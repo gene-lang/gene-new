@@ -1,3 +1,4 @@
+globalThis.getComputedStyle ??= () => ({getPropertyValue: name => name === "padding-left" ? "8px" : name === "row-gap" ? "4px" : ""});
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 class Element extends EventTarget {

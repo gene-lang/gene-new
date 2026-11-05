@@ -54,7 +54,7 @@
     ($dom/append item/element item/label)
     ($dom/append item/element ($dom/render `(button ^type "button" ^class_name "notice_dismiss"
       ^aria-label "Dismiss message" ^title "Dismiss message"
-      ^on_click %(fn [event : Any] : Void (remove_notice notices item/source item/scope item/key)) "×")))
+      ^on_click %(fn [event : Any] : Void (remove_notice notices item/source item/scope item/key)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))
     ($dom/append target item/element)
     ($dom/add_event_listener
       item/element

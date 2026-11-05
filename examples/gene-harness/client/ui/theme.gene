@@ -1,9 +1,6 @@
 # Plugin color overrides for the active light/dark mode.
 (mod harness_ui_theme ^profile web)
 
-# The seven tokens `ui_configure ^theme` may override.
-(const theme_tokens ["ink" "muted" "line" "surface" "sidebar" "soft" "accent"])
-
 # A theme selects only the active mode's explicit token map.
 (fn theme_overrides [theme : Any, mode : Str] : Any
   (var empty : Any {})

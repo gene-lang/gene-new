@@ -253,8 +253,9 @@
             (var choice : Any {^provider provider ^model id ^effort (if picker/required
               (then ($dom/input_value picker/menu_effort)) (else (text current/requested_effort "auto")))})
             (var button ($dom/render `(button ^type "button" ^class_name "models-option"
+              ^aria-pressed %(if selected "true" "false")
               ^on_click %(fn [event : Any] : Void (apply_choice picker choice))
-              %($to_str (if selected (then "✓ ") (else "")) label))))
+              %(if selected (then `(span ^class_name "icon" ^data-icon "check" ^aria-hidden "true")) (else "")) %label)))
             (set button/disabled (||
               (&& ($present? current/pins/provider) (!= (text current/pins/provider) provider))
               (&& ($present? current/pins/model) (!= (text current/pins/model) id))))

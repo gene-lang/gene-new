@@ -1,11 +1,12 @@
 (mod plugin_manager_client ^profile web)
+(import ^from "./appearance.gene" [BrowserAppearance start_appearance refresh_appearance change_appearance])
 (import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
 (import [api_root] ^from "../src/web/contract.gene")
 (import ^from "./state.gene" [query_value])
 (import ^from "./plugin_sessions.gene" [plugin_sessions_view])
 (import [owner_request] ^from "./owner_api.gene")
 
-(type Manager ^props {^csrf Str ^epoch Str ^host Str ^workspace Str ^revision Int ^base Int ^base_plugins (List Any) ^plugins (List Any) ^selected Str ^changes (List Any) ^restore Any ^plan Any ^busy Bool ^ready Bool ^recovery Bool ^repair Bool ^pending Str ^fetch_seq Int ^notice EventTarget})
+(type Manager ^props {^csrf Str ^epoch Str ^host Str ^workspace Str ^revision Int ^base Int ^base_plugins (List Any) ^plugins (List Any) ^selected Str ^changes (List Any) ^restore Any ^plan Any ^busy Bool ^ready Bool ^recovery Bool ^repair Bool ^pending Str ^fetch_seq Int ^appearance Any ^notice EventTarget})
 
 (fn set_hidden [id : Str, value : Bool] : Void
   (var element ($dom/element id))
@@ -74,12 +75,12 @@
 # catalog load (page load and Refresh).
 (fn apply_appearance [mode : Str] : Void
   (if_yes (&& (!= mode "light") (!= mode "dark")) (return))
-  ($dom/set_attribute ($dom/element "harness_document") "data-theme" mode)
+  ($dom/set_attribute ($dom/element "harness_document") "data-mode" mode)
   ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light theme" "Dark theme")))
 
 (fn current_appearance [] : Str
   (var document ($dom/element "harness_document"))
-  (text document/dataset/theme))
+  (text document/dataset/mode))
 
 (fn change_for [manager : Manager, id : Str] : Any
   (for change in manager/changes
@@ -205,7 +206,9 @@
           true)
         (return))
       (set manager/csrf data/csrf)
-      (if_not ($absent? data/appearance) (apply_appearance (text data/appearance)))
+      (if_not ($absent? manager/appearance)
+        (var appearance : BrowserAppearance manager/appearance)
+        (refresh_appearance appearance))
       (if_yes (&& (!= manager/epoch "") (!= manager/epoch (text data/epoch)))
         (set manager/plan nil))
       (set manager/epoch data/epoch)
@@ -798,23 +801,20 @@
 
 (fn main [root : EventTarget] : Void
   (var manager
-    (Manager ^csrf "" ^epoch "" ^host "" ^workspace "" ^revision 0 ^base 0 ^base_plugins [] ^plugins [] ^selected "" ^changes [] ^restore nil ^plan nil ^!busy ^!ready ^!recovery ^!repair ^pending "" ^fetch_seq 0 ^notice ($dom/element "manager_notice")))
+    (Manager ^appearance nil ^csrf "" ^epoch "" ^host "" ^workspace "" ^revision 0 ^base 0 ^base_plugins [] ^plugins [] ^selected "" ^changes [] ^restore nil ^plan nil ^!busy ^!ready ^!recovery ^!repair ^pending "" ^fetch_seq 0 ^notice ($dom/element "manager_notice")))
   ($dom/add_event_listener
     ($dom/element "manager_refresh")
     "click"
     (fn [event : Any] : Void
       (load_catalog manager)))
-  (apply_appearance (current_appearance))
-  ($dom/add_event_listener
-    ($dom/element "theme_toggle")
-    "click"
+  (var appearance (start_appearance
+    (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      (request manager method path payload done))
+    (fn [answer : Any] : Void (return))))
+  (set manager/appearance appearance)
+  ($dom/add_event_listener ($dom/element "theme_toggle") "click"
     (fn [event : Any] : Void
-      (var next (if (== (current_appearance) "dark") "light" "dark"))
-      (request manager "POST" $"${(api_root)}/appearance" {^mode next}
-        (fn [code : Int, data : Any] : Void
-          (if (== code 200)
-            (apply_appearance (text data/mode))
-            (notice manager (text data/message) true))))))
+      (change_appearance appearance {^mode (if (== (current_appearance) "dark") "light" "dark")})))
   ($dom/add_event_listener
     ($dom/element "plugin_query")
     "input"

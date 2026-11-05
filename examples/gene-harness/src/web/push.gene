@@ -2,6 +2,7 @@
 (mod harness_web_push)
 
 (import ^from "./session_service" [host_status list_sessions snapshot RoundError])
+(import ^from "../runtime/appearance" [report_appearance appearance_tabs])
 (import ^from "./contract" [protocol_version])
 (import ^from "../notifications/inbox" [inbox_snapshot])
 (import ^from "../runtime/sessions" [view_session leave_session])
@@ -116,7 +117,12 @@
           (peer .put "viewing" false)))
       (else
         (kept .push peer))))
-  (hub/peers .set kept))
+  (hub/peers .set kept)
+  (let live_ids [])
+  (for peer in kept
+    (if_not peer/closed (live_ids .push (?? peer/client_id ""))))
+  (for report in (appearance_tabs hub/host/runtime)
+    (if_not (live_ids .contains? report/tab) (report_appearance hub/host/runtime report/tab nil))))
 
 (fn expire_peers [hub : PushHub]
   (for peer in hub/peers/.get

@@ -28,6 +28,12 @@
 (fn ensure_dir [path : Str]
   (if_not (exists? path) (make_dir path)))
 
+(fn write_route [assets : Str, route]
+  (let path $"${assets}/${route/file}")
+  (if ($str/starts_with? route/content_type "font/")
+    (then ($fs/write_bytes path route/body))
+    (else (write_text path route/body))))
+
 (fn main [argv]
   (var args [])
   (for arg in argv (args .push ($to_str arg)))
@@ -61,5 +67,5 @@
   (write_text $"${out}/index.html" page)
   (var routes ($web/published_routes))
   (for route in routes
-    (write_text $"${assets}/${route/file}" route/body))
+    (write_route assets route))
   ($println $"Wrote ${out}/index.html and ${routes/.size} files under assets/ for ${base}"))

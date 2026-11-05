@@ -1,84 +1,53 @@
 (import $test [describe it run])
 (import ^from "../../../src/kernel" [new_harness])
-(import ^from "../../../src/runtime/appearance"
-  [read_appearance open_appearance appearance_mode set_appearance AppearanceChanged AppearanceError])
+(import ^from "../../../src/runtime/appearance" [open_appearance set_appearance AppearanceChanged AppearanceRequest AppearanceError appearance_tabs report_appearance])
+(import ^from "../../../src/web/appearance" [read_saved encode_saved appearance_answer appearance_request])
 
-(fn fixture [body]
-  (let root ($path/join ($os/launch_dir) $"tmp/appearance-spec-${($crypto/random_hex 12)}"))
-  ($fs/make_dir root)
-  (try
-    (body root)
-  ensure
-    (let path $"${root}/appearance.gene")
-    (if ($fs/exists? path)
-      (if (== (/kind ($fs/info path)) "directory") ($fs/remove_dir path) ($fs/remove path)))
-    ($fs/remove_dir root)))
-
-(fn observed [h]
-  (let seen [])
-  (h/bus .subscribe AppearanceChanged (fn [event] (seen .push event/mode)))
-  seen)
-
-(describe "Workspace appearance"
-  (it "reads light unless the file holds a known mode" []
-    (fixture (fn [root]
-      ($assert (== (read_appearance root) "light"))
-      ($fs/write_text $"${root}/appearance.gene" "(not data")
-      ($assert (== (read_appearance root) "light"))
-      ($fs/write_text $"${root}/appearance.gene" ($serde/write_data "dark"))
-      ($assert (== (read_appearance root) "light"))
-      ($fs/write_text $"${root}/appearance.gene" ($serde/write_data {^mode "sepia"}))
-      ($assert (== (read_appearance root) "light"))
-      ($fs/write_text $"${root}/appearance.gene" ($serde/write_data {^mode "dark"}))
-      ($assert (== (read_appearance root) "dark")))))
-
-  (it "persists a change before publishing it" []
-    (fixture (fn [root]
-      (let h (new_harness))
-      (let runtime {^h h ^services {^values {}}})
-      (set runtime/services/values/appearance (open_appearance root))
-      (let seen (observed h))
-      ($assert (== (appearance_mode runtime) "light"))
-      ($assert (== (set_appearance runtime "dark") "dark"))
-      ($assert (== (appearance_mode runtime) "dark"))
-      ($assert (== (read_appearance root) "dark"))
-      ($assert (== seen ["dark"]))
-      (let reopened (open_appearance root))
-      ($assert (== reopened/mode/.get "dark")))))
-
-  (it "rejects unknown modes and leaves the choice unchanged" []
-    (fixture (fn [root]
-      (let h (new_harness))
-      (let runtime {^h h ^services {^values {}}})
-      (set runtime/services/values/appearance (open_appearance root))
-      (let seen (observed h))
-      (var code "")
-      (try (set_appearance runtime "sepia") catch AppearanceError (set code $err/code))
-      ($assert (== code "invalid_request"))
-      ($assert (== (appearance_mode runtime) "light"))
-      ($assert seen/.empty?)
-      ($assert (! ($fs/exists? $"${root}/appearance.gene"))))))
-
-  (it "keeps the active mode when the write fails" []
-    (fixture (fn [root]
-      (let h (new_harness))
-      (let runtime {^h h ^services {^values {}}})
-      (set runtime/services/values/appearance (open_appearance root))
-      (let seen (observed h))
-      # A directory where the file belongs makes the atomic write fail.
-      ($fs/make_dir $"${root}/appearance.gene")
-      (var failed false)
-      (try (set_appearance runtime "dark") catch Any (set failed true))
-      ($assert failed)
-      ($assert (== (appearance_mode runtime) "light"))
-      ($assert seen/.empty?))))
-
-  (it "reports light and refuses changes without a setting" []
+(describe "Browser appearance"
+  (it "keeps saved choices when a host falls back" []
+    (let saved (read_saved "other=x; gene_harness_appearance=theme=paper&mode=dark&density=invalid&text_size=larger"))
+    ($assert (== saved {^theme "paper" ^mode "dark" ^text_size "larger"}))
+    (let answer (appearance_answer saved))
+    ($assert (== answer/saved/theme "paper"))
+    ($assert (== answer/rendered/theme "default"))
+    ($assert (== answer/rendered/mode "dark"))
+    ($assert (== answer/rendered/density "comfortable"))
+    ($assert (== (read_saved $"gene_harness_appearance=${(encode_saved saved)}") saved)))
+  (it "merges saved fields and suppresses cookie and event on no-op" []
     (let h (new_harness))
-      (let runtime {^h h ^services {^values {}}})
-    ($assert (== (appearance_mode runtime) "light"))
-    (var code "")
-    (try (set_appearance runtime "dark") catch AppearanceError (set code $err/code))
-    ($assert (== code "unavailable"))))
-
+    (let seen [])
+    (h/bus .subscribe AppearanceChanged (fn [event] (seen .push event/saved)))
+    (let runtime {^h h})
+    (let request {^method "POST" ^headers {^cookie "gene_harness_appearance=theme=paper&mode=dark"} ^body "{\"density\":\"compact\"}"})
+    (let changed (appearance_request request runtime true))
+    (let data ($json/parse (/0 ($node/body changed))))
+    ($assert (== data/saved {^theme "paper" ^mode "dark" ^density "compact"}))
+    ($assert (== data/rendered/theme "default"))
+    ($assert ($str/contains? changed/headers/set-cookie "theme=paper&mode=dark&density=compact"))
+    ($assert (== seen [data/saved]))
+    (request/headers .put "cookie" "gene_harness_appearance=theme=paper&mode=dark&density=compact")
+    (let unchanged (appearance_request request runtime true))
+    ($assert ($absent? unchanged/headers/set-cookie))
+    ($assert (== seen/.size 1)))
+  (it "rejects invalid writes and GET never writes" []
+    (let runtime {^h (new_harness)})
+    (let request {^method "GET" ^headers {} ^body ""})
+    ($assert ($absent? (/set-cookie (/headers (appearance_request request runtime true)))))
+    (request .put "method" "POST")
+    (for body in ["{\"mode\":\"sepia\"}" "{\"density\":false}" "{\"unknown\":\"x\"}" "[]"]
+      (request .put "body" body)
+      ($assert (try (appearance_request request runtime true) false catch AppearanceError true))))
+  (it "server commands request browser changes" []
+    (let h (new_harness))
+    (let seen [])
+    (h/bus .subscribe AppearanceRequest (fn [event] (seen .push event/fields)))
+    ($assert (== (set_appearance {^h h} {^mode "dark"}) {^mode "dark"}))
+    ($assert (== seen [{^mode "dark"}]))
+    ($assert (try (set_appearance {^h h} "dark") false catch AppearanceError true)))
+  (it "stores each connected tab's report" []
+    (let runtime {^services {^values {^appearance (open_appearance "unused")}}})
+    (report_appearance runtime "tab-a" {^saved {^theme "paper"} ^rendered {^theme "default"}})
+    ($assert (== (appearance_tabs runtime) [{^tab "tab-a" ^saved {^theme "paper"} ^rendered {^theme "default"}}]))
+    (report_appearance runtime "tab-a" nil)
+    ($assert (== (appearance_tabs runtime) []))))
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

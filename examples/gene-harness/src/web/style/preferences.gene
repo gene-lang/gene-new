@@ -1,0 +1,28 @@
+(mod harness_style_preferences)
+(var styles """
+@layer preferences {
+@media (prefers-reduced-motion: reduce) {
+ *, *::before, *::after { --duration-fast: 0ms !important; --duration-base: 0ms !important; }
+ * { scroll-behavior: auto !important; }
+}
+@media (forced-colors: active) {
+ .gene_code, .gene_code span { color: CanvasText !important; }
+ .session.selected, .session_tab.selected, .web_tabs [aria-selected=true], .web_listbox [aria-selected=true], .spotlight-option.active { outline: var(--focus-width) solid Highlight !important; }
+ button, .send { border-color: ButtonText !important; }
+ .icon { background: CanvasText !important; }
+}
+:root[data-density=compact], :root[data-density=compact] .theme_preview, :root[data-density=compact] .theme_preview [data-mode] { --density: .8 !important; }
+:root[data-text-size=small] { font-size: 90% !important; }
+:root[data-text-size=large] { font-size: 112.5% !important; }
+:root[data-text-size=larger] { font-size: 125% !important; }
+:root[data-content-width=narrow] { --content-width: 35rem !important; }
+:root[data-content-width=wide] { --content-width: 65rem !important; }
+:root[data-content-width=full] { --content-width: 100% !important; }
+
+@media (hover: none), (pointer: coarse) {
+ button, select, input:not([type=checkbox]):not([type=radio]), .session, .sidebar_footer a, .web_listbox [role=option], input[type=file]::file-selector-button { min-height: var(--touch-target) !important; }
+ label:has(input[type=checkbox]), label:has(input[type=radio]) { display: inline-flex !important; align-items: center !important; min-height: var(--touch-target) !important; }
+ .session_more { opacity: 1 !important; }
+}
+}
+""")

@@ -1,0 +1,10 @@
+(mod harness_style_wide)
+(var rules """
+.app { --shell-narrow: 0; }
+.site .hero_grid { grid-template-columns: var(--site-hero-columns); }
+
+  .app.sidebar_collapsed:not(.ui_full) { grid-template-areas: "host" "main"; grid-template-columns: minmax(0, 1fr); }
+  .app.sidebar_collapsed.has_ui_panel { grid-template-areas: "host host" "panel main"; grid-template-columns: minmax(var(--panel-min), var(--ui-first, 1fr)) minmax(var(--main-min), var(--ui-second, 1fr)); }
+  .app.sidebar_collapsed.has_ui_panel.ui_right { grid-template-areas: "host host" "main panel"; grid-template-columns: minmax(var(--main-min), var(--ui-first, 1fr)) minmax(var(--panel-min), var(--ui-second, 1fr)); }
+
+""")

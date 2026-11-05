@@ -102,9 +102,11 @@ State lives beneath `.gene-harness/`:
 | `blobs/` | Content-addressed history, recall and receipt bodies |
 | `notifications/` | Producer inbox and operator opened watermark |
 | `triggers/` | Durable trigger definitions and occurrences |
-| `appearance.gene` | Saved light/dark choice, readable during metadata recovery |
 | `web_secret`, `web_sessions` | Reusable owner token and generation-bound browser credentials |
 | `connection`, `link`, `cli_cookie` | Live endpoint discovery and client connection state |
+
+Appearance is a browser cookie, shared across hosts on the same hostname; it
+is not workspace state. Recovery reads that cookie and uses built-in themes.
 
 The lock has a permanent path. A process must hold ownership before mutating
 workspace state. Connection metadata is published only when the host is ready.

@@ -1,0 +1,51 @@
+(mod harness_style_manager)
+(import ^from "../../public/web_style" [shell_css])
+(var styles (shell_css """
+@layer shell {
+ .manager_grid { display: grid; grid-template-columns: minmax(var(--panel-min), 38%) minmax(0, 1fr); gap: var(--space-5); align-items: start; }
+ @compact { .manager { padding: var(--space-4); } .plugin_list { max-height: var(--manager-list-compact-max-height); } }
+}
+@layer components {
+
+.manager { max-width: var(--size-80); margin: auto; padding: var(--space-6); }
+.manager header, .manager_bar, .manager_actions, .plugin_heading { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.manager header { justify-content: space-between; border-bottom: var(--border-width) solid var(--line); padding-bottom: var(--space-4); }
+.manager h1 { margin: 0; font-size: var(--text-2xl); letter-spacing: var(--tracking-tight); }
+.manager h2 { font-size: var(--text-xl); margin: 0 0 var(--space-3); }
+.manager h3 { font-size: var(--text-md); margin: var(--space-5) 0 var(--space-2); }
+.manager p { margin: var(--space-2) 0; }
+.manager .muted, .plugin_meta { color: var(--muted); font-size: var(--text-sm); }
+.manager_bar { margin: var(--space-5) 0; }
+.manager input[type=search] { flex: 1; min-width: min(100%, var(--menu-width)); }
+.manager input:not([type=checkbox]), .manager textarea, .manager select { border: var(--border-width) solid var(--edge); padding: var(--space-2) var(--space-2); background-color: var(--field-surface); }
+.manager select:not([multiple]) { padding-right: var(--space-6); }
+.plugin_list { max-height: var(--manager-list-max-height); overflow: auto; border: var(--border-width) solid var(--line); }
+.plugin_row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border-bottom: var(--border-width) solid var(--line); }
+.plugin_row:last-child { border-bottom: 0; }
+.plugin_row.selected { background: var(--soft); }
+.plugin_row > button { flex: 1; border: 0; border-radius: var(--radius-row); padding: 0; text-align: left; background: transparent; }
+.plugin_name { font-weight: var(--weight-bold); display: block; overflow-wrap: anywhere; }
+.manager_card { border: var(--border-width) solid var(--line); padding: var(--space-5); min-width: 0; }
+.manager_card + .manager_card { margin-top: var(--space-5); }
+.plugin_badge { display: inline-block; padding: var(--space-1) var(--space-2); background: var(--soft); font-size: var(--text-xs); }
+.plugin_badge.error, .manager_error { color: var(--danger); }
+.plugin_badge.ready { color: var(--success); }
+.capability { font-family: var(--font-mono); font-size: var(--text-sm); overflow-wrap: anywhere; padding: var(--space-1) 0; }
+.manager ul { padding-left: var(--space-5); }
+.manager .primary { border-color: var(--action); background: var(--action); color: var(--action-ink); }
+.manager .primary:hover:not(:disabled) { border-color: var(--action-hover); background: var(--action-hover); }
+.manager_notice { min-height: var(--size-1-75); margin-top: var(--space-3); overflow-wrap: anywhere; }
+.manager_draft { margin-top: var(--space-5); border-color: var(--edge); }
+.manager_draft .manager_actions { margin-top: var(--space-4); }
+.manager code { overflow-wrap: anywhere; font-size: var(--text-sm); }
+.manager_editor label { display: block; margin: var(--space-3) 0; }
+.manager_editor input, .manager_editor textarea { display: block; width: 100%; }
+.manager_editor textarea { font-family: var(--font-mono); font-size: var(--text-sm); }
+.history_row { padding: var(--space-2) 0; border-bottom: var(--border-width) solid var(--line); }
+.history_row button { margin-top: var(--space-1); }
+.manager details > summary { cursor: pointer; }
+
+.manager_card { border-radius: var(--radius-surface); }
+.plugin_badge { border-radius: var(--radius-chip); }
+}
+"""))

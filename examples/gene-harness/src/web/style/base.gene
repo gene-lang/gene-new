@@ -1,0 +1,14 @@
+(mod harness_style_base)
+(var styles """
+@layer base {
+:root {
+  font-family: var(--font-sans);
+  font-size: 100%;
+  line-height: var(--line-body);
+  color: var(--ink);
+  background: var(--surface);
+}
+img { border-radius: var(--radius-surface); }
+h1, h2, h3, h4, h5, h6 { font-family: var(--font-display); }
+}
+""")

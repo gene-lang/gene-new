@@ -1,32 +1,36 @@
 (mod spotlight)
+(import ^from "../public/web_style" [shell_css])
 (import [Plugin PluginHost] ^from "../plugin_api")
 
 (var asset ($cell nil))
 (var asset_path ($cell ""))
 (var stylesheet ($cell nil))
-(let style """
+(let style (shell_css """
 .spotlight-launcher { white-space: nowrap; }
-.spotlight-backdrop { position: fixed; inset: 0; z-index: 1000; background: #0005; padding: min(14vh, 110px) 16px 24px; overflow: auto; }
+.spotlight-backdrop { position: fixed; inset: 0; z-index: var(--layer-dialog); background: var(--scrim); padding: var(--spotlight-inset-block) var(--space-4) var(--space-6); overflow: auto; }
 .spotlight-backdrop[hidden] { display: none; }
-.spotlight-dialog { width: min(640px, 100%); margin: 0 auto; background: var(--surface, #fff); color: var(--ink, #18202b); border: 1px solid var(--line, #ccd2db); box-shadow: 0 16px 60px #0005; overflow: hidden; }
-.spotlight-heading { display: flex; align-items: center; padding: 12px 14px; gap: 10px; border-bottom: 1px solid var(--line, #ccd2db); }
-.spotlight-heading input { flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 21px; padding: 7px 2px; outline-offset: 4px; }
+.spotlight-dialog { width: min(var(--size-40), 100%); margin: 0 auto; background: var(--surface-raised); color: var(--ink); border: var(--border-width) solid var(--edge); box-shadow: var(--shadow-overlay); overflow: hidden; }
+.spotlight-heading { display: flex; align-items: center; padding: var(--space-3) var(--space-3); gap: var(--space-2); border-bottom: var(--border-width) solid var(--edge); }
+.spotlight-heading input { flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: var(--text-2xl); padding: var(--space-2) var(--space-1); outline-offset: var(--focus-offset); }
 .spotlight-crumb:empty { display: none; }
-.spotlight-crumb { font-size: 12px; padding: 12px 16px 0; color: var(--muted, #667085); }
-.spotlight-results { max-height: min(516px, calc(100dvh - 280px)); overflow-y: auto; padding: 6px; }
-.spotlight-option { display: flex; gap: 16px; align-items: center; padding: 9px 12px; border-radius: 7px; cursor: pointer; min-height: 56px; }
-.spotlight-option.active { background: var(--accent, #2463eb); color: var(--surface, #fff); }
-.spotlight-option[aria-disabled=true] { opacity: .6; }
+.spotlight-crumb { font-size: var(--text-xs); padding: var(--space-3) var(--space-4) 0; color: var(--muted); }
+.spotlight-results { max-height: min(var(--size-32-25), calc(100dvh - var(--size-17-5))); overflow-y: auto; padding: var(--space-1); }
+.spotlight-option { display: flex; gap: var(--space-4); align-items: center; padding: var(--space-2) var(--space-3); border-radius: var(--radius-row); cursor: pointer; min-height: var(--size-3-5); }
+.spotlight-option.active .spotlight-copy small, .spotlight-option.active kbd { color: var(--action-ink); }
+.spotlight-option.active { background: var(--action); color: var(--action-ink); }
+.spotlight-option[aria-disabled=true] { opacity: var(--opacity-disabled); }
 .spotlight-copy { flex: 1; min-width: 0; }
 .spotlight-copy strong, .spotlight-copy small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.spotlight-copy strong { font-size: 14px; line-height: 18px; font-weight: 600; }
-.spotlight-copy small { font-size: 12px; line-height: 16px; opacity: .72; margin-top: 3px; }
-.spotlight-option kbd { font: 12px ui-monospace, monospace; opacity: .8; }
-.spotlight-message { padding: 5px 18px 9px; font-size: 12px; color: var(--muted, #667085); }
-.spotlight-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line, #ccd2db); font-size: 11px; color: var(--muted, #667085); }
-[data-theme=dark] .spotlight-dialog { background: var(--surface, #20242c); color: var(--ink, #eee); border-color: var(--line, #454b57); }
-@media (max-width: 480px) { .spotlight-backdrop { padding: 24px 8px; } .spotlight-footer span { max-width: 220px; } .spotlight-heading input { font-size: 17px; } }
-""")
+.spotlight-copy strong { font-size: var(--text-md); line-height: var(--line-heading); font-weight: var(--weight-bold); }
+.spotlight-copy small { font-size: var(--text-xs); line-height: var(--line-heading); color: var(--muted); margin-top: var(--space-1); }
+.spotlight-option kbd { font: var(--type-code); color: var(--muted); }
+.spotlight-message { padding: var(--space-1) var(--space-4) var(--space-2); font-size: var(--text-xs); color: var(--muted); }
+.spotlight-footer { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border-top: var(--border-width) solid var(--edge); font-size: var(--text-2xs); color: var(--muted); }
+
+@compact { .spotlight-backdrop { padding: var(--space-6) var(--space-2); } .spotlight-footer span { max-width: var(--size-13-75); } .spotlight-heading input { font-size: var(--text-lg); } }
+
+.spotlight-dialog { border-radius: var(--radius-surface); }
+"""))
 
 (fn spotlight_from [path : Str] : Plugin
   # Prepare assets before composition staging captures its Application state.

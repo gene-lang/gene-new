@@ -35,7 +35,7 @@
           (source .set blocks/0)
           # An existing workspace UI must survive the starter's partial configure calls.
           ((/fn (row runtime/h "functions" "ui_configure"))
-            {^^enabled ^layout "panel" ^side "right" ^width 60 ^theme {^light {^accent "#335577"}}})
+            {^^enabled ^layout "panel" ^side "right" ^width 60 ^tokens {^light {^accent "#335577"}}})
           (let save ($to_str `($fs/write_text "counter.gene" %blocks/0)))
           (let published (evaluate_harness_turn ^session session/id
             ^publication_preview (fn [session changes] (ui_publication_preview runtime session changes))
@@ -49,7 +49,7 @@
           ($assert (== checked/kind "done") ($to_str checked/error))
           (let settings (ui_settings runtime))
           ($assert (&& (== settings/layout "panel") (== settings/side "right") (== settings/width 60)
-                       (== settings/theme/light/accent "#335577") (== settings/default_view "counter"))
+                       (== settings/tokens/light/accent "#335577") (== settings/default_view "counter"))
             ($to_str settings))
           (let get (/fn (row runtime/h "functions" "counter_get")))
           (let add (/fn (row runtime/h "functions" "counter_add")))

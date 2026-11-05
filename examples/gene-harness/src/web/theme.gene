@@ -1,85 +1,308 @@
-# Host palettes and the CSS custom properties generated from them. Every shared
-# UI color lives here; the app, plugin manager and website stylesheets refer to
-# the tokens. See docs/theming.md.
+# Theme resolution and generation. Values belong in themes/, never host rules.
 (mod harness_web_theme)
-(import $css [css rule decl_value render : render_css])
+(import $css [css rule decl_value font_face scoped class_name render : render_css])
+(import ^from "../public/web_style" [narrow_minimum])
+(import ^from "./style/narrow" [rules : narrow_rules])
+(import ^from "./style/wide" [rules : wide_rules])
+(import ^from "./themes/default" [theme : default_theme])
+(import ^from "./themes/minimal" [theme : minimal_theme])
 
 (const theme_modes ["light" "dark"])
-# The seven tokens a plugin may override through `ui_configure ^theme`.
-(const public_tokens ["ink" "muted" "line" "surface" "sidebar" "soft" "accent"])
-# Emission order for each palette's custom properties.
-(const palette_tokens
-  ["surface" "sidebar" "soft" "user" "line" "edge" "muted" "ink" "accent" "danger" "success" "scrim"])
+(const public_tokens ["surface" "surface-alt" "surface-raised" "soft" "selected" "line" "edge" "ink" "muted" "accent" "link-color" "action" "action-hover" "action-ink" "focus" "danger" "success" "warning" "info" "danger-surface" "success-surface" "warning-surface" "info-surface" "scrim" "series-1" "series-2" "series-3" "series-4" "series-5" "series-6" "series-7" "series-8" "syntax-string" "syntax-number" "syntax-keyword" "syntax-callable" "syntax-type"])
+(const icon_names ["add" "close" "menu" "more" "send" "stop" "copy" "search" "settings" "notifications" "light" "dark" "chevron-down" "chevron-right" "arrow-down" "check" "success" "warning" "error" "info" "external" "attachment" "microphone" "pin" "edit" "retry" "delete" "sidebar" "plugin" "trigger"])
+# Named system roles are stable; component-specific and private theme tokens may
+# extend this vocabulary without changing host rules.
+(var system_tokens ($into public_tokens []))
+(for name in ["font-sans" "font-mono" "font-display" "density" "weight-regular" "weight-medium" "weight-bold"
+    "tracking-label" "tracking-tight" "link-decoration" "gutter" "gutter-compact" "stack-gap" "inline-gap"
+    "inset-control" "inset-field" "inset-surface" "border-width" "border-width-strong" "rule-width"
+    "focus-width" "focus-offset" "shadow-raised" "shadow-overlay" "duration-fast" "duration-base" "ease-standard"
+    "sidebar-width" "content-width" "topbar-height" "drawer-width" "drawer-width-wide" "menu-width"
+    "panel-min" "main-min" "control-height" "touch-target" "icon-size" "icon-size-sm" "icon-size-lg"
+    "message-user-surface" "sidebar-surface" "field-surface" "code-surface" "notice-surface"]
+  (system_tokens .push name))
+(for group in [["text" ["2xs" "xs" "sm" "md" "lg" "xl" "2xl" "display"]]
+               ["type" ["body" "ui" "small" "label" "title" "heading-1" "heading-2" "heading-3" "display" "code"]]
+               ["radius" ["control" "field" "surface" "row" "chip" "message"]]
+               ["layer" ["raised" "sticky" "overlay" "drawer" "menu" "dialog" "toast"]]]
+  (for role in group/1 (system_tokens .push $"${group/0}-${role}")))
+(for step in [1 2 3 4 5 6 8 10 12] (system_tokens .push $"space-${step}"))
 
-(var light_palette
-  {^surface "#ffffff" ^sidebar "#f7f7f7" ^soft "#efefef" ^user "#ebebeb"
-   ^line "#e5e5e5" ^edge "#858585" ^muted "#636363" ^ink "#1c1c1c"
-   ^accent "#1c1c1c" ^danger "#a8322b" ^success "#2d6a38"
-   ^scrim "rgb(0 0 0 / .2)"})
-
-(var dark_palette
-  {^surface "#151515" ^sidebar "#1b1b1b" ^soft "#262626" ^user "#2b2b2b"
-   ^line "#2f2f2f" ^edge "#777777" ^muted "#9c9c9c" ^ink "#e7e7e7"
-   ^accent "#e7e7e7" ^danger "#ef8b80" ^success "#8fc89b"
-   ^scrim "rgb(0 0 0 / .5)"})
-
-(var palettes {^light light_palette ^dark dark_palette})
-
-# Mode-independent tokens.
-(var shared_tokens
-  [["radius-button" "5px"]
-   ["control-height" "2.5rem"]
-   ["shadow-menu" "0 5px 18px #0002"]
-   ["font-sans" "-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"]
-   ["font-mono" "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"]])
-
-# Aliases and syntax colors are declared wherever plugin overrides apply, so
-# they recompute from an overridden panel's values instead of inheriting the
-# root's computed colors.
-(var derived_tokens
-  [["input-surface" "var(--surface)"]
-   ["selected-surface" "var(--soft)"]
-   ["code-surface" "var(--soft)"]
-   ["notice-surface" "var(--soft)"]
-   ["action-ink" "var(--surface)"]
-   ["syntax-string" "color-mix(in srgb, #23804b 55%, var(--ink))"]
-   ["syntax-number" "color-mix(in srgb, #bc7c42 55%, var(--ink))"]
-   ["syntax-keyword" "color-mix(in srgb, #9b64ce 55%, var(--ink))"]
-   ["syntax-callable" "color-mix(in srgb, #4b82cf 55%, var(--ink))"]
-   ["syntax-type" "color-mix(in srgb, #398a96 55%, var(--ink))"]])
+(var builtin_themes {^default default_theme ^minimal minimal_theme})
 
 (fn theme_mode [value] : Str
-  (if (theme_modes .contains? value) value "light"))
+  (if (theme_modes .contains? value) (then value) (else "light")))
 
-# A data-URI image cannot read custom properties, so each palette carries its
-# own select chevron drawn in its muted color.
-(fn select_chevron [color : Str] : Str
-  (let stroke ($str/join ($str/split color "#") "%23"))
-  ($to_str
-    "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='"
-    stroke
-    "' stroke-width='1.5'/%3E%3C/svg%3E\")"))
+(fn css_name [name] : Str ($str/join ($str/split ($to_str name) "_") "-"))
 
-(fn palette_declarations [palette, scheme : Str]
-  (let declarations [(decl_value "color-scheme" scheme)])
-  (for name in palette_tokens
-    (declarations .push (decl_value $"--${name}" (palette .get name))))
-  (declarations .push (decl_value "--select-chevron" (select_chevron palette/muted)))
-  declarations)
+(fn merge_tokens [target, source]
+  (for [key value] in (?? source {}) (target .put (css_name key) value))
+  target)
 
-(fn token_declarations [pairs]
+(fn resolve_theme [name : Str = "default", themes = builtin_themes, trail = []]
+  (if (trail .contains? name) (fail $"Theme inheritance cycle: ${name}"))
+  (let source (themes .get name))
+  (if ($absent? source) (fail $"Unknown theme ${name}"))
+  (let seen [])
+  (for item in trail (seen .push item))
+  (seen .push name)
+  (let parent (if (== name "default") nil (resolve_theme (?? source/extends "default") themes seen)))
+  (let result {^name name ^title (?? source/title name) ^doc (?? source/doc "")
+    ^tokens {^shared {} ^light {} ^dark {}} ^icons {} ^fonts [] ^styles []})
+  (for mode in ["shared" "light" "dark"]
+    (if ($present? parent) (merge_tokens result/tokens/%mode parent/tokens/%mode))
+    # A child's shared choice wins over a mode-specific value in its parent.
+    # The child's own mode map remains the most specific choice.
+    (if_yes (!= mode "shared")
+      (for [key value] in (?? source/tokens/shared {})
+        (let name (css_name key))
+        (if ($present? (result/tokens/%mode .get name)) (result/tokens/%mode .put name value))))
+    (merge_tokens result/tokens/%mode source/tokens/%mode))
+  (if_yes ($present? parent)
+    (merge_tokens result/icons parent/icons)
+    (for face in parent/fonts (result/fonts .push face))
+    (for style in parent/styles (result/styles .push style)))
+  (merge_tokens result/icons source/icons)
+  (for face in (?? source/fonts [])
+    (let prepared {})
+    (for [key value] in face (prepared .put (css_name key) value))
+    (if (&& (["default" "minimal"] .contains? name)
+            (! ($str/starts_with? face/src "https:")) (! ($str/starts_with? face/src "/")))
+      (prepared .put "src" ($web/font ($path/join this_pkg/root "assets" face/src))))
+    (result/fonts .push prepared))
+  (if ($present? source/style) (result/styles .push source/style))
+  result)
+
+(fn resolved_tokens [theme, mode : Str]
+  (let values {})
+  (merge_tokens values theme/tokens/shared)
+  (merge_tokens values theme/tokens/%mode)
+  values)
+
+(fn token_declarations [tokens]
   (let declarations [])
-  (for pair in pairs
-    (declarations .push (decl_value $"--${pair/0}" pair/1)))
+  (for [name value] in tokens
+    (declarations .push (decl_value $"--${name}" value)))
   declarations)
 
-(var theme_styles
-  (css
-    (rule ":root" (palette_declarations light_palette "light")... (token_declarations shared_tokens)...)
-    (rule ":root[data-theme=\"dark\"]" (palette_declarations dark_palette "dark")...)
-    (rule ":root, .ui_panel" (token_declarations derived_tokens)...)))
+(fn svg_url [svg : Str] : Str
+  ($to_str "url(\"data:image/svg+xml," ($url/encode_component svg) "\")"))
 
-(var theme_css (render_css theme_styles))
+(fn select_chevron [theme, color : Str] : Str
+  (svg_url ($str/join ($str/split (theme/icons .get "chevron-down") "currentColor") color)))
+
+(fn rem_size [value : Str] : Float
+  (if_not ($str/ends_with? value "rem") (fail "Theme layout sizes must be plain rem lengths."))
+  (let raw ($str/slice_bytes value 0 (- ($str/byte_size value) 3)))
+  (let number (if ($str/starts_with? raw ".") ($to_str "0" raw) raw))
+  (+ 0.0 ($json/parse number)))
+
+(fn narrow_breakpoint [theme] : Float
+  (var narrow narrow_minimum)
+  (for mode in theme_modes
+    (let tokens (resolved_tokens theme mode))
+    (let needed (+ (rem_size (tokens .get "sidebar-width")) (rem_size (tokens .get "panel-min")) (rem_size (tokens .get "main-min"))))
+    (if (> needed narrow) (set narrow needed)))
+  narrow)
+
+# Mode values and their shared dependencies are redeclared at subtree boundaries.
+# Space steps stay on :root, so a subtree cannot accidentally change page density.
+# Themes state base lengths. Density is a system relationship, including when
+# a plugin replaces a single step with an ordinary rem value.
+(fn density_tokens [source]
+  (let tokens {})
+  (for [key value] in source
+    (let name ($to_str key))
+    (let scaled (|| ($str/starts_with? name "space-") (== name "control-height")))
+    (let already_scaled (|| ($str/contains? value "--density") ($str/contains? value "var(--space-")
+      ($str/contains? value "var(--control-height)")))
+    (tokens .put key (if (&& scaled (! already_scaled))
+      (then $"calc(${value} * var(--density))") (else value))))
+  tokens)
+
+(fn density_owned? [name : Str] : Bool
+  (|| (== name "density") (== name "control-height") ($str/starts_with? name "space-")))
+
+(fn mode_tokens [theme, mode : Str]
+  (let selected {})
+  (for key in public_tokens (selected .put key true))
+  (for key in ["field-surface" "sidebar-surface" "code-surface" "notice-surface" "message-user-surface"]
+    (selected .put key true))
+  (for source in [theme/tokens/light theme/tokens/dark]
+    (for [key value] in source (selected .put key true)))
+  # Recompute shared aliases whose dependencies change with a mode. The page's
+  # density steps remain inherited; a local --density never recomputes them.
+  (var changed true)
+  (while changed
+    (set changed false)
+    (for [key value] in theme/tokens/shared
+      (let name ($to_str key))
+      (if (|| (density_owned? name) ($present? (selected .get name))) (continue))
+      (var dependent false)
+      (for [target ignored] in selected
+        (let token ($to_str target))
+        (if (density_owned? token) (continue))
+        (if_yes (|| ($str/contains? value $"var(--${token})") ($str/contains? value $"var(--${token},"))
+          (set dependent true) (break)))
+      (if_yes dependent (selected .put name true) (set changed true))))
+  (let tokens {})
+  (for [key ignored] in selected
+    (let name ($to_str key))
+    (if_not (density_owned? name)
+      (tokens .put name (?? (theme/tokens/%mode .get name) (theme/tokens/shared .get name) "initial"))))
+  tokens)
+
+(fn font_nodes [theme]
+  (let nodes [])
+  (for face in theme/fonts
+    (let declarations [(decl_value "font-family" ($json/stringify face/family)) (decl_value "src" $"url(\"${face/src}\")")
+      (decl_value "font-display" (?? face/display face/font-display "swap"))])
+    (for key in ["weight" "style" "stretch"]
+      (if ($present? (face .get key)) (declarations .push (decl_value $"font-${key}" (face .get key)))))
+    (for key in ["size-adjust" "ascent-override" "descent-override" "line-gap-override"]
+      (if ($present? (face .get key)) (declarations .push (decl_value key (face .get key)))))
+    (nodes .push (font_face declarations...)))
+  nodes)
+
+(fn panel_scope [tokens, selector : Str] : Str
+  (let derived {})
+  (for [name value] in tokens
+    (if (|| ($str/starts_with? value "var(--") ($str/starts_with? value "color-mix("))
+      (derived .put name value)))
+  # The lower bound prevents an outer mode from overriding a nested mode.
+  ($to_str "@scope (" selector ") to ([data-mode]) {\n"
+    (render_css (rule ".ui_panel:not([data-mode])" (token_declarations derived)...)) "}\n"))
+
+(fn generate_theme [theme] : Str
+  (let nodes [])
+  (var scopes "")
+  (nodes .push (rule ":root" (token_declarations (density_tokens theme/tokens/shared))...))
+  (for mode in theme_modes
+    (let tokens (mode_tokens theme mode))
+    (let colors (resolved_tokens theme mode))
+    (let global_values {})
+    (for [key value] in theme/tokens/%mode
+      (if (density_owned? ($to_str key)) (global_values .put key value)))
+    (nodes .push (rule (if (== mode "light") ":root:not([data-mode=dark])" ":root[data-mode=dark]") (token_declarations (density_tokens global_values))...))
+    (let selector (if (== mode "light") ":root, [data-mode=\"light\"]" ":root[data-mode=\"dark\"], [data-mode=\"dark\"]"))
+    (nodes .push (rule selector (decl_value "color-scheme" mode)
+      (token_declarations tokens)...
+      (decl_value "--select-chevron" (select_chevron theme (try (color_value colors "muted") catch Any "currentColor")))))
+    (set scopes ($to_str scopes (panel_scope tokens
+      (if (== mode "light") ":root:not([data-mode=dark]), [data-mode=light]" ":root[data-mode=dark], [data-mode=dark]")))))
+  (let icons {})
+  (for [name svg] in theme/icons (icons .put $"icon-${name}" (svg_url svg)))
+  (nodes .push (rule ":root" (token_declarations icons)...))
+  (for [name svg] in theme/icons
+    (nodes .push (rule $".icon[data-icon=\"${name}\"]" (decl_value "--icon" $"var(--icon-${name})"))))
+  (for node in (font_nodes theme) (nodes .push node))
+  (let narrow (narrow_breakpoint theme))
+  (var output ($to_str (render_css nodes) scopes "@layer shell {\n@container shell (width < " narrow "rem) {" narrow_rules "}\n@container shell (width >= " narrow "rem) {" wide_rules "}\n}\n"))
+  (for style in theme/styles (set output ($to_str output (render_css style))))
+  output)
+
+# Font faces have global names in CSS. Preview faces get private family names,
+# so installing or comparing another theme cannot replace the active body face.
+(fn unquote_family [value : Str] : Str
+  (let text ($str/trim value))
+  (if (&& (>= ($str/byte_size text) 2)
+          (|| (&& ($str/starts_with? text "\"") ($str/ends_with? text "\""))
+              (&& ($str/starts_with? text "'") ($str/ends_with? text "'"))))
+    (then ($str/slice_bytes text 1 (- ($str/byte_size text) 2)))
+    (else text)))
+
+(fn preview_font_name [theme, family : Str] : Str
+  ($to_str "harness-preview-" theme/name "-" ($str/slice_bytes ($crypto/sha256 ($str/lower family)) 0 12)))
+
+(fn preview_font_aliases [theme]
+  (let aliases {})
+  (for face in theme/fonts
+    (aliases .put ($str/lower face/family) (preview_font_name theme face/family)))
+  (for style in theme/styles
+    (var in_face false)
+    (for line in ($str/split (render_css style) "\n")
+      (let text ($str/trim line))
+      (if ($str/starts_with? text "@font-face")
+        (then (set in_face true))
+        (elif (&& in_face ($str/starts_with? text "font-family:"))
+          (let family (unquote_family ($str/slice_bytes text 12 (- ($str/byte_size text) 13))))
+          (aliases .put ($str/lower family) (preview_font_name theme family)))
+        (elif (== text "}") (set in_face false)))))
+  aliases)
+
+(fn font_alias_pattern [family : Str]
+  (var escaped family)
+  (for char in ["\\" "." "+" "*" "?" "^" "$" "(" ")" "[" "]" "{" "}" "|"]
+    (set escaped ($str/join ($str/split escaped char) ($to_str "\\" char))))
+  ($Regex ^flags "i" ($to_str "(?<![\\w-])" escaped "(?![\\w-])")))
+
+(fn alias_font_value [value : Str, aliases] : Str
+  (var result value)
+  (for [family alias] in aliases
+    (set result ($regex/replace_all (font_alias_pattern ($to_str family)) result alias)))
+  result)
+
+(fn preview_font_tokens [values, aliases]
+  (let tokens ($thaw ($freeze values)))
+  (if (== ($size aliases) 0) (return tokens))
+  (for name in ["font-sans" "font-mono" "font-display"]
+    (let value (try (color_value values name) catch Any (?? (values .get name) "")))
+    (tokens .put name (alias_font_value value aliases)))
+  (for [key value] in values
+    (if ($str/starts_with? ($to_str key) "type-")
+      (tokens .put key (alias_font_value value aliases))))
+  tokens)
+
+(fn alias_font_rules [source : Str, aliases] : Str
+  (let lines [])
+  (for line in ($str/split source "\n")
+    (let text ($str/trim line))
+    (lines .push (if (|| ($str/starts_with? text "font-family:") ($str/starts_with? text "font:"))
+      (then (alias_font_value line aliases)) (else line))))
+  ($str/join lines "\n"))
+
+# A specimen compares themes without changing the page's own root values.
+(fn preview_css [theme] : Str
+  (var scopes "")
+  (let scope $".theme_preview[data-preview-theme=\"${theme/name}\"]")
+  (let aliases (preview_font_aliases theme))
+  (let shared (preview_font_tokens (density_tokens theme/tokens/shared) aliases))
+  (let nodes [(rule scope (token_declarations shared)...)])
+  (for mode in theme_modes
+    (nodes .push (rule $"${scope} [data-mode=\"${mode}\"]"
+      (decl_value "color-scheme" mode) (token_declarations (preview_font_tokens (density_tokens (resolved_tokens theme mode)) aliases))...))
+    (set scopes ($to_str scopes (panel_scope (mode_tokens theme mode) $"${scope} [data-mode=\"${mode}\"]"))))
+  (let icons {})
+  (for [name svg] in theme/icons (icons .put $"icon-${name}" (svg_url svg)))
+  (nodes .push (rule scope (token_declarations icons)...))
+  (let preview_faces [])
+  (for face in theme/fonts
+    (let prepared ($thaw ($freeze face)))
+    (prepared .put "family" (aliases .get ($str/lower face/family)))
+    (preview_faces .push prepared))
+  (for node in (font_nodes {^fonts preview_faces}) (nodes .push node))
+  (var output ($to_str (render_css nodes) scopes))
+  (for style in theme/styles
+    (let namespaced (scoped $"preview_${theme/name}" style))
+    (let text ($str/join ($str/split (render_css namespaced) $".${(class_name namespaced)}") scope))
+    (set output ($to_str output (alias_font_rules text aliases))))
+  output)
+
+(fn color_value [tokens, name : Str, trail = []] : Str
+  (if (trail .contains? name) (fail $"Cyclic color token ${name}"))
+  (let value (tokens .get name))
+  (if ($absent? value) (fail $"Missing color token ${name}"))
+  (if ($str/starts_with? value "var(--")
+    (then
+      (let seen ($into trail [])) (seen .push name)
+      (color_value tokens ($str/slice_bytes value 6 (- ($str/byte_size value) 7)) seen))
+    (else value)))
+
+(var default_resolved (resolve_theme))
+(var light_palette (resolved_tokens default_resolved "light"))
+(var dark_palette (resolved_tokens default_resolved "dark"))
+(var palettes {^light light_palette ^dark dark_palette})
+(var theme_css (generate_theme default_resolved))
 
 # WCAG 2 relative luminance and contrast ratio of two six-digit hex colors.
 (fn hex_channel [color : Str, offset : Int] : Float

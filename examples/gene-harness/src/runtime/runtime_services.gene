@@ -153,7 +153,7 @@
     {^name "ui_defaults" ^layer "feature_host" ^requires ["runtime"]
      ^open (fn [ctx]
        (if (== ctx/profile/name "manager")
-         {^^enabled ^layout "chat" ^default_view "workspaces" ^panel "" ^side "left" ^width 50 ^theme {}}
+         {^^enabled ^layout "chat" ^default_view "workspaces" ^panel "" ^side "left" ^width 50 ^tokens {}}
          nil)) ^recover nil}
     {^name "notification_host" ^layer "feature_host" ^requires ["runtime" "inbox"]
      ^open (fn [ctx]

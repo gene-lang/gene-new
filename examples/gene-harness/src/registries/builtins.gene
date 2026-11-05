@@ -7,6 +7,7 @@
   validate_hook_point_row validate_trigger_row validate_interaction_row
   validate_prompt_row validate_docs_row validate_event_type_row validate_event_type_owner
   cancel_subscription_row] ^from "./contracts")
+(import [validate_theme validate_icon] ^from "../web/theme_registry")
 (import [validate_web_component] ^from "../ui/components")
 (import [validate_browser_client] ^from "../ui/browser_assets")
 (import [own_engine_resources] ^from "./resources")
@@ -14,6 +15,7 @@
 
 (fn builtin_registry_specs [h, lookup]
   (let discovery_reserved {^discover "" ^doc "" ^workspace "" ^manager "" ^session ""})
+  (let host_functions_reserved (discovery_reserved .assoc "set_appearance" "core"))
   [
     {^name "seams" ^^unique ^schema validate_seam_row ^callbacks ["value"]}
     {^name "commands" ^^unique ^schema validate_command_row ^callbacks ["run"]
@@ -23,7 +25,7 @@
     {^name "input_modes" ^^unique ^schema validate_input_mode_row ^callbacks ["classify" "run" "close"]
      ^prepare (fn [owner, candidate] (prepare_command_callback h owner candidate))}
     {^name "functions" ^^unique ^schema validate_function_row ^callbacks ["fn"]
-     ^signature "fn" ^reserved discovery_reserved}
+     ^signature "fn" ^reserved host_functions_reserved}
     {^name "ui_actions" ^^unique ^schema validate_function_row ^callbacks ["fn"]
      ^signature "fn" ^reserved discovery_reserved}
     {^name "ui_links" ^^unique ^schema validate_function_row ^callbacks ["fn"]
@@ -61,7 +63,9 @@
     {^name "settings_groups" ^^unique ^schema validate_settings_group_row ^key "name"}
     {^name "setting_choices" ^^unique ^schema validate_setting_choices_row ^key "name" ^callbacks ["choices"]}
     {^name "keyboard_actions" ^^unique ^schema validate_keyboard_action_row ^key "id"}
-    {^name "web_components" ^^unique ^^ordered ^schema validate_web_component ^callbacks ["render"]}
+    {^name "themes" ^^unique ^schema validate_theme}
+    {^name "icons" ^^unique ^schema validate_icon}
+    {^name "web_components" ^^unique ^^ordered ^schema validate_web_component ^callbacks ["render"] ^reserved {^theme "core"}}
     {^name "browser_clients" ^^unique ^^ordered ^schema validate_browser_client}
     {^name "event_types" ^^unique ^schema validate_event_type_row
      ^prepare validate_event_type_owner ^^same_owner ^callbacks ["schema"]}

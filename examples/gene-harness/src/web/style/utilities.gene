@@ -1,0 +1,13 @@
+(mod harness_style_utilities)
+(var styles """
+@layer utilities {
+.gene_code { font-family: var(--font-mono); color: var(--ink); tab-size: 2; }
+.gene_comment { color: var(--muted); }
+.gene_string { color: var(--syntax-string); }
+.gene_number, .gene_literal { color: var(--syntax-number); }
+.gene_keyword { color: var(--syntax-keyword); }
+.gene_callable { color: var(--syntax-callable); }
+.gene_property, .gene_type { color: var(--syntax-type); }
+.gene_punctuation { color: var(--muted); }
+}
+""")

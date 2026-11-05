@@ -1,5 +1,6 @@
 # Keyed DOM reconciliation. The controller supplies edit and submission handlers.
 (mod harness_ui_tree ^profile web)
+(import ^from "../appearance.gene" [BrowserAppearance appearance_control])
 (import [UiNode UiClient text flag copy_map sync_controls] ^from "./model.gene")
 (import [event_chord modifier_code? format_chord] ^from "./chords.gene")
 (import [set_chord_recorder] ^from "../overlays.gene")
@@ -85,6 +86,9 @@
             (if_yes (!= value ($dom/input_value node/element)) ($dom/set_input_value node/element value)))))
       (if_yes ($present? props/data-chord)
         ($dom/set_text node/element (format_chord (text props/data-chord) ($browser/platform))))))
+  (if_yes (&& ($present? props/data-appearance) ($present? ui/browser_appearance))
+    (var appearance : BrowserAppearance ui/browser_appearance)
+    (appearance_control appearance node/element props/data-appearance))
   ($dom/insert_at parent node/element at))
 
 # The recorder keeps keys from typing or running shortcuts and stores the chord.

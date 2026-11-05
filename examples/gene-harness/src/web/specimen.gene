@@ -1,0 +1,170 @@
+# Host-owned specimen remains available when optional plugins are disabled.
+(mod theme_specimen)
+(import ^from "./theme" [resolve_theme resolved_tokens public_tokens icon_names color_value contrast_ratio])
+(import ^from "./theme_registry" [installed_themes theme_tokens])
+(import ^from "../kernel" [contribute row])
+(import $css [css rule decl_value])
+
+(const shared_classes ["web_card" "web_stack" "web_row" "web_spread" "web_grid" "web_tight" "web_loose"
+  "web_actions" "web_badge" "web_badge_danger" "web_badge_success" "web_notice" "web_notice_error"
+  "web_notice_success" "web_metric" "web_muted" "web_danger_text" "web_success_text" "web_table_compact"
+  "web_split" "web_scroll_x" "web_dialog" "web_listbox" "web_field" "web_tabs" "web_primary" "web_secondary" "web_danger"])
+
+(fn specimen_style []
+  (let rules [])
+  (for name in public_tokens
+    (let suffix ($str/join ($str/split name "-") "_"))
+    (rules .push (rule $".theme_swatch.token_${suffix}"
+      (decl_value "border-left" $"var(--space-4) solid var(--${name})"))))
+  (rules .push (rule ".theme_mode .drawer, .theme_mode .session_menu"
+    (decl_value "position" "relative") (decl_value "inset" "auto") (decl_value "z-index" "auto")
+    (decl_value "width" "100%") (decl_value "max-width" "100%")))
+  (rules .push (rule ".theme_mode .web_dialog" (decl_value "position" "relative")
+    (decl_value "inset" "auto") (decl_value "z-index" "auto")))
+  (for name in ["body" "ui" "small" "label" "title" "heading-1" "heading-2" "heading-3" "display" "code"]
+    (rules .push (rule $".scale_type-${name}" (decl_value "font" $"var(--type-${name})"))))
+  (for name in ["control" "field" "surface" "row" "chip" "message"]
+    (rules .push (rule $".scale_radius-${name}" (decl_value "border-radius" $"var(--radius-${name})")
+      (decl_value "border" "var(--border-width) solid var(--edge)") (decl_value "padding" "var(--inset-surface)"))))
+  (for step in [1 2 3 4 5 6 8 10 12]
+    (rules .push (rule $".scale_space-${step}" (decl_value "padding-left" $"var(--space-${step})")
+      (decl_value "border-left" "var(--border-width-strong) solid var(--accent)"))))
+  (for name in ["raised" "overlay"]
+    (rules .push (rule $".scale_shadow-${name}" (decl_value "box-shadow" $"var(--shadow-${name})")
+      (decl_value "border" "var(--border-width) solid var(--edge)") (decl_value "padding" "var(--inset-surface)"))))
+  (rules .push (rule ".theme_focus" (decl_value "outline" "var(--focus-width) solid var(--focus)")
+    (decl_value "outline-offset" "var(--focus-offset)")))
+  (css rules...))
+
+(fn palette_samples [theme, mode : Str]
+  (let tokens (resolved_tokens theme mode))
+  (let items [])
+  (let background (try (color_value tokens "surface") catch Any ""))
+  (for name in public_tokens
+    (let suffix ($str/join ($str/split name "-") "_"))
+    (let value (try (color_value tokens name) catch Any (?? (tokens .get name) "initial")))
+    (let ratio (if (&& ($present? (#"^#[0-9a-fA-F]{6}$" .match value)) ($present? (#"^#[0-9a-fA-F]{6}$" .match background)))
+      ($to_str (contrast_ratio value background) ":1 on surface") "measuring"))
+    (items .push `(div ^class_name %$"theme_swatch token_${suffix}"
+      (code %name) (small ^class_name %$"theme_ratio contrast_${suffix}" ^title %value %$"${value} · ${ratio}"))))
+  `(div ^class_name "web_grid" %items...))
+
+(const specimen_sections ["palette" "type" "scales" "structures" "host" "tokens"])
+
+(fn scale_samples [theme, mode : Str]
+  (let tokens (resolved_tokens theme mode))
+  (let rows [])
+  (for [name value] in tokens
+    (let key ($to_str name))
+    (if (|| ($str/starts_with? key "space-") ($str/starts_with? key "type-")
+            ($str/starts_with? key "radius-") ($str/starts_with? key "border-")
+            ($str/starts_with? key "shadow-") ($str/starts_with? key "layer-"))
+      (rows .push `(div ^class_name %$"theme_scale scale_${key}" (code %key) (span "Aa · The quick brown fox") (small %value)))))
+  `(div ^class_name "web_stack" (h2 "Spacing, type roles, shape, borders, elevation and layers") %rows...))
+
+(fn mode_samples [theme, mode : Str, declared, section : Str, prefix : Str]
+  (let icons [])
+  (for [raw_name svg] in theme/icons
+    (let name ($to_str raw_name))
+    (icons .push `(span ^class_name "web_badge" (icon ^name %name) %name)))
+  (let classes [])
+  (for name in shared_classes
+    (classes .push `(div ^class_name %name (span %name))))
+  (let buttons [])
+  (for variant in ["web_primary" "web_secondary" "web_danger"]
+    (buttons .push `(div ^class_name "web_row"
+      (button ^class_name %variant %variant)
+      (button ^class_name %variant ^^disabled "Disabled")
+      (button ^class_name %$"${variant} theme_focus" "Focus"))))
+  (let hooks [])
+  (for token in declared
+    (hooks .push `(li (code %token/name) %$" · ${token/fallback} · ${token/doc}")))
+  (let content
+    (match section
+      (when "palette" (palette_samples theme mode))
+      (when "type" `(div ^class_name "web_stack"
+     (h2 "Typography, fonts and icons")
+     (p "Sans: " (code %(theme/tokens/shared .get "font-sans")))
+     (p "Display: " (code %(theme/tokens/shared .get "font-display")))
+     (p "Mono: " (code %(theme/tokens/shared .get "font-mono")))
+     (h3 "A heading in the display family")
+     (p "Body text: The quick brown fox jumps over the lazy dog.")
+     (small "Metadata in the small role")
+     (pre (code "(fn hello [name] ($to_str \"Hello, \" name))"))
+     (div ^class_name "web_row" %icons...)
+))
+      (when "structures" `(div ^class_name "web_stack"
+     (h2 "Shared structures")
+     (div ^class_name "web_stack" %buttons...)
+     (label ^class_name "web_field" "A field"
+       (input ^key %$"${prefix}/${theme/name}/${mode}/field" ^value "Editable text")
+       (small "Help for this control"))
+     (div ^class_name "web_tabs" ^role "tablist"
+       (button ^role "tab" ^aria_selected "true" "Selected")
+       (button ^role "tab" ^aria_selected "false" "Other tab"))
+     (div ^class_name "web_split" (div ^class_name "web_card" "First pane") (div ^class_name "web_card" "Second pane"))
+     (div ^class_name "web_scroll_x"
+       (table ^class_name "web_table_compact" (thead (tr (th "Name") (th "Value")))
+         (tbody (tr (td "Spacing") (td "Follows density")))))
+     (div ^class_name "web_listbox" ^role "listbox"
+       (div ^role "option" ^aria_selected "true" "Selected option")
+       (div ^role "option" ^aria_selected "false" "Another option"))
+     (div ^class_name "web_dialog"
+       (div ^class_name "web_dialog_panel" (h3 "Dialog") (p "Raised surface, border and elevation.")))
+     (details (summary "Every shared class") (div %classes...))
+))
+      (when "host" `(div ^class_name "web_stack"
+     (h2 "Host structures")
+     (div ^class_name "message user" (p "A user message"))
+     (div ^class_name "message agent" (p "An agent response with a " (a ^href "#" "link") "."))
+     (details ^class_name "step" ^^open (summary "A step") (p "Step content"))
+     (details ^class_name "execution" ^^open (summary "Execution") (pre "Command output"))
+     (div ^class_name "source_preview" (div ^class_name "source_header" "Source preview") (pre "(hello \"Gene\")"))
+     (div ^class_name "card_block" (div ^class_name "card_header" "Card") (div ^class_name "card_body" "Card content"))
+     (p ^class_name "web_notice" "A notice")
+     (p ^class_name "web_notice web_notice_error" "An error notice")
+     (p ^class_name "web_notice web_notice_success" "A success notice")
+     (div ^class_name "drawer" (h3 "Drawer") (p "A raised drawer"))
+     (div ^class_name "session_menu" (button "Menu item"))
+     (div ^class_name "composer" (textarea ^key %$"${prefix}/${theme/name}/${mode}/composer" ^rows "2" ^placeholder "Write a message")
+       (button ^class_name "send" "Send"))
+))
+      (when "tokens" `(div ^class_name "web_stack"
+     (h2 "Plugin tokens") (ul %hooks...)))
+      (else (scale_samples theme mode))))
+  `(section ^mode %mode ^class_name "theme_mode web_stack"
+     (h2 %mode) %content))
+
+(fn specimen [runtime, context]
+  (let themes (installed_themes runtime))
+  (let declared (theme_tokens runtime))
+  (let section (?? context/view_state/section "palette"))
+  (let sections [])
+  (for name in specimen_sections (sections .push `(option ^value %name %name)))
+  (let columns [])
+  (let pickers [])
+  (for field in ["first" "second"]
+    (let wanted (?? (context/view_state .get field) "default"))
+    (let name (if ($present? (themes .get wanted)) wanted "default"))
+    (let options [])
+    (for [key theme] in themes
+      (options .push `(option ^value %($to_str key) %(?? theme/title ($to_str key)))))
+    (pickers .push `(label %field (select ^key %$"compare/${field}" ^state %field ^value %name %options...)))
+    (let theme (resolve_theme name themes))
+    (columns .push `(section ^class_name "theme_preview web_stack" ^preview_theme %name
+      (h2 %theme/title)
+      (div ^class_name "theme_modes" %(mode_samples theme "light" declared section field) %(mode_samples theme "dark" declared section field)))))
+  `(div ^class_name "web_stack"
+     (h2 "Theme specimen")
+     (div ^class_name "web_row" %pickers...
+       (label "Samples" (select ^key "specimen/section" ^state "section" ^value %section %sections...)))
+     (div ^class_name "web_stack" %columns...)))
+
+(fn install_specimen [runtime]
+  (if ($absent? (row runtime/h "web_components" "theme"))
+    (contribute runtime/h "core" "web_components"
+      {^name "theme" ^title "Theme specimen" ^slot "view" ^^always_available
+       ^view_state {^first "default" ^second "minimal" ^section "palette"} ^state_version "1" ^actions []
+       ^style (specimen_style) ^!style_scoped
+       ^render (fn [context] (specimen runtime context))}))
+  nil)

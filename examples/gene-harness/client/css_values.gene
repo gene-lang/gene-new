@@ -1,0 +1,12 @@
+# Computed CSS numeric values use canonical decimal text. Keep the DOM's unit
+# conversion at the boundary so geometry follows theme spacing and text size.
+(mod css_values ^profile web)
+
+(fn css_number [text : Str] : F64
+  (var number : (| Int F64) ($json/parse text))
+  ($to_float number))
+
+(fn computed_length [element : EventTarget, property : Str] : F64
+  (var text ($dom/style_value element property))
+  (if_not ($str/ends_with? text "px") (return 0.0))
+  (css_number ($str/slice_bytes text 0 (- ($str/byte_size text) 2))))

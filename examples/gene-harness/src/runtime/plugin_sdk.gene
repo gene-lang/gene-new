@@ -14,7 +14,7 @@
    "src/public/chatgpt_provider.gene"
    "src/public/model_catalog.gene"
    "src/public/model_choices.gene"
-   "src/public/model_page.gene"
+   "src/public/model_page.gene" "src/public/web_style.gene"
    "src/public/image_contract.gene" "src/public/model_text.gene"
    "src/public/speech_engines.gene" "src/public/mac_recognition.gene"
    "src/public/voice_frames.gene" "src/public/decision_engines.gene"])

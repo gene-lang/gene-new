@@ -10,9 +10,9 @@
 (import [command_receipt take_command_attachments submit_command] ^from "../../../src/runtime/commands")
 (import [list_sessions delete_session] ^from "../../../src/runtime/sessions")
 
-# Settings is always listed; these specs exercise optional plugin views.
+# Host views are always listed; these specs exercise optional plugin views.
 (fn plugin_views [status]
-  ($filter status/components (fn [view] (!= view/name "settings"))))
+  ($filter status/components (fn [view] (! (["settings" "theme"] .contains? view/name)))))
 
 (fn wait_command [service, session, record]
   (service/runtime/services/values/commands/watchers/.get .get $"${session}:${record/id}"; .join)

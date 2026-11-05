@@ -88,9 +88,10 @@
 (import ^from "../runtime/cards" ^^export
   [card_records shown_card card_action card_action_receipt check_card_command
    admit_card_command release_card_command CardError])
-(import ^from "../runtime/appearance" [AppearanceChanged appearance_mode])
+(import ^from "../runtime/appearance" [AppearanceChanged AppearanceRequest appearance_tabs report_appearance])
 (import [delegation_blocks delegation_recovery cancel_delegation_admission]
   ^from "../runtime/delegations")
+(import ^from "./theme_registry" [theme_tokens])
 (import ^from "../ui/state" [ui_status ui_data_revision])
 (import ^from "../ui/views" [render_component])
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
@@ -162,7 +163,7 @@
     (return {^status 400 ^message "The Models contribution is unavailable. Return to Gene Harness."}))
   (contribution/value/login_callback params))
 
-(fn model_page [service, appearance : Str, styles : Str]
+(fn model_page [service, appearance, styles : Str]
   (let lease (acquire_snapshot ^label "web/models page" service/runtime/h/snapshots))
   (try
     ($runtime/with_context {^composition service/runtime/h/snapshots ^snapshot lease/snapshot}
@@ -412,8 +413,10 @@
       (publish_message service "card" changed/session {^card changed/card ^event changed/event}))
     (when (changed : WorkspaceManagerChanged)
       (publish_message service "ui/state" "" (ui_status service/runtime)))
+    (when (request : AppearanceRequest)
+      (publish_message service "appearance_request" "" request/fields))
     (when (changed : AppearanceChanged)
-      (publish_message service "appearance" "" {^mode changed/mode}))
+      (publish_message service "appearance_changed" "" {}))
     (when (changed : SettingsChanged)
       (publish_message service "settings/changed" ""
         {^scope changed/scope ^digest changed/digest ^keys changed/keys})
@@ -931,7 +934,6 @@
     ^model (selection_view ^metadata metadata ^round round service/runtime config)
     ^catalog_revision catalog_revision
     ^profile service/runtime/profile/name
-    ^appearance (appearance_mode service/runtime)
     ^keyboard (keyboard_bindings service/runtime)
     ^readiness (readiness_report ^selection selection service/runtime (session_settings metadata config))
     ^plugins plugins
@@ -1219,12 +1221,15 @@
   (message notification_action [request] : Any
     @doc "Invoke a notification's action. A command action returns its admission; work continues after it."
     (invoke_notification_action self/runtime request))
-  (message appearance [] : Str
-    @doc "The workspace theme mode."
-    (appearance_mode self/runtime))
-  (message set_appearance [mode : Str] : Str
-    @doc "Set the workspace theme mode immediately."
-    (set_appearance self/runtime mode))
+  (message theme_tokens [] : Any
+    @doc "Declared plugin component theme tokens."
+    (theme_tokens self/runtime))
+  (message appearance [] : Any
+    @doc "Saved and rendered appearance reported by connected browser tabs."
+    (appearance_tabs self/runtime))
+  (message set_appearance [fields] : Any
+    @doc "Request appearance fields in every connected browser."
+    (set_appearance self/runtime fields))
   (message views [] : Any
     @doc "UI settings, registered views and their revisions."
     (ui_status self/runtime))

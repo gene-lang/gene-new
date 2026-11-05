@@ -1,0 +1,58 @@
+# The browser resolves CSS colors, so specimen ratios work for variables, mixes,
+# system colors and plugin color spaces as well as six-digit hex values.
+(mod theme_contrast ^profile web)
+(import ^from "./css_values.gene" [css_number])
+
+(type ContrastError ^props {^message Str})
+(impl Error for ContrastError)
+
+(fn decimal [text : Str] : F64
+  (css_number text))
+
+(fn computed_color [probe : EventTarget, color : Str] : (List F64)
+  ($dom/set_style probe "color" $"color-mix(in srgb, ${color} 100%, transparent)")
+  (var value ($dom/style_value probe "color"))
+  (if_not ($str/starts_with? value "color(srgb ") (fail (ContrastError ^message "Color could not be converted to sRGB.")))
+  (var body ($str/slice_bytes value 11 (- ($str/byte_size value) 12)))
+  (var parts ($str/split body " "))
+  (var channels : (List F64) [])
+  (for part in parts
+    (if_yes (&& (!= part "") (!= part "/")) (channels .push (decimal part))))
+  (if_yes (== channels/.size 3) (channels .push 1.0))
+  channels)
+
+(fn blend [front : (List F64), back : (List F64)] : (List F64)
+  (var result : (List F64) [])
+  (for index in [0 1 2]
+    (result .push (+ (* front/%index front/3) (* back/%index (- 1.0 front/3)))))
+  (result .push 1.0)
+  result)
+
+(fn linear [raw : F64] : F64
+  (var value ($math/clamp raw 0.0 1.0))
+  (if (<= value 0.04045)
+    (then (/ value 12.92))
+    (else ($math/pow (/ (+ value 0.055) 1.055) 2.4))))
+
+(fn luminance [color : (List F64)] : F64
+  (+ (+ (* 0.2126 (linear color/0)) (* 0.7152 (linear color/1))) (* 0.0722 (linear color/2))))
+
+(fn ratio [front : (List F64), back : (List F64)] : F64
+  (var a (luminance front))
+  (var b (luminance back))
+  (/ (+ ($math/max a b) 0.05) (+ ($math/min a b) 0.05)))
+
+(fn update_ratio [element : EventTarget, role : Str, source : Str] : Void
+  (var probe ($dom/create_element "span"))
+  (set probe/hidden true)
+  ($dom/append element probe)
+  (try
+    (var canvas (computed_color probe "Canvas"))
+    (var surface (blend (computed_color probe "var(--surface)") canvas))
+    (var color (blend (computed_color probe $"var(--${role})") surface))
+    (var measured (/ ($math/round (* 100.0 (ratio color surface))) 100.0))
+    ($dom/set_text element $"${source} · ${measured}:1 on surface")
+  catch Any
+    ($dom/set_text element $"${source} · ratio unavailable")
+  ensure
+    ($dom/remove probe)))

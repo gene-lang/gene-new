@@ -8,9 +8,9 @@
 (import [SessionError] ^from "../../../src/runtime/sessions")
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
 
-# Settings is always listed; these specs exercise optional plugin views.
+# Host views are always listed; these specs exercise optional plugin views.
 (fn plugin_views [status]
-  ($filter status/components (fn [view] (!= view/name "settings"))))
+  ($filter status/components (fn [view] (! (["settings" "theme"] .contains? view/name)))))
 
 (fn assert_board_outline [runtime, omitted : Int]
   (let result ($json/parse (ui_publication_preview runtime "" [{^id "project_board" ^state "active"}])))
@@ -114,7 +114,7 @@
           (let installed (register_plugin service/runtime/workspace h "project_board" ($fs/read_text (package_path "examples/project_board/project_board.gene"))))
           ($assert (== installed/state "active") ($to_str installed))
           (let configure (/fn (row h "functions" "ui_configure")))
-          (configure {^^enabled ^layout "panel" ^panel "project_board" ^theme {^light {^accent "#335577"}}})
+          (configure {^^enabled ^layout "panel" ^panel "project_board" ^tokens {^light {^accent "#335577"}}})
           (assert_board_outline service/runtime 0)
           (let descriptors (plugin_views (ui_status service/runtime)))
           ($assert (== descriptors/.size 2))

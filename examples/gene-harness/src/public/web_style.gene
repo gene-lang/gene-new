@@ -1,0 +1,10 @@
+# Named shell breakpoints are host contracts. The theme generator computes narrow
+# from layout sizes; compact is constant and uses the root's actual rem size.
+(mod web_style_contract)
+(const compact_query "shell (width < 47.5rem)")
+(const narrow_minimum 56.25)
+
+# Text stylesheets use a named marker; structured $css uses compact_query with
+# the container node. This keeps breakpoint numbers out of component rules.
+(fn shell_css [source : Str] : Str
+  ($str/join ($str/split source "@compact") $"@container ${compact_query}"))

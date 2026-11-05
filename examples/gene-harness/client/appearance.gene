@@ -1,0 +1,101 @@
+# One cookie-backed appearance controller per document. GETs never write.
+(mod browser_appearance ^profile web)
+(import [api_root] ^from "../src/web/contract.gene")
+
+(type BrowserAppearance ^props {^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)
+  ^changed (Fn [Any] Void) ^answer Any ^sequence Int ^signature Str ^safe Bool ^queued PropMap ^posting Bool})
+
+(fn apply_answer [state : BrowserAppearance, answer : Any] : Void
+  (if_yes ($absent? answer/rendered) (return))
+  (var signature ($json/stringify answer))
+  (if_yes (== signature state/signature) (state/changed answer) (return))
+  (set state/signature signature)
+  (set state/answer answer)
+  (var rendered : Any answer/rendered)
+  (var root ($dom/element "harness_document"))
+  ($dom/set_attribute root "data-theme" rendered/theme)
+  ($dom/set_attribute root "data-mode" rendered/mode)
+  ($dom/set_attribute root "data-density" rendered/density)
+  ($dom/set_attribute root "data-text-size" rendered/text_size)
+  ($dom/set_attribute root "data-content-width" rendered/content_width)
+  (var link ($dom/element "harness_theme"))
+  ($dom/set_attribute link "href" rendered/stylesheet)
+  (var mode : Str rendered/mode)
+  ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light" "Dark"))
+  (state/changed answer))
+
+(fn appearance_path [state : BrowserAppearance] : Str
+  ($to_str (api_root) "/appearance" (if state/safe "?ui=default" "")))
+
+(fn refresh_appearance [state : BrowserAppearance] : Void
+  (set state/sequence (+ state/sequence 1))
+  (var sequence state/sequence)
+  (state/api "GET" (appearance_path state) nil
+    (fn [code : Int, answer : Any] : Void
+      (if_yes (&& (== code 200) (== sequence state/sequence)) (apply_answer state answer)))))
+
+(fn queued_changes? [state : BrowserAppearance] : Bool
+  (for [key value] in state/queued (return true))
+  false)
+
+(fn write_appearance [state : BrowserAppearance] : Void
+  (if_yes (|| state/posting (! (queued_changes? state))) (return))
+  (var fields : Any state/queued)
+  (set state/queued {})
+  (set state/posting true)
+  (set state/sequence (+ state/sequence 1))
+  (state/api "POST" (appearance_path state) fields
+    (fn [code : Int, answer : Any] : Void
+      (set state/posting false)
+      (if (queued_changes? state)
+        (then (write_appearance state))
+        (else (if_yes (== code 200) (refresh_appearance state)))))))
+
+(fn change_appearance [state : BrowserAppearance, fields : Any] : Void
+  # Serialize this document's writes so each request carries the preceding
+  # response's cookie. Rapid changes merge into the next small field map.
+  (set state/sequence (+ state/sequence 1))
+  (var changes : PropMap fields)
+  (for [key value] in changes
+    (var name ($to_str key))
+    (set state/queued/%name value))
+  (write_appearance state))
+
+(fn start_appearance [api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), changed : (Fn [Any] Void), safe : Bool = false] : BrowserAppearance
+  (var state (BrowserAppearance ^api api ^changed changed ^answer nil ^sequence 0 ^signature "" ^safe safe ^queued {} ^!posting))
+  ($dom/add_event_listener ($dom/window) "focus" (fn [event : Any] : Void (refresh_appearance state)))
+  ($dom/add_event_listener ($dom/window) "visibilitychange"
+    (fn [event : Any] : Void (if_yes ($browser/visible?) (refresh_appearance state))))
+  ($dom/add_event_listener ($dom/element "harness_theme") "load"
+    (fn [event : Any] : Void (if_not ($absent? state/answer) (state/changed state/answer))))
+  (refresh_appearance state)
+  state)
+
+(fn appearance_control [state : BrowserAppearance, element : EventTarget, field : Str] : Void
+  (if_yes ($absent? state/answer) (return))
+  (var saved : Any state/answer/saved)
+  (var rendered : Any state/answer/rendered)
+  (if_yes (== field "preview")
+    (var preview_name : Str rendered/theme)
+    ($dom/set_attribute element "data-preview-theme" preview_name)
+    ($dom/clear element)
+    ($dom/append element ($dom/render
+      `(div ^class_name "theme_modes"
+        (section ^data-mode "light" ^class_name "theme_mode web_card"
+          (h4 "Light") (p "Text, surfaces and emphasis.") (span ^class_name "web_badge" "Sample"))
+        (section ^data-mode "dark" ^class_name "theme_mode web_card"
+          (h4 "Dark") (p "Text, surfaces and emphasis.") (span ^class_name "web_badge" "Sample")))))
+    (return))
+  (var current : Any (?? saved/%field rendered/%field))
+  (var value : Str current)
+  (if_yes (== field "theme")
+    ($dom/clear element)
+    (var found false)
+    (var themes : (List Any) state/answer/themes)
+    (for theme in themes
+      (var name : Str theme/name)
+      (if_yes (== name value) (set found true))
+      ($dom/append element ($dom/render `(option ^value %name %theme/title))))
+    (if_not found
+      ($dom/append element ($dom/render `(option ^value %value %$"${value} (not installed here)")))))
+  ($dom/set_input_value element value))

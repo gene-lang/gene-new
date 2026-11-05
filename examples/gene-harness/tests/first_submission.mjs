@@ -1,3 +1,4 @@
+globalThis.getComputedStyle ??= () => ({getPropertyValue: name => name === "--shell-narrow" ? "0" : ""});
 // Exercise the compiled conversation client with delayed browser responses.
 // node tests/first_submission.mjs /path/to/web-build/main.mjs
 import assert from "node:assert/strict";
@@ -78,7 +79,7 @@ const {create: create_ui} = await import(new URL("controller.mjs", mainURL));
 const noop = () => {};
 function client() {
   elements.clear(); stored.clear(); requests.length = 0;
-  return new harness.Client({
+  return new harness.Client({browser_appearance: null,
     selected: "s", csrf: "csrf", cursor: "", next_seq: "1", epoch: "process",
     ready: true, connected: true, server_busy: false, awaiting: "", awaiting_session: "",
     queued_prompt: "", queued_submit: false, message_sequence: 0n, sending: false,

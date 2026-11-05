@@ -7,7 +7,8 @@
 (import ^from "./auth" [open_auth authenticate exchange reset_auth AuthError])
 (import ^from "./connection" [bind_workspace publish_connection publish_link clear_connection])
 (import ^from "./plugin_page" [plugin_page manager_client])
-(import ^from "../runtime/appearance" [appearance_mode set_appearance])
+(import ^from "../runtime/appearance" [set_appearance])
+(import ^from "./appearance" [request_appearance appearance_request])
 (import ^from "./plugin_control" [new_plugin_control plugin_control_request close_plugin_control])
 (import ^from "./startup" [mark_ready browser_connection_message])
 (import ^from "./contract" [protocol_version])
@@ -45,7 +46,7 @@
       (if (|| (&& (!= request_origin "") (!= request_origin origin)) (&& (!= request/method "GET") (!= request_origin origin)))
         (return (response 403 {^code "forbidden" ^message "A same-origin request is required."})))
       (if (&& (== request/method "GET") (["/" "/plugins" "/plugins/" "/ui/default"] .contains? request/path))
-        (return (html (plugin_page ^appearance (appearance_mode runtime) ^workspace runtime/root))))
+        (return (html (plugin_page ^appearance (request_appearance request runtime true) ^workspace runtime/root))))
       (if (&& (== request/method "GET") (== request/path $"${(api_root)}/connection"))
         (return (response 200 connection)))
       (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/exchange"))
@@ -86,7 +87,6 @@
               ^running 0
               ^plugins []
               ^mode "recovery"
-              ^appearance (appearance_mode runtime)
               ^readiness "Recovery mode; normal execution is disabled."})))
       (if_yes (&& (== request/method "GET") (== request/path $"${(api_root)}/plugins"))
         (let result
@@ -94,7 +94,6 @@
             runtime))
         (result .put "csrf" browser/csrf)
         (result .put "epoch" runtime/epoch)
-        (result .put "appearance" (appearance_mode runtime))
         (let failure_path $"${runtime/state_root}/startup_failure")
         (if ($fs/exists? failure_path) (result .put "startup_failure" ($fs/read_text failure_path)))
         (return (response 200 result)))
@@ -135,9 +134,8 @@
           (response
             200
             (revert_entry ^expected data/expected runtime/workspace (field data "id") data/revision))))
-      (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/appearance"))
-        (let data (request_data request))
-        (return (response 200 {^mode (set_appearance runtime data/mode)})))
+      (if_yes (&& (["GET" "POST"] .contains? request/method) (== request/path $"${(api_root)}/appearance"))
+        (return (appearance_request request runtime true)))
       (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/reset"))
         (reset_auth auth)
         (publish_link runtime/state_root origin auth/secret)

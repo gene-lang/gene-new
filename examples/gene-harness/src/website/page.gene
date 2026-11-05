@@ -8,10 +8,11 @@
 # The local Harness serves this page at /about/ (`^mode "embedded"`), and
 # `./export` writes it for a static host (`^mode "standalone"`).
 
+(import ^from "../web/appearance" [appearance_answer appearance_link appearance_preloads])
 (import $html [render])
 (import $web [script stylesheet])
 (import [website_css website_class] ^from "./style")
-(import ^from "../web/theme" [theme_css theme_mode])
+(import ^from "../web/style" [styles])
 (import [WebsiteError website_dir repository_url links hero capabilities steps faq
          example site_excerpts run_commands] ^from "./content")
 
@@ -391,7 +392,7 @@
 
 # --- The page ------------------------------------------------------------------------------
 
-(fn website_page [^mode mode : Str = "embedded", ^app_url app_url : Str = "", ^appearance appearance : Str = "light"] : Str
+(fn website_page [^mode mode : Str = "embedded", ^app_url app_url : Str = "", ^appearance appearance = nil] : Str
   (if_not (["embedded" "standalone"] .contains? mode)
     (fail (WebsiteError ^message $"Unknown website mode ${mode}")))
   # Embedded, the app is this server's root. Standalone, a visitor may have no
@@ -399,17 +400,23 @@
   (var open_app (if (== mode "embedded") "/" app_url))
   (var code_ids ($str/join copyable_ids " "))
   (var highlight_ids ($str/join highlighted_ids " "))
-  (var theme (theme_mode appearance))
+  (let chosen (if (== mode "standalone") (appearance_answer {})
+    (if ($absent? appearance) (appearance_answer {}) (if (== ($head appearance) Str) (appearance_answer {^mode appearance}) appearance))))
+  (let rendered chosen/rendered)
+  (let preloads (appearance_preloads chosen))
   ($to_str "<!doctype html>\n"
     (render
-      `(html ^lang "en" ^data-theme %theme
+      `(html ^lang "en" ^id "harness_document" ^data-theme %rendered/theme ^data-mode %rendered/mode
+         ^data-density %rendered/density ^data-text-size %rendered/text_size ^data-content-width %rendered/content_width
          (head
            (meta ^charset "utf-8")
            (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
            (title "Gene Harness · An agent that can extend itself")
            (meta ^name "description"
              ^content "Gene Harness turns new capabilities into durable Gene plugins you can inspect, use on real files, and keep across conversations.")
-           %(stylesheet "gene-harness-theme" theme_css)
+           %(stylesheet "gene-harness" styles)
+           %(appearance_link chosen)
+           %preloads...
            %(stylesheet "gene-harness-website" website_css))
          (body ^class %website_class
            (div ^id "site_root" ^class "site"

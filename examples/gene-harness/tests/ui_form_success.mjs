@@ -1,3 +1,4 @@
+globalThis.getComputedStyle ??= () => ({getPropertyValue: name => name === "--shell-narrow" ? "0" : ""});
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 class Element extends EventTarget {
@@ -38,7 +39,7 @@ function setup({submit=true}={}){
   const navigation=new model.UiNavigation({workspace:'test',active:'workspaces',last_view:'',presentation:'full',
     remembered:{},versions:{},snapshots:{},views:[],side:'left',width:50n,bar_hidden:false,focus:'name',scroll:0,
     focus_pending:false,action_generation:1n,action_revision:'',sidebar,restore:noop,refresh:noop});
-  const ui=new model.UiClient({keyboard:{},root,target:root,safe:false,ready:true,session:'',workspace:'test',epoch:'host',
+  const ui=new model.UiClient({browser_appearance: null, applied_tokens: [],keyboard:{},root,target:root,safe:false,ready:true,session:'',workspace:'test',epoch:'host',
     metadata_revision:'1',rendered_revision:'r1',descriptor:{name:'workspaces',revision:'r1',data_revision:'d1',functions:{save:'f1'}},
     settings:{},instance:'instance',version:'2',notices:create_notices(),state:{selected:'create'},
     drafts:{name:{name:'name',form:'create',value:'calculator'}},forms:{create:{named:{operation:'create'},positional:[]}},

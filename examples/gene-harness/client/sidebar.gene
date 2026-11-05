@@ -6,7 +6,7 @@
 (type Sidebar ^props {^root EventTarget ^desktop_open Bool ^mobile_open Bool ^full_view Bool ^available Bool ^safe Bool ^signature Str ^widgets PropMap ^target EventTarget ^pool EventTarget ^buttons (List Any)})
 
 (fn narrow_sidebar? [] : Bool
-  (<= ($dom/inner_width) 900.0))
+  (== ($dom/style_value ($dom/element "harness_root") "--shell-narrow") "1"))
 
 (fn render_sidebar [state : Sidebar] : Void
   (var root state/root)
@@ -56,6 +56,7 @@
     # A style contribution is scoped to the sidebar component's class.
     (var style_class : Str "")
     (if_yes (&& state/available ($present? chosen/style_class)) (set style_class chosen/style_class))
+    ($dom/set_attribute state/target "data-component" "conversation_sidebar")
     ($dom/set_attribute state/target "class" (if (== style_class "") "sidebar_content" $"sidebar_content ${style_class}"))
     (if_yes state/available
       (if ($absent? chosen/view)

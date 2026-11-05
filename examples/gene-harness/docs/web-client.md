@@ -231,9 +231,10 @@ requests bounded discovery without making an inference call.
 
 | Message | Data |
 | --- | --- |
-| status | Workspace, provider/model, light/dark appearance, commands, ordinary components, session context and render freshness |
+| status | Workspace, provider/model, commands, ordinary components, session context and render freshness |
 | models/catalog | A catalog revision; fetch `GET /api/v9/models` for the separate catalog |
-| appearance | The workspace's new light/dark mode; sent to every peer, including `/ui/default` |
+| appearance_changed | No values; reread this browser’s cookie through `GET /appearance` |
+| appearance_request | Only fields a server command requests; POST them from this document |
 | session/list | Default session records and attention records |
 | attention | Sessions requiring attention |
 | snapshot | Session metadata, records, current/history receipts, questions and next submission sequence |
@@ -245,7 +246,7 @@ requests bounded discovery without making an inference call.
 | console | Live printed output with its turn or command owner and late flag; not replayed into the browser from snapshots |
 | command | Streaming chunk or final command record |
 | mode/state | Current input mode or nil; the frame also carries a change reason |
-| ui/state | Layout, theme and stateful-view descriptors; also invalidates ordinary component status across the workspace |
+| ui/state | Layout defaults, view tokens and stateful-view descriptors; also invalidates ordinary component status across the workspace |
 | ui/action | Workspace action receipt and current admission-generation metadata; no submitting conversation |
 | notifications/state | Isolated inbox revision, publication watermark, opened watermark and visible producer messages |
 | notifications/progress | Transient source/key progress with original work context; never replayed on reconnect |
@@ -253,6 +254,13 @@ requests bounded discovery without making an inference call.
 | stopped | Process stopped, or is restarting under supervision |
 | restarted | Reconnected process completed a supervised restart |
 | error | Structured code and message |
+
+Appearance is independent of status and workspace settings. Documents reread
+it on connect/reconnect, focus, and becoming visible, and ignore superseded
+GET answers. Their POSTs carry only changed fields and are serialized within
+a document. A tab reports `{type: "appearance_report", saved, rendered}` over
+its socket after applying an answer; `(workspace .appearance)` lists these
+reports. Appearance pushes never cause a POST except `appearance_request`.
 
 Session records contain durable ids, round_id and session-wide turn numbers.
 Live records merge by id with the next snapshot. A final snapshot supersedes
@@ -270,6 +278,8 @@ All API paths use /api/v9.
 | POST /control | Stop/restart with optional submitting session and confirmation |
 | GET /status?session=ID | Authentication check, CSRF value and host status with ordinary components rendered for that session; omit ID for an unselected conversation |
 | GET /events?session=ID | Upgrade to the session's ordered stream |
+| GET /appearance | This request cookie’s saved preferences, rendered values and theme stylesheet URL |
+| POST /appearance | Merge changed fields into the cookie; same-origin and CSRF checks apply |
 | GET /notifications | Producer snapshot; independent of workflow question/attention state |
 | GET /notifications/ID | Retained message detail, including cleared revisions |
 | POST /notifications | Publish an operator-owned message |

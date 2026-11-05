@@ -224,7 +224,8 @@ and the descriptors `@font-face` needs:
   below `compact`), `stack-gap` (between blocks), `inline-gap` (between
   controls), `inset-control` (button padding), `inset-field` and
   `inset-surface` (cards, drawers).
-- **Density.** Each step is declared as `calc(<base> * var(--density))` on
+- **Density.** Theme maps state base lengths, such as `^space_4 "1rem"`; the
+  generator scales them, including plugin overrides. Each step is declared as `calc(<base> * var(--density))` on
   `:root`, and so is `control-height`. The theme sets `--density: 1`. The
   compact preference sets `.8` on the root element from the `preferences`
   layer, so it wins over the theme. Density applies to the whole page. A
@@ -303,7 +304,7 @@ compute the `narrow` breakpoint from them (see [Responsive](#responsive)).
 | `drawer-width`, `drawer-width-wide` | Drawers | `20rem`, `27.5rem` |
 | `menu-width` | Menus | `13.75rem` |
 | `panel-min`, `main-min` | Minimum widths of a docked view and of the conversation | `17.5rem`, `21.25rem` |
-| `control-height` | Action buttons and single-line dropdowns | `2.5rem` |
+| `control-height` | Action buttons and single-line dropdowns | `2rem` |
 | `touch-target` | Minimum control height under a coarse pointer | `2.75rem` |
 
 Single-line dropdowns use `control-height` with border-box sizing. Action
@@ -430,7 +431,8 @@ gets the narrow layout instead of overflowing.
 - **`narrow` follows the theme.** Query conditions cannot read custom
   properties. So the generator computes `narrow` from the theme's resolved
   layout sizes and writes the shell's narrow rules into the theme's stylesheet,
-  inside the `shell` layer. That is why layout sizes are plain `rem` lengths
+  inside the `shell` layer. If column sizes differ by mode, it uses the larger
+  requirement so both modes fit. That is why layout sizes are plain `rem` lengths
   the generator can add up. A theme with a wider sidebar collapses earlier
   instead of overflowing. `compact` is a system constant.
 - **The client follows the CSS.** The narrow rules also set `--shell-narrow: 1`
@@ -1073,6 +1075,10 @@ generation diagnostics.
    - the tokens plugins have declared
 
    A theme picker in the view compares any installed theme against another.
+   The Samples selector groups palette, type/icons, scales, shared structures,
+   host structures and plugin tokens so each rendered tree stays within the
+   component contract’s 64 KiB bound. Preview fonts and animations are
+   namespaced so they cannot replace the active page’s resources.
 3. **Check the real app** at widths 320, 390, 768, 1024 and 1440px. Cover:
    - views docked at 25%, 50% and 70% on both sides, and the full view
    - sidebar collapsed, and long titles
@@ -1115,10 +1121,9 @@ does not restrict plugin or user themes.
 
 ## Moving the code to this design
 
-The current code implements the `minimal` look with color tokens only. Every
-other value is written inline in the CSS, and appearance is stored per
-workspace. The work comes in four phases. The look stays the same through
-Phase 1, apart from snapping values to the scales.
+The migration is organized into the phases below. The runtime now separates
+host modules, resolved theme stylesheets and browser appearance. Phase 4
+remains a later project; the first three phases provide the designer workflow.
 
 **Phase 1: tokens and the two built-in themes.**
 

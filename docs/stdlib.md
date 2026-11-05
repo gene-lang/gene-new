@@ -965,7 +965,22 @@ Markup is ordinary node data; render at the output boundary:
 ```
 
 The `$css` library supplies rules, declarations, rendering, and scoped class
-names. Embedded `web_module` code can enhance server-rendered markup; see
+names. `(container "view (max-width: 30rem)" ...)` groups rules inside a
+container query and composes with `scoped` just as `media` does.
+`(font_face (decl font_family "Example") (decl src "url(example.woff2)"))`
+emits global `@font-face` descriptors, including inside scoped styles.
+`($web/font path)` publishes a bundled font at a content-addressed URL with
+its font MIME type and immutable caching; it accepts WOFF2, WOFF, TTF and OTF.
+Use that URL in a font face and, when appropriate, a font preload link.
+`$web/published_routes` exposes font bodies as `Bytes` for binary-safe export;
+JavaScript, CSS and source-map bodies remain `Str`.
+
+In the web profile, `($dom/style_value element property)` reads a computed
+CSS property as trimmed text, including custom properties. It lets behavior
+follow CSS container-query decisions. `($browser/visible?)` reports whether
+the document is visible, for `visibilitychange` listeners.
+
+Embedded `web_module` code can enhance server-rendered markup; see
 [web workflows](workflows.md#web-applications).
 
 ## More libraries

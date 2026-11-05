@@ -1,3 +1,4 @@
+globalThis.getComputedStyle ??= () => ({getPropertyValue: name => name === "--shell-narrow" ? "0" : ""});
 // Exercise the compiled Gene sidebar with browser-owned DOM controls.
 // node tests/sidebar_plugin.mjs /path/to/web-build/sidebar.mjs
 import assert from "node:assert/strict";

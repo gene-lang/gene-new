@@ -1,0 +1,13 @@
+(mod harness_style_reset)
+(var styles """
+@layer reset {
+*, *::before, *::after { box-sizing: border-box; border-radius: 0; }
+input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]), textarea { appearance: none; -webkit-appearance: none; }
+body { margin: 0; container: shell / inline-size; }
+input[type=radio] { border-radius: revert; }
+button, input, textarea, select { font: var(--type-ui); }
+button, a, input, textarea, select, summary { outline-offset: var(--focus-offset); }
+[hidden] { display: none !important; }
+button, input, select, textarea { max-width: 100%; }
+}
+""")

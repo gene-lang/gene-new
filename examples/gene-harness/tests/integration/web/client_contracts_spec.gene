@@ -16,7 +16,7 @@
             ($os/executable_path) "build" "--target" "web" "--out-dir" output (package_path entry))))
           ($assert (== built/status 0) $"${built/stdout}${built/stderr}"))
         # Build each entry once and run fixtures in independent Node globals.
-        (for pair in [["conversation" "main"] ["feature_events" "main"]
+        (for pair in [["appearance" "appearance"] ["conversation" "main"] ["feature_events" "main"]
                      ["first_submission" "main"] ["media_composer" "media"]
                      ["history_start" "view"] ["host_audio" "host_audio"]
                      ["live_output" "live_output"] ["notifications" "main"]

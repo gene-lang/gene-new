@@ -1,7 +1,7 @@
 # Workspace UI configuration and revision descriptors; no rendering or transport.
 (mod ui_state)
 (import [plugin_state next_sequence stream_key] ^from "../storage/state")
-(import [public_tokens theme_modes] ^from "../web/theme")
+(import [public_tokens theme_modes css_name] ^from "../web/theme")
 
 (type UiError ^props {^code Str ^message Str} ^impl [Error])
 (impl Error for UiError)
@@ -13,39 +13,45 @@
   # Match the Workspace UI plugin's persisted identity across source renames.
   (let saved (if ($absent? h/event_store) nil
     (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
-  (?? saved runtime/services/values/ui_defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^theme {}}))
+  (?? saved runtime/services/values/ui_defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^tokens {}}))
 
-(fn validate_theme_colors [colors]
+(fn validate_theme_colors [colors, declared = []]
   (if (!= ($head colors) Map) (ui_error "invalid_request" "Theme overrides must be a map of tokens."))
-  (for [key color] in colors
-    (if_not (public_tokens .contains? ($to_str key))
+  (let normalized {})
+  (for [raw_key color] in colors
+    (let key (css_name raw_key))
+    (if_not (|| (public_tokens .contains? ($to_str key)) (declared .contains? ($to_str key)))
       (ui_error "invalid_request" $"Unknown theme token ${key}."))
-    (if (|| (!= ($head color) Str) ($absent? (#"^#[0-9a-fA-F]{6}$" .match color)))
-      (ui_error "invalid_request" "Theme colors must be six-digit hex colors."))))
+    (if (|| (!= ($head color) Str) (&& (public_tokens .contains? ($to_str key)) ($absent? (#"^#[0-9a-fA-F]{6}$" .match color))))
+      (ui_error "invalid_request" "Theme colors must be six-digit hex colors."))
+    (normalized .put key color))
+  normalized)
 
 # Theme overrides belong to an explicit mode: {^light {...} ^dark {...}}.
-(fn validate_theme [theme]
+(fn validate_theme [theme, declared = []]
+  (let normalized {})
   (for [key colors] in theme
     (if_not (theme_modes .contains? ($to_str key))
       (ui_error "invalid_request" "Theme overrides require light/dark mode maps."))
-    (validate_theme_colors colors)))
+    (normalized .put key (validate_theme_colors colors declared)))
+  normalized)
 
-(fn validate_ui_settings [value]
+(fn validate_ui_settings [value, declared = []]
   (if (!= ($head value) Map) (ui_error "invalid_request" "UI settings must be a map."))
   (let result {^enabled (== value/enabled true) ^layout (?? value/layout "chat")
     ^default_view (?? value/default_view "")
     ^panel (?? value/panel "") ^side (?? value/side "left")
-    ^width (?? value/width 50) ^theme (?? value/theme {})})
+    ^width (?? value/width 50) ^tokens (?? value/tokens {})})
   (if_not (["chat" "panel"] .contains? result/layout) (ui_error "invalid_request" "Unknown UI layout."))
   (if_not (["left" "right"] .contains? result/side) (ui_error "invalid_request" "Panel side must be left or right."))
   (if (|| (!= ($head result/width) Int) (< result/width 25) (> result/width 70))
     (ui_error "invalid_request" "Panel width must be 25–70 percent."))
-  (if (|| (!= ($head result/panel) Str) (!= ($head result/theme) Map))
+  (if (|| (!= ($head result/panel) Str) (!= ($head result/tokens) Map))
     (ui_error "invalid_request" "Invalid panel or theme."))
   (if (|| (!= ($head result/default_view) Str)
           (&& (!= result/default_view "") ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match result/default_view))))
     (ui_error "invalid_request" "Default view must be a registered view name or harness."))
-  (validate_theme result/theme)
+  (result .put "tokens" (validate_theme result/tokens declared))
   result)
 
 (fn ui_record [snapshot, registry : Str, name : Str]
@@ -98,7 +104,7 @@
    ^slot candidate/slot ^revision (ui_revision h record)
    ^data_revision (ui_data_revision runtime snapshot) ^view_state candidate/view_state
    ^state_version ($to_str (?? candidate/state_version "1")) ^functions functions
-   ^style candidate/style_css ^style_class candidate/style_class})
+   ^style candidate/style_css ^style_class candidate/style_class ^tokens (?? candidate/tokens [])})
 
 (fn ui_status [runtime]
   (let h runtime/h)

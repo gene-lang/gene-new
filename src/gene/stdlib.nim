@@ -1174,6 +1174,13 @@ when not defined(geneWasm):
       args[0].strVal, args[1].strVal))
     newNode(newSym("link"), props = props)
 
+  proc biWebFont(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    requireOne("web/font", args)
+    requireStr("web/font path", args[0])
+    let scope = if call == nil: nil else: call[].dispatchScope
+    let path = args[0].strVal
+    newStr(scope.application().publishWebFont(path, fsReadBytes(path)))
+
   proc biWebAssetBase(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 0:
       raise newException(GeneError, "web/asset_base takes no arguments")
@@ -1224,7 +1231,12 @@ when not defined(geneWasm):
       var props = initPropTable()
       props["file"] = newStr(route.fileName)
       props["content_type"] = newStr(route.contentType)
-      props["body"] = newStr(route.body)
+      # Font files are binary. Keep their bytes typed at the export boundary;
+      # exposing them as Str would manufacture invalid UTF-8 language values.
+      props["body"] = if route.contentType.startsWith("font/"):
+        newBytes(route.body)
+      else:
+        newStr(route.body)
       props["source_map"] = if route.isSourceMap: TRUE else: FALSE
       items.add newMap(props)
     newList(items)
@@ -1249,6 +1261,15 @@ proc biCssMedia(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "css/media expects a Str query followed by CSS nodes")
   cssNode("media", args)
+
+proc biCssContainer(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 1 or args[0].kind != vkString:
+    raise newException(GeneError,
+      "css/container expects a Str query followed by CSS nodes")
+  cssNode("container", args)
+
+proc biCssFontFace(args: openArray[Value]): Value {.nimcall.} =
+  cssNode("font_face", args)
 
 proc biCssKeyframes(args: openArray[Value]): Value {.nimcall.} =
   if args.len < 2 or args[0].kind != vkString:
@@ -1507,7 +1528,7 @@ proc renderCssMedia(value: Value, parent: string, depth: int,
                     scope: Scope): string =
   if value.body.len < 1 or value.body[0].kind != vkString:
     raise newException(GeneError, "css/render expected a media query")
-  result.add cssIndent(depth) & "@media " & value.body[0].strVal & " {\n"
+  result.add cssIndent(depth) & "@" & value.head.symVal & " " & value.body[0].strVal & " {\n"
   for i in 1 ..< value.body.len:
     result.add renderCssNode(value.body[i], parent, depth + 1, scope)
   result.add cssIndent(depth) & "}\n"
@@ -1551,8 +1572,17 @@ proc renderCssNode(value: Value, parent: string, depth: int,
       result.add renderCssNode(child, parent, depth, scope)
   of "rule":
     result = renderCssRule(value, parent, depth, scope)
-  of "media":
+  of "media", "container":
     result = renderCssMedia(value, parent, depth, scope)
+  of "font_face":
+    # Font descriptors are global even inside scoped CSS, just like keyframes.
+    result.add cssIndent(depth) & "@font-face {\n"
+    for decl in value.body:
+      if decl.kind != vkNode or not decl.head.isSymbol("decl") or decl.body.len != 2:
+        raise newException(GeneError, "css/render font_face may contain only declarations")
+      result.add cssIndent(depth + 1) & cssPropertyName(decl.body[0]) &
+        ": " & displayStr(decl.body[1], scope) & ";\n"
+    result.add cssIndent(depth) & "}\n"
   of "keyframes":
     result = renderCssKeyframes(value, depth, scope)
   of "scoped":
@@ -10825,12 +10855,16 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
     webScope.define("published_routes", builtinNativeCallFn("web/published_routes",
                                                         biWebPublishedRoutes,
                                                         acceptsNamed = false))
+    webScope.define("font", builtinNativeCallFn("web/font", biWebFont,
+                                              acceptsNamed = false))
     root.define("web", newNamespace("web", webScope))
   let cssScope = newScope(root)
   cssScope.define("css", builtinNativeFn("css/css", biCss))
   cssScope.define("rule", builtinNativeFn("css/rule", biCssRule))
   cssScope.define("decl_value", builtinNativeFn("css/decl_value", biCssDeclValue))
   cssScope.define("media", builtinNativeFn("css/media", biCssMedia))
+  cssScope.define("container", builtinNativeFn("css/container", biCssContainer))
+  cssScope.define("font_face", builtinNativeFn("css/font_face", biCssFontFace))
   cssScope.define("keyframes", builtinNativeFn("css/keyframes", biCssKeyframes))
   cssScope.define("frame", builtinNativeFn("css/frame", biCssFrame))
   cssScope.define("scoped", builtinNativeFn("css/scoped", biCssScoped))

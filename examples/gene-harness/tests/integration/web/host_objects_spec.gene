@@ -397,9 +397,9 @@
       (fn [workspace]
         (with_service workspace (fn [service]
           (let shown (/workspace service/runtime/h/objects/.get))
-          ($assert (["light" "dark"] .contains? shown/.appearance))
-          (shown .set_appearance "dark")
-          ($assert (== shown/.appearance "dark"))
+          ($assert (== ($head shown/.appearance) List))
+          (shown .set_appearance {^mode "dark"})
+          ($assert (== shown/.appearance []))
           ($assert ($present? shown/.views/settings))
           ($assert (> shown/.commands/.size 0))
           ($assert ($present? shown/.metadata))

@@ -1,5 +1,7 @@
 # Workspace panel requests, actions and layout; independent of chat drafts.
 (mod harness_ui_controller ^profile web)
+(import ^from "../contrast.gene" [update_ratio])
+(import ^from "../appearance.gene" [BrowserAppearance change_appearance appearance_control])
 (import [storage_get storage_remove] ^from "../workspace_storage.gene")
 (import [api_root] ^from "../../src/web/contract.gene")
 (import ^from "../notices.gene" [Notices])
@@ -25,6 +27,14 @@
 (import ^from "../state.gene" [revision_before])
 (import ^from "../sidebar.gene" [create_sidebar])
 (import ^from "./router.gene" [navigate update_views install_router capture_view restore_focus update_url layout])
+
+(fn specimen_ratios [ui : UiClient] : Void
+  (for [key raw] in ui/nodes
+    (var node : UiNode raw)
+    (var classes (text node/props/class))
+    (if_yes ($str/starts_with? classes "theme_ratio contrast_")
+      (var role ($str/join ($str/split ($str/slice_bytes classes 21 (- ($str/byte_size classes) 21)) "_") "-"))
+      (update_ratio node/element role (text node/props/title)))))
 
 (fn action_notice [ui : UiClient, pending : Any, message : Str, severity : Str = "info", sticky : Bool = true] : Void
   (notice ^key (text pending/request/input_id) ^severity severity ^sticky sticky ^action (if (&& sticky (! (flag pending/settled)) ($present? ui/pending)) (fn [] : Void (if_yes (== (text ui/pending/request/input_id) (text pending/request/input_id)) (resolve_action ui true))) nil) ^origin {^workspace ui/workspace ^component pending/request/component ^instance pending/request/instance ^arguments pending/request/named ^view_state pending/view_state ^action_id pending/request/input_id}
@@ -184,6 +194,13 @@
   (post_action ui))
 
 (fn changed_control [ui : UiClient, node : UiNode] : Void
+  (if_yes ($present? node/props/data-appearance)
+    (var appearance : BrowserAppearance ui/browser_appearance)
+    (var field : Str node/props/data-appearance)
+    (var changes : Any {})
+    (set changes/%field ($dom/input_value node/element))
+    (change_appearance appearance changes)
+    (return))
   (set ui/navigation/focus node/key)
   (if_not ($absent? node/props/field)
     (var form node/form)
@@ -244,6 +261,7 @@
               (changed_control ui node))
             (fn [node : UiNode] : Void
               (submit_action ui node)))
+          (specimen_ratios ui)
           (set ui/rendered_revision revision)
           (notice ^key "render" ui "")
           (set ui/render_error false)
@@ -372,9 +390,15 @@
   (refresh ui))
 
 (fn set_appearance [ui : UiClient, mode : Str] : Void
-  (if_yes (== ui/appearance mode) (return))
+  (if_not ($absent? ui/browser_appearance)
+    (var appearance : BrowserAppearance ui/browser_appearance)
+    (for [key raw] in ui/nodes
+      (var node : UiNode raw)
+      (if_yes ($present? node/props/data-appearance)
+        (appearance_control appearance node/element node/props/data-appearance))))
   (set ui/appearance mode)
-  (layout ui))
+  (layout ui)
+  (specimen_ratios ui))
 
 (fn create [root : EventTarget, safe : Bool, notices : Notices, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), select : (Fn [Str] Void), command : (Fn [Str] Void), prompt : (Fn [Str] Void), appearance : Str] : UiClient
   (var navigation (UiNavigation ^workspace "" ^active "harness" ^last_view "" ^presentation "classic"
@@ -382,7 +406,7 @@
     ^!bar_hidden ^!focus_pending ^action_generation 0 ^action_revision "" ^sidebar (create_sidebar root safe)
     ^restore (fn [view : Any] : Void (return)) ^refresh (fn [] : Void (return))))
   (var ui
-    (UiClient ^keyboard {} ^root root ^target ($dom/element "ui_view") ^safe safe ^!ready ^session "" ^workspace "" ^epoch "" ^metadata_revision "" ^rendered_revision "" ^descriptor nil ^settings nil ^instance "" ^version "" ^notices notices ^state {} ^drafts {} ^forms {} ^nodes {} ^generation 0 ^sequence 0 ^debounce 0 ^last_data "" ^!loading ^!render_error ^pending nil ^!resolving ^navigation navigation ^navigate (fn [target : Str, presentation : Str] : Void (return)) ^api api ^select select ^command command ^prompt prompt ^appearance appearance))
+    (UiClient ^browser_appearance nil ^applied_tokens [] ^keyboard {} ^root root ^target ($dom/element "ui_view") ^safe safe ^!ready ^session "" ^workspace "" ^epoch "" ^metadata_revision "" ^rendered_revision "" ^descriptor nil ^settings nil ^instance "" ^version "" ^notices notices ^state {} ^drafts {} ^forms {} ^nodes {} ^generation 0 ^sequence 0 ^debounce 0 ^last_data "" ^!loading ^!render_error ^pending nil ^!resolving ^navigation navigation ^navigate (fn [target : Str, presentation : Str] : Void (return)) ^api api ^select select ^command command ^prompt prompt ^appearance appearance))
   (set navigation/restore (fn [view : Any] : Void (restore_view ui view)))
   (set navigation/refresh (fn [] : Void (refresh ui)))
   (set ui/navigate (fn [target : Str, presentation : Str] : Void (navigate ui target presentation) (return)))

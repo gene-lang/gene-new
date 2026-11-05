@@ -1,0 +1,19 @@
+(mod appearance_values)
+(import ^from "../runtime/appearance_error" [AppearanceError])
+(var preference_values {^mode ["light" "dark"] ^density ["comfortable" "compact"]
+  ^text_size ["small" "default" "large" "larger"] ^content_width ["narrow" "default" "wide" "full"]})
+(var defaults {^theme "default" ^mode "light" ^density "comfortable" ^text_size "default" ^content_width "default"})
+
+(fn valid_field? [name : Str, value] : Bool
+  (if (!= ($head value) Str) (return false))
+  (if (== name "theme")
+    (then (&& (! (["light" "dark"] .contains? value)) ($present? (#"^[a-z][a-z0-9_-]{0,79}$" .match value))))
+    (else (&& ($present? (preference_values .get name)) ((preference_values .get name) .contains? value)))))
+
+(fn validate_fields [fields]
+  (if (!= ($head fields) Map)
+    (fail (AppearanceError ^code "invalid_request" ^message "Appearance must be a map of preferences.")))
+  (for [name value] in fields
+    (if_not (valid_field? ($to_str name) value)
+      (fail (AppearanceError ^code "invalid_request" ^message $"Invalid appearance preference ${name}."))))
+  fields)

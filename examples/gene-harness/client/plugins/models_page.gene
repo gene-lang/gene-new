@@ -1,9 +1,10 @@
 (mod models_page_client ^profile web)
+(import ^from "../appearance.gene" [BrowserAppearance start_appearance change_appearance refresh_appearance])
 (import [api_root] ^from "../../src/web/contract.gene")
 (import [text flag items] ^from "../../src/common/launcher.gene")
 (import [owner_request owner_connect] ^from "../owner_api.gene")
 
-(type ModelsPage ^props {^root EventTarget ^notice EventTarget ^csrf Str ^file Any ^catalog Any
+(type ModelsPage ^props {^appearance Any? ^root EventTarget ^notice EventTarget ^csrf Str ^file Any ^catalog Any
   ^ready Bool ^busy Bool ^loading Bool ^serial Int ^poll Int ^await_revision Str ^login Any ^login_serial Int ^accounts Any})
 
 (fn notice [page : ModelsPage, message : Str, error : Bool = false] : Void
@@ -423,7 +424,18 @@
     ^!ready ^!busy ^!loading ^serial 0 ^poll 0 ^await_revision "" ^login nil ^login_serial 0 ^accounts nil))
   ($dom/add_event_listener ($dom/element "models_search") "input" (fn [event : Any] : Void
     (if_yes ($present? page/catalog) (render page))))
+  (var appearance (start_appearance
+    (fn [method : Str, path : Str, data : Any, done : (Fn [Int Any] Void)] : Void
+      (owner_request page/csrf method path data done))
+    (fn [answer : Any] : Void (return))))
+  (set page/appearance appearance)
+  ($dom/add_event_listener ($dom/element "theme_toggle") "click"
+    (fn [event : Any] : Void
+      (var document ($dom/element "harness_document"))
+      (var mode : Str document/dataset/mode)
+      (change_appearance appearance {^mode (if (== mode "dark") "light" "dark")})))
   ($dom/add_event_listener ($dom/element "models_refresh") "click" (fn [event : Any] : Void
+    (refresh_appearance appearance)
     (if_yes (|| page/busy page/loading) (return))
     (set page/await_revision (text page/catalog/id)) (set page/poll 0)
     (request page "POST" "/models/refresh" {} (fn [code : Int, data : Any] : Void

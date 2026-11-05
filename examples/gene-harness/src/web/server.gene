@@ -45,7 +45,8 @@
 (import ^from "./contract" [error_status])
 (import ^from "./push" [new_push_hub add_peer remove_peer expire_peers disconnect_peers broadcast])
 (import ^from "../website/page" [website_page])
-(import ^from "../runtime/appearance" [appearance_mode set_appearance AppearanceError])
+(import ^from "../runtime/appearance" [set_appearance report_appearance AppearanceError])
+(import ^from "./appearance" [request_appearance appearance_request])
 (import ^from "../runtime/sessions" [unload_idle_sessions SessionError])
 (import ^from "../runtime/commands" [CommandError])
 (import ^from "../runtime/round_controller" [request_stop submit_round])
@@ -75,12 +76,6 @@
 (import $os [get_env])
 (import [response fail_request field optional_field number request_data path_parts cookie_value secure_response] ^from "./request")
 (import [feature_request] ^from "./routes/catalog")
-
-# The informational page is static for the life of the server: one copy per
-# theme, chosen per request.
-(var about_pages
-  {^light (website_page ^mode "embedded" ^appearance "light")
-   ^dark (website_page ^mode "embedded" ^appearance "dark")})
 
 (fn main [argv, ^profile supplied_profile = nil, ^channel_options channel_options = nil, ^on_open on_open = nil]
   (manager_client)
@@ -181,17 +176,17 @@
       (let session (field request/params "session" ^default ""))
       (return (redirect ($to_str "/?ui=default&session=" ($url/encode_component session)))))
     (if_yes (&& (== request/method "GET") (== request/path "/"))
-      (return (html (page ^appearance (appearance_mode host/runtime) ^workspace host/runtime/root))))
+      (return (html (page ^appearance (request_appearance request host/runtime safe) ^workspace host/runtime/root))))
     (if (&& (== request/method "GET") (["/plugins" "/plugins/"] .contains? request/path))
-      (return (html (plugin_page ^appearance (appearance_mode host/runtime) ^workspace host/runtime/root))))
+      (return (html (plugin_page ^appearance (request_appearance request host/runtime) ^workspace host/runtime/root))))
     (if (&& (== request/method "GET") (["/models" "/models/"] .contains? request/path))
-      (return (html (model_page host (appearance_mode host/runtime) styles))))
-    # The website needs no session: it reads only the workspace theme and makes
+      (return (html (model_page host (request_appearance request host/runtime safe) styles))))
+    # The website needs no session: it reads only browser appearance and makes
     # no model call, so it is answered before authentication.
     (if_yes (&& (== request/method "GET") (== request/path "/about"))
       (return (redirect "/about/")))
     (if_yes (&& (== request/method "GET") (== request/path "/about/"))
-      (return (html (about_pages .get (appearance_mode host/runtime)))))
+      (return (html (website_page ^mode "embedded" ^appearance (request_appearance request host/runtime)))))
     (if_yes (&& (== request/method "GET") (== request/path $"${(api_root)}/connection"))
       (return (response 200 connection)))
     (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/exchange"))
@@ -233,9 +228,8 @@
         ^message (if (== host/runtime/exit_code/.get 75) "Restarting." "Stopped.")})))
     (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/clients/reply"))
       (return (response 200 (client_reply host (request_data request)))))
-    (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/appearance"))
-      (let data (request_data request))
-      (return (response 200 {^mode (set_appearance host/runtime data/mode)})))
+    (if_yes (&& (["GET" "POST"] .contains? request/method) (== request/path $"${(api_root)}/appearance"))
+      (return (appearance_request request host/runtime safe)))
     (if_yes (== request/path $"${(api_root)}/workspace/settings")
       (if (== request/method "GET") (return (response 200 (read_workspace_settings root))))
       (if_yes (== request/method "POST")
@@ -298,6 +292,13 @@
           (if (== browser/generation ($crypto/sha256 auth/secret))
             (add_peer ^safe safe ^client_id client_id push connection watched 0)
             (ws_close connection)))
+        ^on_message (fn [connection, text]
+          (if (|| (== client_id "") (> ($str/byte_size text) 16384)) (return nil))
+          (try
+            (let report ($json/parse text))
+            (if (&& (== report/type "appearance_report") (== ($head report/saved) Map) (== ($head report/rendered) Map))
+              (report_appearance host/runtime client_id {^saved report/saved ^rendered report/rendered}))
+          catch Any nil))
         ^on_close (fn [connection] (remove_peer push connection)))))
     (if_yes (== request/path $"${(api_root)}/sessions")
       (if (== request/method "GET")

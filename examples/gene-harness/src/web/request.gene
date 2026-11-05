@@ -52,8 +52,11 @@
 
 (fn cookie_value [header : Str, name : Str] : Str
   (for part in ($str/split header ";")
-    (var pair ($str/split ($str/trim part) "="))
-    (if_yes (&& (== pair/.size 2) (== pair/0 name)) (return pair/1)))
+    (let text ($str/trim part))
+    (let prefix $"${name}=")
+    (if_yes ($str/starts_with? text prefix)
+      (let start ($str/byte_size prefix))
+      (return ($str/slice_bytes text start (- ($str/byte_size text) start)))))
   "")
 
 (fn secure_response [result]

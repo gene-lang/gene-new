@@ -7,7 +7,6 @@
 (import [revert_plugin] ^from "../../storage/workspace_repair")
 (import [CompositionConflict] ^from "../../storage/composition_store")
 (import [pin_history] ^from "../../storage/plugin_history")
-(import [appearance_mode] ^from "../../runtime/appearance")
 
 (fn plugins_request [context, request, parts]
   (let host context/host)
@@ -27,7 +26,6 @@
       ^state (field request/params "state" ^default "") host/runtime))
     (result .put "csrf" browser/csrf)
     (result .put "epoch" host/runtime/epoch)
-    (result .put "appearance" (appearance_mode host/runtime))
     (return (response 200 result)))
   (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/revert"))
     (let data (request_data request))

@@ -29,7 +29,7 @@
   (let tokens ($into ($regex/find_all #"<[^>]*>" text) []))
   (for found in tokens
     (let token found/text)
-    (if ($absent? (#"^</?(svg|defs|linearGradient|radialGradient|stop|g|rect|path|line|circle|ellipse|text)([ \t\r\n]+(xmlns=\"http://www.w3.org/2000/svg\"|(id|viewBox|width|height|x|y|x1|x2|y1|y2|cx|cy|r|rx|ry|d|fill|stroke|stroke-width|opacity|offset|stop-color|stop-opacity|font-family|font-size|font-weight|text-anchor|dominant-baseline|gradientUnits|transform)=\"[A-Za-z0-9_#().,% /+-]*\"))*[ \t\r\n]*/?>$" .match token))
+    (if ($absent? (#"^</?(svg|defs|linearGradient|radialGradient|stop|g|rect|path|line|circle|ellipse|text)([ \t\r\n]+(xmlns=\"http://www.w3.org/2000/svg\"|(id|viewBox|width|height|x|y|x1|x2|y1|y2|cx|cy|r|rx|ry|d|fill|stroke|stroke-width|stroke-linecap|stroke-linejoin|opacity|offset|stop-color|stop-opacity|font-family|font-size|font-weight|text-anchor|dominant-baseline|gradientUnits|transform)=\"[A-Za-z0-9_#().,% /+-]*\"))*[ \t\r\n]*/?>$" .match token))
       (image_error))
     # Paint references may only point to a fragment in this same SVG.
     (let paint ($regex/replace_all #"url[(]#[A-Za-z0-9_-]+[)]" token ""))

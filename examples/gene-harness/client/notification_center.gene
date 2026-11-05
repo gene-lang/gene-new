@@ -222,7 +222,7 @@
       ($dom/append element open)
       ($dom/append element ($dom/render `(button ^type "button" ^class_name "notice_dismiss"
         ^aria-label "Dismiss message" ^title "Dismiss message"
-        ^on_click %(fn [event : Any] : Void (remove_notice center/notices item/source item/scope item/key)) "×")))
+        ^on_click %(fn [event : Any] : Void (remove_notice center/notices item/source item/scope item/key)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))
       ($dom/append ($dom/element "notification_local") element)
       ($dom/add_event_listener
         open

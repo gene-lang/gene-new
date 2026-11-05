@@ -25,9 +25,14 @@ const element = id => {
 };
 globalThis.HTMLElement = Element;
 globalThis.document = {activeElement: null, getElementById: element, createElement: tag => new Element(tag), createTextNode: text => new Element('#text', text)};
-globalThis.window = {location: {hash: ''}};
+globalThis.window = Object.assign(new EventTarget(), {location: {hash: ''}});
 globalThis.history = {replaceState() { window.location.hash = ''; }};
 globalThis.fetch = (url, options) => new Promise(resolve => {
+  if (url === '/api/v9/appearance') {
+    resolve({status: 200, text: async () => JSON.stringify({saved: {}, rendered: {
+      theme: 'default', mode: 'light', density: 'comfortable', text_size: 'default', content_width: 'default', stylesheet: '/theme.css'}, themes: []})});
+    return;
+  }
   const request = {url, options, resolve}; pending.push(request); requested.push(request);
 });
 const pageModule = await import(pathToFileURL(process.argv[2]));

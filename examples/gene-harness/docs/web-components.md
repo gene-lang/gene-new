@@ -48,10 +48,12 @@ conversation selected, it creates a conversation for the command. A button's
 are disabled while disconnected or submitting. Components do not replace
 authentication, submission recovery or cancellation controls.
 
-Supported elements: div, section, p, h2, h3, h4, span, strong, small, em, ul,
+Supported elements: div, section, p, h1 through h6, icon, span, strong, small, em, ul,
 ol, li, button, a, details, summary, pre, code, progress, hr, br, img. Supported
 attributes: class/class_name, title, role, aria-label/aria_label, type, href, target,
-value, max, open, disabled, command, prompt, src, alt, width, height, columns, inset (the image properties are detailed below). Attributes contain scalar data;
+mode, tabindex, the aria-selected/expanded/controls/modal/labelledby/describedby/disabled
+attributes (also spelled with underscores), value, max, open, disabled, command, prompt,
+src, alt, width, height, columns, inset (the image properties are detailed below). Attributes contain scalar data;
 there are no inline scripts or raw HTML. Links use local paths, fragments or
 HTTPS URLs. View text becomes DOM text, including user-supplied strings.
 An anchor's `target` can be `_self` (the default) or `_blank` to open a new tab.
@@ -62,7 +64,8 @@ grids, badges, notices and button variants. Component views are bounded to 24
 levels and 64 KiB. The underlying wire tree is `{tag, props, children}`; it can also
 be supplied directly as maps/lists.
 The wire normalizes text and attribute values to strings; true creates an
-empty HTML attribute, while false/nil omit it.
+empty HTML attribute, while false/nil omit it. Use the strings `"true"` and
+`"false"` for ARIA state attributes.
 
 ## Styling
 
@@ -77,16 +80,21 @@ needs no CSS of its own:
 | `web_grid` | Responsive grid of equal columns |
 | `web_tight`, `web_loose` | Smaller or larger gaps on a stack, row, spread or grid |
 | `web_actions` | Button group |
-| `web_badge`, `web_badge_danger`, `web_badge_success` | Square status chip |
+| `web_badge`, `web_badge_danger`, `web_badge_success` | Status chip using the theme’s chip radius |
 | `web_notice`, `web_notice_error`, `web_notice_success` | Notice with a status rule |
 | `web_metric`, `web_muted` | Large number; supporting text |
 | `web_danger_text`, `web_success_text` | Status-colored text |
-| `web_table_compact` | Denser table cells (views) |
+| `web_table_compact` | Denser table cells |
+| `web_field` | Label, control, help and error |
+| `web_tabs` | Tab controls and their selected state |
+| `web_split`, `web_scroll_x` | Wrapping panes; a scrolling region for wide content |
+| `web_dialog`, `web_dialog_panel` | Dialog backdrop and raised content |
+| `web_listbox` | Option rows and their selected state |
 | `web_primary`, `web_secondary`, `web_danger` | Button variants: filled, quiet, destructive |
 
-Headings, paragraphs, lists, links (always underlined), code, preformatted
-text, rules, progress bars, forms and tables in views get theme defaults. Only
-buttons have rounded corners. For example, with no custom CSS:
+Headings, paragraphs, lists, links, code, preformatted text, rules, progress
+bars, forms and tables get theme defaults. Typography, spacing, corners,
+borders and interaction states follow the chosen theme and mode. For example, with no custom CSS:
 
 ```gene
 (quote
@@ -116,7 +124,7 @@ deliberately.
    ^style (css
      (rule ".sheet_grid" (decl display "grid") (decl grid_template_columns "12rem repeat(6, 1fr)"))
      (rule ".sheet_grid > .header" (decl position "sticky") (decl top 0) (decl background "var(--surface)"))
-     (rule ".cell.selected" (decl outline "2px solid var(--accent)")))})
+     (rule ".cell.selected" (decl outline "var(--focus-width) solid var(--focus)")))})
 ```
 
 Prefer the theme tokens (`--ink`, `--muted`, `--line`, `--surface`, `--soft`,
@@ -224,20 +232,21 @@ Enable and configure it through `ui_configure`:
 
 ```gene
 (ui_configure {^^enabled ^layout "panel" ^panel "project_board"
-  ^side "left" ^width 45 ^theme {^light {^accent "#335577"} ^dark {^accent "#9db4d6"}}})
+  ^side "left" ^width 45 ^tokens {^light {^accent "#335577"} ^dark {^accent "#9db4d6"}}})
 ```
 
 `layout` is `chat` or `panel`; `side` is `left` or `right`; `width` is an integer
-percentage from 25 to 70. `theme` overrides the panel's colors per mode:
-`^light` and `^dark` each map the keys `ink`, `muted`, `line`, `surface`,
-`sidebar`, `soft` and `accent` to six-digit hex colors. Flat token maps are
+percentage from 25 to 70. `tokens` overrides the panel's colors per mode:
+`^light` and `^dark` each map any [color role](theming.md#color) to a six-digit
+hex color, or a token declared by the view’s plugin to a CSS value. Snake-case
+keys are normalized to CSS kebab-case. The overrides apply to that plugin’s
+views; switching to a host screen clears them. Flat token maps are
 rejected; a mode without overrides uses the host palette. Passing
 `{^!enabled}` restores the ordinary interface. Configuration is workspace state
 and supplies fresh-tab defaults; navigation and presentation choices are local
 to a tab. `default_view` selects a canonical initial view or `harness` and takes
 precedence over the legacy layout/panel fields. Theme overrides style plugin
-content only; Classic Harness and host controls follow the workspace's light
-or dark theme.
+content only; Classic Harness and host controls follow the browser's theme and mode.
 The `/ui/default` recovery URL omits plugin views and theme overrides for that
 page and preserves the workspace selection.
 
@@ -443,3 +452,21 @@ style strings or positioning attributes. Existing keyed actions, validation,
 tree bounds and revision checks are unchanged. Preview validates structure,
 but alignment and actual image loading must also be checked after host restart
 and browser reload.
+
+
+`(icon ^name "close")` renders a decorative theme icon. Give an icon-only
+button an `aria_label`. A `mode` attribute on a component subtree selects
+`light` or `dark` for that subtree. A view may declare component tokens with
+`^tokens [{^name "board-lane-surface" ^fallback "var(--soft)" ^doc "Lane background."}]`.
+Its CSS reads `var(--board-lane-surface, var(--soft))` without declaring the
+property locally. Themes and the view's own `ui_configure ^tokens` can then
+supply it. `(workspace .theme_tokens)` lists those declarations.
+
+`web_split` wraps two panes according to their minimum basis, and
+`web_scroll_x` contains wide tables. `web_field` groups a label, control, help
+and error; `web_tabs` styles tab controls. `web_dialog` is a backdrop whose
+`web_dialog_panel` child is raised. `web_listbox` styles `role="option"` rows
+and their `aria-selected` state. Custom widgets still implement their own
+keyboard and accessibility behavior. Region queries use the named containers
+`main`, `view`, `sidebar` and `drawer`, at documented steps 30rem, 48rem and
+64rem. Slot wrappers inherit their region rather than becoming containers.

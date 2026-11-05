@@ -178,7 +178,7 @@
 
 (var site_excerpts
   {^html (excerpt (package_file "src/website/page.gene") "(fn capability_card")
-   ^css (excerpt (package_file "src/website/style.gene") "(media \"(max-width: 760px)\"")
+   ^css (excerpt (package_file "src/website/style.gene") "(container compact_query")
    ^browser (excerpt (package_file "client/website.gene") "(fn select_view")})
 
 # --- Running locally -----------------------------------------------------------------

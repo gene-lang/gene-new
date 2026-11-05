@@ -364,19 +364,22 @@
       (p "macOS: ⌘Q, ⌘W, ⌘T, ⌘N, ⌘Tab, ⌘Space and Mission Control keys. Windows and Linux: Ctrl+W, Ctrl+T, Ctrl+N, Alt+F4, Alt+Tab and the Windows key. Browsers reserve others, such as Ctrl+L and F5.")
       (p "If pressing a combination records nothing, the browser or the system kept it; choose another."))])
 
-# Appearance: the workspace theme keeps its own store and owner.
-
+# Appearance belongs to the browser, independently of Settings scope.
 (fn appearance_group [workspace, scope : Str]
-  (let mode workspace/.appearance)
-  [`(section ^key "appearance" ^class_name "web_card"
-      (h3 "Theme")
-      (p ^class_name "web_muted" %$"This workspace uses the ${mode} theme. It applies at once in every open tab.")
-      %(if (== scope "shared") `(p ^class_name "web_notice" "The theme is saved per workspace.") `(span ""))
-      (div ^class_name "web_actions"
-        (button ^key "theme-light" ^action "settings_appearance" ^args {^mode "light"}
-          ^class_name %(if (== mode "light") "web_primary" "web_secondary") "Light")
-        (button ^key "theme-dark" ^action "settings_appearance" ^args {^mode "dark"}
-          ^class_name %(if (== mode "dark") "web_primary" "web_secondary") "Dark")))])
+  (let controls [])
+  (for [field label choices] in [["theme" "Theme" []] ["mode" "Mode" ["light" "dark"]]
+      ["density" "Density" ["comfortable" "compact"]]
+      ["text_size" "Text size" ["small" "default" "large" "larger"]]
+      ["content_width" "Content width" ["narrow" "default" "wide" "full"]]]
+    (let options [])
+    (for value in choices (options .push `(option ^value %value %value)))
+    (controls .push `(label %label (select ^key %$"appearance/${field}" ^appearance %field %options...))))
+  [`(section ^key "appearance" ^class_name "web_card web_stack"
+      (h3 "Appearance")
+      (p ^class_name "web_muted" "Saved for this browser across Harness workspaces.")
+      %controls...
+      (div ^key "appearance/preview" ^appearance "preview" ^class_name "theme_preview")
+      (button ^switch_view "theme" "Preview themes and inspect tokens"))])
 
 # A contributed section renders through its own row; a failure stays inside it.
 (fn section_error [name, reason]
@@ -527,20 +530,20 @@
 
 (fn settings_style []
   (css
-    (rule ".settings_layout" (decl display "flex") (decl flex_wrap "wrap") (decl gap "1.5rem") (decl align_items "flex-start"))
-    (rule ".settings_nav" (decl flex "0 1 12rem") (decl min_width "10rem"))
+    (rule ".settings_layout" (decl display "flex") (decl flex_wrap "wrap") (decl gap "var(--space-6)") (decl align_items "flex-start"))
+    (rule ".settings_nav" (decl flex "0 1 var(--size-12)") (decl min_width "min(100%, var(--size-10))"))
     (rule ".settings_nav button" (decl width "100%") (decl text_align "left"))
-    (rule ".settings_main" (decl flex "1 1 28rem") (decl min_width "0"))
+    (rule ".settings_main" (decl flex "1 1 var(--drawer-width-wide)") (decl min_width "0"))
     (rule ".settings_main label" (decl display "block"))
     (rule ".settings_main textarea" (decl width "100%") (decl font_family "var(--font-mono)"))))
 
 (fn settings [] : Plugin
   (let actions ["settings_save" "settings_reset" "settings_save_models" "settings_reset_models"
-                "settings_key" "settings_appearance"])
+                "settings_key"])
   (let groups
     [{^name "General" ^order 10 ^doc "Limits and timeouts for rounds, providers and sessions."}
      {^name "Models" ^order 20 ^doc "The provider, model and effort new rounds use when a session chooses none."}
-     {^name "Appearance" ^order 40 ^doc "The light or dark theme for this workspace."}
+     {^name "Appearance" ^order 40 ^doc "Theme and appearance preferences for this browser."}
      {^name "Keyboard Shortcuts" ^order 50 ^doc "Application shortcuts. Changes reach open tabs at once."}])
   (let provides [["web_components" "settings"] ["docs" "harness/settings"]])
   (for name in actions (provides .push ["ui_actions" name]))
@@ -559,9 +562,6 @@
         {^name "settings_reset_models" ^doc "Remove the workspace model override or clear the shared default model." ^fn reset_models})
       (host .PluginHost:contribute "ui_actions"
         {^name "settings_key" ^doc "Bind, clear or restore one keyboard shortcut against a digest." ^fn key_action})
-      (host .PluginHost:contribute "ui_actions"
-        {^name "settings_appearance" ^doc "Set the workspace theme."
-         ^fn (fn [^mode mode : Str] ((current_workspace) .set_appearance mode) $"Theme set to ${mode}.")})
       (host .PluginHost:contribute "web_components"
         {^name "settings" ^slot "view" ^title "Settings" ^default_presentation "full" ^^always_available
          ^embeds "settings_section"

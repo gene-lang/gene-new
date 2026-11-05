@@ -1,90 +1,260 @@
-# Guards for docs/theming.md: square corners except on buttons, shared colors
-# only in the theme, and host palettes that keep their measured contrast.
+# Public theme contracts and the guards documented in docs/theming.md.
 (import $test [describe it run])
+(import $css [css rule decl container font_face scoped render : render_css])
 (import ^from "../../../src/web/theme"
-  [theme_css light_palette dark_palette palettes contrast_ratio theme_mode])
-(import ^from "../../../src/web/style" [base_styles styles])
+  [theme_css builtin_themes resolve_theme resolved_tokens color_value contrast_ratio hex_channel linear_channel relative_luminance theme_mode alias_font_value preview_font_aliases preview_css density_tokens mode_tokens system_tokens icon_names narrow_breakpoint generate_theme])
+(import ^from "../../../src/web/style" [base_styles])
+(import ^from "../../../src/web/style/preferences" [styles : preference_styles])
 (import ^from "../../../src/web/plugin_page" [manager_styles plugin_page])
 (import ^from "../../../src/web/page" [page])
 (import ^from "../../../src/website/style" [website_css])
 (import ^from "../../../src/website/page" [website_page])
+(import ^from "../../../src/website/export" [write_route])
+(import ^from "../../../src/web/appearance" [appearance_answer])
+(import ^from "../../../src/ui/components" [bounded_component_view])
+(import ^from "../../../src/web/specimen" [shared_classes specimen specimen_sections])
 
-# [selector value] for every border-radius declaration in rendered CSS.
-(fn radius_rules [css : Str]
-  (let found [])
-  (for block in ($str/split css "}")
+(fn declarations [text : Str]
+  (let result [])
+  (for block in ($str/split text "}")
     (let parts ($str/split block "{"))
-    (if_yes (>= parts/.size 2)
-      (let selector_at (- parts/.size 2))
-      (let body_at (- parts/.size 1))
-      (let selector ($str/trim parts/%selector_at))
-      (for declaration in ($str/split parts/%body_at ";")
-        (let trimmed ($str/trim declaration))
-        (if_yes ($str/starts_with? trimmed "border-radius")
-          (found .push [selector ($str/trim (/1 ($str/split trimmed ":")))])))))
-  found)
+    (if (< parts/.size 2) (continue))
+    (let body (parts .last))
+    (for item in ($str/split body ";")
+      (let pair ($str/split ($str/trim item) ":"))
+      (if (== pair/.size 2) (result .push [($str/trim pair/0) ($str/trim pair/1)]))))
+  result)
 
-(fn hex_literals [css : Str]
-  ($into ($regex/find_all #"#[0-9a-fA-F]{3,8}\b" css) []))
+# Built-in syntax colors use the documented sRGB mix. Measure before rounding
+# to bytes, against every background used by highlighted host code.
+(fn syntax_luminance [tokens, role : Str] : Float
+  (let value (color_value tokens role))
+  (if ($str/starts_with? value "#") (return (relative_luminance value)))
+  ($assert ($str/starts_with? value "color-mix(in srgb,") $"Unsupported built-in syntax color ${value}")
+  (let parts ($str/split value " "))
+  (let hue parts/2)
+  (let weight_text ($str/slice_bytes parts/3 0 (- ($str/byte_size parts/3) 2)))
+  (let weight (/ (+ 0.0 ($json/parse weight_text)) 100.0))
+  (let ink (color_value tokens "ink"))
+  (var luminance 0.0)
+  (for [offset factor] in [[1 0.2126] [3 0.7152] [5 0.0722]]
+    (let channel (+ (* weight (hex_channel hue offset)) (* (- 1.0 weight) (hex_channel ink offset))))
+    (set luminance (+ luminance (* factor (linear_channel channel)))))
+  luminance)
 
-(describe "Harness theme guards"
-  (it "keeps every corner square except the button rule" []
-    # The scan must see the reset and the button rule, or it proves nothing.
-    (var button_rules 0)
-    (for [selector value] in (radius_rules base_styles)
-      (if (== value "var(--radius-button)") (set button_rules (+ button_rules 1))))
-    ($assert (== button_rules 1))
-    (var site_button_rules 0)
-    (for [selector value] in (radius_rules website_css)
-      (if (== value "var(--radius-button)") (set site_button_rules (+ site_button_rules 1))))
-    ($assert (== site_button_rules 4))
-    (for css in [base_styles manager_styles]
-      (for [selector value] in (radius_rules css)
-        ($assert (|| (== value "0") (== value "var(--radius-button)"))
-          $"${selector} uses border-radius ${value}")
-        (if_yes (== value "var(--radius-button)")
-          ($assert (== selector "button") $"${selector} must not use the button radius"))))
-    (let site_buttons [".button" ".site_nav .nav_app" ".nav_toggle" ".copy_button"])
-    (for [selector value] in (radius_rules website_css)
-      (if_yes (!= value "0")
-        ($assert (== value "var(--radius-button)") $"${selector} uses border-radius ${value}")
-        (var allowed false)
-        (for name in site_buttons
-          (if ($str/ends_with? selector $" ${name}") (set allowed true)))
-        ($assert allowed $"${selector} must not use the button radius"))))
+(fn host_stylesheets []
+  (let styles [($str/join ($str/split base_styles preference_styles) "") manager_styles website_css])
+  (for path in ["src/builtin/models.gene" "src/builtin/voice.gene" "src/builtin/spotlight.gene" "src/public/model_page.gene" "src/web/style/narrow.gene" "src/web/style/wide.gene"]
+    (let text ($fs/read_text ($path/join this_pkg/root path)))
+    (styles .push (/1 ($str/split text "\"\"\""))))
+  (for name in ["default" "minimal"]
+    (let theme (resolve_theme name))
+    (for style in theme/styles (styles .push (render_css style))))
+  styles)
 
-  (it "keeps shared color literals in the theme" []
-    (for css in [base_styles manager_styles website_css]
-      (let literals (hex_literals css))
-      (if_not literals/.empty?
-        ($assert false $"hex color outside theme.gene: ${(/text (/0 literals))}"))))
+(describe "Harness theme contracts"
+  (it "resolves inherited tokens and detects cycles" []
+    (let themes ($thaw ($freeze builtin_themes)))
+    (themes .put "paper" {^name "paper" ^tokens {^shared {^radius_surface "6px"} ^dark {^ink "#eeeeee"}}})
+    (let paper (resolve_theme "paper" themes))
+    (let root (resolve_theme))
+    ($assert (== (paper/tokens/shared .get "radius-surface") "6px"))
+    ($assert (== (paper/tokens/shared .get "space-4") (root/tokens/shared .get "space-4")))
+    ($assert (== paper/tokens/dark/ink "#eeeeee"))
+    ($assert (== paper/icons/close root/icons/close))
+    (themes .put "parent" {^name "parent" ^tokens {^light {^radius_surface "12px"} ^dark {^radius_surface "18px"}}})
+    (themes .put "child" {^name "child" ^extends "parent" ^tokens {^shared {^radius_surface "2px"} ^dark {^radius_surface "4px"}}})
+    (let child (resolve_theme "child" themes))
+    ($assert (== ((resolved_tokens child "light") .get "radius-surface") "2px"))
+    ($assert (== ((resolved_tokens child "dark") .get "radius-surface") "4px"))
+    (themes .put "loop" {^name "loop" ^extends "loop"})
+    ($assert (try (resolve_theme "loop" themes) false catch Any true))
+    (themes .put "modes" {^name "modes" ^tokens {^dark {^font_sans "Dark Sans, sans-serif" ^board_lane_radius "8px" ^sidebar_width "30rem"}}})
+    (let modes (resolve_theme "modes" themes))
+    (let light (mode_tokens modes "light"))
+    ($assert (== (light .get "font-sans") (root/tokens/shared .get "font-sans")))
+    ($assert ($present? (light .get "type-body")))
+    ($assert (== (light .get "board-lane-radius") "initial"))
+    ($assert ($absent? (light .get "space-4")))
+    ($assert (== (narrow_breakpoint modes) 68.75)))
 
-  (it "meets the measured contrast for both palettes" []
-    (for [mode palette] in palettes
-      (for text in ["ink" "muted" "danger" "success"]
-        (for background in ["surface" "sidebar" "soft" "user"]
-          (let ratio (contrast_ratio (palette .get text) (palette .get background)))
-          ($assert (>= ratio 4.5) $"${mode} ${text} on ${background} is ${ratio}")))
-      (for background in ["surface" "sidebar" "soft" "user"]
-        (let ratio (contrast_ratio palette/edge (palette .get background)))
-        ($assert (>= ratio 3.0) $"${mode} edge on ${background} is ${ratio}"))
-      # The Send button: action text on its ink fill and its muted hover fill,
-      # and a hover that is visibly different from the resting fill.
-      ($assert (>= (contrast_ratio palette/surface palette/ink) 4.5))
-      ($assert (>= (contrast_ratio palette/surface palette/muted) 4.5))
-      ($assert (>= (contrast_ratio palette/accent palette/muted) 2.0))))
+  (it "keeps minimal's defining choices when the parent changes per mode" []
+    (let themes ($thaw ($freeze builtin_themes)))
+    (themes/default/tokens/light .put "action" "#335577")
+    (themes/default/tokens/dark .put "radius_surface" "12px")
+    (themes/default/tokens/dark .put "shadow_overlay" "0 2px 8px currentColor")
+    (let theme (resolve_theme "minimal" themes))
+    (let light (resolved_tokens theme "light"))
+    (let dark (resolved_tokens theme "dark"))
+    ($assert (== (color_value light "action") (color_value light "ink")))
+    ($assert (== (dark .get "radius-surface") "0"))
+    ($assert (== (dark .get "shadow-overlay") "none")))
 
-  (it "renders the selected mode and defaults to light" []
-    ($assert (== (theme_mode "dark") "dark"))
-    ($assert (== (theme_mode "sepia") "light"))
+  (it "meets contrast floors for both resolved built-in themes in both modes" []
+    (for name in ["default" "minimal"]
+      (let theme (resolve_theme name))
+      (for mode in ["light" "dark"]
+        (let tokens (resolved_tokens theme mode))
+        (for token in system_tokens
+          ($assert ($present? (tokens .get token)) $"Missing ${name}/${mode} token ${token}"))
+        (for text in ["ink" "muted" "danger" "success" "warning" "info" "link-color"]
+          (for background in ["surface" "surface-alt" "surface-raised" "soft" "selected" "message-user-surface"]
+            (let ratio (contrast_ratio (color_value tokens text) (color_value tokens background)))
+            ($assert (>= ratio 4.5) $"${name}/${mode}: ${text} on ${background}: ${ratio}")))
+        (for text in ["edge" "focus"]
+          (for background in ["surface" "surface-alt" "surface-raised" "soft" "message-user-surface"]
+            ($assert (>= (contrast_ratio (color_value tokens text) (color_value tokens background)) 3.0))))
+        (for background in ["danger-surface" "success-surface" "warning-surface" "info-surface"]
+          (for text in ["ink" "muted" "link-color"]
+            ($assert (>= (contrast_ratio (color_value tokens text) (color_value tokens background)) 4.5))))
+        (if (< (contrast_ratio (color_value tokens "link-color") (color_value tokens "ink")) 3.0)
+          ($assert ($str/contains? (tokens .get "link-decoration") "underline")))
+        (for role in ["syntax-string" "syntax-number" "syntax-keyword" "syntax-callable" "syntax-type"]
+          (let front (syntax_luminance tokens role))
+          (for background in ["surface" "soft" "message-user-surface"]
+            (let back (relative_luminance (color_value tokens background)))
+            (let ratio (if (> front back) (/ (+ front 0.05) (+ back 0.05)) (/ (+ back 0.05) (+ front 0.05))))
+            ($assert (>= ratio 4.5) $"${name}/${mode}: ${role} on ${background} is ${ratio}")))
+        (for status in ["danger" "success" "warning" "info"]
+          ($assert (>= (contrast_ratio (color_value tokens status) (color_value tokens $"${status}-surface")) 4.5)))
+        (for background in ["action" "action-hover"]
+          ($assert (>= (contrast_ratio (color_value tokens "action-ink") (color_value tokens background)) 4.5)))
+        (for i in [1 2 3 4 5 6 7 8]
+          ($assert (>= (contrast_ratio (color_value tokens $"series-${i}") (color_value tokens "surface")) 3.0))))))
+
+  (it "keeps host declarations token-based and colors in theme files" []
+    (for text in (host_stylesheets)
+      ($assert ($absent? (#"#[0-9a-fA-F]{3,8}\b|\brgba?[(]|\bhsla?[(]" .match text)))
+      (for [name value] in (declarations text)
+        (if_yes (["font" "font-size" "font-family" "font-weight" "line-height" "letter-spacing" "opacity" "row-gap" "column-gap" "padding" "padding-inline" "padding-block" "margin" "margin-inline" "margin-block" "gap" "z-index" "border-radius" "box-shadow" "transition"] .contains? name)
+          # Root size follows browser settings; the scrim is a geometric backdrop.
+          (if (|| (== value "revert") (== value "100%") ($str/contains? value "100vmax")) (continue))
+          ($assert (|| (== ($regex/replace_all #"\b(auto|inherit|none|0|1)\b|\s+" value "") "") ($str/contains? value "var(--"))
+            $"${name}: ${value} must read a token")))))
+
+  (it "keeps user preferences important in the first layer and names shell queries" []
+    ($assert ($str/starts_with? base_styles "@layer preferences, reset, base, shell, components, content, utilities;"))
+    (for [name value] in (declarations preference_styles)
+      ($assert ($str/ends_with? value "!important") $"Preference ${name} must beat theme CSS"))
+    (for attribute in ["data-density" "data-text-size" "data-content-width" "prefers-reduced-motion" "forced-colors" "pointer: coarse"]
+      ($assert ($str/contains? preference_styles attribute)))
+    (let sidebar ($fs/read_text ($path/join this_pkg/root "client/sidebar.gene")))
+    ($assert ($str/contains? sidebar "$dom/style_value"))
+    ($assert (! ($str/contains? sidebar "inner_width")))
+    (for name in ($fs/list_dir ($path/join this_pkg/root "src/web/style"))
+      (if_not ($str/ends_with? name ".gene") (continue))
+      (let source ($fs/read_text ($path/join this_pkg/root "src/web/style" name)))
+      ($assert (! ($str/contains? source "@container shell (width")) $"${name} must use the compact marker")))
+
+  (it "uses named drawings in host markup" []
+    (for path in ["src/web/page.gene" "client/main.gene" "client/notices.gene" "client/notification_center.gene" "client/plugins/models_picker.gene"]
+      (let source ($fs/read_text ($path/join this_pkg/root path)))
+      (for glyph in ["\"×\"" "\"☰\"" "\"⋯\"" "\"✓\"" "New output ↓"]
+        ($assert (! ($str/contains? source glyph)) $"${path} uses ${glyph} as an icon"))))
+
+  (it "scales plain theme spacing and control lengths without double scaling aliases" []
+    (let tokens (density_tokens {^space-4 "2rem" ^control-height "3rem" ^space-8 "calc(var(--space-4) * 2)"}))
+    ($assert (== tokens/space-4 "calc(2rem * var(--density))"))
+    ($assert (== tokens/control-height "calc(3rem * var(--density))"))
+    ($assert (== tokens/space-8 "calc(var(--space-4) * 2)")))
+
+  (it "generates modes, icons, theme-specific shell conditions and no OS mode query" []
     ($assert (== (theme_mode nil) "light"))
-    ($assert ($str/contains? theme_css ":root[data-theme=\"dark\"]"))
-    ($assert ($str/starts_with? styles ($str/trim theme_css)))
-    ($assert ($str/contains? (page) "data-theme=\"light\""))
-    ($assert ($str/contains? (page ^appearance "dark") "data-theme=\"dark\""))
-    ($assert ($str/contains? (page ^appearance "dark") "id=\"theme_toggle\""))
-    ($assert ($str/contains? (plugin_page ^appearance "dark") "data-theme=\"dark\""))
-    ($assert ($str/contains? (website_page ^appearance "dark") "data-theme=\"dark\""))
-    ($assert ($str/contains? (website_page ^mode "standalone") "data-theme=\"light\""))))
+    ($assert ($str/contains? theme_css "[data-mode=\"dark\"]"))
+    ($assert (! ($str/contains? theme_css "prefers-color-scheme")))
+    ($assert ($str/contains? theme_css "@container shell (width < 56.25rem)"))
+    (let root (resolve_theme))
+    (for name in icon_names ($assert ($present? (root/icons .get name))))
+    (let themes ($thaw ($freeze builtin_themes)))
+    (themes .put "wide" {^name "wide" ^tokens {^shared {^sidebar_width "30rem"}}})
+    ($assert (== (narrow_breakpoint (resolve_theme "wide" themes)) 68.75))
+    ($assert ($str/contains? (generate_theme (resolve_theme "wide" themes)) "width < 68.75rem")))
+
+  (it "renders first-paint attributes and separate host/theme stylesheets" []
+    (let chosen (appearance_answer {^theme "minimal" ^mode "dark" ^density "compact" ^text_size "larger"}))
+    (for html in [(page ^appearance chosen) (plugin_page ^appearance chosen) (website_page ^appearance chosen)]
+      (for text in ["data-mode=\"dark\"" "data-theme=\"minimal\"" "data-density=\"compact\"" "data-text-size=\"larger\"" "id=\"harness_theme\""]
+        ($assert ($str/contains? html text))))
+    ($assert ($str/contains? (website_page ^mode "standalone" ^appearance chosen) "data-theme=\"default\"")))
+
+  (it "renders the specimen and covers every shared class" []
+    (let runtime {^h {^snapshots {^current ($cell {^registries {}})}}})
+    (var text "")
+    (for section in specimen_sections
+      (let tree (specimen runtime {^view_state {^first "default" ^second "minimal" ^section section}}))
+      (let checked (bounded_component_view ^^interactive tree))
+      (set text ($to_str text ($json/stringify checked))))
+    (for section in ["structures" "host"]
+      (let same (specimen runtime {^view_state {^first "default" ^second "default" ^section section}}))
+      (bounded_component_view ^^interactive same))
+    (for name in shared_classes
+      ($assert ($str/contains? text name) $"Specimen misses ${name}")))
+
+  (it "keeps non-hex plugin colors reviewable in the specimen" []
+    (let runtime {^h {^snapshots {^current ($cell {^registries {^themes [
+      {^payload {^name "rgb" ^tokens {^light {^surface "rgb(250 250 248)" ^ink "#111111"}}}}]}})}}})
+    (let tree (specimen runtime {^view_state {^first "rgb" ^second "minimal" ^section "palette"}}))
+    (let checked (bounded_component_view ^^interactive tree))
+    ($assert ($str/contains? ($json/stringify checked) "rgb(250 250 248)")))
+
+  (it "keeps preview font families private and preserves unrelated identifiers" []
+    ($assert (== (alias_font_value "Printer, Inter" {^inter "preview"}) "Printer, preview"))
+    ($assert (== (alias_font_value "A+B, Other" {^A+B "preview"}) "preview, Other"))
+    (let themes ($thaw ($freeze builtin_themes)))
+    (themes .put "font_style" {^name "font_style" ^tokens {^shared {^font_sans "Example Extra, sans-serif"}}
+      ^style (css (font_face (decl font_family "Example Extra") (decl src "url(example.woff2)"))
+        (rule ".web_card" (decl font_family "Example Extra")))})
+    (let theme (resolve_theme "font_style" themes))
+    (let aliases (preview_font_aliases theme))
+    ($assert ($present? (aliases .get "example extra")))
+    (let css (preview_css theme))
+    ($assert ($str/contains? css (aliases .get "example extra")))
+    ($assert (! ($str/contains? css "font-family: Example Extra;"))))
+
+  (it "publishes font bytes with a content address and generates inherited faces" []
+    (let path ($path/join this_pkg/root "tmp" $"theme-font-${($crypto/random_hex 8)}.woff2"))
+    (let exported ($to_str path ".export"))
+    (let payload ($binary/from_list [119 79 70 50 0 255 128 13 10]))
+    (if_not ($fs/exists? ($path/join this_pkg/root "tmp")) ($fs/make_dir ($path/join this_pkg/root "tmp")))
+    (try
+      ($fs/write_bytes path payload)
+      (let first ($web/font path))
+      ($assert (== first ($web/font path)))
+      (let route ($first ($filter ($web/published_routes) (fn [route] ($str/ends_with? first route/file)))))
+      ($assert (== route/content_type "font/woff2"))
+      ($assert (== ($binary/to_list route/body) ($binary/to_list payload)))
+      ($assert (== route/body payload))
+      ($fs/make_dir exported)
+      (write_route exported route)
+      ($assert (== ($fs/read_bytes ($path/join exported route/file)) payload))
+      ($fs/write_text path "wOF2-changed-font-bytes")
+      ($assert (!= first ($web/font path)))
+      (let themes ($thaw ($freeze builtin_themes)))
+      (themes .put "fonted" {^name "fonted" ^tokens {^shared {^font_sans "Example, sans-serif"}}
+        ^fonts [{^family "Example" ^src first ^weight "100 900" ^style "normal" ^size_adjust "102%"}]})
+      (themes .put "child" {^name "child" ^extends "fonted"})
+      (let resolved (resolve_theme "child" themes))
+      ($assert (== resolved/fonts/.size 1))
+      ($assert ($str/contains? (generate_theme resolved) "@font-face"))
+      ($assert ($str/contains? (generate_theme resolved) "size-adjust: 102%;"))
+      (let answer (appearance_answer {^theme "child"} themes))
+      ($assert (== answer/rendered/preloads [first]))
+      (let sheet ($first ($filter ($web/published_routes) (fn [route] (== ($to_str ($web/asset_base) "/" route/file) answer/rendered/stylesheet)))))
+      ($assert (== ($size ($into ($regex/find_all #"font-family: \"Example\";" sheet/body) [])) 1))
+      ($assert ($str/contains? (page ^appearance answer) "as=\"font\""))
+    ensure
+      (if ($fs/exists? path) ($fs/remove path))
+      (if_yes ($fs/exists? exported)
+        (for name in ($fs/list_dir exported) ($fs/remove ($path/join exported name)))
+        ($fs/remove_dir exported))))
+
+  (it "renders scoped container rules and global font descriptors" []
+    (let rendered (render_css (scoped "sample" (css
+      (container "view (max-width: 30rem)" (rule ".grid" (decl display "block")))
+      (font_face (decl font_family "Example") (decl src "url(example.woff2)") (decl font_display "swap"))))))
+    ($assert ($str/contains? rendered "@container view (max-width: 30rem)"))
+    ($assert ($str/contains? rendered ".sample__"))
+    ($assert ($str/contains? rendered "@font-face {"))
+    ($assert ($str/contains? rendered "font-display: swap;"))))
 
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

@@ -91,23 +91,25 @@
       (page_asset .set ($web/load ($path/join this_pkg/root "client" "plugins" "models_page.gene"))))
     (if ($absent? stylesheet/.get)
       (stylesheet .set ($web/stylesheet "models" """
-.models-controls { display: inline-flex; align-items: center; flex-wrap: wrap; gap: .4rem; max-width: 100%; }
-.models-plan { font-size: .8rem; color: var(--muted); }
-.models-controls button { max-width: min(20rem, 45vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models-controls { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); max-width: 100%; }
+.models-plan { font-size: var(--text-sm); color: var(--muted); }
+.models-controls button { max-width: min(var(--size-20), var(--model-picker-max-inline)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .models-controls .models-default { color: var(--muted); }
-.models-menu { position: fixed; z-index: 800; inset: 10vh auto auto 50%; transform: translateX(-50%); width: min(36rem, calc(100vw - 2rem)); max-height: 80dvh; overflow: auto; padding: 1.2rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); box-shadow: 0 8px 32px #0003; }
+.models-menu { position: fixed; z-index: var(--layer-menu); inset: var(--model-menu-inset-block) auto auto 50%; transform: translateX(-50%); width: min(var(--size-36), calc(100vw - var(--size-2))); max-height: var(--model-menu-max-height); overflow: auto; padding: var(--space-5); border: var(--border-width) solid var(--line); background: var(--surface-raised); color: var(--ink); box-shadow: var(--shadow-raised); }
 .models-menu[hidden] { display: none; }
-.models-menu input[type=search] { width: 100%; margin-bottom: .6rem; }
-.models-menu button, .models-menu a { margin: .2rem .4rem .2rem 0; }
-.models-menu h4 { margin: 1rem 0 .4rem; font-size: .8rem; color: var(--muted); }
-.models-menu p { font-size: .8rem; line-height: 1.5; }
+.models-menu input[type=search] { width: 100%; margin-bottom: var(--space-2); }
+.models-menu button, .models-menu a { margin: var(--space-1) var(--space-2) var(--space-1) 0; }
+.models-menu h4 { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-sm); color: var(--muted); }
+.models-menu p { font-size: var(--text-sm); line-height: var(--line-body); }
 .models-option { display: block; width: 100%; text-align: left; }
 .models-option small { display: block; color: var(--muted); }
-.models-custom { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0; }
-.models-custom input { flex: 1; min-width: 8rem; }
-.models-trigger-controls { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
-.models-trigger-controls label { display: inline-flex; align-items: center; gap: .4rem; }
-.models-trigger-controls p { width: 100%; margin: 0 0 .5rem; font-size: .8rem; color: var(--muted); }
+.models-custom { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-3) 0; }
+.models-custom input { flex: 1; min-width: var(--size-8); }
+.models-trigger-controls { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); align-items: center; }
+.models-trigger-controls label { display: inline-flex; align-items: center; gap: var(--space-2); }
+.models-trigger-controls p { width: 100%; margin: 0 0 var(--space-2); font-size: var(--text-sm); color: var(--muted); }
+
+.models-menu, .voice-panel { border-radius: var(--radius-surface); border-color: var(--edge); }
 """)))
     nil catch Any $err/.Error:message))
   (Plugin ^id "models" ^requires ["models/host"]
@@ -122,7 +124,7 @@
       (host .PluginHost:contribute "browser_clients"
         {^name "models" ^title "Models" ^asset asset/.get ^style stylesheet/.get})
       (host .PluginHost:provide "models/page"
-        (fn [appearance : Str, workspace : Str, styles : Str] (model_page page_asset/.get appearance workspace styles)))
+        (fn [appearance, workspace : Str, styles : Str] (model_page page_asset/.get appearance workspace styles)))
       (host .PluginHost:provide "models/catalog"
         {^snapshot (fn [] catalog/.ModelsHost:snapshot)
          ^configuration (fn [] catalog/.ModelsHost:configuration)

@@ -3087,9 +3087,15 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # `mouseup`: a release outside the canvas must still end the drag.
         paramTypes = @[]
         returnType = webType(wtkDomTarget)
+      of "browser/visible?":
+        paramTypes = @[]
+        returnType = webType(wtkBool)
       of "dom/inner_width", "dom/inner_height":
         paramTypes = @[]
         returnType = webType(wtkF64)
+      of "dom/style_value":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
+        returnType = webType(wtkStr)
       of "dom/rect_left", "dom/rect_top", "dom/rect_width", "dom/rect_height":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkF64)
@@ -6119,7 +6125,11 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         of "event/repeat": "repeat"
         else: "isComposing"
       "Boolean(" & event & "." & property & ")"
+    of "browser/visible?": "(document.visibilityState === \"visible\")"
     of "dom/inner_width": "window.innerWidth"
+    of "dom/style_value":
+      let element = if emitter.typescript: "(" & arguments[0] & " as Element)" else: arguments[0]
+      "getComputedStyle(" & element & ").getPropertyValue(" & arguments[1] & ").trim()"
     of "dom/inner_height": "window.innerHeight"
     of "dom/rect_left": "$gene_dom_rect(" & arguments[0] & ", \"left\")"
     of "dom/rect_top": "$gene_dom_rect(" & arguments[0] & ", \"top\")"

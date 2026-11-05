@@ -11,16 +11,18 @@
 
 (describe "Workspace UI theme settings"
   (it "accepts explicit per-mode token maps" []
-    (let modes (validate_ui_settings {^theme {^light {^accent "#335577"} ^dark {^accent "#9db4d6" ^ink "#f0f0f0"}}}))
-    ($assert (== modes/theme/dark/ink "#f0f0f0"))
-    (let light_only (validate_ui_settings {^theme {^light {^surface "#fafafa"}}}))
-    ($assert (== light_only/theme/light/surface "#fafafa")))
+    (let modes (validate_ui_settings {^tokens {^light {^accent "#335577"} ^dark {^accent "#9db4d6" ^ink "#f0f0f0"}}}))
+    ($assert (== modes/tokens/dark/ink "#f0f0f0"))
+    (let light_only (validate_ui_settings {^tokens {^light {^surface "#fafafa"}}}))
+    ($assert (== light_only/tokens/light/surface "#fafafa"))
+    (let snake (validate_ui_settings {^tokens {^light {^surface_alt "#eeeeee"}}}))
+    ($assert (== snake/tokens/light/surface-alt "#eeeeee")))
 
   (it "rejects mixed, unknown and malformed overrides" []
-    ($assert ($str/contains? (rejected {^theme {^light {^accent "#335577"} ^ink "#111111"}}) "light/dark mode maps"))
-    ($assert ($str/contains? (rejected {^theme {^dark {^glow "#335577"}}}) "Unknown theme token"))
-    ($assert ($str/contains? (rejected {^theme {^dark {^accent "blue"}}}) "six-digit"))
-    ($assert ($str/contains? (rejected {^theme {^dark "#335577"}}) "map of tokens"))
-    ($assert ($str/contains? (rejected {^theme {^danger "#335577"}}) "light/dark mode maps"))))
+    ($assert ($str/contains? (rejected {^tokens {^light {^accent "#335577"} ^ink "#111111"}}) "light/dark mode maps"))
+    ($assert ($str/contains? (rejected {^tokens {^dark {^glow "#335577"}}}) "Unknown theme token"))
+    ($assert ($str/contains? (rejected {^tokens {^dark {^accent "blue"}}}) "six-digit"))
+    ($assert ($str/contains? (rejected {^tokens {^dark "#335577"}}) "map of tokens"))
+    ($assert ($str/contains? (rejected {^tokens {^danger "#335577"}}) "light/dark mode maps"))))
 
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

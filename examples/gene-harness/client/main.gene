@@ -1,4 +1,5 @@
 (mod harness_client ^profile web)
+(import ^from "./appearance.gene" [BrowserAppearance start_appearance refresh_appearance change_appearance])
 (import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
 (import [api_root client_record_limit] ^from "../src/web/contract.gene")
 
@@ -150,7 +151,7 @@
     (if_yes notify
       (if (&& (! client/viewing_history) client/autoscroll)
         ($dom/scroll_end client/transcript)
-        (do ($dom/set_text ($dom/element "new_output") "New output ↓") (set_hidden "new_output" false)))))))
+        (do ($dom/set_text ($dom/element "new_output_label") "New output") (set_hidden "new_output" false)))))))
 
 (fn live_console [client : Client, session : Str, data : Any] : Void
   (var store (live_store client))
@@ -482,7 +483,7 @@
              (button ^type "button" ^on_click %(fn [event : Any] : Void (select_session client id))
                %title
                (small %state))
-             (button ^type "button" ^aria-label %$"Close ${title}" ^on_click %(fn [event : Any] : Void (close_tab client id)) "×")))))))
+             (button ^type "button" ^aria-label %$"Close ${title}" ^on_click %(fn [event : Any] : Void (close_tab client id)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))))))
 
 (fn close_tab [client : Client, id : Str, ^navigate navigate : Bool = true] : Void
   (clear_session_output (live_store client) id)
@@ -657,7 +658,7 @@
       ($dom/stop_propagation event)
       (if_yes (keyboard_owned?) (return))
       (var anchor : EventTarget event/current_target)
-      (open_session_menu (conversation_menu client) anchor session)) "…")))
+      (open_session_menu (conversation_menu client) anchor session)) (span ^class "icon" ^data-icon "more" ^aria-hidden "true"))))
   ($dom/append row more) ($dom/append target row)
   (set more/harness_session id)
   (bind_session_menu (conversation_menu client) more session)
@@ -959,7 +960,7 @@
                ^on_click %(fn [event : Any] : Void
                  ($dom/set_input_value client/prompt "What can you help me with?")
                  ($dom/focus client/prompt)) "Explore ideas"
-               (span ^class_name "suggestion_symbol" ^aria-hidden "true" "→"))
+               (span ^class_name "icon" ^data-icon "chevron-right" ^aria-hidden "true"))
              (button ^type "button"
                ^on_click %(fn [event : Any] : Void
                  ($dom/set_input_value client/prompt "/help")
@@ -1010,8 +1011,8 @@
     (else
       ($dom/set_scroll_top client/transcript
         (if prepend (+ old_top (- ($dom/scroll_height client/transcript) old_height)) old_top))
-      ($dom/set_text ($dom/element "new_output")
-        (if client/viewing_history "Return to latest ↓" "New output ↓"))
+      ($dom/set_text ($dom/element "new_output_label")
+        (if client/viewing_history "Return to latest" "New output"))
       (set_hidden "new_output" false))))
 
 (fn update_controls [client : Client] : Void
@@ -1060,7 +1061,7 @@
 (fn apply_appearance [client : Client, mode : Str] : Void
   (if_yes (&& (!= mode "light") (!= mode "dark")) (return))
   (set client/appearance mode)
-  ($dom/set_attribute ($dom/element "harness_document") "data-theme" mode)
+  ($dom/set_attribute ($dom/element "harness_document") "data-mode" mode)
   ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light" "Dark"))
   (if_not ($absent? client/ui)
     (var ui : UiClient client/ui)
@@ -1107,7 +1108,7 @@
   (if_not ($absent? client/command_client)
     (var commands : CommandClient client/command_client)
     (configure_commands commands (string_or data/workspace "")))
-  (if_not ($absent? data/appearance) (apply_appearance client (string_or data/appearance "light")))
+
   (if_not ($absent? client/ui)
     (var ui : UiClient client/ui)
     (update_ui ui data/ui))
@@ -2188,7 +2189,12 @@
       (command_confirmation confirmations session data))
     (ui_event ui kind data)
     (if_yes (== kind "ui/state") (sync_plugin_styles client))
-    (if_yes (== kind "appearance") (apply_appearance client (string_or data/mode "light")))
+    (if_yes (|| (== kind "appearance_changed") (== kind "ui/state") (== kind "ready"))
+      (var appearance : BrowserAppearance client/browser_appearance)
+      (refresh_appearance appearance))
+    (if_yes (== kind "appearance_request")
+      (var requested_appearance : BrowserAppearance client/browser_appearance)
+      (change_appearance requested_appearance data))
     (if_yes (&& (== tab/id client/selected) (== kind "ui/state"))
       (invalidate_status client server_epoch (string_or data/data_revision "")))
     (if_yes (== kind "ready") (set tab/connected true))
@@ -2300,9 +2306,9 @@
   # The server renders the page in the workspace's current theme.
   (var document ($dom/element "harness_document"))
   (var initial_mode : Str "light")
-  (if_not ($absent? document/dataset/theme) (set initial_mode document/dataset/theme))
+  (if_not ($absent? document/dataset/mode) (set initial_mode document/dataset/mode))
   (var client
-    (Client ^browser_clients nil ^command_client nil ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature "" ^cards nil))
+    (Client ^browser_appearance nil ^browser_clients nil ^command_client nil ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature "" ^cards nil))
   (set client/command_client
     (create_commands
       ^settled (fn [envelope : Any, receipt : Any] : Void (command_settled client envelope receipt))
@@ -2420,14 +2426,23 @@
       (fn [text : Str] : Void
         (stage_prompt client text))
       client/appearance))
+  # api already carries safe-UI admission for this document.
+  (var appearance (start_appearance
+    (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      (api client method path payload done))
+    (fn [answer : Any] : Void
+      (apply_appearance client answer/rendered/mode)
+      (if_not ($absent? client/socket)
+        (var socket : EventTarget client/socket)
+        (if_yes ($ws/open? socket)
+          ($ws/send socket ($json/stringify {^type "appearance_report" ^saved answer/saved ^rendered answer/rendered}))))
+      )))
+  (set client/browser_appearance appearance)
+  (var appearance_ui : UiClient client/ui)
+  (set appearance_ui/browser_appearance appearance)
   ($dom/add_event_listener ($dom/element "theme_toggle") "click"
     (fn [event : Any] : Void
-      (var next (if (== client/appearance "dark") "light" "dark"))
-      (api client "POST" $"${(api_root)}/appearance" {^mode next}
-        (fn [code : Int, data : Any] : Void
-          (if (== code 200)
-            (apply_appearance client (string_or data/mode next))
-            (show_error client data))))))
+      (change_appearance appearance {^mode (if (== client/appearance "dark") "light" "dark")})))
   ($dom/add_event_listener ($dom/window) "popstate"
     (fn [event : Any] : Void
       (var search ($browser/search))

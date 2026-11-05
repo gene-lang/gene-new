@@ -13,3 +13,10 @@
 
 (fn run_with [value : Str callback : (Fn [Str] Str)] : Str
   (host_upper value callback))
+
+# Host style and visibility reads retain their types in TypeScript emission.
+(fn computed_style [element : EventTarget, property : Str] : Str
+  ($dom/style_value element property))
+
+(fn document_visible [] : Bool
+  ($browser/visible?))

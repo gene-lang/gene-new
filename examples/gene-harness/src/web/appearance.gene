@@ -1,0 +1,81 @@
+# Browser appearance is cookie data, independent of workspace settings.
+(mod browser_appearance)
+(import ^from "./theme" [resolve_theme generate_theme preview_css resolved_tokens color_value builtin_themes])
+(import ^from "./theme_registry" [installed_themes theme_catalog])
+(import ^from "./request" [cookie_value request_data response])
+(import ^from "../runtime/appearance" [AppearanceError AppearanceChanged])
+(import ^from "../kernel" [publish])
+
+(const cookie_name "gene_harness_appearance")
+(import ^from "./appearance_values" [defaults valid_field? validate_fields])
+
+(fn read_saved [header : Str]
+  (let saved {})
+  (let value (cookie_value header cookie_name))
+  (for part in ($str/split value "&")
+    (let pair ($str/split part "="))
+    (if_yes (== pair/.size 2)
+      (try
+        (let name ($url/decode_component pair/0))
+        (let value ($url/decode_component pair/1))
+        (if (valid_field? name value) (saved .put name value))
+      catch Any nil)))
+  saved)
+
+(fn encode_saved [saved] : Str
+  (let parts [])
+  (for name in ["theme" "mode" "density" "text_size" "content_width"]
+    (if ($present? (saved .get name))
+      (parts .push $"${name}=${($url/encode_component (saved .get name))}")))
+  ($str/join parts "&"))
+
+(fn appearance_answer [saved, themes = builtin_themes]
+  (let rendered ($thaw ($freeze defaults)))
+  (for [name value] in saved (rendered .put name value))
+  (if ($absent? (themes .get rendered/theme)) (rendered .put "theme" "default"))
+  # An unavailable parent also falls back, preserving the saved name.
+  (let theme (try (resolve_theme rendered/theme themes)
+    catch Any
+      (rendered .put "theme" "default")
+      (resolve_theme)))
+  (var css (generate_theme theme))
+  (for [name candidate] in themes
+    (try (set css ($to_str css (preview_css (resolve_theme ($to_str name) themes)))) catch Any nil))
+  (let link ($web/stylesheet $"harness-theme-${rendered/theme}" css))
+  (let preloads [])
+  (let family (try (color_value (resolved_tokens theme rendered/mode) "font-sans") catch Any ""))
+  (let first_family ($str/lower ($str/trim (/0 ($str/split family ",")))))
+  (let family_name ($str/join ($str/split ($str/join ($str/split first_family "\"") "") "'") ""))
+  (var body_face nil)
+  (for face in theme/fonts
+    (if (&& (== family_name ($str/lower face/family)) (== (?? face/style "normal") "normal"))
+      (set body_face face/src)))
+  (if ($present? body_face) (preloads .push body_face))
+  (rendered .put "preloads" preloads)
+  (rendered .put "stylesheet" (/href ($props link)))
+  {^saved saved ^rendered rendered ^themes (theme_catalog themes)})
+
+(fn request_appearance [request, runtime = nil, safe : Bool = false]
+  (appearance_answer (read_saved (?? request/headers/cookie "")) (installed_themes runtime safe)))
+
+(fn appearance_link [appearance]
+  `(link ^id "harness_theme" ^rel "stylesheet" ^href %appearance/rendered/stylesheet))
+
+(fn appearance_preloads [appearance]
+  (let nodes [])
+  (for src in (?? appearance/rendered/preloads [])
+    (nodes .push `(link ^rel "preload" ^as "font" ^crossorigin "anonymous" ^href %src)))
+  nodes)
+
+(fn appearance_request [request, runtime, safe : Bool = false]
+  (let saved (read_saved (?? request/headers/cookie "")))
+  (if (== request/method "GET")
+    (return (response 200 (appearance_answer saved (installed_themes runtime safe)))))
+  (let changes (validate_fields (request_data request)))
+  (let merged ($thaw ($freeze saved)))
+  (for [name value] in changes (merged .put name value))
+  (let result (response 200 (appearance_answer merged (installed_themes runtime safe))))
+  (if_yes (!= saved merged)
+    (result/headers .put "set-cookie" $"${cookie_name}=${(encode_saved merged)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
+    (publish runtime/h (AppearanceChanged ^saved merged)))
+  result)

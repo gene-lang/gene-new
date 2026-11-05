@@ -1,0 +1,35 @@
+(mod harness_style_shell)
+(import ^from "../../public/web_style" [shell_css])
+(var styles (shell_css """
+@layer shell {
+.site .hero_grid { grid-template-columns: minmax(0, 1fr); }
+.app {
+  display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); height: 100dvh; overflow: hidden; }
+.sidebar { display: flex; flex-direction: column; min-height: 0; padding: var(--space-6) var(--space-4) var(--space-4); background: var(--sidebar-surface, var(--surface-alt)); }
+.workspace { overflow: auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.app { grid-template-areas: "host host" "sidebar main"; grid-template-rows: auto minmax(0, 1fr); color: var(--ink); background: var(--surface); }
+.ui_host { grid-area: host; padding: var(--space-2) var(--space-4); border-bottom: var(--border-width) solid var(--line); background: var(--surface); font-size: var(--text-xs); z-index: var(--layer-sticky); }
+.app.has_ui_panel { grid-template-areas: "host host host" "sidebar panel main"; grid-template-columns: var(--sidebar-width) minmax(var(--panel-min), var(--ui-first, 1fr)) minmax(var(--main-min), var(--ui-second, 1fr)); }
+.app.has_ui_panel.ui_right { grid-template-areas: "host host host" "sidebar main panel"; grid-template-columns: var(--sidebar-width) minmax(var(--main-min), var(--ui-first, 1fr)) minmax(var(--panel-min), var(--ui-second, 1fr)); }
+.app.ui_full { grid-template-areas: "host" "panel"; grid-template-columns: minmax(0, 1fr); }
+.app.ui_full .ui_panel { max-height: none; border: 0; }
+.ui_panel { grid-area: panel; overflow: auto; padding: var(--space-4); border-right: var(--border-width) solid var(--line); background: var(--surface); color: var(--ink); }
+#ui_view { position: relative; container: view / inline-size; }
+#sidebar_view { container: sidebar / inline-size; }
+.workspace { container: main / inline-size; }
+@compact { .app, .manager, .site { --gutter: var(--gutter-compact); } }
+.mobile_only { display: none; }
+.ui_host select { background-color: var(--field-surface, var(--surface)); color: var(--ink); border: var(--border-width) solid var(--edge); padding: var(--space-1); max-width: 100%; }
+.ui_host label { display: inline-flex; align-items: center; gap: var(--space-1); }
+.app > .sidebar { grid-area: sidebar; }
+.app > .workspace { grid-area: main; }
+@compact {
+  #ui_workspace_link { margin-inline: var(--space-4); }
+}
+
+@compact {
+ .app:not(.ui_full) { height: auto; min-height: 100dvh; overflow: visible; }
+ .app.has_ui_panel:not(.ui_full), .app.has_ui_panel.ui_right:not(.ui_full) { grid-template-rows: auto auto auto; }
+}
+}
+"""))

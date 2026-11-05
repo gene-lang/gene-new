@@ -1,25 +1,31 @@
 # Host-owned page shell and compiled browser entry point.
 (mod harness_web_page)
 (import ^from "./style" [styles])
-(import ^from "./theme" [theme_mode])
+(import ^from "./appearance" [appearance_answer appearance_link appearance_preloads])
 (import $html [render])
 (import $web [script stylesheet])
 
 (var harness_ui ($web/load $"${($path/parent this_mod/.path)}/../../client/main.gene"))
 
-(fn page [^appearance appearance : Str = "light", ^workspace workspace : Str = ""] : Str
-  (let mode (theme_mode appearance))
+(fn page [^appearance appearance = nil, ^workspace workspace : Str = ""] : Str
+  (let chosen (if ($absent? appearance) (appearance_answer {}) (if (== ($head appearance) Str) (appearance_answer {^mode appearance}) appearance)))
+  (let rendered chosen/rendered)
+  (let preloads (appearance_preloads chosen))
+  (let mode rendered/mode)
   (let workspace_id (if (== workspace "") "" ($crypto/sha256 workspace)))
   (let toggle_label (if (== mode "dark") "Light" "Dark"))
   ($to_str
     "<!doctype html>"
     (render
-      `(html ^lang "en" ^id "harness_document" ^data-theme %mode ^data-workspace-id %workspace_id
+      `(html ^lang "en" ^id "harness_document" ^data-mode %mode ^data-theme %rendered/theme
+         ^data-density %rendered/density ^data-text-size %rendered/text_size ^data-content-width %rendered/content_width ^data-workspace-id %workspace_id
          (head
            (meta ^charset "utf-8")
            (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
            (title "Gene Harness")
-           %(stylesheet "gene-harness" styles))
+           %(stylesheet "gene-harness" styles)
+           %(appearance_link chosen)
+           %preloads...)
          (body
            # Plugin style contributions are mounted here as <style> elements.
            (div ^id "plugin_styles" ^^hidden)
@@ -79,7 +85,7 @@
                  (span ^class "brand_detail" "Harness")
                  (span ^class "local" "Local"))
                (button ^id "create_session" ^class "new_session" ^type "button"
-                 (span ^class "plus" ^aria-hidden "true" "+")
+                 (span ^class "icon" ^data-icon "add" ^aria-hidden "true")
                  "New conversation")
                (div ^id "sidebar_filters"
                  (input ^id "session_filter" ^class "filter" ^type "search" ^placeholder "Search conversations…" ^aria-label "Find a conversation")
@@ -118,7 +124,7 @@
                  (button ^id "menu" ^class "quiet menu_toggle" ^type "button"
                    ^aria-label "Hide conversations" ^aria-controls "classic_sidebar"
                    ^aria-expanded "true" ^title "Hide conversations"
-                   (span ^aria-hidden "true" "☰"))
+                   (span ^class "icon" ^data-icon "menu" ^aria-hidden "true"))
                  (nav ^id "session_tabs" ^class "session_tabs" ^aria-label "Open sessions"))
                (header ^class "topbar"
                  (div ^class "heading"
@@ -138,7 +144,7 @@
                  (strong "Command demo mode — no model connected")
                  "Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat with the configured model. Use /help to explore commands.")
                (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
-               (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden "New output ↓")
+               (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden (span ^id "new_output_label" "New output") (span ^class "icon" ^data-icon "arrow-down" ^aria-hidden "true"))
                (div ^class "composer_wrap"
                  (section ^id "channel_delivery" ^class "auth_notice" ^^hidden ^role "status")
                  (div ^id "web_composer" ^class "web_components")
@@ -187,7 +193,7 @@
              (aside ^id "status_drawer" ^class "drawer" ^^hidden
                (div ^class "drawer_header"
                  (h2 "Workspace status")
-                 (button ^id "close_status" ^class "drawer_close" ^type "button" ^aria-label "Close workspace status" "×"))
+                 (button ^id "close_status" ^class "drawer_close" ^type "button" ^aria-label "Close workspace status" (span ^class "icon" ^data-icon "close" ^aria-hidden "true")))
                (div ^id "status_content")
                (div ^id "web_status" ^class "web_components")))
            (aside ^id "trigger_drawer" ^class "drawer" ^^hidden

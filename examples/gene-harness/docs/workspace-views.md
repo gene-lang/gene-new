@@ -56,9 +56,9 @@ It is invalid on `harness`. A switch button has no function/command/prompt/state
 action at the same time. Unavailable destinations show a notice and leave the
 current view intact.
 
-Plugin themes override the seven public color tokens per light/dark mode,
-scoped to plugin content. Classic Harness and host recovery controls follow the
-workspace theme ([theming](theming.md)). Ordinary views need no CSS: the host
+Plugin token overrides cover color roles and declared component tokens per
+mode, scoped to that plugin’s views. Classic Harness and host recovery
+controls follow the browser’s selected theme ([theming](theming.md)). Ordinary views need no CSS: the host
 styles supported elements and shared classes. A view may add a scoped `style`
 contribution (`$css` data) for presentation the host does not provide. No
 raw HTML or JavaScript is accepted in these component trees.
@@ -81,7 +81,7 @@ functions. A stale Save is rejected with its draft preserved.
 
 Session storage is recovery for the tab, not durable domain storage. If storage
 fails, drafts remain in memory with a warning. Local storage preferences are
-not used by this feature. Cookies continue to handle authentication only.
+not used by this feature. Cookies hold authentication and browser appearance preferences.
 
 ## Actions without conversations
 

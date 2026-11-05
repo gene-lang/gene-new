@@ -6,14 +6,16 @@
 (import ^from "../../support" [isolated run_spec])
 (import ^from "../../web_support" [start_host stop_host cli])
 (import ^from "../../../src/cli/client" [connect api wire])
-(import ^from "../../../src/runtime/appearance" [read_appearance set_appearance])
+(import ^from "../../../src/runtime/appearance" [set_appearance])
 (import ^from "../../../src/web/session_service" [open_session_service close_session_service host_status])
+(import ^from "../../../src/web/theme_registry" [installed_themes theme_tokens])
+(import ^from "../../../src/web/appearance" [appearance_answer])
 (import ^from "../../../src/ui/state" [ui_status])
 (import ^from "../../../src/kernel" [put_cordis_plugin uninstall row])
 (import ^from "../../../src/plugin_api" [Plugin PluginHost])
 
-(fn page_html [origin : Str, path : Str] : Str
-  (let task (request ^url $"${origin}${path}" ^timeout_ms 15000 ^max_bytes 4194304))
+(fn page_html [origin : Str, path : Str, cookie : Str = ""] : Str
+  (let task (request ^url $"${origin}${path}" ^headers {^cookie cookie} ^timeout_ms 15000 ^max_bytes 4194304))
   (let response (try (await task) ensure task/.cancel))
   ($assert (== response/status 200) $"${path} returned ${response/status}")
   response/body)
@@ -32,71 +34,100 @@
          ^render (fn [ctx] (quote (div ^class_name "board" "View")))
          ^style (css (rule ".board" (decl outline_color color)))}))))
 
+(fn theme_plugin [radius : Str]
+  (Plugin ^id "board" ^provides [["themes" "paper"] ["icons" "board-lane"] ["web_components" "board"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "icons" {^name "board-lane" ^svg "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M3 3h18v18H3Z\" fill=\"currentColor\"/></svg>"})
+      (host .PluginHost:contribute "themes" {^name "paper" ^title "Paper" ^tokens {^shared {^radius_surface radius}}})
+      (host .PluginHost:contribute "web_components" {^name "board" ^slot "view" ^title "Board" ^view_state {}
+        ^tokens [{^name "board-lane-radius" ^fallback "var(--radius-surface)" ^doc "Lane shape."}]
+        ^render (fn [ctx] (quote (div (icon ^name "board-lane") "Board")))}))))
+
 (fn named [components, name : Str]
   ($first ($filter components (fn [item] (== item/name name)))))
 
-(describe "Workspace appearance"
-  (it "renders pages in the workspace theme and switches it from every host entry point" []
+(describe "Browser appearance"
+  (it "renders cookie preferences on every page and protects mutations" []
     (isolated ^timeout_ms 240000 this_mod/.path
-      "renders pages in the workspace theme and switches it from every host entry point"
+      "renders cookie preferences on every page and protects mutations"
       (fn [workspace]
         (let host (start_host $"${workspace}/host"))
         (try
           (let client (connect host/root))
           (let origin client/connection/origin)
-          (let state_root $"${host/root}/.gene-harness")
-          ($assert (themed? origin "/" "light"))
-          ($assert ($str/contains? (page_html origin "/") "id=\"theme_toggle\""))
-          ($assert (== (/appearance (api client "GET" "/status")) "light"))
-          ($assert (== (/mode (api client "POST" "/appearance" {^mode "dark"})) "dark"))
+          (let credentials ($thaw ($freeze client/credentials)))
+          (credentials .put "cookie" ($to_str credentials/cookie "; gene_harness_appearance=theme=missing&mode=dark"))
+          (let before (wire host/connection "GET" "/appearance" ^credentials credentials))
+          ($assert (== before/body/saved/theme "missing"))
+          ($assert (== before/body/rendered/theme "default"))
+          (let changed (wire host/connection "POST" "/appearance" {^density "compact"} ^credentials credentials))
+          ($assert (== changed/status 200))
+          ($assert (== changed/body/saved/theme "missing"))
+          (let cookie (/0 ($str/split changed/headers/set-cookie ";")))
+          (credentials .put "cookie" ($to_str client/credentials/cookie "; " cookie))
+          (let same (wire host/connection "POST" "/appearance" {^density "compact"} ^credentials credentials))
+          ($assert ($absent? same/headers/set-cookie))
           (for path in ["/" "/plugins" "/about/" "/?ui=default"]
-            ($assert (themed? origin path "dark") $"${path} ignored the dark theme"))
-          ($assert (== (/appearance (api client "GET" "/status?ui=default")) "dark"))
-          ($assert (== (/appearance (api client "GET" "/plugins")) "dark"))
-          ($assert (== (read_appearance state_root) "dark"))
-          (let bad (wire client/connection "POST" "/appearance" {^mode "sepia"} ^credentials client/credentials))
-          ($assert (== bad/status 400))
-          ($assert (== (read_appearance state_root) "dark"))
-          # The setting is host-owned: it works with the sidebar and the UI
-          # Workspace UI plugin disabled.
-          (let session (/id (cli host/root ["sessions" "create" "--title" "Theme"])))
-          (cli host/root ["--session" session "run" "(disable_plugin \"sidebar\")"])
-          (cli host/root ["--session" session "run" "(disable_plugin \"ui_experiment\")"])
-          ($assert ($str/contains? (page_html origin "/") "id=\"theme_toggle\""))
-          ($assert ($str/contains? (/display (cli host/root ["--session" session "command" "/theme"])) "Theme: dark."))
-          ($assert ($str/contains? (/display (cli host/root ["--session" session "command" "/theme light"])) "Theme set to light."))
-          ($assert ($str/contains? (/display (cli host/root ["--session" session "command" "/theme sepia"])) "/theme light or /theme dark"))
-          ($assert (themed? origin "/" "light"))
-          (let changed (cli host/root ["--session" session "run" "(set_appearance \"dark\")"]))
-          ($assert ($str/contains? changed/display "dark"))
-          ($assert (== (read_appearance state_root) "dark"))
-          ($assert (== (/mode (api client "POST" "/appearance" {^mode "light"})) "light"))
-        ensure
-          (stop_host host)))))
+            (let html (page_html origin path cookie))
+            ($assert ($str/contains? html "data-mode=\"dark\""))
+            ($assert ($str/contains? html "data-theme=\"default\""))
+            ($assert ($str/contains? html "data-density=\"compact\"")))
+          ($assert ($str/contains? (page_html origin "/") "data-mode=\"light\""))
+          ($assert (! ($fs/exists? $"${host/root}/.gene-harness/appearance.gene")))
+          (let invalid (wire host/connection "POST" "/appearance" {^mode "sepia"} ^credentials credentials))
+          ($assert (== invalid/status 400))
+          (let forbidden ($thaw ($freeze credentials)))
+          (forbidden .put "csrf" "wrong")
+          ($assert (== (/status (wire host/connection "POST" "/appearance" {^mode "light"} ^credentials forbidden)) 403))
+        ensure (stop_host host)))))
 
-  (it "serves the recovery host in the saved theme without configuration or events" []
+  (it "recovery follows the cookie and retains an unavailable saved name" []
     (isolated ^timeout_ms 180000 this_mod/.path
-      "serves the recovery host in the saved theme without configuration or events"
+      "recovery follows the cookie and retains an unavailable saved name"
       (fn [workspace]
-        (let root $"${workspace}/recovery")
-        ($fs/make_dir root)
-        ($fs/make_dir $"${root}/.gene-harness")
-        ($fs/make_dir $"${root}/.gene-harness/events")
-        ($fs/write_text $"${root}/.gene-harness/events/CURRENT" "not-a-checkpoint")
-        ($fs/write_text $"${root}/.gene-harness/config.gene" "(not valid configuration")
-        ($fs/write_text $"${root}/.gene-harness/appearance.gene" ($serde/write_data {^mode "dark"}))
-        (let host (start_host ^^recovery root))
+        (let host (start_host ^^recovery $"${workspace}/recovery"))
         (try
-          (let origin host/connection/origin)
-          (for path in ["/" "/plugins" "/ui/default"]
-            ($assert (themed? origin path "dark") $"recovery ${path} ignored the dark theme"))
           (let client (connect host/root))
-          ($assert (== (/appearance (api client "GET" "/plugins")) "dark"))
-          ($assert (== (/mode (api client "POST" "/appearance" {^mode "light"})) "light"))
-          ($assert (themed? origin "/" "light"))
-          ($assert (== (read_appearance $"${root}/.gene-harness") "light"))
-        ensure
-          (stop_host host)))))
+          (let cookie "gene_harness_appearance=theme=paper&mode=dark")
+          (for path in ["/" "/plugins" "/ui/default"]
+            (let html (page_html host/connection/origin path cookie))
+            ($assert ($str/contains? html "data-mode=\"dark\""))
+            ($assert ($str/contains? html "data-theme=\"default\"")))
+          (let credentials ($thaw ($freeze client/credentials)))
+          (credentials .put "cookie" ($to_str credentials/cookie "; " cookie))
+          (let changed (wire host/connection "POST" "/appearance" {^mode "light"} ^credentials credentials))
+          ($assert (== changed/status 200))
+          ($assert (== changed/body/saved/theme "paper"))
+          ($assert (== changed/body/rendered/mode "light"))
+          ($assert (! ($fs/exists? $"${host/root}/.gene-harness/appearance.gene")))
+        ensure (stop_host host)))))
+
+  (it "reloads theme contributions, exposes plugin tokens and falls back without losing the saved name" []
+    (isolated ^timeout_ms 120000 this_mod/.path
+      "reloads theme contributions, exposes plugin tokens and falls back without losing the saved name"
+      (fn [workspace]
+        (let service (open_session_service ^workspace workspace ^^offline))
+        (try
+          (let h service/runtime/h)
+          (put_cordis_plugin h (theme_plugin "6px") {^^host ^limits service/runtime/profile/limits})
+          (let answer (appearance_answer {^theme "paper"} (installed_themes service/runtime)))
+          ($assert (== answer/rendered/theme "paper"))
+          ($assert (== (/name (/0 (theme_tokens service/runtime))) "board-lane-radius"))
+          (let configure (/fn (row h "functions" "ui_configure")))
+          (configure {^^enabled ^panel "board" ^tokens {^dark {^board-lane-radius "8px" ^warning "#eeeeee"}}})
+          (let configured (/settings (ui_status service/runtime)))
+          ($assert (== configured/tokens/dark/board-lane-radius "8px"))
+          (let safe (appearance_answer {^theme "paper"} (installed_themes service/runtime true)))
+          ($assert (== safe/saved/theme "paper"))
+          ($assert (== safe/rendered/theme "default"))
+          (put_cordis_plugin ^^replace h (theme_plugin "12px") {^^host ^limits service/runtime/profile/limits})
+          (let replaced (appearance_answer {^theme "paper"} (installed_themes service/runtime)))
+          ($assert (!= answer/rendered/stylesheet replaced/rendered/stylesheet))
+          (uninstall h "board")
+          (let removed (appearance_answer {^theme "paper"} (installed_themes service/runtime)))
+          ($assert (== removed/saved/theme "paper"))
+          ($assert (== removed/rendered/theme "default"))
+        ensure (close_session_service service)))))
 
   (it "announces changes and carries plugin styles through their lifecycle" []
     (isolated ^timeout_ms 120000 this_mod/.path
@@ -107,12 +138,10 @@
         (service/publisher .set (fn [message] (messages .push message)))
         (try
           (let h service/runtime/h)
-          ($assert (== (/appearance (host_status service)) "light"))
-          (set_appearance service/runtime "dark")
-          (let announced ($filter messages (fn [message] (== message/type "appearance"))))
+          (set_appearance service/runtime {^mode "dark"})
+          (let announced ($filter messages (fn [message] (== message/type "appearance_request"))))
           ($assert (== ($size announced) 1))
           ($assert (== (/mode (/data (/0 announced))) "dark"))
-          ($assert (== (/appearance (host_status ^^safe service)) "dark"))
 
           (put_cordis_plugin h (styled_plugin "#335577") {^^host ^limits service/runtime/profile/limits})
           (let board (named (/web_components (host_status service)) "styled_board"))

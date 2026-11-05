@@ -18,6 +18,9 @@
     "div"
     "section"
     "p"
+    "h1"
+    "h5"
+    "h6"
     "h2"
     "h3"
     "h4"
@@ -42,6 +45,24 @@
   [
     "class"
     "class_name"
+    "mode"
+    "appearance"
+    "preview_theme"
+    "aria-selected"
+    "aria_selected"
+    "aria_expanded"
+    "aria-expanded"
+    "aria_controls"
+    "aria-controls"
+    "aria_modal"
+    "aria-modal"
+    "aria_labelledby"
+    "aria-labelledby"
+    "aria_describedby"
+    "aria-describedby"
+    "aria-disabled"
+    "aria_disabled"
+    "tabindex"
     "title"
     "role"
     "aria-label"
@@ -116,6 +137,11 @@
       (component_error "web component view must be a quoted element or data tree")))
   (if (|| (!= ($head props) Map) (!= ($head children) List))
     (component_error "web component props and children must be a map and list"))
+  (if_yes (== tag "icon")
+    (if (|| (!= ($size props) 1) (!= ($head props/name) Str)
+            ($absent? (#"^[a-z][a-z0-9-]{0,79}$" .match props/name)) (! children/.empty?))
+      (component_error "icon requires a name and no children"))
+    (return {^tag "span" ^props {^class "icon" ^data-icon props/name ^aria-hidden "true"} ^children []}))
   (if_yes (== tag "host_widget")
     (if ($absent? widgets)
       (component_error "host_widget is only available in conversation_sidebar"))
@@ -138,6 +164,20 @@
               (! (|| (component_attributes .contains? name) (card_attributes .contains? name))))
         (card_error $"unsupported card attribute ${name}"))
       (if (card_attribute card tag name item attributes) (continue)))
+    (if_yes (== name "preview_theme")
+      (if ($absent? (#"^[a-z][a-z0-9_-]{0,79}$" .match item)) (component_error "invalid preview theme name"))
+      (attributes .put "data-preview-theme" item)
+      (continue))
+    (if_yes (== name "mode")
+      (if_not (["light" "dark"] .contains? item) (component_error "mode must be light or dark"))
+      (attributes .put "data-mode" item)
+      (continue))
+    (if_yes (== name "appearance")
+      (if_not (|| (&& (== tag "div") (== item "preview"))
+                  (&& (== tag "select") (["theme" "mode" "density" "text_size" "content_width"] .contains? item)))
+        (component_error "appearance requires a preference select"))
+      (attributes .put "data-appearance" item)
+      (continue))
     (if_yes (== name "args")
       (if (!= ($head item) Map) (component_error "action args must be a map"))
       ($serde/write_data item)
@@ -383,5 +423,14 @@
     (checked .put "slot" "view"))
   (if_not ($absent? candidate/view)
     (checked .put "view" (bounded_component_view ^sidebar (== candidate/slot "conversation_sidebar") candidate/view)))
+  (if_yes ($present? candidate/tokens)
+    (if (!= ($head candidate/tokens) List) (component_error "tokens must list component token declarations"))
+    (let names [])
+    (for token in candidate/tokens
+      (if (|| (!= ($head token/name) Str) ($absent? (#"^[a-z][a-z0-9-]*$" .match token/name))
+              (!= ($head token/fallback) Str) (names .contains? token/name))
+        (component_error "component tokens need unique names and CSS fallbacks"))
+      (if (&& ($present? token/doc) (!= ($head token/doc) Str)) (component_error "component token documentation must be text"))
+      (names .push token/name)))
   (component_style candidate checked)
   checked)

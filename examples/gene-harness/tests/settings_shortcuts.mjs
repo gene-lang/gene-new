@@ -1,3 +1,4 @@
+globalThis.getComputedStyle ??= () => ({getPropertyValue: name => name === "--shell-narrow" ? "0" : ""});
 // Compiled-browser checks for Settings shortcut recording and platform chord display.
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
@@ -71,7 +72,7 @@ const sidebar = new Sidebar({root: target, desktop_open: true, mobile_open: fals
 const navigation = new model.UiNavigation({workspace: 'test', active: 'settings', last_view: '', presentation: 'full',
   remembered: {}, versions: {}, snapshots: {}, views: [], side: 'left', width: 50n, bar_hidden: false, focus: '',
   scroll: 0, focus_pending: false, action_generation: 1n, action_revision: '', sidebar, restore: noop, refresh: noop});
-const ui = new model.UiClient({keyboard: {}, root: target, target, safe: false, ready: true, session: '', workspace: 'test',
+const ui = new model.UiClient({browser_appearance: null, applied_tokens: [],keyboard: {}, root: target, target, safe: false, ready: true, session: '', workspace: 'test',
   epoch: 'host', metadata_revision: '1', rendered_revision: 'r1',
   descriptor: {name: 'settings', revision: 'r1', data_revision: 'd1', functions: {settings_key: 'f1'}},
   settings: {}, instance: 'instance', version: '1', notices: create_notices(), state: {recording: 'view/toggle'}, drafts: {}, forms: {},
