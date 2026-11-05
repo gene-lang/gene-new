@@ -4,7 +4,7 @@
 # composition roots, but a change to any file listed here is reported as a loss
 # of the extension promise.
 #
-#   gene run tools/freeze.gene write   # (re)write reports/evidence/frozen.sha256
+#   gene run tools/freeze.gene write   # (re)write tools/frozen.sha256
 #   gene run tools/freeze.gene check   # exit 1 if a frozen file changed
 (let frozen [
   "src/model.gene" "src/contracts.gene"
@@ -25,7 +25,7 @@
 
 (fn frozen_changes []
   (let root (package_root))
-  (let recorded (($fs/read_text $"${root}/reports/evidence/frozen.sha256") .trim))
+  (let recorded (($fs/read_text $"${root}/tools/frozen.sha256") .trim))
   (let changed [])
   (for line in (manifest_lines)
     (if (! (recorded .contains? line)) (changed .push line)))
@@ -37,8 +37,8 @@
     (then
       (let root (package_root))
       (let body ($str/join (manifest_lines) "\n"))
-      ($fs/write_text $"${root}/reports/evidence/frozen.sha256" $"${body}\n")
-      ($println "wrote reports/evidence/frozen.sha256")
+      ($fs/write_text $"${root}/tools/frozen.sha256" $"${body}\n")
+      ($println "wrote tools/frozen.sha256")
       0)
     (else
       (let changed (frozen_changes))

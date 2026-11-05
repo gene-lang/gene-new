@@ -1,3 +1,0 @@
-flag true: plain:A
-flag false: no implementation of message 'render' for Article
-module after the calls: no implementation of message 'render' for Article

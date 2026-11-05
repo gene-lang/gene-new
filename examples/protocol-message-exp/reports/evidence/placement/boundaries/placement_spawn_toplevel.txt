@@ -1,2 +1,0 @@
-in the task: plain:A
-module after the task: no implementation of message 'render' for Article

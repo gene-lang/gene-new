@@ -1,2 +1,0 @@
-function in the namespace: plain:A
-module outside the namespace: no implementation of message 'render' for Article

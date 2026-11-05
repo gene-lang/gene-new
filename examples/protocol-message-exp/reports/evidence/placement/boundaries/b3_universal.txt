@@ -1,2 +1,0 @@
-universal, specialized: article=special other=default
-explicit: article=special other=no implementation of message 'describe' for Other

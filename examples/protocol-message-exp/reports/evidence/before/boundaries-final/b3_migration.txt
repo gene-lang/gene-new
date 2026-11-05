@@ -1,2 +1,0 @@
-canonical: core:A
-interleaved: ["plugin:A" "compact:A" "plugin:A" "compact:A" "core:A"]

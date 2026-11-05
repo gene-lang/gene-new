@@ -1,1 +1,0 @@
-Error: import_impl Render for Article is not allowed directly in a function, lambda, message, ctor or spawn body: a direct import would register the pair in the whole module, not in this body. Import it at module level and pass the selected operation from the composition root, or write the import inside a macro-marked block (a macro expansion) to scope it

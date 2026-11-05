@@ -1,4 +1,0 @@
-compact Article: imported
-Note built on plain: imported
-article: ["c-head" "c-body"]
-note: ["note-head" "plain-body"]

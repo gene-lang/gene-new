@@ -1,2 +1,0 @@
-Article first: imported
-then independent Note: incompatible established Self bindings for Format on Article and Note (existing: imported scoped impl from "<pkg>/tests/boundaries/b3_inheritance/plain.gene"; incoming: imported scoped impl from "<pkg>/tests/boundaries/b3_inheritance/note_independent.gene"): a parent and child type share one Self binding per protocol, so the child impl must be built while the parent pair is visible (import or declare the parent pair first, then the child), not independently

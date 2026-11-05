@@ -1,3 +1,0 @@
-contract change import: imported
-render: ext:A
-defaulted message on the old extension: 1

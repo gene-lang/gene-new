@@ -4,7 +4,7 @@ Executes `tmp/protocol-message-exp.md`: a bounded, deterministic CLI application
 (no network, model, database or browser) that exercises Gene's protocols, held
 messages and scoped implementations, with the matched function baseline, the
 boundary fixtures, a capped Cordis contrast and the H6 timing harness. Results
-and verdicts are in [reports/findings.md](reports/findings.md).
+and verdicts are in [findings.md](findings.md).
 
 Native VM only. Run everything from the repository root with a release `bin/gene`
 (`gene --version` must say `release`).
@@ -25,8 +25,8 @@ Native VM only. Run everything from the repository root with a release `bin/gene
 | `bench/h6/` | The frozen 1,000-node H6 fixture and the five timed variants. |
 | `bench/matrix/` | Dispatch matrix (transport x layout x monomorphic/alternating/uncached). |
 | `ports/cordis/` | One C control and one minimal P attempt (isolated copies of Cordis). |
-| `tools/` | `freeze.gene` (hash the frozen core), `count.gene` (composition counts). |
-| `reports/` | `findings.md` and `evidence/` (before/after outputs, raw measurements). |
+| `tools/` | `freeze.gene` (hash the frozen core against `frozen.sha256`), `count.gene` (composition counts). |
+| `findings.md` | Results, verdicts and the improvement plan. |
 
 ## Commands
 

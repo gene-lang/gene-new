@@ -1,6 +1,0 @@
-sibling before: no implementation of message 'render' for Article
-plain: plain:A
-compact: compact:A
-plain again: plain:A
-sibling after: no implementation of message 'render' for Article
-outer module: no implementation of message 'render' for Article

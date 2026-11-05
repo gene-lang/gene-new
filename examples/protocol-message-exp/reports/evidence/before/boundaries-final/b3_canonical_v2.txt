@@ -1,2 +1,0 @@
-v2 import: duplicate visible impl Render for Article
-v2 canonical still intact: core:A

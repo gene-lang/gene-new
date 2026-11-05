@@ -2,7 +2,7 @@
  ^name "genex/protocol_message_exp"
  ^description "Document Lens: protocol, message and scoped-impl composition experiment"
  ^version "0.1.0"
- ^files {^exclude ["tmp/**" "reports/evidence/raw/**"]}
+ ^files {^exclude ["tmp/**"]}
  ^library {^entry "src/lens.gene"}
  ^applications [
    (application "document_lens" ^entry "src/main.gene")

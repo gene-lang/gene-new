@@ -1,4 +1,0 @@
-plain block: plain:A
-compact block: compact:A
-closure from a compact block: compact:A
-module after the blocks: no implementation of message 'render' for Article

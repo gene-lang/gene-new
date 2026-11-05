@@ -13,15 +13,21 @@ feeds an improvement plan (section 10). Native VM only.
 | After binary | `tmp/pm-exp-build/gene-after`, release, independent fresh Nim cache (29 min under machine load); SHA-256 `6deb08770ab7d869e37644c2b3ac7ab8d5cd458b6a89b503ddad981ea9f5aeb6`; source = HEAD plus a `src/` diff whose SHA-256 is `625a08e44261808c80e1ce442b56f0bdcc8785e570910ece993f25d3d3361f25`. |
 | Build line (both) | `Gene 0.1.0 (release; macosx/arm64; Nim 2.2.12; mm=orc; nim-opt=speed; bounds=true; overflow=true)`; `nim c -d:release --path:src --hints:off --nimcache:<fresh> src/gene.nim`. |
 | Machine | Apple arm64, 14 cores, AC power. The macOS contacts/calendar daemons repeatedly drove the load average to 100-200 during builds; every timing batch below ran at load 3-4 and records per-round load. |
-| Final binary | `tmp/pm-exp-build/gene-final`, release, same flags, nimcache reused (section 12: final-impls rule). Sections 2-11 were measured on the before/after binaries above and are unchanged by it. |
-| Placement binary | `tmp/pm-exp-build/gene-placement`, release, same flags, fresh nimcache (5 min 32 s at load 3-7) (section 13: placement follows `import`, which supersedes section 12). |
+| Final binary | `tmp/pm-exp-build/gene-final`, release, same flags, nimcache reused; SHA-256 `c6d88aa83f9c09e1c8c42536dab6ebecb3429f020f640f7f17cfc7174cf3ff3b` (section 12: final-impls rule). Sections 2-11 were measured on the before/after binaries above and are unchanged by it. |
+| Placement binary | `tmp/pm-exp-build/gene-placement`, release, same flags, fresh nimcache (5 min 32 s at load 3-7); SHA-256 `af681f87f92a26ee49920b70c0d010ef0477ef48f61639b24f4934e2a04c8196` (section 13: placement follows `import`, which supersedes section 12). |
 | Fixtures | `examples/protocol-message-exp/tests/boundaries` (43 cases after section 13; 42 after section 12; 39 when sections 2-8 were run). `bin/gene test examples/protocol-message-exp/tests` runs them plus the matched-output specs and the frozen-core check. |
 
 Reproduce any boundary case: `bin/gene run examples/protocol-message-exp/tests/boundaries/run.gene ID`.
-Raw before/after outputs: `reports/evidence/before/boundaries` (first sweep, before any
-repair), `before/boundaries-final` (final fixtures on the before binary), `after/boundaries`,
-and `final` (the 42 fixtures of section 12 on the final binary, plus the same fixtures on the
-earlier binaries). The `d1_*` ids in the first three directories became `final_reject_*`.
+Evidence files are not kept in the tree. They were removed after commit `6332a6d2`, and
+every `evidence/...` path below is relative to `examples/protocol-message-exp/reports/evidence`
+at that commit: `git show 6332a6d2:examples/protocol-message-exp/reports/evidence/<path>`.
+They hold fixture outputs on each binary, raw benchmark rounds with per-round load averages,
+the held-call profile, the composition counts and the binary hashes. The fixture outputs are
+`before/boundaries` (first sweep, before any repair), `before/boundaries-final` (final
+fixtures on the before binary), `after/boundaries`, `final` (the 42 fixtures of section 12 on
+the final binary, plus the same fixtures on the earlier binaries) and `placement` (section
+13). The `d1_*` ids in the first three directories became `final_reject_*`, and those became
+`placement_*` in section 13. The current outputs are each fixture's `expected.txt`.
 
 ### Existing coverage confirmation (not relabelled as new work)
 
@@ -52,7 +58,7 @@ Observations on the before binary unless noted; each row is a retained fixture.
 ### B1. Recursive composition
 
 All fixtures use the frozen core (`src/model.gene`, `contracts.gene`, `policies/*`,
-consumers; hashes in `reports/evidence/frozen.sha256`, `tools/freeze.gene check` passes
+consumers; hashes in `tools/frozen.sha256`, `tools/freeze.gene check` passes
 after every extension task).
 
 | Case | Result |
@@ -109,7 +115,7 @@ Scope placement fixtures (before / after the function-body rule; the final rule 
 
 ### B4. Diagnostics
 
-Before/after text for each retained reproduction is in `reports/evidence/before` and
+Before/after text for each retained reproduction is in `evidence/before` and
 `after`; summary in section 7.
 
 ## 4. Hypotheses
@@ -150,7 +156,7 @@ Matched outputs: `tests/integration/lens_spec.gene` (9 tests) checks P, P-closur
 F and N against the same goldens for the core tree, the late tree, interleaving, the
 three consumers and the third operation (`Weight`, P = 3).
 
-`reports/evidence/composition-counts.json` (text scan; supporting evidence only):
+`evidence/composition-counts.json` (text scan; `tools/count.gene` regenerates it; supporting evidence only):
 
 | Set | Files | Code lines | import_impl | `^^export` | `each` tokens | type tests | entries |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -265,7 +271,7 @@ Superseded in part: the marked-block exemption and the checks that preserved it 
 by the owner's final-impls direction (section 12); the commit rows above describe the tree as
 it was after `b6fedcd0`.
 
-B4 before/after (retained in `reports/evidence`):
+B4 before/after (in `evidence/before` and `evidence/after`):
 
 | Reproduction | Before | After |
 | --- | --- | --- |
@@ -284,7 +290,7 @@ retained; the fix stays for plain `import` inside functions.
 ## 9. Performance (H6 and the dispatch matrix)
 
 No performance limit applies (owner decision A2); these are measurements with their data
-quality. Release binaries only; per-round load averages are in each `summary.json`.
+quality. Release binaries only; per-round load averages are in each `summary.json` under `evidence/raw`.
 
 ### 9.1 H6: root-authored recursion over the frozen 1,000-node tree
 
@@ -354,7 +360,7 @@ Findings:
    `.%` send, a qualified send that alternates receiver types at one site, and a send
    whose scope holds an overlay impl. A monomorphic qualified send takes the inline cache
    (280 ns, 130 ns above a function call).
-3. **Mechanism (profile, not guess).** `reports/evidence/raw/profile-held-call.txt`
+3. **Mechanism (profile, not guess).** `evidence/raw/profile-held-call.txt`
    (macOS `sample`, 4 s of a held-message loop): 81% of 3,052 samples are under
    `resolveQualifiedSend` and 69% under `collectProtocolMatches`, dominated by
    `receiverDistance` and its retain/release traffic, i.e. a full resolution on every
@@ -488,7 +494,7 @@ where scoped impls compose; keep `examples/protocol-message-exp` and
 | Matched outputs, late-extension diffs, composition cost | section 5 |
 | Cordis C/P contrast | section 6 |
 | Transport and reload matrices | sections 3 (B2), 7 |
-| Raw performance evidence or early-stop statement | `reports/evidence/raw`, section 9 |
+| Raw performance evidence or early-stop statement | `evidence/raw` (section 1), section 9 |
 | Diagnostic defects and separate repair commits | section 8 |
 | Final-impls owner decision and implementation status | sections 8 and 12, superseded by 13 |
 | Prioritized improvement plan | section 10 |
@@ -533,14 +539,14 @@ time"), so this makes the native rule match.
 ### Evidence
 
 - Binary: `tmp/pm-exp-build/gene-final` (release, same flags as section 1, nimcache reused).
-- Boundary suite: 42 fixtures, all green on `gene-final` (`reports/evidence/final`).
+- Boundary suite: 42 fixtures, all green on `gene-final` (`evidence/final`).
   Fixtures were renamed from `d1_*` to `final_reject_*`; the marked-block fixtures
   (`d1_marked_scopes`, `b2_scope_marked_cross_module`) were deleted with the feature; the
   fixtures that used try-wrapped or late imports were rewritten (`b3_*`, `b4_duplicate_scoped`,
   `b2_scope_do_block`, `b2_scope_ns_body`). A conflict that used to be caught in a `try` is now
   a load-time error, so the conflict fixtures are `error` cases whose first stderr line is
   compared, and the "intact afterwards" half became its own fixture (`b3_canonical_v2_core`).
-- The new fixtures on the earlier binaries (`final/new-fixtures-on-*-binary.txt`): 16 of 42
+- The new fixtures on the earlier binaries (`evidence/final/new-fixtures-on-*-binary.txt`): 16 of 42
   pass on `gene-before`, 26 on `gene-after`. On `gene-after` the fixtures that fail because the
   module was *accepted* are exactly the new rules: `b2_scope_ns_body`, `final_reject_conditional`,
   `final_reject_late`, `final_reject_marked_block`; the others differ only by the diagnostic text.
@@ -621,7 +627,7 @@ every nested activation isolates, matching `import`.
 
 ### Evidence
 
-- Boundary suite: 43 fixtures, all green on `gene-placement` (`reports/evidence/placement`).
+- Boundary suite: 43 fixtures, all green on `gene-placement` (`evidence/placement`).
   - The `final_reject_*` fixtures became `placement_*`. Each prints what the body sees and
     what the module sees afterwards.
   - `placement_no_shadow` is new.

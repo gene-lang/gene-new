@@ -3,7 +3,7 @@
 How to let independent modules supply types and behavior to a generic container
 without the container naming either. The executable reference is
 [`examples/protocol-message-exp`](../examples/protocol-message-exp/README.md); its
-[findings](../examples/protocol-message-exp/reports/findings.md) hold the measurements.
+[findings](../examples/protocol-message-exp/findings.md) hold the measurements.
 Precise rules live in the [protocol contract](spec/protocols.md) and
 [calls](spec/calls.md).
 

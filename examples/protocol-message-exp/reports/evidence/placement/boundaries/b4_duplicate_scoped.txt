@@ -1,1 +1,0 @@
-Error: duplicate visible impl Render for Article (existing: imported scoped impl from "<pkg>/tests/boundaries/b4_duplicate_scoped/one.gene"; incoming: imported scoped impl from "<pkg>/tests/boundaries/b4_duplicate_scoped/two.gene")

@@ -1,2 +1,0 @@
-in the lambda: plain:A
-module after the call: no implementation of message 'render' for Article

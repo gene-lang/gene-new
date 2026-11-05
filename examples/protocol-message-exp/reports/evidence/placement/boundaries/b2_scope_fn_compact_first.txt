@@ -1,4 +1,0 @@
-compact: compact:A
-plain: plain:A
-compact again: compact:A
-sibling after: no implementation of message 'render' for Article

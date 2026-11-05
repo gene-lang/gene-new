@@ -1,4 +1,0 @@
-result: no implementation of message 'render' for Chart; an impl Render for Chart exists in "<pkg>/src/extensions/chart_compact.gene" but is not visible in "<pkg>/tests/boundaries/b1_incomplete_root/root.gene", which governs this check; add (import_impl Render for Chart ^from "../../../src/extensions/chart_compact") there
-partial effects: ["enter S" "figure a"]
-incomplete root unsupported samples: 3
-complete root unsupported samples: 0

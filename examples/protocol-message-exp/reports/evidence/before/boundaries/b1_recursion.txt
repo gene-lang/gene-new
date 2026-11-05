@@ -1,7 +1,0 @@
-callout canonical, no import: callout(n)
-plain:   S / T: x / fig(f) / N / fig(f) / chart(c) / table(t,2) / callout(n)
-compact: <|T|F|<|F|C|T|callout(n)>>
-plain again: S / T: x / fig(f) / N / fig(f) / chart(c) / table(t,2) / callout(n)
-compact again: <|T|F|<|F|C|T|callout(n)>>
-tree unchanged: true
-fresh send in this module: no implementation of message 'render' for Article; impls of Render for Article exist in 2 modules but none is visible in "<pkg>/tests/boundaries/b1_recursion/main.gene"; import one there with import_impl

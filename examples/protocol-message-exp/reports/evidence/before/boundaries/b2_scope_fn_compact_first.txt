@@ -1,4 +1,0 @@
-sibling after compact installer: compact:A
-outer module after compact installer: no implementation of message 'render' for Article
-competing installer: duplicate visible impl Render for Article
-after rejected plain: compact:A
