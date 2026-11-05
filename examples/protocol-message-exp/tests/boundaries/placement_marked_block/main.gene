@@ -1,7 +1,14 @@
-# A macro expansion cannot write an import_impl either, so there is no
-# block-scoped policy: the expansion is rejected at its import_impl form.
+# A macro may write import_impl wherever it may write import. A marked block
+# that holds one owns a scope: each block has its own policy, a closure made in
+# a block keeps it, and the module after the expansions sees neither.
 (import [Article] ^from "../common/model")
 (import [Render] ^from "../common/contracts")
+(import [attempt] ^from "../common/util")
 (macro with_plain [body...] `(do (import_impl Render for Article ^from "../common/plain") %body...))
-(with_plain nil)
-($println "loaded")
+(macro with_compact [body...] `(do (import_impl Render for Article ^from "../common/compact") %body...))
+(let article (Article ^title "A"))
+(let kept (with_compact (fn [] article/.Render:render)))
+($println $"plain block: ${(with_plain article/.Render:render)}")
+($println $"compact block: ${(with_compact article/.Render:render)}")
+($println $"closure from a compact block: ${(kept)}")
+($println $"module after the blocks: ${(attempt (fn [] article/.Render:render))}")

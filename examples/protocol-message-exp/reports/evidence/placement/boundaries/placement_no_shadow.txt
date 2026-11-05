@@ -1,0 +1,3 @@
+same provider: plain:A
+other provider: duplicate visible impl Render for Article
+module afterwards: plain:A

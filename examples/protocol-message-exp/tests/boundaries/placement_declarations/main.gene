@@ -1,6 +1,5 @@
-# Declarations only bind names, so the import may sit among them (here inside a
-# transparent `do`). Nothing runs before it, and the first statement that does
-# run already sees the complete impl set.
+# Declarations and imports may sit in any order at module level; here the
+# import is inside a transparent `do`, among declarations.
 (import [Article] ^from "../common/model")
 (import [Render] ^from "../common/contracts")
 (type Local ^props {^n Int})

@@ -1,1 +1,6 @@
-Error: import_impl Render for Article is not allowed here: a module's impls are final once it has loaded, so import_impl must be a direct module-level form, not part of a function, lambda, message, ctor, spawn, block, conditional, namespace or macro expansion. Write it at the top of the module with the other imports, and pass the selected operation from the composition root to code that needs a different policy
+sibling before: no implementation of message 'render' for Article
+plain: plain:A
+compact: compact:A
+plain again: plain:A
+sibling after: no implementation of message 'render' for Article
+outer module: no implementation of message 'render' for Article

@@ -20,7 +20,7 @@ Native VM only. Run everything from the repository root with a release `bin/gene
 | `src/consumers/` | Generic preview, export and outline-report consumers: no protocol, type or impl imports. |
 | `src/baseline/` | Variant F: explicit dispatcher with per-type entries. |
 | `src/variants/` | P-closure, P-typed and N (named canonical policy protocols). |
-| `tests/boundaries/` | B1-B4 and final-impl fixtures; `run.gene` runs each in a fresh process against `expected.txt`. |
+| `tests/boundaries/` | B1-B4 and placement fixtures; `run.gene` runs each in a fresh process against `expected.txt`. |
 | `tests/integration/` | Matched outputs for P / P-closure / P-typed / F / N. |
 | `bench/h6/` | The frozen 1,000-node H6 fixture and the five timed variants. |
 | `bench/matrix/` | Dispatch matrix (transport x layout x monomorphic/alternating/uncached). |
@@ -54,11 +54,12 @@ calendar daemons can drive it to 100+ and invalidate a batch).
 
 The experiment produced runtime changes, each with regressions:
 
-- Final impls (owner decision): a module's impls are final once it has loaded.
-  `import_impl` is accepted only as a direct module-level form ahead of any code;
-  in a `fn`, lambda, `message`, `ctor`, `spawn` body, block, conditional, `ns`
-  body or macro expansion, or after code, it is a compile error. There are no
-  block-scoped imports.
+- `import_impl` placement follows `import` (owner decision 2026-11-05, replacing
+  the 2026-11-01 module-level-only rule; findings section 13): it is accepted
+  wherever `import` is, and the pair is visible where an `import` at the same
+  position binds its names. At module level it joins the module; in a `fn`,
+  lambda, `message`, `ctor`, `spawn` or loop body, or a macro-marked block, it
+  belongs to that activation and the closures created there. Impls never shadow.
 - Conflict diagnostics name both origins; hidden-impl advice ignores `import_impl`
   copies and spells its suggested path relative to the checking module.
 - A relative `import` path that executes after module initialization (inside a

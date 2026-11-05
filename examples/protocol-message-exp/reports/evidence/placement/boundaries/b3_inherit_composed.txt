@@ -1,0 +1,2 @@
+article: ["c-head" "c-body"]
+note: ["note-head" "plain-body"]

@@ -1,0 +1,2 @@
+in the impl message: plain:A
+module after the send: no implementation of message 'render' for Article

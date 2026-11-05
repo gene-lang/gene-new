@@ -1,11 +1,15 @@
-# Function-local direct imports. A module's impls are final once it has loaded,
-# so the module is rejected when it is compiled.
+# Function-local imports. Each pair belongs to the call that imported it, so
+# the two policies never meet and a sibling function sees neither.
 (import [Article] ^from "./model")
 (import [Render] ^from "./contracts")
-(fn install_plain [] (import_impl Render for Article ^from "../common/plain"))
-(fn install_compact [] (import_impl Render for Article ^from "../common/compact"))
-(fn install_plain_locals [seed]
+(fn render_plain [article]
+  (import_impl Render for Article ^from "../common/plain")
+  article/.Render:render)
+(fn render_compact [article]
+  (import_impl Render for Article ^from "../common/compact")
+  article/.Render:render)
+(fn render_plain_locals [article seed]
   (let label $"seed-${seed}")
   (import_impl Render for Article ^from "../common/plain")
-  label)
+  $"${label} ${article/.Render:render}")
 (fn render_sibling [article] article/.Render:render)

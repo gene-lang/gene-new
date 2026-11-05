@@ -1,0 +1,2 @@
+before the import: no implementation of message 'render' for Article
+after the import: plain:A

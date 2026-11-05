@@ -1,5 +1,11 @@
-# A namespace body is not a policy sandbox: an import_impl there is rejected.
+# A namespace body is a scope of its own, for import and import_impl alike: the
+# namespace's functions see the pair, the rest of the module does not.
 (import [Article] ^from "../common/model")
 (import [Render] ^from "../common/contracts")
-(ns policy (import_impl Render for Article ^from "../common/plain"))
-($println "loaded")
+(import [attempt] ^from "../common/util")
+(let article (Article ^title "A"))
+(ns policy
+  (import_impl Render for Article ^from "../common/plain")
+  (fn show [] article/.Render:render))
+($println $"function in the namespace: ${(policy/show)}")
+($println $"module outside the namespace: ${(attempt (fn [] article/.Render:render))}")

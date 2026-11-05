@@ -1,5 +1,5 @@
 # Boundary fixture runner. Each case runs in a fresh `gene run` process so
-# import_impl effects (which are module-wide) cannot leak between cases. The
+# module-level import_impl effects cannot leak between cases. The
 # package root is replaced by <pkg> so diagnostics compare portably.
 #
 #   gene run tests/boundaries/run.gene            # check every case

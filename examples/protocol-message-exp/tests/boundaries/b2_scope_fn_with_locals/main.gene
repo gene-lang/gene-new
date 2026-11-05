@@ -1,9 +1,9 @@
-# A function with local bindings behaves like one without them (module-wide).
+# A function with local bindings behaves like one without them.
 (import [Article] ^from "../common/model")
 (import [Render] ^from "../common/contracts")
 (import [attempt] ^from "../common/util")
-(import [install_plain_locals render_sibling] ^from "../common/fns")
+(import [render_plain_locals render_sibling] ^from "../common/fns")
 (let article (Article ^title "A"))
-($println $"installer returns: ${(install_plain_locals 1)}")
+($println $"in the function: ${(render_plain_locals article 1)}")
 ($println $"sibling: ${(attempt (fn [] (render_sibling article)))}")
 ($println $"outer module: ${(attempt (fn [] article/.Render:render))}")

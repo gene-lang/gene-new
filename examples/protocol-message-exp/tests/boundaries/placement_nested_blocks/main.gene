@@ -1,7 +1,13 @@
-# Plain nested blocks and conditionals are transparent: they do not make an
-# import part of the module's declarations.
+# Plain nested blocks and conditionals inside a function share the function's
+# scope, as they do for import: the pair reaches the rest of that call, and a
+# value can decide whether the call imports it.
 (import [Article] ^from "../common/model")
 (import [Render] ^from "../common/contracts")
-(fn install [flag]
-  (do (if flag (then (do (import_impl Render for Article ^from "../common/plain"))))))
-($println "loaded")
+(import [attempt] ^from "../common/util")
+(fn show [flag article]
+  (do (if flag (then (do (import_impl Render for Article ^from "../common/plain")))))
+  (attempt (fn [] article/.Render:render)))
+(let article (Article ^title "A"))
+($println $"flag true: ${(show true article)}")
+($println $"flag false: ${(show false article)}")
+($println $"module after the calls: ${(attempt (fn [] article/.Render:render))}")

@@ -14,7 +14,8 @@ feeds an improvement plan (section 10). Native VM only.
 | Build line (both) | `Gene 0.1.0 (release; macosx/arm64; Nim 2.2.12; mm=orc; nim-opt=speed; bounds=true; overflow=true)`; `nim c -d:release --path:src --hints:off --nimcache:<fresh> src/gene.nim`. |
 | Machine | Apple arm64, 14 cores, AC power. The macOS contacts/calendar daemons repeatedly drove the load average to 100-200 during builds; every timing batch below ran at load 3-4 and records per-round load. |
 | Final binary | `tmp/pm-exp-build/gene-final`, release, same flags, nimcache reused (section 12: final-impls rule). Sections 2-11 were measured on the before/after binaries above and are unchanged by it. |
-| Fixtures | `examples/protocol-message-exp/tests/boundaries` (42 cases after section 12; 39 when sections 2-8 were run). `bin/gene test examples/protocol-message-exp/tests` runs them plus the matched-output specs and the frozen-core check. |
+| Placement binary | `tmp/pm-exp-build/gene-placement`, release, same flags, fresh nimcache (5 min 32 s at load 3-7) (section 13: placement follows `import`, which supersedes section 12). |
+| Fixtures | `examples/protocol-message-exp/tests/boundaries` (43 cases after section 13; 42 after section 12; 39 when sections 2-8 were run). `bin/gene test examples/protocol-message-exp/tests` runs them plus the matched-output specs and the frozen-core check. |
 
 Reproduce any boundary case: `bin/gene run examples/protocol-message-exp/tests/boundaries/run.gene ID`.
 Raw before/after outputs: `reports/evidence/before/boundaries` (first sweep, before any
@@ -84,7 +85,7 @@ an operation-identity test; a protocol-typed host parameter without the pair rej
 (`parameter 'x' expected Render`); `($runtime/signature op article)` reports
 `dispatch_scope authored` for a held message and fails for a fresh one.
 
-Scope placement fixtures (before / after the function-body rule; the final rule of section 12 supersedes the right column where noted):
+Scope placement fixtures (before / after the function-body rule; the final rule of section 12 superseded the right column where noted, and section 13 replaced both: every nested activation now isolates its imports, as `import` does):
 
 | Placement | Before | After |
 | --- | --- | --- |
@@ -433,8 +434,8 @@ held messages being identity-per-authoring.
      construction (already the behavior of a nominal record); decide only after a second use
      case beyond Show/Style.
 - Owner decisions open: H4b (compatibility of a scoped pair with a later canonical addition
-  without migration). The final-impls rule already rejects `import_impl` in `scope` and
-  `supervisor` bodies, so that earlier question is closed.
+  without migration). Under section 13 an `import_impl` in a `scope` or `supervisor` body
+  belongs to that body, as an `import` there does, which answers the earlier question.
 
 ### Held messages
 
@@ -462,7 +463,8 @@ held messages being identity-per-authoring.
   behavior, no managed leak after owners drop.
 - Contrary evidence: an overlay on the send scope (an eval unit, a function-local `impl`)
   forces the ~2,000 ns uncached path, so heavy use of overlays in hot code costs the plateau
-  above. Module impls are final (section 12), so overlays are the only impls that can change
+  above. Module impls are final once the module has loaded (sections 12 and 13), so
+  overlays, now including function-local `import_impl`, are the only impls that can change
   under a running site.
 - Next: after proposal 1, add a cache keyed on the overlay's activation identity, or measure
   first whether overlays in hot code matter in a real application.
@@ -488,10 +490,13 @@ where scoped impls compose; keep `examples/protocol-message-exp` and
 | Transport and reload matrices | sections 3 (B2), 7 |
 | Raw performance evidence or early-stop statement | `reports/evidence/raw`, section 9 |
 | Diagnostic defects and separate repair commits | section 8 |
-| Final-impls owner decision and implementation status | sections 8 and 12 |
+| Final-impls owner decision and implementation status | sections 8 and 12, superseded by 13 |
 | Prioritized improvement plan | section 10 |
 
 ## 12. Final impls (owner direction, 2026-11-01)
+
+Superseded by section 13: the owner revisited this rule on 2026-11-05. This section records
+the tree as it was at `f3c719b6`.
 
 After section 8 the owner clarified the intent behind the placement rule: `import_impl`
 should not be dynamic, and a module's impls should be final once it has loaded. The
@@ -567,3 +572,94 @@ time"), so this makes the native rule match.
 - Cost to authors: a library can no longer scope a policy to one call with a macro. The
   replacement is the root-authored operation of section 3, which the package shows needs no
   language feature but does need the `each`-style parameter planned in the contract.
+
+## 13. Placement follows `import` (owner direction, 2026-11-05)
+
+The owner revisited section 12: `import_impl` and `import` should work alike, so
+`import_impl` is accepted wherever `import` is. This replaces the module-level-only rule and
+its ordering check.
+
+### Rule and implementation
+
+1. `import_impl` is accepted wherever `import` is: everywhere except `eval`, which refuses
+   both.
+2. The pair is visible where an `import` at the same position binds its names, which is the
+   scope the form runs in. A form running in the module's base scope adds the pair to the
+   module, as before. That covers module level, a top-level conditional, `try` or `do`, after
+   other statements, and a `mod` body. A form running in a nested activation adds the pair to
+   that activation only, as an overlay. Nested activations are a `fn`, lambda, `message`,
+   `ctor`, `spawn`, `scope`, `supervisor`, `for` or `ns` body, or a macro-marked block.
+   Closures created there keep the pair; code after the activation does not see it; each
+   execution imports again.
+3. Impls never shadow. Importing a pair identical to one already visible is a no-op. A
+   different provider of a visible pair is `duplicate visible impl` with both origins, and
+   the visible pair stays in place.
+4. Only code running in the base scope adds to a module's impls, so they are still final once
+   the module has loaded. They are no longer complete before the first statement runs: a late
+   or conditional module-level import is legal, and code that runs before it does not see
+   the pair, just as with `import` (`placement_late`).
+
+Code changes:
+
+- Compiler: `lateImportImpls`, `markLateImportImpls` and the placement check in
+  `compileImportImpl` are deleted. `import_impl` is back in the two macro-result predicates,
+  so a marked block holding one gets a real block scope, as one holding `import` does.
+- VM: `importScopedImpl` registers in the scope the form executes in. When that scope is not
+  the module root, the copy is published as an overlay there. This is the copy path that
+  section 12 deleted, but the executing scope now selects it, not the `scopedImplImports`
+  flag, which stays deleted.
+- `opImportImpl` keeps a spawned task on the owner lane, because it writes the application
+  impl registry and epoch.
+
+`opImportImpl` already forced a call scope and kept it out of the pool. Inline `for` and
+scopeless bodies are whitelists without it. So a nested import never lands in a caller's or
+defining scope.
+
+The difference from the tree before section 8 is that a function-body import then registered
+in the defining module (the section 2 defect), and only macro-marked blocks isolated. Now
+every nested activation isolates, matching `import`.
+
+### Evidence
+
+- Boundary suite: 43 fixtures, all green on `gene-placement` (`reports/evidence/placement`).
+  - The `final_reject_*` fixtures became `placement_*`. Each prints what the body sees and
+    what the module sees afterwards.
+  - `placement_no_shadow` is new.
+  - `b2_scope_fn_*` now show per-call policies interleaved plain/compact/plain in one library.
+  - `b2_scope_ns_body` shows the namespace scope.
+  - `final_ok_declarations` became `placement_declarations`.
+- `tests/test_modules.nim`, 122 OK. Two tests replace the placement tests.
+  - A parity test runs each of 19 positions twice, once importing a name and once importing a
+    pair, and requires the same visibility inside and after.
+  - An activation test covers interleaving, an escaping closure, a marked block, a library
+    function, the identical no-op and the conflict.
+  - The library-relative path test again covers `import_impl` in a library function.
+  - With the nested overlay branch disabled, both new tests fail and the other 120 pass.
+- Package tests: 9 passed.
+- Suites on the placement tree:
+  - `tests/test_all.nim`: 1,802 OK and the same 3 failures as in section 1. It includes
+    `test_modules`, which has one test fewer.
+  - `tests/spec_runner.nim`: exit 0, 892 OK.
+  - `tests/test_rc.nim` (`-d:geneRcStats`): 92 OK. New: "a function-local import_impl is
+    released with its activation", which runs 40 calls that import a pair and make and drop
+    a closure; they leave as many managed values as a control without the import (zero).
+- The `docs/protocol-composition.md` example (a function importing both pairs and passing
+  `Render:render` through the container) was run as a scratch program. It printed
+  `S / fig:a / fig:b` twice and `hidden outside`.
+
+### What changed for the experiment's conclusions
+
+- H1-H3 and H7 are unchanged: every root already imports its pairs at module level.
+- Section 12's cost to authors is reversed. A library can scope a policy to one call by
+  importing it in that function (`b2_scope_fn_*`), and a macro can wrap one in a marked
+  block (`placement_marked_block`).
+- Recursion into third-party types through a frozen container is unchanged. A body-authored
+  send resolves in the body's module, and a caller's function-local import does not reach
+  it. The root-authored operation of section 3 is still the way, and it now also works from
+  a function: the held message carries the function's pairs.
+- Costs, not measured: a nested import is an overlay. Sends under it take the uncached path
+  (the ~1,900 ns plateau of section 9), and each execution bumps `implEpoch`, which
+  invalidates every dispatch-site cache in the application. A function-body `impl` already
+  behaves this way. A hot function that imports a pair therefore slows sends elsewhere too;
+  the "Overlays and reload" item in section 10 now covers this case.
+

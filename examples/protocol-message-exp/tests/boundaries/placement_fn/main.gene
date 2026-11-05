@@ -1,6 +1,11 @@
-# A module's impls are final once it has loaded: a direct import_impl in a fn
-# body is rejected at compile time, even though the function is never called.
+# import_impl goes where import goes. In a function body the pair belongs to
+# that call: the body sees it, the module after the call does not.
 (import [Article] ^from "../common/model")
 (import [Render] ^from "../common/contracts")
-(fn install [] (import_impl Render for Article ^from "../common/plain"))
-($println "loaded")
+(import [attempt] ^from "../common/util")
+(fn show [article]
+  (import_impl Render for Article ^from "../common/plain")
+  article/.Render:render)
+(let article (Article ^title "A"))
+($println $"in the function: ${(show article)}")
+($println $"module after the call: ${(attempt (fn [] article/.Render:render))}")
