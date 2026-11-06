@@ -176,6 +176,37 @@
             $"retention kept ${($size (trigger_sessions restarted/runtime))} of ${before} sessions")
         ensure (close_harness restarted)))))
 
+  (it "keeps an occurrence queued behind the concurrency cap across restart and starts it once" []
+    (isolated this_mod/.path "keeps an occurrence queued behind the concurrency cap across restart and starts it once"
+      (fn [root]
+        (let profile (Profile ^name "triggers" ^plugins [(triggers)]))
+        (let gate ($cell false))
+        (fn all_occurrences [runtime]
+          ($into ($map ["q1" "q2" "q3"] (fn [id] (occurrences runtime id))) []))
+        (fn states [runtime]
+          ($map ($filter ($map ["q1" "q2" "q3"] (fn [id] (/0 (occurrences runtime id)))) (fn [item] ($present? item))) /state))
+        (let harness (open_harness root profile (fn [request] (while (! gate/.get) ($sleep 10)) (done))))
+        (try
+          (let at (+ ($os/wall_ms) 300))
+          (for id in ["q1" "q2" "q3"]
+            (call harness/runtime "create_trigger" {^id id ^kind "scheduled" ^at at ^request id}))
+          ($assert (wait_until (fn [] (== ($size ($filter (states harness/runtime) (fn [state] (== state "started")))) 2)))
+            ($to_str (states harness/runtime)))
+          ($assert (== ($size ($filter (states harness/runtime) (fn [state] (== state "due")))) 1)
+            "the third occurrence waits for a slot")
+        ensure
+          (gate .set true)
+          (close_harness harness))
+        (let restarted (open_harness root profile (fn [request] (done))))
+        (try
+          ($assert (wait_until (fn [] (== ($size ($filter (states restarted/runtime) (fn [state] (== state "finished")))) 3)) ^ms 8000)
+            ($to_str (states restarted/runtime)))
+          (for id in ["q1" "q2" "q3"]
+            (let occurrence (/0 (occurrences restarted/runtime id)))
+            (let receipts (/receipts (round_state restarted/controller occurrence/session)))
+            ($assert (== receipts/.size 1) $"${id} was admitted once"))
+        ensure (close_harness restarted)))))
+
   (it "removes its functions, route and scheduler when disabled" []
     (isolated this_mod/.path "removes its functions, route and scheduler when disabled"
       (fn [root]
