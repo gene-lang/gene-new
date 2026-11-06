@@ -33,7 +33,7 @@
   request_source request_sources finish_participant_outcome] ^from "./turn_participation")
 (import [turn_evidence run_check_in check_in_summary check_in_notice] ^from "../runtime/check_ins")
 (import [decision_available?] ^from "../runtime/decision_service")
-(import [owned_delegation_counts] ^from "../runtime/delegations")
+(import [dispatch_round_event claimed?] ^from "../runtime/round_lifecycle")
 
 (type TurnReadinessFailure ^props {^message Str ^code Str?} ^impl [Error])
 (impl Error for TurnReadinessFailure)
@@ -168,10 +168,11 @@
 (fn checked_limit [round, configured : Int] : Int
   (- (+ round/allowance_base configured) (?? round/task_turns_base 0)))
 
+# Whether a feature still runs work this round owns (delegated children, for
+# example). Answered by round_lifecycle handlers, not a feature import.
 (fn owned_children? [runtime, session : Str, round] : Bool
-  (let service runtime/services/values/delegations)
-  (if ($absent? service) (return false))
-  (try (> (/running (owned_delegation_counts service session round/id)) 0) catch Any false))
+  (try (claimed? (dispatch_round_event runtime "round/outstanding" {^session session ^round round/id}))
+    catch Any false))
 
 (fn run_round [runtime, session : Str, round, ^resume resume : Bool = false]
   (let metadata (require_record runtime/sessions session))

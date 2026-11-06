@@ -5,6 +5,8 @@
 #   round/closed    {^session ^round ^reason}   a parent round failed or was cancelled
 #   round/answered  {^session ^receipt ^batch}  a question batch was answered; a handler
 #                                               returning true takes over the resumption
+#   round/outstanding {^session ^round}         a handler returning true still runs work
+#                                               the round owns (the turn limit waits)
 #   host/stopping   {}                          Stop closed admission
 # Handlers are `round_lifecycle` rows {^name ^events [...] ^handle}; the
 # delegation host's are native rows, and any plugin may add its own.
@@ -14,7 +16,7 @@
 (import [HarnessError] ^from "../errors")
 
 (const native_owner "$host/round_lifecycle")
-(const lifecycle_events ["round/saved" "round/closed" "round/answered" "host/stopping"])
+(const lifecycle_events ["round/saved" "round/closed" "round/answered" "round/outstanding" "host/stopping"])
 
 (fn ^^private validate_handler [candidate]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
