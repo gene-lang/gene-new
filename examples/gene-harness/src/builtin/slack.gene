@@ -7,6 +7,9 @@
     ^activate (fn [host]
       (let channels (host .PluginHost:resolve "channels/host"))
       channels/.ChannelHost:start
+      (host .PluginHost:contribute "channel_transports"
+        {^name "slack" ^summary "Slack Socket Mode transport."
+         ^state (fn [] channels/.ChannelHost:state)})
       (contribute_doc host "harness/channels"
         "Slack accounts, thread sessions, operator trust and queue controls."
         "examples/gene-harness/docs/channels.md" ^tags ["slack" "channels" "sessions"]))))

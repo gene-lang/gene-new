@@ -45,6 +45,25 @@
   (for [id frame] in controller/rounds/.get
     (if ($present? frame/watcher) frame/watcher/.join)))
 
+# A second chat transport from a plugin: its transport row and its own
+# channel initiator admit channel work beside (or instead of) Slack.
+(fn toy_chat []
+  (Plugin ^id "toy_chat" ^requires ["admission/host"]
+    ^activate (fn [host]
+      (let admission (host .PluginHost:resolve "admission/host"))
+      (host .PluginHost:contribute "channel_transports"
+        {^name "toy_chat" ^summary "Toy chat transport." ^state (fn [] {^health "connected"})})
+      (host .PluginHost:contribute "initiators"
+        {^name "toy_chat/channel" ^kind "channel" ^prefix "channel:toy_chat/" ^transport "toy_chat" ^!operator
+         ^normalize (fn [context input] {^kind "channel" ^transport "toy_chat" ^thread context/subject})})
+      (host .PluginHost:contribute "functions"
+        {^name "toy_message" ^doc "Deliver a toy chat message."
+         ^fn (fn [thread : Str, text : Str]
+           (admission .AdmissionHost:create_session ^id $"s-toy-${thread}" ^title $"Toy ${thread}"
+             ^origin {^owner "toy_chat" ^thread thread})
+           (admission .AdmissionHost:submit $"s-toy-${thread}" $"toy-${thread}-1" text
+             ^initiator $"channel:toy_chat/${thread}"))}))))
+
 (describe "Plugin work admission"
   (it "admits a plugin's round through its initiator and returns the recorded receipt on retry" []
     (isolated this_mod/.path "admits a plugin's round through its initiator and returns the recorded receipt on retry"
@@ -68,6 +87,26 @@
           ($assert (== record/kind "automated"))
           (let listed (call runtime "job_sessions"))
           ($assert (== ($map listed /id) ["s-job-a"]) ($to_str listed))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime))))))
+
+(describe "Channel transports"
+  (it "lets a plugin add a chat transport that admits channel work through its own initiator" []
+    (isolated this_mod/.path "lets a plugin add a chat transport that admits channel work through its own initiator"
+      (fn [root]
+        (let runtime (open_runtime root "default" (Profile ^name "chat" ^plugins [(toy_chat)])))
+        (let controller (test_controller runtime (fn [request] "(Outcome ^^done ^reply \"Hi.\")")))
+        (try
+          (provide runtime/h "core" "admission/host" (admission_host_binding runtime))
+          (let receipt (call runtime "toy_message" "t1" "Hello."))
+          ($assert (== receipt/initiator_kind "toy_chat/channel") ($to_str receipt))
+          (let snapshot (acquire_snapshot runtime/h/snapshots))
+          (try
+            (let transports ($map (?? (snapshot/snapshot/registries .get "channel_transports") []) /key))
+            ($assert (== transports ["toy_chat"]) ($to_str transports))
+          ensure (release_snapshot runtime/h/snapshots snapshot))
+          (join_rounds controller)
         ensure
           (close_round_controller controller)
           (close_runtime runtime))))))
