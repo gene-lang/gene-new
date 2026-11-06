@@ -113,6 +113,26 @@
           ($assert (== ($map live /id) ["later"]) ($to_str seen))
         ensure (close_harness harness)))))
 
+  (it "skips an occurrence that would overlap a running round and admits only one" []
+    (isolated this_mod/.path "skips an occurrence that would overlap a running round and admits only one"
+      (fn [root]
+        (let gate ($cell false))
+        (let profile (Profile ^name "triggers" ^plugins [(triggers)]))
+        (let harness (open_harness root profile (fn [request]
+          (while (! gate/.get) ($sleep 10))
+          (done))))
+        (let runtime harness/runtime)
+        (try
+          (call runtime "create_trigger" {^id "beat" ^kind "heartbeat" ^every_ms 150 ^request "Beat."})
+          (fn overlapped [] ($filter (occurrences runtime "beat") (fn [item] (== item/reason "overlap"))))
+          ($assert (wait_until (fn [] (> ($size (overlapped)) 0))) ($to_str (occurrences runtime "beat")))
+          (let started ($filter (occurrences runtime "beat") (fn [item] (== item/state "started"))))
+          ($assert (== started/.size 1) "one round runs; overlapping occurrences are skipped")
+          (gate .set true)
+        ensure
+          (gate .set true)
+          (close_harness harness)))))
+
   (it "removes its functions, route and scheduler when disabled" []
     (isolated this_mod/.path "removes its functions, route and scheduler when disabled"
       (fn [root]
