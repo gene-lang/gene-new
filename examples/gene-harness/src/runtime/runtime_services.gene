@@ -1,7 +1,8 @@
 # Static host service ownership. Plugins use facades; they cannot edit this table.
 (mod runtime_services)
 (import [withdraw_host_objects] ^from "../plugin_api")
-(import [new_harness shutdown_harness provide] ^from "../kernel")
+(import [new_harness shutdown_harness provide contribute] ^from "../kernel")
+(import [recall_image_run] ^from "../storage/image_runs")
 (import [profile_admissions] ^from "../profiles/profile")
 (import [open_event_store close_event_store flush_event_store] ^from "../storage/state")
 (import [open_inbox close_inbox] ^from "../notifications/inbox")
@@ -98,6 +99,8 @@
   (let images (open_image_host ctx/runtime))
   (try
     (provide ctx/h "core" "image/runtime" images)
+    (contribute ctx/h "core" "recall_sources"
+      {^prefix "image." ^recall (fn [session, id] (recall_image_run ctx/runtime session id))})
     images
   catch Any (close_image_host images) (fail $err)))
 

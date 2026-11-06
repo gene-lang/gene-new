@@ -1,6 +1,6 @@
 (mod turn_loop)
 (import [effective_config] ^from "../runtime/settings_resolver")
-(import ^from "../runtime/composition" [acquire_snapshot release_snapshot])
+(import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import ^from "./harness_turn" [evaluate_harness_turn])
 (import [ui_publication_preview] ^from "../ui/views")
 (import ^from "./instructions" [assemble_instructions])
@@ -25,7 +25,6 @@
   [append_core_event append_turn_end_once core_state record_core_state flush_event_store copy_data])
 (import ^from "../runtime/questions" [ask_questions])
 (import ^from "../runtime/sessions" [require_record update_session])
-(import [recall_image_run] ^from "../storage/image_runs")
 (import [new_runtime_turn_transaction] ^from "../runtime/turn_participant_registry")
 (import [begin_turn_transaction run_turn_phase finish_turn_transaction ParticipantFailure]
   ^from "../runtime/turn_participants")
@@ -39,9 +38,17 @@
 (impl Error for TurnReadinessFailure)
 
 (fn recall_model_context [runtime, session : Str, id : Str]
-  (if ($str/starts_with? id "image.")
-    (recall_image_run runtime session ($str/slice_bytes id 6 (- ($str/byte_size id) 6)))
-    (recall_body runtime session id)))
+  (var source nil)
+  (let snapshot (current_snapshot runtime/h/snapshots))
+  (for record in (?? (snapshot/registries .get "recall_sources") [])
+    (let row record/payload)
+    (if (&& ($str/starts_with? id row/prefix)
+            (|| ($absent? source) (> ($str/byte_size row/prefix) ($str/byte_size source/prefix))))
+      (set source row)))
+  (if ($absent? source)
+    (recall_body runtime session id)
+    (source/recall session ($str/slice_bytes id ($str/byte_size source/prefix)
+      (- ($str/byte_size id) ($str/byte_size source/prefix))))))
 
 (fn transcript [runtime, session : Str, payload]
   (let timed (copy_data payload))

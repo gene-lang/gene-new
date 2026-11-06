@@ -67,6 +67,9 @@
     # Default UI settings for a workspace with no saved UI state; a profile's
     # plugin (the workspace manager's) contributes the "default" row.
     {^name "ui_defaults" ^^unique}
+    # Recall for model-context ids with a feature prefix (e.g. "image."); the
+    # longest matching prefix's `recall [session id]` answers.
+    {^name "recall_sources" ^^unique ^key "prefix" ^callbacks ["recall"]}
     {^name "http_routes" ^^unique ^schema validate_http_route_row ^callbacks ["handle"]
      ^key (fn [candidate] candidate/prefix)
      ^prepare (fn [owner, candidate] (candidate .assoc "prefix" (route_prefix owner candidate)))}
