@@ -9,13 +9,8 @@
 (import [close_delegation_owner] ^from "../runtime/delegations")
 
 (fn parse_control [text : Str]
-  (var source text/.trim)
-  # Slack integrations may append attribution to an otherwise literal command,
-  # sometimes flattened onto the same line. Exclude only that exact suffix;
-  # preserve ordinary message text and multiline !answer JSON unchanged.
-  (let footer (#"\s+\*Sent using\*[ \t]+<@[UW][A-Z0-9]+(?:\|[^>\r\n]+)?>$" .match source))
-  (if_not ($absent? footer)
-    (set source ($str/trim ($str/slice_bytes source 0 footer/start))))
+  # Transports strip their own attribution from commands at ingress.
+  (let source text/.trim)
   (let matched (#"^!(stop|status|continue|continue-until-finished|resume-queue|replace-paused|answer)([ \t]|$)" .match source))
   (if ($absent? matched) (return nil))
   (let name matched/groups/0)

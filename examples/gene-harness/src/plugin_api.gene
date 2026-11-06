@@ -91,9 +91,16 @@
   (message store [name : Str, data, ^source source : Str = "upload"] : Any))
 
 
+# The channel host (seam "channels/host"): queues, authority and receipts
+# stay here; a transport plugin owns its connections and contributes a
+# `channel_transports` row (docs/channels.md, "Transports").
 (protocol ChannelHost
-  (message start [] : Any)
-  (message state [] : Any))
+  (message state [] : Any)
+  (message options [] : Any)
+  (message accounts [transport : Str] : Any)
+  (message receive [account : Str, event] : Any)
+  (message report [id : Str, connected : Bool, code : Str] : Any)
+  (message tick [] : Any))
 
 # Plugin work admission (AdmissionHost, seam "admission/host"). Rounds use the
 # caller's `initiators` row; identity, sequence and digest rules are the round

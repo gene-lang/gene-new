@@ -215,7 +215,7 @@ that activation retires. Their returned data collections are immutable.
 | --- | --- |
 | `media/host` | `MediaHost`: `list`, `show id`, `import_file path`, `page id page`, `store name bytes`. Showing media requires an open turn in the same workspace. |
 | `admission/host` | `AdmissionHost`: `create_session ^origin`, `session`, `sessions ^origin_owner`, `busy?`, `update_session`, `delete_session`, `receipt session request_id`, `check_model_settings`, and `submit session request_id text ^initiator ^input ^model_settings` through the caller's own `initiators` row. A retried request id returns its recorded receipt. |
-| `channels/host` | `ChannelHost`: `start` and `state`. The `slack` plugin owns transport activation; host-owned accounts and queues survive its replacement or disable. Status contains public identity/health data. |
+| `channels/host` | `ChannelHost`: `state`, `options`, `accounts`, `receive`, `report` and `tick`. A transport plugin (the built-in `slack`) owns its connections and contributes a `channel_transports` row; host-owned accounts, queues and receipts survive its replacement or disable. `state` contains public identity/health data. See [channels](channels.md#transports). |
 | `sessions/host` | Read-only `SessionHost`: `record session` and `round session`. `round` returns a projection of the loaded round or nil, with no session cells or manager. |
 | `decisions/host` | `DecisionHost`: `decide request`, `engines` and `status ^use`. Engine problems return a status; malformed questions raise. See [quick decisions](decisions.md). |
 | `voice/host` | `VoiceHost`: `output session` and `reset_if_unused`, for spoken-reply policy and activation cleanup. |

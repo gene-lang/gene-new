@@ -1,0 +1,66 @@
+# The Slack `channel_transports` row (src/channels/transports.gene has the
+# contract). Send-side API clients are opened per account on first use and
+# closed with the activation.
+(mod slack_adapter)
+(import [read_slack_credentials open_api close_api] ^from "./api")
+(import [send_part remove_part reconcile_parts] ^from "./delivery")
+(import [render_reply render_title check_surface] ^from "./render")
+(import [open_users lookup_name] ^from "./users")
+(import [verify_account verify_route] ^from "./setup")
+
+(type SlackClients ^props {^clients Cell ^gate Any ^requester Any?})
+
+(fn open_clients [^requester requester = nil]
+  (SlackClients ^clients ($cell {}) ^gate ($sync/gate) ^requester requester))
+
+(fn account_api [clients, account]
+  (clients/gate (fn []
+    (let found (clients/clients/.get .get account/id))
+    (if_not ($absent? found) (return found))
+    (let credentials (read_slack_credentials account/config/secret_file))
+    (let client (open_api credentials/bot ^requester clients/requester))
+    (clients/clients/.get .put account/id client)
+    client)))
+
+(fn close_clients [clients]
+  (let open (clients/clients .swap {}))
+  (for [id client] in open (close_api client))
+  nil)
+
+# A client that cannot be opened (credentials, network) made no request, so
+# the part stays pending and retries later instead of becoming uncertain.
+(fn ^^private with_api [clients, request, effect]
+  (var api nil)
+  (try (set api (account_api clients request/account))
+    catch Error
+      (return {^status "pending" ^error (?? $err/code "credentials_unavailable")
+               ^retry_at (+ ($os/wall_ms) 30000)}))
+  (effect api))
+
+(fn render [request]
+  (if (== request/kind "title") (return [(render_title request/text)]))
+  (render_reply request/text request/reference ^surface (?? request/settings/surface "mrkdwn")))
+
+# Delivery callbacks bound to one fixed client (tests and probes).
+(fn api_adapter [api]
+  {^name "slack" ^pace_ms 1100
+   ^send (fn [request] (send_part api request))
+   ^remove (fn [request] (remove_part api request))
+   ^reconcile (fn [request] (reconcile_parts api request))})
+
+(fn slack_adapter [^requester requester = nil, ^state state = nil]
+  (let clients (open_clients ^requester requester))
+  (let users (open_users ^requester requester))
+  {^clients clients
+   ^row {^name "slack" ^summary "Slack Socket Mode transport." ^pace_ms 1100
+     ^state (if ($absent? state) (fn [] {}) state)
+     ^render render
+     ^send (fn [request] (with_api clients request (fn [api] (send_part api request))))
+     ^remove (fn [request] (with_api clients request (fn [api] (remove_part api request))))
+     ^reconcile (fn [request] (reconcile_parts (account_api clients request/account) request))
+     ^lookup (fn [request] (lookup_name users request/account request/kind request/data))
+     ^verify_account (fn [request] (verify_account request/data ^requester requester))
+     ^verify_route (fn [request] (verify_route request/account request/channel ^requester requester))
+     ^settings (fn [request] {^surface (check_surface (?? request/data/surface "mrkdwn"))})}})
+
+(fn close_adapter [adapter] (close_clients adapter/clients))

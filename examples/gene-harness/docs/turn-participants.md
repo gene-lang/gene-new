@@ -234,9 +234,10 @@ of a prefix. Public kinds are `channel` and `plugin`; their names and prefixes
 belong to the contributor. Channel rows also declare their owned `transport`.
 Overlapping routes are rejected rather than resolved by activation order.
 
-The channel host keeps producer authorization, queues and delivery. Its Slack
-adapter registers `slack/channel` independently of transport activation so
-already queued work retains its validation path. The round controller uses the
+The channel host keeps producer authorization, queues and delivery. It
+registers `<transport>/channel` for each configured transport independently of
+that transport plugin's activation, so already queued work retains its
+validation path. The round controller uses the
 selected row and stores `initiator_kind` and `operator` in the admitted receipt.
 An existing round retains that policy through source disable/replacement;
 claimed continuations retain their already-admitted plugin metadata. Receipts

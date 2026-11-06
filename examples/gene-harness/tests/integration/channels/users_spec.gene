@@ -2,25 +2,31 @@
 (import [isolated run_spec test_service] ^from "../../support")
 (import [close_session_service] ^from "../../../src/web/session_service")
 (import [configure_account configure_route] ^from "../../../src/channels/authority")
-(import [bind_workspace] ^from "../../../src/channels/service")
+(import [bind_workspace lookup] ^from "../../../src/channels/service")
 (import [channel_request] ^from "../../../src/channels/http")
-(import [open_users lookup_user profile_name thread_url] ^from "../../../src/channels/users")
+(import [open_users lookup_name profile_name thread_url] ^from "../../../src/builtin/slack/users")
 (import [ChannelError] ^from "../../../src/channels/model")
 (import [message_after?] ^from "../../../src/channels/model")
 (import [last_thread_message] ^from "../../../src/channels/thread_links")
-(import [mutate] ^from "../../../src/channels/store")
+(import [mutate snapshot] ^from "../../../src/channels/store")
 
 (fn response [body, ^status status = 200, ^headers headers = []]
   {^status status ^headers headers ^body ($binary/from_str ($json/stringify body))})
 
+# The Slack plugin's lookups use the host's channel requester; specs swap the
+# fake behind it through `requester`.
+(var requester ($cell nil))
+
 (fn fixture [workspace, body]
-  (let service (test_service ^workspace workspace ^without_plugins ["slack"]
+  (requester .set (fn [request] ($assert false "unexpected Slack request")))
+  (let service (test_service ^workspace workspace
+    ^channel_options {^start false ^requester (fn [request] (requester/.get request))}
     ^provider (fn [request] "(Outcome ^^done ^reply \"Done.\")")))
   (try
     (let filename ($path/join workspace "fake-slack-credentials"))
     ($fs/write_text filename "Bot user oauth token: xoxb-test\nApp token: xapp-test\nChannel id: C12345678\n")
-    (configure_account service/runtime/services/values/channels/owner "dobi" filename "/fake-adapter"
-      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (configure_account service/runtime/services/values/channels/owner "dobi" ^config {^secret_file filename ^library "/fake-adapter"}
+      {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
     (let route (configure_route service/runtime/services/values/channels/owner "dobi" "C123" workspace))
     (bind_workspace service/runtime/services/values/channels workspace route/id)
     (body service/runtime/services/values/channels)
@@ -59,12 +65,12 @@
       (fn [workspace]
         (fixture workspace (fn [channels]
           (let calls ($cell 0))
-          (set channels/users (open_users ^requester (fn [request]
+          (requester .set (fn [request]
             (calls .set (+ calls/.get 1))
             ($assert (== request/method "chat.getPermalink"))
             ($assert (== request/http_method "GET"))
             ($assert (== request/params {^channel "C123" ^message_ts "1.000001"}))
-            (response {^^ok ^channel "C123" ^permalink "https://example.slack.com/archives/C123/p1000001"}))))
+            (response {^^ok ^channel "C123" ^permalink "https://example.slack.com/archives/C123/p1000001"})))
           (let input {^account "dobi" ^team "T123" ^channel "C123" ^thread "1.000001"})
           (for index in [1 2]
             ($assert (== (/body/url (channel_request channels "POST" "/api/v9/channels/thread" input))
@@ -75,7 +81,7 @@
           (mutate channels/owner (fn [state]
             (state/deliveries .put "new-reply"
               {^intent (input .assoc "mode" "post") ^parts [{^status "sent" ^ts "2.000001"}]})))
-          (set channels/users/requester (fn [request]
+          (requester .set (fn [request]
             (calls .set (+ calls/.get 1))
             ($assert (== request/params/message_ts "2.000001"))
             (response {^^ok ^channel "C123" ^permalink "https://example.slack.com/archives/C123/p2000001"})))
@@ -88,12 +94,12 @@
       (fn [workspace]
         (fixture workspace (fn [channels]
           (let calls ($cell 0))
-          (set channels/users (open_users ^requester (fn [request]
+          (requester .set (fn [request]
             (calls .set (+ calls/.get 1))
             ($assert (== request/method "conversations.info"))
             ($assert (== request/http_method "GET"))
             ($assert (== request/params/channel "C123"))
-            (response {^^ok ^channel {^id "C123" ^name "team-dobi"}}))))
+            (response {^^ok ^channel {^id "C123" ^name "team-dobi"}})))
           (let input {^account "dobi" ^team "T123" ^channel "C123"})
           (for index in [1 2]
             ($assert (== (/body/name (channel_request channels "POST" "/api/v9/channels/channel" input)) "team-dobi")))
@@ -107,11 +113,11 @@
       (fn [workspace]
         (fixture workspace (fn [channels]
           (let calls ($cell []))
-          (set channels/users (open_users ^requester (fn [request]
+          (requester .set (fn [request]
             (calls/.get .push request/method)
             (if (== request/method "users.info")
               (response {^!ok ^error "missing_scope"})
-              (response {^^ok ^channel {^id "C123" ^name "team-dobi"}})))))
+              (response {^^ok ^channel {^id "C123" ^name "team-dobi"}}))))
           ($assert (== (/body/name (channel_request channels "POST" "/api/v9/channels/user"
             {^account "dobi" ^team "T123" ^author "UOWNER"})) ""))
           ($assert (== (/body/name (channel_request channels "POST" "/api/v9/channels/channel"
@@ -130,19 +136,19 @@
       (fn [workspace]
         (fixture workspace (fn [channels]
           (let calls ($cell 0))
-          (set channels/users (open_users ^requester (fn [request]
+          (requester .set (fn [request]
             (calls .set (+ calls/.get 1))
             ($assert (== request/method "users.info"))
             ($assert (== request/http_method "GET"))
             ($assert (== request/params/user "UOWNER"))
             ($assert (== request/headers/authorization "Bearer xoxb-test"))
-            (response {^^ok ^user {^id "UOWNER" ^profile {^real_name "Guoliang Cao"}}}))))
+            (response {^^ok ^user {^id "UOWNER" ^profile {^real_name "Guoliang Cao"}}})))
           (let input {^account "dobi" ^team "T123" ^author "UOWNER"})
           (for index in [1 2]
             (let result (channel_request channels "POST" "/api/v9/channels/user" input))
             ($assert (== result/body/name "Guoliang Cao")))
           ($assert (== calls/.get 1))
-          ($assert (try (lookup_user channels/users channels/owner (input .assoc "team" "TOTHER")) false
+          ($assert (try (lookup channels "user" (input .assoc "team" "TOTHER")) false
             catch ChannelError (== $err/code "forbidden")))
           ($assert (try (channel_request channels "POST" "/api/v9/channels/user"
             (input .assoc "account" "other")) false catch ChannelError (== $err/code "forbidden")))
@@ -155,9 +161,10 @@
           (let calls ($cell 0))
           (let users (open_users ^requester (fn [request]
             (calls .set (+ calls/.get 1)) (response {^!ok ^error "missing_scope"}))))
+          (let account (/accounts (snapshot channels/owner); .get "dobi"))
           (for author in ["UOWNER" "UOTHER" "UOWNER"]
-            ($assert (== (/name (lookup_user users channels/owner
-              {^account "dobi" ^team "T123" ^author author})) "")))
+            ($assert (== (/name (lookup_name users account "user"
+              {^team "T123" ^author author})) "")))
           ($assert (== calls/.get 1)))))))
 
   (it "rejects mismatched Slack identities without failing the transcript" []
@@ -166,7 +173,8 @@
         (fixture workspace (fn [channels]
           (let users (open_users ^requester (fn [request]
             (response {^^ok ^user {^id "UOTHER" ^profile {^real_name "Wrong person"}}}))))
-          ($assert (== (/name (lookup_user users channels/owner
-            {^account "dobi" ^team "T123" ^author "UOWNER"})) ""))))))))
+          (let account (/accounts (snapshot channels/owner); .get "dobi"))
+          ($assert (== (/name (lookup_name users account "user"
+            {^team "T123" ^author "UOWNER"})) ""))))))))
 
 (fn main [args] : Int (run_spec args))

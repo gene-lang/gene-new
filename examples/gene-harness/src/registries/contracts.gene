@@ -174,14 +174,21 @@
 # under /callback/<owner><path> and verify their own protocol (signature,
 # OAuth state). The host computes the prefix, so routes stay in the
 # contributor's namespace.
-# A chat transport (Slack, or any plugin's own). The channel host keeps
-# queues, authority and delivery receipts; a transport row supplies
-# connection state and is selected by name. Its channel initiator
-# (`kind "channel"`, `^transport` = name) admits its work.
+# A chat transport (Slack, or any plugin's own), selected by an account's
+# `transport`. The channel host keeps queues, authority, ingress and delivery
+# receipts; the row supplies state, render, send/remove/reconcile, lookups,
+# setup verification and settings (src/channels/transports.gene). The host
+# registers `<name>/channel` for configured accounts unless a plugin already
+# contributes that transport's channel initiator.
 (fn validate_channel_transport_row [candidate]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
           (! ($runtime/callable? candidate/state)))
     (fail (HarnessError ^message "a channel transport requires a name and a callable state")))
+  (for field in ["render" "send" "remove" "reconcile" "lookup" "verify_account" "verify_route" "settings"]
+    (if (&& ($present? (candidate .get field)) (! ($runtime/callable? (candidate .get field))))
+      (fail (HarnessError ^message $"channel transport ${field} must be callable"))))
+  (if (&& ($present? candidate/pace_ms) (|| (!= ($head candidate/pace_ms) Int) (< candidate/pace_ms 0)))
+    (fail (HarnessError ^message "channel transport pace_ms must be a non-negative Int")))
   candidate)
 
 (fn validate_http_route_row [candidate]

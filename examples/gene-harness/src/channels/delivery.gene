@@ -1,8 +1,12 @@
 (mod channel_delivery)
+# Delivery receipts, part claims, pacing and thread ordering are the host's;
+# they survive a transport swap. The account's `channel_transports` row only
+# performs the external effect for one part (`send`, `remove`) and the
+# read-only recovery scan (`reconcile`), and classifies its own failures.
 (import [last_thread_message] ^from "./thread_links")
 (import [snapshot mutate read] ^from "./store")
-(import [channel_error copy key required_text identifier slack_ts remember_message] ^from "./model")
-(import [api_call SlackError] ^from "./slack_api")
+(import [channel_error copy key required_text identifier message_id remember_message ChannelError] ^from "./model")
+(import [transport_row transport_call transport_outcome] ^from "./transports")
 
 (fn normalize_intent [supplied]
   (let parts supplied/parts)
@@ -28,16 +32,16 @@
    ^route (required_text supplied/route "route ID")
    ^workspace (required_text supplied/workspace "workspace directory" ^max_bytes 4096)
    ^account (required_text supplied/account "account ID")
-   ^team (identifier supplied/team "T" "team ID")
-   ^channel (identifier supplied/channel "CG" "channel ID")
-   ^thread (if (== mode "thread") nil (slack_ts supplied/thread))
+   ^team (identifier supplied/team "team ID")
+   ^channel (identifier supplied/channel "channel ID")
+   ^thread (if (== mode "thread") nil (message_id supplied/thread))
    ^session (required_text supplied/session "session ID")
    ^round (required_text supplied/round "round ID")
    ^revision revision ^mode mode ^parts (copy parts)})
   (if (== supplied/remove true) (intent .put "remove" true))
   (if_yes (== mode "thread")
     (if (|| (!= ($head supplied/through) Int) (< supplied/through 0))
-      (channel_error "invalid_request" "A new Slack thread needs its conversation boundary."))
+      (channel_error "invalid_request" "A new channel thread needs its conversation boundary."))
     (intent .put "through" supplied/through)
     (if_not ($absent? supplied/archived_rounds)
       (let archived supplied/archived_rounds)
@@ -51,9 +55,13 @@
   [intent/id intent/owner intent/route intent/workspace intent/account intent/team
    intent/channel intent/thread intent/session intent/round intent/mode])
 
+# Quotas are per transport app and team (one account each).
+(fn quota_group [account] : Str
+  ($to_str account/transport "/" (?? account/app account/bot_user) "/" account/team))
+
 (fn record_quota [state, account_id : Str, method : Str, until : Int]
   (let account (state/accounts .get account_id))
-  (let id ($to_str method "/" account/app "/" account/team))
+  (let id ($to_str method "/" (quota_group account)))
   (if ($absent? state/rate_limits) (state .put "rate_limits" {}))
   (state/rate_limits .put id ($math/max (?? (state/rate_limits .get id) 0) until)))
 
@@ -123,7 +131,7 @@
     (let previous (state/deliveries .get intent/id))
     (if (&& (== intent/mode "thread") ($absent? previous)
             (|| (!= route/enabled true) (!= (/enabled (state/accounts .get intent/account)) true)))
-      (channel_error "unavailable" "The Slack channel connection is disabled."))
+      (channel_error "unavailable" "The channel connection is disabled."))
     (if_yes ($present? previous)
       (if (!= (delivery_identity previous/intent) (delivery_identity intent))
         (channel_error "submission_conflict" "Delivery destination changed."))
@@ -197,7 +205,7 @@
   (required_text reason "delivery resolution reason" ^max_bytes 1024)
   (if (! (["sent" "retry" "failed"] .contains? decision))
     (channel_error "invalid_request" "Choose sent, retry or failed for the delivery part."))
-  (if (== decision "sent") (slack_ts ts))
+  (if (== decision "sent") (message_id ts))
   (mutate owner (fn [state]
     (let record (state/deliveries .get id))
     (if (|| ($absent? record) (!= record/intent/revision revision)
@@ -270,7 +278,7 @@
       (channel_error "invalid_request" "Invalid output outcome."))
     (if (&& (== outcome/status "sent")
             (! (&& (== record/intent/remove true) ($absent? outcome/ts))))
-      (part .put "ts" (slack_ts outcome/ts)))
+      (part .put "ts" (message_id outcome/ts)))
     (part .put "status" outcome/status)
     (part .put "error" (?? outcome/error nil))
     (part .put "retry_at" (?? outcome/retry_at 0))
@@ -281,25 +289,10 @@
     (summarize_delivery record)
     record) ^changes {^deliveries [id] ^rate_limits nil}))
 
-(fn remove_progress [api, intent, part]
-  # The timestamp comes only from this owner's earlier progress delivery. A
-  # status that was never posted needs no Slack call and no invented timestamp.
-  (if ($absent? part/ts) (return {^status "sent" ^ts nil}))
-  (try
-    (api_call api "chat.delete" {^channel intent/channel ^ts part/ts})
-    {^status "sent" ^ts part/ts}
-  catch SlackError
-    (if (== $err/code "message_not_found")
-      (then {^status "sent" ^ts part/ts})
-      (elif (["rate_limited" "transport_unknown" "server_unknown" "invalid_response" "internal_error"
-            "fatal_error" "request_timeout" "service_unavailable"] .contains? $err/code) {^status "pending" ^error $err/code
-         ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))})
-      (else {^status "failed" ^error $err/code}))
-  catch Error {^status "pending" ^error "unconfirmed_removal" ^retry_at (+ ($os/wall_ms) 1000)}))
-
-(fn deliver_output [owner, api, id : Str, ^max_parts maximum : Int = 512]
+(fn deliver_output [owner, adapter, id : Str, ^max_parts maximum : Int = 512]
   (let original (output_result owner id))
   (let revision original/intent/revision)
+  (let account (read owner (fn [state] (state/accounts .get original/intent/account))))
   (var index 0)
   (var sent 0)
   (while (< index original/parts/.size)
@@ -307,31 +300,25 @@
     (if_yes ($present? claimed)
       (let intent claimed/intent)
       (if_yes (== intent/remove true)
-        (let removed (remove_progress api intent claimed/part))
+        # The ID comes only from this owner's earlier progress delivery. A
+        # status that was never posted needs no external call, and a transport
+        # that cannot delete messages leaves its last status in place.
+        (let removed (if (|| ($absent? claimed/part/ts) (! ($runtime/callable? adapter/remove)))
+          {^status "sent" ^ts claimed/part/ts}
+          (transport_outcome adapter "remove"
+            {^account account ^intent intent ^delivery id ^part claimed/part}
+            {^status "pending" ^error "unconfirmed_removal" ^retry_at (+ ($os/wall_ms) 1000)})))
         (finish_part owner id revision index removed)
         (break))
-      (let rendered intent/parts/%index)
-      (let data {^channel intent/channel ^text rendered/text ^parse "none"
-        ^metadata {^event_type "gene_harness_delivery"
-          ^event_payload {^delivery id ^part index ^revision revision ^body_digest (key rendered)}}})
-      (if_not ($absent? rendered/blocks) (data .put "blocks" rendered/blocks))
       (let update ($present? claimed/part/ts))
-      (if update (then (data .put "ts" claimed/part/ts))
-        (else
-          (data .put "unfurl_links" false) (data .put "unfurl_media" false)
-          (let thread (if (== intent/mode "thread")
-            (if (== index 0) nil (/ts (/0 (/parts (output_result owner id))))) intent/thread))
-          (if_not ($absent? thread) (data .put "thread_ts" thread))))
-      (let outcome (try
-        (let response (api_call api (if update "chat.update" "chat.postMessage") data))
-        {^status "sent" ^ts (slack_ts response/ts)}
-        catch SlackError
-          (if (== $err/code "rate_limited")
-            (then {^status "pending" ^error "rate_limited" ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))})
-            (elif (["transport_unknown" "server_unknown" "invalid_response" "internal_error"
-                  "fatal_error" "request_timeout" "service_unavailable"] .contains? $err/code) {^status "uncertain" ^error $err/code})
-            (else {^status "failed" ^error $err/code}))
-        catch Error {^status "uncertain" ^error "unconfirmed_response"}))
+      (let thread (if update nil
+        (if (== intent/mode "thread")
+          (if (== index 0) nil (/ts (/0 (/parts (output_result owner id)))))
+          intent/thread)))
+      (let outcome (transport_outcome adapter "send"
+        {^account account ^intent intent ^delivery id ^revision revision ^index index
+         ^part intent/parts/%index ^ts claimed/part/ts ^thread thread}
+        {^status "uncertain" ^error "unconfirmed_response"}))
       (finish_part owner id revision index outcome)
       (set sent (+ sent 1))
       (if (|| (!= outcome/status "sent") (>= sent maximum)) (break)))
@@ -340,8 +327,9 @@
 
 # Read-only recovery: never import thread history into model context and never
 # treat an absent search result as proof that an unknown post can be replayed.
-# One bounded page per call keeps Socket Mode processing independent of lookup.
-(fn reconcile_remote [owner, api, id : Str]
+# The transport scans one bounded page per call and returns the parts it
+# matched exactly once, plus its next cursor.
+(fn reconcile_remote [owner, adapter, id : Str]
   (let original (output_result owner id))
   (if (!= original/status "uncertain") (return original))
   (if (&& (== original/reconcile_error "rate_limited")
@@ -356,13 +344,8 @@
     nil) ^changes {^deliveries [id]})
   (let account (/accounts (snapshot owner); .get original/intent/account))
   (let new_root (&& (== original/intent/mode "thread") (!= original/parts/0/status "sent")))
-  (let thread (if (== original/intent/mode "thread") original/parts/0/ts original/intent/thread))
-  (let query {^channel original/intent/channel
-    ^include_all_metadata true ^limit 100})
-  (if_not new_root (query .put "ts" thread))
-  (if_not ($absent? original/reconcile_cursor) (query .put "cursor" original/reconcile_cursor))
-  (let response (try (api_call api (if new_root "conversations.history" "conversations.replies") query ^http_method "GET")
-    catch SlackError
+  (let response (try (transport_call adapter "reconcile" {^account account ^delivery original ^new_root new_root})
+    catch ChannelError
       (let failure $err)
       (if (== failure/code "rate_limited")
         (mutate owner (fn [state]
@@ -374,27 +357,96 @@
               (record_quota state record/intent/account "read" record/reconcile_after)))
           nil) ^changes {^deliveries [id] ^rate_limits nil}))
       (fail failure)))
-  (for part in original/parts
-    (if (!= part/status "uncertain") (continue))
-    (let index part/index)
-    (let matches [])
-    (for message in (?? response/messages [])
-      (let metadata message/metadata)
-      (let external metadata/event_payload)
-      (if (&& (== message/user account/bot_user) (== metadata/event_type "gene_harness_delivery")
-               (== external/delivery id) (== external/part part/index)
-               (== external/revision original/intent/revision)
-               (if new_root (== (?? message/thread_ts message/ts) message/ts)
-                 (== (?? message/thread_ts message/ts) thread))
-               (== external/body_digest (key original/intent/parts/%index)))
-        (matches .push message)))
-    (if (== matches/.size 1)
-      (finish_part owner id original/intent/revision part/index {^status "sent" ^ts matches/0/ts})))
+  (for found in (?? response/matches [])
+    (let index found/index)
+    (if (|| (!= ($head index) Int) (< index 0) (>= index original/parts/.size)) (continue))
+    (if (== original/parts/%index/status "uncertain")
+      (finish_part owner id original/intent/revision index {^status "sent" ^ts found/ts})))
   (mutate owner (fn [state]
     (let record (state/deliveries .get id))
     (if (!= record/intent/revision original/intent/revision) (return record))
-    (let cursor response/response_metadata/next_cursor)
+    (let cursor response/cursor)
     (record .put "reconcile_cursor" (if (|| ($absent? cursor) (== cursor "")
       (&& new_root (== record/parts/0/status "sent"))) nil cursor))
     (record .put "reconcile_at" ($os/wall_ms))
     record) ^changes {^deliveries [id]}))
+
+# The delivery scheduler. Uncertain or blocked parts hold later output in the
+# same thread; server backoffs are restored from durable quotas before any
+# other channel is considered; each channel is paced by its transport's
+# `pace_ms` (default 1100). `adapter` overrides the account's transport row.
+(fn health [service, id : Str, code : Str]
+  (service/health/.get .put id {^connected false ^code code ^at ($os/wall_ms)}))
+
+(fn backoff_until [service, id : Str, wall_deadline : Int]
+  (let remaining (- wall_deadline ($os/wall_ms)))
+  (if (> remaining 0)
+    (service/next_send/.get .put id
+      ($math/max (?? (service/next_send/.get .get id) 0) (+ ($os/monotonic_ms) remaining)))))
+
+(fn delivery_adapter [service, account, supplied]
+  (if ($present? supplied) supplied (transport_row service/runtime account/transport)))
+
+(fn deliver_pending [service, ^adapter supplied = nil]
+  (let owner service/owner)
+  (let state (read owner (fn [state]
+    (let active {})
+    (for [id record] in state/deliveries
+      (if (["accepted" "uncertain"] .contains? record/status) (active .put ($to_str id) record)))
+    {^accounts state/accounts ^rate_limits (?? state/rate_limits {}) ^deliveries active})))
+  (let deliveries [])
+  (for [id delivery] in state/deliveries (deliveries .push delivery))
+  (for [id until] in (?? state/rate_limits {}) (backoff_until service ($to_str id) until))
+  (for delivery in deliveries
+    (let account (state/accounts .get delivery/intent/account))
+    (if ($absent? account) (continue))
+    (let group (quota_group account))
+    (for part in delivery/parts
+      (if (== part/error "rate_limited")
+        (backoff_until service ($to_str "write/" group) (?? part/retry_at 0))))
+    (if (== delivery/reconcile_error "rate_limited")
+      (backoff_until service ($to_str "read/" group) (?? delivery/reconcile_after 0))))
+  (let blocked {})
+  (for delivery in ($order/sort_by deliveries /sequence)
+    (let id delivery/intent/id)
+    (let thread ($to_str delivery/intent/workspace "/" delivery/intent/session))
+    (if ($has_key? blocked thread) (continue))
+    (if (== delivery/status "delivered") (continue))
+    (let account (state/accounts .get delivery/intent/account))
+    (if (|| ($absent? account) (! account/enabled)) (continue))
+    (let group (quota_group account))
+    (var adapter nil)
+    (try (set adapter (delivery_adapter service account supplied))
+      catch ChannelError (health service delivery/intent/account $err/code))
+    (if_yes ($absent? adapter) (blocked .put thread true) (continue))
+    (let pace (?? adapter/pace_ms 1100))
+    (if_yes (== delivery/status "uncertain")
+      (blocked .put thread true)
+      (if (&& (>= ($os/wall_ms) (?? delivery/reconcile_after (+ (?? delivery/reconcile_at 0) 30000)))
+              (>= ($os/monotonic_ms) (?? (service/next_send/.get .get ($to_str "read/" group)) 0)))
+        (try
+          (reconcile_remote owner adapter id)
+          (service/next_send/.get .put ($to_str "read/" group) (+ ($os/monotonic_ms) pace))
+        catch Error
+          (backoff_until service ($to_str "read/" group) (+ ($os/wall_ms) (?? $err/retry_after_ms 30000)))
+          (health service delivery/intent/account (?? $err/code "reconcile_unavailable"))))
+      (continue))
+    (if (!= delivery/status "accepted") (continue))
+    (let channel ($to_str delivery/intent/team "/" delivery/intent/channel))
+    (if (> ($math/max (?? (service/next_send/.get .get channel) 0)
+                     (?? (service/next_send/.get .get ($to_str "write/" group)) 0)) ($os/monotonic_ms))
+      (then (blocked .put thread true) (continue)))
+    (try
+      (let result (deliver_output owner adapter id ^max_parts 1))
+      (var delay pace)
+      (for part in result/parts
+        (if (== part/error "rate_limited")
+          (then
+            (set delay ($math/max delay (- (?? part/retry_at 0) ($os/wall_ms))))
+            (backoff_until service ($to_str "write/" group) (?? part/retry_at 0)))))
+      (service/next_send/.get .put channel (+ ($os/monotonic_ms) delay))
+      (if (!= result/status "delivered") (blocked .put thread true))
+    catch Error
+      (blocked .put thread true)
+      (health service delivery/intent/account (?? $err/code "delivery_error"))))
+  nil)

@@ -2,26 +2,26 @@
 (import [isolated run_spec test_service] ^from "../../support")
 (import [close_session_service] ^from "../../../src/web/session_service")
 (import [configure_account configure_route snapshot open_authority close_channel_store] ^from "../../../src/channels/authority")
-(import [open_transport close_transport socket_session reconcile_connections deliver_pending] ^from "../../../src/channels/transport")
-(import [accept_output begin_part recover_deliveries reconcile_remote] ^from "../../../src/channels/delivery")
+(import [open_transport close_transport socket_session reconcile_connections] ^from "../../../src/builtin/slack/transport")
+(import [accept_output begin_part recover_deliveries reconcile_remote deliver_pending] ^from "../../../src/channels/delivery")
 (import [key] ^from "../../../src/channels/model")
 (import [slack] ^from "../../../src/builtin/slack")
 (import [put_cordis_plugin provide withdraw_seam replace : replace_seam] ^from "../../../src/kernel")
-(import [channel_host_binding] ^from "../../../src/channels/host")
+(import [channel_host_binding local_channel_host] ^from "../../../src/channels/host")
 (import [bind_workspace receive_handoff] ^from "../../../src/channels/service")
-(import [receive_envelope] ^from "../../../src/channels/ingress")
 (import [queue_status hold_queue] ^from "../../../src/channels/queue")
 (import [submit] ^from "../../../src/web/session_service")
 (import [ChannelError] ^from "../../../src/channels/model")
+(import [receive_slack slack_row] ^from "../../channel_support")
 
 (fn fixture [workspace, body, ^builtin builtin : Bool = false]
-  (let harness (test_service ^workspace workspace ^without_plugins (if builtin [] ["slack"])
+  (let harness (test_service ^workspace workspace ^channel_options (if builtin nil {^start false})
     ^provider (fn [request] "(Outcome ^^done ^reply \"Done.\")")))
   (try
     (let filename ($path/join workspace "fake-slack-credentials"))
     ($fs/write_text filename "Bot user oauth token: xoxb-test\nApp token: xapp-test\nChannel id: C12345678\n")
-    (configure_account harness/runtime/services/values/channels/owner "dobi" filename "/test-adapter"
-      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (configure_account harness/runtime/services/values/channels/owner "dobi" ^config {^secret_file filename ^library "/test-adapter"}
+      {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
     (body harness)
   ensure (close_session_service harness)))
 
@@ -48,7 +48,7 @@
               ($assert (== ($size harness/runtime/sessions/index/.get) 0))
               (acknowledgments/.get .push id))
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})
-          (let transport (open_transport harness/runtime/services/values/channels ^driver driver ^start false
+          (let transport (open_transport (local_channel_host harness/runtime/services/values/channels) ^driver driver ^start false
             ^requester (fn [request] ($assert false "unexpected API request"))))
           (try
             (socket_session transport "A123" (/accounts (snapshot harness/runtime/services/values/channels/owner); .get "dobi"))
@@ -66,15 +66,15 @@
             ^receive (fn [native socket] frame/.get)
             ^ack (fn [native socket id] ($assert false "unqualified socket acknowledged input"))
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})
-          (let transport (open_transport harness/runtime/services/values/channels ^driver driver ^start false
+          (let transport (open_transport (local_channel_host harness/runtime/services/values/channels) ^driver driver ^start false
             ^requester (fn [request] ($assert false "unexpected API request"))))
           (try
             (let account (/accounts (snapshot harness/runtime/services/values/channels/owner); .get "dobi"))
             ($assert (try (socket_session transport "A123" account) false
-              catch ChannelError (== $err/code "invalid_hello")))
+              catch Error (== $err/code "invalid_hello")))
             (frame .set {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 2})
             ($assert (try (socket_session transport "A123" account) false
-              catch ChannelError (== $err/code "conflicting_receiver")))
+              catch Error (== $err/code "conflicting_receiver")))
             ($assert (== closed/.get 2))
           ensure (close_transport transport)))))))
 
@@ -83,8 +83,8 @@
       (fn [workspace]
         (fixture workspace (fn [harness]
           (let primary (/accounts (snapshot harness/runtime/services/values/channels/owner); .get "dobi"))
-          (configure_account harness/runtime/services/values/channels/owner "second-team" primary/secret_file "/test-adapter"
-            {^team "T456" ^app "A123" ^bot "B456" ^bot_user "UBOT2" ^operator "UOWNER2"})
+          (configure_account harness/runtime/services/values/channels/owner "second-team" ^config primary/config
+            {^transport "slack" ^team "T456" ^app "A123" ^bot "B456" ^bot_user "UBOT2" ^operator "UOWNER2"})
           (let opened ($cell 0)) (let closed ($cell 0)) (let reads ($cell 0))
           (let driver {^load (fn [filename] nil)
             ^connect (fn [api native app] (opened .set (+ opened/.get 1)) (reads .set 0) opened/.get)
@@ -96,7 +96,7 @@
                 (else nil)))
             ^ack (fn [native socket id] nil)
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})
-          (let transport (open_transport harness/runtime/services/values/channels ^driver driver
+          (let transport (open_transport (local_channel_host harness/runtime/services/values/channels) ^driver driver
             ^requester (fn [request] ($assert false "unexpected API request"))))
           (try
             (let due (+ ($os/monotonic_ms) 5000))
@@ -107,7 +107,6 @@
             (close_transport transport)
             ($assert (== opened/.get closed/.get))
             ($assert (== ($size transport/jobs/.get) 0))
-            ($assert (== ($size transport/apis/.get) 0))
           ensure (close_transport transport)))))))
 
   (it "paces ordered parts per channel and applies Retry-After to other threads too" []
@@ -122,20 +121,21 @@
               {^status 429 ^headers [["Retry-After" "60"]] ^body ($binary/from_str "{}")}
               {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify
                 {^^ok ^ts ($to_str calls/.get/.size ".000002")}))})))
-          (let transport (open_transport harness/runtime/services/values/channels ^start false ^requester requester))
-          (try
+          (let channels harness/runtime/services/values/channels)
+          (let deliver (fn [] (deliver_pending channels ^adapter (slack_row requester))))
+          (do
             (let base {^id "ordered" ^owner route/owner ^route route/id ^workspace workspace
               ^account "dobi" ^team "T123" ^channel "C123" ^thread "1.000001"
               ^session "pace-session" ^round "pace-round" ^parts [{^text "First"} {^text "Second"}]})
             (accept_output harness/runtime/services/values/channels/owner base)
             (accept_output harness/runtime/services/values/channels/owner
               (base .assoc "id" "another-thread"; .assoc "thread" "2.000001"; .assoc "parts" [{^text "Third"}]))
-            (deliver_pending transport) (deliver_pending transport)
+            (deliver) (deliver)
             ($assert (== calls/.get/.size 1))
-            ($sleep 1120) (deliver_pending transport)
+            ($sleep 1120) (deliver)
             ($assert (== calls/.get/.size 2))
             ($assert (>= (- calls/.get/1/at calls/.get/0/at) 1100))
-            ($sleep 1120) (deliver_pending transport)
+            ($sleep 1120) (deliver)
             ($assert (== ($map calls/.get /text) ["First" "Second" "Third"]))
             ($sleep 1120)
             (limited .set true)
@@ -147,24 +147,21 @@
             (accept_output harness/runtime/services/values/channels/owner
               (base .assoc "id" "other-channel"; .assoc "channel" "C456"; .assoc "route" other/id
                     ; .assoc "workspace" other/workspace; .assoc "parts" [{^text "Another channel must wait"}]))
-            (deliver_pending transport)
+            (deliver)
             ($assert (== calls/.get/.size 4))
             # Replacing the progress payload must not erase the app/team quota.
             (accept_output harness/runtime/services/values/channels/owner
               (base .assoc "id" "limited"; .assoc "mode" "progress"; .assoc "revision" 1
                     ; .assoc "parts" [{^text "Latest progress"}]))
-            ($assert (> (transport/next_send/.get .get "T123/C123") (+ ($os/monotonic_ms) 58000)))
-            (deliver_pending transport)
+            ($assert (> (channels/next_send/.get .get "T123/C123") (+ ($os/monotonic_ms) 58000)))
+            (deliver)
             ($assert (== calls/.get/.size 4))
-            (close_transport transport)
-            (close_channel_store harness/runtime/services/values/channels/owner)
-            (set harness/runtime/services/values/channels/owner (open_authority ($path/join harness/runtime/state_root "channels" "owner")))
-            (let restored (open_transport harness/runtime/services/values/channels ^start false ^requester requester))
-            (try
-              (deliver_pending restored)
-              ($assert (== calls/.get/.size 4) "owner restart lost the workspace-wide Retry-After")
-            ensure (close_transport restored))
-          ensure (close_transport transport)))))))
+            # A restarted owner has no in-memory pacing; durable quotas restore it.
+            (close_channel_store channels/owner)
+            (set channels/owner (open_authority ($path/join harness/runtime/state_root "channels" "owner")))
+            (channels/next_send .set {})
+            (deliver)
+            ($assert (== calls/.get/.size 4) "owner restart lost the workspace-wide Retry-After")))))))
 
   (it "persists and shares read reconciliation backoffs across channels and owner restarts" []
     (isolated this_mod/.path "persists and shares read reconciliation backoffs across channels and owner restarts"
@@ -184,19 +181,14 @@
             ($assert (== request/method "conversations.replies"))
             (calls .set (+ calls/.get 1))
             {^status 429 ^headers [["Retry-After" "60"]] ^body ($binary/from_str "{}")}))
-          (let transport (open_transport harness/runtime/services/values/channels ^start false ^requester requester))
-          (try
-            (deliver_pending transport)
-            ($assert (== calls/.get 1))
-            (close_transport transport)
-            (close_channel_store harness/runtime/services/values/channels/owner)
-            (set harness/runtime/services/values/channels/owner (open_authority ($path/join harness/runtime/state_root "channels" "owner")))
-            (let restored (open_transport harness/runtime/services/values/channels ^start false ^requester requester))
-            (try
-              (deliver_pending restored)
-              ($assert (== calls/.get 1))
-            ensure (close_transport restored))
-          ensure (close_transport transport)))))))
+          (let channels harness/runtime/services/values/channels)
+          (deliver_pending channels ^adapter (slack_row requester))
+          ($assert (== calls/.get 1))
+          (close_channel_store channels/owner)
+          (set channels/owner (open_authority ($path/join harness/runtime/state_root "channels" "owner")))
+          (channels/next_send .set {})
+          (deliver_pending channels ^adapter (slack_row requester))
+          ($assert (== calls/.get 1)))))))
 
   (it "retires active plugin sockets on withdrawal and replacement while core queue holds survive" []
     (isolated this_mod/.path "retires active plugin sockets on withdrawal and replacement while core queue holds survive"
@@ -222,18 +214,22 @@
               {^^host ^limits harness/runtime/profile/limits} ^^replace)))
           (replace_seam harness/runtime/h "core" "channels/host"
             (channel_host_binding harness/runtime ^options {^driver driver ^requester requester}))
-          (install)
           (let wait_open (fn [count]
             (let due (+ ($os/monotonic_ms) 5000))
             (while (< opened/.get count)
               ($assert (< ($os/monotonic_ms) due) "plugin socket did not start") ($sleep 5))))
+          # The installed plugin reconnects through the new seam, then a
+          # same-id replacement hands its slot over: one socket at a time.
           (wait_open 1)
+          (install)
+          (wait_open 2)
+          ($assert (== closed/.get 1))
           ($assert (withdraw_seam harness/runtime/h "core" "channels/host"))
           ($assert (== opened/.get closed/.get))
           (for client in clients/.get ($assert client/closed/.get))
           (let route (configure_route harness/runtime/services/values/channels/owner "dobi" "C123" workspace))
           (bind_workspace harness/runtime/services/values/channels workspace route/id)
-          (let incoming (receive_envelope harness/runtime/services/values/channels/owner "dobi"
+          (let incoming (receive_slack harness/runtime/services/values/channels/owner "dobi"
             {^type "events_api" ^envelope_id "one" ^payload {^type "event_callback"
               ^api_app_id "A123" ^team_id "T123" ^event_id "Ev1"
               ^event {^type "message" ^user "UOWNER" ^channel "C123" ^ts "1.000001" ^text "<@UBOT> Queued request"}}}))
@@ -246,10 +242,10 @@
           ($assert (== (/pending (queue_status harness/runtime/services/values/channel_queues accepted/session)) 1))
           (provide harness/runtime/h "core" "channels/host"
             (channel_host_binding harness/runtime ^options {^driver driver ^requester requester}))
-          (wait_open 2)
-          (install)
           (wait_open 3)
-          ($assert (== closed/.get 2))
+          (install)
+          (wait_open 4)
+          ($assert (== closed/.get 3))
           ($assert (/held (queue_status harness/runtime/services/values/channel_queues accepted/session)))
           ($assert (== (/pending (queue_status harness/runtime/services/values/channel_queues accepted/session)) 1))
           (close_session_service harness)

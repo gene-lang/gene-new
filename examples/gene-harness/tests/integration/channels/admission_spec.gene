@@ -20,11 +20,11 @@
     (if (same? watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session))) (return nil))))
 
 (fn fixture [workspace, provider, body]
-  (let service (test_service ^workspace workspace ^provider provider ^without_plugins ["slack"]))
+  (let service (test_service ^workspace workspace ^provider provider ^channel_options {^start false}))
   (let owner (open_authority ($path/join workspace "test-authority")))
   (try
-    (configure_account owner "dobi" "/credential-reference" "/adapter.so"
-      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (configure_account owner "dobi" ^config {^secret_file "/credential-reference" ^library "/adapter.so"}
+      {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
     (let route (configure_route owner "dobi" "C123" workspace))
     (let queues service/runtime/services/values/channel_queues)
     (configure_queues queues route)

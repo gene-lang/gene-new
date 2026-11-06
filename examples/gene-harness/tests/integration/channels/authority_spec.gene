@@ -7,7 +7,7 @@
   ^from "../../../src/channels/model")
 
 (fn identity []
-  {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+  {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
 
 (describe "Channel authorization authority"
   (it "persists one revisioned policy and revocation across reopen without storing tokens" []
@@ -18,7 +18,7 @@
         (let revision ($cell 0))
         (let owner (open_authority root))
         (try
-          (configure_account owner "dobi" "/private/credential-reference" "/adapter.so" (identity))
+          (configure_account owner "dobi" ^config {^secret_file "/private/credential-reference" ^library "/adapter.so"} (identity))
           (let binding (configure_route owner "dobi" "C123" workspace))
           (selected .set binding/id)
           ($assert (/allowed (authorize owner binding/id "UOWNER" ^workspace workspace)))
@@ -50,9 +50,9 @@
       (fn [workspace]
         (let owner (open_authority ($path/join workspace "authority")))
         (try
-          (configure_account owner "dobi" "/reference" "/adapter.so" (identity))
+          (configure_account owner "dobi" ^config {^secret_file "/reference" ^library "/adapter.so"} (identity))
           (let binding (configure_route owner "dobi" "C123" workspace))
-          ($assert (try (configure_account owner "duplicate" "/reference" "/adapter.so" (identity)) false
+          ($assert (try (configure_account owner "duplicate" ^config {^secret_file "/reference" ^library "/adapter.so"} (identity)) false
             catch ChannelError (== $err/code "conflict")))
           ($assert (try (configure_route owner "dobi" "C456" workspace) false
             catch ChannelError (== $err/code "conflict")))

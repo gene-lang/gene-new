@@ -8,10 +8,12 @@
   ^from "../../../src/channels/authority")
 (import [bind_workspace receive_handoff drain_session project_events handoff_outputs]
   ^from "../../../src/channels/service")
-(import [receive_envelope] ^from "../../../src/channels/ingress")
+
 (import [pending_output deliver_output] ^from "../../../src/channels/delivery")
-(import [open_api close_api] ^from "../../../src/channels/slack_api")
+(import [open_api close_api] ^from "../../../src/builtin/slack/api")
 (import [ChannelError] ^from "../../../src/channels/model")
+(import [receive_slack] ^from "../../channel_support")
+(import [api_adapter] ^from "../../../src/builtin/slack/adapter")
 
 (fn frame [ts : Str, text : Str, ^author author : Str = "UOWNER", ^thread thread = nil,
            ^team team : Str = "T123", ^channel channel : Str = "C123"]
@@ -25,15 +27,15 @@
     (let at position/.get) (position .set (+ at 1)) frames/%at)})
 
 (fn fixture [workspace, body]
-  (let service (test_service ^workspace workspace ^without_plugins ["slack"]
+  (let service (test_service ^workspace workspace ^channel_options {^start false}
     ^provider (fn [request] "(Outcome ^^done)")))
   (let calls ($cell 0))
   (try
     (put_cordis_plugin service/runtime/h (qualification_provider calls)
       {^^host ^limits service/runtime/profile/limits})
     (set service/runtime/profile/provider "qualification")
-    (configure_account service/runtime/services/values/channels/owner "qualification" "/unused" "/unused"
-      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (configure_account service/runtime/services/values/channels/owner "qualification" ^config {^secret_file "/unused" ^library "/unused"}
+      {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
     (let route (configure_route service/runtime/services/values/channels/owner "qualification" "C123" workspace))
     (bind_workspace service/runtime/services/values/channels workspace route/id)
     (body service calls route)
@@ -79,7 +81,7 @@
     (isolated this_mod/.path "requires a reconciled final delivery rather than an empty outbox before projection"
       (fn [workspace]
         (fixture workspace (fn [service calls route]
-          (let incoming (receive_envelope service/runtime/services/values/channels/owner "qualification"
+          (let incoming (receive_slack service/runtime/services/values/channels/owner "qualification"
             (frame "1.000001" "<@UBOT> nonce")))
           (let accepted (receive_handoff service/runtime/services/values/channels incoming))
           ($assert ($absent? (completed_qualification service "1.000001")))
@@ -95,7 +97,7 @@
             {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts "2.000001"}))})))
           (try
             (for outgoing in (pending_output service/runtime/services/values/channel_queues)
-              (deliver_output service/runtime/services/values/channels/owner api outgoing/intent/id))
+              (deliver_output service/runtime/services/values/channels/owner (api_adapter api) outgoing/intent/id))
             ($assert ($absent? (completed_qualification service "1.000001")))
             (handoff_outputs service/runtime/services/values/channels ^^force)
             ($assert (== (/session (completed_qualification service "1.000001")) accepted/session))
@@ -107,8 +109,8 @@
         (for fail_retirement in [false true]
           (let root ($path/join workspace (if fail_retirement "failure" "ordinary")))
           (fixture root (fn [service calls route]
-            (configure_account service/runtime/services/values/channels/owner "other" "/unused" "/unused"
-              {^team "T456" ^app "A456" ^bot "B456" ^bot_user "UBOT2" ^operator "UOTHER"})
+            (configure_account service/runtime/services/values/channels/owner "other" ^config {^secret_file "/unused" ^library "/unused"}
+              {^transport "slack" ^team "T456" ^app "A456" ^bot "B456" ^bot_user "UBOT2" ^operator "UOTHER"})
             (let other (configure_route service/runtime/services/values/channels/owner "other" "C456" ($path/join root "other")))
             (if fail_retirement (close_channel_store service/runtime/services/values/channels/owner))
             (let checked ($cell false))

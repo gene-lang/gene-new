@@ -2,7 +2,7 @@
 (import [registry contribute rows registry_row_records] ^from "../kernel")
 (import [acquire_snapshot release_snapshot current_snapshot] ^from "./composition")
 (import [core_initiators core_source_owner initiator_matches?] ^from "./initiator_specs")
-(import [register_channel_initiators channel_source_owner] ^from "../channels/initiators")
+(import [channel_source_owner] ^from "../channels/initiators")
 (import [normalize_round_input] ^from "./input_metadata")
 (import [RoundError] ^from "./round_errors")
 (import [freeze_turn_data] ^from "./turn_data")
@@ -94,9 +94,8 @@
       ^prepare (fn [owner candidate] (prepare_initiator runtime owner candidate))
       ^callbacks ["normalize"] ^^same_owner
       ^reserved {^core/user core_source_owner ^core/trigger core_source_owner
-        ^core/parent core_source_owner ^core/continue core_source_owner ^slack/channel channel_source_owner}})
+        ^core/parent core_source_owner ^core/continue core_source_owner}})
   (for definition in (core_initiators) (contribute runtime/h core_source_owner "initiators" definition))
-  (register_channel_initiators runtime/h contribute)
   nil)
 
 (fn policy_rows [snapshot]

@@ -1,52 +1,41 @@
+# Owner setup: the transport verifies credentials and destinations; the host
+# records the resulting account and route. data/transport names the
+# `channel_transports` row; it may be omitted while only one is installed.
 (mod channel_setup)
 (import [configure_account configure_route snapshot route_key] ^from "./authority")
-(import [channel_error required_text] ^from "./model")
-(import [read_slack_credentials secret_path open_api close_api identify api_call
-         load_socket_library connect_socket socket_message] ^from "./slack_api")
+(import [channel_error transport_name] ^from "./model")
+(import [transport_row transport_call transport_rows] ^from "./transports")
+(import [ensure_channel_initiator] ^from "./initiators")
 (import [bind_workspace] ^from "./service")
 
-(fn setup_account [service, data]
-  (let filename (secret_path (required_text data/secret_file "credential reference" ^max_bytes 4096)))
-  (let library (secret_path (required_text data/library "native library reference" ^max_bytes 4096)))
-  (let credentials (read_slack_credentials filename))
-  (let client (open_api credentials/bot))
-  (try
-    (let identity (identify client credentials))
-    (if (! identity/member) (channel_error "forbidden" "Invite the Slack bot into the configured channel first."))
-    (if (== identity/operator "")
-      (channel_error "invalid_request" "Initial pairing requires the operator's Slack user token in the credential file."))
-    (let native (load_socket_library library))
-    (let socket (connect_socket client native credentials/app))
-    (try
-      (let due (+ ($os/monotonic_ms) 10000))
-      (var hello nil)
-      (while ($absent? hello)
-        (if (>= ($os/monotonic_ms) due) (channel_error "unavailable" "Slack connection hello timed out."))
-        (set hello (socket_message native socket))
-        (if ($absent? hello) ($sleep 5)))
-      (if (|| (!= hello/type "hello") (!= hello/connection_info/app_id identity/app))
-        (channel_error "forbidden" "The Slack app and bot tokens do not identify the same application."))
-    ensure ($C/close socket))
-    (let result (configure_account service/owner data/id filename library identity))
-    (result .put "channel" credentials/channel)
-    result
-  ensure (close_api client)))
+(fn sole_transport [runtime]
+  (let rows (transport_rows runtime))
+  (if (!= rows/.size 1)
+    (channel_error "invalid_request" "Name the channel transport for this account."))
+  rows/0/name)
 
-(fn setup_route [service, data]
+# ^row overrides the installed transport row (probes without a full host).
+(fn setup_account [service, data, ^row supplied = nil]
+  (let transport (transport_name (if ($present? data/transport) data/transport
+    (if ($present? supplied) supplied/name (sole_transport service/runtime)))))
+  (let row (if ($present? supplied) supplied (transport_row service/runtime transport)))
+  (let verified (transport_call row "verify_account" {^data data}))
+  (let identity (verified/identity .assoc "transport" transport))
+  (let result (configure_account service/owner data/id identity ^config (?? verified/config {})))
+  (if ($present? service/runtime/h) (ensure_channel_initiator service/runtime/h transport))
+  (if_not ($absent? verified/channel) (result .put "channel" verified/channel))
+  result)
+
+(fn setup_route [service, data, ^row supplied = nil]
   (let owner (snapshot service/owner))
   (let account (owner/accounts .get data/account))
-  (if ($absent? account) (channel_error "not_found" "Slack account not configured."))
+  (if ($absent? account) (channel_error "not_found" "Channel account not configured."))
   (let workspace (try ($fs/real_path data/workspace)
     catch Error (channel_error "not_found" "Create the routed workspace directory first.")))
-  (let previous (owner/routes .get (route_key data/account account/team data/channel)))
-  (if_yes ($absent? previous)
-    (let credentials (read_slack_credentials account/secret_file))
-    (let client (open_api credentials/bot))
-    (try
-      (let info (api_call client "conversations.info" {^channel data/channel} ^http_method "GET"))
-      (if (|| (!= info/channel/is_member true) (== info/channel/is_im true) (== info/channel/is_mpim true))
-        (channel_error "forbidden" "The bot must belong to the selected Slack channel."))
-    ensure (close_api client)))
+  (let previous (owner/routes .get (route_key account/transport data/account account/team data/channel)))
+  (if ($absent? previous)
+    (transport_call (if ($present? supplied) supplied (transport_row service/runtime account/transport))
+      "verify_route" {^account account ^channel data/channel}))
   (let route (configure_route service/owner data/account data/channel workspace
     ^approved (?? data/approved previous/approved) ^require_mention (?? data/require_mention (?? previous/require_mention true))
     ^enabled (?? data/enabled (?? previous/enabled true))))

@@ -1,23 +1,33 @@
-# The channel host owns durable input policy independently of Slack transport
-# activation, so queued and historical work remains inspectable while it is off.
+# The channel host owns durable input policy independently of any transport
+# plugin's activation, so queued and historical work remains admissible and
+# inspectable while that plugin is off. Each configured transport gets one
+# host-owned channel initiator, `<transport>/channel` with prefix
+# `channel:<transport>/`, unless a plugin already contributes that transport's.
 (mod channel_initiators)
-(import [normalize_channel_input render_parts] ^from "./model")
+(import [normalize_channel_input render_parts transport_name] ^from "./model")
 (import [RoundError] ^from "../runtime/round_errors")
+(import [contribute rows] ^from "../kernel")
 
 (const channel_source_owner "$host/channels")
 
-(fn normalize_slack_source [context, value]
-  (let input (normalize_channel_input value))
-  (if_not context/continued
-    (if (|| (!= context/initiator ($to_str "channel:slack/" input/account))
-            (!= context/text (render_parts input/messages)))
-      (fail (RoundError ^code "invalid_request" ^message "Channel request and origin metadata do not match."))))
-  input)
+(fn channel_source [transport : Str]
+  (fn [context, value]
+    (let input (normalize_channel_input value))
+    (if (!= input/transport transport)
+      (fail (RoundError ^code "invalid_request" ^message "Channel input belongs to another transport.")))
+    (if_not context/continued
+      (if (|| (!= context/initiator ($to_str "channel:" transport "/" input/account))
+              (!= context/text (render_parts input/messages)))
+        (fail (RoundError ^code "invalid_request" ^message "Channel request and origin metadata do not match."))))
+    input))
 
-(fn slack_initiator []
-  {^name "slack/channel" ^kind "channel" ^transport "slack" ^prefix "channel:slack/"
-   ^operator true ^normalize normalize_slack_source})
+(fn channel_initiator [transport : Str]
+  {^name ($to_str transport "/channel") ^kind "channel" ^transport transport
+   ^prefix ($to_str "channel:" transport "/") ^operator true ^normalize (channel_source transport)})
 
-(fn register_channel_initiators [h, contribute]
-  (contribute h channel_source_owner "initiators" (slack_initiator))
+(fn ensure_channel_initiator [h, transport : Str]
+  (transport_name transport)
+  (for existing in (rows h "initiators")
+    (if (&& (== existing/kind "channel") (== existing/transport transport)) (return nil)))
+  (contribute h channel_source_owner "initiators" (channel_initiator transport))
   nil)

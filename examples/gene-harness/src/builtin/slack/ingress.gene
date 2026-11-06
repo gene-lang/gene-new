@@ -1,0 +1,81 @@
+# Slack ingress normalization: a Socket Mode envelope becomes the channel
+# host's event shape. The host records it durably (dedup, authorization,
+# queue) before the reader acknowledges the envelope.
+(mod slack_ingress)
+(import [slack_error SlackError] ^from "./api")
+(import [decode_text] ^from "./text")
+(import [ChannelHost] ^from "../../plugin_api")
+
+(fn ^^private text_field [value, label : Str, ^max_bytes maximum : Int = 256] : Str
+  (if (|| (!= ($head value) Str) (== value "") (> value/.byte_size maximum))
+    (slack_error "invalid_request" ($to_str "Invalid Slack " label ".")))
+  value)
+
+(fn ^^private slack_id [value, prefixes : Str, label : Str] : Str
+  (text_field value label ^max_bytes 80)
+  (if (|| ($absent? (#"^[A-Z0-9]+$" .match value))
+          (! (prefixes .contains? ($str/slice_bytes value 0 1))))
+    (slack_error "invalid_request" ($to_str "Invalid Slack " label ".")))
+  value)
+
+(fn ^^private slack_ts [value] : Str
+  (text_field value "message timestamp" ^max_bytes 40)
+  (if ($absent? (#"^[0-9]{1,20}\.[0-9]{1,9}$" .match value))
+    (slack_error "invalid_request" "Invalid Slack message timestamp."))
+  value)
+
+# Slack integrations may append attribution to an otherwise literal command,
+# sometimes flattened onto the same line. Strip only that exact suffix and only
+# from a command; ordinary text and multiline !answer JSON stay unchanged.
+(fn command_text [text : Str] : Str
+  (let source text/.trim)
+  (let footer (#"\s+\*Sent using\*[ \t]+<@[UW][A-Z0-9]+(?:\|[^>\r\n]+)?>$" .match source))
+  (if ($absent? footer) (return text))
+  (let stripped ($str/trim ($str/slice_bytes source 0 footer/start)))
+  (if ($present? (#"^![a-z]" .match stripped)) stripped text))
+
+# nil: an envelope type Slack does not deliver work through (nothing to record).
+(fn normalize_envelope [account, envelope]
+  (text_field envelope/envelope_id "envelope ID")
+  (if (!= envelope/type "events_api") (return nil))
+  (let payload envelope/payload)
+  (if (|| (!= payload/type "event_callback") (!= payload/team_id account/team)
+          (!= payload/api_app_id account/app))
+    (slack_error "forbidden" "Slack event does not match the connected account."))
+  (let event_id (text_field payload/event_id "event ID"))
+  (let event payload/event)
+  (let result {^event_id event_id ^content event ^reason "unsupported_event"
+    ^raw {^team_id payload/team_id ^api_app_id payload/api_app_id ^event_id event_id ^event event}})
+  (if_not (&& (["message" "app_mention"] .contains? event/type)
+              ($absent? event/subtype) ($absent? event/bot_id)
+              (!= event/user account/bot_user)
+              (== ($head event/text) Str) (!= event/text/.trim ""))
+    (return result))
+  (let mention ($to_str "<@" account/bot_user ">"))
+  (let text (command_text (decode_text ($str/join (event/text .split mention) ""))))
+  # Malformed identities are recorded as ignored and acknowledged, so Slack
+  # does not redeliver an event no route could accept.
+  (let message (try
+    {^channel (slack_id event/channel "CG" "channel ID")
+     ^thread (slack_ts (?? event/thread_ts event/ts)) ^message (slack_ts event/ts)
+     ^author (slack_id event/user "UW" "author ID")
+     ^text (if (== text/.trim "") event/text text/.trim)}
+    catch SlackError nil))
+  (if_yes ($absent? message) (result .put "reason" "invalid_event") (return result))
+  (result .put "message" message)
+  (result .put "mentioned" (event/text .contains? mention))
+  (result .delete "reason")
+  result)
+
+# Returns the host's durable disposition (or an ignored status) once the
+# caller may acknowledge.
+(fn receive_envelope [channels, supplied, envelope]
+  (var account supplied)
+  (if_yes (== ($head supplied) Str)
+    (set account nil)
+    (for candidate in (channels .ChannelHost:accounts "slack")
+      (if (== candidate/id supplied) (set account candidate)))
+    (if ($absent? account) (slack_error "not_found" "Slack account not configured.")))
+  (let event (normalize_envelope account envelope))
+  (if ($absent? event) (return {^status "ignored" ^reason "unsupported_envelope"}))
+  (channels .ChannelHost:receive account/id event))

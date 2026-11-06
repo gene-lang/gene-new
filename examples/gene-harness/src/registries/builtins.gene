@@ -67,7 +67,8 @@
     # Default UI settings for a workspace with no saved UI state; a profile's
     # plugin (the workspace manager's) contributes the "default" row.
     {^name "ui_defaults" ^^unique}
-    {^name "channel_transports" ^^unique ^schema validate_channel_transport_row ^callbacks ["state" "start"]}
+    {^name "channel_transports" ^^unique ^schema validate_channel_transport_row
+     ^callbacks ["state" "render" "send" "remove" "reconcile" "lookup" "verify_account" "verify_route" "settings"]}
     # Recall for model-context ids with a feature prefix (e.g. "image."); the
     # longest matching prefix's `recall [session id]` answers.
     {^name "recall_sources" ^^unique ^key "prefix" ^callbacks ["recall"]}

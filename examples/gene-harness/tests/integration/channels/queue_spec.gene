@@ -13,8 +13,8 @@
   (let root ($path/join workspace "queues"))
   (let queues (open_queues root workspace))
   (try
-    (configure_account owner "dobi" "/credential-reference" "/adapter.so"
-      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (configure_account owner "dobi" ^config {^secret_file "/credential-reference" ^library "/adapter.so"}
+      {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
     (let route (configure_route owner "dobi" "C123" workspace ^approved ["UOWNER" "UOTHER"]))
     (configure_queues queues route)
     (body {^owner owner ^queues queues ^root root ^workspace workspace ^route route})

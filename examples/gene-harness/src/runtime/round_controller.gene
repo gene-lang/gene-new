@@ -1,7 +1,8 @@
 (mod round_controller)
 (import [effective_config] ^from "./settings_resolver")
 (import [operator_round? continuable_round?] ^from "./round_policy")
-(import [normalize_message] ^from "../channels/model")
+(import [normalize_message transport_label] ^from "../channels/model")
+(import [ensure_channel_initiator] ^from "../channels/initiators")
 (import [resolve_initiator make_initiator] ^from "./initiators")
 (import [RoundError] ^from "./round_errors" ^^export)
 (import [observe_round : observe_channel_round
@@ -214,7 +215,9 @@
       (let batch prepared/batch)
       (try
         (let admitted (submit_round_impl controller session batch/request_id batch/sequence batch/text
-          ^initiator (make_initiator controller/runtime/h "channel" batch/input/account ^transport batch/input/transport)
+          ^initiator (do
+            (ensure_channel_initiator controller/runtime/h batch/input/transport)
+            (make_initiator controller/runtime/h "channel" batch/input/account ^transport batch/input/transport))
           ^input batch/input
           ^on_admit (fn [receipt] (finish_channel_admission queues batch/id receipt))))
         {^kind "admitted" ^batch batch/id ^receipt admitted}
@@ -709,7 +712,7 @@
     (fail (RoundError ^code "invalid_request" ^message "A question answer has one input origin.")))
   (let source (if ($absent? channel_input)
     (if operator_input {^kind "harness" ^transport "harness"} nil) (normalize_message channel_input)))
-  (if_yes (== source/transport "slack")
+  (if_yes (&& ($present? source) (!= source/transport "harness"))
     (let bound (/channel (require_record controller/runtime/sessions session)))
     (if (|| ($absent? bound) (!= source/account bound/account) (!= source/team bound/team)
             (!= source/channel bound/channel) (!= source/thread bound/thread))
@@ -773,7 +776,8 @@
     (set answer_id $"${answer_base}#${answer_index}"))
   (let answer_origin (if ($absent? batch/answer_source)
     (then "")
-    (elif (== batch/answer_source/transport "slack") ($to_str " [Slack message " batch/answer_source/message " from " batch/answer_source/author "]"))
+    (elif (!= batch/answer_source/transport "harness")
+      ($to_str " [" (transport_label batch/answer_source/transport) " message " batch/answer_source/message " from " batch/answer_source/author "]"))
     (else " [User via Harness]")))
   (items .push {^id answer_id ^header ($to_str "[" answer_id "]" answer_origin) ^value ($to_str batch/answers)})
   (receipt .put "state" "running")

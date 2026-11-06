@@ -1,15 +1,41 @@
 (mod slack_plugin)
 (import [Plugin PluginHost ChannelHost] ^from "../plugin_api")
 (import [contribute_doc] ^from "../public/documentation")
+(import [slack_adapter close_adapter] ^from "./slack/adapter")
+(import [open_transport close_transport transport_loop] ^from "./slack/transport")
 
-(fn slack [] : Plugin
+# The Slack adapter: its `channel_transports` row (render, send, reconcile,
+# lookups, setup checks) and the Socket Mode receiver. The receiver is a slot
+# service ("channels/slack"): it starts after this activation is published,
+# and a successor that takes the slot makes it disconnect before the
+# successor connects (Slack allows one receiver per app). Queues, accounts and
+# receipts stay with the channel host and survive this plugin's retirement.
+# ^driver and ^requester (probes) apply when the host's channel options give none.
+(fn slack [^driver supplied_driver = nil, ^requester supplied_requester = nil] : Plugin
   (Plugin ^id "slack" ^requires ["channels/host"]
     ^activate (fn [host]
       (let channels (host .PluginHost:resolve "channels/host"))
-      channels/.ChannelHost:start
-      (host .PluginHost:contribute "channel_transports"
-        {^name "slack" ^summary "Slack Socket Mode transport."
-         ^state (fn [] channels/.ChannelHost:state)})
+      (let configured (?? channels/.ChannelHost:options {}))
+      (let options {^start configured/start ^driver (?? configured/driver supplied_driver)
+        ^requester (?? configured/requester supplied_requester)})
+      (let adapter (slack_adapter ^requester options/requester
+        ^state (fn [] channels/.ChannelHost:state)))
+      (host .PluginHost:defer (fn [] (close_adapter adapter)))
+      (host .PluginHost:contribute "channel_transports" adapter/row)
+      (host .PluginHost:contribute "feature_slots"
+        {^name "channels/slack" ^summary "The Slack Socket Mode receiver."})
+      # ^start false (tests, offline hosts) leaves the loop to the caller.
+      (if_yes (!= options/start false)
+        (let current ($cell nil))
+        (host .PluginHost:service "socket_mode" ^slot "channels/slack"
+          ^quiesce (fn []
+            (let transport current/.get)
+            (if ($present? transport) (close_transport transport)))
+          (fn []
+            (let transport (open_transport channels ^start false
+              ^driver options/driver ^requester options/requester))
+            (current .set transport)
+            (try (transport_loop transport) ensure (close_transport transport)))))
       (contribute_doc host "harness/channels"
         "Slack accounts, thread sessions, operator trust and queue controls."
         "examples/gene-harness/docs/channels.md" ^tags ["slack" "channels" "sessions"]))))

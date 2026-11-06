@@ -1,0 +1,60 @@
+# `channel_transports` rows: one per transport plugin, selected by an
+# account's `transport`. The host keeps queues, producer authority, ingress
+# and delivery receipts and thread-to-session mapping; a row supplies what
+# differs per transport (docs/channels.md, "Transports"):
+#   state []                                public connection state
+#   render {^text ^session ^reference ^settings ^kind}   -> [part]
+#   send {^account ^intent ^delivery ^revision ^index ^part ^ts ^thread} -> outcome
+#   remove {^account ^intent ^delivery ^part}            -> outcome
+#   reconcile {^account ^delivery ^new_root}             -> {^matches [{^index ^ts}] ^cursor}
+#   lookup {^kind ^account ^data}           display name or thread link
+#   verify_account {^data}                  -> {^identity ^config ^channel}
+#   verify_route {^account ^channel}        the bot may post there
+#   settings {^data}                        -> transport-specific settings
+#   pace_ms                                 minimum gap between posts per channel
+# An outcome is {^status sent|pending|uncertain|failed ^ts ^error ^retry_at}.
+# Transport errors reach callers as ChannelError with their code preserved.
+(mod channel_transports)
+(import [current_snapshot] ^from "../runtime/composition")
+(import [ChannelError channel_error transcript_reference] ^from "./model")
+
+(fn transport_rows [runtime]
+  (if (|| ($absent? runtime) ($absent? runtime/h) ($absent? runtime/h/snapshots)) (return []))
+  (let snapshot (current_snapshot runtime/h/snapshots))
+  ($map (?? (snapshot/registries .get "channel_transports") []) /payload))
+
+(fn transport_row [runtime, name : Str]
+  (for row in (transport_rows runtime)
+    (if (== row/name name) (return row)))
+  (channel_error "unavailable" ($to_str "The " name " channel transport is not installed.")))
+
+(fn ^^private as_channel_error [failure]
+  (if (== ($head failure) ChannelError) (return failure))
+  (ChannelError ^code (if (== ($head failure/code) Str) failure/code "transport_error")
+    ^message (if (== ($head failure/message) Str) failure/message "The channel transport failed.")
+    ^retry_after_ms (if (== ($head failure/retry_after_ms) Int) failure/retry_after_ms nil)))
+
+(fn transport_call [row, field : Str, request]
+  (let callback (row .get field))
+  (if (! ($runtime/callable? callback))
+    (channel_error "unsupported" ($to_str "The " row/name " transport does not support " field ".")))
+  (try (callback request)
+    catch Error (fail (as_channel_error $err))))
+
+# An external effect's outcome. A callback that fails without classifying its
+# effect gets `fallback`, which callers choose conservatively.
+(fn transport_outcome [row, field : Str, request, fallback]
+  (let outcome (try (transport_call row field request) catch Error fallback))
+  (if (|| (!= ($head outcome) Map)
+          (! (["sent" "pending" "uncertain" "failed"] .contains? outcome/status)))
+    fallback outcome))
+
+# The transport renders text into its parts; the host chooses the transcript
+# link that may leave the workspace. kind "title" renders a thread root.
+(fn render_text [runtime, settings, transport : Str, text : Str, session : Str, ^kind kind : Str = "reply"]
+  (let parts (transport_call (transport_row runtime transport) "render"
+    {^kind kind ^text text ^session session ^settings (?? settings {})
+     ^reference (transcript_reference session (?? settings/public_url nil))}))
+  (if (|| (!= ($head parts) List) parts/.empty?)
+    (channel_error "invalid_request" "The channel transport rendered no parts."))
+  parts)
