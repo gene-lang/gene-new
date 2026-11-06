@@ -6,7 +6,7 @@
 (import [provide] ^from "../../../src/kernel")
 (import [admission_host_binding] ^from "../../../src/runtime/admission_host")
 (import [close_round_controller round_state] ^from "../../../src/runtime/round_controller")
-(import [require_record] ^from "../../../src/runtime/sessions")
+(import [require_record list_sessions] ^from "../../../src/runtime/sessions")
 (import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
 (import [acquire_snapshot release_snapshot current_snapshot] ^from "../../../src/runtime/composition")
@@ -153,6 +153,27 @@
           (let occurrence (/0 (occurrences restarted/runtime "missed")))
           ($assert (== occurrence/state "skipped") ($to_str occurrence))
           ($assert (== occurrence/reason "missed"))
+        ensure (close_harness restarted)))))
+
+  (it "applies session retention when a scheduler starts" []
+    (isolated this_mod/.path "applies session retention when a scheduler starts"
+      (fn [root]
+        (let profile (Profile ^name "triggers" ^plugins [(triggers)]))
+        (fn trigger_sessions [runtime]
+          ($filter (list_sessions ^^all runtime/sessions) (fn [record] (== record/origin/trigger "kept"))))
+        (let harness (open_harness root profile (fn [request] (done))))
+        (try
+          (call harness/runtime "create_trigger" {^id "kept" ^kind "heartbeat" ^every_ms 150 ^request "Beat."
+            ^retention {^keep 1}})
+          ($assert (wait_until (fn [] (>= ($size (trigger_sessions harness/runtime)) 3)) ^ms 8000)
+            ($to_str ($size (trigger_sessions harness/runtime))))
+        ensure (close_harness harness))
+        (let counted (open_runtime root "default" profile ^!activate))
+        (let before (try ($size (trigger_sessions counted)) ensure (close_runtime counted)))
+        (let restarted (open_harness root profile (fn [request] (done))))
+        (try
+          ($assert (wait_until (fn [] (< ($size (trigger_sessions restarted/runtime)) before)))
+            $"retention kept ${($size (trigger_sessions restarted/runtime))} of ${before} sessions")
         ensure (close_harness restarted)))))
 
   (it "removes its functions, route and scheduler when disabled" []
