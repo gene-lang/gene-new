@@ -4,7 +4,7 @@
 # keep a seven-day dedup/reconciliation window; unresolved effects never expire.
 (fn compact_progress [state, table_name : Str, id : Str, record]
   # A stable progress ID may be updated long after its rendered body expires.
-  # Retain its identity, revision, digest and known Slack message timestamp on
+  # Retain its identity, revision, digest and known external message ID on
   # both sides, so asymmetric maintenance cannot reset or repost the message.
   (if (== table_name "outbox")
     (then

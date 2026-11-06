@@ -1,0 +1,82 @@
+# The triggers plugin's browser client: a toolbar button and a panel that
+# lists, creates and deletes trigger definitions through the plugin's own
+# route (/api/vN/p/triggers). Mounted by the host bridge; removed with the
+# plugin.
+(mod triggers_client ^profile web)
+(import [api_root] ^from "../../src/web/contract.gene")
+(import [text] ^from "../../src/common/launcher.gene")
+
+(fn route [suffix : Str] : Str $"${(api_root)}/p/triggers${suffix}")
+
+(fn load [state : Any] : Void
+  (var api : (Fn [Str Str Any (Fn [Int Any] Void)] Void) state/bridge/api)
+  (api "GET" (route "") nil (fn [code : Int, data : Any] : Void
+    (if_yes (!= code 200)
+      ($dom/set_text state/message "Triggers are unavailable.")
+      (return))
+    ($dom/clear state/list)
+    (var definitions : (List Any) data/triggers)
+    (if_yes (== definitions/.size 0)
+      ($dom/set_text state/message "No triggers yet.")
+      (return))
+    ($dom/set_text state/message "")
+    (for definition in definitions
+      (var id : Str definition/id)
+      (var kind_text : Str definition/kind)
+      (var request_text : Str definition/request)
+      (var summary : Str $" ${kind_text} · ${request_text}")
+      (var row ($dom/render `(div ^class_name "trigger-row" (strong %id) (span %summary))))
+      (var remove ($dom/render `(button ^type "button" "Delete")))
+      ($dom/add_event_listener remove "click" (fn [event : Any] : Void
+        (api "DELETE" (route $"/${($url/encode_component id)}") nil
+          (fn [status : Int, result : Any] : Void (load state)))))
+      ($dom/append row remove)
+      ($dom/append state/list row)))))
+
+(fn create [state : Any] : Void
+  (var api : (Fn [Str Str Any (Fn [Int Any] Void)] Void) state/bridge/api)
+  (var kind ($dom/input_value state/kind))
+  (var schedule ($dom/input_value state/schedule))
+  (var id ($dom/input_value state/id))
+  (var body ($dom/input_value state/request))
+  (var definition
+    (if (== kind "heartbeat") {^id id ^kind kind ^request body ^every_ms ($json/parse schedule)}
+      (if (== kind "scheduled") {^id id ^kind kind ^request body ^at schedule}
+        {^id id ^kind kind ^request body ^cron schedule})))
+  (api "POST" (route "") definition (fn [code : Int, result : Any] : Void
+    (if (== code 201)
+      (load state)
+      (do
+        (var problem (text result/message))
+        ($dom/set_text state/message (if (== problem "") "Could not create the trigger." problem)))))))
+
+(fn main [root : EventTarget] : Void
+  (var bridge : Any root/harness_bridge)
+  (var button ($dom/render `(button ^type "button" ^class_name "triggers-launcher" ^title "Triggers" "Triggers")))
+  (var panel ($dom/render `(section ^class_name "triggers-panel" ^aria-label "Triggers" ^^hidden)))
+  (var list ($dom/render `(div ^class_name "triggers-list")))
+  (var message ($dom/render `(div ^class_name "triggers-message" ^role "status" ^aria-live "polite")))
+  (var id ($dom/render `(input ^type "text" ^placeholder "id" ^aria-label "Trigger id")))
+  (var kind ($dom/render `(select ^aria-label "Kind" (option ^value "heartbeat" "heartbeat")
+    (option ^value "scheduled" "scheduled") (option ^value "cron" "cron"))))
+  (var schedule ($dom/render `(input ^type "text" ^placeholder "every_ms, UTC time or cron" ^aria-label "Schedule")))
+  (var request ($dom/render `(textarea ^placeholder "Request" ^aria-label "Request")))
+  (var submit ($dom/render `(button ^type "button" "Create")))
+  (var state {^bridge bridge ^list list ^message message ^id id ^kind kind ^schedule schedule ^request request ^open false})
+  (set root/harness_controller
+    {^dispose (fn [] : Void ($dom/remove button) ($dom/remove panel))
+     ^update (fn [status : Any] : Void nil)
+     ^key (fn [event : Any] : Bool false)})
+  ($dom/append root panel)
+  (for element in [list message id kind schedule request submit] ($dom/append panel element))
+  (var toolbar : EventTarget bridge/toolbar)
+  ($dom/append toolbar button)
+  ($dom/add_event_listener button "click" (fn [event : Any] : Void
+    (if_yes state/open
+      (set state/open false)
+      ($dom/set_attribute panel "hidden" "")
+      (return))
+    (set state/open true)
+    ($dom/remove_attribute panel "hidden")
+    (load state)))
+  ($dom/add_event_listener submit "click" (fn [event : Any] : Void (create state))))

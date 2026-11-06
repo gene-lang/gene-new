@@ -4,7 +4,8 @@
 (import [HarnessError] ^from "../errors")
 (import [validate_keyboard_action_row validate_setting_row validate_settings_group_row validate_setting_choices_row validate_seam_row validate_command_row validate_function_row validate_input_mode_row
   validate_provider_row validate_speech_row validate_decision_engine_row validate_image_generator_row validate_hook_row
-  validate_hook_point_row validate_trigger_row validate_interaction_row
+  validate_hook_point_row validate_interaction_row
+  validate_feature_slot_row validate_service_row validate_http_route_row validate_channel_transport_row
   validate_prompt_row validate_docs_row validate_event_type_row validate_event_type_owner
   cancel_subscription_row] ^from "./contracts")
 (import [validate_theme validate_icon] ^from "../web/theme_registry")
@@ -12,6 +13,12 @@
 (import [validate_browser_client] ^from "../ui/browser_assets")
 (import [own_engine_resources] ^from "./resources")
 (import [prepare_command_callback prepare_prompt_callback] ^from "../runtime/callback_context")
+(import [api_root] ^from "../web/contract")
+
+(fn ^^private route_prefix [owner : Str, candidate]
+  (if (== candidate/kind "owner")
+    $"${(api_root)}/p/${owner}${candidate/path}"
+    $"/callback/${owner}${candidate/path}"))
 
 (fn builtin_registry_specs [h, lookup]
   (let discovery_reserved {^discover "" ^doc "" ^workspace "" ^manager "" ^session ""})
@@ -53,7 +60,21 @@
        (if ($absent? (lookup "hook_points" candidate/point))
          (fail (HarnessError ^message $"hook point ${candidate/point} is not available")))
        candidate)}
-    {^name "triggers" ^^unique ^schema validate_trigger_row ^key "id"}
+    # Not unique: several plugins may claim a slot. The holder is resolved from
+    # the published rows (runtime/activation_services.gene), never by order.
+    {^name "feature_slots" ^!unique ^schema validate_feature_slot_row}
+    {^name "services" ^^unique ^schema validate_service_row}
+    # Default UI settings for a workspace with no saved UI state; a profile's
+    # plugin (the workspace manager's) contributes the "default" row.
+    {^name "ui_defaults" ^^unique}
+    {^name "channel_transports" ^^unique ^schema validate_channel_transport_row
+     ^callbacks ["state" "render" "send" "remove" "reconcile" "lookup" "verify_account" "verify_route" "settings"]}
+    # Recall for model-context ids with a feature prefix (e.g. "image."); the
+    # longest matching prefix's `recall [session id]` answers.
+    {^name "recall_sources" ^^unique ^key "prefix" ^callbacks ["recall"]}
+    {^name "http_routes" ^^unique ^schema validate_http_route_row ^callbacks ["handle"]
+     ^key (fn [candidate] candidate/prefix)
+     ^prepare (fn [owner, candidate] (candidate .assoc "prefix" (route_prefix owner candidate)))}
     {^name "interactions" ^^unique ^schema validate_interaction_row
      ^callbacks ["validate_request" "validate_reply" "render"]}
     {^name "prompt" ^!unique ^^ordered ^schema validate_prompt_row ^callbacks ["render"]

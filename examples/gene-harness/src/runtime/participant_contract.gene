@@ -5,6 +5,15 @@
 (import [freeze_turn_data] ^from "./turn_data")
 
 (type ParticipantBindings ^props {^owner Str ^slot Str ^value Any})
+
+# Live bindings: callable values stay callable (the capability native
+# adapters use, now public); every other value is frozen inert data.
+(fn freeze_bindings [value]
+  (if (!= ($head value) Map) (return (freeze_turn_data value)))
+  (let out {})
+  (for [key item] in value
+    (out .put ($to_str key) (if ($runtime/callable? item) item (freeze_bindings item))))
+  ($freeze_shallow out))
 (type ParticipantCommit ^props {^items Any})
 (type ParticipantValidation ^props {^error Str? ^items Any ^defer_done Bool})
 
@@ -85,7 +94,7 @@
     (then
       (if ($absent? value) (return nil))
       (if (!= ($head value) Map) (contract_error name phase "Public bindings must be a data map."))
-      (return (ParticipantBindings ^owner owner ^slot slot ^value (freeze_turn_data value)))))
+      (return (ParticipantBindings ^owner owner ^slot slot ^value (freeze_bindings value)))))
   (if (== phase "commit")
     (return (ParticipantCommit ^items (public_request_items name context phase value))))
   (if (== phase "validate_outcome")

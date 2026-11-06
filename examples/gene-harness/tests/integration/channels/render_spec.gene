@@ -1,11 +1,12 @@
 (import $test [describe it])
 (import [run_spec] ^from "../../support")
-(import [render_reply transcript_reference] ^from "../../../src/channels/render")
+(import [render_reply] ^from "../../../src/builtin/slack/render")
+(import [transcript_reference] ^from "../../../src/channels/model")
 
 (describe "Slack output rendering"
   (it "renders Markdown and mrkdwn while keeping literal controls inert and images in the transcript" []
     (let text "# Result\n**Done** & <@U123> <!here>\n[Docs](https://example.com/a?b=1&c=2)\n![Logo](/api/v1/media/asset_1)\n![Other](https://example.com/a.png)")
-    (let parts (render_reply text "session-1"))
+    (let parts (render_reply text (transcript_reference "session-1" nil)))
     (let body parts/0/text)
     ($assert (body .contains? "*Result*"))
     ($assert (body .contains? "*Done* &amp; &lt;@U123&gt; &lt;!here&gt;"))
@@ -14,7 +15,7 @@
     ($assert (! (body .contains? "/api/v1/media")))
     ($assert (body .contains? "![Other](https://example.com/a.png)"))
     ($assert parts/0/blocks/0/text/verbatim)
-    (let native (render_reply text "session-1" ^surface "markdown" ^public_url "https://harness.example.com/"))
+    (let native (render_reply text (transcript_reference "session-1" "https://harness.example.com/") ^surface "markdown"))
     ($assert (native/0/text .contains? "# Result"))
     ($assert (== native/0/blocks/0/type "markdown"))
     ($assert (native/0/text .contains? "https://harness.example.com/?session=session-1"))
@@ -25,7 +26,7 @@
     (let long [])
     (repeat 250 (long .push "雪 and code"))
     (let text ($to_str "Intro\n```gene\n" ($str/join long "\n") "\n```\n[docs](https://example.com/reference) end"))
-    (let parts (render_reply text "session-1" ^max_bytes 256))
+    (let parts (render_reply text "Harness session session-1" ^max_bytes 256))
     ($assert (> parts/.size 5))
     (for part in parts
       ($assert (<= part/text/.byte_size 256))

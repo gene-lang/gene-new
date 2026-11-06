@@ -1,0 +1,48 @@
+# Workspace housekeeping owned by the loop, independent of any feature plugin:
+# unreferenced body collection, idle session unloading and question deadlines
+# of automated (non-interactive) rounds. It used to ride on the trigger
+# scheduler's tick, so disabling triggers silently stopped it.
+(mod housekeeping)
+(import [effective_config note_active_setting] ^from "./settings_resolver")
+(import [list_sessions load_session update_session unload_idle_sessions] ^from "./sessions")
+(import [answer_round] ^from "./round_controller")
+(import [collect_unreferenced_bodies] ^from "../agents/history")
+
+(fn ^^private expire_automated_questions [runtime, controller, now : Int]
+  (for record in (list_sessions runtime/sessions ^status "waiting")
+    (if (== record/kind "interactive") (continue))
+    (let loaded (load_session runtime/sessions record/id))
+    (let receipt loaded/round/.get)
+    (let deadline receipt/questions/deadline)
+    (if_yes (&& ($present? deadline) (<= deadline now))
+      (update_session runtime/sessions record/id {^^attention})
+      (answer_round controller record/id receipt/questions/id {} ^^dismiss))))
+
+(fn housekeeping_tick [state, ^now now = nil]
+  (let runtime state/runtime)
+  (if (|| state/closed/.get runtime/stopping/.get) (return nil))
+  (let instant (?? now ($os/wall_ms)))
+  (try (expire_automated_questions runtime state/controller instant)
+    catch Any ($println $"Housekeeping: ${$err/message}"))
+  (if_yes (&& runtime/body_gc_pending/.get (>= (- instant state/last_gc/.get) state/gc_interval))
+    (if (collect_unreferenced_bodies runtime) (state/last_gc .set instant)))
+  (unload_idle_sessions runtime/sessions)
+  nil)
+
+(fn open_housekeeping [runtime, controller, ^poll_ms poll_ms : Int = 250, ^start start : Bool = true]
+  (let config (effective_config runtime))
+  (let gc_interval (note_active_setting runtime "body_gc_interval_ms" config/body_gc_interval_ms))
+  (let state {^runtime runtime ^controller controller ^closed ($cell false) ^task ($cell nil)
+    ^last_gc ($cell 0) ^gc_interval (if (&& (== ($head gc_interval) Int) (> gc_interval 0)) gc_interval 60000)})
+  (if start
+    (state/task .set (spawn ^lane root
+      (while (! state/closed/.get)
+        ($sleep poll_ms)
+        (try (housekeeping_tick state) catch Any ($println $"Housekeeping: ${$err/message}"))))))
+  state)
+
+(fn close_housekeeping [state]
+  (if (state/closed .swap true) (return nil))
+  (let task state/task/.get)
+  (if_not ($absent? task) task/.cancel (try task/.join catch Any nil))
+  nil)

@@ -1,7 +1,8 @@
 (mod round_controller)
 (import [effective_config] ^from "./settings_resolver")
 (import [operator_round? continuable_round?] ^from "./round_policy")
-(import [normalize_message] ^from "../channels/model")
+(import [normalize_message transport_label] ^from "../channels/model")
+(import [ensure_channel_initiator] ^from "../channels/initiators")
 (import [resolve_initiator make_initiator] ^from "./initiators")
 (import [RoundError] ^from "./round_errors" ^^export)
 (import [observe_round : observe_channel_round
@@ -39,8 +40,7 @@
 (import ^from "./workspace_lock" [close_workspace_lock])
 (import ^from "../kernel" [RoundChanged publish contribute])
 (import [CommandResult] ^from "../plugin_api")
-(import [note_delegation_round queue_delegation_answer
-  close_delegation_owner prepare_delegations_stop] ^from "./delegations")
+(import [dispatch_round_event claimed?] ^from "./round_lifecycle")
 (import [decision_available?] ^from "./decision_service")
 
 (type RoundController ^props {^runtime Any ^rounds Any ^closed Any})
@@ -215,7 +215,9 @@
       (let batch prepared/batch)
       (try
         (let admitted (submit_round_impl controller session batch/request_id batch/sequence batch/text
-          ^initiator (make_initiator controller/runtime/h "channel" batch/input/account ^transport batch/input/transport)
+          ^initiator (do
+            (ensure_channel_initiator controller/runtime/h batch/input/transport)
+            (make_initiator controller/runtime/h "channel" batch/input/account ^transport batch/input/transport))
           ^input batch/input
           ^on_admit (fn [receipt] (finish_channel_admission queues batch/id receipt))))
         {^kind "admitted" ^batch batch/id ^receipt admitted}
@@ -263,9 +265,8 @@
   (if_not found (receipts .push (copy_data receipt)))
   # A superseded pause may still own running children; the delegation host
   # settles them. Never take a delegation gate here.
-  (if_not ($absent? controller/runtime/services/values/delegations)
-    (for superseded in superseded_receipts
-      (note_delegation_round controller/runtime/services/values/delegations session superseded)))
+  (for superseded in superseded_receipts
+    (dispatch_round_event controller/runtime "round/saved" {^session session ^receipt superseded}))
   (let retained (if (> receipts/.size receipt_limit)
     ($drop receipts (- receipts/.size receipt_limit)) receipts))
   (let all {^next_seq ($math/max state/next_seq (+ receipt/submission_seq 1)) ^receipts retained})
@@ -308,8 +309,9 @@
   (let failure (match outcome
     (when (TaskOutcome/ok result) (["failed" "cancelled" "interrupted"] .contains? result/state))
     (else true)))
-  (if (&& failure ($present? controller/runtime/services/values/delegations))
-    (close_delegation_owner controller/runtime/services/values/delegations session receipt/id "The parent round failed or was cancelled."))
+  (if failure
+    (dispatch_round_event controller/runtime "round/closed"
+      {^session session ^round receipt/id ^reason "The parent round failed or was cancelled."}))
   (let saved (with_session_gate
     controller/runtime/sessions
     $"round/${session}"
@@ -361,8 +363,7 @@
   (save_round controller session saved)
   (let frame (controller/rounds/.get .get session))
   (frame .put "task" nil)
-  (if_not ($absent? controller/runtime/services/values/delegations)
-    (note_delegation_round controller/runtime/services/values/delegations session saved))
+  (dispatch_round_event controller/runtime "round/saved" {^session session ^receipt saved})
   saved)
 
 (fn start_round_task [controller : RoundController, session : Str, receipt, ^resume resume : Bool = false]
@@ -514,7 +515,7 @@
       ^digest digest
       ^state "running"
       ^initiator initiator
-      ^initiator_kind source/name ^operator source/operator
+      ^initiator_kind source/name ^operator source/operator ^check_in_use source/check_in
       ^prompt text
       ^selection admission/selection
       ^request text
@@ -711,7 +712,7 @@
     (fail (RoundError ^code "invalid_request" ^message "A question answer has one input origin.")))
   (let source (if ($absent? channel_input)
     (if operator_input {^kind "harness" ^transport "harness"} nil) (normalize_message channel_input)))
-  (if_yes (== source/transport "slack")
+  (if_yes (&& ($present? source) (!= source/transport "harness"))
     (let bound (/channel (require_record controller/runtime/sessions session)))
     (if (|| ($absent? bound) (!= source/account bound/account) (!= source/team bound/team)
             (!= source/channel bound/channel) (!= source/thread bound/thread))
@@ -750,8 +751,9 @@
 # The recorded continuation of an answered batch: answering, and recovery
 # after a crash between the answer and this step, both run it exactly once.
 (fn continue_answered_round [controller : RoundController, session : Str, receipt, batch, ^dispatched dispatched : Bool = false]
-  (if_yes (&& (! dispatched) ($present? controller/runtime/services/values/delegations)
-          (queue_delegation_answer controller/runtime/services/values/delegations session receipt batch))
+  (if_yes (&& (! dispatched)
+          (claimed? (dispatch_round_event controller/runtime "round/answered"
+            {^session session ^receipt receipt ^batch batch})))
     (receipt .put "questions" batch)
     (receipt .put "resume_queued" true)
     (save_round controller session receipt)
@@ -774,7 +776,8 @@
     (set answer_id $"${answer_base}#${answer_index}"))
   (let answer_origin (if ($absent? batch/answer_source)
     (then "")
-    (elif (== batch/answer_source/transport "slack") ($to_str " [Slack message " batch/answer_source/message " from " batch/answer_source/author "]"))
+    (elif (!= batch/answer_source/transport "harness")
+      ($to_str " [" (transport_label batch/answer_source/transport) " message " batch/answer_source/message " from " batch/answer_source/author "]"))
     (else " [User via Harness]")))
   (items .push {^id answer_id ^header ($to_str "[" answer_id "]" answer_origin) ^value ($to_str batch/answers)})
   (receipt .put "state" "running")
@@ -840,8 +843,9 @@
 (fn cancel_round [controller : RoundController, session : Str, id : Str, ^from_delegation from_delegation : Bool = false]
   (let result (with_session_gate controller/runtime/sessions $"round/${session}"
     (fn [] (cancel_round_locked controller session id))))
-  (if (&& (! from_delegation) ($present? controller/runtime/services/values/delegations))
-    (close_delegation_owner controller/runtime/services/values/delegations session result/id "The parent round was cancelled."))
+  (if (! from_delegation)
+    (dispatch_round_event controller/runtime "round/closed"
+      {^session session ^round result/id ^reason "The parent round was cancelled."}))
   result)
 
 (fn cancel_round_locked [controller, session : Str, id : Str]
@@ -869,8 +873,7 @@
 
 (fn close_round_controller [controller : RoundController]
   (if (controller/closed .swap true) (return nil))
-  (if_not ($absent? controller/runtime/services/values/delegations)
-    (prepare_delegations_stop controller/runtime/services/values/delegations []))
+  (dispatch_round_event controller/runtime "host/stopping" {})
   (for [session frame] in controller/rounds/.get
     (if_not ($absent? frame/task) frame/task/.cancel))
   (for [session frame] in controller/rounds/.get
@@ -894,8 +897,7 @@
     (fail
       (RoundError ^code "confirmation_required" ^message $"Other sessions are running: ${names}. Confirm /stop or /restart.")))
   (runtime/stopping .set true)
-  (if_not ($absent? runtime/services/values/delegations)
-    (prepare_delegations_stop runtime/services/values/delegations []))
+  (dispatch_round_event runtime "host/stopping" {})
   (runtime/services/values/commands/accepting .set false)
   (var exit_code code)
   (if (&& (== code 75) (!= runtime/supervised true) (!= ($os/env? "GENE_HARNESS_SUPERVISED") "1"))

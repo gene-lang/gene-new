@@ -3,21 +3,30 @@
 (import [sdk_modules] ^from "../../../src/runtime/plugin_sdk")
 
 (describe "Built-in import boundary"
-  (it "admits only public dependencies" []
+  (it "admits only public dependencies and the plugin's own modules" []
+    # A built-in is src/builtin/<id>.gene plus optional private modules under
+    # src/builtin/<id>/; both may import only the SDK and that directory.
     (let shared (sdk_modules))
     (let root ($path/join this_pkg/root "src" "builtin"))
-    (for name in ($fs/list_dir root)
-      (if_not ($str/ends_with? name ".gene") (continue))
-      (for form in ($parse/read_all ($fs/read_text ($path/join root name)))
+    (let files [])
+    (for entry in ($into ($fs/walk root) [])
+      (if (|| (!= entry/kind "file") (! ($str/ends_with? entry/relative_path ".gene"))) (continue))
+      (let path ($path/join root entry/relative_path))
+      (let first (/0 ($str/split entry/relative_path "/")))
+      (files .push {^path path ^plugin (if ($str/ends_with? first ".gene")
+        ($str/slice_bytes first 0 (- ($str/byte_size first) 5)) first)}))
+    (for file in files
+      (let own ($to_str ($path/join root file/plugin) "/"))
+      (for form in ($parse/read_all ($fs/read_text file/path))
         (if_not (["import" "import_impl"] .contains? ($to_str ($head form))) (continue))
         # Native libraries and explicitly named Gene/genex packages are public.
         (if (|| (!= ($head form/from) Str) ($present? form/pkg)) (continue))
         (let path form/from)
-        (let file_path ($path/join root name))
-        (let resolved ($path/normalize ($path/join ($path/parent file_path)
+        (let resolved ($path/normalize ($path/join ($path/parent file/path)
           (if ($str/ends_with? path ".gene") path ($to_str path ".gene")))))
-        ($assert (shared .contains? ($path/relative resolved this_pkg/root))
-          $"${name} imports host internals: ${path}; use a narrow public protocol"))))
+        ($assert (|| (shared .contains? ($path/relative resolved this_pkg/root))
+                     ($str/starts_with? resolved own))
+          $"${file/path} imports host internals: ${path}; use a narrow public protocol"))))
 
   (it "keeps public helpers independent of private host implementation modules" []
     (let shared (sdk_modules))

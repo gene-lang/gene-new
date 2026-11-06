@@ -2,7 +2,7 @@
 (import [last_thread_message] ^from "./thread_links")
 (import [open_channel_store close_channel_store snapshot mutate read has_queue?] ^from "./store" ^^export)
 (import [channel_error copy key normalize_message binding_key message_key
-         normalize_channel_input render_parts required_text remember_message] ^from "./model")
+         normalize_channel_input render_parts required_text remember_message transport_name] ^from "./model")
 
 (fn open_queues [root : Str, workspace : Str]
   (let store (open_channel_store root "workspace"
@@ -19,6 +19,7 @@
       (channel_error "forbidden" "The channel route belongs to another workspace."))
     (let source {^id (required_text route/id "route ID")
       ^owner (required_text route/owner "connection owner")
+      ^transport (transport_name route/transport)
       ^account (required_text route/account "account ID") ^team route/team
       ^channel route/channel ^workspace state/workspace})
     (if (&& ($present? state/source) (!= state/source source))
@@ -108,7 +109,7 @@
     (if_yes ($absent? binding)
       (let session new_session)
       (set binding {^id thread ^session session ^status "pending" ^root_input id
-        ^transport "slack" ^account message/account ^team message/team
+        ^transport message/transport ^account message/account ^team message/team
         ^channel message/channel ^thread message/thread})
       (state/bindings .put thread binding)
       (state/queues .put session {^session session ^binding thread ^revision 0
@@ -342,7 +343,7 @@
       (return {^kind "held" ^reason "oversized"}))
     (let id proposed)
     (let first parts/0)
-    (let input (normalize_channel_input {^kind "channel" ^transport "slack"
+    (let input (normalize_channel_input {^kind "channel" ^transport first/transport
       ^account first/account ^team first/team ^channel first/channel ^thread first/thread
       ^batch id ^messages parts}))
     (let batch {^id id ^session session ^status "prepared" ^members ids

@@ -1,18 +1,35 @@
 # Runtime-owned persistence and publisher adapters. The kernel retains only
 # callbacks; it neither imports these subsystems nor holds their live objects.
 (mod plugin_services)
-(import [append_plugin_event prepare_plugin_state plugin_state append_core_event] ^from "../storage/state")
+(import [append_plugin_event prepare_plugin_state plugin_state append_core_event
+  record_core_state core_state core_states_with_prefix flush_event_store] ^from "../storage/state")
+(import [new_activation_services register_service] ^from "./activation_services")
 (import [safe_publish update_notification list_source_messages clear_source_message] ^from "../notifications/publisher")
 (import [HarnessError] ^from "../errors")
 
 (type PluginServices ^^private ^props {^notify Fn ^notifications Fn
-  ^notification_update Fn ^notification_clear Fn ^emit_event Fn ^state Fn ^update_state Fn})
+  ^notification_update Fn ^notification_clear Fn ^emit_event Fn ^state Fn ^update_state Fn
+  ^put_record Fn ^delete_record Fn ^record Fn ^records Fn ^service Fn ^activation_services Any})
+
+# Feature records are workspace-scoped and keyed by kind and key. They belong
+# to the feature, not to the plugin id that wrote them, so a replacement
+# implementation reads the same records. Reads always go to the projection,
+# which is the authoritative state.
+(fn ^^private record_storage_key [kind : Str, key : Str] : Str
+  $"record|${kind}|${key}")
+
+(fn ^^private validate_record_name [kind, key]
+  (if (|| (!= ($head kind) Str) (== kind "") (> ($str/byte_size kind) 128) ($str/contains? kind "|"))
+    (fail (HarnessError ^message "A record kind must be a nonempty name of at most 128 bytes without '|'.")))
+  (if (|| (!= ($head key) Str) (== key "") (> ($str/byte_size key) 256))
+    (fail (HarnessError ^message "A record key must be a nonempty string of at most 256 bytes."))))
 
 (fn require_events [events]
   (if ($absent? events)
     (fail (HarnessError ^message "plugin persistence requires a durable event store"))))
 
 (fn new_plugin_services [events, inbox = nil]
+  (let services (new_activation_services))
   ($freeze_shallow (PluginServices
     ^notify (fn [h, owner, revision, message]
       (safe_publish ^revision revision h inbox owner message))
@@ -31,4 +48,38 @@
       (writer .put "at" ($to_str ($now)))
       (let event (prepare_plugin_state ^writer writer events scope stream owner value))
       (append_core_event ^projection owner events scope stream event)
-      value))))
+      value)
+    ^put_record (fn [owner, kind, key, value]
+      (require_events events)
+      (validate_record_name kind key)
+      (if ($absent? value)
+        (fail (HarnessError ^message "A record value cannot be nil; use delete_record.")))
+      (record_core_state events "workspace" "workspace" "feature/record"
+        (record_storage_key kind key) {^kind kind ^key key ^value value ^writer owner})
+      (flush_event_store events)
+      value)
+    ^delete_record (fn [owner, kind, key]
+      (require_events events)
+      (validate_record_name kind key)
+      (let existed ($present? (core_state events "workspace" "workspace" (record_storage_key kind key))))
+      (if_yes existed
+        (record_core_state events "workspace" "workspace" "feature/record"
+          (record_storage_key kind key) nil)
+        (flush_event_store events))
+      existed)
+    ^record (fn [kind, key]
+      (validate_record_name kind key)
+      (if ($absent? events) (return nil))
+      (let stored (core_state events "workspace" "workspace" (record_storage_key kind key)))
+      (if ($absent? stored) nil stored/value))
+    ^records (fn [kind]
+      (validate_record_name kind "-")
+      (if ($absent? events) (return []))
+      (let out [])
+      (for [storage_key stored] in
+          (core_states_with_prefix events "workspace" "workspace" $"record|${kind}|")
+        (out .push {^key stored/key ^value stored/value}))
+      ($order/sort_by out (fn [item] item/key)))
+    ^service (fn [h, owner, effects, name, thunk, slot, quiesce]
+      (register_service services h owner effects name thunk ^slot slot ^quiesce quiesce))
+    ^activation_services services)))

@@ -90,17 +90,33 @@
   (message page [id : Str, page : Int] : Any)
   (message store [name : Str, data, ^source source : Str = "upload"] : Any))
 
-(protocol TriggerHost
-  (message start [] : Any)
-  (message list [] : Any)
-  (message create [definition] : Any)
-  (message update [id : Str, changes] : Any)
-  (message delete [id : Str] : Any)
-  (message occurrences [^trigger trigger : Str = ""] : Any))
 
+# The channel host (seam "channels/host"): queues, authority and receipts
+# stay here; a transport plugin owns its connections and contributes a
+# `channel_transports` row (docs/channels.md, "Transports").
 (protocol ChannelHost
-  (message start [] : Any)
-  (message state [] : Any))
+  (message state [] : Any)
+  (message options [] : Any)
+  (message accounts [transport : Str] : Any)
+  (message receive [account : Str, event] : Any)
+  (message report [id : Str, connected : Bool, code : Str] : Any)
+  (message tick [] : Any))
+
+# Plugin work admission (AdmissionHost, seam "admission/host"). Rounds use the
+# caller's `initiators` row; identity, sequence and digest rules are the round
+# controller's. A retried request id returns its recorded receipt.
+(protocol AdmissionHost
+  (message create_session [^id id : Str = "", ^kind kind : Str = "automated", ^title title : Str = "",
+                           ^first_request first_request : Str = "", ^origin origin = nil] : Any)
+  (message session [session : Str] : Any)
+  (message sessions [^origin_owner origin_owner : Str = ""] : Any)
+  (message busy? [session : Str] : Bool)
+  (message update_session [session : Str, changes] : Any)
+  (message delete_session [session : Str] : Bool)
+  (message receipt [session : Str, request_id : Str] : Any)
+  (message check_model_settings [settings] : Any)
+  (message submit [session : Str, request_id : Str, text : Str, ^initiator initiator : Str,
+                   ^input input = nil, ^model_settings model_settings = nil] : Any))
 
 (protocol SessionHost
   (message record [session : Str] : Any)
@@ -197,6 +213,17 @@
   (message emit_event [name : Str, payload] : Any)
   (message state [^session session = nil] : Any)
   (message update_state [value, ^session session = nil] : Any)
+  # Feature records: workspace-scoped, keyed by kind and key, shared by every
+  # implementation of the feature. Reads always see the latest write.
+  (message put_record [kind : Str, key : Str, value] : Any)
+  (message delete_record [kind : Str, key : Str] : Bool)
+  (message record [kind : Str, key : Str] : Any)
+  (message records [kind : Str] : Any)
+  # Long-lived work outside callback deadlines. It starts after this
+  # activation is published (and, with ^slot, only while this plugin holds that
+  # feature_slots row); quiesce runs when it stops producing; it is cancelled
+  # when the activation retires.
+  (message service [name : Str, body, ^slot slot = nil, ^quiesce quiesce = nil] : Str)
   (message notify [message] : Any)
   (message notifications [] : Any)
   (message notification_update [id : Str, changes] : Any)

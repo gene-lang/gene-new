@@ -214,8 +214,8 @@ that activation retires. Their returned data collections are immutable.
 | Seam | Protocol and operations |
 | --- | --- |
 | `media/host` | `MediaHost`: `list`, `show id`, `import_file path`, `page id page`, `store name bytes`. Showing media requires an open turn in the same workspace. |
-| `triggers/host` | `TriggerHost`: `start`, `list`, `create definition`, `delete id`, `occurrences`. Scheduler activation belongs to the `triggers` plugin; other plugins normally use its contributed functions. |
-| `channels/host` | `ChannelHost`: `start` and `state`. The `slack` plugin owns transport activation; host-owned accounts and queues survive its replacement or disable. Status contains public identity/health data. |
+| `admission/host` | `AdmissionHost`: `create_session ^origin`, `session`, `sessions ^origin_owner`, `busy?`, `update_session`, `delete_session`, `receipt session request_id`, `check_model_settings`, and `submit session request_id text ^initiator ^input ^model_settings` through the caller's own `initiators` row. A retried request id returns its recorded receipt. |
+| `channels/host` | `ChannelHost`: `state`, `options`, `accounts`, `receive`, `report` and `tick`. A transport plugin (the built-in `slack`) owns its connections and contributes a `channel_transports` row; host-owned accounts, queues and receipts survive its replacement or disable. `state` contains public identity/health data. See [channels](channels.md#transports). |
 | `sessions/host` | Read-only `SessionHost`: `record session` and `round session`. `round` returns a projection of the loaded round or nil, with no session cells or manager. |
 | `decisions/host` | `DecisionHost`: `decide request`, `engines` and `status ^use`. Engine problems return a status; malformed questions raise. See [quick decisions](decisions.md). |
 | `voice/host` | `VoiceHost`: `output session` and `reset_if_unused`, for spoken-reply policy and activation cleanup. |
@@ -239,6 +239,39 @@ in `runtime/plugin_sdk.gene`; other paths under
 `src/public/` receive no implicit permission. Helpers cannot import private host
 implementation modules. Stored-plugin acceptance covers all helper families
 and restart, alongside rejection of private, undeclared and traversal paths.
+
+### Own a feature: services, slots, records and routes
+
+A feature can live entirely in its plugin. The `triggers` built-in is the
+reference ([source](../src/builtin/triggers.gene)).
+
+- `(host .PluginHost:service name body ^slot slot ^quiesce quiesce)` runs `body`
+  outside callback deadlines. It is a `services` row, so it starts only after its
+  activation is published; a failed replacement leaves the previous producer
+  running. `quiesce` runs when it stops producing (a successor took over, the
+  plugin was disabled, or the host is stopping), and the task is cancelled when
+  the activation retires. Stored activations restart on composition changes, so
+  a service must resume from its records.
+- A `feature_slots` row `{^name slot}` claims a single-producer feature; services
+  with `^slot` run only while their plugin holds it. A slot is held by its one
+  `^takeover true` row, otherwise by its single claimant, otherwise by the
+  previous holder. Two takeovers, or several claimants with no previous holder
+  (for example at startup), are a conflict and no producer runs; resolve it by
+  disabling one plugin or claiming with `^takeover`. Initiator names may use a
+  claimed slot as their namespace.
+- `put_record kind key value`, `delete_record kind key`, `record kind key` and
+  `records kind` keep workspace-scoped keyed records. They belong to the feature,
+  not the plugin id, so a replacement under another id reads the same records.
+  Read through them instead of caching a private copy: an edit made through an
+  older activation's retained handle is then visible to its successor.
+- An `http_routes` row `{^name ^kind ^methods ^path ^handle}` adds HTTP. `owner`
+  routes run after browser admission (Origin, owner cookie, CSRF) under
+  `/api/vN/p/<plugin><path>`. `callback` routes run before browser admission under
+  `/callback/<plugin><path>` and must verify their own protocol (a signature or
+  OAuth state). The handler receives `{^method ^path ^subpath ^params ^headers
+  ^body}` and returns `{^status Int ^body ...}`; a string body is sent as text.
+- Work is admitted through `AdmissionHost` (above) with the plugin's own
+  `initiators` row; an initiator may declare `^check_in` with a decision use id.
 
 ### Define an extension point
 

@@ -1,13 +1,15 @@
 (mod channel_service)
 (import [open_authority authorize authorize_parts public_authority] ^from "./authority")
 (import [snapshot mutate close_channel_store read has_queue? take_changes] ^from "./store")
-(import [channel_error key binding_key required_text slack_ts] ^from "./model")
+(import [channel_error key binding_key required_text message_id account_id identifier] ^from "./model")
+(import [transport_row transport_call render_text] ^from "./transports")
+(import [ensure_channel_initiator] ^from "./initiators")
 (import [last_thread_message] ^from "./thread_links")
 (import [finish_shares prepare_share] ^from "./sharing")
 (import [configure_queues enqueue queue_status activate_binding tombstone_session] ^from "./queue")
-(import [queue_output pending_output due_output defer_output accept_output output_result reconcile_output recover_deliveries] ^from "./delivery")
+(import [queue_output pending_output due_output defer_output accept_output output_result reconcile_output
+         recover_deliveries deliver_pending] ^from "./delivery")
 (import [pending_ingress handoff_schedule defer_handoff wake_root_waiters finish_handoff] ^from "./ingress")
-(import [render_reply] ^from "./render")
 (import [parse_control apply_control] ^from "./controls")
 (import [byte_prefix] ^from "../public/text")
 (import [connect api] ^from "../cli/client")
@@ -16,10 +18,10 @@
 (import [admit_channel_queue round_state] ^from "../runtime/round_controller")
 (import [core_state events_for append_core_event flush_event_store next_sequence stream_key unload_event_stream] ^from "../storage/state")
 (import [RoundChanged DurableRecord] ^from "../kernel")
-(import [open_users lookup_user lookup_channel lookup_thread] ^from "./users")
 
 (type ChannelService ^props {^runtime Any ^controller Any ^owner Any ^gate Any ^closed Cell
-  ^settings Cell ^health Cell ^dirty Cell ^retry_at Cell ^subscriptions List ^users Any})
+  ^settings Cell ^health Cell ^dirty Cell ^retry_at Cell ^subscriptions List
+  ^next_send Cell ^ticking Cell})
 
 (fn open_channel_service [runtime, controller]
   (let owner (open_authority ($path/join runtime/state_root "channels" "owner")))
@@ -28,7 +30,12 @@
     (let ids {}) (for [id queue] in state/queues (ids .put ($to_str id) true)) ids)))
   (let service (ChannelService ^runtime runtime ^controller controller ^owner owner ^gate ($sync/gate)
     ^closed ($cell false) ^settings ($cell (?? (/settings (snapshot runtime/services/values/channel_queues)) {}))
-    ^health ($cell {}) ^dirty ($cell dirty) ^retry_at ($cell {}) ^subscriptions [] ^users (open_users)))
+    ^health ($cell {}) ^dirty ($cell dirty) ^retry_at ($cell {}) ^subscriptions []
+    ^next_send ($cell {}) ^ticking ($cell false)))
+  # Continuations of channel rounds need their transport's initiator even
+  # before that transport's plugin activates.
+  (for [id account] in (/accounts (snapshot owner))
+    (try (ensure_channel_initiator runtime/h account/transport) catch Error nil))
   (finish_shares service)
   (let mark (fn [id]
     (if (has_queue? runtime/services/values/channel_queues id) (service/dirty/.get .put id true))))
@@ -70,46 +77,56 @@
 (fn share_session [service, session : Str, revision : Int]
   (let header (source_header service))
   (let source header/source)
-  (if ($absent? source) (channel_error "unavailable" "Configure a Slack channel for this workspace first."))
+  (if ($absent? source) (channel_error "unavailable" "Configure a channel for this workspace first."))
   (let policy (if (local_owner? service source) (public_authority service/owner)
     (api (connect header/owner_root) "GET" "/channels/owner/policy")))
   (let route (policy/routes .get source/id))
   (var account nil)
   (for candidate in policy/accounts (if (== candidate/id source/account) (set account candidate)))
   (if (|| (!= route/enabled true) (!= account/enabled true))
-    (channel_error "unavailable" "The Slack channel connection is disabled."))
+    (channel_error "unavailable" "The channel connection is disabled."))
   (prepare_share service session revision))
 
-(fn user_name [service, data]
-  (let source (/source (source_header service)))
-  (if (|| ($absent? source) (!= source/account data/account) (!= source/team data/team))
-    (channel_error "forbidden" "The Slack user does not match this workspace's channel source."))
-  (if (local_owner? service source)
-    (lookup_user service/users service/owner data)
-    (owner_call service "POST" "user" data)))
+# Display metadata, answered by the account's transport. `kind` is user,
+# channel or thread; a thread's target is the latest message Harness observed.
+(fn lookup [service, kind : Str, data]
+  (let account_name (account_id data/account))
+  (let team (identifier data/team "team ID"))
+  (let request {^team team})
+  (if (== kind "user") (request .put "author" (identifier data/author "author ID"))
+    (request .put "channel" (identifier data/channel "channel ID")))
+  (if_yes (== kind "thread")
+    (request .put "thread" (message_id data/thread))
+    # The latest message either side observed; never a progress message.
+    (request .put "message" (read service/owner (fn [state]
+      (last_thread_message state {^account account_name ^team team ^channel request/channel
+        ^thread request/thread ^message (?? data/message nil) ^last_message (?? data/last_message nil)})))))
+  (let account (read service/owner (fn [state] (state/accounts .get account_name))))
+  (if (|| ($absent? account) (!= account/team team))
+    (channel_error "forbidden" "The channel identity belongs to another configured account."))
+  (transport_call (transport_row service/runtime account/transport) "lookup"
+    {^kind kind ^account account ^data request}))
 
-(fn channel_name [service, data]
+(fn source_lookup [service, kind : Str, data, check_channel : Bool]
   (let source (/source (source_header service)))
   (if (|| ($absent? source) (!= source/account data/account) (!= source/team data/team)
-          (!= source/channel data/channel))
-    (channel_error "forbidden" "The Slack channel does not match this workspace's channel source."))
+          (&& check_channel (!= source/channel data/channel)))
+    (channel_error "forbidden" ($to_str "The " kind " does not match this workspace's channel source.")))
   (if (local_owner? service source)
-    (lookup_channel service/users service/owner data)
-    (owner_call service "POST" "channel" data)))
+    (lookup service kind data)
+    (owner_call service "POST" kind data)))
+
+(fn user_name [service, data] (source_lookup service "user" data false))
+(fn channel_name [service, data] (source_lookup service "channel" data true))
 
 (fn thread_link [service, data]
-  (slack_ts data/thread)
+  (message_id data/thread)
   (let source (/source (source_header service)))
-  (if (|| ($absent? source) (!= source/account data/account) (!= source/team data/team)
-          (!= source/channel data/channel))
-    (channel_error "forbidden" "The Slack thread does not match this workspace's channel source."))
+  (if ($absent? source) (channel_error "forbidden" "The thread does not match this workspace's channel source."))
   (let target (read service/runtime/services/values/channel_queues (fn [state]
-    (let binding (state/bindings .get (binding_key (data .assoc "transport" "slack"))))
+    (let binding (state/bindings .get (binding_key (data .assoc "transport" source/transport))))
     (last_thread_message state (data .assoc "last_message" binding/last_message)))))
-  (let request (data .assoc "message" target))
-  (if (local_owner? service source)
-    (lookup_thread service/users service/owner request)
-    (owner_call service "POST" "thread" request)))
+  (source_lookup service "thread" (data .assoc "message" target) true))
 
 (fn authorize_input [service, author : Str]
   (let source (source_header service))
@@ -134,6 +151,7 @@
   (let route (policy/routes .get route_id))
   (if (|| ($absent? route) (!= route/owner policy/owner) (!= route/workspace service/runtime/root))
     (channel_error "forbidden" "The owner has no matching route to this workspace."))
+  (try (ensure_channel_initiator service/runtime/h route/transport) catch Error nil)
   (configure_queues service/runtime/services/values/channel_queues route ^owner_root canonical)
   {^source (/source (source_state service))})
 
@@ -157,7 +175,7 @@
       (let root (state/messages .get binding/root_input))
       (let title (byte_prefix ($str/join (root/message/text .split "\n") " ") 160))
       (create_session_unlocked manager ^id session ^title title ^first_request root/message/text
-        ^channel {^transport "slack" ^account binding/account ^team binding/team
+        ^channel {^transport binding/transport ^account binding/account ^team binding/team
           ^channel binding/channel ^thread binding/thread ^binding binding/id
           ^owner state/source/owner ^route state/source/id}))
     (activate_binding service/runtime/services/values/channel_queues binding/id))))
@@ -167,7 +185,7 @@
   (let status (queue_status service/runtime/services/values/channel_queues disposition/session))
   (queue_output service/runtime/services/values/channel_queues
     (output_intent service status/binding ($to_str "deleted-" (key [message/account message/channel message/message]))
-      "channel-binding" "This Harness conversation was deleted. Start a new top-level request in a new Slack thread."))
+      "channel-binding" "This Harness conversation was deleted. Start a new top-level request in a new thread."))
   nil)
 
 # Authenticated host route only: forwarded sender fields by themselves are not
@@ -213,9 +231,8 @@
   {^id id ^owner state/source/owner ^route state/source/id ^workspace state/workspace
    ^account binding/account ^team binding/team ^channel binding/channel ^thread binding/thread
    ^session binding/session ^round round ^mode mode ^revision revision
-   ^parts (render_reply text binding/session
-     ^surface (?? service/settings/.get/surface "mrkdwn")
-     ^public_url (?? service/settings/.get/public_url nil))})
+   ^parts (render_text service/runtime service/settings/.get (?? binding/transport state/source/transport)
+     text binding/session)})
 
 (fn project_events [service, session : Str]
   (let state (session_state service session))
@@ -409,8 +426,9 @@
           (result .push {^id hold/source ^status "uncertain_admission"}))))
     result)))
 
-# Network work is driven by the Slack plugin. Durable queues, transcript
-# projections and recovery live in this core service and survive its retirement.
+# Network work is driven by a transport plugin (tick_transport). Durable
+# queues, transcript projections and recovery live in this core service and
+# survive its retirement.
 (fn tick_channels [service]
   (if service/closed/.get (return nil))
   (finish_shares service)
@@ -435,4 +453,26 @@
     catch Error
       (service/retry_at/.get .put id (+ ($os/wall_ms) 1000))
       (service/health/.get .put id {^code (?? $err/code "channel_error") ^at ($os/wall_ms)})))
+  nil)
+
+(fn report_health [service, id : Str, connected : Bool, code : Str]
+  (service/health/.get .put id {^connected connected ^code code ^at ($os/wall_ms)})
+  nil)
+
+# One pass of host channel work, driven by a transport plugin's loop: owner
+# ingress to workspaces, queue admission and transcript projection, outbox to
+# owner, delivery through the accounts' transport rows, then owner results
+# back to the outbox. Concurrent drivers (several transports) share one pass.
+(fn tick_transport [service]
+  (if (service/ticking .swap true) (return nil))
+  (try
+    (try (handoff_inputs service)
+      catch Error (report_health service "intake" false (?? $err/code "handoff_unavailable")))
+    (tick_channels service)
+    (try (handoff_outputs service)
+      catch Error (report_health service "outbox" false (?? $err/code "handoff_unavailable")))
+    (deliver_pending service)
+    # Reconcile a completed owner result without waiting for a new model event.
+    (try (handoff_outputs service) catch Error nil)
+  ensure (service/ticking .set false))
   nil)

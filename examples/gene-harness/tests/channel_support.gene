@@ -1,0 +1,18 @@
+# Slack fixtures for channel specs: envelopes go through the Slack plugin's
+# normalization into the host's durable ingress, as the Socket Mode reader does.
+(mod channel_support)
+(import [snapshot] ^from "../src/channels/store")
+(import [record_ingress] ^from "../src/channels/ingress")
+(import [normalize_envelope] ^from "../src/builtin/slack/ingress")
+(import [slack_adapter api_adapter] ^from "../src/builtin/slack/adapter")
+
+(fn receive_slack [owner, account_id : Str, envelope]
+  (let state (snapshot owner))
+  (let account (state/accounts .get account_id))
+  (let event (normalize_envelope account envelope))
+  (if ($absent? event) {^status "ignored" ^reason "unsupported_envelope"}
+    (record_ingress owner account_id event)))
+
+# The Slack row's delivery callbacks over a fake HTTP requester.
+(fn slack_row [requester]
+  (/row (slack_adapter ^requester requester)))

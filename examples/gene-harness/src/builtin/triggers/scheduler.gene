@@ -1,0 +1,410 @@
+# The trigger scheduler, owned by the `triggers` plugin. Its state lives only
+# in the "triggers" feature records, read on every operation, so any
+# implementation of the slot (a replacement under another id included) sees
+# the same definitions, occurrences and watermarks, and edits made through an
+# older activation's retained handle stay visible. Work is admitted through
+# AdmissionHost with the plugin's own `triggers:` initiator.
+(mod trigger_scheduler)
+(import [PluginHost AdmissionHost ServiceError current_workspace] ^from "../../plugin_api")
+(import * : cron ^from "./schedule/cron")
+(import * : timezone ^from "./schedule/timezone")
+(import * : calendar ^from "./schedule/calendar")
+
+(type TriggerError ^props {^code Str ^message Str} ^impl [Error])
+(impl Error for TriggerError)
+
+(type TriggerScheduler ^props {^host Any ^admission Any ^gate Any ^last_retention Any ^hook Any})
+
+(const definition_kind "triggers/definition")
+(const occurrence_kind "triggers/occurrence")
+(const watermark_kind "triggers/watermark")
+(const last_kind "triggers/last")
+
+(fn new_scheduler [host, admission, ^hook hook = nil] : TriggerScheduler
+  (TriggerScheduler ^host host ^admission admission ^gate ($sync/gate) ^last_retention ($cell 0) ^hook hook))
+
+(fn invalid [message : Str]
+  (fail (TriggerError ^code "invalid_request" ^message message)))
+
+(fn ^^private thawed [value] ($thaw ($serde/read_data ($serde/write_data value))))
+
+(fn ^^private setting [key : Str, fallback]
+  (let value (try (/value ((current_workspace) .setting key)) catch Any nil))
+  (if (&& (== ($head value) Int) (> value 0)) value fallback))
+
+# --- records -----------------------------------------------------------
+
+(fn ^^private record_map [s, kind : Str]
+  (let out {})
+  (for item in (s/host .PluginHost:records kind) (out .put item/key (thawed item/value)))
+  out)
+
+(fn definitions [s] (record_map s definition_kind))
+(fn ^^private occurrence_map [s] (record_map s occurrence_kind))
+(fn ^^private save_definition [s, definition]
+  (s/host .PluginHost:put_record definition_kind definition/id definition)
+  (thawed definition))
+(fn ^^private save_occurrence [s, occurrence]
+  (s/host .PluginHost:put_record occurrence_kind occurrence/id occurrence)
+  (if_yes (== occurrence/state "finished")
+    (let last (s/host .PluginHost:record last_kind occurrence/trigger))
+    (if (|| ($absent? last) (> occurrence/at_ms last/at_ms))
+      (s/host .PluginHost:put_record last_kind occurrence/trigger occurrence)))
+  (thawed occurrence))
+
+# --- validation --------------------------------------------------------
+
+(fn safe_trigger_id? [id]
+  (if (|| (!= ($head id) Str) (== id "") (> ($str/byte_size id) 100)) (return false))
+  (let bytes ($binary/from_str id))
+  (var index 0)
+  (while (< index ($binary/size bytes))
+    (let byte ($binary/get bytes index))
+    (if_not (|| (&& (>= byte 65) (<= byte 90)) (&& (>= byte 97) (<= byte 122))
+      (&& (>= byte 48) (<= byte 57)) ([45 95] .contains? byte)) (return false))
+    (set index (+ index 1)))
+  true)
+
+(fn at_ms [value]
+  (if_yes (== ($head value) Int)
+    (if (< value 0) (invalid "Scheduled at must be non-negative"))
+    (return value))
+  (if (!= ($head value) Str) (invalid "Scheduled at must be epoch milliseconds or a UTC timestamp"))
+  (if_not ($str/ends_with? value "Z") (invalid "Scheduled timestamps require UTC (Z)"))
+  (let parts ($str/split ($str/slice_bytes value 0 (- ($str/byte_size value) 1)) "T"))
+  (if (!= parts/.size 2) (invalid "Expected YYYY-MM-DDTHH:MM:SSZ"))
+  (* (calendar/local_seconds parts/0 parts/1) 1000))
+
+(fn ^^private two_digits [number]
+  (if (< number 10) $"0${number}" ($to_str number)))
+
+(fn local_stamp [definition, at]
+  (let second ($to_int (/ at 1000)))
+  (let local (if (== definition/kind "cron")
+    (+ second (timezone/offset_at definition/rules second)) second))
+  (let day (calendar/floor_div local 86400))
+  (let date (calendar/civil day))
+  (let daytime (- local (* day 86400)))
+  (let hour (calendar/floor_div daytime 3600))
+  (let minute (calendar/floor_div (calendar/modulo daytime 3600) 60))
+  (let zone (?? definition/timezone "UTC"))
+  $"${date/year}-${(two_digits date/month)}-${(two_digits date/day)} ${(two_digits hour)}:${(two_digits minute)} ${zone}")
+
+(fn ^^private next_time [definition, after]
+  (match definition/kind ^!exhaustive
+    (when "heartbeat" (+ after definition/every_ms))
+    (when "scheduled" nil)
+    (when "cron" (cron/next definition/pattern definition/rules after))))
+
+(fn validate_definition [input, now]
+  (if (!= ($head input) Map) (invalid "Trigger definition must be an inert map"))
+  (for [key value] in input
+    (if_not (["id" "kind" "request" "every_ms" "at" "cron" "timezone" "missed" "overlap"
+      "continue_session" "enabled" "retention" "model_settings" "tags" "docs" "doc"] .contains? ($to_str key))
+      (invalid $"Unknown trigger field ${key}")))
+  (let definition (thawed input))
+  (if_not (safe_trigger_id? definition/id) (invalid "Trigger id must contain letters, digits, - or _"))
+  (if_not (["heartbeat" "scheduled" "cron"] .contains? definition/kind) (invalid "Invalid trigger kind"))
+  (if (|| (!= ($head definition/request) Str) (== ($str/trim definition/request) ""))
+    (invalid "A trigger needs a request"))
+  (for [key default] in {^missed "skip" ^overlap "skip" ^!continue_session ^^enabled}
+    (if ($absent? (definition .get key)) (definition .put key default)))
+  (if_not (["skip" "once"] .contains? definition/missed) (invalid "Invalid missed policy"))
+  (if_not (["skip" "queue_one"] .contains? definition/overlap) (invalid "Invalid overlap policy"))
+  (for key in ["enabled" "continue_session"]
+    (if (!= ($head (definition .get key)) Bool) (invalid $"Trigger ${key} must be boolean")))
+  (if_not ($absent? definition/retention)
+    (let policy definition/retention)
+    (if (== ($absent? policy/keep) ($absent? policy/days)) (invalid "Retention requires either keep or days"))
+    (let amount (?? policy/keep policy/days))
+    (if (|| (!= ($head amount) Int) (< amount 0)) (invalid "Retention must be non-negative")))
+  (definition .put "created_ms" now)
+  (if_yes (== definition/kind "heartbeat")
+    (if (|| (!= ($head definition/every_ms) Int) (<= definition/every_ms 0))
+      (invalid "Heartbeat every_ms must be positive"))
+    (definition .put "next_ms" (+ now definition/every_ms)))
+  (if (== definition/kind "scheduled") (definition .put "next_ms" (at_ms definition/at)))
+  (if_yes (== definition/kind "cron")
+    (let pattern (cron/compile definition/cron))
+    (let rules (timezone/system_rules (?? definition/timezone "UTC") 2100))
+    (definition .put "timezone" rules/name)
+    (definition .put "pattern" pattern)
+    (definition .put "rules" rules)
+    (definition .put "next_ms" (cron/next pattern rules now)))
+  definition)
+
+(fn ^^private check_model [s, definition]
+  (let result (s/admission .AdmissionHost:check_model_settings (?? definition/model_settings {})))
+  (if ($present? result/error) (invalid result/error))
+  (if ($present? definition/model_settings) (definition .put "model_settings" (thawed result/settings)))
+  result/warnings)
+
+# --- operations --------------------------------------------------------
+
+(fn create_trigger [s, input, ^now now = nil]
+  (let definition (validate_definition input (?? now ($os/wall_ms))))
+  (s/gate (fn []
+    (if_not ($absent? (s/host .PluginHost:record definition_kind definition/id))
+      (fail (TriggerError ^code "conflict" ^message "Trigger already exists")))
+    (let warnings (check_model s definition))
+    (let result (save_definition s definition))
+    (if (! warnings/.empty?) (result .put "warnings" warnings))
+    result)))
+
+(fn update_trigger [s, id : Str, changes]
+  (if (!= ($head changes) Map) (invalid "Trigger changes must be an inert map"))
+  (for [key value] in changes
+    (if (!= ($to_str key) "model_settings") (invalid $"Unknown trigger update field ${key}")))
+  (s/gate (fn []
+    (let stored (s/host .PluginHost:record definition_kind id))
+    (if (|| ($absent? stored) (== stored/deleted true))
+      (fail (TriggerError ^code "not_found" ^message "Trigger does not exist")))
+    (let next (thawed stored))
+    (next .put "model_settings" (if ($absent? changes/model_settings) nil changes/model_settings))
+    (let warnings (if ($absent? next/model_settings) [] (check_model s next)))
+    (let result (save_definition s next))
+    (if (! warnings/.empty?) (result .put "warnings" warnings))
+    result)))
+
+(fn ^^private clear_waiting_notice [s, id : Str]
+  (try
+    (for message in (s/host .PluginHost:notifications)
+      (if (== message/key $"trigger-blocked/${id}")
+        (s/host .PluginHost:notification_clear message/id message/revision)))
+  catch Any nil))
+
+(fn delete_trigger [s, id : Str]
+  (s/gate (fn []
+    (let stored (s/host .PluginHost:record definition_kind id))
+    (if (|| ($absent? stored) (== stored/deleted true))
+      (fail (TriggerError ^code "not_found" ^message "Trigger does not exist")))
+    (let removed (thawed stored))
+    (removed .put "enabled" false)
+    (removed .put "deleted" true)
+    (save_definition s removed)
+    (clear_waiting_notice s id)
+    removed)))
+
+(fn list_occurrences [s, ^trigger trigger = nil, ^active active : Bool = false]
+  (let result [])
+  (for [id occurrence] in (occurrence_map s)
+    (if (&& active (! (["due" "started"] .contains? occurrence/state))) (continue))
+    (if (|| ($absent? trigger) (== occurrence/trigger trigger)) (result .push occurrence)))
+  ($order/sort_by result (fn [occurrence] occurrence/at_ms)))
+
+(fn list_triggers [s]
+  (let result [])
+  (let waiting {})
+  (for occurrence in (list_occurrences s ^^active)
+    (if ($present? occurrence/waiting_reason) (waiting .put occurrence/trigger occurrence/waiting_reason)))
+  (for [id definition] in (definitions s)
+    (if_not (== definition/deleted true)
+      (if ($present? (waiting .get id)) (definition .put "waiting_reason" (waiting .get id)))
+      (result .push definition)))
+  ($order/sort_by result (fn [definition] definition/id)))
+
+# --- scheduling --------------------------------------------------------
+
+(fn ^^private boundary [s, name, occurrence]
+  (if_not ($absent? s/hook) (s/hook name occurrence))
+  nil)
+
+(fn ^^private reconcile_occurrences [s]
+  (for occurrence in (list_occurrences s ^^active)
+    (let receipt (s/admission .AdmissionHost:receipt occurrence/session occurrence/id))
+    (if ($absent? receipt) (continue))
+    (let before ($serde/write_data occurrence))
+    (if_yes (== occurrence/state "due")
+      (occurrence .put "state" "started")
+      (occurrence .put "round" receipt/id))
+    (if_yes (! (["running" "waiting"] .contains? receipt/state))
+      (occurrence .put "state" "finished")
+      (occurrence .put "outcome" receipt/state)
+      (if (["failed" "interrupted"] .contains? receipt/state)
+        (s/admission .AdmissionHost:update_session occurrence/session {^^attention})))
+    (if (!= ($serde/write_data occurrence) before) (save_occurrence s occurrence))))
+
+(fn ^^private trigger_busy? [s, trigger]
+  (for occurrence in (list_occurrences s ^trigger trigger ^^active)
+    (if (== occurrence/state "started") (return true)))
+  false)
+
+(fn ^^private record_due [s, definition, at, ^missed missed : Bool = false]
+  (let id $"${definition/id}@${at}")
+  (if_not ($absent? (s/host .PluginHost:record occurrence_kind id)) (return nil))
+  (let watermark (s/host .PluginHost:record watermark_kind definition/id))
+  (if (<= at (?? watermark/at_ms -1)) (return nil))
+  (var state "due")
+  (var reason "")
+  (if_yes (&& missed (== definition/missed "skip")) (set state "skipped") (set reason "missed"))
+  (var queued false)
+  (for previous in (list_occurrences s ^trigger definition/id ^^active)
+    (if (== previous/state "due") (set queued true)))
+  (if_yes (== state "due")
+    (if queued
+      (then (set state "skipped") (set reason "coalesced"))
+      (else
+        (if_yes (&& (trigger_busy? s definition/id) (== definition/overlap "skip"))
+          (set state "skipped") (set reason "overlap")))))
+  (let session $"s-trigger-${($str/slice_bytes ($crypto/sha256 id) 0 32)}")
+  (let occurrence (save_occurrence s
+    {^id id ^trigger definition/id ^at_ms at ^state state ^reason reason ^session session}))
+  (boundary s "due" occurrence)
+  occurrence)
+
+(fn ^^private schedule_due [s, now, boot]
+  (for definition in (list_triggers s)
+    (if (|| (! definition/enabled) ($absent? definition/next_ms) (> definition/next_ms now)) (continue))
+    (var at definition/next_ms)
+    # Downtime is coalesced to the last scheduled occurrence, including cron
+    # gaps and repeated local times as resolved by the retained timezone rules.
+    (if (== definition/kind "heartbeat")
+      (set at (+ at (* definition/every_ms ($to_int (/ (- now at) definition/every_ms))))))
+    (if (== definition/kind "cron") (set at (cron/previous definition/pattern definition/rules now)))
+    (record_due s definition at ^missed boot)
+    (definition .put "last_ms" at)
+    (definition .put "next_ms" (next_time definition at))
+    (definition .delete "waiting_reason")
+    (save_definition s definition)))
+
+(fn ^^private start_due [s]
+  (let cap (setting "trigger_concurrency" 2))
+  (var running 0)
+  (for occurrence in (list_occurrences s ^^active)
+    (if (== occurrence/state "started") (set running (+ running 1))))
+  (for occurrence in (list_occurrences s ^^active)
+    (if (>= running cap) (break))
+    (if (!= occurrence/state "due") (continue))
+    (let definition (s/host .PluginHost:record definition_kind occurrence/trigger))
+    (if_yes (|| ($absent? definition) (! definition/enabled))
+      (occurrence .put "state" "skipped")
+      (occurrence .put "reason" "disabled")
+      (save_occurrence s occurrence)
+      (continue))
+    (if (trigger_busy? s definition/id) (continue))
+    (if_yes definition/continue_session
+      (let prior (s/host .PluginHost:record last_kind definition/id))
+      (if_yes (&& ($present? prior) ($present? (s/admission .AdmissionHost:session prior/session)))
+        (occurrence .put "session" prior/session)
+        (save_occurrence s occurrence)))
+    (if (s/admission .AdmissionHost:busy? occurrence/session) (continue))
+    (if ($absent? (s/admission .AdmissionHost:session occurrence/session))
+      (s/admission .AdmissionHost:create_session ^id occurrence/session ^kind definition/kind
+        ^title $"${definition/id} · ${(local_stamp definition occurrence/at_ms)}"
+        ^first_request definition/request
+        ^origin {^owner "triggers" ^trigger definition/id ^occurrence occurrence/id}))
+    (boundary s "session" occurrence)
+    (try
+      (let receipt (s/admission .AdmissionHost:submit occurrence/session occurrence/id
+        $"[trigger ${definition/id} occurrence ${occurrence/id}]\n${definition/request}"
+        ^initiator $"triggers:${definition/id}" ^model_settings (?? definition/model_settings {})))
+      (boundary s "admitted" occurrence)
+      (occurrence .put "state" "started")
+      (occurrence .put "waiting_reason" nil)
+      (clear_waiting_notice s definition/id)
+      (occurrence .put "round" receipt/id)
+      (save_occurrence s occurrence)
+      (boundary s "started" occurrence)
+      (set running (+ running 1))
+    catch ServiceError
+      (if (!= $err/code "not_ready") (fail $err))
+      (let reason $err/message)
+      (if_yes (!= occurrence/waiting_reason reason)
+        (occurrence .put "waiting_reason" reason)
+        (save_occurrence s occurrence)
+        (try (s/host .PluginHost:notify
+          {^key $"trigger-blocked/${definition/id}" ^severity "warning" ^^renew
+           ^title $"Trigger ${definition/id} is waiting" ^summary reason})
+          catch Any nil)))))
+
+(fn ^^private prune_occurrences [s]
+  (let keep (setting "trigger_occurrence_keep" 256))
+  (for [id definition] in (definitions s)
+    (let candidates [])
+    (for occurrence in (list_occurrences s ^trigger ($to_str id))
+      (if_not (["finished" "skipped"] .contains? occurrence/state) (continue))
+      (let session (s/admission .AdmissionHost:session occurrence/session))
+      (if (&& ($present? session) (|| session/pinned session/attention)) (continue))
+      (candidates .push occurrence))
+    (let excess (- candidates/.size keep))
+    (if (<= excess 0) (continue))
+    (var watermark (?? (/at_ms (s/host .PluginHost:record watermark_kind ($to_str id))) -1))
+    (repeat index in excess
+      (set watermark ($math/max watermark candidates/%index/at_ms)))
+    (s/host .PluginHost:put_record watermark_kind ($to_str id) {^trigger ($to_str id) ^at_ms watermark})
+    (repeat position in excess
+      (s/host .PluginHost:delete_record occurrence_kind candidates/%position/id))))
+
+(fn ^^private empty_heartbeat? [record]
+  (&& (== record/kind "heartbeat") (== record/status "done")
+      (!= record/has_patch true) (!= record/has_registration true) (!= record/attention true)))
+
+(fn apply_retention [s, ^now now = nil]
+  (let instant (?? now ($os/wall_ms)))
+  (let removed [])
+  (let sessions (s/admission .AdmissionHost:sessions ^origin_owner "triggers"))
+  (for definition in (list_triggers s)
+    (if ($absent? definition/retention) (continue))
+    (let all ($filter sessions (fn [record] (== record/origin/trigger definition/id))))
+    (let candidates [])
+    (for record in all
+      (if (|| record/pinned record/attention (["running" "waiting"] .contains? record/status)) (continue))
+      (candidates .push record))
+    (let ordered ($order/sort_by ^compare (fn [a b]
+      (let first (if (empty_heartbeat? a) 0 1))
+      (let second (if (empty_heartbeat? b) 0 1))
+      (if (!= first second) ($order/compare first second)
+        ($order/compare (?? a/last_active_ms 0) (?? b/last_active_ms 0))))
+      candidates (fn [record] record)))
+    (var excess ($math/max 0 (- all/.size (?? definition/retention/keep all/.size))))
+    (for record in ordered
+      (let expired (&& ($present? definition/retention/days)
+        (< (?? record/last_active_ms 0) (- instant (* definition/retention/days 86400000)))))
+      (if (&& (<= excess 0) (! expired)) (continue))
+      (if_yes (s/admission .AdmissionHost:delete_session record/id)
+        (removed .push record/id)
+        (set excess (- excess 1)))))
+  removed)
+
+(fn ^^private sync_plugin_triggers [s, now]
+  (let live {})
+  (let stored (definitions s))
+  (for input in (try (s/host .PluginHost:rows "triggers") catch Any [])
+    (let data (thawed input))
+    (let fingerprint ($crypto/sha256 ($serde/write_data data)))
+    (live .put data/id true)
+    (let previous (stored .get data/id))
+    (if (&& ($present? previous) ($absent? previous/plugin_fingerprint))
+      (fail (TriggerError ^code "conflict" ^message $"Plugin trigger conflicts with operator trigger ${data/id}")))
+    (if_yes (|| ($absent? previous) (!= previous/plugin_fingerprint fingerprint))
+      (let definition (validate_definition data now))
+      (check_model s definition)
+      (definition .put "plugin_fingerprint" fingerprint)
+      (save_definition s definition)))
+  (for [id definition] in stored
+    (if_yes (&& ($present? definition/plugin_fingerprint) ($absent? (live .get id)) (!= definition/deleted true))
+      (definition .put "deleted" true)
+      (definition .put "enabled" false)
+      (save_definition s definition)
+      (clear_waiting_notice s ($to_str id)))))
+
+(fn tick_triggers [s, ^now now = nil, ^boot boot : Bool = false]
+  (let instant (?? now ($os/wall_ms)))
+  (s/gate (fn []
+    (sync_plugin_triggers s instant)
+    (reconcile_occurrences s)
+    (schedule_due s instant boot)
+    (start_due s)
+    (prune_occurrences s)
+    (if_yes (>= (- instant s/last_retention/.get) 3600000)
+      (apply_retention s ^now instant)
+      (s/last_retention .set instant))))
+  nil)
+
+(fn run_scheduler [s, ^poll_ms poll_ms : Int = 100]
+  # The first tick after start reconciles what a previous producer admitted
+  # and applies the missed-occurrence policy to downtime.
+  (try (tick_triggers s ^^boot) catch Any ($println $"Trigger scheduler: ${$err/message}"))
+  (loop
+    ($sleep poll_ms)
+    (try (tick_triggers s) catch Any ($println $"Trigger scheduler: ${$err/message}"))))

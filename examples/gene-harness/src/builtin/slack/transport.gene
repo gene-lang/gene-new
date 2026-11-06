@@ -1,0 +1,137 @@
+# Slack Socket Mode: one receiver per enabled app, reconnecting with backoff,
+# and the loop that drives the channel host's work (ChannelHost:tick). The
+# host owns queues, receipts and delivery scheduling; this plugin owns the
+# connections and acknowledges an envelope only after the host recorded it.
+(mod slack_transport)
+(import [ChannelHost] ^from "../../plugin_api")
+(import [read_slack_credentials open_api close_api connect_socket socket_message
+         acknowledge load_socket_library slack_error] ^from "./api")
+(import [receive_envelope] ^from "./ingress")
+
+(type SlackTransport ^props {^channels Any ^closed Cell ^jobs Cell
+  ^task Cell ^driver Any ^requester Any?})
+
+(fn default_driver []
+  {^load load_socket_library ^connect connect_socket ^receive socket_message
+   ^idle_ms (fn [native socket] (native/idle_ms socket))
+   ^ping (fn [native socket]
+     (if (< (native/ping socket) 0) (slack_error "connection_error" "Socket ping failed.")))
+   ^ack acknowledge ^close (fn [socket] ($C/close socket))})
+
+# Health is advisory: a withdrawn channel host must not stop the reader's
+# cleanup.
+(fn transport_health [transport, id : Str, connected : Bool, code : Str]
+  (try (transport/channels .ChannelHost:report id connected code) catch Error nil))
+
+(fn slack_accounts [transport]
+  (transport/channels .ChannelHost:accounts "slack"))
+
+(fn socket_session [transport, app : Str, account]
+  (let credentials (read_slack_credentials account/config/secret_file))
+  (let client (open_api credentials/bot ^requester transport/requester))
+  (try
+    (let native (transport/driver/load account/config/library))
+    (let socket (transport/driver/connect client native credentials/app))
+    (try
+      (var initialized false)
+      (var last_ping ($os/monotonic_ms))
+      (let deadline (+ ($os/monotonic_ms) 10000))
+      (while (! transport/closed/.get)
+        (if (&& (! initialized) (>= ($os/monotonic_ms) deadline))
+          (slack_error "hello_timeout" "Slack did not send a connection hello."))
+        (let message (transport/driver/receive native socket))
+        (if (&& initialized ($present? transport/driver/idle_ms))
+          (then
+            (if (> (transport/driver/idle_ms native socket) 90000)
+              (slack_error "heartbeat_timeout" "No WebSocket frame received before the heartbeat deadline."))
+            (if (> (- ($os/monotonic_ms) last_ping) 30000)
+              (then (transport/driver/ping native socket) (set last_ping ($os/monotonic_ms))))))
+        (if_yes ($absent? message) ($sleep 10) (continue))
+        (if_yes (! initialized)
+          (if (|| (!= message/type "hello") (!= message/connection_info/app_id app))
+            (slack_error "invalid_hello" "The connected Slack application does not match its account."))
+          (if (!= message/num_connections 1)
+            (slack_error "conflicting_receiver" "Another Socket Mode receiver is connected to this Slack app."))
+          (set initialized true)
+          (transport_health transport app true "connected")
+          (continue))
+        (if (== message/type "disconnect") (return nil))
+        (if_yes ($present? message/envelope_id)
+          (var selected nil)
+          (for candidate in (slack_accounts transport)
+            (if (&& candidate/enabled (== candidate/app app)
+                    (== candidate/team message/payload/team_id))
+              (set selected candidate)))
+          (if ($absent? selected)
+            # Unconfigured teams have no eligible workspace or author policy.
+            (then (transport/driver/ack native socket message/envelope_id))
+            (else
+              (receive_envelope transport/channels selected message)
+              (transport/driver/ack native socket message/envelope_id)))))
+    ensure (transport/driver/close socket))
+  ensure (close_api client)))
+
+(fn socket_loop [transport, app : Str, account]
+  (var delay 1000)
+  (while (! transport/closed/.get)
+    (try
+      (socket_session transport app account)
+      (set delay 1000)
+    catch Error
+      # Do not print errors from native/TLS/HTTP libraries: they may contain a
+      # short-lived Socket Mode URL. Only stable, non-secret status codes escape.
+      (transport_health transport app false (?? $err/code "connection_error")))
+    (if (! transport/closed/.get) ($sleep delay))
+    (set delay ($math/min 30000 (* delay 2)))))
+
+(fn spawn_owned [transport, name : Str, callback, args]
+  (spawn ^lane root (callback args ...)))
+
+(fn reconcile_connections [transport]
+  (let apps {})
+  # Accounts arrive sorted by id: the first enabled account of an app owns it.
+  (for account in (slack_accounts transport)
+    (if (&& account/enabled (! ($has_key? apps account/app))) (apps .put account/app account)))
+  (let jobs transport/jobs/.get)
+  (let remove [])
+  (for [app job] in jobs
+    (let name ($to_str app))
+    (if_yes (!= job/account (apps .get name))
+      job/task/.cancel job/task/.join
+      (remove .push name)))
+  (for id in remove (jobs .delete id))
+  (for [app account] in apps
+    (let name ($to_str app))
+    (if_not ($has_key? jobs name)
+      (let task (spawn_owned transport "Slack Socket Mode" socket_loop [transport name account]))
+      (jobs .put name {^task task ^account account})))
+  nil)
+
+(fn transport_tick [transport]
+  (reconcile_connections transport)
+  transport/channels/.ChannelHost:tick
+  nil)
+
+(fn transport_loop [transport]
+  (while (! transport/closed/.get)
+    (try (transport_tick transport)
+      catch Error (transport_health transport "transport" false (?? $err/code "transport_error")))
+    ($sleep 100)))
+
+(fn open_transport [channels, ^driver driver = nil,
+                    ^requester requester = nil, ^start start : Bool = true]
+  (let transport (SlackTransport ^channels channels ^closed ($cell false)
+    ^jobs ($cell {}) ^task ($cell nil)
+    ^driver (if ($absent? driver) (default_driver) driver) ^requester requester))
+  (if start
+    (transport/task .set (spawn_owned transport "Slack channel service" transport_loop [transport])))
+  transport)
+
+(fn close_transport [transport]
+  (if (transport/closed .swap true) (return nil))
+  (let main transport/task/.get)
+  (if_not ($absent? main) main/.cancel main/.join)
+  (let jobs (transport/jobs .swap {}))
+  (for [id job] in jobs job/task/.cancel)
+  (for [id job] in jobs job/task/.join)
+  nil)

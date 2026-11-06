@@ -135,4 +135,19 @@
     (let services (require_plugin_services record/h))
     (let scope (if ($absent? session) "workspace" "session"))
     (let stream (if ($absent? session) "workspace" ($to_str session)))
-    (services/update_state record/owner scope stream record/state_writer value)))
+    (services/update_state record/owner scope stream record/state_writer value))
+  (message put_record [kind : Str, key : Str, value] : Any
+    (let services (require_plugin_services self/h))
+    (services/put_record self/owner kind key value))
+  (message delete_record [kind : Str, key : Str] : Bool
+    (let services (require_plugin_services self/h))
+    (services/delete_record self/owner kind key))
+  (message record [kind : Str, key : Str] : Any
+    (let services (require_plugin_services self/h))
+    (immutable_view (services/record kind key)))
+  (message records [kind : Str] : Any
+    (let services (require_plugin_services self/h))
+    (immutable_view (services/records kind)))
+  (message service [name : Str, body, ^slot slot = nil, ^quiesce quiesce = nil] : Str
+    (let services (require_plugin_services self/h))
+    (services/service self/h self/owner self/effects name body slot quiesce)))

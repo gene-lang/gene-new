@@ -212,8 +212,8 @@
     (events/state_writers/.get .put key writers))
   (if_yes (&& (== origin "core")
               (["session/state" "round/state" "question/asked" "question/answered"
-                "command" "trigger/state" "trigger/occurrence" "history/summary"
-                "card/state" "card/action" "delegation/state"] .contains? event/type))
+                "command" "history/summary"
+                "card/state" "card/action" "delegation/state" "feature/record"] .contains? event/type))
     (update_core_projection events key event/key event/state))
   envelope)
 
@@ -265,8 +265,8 @@
 (fn record_core_state
   [events : EventStore, scope : Str, stream : Str, kind : Str, key : Str, state]
   (if_not (["session/state" "round/state" "question/asked" "question/answered"
-            "command" "trigger/state" "trigger/occurrence" "history/summary"
-            "card/state" "card/action" "delegation/state"] .contains? kind)
+            "command" "history/summary"
+            "card/state" "card/action" "delegation/state" "feature/record"] .contains? kind)
     (fail (HarnessStateError ^message "unknown core state kind")))
   (append_core_event events scope stream
     {^type kind ^key key ^state (copy_data state)}))
@@ -284,6 +284,18 @@
   (ensure_projections_loaded events (stream_key scope stream))
   (var states (events/core_projections/.get .get (stream_key scope stream)))
   (if (== states void) (fresh_map) (copy_data states)))
+
+# Projection entries whose key starts with `prefix`. Only matching values are
+# copied, so a feature reading one record kind does not copy the whole stream.
+(fn core_states_with_prefix [events : EventStore, scope : Str, stream : Str, prefix : Str]
+  (require_open events)
+  (ensure_projections_loaded events (stream_key scope stream))
+  (var states (events/core_projections/.get .get (stream_key scope stream)))
+  (var out (fresh_map))
+  (if (== states void) (return out))
+  (for [key value] in states
+    (if ($str/starts_with? ($to_str key) prefix) (out .put ($to_str key) (copy_data value))))
+  out)
 
 (fn events_for [events : EventStore, scope : Str, stream : Str]
   (require_open events)

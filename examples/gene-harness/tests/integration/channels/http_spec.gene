@@ -3,7 +3,7 @@
 (import [start_host stop_host cli] ^from "../../web_support")
 (import [connect api wire] ^from "../../../src/cli/client")
 (import [open_authority configure_account configure_route close_channel_store] ^from "../../../src/channels/authority")
-(import [receive_envelope] ^from "../../../src/channels/ingress")
+(import [receive_slack] ^from "../../channel_support")
 
 (describe "Channel host handoff"
   (it "uses owner authentication across hosts and reauthorizes after policy and credential changes without replay" []
@@ -17,10 +17,10 @@
         (let owner (open_authority ($path/join owner_root ".gene-harness" "channels" "owner")))
         (let routing ($cell nil)) (let delivery ($cell nil))
         (try
-          (configure_account owner "dobi" "/missing-test-credential-reference" "/missing-adapter"
-            {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+          (configure_account owner "dobi" ^config {^secret_file "/missing-test-credential-reference" ^library "/missing-adapter"}
+            {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
           (routing .set (configure_route owner "dobi" "C123" project_root))
-          (delivery .set (receive_envelope owner "dobi" {^envelope_id "envelope-1" ^type "events_api"
+          (delivery .set (receive_slack owner "dobi" {^envelope_id "envelope-1" ^type "events_api"
             ^payload {^type "event_callback" ^api_app_id "A123" ^team_id "T123" ^event_id "Ev1"
               ^event {^type "message" ^ts "1.000001" ^channel "C123" ^user "UOWNER" ^text "<@UBOT> Build it."}}}))
         ensure (close_channel_store owner))

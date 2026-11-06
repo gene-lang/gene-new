@@ -258,24 +258,24 @@ Profile: """
     (problem "Use sessions [list|create --title TITLE]."))
   (if_yes (== action "triggers")
     (let sub (?? words/1 "list"))
-    (if (== sub "list") (return (api client "GET" "/triggers")))
+    (if (== sub "list") (return (api client "GET" "/p/triggers")))
     (if_yes (== sub "create")
       (if ($absent? words/2) (problem "triggers create needs a definition file."))
-      (return (api client "POST" "/triggers" (read_data_file words/2))))
+      (return (api client "POST" "/p/triggers" (read_data_file words/2))))
     (if_yes (== sub "update")
       (if (|| ($absent? words/2) ($absent? words/3)) (problem "triggers update needs an id and a changes file."))
-      (return (api client "PATCH" $"/triggers/${($url/encode_component words/2)}" (read_data_file words/3))))
+      (return (api client "PATCH" $"/p/triggers/${($url/encode_component words/2)}" (read_data_file words/3))))
     (if_yes (== sub "delete")
       (if ($absent? words/2) (problem "triggers delete needs an id."))
-      (return (api client "DELETE" $"/triggers/${($url/encode_component words/2)}")))
+      (return (api client "DELETE" $"/p/triggers/${($url/encode_component words/2)}")))
     (if (== sub "occurrences")
       (return
         (api
           client
           "GET"
           (if ($absent? words/2)
-            "/trigger-occurrences"
-            $"/triggers/${($url/encode_component words/2)}/occurrences"))))
+            "/p/triggers/occurrences"
+            $"/p/triggers/${($url/encode_component words/2)}/occurrences"))))
     (problem "Use triggers list|create|update|delete|occurrences."))
   (if (== action "transcript")
     (return

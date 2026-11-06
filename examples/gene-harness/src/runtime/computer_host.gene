@@ -43,8 +43,6 @@
 
 (fn start_computer [handle]
   (let record (require_service handle))
-  (if (!= record/host/owner "computer")
-    (fail (ServiceError ^code "forbidden" ^message "Computer activation belongs to the computer plugin.")))
   (if (== (record/values/.get .get "started") true) (return nil))
   (let state record/config)
   (state/gate (fn []

@@ -1,45 +1,51 @@
 (mod channel_authority)
 (import [open_channel_store close_channel_store snapshot mutate read] ^from "./store" ^^export)
-(import [channel_error copy key account_id identifier required_text] ^from "./model")
+(import [channel_error copy key account_id identifier required_text transport_name] ^from "./model")
 
 (fn open_authority [root : Str]
   (open_channel_store root "owner"
     {^id ($to_str "owner-" ($crypto/random_hex 16)) ^policy_revision 0
      ^accounts {} ^routes {} ^ingress {} ^deliveries {}}))
 
-(fn route_key [account : Str, team : Str, channel : Str]
-  (key ["slack" account team channel]))
+(fn route_key [transport : Str, account : Str, team : Str, channel : Str]
+  (key [transport account team channel]))
 
-# The account stores host-owned references and verified public identity fields,
-# never a copy of the token file. Only owner tooling calls this configuration API.
-(fn configure_account [owner, id : Str, secret_file : Str, library : Str, identity]
+(fn ^^private optional_identifier [value, label : Str]
+  (if ($absent? value) nil (identifier value label)))
+
+# The account stores the transport's verified public identity and its opaque
+# `config` (host-owned references such as a credential file), never a copy of
+# a secret. Only owner tooling calls this configuration API; only the account's
+# transport plugin reads `config`.
+(fn configure_account [owner, id : Str, identity, ^config config = {}]
   (account_id id)
-  (required_text secret_file "credential reference" ^max_bytes 4096)
-  (required_text library "native library reference" ^max_bytes 4096)
-  (let record {^id id ^transport "slack" ^secret_file secret_file ^library library
-    ^team (identifier identity/team "T" "team ID")
-    ^app (identifier identity/app "A" "app ID")
-    ^bot (identifier identity/bot "B" "bot ID")
-    ^bot_user (identifier identity/bot_user "UW" "bot user ID")
-    ^operator (identifier identity/operator "UW" "operator ID") ^^enabled})
+  (if (!= ($head config) Map) (channel_error "invalid_request" "Channel account config must be a map."))
+  (let transport (transport_name identity/transport))
+  (let record {^id id ^transport transport ^config (copy config)
+    ^team (identifier identity/team "team ID")
+    ^app (optional_identifier identity/app "app ID")
+    ^bot (optional_identifier identity/bot "bot ID")
+    ^bot_user (identifier identity/bot_user "bot user ID")
+    ^operator (identifier identity/operator "operator ID") ^^enabled})
   (mutate owner (fn [state]
     (for [name existing] in state/accounts
-      (if (&& (!= ($to_str name) id) (== existing/app record/app) (== existing/team record/team))
-        (channel_error "conflict" "This Slack app/team already has a configured account.")))
+      (if (&& (!= ($to_str name) id) (== existing/transport transport) (== existing/team record/team)
+              (== (?? existing/app existing/bot_user) (?? record/app record/bot_user)))
+        (channel_error "conflict" "This transport app/team already has a configured account.")))
     (let previous (state/accounts .get id))
     (if (&& ($present? previous)
-            (|| (!= previous/app record/app) (!= previous/team record/team)
-                (!= previous/bot_user record/bot_user)))
-      (channel_error "conflict" "An account's Slack identity cannot be replaced in place."))
+            (|| (!= previous/transport transport) (!= previous/app record/app)
+                (!= previous/team record/team) (!= previous/bot_user record/bot_user)))
+      (channel_error "conflict" "An account's channel identity cannot be replaced in place."))
     (if_yes (!= previous record)
       (state/accounts .put id record)
       (state .put "policy_revision" (+ state/policy_revision 1)))
-    {^account id ^owner state/id ^policy_revision state/policy_revision})))
+    {^account id ^transport transport ^owner state/id ^policy_revision state/policy_revision})))
 
 (fn configure_route [owner, account : Str, channel : Str, workspace : Str,
                      ^approved approved = nil, ^require_mention require_mention : Bool = true,
                      ^enabled enabled : Bool = true]
-  (identifier channel "CG" "channel ID")
+  (identifier channel "channel ID")
   (required_text workspace "workspace directory" ^max_bytes 4096)
   (if_not (workspace .starts_with? "/")
     (channel_error "invalid_request" "The routed workspace must be an absolute directory."))
@@ -48,19 +54,19 @@
     (let selected (state/accounts .get account))
     (if ($absent? selected) (channel_error "not_found" "Channel account not found."))
     (let users (if ($absent? approved) [selected/operator] approved))
-    (if (!= ($head users) List) (channel_error "invalid_request" "Approved Slack users must be a list."))
+    (if (!= ($head users) List) (channel_error "invalid_request" "Approved channel users must be a list."))
     (let normalized [])
     (for user in users
-      (identifier user "UW" "approved user ID")
+      (identifier user "approved user ID")
       (if_not (normalized .contains? user) (normalized .push user)))
-    (let id (route_key account selected/team channel))
+    (let id (route_key selected/transport account selected/team channel))
     (let previous (state/routes .get id))
     (if (&& ($present? previous) (!= previous/workspace canonical))
-      (channel_error "conflict" "Moving a Slack channel to another workspace requires an explicit migration."))
+      (channel_error "conflict" "Moving a channel to another workspace requires an explicit migration."))
     (for [other candidate] in state/routes
       (if (&& enabled candidate/enabled (!= ($to_str other) id) (== candidate/workspace canonical))
-        (channel_error "conflict" "The workspace already has an enabled Slack binding.")))
-    (let record {^id id ^owner state/id ^account account ^team selected/team ^channel channel
+        (channel_error "conflict" "The workspace already has an enabled channel binding.")))
+    (let record {^id id ^owner state/id ^transport selected/transport ^account account ^team selected/team ^channel channel
       ^workspace canonical ^approved normalized ^require_mention require_mention ^enabled enabled})
     (if_yes (!= previous record)
       (state/routes .put id record)
@@ -92,7 +98,16 @@
   (let state (snapshot owner))
   (let accounts [])
   (for [id account] in state/accounts
-    (accounts .push {^id ($to_str id) ^transport "slack" ^team account/team ^app account/app
+    (accounts .push {^id ($to_str id) ^transport account/transport ^team account/team ^app account/app
       ^bot_user account/bot_user ^operator account/operator ^enabled account/enabled}))
   {^owner state/id ^revision state/revision ^policy_revision state/policy_revision
    ^accounts accounts ^routes (copy state/routes)})
+
+# The account records of one transport, including its `config`, for that
+# transport's own plugin (connections and API clients).
+(fn transport_accounts [owner, transport : Str]
+  (read owner (fn [state]
+    (let result [])
+    (for [id account] in state/accounts
+      (if (== account/transport transport) (result .push (copy account))))
+    ($order/sort_by result /id))))

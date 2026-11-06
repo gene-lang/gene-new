@@ -70,7 +70,6 @@
 (import [pin_history] ^from "../storage/plugin_history")
 (import [manager_list manager_inspect manager_operation] ^from "../runtime/workspace_manager")
 (import [manager_root_path] ^from "../public/workspace_paths")
-(import [require_trigger_manager] ^from "../runtime/trigger_host")
 (import [inbox_snapshot message_detail clear_messages acknowledge_messages] ^from "../notifications/inbox")
 (import [publish_notification] ^from "../notifications/publisher")
 (import [invoke_notification_action] ^from "../notifications/actions")
@@ -96,15 +95,12 @@
 (import ^from "../ui/views" [render_component])
 (import ^from "../runtime/cordis_adapter" [spawn_composition_call])
 (import ^from "../ui/components" [bounded_component_view WebComponentError])
-(import ^from "../runtime/triggers" ^^export
-  [
-    open_trigger_manager
-    close_trigger_manager
-    list_triggers
-    create_trigger
-    update_trigger
-    delete_trigger
-    list_occurrences])
+
+(fn ^^private feature_function [runtime, name : Str]
+  (let found (row runtime/h "functions" name))
+  (if (|| ($absent? found) (== found void))
+    (fail (ServiceError ^code "unavailable" ^message $"${name} is unavailable: its plugin is disabled or not ready.")))
+  found/fn)
 
 (type WorkspaceService ^props {^runtime Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^offline Bool ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any? ^clients Any? ^client_requests Any?})
 
@@ -1186,23 +1182,23 @@
   (message search_sessions [query : Str, ^limit limit : Int = 50] : Any
     @doc "Search session titles and transcripts."
     (search_sessions ^limit limit self/sessions query))
+  # Trigger methods call the triggers plugin's published functions, the same
+  # path any plugin uses; with the plugin disabled they are unavailable.
   (message triggers [] : Any
     @doc "Trigger definitions."
-    (list_triggers (require_trigger_manager self/runtime)))
+    ((feature_function self/runtime "list_triggers")))
   (message create_trigger [definition] : Any
     @doc "Create a trigger immediately. Scheduled work starts from it."
-    (create_trigger (require_trigger_manager self/runtime) definition))
+    ((feature_function self/runtime "create_trigger") definition))
   (message update_trigger [id : Str, changes] : Any
     @doc "Change a trigger immediately."
-    (update_trigger (require_trigger_manager self/runtime) id changes))
+    ((feature_function self/runtime "update_trigger") id changes))
   (message delete_trigger [id : Str] : Any
     @doc "Delete a trigger immediately."
-    (delete_trigger (require_trigger_manager self/runtime) id))
+    ((feature_function self/runtime "delete_trigger") id))
   (message trigger_occurrences [^trigger trigger = nil] : Any
     @doc "Trigger occurrences and their outcomes, optionally for one trigger."
-    (if ($present? trigger)
-      (then (list_occurrences (require_trigger_manager self/runtime) ^trigger trigger))
-      (else (list_occurrences (require_trigger_manager self/runtime)))))
+    ((feature_function self/runtime "trigger_occurrences") ^trigger trigger))
   (message notifications [] : Any
     @doc "The notification inbox."
     (inbox_snapshot self/services/values/inbox))

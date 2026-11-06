@@ -229,13 +229,13 @@
     (for child in children (update_session_unlocked manager child {^pinned record/pinned})))
   (copy_data record))
 
-(fn create_session [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil, ^channel channel = nil]
+(fn create_session [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil, ^channel channel = nil, ^origin origin = nil]
   (require_open manager)
   (manager/mutating (fn []
-    (create_session_unlocked ^id id ^kind kind ^title title ^trigger trigger ^occurrence occurrence ^first_request first_request ^pinned pinned ^parent parent ^model_settings model_settings ^channel channel
+    (create_session_unlocked ^id id ^kind kind ^title title ^trigger trigger ^occurrence occurrence ^first_request first_request ^pinned pinned ^parent parent ^model_settings model_settings ^channel channel ^origin origin
       manager))))
 
-(fn create_session_unlocked [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil, ^channel channel = nil]
+(fn create_session_unlocked [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil, ^channel channel = nil, ^origin origin = nil]
   (require_open manager)
   (let chosen (if (== id "") $"s-${($crypto/random_hex 12)}" id))
   (if_not (safe_id? chosen)
@@ -245,11 +245,12 @@
     (if (&& ($present? channel) (!= previous/channel channel))
       (fail (SessionError ^code "conflict" ^message "Session has another channel origin.")))
     (if (&& (== previous/kind kind) (== previous/trigger trigger) (== previous/occurrence occurrence)
+            (== (?? previous/origin nil) origin)
             (|| (!= kind "child")
                 (&& (== previous/parent/session parent/session) (== previous/parent/delegation parent/delegation))))
       (return (copy_data previous)))
     (fail (SessionError ^code "conflict" ^message $"session ${chosen} already exists")))
-  (if_not (["interactive" "heartbeat" "scheduled" "cron" "child"] .contains? kind)
+  (if_not (["interactive" "heartbeat" "scheduled" "cron" "child" "automated"] .contains? kind)
     (fail (SessionError ^code "invalid_request" ^message "invalid session kind")))
   (if_yes (== kind "child")
     (if (|| (!= ($head parent) Map) (!= ($head parent/session) Str)
@@ -284,6 +285,7 @@
     (record .put "pinned" parent_record/pinned))
   (if_not ($absent? model_settings) (record .put "model_settings" (copy_data model_settings)))
   (if_not ($absent? channel) (record .put "channel" (copy_data channel)))
+  (if_not ($absent? origin) (record .put "origin" (copy_data origin)))
   (record_core_state
     manager/events
     "workspace"
@@ -319,7 +321,7 @@
     (if (&& ($present? kind) (!= record/kind kind)) (continue))
     (if (&& ($present? status) (!= record/status status)) (continue))
     (if (&& ($present? attention) (!= record/attention attention)) (continue))
-    (if (&& ($present? trigger) (!= record/trigger trigger)) (continue))
+    (if (&& ($present? trigger) (!= (?? record/trigger record/origin/trigger) trigger)) (continue))
     (if (&& (!= since "") (< ($order/compare record/last_active since) 0)) (continue))
     (if (&& (!= until "") (> ($order/compare record/last_active until) 0)) (continue))
     (if (&& (!= query "") (! ($str/contains? ($str/lower record/title) query)) (! ($str/contains? ($str/lower record/first_request) query)))

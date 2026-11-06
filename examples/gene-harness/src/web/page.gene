@@ -117,7 +117,6 @@
                (div ^id "web_sidebar" ^class "web_components")
                (nav ^id "sessions" ^class "session_list" ^aria-label "Conversations")
                (div ^id "sidebar_tools" ^class "sidebar_footer"
-                 (button ^id "triggers_button" ^type "button" "Triggers")
                  (button ^id "status_button" ^type "button" "Workspace status")
                  (a ^href "/about/" "About Gene Harness")))
              (main ^id "classic_workspace" ^class "workspace"
@@ -197,49 +196,4 @@
                  (button ^id "close_status" ^class "drawer_close" ^type "button" ^aria-label "Close workspace status" (span ^class "icon" ^data-icon "close" ^aria-hidden "true")))
                (div ^id "status_content")
                (div ^id "web_status" ^class "web_components")))
-           (aside ^id "trigger_drawer" ^class "drawer" ^^hidden
-             (div ^class "drawer_header"
-               (h2 "Triggers")
-               (button ^id "close_triggers" ^type "button" "Close"))
-             (div ^id "trigger_list")
-             (section ^id "trigger_occurrences")
-             (details ^class "trigger_create"
-               (summary "Create trigger")
-               (form ^id "trigger_form"
-                 (label "Id" (input ^id "trigger_id" ^^required ^placeholder "nightly-audit"))
-                 (label
-                   "Kind"
-                   (select ^id "trigger_kind"
-                     (option ^value "heartbeat" "Heartbeat")
-                     (option ^value "scheduled" "One-shot schedule")
-                     (option ^value "cron" "Cron")))
-                 (label ^id "trigger_every_field"
-                   "Interval in milliseconds"
-                   (input ^id "trigger_every" ^type "number" ^min "1" ^value "60000"))
-                 (label ^id "trigger_at_field" ^^hidden
-                   "At (UTC)"
-                   (input ^id "trigger_at" ^placeholder "2026-10-01T12:00:00Z"))
-                 (label ^id "trigger_cron_field" ^^hidden
-                   "Cron (five fields)"
-                   (input ^id "trigger_cron" ^value "0 3 * * *"))
-                 (label ^id "trigger_timezone_field" ^^hidden
-                   "Timezone"
-                   (input ^id "trigger_timezone" ^value "UTC"))
-                 (label "Request" (textarea ^id "trigger_request" ^rows "3" ^^required))
-                 (div ^id "trigger_model_actions")
-                 (label
-                   "After downtime"
-                   (select ^id "trigger_missed"
-                     (option ^value "skip" "Skip missed work")
-                     (option ^value "once" "Run once")))
-                 (label
-                   "Overlapping work"
-                   (select ^id "trigger_overlap"
-                     (option ^value "skip" "Skip")
-                     (option ^value "queue_one" "Queue one")))
-                 (label (input ^id "trigger_continue" ^type "checkbox") "Continue previous session")
-                 (label
-                   "Sessions to keep"
-                   (input ^id "trigger_keep" ^type "number" ^min "0" ^value "30"))
-                 (button ^type "submit" "Create"))))
            %(script ^mount "harness_root" harness_ui))))))

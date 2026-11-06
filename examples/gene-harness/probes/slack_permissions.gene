@@ -1,5 +1,5 @@
 # Read-only preflight for live qualification. Never prints token values.
-(import [read_slack_credentials open_api close_api api_call] ^from "../src/channels/slack_api")
+(import [read_slack_credentials open_api close_api api_call] ^from "../src/builtin/slack/api")
 
 (fn scopes [token : Str]
   (if (== token "") (return []))

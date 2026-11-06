@@ -1,0 +1,190 @@
+# Long-lived plugin work bound to an activation and, optionally, a feature slot.
+#
+# A service is registered during (or after) activation and published as a row
+# of the `services` registry, so it starts only once its activation's rows are
+# in the published composition: a failed candidate never starts producing, and
+# the old activation keeps producing until its successor is published. A
+# service with `^slot` runs only while its owner holds that feature slot.
+#
+# Slot holder, from the published `feature_slots` rows for that name:
+# - exactly one row with `^takeover true` holds it (an explicit replacement);
+# - otherwise a single claiming owner holds it;
+# - otherwise the previous holder keeps it if it still claims it, so a new
+#   plain claim never moves a held slot;
+# - anything else (two takeovers, or several claimants with no previous
+#   holder, as at startup) is a conflict: no producer runs until it is resolved.
+# On every publication the services that should no longer run are quiesced
+# first, then newly selected ones start, so at most one producer holds a slot.
+# Quiesce stops a producer; it does not revoke the activation, whose retained
+# handles keep working against the feature's authoritative records.
+(mod activation_services)
+(import [subscribe_publications current_snapshot] ^from "./composition")
+(import [supervised_call] ^from "./call_supervision")
+(import [default_execution_limits] ^from "../plugin_api")
+(import [contribute] ^from "../kernel")
+(import [HarnessError] ^from "../errors")
+(import [spawn_effect_call] ^from "." ^pkg "cordis")
+
+(type ActivationServices ^^private ^props {^records Any ^subscription Any ^stopping Any ^gate Any
+  ^holders Any})
+
+(fn new_activation_services [] : ActivationServices
+  (ActivationServices ^records ($cell {}) ^subscription ($cell nil) ^stopping ($cell false)
+    ^gate ($sync/gate) ^holders ($cell {})))
+
+(fn ^^private slot_owners [rows, slot : Str]
+  (let owners [])
+  (let takeovers [])
+  (for row in rows
+    (if_yes (== row/payload/name slot)
+      (if_not (owners .contains? row/owner) (owners .push row/owner))
+      (if (&& (== row/payload/takeover true) (! (takeovers .contains? row/owner)))
+        (takeovers .push row/owner))))
+  {^owners owners ^takeovers takeovers})
+
+# The holder of every claimed slot in `snapshot`, or nil for a conflict.
+(fn resolve_slot_holders [snapshot, previous]
+  (let rows (?? (snapshot/registries .get "feature_slots") []))
+  (let names [])
+  (for row in rows (if_not (names .contains? row/payload/name) (names .push row/payload/name)))
+  (let holders {})
+  (for name in names
+    (let claims (slot_owners rows name))
+    (let prior (previous .get name))
+    (holders .put name
+      (if (== claims/takeovers/.size 1) claims/takeovers/0
+        (if (> claims/takeovers/.size 1) nil
+          (if (== claims/owners/.size 1) claims/owners/0
+            (if (&& ($present? prior) (claims/owners .contains? prior)) prior nil))))))
+  holders)
+
+(fn ^^private service_error [message : Str]
+  (fail (HarnessError ^message message)))
+
+(fn ^^private validate_registration [name, thunk, slot, quiesce]
+  (if (|| (!= ($head name) Str) (== name "") ($str/contains? name "/")
+          (> ($str/byte_size name) 64))
+    (service_error "A service needs a nonempty name of at most 64 bytes without '/'."))
+  (if_not ($runtime/callable? thunk) (service_error "A service needs a callable body."))
+  (if (&& ($present? slot) (|| (!= ($head slot) Str) (== slot "")))
+    (service_error "A service slot must be a nonempty name."))
+  (if (&& ($present? quiesce) (! ($runtime/callable? quiesce)))
+    (service_error "A service quiesce callback must be callable.")))
+
+(fn ^^private all_records [services : ActivationServices]
+  (services/gate (fn []
+    (let out [])
+    (for [token record] in services/records/.get (out .push record))
+    out)))
+
+(fn ^^private start_record [record]
+  # Only a waiting or quiesced service starts; a stopped one has retired.
+  (let previous (record/state .swap "running"))
+  (if (! (["waiting" "quiesced"] .contains? previous))
+    (then
+      (record/state .set previous)
+      (return nil)))
+  (try
+    (record/task .set (spawn_effect_call record/effects $"service ${record/name}" record/thunk []))
+  catch Any
+    (record/state .set "failed")
+    (record/error .set $err/message))
+  nil)
+
+(fn ^^private quiesce_record [record]
+  (let previous (record/state .swap "quiesced"))
+  (if (!= previous "running")
+    (then
+      (record/state .set previous)
+      (return nil)))
+  (if_yes ($present? record/quiesce)
+    (match (supervised_call record/quiesce [] (default_execution_limits)) ^!exhaustive
+      (when (TaskOutcome/error error) (record/error .set ($to_str error)))
+      (when (TaskOutcome/panic message) (record/error .set ($to_str message)))
+      (when TaskOutcome/cancelled (record/error .set "quiesce exceeded its budget"))
+      (else nil)))
+  (let task record/task/.get)
+  (if_not ($absent? task) task/.cancel)
+  nil)
+
+(fn ^^private stop_record [record]
+  (record/state .set "stopped")
+  (let task record/task/.get)
+  (record/task .set nil)
+  (if_not ($absent? task)
+    task/.cancel
+    (try task/.join catch Any nil))
+  nil)
+
+(fn ^^private desired? [services, record, snapshot, holders]
+  (if services/stopping/.get (return false))
+  (var published false)
+  (for row in (?? (snapshot/registries .get "services") [])
+    (if (&& (== row/owner record/owner) (== row/payload/token record/token))
+      (set published true)))
+  (if (! published) (return false))
+  (if ($absent? record/slot) (return true))
+  (== (holders .get record/slot) record/owner))
+
+(fn reconcile_services [services : ActivationServices, snapshot]
+  (let holders (resolve_slot_holders snapshot services/holders/.get))
+  (services/holders .set holders)
+  (let records (all_records services))
+  # Quiesce before starting: a slot moves from its old producer to the new
+  # one in this order within one publication.
+  (for record in records
+    (if (&& (== record/state/.get "running") (! (desired? services record snapshot holders)))
+      (quiesce_record record)))
+  (for record in records
+    (if (&& (["waiting" "quiesced"] .contains? record/state/.get) (desired? services record snapshot holders))
+      (start_record record)))
+  nil)
+
+(fn ^^private ensure_subscribed [services : ActivationServices, h]
+  (if ($present? services/subscription/.get) (return nil))
+  (services/subscription .set
+    (subscribe_publications h/snapshots (fn [previous, snapshot] (reconcile_services services snapshot))))
+  nil)
+
+(fn register_service [services : ActivationServices, h, owner : Str, effects, name, thunk,
+                      ^slot slot = nil, ^quiesce quiesce = nil] : Str
+  (validate_registration name thunk slot quiesce)
+  (if services/stopping/.get (service_error "The host is stopping; no new services start."))
+  (for record in (all_records services)
+    (if (&& (== record/owner owner) (== record/name name) (same? record/effects effects))
+      (service_error $"Service ${name} is already registered by this activation.")))
+  (ensure_subscribed services h)
+  (let token ($crypto/random_hex 16))
+  (let record {^token token ^owner owner ^name name ^slot slot ^thunk thunk ^quiesce quiesce
+    ^effects effects ^state ($cell "waiting") ^task ($cell nil) ^error ($cell nil)})
+  (services/gate (fn [] (services/records/.get .put token record)))
+  (effects .defer (fn []
+    (services/gate (fn [] (services/records/.get .delete token)))
+    (stop_record record)))
+  (let payload {^name $"${owner}/${name}" ^token token})
+  (if ($present? slot) (payload .put "slot" slot))
+  (contribute h owner "services" payload)
+  # A registration outside activation publishes immediately; one inside an
+  # activation waits for that activation's publication.
+  (reconcile_services services (current_snapshot h/snapshots))
+  token)
+
+(fn quiesce_services [services : ActivationServices]
+  (services/stopping .set true)
+  (for record in (all_records services) (quiesce_record record))
+  nil)
+
+(fn service_states [services : ActivationServices]
+  (let out [])
+  (let holders services/holders/.get)
+  (for record in (all_records services)
+    (let item {^owner record/owner ^name record/name ^slot record/slot
+      ^state record/state/.get ^error record/error/.get})
+    (if_yes ($present? record/slot)
+      (item .put "holder" (holders .get record/slot))
+      (item .put "conflict" (&& (holders .has_key? record/slot) ($absent? (holders .get record/slot)))))
+    (out .push item))
+  ($order/sort_by out (fn [item] $"${item/owner}/${item/name}")))
+
+(fn slot_holder [services : ActivationServices, slot : Str]
+  (services/holders/.get .get slot))

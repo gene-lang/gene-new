@@ -7,20 +7,23 @@
 (import [drain_session handoff_inputs handoff_outputs queue_progress tick_channels delivery_status output_intent] ^from "../../../src/channels/service")
 (import [pending_parts claim_batch queue_status resume_queue resolve_claim] ^from "../../../src/channels/queue")
 (import [authorize_parts] ^from "../../../src/channels/authority")
-(import [receive_envelope pending_ingress defer_handoff] ^from "../../../src/channels/ingress")
+(import [pending_ingress defer_handoff] ^from "../../../src/channels/ingress")
 (import [event] ^from "./service_spec")
 (import [submit snapshot : browser_snapshot close_session_service] ^from "../../../src/web/session_service")
 (import [unload_session] ^from "../../../src/runtime/sessions")
 (import [queue_output accept_output begin_part finish_part reconcile_output due_output resolve_output output_result deliver_output] ^from "../../../src/channels/delivery")
-(import [open_api close_api] ^from "../../../src/channels/slack_api")
-(import [open_transport close_transport socket_session] ^from "../../../src/channels/transport")
+(import [open_api close_api] ^from "../../../src/builtin/slack/api")
+(import [open_transport close_transport socket_session] ^from "../../../src/builtin/slack/transport")
 (import [ChannelError key] ^from "../../../src/channels/model")
-(import [decode_text] ^from "../../../src/channels/slack_text")
-(import [render_reply] ^from "../../../src/channels/render")
+(import [decode_text] ^from "../../../src/builtin/slack/text")
+(import [render_reply] ^from "../../../src/builtin/slack/render")
 (import [prune] ^from "../../../src/channels/retention")
 (import [round_state] ^from "../../../src/runtime/round_controller")
 (import [record_core_state flush_event_store] ^from "../../../src/storage/state")
 (import $store/fs [open : store_open Store])
+(import [receive_slack] ^from "../../channel_support")
+(import [local_channel_host] ^from "../../../src/channels/host")
+(import [api_adapter] ^from "../../../src/builtin/slack/adapter")
 
 (fn prune_later [store]
   (let now ($os/wall_ms))
@@ -28,7 +31,7 @@
 
 (fn restored_fixture [f, workspace : Str, body]
   (close_session_service f/harness)
-  (let restored (test_service ^workspace workspace ^without_plugins ["slack"]
+  (let restored (test_service ^workspace workspace ^channel_options {^start false}
     ^provider (fn [request] "(Outcome ^^done)")))
   (try (body {^harness restored ^channels restored/runtime/services/values/channels ^route f/route})
   ensure (close_session_service restored)))
@@ -36,7 +39,7 @@
 (fn deliver_progress [f, binding, api, text : Str]
   (queue_progress f/channels binding "retained-progress" "round-test" text)
   (handoff_outputs f/channels ^^force)
-  (deliver_output f/channels/owner api "retained-progress")
+  (deliver_output f/channels/owner (api_adapter api) "retained-progress")
   (handoff_outputs f/channels ^^force))
 
 (describe "Channel review regressions"
@@ -326,9 +329,9 @@
         (fixture workspace (fn [f]
           (let root (receive f "EvRoot" "1.000001" "<@UBOT> Start."))
           (handoff_inputs f/channels)
-          (let first (receive_envelope f/channels/owner "dobi"
+          (let first (receive_slack f/channels/owner "dobi"
             (event "EvFirst" "2.000001" "First amendment." ^thread "1.000001")))
-          (receive_envelope f/channels/owner "dobi"
+          (receive_slack f/channels/owner "dobi"
             (event "EvSecond" "3.000001" "Second amendment." ^thread "1.000001"))
           (defer_handoff f/channels/owner first/id "handoff_unavailable")
           (mutate f/channels/owner (fn [state]
@@ -371,20 +374,20 @@
               (if (received .swap true) nil {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}))
             ^idle_ms (fn [native socket] 90001) ^ping (fn [native socket] nil)
             ^close (fn [socket] (closed .set true))})
-          (let transport (open_transport harness/runtime/services/values/channels ^driver driver ^start false))
+          (let transport (open_transport (local_channel_host harness/runtime/services/values/channels) ^driver driver ^start false))
           (try
             (let account (/dobi (/accounts (snapshot harness/runtime/services/values/channels/owner))))
             ($assert (try (socket_session transport "A123" account) false
-              catch ChannelError (== $err/code "heartbeat_timeout")))
+              catch Error (== $err/code "heartbeat_timeout")))
             ($assert closed/.get)
           ensure (close_transport transport)))))))
 
   (it "preserves inline operators and emits raw code on the Markdown surface" []
     (let text "Use `2 ** 10` and ``a ~~ b`` with **bold**.")
-    ($assert (== (/text (/0 (render_reply text "s-1"))) "Use `2 ** 10` and ``a ~~ b`` with *bold*."))
+    ($assert (== (/text (/0 (render_reply text "Harness session s-1"))) "Use `2 ** 10` and ``a ~~ b`` with *bold*."))
     (let code "```\nif a < b && c > d:\n```\n`<@U123> & x`")
-    ($assert (== (/text (/0 (render_reply code "s-1" ^surface "markdown"))) code))
-    ($assert ((/text (/0 (render_reply code "s-1"))) .contains? "&lt; b &amp;&amp; c &gt;"))))
+    ($assert (== (/text (/0 (render_reply code "Harness session s-1" ^surface "markdown"))) code))
+    ($assert ((/text (/0 (render_reply code "Harness session s-1"))) .contains? "&lt; b &amp;&amp; c &gt;"))))
 
 (fn main [args] : Int
   (run_spec (if ($absent? args/0) [nil "Channel review regressions"] args)))

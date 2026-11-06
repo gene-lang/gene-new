@@ -34,7 +34,7 @@ field or pass nil to clear the pin, including for an occurrence already due.
 Already started rounds keep their snapshot. Plugin declarations accept the same
 field, and a changed declaration replaces the stored definition. The CLI accepts
 `triggers update ID FILE`, and the
-browser API accepts PATCH /api/v9/triggers/ID with the same changes map.
+browser API accepts PATCH /api/v9/p/triggers/ID with the same changes map.
 
 Unknown fields and providers are rejected. A signed-out provider or unlisted
 model is accepted with returned warnings; review them. Requested effort is kept
@@ -53,3 +53,16 @@ The polling loop runs as host background work owned by the plugin's activation
 effect. It must outlive the activation callback's execution budget; starting it
 with a plain spawn inside activation can leave a ready plugin whose scheduler
 has stopped. Individual triggered rounds retain their own execution limits.
+
+## Ownership
+
+The whole feature lives in the `triggers` plugin: the scheduler is a slot
+service (`feature_slots` "triggers"), definitions and occurrences are its feature
+records (`triggers/definition`, `triggers/occurrence`, `triggers/watermark`,
+`triggers/last`), rounds are admitted through `AdmissionHost` with the
+`triggers:` initiator, and the HTTP API is its owner route `/api/vN/p/triggers`.
+Disabling the plugin removes all of it. Another plugin replaces it by claiming the
+slot with `^takeover`; it reads the same records. Workspace housekeeping (body
+collection, idle session unloading, automated question deadlines) is host-owned
+and runs whether or not triggers are enabled.
+

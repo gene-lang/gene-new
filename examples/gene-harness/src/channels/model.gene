@@ -1,5 +1,9 @@
 (mod channel_model)
-(type ChannelError ^props {^code Str ^message Str} ^impl [Error])
+# Channel identity is transport-neutral: an account belongs to a transport
+# (a `channel_transports` row); team, channel, thread, message and author are
+# that transport's opaque identifiers. The transport validates its own formats
+# at ingress; the host bounds them and orders message IDs.
+(type ChannelError ^props {^code Str ^message Str ^retry_after_ms Int?} ^impl [Error])
 (impl Error for ChannelError)
 
 (fn channel_error [code : Str, message : Str]
@@ -13,12 +17,23 @@
     (channel_error "invalid_request" ($to_str "Invalid channel " label ".")))
   value)
 
-(fn identifier [value, prefix : Str, label : Str] : Str
-  (required_text value label ^max_bytes 80)
-  (if (|| ($absent? (#"^[A-Z0-9]+$" .match value))
-          (! (prefix .contains? ($str/slice_bytes value 0 1))))
-    (channel_error "invalid_request" ($to_str "Invalid Slack " label ".")))
+(fn identifier [value, label : Str] : Str
+  (required_text value label ^max_bytes 128)
+  (if ($absent? (#"^[A-Za-z0-9][A-Za-z0-9_.:@+-]*$" .match value))
+    (channel_error "invalid_request" ($to_str "Invalid channel " label ".")))
   value)
+
+(fn transport_name [value] : Str
+  (required_text value "transport" ^max_bytes 64)
+  (if ($absent? (#"^[a-z][a-z0-9_-]*$" .match value))
+    (channel_error "invalid_request" "Invalid channel transport name."))
+  value)
+
+# "slack" -> "Slack": the label in rendered requests and answer headers.
+(fn transport_label [transport : Str] : Str
+  (if (== transport "") (return "Channel"))
+  (let initial ($str/slice_bytes transport 0 1))
+  ($to_str initial/.upper ($str/slice_bytes transport 1 (- transport/.byte_size 1))))
 
 (fn account_id [value] : Str
   (required_text value "account ID" ^max_bytes 64)
@@ -26,19 +41,27 @@
     (channel_error "invalid_request" "Invalid channel account ID."))
   value)
 
-(fn slack_ts [value] : Str
-  (required_text value "message ID" ^max_bytes 40)
-  (if ($absent? (#"^[0-9]{1,20}\.[0-9]{1,9}$" .match value))
-    (channel_error "invalid_request" "Invalid Slack message timestamp."))
+(fn message_id [value] : Str
+  (required_text value "message ID" ^max_bytes 64)
+  (if ($absent? (#"^[A-Za-z0-9][A-Za-z0-9_.:-]*$" .match value))
+    (channel_error "invalid_request" "Invalid channel message ID."))
   value)
 
+# Numeric IDs (Slack's "seconds.micros", counters) order by value; others by
+# byte order. Mixed kinds never reorder an observed thread.
 (fn message_after? [candidate : Str, current : Str] : Bool
-  (let order_key (fn [value]
-    (slack_ts value)
-    (let parts (value .split "."))
-    ($to_str ($str/slice_bytes "00000000000000000000" 0 (- 20 parts/0/.byte_size)) parts/0
-      ($str/slice_bytes ($to_str parts/1 "000000000") 0 9))))
-  (> ($order/compare (order_key candidate) (order_key current)) 0))
+  (message_id candidate) (message_id current)
+  (let numeric #"^([0-9]{1,20})(?:\.([0-9]{1,9}))?$")
+  (let left (numeric .match candidate))
+  (let right (numeric .match current))
+  (if (|| ($absent? left) ($absent? right))
+    (return (> ($order/compare candidate current) 0)))
+  (let order_key (fn [matched]
+    (let whole matched/groups/0)
+    (let fraction (?? matched/groups/1 ""))
+    ($to_str ($str/slice_bytes "00000000000000000000" 0 (- 20 whole/.byte_size)) whole
+      ($str/slice_bytes ($to_str fraction "000000000") 0 9))))
+  (> ($order/compare (order_key left) (order_key right)) 0))
 
 (fn remember_message [binding, timestamp : Str]
   (if (message_after? timestamp (?? binding/last_message binding/thread))
@@ -52,17 +75,17 @@
   (key [source/transport source/account source/team source/channel source/message]))
 
 (fn normalize_message [source]
-  (if (|| (!= ($head source) Map) (!= source/transport "slack"))
-    (channel_error "invalid_request" "Expected a Slack channel input."))
+  (if (!= ($head source) Map)
+    (channel_error "invalid_request" "Expected a channel input."))
   (let received (?? source/received_at ($os/wall_ms)))
   (if (|| (!= ($head received) Int) (< received 0))
     (channel_error "invalid_request" "Invalid channel receipt time."))
-  {^transport "slack" ^account (account_id source/account)
-   ^team (identifier source/team "T" "team ID")
-   ^channel (identifier source/channel "CG" "channel ID")
-   ^thread (slack_ts source/thread) ^message (slack_ts source/message)
-   ^author (identifier source/author "UW" "author ID")
-   # Intake is bounded by the socket envelope. Admission applies the smaller
+  {^transport (transport_name source/transport) ^account (account_id source/account)
+   ^team (identifier source/team "team ID")
+   ^channel (identifier source/channel "channel ID")
+   ^thread (message_id source/thread) ^message (message_id source/message)
+   ^author (identifier source/author "author ID")
+   # Intake is bounded by the transport envelope. Admission applies the smaller
    # 64 KiB rendered-request limit and holds the complete batch for review.
    ^text (required_text source/text "message text" ^max_bytes 1048576)
    ^received_at received})
@@ -70,7 +93,7 @@
 (fn render_parts [parts] : Str
   (let lines [])
   (for part in parts
-    (lines .push ($to_str "[Slack message " part/message " from " part/author "]\n" part/text)))
+    (lines .push ($to_str "[" (transport_label part/transport) " message " part/message " from " part/author "]\n" part/text)))
   ($str/join lines "\n\n"))
 
 (fn normalize_channel_input [value]
@@ -83,13 +106,27 @@
   (for supplied in value/messages
     (let part (normalize_message supplied))
     (if (|| (!= part/account value/account) (!= part/team value/team)
-            (!= part/channel value/channel) (!= part/thread value/thread))
+            (!= part/channel value/channel) (!= part/thread value/thread)
+            (&& ($present? value/transport) (!= part/transport value/transport))
+            (&& (! parts/.empty?) (!= part/transport parts/0/transport)))
       (channel_error "invalid_request" "Channel batch members must share one external conversation."))
     (let id (message_key part))
     (if ($has_key? seen id) (channel_error "invalid_request" "Channel batch repeats a message identity."))
     (seen .put id true)
     (parts .push part))
   (let first parts/0)
-  {^kind "channel" ^transport "slack" ^account first/account ^team first/team
+  {^kind "channel" ^transport first/transport ^account first/account ^team first/team
    ^channel first/channel ^thread first/thread
    ^batch (required_text value/batch "batch ID" ^max_bytes 128) ^messages parts})
+
+# The transcript link a transport may publish: an operator-configured,
+# externally reachable browser URL. Never publish a local owner link (which
+# contains a login token) to an external channel.
+(fn transcript_reference [session : Str, public_url]
+  (if (|| (!= ($head public_url) Str)
+          ($absent? (#"^https?://[^/@?# ]+[^?# ]*$" .match public_url))
+          ($present? (#"(?i)^https?://(localhost|127\.[0-9.]+|\[::1\])(:|/|$)" .match public_url)))
+    (return ($to_str "Harness session " session)))
+  (var base public_url)
+  (while (base .ends_with? "/") (set base ($str/slice_bytes base 0 (- base/.byte_size 1))))
+  ($to_str base "/?session=" ($url/encode_component session)))

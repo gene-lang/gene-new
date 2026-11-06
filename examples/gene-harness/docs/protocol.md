@@ -363,7 +363,7 @@ Each row reports cheap availability, configures public model settings,
 prepares model-visible input as plain data, and sends one transport attempt.
 The loop retries one HTTP timeout. A missing or unavailable selected provider
 refuses round admission with `not_ready`; the same check runs before each
-turn. The `triggers` plugin resolves `TriggerHost` through `triggers/host`.
+turn. The `triggers` plugin admits its rounds through `AdmissionHost` (`admission/host`) with its own `triggers:` initiator.
 The host owns durable definitions and occurrences; plugin activation owns the
 scheduler. Disabling it stops scheduling, and its HTTP routes report unavailable.
 

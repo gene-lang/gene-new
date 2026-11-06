@@ -1,0 +1,48 @@
+# Plugin-contributed HTTP routes (`http_routes` registry). The server calls
+# `plugin_route` twice: for `callback` routes before browser admission and for
+# `owner` routes where the static feature routes run. The handler receives an
+# immutable request projection and returns {^status Int ^body ...}; a string
+# body is sent as text, anything else as JSON.
+(mod plugin_routes)
+(import [acquire_snapshot release_snapshot immutable_view] ^from "../../runtime/composition")
+(import [response] ^from "../request")
+(import $net/http [Response])
+
+(fn ^^private matches? [route, path : Str]
+  (|| (== path route/prefix) ($str/starts_with? path ($to_str route/prefix "/"))))
+
+(fn ^^private select_route [snapshot, kind : Str, path : Str, method : Str]
+  (var best nil)
+  (for record in (?? (snapshot/registries .get "http_routes") [])
+    (let route record/payload)
+    (if (&& (== route/kind kind) (matches? route path) (route/methods .contains? method))
+      # The longest matching prefix wins; prefixes are unique.
+      (if (|| ($absent? best) (> ($str/byte_size route/prefix) ($str/byte_size best/prefix)))
+        (set best route))))
+  best)
+
+(fn ^^private respond [result]
+  (if (|| (!= ($head result) Map) (!= ($head result/status) Int))
+    (return (response 500 {^error "invalid_response" ^message "A plugin route must return {^status Int ^body ...}."})))
+  (let body (?? result/body nil))
+  (if (== ($head body) Str)
+    (Response ^status result/status
+      ^headers {^content-type (?? result/content_type "text/plain; charset=utf-8") ^cache-control "no-store"}
+      ^body body)
+    (response result/status body)))
+
+(fn plugin_route [h, request, kind : Str]
+  (let lease (acquire_snapshot h/snapshots ^label "plugin route"))
+  (try
+    (let route (select_route lease/snapshot kind request/path request/method))
+    (if ($absent? route) (return nil))
+    (let subpath ($str/slice_bytes request/path ($str/byte_size route/prefix)
+      (- ($str/byte_size request/path) ($str/byte_size route/prefix))))
+    (let projection (immutable_view {^method request/method ^path request/path ^subpath subpath
+      ^params (?? request/params {}) ^headers (?? request/headers {}) ^body (?? request/body "")}))
+    (let result (try
+      ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot}
+        (fn [] (route/handle projection)))
+      catch Any {^status 500 ^body {^error "plugin_route_failed" ^message $err/message}}))
+    (respond result)
+  ensure (release_snapshot h/snapshots lease)))

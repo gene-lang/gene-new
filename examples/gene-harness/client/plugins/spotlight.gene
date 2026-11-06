@@ -157,8 +157,6 @@
       ^subtitle "Action" ^aliases "new chat"}
      {^id "action:attention" ^kind "action" ^action "attention" ^title "Needs attention"
       ^subtitle "Navigation" ^aliases "notifications questions"}
-     {^id "action:triggers" ^kind "action" ^action "triggers" ^title "Triggers"
-      ^subtitle "Workspace tool" ^aliases "schedule heartbeat cron"}
      {^id "view:harness" ^kind "view" ^view "harness" ^title "Classic Harness"
       ^subtitle "View" ^aliases "chat"}])
   (var views (items current/views))

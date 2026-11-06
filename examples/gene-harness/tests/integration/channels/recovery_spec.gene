@@ -8,7 +8,8 @@
 (import [queue_status hold_queue pending_parts discard_inputs resume_queue] ^from "../../../src/channels/queue")
 (import [round_state round_receipt] ^from "../../../src/runtime/round_controller")
 (import [pending_output output_result deliver_output reconcile_remote] ^from "../../../src/channels/delivery")
-(import [close_api] ^from "../../../src/channels/slack_api")
+(import [close_api] ^from "../../../src/builtin/slack/api")
+(import [api_adapter] ^from "../../../src/builtin/slack/adapter")
 
 (fn crashed [workspace : Str, point : Str]
   ($println ($to_str "Checking crash checkpoint: " point)) ($io/flush_stdout)
@@ -119,8 +120,8 @@
               ($assert (== before/parts/0/status "sent"))
               ($assert (== before/parts/1/status "uncertain"))
               ($assert (== before/parts/2/status "pending"))
-              (reconcile_remote service/runtime/services/values/channels/owner api "test-reply"))
-            (let delivered (deliver_output service/runtime/services/values/channels/owner api "test-reply"))
+              (reconcile_remote service/runtime/services/values/channels/owner (api_adapter api) "test-reply"))
+            (let delivered (deliver_output service/runtime/services/values/channels/owner (api_adapter api) "test-reply"))
             ($assert (== delivered/status "delivered"))
             (handoff_outputs service/runtime/services/values/channels ^^force)
             ($assert (== ($size (pending_output service/runtime/services/values/channel_queues)) 0))
@@ -128,7 +129,7 @@
             ($assert (== messages/.size 3))
             ($assert (== ($map messages /text) ["First" "Second" "Third"]))
             ($assert (== (read_count root) 1))
-            (deliver_output service/runtime/services/values/channels/owner api "test-reply")
+            (deliver_output service/runtime/services/values/channels/owner (api_adapter api) "test-reply")
             ($assert (== ($size (remote_messages root)) 3))
           ensure (close_api api) (close_session_service service))))))
 

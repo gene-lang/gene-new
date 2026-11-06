@@ -1,0 +1,52 @@
+# Slack account and route verification for the host's setup flow. The host
+# stores what these return; it never reads the credential file itself.
+(mod slack_setup)
+(import [read_slack_credentials secret_path open_api close_api identify api_call
+         load_socket_library connect_socket socket_message slack_error] ^from "./api")
+
+(fn ^^private reference [value, label : Str] : Str
+  (if (|| (!= ($head value) Str) (== value "") (> value/.byte_size 4096))
+    (slack_error "invalid_request" ($to_str "Invalid channel " label ".")))
+  (secret_path value))
+
+# data: {^secret_file ^library}. Proves the bot, app and operator tokens name
+# one Slack app in one team, the bot belongs to the configured channel, and
+# Socket Mode answers with that app's hello.
+(fn verify_account [data, ^requester requester = nil, ^driver driver = nil]
+  (let filename (reference data/secret_file "credential reference"))
+  (let library (reference data/library "native library reference"))
+  (let credentials (read_slack_credentials filename))
+  (let client (open_api credentials/bot ^requester requester))
+  (try
+    (let identity (identify client credentials))
+    (if (! identity/member) (slack_error "forbidden" "Invite the Slack bot into the configured channel first."))
+    (if (== identity/operator "")
+      (slack_error "invalid_request" "Initial pairing requires the operator's Slack user token in the credential file."))
+    (let native (if ($absent? driver) (load_socket_library library) (driver/load library)))
+    (let socket (if ($absent? driver) (connect_socket client native credentials/app)
+      (driver/connect client native credentials/app)))
+    (try
+      (let due (+ ($os/monotonic_ms) 10000))
+      (var hello nil)
+      (while ($absent? hello)
+        (if (>= ($os/monotonic_ms) due) (slack_error "unavailable" "Slack connection hello timed out."))
+        (set hello (if ($absent? driver) (socket_message native socket) (driver/receive native socket)))
+        (if ($absent? hello) ($sleep 5)))
+      (if (|| (!= hello/type "hello") (!= hello/connection_info/app_id identity/app))
+        (slack_error "forbidden" "The Slack app and bot tokens do not identify the same application."))
+    ensure (if ($absent? driver) ($C/close socket) (driver/close socket)))
+    {^identity {^transport "slack" ^team identity/team ^app identity/app ^bot identity/bot
+                ^bot_user identity/bot_user ^operator identity/operator}
+     ^config {^secret_file filename ^library library} ^channel credentials/channel}
+  ensure (close_api client)))
+
+# The bot must belong to a (non-DM) channel before Harness routes it.
+(fn verify_route [account, channel : Str, ^requester requester = nil]
+  (let credentials (read_slack_credentials account/config/secret_file))
+  (let client (open_api credentials/bot ^requester requester))
+  (try
+    (let info (api_call client "conversations.info" {^channel channel} ^http_method "GET"))
+    (if (|| (!= info/channel/is_member true) (== info/channel/is_im true) (== info/channel/is_mpim true))
+      (slack_error "forbidden" "The bot must belong to the selected Slack channel."))
+    nil
+  ensure (close_api client)))

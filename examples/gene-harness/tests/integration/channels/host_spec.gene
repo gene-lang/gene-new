@@ -5,6 +5,7 @@
 (import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import [row] ^from "../../../src/kernel")
 
+# A stored replacement uses only the public protocol: no receiver of its own.
 (fn stored_slack []
   (quote (mod plugin
     (import [Plugin PluginHost ChannelHost] ^from "src/plugin_api.gene")
@@ -12,7 +13,6 @@
       (Plugin ^id "slack" ^requires ["channels/host"] ^provides [["functions" "slack_status"]]
         ^activate (fn [host]
           (let channels (host .PluginHost:resolve "channels/host"))
-          channels/.ChannelHost:start
           (host .PluginHost:contribute "functions"
             {^name "slack_status" ^doc "Read public channel state."
              ^fn (fn [] channels/.ChannelHost:state)})))))))
@@ -20,13 +20,13 @@
 (fn wait_open [opened, count : Int]
   (let due (+ ($os/monotonic_ms) 5000))
   (while (< opened/.get count)
-    ($assert (< ($os/monotonic_ms) due) "Stored Slack transport did not start.")
+    ($assert (< ($os/monotonic_ms) due) "The built-in Slack receiver did not start.")
     ($sleep 10)))
 
 (describe "Public channel host"
-  (it "runs an API-only stored Slack replacement without loop and keeps accounts through restart" []
+  (it "lets an API-only stored Slack replacement retire the built-in receiver and keeps accounts through restart" []
     (isolated this_mod/.path
-      "runs an API-only stored Slack replacement without loop and keeps accounts through restart"
+      "lets an API-only stored Slack replacement retire the built-in receiver and keeps accounts through restart"
       (fn [root]
         (let opened ($cell 0))
         (let closed ($cell 0))
@@ -48,24 +48,23 @@
         (try
           (let credentials ($path/join root "fake-slack-credentials"))
           ($fs/write_text credentials "Bot user oauth token: xoxb-test\nApp token: xapp-test\nChannel id: C12345678\n")
-          (configure_account service/runtime/services/values/channels/owner "test" credentials "/fixture"
-            {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+          (configure_account service/runtime/services/values/channels/owner "test" ^config {^secret_file credentials ^library "/fixture"}
+            {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+          (wait_open opened 1)
           (let registered (register_plugin ^^replace service/runtime/workspace service/runtime/h "slack" (stored_slack)))
           ($assert (== registered/status "ready") ($to_str registered))
-          (wait_open opened 1)
+          ($assert (== opened/.get closed/.get) "the replaced built-in kept its receiver")
           (let status_fn (/fn (row service/runtime/h "functions" "slack_status")))
           (let status (status_fn))
           ($assert (== status/owner/accounts/0/id "test"))
           ($assert (! ($str/contains? ($json/stringify status) "xoxb-test")))
-          ($assert ($absent? status/owner/accounts/0/secret_file))
+          ($assert (! ($str/contains? ($json/stringify status) "fake-slack-credentials")))
           ($assert (try (status/owner/accounts .push {}) false catch Any true))
         ensure (close_session_service service))
         ($assert (== opened/.get closed/.get))
-        (let before opened/.get)
         (let restarted (test_service ^workspace root ^channel_options options
           ^provider (fn [request] "(Outcome ^^done ^reply \"unused\")")))
         (try
-          (wait_open opened (+ before 1))
           (let next_fn (/fn (row restarted/runtime/h "functions" "slack_status")))
           ($assert (== (/id (/0 (/accounts (/owner (next_fn))))) "test"))
         ensure (close_session_service restarted))

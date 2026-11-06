@@ -1,7 +1,8 @@
 # Static host service ownership. Plugins use facades; they cannot edit this table.
 (mod runtime_services)
 (import [withdraw_host_objects] ^from "../plugin_api")
-(import [new_harness shutdown_harness provide] ^from "../kernel")
+(import [new_harness shutdown_harness provide contribute] ^from "../kernel")
+(import [recall_image_run] ^from "../storage/image_runs")
 (import [profile_admissions] ^from "../profiles/profile")
 (import [open_event_store close_event_store flush_event_store] ^from "../storage/state")
 (import [open_inbox close_inbox] ^from "../notifications/inbox")
@@ -19,7 +20,6 @@
 (import [new_round_controller close_round_controller delegation_callbacks] ^from "./round_controller")
 (import [open_card_service] ^from "./cards")
 (import [open_delegation_host close_delegation_host] ^from "./delegations")
-(import [new_trigger_host close_trigger_host] ^from "./trigger_host")
 (import [open_image_host close_image_host] ^from "./image_service")
 (import [recover_runtime_state] ^from "./kernel_recovery")
 (import [new_voice_state close_voice_state] ^from "./voice_state")
@@ -40,11 +40,20 @@
 (import [open_operator_host close_operator_host operator_host_binding] ^from "./operator_host")
 (import [composition_host_binding] ^from "./composition_host")
 (import [install_turn_participants] ^from "./turn_participant_registry")
+(import [install_round_lifecycle contribute_native_handler] ^from "./round_lifecycle")
+(import [delegation_lifecycle_handler] ^from "./delegation_participant")
 (import [install_outcome_extensions] ^from "./outcome_extensions")
 (import [install_initiators] ^from "./initiators")
 (import [new_plugin_services] ^from "./plugin_services")
 (import [new_models_host close_models_host models_host_binding] ^from "./models_host")
 (import [open_decision_service close_decision_service] ^from "./decision_service")
+
+# A profile names no special role: the manager service opens when one of the
+# profile's plugins declares the seam it provides.
+(fn profile_requires? [profile, seam : Str] : Bool
+  (for plugin in (?? profile/plugins [])
+    (if ((?? plugin/requires []) .contains? seam) (return true)))
+  false)
 
 (fn close_kernel [ctx, h]
   (if (== ctx/harness_closed true) (return nil))
@@ -90,6 +99,8 @@
   (let images (open_image_host ctx/runtime))
   (try
     (provide ctx/h "core" "image/runtime" images)
+    (contribute ctx/h "core" "recall_sources"
+      {^prefix "image." ^recall (fn [session, id] (recall_image_run ctx/runtime session id))})
     images
   catch Any (close_image_host images) (fail $err)))
 
@@ -150,11 +161,6 @@
     {^name "readiness" ^layer "feature_host" ^requires ["runtime"]
      ^open (fn [ctx] (runtime_readiness ctx/runtime))
      ^recover (fn [ctx] (fn [] "Recovery mode: repair composition, then retry normal startup."))}
-    {^name "ui_defaults" ^layer "feature_host" ^requires ["runtime"]
-     ^open (fn [ctx]
-       (if (== ctx/profile/name "manager")
-         {^^enabled ^layout "chat" ^default_view "workspaces" ^panel "" ^side "left" ^width 50 ^tokens {}}
-         nil)) ^recover nil}
     {^name "notification_host" ^layer "feature_host" ^requires ["runtime" "inbox"]
      ^open (fn [ctx]
        (let handle (open_notification_host ctx/runtime))
@@ -199,19 +205,20 @@
     {^name "media" ^layer "feature_host" ^requires ["sessions" "repair"]
      ^open (fn [ctx] (provide ctx/h "core" "media/host" (media_host_binding ctx/runtime)) nil) ^recover nil}
     {^name "controller" ^layer "loop" ^requires ["commands" "channel_queues"]
-     ^open (fn [ctx] (new_round_controller ctx/runtime)) ^recover nil
+     ^open (fn [ctx]
+       (install_round_lifecycle ctx/runtime)
+       (new_round_controller ctx/runtime)) ^recover nil
      ^quiesce (fn [ctx controller] (close_round_controller controller))
      ^close (fn [ctx controller] (close_round_controller controller))}
     {^name "delegations" ^layer "feature_host" ^requires ["cards" "controller"]
      ^open (fn [ctx]
        (let service (open_delegation_host ctx/runtime (delegation_callbacks ctx/services/values/controller)))
-       (try (provide ctx/h "core" "delegations/runtime" service/handle) service
+       (try
+         (provide ctx/h "core" "delegations/runtime" service/handle)
+         (contribute_native_handler ctx/runtime (delegation_lifecycle_handler service))
+         service
          catch Any (close_delegation_host service) (fail $err)))
      ^recover nil ^close (fn [ctx, service] (close_delegation_host service))}
-    {^name "trigger_host" ^layer "feature_host" ^requires ["controller"]
-     ^open (fn [ctx] (new_trigger_host ctx/runtime ctx/services/values/controller)) ^recover nil
-     ^quiesce (fn [ctx host] (close_trigger_host host))
-     ^close (fn [ctx host] (close_trigger_host host))}
     {^name "images" ^layer "feature_host" ^requires ["cards"] ^open image_service ^recover nil
      ^close (fn [ctx, service] (close_image_host service))}
     {^name "participants" ^layer "loop" ^requires ["delegations" "cards" "voice"]
@@ -228,7 +235,7 @@
        commands)
      ^recover nil ^quiesce (fn [ctx, commands] (quiesce_command_manager commands))
      ^close (fn [ctx, commands] (close_command_manager commands))}
-    {^name "actions" ^layer "feature_host" ^requires ["commands" "ui_defaults"]
+    {^name "actions" ^layer "feature_host" ^requires ["commands"]
      ^open (fn [ctx]
        (install_appearance_rows ctx/runtime)
        (install_setting_rows ctx/runtime)
@@ -259,7 +266,7 @@
      ^recover nil ^close (fn [ctx, computer] (close_computer_host computer))}
     {^name "manager" ^layer "feature_host" ^requires ["actions"]
      ^open (fn [ctx]
-       (if (!= ctx/profile/name "manager") (return nil))
+       (if (! (profile_requires? ctx/profile "workspaces/host")) (return nil))
        (let manager (open_workspace_manager ctx/runtime))
        (try
          (provide ctx/h "core" "workspaces/host" (workspace_host_binding ctx/runtime))
@@ -286,7 +293,7 @@
     {^name "host_objects" ^layer "feature_host" ^requires ["actions" "manager" "sessions"]
      ^open (fn [ctx] (if ($present? ctx/objects) (ctx/objects ctx/runtime)) nil)
      ^recover nil ^close (fn [ctx, state] (withdraw_host_objects ctx/h/snapshots))}
-    {^name "plugins" ^layer "loop" ^requires {^normal ["host_objects" "actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants" "core_prompt" "trigger_host" "notification_host" "readiness" "models_host" "decisions"] ^recovery ["runtime"] ^doctor []}
+    {^name "plugins" ^layer "loop" ^requires {^normal ["host_objects" "actions" "voice" "channel_queues" "manager" "media" "computer" "operator" "plugin_api" "participants" "core_prompt" "notification_host" "readiness" "models_host" "decisions"] ^recovery ["runtime"] ^doctor []}
      ^open activate_services ^recover activate_services ^close close_kernel}
     {^name "initial_session" ^layer "loop" ^requires ["plugins" "sessions"]
      ^open (fn [ctx]

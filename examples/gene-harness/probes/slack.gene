@@ -2,7 +2,7 @@
 # This probe neither posts messages nor acknowledges application events.
 (import [read_slack_credentials open_api close_api identify connect_socket
          socket_message load_socket_library SlackError]
-  ^from "../src/channels/slack_api")
+  ^from "../src/builtin/slack/api")
 
 (fn main [argv] : Int
   (let args ($body argv))

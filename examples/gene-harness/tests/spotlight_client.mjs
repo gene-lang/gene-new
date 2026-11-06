@@ -94,7 +94,7 @@ assert.equal(f.control.key(keyEvent("KeyK",{metaKey:true,isComposing:true})),fal
 f.control.key(keyEvent("KeyK",{metaKey:true}));
 assert.equal(f.requests.length,1);
 f.requests[0].done(200n,{results:Array.from({length:14},(_,i)=>result(i)),partial:false});
-assert.equal(options().length,20);
+assert.equal(options().length,19);
 assert.match(selected().textContent,/Conversation 0/);
 for(let i=0;i<10;i++) f.control.key(keyEvent("ArrowDown"));
 assert.match(selected().textContent,/Conversation 10/);
@@ -346,7 +346,7 @@ const picker=new Element("select"); picker.setAttribute("id","ui_view_picker");
 const oldButton=new Element("button"), fallback=new Element("button"), panel=new Element();
 focusRoot.append(picker,oldButton,fallback);
 document.body.append(focusRoot,panel);
-for(const id of ["confirmations","notification_center","trigger_drawer","status_drawer"]) {
+for(const id of ["confirmations","notification_center","status_drawer"]) {
   const drawer=new Element(); drawer.setAttribute("id",id); drawer.hidden=true; focusRoot.append(drawer);
 }
 oldButton.focus();
@@ -363,12 +363,12 @@ assert.equal(overlays.claim_modal("hidden-bar",focusRoot,panel,()=>{},fallback),
 focusRoot.removeChild(removed);
 overlays.release_modal("hidden-bar",true);
 assert.equal(document.activeElement,composer,"focus must not return to the hidden host bar");
-const triggerDrawer=document.getElementById('trigger_drawer');
+const triggerDrawer=document.getElementById('status_drawer');
 document.body.appendChild(triggerDrawer); // Host drawers live outside harness_root.
 const triggerModel=new Element('button'); triggerDrawer.append(triggerModel); triggerDrawer.hidden=false;
 triggerModel.focus();
 assert.equal(overlays.claim_modal('trigger-model',focusRoot,panel,()=>{},triggerModel),true,
-  'a control inside the trigger drawer can open an owned picker');
+  'a control inside a host drawer can open an owned picker');
 assert.equal(triggerDrawer.hidden,true,'the parent drawer must not compete with the picker');
 overlays.release_modal('trigger-model',true);
 assert.equal(triggerDrawer.hidden,false);

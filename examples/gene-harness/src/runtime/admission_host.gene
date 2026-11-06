@@ -1,0 +1,124 @@
+# Public work admission for plugins (AdmissionHost). A plugin creates sessions
+# and submits rounds through its own `initiators` row; the round controller
+# keeps admission identity, sequence, digest and cancellation. Session origin
+# is an opaque record supplied by the feature, not a per-feature parameter.
+(mod admission_host)
+(import [AdmissionHost ServiceError] ^from "../plugin_api")
+(import [service_binding require_service] ^from "./service_handles")
+(import [immutable_view] ^from "./composition")
+(import [create_session require_record list_sessions update_session delete_session load_session session_busy?]
+  ^from "./sessions")
+(import [submit_round round_state round_for_request RoundError] ^from "./round_controller")
+(import [copy_data] ^from "../storage/state")
+(import [row] ^from "../kernel")
+(import [validate_model_settings] ^from "../public/models")
+(import [effective_config] ^from "./settings_resolver")
+(import [catalog_snapshot session_settings select_provider] ^from "../agents/provider_selection")
+
+# How a round admitted with `settings` would select its model: an error for an
+# unusable choice, otherwise warnings (unready provider, effort resolution,
+# uncatalogued model). Selection stays host-owned.
+(fn ^^private check_model_settings [runtime, input]
+  (let choice (try (validate_model_settings (?? input {})) catch Any (return {^error $err/message})))
+  (if (&& ($present? choice/provider) ($absent? (row runtime/h "providers" choice/provider)))
+    (return {^error $"Unknown provider ${choice/provider}"}))
+  (let base (effective_config runtime))
+  (let selected (try (select_provider ^allow_unready true runtime
+    (session_settings {^model_settings choice} base))
+    catch Any
+      (if (&& (!= $err/code "not_ready") (> ($size choice) 0)) (return {^error $err/message}))
+      {^reason $err/message}))
+  (let warnings [])
+  (if ($present? selected/reason) (warnings .push selected/reason))
+  (if (&& ($present? choice/effort) (!= choice/effort "auto")
+    ($present? selected/selection) (!= choice/effort selected/selection/effective_effort))
+    (then
+      (let effective (?? selected/selection/effective_effort "provider default"))
+      (warnings .push $"Requested effort ${choice/effort} resolves to ${effective}.")))
+  (if_yes ($present? choice/model)
+    (let catalog (catalog_snapshot runtime))
+    (let provider choice/provider)
+    (let candidate (row runtime/h "providers" provider))
+    (var listed false)
+    (for model in (?? catalog/providers/%provider/models candidate/builtin_models [])
+      (if (== model/id choice/model) (set listed true)))
+    (if (! listed) (warnings .push "Model is not in the catalog; access is unverified.")))
+  {^settings choice ^warnings warnings})
+
+(fn ^^private controller_of [handle]
+  (let record (require_service handle))
+  (let controller record/runtime/services/values/controller)
+  (if (|| ($absent? controller) controller/closed/.get)
+    (fail (ServiceError ^code "unavailable" ^message "Round admission is unavailable.")))
+  {^runtime record/runtime ^controller controller})
+
+(fn ^^private receipt_view [receipt]
+  (if ($absent? receipt) (return nil))
+  (immutable_view {^id receipt/id ^request_id receipt/request_id ^state receipt/state
+    ^initiator receipt/initiator ^initiator_kind receipt/initiator_kind
+    ^submission_seq receipt/submission_seq ^accepted_at receipt/accepted_at}))
+
+(fn ^^private session_view [record]
+  (if ($absent? record) nil (immutable_view record)))
+
+(fn ^^private find_receipt [controller, runtime, session : Str, request_id : Str]
+  (if ($absent? (runtime/sessions/index/.get .get session)) (return nil))
+  (let loaded (runtime/sessions/loaded/.get .get session))
+  (if_not ($absent? loaded)
+    (let current loaded/round/.get)
+    (if (&& ($present? current) (== current/request_id request_id)) (return (copy_data current))))
+  (round_for_request controller session request_id))
+
+(type HostedAdmission ^^private ^props {^token Any}
+  (impl AdmissionHost
+    (message create_session [^id id : Str = "", ^kind kind : Str = "automated", ^title title : Str = "",
+                             ^first_request first_request : Str = "", ^origin origin = nil] : Any
+      (let context (controller_of self))
+      (session_view (create_session context/runtime/sessions ^id id ^kind kind
+        ^title (if (== title "") "Automated work" title) ^first_request first_request
+        ^origin (if ($absent? origin) nil (copy_data origin)))))
+    (message session [session : Str] : Any
+      (let context (controller_of self))
+      (if ($absent? (context/runtime/sessions/index/.get .get session)) (return nil))
+      (session_view (require_record context/runtime/sessions session)))
+    (message sessions [^origin_owner owner : Str = ""] : Any
+      (let context (controller_of self))
+      (let out [])
+      (for record in (list_sessions ^^all context/runtime/sessions)
+        (if (|| (== owner "") (== record/origin/owner owner)) (out .push record)))
+      (immutable_view out))
+    (message busy? [session : Str] : Bool
+      (let context (controller_of self))
+      (if ($absent? (context/runtime/sessions/index/.get .get session)) (return false))
+      (session_busy? (load_session context/runtime/sessions session)))
+    (message update_session [session : Str, changes] : Any
+      (let context (controller_of self))
+      (session_view (update_session context/runtime/sessions session (copy_data changes))))
+    (message delete_session [session : Str] : Bool
+      (let context (controller_of self))
+      (delete_session context/runtime/sessions session))
+    (message check_model_settings [settings] : Any
+      (let context (controller_of self))
+      (immutable_view (check_model_settings context/runtime settings)))
+    (message receipt [session : Str, request_id : Str] : Any
+      (let context (controller_of self))
+      (receipt_view (find_receipt context/controller context/runtime session request_id)))
+    (message submit [session : Str, request_id : Str, text : Str, ^initiator initiator : Str,
+                     ^input input = nil, ^model_settings model_settings = nil] : Any
+      (let context (controller_of self))
+      # A retried request id returns its recorded receipt rather than
+      # admitting the same work twice.
+      (let existing (find_receipt context/controller context/runtime session request_id))
+      (if ($present? existing) (return (receipt_view existing)))
+      (let sequence (/next_seq (round_state context/controller session)))
+      (let admitted ($cell nil))
+      (try
+        (submit_round context/controller session request_id sequence text
+          ^initiator initiator ^input input ^model_settings model_settings
+          ^on_admit (fn [receipt] (admitted .set (copy_data receipt))))
+      catch RoundError
+        (fail (ServiceError ^code $err/code ^message $err/message)))
+      (receipt_view admitted/.get))))
+
+(fn admission_host_binding [runtime]
+  (service_binding runtime "admission" (fn [token] (HostedAdmission ^token token))))

@@ -4,16 +4,19 @@
 (import [open_channel_service close_channel_service receive_handoff drain_session project_events
          handoff_inputs handoff_outputs bind_workspace project_rounds project_queue] ^from "../../../src/channels/service")
 (import [configure_account configure_route snapshot authorize] ^from "../../../src/channels/authority")
-(import [receive_envelope pending_ingress] ^from "../../../src/channels/ingress")
+(import [pending_ingress] ^from "../../../src/channels/ingress")
 (import [queue_status] ^from "../../../src/channels/queue")
 (import [pending_output deliver_output reconcile_output] ^from "../../../src/channels/delivery")
-(import [open_api close_api] ^from "../../../src/channels/slack_api")
+(import [open_api close_api] ^from "../../../src/builtin/slack/api")
 (import [delete_session] ^from "../../../src/runtime/sessions")
 (import [round_receipt] ^from "../../../src/runtime/round_controller")
 (import [qualification_provider] ^from "../../../probes/slack_live")
 (import [put_cordis_plugin] ^from "../../../src/kernel")
 (import [channel_settings] ^from "../../../src/channels/http")
 (import [parse_control] ^from "../../../src/channels/controls")
+(import [receive_slack] ^from "../../channel_support")
+(import [command_text] ^from "../../../src/builtin/slack/ingress")
+(import [api_adapter] ^from "../../../src/builtin/slack/adapter")
 
 (fn wait_round [service, session]
   (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session)))
@@ -21,13 +24,13 @@
 
 (fn fixture [workspace, body]
   (let calls ($cell []))
-  (let harness (test_service ^workspace workspace ^without_plugins ["slack"] ^provider (fn [request]
+  (let harness (test_service ^workspace workspace ^channel_options {^start false} ^provider (fn [request]
     (calls/.get .push request)
     "($fs/write_text \"channel-service-proof.txt\" \"executed\") (Outcome ^^done ^reply \"Task completed.\")")))
   (let channels harness/runtime/services/values/channels)
   (try
-    (configure_account channels/owner "dobi" "/reference" "/adapter.so"
-      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (configure_account channels/owner "dobi" ^config {^secret_file "/reference" ^library "/adapter.so"}
+      {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
     (let route (configure_route channels/owner "dobi" "C123" workspace ^approved ["UOWNER" "UOTHER"]))
     (bind_workspace channels workspace route/id)
     (body {^harness harness ^channels channels ^route route ^calls calls})
@@ -42,16 +45,18 @@
     ^team_id "T123" ^event_id id ^event message}})
 
 (fn receive [f, id : Str, ts : Str, text : Str, ^thread thread = nil, ^author author : Str = "UOWNER"]
-  (let incoming (receive_envelope f/channels/owner "dobi" (event id ts text ^thread thread ^author author)))
+  (let incoming (receive_slack f/channels/owner "dobi" (event id ts text ^thread thread ^author author)))
   (if (== incoming/status "pending") (receive_handoff f/channels incoming) incoming))
 
 (describe "Workspace channel service"
   (it "accepts attributed Slack controls without changing answer JSON or literal prompts" []
-    ($assert (== (parse_control "!continue-until-finished round-1 *Sent using* <@UAPP>")
+    # The Slack plugin strips its attribution footer from commands at ingress.
+    ($assert (== (parse_control (command_text "!continue-until-finished round-1 *Sent using* <@UAPP>"))
       {^name "continue-until-finished" ^args "round-1"}))
-    ($assert (== (parse_control "!status\n\n*Sent using* <@UAPP|App>") {^name "status" ^args ""}))
+    ($assert (== (parse_control (command_text "!status\n\n*Sent using* <@UAPP|App>")) {^name "status" ^args ""}))
     (let json "q1 {\n  \"note\": \"literal *Sent using* <@UAPP>\"\n}")
-    ($assert (== (/args (parse_control ($to_str "!answer " json "\n\n*Sent using* <@UAPP>"))) json))
+    ($assert (== (/args (parse_control (command_text ($to_str "!answer " json "\n\n*Sent using* <@UAPP>")))) json))
+    ($assert (== (command_text "Explain *Sent using* <@UAPP>") "Explain *Sent using* <@UAPP>"))
     ($assert ($absent? (parse_control "Explain *Sent using* <@UAPP>"))))
 
   (it "continues a paused Slack task from a connector-attributed command" []
@@ -82,7 +87,7 @@
           (channel_settings f/channels {^surface "markdown" ^public_url "https://harness.example.com"})
           (let original (snapshot f/harness/runtime/services/values/channel_queues))
           (close_session_service f/harness)
-          (let restored (test_service ^workspace workspace ^without_plugins ["slack"]
+          (let restored (test_service ^workspace workspace ^channel_options {^start false}
             ^provider (fn [request] "(Outcome ^^done)")))
           (try
             ($assert (== restored/runtime/services/values/channels/settings/.get
@@ -127,7 +132,7 @@
     (isolated this_mod/.path "creates interactive sessions from roots, batches shared authors and publishes final replies and browser continuations"
       (fn [workspace]
         (fixture workspace (fn [f]
-          (let incoming (receive_envelope f/channels/owner "dobi" (event "Ev1" "1.000001" "<@UBOT> Build it.")))
+          (let incoming (receive_slack f/channels/owner "dobi" (event "Ev1" "1.000001" "<@UBOT> Build it.")))
           (let checked (receive_handoff f/channels incoming))
           ($assert (== checked/status "queued") ($serde/write_data checked))
           (handoff_inputs f/channels)
@@ -147,12 +152,12 @@
           ($assert (== outputs/.size 1))
           ($assert (== outputs/0/intent/parts/0/text "Agent:\nTask completed."))
           # message and app_mention subscriptions describe the same logical input.
-          (receive_envelope f/channels/owner "dobi" (event "Ev2" "1.000001" "<@UBOT> Build it." ^kind "app_mention"))
+          (receive_slack f/channels/owner "dobi" (event "Ev2" "1.000001" "<@UBOT> Build it." ^kind "app_mention"))
           (handoff_inputs f/channels)
           ($assert (== (/kind (drain_session f/channels session)) "empty"))
           ($assert (== f/calls/.get/.size 1))
-          (receive_envelope f/channels/owner "dobi" (event "Ev3" "2.000001" "Add X." ^thread "1.000001"))
-          (receive_envelope f/channels/owner "dobi" (event "Ev4" "3.000001" "Actually skip X." ^thread "1.000001" ^author "UOTHER"))
+          (receive_slack f/channels/owner "dobi" (event "Ev3" "2.000001" "Add X." ^thread "1.000001"))
+          (receive_slack f/channels/owner "dobi" (event "Ev4" "3.000001" "Actually skip X." ^thread "1.000001" ^author "UOTHER"))
           (handoff_inputs f/channels)
           (let next (drain_session f/channels session))
           ($assert (== ($map next/receipt/input/messages /author) ["UOWNER" "UOTHER"]))
@@ -176,7 +181,7 @@
           (try
             (for output in all
               (reconcile_output f/harness/runtime/services/values/channel_queues
-                (deliver_output f/channels/owner api output/intent/id)))
+                (deliver_output f/channels/owner (api_adapter api) output/intent/id)))
             ($assert (== ($size (pending_output f/harness/runtime/services/values/channel_queues)) 0))
             ($assert (== posted/.get/.size all/.size))
           ensure (close_api api))
@@ -193,16 +198,16 @@
     (isolated this_mod/.path "ignores unmentioned roots and their replies and never recreates a deleted conversation"
       (fn [workspace]
         (fixture workspace (fn [f]
-          (let ordinary (receive_envelope f/channels/owner "dobi" (event "Ev1" "1.000001" "Ordinary channel chat.")))
+          (let ordinary (receive_slack f/channels/owner "dobi" (event "Ev1" "1.000001" "Ordinary channel chat.")))
           ($assert (== (/status (receive_handoff f/channels ordinary)) "ignored"))
-          (let unknown (receive_envelope f/channels/owner "dobi" (event "Ev2" "2.000001" "Follow up." ^thread "1.000001")))
+          (let unknown (receive_slack f/channels/owner "dobi" (event "Ev2" "2.000001" "Follow up." ^thread "1.000001")))
           ($assert (== (/status (receive_handoff f/channels unknown)) "ignored"))
           ($assert (== ($size f/harness/runtime/sessions/index/.get) 0))
-          (let root (receive_envelope f/channels/owner "dobi" (event "Ev3" "3.000001" "<@UBOT> First task.")))
+          (let root (receive_slack f/channels/owner "dobi" (event "Ev3" "3.000001" "<@UBOT> First task.")))
           (let received (receive_handoff f/channels root))
           ($assert (== ($size f/harness/runtime/sessions/index/.get) 1))
           (delete_session f/harness/runtime/sessions received/session ^^explicit)
-          (let later (receive_envelope f/channels/owner "dobi" (event "Ev4" "4.000001" "Next task." ^thread "3.000001")))
+          (let later (receive_slack f/channels/owner "dobi" (event "Ev4" "4.000001" "Next task." ^thread "3.000001")))
           ($assert (== (/status (receive_handoff f/channels later)) "deleted"))
           (let replies (pending_output f/harness/runtime/services/values/channel_queues))
           ($assert (> ($size ($filter replies (fn [out]
@@ -339,14 +344,14 @@
             (let working ($first (pending_output f/harness/runtime/services/values/channel_queues)))
             (handoff_outputs f/channels)
             (reconcile_output f/harness/runtime/services/values/channel_queues
-              (deliver_output f/channels/owner api working/intent/id))
+              (deliver_output f/channels/owner (api_adapter api) working/intent/id))
             (ready .set true) (wait_round f/harness root/session)
             (project_events f/channels root/session)
             (project_rounds f/channels root/session)
             (handoff_outputs f/channels)
             (for outgoing in (pending_output f/harness/runtime/services/values/channel_queues)
               (reconcile_output f/harness/runtime/services/values/channel_queues
-                (deliver_output f/channels/owner api outgoing/intent/id)))
+                (deliver_output f/channels/owner (api_adapter api) outgoing/intent/id)))
             ($assert (== ($map calls/.get /method) ["chat.postMessage" "chat.delete" "chat.postMessage"]))
             ($assert (== calls/.get/1/data {^channel "C123" ^ts "1.000002"}))
             ($assert (== calls/.get/2/data/text "Agent:\nHi three!"))

@@ -145,9 +145,64 @@
     (fail (HarnessError ^message "a hook point needs a name and collect or coordinator dispatch")))
   candidate)
 
-(fn validate_trigger_row [candidate]
-  (if (|| (!= ($head candidate/id) Str) (!= ($head candidate/request) Str) (! (["heartbeat" "scheduled" "cron"] .contains? candidate/kind)))
-    (fail (HarnessError ^message "a trigger row requires id, kind and request")))
+# A feature slot names a single-producer feature independently of the plugin
+# implementing it. A plugin claims a slot; `^takeover true` takes it from
+# another holder explicitly. See runtime/activation_services.gene.
+(fn validate_feature_slot_row [candidate]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
+          (> ($str/byte_size candidate/name) 128))
+    (fail (HarnessError ^message "a feature slot row requires a nonempty name of at most 128 bytes")))
+  (if (&& ($present? candidate/takeover) (!= ($head candidate/takeover) Bool))
+    (fail (HarnessError ^message "a feature slot takeover flag must be a boolean")))
+  (for [key value] in candidate
+    (if_not (["name" "takeover" "summary" "tags" "docs"] .contains? ($to_str key))
+      (fail (HarnessError ^message $"Unknown feature slot field ${key}"))))
+  candidate)
+
+# Activation services are published as rows so their liveness follows the
+# published composition: a failed candidate's rows never publish, and a
+# retired activation's rows disappear with it.
+(fn validate_service_row [candidate]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
+          (!= ($head candidate/token) Str) (== candidate/token "")
+          (&& ($present? candidate/slot) (|| (!= ($head candidate/slot) Str) (== candidate/slot ""))))
+    (fail (HarnessError ^message "a service row requires name, token and an optional nonempty slot")))
+  candidate)
+
+# Plugin HTTP routes. `owner` routes run after browser admission (Origin,
+# cookie, CSRF) under /api/vN/p/<owner><path>; `callback` routes run before it
+# under /callback/<owner><path> and verify their own protocol (signature,
+# OAuth state). The host computes the prefix, so routes stay in the
+# contributor's namespace.
+# A chat transport (Slack, or any plugin's own), selected by an account's
+# `transport`. The channel host keeps queues, authority, ingress and delivery
+# receipts; the row supplies state, render, send/remove/reconcile, lookups,
+# setup verification and settings (src/channels/transports.gene). The host
+# registers `<name>/channel` for configured accounts unless a plugin already
+# contributes that transport's channel initiator.
+(fn validate_channel_transport_row [candidate]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
+          (! ($runtime/callable? candidate/state)))
+    (fail (HarnessError ^message "a channel transport requires a name and a callable state")))
+  (for field in ["render" "send" "remove" "reconcile" "lookup" "verify_account" "verify_route" "settings"]
+    (if (&& ($present? (candidate .get field)) (! ($runtime/callable? (candidate .get field))))
+      (fail (HarnessError ^message $"channel transport ${field} must be callable"))))
+  (if (&& ($present? candidate/pace_ms) (|| (!= ($head candidate/pace_ms) Int) (< candidate/pace_ms 0)))
+    (fail (HarnessError ^message "channel transport pace_ms must be a non-negative Int")))
+  candidate)
+
+(fn validate_http_route_row [candidate]
+  (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
+          (! (["owner" "callback"] .contains? candidate/kind))
+          (!= ($head candidate/path) Str)
+          (&& (!= candidate/path "") (! ($str/starts_with? candidate/path "/")))
+          (! ($runtime/callable? candidate/handle)))
+    (fail (HarnessError ^message "an http route requires name, kind owner|callback, a path starting with / (or empty) and a callable handle")))
+  (if (|| (!= ($head candidate/methods) List) candidate/methods/.empty?)
+    (fail (HarnessError ^message "an http route requires a nonempty methods list")))
+  (for method in candidate/methods
+    (if_not (["GET" "POST" "PUT" "PATCH" "DELETE"] .contains? method)
+      (fail (HarnessError ^message $"Unsupported http route method ${method}"))))
   candidate)
 
 (fn validate_interaction_row [candidate]

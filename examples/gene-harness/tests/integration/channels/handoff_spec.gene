@@ -2,14 +2,16 @@
 (import [isolated run_spec] ^from "../../support")
 (import [open_authority configure_account configure_route authorize snapshot close_channel_store]
   ^from "../../../src/channels/authority")
-(import [receive_envelope pending_ingress finish_handoff] ^from "../../../src/channels/ingress")
+(import [pending_ingress finish_handoff] ^from "../../../src/channels/ingress")
 (import [open_queues configure_queues enqueue] ^from "../../../src/channels/queue")
 (import [queue_output pending_output accept_output output_result reconcile_output
          begin_part finish_part recover_deliveries deliver_output reconcile_remote] ^from "../../../src/channels/delivery")
-(import [open_api close_api] ^from "../../../src/channels/slack_api")
+(import [open_api close_api] ^from "../../../src/builtin/slack/api")
 (import [mutate] ^from "../../../src/channels/store")
 (import [ChannelError key] ^from "../../../src/channels/model")
 (import [prune] ^from "../../../src/channels/retention")
+(import [receive_slack] ^from "../../channel_support")
+(import [api_adapter] ^from "../../../src/builtin/slack/adapter")
 
 (fn envelope [id : Str, ^event_type event_type : Str = "message", ^text text : Str = "<@UBOT> build it",
               ^author author : Str = "UOWNER", ^ts ts : Str = "1.000001"]
@@ -22,8 +24,8 @@
   (let owner (open_authority root))
   (let queues (open_queues ($path/join workspace "queues") workspace))
   (try
-    (configure_account owner "dobi" "/reference" "/adapter.so"
-      {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+    (configure_account owner "dobi" ^config {^secret_file "/reference" ^library "/adapter.so"}
+      {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
     (let route (configure_route owner "dobi" "C123" workspace))
     (configure_queues queues route)
     (let input (enqueue queues {^transport "slack" ^account "dobi" ^team "T123"
@@ -45,16 +47,16 @@
     (isolated this_mod/.path "records routing before acknowledgement and preserves it across retry, policy change and restart"
       (fn [workspace]
         (fixture workspace (fn [f]
-          (let first (receive_envelope f/owner "dobi" (envelope "Ev1")))
+          (let first (receive_slack f/owner "dobi" (envelope "Ev1")))
           ($assert (== first/status "pending"))
           ($assert (== first/message/text "build it"))
           ($assert (== first/workspace workspace))
           ($assert first/start_allowed)
           (configure_route f/owner "dobi" "C123" workspace ^approved [])
-          ($assert (== first (receive_envelope f/owner "dobi" (envelope "Ev1"))))
+          ($assert (== first (receive_slack f/owner "dobi" (envelope "Ev1"))))
           ($assert (== ($size (pending_ingress f/owner)) 1))
-          ($assert (== (/status (receive_envelope f/owner "dobi" (envelope "Ev2"))) "denied"))
-          ($assert (try (receive_envelope f/owner "dobi" (envelope "Ev1" ^text "changed")) false
+          ($assert (== (/status (receive_slack f/owner "dobi" (envelope "Ev2"))) "denied"))
+          ($assert (try (receive_slack f/owner "dobi" (envelope "Ev1" ^text "changed")) false
             catch ChannelError (== $err/code "submission_conflict")))
           (close_channel_store f/owner)
           (let recovered (open_authority f/owner_root))
@@ -62,7 +64,7 @@
             ($assert (== first/route (/route (/0 (pending_ingress recovered)))))
             (finish_handoff recovered first/id {^status "denied"})
             ($assert (== ($size (pending_ingress recovered)) 0))
-            ($assert (== (/status (receive_envelope recovered "dobi" (envelope "Ev1"))) "handed_off"))
+            ($assert (== (/status (receive_slack recovered "dobi" (envelope "Ev1"))) "handed_off"))
           ensure (close_channel_store recovered)))))))
 
   (it "rejects cross-account payloads and excludes bots, edits and denied text" []
@@ -71,14 +73,14 @@
         (fixture workspace (fn [f]
           (let other (envelope "Ev1"))
           (other/payload .put "team_id" "TOTHER")
-          ($assert (try (receive_envelope f/owner "dobi" other) false
-            catch ChannelError (== $err/code "forbidden")))
+          ($assert (try (receive_slack f/owner "dobi" other) false
+            catch Error (== $err/code "forbidden")))
           (let bot (envelope "Ev2" ^author "UBOT"))
-          ($assert (== (/status (receive_envelope f/owner "dobi" bot)) "ignored"))
+          ($assert (== (/status (receive_slack f/owner "dobi" bot)) "ignored"))
           (let edited (envelope "Ev3"))
           (edited/payload/event .put "subtype" "message_changed")
-          ($assert (== (/status (receive_envelope f/owner "dobi" edited)) "ignored"))
-          (let denied (receive_envelope f/owner "dobi" (envelope "Ev4" ^author "UGUEST" ^text "private denied text")))
+          ($assert (== (/status (receive_slack f/owner "dobi" edited)) "ignored"))
+          (let denied (receive_slack f/owner "dobi" (envelope "Ev4" ^author "UGUEST" ^text "private denied text")))
           ($assert (== denied/status "denied"))
           ($assert (! ($str/contains? ($serde/write_data denied) "private denied text")))
           ($assert (== ($size (pending_ingress f/owner)) 0)))))))
@@ -99,10 +101,10 @@
             {^status 200 ^headers [] ^body ($binary/from_str
               ($json/stringify {^^ok ^ts ($to_str calls/.get/.size ".000002")}))})))
           (try
-            (let result (deliver_output f/owner api outgoing/id))
+            (let result (deliver_output f/owner (api_adapter api) outgoing/id))
             ($assert (== result/status "delivered") ($serde/write_data result))
             ($assert (== ($map calls/.get /text) ["First" "Second"]))
-            ($assert (== result (deliver_output f/owner api outgoing/id)))
+            ($assert (== result (deliver_output f/owner (api_adapter api) outgoing/id)))
             ($assert (== calls/.get/.size 2))
             (reconcile_output f/queues (output_result f/owner outgoing/id))
             ($assert (== ($size (pending_output f/queues)) 0))
@@ -169,10 +171,10 @@
             (calls .set (+ calls/.get 1))
             {^status 429 ^headers [["retry-after" "60"]] ^body ($binary/from_str "{}")})))
           (try
-            (let delayed (deliver_output f/owner api multipart/id))
+            (let delayed (deliver_output f/owner (api_adapter api) multipart/id))
             ($assert (== delayed/status "accepted") ($serde/write_data delayed))
             ($assert (== delayed/parts/0/status "pending") ($serde/write_data delayed))
-            (deliver_output f/owner api multipart/id)
+            (deliver_output f/owner (api_adapter api) multipart/id)
             ($assert (== calls/.get 1))
             ($assert ($absent? (begin_part f/owner multipart/id 0 1)))
           ensure (close_api api)))))))
@@ -188,10 +190,10 @@
           (let api (open_api "test-token" ^requester (fn [request]
             ($assert false "An unsent status must not reach Slack."))))
           (try
-            (let result (deliver_output f/owner api working/id))
+            (let result (deliver_output f/owner (api_adapter api) working/id))
             ($assert (== result/status "delivered"))
             ($assert ($absent? result/parts/0/ts))
-            ($assert (== result (deliver_output f/owner api working/id)))
+            ($assert (== result (deliver_output f/owner (api_adapter api) working/id)))
           ensure (close_api api)))))))
 
   (it "retries lost progress removals after a restart without reposting the status" []
@@ -211,12 +213,12 @@
               {^status 503 ^headers [] ^body ($binary/from_str "{}")}
               {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^!ok ^error "message_not_found"}))}))))
           (try
-            (deliver_output f/owner api working/id)
+            (deliver_output f/owner (api_adapter api) working/id)
             (accept_output f/owner (working .assoc "revision" 1; .assoc "remove" true))
-            (let lost (deliver_output f/owner api working/id))
+            (let lost (deliver_output f/owner (api_adapter api) working/id))
             ($assert (== lost/status "accepted"))
             ($assert (== lost/parts/0/status "pending"))
-            (deliver_output f/owner api working/id)
+            (deliver_output f/owner (api_adapter api) working/id)
             ($assert (== calls/.get/.size 2) "Backoff must prevent an immediate retry.")
             (mutate f/owner (fn [state]
               (let current (state/deliveries .get working/id))
@@ -226,7 +228,7 @@
             (let recovered (output_result f/owner working/id))
             ($assert (== recovered/parts/0/status "pending"))
             ($assert (== recovered/parts/0/ts "9.000001"))
-            ($assert (== (/status (deliver_output f/owner api working/id)) "delivered"))
+            ($assert (== (/status (deliver_output f/owner (api_adapter api) working/id)) "delivered"))
             ($assert (== calls/.get ["chat.postMessage" "chat.delete" "chat.delete"]))
           ensure (close_api api)))))))
 
@@ -249,10 +251,10 @@
                   ^event_payload {^delivery outgoing/id ^part 0 ^revision 0
                     ^body_digest (key outgoing/parts/0)}}}]}))})))
           (try
-            ($assert (== (/status (reconcile_remote f/owner api outgoing/id)) "uncertain"))
+            ($assert (== (/status (reconcile_remote f/owner (api_adapter api) outgoing/id)) "uncertain"))
             ($assert ($absent? (begin_part f/owner outgoing/id 0 0)))
             (author .set "UBOT")
-            (let confirmed (reconcile_remote f/owner api outgoing/id))
+            (let confirmed (reconcile_remote f/owner (api_adapter api) outgoing/id))
             ($assert (== confirmed/status "delivered"))
             ($assert (== confirmed/parts/0/ts "2.000002"))
           ensure (close_api api)))))))

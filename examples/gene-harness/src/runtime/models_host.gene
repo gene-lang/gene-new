@@ -190,8 +190,6 @@
 
 (fn start_file_watch [handle, supplied_root] ^^private
   (let service (require_service handle))
-  (if (!= service/host/owner "models_file_watch")
-    (fail (ServiceError ^code "forbidden" ^message "File watching belongs to the models_file_watch plugin.")))
   (let state service/config/state)
   (if (! state/accepting/.get) (fail (ServiceError ^code "unavailable" ^message "The models host is closing.")))
   (if ($absent? state/root/.get) (state/root .set (manager_root_path ^explicit supplied_root)))
@@ -211,7 +209,13 @@
   (let policy (runtime/h/plugin_policies/.get .get "models"))
   (let state runtime/services/values/models_host)
   (if ($absent? state) (return nil))
-  (state/catalogs .get (?? policy/activation_revision "")))
+  (let selected (state/catalogs .get (?? policy/activation_revision "")))
+  (if (&& ($present? selected) (! selected/closed/.get)) (return selected))
+  # A catalog started by a plugin under another id: use it when it is the
+  # only open one, rather than choosing between activations by order.
+  (let open [])
+  (for [revision catalog] in state/catalogs (if_not catalog/closed/.get (open .push catalog)))
+  (if (== open/.size 1) open/0 selected))
 
 (fn require_catalog [handle] ^^private
   (let service (require_service handle))
@@ -339,8 +343,6 @@
 
 (fn start_catalog [handle, root] ^^private
   (let service (require_service handle))
-  (if (!= service/host/owner "models")
-    (fail (ServiceError ^code "forbidden" ^message "Catalog activation belongs to the models plugin.")))
   (let state service/config/state)
   (if (! state/accepting/.get)
     (fail (ServiceError ^code "unavailable" ^message "The models host is closing.")))
@@ -377,8 +379,6 @@
 
 (fn begin_model_login [handle, provider : Str, account] ^^private
   (let service (require_service handle))
-  (if (!= service/host/owner "models")
-    (fail (ServiceError ^code "forbidden" ^message "Sign-in belongs to the Models contribution.")))
   (if (! (["openrouter" "chatgpt"] .contains? provider))
     (fail (ServiceError ^code "invalid_request" ^message "This connection does not offer browser sign-in.")))
   (let state service/config/state)
@@ -435,8 +435,6 @@
 
 (fn model_account_action [handle, id : Str, action : Str] ^^private
   (let service (require_service handle))
-  (if (!= service/host/owner "models")
-    (fail (ServiceError ^code "forbidden" ^message "Account changes belong to the Models contribution.")))
   (let selected (try (active_chatgpt_id) catch Any nil))
   (let result (try
     (match action

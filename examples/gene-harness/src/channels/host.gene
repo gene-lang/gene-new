@@ -1,42 +1,52 @@
-# Channel queues and identity stay host-owned. A plugin owns only the scoped
-# transport activation and receives public status, never accounts or API clients.
+# The public channel host (seam "channels/host"). Queues, producer authority,
+# ingress and delivery receipts stay host-owned and survive any transport
+# plugin's retirement. A transport plugin runs its own connections, hands
+# normalized ingress to `receive`, drives host work with `tick`, and supplies
+# rendering and delivery through its `channel_transports` row.
 (mod channel_host)
 (import [ChannelHost ServiceError] ^from "../plugin_api")
 (import [service_binding require_service] ^from "../runtime/service_handles")
 (import [immutable_view] ^from "../runtime/composition")
-(import [open_transport close_transport] ^from "./transport")
-(import [public_authority] ^from "./authority")
+(import [public_authority transport_accounts] ^from "./authority")
+(import [record_ingress] ^from "./ingress")
+(import [tick_transport report_health] ^from "./service")
+(import [transport_name] ^from "./model")
 
-(fn channel_service [handle]
-  (let record (require_service handle))
-  (let service record/runtime/services/values/channels)
+(fn channel_service [view]
+  (let service (if ($present? view/service) view/service
+    (do (let record (require_service view)) record/runtime/services/values/channels)))
   (if (|| ($absent? service) service/closed/.get)
     (fail (ServiceError ^code "unavailable" ^message "The channel service is unavailable.")))
   service)
 
-(fn start_channel_transport [handle]
-  (let record (require_service handle))
-  (if (!= record/host/owner "slack")
-    (fail (ServiceError ^code "forbidden" ^message "Slack transport activation belongs to the slack plugin.")))
-  (let previous (record/values/.get .get "transport"))
-  (if (&& ($present? previous) (! previous/closed/.get)) (return {^^started}))
-  (let service (channel_service handle))
-  (let options (?? record/config {}))
-  (if_not ($absent? options/requester) (set service/users/requester options/requester))
-  (let transport (open_transport service ^owner record/host/effects
-    ^start (?? options/start true) ^driver options/driver ^requester options/requester))
-  (try
-    (record/values/.get .put "transport" transport)
-    (record/host/effects .defer (fn [] (close_transport transport)))
-    {^^started}
-  catch Any (close_transport transport) (fail $err)))
+(fn channel_options [view]
+  (if ($present? view/service) (return (?? view/options {})))
+  (let record (require_service view))
+  (?? record/config {}))
 
-(type HostedChannels ^^private ^props {^token Any}
+# A seam handle (`token`, leased through service_binding) or, for tests and
+# probes, a direct view of one channel service (`service`).
+(type HostedChannels ^^private ^props {^token Any ^service Any? ^options Any?}
   (impl ChannelHost
-    (message start [] : Any (start_channel_transport self))
     (message state [] : Any
       (let service (channel_service self))
-      (immutable_view {^owner (public_authority service/owner) ^health service/health/.get}))))
+      (immutable_view {^owner (public_authority service/owner) ^health service/health/.get}))
+    # Host channel options: test hooks (driver, requester) and ^start false,
+    # which tells transports not to run their own loop.
+    (message options [] : Any (channel_options self))
+    (message accounts [transport : Str] : Any
+      (let service (channel_service self))
+      (transport_accounts service/owner (transport_name transport)))
+    (message receive [account : Str, event] : Any
+      (let service (channel_service self))
+      (record_ingress service/owner account event))
+    (message report [id : Str, connected : Bool, code : Str] : Any
+      (report_health (channel_service self) id connected code))
+    (message tick [] : Any
+      (tick_transport (channel_service self)))))
+
+(fn local_channel_host [service, ^options options = nil]
+  (HostedChannels ^token nil ^service service ^options options))
 
 (fn channel_host_binding [runtime, ^options options = nil]
   (service_binding runtime "channels" (fn [token] (HostedChannels ^token token)) ^config options))

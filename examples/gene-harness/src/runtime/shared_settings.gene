@@ -14,7 +14,8 @@
 
 # The manager root this host shares defaults with, or "" when none can be named.
 (fn shared_settings_root [runtime] : Str
-  (if (== runtime/profile/name "manager") (return runtime/root))
+  (for plugin in (?? runtime/profile/plugins [])
+    (if ((?? plugin/requires []) .contains? "workspaces/host") (return runtime/root)))
   (try (manager_root_path ^explicit (?? runtime/launch/root nil)) catch Any ""))
 
 # A missing file holds no values. A damaged one reports its error and contributes

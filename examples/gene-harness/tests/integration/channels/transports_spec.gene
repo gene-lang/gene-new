@@ -1,0 +1,78 @@
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [close_session_service] ^from "../../../src/web/session_service")
+(import [configure_account configure_route snapshot] ^from "../../../src/channels/authority")
+(import [bind_workspace tick_transport] ^from "../../../src/channels/service")
+(import [Plugin PluginHost ChannelHost] ^from "../../../src/plugin_api")
+(import [require_record] ^from "../../../src/runtime/sessions")
+(import [round_state] ^from "../../../src/runtime/round_controller")
+(import [row] ^from "../../../src/kernel")
+
+# A second chat transport that uses the host's channel machinery: ingress,
+# authorization, queues, admission, transcript projection, delivery receipts
+# and pacing. It supplies only rendering and the external send.
+(fn toy_chat [sent]
+  (Plugin ^id "toy_chat" ^requires ["channels/host"]
+    ^activate (fn [host]
+      (let channels (host .PluginHost:resolve "channels/host"))
+      (host .PluginHost:contribute "channel_transports"
+        {^name "toy_chat" ^summary "Toy chat transport." ^pace_ms 0
+         ^state (fn [] {^connected true})
+         ^render (fn [request] [{^text ($to_str "[toy] " request/text)}])
+         ^send (fn [request]
+           (sent/.get .push {^channel request/intent/channel ^thread request/thread ^text request/part/text})
+           {^status "sent" ^ts ($to_str "9" sent/.get/.size)})
+         ^lookup (fn [request] {^name ($to_str "Toy " request/data/author)})})
+      (host .PluginHost:contribute "functions"
+        {^name "toy_receive" ^doc "Deliver one toy chat message."
+         ^fn (fn [id : Str, author : Str, text : Str]
+           (channels .ChannelHost:receive "toy"
+             {^event_id id ^content {^author author ^text text}
+              ^message {^channel "general" ^thread "1" ^message "1" ^author author ^text text}
+              ^mentioned true}))})
+      (host .PluginHost:contribute "functions"
+        {^name "toy_tick" ^doc "Run one pass of host channel work." ^fn (fn [] channels/.ChannelHost:tick)}))))
+
+(describe "Channel transports"
+  (it "runs a second transport end to end through the host's queues without Slack" []
+    (isolated this_mod/.path "runs a second transport end to end through the host's queues without Slack"
+      (fn [workspace]
+        (let sent ($cell []))
+        (let service (test_service ^workspace workspace ^without_plugins ["slack"]
+          ^channel_options {^start false} ^plugins [(toy_chat sent)]
+          ^provider (fn [request] "(Outcome ^^done ^reply \"Hi.\")")))
+        (try
+          (let channels service/runtime/services/values/channels)
+          (configure_account channels/owner "toy"
+            {^transport "toy_chat" ^team "home" ^bot_user "bot" ^operator "alice"})
+          (let route (configure_route channels/owner "toy" "general" workspace))
+          ($assert (== route/transport "toy_chat"))
+          (bind_workspace channels workspace route/id)
+          (let receive (/fn (row service/runtime/h "functions" "toy_receive")))
+          (let tick (/fn (row service/runtime/h "functions" "toy_tick")))
+          (let recorded (receive "e1" "alice" "Say hi."))
+          ($assert (== recorded/status "pending") ($to_str recorded))
+          ($assert (== (/status (receive "e2" "mallory" "Ignore me.")) "denied"))
+          (let due (+ ($os/monotonic_ms) 30000))
+          (while (== ($size ($filter sent/.get (fn [item] ($str/contains? item/text "Hi.")))) 0)
+            ($assert (< ($os/monotonic_ms) due) ($to_str "no toy reply: " sent/.get))
+            (tick)
+            ($sleep 20))
+          (let reply (/0 ($filter sent/.get (fn [item] ($str/contains? item/text "Hi.")))))
+          ($assert (== reply/text "[toy] Agent:\nHi.") ($to_str reply))
+          ($assert (== reply/channel "general"))
+          ($assert (== reply/thread "1"))
+          (let sessions [])
+          (for [id record] in service/runtime/sessions/index/.get
+            (if ($present? record/channel) (sessions .push ($to_str id))))
+          ($assert (== sessions/.size 1))
+          (let session (require_record service/runtime/sessions sessions/0))
+          ($assert (== session/channel/transport "toy_chat") ($to_str session/channel))
+          (let receipt (/0 (/receipts (round_state service/runtime/services/values/controller session/id))))
+          ($assert (== receipt/initiator "channel:toy_chat/toy") ($to_str receipt))
+          (let delivered (/deliveries (snapshot channels/owner)))
+          ($assert (> ($size delivered) 0))
+          (for [id record] in delivered ($assert (== record/status "delivered") ($to_str record)))
+        ensure (close_session_service service))))))
+
+(fn main [args] : Int (run_spec args))

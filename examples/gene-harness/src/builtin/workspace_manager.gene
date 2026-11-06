@@ -139,7 +139,9 @@
                ["functions" "workspace_stop"] ["functions" "workspace_restart"]
                ["functions" "workspace_set_port"] ["functions" "workspace_rename"]
                ["functions" "workspace_archive"] ["functions" "workspace_restore"]]
-    ^activate (fn [host]      (let manager (host .PluginHost:resolve "workspaces/host"))
+    ^activate (fn [host]
+      (host .PluginHost:contribute "ui_defaults"
+        {^name "default" ^^enabled ^layout "chat" ^default_view "workspaces" ^panel "" ^side "left" ^width 50 ^tokens {}})      (let manager (host .PluginHost:resolve "workspaces/host"))
       (let functions
         [{^name "workspace_list"
           ^doc "List the workspaces under the manager's workspaces directory, their status, and archived names."

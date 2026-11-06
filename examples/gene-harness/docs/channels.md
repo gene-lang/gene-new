@@ -369,14 +369,60 @@ and its `files:write` scope.
 
 ## Plugin and runtime boundaries
 
-Implement Slack as a plugin over a small transport-neutral Harness service.
+Slack is a plugin over a transport-neutral Harness channel host.
 
 | Component | Responsibility |
 | --- | --- |
-| Workspace channel service | External identities, thread/session bindings, per-session input queues, batching, admission receipts and outgoing delivery intents |
-| Slack plugin | Slack event normalization, mention rules, thread targeting, message formatting and interactive controls |
-| Connection owner | Credentials, authoritative sender policy, Socket Mode lifecycle, durable ingress, routing decisions, workspace handoffs and Slack API delivery results |
+| Channel host (`src/channels`) | Accounts and routes (producer authority), durable ingress, thread/session bindings, per-session input queues, batching, admission receipts, outgoing delivery intents, delivery receipts, part claims, pacing and thread ordering |
+| Slack plugin (`src/builtin/slack*`) | Socket Mode connections, envelope normalization and mention rules, Slack text decoding, mrkdwn/Markdown rendering, the Slack Web API calls for send, remove, history reconcile, lookups and setup verification |
+| Connection owner | The workspace whose channel host holds the accounts; its transport plugin owns the sockets and credentials |
 | Existing session/round runtime | Conversation history, model execution, questions, cancellation and continuation |
+
+### Transports
+
+A transport is a plugin that contributes a `channel_transports` row named after
+its accounts' `transport`, and resolves the `channels/host` seam
+(`ChannelHost`). The host keeps everything that must survive a transport swap;
+the row supplies what differs per transport:
+
+| Row field | Called with | Returns |
+| --- | --- | --- |
+| `state []` | | public connection state |
+| `render` | `{^kind ^text ^session ^reference ^settings}` | parts `[{^text ^blocks?}]`; kind `title` renders a shared thread's root |
+| `send` | `{^account ^intent ^delivery ^revision ^index ^part ^ts ^thread}` | outcome `{^status sent\|pending\|uncertain\|failed ^ts ^error ^retry_at}`; `ts` updates an earlier post, `thread` replies in a thread |
+| `remove` | `{^account ^intent ^delivery ^part}` | outcome; without it, a progress message stays |
+| `reconcile` | `{^account ^delivery ^new_root}` | `{^matches [{^index ^ts}] ^cursor}`; parts it matched exactly once |
+| `lookup` | `{^kind user\|channel\|thread ^account ^data}` | `{^name}` or `{^url}` |
+| `verify_account` | `{^data}` | `{^identity ^config ^channel?}` for setup |
+| `verify_route` | `{^account ^channel}` | fails unless the bot may post there |
+| `settings` | `{^data}` | the transport's workspace settings (Slack: `surface`) |
+| `pace_ms` | | minimum gap between posts per channel (default 1100) |
+
+The account passed to callbacks is the stored record, including the opaque
+`config` the transport returned from `verify_account` (Slack: credential file
+and native library references). Errors from callbacks reach callers as
+`ChannelError` with their `code` and `retry_after_ms`; a callback that fails
+without classifying its effect leaves the part uncertain (send) or pending
+(remove). The host chooses the transcript link (`reference`) that may leave
+the workspace.
+
+`ChannelHost` gives the plugin `accounts [transport]` (records with `config`),
+`receive [account event]` (durable ingress; acknowledge the external envelope
+only after it returns), `report [id connected code]` (health), `tick []` (one
+pass of host work: handoffs, admission, projection, delivery through the rows)
+and `options []` (host test hooks; `^start false` leaves the loop to the
+caller). A received event is `{^event_id ^content ^message ^mentioned ^raw}`;
+`message` (`{^channel ^thread ^message ^author ^text}`) is present only for
+eligible input, and `reason` names why the rest is ignored. The host registers
+the channel initiator `<transport>/channel` (prefix `channel:<transport>/`)
+for every configured transport unless a plugin already contributes it, so
+queued and paused work stays admissible while its plugin is off.
+
+The Slack Socket Mode receiver is a slot service (`channels/slack`): it starts
+after the plugin's activation is published, and a successor that takes the
+slot makes it disconnect first, since Slack allows one receiver per app.
+`tests/integration/channels/transports_spec.gene` runs a second transport end
+to end through the host's queues with Slack disabled.
 
 Harness already has durable sessions and request receipts. Its current round
 admission rejects busy sessions, so external follow-ups use a durable queue.
@@ -534,8 +580,10 @@ Create an inert account definition, for example:
 
 With the owner host running, register it using
 `gene-harness --workspace OWNER channels account dobi --file ACCOUNT_FILE`.
-Pairing verifies bot/operator/team identity, channel membership and that the
-app token's hello belongs to the same Slack application.
+Pairing (the Slack row's `verify_account`) verifies bot/operator/team
+identity, channel membership and that the app token's hello belongs to the
+same Slack application. Add `^transport "slack"` when more than one
+transport plugin is installed.
 
 A route file specifies `channel` (its Slack ID), `workspace` (an absolute Gene
 workspace directory), optional `approved` user IDs, and optional

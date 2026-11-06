@@ -1,16 +1,18 @@
 (mod channel_recovery_fixture)
 (import [test_service] ^from "../support")
 (import [configure_account configure_route snapshot] ^from "../../src/channels/authority")
-(import [receive_envelope] ^from "../../src/channels/ingress")
+
 (import [bind_workspace receive_handoff handoff_inputs handoff_outputs drain_session output_intent]
   ^from "../../src/channels/service")
 (import [queue_status hold_queue resume_queue] ^from "../../src/channels/queue")
 (import [queue_output deliver_output] ^from "../../src/channels/delivery")
-(import [open_api] ^from "../../src/channels/slack_api")
+(import [open_api] ^from "../../src/builtin/slack/api")
 (import [load_session with_session_gate] ^from "../../src/runtime/sessions")
 (import [save_round round_receipt] ^from "../../src/runtime/round_controller")
 (import [submit] ^from "../../src/web/session_service")
 (import [key] ^from "../../src/channels/model")
+(import [receive_slack] ^from "../channel_support")
+(import [api_adapter] ^from "../../src/builtin/slack/adapter")
 
 (fn read_count [root : Str]
   (let filename ($path/join root "model-count"))
@@ -42,12 +44,12 @@
     "(Outcome ^^done ^reply \"Complete.\")"))
 
 (fn counted_service [root : Str, ^point point : Str = "normal"]
-  (test_service ^workspace root ^without_plugins ["slack"] ^provider (model_callback root ^point point)))
+  (test_service ^workspace root ^channel_options {^start false} ^provider (model_callback root ^point point)))
 
 (fn configure_fixture [service]
   (let channels service/runtime/services/values/channels)
-  (configure_account channels/owner "dobi" "/unused-reference" "/unused-library"
-    {^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
+  (configure_account channels/owner "dobi" ^config {^secret_file "/unused-reference" ^library "/unused-library"}
+    {^transport "slack" ^team "T123" ^app "A123" ^bot "B123" ^bot_user "UBOT" ^operator "UOWNER"})
   (let route (configure_route channels/owner "dobi" "C123" service/runtime/root
     ^approved ["UOWNER" "UOTHER"]))
   (bind_workspace channels service/runtime/root route/id)
@@ -60,7 +62,7 @@
     ^api_app_id "A123" ^team_id "T123" ^event message}})
 
 (fn intake [service, supplied]
-  (receive_envelope service/runtime/services/values/channels/owner "dobi" supplied))
+  (receive_slack service/runtime/services/values/channels/owner "dobi" supplied))
 
 (fn session_id [service]
   (let state (snapshot service/runtime/services/values/channel_queues))
@@ -217,6 +219,6 @@
       (queue_output service/runtime/services/values/channel_queues outgoing)
       (handoff_outputs service/runtime/services/values/channels ^^force)
       (let api (remote_api root ^crash_part (if (== point "remote_unknown") 1 nil)))
-      (deliver_output service/runtime/services/values/channels/owner api outgoing/id)
+      (deliver_output service/runtime/services/values/channels/owner (api_adapter api) outgoing/id)
       (handoff_outputs service/runtime/services/values/channels ^^force)))
   ($assert false ($to_str "Crash checkpoint was not reached: " point)))

@@ -41,7 +41,7 @@
                 ($assert (== ($head context/turn) Int))
                 ($assert (try (context .put "forged" true) false catch Any true))
                 (state .put "turn" context/turn))
-              ^bindings (fn [context state value] {^generation %version})
+              ^bindings (fn [context state value] {^generation %version ^twice (fn [n] (* n 2))})
               ^commit (fn [context state value]
                 ($assert (== state/turn context/turn))
                 ($assert ($absent? value/turn))
@@ -82,7 +82,7 @@
         (let registered (register_plugin runtime/workspace runtime/h "notes" (notes_source)))
         ($assert (== registered/status "ready") ($to_str registered))
         (let controller (test_controller runtime (fn [request]
-          "($assert (== notes/memory/generation \"one\")) (Outcome ^^done ^reply \"Saved.\" ^extensions {^notes/facts [\"  fact  \"]})")))
+          "($assert (== notes/memory/generation \"one\")) ($assert (== (notes/memory/twice 21) 42)) (Outcome ^^done ^reply \"Saved.\" ^extensions {^notes/facts [\"  fact  \"]})")))
         (try
           (let result (wait_round controller (submit_round controller "default" "remember" 1 "Remember a fact.")))
           ($assert (== result/state "done") ($to_str result))
@@ -153,9 +153,9 @@
 )
 
 (describe "Public extension ownership and supervision"
-  (it "refuses unowned keys, legacy aliases, host annotations and duplicate declarations during activation" []
+  (it "refuses unowned keys, legacy aliases and duplicate declarations during activation" []
     (isolated this_mod/.path
-      "refuses unowned keys, legacy aliases, host annotations and duplicate declarations during activation"
+      "refuses unowned keys, legacy aliases and duplicate declarations during activation"
       (fn [root]
         (let runtime (open_runtime root "default" (baseline_profile)))
         (try
@@ -167,9 +167,6 @@
               ^definition (quote {^name "notes/memory" ^begin (fn [ctx state value] nil)})}
              {^id "aliases" ^registry "outcome_extensions" ^name "aliases/field"
               ^definition (quote {^name "aliases/field" ^alias "reply" ^schema (fn [ctx value] {^value value})})}
-             {^id "annotations" ^registry "turn_participants" ^name "annotations/policy"
-              ^definition (quote {^name "annotations/policy" ^request_record {^type "reply"}
-                ^begin (fn [ctx state value] nil)})}
              {^id "duplicate" ^registry "outcome_extensions" ^name "duplicate/field" ^^duplicate
               ^definition (quote {^name "duplicate/field" ^schema (fn [ctx value] {^value value})})}
              {^id "duplicate_part" ^registry "turn_participants" ^name "duplicate_part/pipeline" ^^duplicate

@@ -1,64 +1,58 @@
-(mod slack_ingress)
+(mod channel_ingress)
 (import [snapshot mutate read] ^from "./store")
 (import [route_key authorize_state] ^from "./authority")
 (import [channel_error copy key required_text normalize_message binding_key] ^from "./model")
-(import [decode_text] ^from "./slack_text")
 
-# Run only on the connection owner's authenticated socket. Returning means the
-# disposition is durable and the caller may acknowledge this Slack envelope.
-# Network delivery to the workspace happens later, outside the socket reader.
-(fn receive_envelope [owner, account_id : Str, envelope]
-  (required_text envelope/envelope_id "envelope ID" ^max_bytes 256)
+# A transport plugin normalizes its own envelope and calls this on the
+# connection owner before acknowledging it. Returning means the disposition is
+# durable and the caller may acknowledge. Network delivery to the workspace
+# happens later, outside the reader. The event is:
+#   {^event_id ^content          dedup identity and conflict digest source
+#    ^message {^channel ^thread ^message ^author ^text}   only when eligible
+#    ^reason                      why an ineligible event is ignored
+#    ^mentioned ^raw}             addressed to the bot; transport audit copy
+(fn record_ingress [owner, account_id : Str, event]
+  (if (!= ($head event) Map) (channel_error "invalid_request" "Channel ingress must be a map."))
+  (let event_id (required_text event/event_id "event ID" ^max_bytes 256))
+  # An account's team never changes in place, so the record ID is stable.
+  (let team (read owner (fn [state] (/team (state/accounts .get account_id)))))
+  (if ($absent? team) (channel_error "not_found" "Channel account not configured."))
+  (let id (key [account_id team event_id]))
   (mutate owner (fn [state]
     (let account (state/accounts .get account_id))
-    (if ($absent? account) (channel_error "not_found" "Slack account not configured."))
-    (if (!= envelope/type "events_api")
-      (return {^status "ignored" ^reason "unsupported_envelope"}))
-    (let payload envelope/payload)
-    (if (|| (!= payload/type "event_callback") (!= payload/team_id account/team)
-            (!= payload/api_app_id account/app))
-      (channel_error "forbidden" "Slack event does not match the connected account."))
-    (let event_id (required_text payload/event_id "event ID" ^max_bytes 256))
-    (let id (key [account_id account/team event_id]))
-    (let digest (key payload/event))
+    (if ($absent? account) (channel_error "not_found" "Channel account not configured."))
+    (let digest (key event/content))
     (let previous (state/ingress .get id))
     (if_yes ($present? previous)
       (if (!= previous/digest digest)
-        (channel_error "submission_conflict" "Slack event ID has different content."))
+        (channel_error "submission_conflict" "Channel event ID has different content."))
       (return previous))
-    (let event payload/event)
     (state .put "ingress_sequence" (+ (?? state/ingress_sequence 0) 1))
     (let record {^id id ^event_id event_id ^account account_id ^digest digest
-      ^sequence state/ingress_sequence ^status "ignored" ^reason "unsupported_event"
+      ^sequence state/ingress_sequence ^status "ignored" ^reason (?? event/reason "unsupported_event")
       ^received_at ($os/wall_ms)})
-    (if_yes (&& (["message" "app_mention"] .contains? event/type)
-                ($absent? event/subtype) ($absent? event/bot_id)
-                (!= event/user account/bot_user)
-                (== ($head event/text) Str) (!= event/text/.trim ""))
-      (let route_id (route_key account_id account/team (?? event/channel "")))
-      (let decision (authorize_state state route_id (?? event/user "") nil))
+    (let supplied event/message)
+    (if_yes ($present? supplied)
+      (let route_id (route_key account/transport account_id account/team (?? supplied/channel "")))
+      (let decision (authorize_state state route_id (?? supplied/author "") nil))
       (record .put "decision" {^allowed decision/allowed ^owner decision/owner
         ^policy_revision decision/policy_revision ^author decision/author})
       (record .put "status" "denied")
       (record .put "reason" "sender_policy")
       (if_yes decision/allowed
-        (let mention ($to_str "<@" account/bot_user ">"))
-        (let text (decode_text ($str/join (event/text .split mention) "")))
-        (let message (normalize_message {^transport "slack" ^account account_id ^team account/team
-          ^channel event/channel ^thread (?? event/thread_ts event/ts) ^message event/ts
-          ^author event/user ^text (if (== text/.trim "") event/text text/.trim)
-          ^received_at record/received_at}))
+        (let message (normalize_message {^transport account/transport ^account account_id ^team account/team
+          ^channel supplied/channel ^thread supplied/thread ^message supplied/message
+          ^author supplied/author ^text supplied/text ^received_at record/received_at}))
         (record .put "route" (copy decision/route))
         (record .put "workspace" decision/route/workspace)
-        (record .put "payload" {^team_id payload/team_id ^api_app_id payload/api_app_id
-          ^event_id payload/event_id ^event (copy event)})
+        (record .put "payload" (copy (?? event/raw {})))
         (record .put "message" message)
-        (record .put "start_allowed" (|| (! decision/route/require_mention) (event/text .contains? mention)))
-        (record .put "mentioned" (event/text .contains? mention))
+        (record .put "start_allowed" (|| (! decision/route/require_mention) (== event/mentioned true)))
+        (record .put "mentioned" (== event/mentioned true))
         (record .put "status" "pending")
         (record .delete "reason")))
     (state/ingress .put id record)
-    record) ^changes {^ingress [(key [account_id envelope/payload/team_id envelope/payload/event_id])]}))
+    record) ^changes {^ingress [id]}))
 
 (fn pending_ingress [owner]
   (read owner (fn [state]

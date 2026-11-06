@@ -5,8 +5,7 @@
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
 (import [baseline_profile] ^from "../../../src/profiles/baseline")
 (import [submit_round round_state close_round_controller] ^from "../../../src/runtime/round_controller")
-(import [open_trigger_manager close_trigger_manager create_trigger tick_triggers list_occurrences]
-  ^from "../../../src/runtime/triggers")
+(import [create_session] ^from "../../../src/runtime/sessions")
 (import [effective_config settings_state] ^from "../../../src/runtime/settings_resolver")
 (import [read_setting reset_setting] ^from "../../../src/runtime/workspace_config")
 (import [write_shared_settings shared_settings_root] ^from "../../../src/runtime/shared_settings")
@@ -90,30 +89,31 @@
           (if ($str/contains? ($to_str request/messages) "ask a question")
             "(Outcome ^questions [{^id \"pick\" ^prompt \"Which one?\"}] ^reply \"Choose.\")"
             "(Outcome ^prompt \"Keep checking.\" ^reply \"Checking.\")"))))
-        (let manager (open_trigger_manager runtime controller ^!start ^now 1000))
+        # Trigger limits apply to every automated round; admit them directly
+        # through the core trigger initiator rather than a scheduler.
+        (fn automated [id : Str, text : Str]
+          (create_session runtime/sessions ^id $"s-${id}" ^kind "heartbeat" ^title id)
+          (submit_round controller $"s-${id}" $"${id}@1" 1 text ^initiator $"trigger:${id}")
+          $"s-${id}")
         (try
           (assert_unobserved runtime)
           (share runtime {^trigger_turn_limit 2 ^trigger_timeout_ms 7000 ^question_timeout_ms 9000})
-          (create_trigger manager {^id "beat" ^kind "heartbeat" ^every_ms 100 ^request "inspect"} ^now 1000)
           (let before ($os/wall_ms))
-          (tick_triggers manager ^now 1100)
+          (let beat (automated "beat" "inspect"))
           (let after ($os/wall_ms))
           (join_rounds controller)
-          (let occurrence (/0 (list_occurrences manager ^trigger "beat")))
-          (let limited (latest_receipt controller occurrence/session))
+          (let limited (latest_receipt controller beat))
           ($assert (== calls/.get 2) $"the shared trigger turn limit ended the round after two turns, saw ${calls/.get}")
           ($assert (== limited/message "turn limit reached") ($to_str limited))
           ($assert (&& (>= limited/deadline_ms (+ before 7000)) (<= limited/deadline_ms (+ after 7000)))
             $"the shared trigger timeout set the deadline: ${limited/deadline_ms}")
           # The admitted deadline does not move when the shared value changes.
           (share runtime {^trigger_timeout_ms 5000})
-          ($assert (== (/deadline_ms (latest_receipt controller occurrence/session)) limited/deadline_ms))
-          (create_trigger manager {^id "asker" ^kind "heartbeat" ^every_ms 100 ^request "ask a question"} ^now 1100)
+          ($assert (== (/deadline_ms (latest_receipt controller beat)) limited/deadline_ms))
           (let asked_before ($os/wall_ms))
-          (tick_triggers manager ^now 1200)
+          (let asker (automated "asker" "ask a question"))
           (join_rounds controller)
-          (let asked (/0 (list_occurrences manager ^trigger "asker")))
-          (let waiting (latest_receipt controller asked/session))
+          (let waiting (latest_receipt controller asker))
           ($assert (== waiting/state "waiting") ($to_str waiting))
           ($assert (>= waiting/deadline_ms (+ asked_before 5000)) "the newer shared timeout applied to the next trigger")
           (let deadline waiting/questions/deadline)
@@ -122,7 +122,6 @@
             $"the shared question timeout set the batch deadline: ${deadline}")
           (assert_unobserved runtime)
         ensure
-          (close_trigger_manager manager)
           (close_round_controller controller)
           (close_runtime runtime))))))
 
@@ -141,14 +140,13 @@
           (let controller (test_controller runtime (fn [request]
             (calls .set (+ calls/.get 1))
             "(Outcome ^prompt \"Keep going.\" ^reply \"Working.\")")))
-          (let manager (open_trigger_manager runtime controller ^!start ^now 1000))
           (try
             (let before (config_text runtime))
             (let config (effective_config runtime))
             (let values {})
             (for key in startup_keys (values .put key (config .get key)))
             (values .put "idle_timeout_ms_active" runtime/sessions/idle_timeout_ms)
-            (values .put "trigger_cap" manager/cap)
+            (values .put "trigger_cap" config/trigger_concurrency)
             (values .put "limits" {^timeout_ms runtime/h/limits/timeout_ms ^max_memory_mb runtime/h/limits/max_memory_mb})
             (submit_round controller "default" "r1" 1 "go")
             (join_rounds controller)
@@ -159,7 +157,6 @@
               ($assert (== ($serde/read_data before) {}) $"a new workspace stores no defaults: ${before}"))
             (observed .put name values)
           ensure
-            (close_trigger_manager manager)
             (close_round_controller controller)
             (close_runtime runtime)))
         (let fresh observed/fresh)
