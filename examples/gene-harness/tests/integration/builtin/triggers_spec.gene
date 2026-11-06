@@ -133,6 +133,28 @@
           (gate .set true)
           (close_harness harness)))))
 
+  (it "records a one-shot missed during downtime as skipped and rejects unknown providers" []
+    (isolated this_mod/.path "records a one-shot missed during downtime as skipped and rejects unknown providers"
+      (fn [root]
+        (let profile (Profile ^name "triggers" ^plugins [(triggers)]))
+        (let harness (open_harness root profile (fn [request] (done))))
+        (let runtime harness/runtime)
+        (try
+          (let refused (try (call runtime "create_trigger" {^id "bad" ^kind "scheduled"
+            ^at (+ ($os/wall_ms) 86400000) ^request "x" ^model_settings {^provider "no_such_provider"}})
+            "accepted" catch Any $err/message))
+          ($assert ($str/contains? refused "Unknown provider") refused)
+          (call runtime "create_trigger" {^id "missed" ^kind "scheduled" ^at (+ ($os/wall_ms) 1500) ^request "Missed."})
+        ensure (close_harness harness))
+        ($sleep 1700)
+        (let restarted (open_harness root profile (fn [request] (done))))
+        (try
+          ($assert (wait_until (fn [] (> ($size (occurrences restarted/runtime "missed")) 0))))
+          (let occurrence (/0 (occurrences restarted/runtime "missed")))
+          ($assert (== occurrence/state "skipped") ($to_str occurrence))
+          ($assert (== occurrence/reason "missed"))
+        ensure (close_harness restarted)))))
+
   (it "removes its functions, route and scheduler when disabled" []
     (isolated this_mod/.path "removes its functions, route and scheduler when disabled"
       (fn [root]
