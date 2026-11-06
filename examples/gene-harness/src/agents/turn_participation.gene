@@ -4,7 +4,7 @@
   ^from "../runtime/turn_participants")
 (import [new_runtime_turn_transaction] ^from "../runtime/turn_participant_registry")
 (import [acquire_snapshot release_snapshot] ^from "../runtime/composition")
-(import [ParticipantBindings ParticipantCommit ParticipantValidation] ^from "../runtime/participant_contract")
+(import [ParticipantBindings ParticipantCommit ParticipantValidation freeze_bindings] ^from "../runtime/participant_contract")
 (import [freeze_turn_data] ^from "../runtime/turn_data")
 (import [request_items discard_done_items] ^from "./outcome")
 
@@ -69,7 +69,7 @@
     (for record in (?? (registries .get "functions") [])
       (if (== record/payload/name ($to_str owner))
         (bad_phase_result transaction source "bindings" "A public data namespace conflicts with a selected function.")))
-    (bindings .put owner (freeze_turn_data data)))
+    (bindings .put owner (freeze_bindings data)))
   bindings)
 
 (fn commit_participants [transaction, result]
