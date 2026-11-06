@@ -170,10 +170,15 @@
         ensure (close_harness harness))
         (let counted (open_runtime root "default" profile ^!activate))
         (let before (try ($size (trigger_sessions counted)) ensure (close_runtime counted)))
-        (let restarted (open_harness root profile (fn [request] (done))))
+        # Hold the restarted round, so overlap skips later beats and at most one
+        # new session can appear while retention trims to `keep`.
+        (let held ($cell false))
+        (let restarted (open_harness root profile (fn [request] (while (! held/.get) ($sleep 10)) (done))))
         (try
-          ($assert (wait_until (fn [] (< ($size (trigger_sessions restarted/runtime)) before)))
+          ($assert (>= before 3))
+          ($assert (wait_until (fn [] (<= ($size (trigger_sessions restarted/runtime)) 2)))
             $"retention kept ${($size (trigger_sessions restarted/runtime))} of ${before} sessions")
+          (held .set true)
         ensure (close_harness restarted)))))
 
   (it "keeps an occurrence queued behind the concurrency cap across restart and starts it once" []
