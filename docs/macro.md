@@ -341,16 +341,60 @@ inserted code.
 tmp # Target: 100; the expansion does not redefine the outer binding.
 ```
 
-There is no guaranteed collision-free temporary in this core design. A `swap`
-template using `tmp` can fail or silently leave values unswapped when an operand
-also names `tmp`; a long prefix reduces collisions but does not prevent them.
-**D6, deferred by the owner on 2026-10-02:** add neither `^fresh` nor a public
-fresh-symbol function such as `gene/gensym` in this work. Revisit freshness only
-when a concrete application or library use demonstrates a need. Ordinary
-macro-body execution would permit a library helper later, without requiring a
-template-wide renaming feature now. There is currently only a compiler-internal
-gensym counter. Deferral does not supply a capture guarantee or remove the
-existing library-collision audit.
+There is no automatic hygiene: a template that declares a temporary captures
+any caller name with the same spelling. A `swap` template using `tmp` leaves
+the values unswapped when an operand is also named `tmp`, and a long prefix
+reduces collisions but does not prevent them.
+
+**D6, decided 2026-11-06:** `$gensym` names the binders a template declares
+around spliced caller syntax. `($gensym base)` returns a symbol spelled
+`<base>_<module hash>_<depth>_<k>`, such as `tmp_3fa9c01b_0_1`; the base is
+mandatory.
+
+```gene
+(macro swap [a b]
+  (let tmp ($gensym "tmp"))
+  `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
+
+(var tmp 1) (var y 2) (swap tmp y)
+[tmp y] # [2 1]
+```
+
+- `base` is a Str of ASCII letters, digits and `_` that starts with a letter
+  or `_`. A leading digit is rejected because `1_0_1` reads as a number.
+- *module hash* is the first 8 hex digits of the sha256 of the module
+  identity of the code containing the call (not of the macro's defining
+  module). Code that `eval` compiles uses the module the Env came from.
+  A caller would have to type that hash to hit the name by accident.
+- *depth* is the number of macro expansion results that lexically enclose
+  the call being expanded. *k* counts the `$gensym` calls made by one
+  expansion, starting at 1 and shared by all bases.
+- Distinct names where scopes overlap come from `depth` and `k`, not from the
+  hash. Equal names arise only in disjoint scopes (separate runs of one call
+  site, two macros using the same base at the same depth), where they never
+  share a binding. Spellings contain nothing random, so artifacts and emitted
+  JavaScript are reproducible, and a local macro that runs repeatedly adds no
+  new symbols.
+- A gensym is an ordinary symbol: it prints as itself, reads back as the same
+  symbol, works as a binder and as a type name, and survives artifacts. The
+  hash is the same on every machine for package modules and the application's
+  own modules; an external ad-hoc root and a file with no owning package
+  identify by absolute path, so their hashes follow the checkout. A web-profile
+  module has no package identity and is identified by its file name.
+- `$gensym` works only while a macro body runs, including functions and
+  callbacks the body calls. Anywhere else (ordinary code, fexprs, `eval` not
+  reached from a macro body) it is an error:
+  `$gensym can only be called while a macro body is running`. Each running
+  body has its own counter, kept with its invocation: two runs of one local
+  macro that suspend and resume interleaved each count from 1, and a task
+  spawned from the body does not inherit it.
+- The guarantee is against accidents, not intent: it does not cover writing
+  the spelling by hand, rebuilding it with `to_sym`, or carrying a gensym out
+  of its expansion as data and binding it again. It does not change D1: free
+  names in a template still resolve at the call site.
+
+**When spliced caller syntax sits inside a template's binder, name the binder
+with `$gensym`.** There is still no renaming pass.
 
 Before disabling the current rename pass, audit built-in templates that rely
 on it, especially `builtinLogMacro` and its `generated_logger` local. Add probes
@@ -365,7 +409,7 @@ simplification, but it changes more than allocation: caller `break`/`continue`
 and the ownership/lifetime of tasks spawned by logger, message, or payload code
 must be checked. Treat timing improvements as a hypothesis until measured for
 the revised implementation. A compiler-only temporary name is another candidate
-for the built-in implementation, not a proven solution or a public D6 API.
+for the built-in implementation, separate from the public `$gensym`.
 `validateBindingName` accepting a spelling is insufficient: syntax can also be
 constructed through `to_sym`, and artifacts, printers, eval, and both backends
 must preserve any reserved-name or internal-identity invariant.
@@ -376,7 +420,8 @@ renaming exposes ordinary capture: `generated_logger` in supplied message or
 payload syntax denotes the logger local. A same-named receiver expression still
 uses its outer binding because it is evaluated before the local declaration.
 This behavior is covered in `test_logging.nim` and documented in the logging
-guide; D6 remains deferred. No collision-free temporary guarantee is claimed.
+guide. The logger template does not use `$gensym`: its local keeps the
+documented capture behavior.
 
 This deliberately replaces the earlier automatic-capture-protection proposal.
 The implementation should remove the partial rename machinery behind B1, B3,
@@ -868,6 +913,33 @@ This is a runtime expansion of a local macro, with the same result-scope and
 caller-control-flow contract as other macros. It is not `eval`'s binding-copy
 boundary. A template that emits a bare `n` still reads the caller's binding.
 Module-level macros retain their separate compile-time definition instances.
+
+**Inserting a definition by value is an error at module level.** A module-level
+macro runs against its module's compile-time copy, so `%helper`, `%Point` or an
+enum variant in its result would insert the copy's object: the function runs
+against the copy's state, the type is not the program's nominal type, and
+protocol dispatch fails. The compiler rejects it:
+
+```
+cannot insert compile-time function 'helper' into generated code from macro 'm':
+module-level macros run against a compile-time copy of their module.
+  - to call it at runtime, emit its name (`(helper …)` instead of `(%helper …)`)
+    and have callers import it;
+  - to use runtime values, define the macro locally;
+  - to insert a value, insert data.
+```
+
+Allowed in a module-level result: data (nil, void, Bool, numbers, Str, Bytes,
+Char, Sym, Regex, Range, Date, Time, DateTime, Timezone, Duration, and lists,
+maps, sets, hash maps, nodes and pipelines of data), intrinsics that every
+phase shares (the native functions of the `gene` root such as `$println`, and
+built-in types such as `Int`), and objects the program itself put in the
+syntax being compiled: an `eval` form or a local macro's result. A runtime
+object passed through `eval` therefore reaches the right object, while one the
+module-level macro body introduced, or kept from an earlier `eval`, does not.
+Local macros run in the runtime environment, so `%helper` there is the runtime
+helper. The check is by kind and origin, not by immutability: types, protocols
+and enum variants are deeply frozen and still belong to one phase.
 The VM implements this through ordinary captured macro-body functions and
 runtime compilation of the result. Generated code enters the actual caller
 scope without an eval overlay or an additional function boundary.
@@ -1064,10 +1136,10 @@ as currently passing. Promote them to executable documentation when repaired.
 
 ## 8. Decision record and implementation follow-ups
 
-D1, D2a, D2b's lexical lookup, D3, D4, D5, D7, and D8, together with ordinary
+D1, D2a, D2b's lexical lookup, D3, D4, D5, D6, D7, and D8, together with ordinary
 binding of generated code, are decided. Definition-side execution and ordinary
 quotation apply consistently across static and runtime expansion.
-D6 is explicitly deferred until a concrete need is demonstrated.
+D6 (`$gensym`) was decided on 2026-11-06 once `swap` showed the need.
 The numbered decisions are settled or explicitly deferred. Local macros expand
 when their enclosing function runs; REPL macro definitions commit after
 successful compilation, including when execution then fails. E1 remains
@@ -1082,7 +1154,7 @@ implemented spec when it lands.
 | D3: Eval compile-time context | Use the macros available through the selected Env or CallerEnv | Decided 2026-10-02. Ordinary env includes its visible macro context; caller_env supplies caller macros; isolated environments expose only their configured context. Preserve existing eval control-flow, mutation, and lifetime boundaries; E1 is an independent bug |
 | D4: Macro/value shadowing | Ordinary lexical lookup: the nearest binding determines macro expansion versus ordinary use | Decided 2026-10-02. Inner bindings may hide macros; no fallback to a hidden macro when an inner value is not callable. Same-scope duplicates, imports, and REPL redefinition follow ordinary binding rules |
 | D5: Marked results and local declarations | Wrap a non-do executable result in `(do ^^macro_result <result>)`, or set the boolean property on an existing do; create a scope for bindings or impl registrations | Core and marker policy decided 2026-10-02. Classify position/slots before wrapping. Handwritten forms behave identically; only literal true enables the rule, and absent/false/non-boolean is unmarked. D7 specifies registration visibility |
-| D6: Explicit fresh names | Defer both `^fresh` and a public fresh-symbol helper until a concrete need arises | Deferred by the owner 2026-10-02. No new freshness API in this work; ordinary shadowing remains. Revisit if an application/library demonstrates the need; the existing collision audit still applies |
+| D6: Fresh names | `$gensym base` returns `<base>_<module hash>_<depth>_<k>`; no `^fresh` | Decided 2026-11-06. Works only while a macro body runs; the context belongs to the running invocation. Distinct by `depth` and `k`; the hash keeps caller syntax from spelling a name by accident. No automatic renaming; free template names still resolve at the call site (D1) |
 | D7: Scope-sensitive registrations | Block-owned impl requires local scope even without variables | Decided 2026-10-02. Registrations are visible inside the marked block, not afterward; returned closures retain their implementation context. Adding an unrelated local changes nothing; top-level impl-producing macros require migration |
 | D8: Supported expansion positions | Expression positions plus existing direct pipeline-slot substitution; no clause-position macros | Decided 2026-10-02. VM/web must share syntax-role traversal and reject unsupported positions consistently; preserve expression macros inside valid clauses and allow a macro to generate an entire enclosing expression |
 
@@ -1115,7 +1187,7 @@ defined in section 8, E1 in section 4, and O1 in section 5.
 | L3 | A missing backtick, a misspelled `%name`, and `%(expr)` are inserted as ordinary code without a diagnostic |
 | L4 | Macros require definition before use, and a macro name blocks later bindings of that name in the file |
 | L5 | The web profile rejects local macro definitions and macro-generating macros |
-| C1 | Without renaming there is no collision-free temporary; `swap` fails or silently does nothing when an operand is named like the template's local |
+| C1 | A template's fixed temporary captures a caller name; `swap` silently does nothing when an operand is named like the template's local. Use `$gensym` (D6) |
 | C2 | `^^macro_result` is a property, not metadata, and can be written by hand |
 | C3 | Wrapping a result hides a macro-produced direct pipeline slot |
 | C4 | Whether a macro-generated `impl` escapes depends on how the result scope is implemented |

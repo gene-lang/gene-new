@@ -677,7 +677,23 @@ The wrapper preserves caller return and loop targets and adds no task scope.
 ```
 
 Substitution uses ordinary shadowing: a template's local can capture a name
-in an argument. There is no automatic renaming or public fresh-symbol API.
+in an argument, and there is no automatic renaming. When spliced caller
+syntax sits inside a template's binder, name the binder with `$gensym`. It
+takes a base name and returns a symbol that caller code cannot already be
+using; it works only while a macro body runs:
+
+```gene runnable
+(macro swap [a b]
+  (let tmp ($gensym "tmp"))
+  `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
+(var tmp 1)
+(var y 2)
+(swap tmp y)
+[tmp y] # [2 1]
+```
+
+A local macro compiles its expansion each time its call runs; prefer a
+module-level macro on a hot path.
 A caller parameter or local can also shadow an outer macro name. Macros expand
 in expression positions and direct pipeline slots, not in place of structural
 `else` or `when` clauses. Quoted data stays data.

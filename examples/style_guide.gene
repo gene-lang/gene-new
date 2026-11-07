@@ -234,6 +234,12 @@ line two"""
 (macro unless [condition, body...]
   `(if_not %condition %body...))
 
+# A template that declares a temporary around caller syntax names it with
+# $gensym, so no caller name can be captured.
+(macro swap_values [a b]
+  (let tmp ($gensym "tmp"))
+  `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
+
 (fn raw_head! [form]
   ($head form))
 

@@ -944,6 +944,527 @@ suite "spec — macros from design":
     check_eval("(macro body_only [x] (let items ($body x)) `(quote (h %items...))) " &
       "(body_only (ignored ^key 7 1 2))", "(h 1 2)")
 
+suite "spec — macro fresh names ($gensym)":
+  test "a gensym binder cannot capture caller names, module-level and local":
+    check_eval("""
+      (macro swap [a b]
+        (let tmp ($gensym "tmp"))
+        `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
+      (var tmp 1)
+      (var y 2)
+      (swap tmp y)
+      [tmp y]""", "[2 1]")
+    check_eval("""
+      (fn run []
+        (macro swap [a b]
+          (let tmp ($gensym "tmp"))
+          `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
+        (var tmp 1)
+        (var y 2)
+        (swap tmp y)
+        (var out [tmp y])
+        (for i in [1 2 3] (swap tmp y))
+        [out [tmp y]])
+      (run)""", "[[2 1] [1 2]]")
+
+  test "a gensym is an ordinary symbol with the documented spelling":
+    check_eval("""
+      (macro sh [] (let t ($gensym "tmp")) ($to_str t))
+      ($present? (#"^tmp_[0-9a-f]{8}_0_1$" .match (sh)))""", "true")
+    # k counts every base in one expansion and restarts for the next expansion
+    check_eval("""
+      (macro three []
+        (let a ($gensym "a"))
+        (let b ($gensym "b"))
+        (let c ($gensym "a"))
+        `(quote [%a %b %c]))
+      (let r (three))
+      (let s (three))
+      [(== r s) (!= r/0 r/2)
+       ($present? (#"_0_1$" .match ($to_str r/0)))
+       ($present? (#"_0_2$" .match ($to_str r/1)))
+       ($present? (#"_0_3$" .match ($to_str r/2)))]""", "[true true true true true]")
+
+  test "nested expansions get greater depths, including spliced caller syntax":
+    check_eval("""
+      (macro inner [] (let t ($gensym "t")) `(quote %t))
+      (macro outer [x] (let t ($gensym "t")) `(do (var %t 1) [(quote %t) (inner) %x]))
+      (let r (outer (inner)))
+      [($present? (#"_0_1$" .match ($to_str r/0)))
+       ($present? (#"_1_1$" .match ($to_str r/1)))
+       ($present? (#"_1_1$" .match ($to_str r/2)))]""", "[true true true]")
+    # a call inside a result sits deeper: names differ although both are k = 1
+    check_eval("""
+      (macro leaf [] (let t ($gensym "t")) `(quote %t))
+      (macro twice [] (let t ($gensym "t")) `(do (var %t 1) [(quote %t) (leaf)]))
+      (let r (twice))
+      (!= r/0 r/1)""", "true")
+
+  test "eval compiles at the depth of the Env it runs in":
+    check_eval("""
+      (macro leaf [] (let t ($gensym "t")) `(quote %t))
+      (macro host [] `(eval (quote (leaf)) ^in (env)))
+      [($present? (#"_1_1$" .match ($to_str (host))))
+       ($present? (#"_0_1$" .match ($to_str (eval (quote (leaf)) ^in (env)))))]""",
+      "[true true]")
+
+  test "functions and callbacks a macro body calls may use the body's context":
+    check_eval("""
+      (fn pick [base] ($gensym base))
+      (macro m []
+        (let a (pick "h"))
+        (let cb ([1] .map (fn [x] ($gensym "cb"))))
+        (let seen ($cell []))
+        ($order/sort_by [3 1 2] (fn [x] (seen/.get .push ($gensym "s")) x))
+        `(quote [%a %cb/0 %seen/.get]))
+      (let r (m))
+      [($present? (#"^h_[0-9a-f]{8}_0_1$" .match ($to_str r/0)))
+       ($present? (#"^cb_[0-9a-f]{8}_0_2$" .match ($to_str r/1)))
+       ($present? (#"^s_[0-9a-f]{8}_0_3$" .match ($to_str r/2/0)))
+       ($present? (#"^s_[0-9a-f]{8}_0_5$" .match ($to_str r/2/2)))]""",
+      "[true true true true]")
+
+  test "gensym is an error outside a running macro body":
+    check_runtime_error("($gensym \"x\")",
+      "$gensym can only be called while a macro body is running")
+    check_runtime_error("(fn f [] ($gensym \"x\")) (f)",
+      "$gensym can only be called while a macro body is running")
+    check_runtime_error("(fn f! [x] ($gensym \"x\")) (f! 1)",
+      "$gensym can only be called while a macro body is running")
+    check_runtime_error("(eval (quote ($gensym \"x\")) ^in (env))",
+      "$gensym can only be called while a macro body is running")
+    # a macro body's context ends with the body
+    check_eval("""
+      (macro m [] ($gensym "x") `1)
+      (m)
+      (try ($gensym "x") catch Error "refused")""", "\"refused\"")
+
+  test "gensym validates its base":
+    check_runtime_error("($gensym)", "gensym expects 1 argument")
+    check_runtime_error("($gensym 1)", "gensym expects a Str base")
+    for bad in ["\"\"", "\"1t\"", "\"a.b\"", "\"a b\"", "\"a#b\"", "\"a\\\"b\""]:
+      check_runtime_error("($gensym " & bad & ")", "gensym base must be a Str")
+    for good in ["tmp", "t1", "my_tmp", "_tmp", "Point"]:
+      check_eval("(macro m [] ($gensym \"" & good & "\") `1) (m)", "1")
+
+  test "a gensym works as a type name":
+    check_eval("""
+      (macro mk []
+        (let T ($gensym "Point"))
+        `(do (type %T ^props {^x Int}) (let p (%T ^x 3)) p/x))
+      (mk)""", "3")
+
+  test "reused names across activations and expansions never share a binding":
+    # a recursive function: every activation expands the same call site with
+    # the same names, and each swaps its own variables
+    check_eval("""
+      (fn f [n]
+        (macro swap [a b]
+          (let tmp ($gensym "tmp"))
+          `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
+        (var a 1)
+        (var b 2)
+        (swap a b)
+        (if (> n 0) (f (- n 1)) [a b]))
+      (f 3)""", "[2 1]")
+    # a closure from one expansion, called inside another that spliced it:
+    # the nested call sits deeper, so the two temporaries differ
+    check_eval("""
+      (macro mk_adder [x]
+        (let t ($gensym "n"))
+        `(do (var %t %x) (fn [y] (+ y %t))))
+      (macro call_with [f v]
+        (let t ($gensym "n"))
+        `(do (var %t 10) (%f %v)))
+      (call_with (mk_adder 5) 1)""", "6")
+    # two macros with the same base and depth reuse one spelling in
+    # disjoint scopes
+    check_eval("""
+      (macro one [] (let t ($gensym "t")) `(do (var %t 1) %t))
+      (macro two [] (let t ($gensym "t")) `(do (var %t 2) %t))
+      [(one) (two)]""", "[1 2]")
+
+  test "second round (I2): a macro call passed as syntax to another macro is expanded in place":
+    # `(inner)` is an argument of `outer`, spliced into outer's result, so it is
+    # expanded one level deeper than outer, not at outer's own depth
+    check_eval("""
+      (macro inner [] (let t ($gensym "t")) `(quote %t))
+      (macro outer [x] (let t ($gensym "t")) `(do (var %t 1) [(quote %t) %x]))
+      (let r (outer (inner)))
+      [($present? (#"_0_1$" .match ($to_str r/0)))
+       ($present? (#"_1_1$" .match ($to_str r/1)))
+       (!= r/0 r/1)]""", "[true true true]")
+
+  test "second round: two macros with the same base and depth but different k":
+    # `pair` makes k = 1 and 2 and binds both; `single` at the same depth makes
+    # k = 1, the same spelling as pair's first. The two scopes are disjoint.
+    check_eval("""
+      (macro pair []
+        (let a ($gensym "t"))
+        (let b ($gensym "t"))
+        `(do (var %a 1) (var %b 2) [%a %b]))
+      (macro single [] (let a ($gensym "t")) `(do (var %a 3) %a))
+      (macro names []
+        (let a ($gensym "t"))
+        (let b ($gensym "t"))
+        `(quote [%a %b]))
+      (let n (names))
+      [(pair) (single)
+       ($present? (#"_0_1$" .match ($to_str n/0)))
+       ($present? (#"_0_2$" .match ($to_str n/1)))]""", "[[1 2] 3 true true]")
+
+  test "second round (I1, I3): a closure built in one expansion and called inside another":
+    # mk_adder's temporary is `n_..._1_1`, call_with's is `n_..._0_1`. Were they
+    # equal, the closure would read call_with's 10 and answer 11.
+    check_eval("""
+      (macro mk_adder [x]
+        (let t ($gensym "n"))
+        `(do (var %t %x) (fn [y] (+ y %t))))
+      (macro call_with [f v]
+        (let t ($gensym "n"))
+        `(do (var %t 10) (%f %v)))
+      (call_with (mk_adder 5) 1)""", "6")
+
+  test "second round (I4): an eval ^in inside an expansion that expands a gensym macro":
+    # The eval'd `(wrap ...)` runs at the Env's depth (1), so its temporary is
+    # `t_..._1_1` and cannot capture the host's `t_..._0_1`, which it is given.
+    check_eval("""
+      (macro wrap [x] (let t ($gensym "t")) `(do (var %t 100) %x))
+      (macro host []
+        (let h ($gensym "t"))
+        `(do (var %h 7) (eval (quote (wrap %h)) ^in (env))))
+      (host)""", "7")
+
+  test "second round (I3): a local macro called from a recursive function and from a loop":
+    check_eval("""
+      (fn walk [n]
+        (macro bump [cell]
+          (let tmp ($gensym "tmp"))
+          `(do (var %tmp (+ %cell 1)) (set %cell %tmp)))
+        (var total 0)
+        (var i 0)
+        (while (< i 3) (bump total) (set i (+ i 1)))
+        (if (> n 0) (+ total (walk (- n 1))) total))
+      (walk 3)""", "12")
+
+  test "each running macro body keeps its own counter across suspension":
+    check_eval("""
+      (let names ($cell []))
+      (fn work [label started release]
+        (macro expand []
+          (let a ($gensym "t"))
+          (started .send true)
+          release/.recv
+          (let b ($gensym "t"))
+          (names/.get .push [label ($to_str a) ($to_str b)])
+          0)
+        (expand))
+      (let first_started ($channel ^capacity 1))
+      (let second_started ($channel ^capacity 1))
+      (let release_first ($channel ^capacity 1))
+      (let release_second ($channel ^capacity 1))
+      (let first (spawn ^lane root (work "a" first_started release_first)))
+      first_started/.recv
+      (let second (spawn ^lane root (work "b" second_started release_second)))
+      second_started/.recv
+      (let outside (spawn ^lane root (try ($gensym "t") catch Error "refused")))
+      (let refused (await outside))
+      (release_first .send true)
+      (await first)
+      (release_second .send true)
+      (await second)
+      (let rows names/.get)
+      [refused
+       ($present? (#"_0_1$" .match rows/0/1)) ($present? (#"_0_2$" .match rows/0/2))
+       ($present? (#"_0_1$" .match rows/1/1)) ($present? (#"_0_2$" .match rows/1/2))]""",
+      "[\"refused\" true true true true]")
+
+  test "a cancelled or failing macro body leaves no context behind":
+    # cancelled while suspended inside the body: the task ends, the next
+    # expansion counts from 1, and an ordinary call is still refused
+    check_eval("""
+      (let started ($channel ^capacity 1))
+      (let release ($channel ^capacity 1))
+      (fn work []
+        (macro expand []
+          ($gensym "t")
+          (started .send true)
+          release/.recv
+          `(quote 1))
+        (expand))
+      (let task (spawn ^lane root (work)))
+      started/.recv
+      (task .cancel)
+      (let outcome (task .join))
+      (fn after []
+        (macro again [] (let a ($gensym "t")) `(quote %a))
+        (again))
+      [outcome
+       ($present? (#"_0_1$" .match ($to_str (after))))
+       (try ($gensym "t") catch Error "refused")]""",
+      "[TaskOutcome/cancelled true \"refused\"]")
+    # an error unwinding out of the body, caught by the caller on the same task
+    check_eval("""
+      (fn f []
+        (macro bad [] ($gensym "t") (fail "mid-body"))
+        (try (bad) catch Any "caught"))
+      (fn g []
+        (macro again [] (let a ($gensym "t")) `(quote %a))
+        (again))
+      [(f)
+       (try ($gensym "t") catch Error "refused")
+       ($present? (#"_0_1$" .match ($to_str (g))))]""",
+      "[\"caught\" \"refused\" true]")
+
+  test "a task spawned from a macro body does not inherit its context":
+    # the child is refused, and it did not advance the body's counter
+    check_eval("""
+      (fn g []
+        (macro m []
+          (let a ($gensym "t"))
+          (let child (spawn ^lane root (try ($gensym "t") catch Error "refused")))
+          (let seen (await child))
+          (let b ($gensym "t"))
+          `(quote [%seen %a %b]))
+        (m))
+      (let r (g))
+      [r/0 ($present? (#"_0_1$" .match ($to_str r/1)))
+       ($present? (#"_0_2$" .match ($to_str r/2)))]""",
+      "[\"refused\" true true]")
+    check_eval("""
+      (macro cm []
+        (let a ($gensym "t"))
+        (let child (spawn ^lane root (try ($gensym "t") catch Error "refused")))
+        (let seen (await child))
+        (let b ($gensym "t"))
+        `(quote [%seen %a %b]))
+      (let c (cm))
+      [c/0 ($present? (#"_0_1$" .match ($to_str c/1)))
+       ($present? (#"_0_2$" .match ($to_str c/2)))]""",
+      "[\"refused\" true true]")
+
+  test "a gensym binder is not visible outside its marked block":
+    check_eval("""
+      (macro decl [] (let t ($gensym "t")) `(do (var %t 1) (quote %t)))
+      (let n (decl))
+      (try (eval n ^in (env)) catch Error "unbound")""", "\"unbound\"")
+
+  test "an fexpr's eval continues at the depth of its call site":
+    check_eval("""
+      (macro leaf [] (let t ($gensym "t")) `(quote %t))
+      (fn run_it! [form] (eval form ^in caller_env))
+      (macro host [] `(run_it! (leaf)))
+      [($present? (#"_0_1$" .match ($to_str (run_it! (leaf)))))
+       ($present? (#"_1_1$" .match ($to_str (host))))]""", "[true true]")
+
+  test "a recursive result and a gensym passed to an inner call get distinct names":
+    check_eval("""
+      (macro rec [n]
+        (let t ($gensym "r"))
+        (if (> n 0)
+          `(do (var %t 1) [(quote %t) (rec %(- n 1))])
+          `(quote %t)))
+      (let r (rec 2))
+      [($present? (#"_0_1$" .match ($to_str r/0)))
+       ($present? (#"_1_1$" .match ($to_str r/1/0)))
+       ($present? (#"_2_1$" .match ($to_str r/1/1)))]""", "[true true true]")
+    check_eval("""
+      (macro inner [name]
+        (let t ($gensym "t"))
+        `(do (var %t 1) [(quote %name) (quote %t) %name]))
+      (macro outer []
+        (let o ($gensym "t"))
+        `(do (var %o 5) (inner %o)))
+      (let r (outer))
+      [(!= r/0 r/1) r/2]""", "[true 5]")
+
+  test "a local macro using gensym keeps the symbol table and heap flat over 300,000 runs":
+    let source = """
+      (fn run [n]
+        (macro swap [a b]
+          (let tmp ($gensym "tmp"))
+          `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
+        (var tmp 1)
+        (var y 2)
+        (var i 0)
+        (while (< i n) (swap tmp y) (set i (+ i 1)))
+        [tmp y])
+      (run COUNT)"""
+    discard run(compileSource(source.replace("COUNT", "10")), newGlobalScope())
+    GC_fullCollect()
+    let symbols = internedSymbolCount()
+    check run(compileSource(source.replace("COUNT", "100000")),
+              newGlobalScope()).print() == "[1 2]"
+    GC_fullCollect()
+    let heap = getTotalMem()
+    check run(compileSource(source.replace("COUNT", "300000")),
+              newGlobalScope()).print() == "[1 2]"
+    GC_fullCollect()
+    # no new symbol for any run, and the heap does not grow with the run count
+    check internedSymbolCount() == symbols
+    check getTotalMem() - heap < 4 * 1024 * 1024
+
+  test "a printed expansion reads back and behaves like the macro":
+    let shown = run(compileSource("""
+      (macro swap_text [a b]
+        (let tmp ($gensym "tmp"))
+        `(quote (do (var %tmp %a) (set %a %b) (set %b %tmp))))
+      (swap_text x y)"""), newGlobalScope())
+    let text = shown.print()
+    check "tmp_" in text
+    check read(text).print() == text
+    check run(compileSource("(var x 1) (var y 2) " & text & " [x y]"),
+              newGlobalScope()).print() == "[2 1]"
+
+suite "spec — module-level macros reject compile-time definitions":
+  test "inserting a function, type or enum variant by value is a compile error":
+    check_compile_error("""
+      (var calls 0)
+      (fn helper [] (set calls (+ calls 1)) calls)
+      (macro m [] `(%helper))
+      (m)""", "cannot insert compile-time function 'helper' into generated code from macro 'm'")
+    check_compile_error("""
+      (type Point ^props {^x Int})
+      (macro mk [] `(%Point ^x 1))
+      (mk)""", "cannot insert compile-time type 'Point' into generated code from macro 'mk'")
+    check_compile_error("""
+      (enum Color red green)
+      (macro pick [] `(%Color/red))
+      (pick)""", "into generated code from macro 'pick'")
+    # nested in data, still rejected; the error lists the ways out
+    check_compile_error("""
+      (fn helper [] 1)
+      (macro m [] `(quote [1 {^f %helper}]))
+      (m)""", "to insert a value, insert data")
+    check_compile_error("""
+      (fn helper [] 1)
+      (macro m [] `(quote [1 {^f %helper}]))
+      (m)""", "to use runtime values, define the macro locally")
+
+  test "data of every literal kind, intrinsics and symbols are still allowed":
+    check_eval("""
+      (macro forward [syntax] syntax)
+      (let date (forward 2026-07-04))
+      (let regex (forward #"a"))
+      [(== date 2026-07-04) ($present? (regex .match "a"))
+       (forward [2026-07-04 'c' 1.5 "s" nil])
+       (forward {^k 2026-07-04})]""",
+      "[true true [2026-07-04 'c' 1.5 \"s\" nil] {^k 2026-07-04}]")
+    check_eval("""
+      (macro nat [] `(%$to_str 1 2))
+      (macro ty [] `(quote %Int))
+      [(nat) (ty)]""", "[\"12\" (type Int)]")
+
+  test "a runtime object the program supplied through eval is forwarded":
+    check_eval("""
+      (var calls 0)
+      (fn helper [] (set calls (+ calls 1)) calls)
+      (macro forward [syntax] syntax)
+      (let selected (eval `(forward %helper) ^in (env)))
+      [(same? selected helper) (selected) calls]""", "[true 1 1]")
+    # the same forwarding macro rejects the compile-time copy's helper
+    check_compile_error("""
+      (fn helper [] 1)
+      (macro forward [syntax] syntax)
+      (macro wrong [] `(forward %helper))
+      (wrong)""", "cannot insert compile-time function 'helper' into generated code from macro 'wrong'")
+
+  test "a runtime object kept from an earlier eval is rejected in a later one":
+    # `store` is a cell the program supplies to both evals, so a module-level
+    # macro can carry the first eval's function into the second. It is a
+    # runtime object, but not one of the second form's own.
+    check_eval("""
+      (fn helper [] 1)
+      (fn other [] 2)
+      (macro keep [syntax store]
+        (if ($present? (store .get))
+          (store .get)
+          (do (store .set syntax) syntax)))
+      (let store ($cell nil))
+      (let one (eval `(keep %helper %store) ^in (env)))
+      [(same? one helper)
+       (try (eval `(keep %other %store) ^in (env)) catch Error "rejected")]""",
+      "[true \"rejected\"]")
+    check_eval("""
+      (fn helper [] 1)
+      (fn other [] 2)
+      (macro keep [syntax store]
+        (if ($present? (store .get))
+          (store .get)
+          (do (store .set syntax) syntax)))
+      (let store ($cell nil))
+      (eval `(keep %helper %store) ^in (env))
+      (try (eval `(keep %other %store) ^in (env))
+        catch Error ($present? (#"cannot insert compile-time function 'helper'" .match $err/message)))""",
+      "true")
+
+  test "local macros insert runtime values":
+    check_eval("""
+      (fn run []
+        (var calls 0)
+        (fn helper [] (set calls (+ calls 1)) calls)
+        (macro loc [] `(%helper))
+        (loc)
+        (loc)
+        calls)
+      (run)""", "2")
+
+  test "every other runtime kind is rejected, alone and nested":
+    check_compile_error("(macro m [] (fn [] 1)) (m)",
+      "cannot insert compile-time anonymous function into generated code from macro 'm'")
+    check_compile_error("(macro m [] `(f %(fn [] 1))) (m)",
+      "cannot insert compile-time anonymous function")
+    check_compile_error("""
+      (protocol P (message hello [] : Int))
+      (macro m [] `(quote [%P:hello]))
+      (m)""", "cannot insert compile-time protocol message 'hello'")
+    # an instance is rejected even when every field is data
+    check_compile_error("""
+      (type Pt ^props {^x Int})
+      (macro m [] `(quote %(Pt ^x 1)))
+      (m)""", "cannot insert compile-time type 'Pt'")
+    check_compile_error("""
+      (ns shapes (var x 1))
+      (macro m [] `(quote %shapes))
+      (m)""", "cannot insert compile-time namespace 'shapes'")
+    check_compile_error("""
+      (fn h [] 1)
+      (macro m [] `(quote [1 [%h]]))
+      (m)""", "cannot insert compile-time function 'h'")
+    check_compile_error("""
+      (fn h [] 1)
+      (macro m [] `(quote (tag ^k %h)))
+      (m)""", "cannot insert compile-time function 'h'")
+
+  test "data of the remaining literal kinds passes alone and nested":
+    check_eval("""
+      (macro forward [syntax] syntax)
+      (macro duration [] ($temporal/difference 2026-07-04T12:30:00Z 2026-07-04T11:30:00Z))
+      (macro span [] ($range 0 3))
+      [(forward 12:30:00Z) (forward 2026-07-04T12:30:00Z) (forward #B16#4869)
+       (forward 'c') (duration) ($head (span))
+       (forward [12:30:00Z #B16#4869 'c' {^d 2026-07-04T12:30:00Z}])]""",
+      "[12:30:00Z 2026-07-04T12:30:00Z #B16#4869 'c' (duration 3600000000) " &
+      "(type Range) [12:30:00Z #B16#4869 'c' {^d 2026-07-04T12:30:00Z}]]")
+
+  test "a supplied runtime object may be wrapped or nested, and a local macro may forward one":
+    check_eval("""
+      (var calls 0)
+      (fn helper [] (set calls (+ calls 1)) calls)
+      (macro forward [syntax] syntax)
+      (macro wrap [syntax] `(fn [] (%syntax)))
+      (let wrapped (eval `(wrap %helper) ^in (env)))
+      (let nested (eval `(forward [1 {^f %helper}]) ^in (env)))
+      [(wrapped) (same? nested/1/f helper) calls]""", "[1 true 1]")
+    check_eval("""
+      (macro forward [syntax] syntax)
+      (fn loc []
+        (var n 0)
+        (fn local_helper [] (set n (+ n 1)) n)
+        (macro viaforward [] `(forward (%local_helper)))
+        [(viaforward) (viaforward)])
+      (loc)""", "[1 2]")
+
 suite "spec — explicit fexprs from design (§3/§11.1)":
   test "a bang-named fn receives raw syntax":
     check_eval("(var hit ($cell 0)) " &

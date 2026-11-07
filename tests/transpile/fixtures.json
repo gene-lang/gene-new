@@ -895,6 +895,14 @@
       "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
     },
     {
+      "id": "macro.gensym_swap",
+      "source": "(macro swap [a b] (let tmp ($gensym \"tmp\")) `(do (var %tmp %a) (set %a %b) (set %b %tmp))) (var tmp 1) (var y 2) (swap tmp y) [tmp y]",
+      "web_source": "(mod macro_gensym_swap ^profile web) (macro swap [a b] (let tmp ($gensym \"tmp\")) `(do (var %tmp %a) (set %a %b) (set %b %tmp))) (fn run [] : (List Int) (var tmp 1) (var y 2) (swap tmp y) [tmp y])",
+      "web_export": "run",
+      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "2"}, {"kind": "int", "value": "1"}]},
+      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+    },
+    {
       "id": "macro.generated_macro",
       "source": "(macro make_adder [n] `(do (macro add_n [x] `(+ %x %%n)) (add_n 2))) (make_adder 3)",
       "web_source": "(mod macro_generated_macro ^profile web) (macro make_adder [n] `(do (macro add_n [x] `(+ %x %%n)) (add_n 2))) (fn run [] : Int (make_adder 3))",

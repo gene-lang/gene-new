@@ -228,7 +228,10 @@ For a browser client split across Gene files, load its entry with
 `($web/script asset ^mount "root")`. The entry has the same
 `main [root : EventTarget] : Void` contract. `web/load` reads the import graph
 and serves only compiled Gene; it does not admit `js/fn` imports. Generated
-mounts, dependencies, and source maps are content-addressed together. The
+mounts, dependencies, and source maps are content-addressed together. A
+generated file names its source by file name, not absolute path, and the
+source map embeds the source text, so the same module builds to the same bytes
+in any checkout. The
 [Harness browser client](../examples/gene-harness/README.md#browser-client)
 uses this path without an authored JavaScript bootstrap or a separate bundler.
 

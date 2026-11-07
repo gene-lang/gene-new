@@ -1456,6 +1456,16 @@ proc internSymbolId(v: string): int32 =
   finally:
     release(internLock)
 
+proc internedSymbolCount*(): int =
+  ## How many distinct symbol spellings the process has interned. The table
+  ## only grows, so a steady count across a workload shows the workload mints
+  ## no new symbols.
+  acquire(internLock)
+  try:
+    result = symbolNames.len
+  finally:
+    release(internLock)
+
 proc lookupSymbolId(v: string): int32 =
   ## Lookup-only probe: -1 when the text was never interned, so misses
   ## (hasKey on an absent key) do not grow the intern table.

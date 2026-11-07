@@ -239,6 +239,22 @@ type
     target: Value
     auxiliary: Value
     mapEntry: bool
+    gensym: GensymContext # a running macro body's `$gensym` state, if set
+
+  LeaseScope = object
+    ## One run loop's leases, linked to the loop it was called from. A loop
+    ## that a native starts to call back into Gene (`applyCall`) continues the
+    ## caller's dynamic extent, so a lookup walks outward through it. An
+    ## independently scheduled fiber starts a new chain.
+    leases: ptr seq[NativeOwnershipLease]
+    parent: ptr LeaseScope
+
+  MacroBodyRegion* = ref object
+    ## The `$gensym` context of a compile-time macro body, which runs inside a
+    ## native call of the compiler rather than as frames of its own.
+    leases: seq[NativeOwnershipLease]
+    scope: LeaseScope
+    previous: ptr LeaseScope
 
   Fiber = ref object of RootObj
     cleanup: EvalCleanup
@@ -1046,6 +1062,7 @@ type RuntimeMacroSlots = ref object of RootObj
   entries: seq[RuntimeMacroDefinition]
 var activeVmScope {.threadvar.}: ptr Scope
 var activeOwnershipLeases {.threadvar.}: ptr seq[NativeOwnershipLease]
+var activeLeaseScope {.threadvar.}: ptr LeaseScope
 var activeOwnershipFrames {.threadvar.}: ptr seq[Frame]
 var activeTask {.threadvar.}: Value
 var activeFiberIdentity {.threadvar.}: uint64
@@ -7397,6 +7414,59 @@ proc biToSym(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "to_sym expects a Str or Sym, got " & $args[0].kind)
 
+proc currentGensymContext(): GensymContext =
+  ## The innermost running macro body on this execution, or nil. Inner run
+  ## loops come before the loops they were called from, so the first context
+  ## found walking outward is the nearest enclosing macro body.
+  var scope = activeLeaseScope
+  while scope != nil:
+    let leases = scope.leases
+    for i in countdown(leases[].high, 0):
+      if leases[][i].gensym != nil:
+        return leases[][i].gensym
+    scope = scope.parent
+
+proc enterMacroBodyContext*(context: GensymContext): MacroBodyRegion =
+  ## Make `context` the `$gensym` state of everything the compile-time macro
+  ## body runs, until `leaveMacroBodyContext`.
+  result = MacroBodyRegion()
+  result.leases.add NativeOwnershipLease(depth: 0, gensym: context)
+  result.previous = activeLeaseScope
+  result.scope = LeaseScope(leases: addr result.leases, parent: activeLeaseScope)
+  activeLeaseScope = addr result.scope
+
+proc leaveMacroBodyContext*(region: MacroBodyRegion) =
+  activeLeaseScope = region.previous
+
+proc validGensymBase(base: string): bool =
+  if base.len == 0 or base[0] notin {'a'..'z', 'A'..'Z', '_'}:
+    return false
+  for ch in base:
+    if ch notin {'a'..'z', 'A'..'Z', '0'..'9', '_'}:
+      return false
+  true
+
+proc biGensym(args: openArray[Value]): Value {.nimcall.} =
+  ## `($gensym base)`: a symbol no caller syntax can already use, spelled
+  ## `<base>_<module hash>_<depth>_<k>`. Only a running macro body has the
+  ## context that makes the spelling unique and repeatable.
+  requireOne("gensym", args)
+  if args[0].kind != vkString:
+    raise newException(GeneError,
+      "gensym expects a Str base, got " & $args[0].kind)
+  let base = args[0].strVal
+  if not validGensymBase(base):
+    raise newException(GeneError,
+      "gensym base must be a Str of ASCII letters, digits and _ that starts " &
+      "with a letter or _")
+  let context = currentGensymContext()
+  if context == nil:
+    raise newException(GeneError,
+      "$gensym can only be called while a macro body is running")
+  inc context.count
+  newSym(base & "_" & context.hash & "_" & $context.depth & "_" &
+         $context.count)
+
 proc biMapDeleteBang(args: openArray[Value]): Value {.nimcall.} =
   ## `(m .delete key)` removes the entry and returns what was there, or `void`
   ## when the key was absent — so a caller can tell "removed something" from
@@ -9094,6 +9164,8 @@ proc releaseOwnershipLeases(leases: var seq[NativeOwnershipLease],
                             depth: int) =
   while leases.len > 0 and leases[^1].depth >= depth:
     let lease = leases.pop()
+    if lease.gensym != nil:
+      continue
     if lease.mapEntry:
       lease.target.putMapEntry(lease.auxiliary.strVal, VOID)
     else:
@@ -9903,6 +9975,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.define("to_str", builtinNativeCallFn("to_str", biToStr,
                                           acceptsNamed = false))
   result.define("to_sym", builtinNativeFn("to_sym", biToSym))
+  result.define("gensym", builtinNativeFn("gensym", biGensym))
   result.define("to_int", builtinNativeFn("to_int", biToInt))
   result.define("to_float", builtinNativeFn("to_float", biToFloat))
   result.define("chars", builtinNativeFn("chars", biChars))
@@ -16345,6 +16418,9 @@ proc evalMacroBindings(env: Value): MacroBindings =
     discard env.callerEnvScope # enforce the borrowed lifetime before reading context
     let context = asMacroBindings(env.envCompilerMacros)
     result.definitions.mergeMacroBindings(context)
+    if context != nil:
+      result.expansionDepth = context.expansionDepth
+      result.gensymHash = context.gensymHash
     return
   let chain = envChain(env)
   let module = nearestEnvModule(chain)
@@ -16353,7 +16429,12 @@ proc evalMacroBindings(env: Value): MacroBindings =
   for item in chain:
     for imported in item.envImports:
       result.definitions.mergeMacroBindings(exportedEnvMacros(imported))
-    result.definitions.mergeMacroBindings(asMacroBindings(item.envCompilerMacros))
+    let itemContext = asMacroBindings(item.envCompilerMacros)
+    result.definitions.mergeMacroBindings(itemContext)
+    # The chain runs outermost first, so the Env itself decides.
+    if itemContext != nil and itemContext.gensymHash.len > 0:
+      result.expansionDepth = itemContext.expansionDepth
+      result.gensymHash = itemContext.gensymHash
     for name, value in item.envBindings:
       var remove: seq[string]
       for macroName in result.definitions.keys:
@@ -17304,7 +17385,8 @@ proc captureEnvMacros(env: Value, context: MacroBindings, scope: Scope) =
   if context == nil: return
   let captured = MacroBindings(definitions: context.definitions,
     hiddenNames: context.hiddenNames, exportedNames: context.exportedNames,
-    ownedNames: context.ownedNames, history: context.history)
+    ownedNames: context.ownedNames, history: context.history,
+    expansionDepth: context.expansionDepth, gensymHash: context.gensymHash)
   var functions: seq[Value]
   for name, definition in context.definitions:
     if not definition.runtime or definition in captured.capturedDefinitions: continue
@@ -18050,9 +18132,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   let previousOwnershipFrames = activeOwnershipFrames
   activeOwnershipLeases = addr ownershipLeases
   activeOwnershipFrames = addr frames
+  let previousLeaseScope = activeLeaseScope
+  var leaseScope = LeaseScope(leases: addr ownershipLeases,
+    parent: if fiber == nil or stopOnYield: previousLeaseScope else: nil)
+  activeLeaseScope = addr leaseScope
   defer:
     activeOwnershipLeases = previousOwnershipLeases
     activeOwnershipFrames = previousOwnershipFrames
+    activeLeaseScope = previousLeaseScope
   var chunk = chunkArg
   var scope = scopeArg
   let previousVmScope = activeVmScope
@@ -22772,6 +22859,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             scope.runtimeMacroBudget())
           let proto = FunctionProto(callee.fnCode)
           var bound = bindBudgetedCallScope(callee, proto, arguments, NamedArgs(), scope)
+          # The body's frame owns this `$gensym` state: it is released with the
+          # frame on return, error or cancellation, and travels with the fiber
+          # when the body suspends. The call below pushes the caller, so the
+          # body runs at depth `frames.len + 1`. `enterBytecodeCall` continues
+          # the loop itself, so the lease goes in first.
+          ownershipLeases.add NativeOwnershipLease(depth: frames.len + 1,
+            gensym: newGensymContext(specification.context.gensymHash,
+                                     specification.context.expansionDepth))
           enterBytecodeCall(proto.chunk, bound.scope, false,
             proto.frameNeedsImplValidation, NIL, "", false, @[], callee.fnName,
             sp, false)

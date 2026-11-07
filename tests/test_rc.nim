@@ -10,7 +10,7 @@
 
 when defined(geneRcStats):
   import gene/[compiler, gir, native_api, pending_exception, printer, reader, types, vm]
-  import std/[os, tables, unittest]
+  import std/[os, strutils, tables, unittest]
 
   # A container's generated destructor can release its elements with the
   # pending-exception flag still set; each element's destructor must finish.
@@ -92,10 +92,12 @@ when defined(geneRcStats):
           let scope = newGlobalScope()
           let app = Application(scope.application)
           let path = app.applicationPackage.root / "macro_detached_env.gene"
+          # The Env is built by the module's own code. A module-level macro
+          # cannot return one: it would belong to the compile-time copy.
           let source = "(mod compile_only) (var offset 40) " &
             "(fn helper [x] (+ offset x)) " &
             "(macro computed [x] (helper x)) " &
-            "(macro expose [] (env ^bindings {^helper helper})) (expose)"
+            "(env ^bindings {^helper helper})"
           let compiled = compileFormsWithMacros(readAllWithLocs(source, path),
             initTable[string, Table[string, MacroDef]](),
             moduleIdentity = app.moduleIdentityFor(path), moduleSourcePath = "macro_detached_env.gene")
@@ -127,8 +129,11 @@ when defined(geneRcStats):
           let scope = newGlobalScope()
           let app = Application(scope.application)
           let path = app.applicationPackage.root / "macro_detached_helper.gene"
+          # `(computed 2)` builds and then releases the macro phase; the
+          # module's own helper is what outlives it.
           let source = "(mod compile_only) (var offset 40) " &
-            "(fn helper [x] (+ offset x)) (macro expose [] helper) (expose)"
+            "(fn helper [x] (+ offset x)) (macro computed [x] (helper x)) " &
+            "(var seen (computed 2)) helper"
           let compiled = compileFormsWithMacros(readAllWithLocs(source, path),
             initTable[string, Table[string, MacroDef]](),
             moduleIdentity = app.moduleIdentityFor(path), moduleSourcePath = "macro_detached_helper.gene")
@@ -165,25 +170,35 @@ when defined(geneRcStats):
       check leakedManaged(source, macroModule = true) == 0
 
     test "embedded helper values release after their compiled code is discarded":
+      # A function the program supplies to `eval` is embedded in the compiled
+      # code, and a module-level macro may forward it.
       let source = "(mod compile_only) (fn helper [x] (+ x 1)) " &
-        "(macro computed [x] `(%helper %x)) (computed 3)"
+        "(macro forward [form] form) " &
+        "(eval `(forward (%helper 3)) ^in (env))"
       discard leakedManaged(source, macroModule = true)
       check leakedManaged(source, macroModule = true) == 0
 
-    test "emitted helper values retain their definition environment":
-      let scope = newGlobalScope()
-      let app = Application(scope.application)
-      let path = app.applicationPackage.root / "macro_retained_helper.gene"
-      let source = "(mod compile_only) (var offset 40) " &
-        "(fn helper [x] (+ offset x)) (macro expose [] helper) (expose)"
-      let compiled = compileFormsWithMacros(readAllWithLocs(source, path),
-        initTable[string, Table[string, MacroDef]](),
-        moduleIdentity = app.moduleIdentityFor(path), moduleSourcePath = "macro_retained_helper.gene")
-      let helper = run(compiled.chunk, scope)
-      discard run(compileSource("(set offset 100)", useLocalSlots = false), scope)
-      scope.define("retained_helper", helper)
-      GC_fullCollect()
-      check run(compileSource("(retained_helper 2)", useLocalSlots = false), scope).print() == "42"
+    test "inserting a compile-time definition is rejected and releases its phase":
+      proc exercise() =
+        let scope = newGlobalScope()
+        let app = Application(scope.application)
+        let path = app.applicationPackage.root / "macro_rejected_helper.gene"
+        let source = "(mod compile_only) (var offset 40) " &
+          "(fn helper [x] (+ offset x)) (macro expose [] helper) (expose)"
+        var message = ""
+        try:
+          discard compileFormsWithMacros(readAllWithLocs(source, path),
+            initTable[string, Table[string, MacroDef]](),
+            moduleIdentity = app.moduleIdentityFor(path),
+            moduleSourcePath = "macro_rejected_helper.gene")
+        except GeneError as error:
+          message = error.msg
+        check "cannot insert compile-time function 'helper'" in message
+        GC_fullCollect()
+      exercise()
+      let before = liveManaged
+      exercise()
+      check liveManaged == before
 
   suite "rc — closures and scopes (geneRcStats)":
     test "reused for activations release their values on normal and abrupt exits":

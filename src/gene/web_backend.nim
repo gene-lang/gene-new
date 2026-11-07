@@ -4945,7 +4945,10 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     importedAliases: Table[string, WebType] = initTable[string, WebType]()): WebModule =
   var frontEnd: ExpandedSourceUnit
   try:
-    frontEnd = expandSourceUnitMacros(unit, importedMacros)
+    # The web graph has no package identity. A module's file name is what its
+    # artifacts are named by, and is the same in every checkout.
+    frontEnd = expandSourceUnitMacros(unit, importedMacros,
+      gensymModule = "web::" & splitFile(sourcePath).name)
   except GeneError as error:
     raise newException(WebProfileError, error.msg)
   macroExports = frontEnd.macroExports
@@ -8064,13 +8067,22 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
 
 include ./web_errors
 
+proc portableSourceName(module: WebModule): string =
+  ## What a generated artifact calls its source. An absolute path would make
+  ## the same module emit different bytes in different checkouts, and with them
+  ## a different content-addressed asset. A file is named by its file name; the
+  ## source map embeds the source text, so nothing needs the path to find it. An
+  ## embedded block already carries a stable identity instead of a path.
+  if module.embedded: module.sourcePath
+  else: extractFilename(module.sourcePath)
+
 proc emitModule(module: WebModule, typescript: bool,
                 lineLocs: var seq[SourceLoc]): string =
   let nominalTypes = nominalTypeNames(module)
   let errorTypes = errorTypeNames(module)
   var emitter = WebEmitter(typescript: typescript, nominalTypes: nominalTypes,
                            errorTypes: errorTypes)
-  emitter.line("// Generated from " & module.sourcePath & "; target es2022.")
+  emitter.line("// Generated from " & module.portableSourceName & "; target es2022.")
   emitter.emitErrorRuntime()
   for imported in module.imports:
     emitter.currentLoc = imported.loc
@@ -9572,7 +9584,7 @@ proc emitSourceMap(module: WebModule, outputName: string,
     "version": 3,
     "file": outputName,
     "sourceRoot": "",
-    "sources": [module.sourcePath],
+    "sources": [module.portableSourceName],
     "sourcesContent": [sourceMapContent(module)],
     "names": newSeq[string](),
     "mappings": sourceMappings(lineLocs)

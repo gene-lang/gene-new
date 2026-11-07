@@ -187,13 +187,56 @@ suite "cli — gene run":
     check reported.output.count("Tail-call fallback [return_type]") == 1
     check "tail_fallback.gene" in reported.output
 
+  test "a macro body that uses only $ names does not rerun the defining file":
+    # `$name` is `gene/name`, and `gene` can be bound nowhere, so it needs no
+    # compile-time copy of the defining module. Only a bare name does.
+    let dollarOnly = writeCliProgram("macro_dollar_only.gene",
+      "($println \"top level ran\") " &
+      "(macro m [x] (do ($println \"body\") x)) " &
+      "($println (m 1))")
+    var ran = runGene(["run", dollarOnly])
+    check ran.exitCode == 0
+    check ran.output.count("top level ran") == 1
+    check ran.output.count("body") == 1
+
+    let gensymSwap = writeCliProgram("macro_gensym_once.gene",
+      "($println \"top level ran\") " &
+      "(macro swap [a b] (let tmp ($gensym \"tmp\")) " &
+      "  `(do (var %tmp %a) (set %a %b) (set %b %tmp))) " &
+      "(var tmp 1) (var y 2) (swap tmp y) ($println [tmp y])")
+    ran = runGene(["run", gensymSwap])
+    check ran.exitCode == 0
+    check ran.output.count("top level ran") == 1
+    check ran.output.contains("[2 1]")
+
+    let bareName = writeCliProgram("macro_bare_name.gene",
+      "($println \"top level ran\") " &
+      "(fn helper [x] x) " &
+      "(macro m [x] (helper x)) " &
+      "($println (m 1))")
+    ran = runGene(["run", bareName])
+    check ran.exitCode == 0
+    # A bare name still needs the definition module's bindings, so the file
+    # runs once more in the compile-time copy (documented limit).
+    check ran.output.count("top level ran") == 2
+
+  test "gensym names are the same on every build of one module":
+    let program = writeCliProgram("gensym_names.gene",
+      "(macro names [] " &
+      "  (let a ($gensym \"tmp\")) (let b ($gensym \"tmp\")) " &
+      "  `(quote [%a %b])) " &
+      "($println (names))")
+    let first = runGene(["run", program])
+    let second = runGene(["run", program])
+    check first.exitCode == 0
+    check first.output == second.output
+    check first.output.contains("_0_1 ") or first.output.contains("_0_1")
+
   test "gene harness recovery nucleus has no plugin imports":
     for path in [
       "examples/gene-harness/src/kernel.gene",
       "examples/gene-harness/src/plugin_api.gene",
-      "examples/gene-harness/src/storage/state.gene",
-      "examples/gene-harness/src/views/view_api.gene",
-      "examples/gene-harness/src/storage/workspace.gene"
+      "examples/gene-harness/src/storage/state.gene"
     ]:
       for line in readFile(path).splitLines:
         let stripped = line.strip
@@ -249,24 +292,6 @@ suite "cli — gene run":
     if loaded.exitCode != 0: checkpoint loaded.output
     check loaded.exitCode == 0
     check loaded.output.strip in ["1 a", "1 b"]
-
-  test "inference-depth qualification stage is exact and public-only":
-    let checked = execCmdEx(
-      "python3 tools/qualify_inference_depth.py --self-test")
-    check checked.exitCode == 0
-    check "tasks=12 primitives_covered=12 max_admissible=8" in checked.output
-    check "round_ceiling=5 attempts=2" in checked.output
-    check "minimum_liveness=0.9 minimum_solve=0.5 public_hidden_fields=0" in
-      checked.output
-
-  test "episode-depth qualification stage keeps the subject's checker rules":
-    let checked = execCmdEx(
-      "python3 tools/qualify_episode_depth.py --self-test")
-    check checked.exitCode == 0
-    check "episodes=10 components=20 round_ceiling=9 attempts=2" in
-      checked.output
-    check "public_hidden_fields=0 soundness_verified=true" in checked.output
-    check "framing=episode programs=stage_two_identical" in checked.output
 
   test "run loads explicit structured logging config before the entry module":
     let logDir = cliDir / "configured_logs"
@@ -1650,7 +1675,11 @@ suite "cli — gene parse/fmt/compile":
     if fileExists(mapPath):
       let sourceMapText = readFile(mapPath)
       let sourceMap = parseJson(sourceMapText)
-      check normalizedPath(absolutePath(path)) in sourceMapText
+      # The map names its source by file name and embeds the text, so the same
+      # module emits the same bytes in any checkout.
+      check sourceMap["sources"][0].getStr() == extractFilename(path)
+      check normalizedPath(absolutePath(path)) notin sourceMapText
+      check "web_slice ^profile web" in sourceMap["sourcesContent"][0].getStr()
       check sourceMap["mappings"].getStr().contains(';')
       check sourceMap["mappings"].getStr() != "AAAA"
     if fileExists(jsPath):

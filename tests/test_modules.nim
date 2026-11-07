@@ -429,6 +429,82 @@ suite "modules — file imports":
     let loaded = app.loadFileModule(modDir / "macro_identity_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "[\"original\" 42]"
 
+  test "gensym binders are reproducible and survive an artifact round trip":
+    writeModule("gensym_artifact.gene",
+      "(mod gensym_artifact) " &
+      "(macro swap [a b] (let tmp ($gensym \"tmp\")) " &
+      "  `(do (var %tmp %a) (set %a %b) (set %b %tmp))) " &
+      "(var tmp 1) (var y 2) (swap tmp y) (var observed [tmp y])")
+    let firstApp = newApplication(modDir)
+    let original = firstApp.compileFileModuleBundle(modDir / "gensym_artifact.gene",
+      firstApp.applicationPackage.id)
+    let secondApp = newApplication(modDir)
+    let again = secondApp.compileFileModuleBundle(modDir / "gensym_artifact.gene",
+      secondApp.applicationPackage.id)
+    let encoded = encodeExecutableGir(original)
+    # Nothing in a gensym is random or order-dependent.
+    check encodeExecutableGir(again) == encoded
+    check encoded.contains("tmp_")
+    let decoded = decodeExecutableGir(encoded)
+    removeFile(modDir / "gensym_artifact.gene")
+    let app = newApplication(modDir)
+    app.installCompiledModules(decoded.modules)
+    let loaded = app.loadFileModule(modDir / "gensym_artifact.gene")
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "[2 1]"
+
+  test "gensym names carry the module hash: modules differ, a moved checkout matches":
+    let body = "(macro names [] (let t ($gensym \"tmp\")) `(quote %t)) " &
+      "(var observed (names))"
+    writeModule("hash_a.gene", body)
+    writeModule("hash_b.gene", body)
+    let app = newApplication(modDir)
+    let a = app.loadFileModule(modDir / "hash_a.gene")
+      .moduleRootNamespace.nsScope.lookup("observed").print()
+    let b = app.loadFileModule(modDir / "hash_b.gene")
+      .moduleRootNamespace.nsScope.lookup("observed").print()
+    check a.startsWith("tmp_")
+    check a.endsWith("_0_1")
+    check b.endsWith("_0_1")
+    check a != b
+    # The same module under another checkout root: an application's own
+    # modules identify by their relative path, so the hash is the same.
+    let moved = getTempDir() / "gene_module_tests_moved"
+    removeDir(moved)
+    createDir(moved)
+    defer: removeDir(moved)
+    writeFile(moved / "hash_a.gene", body)
+    let movedApp = newApplication(moved)
+    check movedApp.loadFileModule(moved / "hash_a.gene")
+      .moduleRootNamespace.nsScope.lookup("observed").print() == a
+
+  test "a module-level macro cannot insert its own module value":
+    writeModule("insert_module.gene",
+      "(macro m [] `(quote %this_mod)) (var observed (m))")
+    let app = newApplication(modDir)
+    var message = ""
+    try:
+      discard app.loadFileModule(modDir / "insert_module.gene")
+    except GeneError as error:
+      message = error.msg
+    check "cannot insert compile-time module 'insert_module' into generated code" in message
+
+  test "a printed expansion pasted into another module is not captured":
+    let swapMacro = "(macro swap [a b] (let tmp ($gensym \"tmp\")) " &
+      "`(do (var %tmp %a) (set %a %b) (set %b %tmp))) "
+    writeModule("paste_a.gene",
+      "(macro names [] (let t ($gensym \"tmp\")) `(quote %t)) " &
+      "(var observed (names))")
+    let app = newApplication(modDir)
+    let printed = app.loadFileModule(modDir / "paste_a.gene")
+      .moduleRootNamespace.nsScope.lookup("observed").print()
+    # module A's `tmp_<hash>_0_1` is an ordinary caller name in module B, whose
+    # own `swap` makes a different one
+    writeModule("paste_b.gene", swapMacro &
+      "(var " & printed & " 1) (var y 2) (swap " & printed & " y) " &
+      "(var observed [" & printed & " y])")
+    check app.loadFileModule(modDir / "paste_b.gene")
+      .moduleRootNamespace.nsScope.lookup("observed").print() == "[2 1]"
+
   test "macro body imports use verified artifacts after source removal":
     writeModule("phase_dep.gene",
       "(type PhaseBox ^props {^value Int} (message value [] : Int self/value)) " &
@@ -458,16 +534,18 @@ suite "modules — file imports":
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "43"
 
   test "phase imports preserve runtime constants in source-compiled templates":
+    # The constant is an intrinsic: a module-level macro may insert a native
+    # function of the `gene` root, but not a definition of its own module.
     writeModule("phase_value_dep.gene",
-      "(fn helper [x] (+ x 1)) (macro apply_helper [x] `(%helper %x)) " &
-      "(var offset (apply_helper 2)) (fn add [x] (+ offset x))")
+      "(macro apply_helper [x] `(%$to_str %x)) " &
+      "(var offset (apply_helper 2)) (fn add [x] ($to_str offset x))")
     writeModule("phase_value_macros.gene",
       "(import [add] ^from \"./phase_value_dep\") (macro computed [x] (add x))")
     writeModule("phase_value_user.gene",
       "(import [computed] ^from \"./phase_value_macros\") (var observed (computed 40))")
     let app = newApplication(modDir)
     let loaded = app.loadFileModule(modDir / "phase_value_user.gene")
-    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "43"
+    check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "\"240\""
 
   test "macros and phase imports share one definition module instance":
     writeModule("phase_counter.gene",
@@ -1526,6 +1604,27 @@ suite "modules — the sandbox loader (design §D5)":
       (modDir / "gene_sandbox_escape").replace("\\", "/") & "\")"
       ).print() == "1"
     check fileExists(modDir / "gene_sandbox_escape")
+
+  test "a macro body that uses only $ names keeps the sandbox's grants":
+    ## A `$name` is `gene/name`. A macro body that uses nothing else no longer
+    ## re-runs its defining file at compile time, so it must still resolve
+    ## `gene` from the sandbox's restricted root, not from the host's.
+    let escape = (modDir / "gene_sandbox_escape").replace("\\", "/")
+    writeModule("macro_fs.gene",
+      "(macro touch_it [] (do ($fs/write_text \"" & escape & "\" \"macro\") 1)) " &
+      "(fn run [] (touch_it))")
+    var raised = false
+    try:
+      discard runSandboxProgram("(var m " &
+        loadSandboxed(modDir, "macro_fs.gene", "[]") & ") (m/run)")
+    except GeneError as error:
+      raised = true
+      check "gene/fs is not defined here" in error.msg
+    check raised
+    check not fileExists(modDir / "gene_sandbox_escape")
+    check runSandboxProgram("(var m " &
+      loadSandboxed(modDir, "macro_fs.gene", "[\"fs\"]") & ") (m/run)").print() == "1"
+    check readFile(modDir / "gene_sandbox_escape") == "macro"
 
   test "the restriction reaches a module the sandboxed one imports":
     ## The half that makes it a boundary rather than a speed bump: a mod that

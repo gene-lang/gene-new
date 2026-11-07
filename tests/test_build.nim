@@ -1,5 +1,5 @@
 import gene/[build, package, process_lock, reader, types, vm]
-import std/[os, strutils, tables, unittest]
+import std/[algorithm, os, strutils, tables, unittest]
 when defined(posix):
   import std/posix
 
@@ -398,6 +398,67 @@ suite "build engine — pure Gene targets":
     check artifacts[0].artifactDigest == artifacts[1].artifactDigest
     check not artifacts[0].cacheHit
     check artifacts[1].cacheHit
+
+  test "gensym names build identically across checkouts, orders and workers":
+    when defined(posix):
+      let root = buildTestRoot()
+      let libraries = ["one", "two", "three"]
+      proc build(checkout, store: string, order: seq[string],
+                 parallelism: int): seq[string] =
+        var dependencies = ""
+        for name in order:
+          dependencies.add "   ^" & name & " (dep \"acme/" & name &
+            "\" \"1.0.0\" ^^workspace)\n"
+        writeBuildFile(checkout / "package.gene",
+          "{^format 1 ^name \"acme/app\" ^version \"1.0.0\"\n" &
+          " ^workspace {^members [\"packages/*\"]}\n" &
+          " ^applications [(application \"app\" ^entry \"src/main.gene\")]\n" &
+          " ^dependencies {\n" & dependencies & "}}")
+        writeBuildFile(checkout / "src/main.gene",
+          "(macro swap [a b] (let tmp ($gensym \"tmp\")) " &
+          "  `(do (var %tmp %a) (set %a %b) (set %b %tmp))) " &
+          "(fn main [] (var tmp 1) (var y 2) (swap tmp y) tmp)")
+        for name in libraries:
+          writeBuildFile(checkout / "packages" / name / "package.gene",
+            "{^format 1 ^name \"acme/" & name &
+            "\" ^version \"1.0.0\" ^library {^entry \"src/index.gene\"}}")
+          writeBuildFile(checkout / "packages" / name / "src/index.gene",
+            "(macro swap [a b] (let tmp ($gensym \"tmp\")) " &
+            "  `(do (var %tmp %a) (set %a %b) (set %b %tmp))) " &
+            "(fn swapped [] (var tmp 1) (var y 2) (swap tmp y) [tmp y] " &
+            "  (var other 3) (swap other y) [other y])")
+        let manager = newPackageManager(checkout / "package_store")
+        let resolution = manager.resolve(ResolveRequest(startDir: checkout))
+        let graph = manager.sync(resolution,
+          SyncPolicy(offline: true, userStoreRoot: checkout / "package_store"))
+        let engine = newBuildEngine(BuildEnvironment(
+          artifactStore: newLocalArtifactStore(store),
+          toolchains: newToolchainSet("gene-test-compiler",
+                                     "x86_64-test-linux-gnu")))
+        let built = engine.build(BuildRequest(
+          rootPackageId: graph.activePackageId, target: "app",
+          profile: "dev", mode: bmVm, maxParallelism: parallelism), graph)
+        check built.rebuilt == 4
+        for artifact in built.artifacts:
+          result.add artifact.packageName & "=" & artifact.artifactDigest
+        result.sort()
+      # Same dependency order: one worker in one checkout against three workers
+      # in another, with a separate artifact store. Every artifact matches.
+      let first = build(root / "checkout_one", root / "store_one",
+                        @["one", "two", "three"], 1)
+      let second = build(root / "checkout_two", root / "store_two",
+                         @["one", "two", "three"], 3)
+      check first.len == 4
+      check first == second
+      # Reversed dependency order changes the application's own manifest, but
+      # no library artifact: the libraries' bytes do not depend on build order.
+      let reversed = build(root / "checkout_three", root / "store_three",
+                           @["three", "two", "one"], 2)
+      proc libraryDigests(digests: seq[string]): seq[string] =
+        for entry in digests:
+          if not entry.startsWith("acme/app="): result.add entry
+      check libraryDigests(reversed) == libraryDigests(first)
+      check libraryDigests(first).len == 3
 
   test "crashed locks recover and concurrent project views converge":
     when defined(posix):

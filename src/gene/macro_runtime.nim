@@ -229,10 +229,13 @@ proc macroNeedsDefinitionBindings(chunk: Chunk): bool =
     return false
   for instruction in chunk.instructions:
     case instruction.op
-    of opLoadName, opLoadStdlibPath, opCallName0, opCallName1, opCallNameN, opSetName:
+    of opLoadName, opCallName0, opCallName1, opCallNameN, opSetName:
       # Even an intrinsic spelling can be shadowed in the definition module.
       # Name-based access needs that lexical environment before it can choose
       # a binding; presence in the intrinsic parent is not sufficient evidence.
+      # `opLoadStdlibPath` (`$x`, i.e. `gene/x`) is deliberately absent: `gene`
+      # is a reserved root that no module can bind or shadow, so the path
+      # resolves identically in the compile-time copy and in the defining module.
       return true
     of opMakeEnv, opEval, opSyntaxCall, opImport, opImportImpl:
       return true
@@ -376,10 +379,12 @@ proc evaluateMacroBody(definition: MacroDef, bindings: Table[string, Value],
       let savedMacros = scope.compilerMacros
       let savedBudget = scope.evalBudget
       if activeVmBudget != nil: scope.evalBudget = activeVmBudget[]
+      let region = enterMacroBodyContext(session.gensym)
       try:
         let function = run(code, scope)
         return applyCall(function, arguments, NamedArgs(), scope, loc = definition.sourceLoc)
       finally:
+        leaveMacroBodyContext(region)
         scope.compilerMacros = savedMacros
         scope.evalBudget = savedBudget
     let state = macroRuntimeState(session)
@@ -441,14 +446,25 @@ proc evaluateMacroBody(definition: MacroDef, bindings: Table[string, Value],
       # invocation's budget dynamically instead of reusing its captured one.
       let savedLexicalBudget = lexical.evalBudget
       lexical.evalBudget = invocationBudget
+      let region = enterMacroBodyContext(session.gensym)
       try:
         let function = run(body, lexical)
         result = applyCall(function, arguments, NamedArgs(), lexical,
                            loc = definition.sourceLoc)
       finally:
+        leaveMacroBodyContext(region)
         lexical.evalBudget = savedLexicalBudget
     finally:
       instance.scope.evalBudget = savedBudget
       state.activeBudget = previousBudget
 
 macroEvaluator = evaluateMacroBody
+
+proc isIntrinsicValue(value: Value): bool {.nimcall, gcsafe.} =
+  ## Runtime-kind values that every compilation phase shares: the native
+  ## functions of the `gene` root, and the built-in types, which are process
+  ## singletons. A macro may insert these (`%$println`, `%Int`).
+  {.cast(gcsafe).}:
+    value.kind == vkNativeFn or isBuiltinSurfaceType(value)
+
+intrinsicValueCheck = isIntrinsicValue

@@ -34,6 +34,15 @@ Prefer the path spelling for a zero-argument message send on a simple symbol or 
 
 Keep sends with arguments parenthesized, such as `(a .x value)`. Keep the explicit send for literal or computed receivers, such as `([1 2] .size)` and `((make_a) .x)`, and for parent dispatch, such as `(super .x)`. Preserve quoted syntax as data rather than rewriting its structure for style.
 
+In a macro template, when spliced caller syntax sits inside a binder the
+template declares, name the binder with `$gensym` instead of a fixed name:
+
+```gene
+(macro swap [a b]
+  (let tmp ($gensym "tmp"))
+  `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
+```
+
 ### Preserve the language design
 
 Do not introduce or change Gene syntax without consulting the project owner first.

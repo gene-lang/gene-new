@@ -19,6 +19,25 @@ negating `$absent?`.
 Presence is separate from truthiness and emptiness: `false`, zero, empty
 strings and empty collections are all present.
 
+## Fresh macro names
+
+`($gensym base)` returns a symbol for a binder that a macro's template declares
+around caller syntax. `base` is a required Str of ASCII letters, digits and
+`_` that starts with a letter or `_`. The result is spelled
+`<base>_<module hash>_<depth>_<k>`, so caller code cannot be using it by
+accident, and it is the same on every build. It works only while a macro body
+runs, including functions and callbacks the body calls:
+
+```gene runnable
+(macro bump_twice [place]
+  (let before ($gensym "before"))
+  `(do (let %before %place) (set %place (+ %before 2)) %before))
+(var before 10)
+[(bump_twice before) before] # [10 12]
+```
+
+See [macros](macro.md) for the full contract.
+
 ## Numbers
 
 Int `/` truncates toward zero and `//` computes the matching remainder using

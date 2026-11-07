@@ -23,9 +23,11 @@
 (show "evaluation count" calls 2)
 
 # Bind an argument once when the generated code needs its value repeatedly.
-# Expansion-local declarations stay inside the result's scope.
+# Expansion-local declarations stay inside the result's scope, and $gensym
+# names the temporary so no caller name can be captured.
 (macro twice_once [expression]
-  `(do (let saved %expression) (+ saved saved)))
+  (let saved ($gensym "saved"))
+  `(do (let %saved %expression) (+ %saved %saved)))
 
 (let saved 100)
 (show "single evaluation"

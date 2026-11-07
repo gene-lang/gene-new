@@ -1,5 +1,7 @@
 import gene/[web, vm, types]
-import std/[os, osproc, strutils, tempfiles, unittest]
+import std/[algorithm, os, osproc, strutils, tempfiles, unittest]
+when defined(posix):
+  import std/posix
 
 suite "web standard receiver methods":
   test "preserves browser empty-separator code units through both spellings":
@@ -33,6 +35,124 @@ suite "web standard receiver methods":
         "(fn run [] : Any " & expression & ")")
       expect WebProfileError:
         discard buildWebModule(source, root / "out")
+
+suite "web macros with gensym":
+  const swapSource = """
+    (mod NAME ^profile web)
+    (macro swap [a b]
+      (let tmp ($gensym "tmp"))
+      `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
+    (fn run [] : (List Int)
+      (var tmp 1)
+      (var y 2)
+      (swap tmp y)
+      [tmp y])
+  """
+
+  proc gensymHash(js: string): string =
+    ## The 8 hex digits of the first `tmp_<hash>_0_1` binder in emitted code.
+    for start in 0 ..< max(0, js.len - 16):
+      if js[start .. start + 3] == "tmp_" and js[start + 12 .. start + 15] == "_0_1":
+        let candidate = js[start + 4 .. start + 11]
+        var hex = true
+        for ch in candidate:
+          if ch notin {'0'..'9', 'a'..'f'}: hex = false
+        if hex: return candidate
+
+  proc buildSwap(prefix, name: string,
+                 run = false): tuple[js: string, exitCode: int, output: string] =
+    let root = createTempDir(prefix, "")
+    defer: removeDir(root)
+    writeFile(root / (name & ".gene"), swapSource.replace("NAME", name))
+    discard buildWebModule(root / (name & ".gene"), root / "out")
+    result.js = readFile(root / "out" / (name & ".mjs"))
+    if run:
+      writeFile(root / "out" / "check.mjs",
+        "import assert from 'node:assert/strict';\n" &
+        "import {run} from './" & name & ".mjs';\n" &
+        "assert.deepEqual(run(), [2n, 1n]);\n")
+      let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+      result.exitCode = ran.exitCode
+      result.output = ran.output
+
+  test "gensym binders are emitted as written and behave correctly":
+    let built = buildSwap("gene-web-gensym-run-", "swapper", run = true)
+    checkpoint built.output
+    check built.exitCode == 0
+    check gensymHash(built.js).len == 8
+
+  test "web output is reproducible and names the module":
+    let first = buildSwap("gene-web-gensym-one-", "swapper").js
+    let second = buildSwap("gene-web-gensym-two-", "swapper").js
+    # across checkouts nothing differs: the source is named by file name, not
+    # by its absolute path
+    check first == second
+    check "gene-web-gensym-one-" notin first
+    # the hash comes from the module, not from the empty identity
+    check gensymHash(first).len == 8
+    check gensymHash(first) != "e3b0c442"
+    check gensymHash(first) == gensymHash(second)
+    check gensymHash(buildSwap("gene-web-gensym-other-", "other").js) !=
+      gensymHash(first)
+
+  proc outputs(dir: string): seq[(string, string)] =
+    ## Every emitted file, by name, with its bytes.
+    var names: seq[string]
+    for path in walkFiles(dir / "*"):
+      names.add extractFilename(path)
+    names.sort()
+    for name in names:
+      result.add (name, readFile(dir / name))
+
+  test "the same modules build to identical bytes twice, in either order, on several workers":
+    let root = createTempDir("gene-web-gensym-det-", "")
+    defer: removeDir(root)
+    for name in ["alpha", "beta"]:
+      writeFile(root / (name & ".gene"), swapSource.replace("NAME", name))
+    proc buildBoth(outDir: string, order: openArray[string]) =
+      for name in order:
+        discard buildWebModule(root / (name & ".gene"), outDir)
+    # a second checkout of the same two modules, built to its own directory
+    let moved = createTempDir("gene-web-gensym-moved-", "")
+    defer: removeDir(moved)
+    for name in ["alpha", "beta"]:
+      writeFile(moved / (name & ".gene"), swapSource.replace("NAME", name))
+    for name in ["alpha", "beta"]:
+      discard buildWebModule(moved / (name & ".gene"), moved / "out")
+    buildBoth(root / "out_forward", ["alpha", "beta"])
+    buildBoth(root / "out_again", ["alpha", "beta"])
+    buildBoth(root / "out_reverse", ["beta", "alpha"])
+    let reference = outputs(root / "out_forward")
+    check reference.len >= 4   # two modules, each with a source map
+    # byte-for-byte, the header line included: nothing here is checkout-relative
+    check outputs(root / "out_again") == reference
+    check outputs(moved / "out") == reference   # another checkout, every byte
+    check outputs(root / "out_reverse") == reference
+    # the two modules carry different hashes
+    var hashes: seq[string]
+    for (name, bytes) in reference:
+      if name in ["alpha.mjs", "beta.mjs"]: hashes.add gensymHash(bytes)
+    check hashes.len == 2
+    check hashes[0].len == 8 and hashes[1].len == 8
+    check hashes[0] != hashes[1]
+    when defined(posix):
+      var workers: seq[Pid]
+      for worker in 0 ..< 3:
+        let child = posix.fork()
+        if child == 0:
+          try:
+            buildBoth(root / ("out_worker" & $worker),
+                      if worker mod 2 == 0: ["alpha", "beta"] else: ["beta", "alpha"])
+            posix.exitnow(0)
+          except CatchableError:
+            posix.exitnow(1)
+        workers.add child
+      for child in workers:
+        var status: cint
+        discard posix.waitpid(child, status, 0)
+        check status == 0
+      for worker in 0 ..< 3:
+        check outputs(root / ("out_worker" & $worker)) == reference
 
 suite "web navigation host bindings":
   test "web/load source and compilation failures can be caught by Gene":

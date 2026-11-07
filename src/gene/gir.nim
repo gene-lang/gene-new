@@ -507,16 +507,31 @@ type
     ownedNames*: seq[string]
     history*: seq[Value] # successful REPL source, for definition-side execution
     capturedDefinitions*: seq[MacroDef] # aligned with Env's owned macro closures
+    # Where this lexical position sits for `$gensym`: how many expansion
+    # results enclose it, and the hash of the module it belongs to. Code that
+    # `eval` compiles against an Env continues from here.
+    expansionDepth*: int
+    gensymHash*: string
 
   CompilerPreparationCache* = ref object
     ## Owner-local derived compiler data; excluded from portable artifacts.
     state*: RootRef
+
+  GensymContext* = ref object
+    ## One running macro body's `$gensym` state (docs/macro.md `$gensym`). A
+    ## context belongs to one invocation: it is created when the body starts
+    ## and ends when the body does. `count` is the `k` of the next name.
+    hash*: string      # 8 hex digits of sha256(identity of the expanding module)
+    depth*: int        # macro expansion results that lexically enclose the call
+    count*: int
 
   RuntimeExpansionContext* = object
     compilerPreparation*: CompilerPreparationCache
     macros*: MacroBindings
     sourceContext*: MacroDefinitionContext
     sourceLoc*: SourceLoc
+    expansionDepth*: int   # macro expansion results enclosing this call site
+    gensymHash*: string    # `$gensym` module hash for the expanding module
     namespacePath*: seq[string]
     letNames*: seq[string]
     inFunction*, inGenerator*, inStatementFn*, selfAvailable*: bool
@@ -996,6 +1011,9 @@ type InstructionWithoutTail = object
 static:
   doAssert sizeof(Instruction) == sizeof(InstructionWithoutTail),
     "Instruction.tail must fit existing target padding"
+
+proc newGensymContext*(hash: string, depth: int): GensymContext =
+  GensymContext(hash: hash, depth: depth)
 
 proc newChunk*(sourceName = ""): Chunk =
   Chunk(sourceName: sourceName, constants: @[], instructions: @[],

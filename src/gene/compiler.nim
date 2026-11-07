@@ -1,7 +1,7 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
 import std/[algorithm, monotimes, os, sets, strutils, tables]
-import ./[equality, execution_limits, gir, printer, reader, types]
+import ./[digest, equality, execution_limits, gir, printer, reader, types]
 import ./error_analysis
 export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 
@@ -16,12 +16,23 @@ type
     memoryLimitBytes*: int64
     sampleCountdown*: int
 
+  SuppliedValues = ref object
+    ## Runtime objects (functions, types, ...) that the program itself placed in
+    ## the syntax handed to the compiler: an `eval` form or a local macro's
+    ## result. They belong to the phase that runs the code, so a module-level
+    ## macro that forwards or wraps them inserts the right object. Collected
+    ## the first time a macro result needs the answer.
+    root: Value
+    collected: bool
+    bits: HashSet[uint64]
+
   MacroExecutionSession* = ref object
     runtimeState*: RootRef
     compilerState: RootRef
     hostContext*: RootRef
     rootContext*: MacroDefinitionContext
     expansionDepth*: int
+    gensym*: GensymContext # the macro body now running, for `$gensym`
     runtimeDefinitionScope*: Scope # transient, only while matching runtime defaults
 
   MacroEvaluator* = proc(definition: MacroDef, bindings: Table[string, Value],
@@ -96,6 +107,9 @@ type
     repeatedMacroSites: HashSet[uint64]
     hasMacros: bool
     macroExpansionDepth: int
+    gensymHash: string # `$gensym` module hash; empty means derive from macroContext
+    macroGensym: GensymContext # state of the expansion being matched and run
+    supplied: SuppliedValues # the runtime syntax this unit compiles, if any
     allowAmbientImports: bool
     # Cross-module macros (design §11/§15): the module loader pre-loads each
     # top-level `^from "path"` dependency and hands us its macro exports keyed
@@ -231,6 +245,9 @@ proc `=destroy`(unit: var ExpandedSourceUnit) =
 # The VM installs this immutable dispatch hook to avoid a compiler/VM import
 # cycle. Reentrant compilation during a macro invocation shares its session.
 var macroEvaluator*: MacroEvaluator
+## Set by the VM: a runtime-kind value that both compilation phases share, such
+## as a native function of the `gene` root or a built-in type.
+var intrinsicValueCheck*: proc(value: Value): bool {.nimcall, gcsafe.}
 var activeMacroSession* {.threadvar.}: MacroExecutionSession
 var activeMacroHostContext* {.threadvar.}: RootRef
 
@@ -1050,6 +1067,8 @@ proc childCompiler(c: Compiler): Compiler =
            macroPhaseCompilation: c.macroPhaseCompilation,
            dynamicNameLookup: c.dynamicNameLookup,
            macroExpansionDepth: c.macroExpansionDepth,
+           gensymHash: c.gensymHash, macroGensym: c.macroGensym,
+           supplied: c.supplied,
            allowAmbientImports: c.allowAmbientImports,
            importedMacroSets: c.importedMacroSets,
            importedMacroNames: c.importedMacroNames,
@@ -2239,6 +2258,21 @@ proc containsRuntimeSyntaxValue(value: Value, seen: var HashSet[uint64]): bool =
   else: discard
   false
 
+var gensymHashes {.threadvar.}: Table[string, string]
+
+proc gensymHashFor*(identity: string): string =
+  ## First 8 hex digits of the sha256 of a module identity. Computed once per
+  ## identity: a name can only be hit by caller syntax that spells this hash.
+  if gensymHashes.hasKey(identity):
+    return gensymHashes[identity]
+  result = sha256Hex(identity)[0 ..< 8]
+  gensymHashes[identity] = result
+
+proc moduleGensymHash(c: Compiler): string =
+  if c.gensymHash.len > 0: c.gensymHash
+  elif c.macroContext != nil: gensymHashFor(c.macroContext.moduleIdentity)
+  else: gensymHashFor("")
+
 proc evaluateMacroValue(c: var Compiler, def: MacroDef,
                         env: Table[string, Value], callName = ""): Value =
   if macroEvaluator == nil:
@@ -2250,6 +2284,10 @@ proc evaluateMacroValue(c: var Compiler, def: MacroDef,
   let previousSession = activeMacroSession
   activeMacroSession = c.macroSession
   inc c.macroSession.expansionDepth
+  let previousGensym = c.macroSession.gensym
+  c.macroSession.gensym =
+    if c.macroGensym != nil: c.macroGensym
+    else: newGensymContext(c.moduleGensymHash(), max(0, c.macroExpansionDepth - 1))
   try:
     result = macroEvaluator(def, env, c.macroSession, c.budget)
     if not c.macroPhaseCompilation:
@@ -2278,6 +2316,7 @@ proc evaluateMacroValue(c: var Compiler, def: MacroDef,
     failure.errorDetail = error.errorDetail
     raise failure
   finally:
+    c.macroSession.gensym = previousGensym
     dec c.macroSession.expansionDepth
     activeMacroSession = previousSession
 
@@ -2655,8 +2694,109 @@ proc matchMacroArguments(c: var Compiler, def: MacroDef, node: Value): Table[str
     env[def.rest] = newList(rest)
   env
 
+proc collectRuntimeValues(value: Value, seen: var HashSet[uint64],
+                          found: var seq[Value]) =
+  ## Every runtime-kind object (`kind > vkPipeline`) reachable through syntax
+  ## containers, in encounter order. The same traversal as
+  ## `containsRuntimeSyntaxValue`.
+  if value.kind > vkPipeline:
+    found.add value
+    return
+  if value.kind notin {vkNode, vkList, vkMap, vkSet, vkHashMap, vkPipeline}: return
+  if seen.containsOrIncl(value.bits): return
+  case value.kind
+  of vkNode:
+    collectRuntimeValues(value.head, seen, found)
+    for item in value.body: collectRuntimeValues(item, seen, found)
+    for _, item in value.props: collectRuntimeValues(item, seen, found)
+    for _, item in value.meta: collectRuntimeValues(item, seen, found)
+  of vkList:
+    for item in value.listItems: collectRuntimeValues(item, seen, found)
+  of vkMap:
+    for _, item in value.mapEntries: collectRuntimeValues(item, seen, found)
+  of vkSet:
+    for item in value.setItems: collectRuntimeValues(item, seen, found)
+  of vkHashMap:
+    for item in value.hashMapEntries:
+      collectRuntimeValues(item.key, seen, found)
+      collectRuntimeValues(item.val, seen, found)
+  of vkPipeline:
+    collectRuntimeValues(value.pipelineInitial, seen, found)
+    for stage in value.pipelineStages:
+      collectRuntimeValues(stage.head, seen, found)
+      for item in stage.body: collectRuntimeValues(item, seen, found)
+      for _, item in stage.props: collectRuntimeValues(item, seen, found)
+      for _, item in stage.meta: collectRuntimeValues(item, seen, found)
+  else: discard
+
+proc isSuppliedValue(c: Compiler, value: Value): bool =
+  if c.supplied == nil: return false
+  if not c.supplied.collected:
+    var seen: HashSet[uint64]
+    var found: seq[Value]
+    collectRuntimeValues(c.supplied.root, seen, found)
+    for item in found: c.supplied.bits.incl item.bits
+    c.supplied.collected = true
+  c.supplied.bits.contains(value.bits)
+
+proc describeInsertedValue(value: Value): tuple[text, name: string] =
+  case value.kind
+  of vkFunction:
+    if value.fnName.len > 0: ("function '" & value.fnName & "'", value.fnName)
+    else: ("anonymous function", "")
+  of vkType: ("type '" & value.typeName & "'", value.typeName)
+  of vkProtocol: ("protocol '" & value.protocolName & "'", value.protocolName)
+  of vkProtocolMessage:
+    ("protocol message '" & value.protocolMessageName & "'", value.protocolMessageName)
+  of vkEnumVariant:
+    ("enum variant '" & value.enumVariantName & "'", value.enumVariantName)
+  of vkNamespace: ("namespace '" & value.nsName & "'", value.nsName)
+  of vkModule: ("module '" & value.moduleName & "'", value.moduleName)
+  else: ("value of kind " & ($value.kind)[2 .. ^1], "")
+
+proc checkInsertedValues(c: Compiler, expansion: Value, macroName: string) =
+  ## A module-level macro runs against a compile-time copy of its module, so
+  ## a function, type or other runtime object it inserts into the code it
+  ## returns belongs to that copy, not to the program (docs/macro.md). Allowed:
+  ## data, an intrinsic both phases share, and an object the program supplied
+  ## in the syntax being compiled.
+  if c.macroPhaseCompilation or expansion.kind <= vkSymbol: return
+  var seen: HashSet[uint64]
+  var found: seq[Value]
+  collectRuntimeValues(expansion, seen, found)
+  for value in found:
+    if intrinsicValueCheck != nil and intrinsicValueCheck(value): continue
+    if c.isSuppliedValue(value): continue
+    let described = describeInsertedValue(value)
+    var message = "cannot insert compile-time " & described.text &
+      " into generated code from macro '" & macroName & "':\n" &
+      "module-level macros run against a compile-time copy of their module.\n"
+    if value.kind == vkFunction and described.name.len > 0:
+      message.add "  - to call it at runtime, emit its name (`(" & described.name &
+        " …)` instead of `(%" & described.name & " …)`)\n" &
+        "    and have callers import it;\n"
+    else:
+      message.add "  - to use it at runtime, emit its name and have callers import it;\n"
+    message.add "  - to use runtime values, define the macro locally;\n" &
+      "  - to insert a value, insert data."
+    let failure = newException(GeneError, message)
+    failure.loc = c.currentLoc
+    raise failure
+
 proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
-  c.evaluateMacroValue(def, c.matchMacroArguments(def, node), node.head.print())
+  # Every caller increments `macroExpansionDepth` before expanding, so the
+  # call being expanded is enclosed by one fewer expansion results than that.
+  # Argument matching and the body share one `$gensym` context: it is one
+  # expansion.
+  let previousGensym = c.macroGensym
+  c.macroGensym = newGensymContext(c.moduleGensymHash(),
+                                   max(0, c.macroExpansionDepth - 1))
+  try:
+    let name = node.head.print()
+    result = c.evaluateMacroValue(def, c.matchMacroArguments(def, node), name)
+    c.checkInsertedValues(result, if def.name.len > 0: def.name else: name)
+  finally:
+    c.macroGensym = previousGensym
 
 proc runtimeExpansionContext(c: Compiler): RuntimeExpansionContext =
   var preparation = CompilerPreparationCache()
@@ -2669,6 +2809,7 @@ proc runtimeExpansionContext(c: Compiler): RuntimeExpansionContext =
   result = RuntimeExpansionContext(macros: c.visibleMacroBindings(),
     compilerPreparation: preparation,
     sourceContext: c.macroContext, sourceLoc: c.currentLoc,
+    expansionDepth: c.macroExpansionDepth, gensymHash: c.moduleGensymHash(),
     namespacePath: c.namespacePath, inFunction: c.inFunction,
     inGenerator: c.inGenerator, inStatementFn: c.inStatementFn,
     selfAvailable: c.selfAvailable, loopDepth: c.loopDepth,
@@ -3274,7 +3415,8 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
     provenance[result.bits] = provenance[value.bits]
 
 proc expandSourceUnitMacros*(unit: SourceUnit,
-    importedMacros = initTable[string, Table[string, MacroDef]]()):
+    importedMacros = initTable[string, Table[string, MacroDef]](),
+    gensymModule = ""):
     ExpandedSourceUnit =
   ## Produce the original+expanded front-end artifact without emitting GIR.
   ## This is the single macro-expansion seam shared by semantic backends; the
@@ -3291,6 +3433,10 @@ proc expandSourceUnitMacros*(unit: SourceUnit,
                    ffiLibraryNames: initTable[string, bool](),
                    importedMacroSets: importedMacros)
   c.prepareMacroContext(unit.forms)
+  # A backend with no module-loader identity names the unit itself, so every
+  # `$gensym` in it carries that unit's hash rather than the empty one.
+  if gensymModule.len > 0:
+    c.gensymHash = gensymHashFor(gensymModule)
   c.markStaticImplForms(unit.forms)
   for i, form in unit.forms:
     let loc = if i < unit.formLocs.len: unit.formLocs[i] else: SourceLoc()
@@ -6311,7 +6457,8 @@ proc importedMacroForHead(c: Compiler, value: Value):
   (true, definitions[path])
 
 proc visibleMacroBindings(c: Compiler): MacroBindings =
-  result = MacroBindings(definitions: c.macros)
+  result = MacroBindings(definitions: c.macros,
+    expansionDepth: c.macroExpansionDepth, gensymHash: c.moduleGensymHash())
   for name in c.wildcardCandidates.keys:
     if c.localSlot(name) >= 0 or c.parentSlot(name).slot >= 0: continue
     let candidates = c.importedCandidates(name)
@@ -11351,6 +11498,11 @@ proc compileEvalForm*(form: Value, macros: MacroBindings = nil,
   if macros != nil:
     c.macros = macros.definitions
     c.hasMacros = c.macros.len > 0
+    # The code continues the Env's lexical position: its macro calls sit
+    # deeper than every expansion visible from there, in that module's names.
+    c.macroExpansionDepth = macros.expansionDepth
+    c.gensymHash = macros.gensymHash
+  c.supplied = SuppliedValues(root: form)
   compileFormsInto(c, @[form], useLocalSlots = true)
 
 proc runtimeExpansionCompiler(context: RuntimeExpansionContext,
@@ -11364,7 +11516,10 @@ proc runtimeExpansionCompiler(context: RuntimeExpansionContext,
     loopDepth: context.loopDepth, allowYield: context.inGenerator,
     allowAmbientImports: context.allowAmbientImports,
     macroContext: context.sourceContext, namespacePath: context.namespacePath,
-    budget: budget)
+    # The expansion's result sits one expansion level below its call site, and
+    # keeps the module hash of the code that made the call.
+    macroExpansionDepth: context.expansionDepth + 1,
+    gensymHash: context.gensymHash, budget: budget)
   if context.macros != nil:
     result.macros = context.macros.definitions
     result.hasMacros = result.macros.len > 0
@@ -11423,6 +11578,10 @@ proc compileRuntimeMacroResult*(value: Value, call: RuntimeMacroCall,
   try:
     var c = runtimeExpansionCompiler(call.context, budget)
     c.macroSession = MacroExecutionSession(hostContext: hostContext)
+    # A local macro runs in the runtime environment, so every object in its
+    # result is a runtime object the module-level macros called from it may
+    # forward (checkInsertedValues).
+    c.supplied = SuppliedValues(root: value)
     c.prepareMacroContext(@[value])
     c.chunk.runtimeMacroExpansion = true
     compileExpr(c, markMacroResult(value), tail = tail)
