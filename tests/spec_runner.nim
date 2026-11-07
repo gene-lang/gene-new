@@ -1084,6 +1084,47 @@ suite "spec — macro fresh names ($gensym)":
       (macro two [] (let t ($gensym "t")) `(do (var %t 2) %t))
       [(one) (two)]""", "[1 2]")
 
+  test "a local macro's defaults and body share one gensym counter":
+    # The default `%($gensym "t")` and the body's `($gensym "t")` are one
+    # expansion. Were each to start at k = 1, `name` and `temporary` would be the
+    # same symbol and the parameter would capture the reference: 100, not 7.
+    check_eval("""
+      (macro module_pick [name = `%($gensym "t")]
+        (let temporary ($gensym "t"))
+        `(do (var %name 7) ((fn [%temporary] %name) 100)))
+      (fn local_pick []
+        (macro pick [name = `%($gensym "t")]
+          (let temporary ($gensym "t"))
+          `(do (var %name 7) ((fn [%temporary] %name) 100)))
+        (pick))
+      [(module_pick) (local_pick)]""", "[7 7]")
+    check_eval("""
+      (macro module_names [a = `%($gensym "t") b = `%($gensym "t")]
+        (let c ($gensym "t"))
+        `(quote [%a %b %c]))
+      (fn local_names []
+        (macro names [a = `%($gensym "t") b = `%($gensym "t")]
+          (let c ($gensym "t"))
+          `(quote [%a %b %c]))
+        (names))
+      (let m (module_names))
+      (let l (local_names))
+      [($present? (#"_0_1$" .match ($to_str m/0)))
+       ($present? (#"_0_2$" .match ($to_str m/1)))
+       ($present? (#"_0_3$" .match ($to_str m/2)))
+       ($present? (#"_0_1$" .match ($to_str l/0)))
+       ($present? (#"_0_2$" .match ($to_str l/1)))
+       ($present? (#"_0_3$" .match ($to_str l/2)))]""",
+      "[true true true true true true]")
+    # an explicitly passed argument leaves only the body's gensym
+    check_eval("""
+      (fn explicit_local []
+        (macro pick [name = `%($gensym "t")]
+          (let temporary ($gensym "t"))
+          `(do (var %name 7) ((fn [%temporary] %name) 100)))
+        (pick chosen))
+      (explicit_local)""", "7")
+
   test "second round (I2): a macro call passed as syntax to another macro is expanded in place":
     # `(inner)` is an argument of `outer`, spliced into outer's result, so it is
     # expanded one level deeper than outer, not at outer's own depth
@@ -1368,6 +1409,23 @@ suite "spec — module-level macros reject compile-time definitions":
       (macro forward [syntax] syntax)
       (macro wrong [] `(forward %helper))
       (wrong)""", "cannot insert compile-time function 'helper' into generated code from macro 'wrong'")
+
+  test "a supplied object's address cannot be reused by a function the macro makes":
+    # The macro drops the last reference to the supplied function and then
+    # allocates its own; the snapshot must keep the supplied one alive, or the
+    # new function can land at the same address and pass as supplied.
+    check_eval("""
+      (macro smuggle [items]
+        (items .set 0 nil)
+        (items .push (fn [] 99))
+        `(quote %items))
+      (var rejected 0)
+      (var i 0)
+      (while (< i 20)
+        (if (try (do (eval `(smuggle [%(fn [] 7)]) ^in (env)) false) catch Error true)
+          (then (set rejected (+ rejected 1))))
+        (set i (+ i 1)))
+      rejected""", "20")
 
   test "a runtime object kept from an earlier eval is rejected in a later one":
     # `store` is a cell the program supplies to both evals, so a module-level

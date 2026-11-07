@@ -22855,8 +22855,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "runtime macro expansion depth exceeded")
           let specification = chunk.runtimeMacroCalls[inst[].intArg]
           let callee = runtimeMacroFunction(scope, specification.definition, specification.syntax.head)
+          # One context for the whole expansion: defaults are evaluated
+          # before the body and count from the same `k`.
+          let gensymContext = newGensymContext(specification.context.gensymHash,
+                                               specification.context.expansionDepth)
           let arguments = bindRuntimeMacroArguments(specification, callee.fnScope,
-            scope.runtimeMacroBudget())
+            scope.runtimeMacroBudget(), gensymContext)
           let proto = FunctionProto(callee.fnCode)
           var bound = bindBudgetedCallScope(callee, proto, arguments, NamedArgs(), scope)
           # The body's frame owns this `$gensym` state: it is released with the
@@ -22865,8 +22869,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # body runs at depth `frames.len + 1`. `enterBytecodeCall` continues
           # the loop itself, so the lease goes in first.
           ownershipLeases.add NativeOwnershipLease(depth: frames.len + 1,
-            gensym: newGensymContext(specification.context.gensymHash,
-                                     specification.context.expansionDepth))
+            gensym: gensymContext)
           enterBytecodeCall(proto.chunk, bound.scope, false,
             proto.frameNeedsImplValidation, NIL, "", false, @[], callee.fnName,
             sp, false)

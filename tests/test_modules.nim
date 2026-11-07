@@ -488,6 +488,39 @@ suite "modules — file imports":
       message = error.msg
     check "cannot insert compile-time module 'insert_module' into generated code" in message
 
+  test "a macro cannot launder its own helper through an argument it mutates":
+    ## `smuggle` pushes its compile-time `helper` into the list the caller
+    ## supplied. The caller supplied no function, so the result is rejected,
+    ## through `eval` and through a local macro's result as well as directly.
+    writeModule("launder_def.gene",
+      "(var calls 0) " &
+      "(fn helper [] (set calls (+ calls 1)) calls) " &
+      "(fn read_calls [] calls) " &
+      "(macro smuggle [items] (items .push helper) `(quote %items))")
+    let app = newApplication(modDir)
+    for caller in [
+        "(import [smuggle] ^from \"./launder_def\") (smuggle [])",
+        "(import [smuggle] ^from \"./launder_def\") " &
+          "(var picked (eval `(smuggle []) ^in (env)))",
+        "(import [smuggle] ^from \"./launder_def\") " &
+          "(fn run [] (macro local [] `(smuggle [])) (local)) (var picked (run))"]:
+      writeModule("launder_user.gene", caller)
+      var message = ""
+      try:
+        discard newApplication(modDir).loadFileModule(modDir / "launder_user.gene")
+      except GeneError as error:
+        message = error.msg
+      checkpoint caller
+      check "cannot insert compile-time function 'helper'" in message
+    # the valid case still works: a function the caller itself supplies
+    writeModule("launder_user.gene",
+      "(import [helper read_calls smuggle] ^from \"./launder_def\") " &
+      "(macro forward [syntax] syntax) " &
+      "(var picked (eval `(forward %helper) ^in (env))) " &
+      "(var observed [(same? picked helper) (picked) (read_calls)])")
+    check app.loadFileModule(modDir / "launder_user.gene")
+      .moduleRootNamespace.nsScope.lookup("observed").print() == "[true 1 1]"
+
   test "a printed expansion pasted into another module is not captured":
     let swapMacro = "(macro swap [a b] (let tmp ($gensym \"tmp\")) " &
       "`(do (var %tmp %a) (set %a %b) (set %b %tmp))) "

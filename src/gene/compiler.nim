@@ -25,6 +25,7 @@ type
     root: Value
     collected: bool
     bits: HashSet[uint64]
+    held: seq[Value] # keeps every recorded object alive, so no address is reused
 
   MacroExecutionSession* = ref object
     runtimeState*: RootRef
@@ -2729,14 +2730,26 @@ proc collectRuntimeValues(value: Value, seen: var HashSet[uint64],
       for _, item in stage.meta: collectRuntimeValues(item, seen, found)
   else: discard
 
+proc snapshotSuppliedValues(c: Compiler) =
+  ## Record the runtime objects the program put in the syntax being compiled.
+  ## A macro receives that syntax's own containers and can mutate them, so the
+  ## record is taken before the first macro body of the unit runs and kept for
+  ## the whole compilation: an object a macro adds afterwards was not supplied.
+  if c.supplied == nil or c.supplied.collected: return
+  var seen: HashSet[uint64]
+  var found: seq[Value]
+  collectRuntimeValues(c.supplied.root, seen, found)
+  for item in found: c.supplied.bits.incl item.bits
+  # The identities are raw addresses. A macro can drop the last reference to a
+  # supplied object and allocate a function of its own at the freed address,
+  # which would then match. Holding the objects for the whole compilation keeps
+  # each address taken.
+  c.supplied.held = move found
+  c.supplied.collected = true
+
 proc isSuppliedValue(c: Compiler, value: Value): bool =
   if c.supplied == nil: return false
-  if not c.supplied.collected:
-    var seen: HashSet[uint64]
-    var found: seq[Value]
-    collectRuntimeValues(c.supplied.root, seen, found)
-    for item in found: c.supplied.bits.incl item.bits
-    c.supplied.collected = true
+  c.snapshotSuppliedValues()
   c.supplied.bits.contains(value.bits)
 
 proc describeInsertedValue(value: Value): tuple[text, name: string] =
@@ -2788,6 +2801,7 @@ proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
   # call being expanded is enclosed by one fewer expansion results than that.
   # Argument matching and the body share one `$gensym` context: it is one
   # expansion.
+  c.snapshotSuppliedValues()
   let previousGensym = c.macroGensym
   c.macroGensym = newGensymContext(c.moduleGensymHash(),
                                    max(0, c.macroExpansionDepth - 1))
@@ -11549,8 +11563,12 @@ proc runtimeMacroDiagnostic(call: RuntimeMacroCall): string =
     result.add " (defined at " & source.sourceName & ":" & $source.line & ")"
 
 proc bindRuntimeMacroArguments*(call: RuntimeMacroCall, definitionScope: Scope,
-                                budget: CompileBudget = nil): seq[Value] =
+                                budget: CompileBudget = nil,
+                                gensym: GensymContext = nil): seq[Value] =
+  ## `gensym` is the expansion's own `$gensym` context. A default that calls
+  ## `$gensym` and the body that follows are one expansion, so they share it.
   var c = runtimeExpansionCompiler(call.context, budget)
+  if gensym != nil: c.macroGensym = gensym
   c.macroSession = MacroExecutionSession(runtimeDefinitionScope: definitionScope,
     hostContext: definitionScope.application)
   try:
