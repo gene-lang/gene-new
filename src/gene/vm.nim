@@ -7263,6 +7263,11 @@ proc shallowCopyContainer(name: string, target: Value): Value =
   of vkMap: newMap(copyEntries(target.mapEntries), target.mapImmutable)
   of vkList: newList(copyItems(target.listItems), target.listImmutable)
   of vkNode:
+    if target.nodeConstructing:
+      raise newException(GeneError,
+        name & " cannot copy an in-progress " & target.head.typeName)
+    if target.head.kind == vkType:
+      rejectNativeWrapperConstruction(target.head, name)
     newNode(target.head, copyEntries(target.props), copyItems(target.body),
             copyEntries(target.meta), target.nodeImmutable)
   else:
@@ -27442,7 +27447,11 @@ proc staticLookup(target, segment: Value): Value =
   if target.kind == vkStream:
     var items: seq[Value]
     while target.streamHasNext:
-      items.add staticLookup(checkedStreamNext(target, "selector item"), segment)
+      # A stream projection publishes items to Gene code. Normalize each
+      # missing element here; the outer staticLookupValue only sees the
+      # resulting Stream, not the individual MISSING values inside it.
+      items.add staticLookupValue(
+        checkedStreamNext(target, "selector item"), segment)
     return newStream(items)
   case segment.kind
   of vkInt, vkFloat:

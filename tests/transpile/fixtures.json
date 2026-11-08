@@ -6354,6 +6354,34 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "nil_void.present_structural_equality",
+      "source": "(fn eq [a : Present b : Present] : Bool (== a b)) (fn ne [a : Present b : Present] : Bool (!= a b)) (fn same_p [a : Present b : Present] : Bool (same? a b)) (fn run [] : (List Bool) [(eq [1] [1]) (ne [1] [1]) (same_p [1] [1])]) (run)",
+      "web_source": "(mod nil_void_present_structural_equality ^profile web) (fn eq [a : Present b : Present] : Bool (== a b)) (fn ne [a : Present b : Present] : Bool (!= a b)) (fn same_p [a : Present b : Present] : Bool (same? a b)) (fn run [] : (List Bool) [(eq [1] [1]) (ne [1] [1]) (same_p [1] [1])])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": false
+          },
+          {
+            "kind": "bool",
+            "value": false
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }

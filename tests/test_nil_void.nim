@@ -45,6 +45,11 @@ suite "nil — Present":
   test "Present? is optional and Any is required":
     check nilEval("(fn g [x : Present?] x) [(g) (g 1)]") == "[nil 1]"
     expect GeneError: discard nilEval("(fn h [x : Any] x) (h)")
+  test "Present uses value semantics for Range and identity for containers":
+    check nilEval("""
+      (fn same_p [a : Present b : Present] : Bool (same? a b))
+      [(same_p ($range 1 3) ($range 1 3)) (same_p [1] [1])]
+    """) == "[true false]"
 
 suite "nil — map and filter_map":
   test "map keeps one result per input including nil":
@@ -119,3 +124,36 @@ suite "nil — statement returns":
       (fn g [] : (| Int Nil) 42)
       [(try (f) catch TypeError "TypeError") (g)]
     """) == "[\"TypeError\" 42]"
+
+suite "nil — review regressions":
+  test "explicit return nil cannot bypass the declared result boundary":
+    for source in [
+        "(fn f [] : Int (if true (then (return nil))) 42) (try (f) catch TypeError \"type error\")",
+        "(fn f [] : Str (if true (then (return nil))) \"ok\") (try (f) catch TypeError \"type error\")"]:
+      check nilEval(source) == "\"type error\""
+
+  test "stream projection misses are normalized to nil before publication":
+    check nilEval("""
+      (let direct ($into (/missing ($to_stream [{} {^missing nil}])) []))
+      (let nested ($into (/a/b ($to_stream [{^a {^b 1}} {}])) []))
+      [($map direct (fn [v] [(== v nil) (same? v nil) ($absent? v)]))
+       ($map nested (fn [v] [(== v nil) (same? v nil) ($absent? v)]))]
+    """) == "[[[true true true] [true true true]] [[false false false] [true true true]]]"
+
+  test "dissoc_in refuses to copy native wrappers":
+    expect GeneError: discard nilEval("""
+      (type Conn ^repr native_wrapper ^props {^handle Str}
+        (ctor [h : Str] (set self/handle h)))
+      (let original (new Conn "H"))
+      ($dissoc_in original /missing/child)
+    """)
+
+  test "native wrapper construction cannot escape through dissoc_in":
+    check nilEval("""
+      (var escaped nil)
+      (type Conn ^repr native_wrapper ^props {^handle Str}
+        (ctor [h : Str]
+          (set escaped ($dissoc_in self /missing/child))
+          (set self/handle h)))
+      [(try (new Conn "H") catch Error "failed") escaped]
+    """) == "[\"failed\" nil]"

@@ -9020,10 +9020,10 @@ proc compileReturn(c: var Compiler, node: Value) =
       node.body[0].kind notin {vkNil}:
     raise newException(GeneError,
       "return in a Nil function takes no value; use (return) or (return nil)")
-  if node.body.len == 1 and node.body[0].kind != vkNil:
-    c.sawValueReturn = true
-  elif node.body.len == 0 and not c.inStatementFn and not c.inGenerator:
-    # A bare return yields nil, which a typed result may reject.
+  if not c.inStatementFn and not c.inGenerator:
+    # Any explicit return, including (return) and (return nil), is an early
+    # result that must still satisfy the declared return contract. Otherwise a
+    # function ending in a literal can skip the result boundary entirely.
     c.sawValueReturn = true
   if node.body.len == 0:
     c.emitConst NIL

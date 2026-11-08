@@ -2418,12 +2418,14 @@ proc comparisonNeedsHelper(op: string, left, right: WebType): bool =
   ## would tell two nils apart. Plain `===` stays for everything else.
   case op
   of "==", "!=":
-    left.kind in {wtkList, wtkPropMap, wtkMap, wtkNode, wtkAny, wtkNominal,
-                  wtkRange, wtkUnion} or
+    left.kind in {wtkList, wtkPropMap, wtkMap, wtkNode, wtkAny, wtkPresent,
+                  wtkNominal, wtkRange, wtkUnion} or
+      right.kind == wtkPresent or
       (admitsNilOrAny(left) and admitsNilOrAny(right))
   of "same?":
     (admitsNilOrAny(left) and admitsNilOrAny(right)) or
-      left.kind == wtkRange or right.kind == wtkRange
+      left.kind == wtkRange or right.kind == wtkRange or
+      left.kind == wtkPresent or right.kind == wtkPresent
   else:
     false
 
