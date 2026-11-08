@@ -1,0 +1,29 @@
+(alias Child (| Tag Str))
+(alias Attrs (Map Sym Str))
+
+(type Tag
+  ^props {^name Str ^attrs Attrs?}
+  ^body [Child...]
+
+  (message render [] : Str
+    (let inner
+      ($str/join
+        ($map ($body self)
+          (fn [child]
+            (match child
+              (when (tag : Tag) tag/.render)
+              (when (text : Str) text)
+              (else ""))))
+        ""))
+    $"<${self/name}${self/attrs}>${inner}</${self/name}>"))
+
+(for name in ["div" "strong"]
+  (fn %name [^attrs... body...]
+    (Tag ^name %name attrs... body...)))
+
+(let page
+  (div ^class "card"
+    "Hello "
+    (strong "world")))
+
+($println (page .render))
