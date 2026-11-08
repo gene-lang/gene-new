@@ -7406,7 +7406,7 @@ proc emitStructuralEquality(emitter: var WebEmitter,
     emitter.line("if (aMap || bMap) {")
     inc emitter.indent
     emitter.line("if (!aMap || !bMap || a.size !== b.size) return false;")
-    emitter.line("const unmatched = [...b.entries()];")
+    emitter.line("const unmatched = [...b];")
     emitter.line("outer: for (const [key, value] of a) { for (let i = 0; i < unmatched.length; i++) { if ($gene_equal(key, unmatched[i][0]) && $gene_equal(value, unmatched[i][1])) { unmatched.splice(i, 1); continue outer; } } return false; }")
     emitter.line("return true;")
     dec emitter.indent
@@ -8245,8 +8245,14 @@ proc emitModule(module: WebModule, typescript: bool,
   needsDom = moduleUsesExprKind(module, {wekDomRender})
   let needsDomEvents = moduleUsesExprKind(module, {wekDomListener}) or
     moduleUsesTypeKind(module, wtkDomTarget)
+  # `Present` can hold any non-nil structured value. A module that compares
+  # Present operands may therefore reach the Map/object/Range branches of
+  # `$gene_equal` even when it never spells `Any` or constructs a container.
+  let needsPresentEquality =
+    moduleUsesTypeKind(module, wtkPresent) or
+    moduleExprUsesTypeKind(module, wtkPresent)
   needsMap = moduleUsesTypeKind(module, wtkMap) or
-    moduleUsesExprKind(module, {wekMap})
+    moduleUsesExprKind(module, {wekMap}) or needsPresentEquality
   let needsPropMap = moduleUsesTypeKind(module, wtkPropMap) or
     moduleExprUsesTypeKind(module, wtkPropMap) or needsPath or
     moduleUsesBuiltin(module, ["json/parse"])
@@ -9428,7 +9434,8 @@ proc emitModule(module: WebModule, typescript: bool,
       moduleExprUsesTypeKind(module, wtkPropMap) or
       moduleExprUsesTypeKind(module, wtkNode) or
       moduleExprUsesTypeKind(module, wtkNominal) or
-      moduleExprUsesTypeKind(module, wtkAny)
+      moduleExprUsesTypeKind(module, wtkAny) or
+      needsPresentEquality
     emitter.emitStructuralEquality(needsMap, needsObjectEquality)
   emitter.emitValidators(module)
   # Constants first: a literal has no dependencies, so one pass in source

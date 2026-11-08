@@ -6382,6 +6382,49 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "nil_void.present_cross_module_equality",
+      "source": "(type Row ^props {^x Int}) (fn eq [a : Present b : Present] : Bool (== a b)) (fn same_p [a : Present b : Present] : Bool (same? a b)) (fn run [] : (List Bool) [(eq {^a 1} {^a 1}) (same_p {^a 1} {^a 1}) (eq (Row ^x 1) (Row ^x 1)) (same_p (Row ^x 1) (Row ^x 1)) (eq ($range 1 3) ($range 1 3)) (same_p ($range 1 3) ($range 1 3))]) (run)",
+      "web_source": "(mod nil_void_present_cross_module ^profile web) (import [make_map make_row make_range] ^from \"./fixture_present_values.gene\") (fn eq [a : Present b : Present] : Bool (== a b)) (fn same_p [a : Present b : Present] : Bool (same? a b)) (fn run [] : (List Bool) [(eq (make_map) (make_map)) (same_p (make_map) (make_map)) (eq (make_row) (make_row)) (same_p (make_row) (make_row)) (eq (make_range) (make_range)) (same_p (make_range) (make_range))])",
+      "web_files": {
+        "fixture_present_values.gene": "(mod fixture_present_values ^profile web)\n(type Row ^props {^x Int})\n(fn make_map [] : (Map Str Int) {{\"a\" : 1}})\n(fn make_row [] : Row (Row ^x 1))\n(fn make_range [] : Range (range 1 3))\n"
+      },
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": false
+          },
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": false
+          },
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }
