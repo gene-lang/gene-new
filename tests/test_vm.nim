@@ -1411,7 +1411,7 @@ suite "module references":
     ck "#Ref answer 42 [#Deref answer ($deref answer)]", "[42 42]"
     ck "#Ref flag true [#Deref flag ($deref flag)]", "[true true]"
     ck "#Ref absent nil [#Deref absent ($deref absent)]", "[nil nil]"
-    ck "#Ref skipped void [#Deref skipped ($deref skipped)]", "[void void]"
+    ck "#Ref skipped nil [#Deref skipped ($deref skipped)]", "[nil nil]"
     ck "#Ref text \"hello\" [#Deref text ($deref text)]",
        "[\"hello\" \"hello\"]"
 
@@ -1746,7 +1746,7 @@ suite "vm — literals and self-evaluation":
   test "general map evaluates keys and values":
     ck "(var k \"a\") ({{k : (+ 1 2)}} .get \"a\")", "3"
     ck "{{\"a\" : 1 \"a\" : 2}}", "{{\"a\" : 2}}"
-    ck "{{\"a\" : 1 \"a\" : void}}", "{{}}"
+    ck "{{\"a\" : 1 \"a\" : nil}}", "{{\"a\" : nil}}"
     expect GeneError:
       discard runStr("{{[1] : 2}}")
   test "set constructor deduplicates hash-stable values":
@@ -1767,7 +1767,7 @@ suite "vm — literals and self-evaluation":
     ck "(var m (#\"(?<word>\\w+)-(\\d+)\" .match \"ab-12 zz\")) " &
        "[m/text m/groups (m/named .get \"word\") m/start m/end]",
        "[\"ab-12\" #[\"ab\" \"12\"] \"ab\" 0 5]"
-    ck "(#\"z+\" .match \"abc\")", "void"
+    ck "(#\"z+\" .match \"abc\")", "nil"
   test "regex find_all returns a stream":
     ck "(var xs ($into (#\"\\d+\" .find_all \"a12b3\") [])) " &
        "[xs/0/text xs/0/start xs/0/end xs/1/text xs/1/start xs/1/end]",
@@ -1786,9 +1786,9 @@ suite "vm — literals and self-evaluation":
     ck "(#\"(\\w+)=(?<n>\\d+)\" .replace_all \"a=1 b=22\" \"\\\\k<n>\")",
        "\"1 22\""
     ck "(#\"\\s*,\\s*\" .split \"a, b,c\")", "[\"a\" \"b\" \"c\"]"
-  test "map and node storage drops void props":
-    ck "{^a void ^b 1}", "{^b 1}"
-    ck "(quote (x ^a void ^b 1 @m void @n 2))", "(x @n 2 ^b 1)"
+  test "map and node storage keeps nil props":
+    ck "{^a nil ^b 1}", "{^a nil ^b 1}"
+    ck "(quote (x ^a nil ^b 1 @m nil @n 2))", "(x @m nil @n 2 ^a nil ^b 1)"
   test "quote suppresses evaluation":
     ck "(quote (+ 1 2))", "(+ 1 2)"
     ck "(quote (.f a))", "(.f a)"
@@ -1814,8 +1814,8 @@ suite "vm — strings and interpolation":
   test "to_str is an ordinary variadic callable":
     ck "(var concat $to_str) (concat \"name=\" \"Ada\" \" score=\" 10)",
        "\"name=Ada score=10\""
-    ck "[($to_str) (gene/to_str \"a\" 1 true nil void) " &
-       " (same? $to_str gene/to_str)]", "[\"\" \"a1truenilvoid\" true]"
+    ck "[($to_str) (gene/to_str \"a\" 1 true nil nil) " &
+       " (same? $to_str gene/to_str)]", "[\"\" \"a1truenilnil\" true]"
 
   test "bare dollar has no builtin behavior and accepts an ordinary binding":
     expect GeneError:
@@ -1837,9 +1837,9 @@ suite "vm — quasiquote templates":
     ck "(var h (quote button)) (var cls \"primary\") " &
        "`(%h ^class %cls {^label %cls})",
        "(button ^class \"primary\" {^label \"primary\"})"
-  test "quasiquote drops void props and map entries":
-    ck "(var skip void) `(x ^a %skip ^b 1 {^a %skip ^b 1})",
-       "(x ^b 1 {^b 1})"
+  test "quasiquote keeps nil props and map entries":
+    ck "(var skip nil) `(x ^a %skip ^b 1 {^a %skip ^b 1})",
+       "(x ^a nil ^b 1 {^a nil ^b 1})"
 
   test "nested quasiquote preserves inner unquote depth":
     ck "(var x 1) `(outer `(inner %x) %x)",
@@ -2639,8 +2639,8 @@ suite "vm — special forms":
     ck "(if true 1 2)", "1"
     ck "(if false 1 2)", "2"
     ck "(if nil 1 2)", "2"
-    ck "(if void 1 2)", "2"
-    ck "(if 0 1 2)", "1"     # 0 is truthy; only false/nil/void are falsy
+    ck "(if nil 1 2)", "2"
+    ck "(if 0 1 2)", "1"     # 0 is truthy; only false and nil are falsy
     ck "(if false 1)", "nil"
   test "if full form with then/elif/else":
     ck "(if (< 2 1) (then 10) (elif (< 1 2) 20) (else 30))", "20"
@@ -3030,7 +3030,7 @@ suite "vm — fused stdlib paths":
     check example.nsScope.namesGen == stamp
     check run(chunk, isolated).print() == "\"second\""
     let missing = compileSource("$math/later")
-    check run(missing, isolated).kind == vkVoid
+    check run(missing, isolated).kind == vkNil
     example.nsScope.define("later", newStr("added"))
     check run(missing, isolated).print() == "\"added\""
 
@@ -3546,7 +3546,7 @@ suite "vm — scopeless field reads":
      (try (sum {^x 1 ^y "a"}) catch Any $err/message)]
   """
   const fieldResult =
-    "[95 \"k\" void void void 5 \"+ expects numbers, got vkString\"]"
+    "[95 \"k\" nil nil nil 5 \"+ expects numbers, got vkString\"]"
 
   test "bodies that read one-key fields of their parameters run scopeless":
     let chunk = compileSource(fieldProgram)
@@ -3782,8 +3782,8 @@ suite "vm — Paths":
   test "expression paths apply static Paths to lexical values":
     ck "(var user {^name \"Ada\" ^age 37}) user/name", "\"Ada\""
     ck "(var user {^address {^city \"Raleigh\"}}) user/address/city", "\"Raleigh\""
-  test "missing Path lookup propagates void":
-    ck "(var user {^name \"Ada\"}) user/missing/name", "void"
+  test "missing Path lookup propagates nil":
+    ck "(var user {^name \"Ada\"}) user/missing/name", "nil"
     ck "(var user {^name nil}) user/name", "nil"
   test "Path options handle missing lookups explicitly":
     ck "(var fallback \"unknown\") " &
@@ -3800,10 +3800,10 @@ suite "vm — Paths":
   test "Paths read list indexes and path sends expose list behavior":
     ck "(var xs [10 20 30]) xs/1", "20"
     ck "(var xs [10 20 30]) xs/-1", "30"
-    ck "(var xs [10 20 30]) xs/size", "void"
+    ck "(var xs [10 20 30]) xs/size", "nil"
     ck "(var xs [10 20 30]) [xs/.size xs/.empty? xs/.first xs/.last]",
        "[3 false 10 30]"
-    ck "(var xs []) [xs/.empty? xs/.first xs/.last]", "[true void void]"
+    ck "(var xs []) [xs/.empty? xs/.first xs/.last]", "[true nil nil]"
     ck "(fn size [xs] xs/.size) (size [1 2 3])", "3"
   test "Paths read node props, body indexes, and projections":
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/name", "\"Ada\""
@@ -3814,11 +3814,11 @@ suite "vm — Paths":
     expect GeneError: discard runStr("(/name)")
     expect GeneError: discard runStr("(/name ^unused 1 {^name \"Ada\"})")
 
-  test "static Path lookup maps over streams and skips void":
+  test "static Path lookup maps over streams and emits nil for misses":
     ck "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
        "(var names users/%$to_stream/name) " &
        "[(names .next) (names .next) (names .has_next)]",
-       "[\"Ada\" \"Bob\" false]"
+       "[\"Ada\" nil true]"
 
   test "first-class Paths map over streams":
     ck "(var get-name /name) " &
@@ -3853,12 +3853,12 @@ suite "vm — dynamic Paths":
        "\"Ada\""
     ck "(var plus +) " &
        "[((Path %plus) 4) ((Path %($key plus)) 4)]",
-       "[4 void]"
+       "[4 nil]"
     ck "(var field \"name\") " &
        "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
        "(var names ((Path %$to_stream %($key field)) users)) " &
        "[(names .next) (names .next) (names .has_next)]",
-       "[\"Ada\" \"Bob\" false]"
+       "[\"Ada\" nil true]"
   test "complex selector stages adapt stream helpers":
     ck "(var users [{^name \"Ada\" ^^adult} " &
        "            {^name \"Tim\" ^!adult} " &
@@ -3902,7 +3902,7 @@ suite "vm — node projection built-ins":
        "(ps .put `extra 2) " &
        "(bs .set 0 3) " &
        "(ms .put `other 4) " &
-       "[(== n/extra void) n/0 (== n/%$meta/other void)]",
+       "[($absent? n/extra) n/0 ($absent? n/%$meta/other)]",
        "[true [1] true]"
     ck "(var child [1]) " &
        "(var n `(user @note %child ^data %child %child)) " &
@@ -3925,11 +3925,12 @@ suite "vm — functional Path updates":
   test "assoc_in preserves immutable container class":
     ck "($assoc_in #{^age 37} /age 38)", "#{^age 38}"
     ck "($assoc_in #[10 20] /1 99)", "#[10 99]"
-  test "assoc_in writes void as delete for maps and nil for positions":
-    ck "($assoc_in {^name \"Ada\" ^age 37} /age void)", "{^name \"Ada\"}"
-    ck "($assoc_in (quote (user ^name \"Ada\" 10 20)) /0 void)",
+  test "assoc_in stores nil and dissoc_in removes":
+    ck "($assoc_in {^name \"Ada\" ^age 37} /age nil)", "{^name \"Ada\" ^age nil}"
+    ck "($dissoc_in {^name \"Ada\" ^age 37} /age)", "{^name \"Ada\"}"
+    ck "($assoc_in (quote (user ^name \"Ada\" 10 20)) /0 nil)",
        "(user ^name \"Ada\" nil 20)"
-    ck "($assoc_in [10 20] /1 void)", "[10 nil]"
+    ck "($assoc_in [10 20] /1 nil)", "[10 nil]"
   test "assoc_in updates nested existing paths":
     ck "(var user {^address {^city \"Durham\"}}) ($assoc_in user /address/city \"Raleigh\")",
        "{^address {^city \"Raleigh\"}}"
@@ -3953,17 +3954,17 @@ suite "vm — container update built-ins":
   test "List/assoc returns an updated copy":
     ck "(var xs #[1 2 3]) (var ys (xs .assoc 1 20)) [xs ys]",
        "[#[1 2 3] #[1 20 3]]"
-    ck "([1 2] .assoc 1 void)", "[1 nil]"
+    ck "([1 2] .assoc 1 nil)", "[1 nil]"
 
   test "List/set mutates mutable lists":
     ck "(var xs [1 2]) [(xs .set 1 9) xs]", "[9 [1 9]]"
-    ck "(var xs [1 2]) [(xs .set 0 void) xs]", "[nil [nil 2]]"
+    ck "(var xs [1 2]) [(xs .set 0 nil) xs]", "[nil [nil 2]]"
     expect GeneError:
       discard runStr("(#[1] .set 0 2)")
 
   test "List/push grows mutable lists in place":
     ck "(var xs [1]) [(xs .push 2) xs]", "[2 [1 2]]"
-    ck "(var xs []) [(xs .push void) xs]", "[nil [nil]]"
+    ck "(var xs []) [(xs .push nil) xs]", "[nil [nil]]"
     expect GeneError:
       discard runStr("(#[1] .push 2)")
 
@@ -3975,14 +3976,14 @@ suite "vm — container update built-ins":
 
   test "Map/put mutates mutable maps":
     ck "(var m {^a 1}) [(m .put \"b\" 2) (/b m)]", "[2 2]"
-    ck "(var m {^a 1}) [(m .put \"a\" void) (/a m)]", "[void void]"
+    ck "(var m {^a 1}) [(m .put \"a\" nil) (/a m)]", "[nil nil]"
     expect GeneError:
       discard runStr("(#{^a 1} .put \"a\" 2)")
   test "Map/delete removes an entry and returns what was there":
     ck "(var m {^a 1 ^b 2}) [(m .delete \"a\") m]", "[1 {^b 2}]"
     # Absent key is `void`, so a caller can tell "removed something" from
     # "there was nothing" without a second lookup.
-    ck "(var m {^a 1}) [(m .delete \"zz\") m]", "[void {^a 1}]"
+    ck "(var m {^a 1}) [(m .delete \"zz\") m]", "[nil {^a 1}]"
     # Symbol and string keys both work: the key is converted before comparing,
     # the same normalization `get` and `put` use. Map iteration yields symbols,
     # so an iterated key can be deleted directly.
@@ -4005,11 +4006,11 @@ suite "vm — container update built-ins":
   test "Map/assoc returns an updated copy":
     ck "(var m #{^a 1}) (var n (m .assoc \"b\" 2)) [m n]",
        "[#{^a 1} #{^a 1 ^b 2}]"
-    ck "({^a 1} .assoc \"a\" void)", "{}"
+    ck "({^a 1} .dissoc \"a\")", "{}"
     expect GeneError: discard runStr("([1] .assoc \"a\" 2)")
   test "Map/get reads entries without selector staging":
     ck "(var m {^a 1}) [(m .get \"a\") (m .get \"missing\")]",
-       "[1 void]"
+       "[1 nil]"
     ck "(var m {^a 1}) (m .get (quote a))", "1"
     expect GeneError: discard runStr("([1] .get \"a\")")
 
@@ -4018,8 +4019,8 @@ suite "vm — container update built-ins":
        "[(n .set_prop \"name\" \"Bob\") (/name n)]",
        "[\"Bob\" \"Bob\"]"
     ck "(var n (quote (user ^name \"Ada\"))) " &
-       "[(n .set_prop \"name\" void) (/name n)]",
-       "[void void]"
+       "[(n .set_prop \"name\" nil) (/name n)]",
+       "[nil nil]"
     expect GeneError:
       discard runStr("(#(user ^name \"Ada\") .set_prop \"name\" \"Bob\")")
 
@@ -4058,15 +4059,15 @@ suite "vm — namespaces":
   test "ns rejects duplicate local bindings only":
     expect GeneError: discard runStr("(ns m (var x 1) (var x 2))")
     ck "(var x 1) (ns m (var x 2)) [x (/x m)]", "[1 2]"
-  test "a missing namespace member is void":
-    ck "(ns n (var a 1)) n/nope", "void"
+  test "a missing namespace member is nil":
+    ck "(ns n (var a 1)) n/nope", "nil"
   test "namespace exports do not leak into the enclosing scope":
     expect GeneError: discard runStr("(ns m (var secret 1)) secret")
   test "namespaces compare by identity":
     ck "(ns m (var a 1)) (== m m)", "true"
   test "namespace reflection exposes bindings and lookup":
     ck "(ns m (var b 2) (var a 1)) [(m .lookup \"a\") (m .lookup \"missing\")]",
-       "[1 void]"
+       "[1 nil]"
     ck "(ns m (var b 2) (var a 1)) (m .bindings)",
        "{^a 1 ^b 2}"
   test "declarations exposes namespace bindings as a stream":
@@ -4309,17 +4310,17 @@ suite "vm — channels":
        "   (when (TryRecv/value _) false))]",
        "[true false 1 true]"
 
-  test "try_recv distinguishes empty, Void, Nil, and ordinary payloads":
+  test "try_recv distinguishes empty, Nil, Nil, and ordinary payloads":
     ck "(var ch ($channel ^capacity 3)) " &
        "(var empty-result (ch .try_recv)) " &
-       "(ch .send void) " &
+       "(ch .send nil) " &
        "(ch .send nil) " &
        "(ch .send 7) " &
        "[(match empty-result ^!exhaustive (when TryRecv/empty `empty)) " &
        " (match (ch .try_recv) ^!exhaustive (when (TryRecv/value v) v)) " &
        " (match (ch .try_recv) ^!exhaustive (when (TryRecv/value v) v)) " &
        " (match (ch .try_recv) ^!exhaustive (when (TryRecv/value v) v))]",
-       "[empty void nil 7]"
+       "[empty nil nil 7]"
 
   test "closed channels drain buffered values before ChannelClosed":
     ck "(var ch ($channel ^capacity 1)) " &
@@ -4638,17 +4639,17 @@ suite "vm — cooperative scheduler":
        "  (spawn ^lane root (do ($sleep 1) (ch .send 7))) " &
        "  [(await reader) entered/.get])", "[7 1]"
 
-  test "path message calls preserve void and nil traversal":
-    ck "(let data {}) data/missing/.size", "void"
+  test "path message calls stop at nil":
+    ck "(let data {}) data/missing/.size", "nil"
     ck "(let data {^value nil}) " &
-       "(try data/value/.size catch MessageError \"nil was sent\")",
-       "\"nil was sent\""
+       "data/value/.size",
+       "nil"
     ck "(let calls ($cell 0)) " &
        "(type Stop ^props {} " &
-       "  (message first [] void) " &
+       "  (message first [] nil) " &
        "  (message second [] (calls .set 1) 7)) " &
        "(let value (Stop)) " &
-       "[value/.first/.second calls/.get]", "[void 0]"
+       "[value/.first/.second calls/.get]", "[nil 0]"
 
   test "closing a channel wakes parked receivers and senders":
     ck "(scope (var ch ($channel ^capacity 1)) " &
@@ -5505,10 +5506,10 @@ suite "vm — streams":
        " (s .has_next)]",
        "[true 1 1 2 2 false nil false]"
 
-  test "streams skip void items":
-    ck "(var s ($to_stream [1 void 2])) " &
+  test "streams emit nil items":
+    ck "(var s ($to_stream [1 nil 2])) " &
        "[(s .next) (s .next) (s .has_next)]",
-       "[1 2 false]"
+       "[1 nil true]"
 
   test "map pairs can be streamed":
     ck "(var s ($to_pairs_stream {^a 1 ^b 2})) " &
@@ -5525,8 +5526,8 @@ suite "vm — streams":
        " (s .has_next)]",
        "[2 4 6 false]"
 
-  test "stream map normalizes void results to nil":
-    ck "(var s ($map ($to_stream [1 2]) (fn [x] (if (== x 1) void x)))) " &
+  test "stream map emits nil results":
+    ck "(var s ($map ($to_stream [1 2]) (fn [x] (if (== x 1) nil x)))) " &
        "[(s .next) (s .has_next) (s .next) (s .has_next)]",
        "[nil true 2 false]"
 

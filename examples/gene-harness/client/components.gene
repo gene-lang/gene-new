@@ -1,6 +1,6 @@
 (mod harness_web_components ^profile web)
 
-(fn render_element [tree : Any, on_command : (Fn [Str] Void), on_prompt : (Fn [Str] Void), on_navigate : (Fn [Str Str] Void), enabled : Bool, buttons : (List Any), ^widgets widgets : Any = nil] : EventTarget
+(fn render_element [tree : Any, on_command : (Fn [Str] Nil), on_prompt : (Fn [Str] Nil), on_navigate : (Fn [Str Str] Nil), enabled : Bool, buttons : (List Any), ^widgets widgets : Any = nil] : EventTarget
   (if_yes ($absent? tree) (return ($dom/create_text "")))
   (if_yes ($absent? tree/tag)
     (var text : Str tree)
@@ -27,7 +27,7 @@
     (if_not ($absent? props/presentation) (set presentation props/presentation))
     ($dom/set_attribute element "type" "button")
     ($dom/add_event_listener element "click"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         ($dom/prevent_default event)
         (if_yes ($absent? props/disabled) (on_navigate destination presentation)))))
   (if_not ($absent? props/command)
@@ -38,7 +38,7 @@
     ($dom/add_event_listener
       element
       "click"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (if_yes ($absent? props/disabled) (on_command command)))))
   (if_not ($absent? props/prompt)
     (buttons .push {^element element ^disabled ($present? props/disabled)})
@@ -48,11 +48,11 @@
     ($dom/add_event_listener
       element
       "click"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (if_yes ($absent? props/disabled) (on_prompt prompt)))))
   element)
 
-(fn render_slot [target : EventTarget, components : (List Any), slot : Str, on_command : (Fn [Str] Void), on_prompt : (Fn [Str] Void), on_navigate : (Fn [Str Str] Void), enabled : Bool, buttons : (List Any)] : Bool
+(fn render_slot [target : EventTarget, components : (List Any), slot : Str, on_command : (Fn [Str] Nil), on_prompt : (Fn [Str] Nil), on_navigate : (Fn [Str Str] Nil), enabled : Bool, buttons : (List Any)] : Bool
   (var rendered false)
   (for component in components
     (var selected : Str component/slot)

@@ -6,7 +6,7 @@
 (import ^from "./notices.gene" [Notices put_notice remove_notice])
 (import ^from "./cards.gene" [question_tree])
 
-(type QuestionEditors ^props {^editors PropMap ^mounts PropMap ^pending PropMap ^drafts PropMap ^ready Bool ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^changed (Fn [Str] Void) ^stage (Fn [Str] Void)})
+(type QuestionEditors ^props {^editors PropMap ^mounts PropMap ^pending PropMap ^drafts PropMap ^ready Bool ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^changed (Fn [Str] Nil) ^stage (Fn [Str] Nil)})
 (type QuestionEditor ^props {^key Str ^session Str ^batch Any ^answers PropMap ^skips PropMap ^sending Bool ^error Str ^views (List Any)})
 
 (fn qtext [value : Any, fallback : Str = ""] : Str
@@ -34,8 +34,8 @@
     {}))
 
 (fn create_question_editors [notices : Notices,
-  api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), changed : (Fn [Str] Void),
-  ^stage stage : (Fn [Str] Void) = (fn [text : Str] : Void nil)] : QuestionEditors
+  api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil), changed : (Fn [Str] Nil),
+  ^stage stage : (Fn [Str] Nil) = (fn [text : Str] : Nil nil)] : QuestionEditors
   (var controller (QuestionEditors ^editors {} ^mounts {}
     ^pending (restored_map "gene-harness/question-replies")
     ^drafts (restored_map "gene-harness/question-drafts") ^!ready
@@ -68,7 +68,7 @@
   (set controller/editors/%key editor)
   editor)
 
-(fn sync_question [controller : QuestionEditors, editor : QuestionEditor] : Void
+(fn sync_question [controller : QuestionEditors, editor : QuestionEditor] : Nil
   (var key editor/key)
   (var pending ($present? controller/pending/%key))
   (for view in editor/views
@@ -118,7 +118,7 @@
 
 # A question view's answer buttons select draft values; Answer still submits
 # the whole batch (docs/cards.md).
-(fn render_question_view [controller : QuestionEditors, editor : QuestionEditor, field : Any, enabled : Bool] : Void
+(fn render_question_view [controller : QuestionEditors, editor : QuestionEditor, field : Any, enabled : Bool] : Nil
   (var container : EventTarget field/element)
   (var question : Any field/question)
   (var id (qtext field/id))
@@ -136,7 +136,7 @@
           (for item in picked
             (if_yes (== (qjson item) value_json) (return true))))
         false)
-      (fn [value : Any] : Void
+      (fn [value : Any] : Nil
         (if multi
           (do
             (var next : (List Any) [])
@@ -156,14 +156,14 @@
       controller/stage
       enabled)))
 
-(fn store_draft [controller : QuestionEditors, editor : QuestionEditor] : Void
+(fn store_draft [controller : QuestionEditors, editor : QuestionEditor] : Nil
   (var key editor/key)
   (set controller/drafts/%key {^answers editor/answers ^skips editor/skips})
   (if_not (storage_set "gene-harness/question-drafts" (qjson controller/drafts))
     (set editor/error "Draft could not be saved in browser storage. Keep this tab open."))
   (sync_question controller editor))
 
-(fn send_reply [controller : QuestionEditors, editor : QuestionEditor, dismiss : Bool] : Void
+(fn send_reply [controller : QuestionEditors, editor : QuestionEditor, dismiss : Bool] : Nil
   (if_yes (|| (! controller/ready) editor/sending) (return))
   (var key editor/key)
   (var payload : Any controller/pending/%key)
@@ -196,16 +196,16 @@
     "POST"
     $"${(api_root)}/sessions/${session}/answers"
     payload
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set editor/sending false)
       (if (definitive_reply code)
         (do
-          (set controller/pending/%key void)
+          (controller/pending .delete key)
           (storage_set "gene-harness/question-replies" (qjson controller/pending))
           (if (< code 300)
             (do
               (set editor/error "Answer accepted.")
-              (set controller/drafts/%key void)
+              (controller/drafts .delete key)
               (storage_set "gene-harness/question-drafts" (qjson controller/drafts)))
             (set editor/error (qtext data/message "This batch cannot accept the reply.")))
           (remove_notice controller/notices "questions" session key))
@@ -222,7 +222,7 @@
       (sync_question controller editor)
       (controller/changed session))))
 
-(fn resume_replies [controller : QuestionEditors] : Void
+(fn resume_replies [controller : QuestionEditors] : Nil
   (if_not controller/ready (return))
   (for [key payload] in controller/pending
     (if_not ($absent? payload)
@@ -239,7 +239,7 @@
         "GET"
         $"${(api_root)}/sessions/${session}/snapshot?ui=default"
         nil
-        (fn [code : Int, data : Any] : Void
+        (fn [code : Int, data : Any] : Nil
           (set editor/sending false)
           (if (== code 200)
             (send_reply controller editor false)
@@ -248,13 +248,13 @@
               (sync_question controller editor)
               (controller/changed session))))))))
 
-(fn question_ready [controller : QuestionEditors, ready : Bool] : Void
+(fn question_ready [controller : QuestionEditors, ready : Bool] : Nil
   (set controller/ready ready)
   (for [key raw] in controller/editors
     (var editor : QuestionEditor raw)
     (sync_question controller editor)))
 
-(fn cancel_question_round [controller : QuestionEditors, editor : QuestionEditor] : Void
+(fn cancel_question_round [controller : QuestionEditors, editor : QuestionEditor] : Nil
   (var round (qtext editor/batch/round_id))
   (if_yes (|| (! controller/ready) editor/sending (== round "")) (return))
   (var session editor/session)
@@ -264,12 +264,12 @@
     "POST"
     $"${(api_root)}/sessions/${session}/cancel"
     {^round_id round}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set editor/sending false)
       (if (&& (>= code 200) (< code 300))
         (do
           (var key editor/key)
-          (set controller/pending/%key void)
+          (controller/pending .delete key)
           (storage_set "gene-harness/question-replies" (qjson controller/pending))
           (remove_notice controller/notices "questions" session key)
           (set editor/error "Cancellation requested."))
@@ -277,7 +277,7 @@
       (sync_question controller editor)
       (controller/changed session))))
 
-(fn mount_question [controller : QuestionEditors, session : Str, batch : Any, target : EventTarget, slot : Str] : Void
+(fn mount_question [controller : QuestionEditors, session : Str, batch : Any, target : EventTarget, slot : Str] : Nil
   (var identity (if ($absent? batch) "" (question_key session (qtext batch/id))))
   (var previous : Any controller/mounts/%slot)
   (if_yes (== (qtext previous/key) identity) (return))
@@ -289,7 +289,7 @@
       (if_yes (!= (qtext view/slot) slot) (kept .push view)))
     (set old/views kept))
   ($dom/clear target)
-  (set controller/mounts/%slot void)
+  (controller/mounts .delete slot)
   (if_yes (== identity "") (return))
   (var editor (editor_for controller session batch))
   (set editor/batch batch)
@@ -312,7 +312,7 @@
         ($dom/add_event_listener
           input
           "input"
-          (fn [event : Any] : Void
+          (fn [event : Any] : Nil
             (set editor/answers/%id ($dom/input_value input))
             (store_draft controller editor)))
         ($dom/append group input))
@@ -327,7 +327,7 @@
           ($dom/add_event_listener
             input
             "change"
-            (fn [event : Any] : Void
+            (fn [event : Any] : Nil
               (var picked : (List Any) [])
               (if_not ($absent? editor/answers/%id)
                 (var saved : (List Any) editor/answers/%id)
@@ -351,9 +351,11 @@
         ($dom/add_event_listener
           select
           "change"
-          (fn [event : Any] : Void
+          (fn [event : Any] : Nil
             (var selected : Int ($json/parse ($dom/input_value select)))
-            (set editor/answers/%id (if (< selected 0) void values/%selected))
+            (if (< selected 0)
+              (then (editor/answers .delete id))
+              (else (set editor/answers/%id values/%selected)))
             (store_draft controller editor)))
         ($dom/append group select)))
     (var skip ($dom/render `(input ^type "checkbox")))
@@ -364,7 +366,7 @@
     ($dom/add_event_listener
       skip
       "change"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (set editor/skips/%id skip/checked)
         (store_draft controller editor)))
     ($dom/append group label)
@@ -380,18 +382,18 @@
   ($dom/add_event_listener
     form
     "submit"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       ($dom/prevent_default event)
       (send_reply controller editor false)))
   ($dom/add_event_listener
     dismiss
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (send_reply controller editor true)))
   ($dom/add_event_listener
     cancel
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (cancel_question_round controller editor)))
   (var view
     {

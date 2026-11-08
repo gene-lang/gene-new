@@ -37,7 +37,7 @@ Reach for `quote` or quasiquote when you want the data:
 ## Scalars
 
 ```gene
-nil  void  true  false
+nil  true  false
 42  -7  3.5
 "text"
 $"hello ${name} ${(+ 1 2)}"      # interpolation
@@ -51,9 +51,9 @@ line two"""                       # multiline
 2026-07-04T09:30:15-04:00[America/New_York]
 ```
 
-`nil` and `void` are distinct. `void` means absent — an unset prop-schema field
-reads as `void`, while an omitted named parameter binds `nil`. `$absent?` covers
-both; `$nil?` and `$void?` separate them.
+`nil` is the one absence value: an unset prop-schema field and an omitted
+parameter both read as `nil`. `$absent?` tests for it; `$has_key?` tells a stored
+nil from a missing key.
 
 Use `$to_str` (`gene/to_str`) to join display values, or write `$"a${x}b"`
 when interpolation is clearer than `($to_str "a" x "b")`. Interpolation

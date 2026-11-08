@@ -233,7 +233,7 @@ proc csvRowValue(row: seq[string], headers: seq[string], hasHeaders: bool,
 proc csvTakeReadyRow(state: var CsvParserState, headers: var seq[string],
                      headerSeen: var bool, hasHeaders: bool): Value =
   if not state.rowReady:
-    return VOID
+    return MISSING
   let row = move state.readyRow
   state.rowReady = false
   if hasHeaders and not headerSeen:
@@ -244,7 +244,7 @@ proc csvTakeReadyRow(state: var CsvParserState, headers: var seq[string],
       seen.incl name
     headers = row
     headerSeen = true
-    return VOID
+    return MISSING
   csvRowValue(row, headers, hasHeaders, state)
 
 proc biCsvParseRows(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -283,7 +283,7 @@ proc biCsvParseRows(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   var rows: seq[Value]
   proc acceptReadyRow() =
     let value = csvTakeReadyRow(state, headers, headerSeen, hasHeaders)
-    if value.kind != vkVoid:
+    if not value.isMissing:
       rows.add value
   for i in start ..< input.len:
     if csvPushByte(state, input[i]):
@@ -371,7 +371,7 @@ proc csvAdvance(record: CsvReaderRecord, scope: Scope): Value =
         csvNotePeak(record)
         let row = csvTakeReadyRow(record.parser, record.headers,
                                   record.headerSeen, record.hasHeaders)
-        if row.kind != vkVoid:
+        if not row.isMissing:
           return csvStepResult(1, row)
       if record.cursor < record.buffered.len:
         let ch = record.buffered[record.cursor]

@@ -6,7 +6,7 @@
 (fn freeze_turn_data [value, ^depth depth : Int = 0]
   (if (> depth 32) (fail (TurnDataError ^message "Turn extension data exceeds 32 levels.")))
   (let kind ($head value))
-  (if ([Void Nil Bool Int Float Str Sym] .contains? kind) (return value))
+  (if ([Nil Nil Bool Int Float Str Sym] .contains? kind) (return value))
   (if (== kind List)
     (return ($freeze_shallow ($map value (fn [item] (freeze_turn_data item ^depth (+ depth 1)))))))
   (if_yes (== kind Map)

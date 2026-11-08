@@ -34,12 +34,12 @@
   (if_yes ($absent? entry/open) (set entry/open default_open))
   (flag entry/open))
 
-(fn index_output [store : LiveOutput] : Void
+(fn index_output [store : LiveOutput] : Nil
   (set store/index {})
   (for entry in store/entries
     (var key (text entry/key)) (set store/index/%key entry)))
 
-(fn clear_session_output [store : LiveOutput, session : Str] : Void
+(fn clear_session_output [store : LiveOutput, session : Str] : Nil
   (if_yes (== store/notify_session session) (set store/notify_session ""))
   (var kept : (List Any) [])
   (for entry in store/entries
@@ -60,14 +60,14 @@
   (set store/epoch epoch) (set store/entries []) (set store/index {}) (set store/bytes 0) (set store/chunks 0) (set store/notify_session "")
   true)
 
-(fn interrupt_output [store : LiveOutput, session : Str] : Void
+(fn interrupt_output [store : LiveOutput, session : Str] : Nil
   (for entry in store/entries
     (if_yes (&& (== (text entry/session) session) (! (flag entry/terminal)))
       (set entry/incomplete true))))
 
 # Completion prevents a later disconnect from marking already finished output.
 # It cannot repair an earlier gap in a stream of deltas.
-(fn observe_output [store : LiveOutput, session : Str, kind : Str, data : Any] : Void
+(fn observe_output [store : LiveOutput, session : Str, kind : Str, data : Any] : Nil
   (if_yes (== kind "snapshot")
     (var records : (List Any) data/records)
     (for record in records
@@ -82,7 +82,7 @@
   (var entry : Any (output_entry store key))
   (if_not ($absent? entry) (set entry/terminal true)))
 
-(fn evict_output [store : LiveOutput] : Void
+(fn evict_output [store : LiveOutput] : Nil
   (for entry in store/entries
     (if_yes (&& (<= store/bytes 4194304) (<= store/chunks 32768)) (break))
     (set store/bytes (- store/bytes (integer entry/bytes)))

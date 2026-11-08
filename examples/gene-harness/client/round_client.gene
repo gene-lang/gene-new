@@ -6,17 +6,17 @@
 (import [voice_draft_key] ^from "../src/common/voice_transitions.gene")
 
 (type RoundClient ^props {^workspace Str ^pending Any ^resolving Bool
-  ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^changed (Fn [Str] Void)
-  ^settled (Fn [Any Any] Void)})
+  ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^changed (Fn [Str] Nil)
+  ^settled (Fn [Any Any] Nil)})
 
 (fn storage_key [client : RoundClient] : Str
   $"gene-harness/voice-pending/${client/workspace}")
 
-(fn clear_pending [client : RoundClient] : Void
+(fn clear_pending [client : RoundClient] : Nil
   (storage_remove (storage_key client))
   (set client/pending nil))
 
-(fn hold_draft [client : RoundClient, session : Str] : Void
+(fn hold_draft [client : RoundClient, session : Str] : Nil
   (var key (voice_draft_key client/workspace session))
   (var saved (?? (storage_get key) ""))
   (if_yes (== saved "") (return))
@@ -27,7 +27,7 @@
       (client/changed "The refused voice draft could not be marked for review. Inspect it before sending more."))
   catch Any (client/changed "The saved voice draft needs inspection before another submission.")))
 
-(fn admitted [client : RoundClient, receipt : Any] : Void
+(fn admitted [client : RoundClient, receipt : Any] : Nil
   (var envelope : Any client/pending)
   # Clearing an admitted prefix belongs to the host too: disabling the plugin
   # while POST is in flight must not leave accepted speech queued for resending.
@@ -56,7 +56,7 @@
   (clear_pending client)
   (client/settled envelope receipt))
 
-(fn recover_round [client : RoundClient] : Void
+(fn recover_round [client : RoundClient] : Nil
   (if_yes (|| client/resolving ($absent? client/pending)) (return))
   (if_yes (flag client/pending/invalid)
     (client/changed "Saved voice submission is unreadable. Inspect its conversation before forgetting the request.")
@@ -68,7 +68,7 @@
   (client/api "GET"
     $"${(api_root)}/sessions/${(text envelope/session)}/requests/${(text envelope/request_id)}?kind=round"
     nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (!= workspace client/workspace) (return))
       (set client/resolving false)
       (if (== code 200)
@@ -82,7 +82,7 @@
   (client/changed "Voice request forgotten after inspection. This does not cancel or repeat earlier work.")
   true)
 
-(fn configure_rounds [client : RoundClient, workspace : Str] : Void
+(fn configure_rounds [client : RoundClient, workspace : Str] : Nil
   (if_yes (== client/workspace workspace) (return))
   (set client/workspace workspace) (set client/pending nil) (set client/resolving false)
   (var saved (?? (storage_get (storage_key client)) ""))
@@ -97,7 +97,7 @@
     (recover_round client)))
 
 (fn dispatch_round [client : RoundClient, session : Str, value : Str, input : Any,
-                    done : (Fn [Int Any] Void), ^model_settings model_settings : Any = nil] : Void
+                    done : (Fn [Int Any] Nil), ^model_settings model_settings : Any = nil] : Nil
   (if_yes (|| client/resolving ($present? client/pending))
     (done 409 {^code "pending_voice" ^^not_sent ^message "Resolve the earlier voice submission first."})
     (return))
@@ -114,7 +114,7 @@
       (done 400 {^^not_sent ^message "Voice input metadata could not be encoded."}) (return))
   (set client/resolving true)
   (client/api "GET" $"${(api_root)}/sessions/${session}/voice" nil
-    (fn [code : Int, state : Any] : Void
+    (fn [code : Int, state : Any] : Nil
       (if_yes (!= code 200)
         (set client/resolving false) (hold_draft client session)
         (client/changed "Voice was not submitted. Inspect the draft before trying again.")
@@ -132,7 +132,7 @@
         (done 409 {^^not_sent ^message "Browser storage is required to recover a voice submission."}) (return))
       (set client/pending envelope)
       (client/api "POST" $"${(api_root)}/sessions/${session}/rounds" envelope
-        (fn [accepted : Int, receipt : Any] : Void
+        (fn [accepted : Int, receipt : Any] : Nil
           (set client/resolving false)
           (if (== accepted 202)
             (admitted client receipt)
@@ -144,6 +144,6 @@
           (done accepted receipt)
           (if_yes (|| (== accepted 0) (>= accepted 500)) (recover_round client)))))))
 
-(fn create_rounds [api : (Fn [Str Str Any (Fn [Int Any] Void)] Void),
-                   changed : (Fn [Str] Void), settled : (Fn [Any Any] Void)] : RoundClient
+(fn create_rounds [api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil),
+                   changed : (Fn [Str] Nil), settled : (Fn [Any Any] Nil)] : RoundClient
   (RoundClient ^workspace "" ^pending nil ^!resolving ^api api ^changed changed ^settled settled))

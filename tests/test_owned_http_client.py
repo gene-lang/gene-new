@@ -353,7 +353,7 @@ class OwnedHttpClientTests(unittest.TestCase):
   (let stats ($runtime/gc_stats))
   ($println ($json/stringify
     {{^status response/status ^body ($binary/to_list response/body)
-      ^eof ($nil? eof) ^bytes stats/io_retained_bytes
+      ^eof ($absent? eof) ^bytes stats/io_retained_bytes
       ^leases stats/io_cleanup_leases}}))
 """)
         self.assertEqual(data, {"status": 202, "body": [97, 0, 98],
@@ -481,7 +481,7 @@ class OwnedHttpClientTests(unittest.TestCase):
   (let stats ($runtime/gc_stats))
   ($println ($json/stringify
     {{^busy direct_busy ^status response/status
-      ^size ($binary/size response/body) ^after_eof ($nil? after)
+      ^size ($binary/size response/body) ^after_eof ($absent? after)
       ^pending stats/http_client_pending_requests
       ^leases stats/io_cleanup_leases}}))
 """, timeout=12)
@@ -512,7 +512,7 @@ class OwnedHttpClientTests(unittest.TestCase):
   (let stats ($runtime/gc_stats))
   ($println ($json/stringify
     {{^busy direct_busy ^status response/status
-      ^body ($binary/to_str response/body) ^after_eof ($nil? after)
+      ^body ($binary/to_str response/body) ^after_eof ($absent? after)
       ^pending stats/http_client_pending_requests
       ^leases stats/io_cleanup_leases}}))
 """, timeout=12)
@@ -577,7 +577,7 @@ class OwnedHttpClientTests(unittest.TestCase):
     {{^held_busy held_busy ^direct_busy direct_busy ^dynamic_busy dynamic_busy
       ^pipeline_busy pipeline_busy ^shape_known shape/shape_known
       ^inherited_busy inherited_busy
-      ^after_eof ($nil? after)}}))
+      ^after_eof ($absent? after)}}))
 """, timeout=12, root_driver=True)
         self.assertEqual(data, {"held_busy": True, "direct_busy": True,
                                 "dynamic_busy": True, "pipeline_busy": True,
@@ -601,8 +601,8 @@ class OwnedHttpClientTests(unittest.TestCase):
   (impl AsyncReader for Deferred
     (message read [max_bytes : Int] : (Task Bytes? Error)
       (spawn ^lane root (await (super .AsyncReader:read max_bytes)))))
-  ($assert ($nil? (await ((Inline) .AsyncReader:read 16))))
-  ($assert ($nil? (await ((Deferred) .AsyncReader:read 16))))
+  ($assert ($absent? (await ((Inline) .AsyncReader:read 16))))
+  ($assert ($absent? (await ((Deferred) .AsyncReader:read 16))))
   (let client (await ($net/http_client/open)))
   (let statuses [])
   (for reader in [(Inline) (Deferred)]
@@ -668,7 +668,7 @@ class OwnedHttpClientTests(unittest.TestCase):
   (await (client .IoResource:wait_closed))
   (let stats ($runtime/gc_stats))
   ($println ($json/stringify
-    {{^full full ^eof ($nil? eof) ^guards stats/io_read_guards
+    {{^full full ^eof ($absent? eof) ^guards stats/io_read_guards
       ^pending stats/http_client_pending_requests ^leases stats/io_cleanup_leases}}))
 """, timeout=12, root_driver=True)
         self.assertEqual(data, {"full": True, "eof": True, "guards": 0,
@@ -787,7 +787,7 @@ class OwnedHttpClientTests(unittest.TestCase):
   (await (client .IoResource:wait_closed))
   ($println ($json/stringify
     {{^status response/status ^body ($binary/to_str body)
-      ^eof ($nil? eof)}}))
+      ^eof ($absent? eof)}}))
 """)
         self.assertEqual(data, {"status": 202, "body": "duplex",
                                 "eof": True})
@@ -913,7 +913,7 @@ class OwnedHttpClientTests(unittest.TestCase):
   (var total 0)
   (while true
     (let part (await (response/body .AsyncReader:read 65536)))
-    (if ($nil? part) (then (break)))
+    (if ($absent? part) (then (break)))
     (set total (+ total ($binary/size part))))
   (await (response/body .IoResource:wait_closed))
   (client .IoResource:close)
@@ -981,7 +981,7 @@ class OwnedHttpClientTests(unittest.TestCase):
       ^followed_body ($binary/to_str followed/body)
       ^effective followed/effective_url ^loop_status looped/status
       ^stream_status streamed/status ^stream_first ($binary/to_str first)
-      ^stream_second ($binary/to_str second) ^eof ($nil? eof)}}))
+      ^stream_second ($binary/to_str second) ^eof ($absent? eof)}}))
 """)
         self.assertEqual(data, {"followed_status": 201,
                                 "followed_body": "/one",

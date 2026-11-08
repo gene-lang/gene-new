@@ -185,7 +185,7 @@
   (let files [])
   (for operation in operations
     (for relative in [operation/path operation/target]
-      (if (== (originals .get relative) void)
+      (if ($absent? (originals .get relative))
         (then
           (let path ($path/join root relative))
           (let exists ($fs/exists? path))
@@ -202,7 +202,7 @@
             ^physical physical ^mode target/mode
             ^text content})
           (files .push relative))))
-    (if_not (== (targets .get operation/target) void)
+    (if_not ($absent? (targets .get operation/target))
       (patch_error $"multiple patch operations target ${operation/target}"))
     (targets .put operation/target true)
     (let original (originals .get operation/path))

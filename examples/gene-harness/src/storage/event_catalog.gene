@@ -6,7 +6,7 @@
 
 (fn require_event_fields [payload, names, event_name]
   (for name in names
-    (if (== (payload .get name) void)
+    (if (! ($has_key? payload name))
       ($panic $"${event_name} requires ${name}")))
   payload)
 

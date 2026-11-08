@@ -32,8 +32,8 @@ suite "string and list receiver methods":
   test "list get uses path indexing and join uses the existing string function":
     check evalData("""
       (let xs [10 nil 30])
-      [(xs .get 0) (xs .get -1) (xs .get 1) ($void? (xs .get 3))
-       ($void? (xs .get -4)) ($void? ([] .get 0))
+      [(xs .get 0) (xs .get -1) (xs .get 1) ($absent? (xs .get 3))
+       ($absent? (xs .get -4)) ($absent? ([] .get 0))
        (["a" "b"] .join) (["a" "b"] .join " / ") ([] .join ",")]
     """).print() == "[10 30 nil true true true \"ab\" \"a / b\" \"\"]"
 

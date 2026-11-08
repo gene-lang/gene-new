@@ -101,11 +101,11 @@ proc strictMember(value: Value, path: openArray[string], application: Applicatio
   result = value
   for name in path:
     if result.kind == vkModule: result = result.moduleRootNamespace
-    if result.kind != vkNamespace: return VOID
+    if result.kind != vkNamespace: return MISSING
     if application != nil and result.nsScope.application() != application:
-      return VOID # this application's mutation guards cannot protect foreign slots
+      return MISSING # this application's mutation guards cannot protect foreign slots
     result = result.exportedBinding(name)
-    if result.kind == vkVoid: return
+    if result.isMissing: return
 
 proc strictPrefixContext(registration: StrictErrorRegistration,
                           path: seq[string], candidate: Value): Scope =
@@ -136,7 +136,7 @@ proc strictPrefixContext(registration: StrictErrorRegistration,
 proc resolveStrictRegistration(registration: StrictErrorRegistration): Value =
   let declaration = cast[Scope](registration.declarationScope)
   let parts = strictTargetParts(registration.target)
-  if declaration == nil or parts.len == 0: return VOID
+  if declaration == nil or parts.len == 0: return MISSING
   if not registration.allowedReady:
     let allowed = registration.strictAllowedTypes(declaration)
     if allowed.ok:
@@ -157,20 +157,20 @@ proc resolveStrictRegistration(registration: StrictErrorRegistration): Value =
       registration.prefixes.add (scope: cast[pointer](current), name: name,
         path: parts[0..i], remaining: parts[i+1..^1])
     if i == 0:
-      if not current.lookupOptional(name, value): return VOID
+      if not current.lookupOptional(name, value): return MISSING
     else:
       current.materializeMirroredVars()
-      if name in current.exportExcludedNames: return VOID
-      value = current.vars.getOrDefault(name, VOID)
-      if value.kind == vkVoid: return VOID
+      if name in current.exportExcludedNames: return MISSING
+      value = current.vars.getOrDefault(name, MISSING)
+      if value.isMissing: return MISSING
     if i < parts.high:
       if value.kind == vkModule: value = value.moduleRootNamespace
-      if value.kind != vkNamespace: return VOID
+      if value.kind != vkNamespace: return MISSING
       current = value.nsScope
-  if not registration.allowedReady: return VOID
+  if not registration.allowedReady: return MISSING
   if registration.typeIdentityOnly:
     let subject = registration.strictDispatchSubject(value)
-    if subject.kind notin {vkType, vkProtocol}: return VOID
+    if subject.kind notin {vkType, vkProtocol}: return MISSING
     if registration.subject.kind == vkNil:
       registration.subject = subject
       registration.pinStrictOrigin(if subject.kind == vkType: subject.typeScope
@@ -178,7 +178,7 @@ proc resolveStrictRegistration(registration: StrictErrorRegistration): Value =
   var callable = value
   if registration.messageName.len > 0:
     let subject = registration.strictDispatchSubject(value)
-    if subject.kind notin {vkType, vkProtocol}: return VOID
+    if subject.kind notin {vkType, vkProtocol}: return MISSING
     if registration.subject.kind == vkNil:
       registration.subject = subject
       let origin = if subject.kind == vkType: subject.typeScope else: subject.protocolScope
@@ -332,7 +332,7 @@ proc addStrictDependencies(lease: StrictErrorLease, dependencies: seq[ErrorProof
       declarationScope: cast[pointer](scope), target: dependency.target,
       sourceAllowed: dependency.permitted, label: label)
     let target = registration.resolveStrictRegistration()
-    if target.kind == vkVoid and registration.targetScope == nil:
+    if target.isMissing and registration.targetScope == nil:
       let parts = strictTargetParts(dependency.target)
       if parts.len == 1:
         registration.targetScope = cast[pointer](scope)
@@ -400,7 +400,7 @@ proc activateStrictErrorLease(value: Value, scope: Scope): RootRef =
   let original = StrictErrorLease(value.fnErrorLease)
   for registration in original.registrations:
     let target = registration.resolveStrictRegistration()
-    if not registration.ready or target.kind == vkVoid:
+    if not registration.ready or target.isMissing:
       raise newException(GeneError, "strict error dependency is not ready: " &
         registration.target.print() & " in " & registration.label)
     if not registration.strictCandidateFits(target):
@@ -669,7 +669,7 @@ proc admitErrorValue(value: Value, scope: Scope): Value =
     raiseTypeError("Error admission", "unambiguous Error conformance", value, scope,
                    hint = resolution.msg)
   if formatter.usesDefaultErrorMessage(app):
-    let backing = value.props.getOrDefault("message", VOID)
+    let backing = value.props.getOrDefault("message", NIL)
     if backing.kind != vkString:
       raiseTypeError("Error admission message", "present Str property", backing, scope)
   checkErrorFormatterLane(value, formatter, scope)

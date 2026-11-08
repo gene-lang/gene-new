@@ -22,9 +22,9 @@
 (fn changed_paths ^^private [adapter, change]
   (if (== change/kind `rescan_required) (return ["*"]))
   (var paths ($thaw #[]))
-  (if_not (== change/path void)
+  (if_not ($absent? change/path)
     (paths .push $"${adapter/root}/${change/path}"))
-  (if_not (== change/from void)
+  (if_not ($absent? change/from)
     (paths .push $"${adapter/root}/${change/from}"))
   paths)
 

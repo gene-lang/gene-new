@@ -4,7 +4,7 @@
 
 (type MediaComposer ^props {^selected Str ^drafts PropMap ^enabled Bool ^working Bool
   ^list EventTarget ^input EventTarget ^status EventTarget
-  ^post (Fn [Str Str (Fn [Int Any] Void)] Void) ^changed (Fn [] Void)})
+  ^post (Fn [Str Str (Fn [Int Any] Nil)] Nil) ^changed (Fn [] Nil)})
 
 (fn media_key [session : Str] : Str
   (var key (if (== session "") "new" session))
@@ -31,7 +31,7 @@
     (set media/drafts/%session saved)))
   saved)
 
-(fn persist_media [media : MediaComposer, session : Str] : Void
+(fn persist_media [media : MediaComposer, session : Str] : Nil
   (var saved : (List Any) [])
   (for item in (items_for media session)
     (var state : Str item/state)
@@ -51,7 +51,7 @@
   ($dom/append view ($dom/render `(a ^href %$"${url}?download=1" %name)))
   view)
 
-(fn render_media [media : MediaComposer] : Void
+(fn render_media [media : MediaComposer] : Nil
   ($dom/clear media/list)
   (for item in (items_for media media/selected)
     (var name : Str item/name)
@@ -68,15 +68,15 @@
       (else "Uploading…")))
     ($dom/append card ($dom/render `(small ^role "status" %status)))
     ($dom/append card ($dom/render `(button ^type "button" ^disabled %(! media/enabled)
-      ^aria_label %$"Remove ${name}" ^on_click %(fn [event : Any] : Void (remove_media media key)) "Remove")))
+      ^aria_label %$"Remove ${name}" ^on_click %(fn [event : Any] : Nil (remove_media media key)) "Remove")))
     ($dom/append media/list card)))
 
-(fn media_changed [media : MediaComposer, session : Str] : Void
+(fn media_changed [media : MediaComposer, session : Str] : Nil
   (persist_media media session)
   (if_yes (== session media/selected) (render_media media))
   (media/changed))
 
-(fn remove_media [media : MediaComposer, key : Str] : Void
+(fn remove_media [media : MediaComposer, key : Str] : Nil
   (if_not media/enabled (return))
   (var kept : (List Any) [])
   (var reader : Any nil)
@@ -114,12 +114,12 @@
     (if_yes (!= state "ready") (return true)))
   false)
 
-(fn media_select [media : MediaComposer, session : Str] : Void
+(fn media_select [media : MediaComposer, session : Str] : Nil
   (persist_media media media/selected)
   (set media/selected session)
   (render_media media))
 
-(fn media_move [media : MediaComposer, source : Str, destination : Str] : Void
+(fn media_move [media : MediaComposer, source : Str, destination : Str] : Nil
   (var items (items_for media source))
   (if_yes (== items/.size 0) (return))
   (for item in items (set item/session destination))
@@ -129,7 +129,7 @@
   (persist_media media source)
   (persist_media media destination))
 
-(fn media_admitted [media : MediaComposer, session : Str, ids : (List Any)] : Void
+(fn media_admitted [media : MediaComposer, session : Str, ids : (List Any)] : Nil
   (var kept : (List Any) [])
   (for item in (items_for media session)
     (var submitted false)
@@ -139,13 +139,13 @@
   (set media/drafts/%session kept)
   (media_changed media session))
 
-(fn media_controls [media : MediaComposer, enabled : Bool] : Void
+(fn media_controls [media : MediaComposer, enabled : Bool] : Nil
   (set media/input/disabled (! enabled))
   (if_yes (!= media/enabled enabled)
     (set media/enabled enabled)
     (render_media media)))
 
-(fn finish_upload [media : MediaComposer, item : Any, code : Int, result : Any] : Void
+(fn finish_upload [media : MediaComposer, item : Any, code : Int, result : Any] : Nil
   (if (&& (>= code 200) (< code 300))
     (then (set item/state "ready") (set item/asset result))
     (else
@@ -156,7 +156,7 @@
   (media_changed media session)
   (start_upload media))
 
-(fn start_upload [media : MediaComposer] : Void
+(fn start_upload [media : MediaComposer] : Nil
   (if_yes media/working (return))
   (var next : Any nil)
   (for [session items] in media/drafts
@@ -172,20 +172,20 @@
   (media_changed media session)
   (try
     (set item/reader ($files/read_base64 item/file 10485760
-      (fn [data : Str] : Void
+      (fn [data : Str] : Nil
         (var removed : Bool item/removed)
         (if removed
           (finish_upload media item 499 {^message "Removed from draft."})
           (do
             (set item/state "uploading")
             (var name : Str item/name)
-            (media/post name data (fn [code : Int, result : Any] : Void
+            (media/post name data (fn [code : Int, result : Any] : Nil
               (finish_upload media item code result))))))
-      (fn [message : Str] : Void
+      (fn [message : Str] : Nil
         (finish_upload media item 400 {^message message}))))
   catch Any (finish_upload media item 400 {^message "The selected file could not be read."})))
 
-(fn add_files [media : MediaComposer, files : (List Any)] : Void
+(fn add_files [media : MediaComposer, files : (List Any)] : Nil
   (if_not media/enabled (return))
   (var entries (items_for media media/selected))
   (for file in files
@@ -200,19 +200,19 @@
   (media_changed media media/selected)
   (start_upload media))
 
-(fn create_media [session : Str, post : (Fn [Str Str (Fn [Int Any] Void)] Void), changed : (Fn [] Void)] : MediaComposer
+(fn create_media [session : Str, post : (Fn [Str Str (Fn [Int Any] Nil)] Nil), changed : (Fn [] Nil)] : MediaComposer
   (var media (MediaComposer ^selected session ^drafts {} ^!enabled ^!working
     ^list ($dom/element "media_drafts") ^input ($dom/element "media_files")
     ^status ($dom/element "media_status") ^post post ^changed changed))
-  ($dom/add_event_listener media/input "change" (fn [event : Any] : Void
+  ($dom/add_event_listener media/input "change" (fn [event : Any] : Nil
     (add_files media ($files/from_input media/input))
     ($dom/set_input_value media/input "")))
   (var composer ($dom/element "composer"))
-  ($dom/add_event_listener composer "dragover" (fn [event : Any] : Void ($dom/prevent_default event)))
-  ($dom/add_event_listener composer "drop" (fn [event : Any] : Void
+  ($dom/add_event_listener composer "dragover" (fn [event : Any] : Nil ($dom/prevent_default event)))
+  ($dom/add_event_listener composer "drop" (fn [event : Any] : Nil
     ($dom/prevent_default event)
     (add_files media ($files/from_event event))))
-  ($dom/add_event_listener ($dom/element "prompt") "paste" (fn [event : Any] : Void
+  ($dom/add_event_listener ($dom/element "prompt") "paste" (fn [event : Any] : Nil
     (var files ($files/from_event event))
     (if_yes (> files/.size 0)
       ($dom/prevent_default event)

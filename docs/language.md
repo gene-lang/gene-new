@@ -41,7 +41,7 @@ Common values:
 | `{^name "Ada" ^active true}` | Property map with named keys |
 | `{{"red" : 1 "blue" : 2}}` | General map with explicit keys |
 | `#[1 2 3]`, `#{^name "Ada"}` | Shallow immutable collection |
-| `nil`, `void` | Stored absence; missing/no-result |
+| `nil` | The one absence value; missing reads and statement results |
 
 `#` starts a line comment. `#< ... >#` is a block comment. The special `#[...]`
 and `#{...}` forms are literals, not comments. `^^active` is shorthand for
@@ -103,17 +103,17 @@ To select from a call result, write `(/name (get_person))`, or bind the result
 first. A path or message glued after a closing delimiter, such as `(get_person)/name`
 or `(get_people).size`, is a read error; a send uses `((get_people) .size)`.
 
-A missing property produces void. `??` supplies a fallback for nil or void:
+A missing property reads as `nil`. `??` supplies a fallback for nil:
 
 ```gene runnable
 (let person {^name "Ada"})
-[(?? person/nickname "anonymous") ($void? person/nickname)]
-# ["anonymous" true]
+[(?? person/nickname "anonymous") ($has_key? person "nickname")]
+# ["anonymous" false]
 ```
 
 Calling a missing member still fails. The error names the call head, such as
 `person/run`, and a missing `$` path identifies its first missing namespace
-member. Reading the missing property alone remains a normal void result.
+member. Reading the missing property alone remains a normal nil result.
 
 Use `==` for structural equality and `same?` for identity. Metadata does not
 participate in structural equality. Mutable list/map identity remains distinct
@@ -191,8 +191,7 @@ default takes precedence; an explicitly supplied nil does not select a default.
 ```
 
 Write `value : Int?` without `= 18` to default to nil. Optional positionals
-must follow required positionals and cannot precede a rest parameter. An
-explicit positional void fails an `Int?` check.
+must follow required positionals and cannot precede a rest parameter.
 
 Named arguments use `^` at both declaration and call:
 
@@ -215,7 +214,7 @@ A rest parameter ends in `...`. At a call site, `value ...` spreads its contents
 ```
 
 Defaults run at call time and may refer to earlier parameters. For exact
-named-void and callable-shape rules, see [calls](spec/calls.md) and
+named-argument and callable-shape rules, see [calls](spec/calls.md) and
 [optional binding](spec/nil-void.md).
 
 ### Describing a callable
@@ -270,10 +269,9 @@ selected for a receiver. Type queries describe direct data construction;
 
 ## Control flow
 
-Only false, nil, and void are falsy. Zero and an empty string are truthy.
+Only false and nil are falsy. Zero and an empty string are truthy.
 `if` returns a value; `do` groups expressions and returns the last one.
-For presence, prefer `($present? x)` to `(! ($absent? x))`. Only `nil` and
-`void` are absent; `false`, zero, empty strings and empty collections are present.
+For presence, prefer `($present? x)` to `(! ($absent? x))`. Only `nil` is absent; `false`, zero, empty strings and empty collections are present.
 
 Prefer an `elif` chain to nesting another `if` in each else branch:
 
@@ -509,11 +507,11 @@ A Path can be the callback:
 ($map people /name) # ["Ada" "Grace"]
 ```
 
-`map` converts a callback's void result to nil. `filter_map` drops only void,
-preserving nil, false, zero, and empty strings:
+`map` keeps one result per input. `filter_map` maps and then drops nil results,
+preserving false, zero, and empty strings:
 
 ```gene runnable
-(fn keep_positive [n] (if (> n 0) n void))
+(fn keep_positive [n] (if (> n 0) n nil))
 [($map [-1 2] keep_positive) ($filter_map [-1 2] keep_positive)]
 # [[nil 2] [2]]
 ```
@@ -546,7 +544,7 @@ runs when the Stream is pulled. `yield` requires this marker, and a trailing
 # [0 2 4 6]
 ```
 
-Raw `yield void` emits nothing. Stream consumers and `close` manage upstream
+`(yield nil)` emits nil. Stream consumers and `close` manage upstream
 cleanup; an early close runs suspended `ensure` blocks. Do not assume a lazy
 pipeline has executed because it was constructed.
 

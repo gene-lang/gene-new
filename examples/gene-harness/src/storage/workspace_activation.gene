@@ -320,7 +320,7 @@
               $"stored plugin ${entry/id} collides with a profile plugin; replace it explicitly"))
           (else
             (var descriptor (plan/descriptors .get entry/id))
-            (if_yes (&& (!= descriptor void) (== (workspace/errors/.get .get entry/id) void))
+            (if_yes (&& ($present? descriptor) ($absent? (workspace/errors/.get .get entry/id)))
               (try
                 (admissions .push
                   {^plugin descriptor ^options (descriptor_entry_options workspace entry)})
@@ -331,7 +331,7 @@
       (put_cordis_plugins h admissions)
     catch Any
       (for entry in plan/entries
-        (if (== (workspace/errors/.get .get entry/id) void)
+        (if ($absent? (workspace/errors/.get .get entry/id))
           (record_quarantine workspace ($to_str entry/id) ($to_str $err/message))))))
   (for item in admissions
     (var id ($to_str item/plugin/id))

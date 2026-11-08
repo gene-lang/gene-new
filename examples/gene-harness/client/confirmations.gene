@@ -5,9 +5,9 @@
 (import [handoff_modal] ^from "./overlays.gene")
 (import [flag] ^from "../src/common/launcher.gene")
 (import ^from "./notices.gene" [Notices put_notice remove_notice])
-(type Confirmations ^props {^target EventTarget ^items PropMap ^saved PropMap ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)})
+(type Confirmations ^props {^target EventTarget ^items PropMap ^saved PropMap ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)})
 
-(fn create_confirmations [target : EventTarget, notices : Notices, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void)] : Confirmations
+(fn create_confirmations [target : EventTarget, notices : Notices, api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)] : Confirmations
   (var controller (Confirmations ^target target ^items {} ^saved {} ^notices notices ^api api))
   (var saved (?? (storage_get "gene-harness/confirmations") ""))
   (if_yes (!= saved "")
@@ -22,7 +22,7 @@
       nil))
   controller)
 
-(fn finish_confirmation [controller : Confirmations, key : Str, target : EventTarget] : Void
+(fn finish_confirmation [controller : Confirmations, key : Str, target : EventTarget] : Nil
   (var record : Any controller/saved/%key)
   (set record/handled true)
   (var session : Str record/session)
@@ -30,7 +30,7 @@
   (storage_set "gene-harness/confirmations" ($json/stringify controller/saved))
   ($dom/remove target))
 
-(fn command_confirmation [controller : Confirmations, session : Str, command : Any] : Void
+(fn command_confirmation [controller : Confirmations, session : Str, command : Any] : Nil
   (var code "")
   (if_not ($absent? command/error_code) (set code command/error_code))
   (if_yes (!= code "confirmation_required") (return))
@@ -55,7 +55,7 @@
   ($dom/append target status)
   ($dom/append controller/target target)
   (if_yes handoff ($dom/focus confirm))
-  (put_notice ^action (fn [] : Void ($dom/focus confirm))
+  (put_notice ^action (fn [] : Nil ($dom/focus confirm))
     controller/notices
     ($dom/element "notice")
     "confirmation"
@@ -68,19 +68,19 @@
   ($dom/add_event_listener
     keep
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (finish_confirmation controller key target)))
   ($dom/add_event_listener
     confirm
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (set confirm/disabled true)
       (set keep/disabled true)
       (controller/api
         "POST"
         $"${(api_root)}/sessions/${session}/commands"
         {^text $"/${name} --confirm" ^expected_command command/expected_command}
-        (fn [code : Int, data : Any] : Void
+        (fn [code : Int, data : Any] : Nil
           (if (== code 202)
             (finish_confirmation controller key target)
             (do

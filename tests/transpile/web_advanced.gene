@@ -21,7 +21,7 @@
 
 (fn ^^generator numbers [] : (Stream Int Never)
   (yield 1)
-  (yield void)
+  (yield nil)
   (yield 2))
 
 (fn async_value [] : Int

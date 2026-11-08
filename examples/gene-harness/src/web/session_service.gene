@@ -98,7 +98,7 @@
 
 (fn ^^private feature_function [runtime, name : Str]
   (let found (row runtime/h "functions" name))
-  (if (|| ($absent? found) (== found void))
+  (if (|| ($absent? found) ($absent? found))
     (fail (ServiceError ^code "unavailable" ^message $"${name} is unavailable: its plugin is disabled or not ready.")))
   found/fn)
 

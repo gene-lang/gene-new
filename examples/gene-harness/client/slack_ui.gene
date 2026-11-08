@@ -13,23 +13,23 @@
   (var state : SlackUi states/slack) state)
 (fn pending_session [client : Client] : Str (/pending (slack_state client)))
 
-(fn render_session_title [client : Client, text : Str, shared : Any] : Void
+(fn render_session_title [client : Client, text : Str, shared : Any] : Nil
   (var state (slack_state client))
   (if_yes ($absent? state/title)
     (set state/title (create_session_title client/title)))
   (var raw : Any state/title) (var title : SlackSessionTitle raw)
   (update_session_title title text shared client/selected))
 
-(fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Void
+(fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Nil
   (var state (slack_state client))
   (if_yes ($absent? state/users)
     (set state/users (create_user_labels
-      (fn [data : Any, done : (Fn [Int Any] Void)] : Void
+      (fn [data : Any, done : (Fn [Int Any] Nil)] : Nil
         (api client "POST" $"${(api_root)}/channels/user" data done)))))
   (var raw : Any state/users) (var users : SlackUserLabels raw)
   (user_label users source target))
 
-(fn add_session_to_slack [client : Client] : Void
+(fn add_session_to_slack [client : Client] : Nil
   (var state (slack_state client))
   (var session client/selected)
   (if_yes (|| (== session "") (!= (string_or state/pending "") "")) (return))
@@ -37,7 +37,7 @@
   (update_controls client)
   (api client "POST" $"${(api_root)}/sessions/${($url/encode_component session)}/slack"
     {^revision client/session_revision}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set state/pending "")
       (if (== code 202)
         (then

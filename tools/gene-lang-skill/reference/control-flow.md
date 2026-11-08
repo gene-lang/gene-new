@@ -59,7 +59,7 @@ Each clause can also contain several expressions, returning the last:
 `&&`, `||`, `!`, and `??` (absent-default) round out the boolean surface.
 
 Use `($present? value)` rather than `(! ($absent? value))`. These predicates
-test absence, not truthiness: only `nil` and `void` are absent. `false`, zero,
+test absence, not truthiness: only `nil` is absent. `false`, zero,
 an empty string and an empty collection are present.
 
 ## Match
@@ -148,7 +148,7 @@ Message surface: `has_next` `peek` `next` `try_next` `close` `map` `filter`
 
 `peek`/`next` raise `EndOfStream` at exhaustion; `try_next` returns a tagged
 result instead — `TryNext/exhausted`, `#(TryNext/value item)`, or
-`#(TryNext/error err)`. `void` items are skipped. The first producer error is
+`#(TryNext/error err)`. `nil` items are delivered. The first producer error is
 terminal and propagates once.
 
 A generator is a `fn` or `message` declared with `^^generator`. Unmarked

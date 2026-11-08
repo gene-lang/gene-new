@@ -137,7 +137,7 @@ when compileOption("threads") and defined(posix):
         (var count 0)
         (while true
           (let row (await (rows .next)))
-          (if ($nil? row) (then (break)))
+          (if ($absent? row) (then (break)))
           (set count (+ count 1)))
         (rows .IoResource:close)
         (await (rows .IoResource:wait_closed))

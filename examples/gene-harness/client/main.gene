@@ -82,34 +82,34 @@
    set_appearance : ui_appearance])
 
 
-(fn ensure_feature_host [client : Client] : Void
+(fn ensure_feature_host [client : Client] : Nil
   (if_yes ($present? client/services) (return))
   (set client/services (FeatureHost
-    ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void (api client method path payload done))
-    ^error (fn [data : Any, session : Str] : Void (show_error client data ^session session))
-    ^feedback (fn [key : Str, message : Str, sticky : Bool] : Void (notice client message ^key key ^sticky sticky))
-    ^controls (fn [] : Void (update_controls client))
-    ^select (fn [id : Str] : Void (select_session client id))
-    ^refresh (fn [] : Void (refresh_sessions client))
+    ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil (api client method path payload done))
+    ^error (fn [data : Any, session : Str] : Nil (show_error client data ^session session))
+    ^feedback (fn [key : Str, message : Str, sticky : Bool] : Nil (notice client message ^key key ^sticky sticky))
+    ^controls (fn [] : Nil (update_controls client))
+    ^select (fn [id : Str] : Nil (select_session client id))
+    ^refresh (fn [] : Nil (refresh_sessions client))
     ^tab (fn [id : Str] : Any (session_tab client id))
-    ^upsert (fn [data : Any] : Void (upsert_session client data))
-    ^remember (fn [] : Void (remember_draft client))
-    ^apply_run (fn [session : Str, data : Any] : Void (apply_run client session data))
-    ^emit (fn [kind : Str, session : Str, data : Any] : Void (browser_event client kind session data))
-    ^render (fn [] : Void (render_transcript client))))
+    ^upsert (fn [data : Any] : Nil (upsert_session client data))
+    ^remember (fn [] : Nil (remember_draft client))
+    ^apply_run (fn [session : Str, data : Any] : Nil (apply_run client session data))
+    ^emit (fn [kind : Str, session : Str, data : Any] : Nil (browser_event client kind session data))
+    ^render (fn [] : Nil (render_transcript client))))
   (initialize_delegation client))
 
-(fn render_session_title [client : Client, text : Str, shared : Any] : Void
+(fn render_session_title [client : Client, text : Str, shared : Any] : Nil
   (ensure_feature_host client) (slack_title client text shared))
-(fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Void
+(fn resolve_slack_author [client : Client, source : Any, target : EventTarget] : Nil
   (ensure_feature_host client) (slack_author client source target))
-(fn add_session_to_slack [client : Client] : Void (ensure_feature_host client) (slack_share client))
+(fn add_session_to_slack [client : Client] : Nil (ensure_feature_host client) (slack_share client))
 (fn voice_pending? [client : Client] : Bool (ensure_feature_host client) (pending_voice client))
 (fn voice_replay_handler [client : Client] : Any (ensure_feature_host client) (replay_voice client))
 (fn voice_rounds [client : Client] : RoundClient (ensure_feature_host client) (rounds_voice client))
 (fn voice_review_key [client : Client, session : Str] : Str (ensure_feature_host client) (review_key_voice client session))
 (fn reviewed_voice_input [client : Client, session : Str, value : Str] : Any (ensure_feature_host client) (input_voice client session value))
-(fn voice_submit [client : Client, session : Str, value : Str, input : Any, done : (Fn [Int Any] Void)] : Void
+(fn voice_submit [client : Client, session : Str, value : Str, input : Any, done : (Fn [Int Any] Nil)] : Nil
   (ensure_feature_host client) (submit_voice client session value input done))
 
 (fn live_store [client : Client] : LiveOutput
@@ -117,7 +117,7 @@
   (var raw : Any client/live_output)
   (var store : LiveOutput raw) store)
 
-(fn refresh_live_output [client : Client] : Void
+(fn refresh_live_output [client : Client] : Nil
   (var store (live_store client))
   (for mount in store/mounts
     (var entry : Any (output_entry store (string_or mount/key "")))
@@ -135,11 +135,11 @@
     (if_yes (!= label (string_or mount/label ""))
       ($dom/set_text summary label) (set mount/label label))))
 
-(fn schedule_live_output [client : Client] : Void
+(fn schedule_live_output [client : Client] : Nil
   (var store (live_store client))
   (if_yes store/scheduled (return))
   (set store/scheduled true)
-  ($time/after 40.0 (fn [] : Void
+  ($time/after 40.0 (fn [] : Nil
     (set store/scheduled false)
     (refresh_live_output client)
     (var notify (&& (!= store/notify_session "") (== store/notify_session client/selected)))
@@ -149,13 +149,13 @@
         ($dom/scroll_end client/transcript)
         (do ($dom/set_text ($dom/element "new_output_label") "New output") (set_hidden "new_output" false)))))))
 
-(fn live_console [client : Client, session : Str, data : Any] : Void
+(fn live_console [client : Client, session : Str, data : Any] : Nil
   (var store (live_store client))
   (if_yes (receive_output store session data)
     (if_yes (== session client/selected) (set store/notify_session session))
     (schedule_live_output client)))
 
-(fn begin_output_render [client : Client] : Void
+(fn begin_output_render [client : Client] : Nil
   (var store (live_store client))
   (for mount in store/mounts
     (if_yes ($present? mount/command) (continue))
@@ -179,12 +179,12 @@
   (var summary ($dom/render `(summary %label)))
   (var panel ($dom/render `(details ^class_name "execution live_output"
     ^open %(output_open entry default_open) ^hidden %($absent? entry)
-    ^on_toggle %(fn [event : Any] : Void
+    ^on_toggle %(fn [event : Any] : Nil
       (var current : Any (output_entry store key))
       (if_not ($absent? current) (set current/open event/current_target/open))))))
   ($dom/append panel summary)
   ($dom/append panel ($dom/render `(button ^type "button" ^class_name "copy"
-    ^on_click %(fn [event : Any] : Void
+    ^on_click %(fn [event : Any] : Nil
       (copy_text client (output_text (output_entry store key)))) "Copy")))
   ($dom/append panel pre)
   (store/mounts .push {^key key ^panel panel ^pre pre ^summary summary ^text "" ^label label ^entry entry
@@ -201,17 +201,17 @@
   (var events : FeatureEvents raw)
   events)
 
-(fn browser_event [client : Client, kind : Str, session : Str, data : Any] : Void
+(fn browser_event [client : Client, kind : Str, session : Str, data : Any] : Nil
   (emit_feature_event (client_events client) kind session data))
 
-(fn subscribe_browser [client : Client, owner : Str, callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
+(fn subscribe_browser [client : Client, owner : Str, callback : (Fn [Str Str Any] Nil)] : (Fn [] Nil)
   (var dispose (subscribe_feature (client_events client) callback ^owner owner))
   (if_yes client/ready (render_transcript client))
-  (fn [] : Void
+  (fn [] : Nil
     (dispose)
     (if_yes client/ready (render_transcript client))))
 
-(fn creation_outcome [client : Client, code : Int] : Void
+(fn creation_outcome [client : Client, code : Int] : Nil
   (if_yes (|| (== code 0) (>= code 500)) (set client/creation_unknown true))
   (if_yes (== code 201) (set client/creation_unknown false))
   (var unknown (launcher_flag client/creation_unknown))
@@ -219,7 +219,7 @@
   (notice ^key "creation-recovery" ^sticky unknown client
     (if unknown "Conversation creation is unknown. Inspect your conversations, then acknowledge it in the host controls before creating another." "")))
 
-(fn acknowledge_creation [client : Client] : Void
+(fn acknowledge_creation [client : Client] : Nil
   (if_yes client/sending (return))
   (set client/creation_unknown false)
   (set_hidden "session_creation_recovery" true)
@@ -227,7 +227,7 @@
   (set recovery/open false)
   (notice ^key "creation-recovery" client "Creation uncertainty acknowledged after inspection. No creation was replayed."))
 
-(fn request_session [client : Client, title : Str, done : (Fn [Int Any] Void)] : Void
+(fn request_session [client : Client, title : Str, done : (Fn [Int Any] Nil)] : Nil
   (if_yes client/sending
     (done 409 {^^not_sent ^message "Wait for the current submission to resolve."}) (return))
   (if_yes (launcher_flag client/creation_unknown)
@@ -235,7 +235,7 @@
     (return))
   (set client/sending true) (update_controls client)
   (api client "POST" $"${(api_root)}/sessions" {^title title}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set client/sending false)
       (creation_outcome client code)
       (if_yes (== code 201) (transfer_model_draft client (string_or data/id "")))
@@ -243,13 +243,13 @@
       (done code data))))
 
 (fn launcher_command [client : Client, session : Str, text : Str, expected : Any,
-                      done : (Fn [Int Any] Void)] : Void
+                      done : (Fn [Int Any] Nil)] : Nil
   (if_yes (|| (! client/ready) client/sending)
     (done 409 {^message "Wait for the current submission to resolve."}) (return))
   (if_yes (== session "")
     (var draft ($dom/input_value client/prompt))
     (request_session client "Plugin tools"
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if (== code 201)
           (do
             (var target : Str data/id)
@@ -261,12 +261,12 @@
   (set client/sending true) (update_controls client)
   (var commands : CommandClient client/command_client)
   (dispatch_command commands session text expected
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set client/sending false) (update_controls client)
       (done code data)
       (if_yes (== code 202) ($dom/focus client/prompt)))))
 
-(fn launcher_navigate [client : Client, item : Any, done : (Fn [Int Any] Void)] : Void
+(fn launcher_navigate [client : Client, item : Any, done : (Fn [Int Any] Nil)] : Nil
   (if_yes client/sending (done 409 {^message "Resolving your submission…"}) (return))
   (var kind (string_or item/kind ""))
   (var ui : UiClient client/ui)
@@ -278,7 +278,7 @@
   (if_yes (== kind "conversation")
     (var target (string_or item/session ""))
     (api client "GET" $"${(api_root)}/sessions/${target}/snapshot" nil
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if_yes (|| (!= code 200) client/sending)
           (done 409 {^message "This conversation is unavailable or a submission is resolving."}) (return))
         (select_session ^snapshot data client target) (navigate ui "harness")
@@ -292,7 +292,7 @@
   (var draft (if (== client/selected "") ($dom/input_value client/prompt)
     (?? (storage_get (draft_key "new")) "")))
   (request_session client "New conversation"
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if (== code 201)
         (do
           (var target : Str data/id)
@@ -320,30 +320,30 @@
       ^model client/status/model ^catalog_revision client/status/catalog_revision
       ^model_settings tab/cache/session/model_settings
       ^workspace (string_or client/status/workspace "")})
-   ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+   ^api (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
      (api client method path payload done))
-   ^command (fn [session : Str, text : Str, expected : Any, done : (Fn [Int Any] Void)] : Void
+   ^command (fn [session : Str, text : Str, expected : Any, done : (Fn [Int Any] Nil)] : Nil
      (launcher_command client session text expected done))
-   ^navigate (fn [item : Any, done : (Fn [Int Any] Void)] : Void (launcher_navigate client item done))
+   ^navigate (fn [item : Any, done : (Fn [Int Any] Nil)] : Nil (launcher_navigate client item done))
    ^keyboard_owned (fn [] : Bool (keyboard_owned?))
-   ^ensure_session (fn [done : (Fn [Int Any] Void)] : Void
+   ^ensure_session (fn [done : (Fn [Int Any] Nil)] : Nil
      (if (!= client/selected "")
        (done 200 {^id client/selected})
        (request_session client "New conversation"
-         (fn [code : Int, data : Any] : Void
+         (fn [code : Int, data : Any] : Nil
            (if_yes (== code 201) (select_session client (string_or data/id "")))
            (done code data)))))
    ^capabilities_for (fn [name : Str] : Any
      (if (== name "models")
-       (then (model_capabilities client (fn [] : Void (send client))))
+       (then (model_capabilities client (fn [] : Nil (send client))))
        (else (voice_capabilities client name))))
-   ^subscribe (fn [callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
+   ^subscribe (fn [callback : (Fn [Str Str Any] Nil)] : (Fn [] Nil)
      (subscribe_browser client "" callback))
-   ^subscribe_owned (fn [owner : Str, callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
+   ^subscribe_owned (fn [owner : Str, callback : (Fn [Str Str Any] Nil)] : (Fn [] Nil)
      (subscribe_browser client owner callback))
-   ^claim (fn [owner : Str, panel : EventTarget, close : (Fn [Bool] Void), fallback : EventTarget] : Bool
+   ^claim (fn [owner : Str, panel : EventTarget, close : (Fn [Bool] Nil), fallback : EventTarget] : Bool
      (claim_modal owner client/root panel close fallback))
-   ^release (fn [owner : Str, restore : Bool] : Void (release_modal owner restore))})
+   ^release (fn [owner : Str, restore : Bool] : Nil (release_modal owner restore))})
 
 (fn render_plugin_slot [client : Client, target : EventTarget, slot : Str] : Bool
   (var components client/components)
@@ -354,24 +354,24 @@
     target
     components
     slot
-    (fn [text : Str] : Void
+    (fn [text : Str] : Nil
       (component_command client text))
-    (fn [text : Str] : Void
+    (fn [text : Str] : Nil
       (if_yes (&& client/ready client/connected (! client/sending)) (stage_prompt client text)))
-    (fn [target : Str, presentation : Str] : Void
+    (fn [target : Str, presentation : Str] : Nil
       (var ui : UiClient client/ui)
       (navigate ui target presentation))
     (&& client/ready client/connected (! client/sending))
     buttons))
 
-(fn render_extensions [client : Client] : Void
+(fn render_extensions [client : Client] : Nil
   (if_not ($absent? client/ui)
     (var sidebar_ui : UiClient client/ui)
     (update_sidebar sidebar_ui/navigation/sidebar client/components
-      (fn [text : Str] : Void (component_command client text))
-      (fn [text : Str] : Void
+      (fn [text : Str] : Nil (component_command client text))
+      (fn [text : Str] : Nil
         (if_yes (&& client/ready client/connected (! client/sending)) (stage_prompt client text)))
-      (fn [target : Str, presentation : Str] : Void (navigate sidebar_ui target presentation))
+      (fn [target : Str, presentation : Str] : Nil (navigate sidebar_ui target presentation))
       (&& client/ready client/connected (! client/sending))))
   (for slot in ["sidebar" "toolbar" "composer" "composer_actions" "status"]
     (var target ($dom/element $"web_${slot}"))
@@ -386,16 +386,16 @@
         (var disabled : Bool item/disabled)
         (set button/disabled (|| disabled (! client/ready) (! client/connected) client/sending))))))
 
-(fn component_command [client : Client, text : Str] : Void
+(fn component_command [client : Client, text : Str] : Nil
   (if_yes (|| (! client/ready) (! client/connected) client/sending) (return))
   (launcher_command client client/selected text nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (!= code 202) (show_error client data)))))
 
-(fn notice [client : Client, text : Str, ^key key : Str = "feedback", ^scope scope : Str = "", ^sticky sticky : Bool = false, ^severity severity : Str = "info"] : Void
+(fn notice [client : Client, text : Str, ^key key : Str = "feedback", ^scope scope : Str = "", ^sticky sticky : Bool = false, ^severity severity : Str = "info"] : Nil
   (put_notice client/notices client/notice "host" scope key text severity sticky {^session scope}))
 
-(fn set_hidden [id : Str, hidden : Bool] : Void
+(fn set_hidden [id : Str, hidden : Bool] : Nil
   (var element ($dom/element id))
   (set element/hidden hidden))
 
@@ -404,7 +404,7 @@
   (var text : Str value)
   text)
 
-(fn api [client : Client, method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+(fn api [client : Client, method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
   (var address
     (if client/safe_ui
       ($to_str path (if (str/contains? path "?") "&ui=default" "?ui=default"))
@@ -414,7 +414,7 @@
     address
     ($json/stringify payload)
     {^content-type "application/json" ^x-csrf-token client/csrf}
-    (fn [status : Int, body : Str] : Void
+    (fn [status : Int, body : Str] : Nil
       (var result
         :
         Any
@@ -426,7 +426,7 @@
             {^code "invalid_response" ^message "The Harness returned an unreadable response."})))
       (done status result))))
 
-(fn show_error [client : Client, result : Any, ^session session : Str = ""] : Void
+(fn show_error [client : Client, result : Any, ^session session : Str = ""] : Nil
   (var message (string_or result/message "The request could not be completed."))
   (notice ^key "request-error" ^scope session ^^sticky ^severity "error" client message))
 
@@ -439,7 +439,7 @@
   (client/tabs .push tab)
   tab)
 
-(fn save_tab [client : Client] : Void
+(fn save_tab [client : Client] : Nil
   (var tab (session_tab client client/selected))
   (var cache : Any tab/cache)
   (set cache/records client/records)
@@ -455,7 +455,7 @@
     (set cache/status client/status))
   (set tab/expanded client/expanded))
 
-(fn render_tabs [client : Client] : Void
+(fn render_tabs [client : Client] : Nil
   (var target ($dom/element "session_tabs"))
   ($dom/clear target)
   (for tab in client/tabs
@@ -470,12 +470,12 @@
         target
         ($dom/render
           `(div ^class_name %(if (== id client/selected) "session_tab selected" "session_tab")
-             (button ^type "button" ^on_click %(fn [event : Any] : Void (select_session client id))
+             (button ^type "button" ^on_click %(fn [event : Any] : Nil (select_session client id))
                %title
                (small %state))
-             (button ^type "button" ^aria-label %$"Close ${title}" ^on_click %(fn [event : Any] : Void (close_tab client id)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))))))
+             (button ^type "button" ^aria-label %$"Close ${title}" ^on_click %(fn [event : Any] : Nil (close_tab client id)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))))))
 
-(fn close_tab [client : Client, id : Str, ^navigate navigate : Bool = true] : Void
+(fn close_tab [client : Client, id : Str, ^navigate navigate : Bool = true] : Nil
   (clear_session_output (live_store client) id)
   (browser_event client "session/close" id nil)
   (var tab (session_tab client id))
@@ -493,7 +493,7 @@
     (select_session client next))
   (render_tabs client))
 
-(fn remember_draft [client : Client] : Void
+(fn remember_draft [client : Client] : Nil
   (if_yes (! client/ready) (return))
   (if_yes (&& (!= client/selected "") (== client/generation 0)) (return))
   (reviewed_voice_input client client/selected ($dom/input_value client/prompt))
@@ -504,7 +504,7 @@
       client
       "Browser storage is unavailable. Keep this tab open to preserve your draft.")))
 
-(fn controls [client : Client] : Void
+(fn controls [client : Client] : Nil
   (if_not ($absent? client/inbox)
     (var inbox : ProducerInbox client/inbox)
     (producer_ready inbox (&& client/ready client/connected) client/selected))
@@ -522,7 +522,7 @@
     ($absent? client/pending) (! in_mode)))
   (if_yes (&& client/was_executing (! executing))
     (set client/action_cooldown true)
-    ($time/after 250.0 (fn [] : Void (set client/action_cooldown false) (update_controls client))))
+    ($time/after 250.0 (fn [] : Nil (set client/action_cooldown false) (update_controls client))))
   (set client/was_executing executing)
   ($dom/set_class client/root "working" client/busy)
   ($dom/set_class client/root "sending" client/sending)
@@ -590,7 +590,7 @@
     (var ui : UiClient client/ui)
     (ui_controls ui (&& client/ready client/connected) client/selected)))
 
-(fn render_input [client : Client] : Void
+(fn render_input [client : Client] : Nil
   (var batch (waiting_batch {^round client/round}))
   (set client/input_id (if ($absent? batch) "" (string_or batch/id "")))
   (set_hidden "input_panel" (== client/input_id ""))
@@ -598,7 +598,7 @@
     (var questions : QuestionEditors client/questions)
     (mount_question questions client/selected batch ($dom/element "input_fields") "conversation")))
 
-(fn render_sessions [client : Client] : Void
+(fn render_sessions [client : Client] : Nil
   (var focused ($dom/active_element))
   (set client/list/harness_focus_session
     (if ($dom/contains? client/list focused) (string_or focused/harness_session "") ""))
@@ -624,7 +624,7 @@
     (var menu_raw : Any client/session_menu)
     (var menu : SessionMenu menu_raw) (finish_session_menu_render menu)))
 
-(fn render_session_button [client : Client, target : EventTarget, session : Any] : Void
+(fn render_session_button [client : Client, target : EventTarget, session : Any] : Nil
   (var title : Str session/title)
   (var id : Str session/id)
   (var kind : Str session/kind)
@@ -638,13 +638,13 @@
   ($dom/append
     row
     ($dom/render
-      `(button ^type "button" ^class_name %cls ^on_click %(fn [event : Any] : Void (select_session client id))
+      `(button ^type "button" ^class_name %cls ^on_click %(fn [event : Any] : Nil (select_session client id))
          (span ^class_name "session_name" %title)
          (span ^class_name "session_meta" %metadata))))
   (var more ($dom/render `(button ^type "button" ^class_name "session_more"
     ^aria-label %$"Actions for ${title}" ^aria-haspopup "menu" ^aria-expanded "false"
     ^disabled %(! client/ready)
-    ^on_click %(fn [event : Any] : Void
+    ^on_click %(fn [event : Any] : Nil
       ($dom/stop_propagation event)
       (if_yes (keyboard_owned?) (return))
       (var anchor : EventTarget event/current_target)
@@ -657,15 +657,15 @@
 (fn conversation_menu [client : Client] : SessionMenu
   (if_yes ($absent? client/session_menu)
     (set client/session_menu (create_session_menu
-      (fn [method : Str, path : Str, data : Any, done : (Fn [Int Any] Void)] : Void
+      (fn [method : Str, path : Str, data : Any, done : (Fn [Int Any] Nil)] : Nil
         (api client method path data done))
-      (fn [record : Any] : Void (session_edited client record))
-      (fn [ids : (List Any)] : Void
+      (fn [record : Any] : Nil (session_edited client record))
+      (fn [ids : (List Any)] : Nil
         (for value in ids (var id : Str value) (forget_session client id))
         (refresh_sessions client)))))
   (var raw : Any client/session_menu) (var menu : SessionMenu raw) menu)
 
-(fn session_edited [client : Client, record : Any] : Void
+(fn session_edited [client : Client, record : Any] : Nil
   (var id : Str record/id)
   (var received_revision : Int ($json/parse (string_or record/revision "0")))
   (for tab in client/tabs
@@ -694,7 +694,7 @@
     ($dom/set_text ($dom/element "pin_session") (if (launcher_flag record/pinned) "Unpin" "Pin")))
   (render_sessions client) (render_tabs client) (refresh_sessions client) (update_controls client))
 
-(fn forget_session [client : Client, id : Str] : Void
+(fn forget_session [client : Client, id : Str] : Nil
   (var ids : (List Str) [id])
   (for tab in client/tabs
     (if_yes (== (string_or tab/cache/session/parent/session "") id) (ids .push tab/id)))
@@ -720,7 +720,7 @@
     (storage_remove (mode_pending_key removed)))
   (render_sessions client) (render_tabs client))
 
-(fn refresh_sessions [client : Client] : Void
+(fn refresh_sessions [client : Client] : Nil
   (if_not client/ready (return))
   (set client/filter_epoch (+ client/filter_epoch 1))
   (var epoch client/filter_epoch)
@@ -735,7 +735,7 @@
     "GET"
     $"${(api_root)}/sessions${query}"
     nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (!= epoch client/filter_epoch) (return))
       (if (== code 200)
         (then
@@ -750,20 +750,20 @@
     (if_yes (== previous id) (return true)))
   false)
 
-(fn toggle_block [client : Client, id : Str, opened : Bool] : Void
+(fn toggle_block [client : Client, id : Str, opened : Bool] : Nil
   (var kept : (List Str) [])
   (for previous in client/expanded
     (if_yes (!= previous id) (kept .push previous)))
   (if_yes opened (kept .push id))
   (set client/expanded kept))
 
-(fn copy_text [client : Client, text : Str] : Void
+(fn copy_text [client : Client, text : Str] : Nil
   ($browser/copy
     text
-    (fn [copied : Bool] : Void
+    (fn [copied : Bool] : Nil
       (notice client (if copied "Copied." "Select the text to copy it.")))))
 
-(fn edit_prompt [client : Client, text : Str] : Void
+(fn edit_prompt [client : Client, text : Str] : Nil
   (if_yes ($present? client/pending)
     (notice client "Resolve the pending submission before editing another prompt.")
     (return))
@@ -772,7 +772,7 @@
   (render_commands client)
   ($dom/focus client/prompt))
 
-(fn stage_prompt [client : Client, text : Str] : Void
+(fn stage_prompt [client : Client, text : Str] : Nil
   (var ui : UiClient client/ui)
   (navigate ui "harness")
   (var draft ($dom/input_value client/prompt))
@@ -784,12 +784,12 @@
     `(div
       (p "A view offered a prompt. Keep your current draft, replace it, or append the offered text.")
       (pre %text)
-      (button ^type "button" ^on_click %(fn [event : Any] : Void
+      (button ^type "button" ^on_click %(fn [event : Any] : Nil
         (edit_prompt client text) (set offer/hidden true)) "Replace draft")
-      (button ^type "button" ^on_click %(fn [event : Any] : Void
+      (button ^type "button" ^on_click %(fn [event : Any] : Nil
         (edit_prompt client ($to_str ($dom/input_value client/prompt) "\n\n" text))
         (set offer/hidden true)) "Append to draft")
-      (button ^type "button" ^on_click %(fn [event : Any] : Void
+      (button ^type "button" ^on_click %(fn [event : Any] : Nil
         (set offer/hidden true) ($dom/focus client/prompt)) "Keep draft")))))
 
 (fn card_owned [client : Client, card : Any] : Bool
@@ -799,7 +799,7 @@
   (var card_round (string_or card/round ""))
   (&& (== round_state "running") (== round_id card_round)))
 
-(fn render_block [client : Client, target : EventTarget, block : Any] : Void
+(fn render_block [client : Client, target : EventTarget, block : Any] : Nil
   (var block_phase : Str block/phase)
   (if_yes (render_delegation client target block) (return))
   (if_yes (== block_phase "card")
@@ -810,8 +810,8 @@
     ($dom/append target (card_update_line block))
     (return))
   (if_yes (== block_phase "questions")
-    ($dom/append target (answered_view block (fn [text : Str] : Void (stage_prompt client text))
-      ^resolve_author (fn [source : Any, target : EventTarget] : Void (resolve_slack_author client source target))))
+    ($dom/append target (answered_view block (fn [text : Str] : Nil (stage_prompt client text))
+      ^resolve_author (fn [source : Any, target : EventTarget] : Nil (resolve_slack_author client source target))))
     (return))
   (var id : Str block/id)
   (var generation client/generation)
@@ -825,14 +825,14 @@
     ($dom/append
     target
     (block_view
-      ^resolve_author (fn [source : Any, target : EventTarget] : Void (resolve_slack_author client source target))
+      ^resolve_author (fn [source : Any, target : EventTarget] : Nil (resolve_slack_author client source target))
       ^on_speak (voice_replay_handler client)
       block
       (not_durable block)
-      (fn [text : Str] : Void
+      (fn [text : Str] : Nil
         (copy_text client text))
       (expanded_block client id)
-      (fn [opened : Bool] : Void
+      (fn [opened : Bool] : Nil
         (if_yes (== generation client/generation) (toggle_block client id opened))))))
   (var phase : Str block/phase)
   (if_yes (&& (== phase "command") (! combined) ($absent? block/mode_instance))
@@ -845,7 +845,7 @@
     ($dom/append
       target
       ($dom/render
-        `(button ^type "button" ^on_click %(fn [event : Any] : Void (api client "POST" $"${(api_root)}/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Void (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
+        `(button ^type "button" ^on_click %(fn [event : Any] : Nil (api client "POST" $"${(api_root)}/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Nil (if_yes (!= code 200) (show_error client data))))) "Cancel command"))))
   (var view : Any block/view)
   (if_yes ($present? view)
     (var next : Any view/next)
@@ -855,9 +855,9 @@
       ($dom/append
         target
         ($dom/render
-          `(button ^type "button" ^on_click %(fn [event : Any] : Void (send_command client $"/view ${path}:${first}")) "Next page"))))))
+          `(button ^type "button" ^on_click %(fn [event : Any] : Nil (send_command client $"/view ${path}:${first}")) "Next page"))))))
 
-(fn render_run [client : Client, blocks : (List Any), run : Any] : Void
+(fn render_run [client : Client, blocks : (List Any), run : Any] : Nil
   (var target ($dom/render `(section ^class_name "run")))
   (var prompt "")
   (var generation client/generation)
@@ -875,30 +875,30 @@
         (var active (&& ($present? run) (! (terminal (string_or run/state "")))))
         ($dom/append target
           (step_view step (expanded_block client key) active
-            (fn [text : Str] : Void (copy_text client text))
+            (fn [text : Str] : Nil (copy_text client text))
             (fn [id : Str] : Bool (expanded_block client id))
-            (fn [id : Str, opened : Bool] : Void
+            (fn [id : Str, opened : Bool] : Nil
               (if_yes (== generation client/generation) (toggle_block client id opened)))
             ^on_speak (voice_replay_handler client)
             ^output_view (live_output_view client (turn_output_key client/selected (string_or block/round_id "") (dint block/turn)))
-            ^render_extra (fn [content : EventTarget, item : Any] : Void (render_block client content item)))))))
+            ^render_extra (fn [content : EventTarget, item : Any] : Nil (render_block client content item)))))))
   (if_yes (&& ($present? run) (!= (run_label run) "Completed"))
     (var on_continue : Any nil)
     (if_yes (== (string_or run/id "") (string_or client/round/id ""))
       (var session client/selected) (var source : Str run/id)
-      (set on_continue (fn [mode : Str] : Void
+      (set on_continue (fn [mode : Str] : Nil
         (var payload : Any {^mode mode})
         (attach_model_draft client payload session)
         (api client "POST" $"${(api_root)}/sessions/${session}/rounds/${source}/continue" payload
-          (fn [code : Int, data : Any] : Void
+          (fn [code : Int, data : Any] : Nil
             (if (== code 202)
               (then (model_draft_admitted client session payload) (apply_run client session data))
               (else (show_error ^session session client data)
                 (if_yes (== session client/selected) (render_transcript client)))))))))
-    ($dom/append target (run_status_view run prompt (fn [text : Str] : Void (edit_prompt client text)) ^on_continue on_continue)))
+    ($dom/append target (run_status_view run prompt (fn [text : Str] : Nil (edit_prompt client text)) ^on_continue on_continue)))
   ($dom/append client/transcript target))
 
-(fn render_transcript [client : Client, ^prepend prepend : Bool = false] : Void
+(fn render_transcript [client : Client, ^prepend prepend : Bool = false] : Nil
   (begin_output_render client)
   (ensure_feature_host client)
   (begin_delegation_render client)
@@ -936,8 +936,8 @@
       ^shown_round (if ($absent? first) "" (string_or first/round_id "")))))
   (append_history_start client/transcript cache/session client/records client/preview
     client/has_older client/loading_older
-    (fn [text : Str] : Void (copy_text client text))
-    (fn [] : Void (load_older client)))
+    (fn [text : Str] : Nil (copy_text client text))
+    (fn [] : Nil (load_older client)))
   (if (&& (== all_visible/.size 0) (== (string_or cache/session/first_request "") ""))
     (if_not (render_plugin_slot client client/transcript "welcome")
       ($dom/append client/transcript
@@ -947,12 +947,12 @@
            (p "Start with an idea, a question, or a task.")
            (div ^class_name "suggestions"
              (button ^type "button"
-               ^on_click %(fn [event : Any] : Void
+               ^on_click %(fn [event : Any] : Nil
                  ($dom/set_input_value client/prompt "What can you help me with?")
                  ($dom/focus client/prompt)) "Explore ideas"
                (span ^class_name "icon" ^data-icon "chevron-right" ^aria-hidden "true"))
              (button ^type "button"
-               ^on_click %(fn [event : Any] : Void
+               ^on_click %(fn [event : Any] : Nil
                  ($dom/set_input_value client/prompt "/help")
                  ($dom/focus client/prompt)) "Browse commands"
                (span ^class_name "suggestion_symbol" ^aria-hidden "true" "/"))))))))
@@ -1005,7 +1005,7 @@
         (if client/viewing_history "Return to latest" "New output"))
       (set_hidden "new_output" false))))
 
-(fn update_controls [client : Client] : Void
+(fn update_controls [client : Client] : Nil
   (var state : Str (if ($absent? client/round) "" client/round/state))
   (set client/server_busy (|| (== state "running")
     (&& (== state "waiting") ($present? client/round/delegation_wait))
@@ -1020,35 +1020,35 @@
       ($present? client/mode/running)))
   (controls client))
 
-(fn acknowledge_run [client : Client, run : Any, session : Str] : Void
+(fn acknowledge_run [client : Client, run : Any, session : Str] : Nil
   (if_yes ($absent? run) (return))
   (var request_id (string_or run/request_id ""))
   (if_yes (&& (== session client/awaiting_session) (== request_id client/awaiting))
     (set client/awaiting "")
     (set client/awaiting_session "")))
 
-(fn refresh_status [client : Client] : Void
+(fn refresh_status [client : Client] : Nil
   (if_not client/ready (return))
   (set client/status_generation (+ client/status_generation 1))
   (var generation client/status_generation)
   (var session client/selected)
   # Coalesce a publication's invalidations and drop late requests after a tab
   # switch or another workspace update. This is event-driven, not polling.
-  ($time/after 25.0 (fn [] : Void
+  ($time/after 25.0 (fn [] : Nil
     (if_yes (!= generation client/status_generation) (return))
     (api client "GET" $"${(api_root)}/status?session=${($url/encode_component session)}" nil
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if_yes (|| (!= generation client/status_generation) (!= session client/selected)) (return))
         (if (== code 200) (apply_status client data) (show_error client data)))))))
 
-(fn invalidate_status [client : Client, epoch : Str, revision : Str] : Void
+(fn invalidate_status [client : Client, epoch : Str, revision : Str] : Nil
   (if_yes (&& (== epoch client/status_epoch) (! (revision_before client/status_revision revision)))
     (return))
   (set client/status_epoch epoch)
   (set client/status_revision revision)
   (refresh_status client))
 
-(fn apply_appearance [client : Client, mode : Str] : Void
+(fn apply_appearance [client : Client, mode : Str] : Nil
   (if_yes (&& (!= mode "light") (!= mode "dark")) (return))
   (set client/appearance mode)
   ($dom/set_attribute ($dom/element "harness_document") "data-mode" mode)
@@ -1059,7 +1059,7 @@
 
 # Plugin style contributions from slot components and views, one <style> each.
 # Recovery views mount none.
-(fn sync_plugin_styles [client : Client] : Void
+(fn sync_plugin_styles [client : Client] : Nil
   (var entries : (List Any) [])
   (if_not client/safe_ui
     (for component in client/components
@@ -1083,7 +1083,7 @@
     ($dom/set_text element css)
     ($dom/append target element)))
 
-(fn apply_status [client : Client, data : Any] : Void
+(fn apply_status [client : Client, data : Any] : Nil
   (if_not (status_is_current data client/status client/selected client/epoch client/status_epoch client/status_revision)
     (return))
   (var epoch (string_or data/epoch ""))
@@ -1140,7 +1140,7 @@
   (if_yes (&& components_changed (== client/records/.size 0) (== client/preview/.size 0))
     (render_transcript client)))
 
-(fn render_commands [client : Client] : Void
+(fn render_commands [client : Client] : Nil
   (var picker ($dom/element "commands"))
   (if_yes ($present? client/mode)
     (set picker/hidden true)
@@ -1170,7 +1170,7 @@
       ($dom/append
         picker
         ($dom/render
-          `(button ^type "button" ^class_name "command" ^on_click %(fn [event : Any] : Void ($dom/set_input_value client/prompt $"/${name} ") (remember_draft client) ($dom/focus client/prompt) (set picker/hidden true))
+          `(button ^type "button" ^class_name "command" ^on_click %(fn [event : Any] : Nil ($dom/set_input_value client/prompt $"/${name} ") (remember_draft client) ($dom/focus client/prompt) (set picker/hidden true))
              (strong %$"/${name}")
              (span %doc))))))
   (if_not matched
@@ -1182,14 +1182,14 @@
               "Use /help to load available commands."
               "No matching commands. Use /help for the full list."))))))
 
-(fn upsert_session [client : Client, session : Any] : Void
+(fn upsert_session [client : Client, session : Any] : Nil
   (set client/sessions (merge_blocks client/sessions [session]))
   (render_sessions client))
 
-(fn sessions_page [client : Client, after : Str] : Void
+(fn sessions_page [client : Client, after : Str] : Nil
   (var epoch client/socket_epoch)
   (api client "GET" $"${(api_root)}/sessions?after=${after}" nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (!= epoch client/socket_epoch) (return))
       (if (== code 200)
         (then
@@ -1207,7 +1207,7 @@
           (if_yes (!= next "") (sessions_page client next)))
         (else (show_error client data))))))
 
-(fn load_older [client : Client] : Void
+(fn load_older [client : Client] : Nil
   (if_yes (|| client/loading_older (== ($size client/records) 0)) (return))
   (set client/loading_older true)
   (var generation client/generation)
@@ -1219,7 +1219,7 @@
     "GET"
     $"${(api_root)}/sessions/${client/selected}/snapshot?before=${before}"
     nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (!= generation client/generation) (return))
       (set client/loading_older false)
       (if (== code 200)
@@ -1239,7 +1239,7 @@
         (else
           (show_error client data))))))
 
-(fn apply_snapshot [client : Client, data : Any] : Void
+(fn apply_snapshot [client : Client, data : Any] : Nil
   (if_yes (== (string_or data/status/epoch client/epoch) client/epoch)
     (var before_sequence : Int 0) (var next_sequence : Int 0)
     (if_not ($absent? client/round/submission_seq) (set before_sequence client/round/submission_seq))
@@ -1305,7 +1305,7 @@
     (var parent_title (string_or data/session/parent_title parent))
     (var turn (dint data/session/parent/turn))
     ($dom/append origin (session_link parent $"Delegated by ${parent_title} · turn ${turn}"
-      (fn [id : Str] : Void (select_session client id)))))
+      (fn [id : Str] : Nil (select_session client id)))))
   (var tab (session_tab client client/selected))
   (set tab/title title)
   (set tab/cache data)
@@ -1317,7 +1317,7 @@
   (render_tabs client)
   (update_controls client))
 
-(fn apply_records [client : Client, incoming : (List Any), cursor : Str] : Void
+(fn apply_records [client : Client, incoming : (List Any), cursor : Str] : Nil
   (if_not client/viewing_history
     (var merged (merge_blocks client/records (historical_records incoming)))
     (if_yes (> ($size merged) client_record_limit) (set client/has_older true))
@@ -1332,7 +1332,7 @@
   (if_yes (!= cursor "") (set client/cursor cursor))
   (render_transcript client))
 
-(fn apply_record [client : Client, record : Any] : Void
+(fn apply_record [client : Client, record : Any] : Nil
   (if_yes (== (string_or record/phase "") "console") (return))
   (if_yes (&& (== (string_or record/phase "") "turn/start")
     (== (string_or record/round_id "") (string_or client/round/id "")))
@@ -1349,7 +1349,7 @@
     (if_not found (set client/preview (bounded_blocks (merge_blocks client/preview [record]) true))))
   (render_transcript client))
 
-(fn apply_run [client : Client, session : Str, data : Any] : Void
+(fn apply_run [client : Client, session : Str, data : Any] : Nil
   (acknowledge_run client data session)
   (if_yes (== session client/selected)
     (var current_sequence : Int 0) (var incoming_sequence : Int 0)
@@ -1367,7 +1367,7 @@
     (if_yes (== tab/id id) (return true)))
   false)
 
-(fn select_session [client : Client, id : Str, ^snapshot snapshot : Any = nil, ^force force : Bool = false] : Void
+(fn select_session [client : Client, id : Str, ^snapshot snapshot : Any = nil, ^force force : Bool = false] : Nil
   (if_yes (&& client/sending (! force))
     (notice client "Resolving your submission…")
     (return))
@@ -1424,7 +1424,7 @@
       "GET"
       $"${(api_root)}/sessions/${id}/snapshot"
       nil
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if_yes (== id client/selected)
           (if (== code 200)
             (apply_snapshot client data)
@@ -1435,10 +1435,10 @@
       "POST"
       $"${(api_root)}/sessions/${id}/open"
       {}
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if_yes (!= code 200) (show_error client data))))))
 
-(fn pin_session [client : Client] : Void
+(fn pin_session [client : Client] : Nil
   (var id client/selected)
   (if_yes (== id "") (return))
   (var tab (session_tab client id))
@@ -1450,7 +1450,7 @@
     "PATCH"
     $"${(api_root)}/sessions/${id}"
     {^pinned (! pinned) ^revision client/session_revision}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if (== code 200)
         (then
           (set cache/session data)
@@ -1460,13 +1460,13 @@
         (else
           (show_error client data))))))
 
-(fn create [client : Client] : Void
+(fn create [client : Client] : Nil
   (var draft
     (if (== client/selected "")
       ($dom/input_value client/prompt)
       (?? (storage_get (draft_key "new")) "")))
   (request_session client "New conversation"
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if (== code 201)
         (then
           (var id : Str data/id)
@@ -1480,7 +1480,7 @@
         (else
           (show_error client data))))))
 
-(fn send_pending [client : Client] : Void
+(fn send_pending [client : Client] : Nil
   (if_yes (|| ($absent? client/pending) client/sending (! client/connected)) (return))
   (var pending : Any client/pending)
   (var session : Str pending/session)
@@ -1494,7 +1494,7 @@
   (set client/sending true)
   (update_controls client)
   (api client "POST" $"${(api_root)}/sessions/${session}/rounds" pending
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set client/sending false)
       (if (== code 202)
         (then
@@ -1555,7 +1555,7 @@
       (render_transcript client)
       (update_controls client))))
 
-(fn stage_submission [client : Client, text : Str] : Void
+(fn stage_submission [client : Client, text : Str] : Nil
   (if_yes (voice_pending? client)
     (notice client "Resolve the pending voice submission before sending another prompt.") (return))
   (var attachments : MediaComposer client/media)
@@ -1577,7 +1577,7 @@
 
 # A card's Send submits a chat message with the card revisions the user saw;
 # the host attaches that exact state, or refuses a changed card.
-(fn stage_card_send [client : Client, text : Str, card : Any] : Void
+(fn stage_card_send [client : Client, text : Str, card : Any] : Nil
   (if_yes (|| ($present? client/pending) client/sending)
     (notice client "Resolve the pending submission before sending a card.")
     (return))
@@ -1599,7 +1599,7 @@
   (send_pending client))
 
 # A live card update replaces its block in place; a new card is appended.
-(fn apply_card [client : Client, session : Str, card : Any] : Void
+(fn apply_card [client : Client, session : Str, card : Any] : Nil
   (if_yes (!= session client/selected) (return))
   (var id (string_or card/id ""))
   (var created_seq : Int 0)
@@ -1630,7 +1630,7 @@
   (set client/records records)
   (render_transcript client))
 
-(fn apply_card_message [client : Client, session : Str, data : Any] : Void
+(fn apply_card_message [client : Client, session : Str, data : Any] : Nil
   (var card : Any data/card)
   (var event (string_or data/event ""))
   (var host : CardHost client/cards)
@@ -1650,18 +1650,18 @@
           ^card_id card_id ^order card/updated_ms ^^durable}])))
   (apply_card client session card))
 
-(fn send_command [client : Client, text : Str, ^clear clear : Bool = true, ^card card : Any = nil] : Void
+(fn send_command [client : Client, text : Str, ^clear clear : Bool = true, ^card card : Any = nil] : Nil
   (var session client/selected)
   (set client/sending true)
   (update_controls client)
   (var commands : CommandClient client/command_client)
   (dispatch_command ^card card ^clear_composer clear commands session text nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set client/sending false)
       (if_yes (!= code 202) (show_error client data))
       (update_controls client))))
 
-(fn command_settled [client : Client, envelope : Any, receipt : Any] : Void
+(fn command_settled [client : Client, envelope : Any, receipt : Any] : Nil
   (if_yes (&& (launcher_flag envelope/clear_composer)
               (== (string_or envelope/session "") client/selected)
               (== (string_or envelope/text "") ($dom/input_value client/prompt)))
@@ -1671,7 +1671,7 @@
   (var name (string_or data/name ""))
   (|| (== name "sh") (== name "run") (== name "repl")))
 
-(fn apply_command [client : Client, session : Str, data : Any] : Void
+(fn apply_command [client : Client, session : Str, data : Any] : Nil
   (if_yes (!= session client/selected) (return))
   (var id : Str data/id)
   (var status : Str data/status)
@@ -1709,7 +1709,7 @@
 (fn mode_pending_key [session : Str] : Str
   $"gene-harness/mode-pending/${session}")
 
-(fn resolve_mode_receipt [client : Client, records : (List Any)] : Void
+(fn resolve_mode_receipt [client : Client, records : (List Any)] : Nil
   (if_yes (== client/selected "") (return))
   (if_yes ($absent? client/mode_pending)
     (var saved : Str (?? (storage_get (mode_pending_key client/selected)) ""))
@@ -1730,7 +1730,7 @@
     client
     "Input outcome is unknown. Check the transcript; submit again to resolve the same input id."))
 
-(fn send_mode_input [client : Client] : Void
+(fn send_mode_input [client : Client] : Nil
   (if_yes (|| (! client/ready) (! client/connected) client/sending ($present? client/mode/running))
     (return))
   (var text ($dom/input_value client/prompt))
@@ -1762,7 +1762,7 @@
     "POST"
     $"${(api_root)}/sessions/${session}/mode/input"
     pending
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set client/sending false)
       (var incomplete : Bool false)
       (var closed : Bool false)
@@ -1789,7 +1789,7 @@
           (show_error client data)))
       (update_controls client))))
 
-(fn leave_mode [client : Client] : Void
+(fn leave_mode [client : Client] : Nil
   (if_yes (|| ($absent? client/mode) client/sending) (return))
   (var session client/selected)
   (var instance : Str client/mode/instance)
@@ -1800,7 +1800,7 @@
     "POST"
     $"${(api_root)}/sessions/${session}/mode/leave"
     {^instance instance}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set client/sending false)
       (if (== code 200)
         (do
@@ -1809,14 +1809,14 @@
         (show_error client data))
       (update_controls client))))
 
-(fn action [client : Client] : Void
+(fn action [client : Client] : Nil
   (if_yes (|| client/sending client/action_cooldown) (return))
   (var executing (if ($absent? client/mode) client/server_busy ($present? client/mode/running)))
   (if executing
     (stop client)
     (send client)))
 
-(fn send [client : Client] : Void
+(fn send [client : Client] : Nil
   (if_yes (|| (! client/ready) (! client/connected) client/sending) (return))
   (if_yes (voice_pending? client)
     (notice client "Resolve the pending voice submission before sending another prompt.") (return))
@@ -1828,7 +1828,7 @@
   (if_yes (&& ($present? input) (!= (str/trim raw) ""))
     (var session client/selected)
     (voice_submit client session raw input
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if (== code 202)
           (do
             (storage_remove (voice_review_key client session))
@@ -1859,7 +1859,7 @@
   (remember_draft client)
   (if_yes (== client/selected "")
     (request_session client "New conversation"
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if (== code 201)
           (then
             (var id : Str data/id)
@@ -1877,7 +1877,7 @@
     (return))
   (stage_submission client text))
 
-(fn stop [client : Client] : Void
+(fn stop [client : Client] : Nil
   (if_yes ($present? client/mode)
     (if_yes ($absent? client/mode/running) (return))
     (var command_id : Str client/mode/running)
@@ -1886,7 +1886,7 @@
       "POST"
       $"${(api_root)}/sessions/${client/selected}/commands/${command_id}/cancel"
       {}
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if (== code 200)
           (notice client "Stop requested.")
           (show_error client data))))
@@ -1898,7 +1898,7 @@
     "POST"
     $"${(api_root)}/sessions/${client/selected}/rounds/${id}/cancel"
     {}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if (== code 200)
         (then
           (notice client "Stop requested."))
@@ -1924,7 +1924,7 @@
     (return {^ok (run_action ui id)}))
   nil)
 
-(fn answer_client_request [client : Client, data : Any] : Void
+(fn answer_client_request [client : Client, data : Any] : Nil
   (if_yes (!= (string_or data/client "") (client_page_id client)) (return))
   (var operation (string_or data/operation ""))
   (var known (|| (== operation "view/state") (== operation "view/navigate") (== operation "action/invoke")))
@@ -1937,9 +1937,9 @@
     (else {^id data/id ^!ok ^error $"Unknown client operation ${operation}."})))
   ($http/request "POST" $"${(api_root)}/clients/reply" ($json/stringify reply)
     {^content-type "application/json" ^x-csrf-token client/csrf}
-    (fn [status : Int, body : Str] : Void nil)))
+    (fn [status : Int, body : Str] : Nil nil)))
 
-(fn socket_message [client : Client, text : Str] : Void
+(fn socket_message [client : Client, text : Str] : Nil
   (try
     (var message : Any ($json/parse text))
     (var version : Int message/protocol)
@@ -2039,13 +2039,13 @@
     (notice ^key "connection" ^^sticky client "Refreshing the live connection…")
     (connect_socket client)))
 
-(fn reconnect_socket [client : Client, epoch : Int] : Void
-  ($time/after 2500.0 (fn [] : Void
+(fn reconnect_socket [client : Client, epoch : Int] : Nil
+  ($time/after 2500.0 (fn [] : Nil
     (if_yes (|| (! client/ready) (!= epoch client/socket_epoch)) (return))
     # Reconnection checks cookie expiry. Connected streams refresh status only
     # on workspace invalidation or tab selection, without timer polling.
     (api client "GET" $"${(api_root)}/status" nil
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if_yes (!= epoch client/socket_epoch) (return))
         (match code
           (when 200 (set client/csrf data/csrf) (connect_socket client))
@@ -2056,10 +2056,10 @@
             (update_controls client))
           (else (reconnect_socket client epoch))))))))
 
-(fn connect_socket [client : Client] : Void
+(fn connect_socket [client : Client] : Nil
   (connect_stream client (session_tab client client/selected)))
 
-(fn connect_stream [client : Client, tab : SessionTab] : Void
+(fn connect_stream [client : Client, tab : SessionTab] : Nil
   (if_yes (|| (! client/ready) tab/closed) (return))
   (set tab/socket_epoch (+ tab/socket_epoch 1))
   (var epoch tab/socket_epoch)
@@ -2087,15 +2087,15 @@
     (set client/socket_epoch epoch))
   ($time/after
     10000.0
-    (fn [] : Void
+    (fn [] : Nil
       (if_yes (&& client/ready (== epoch tab/socket_epoch) (! tab/connected)) ($ws/close socket))))
   ($ws/on_text
     socket
-    (fn [text : Str] : Void
+    (fn [text : Str] : Nil
       (if_yes (== epoch tab/socket_epoch) (stream_message client tab text))))
   ($ws/on_close
     socket
-    (fn [] : Void
+    (fn [] : Nil
       (if_yes (|| (!= epoch tab/socket_epoch) tab/closed) (return))
       (interrupt_output (live_store client) tab/id) (schedule_live_output client)
       (set tab/connected false)
@@ -2106,17 +2106,17 @@
           (notice ^key "connection" ^^sticky client "Reconnecting… Your draft is saved.")))
       (if_yes client/ready (reconnect_stream client tab epoch)))))
 
-(fn reconnect_stream [client : Client, tab : SessionTab, epoch : Int] : Void
+(fn reconnect_stream [client : Client, tab : SessionTab, epoch : Int] : Nil
   ($time/after
     1500.0
-    (fn [] : Void
+    (fn [] : Nil
       (if_yes (|| (! client/ready) tab/closed (!= epoch tab/socket_epoch)) (return))
       (api
         client
         "GET"
         $"${(api_root)}/status"
         nil
-        (fn [code : Int, data : Any] : Void
+        (fn [code : Int, data : Any] : Nil
           (if_yes (|| tab/closed (!= epoch tab/socket_epoch)) (return))
           (match code
             (when 200
@@ -2129,7 +2129,7 @@
             (else
               (reconnect_stream client tab epoch))))))))
 
-(fn stream_message [client : Client, tab : SessionTab, text : Str] : Void
+(fn stream_message [client : Client, tab : SessionTab, text : Str] : Nil
   (try
     (var message : Any ($json/parse text))
     (var version : Int message/protocol)
@@ -2240,7 +2240,7 @@
   catch Any
     (connect_stream client tab)))
 
-(fn authenticated [client : Client, data : Any] : Void
+(fn authenticated [client : Client, data : Any] : Nil
   (set client/csrf data/csrf)
   (set client/ready true)
   (set_hidden "auth_notice" true)
@@ -2259,7 +2259,7 @@
     ($dom/set_input_value client/prompt (?? (storage_get key) "")))
   (connect_socket client))
 
-(fn authenticate [client : Client] : Void
+(fn authenticate [client : Client] : Nil
   (var token (query_value ($browser/hash) "token"))
   # Remove the owner token fragment without losing a view/presentation deep link.
   ($browser/replace_url ($to_str "/" ($browser/search)))
@@ -2269,7 +2269,7 @@
       "POST"
       $"${(api_root)}/auth/exchange"
       {^token token}
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if (== code 200)
           (then
             (authenticated client data))
@@ -2281,7 +2281,7 @@
       "GET"
       $"${(api_root)}/status"
       nil
-      (fn [code : Int, data : Any] : Void
+      (fn [code : Int, data : Any] : Nil
         (if (== code 200)
           (then
             (authenticated client data))
@@ -2289,7 +2289,7 @@
             (show_error client data)
             (set_hidden "auth_notice" false)))))))
 
-(fn main [root : EventTarget] : Void
+(fn main [root : EventTarget] : Nil
   # The server renders the page in the workspace's current theme.
   (var document ($dom/element "harness_document"))
   (var initial_mode : Str "light")
@@ -2298,10 +2298,10 @@
     (Client ^browser_appearance nil ^browser_clients nil ^command_client nil ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature "" ^cards nil))
   (set client/command_client
     (create_commands
-      ^settled (fn [envelope : Any, receipt : Any] : Void (command_settled client envelope receipt))
-      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      ^settled (fn [envelope : Any, receipt : Any] : Nil (command_settled client envelope receipt))
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
         (api client method path payload done))
-      (fn [message : Str] : Void
+      (fn [message : Str] : Nil
         (var commands : CommandClient client/command_client)
         (set_hidden "command_receipt_recover" ($absent? commands/pending))
         (set_hidden "command_receipt_discard" ($absent? commands/pending))
@@ -2317,47 +2317,47 @@
   (initialize_voice_feature client)
   (set client/browser_clients (create_clients root client/safe_ui (browser_bridge client)))
   ($dom/add_event_listener ($dom/element "command_receipt_recover") "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var commands : CommandClient client/command_client)
       (recover_command commands)))
   ($dom/add_event_listener ($dom/element "command_receipt_forget") "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var commands : CommandClient client/command_client)
       (forget_command commands)))
   ($dom/add_event_listener ($dom/element "session_creation_acknowledge") "click"
-    (fn [event : Any] : Void (acknowledge_creation client)))
+    (fn [event : Any] : Nil (acknowledge_creation client)))
   (set client/media
     (create_media client/selected
-      (fn [name : Str, data : Str, done : (Fn [Int Any] Void)] : Void
+      (fn [name : Str, data : Str, done : (Fn [Int Any] Nil)] : Nil
         (api client "POST" $"${(api_root)}/media" {^name name ^data data} done))
-      (fn [] : Void (update_controls client))))
+      (fn [] : Nil (update_controls client))))
   (set client/questions
     (create_question_editors
       client/notices
-      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
         (api client method path payload done))
-      (fn [session : Str] : Void
+      (fn [session : Str] : Nil
         (var center : NotificationCenter client/center)
         (invalidate_questions center session))
-      ^stage (fn [text : Str] : Void (stage_prompt client text))))
+      ^stage (fn [text : Str] : Nil (stage_prompt client text))))
   (var questions : QuestionEditors client/questions)
   (set client/cards
     (create_card_host
-      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
         (api client method path payload done))
-      (fn [session : Str, text : Str, card : Any] : Void
+      (fn [session : Str, text : Str, card : Any] : Nil
         (if_yes (== session client/selected) (send_command ^!clear ^card card client text)))
-      (fn [session : Str, text : Str, card : Any] : Void
+      (fn [session : Str, text : Str, card : Any] : Nil
         (if_yes (== session client/selected) (stage_card_send client text card)))
-      (fn [text : Str] : Void (stage_prompt client text))
-      (fn [session : Str, card : Any] : Void (apply_card client session card))))
+      (fn [text : Str] : Nil (stage_prompt client text))
+      (fn [session : Str, card : Any] : Nil (apply_card client session card))))
   (set client/center
     (create_center
       client/notices
       questions
-      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
         (api client method path payload done))
-      (fn [session : Str] : Void
+      (fn [session : Str] : Nil
         (select_session client session)
         (var ui : UiClient client/ui)
         (navigate ui "harness"))))
@@ -2366,12 +2366,12 @@
     (create_producer_inbox
       client/notices
       client/safe_ui
-      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
         (api client method path payload done))
-      (fn [count : Int] : Void
+      (fn [count : Int] : Nil
         (set center/new_messages count)
         (update_center_count center))
-      (fn [reference : Any] : Void
+      (fn [reference : Any] : Nil
         (var session (string_or reference/session ""))
         (if_yes (!= session "") (select_session client session))
         (var ui : UiClient client/ui)
@@ -2383,16 +2383,16 @@
           (client/expanded .push round)
           (render_transcript client))
         nil)
-      (fn [session : Str, text : Str] : Void
+      (fn [session : Str, text : Str] : Nil
         (if_yes (&& (!= session "") (!= session client/selected)) (select_session client session))
         (stage_prompt client text))))
   (var inbox : ProducerInbox client/inbox)
-  (set center/on_open (fn [] : Void (opened_inbox inbox)))
+  (set center/on_open (fn [] : Nil (opened_inbox inbox)))
   (set client/confirmations
     (create_confirmations
       ($dom/element "confirmations")
       client/notices
-      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
         (var parts ($str/split path "/"))
         (if_yes (&& (== method "POST") (== parts/.size 6) (== parts/5 "commands"))
           (var commands : CommandClient client/command_client)
@@ -2404,23 +2404,23 @@
       root
       client/safe_ui
       client/notices
-      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
         (api client method path payload done))
-      (fn [id : Str] : Void
+      (fn [id : Str] : Nil
         (select_session client id))
-      (fn [command : Str] : Void
+      (fn [command : Str] : Nil
         (component_command client command))
-      (fn [text : Str] : Void
+      (fn [text : Str] : Nil
         (stage_prompt client text))
       client/appearance))
   # api already carries safe-UI admission for this document.
   (var appearance (start_appearance
-    (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+    (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
       (api client method path payload done))
-    (fn [answer : Any] : Void
+    (fn [answer : Any] : Nil
       (apply_appearance client answer/rendered/mode))
-    ^on_error (fn [error : Any] : Void (show_error client error))
-    ^report (fn [answer : Any] : Void
+    ^on_error (fn [error : Any] : Nil (show_error client error))
+    ^report (fn [answer : Any] : Nil
       (if_not ($absent? client/socket)
         (var socket : EventTarget client/socket)
         (if_yes ($ws/open? socket)
@@ -2430,10 +2430,10 @@
   (var appearance_ui : UiClient client/ui)
   (set appearance_ui/browser_appearance appearance)
   ($dom/add_event_listener ($dom/element "theme_toggle") "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (change_appearance appearance {^mode (if (== client/appearance "dark") "light" "dark")})))
   ($dom/add_event_listener ($dom/window) "popstate"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var search ($browser/search))
       (var session (query_value search "session"))
       (var view (query_value search "view"))
@@ -2446,13 +2446,13 @@
   ($dom/add_event_listener
     ($dom/element "composer")
     "submit"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       ($dom/prevent_default event)
       (action client)))
   ($dom/add_event_listener
     client/prompt
     "keydown"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var composer_ui : UiClient client/ui)
       (var chord (event_chord event))
       (if_yes (== chord (action_chord composer_ui "composer/close_commands" "Escape"))
@@ -2463,39 +2463,39 @@
   ($dom/add_event_listener
     client/prompt
     "input"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (remember_draft client)
       (render_commands client)))
   ($dom/add_event_listener
     ($dom/element "create_session")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (create client)))
   ($dom/add_event_listener
     ($dom/element "session_filter")
     "input"
-    (fn [event : Any] : Void
-      ($time/after 300.0 (fn [] : Void (refresh_sessions client)))))
+    (fn [event : Any] : Nil
+      ($time/after 300.0 (fn [] : Nil (refresh_sessions client)))))
   (for id in ["kind_filter" "status_filter" "trigger_filter" "since_filter" "until_filter"]
     ($dom/add_event_listener
       ($dom/element id)
       "change"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (refresh_sessions client))))
   ($dom/add_event_listener
     ($dom/element "leave_mode")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (leave_mode client)))
   ($dom/add_event_listener
     ($dom/element "resolve_submission")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (send_pending client)))
   ($dom/add_event_listener
     ($dom/element "new_output")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (if client/viewing_history
         (select_session client client/selected)
         (do
@@ -2504,48 +2504,48 @@
   ($dom/add_event_listener
     client/transcript
     "scroll"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (set client/autoscroll ($dom/near_end client/transcript 80.0))))
   ($dom/add_event_listener
     ($dom/element "status_button")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var drawer ($dom/element "status_drawer"))
       (var hidden : Bool drawer/hidden)
       (set drawer/hidden (! hidden))))
   ($dom/add_event_listener
     ($dom/element "close_status")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (set_hidden "status_drawer" true)
       ($dom/focus ($dom/element "status_button"))))
   ($dom/add_event_listener
     ($dom/element "add_to_slack")
     "click"
-    (fn [event : Any] : Void (add_session_to_slack client)))
+    (fn [event : Any] : Nil (add_session_to_slack client)))
   ($dom/add_event_listener
     ($dom/element "rename_session")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (set_hidden "rename_form" false)
       ($dom/set_input_value ($dom/element "rename_title") ($dom/text client/title))
       ($dom/focus ($dom/element "rename_title"))))
   ($dom/add_event_listener
     ($dom/element "pin_session")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (pin_session client)))
   ($dom/add_event_listener
     ($dom/element "rename_form")
     "submit"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       ($dom/prevent_default event)
       (api
         client
         "PATCH"
         $"${(api_root)}/sessions/${client/selected}"
         {^title ($dom/input_value ($dom/element "rename_title")) ^revision client/session_revision}
-        (fn [code : Int, data : Any] : Void
+        (fn [code : Int, data : Any] : Nil
           (if (== code 200)
             (then
               (set_hidden "rename_form" true)
@@ -2562,12 +2562,12 @@
   ($dom/add_event_listener
     ($dom/window)
     "focus"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (if_yes (&& client/ready (! client/sending)) (connect_socket client))))
   ($dom/add_event_listener
     ($dom/window)
     "hashchange"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (if_yes (!= (query_value ($browser/hash) "token") "") (authenticate client))))
   (render_transcript client)
   (if_yes (== client/selected "")

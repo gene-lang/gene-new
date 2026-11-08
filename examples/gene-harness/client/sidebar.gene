@@ -8,7 +8,7 @@
 (fn narrow_sidebar? [] : Bool
   (== ($dom/style_value ($dom/element "harness_root") "--shell-narrow") "1"))
 
-(fn render_sidebar [state : Sidebar] : Void
+(fn render_sidebar [state : Sidebar] : Nil
   (var root state/root)
   (var sidebar ($dom/element "classic_sidebar"))
   (var toggle ($dom/element "menu"))
@@ -24,17 +24,17 @@
   ($dom/set_attribute toggle "aria-label" label)
   ($dom/set_attribute toggle "title" label))
 
-(fn sidebar_layout [state : Sidebar, full : Bool] : Void
+(fn sidebar_layout [state : Sidebar, full : Bool] : Nil
   (set state/full_view full)
   (if_yes full (set state/mobile_open false))
   (render_sidebar state))
 
-(fn close_mobile_sidebar [state : Sidebar] : Void
+(fn close_mobile_sidebar [state : Sidebar] : Nil
   (set state/mobile_open false)
   (render_sidebar state))
 
-(fn update_sidebar [state : Sidebar, components : (List Any), on_command : (Fn [Str] Void),
-                    on_prompt : (Fn [Str] Void), on_navigate : (Fn [Str Str] Void), enabled : Bool] : Void
+(fn update_sidebar [state : Sidebar, components : (List Any), on_command : (Fn [Str] Nil),
+                    on_prompt : (Fn [Str] Nil), on_navigate : (Fn [Str Str] Nil), enabled : Bool] : Nil
   (if_yes state/safe (return))
   (var chosen : Any nil)
   (for component in components
@@ -101,7 +101,7 @@
   ($dom/add_event_listener
     ($dom/element "menu")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (if (narrow_sidebar?)
         (set state/mobile_open (! state/mobile_open))
         (do
@@ -111,19 +111,19 @@
   ($dom/add_event_listener
     ($dom/element "close_menu")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (close_mobile_sidebar state)
       ($dom/focus ($dom/element "menu"))))
   ($dom/add_event_listener
     ($dom/window)
     "resize"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (if_not (narrow_sidebar?) (set state/mobile_open false))
       (render_sidebar state)))
   ($dom/add_event_listener
     ($dom/element "harness_root")
     "keydown"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (if_yes (&& state/mobile_open (== ($event/key event) "Escape"))
         ($dom/prevent_default event)
         (close_mobile_sidebar state)

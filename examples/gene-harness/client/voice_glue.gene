@@ -15,7 +15,7 @@
   (var states (features client))
   (if_yes ($absent? states/voice) (set states/voice (VoiceGlue)))
   (var state : VoiceGlue states/voice) state)
-(fn configure_voice [client : Client, data : Any] : Void
+(fn configure_voice [client : Client, data : Any] : Nil
   (var state (voice_state client))
   (if_yes ($absent? state/rounds) (return))
   (var raw : Any state/rounds)
@@ -32,7 +32,7 @@
   (if_yes (!= name "voice") (return {}))
   {^voice {
     ^pending (fn [] : Bool (voice_pending? client))
-    ^submit (fn [session : Str, value : Str, input : Any, done : (Fn [Int Any] Void)] : Void
+    ^submit (fn [session : Str, value : Str, input : Any, done : (Fn [Int Any] Nil)] : Nil
       (voice_submit client session value input done))
     ^review (fn [session : Str, value : Str, input : Any] : Bool
       (voice_review client session value input))}})
@@ -43,7 +43,7 @@
     (if_yes (== (string_or contribution/name "") "voice") (set available true)))
   (if_yes (|| (! available) (! (feature_subscribed? (client_events client) "voice"))) (return nil))
   (var session client/selected)
-  (fn [record : Any] : Void (browser_event client "voice/replay" session record)))
+  (fn [record : Any] : Nil (browser_event client "voice/replay" session record)))
 
 (fn voice_rounds [client : Client] : RoundClient
   (var state (voice_state client))
@@ -52,7 +52,7 @@
   result)
 
 (fn voice_submit [client : Client, session : Str, value : Str, input : Any,
-                  done : (Fn [Int Any] Void)] : Void
+                  done : (Fn [Int Any] Nil)] : Nil
   (if_yes (|| (! client/ready) client/sending ($present? client/pending))
     (done 409 {^^not_sent ^message "Resolve the current submission before sending voice."}) (return))
   (if_yes (! (model_allows_submit ^resume false client))
@@ -62,7 +62,7 @@
   (set client/sending true) (update_controls client)
   (var voice (voice_rounds client))
   (dispatch_round ^model_settings choice/model_settings voice session value input
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set client/sending false) (update_controls client)
       (done code data))))
 
@@ -96,13 +96,13 @@
     ($dom/focus client/prompt))
   true)
 
-(fn initialize_voice [client : Client] : Void
+(fn initialize_voice [client : Client] : Nil
   (var state (voice_state client))
   (set state/rounds
     (create_rounds
-      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Void)] : Void
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
         (api client method path payload done))
-      (fn [message : Str] : Void
+      (fn [message : Str] : Nil
         (var voice (voice_rounds client))
         (var pending ($present? voice/pending))
         (set_hidden "voice_receipt_recover" (! pending))
@@ -111,7 +111,7 @@
         (set forget/disabled voice/resolving)
         (notice ^key "voice-recovery" ^sticky pending client message)
         (browser_event client "submission/state" "" {^pending pending}))
-      (fn [envelope : Any, receipt : Any] : Void
+      (fn [envelope : Any, receipt : Any] : Nil
         (var session (string_or envelope/session ""))
         (model_draft_admitted client session envelope)
         (apply_run client session receipt)
@@ -125,11 +125,11 @@
               (storage_remove (draft_key session)))))
         (browser_event client "voice/admitted" session receipt))))
   ($dom/add_event_listener ($dom/element "voice_receipt_recover") "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var voice (voice_rounds client))
       (recover_round voice)))
   ($dom/add_event_listener ($dom/element "voice_receipt_forget") "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var voice (voice_rounds client))
       (forget_round voice)))
 )

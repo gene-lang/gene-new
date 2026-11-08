@@ -6,7 +6,7 @@
 (fn new_vad [] : Vad
   (Vad ^noise 0.003 ^above 0 ^quiet 0 ^elapsed 0 ^!active))
 
-(fn reset_vad [vad : Vad] : Void
+(fn reset_vad [vad : Vad] : Nil
   (set vad/above 0) (set vad/quiet 0) (set vad/elapsed 0) (set vad/active false))
 
 (fn vad_step [vad : Vad, level : F64, duration_ms : Int, blocked : Bool] : Str

@@ -159,7 +159,7 @@
     (var bytes 0)
     (loop
       (let chunk (await (output/0 .AsyncReader:read 65536)))
-      (if ($nil? chunk) (break))
+      (if ($absent? chunk) (break))
       (set bytes (+ bytes ($binary/size chunk))))
     output/0/.IoResource:close
     (await output/0/.IoResource:wait_closed)

@@ -150,7 +150,7 @@
           ^children [{^id "provider" ^module "provider.gene" ^config 1}]}
        ]})
     (var third (loader .reconcile disabled))
-    (assert_equal (runtime/.root .get loaded_key) void
+    (assert_equal (runtime/.root .get loaded_key) nil
       "inherited disable must remove descendant plugin instances")
     (assert_equal direct_consumer/.state InstanceState/pending
       "withdrawing a loader provider must quiesce direct consumers")

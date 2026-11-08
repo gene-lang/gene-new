@@ -185,7 +185,7 @@
         (if ($absent? definition) (return nil))
         (return {^row_id definition/revision ^payload {^name key} ^effects definition/effects}))
       (if_not (registry_exists? h registry_name) (return nil))
-      (var selected void)
+      (var selected nil)
       # Cordis invokes selection callbacks outside RegistryHost.activate's
       # dynamic publication context. During reconciliation they must still
       # see candidate rows, otherwise newly provided dependencies remain
@@ -195,9 +195,9 @@
         (do
           (let registry (registry_named h registry_name))
           (for record in registry/rows/.get
-            (if (&& (== selected void) (== record/key key)) (set selected record))))
+            (if (&& ($absent? selected) (== record/key key)) (set selected record))))
         (set selected (row_record h registry_name key)))
-      (if (== selected void) (return nil))
+      (if ($absent? selected) (return nil))
       {^row_id selected/row_id ^payload selected/payload ^effects selected/effects})))
 
 (fn ^^private make_cordis_registry_host [h : Harness] : RegistryHost
@@ -206,7 +206,7 @@
 (fn ^^private release_activation_policy [h : Harness, owner : Str, context]
   (var policies h/plugin_policies/.get)
   (var current (policies .get owner))
-  (if_yes (&& (!= current void) (== current/context context)) (policies .delete owner))
+  (if_yes (&& ($present? current) (== current/context context)) (policies .delete owner))
   nil)
 
 (fn new_harness
@@ -324,7 +324,7 @@
     (hide_owner_rows h ($to_str id)))
   (let departed_registries [])
   (for [name registry] in h/registries/.get
-    (if (!= (previous .get registry/owner) void)
+    (if ($present? (previous .get registry/owner))
       (departed_registries .push ($to_str name))))
   (for name in departed_registries
     (let registry (registry_named h name))
@@ -383,7 +383,7 @@
 (fn put_cordis_plugin [h : Harness, plugin : Plugin, entry_options, ^replace replace : Bool = false]
   (run_composition_change h/snapshots (fn []
   (if ($absent? h/composition) (fail (HarnessError ^message "Harness has no Cordis composition")))
-  (if_yes (&& (! replace) (!= (h/plugins .get; .get plugin/id) void))
+  (if_yes (&& (! replace) ($present? (h/plugins .get; .get plugin/id)))
     (fail (HarnessError ^message $"plugin ${plugin/id} already installed")))
   (validate_plugin_descriptor h plugin/id plugin)
   (h/plugins
@@ -413,7 +413,7 @@
 
   (for admission in admissions
     (var plugin admission/plugin)
-    (if_yes (!= (h/plugins/.get .get plugin/id) void)
+    (if_yes ($present? (h/plugins/.get .get plugin/id))
       (fail (HarnessError ^message $"plugin ${plugin/id} already installed")))
     (validate_plugin_descriptor h plugin/id plugin))
   (for admission in admissions
@@ -445,11 +445,11 @@
 # `plugin_states`, which is a far better 3am outcome than either alternative.
 
 (fn ^^private status_in [h : Harness, states, id : Str] : Str
-  (if (== (h/plugins .get; .get id) void) (return "absent"))
-  (if (!= (h/plugin_errors .get; .get id) void) (return "error"))
+  (if ($absent? (h/plugins .get; .get id)) (return "absent"))
+  (if ($present? (h/plugin_errors .get; .get id)) (return "error"))
   (if ($absent? states/.get) (states .set h/composition/.entry_states))
   (let state (states/.get .get id))
-  (if (== state void) (return "pending"))
+  (if ($absent? state) (return "pending"))
   (match state
     (when "active" "ready")
     (when "failed" "error")
@@ -460,7 +460,7 @@
 
 (fn plugin_error [h : Harness, id : Str]
   (var found (h/plugin_errors .get; .get id))
-  (if_not (== found void) ($to_str found)))
+  (if_not ($absent? found) ($to_str found)))
 
 (fn ^^private plugin_ids [h : Harness] : Any
   # Gene maps keep insertion order, so ids come back in install order.
@@ -485,7 +485,7 @@
 
 (fn uninstall [h : Harness, id : Str] : Str
   (run_composition_change h/snapshots (fn []
-  (if (== (h/plugins .get; .get id) void)
+  (if ($absent? (h/plugins .get; .get id))
     (fail (HarnessError ^message $"plugin ${id} not installed")))
   (h/plugins
     .get

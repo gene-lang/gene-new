@@ -12,8 +12,6 @@ proc envelope(value: Value): JsonNode =
   case value.kind
   of vkNil:
     result["kind"] = %"nil"
-  of vkVoid:
-    result["kind"] = %"void"
   of vkBool:
     result["kind"] = %"bool"
     result["value"] = %value.boolVal

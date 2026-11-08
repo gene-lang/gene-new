@@ -59,7 +59,7 @@ import { pathToFileURL } from "node:url";
 const mod = await import(pathToFileURL(""" & $(%modulePath) & """).href);
 function envelope(value) {
   if (value === null) return {kind: "nil"};
-  if (value === undefined) return {kind: "void"};
+  if (value === undefined) return {kind: "nil"};
   if (typeof value === "boolean") return {kind: "bool", value};
   if (typeof value === "string") return {kind: "str", value};
   if (typeof value === "bigint") return {kind: "int", value: value.toString()};

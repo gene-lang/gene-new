@@ -38,8 +38,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
                         requireOpen = true): int =
     if not nativeReceiverIs(scope, value, "TerminalSession"):
       raiseTerminalError(name & " expects a terminal/Session", scope)
-    let id = value.props.getOrDefault("id", VOID)
-    let closed = value.props.getOrDefault("closed", VOID)
+    let id = value.props.getOrDefault("id", NIL)
+    let closed = value.props.getOrDefault("closed", NIL)
     if id.kind != vkInt or closed.kind != vkCell:
       raiseTerminalError(name & " received an invalid terminal/Session", scope)
     if requireOpen and closed.cellValue.isTruthy:
@@ -60,7 +60,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       let separator = item.find('=')
       if separator > 0:
         values[item[0 ..< separator]] = item[separator + 1 .. ^1]
-    if overrides.kind != vkVoid:
+    if overrides.kind != vkNil:
       requirePropMap(name & " ^environment", overrides)
       for key, value in overrides.mapEntries:
         requireStr(name & " ^environment ^" & key, value)
@@ -207,7 +207,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     var rows = 24
     var cols = 80
     var scrollbackLines = 2000
-    var environment = VOID
+    var environment = NIL
     if call != nil:
       for i, argName in call[].namedNames:
         let value = call[].namedValues[i]
@@ -1569,28 +1569,28 @@ proc parseCursesPanes(name: string, value: Value): seq[CursesPane] =
   requireList(name & " ^panes", value)
   for item in value.listItems:
     requirePropMap(name & " ^panes item", item)
-    let title = item.mapEntries.getOrDefault("title", VOID)
-    let output = item.mapEntries.getOrDefault("output", VOID)
-    let scrollValue = item.mapEntries.getOrDefault("scroll", VOID)
-    let focusedValue = item.mapEntries.getOrDefault("focused", VOID)
-    let maximizedValue = item.mapEntries.getOrDefault("maximized", VOID)
-    let terminalIdValue = item.mapEntries.getOrDefault("terminal_id", VOID)
+    let title = item.mapEntries.getOrDefault("title", NIL)
+    let output = item.mapEntries.getOrDefault("output", NIL)
+    let scrollValue = item.mapEntries.getOrDefault("scroll", NIL)
+    let focusedValue = item.mapEntries.getOrDefault("focused", NIL)
+    let maximizedValue = item.mapEntries.getOrDefault("maximized", NIL)
+    let terminalIdValue = item.mapEntries.getOrDefault("terminal_id", NIL)
     requireStr(name & " ^panes item ^title", title)
     requireStr(name & " ^panes item ^output", output)
     let scroll =
-      if scrollValue.kind == vkVoid: 0
+      if scrollValue.kind == vkNil: 0
       else: int(requireInt64(name & " ^panes item ^scroll", scrollValue))
     if scroll < 0:
       raise newException(GeneError,
         name & " ^panes item ^scroll must be non-negative")
-    if focusedValue.kind notin {vkVoid, vkBool}:
+    if focusedValue.kind notin {vkNil, vkBool}:
       raise newException(GeneError,
         name & " ^panes item ^focused must be Bool")
-    if maximizedValue.kind notin {vkVoid, vkBool}:
+    if maximizedValue.kind notin {vkNil, vkBool}:
       raise newException(GeneError,
         name & " ^panes item ^maximized must be Bool")
     let terminalId =
-      if terminalIdValue.kind == vkVoid: 0
+      if terminalIdValue.kind == vkNil: 0
       else: int(requireInt64(name & " ^panes item ^terminal_id",
                              terminalIdValue))
     if terminalId < 0:
@@ -1732,8 +1732,8 @@ proc cursesScreenId(name: string, screen: Value, scope: Scope,
                     requireOpen = true): int =
   if not nativeReceiverIs(scope, screen, "CursesScreen"):
     raiseCursesError(name & " expects a curses/Screen", scope)
-  let id = screen.props.getOrDefault("id", VOID)
-  let closed = screen.props.getOrDefault("closed", VOID)
+  let id = screen.props.getOrDefault("id", NIL)
+  let closed = screen.props.getOrDefault("closed", NIL)
   if id.kind != vkInt or closed.kind != vkCell:
     raiseCursesError(name & " received an invalid curses/Screen", scope)
   if requireOpen and closed.cellValue.isTruthy:

@@ -1,11 +1,11 @@
 (mod slack_user_labels ^profile web)
 
-(type SlackUserLabels ^props {^cache PropMap ^lookup (Fn [Any (Fn [Int Any] Void)] Void)})
+(type SlackUserLabels ^props {^cache PropMap ^lookup (Fn [Any (Fn [Int Any] Nil)] Nil)})
 
-(fn create_user_labels [lookup : (Fn [Any (Fn [Int Any] Void)] Void)] : SlackUserLabels
+(fn create_user_labels [lookup : (Fn [Any (Fn [Int Any] Nil)] Nil)] : SlackUserLabels
   (SlackUserLabels ^cache {} ^lookup lookup))
 
-(fn user_label [users : SlackUserLabels, source : Any, target : EventTarget] : Void
+(fn user_label [users : SlackUserLabels, source : Any, target : EventTarget] : Nil
   (var author : Str source/author)
   (if_yes (|| ($absent? source/account) ($absent? source/team)) (return))
   (var account : Str source/account) (var team : Str source/team)
@@ -20,7 +20,7 @@
   (var entry : Any {^!ready ^text author ^nodes nodes})
   (set users/cache/%key entry)
   (users/lookup {^account account ^team team ^author author}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (var name : Str "")
       (if_yes (&& (== code 200) ($present? data/name)) (set name data/name))
       (set entry/text (if (== name "") author $"${name}(${author})"))
@@ -34,7 +34,7 @@
   (var author : Str source/author)
   (var target ($dom/render `(span %author)))
   (if_not ($absent? resolve)
-    (var apply : (Fn [Any EventTarget] Void) resolve) (apply source target))
+    (var apply : (Fn [Any EventTarget] Nil) resolve) (apply source target))
   target)
 
 (fn author_line [prefix : Str, source : Any, suffix : Str, resolve : Any = nil] : EventTarget

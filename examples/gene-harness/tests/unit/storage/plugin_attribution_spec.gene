@@ -22,7 +22,7 @@
     (assign_creation next first)
     ($assert (== next/created_in first/created_in))
     ($assert ($absent? (/session (/source_origin (source_attribution next)))))
-    (for created in [nil void]
+    (for created in [nil]
       (let unknown {^id "probe" ^module_digest "old" ^source_origin {^kind "direct"}
         ^session "default" ^created_in created})
       ($assert ($absent? (/created_in (source_attribution unknown))))

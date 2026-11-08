@@ -49,7 +49,7 @@
 
 (fn resolve [h : Harness, seam : Str] : Any
   (var found (row h "seams" seam))
-  (if_yes (== found void) (fail (HarnessError ^message $"no provider for seam ${seam}")))
+  (if_yes ($absent? found) (fail (HarnessError ^message $"no provider for seam ${seam}")))
   found/value)
 
 (fn withdraw_seam [h : Harness, owner : Str, seam : Str] : Bool
@@ -64,7 +64,7 @@
   # Asking without committing. `resolve` raises, which is right for a consumer
   # that cannot proceed without the seam and wrong for a caller deciding whether
   # a deployment offers something at all.
-  (!= (row h "seams" seam) void))
+  ($present? (row h "seams" seam)))
 
 (fn ^^private bound_seams [h : Harness] : Any
   (var out (fresh_list))

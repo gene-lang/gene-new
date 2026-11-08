@@ -120,7 +120,7 @@
   # The server's own rendering rule, applied to one row. Keeping it in one
   # function is what stops the optimistic update and the server response from
   # drifting apart.
-  (fn paint_row [row : Any, button : Any, done : Bool] : Void
+  (fn paint_row [row : Any, button : Any, done : Bool] : Nil
     (var was : Str row/class_name)
     (var peek (if (peeking? was) " peek" ""))
     (set row/class_name (if done $"done${peek}" $"open${peek}"))
@@ -129,7 +129,7 @@
   # `event` is the DOM `Any` boundary, so each field read is annotated where it
   # re-enters typed code — that annotation is the only place a mistake about
   # the DOM shape can hide, rather than every use downstream of it.
-  (fn on_click [event : Any] : Void
+  (fn on_click [event : Any] : Nil
     (var target event/target)
     (var target_class : Str target/class_name)
     ($console/log $"todo_client: click on class=${target_class}")
@@ -147,7 +147,7 @@
       (if_yes row
         ($console/log $"todo_client: toggling todo ${id}")
         ($http/post_form "/api/todos/toggle" $"id=${id}"
-          (fn [body : Str] : Void
+          (fn [body : Str] : Nil
             # The response is the authoritative list, so the row is painted
             # from what the server stored rather than from a guess about what
             # the click did.
@@ -159,7 +159,7 @@
                 ($console/log $"todo_client: todo ${id} is now done=${done}")
                 (paint_row row target done))))))))
 
-  (fn main [root : EventTarget] : Void
+  (fn main [root : EventTarget] : Nil
     ($console/log "todo_client: mounted, delegating clicks from the root")
     ($dom/add_event_listener root "click" on_click)))
 
@@ -175,7 +175,7 @@
 
 (fn parse_filter [value] : TodoFilter
   (var flt (TodoFilter .from_backing (|| value "all")))
-  (if (== flt void) TodoFilter/all flt))
+  (if ($absent? flt) TodoFilter/all flt))
 
 (fn keep? [flt : TodoFilter]
   (match flt ^!exhaustive

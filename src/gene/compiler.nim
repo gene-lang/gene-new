@@ -73,8 +73,8 @@ type
     seenModDecl: bool
     allowYield: bool
     generatorFnNames: Table[string, bool]
-    sawNonVoidReturn: bool
-    # Enclosing function is declared `: Nil` or `: Void`, so `return` may not
+    sawValueReturn: bool
+    # Enclosing function is declared `: Nil`, so `return` may not
     # carry a value (design.md §7.7). Per-function: a child compiler is built
     # fresh for each `fn`, so this never leaks into a nested one.
     inStatementFn: bool
@@ -725,8 +725,6 @@ proc exprKnownExactResult(c: Compiler, v: Value, typeName: string): bool =
     typeName == "Str"
   of vkNil:
     typeName == "Nil"
-  of vkVoid:
-    typeName == "Void"
   of vkSymbol:
     let local = c.localType(v.symVal)
     local.kind == vkSymbol and local.symVal == typeName
@@ -1844,7 +1842,7 @@ proc compileSubBody(c: var Compiler, forms: openArray[Value],
   child.reserveProtocolBindingsFor(forms)
   compileBody(child, forms, tail = tail) # empty -> nil
   discard child.emit(opReturn)
-  c.sawNonVoidReturn = c.sawNonVoidReturn or child.sawNonVoidReturn
+  c.sawValueReturn = c.sawValueReturn or child.sawValueReturn
   if scoped:
     child.chunk.localNames = child.localNames
   child.chunk
@@ -1950,6 +1948,43 @@ proc parameterTypeAdmitsNil(c: Compiler, expr: Value, shadowed: openArray[string
         path.add segment.symVal
       return c.parameterTypeAdmitsNil(newSym(path.join("/")), shadowed, depth + 1)
   false
+
+proc expandTypeAlias(c: Compiler, expr: Value, shadowed: openArray[string],
+                     depth = 0): Value =
+  ## Follow `expr` through alias declarations (local, qualified, or imported) to
+  ## the form it names. Anything that is not an alias comes back unchanged.
+  if depth > 100: raise newException(GeneError, "recursive type alias")
+  if expr.isTypeAlias:
+    return c.expandTypeAlias(expr.typeAliasExpr, shadowed, depth + 1)
+  if expr.kind == vkSymbol and expr.symVal notin shadowed:
+    if c.parameterAliases.hasKey(expr.symVal):
+      return c.expandTypeAlias(c.parameterAliases[expr.symVal], shadowed, depth + 1)
+    let path = expr.symVal.split('/')
+    if path.len > 1:
+      if path[0] in shadowed: return expr
+      var resolved = c.ownInterfaceEntry(path[0])
+      if resolved.found:
+        for segment in path[1 .. ^1]:
+          if resolved.entry.category != cbcNamespace or
+              resolved.entry.namespace == nil or
+              not resolved.entry.namespace.entries.hasKey(segment):
+            return expr
+          resolved.entry = resolved.entry.namespace.entries[segment]
+        let form = resolved.entry.typeForm
+        if form.kind == vkNode and form.head.isSymbol("alias") and form.body.len == 2:
+          return c.expandTypeAlias(form.body[1], shadowed, depth + 1)
+        return expr
+    if c.importedCompileEntries.hasKey(expr.symVal):
+      let form = c.importedCompileEntries[expr.symVal].typeForm
+      if form.kind == vkNode and form.head.isSymbol("alias") and form.body.len == 2:
+        return c.expandTypeAlias(form.body[1], shadowed, depth + 1)
+  elif expr.kind == vkNode and expr.head.isSymbol("path"):
+    var path: seq[string]
+    for segment in expr.body:
+      if segment.kind != vkSymbol: return expr
+      path.add segment.symVal
+    return c.expandTypeAlias(newSym(path.join("/")), shadowed, depth + 1)
+  expr
 
 proc rejectOptionalSuffix(s, what, hint: string): string =
   ## `?`-suffixed declaration names are gone: optionality moved to the type
@@ -2354,8 +2389,8 @@ proc macroMatchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
     (true, false)
   of "Nil":
     (true, value.kind == vkNil)
-  of "Void":
-    (true, value.kind == vkVoid)
+  of "Present":
+    (true, value.kind != vkNil)
   of "Bool":
     (true, value.kind == vkBool)
   of "Str", "String":
@@ -2532,7 +2567,7 @@ proc macroTryMatch(pattern, target: Value,
       return true
     env[name] = target
     true
-  of vkInt, vkFloat, vkString, vkBool, vkChar, vkNil, vkVoid:
+  of vkInt, vkFloat, vkString, vkBool, vkChar, vkNil:
     equal(pattern, target)
   of vkList:
     let (items, ok) = macroPatternItems(target)
@@ -2642,9 +2677,10 @@ proc requiredMacroParamCount(params: openArray[MacroParam]): int =
       return
     inc result
 
-proc bindMacroImplicitVoid(pattern: Value, env: var Table[string, Value]) =
+proc bindMacroImplicitNil(pattern: Value, env: var Table[string, Value]) =
+  ## An omitted optional macro parameter binds nil.
   for name in patternBindingNames(pattern):
-    env[name] = VOID
+    env[name] = NIL
 
 proc bindMacroDefault(c: var Compiler, definition: MacroDef, pattern: Value,
                       defaultValue: MacroDefault,
@@ -2654,7 +2690,7 @@ proc bindMacroDefault(c: var Compiler, definition: MacroDef, pattern: Value,
     bindMacroPattern(pattern, c.macroDefaultSyntax(definition, defaultValue.defaultExpr, env),
                      env, what)
   else:
-    bindMacroImplicitVoid(pattern, env)
+    bindMacroImplicitNil(pattern, env)
 
 proc matchMacroArguments(c: var Compiler, def: MacroDef, node: Value): Table[string, Value] =
   let args = node.body
@@ -4503,7 +4539,7 @@ proc incompatibleGeneratorResult(c: Compiler, annotation: Value,
       if form.kind == vkNode and form.head.isSymbol("alias") and form.body.len == 2:
         return c.incompatibleGeneratorResult(form.body[1], typeParams, depth + 1)
       return true
-    return name in ["Nil", "Void", "Never", "Bool", "Int", "Float", "F64",
+    return name in ["Nil", "Present", "Never", "Bool", "Int", "Float", "F64",
       "F32", "I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64",
       "Char", "Str", "Symbol", "List", "Map", "PropMap", "Set", "HashMap",
       "Node", "Type", "Task", "Channel", "Cell", "AtomicCell", "Buffer",
@@ -4515,7 +4551,7 @@ proc incompatibleGeneratorResult(c: Compiler, annotation: Value,
         if not c.incompatibleGeneratorResult(member, typeParams, depth + 1): return false
       return true
     return c.incompatibleGeneratorResult(annotation.head, typeParams, depth + 1)
-  annotation.kind in {vkVoid, vkBool, vkInt, vkFloat, vkString, vkChar}
+  annotation.kind in {vkBool, vkInt, vkFloat, vkString, vkChar}
 
 proc returnContractRetainsScope(c: Compiler, annotation: Value,
                                  typeParams: seq[string], depth = 0): bool =
@@ -4557,6 +4593,13 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       raise newException(GeneError, "function return annotation requires a type")
     returnType = body[start]
     inc start
+    # A bare `Nil` return discards the body's value (design: value discarding).
+    # The rule reads the annotation after alias expansion, so an alias of `Nil`
+    # means the same thing as `Nil`; `Nil?` and unions stay ordinary types, and
+    # a type parameter is never rewritten.
+    let expanded = c.expandTypeAlias(returnType, typeParams)
+    if expanded.kind == vkSymbol and expanded.symVal == "Nil":
+      returnType = expanded
 
   if generator and c.incompatibleGeneratorResult(returnType, typeParams):
     raise newException(GeneError,
@@ -4585,7 +4628,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     seenLocals[specs.rest] = true
   var fnCompiler = c.childCompiler()
   fnCompiler.inStatementFn =
-    returnType.kind == vkSymbol and returnType.symVal in ["Nil", "Void"]
+    returnType.kind == vkSymbol and returnType.symVal == "Nil"
   fnCompiler.enableLocalSlots()
   fnCompiler.parentSlots = c.parentFrames()
   fnCompiler.parentFunctionSigs = c.parentFunctionSigFrames()
@@ -4636,17 +4679,17 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   compileBodyFrom(fnCompiler, body, start, tail = tailBody)
   if generator and start < body.len:
     fnCompiler.warnDiscardedPipeline(body[^1])
-  if fnCompiler.inGenerator and fnCompiler.sawNonVoidReturn:
+  if fnCompiler.inGenerator and fnCompiler.sawValueReturn:
     raise newException(GeneError,
-      "generator return value must be void")
+      "generator return takes no value")
   let returnKnownBareInt =
     returnType.isBareIntType and not fnCompiler.inGenerator and
-      not fnCompiler.sawNonVoidReturn and
+      not fnCompiler.sawValueReturn and
       fnCompiler.formsKnownBareInt(body, start)
   let returnBoundaryRedundant =
     returnType.kind == vkSymbol and
-      returnType.symVal in ["Any", "Int", "F64", "Bool", "Str", "Nil", "Void"] and
-      not fnCompiler.inGenerator and not fnCompiler.sawNonVoidReturn and
+      returnType.symVal in ["Any", "Int", "F64", "Bool", "Str", "Nil"] and
+      not fnCompiler.inGenerator and not fnCompiler.sawValueReturn and
       fnCompiler.formsKnownExactResult(body, returnType.symVal, start)
   discard fnCompiler.emit(if returnKnownBareInt: opReturnBareInt else: opReturn)
   fnCompiler.chunk.localNames = fnCompiler.localNames
@@ -5275,7 +5318,7 @@ proc isConstantValue(value: Value): bool =
   ## symbol *value* and a name reference are different nodes. Narrower in this
   ## direction is the safe one: everything the VM accepts, the profile accepts.
   case value.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString:
+  of vkNil, vkBool, vkInt, vkFloat, vkString:
     true
   of vkList:
     for item in value.listItems:
@@ -7100,7 +7143,7 @@ proc builtinTestMacro(name: string): MacroDef =
       result.params.add MacroParam(pattern: newSym("description"))
       result.named = @[MacroNamedParam(arg: "skip", pattern: newSym("skip"),
         defaultValue: MacroDefault(optional: true, hasExpr: true,
-                                   defaultExpr: VOID))]
+                                   defaultExpr: NIL))]
     result.params.add MacroParam(pattern: newSym("params"))
     let templateSource =
       if name == "it":
@@ -7753,7 +7796,7 @@ proc compilePathSuffix(c: var Compiler, parts: seq[Value], start: int,
 proc compilePath(c: var Compiler, node: Value) =
   let parts = node.body
   if parts.len == 0:
-    c.emitConst VOID
+    c.emitConst NIL
     return
   if parts.len >= 2 and parts[0].isSymbol("gene") and parts[1].isSymbol("ex"):
     raise newException(GeneError, "$ex was renamed to $err")
@@ -8747,7 +8790,7 @@ proc inlineForForm(c: Compiler, form: Value): bool =
   ## can then hold or observe the iteration's activation, so one slot of the
   ## enclosing frame can carry every item.
   case form.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkChar, vkString:
+  of vkNil, vkBool, vkInt, vkFloat, vkChar, vkString:
     true
   of vkSymbol:
     inlineForName(form) or form.symVal in ["in", "else", "elif"]
@@ -8885,7 +8928,7 @@ proc compileInlineFor(c: var Compiler, body: openArray[Value],
       for at in stale: c.chunk.callSites.del(at)
       return false
   c.localNames = inner.localNames
-  c.sawNonVoidReturn = c.sawNonVoidReturn or inner.sawNonVoidReturn
+  c.sawValueReturn = c.sawValueReturn or inner.sawValueReturn
   for i in first ..< c.chunk.instructions.len:
     let instruction = c.chunk.instructions[i]
     if instruction.op == opSetLocal and instruction.intArg < previousLocalCount:
@@ -8967,20 +9010,23 @@ proc compileReturn(c: var Compiler, node: Value) =
     raise newException(GeneError, "return is only valid inside fn")
   if node.props.len != 0 or node.body.len > 1:
     raise newException(GeneError, "return expects zero or one value")
-  if c.inGenerator and node.body.len == 1 and node.body[0].kind != vkVoid:
+  if c.inGenerator and node.body.len == 1 and node.body[0].kind != vkNil:
     raise newException(GeneError,
-      "generator return value must be void")
-  # A `: Nil` / `: Void` function yields the declared unit, so an explicit
-  # returned value could only be silently discarded. Rejecting it keeps the
-  # signature the single source of truth about what a call produces.
+      "generator return takes no value")
+  # A `: Nil` function yields nil, so an explicit returned value could only be
+  # silently discarded. Rejecting it keeps the signature the single source of
+  # truth about what a call produces.
   if c.inStatementFn and node.body.len == 1 and
-      node.body[0].kind notin {vkNil, vkVoid}:
+      node.body[0].kind notin {vkNil}:
     raise newException(GeneError,
-      "return in a Nil/Void function takes no value; use (return) or (return nil)")
-  if node.body.len == 1 and node.body[0].kind != vkVoid:
-    c.sawNonVoidReturn = true
+      "return in a Nil function takes no value; use (return) or (return nil)")
+  if node.body.len == 1 and node.body[0].kind != vkNil:
+    c.sawValueReturn = true
+  elif node.body.len == 0 and not c.inStatementFn and not c.inGenerator:
+    # A bare return yields nil, which a typed result may reject.
+    c.sawValueReturn = true
   if node.body.len == 0:
-    c.emitConst VOID
+    c.emitConst NIL
   else:
     compileExpr(c, node.body[0], tail = true)
   discard c.emit(opExplicitReturn)
@@ -9001,7 +9047,7 @@ proc compileTry(c: var Compiler, node: Value) =
     if i >= body.len:
       raise newException(GeneError, "catch requires an error type")
     let errorType = body[i]
-    if errorType.kind in {vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString,
+    if errorType.kind in {vkNil, vkBool, vkInt, vkFloat, vkString,
                           vkChar, vkList, vkMap, vkSet, vkHashMap} or
         errorType.isSymbol("_") or
         (errorType.kind == vkNode and errorType.props.len > 0):
@@ -9484,7 +9530,7 @@ proc compileType(c: var Compiler, node: Value) =
       raise newException(GeneError, "type ^derive must be a list")
     for request in derived.listItems:
       let protocolExpr = deriveProtocolExpr(request)
-      if protocolExpr.kind == vkNil or protocolExpr.kind == vkVoid:
+      if protocolExpr.kind == vkNil:
         raise newException(GeneError, "type ^derive entries must name protocols")
       compileEvaluatedListItem(c, protocolExpr)
       deriveRequests.add request
@@ -10111,7 +10157,7 @@ proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
     let start = c.chunk.instructions.len
     compileBody(inner, node.body, tail = tail)
     c.localNames = inner.localNames
-    c.sawNonVoidReturn = c.sawNonVoidReturn or inner.sawNonVoidReturn
+    c.sawValueReturn = c.sawValueReturn or inner.sawValueReturn
     for i in start ..< c.chunk.instructions.len:
       let instruction = c.chunk.instructions[i]
       if instruction.op == opSetLocal and instruction.intArg < previousLocalCount:
@@ -10130,7 +10176,7 @@ proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
     compileBody(inner, node.body, tail = tail)
     discard inner.emit(opReturn)
     inner.chunk.localNames = inner.localNames
-    c.sawNonVoidReturn = c.sawNonVoidReturn or inner.sawNonVoidReturn
+    c.sawValueReturn = c.sawValueReturn or inner.sawValueReturn
     discard c.emit(opBlockScope, c.chunk.addSubchunk(inner.chunk), tail = tail)
 
 proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
@@ -11574,7 +11620,7 @@ proc bindRuntimeMacroArguments*(call: RuntimeMacroCall, definitionScope: Scope,
   try:
     let bindings = c.matchMacroArguments(call.definition, call.syntax)
     for name in call.definition.runtimeParamNames:
-      result.add bindings.getOrDefault(name, VOID)
+      result.add bindings.getOrDefault(name, NIL)
   except GeneError as error:
     error.msg = call.runtimeMacroDiagnostic() & ": " & error.msg
     raise

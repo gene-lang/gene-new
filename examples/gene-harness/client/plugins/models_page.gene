@@ -8,10 +8,10 @@
 (type ModelsPage ^props {^appearance Any? ^root EventTarget ^notice EventTarget ^csrf Str ^file Any ^catalog Any
   ^ready Bool ^busy Bool ^loading Bool ^serial Int ^poll Int ^await_revision Str ^login Any ^login_serial Int ^accounts Any})
 
-(fn notice [page : ModelsPage, message : Str, error : Bool = false] : Void
+(fn notice [page : ModelsPage, message : Str, error : Bool = false] : Nil
   ($dom/set_text page/notice message) ($dom/set_class page/notice "error" error))
 
-(fn request [page : ModelsPage, method : Str, path : Str, data : Any, done : (Fn [Int Any] Void)] : Void
+(fn request [page : ModelsPage, method : Str, path : Str, data : Any, done : (Fn [Int Any] Nil)] : Nil
   (owner_request page/csrf method ($to_str (api_root) path) data done))
 
 (fn scalar [value : Any] : Str
@@ -19,7 +19,7 @@
   (var encoded ($json/stringify value))
   (if ($str/starts_with? encoded "\"") (then (text value)) (else encoded)))
 
-(fn controls [page : ModelsPage] : Void
+(fn controls [page : ModelsPage] : Nil
   (var errors (items page/file/errors))
   (var disabled (|| (! page/ready) page/busy page/loading (> errors/.size 0)))
   (for id in ["endpoint_add" "model_add"]
@@ -38,11 +38,11 @@
 (fn copy_config [page : ModelsPage] : Any
   ($json/parse ($json/stringify page/file/config)))
 
-(fn save [page : ModelsPage, config : Any] : Void
+(fn save [page : ModelsPage, config : Any] : Nil
   (if_yes (! (editable page)) (return))
   (set page/busy true) (controls page)
   (request page "POST" "/models/settings" {^config config ^expected_digest page/file/digest}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set page/busy false)
       (if (== code 200)
         (then (notice page "Settings saved.") (set page/poll 0) (load page))
@@ -52,13 +52,13 @@
             (then (load page) (notice page "Settings changed in another host. Review the refreshed settings, then save again." true))
             (else (notice page (text data/message "Settings could not be saved. Refresh to inspect the current file.") true))))))))
 
-(fn set_default [page : ModelsPage, provider : Str, model : Str, effort : Str] : Void
+(fn set_default [page : ModelsPage, provider : Str, model : Str, effort : Str] : Nil
   (if_yes (! (editable page)) (return))
   (var config : Any (copy_config page))
   (set config/default {^provider provider ^model model ^effort effort})
   (save page config))
 
-(fn set_hidden [page : ModelsPage, provider : Str, id : Str, hidden : Bool] : Void
+(fn set_hidden [page : ModelsPage, provider : Str, id : Str, hidden : Bool] : Nil
   (if_yes (! (editable page)) (return))
   (var config : Any (copy_config page))
   (var found false)
@@ -71,7 +71,7 @@
     (set config/models overrides))
   (save page config))
 
-(fn remove_endpoint [page : ModelsPage, provider : Str] : Void
+(fn remove_endpoint [page : ModelsPage, provider : Str] : Nil
   (if_yes (! (editable page)) (return))
   (var config : Any (copy_config page))
   (var kept : (List Any) [])
@@ -91,7 +91,7 @@
         (then ($to_str "Configure " (text configured/credential/env) ", then refresh connections."))
         (else "Check this endpoint and its credential source, then refresh connections.")))))
 
-(fn render_login [page : ModelsPage] : Void
+(fn render_login [page : ModelsPage] : Nil
   (var target ($dom/element "models_login")) ($dom/clear target)
   (if_yes ($absent? page/login) (return))
   (var state (text page/login/state))
@@ -106,7 +106,7 @@
         (p %(if chatgpt (then "OpenAI will ask you to authorize ChatGPT plan usage. Review the account, workspace and permissions before continuing.")
           (else "OpenRouter will ask you to authorize an API key. Requests use your OpenRouter credits.")))
         %link
-        (button ^type "button" ^on_click %(fn [event : Any] : Void (cancel_login page)) "Cancel sign-in")))))
+        (button ^type "button" ^on_click %(fn [event : Any] : Nil (cancel_login page)) "Cancel sign-in")))))
     (else
       ($dom/append target ($dom/render `(p ^role "status"
         %(if (== state "complete")
@@ -115,11 +115,11 @@
             (else "Connected. Refreshing connections…")))
           (else ($to_str "Sign-in " state ". You can connect again.")))))))))
 
-(fn poll_login [page : ModelsPage, serial : Int, count : Int] : Void
+(fn poll_login [page : ModelsPage, serial : Int, count : Int] : Nil
   (if_yes (|| (!= serial page/login_serial) ($absent? page/login)) (return))
   (var id (text page/login/id))
   (request page "GET" ($to_str "/models/login?id=" ($url/encode_component id)) nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (!= serial page/login_serial) (return))
       (set page/login/state (if (== code 200) (then (text data/state)) (else "failed")))
       (if_yes ($present? data/account) (set page/login/account data/account))
@@ -127,22 +127,22 @@
       (if (|| (== state "pending") (== state "exchanging"))
         (then
           (if (< count 305)
-            (then ($time/after 1000.0 (fn [] : Void (poll_login page serial (+ count 1)))))
+            (then ($time/after 1000.0 (fn [] : Nil (poll_login page serial (+ count 1)))))
             (else (cancel_login page))))
         (elif (== state "complete") (set page/poll 0) (load page))))))
 
-(fn cancel_login [page : ModelsPage] : Void
+(fn cancel_login [page : ModelsPage] : Nil
   (if_yes ($absent? page/login) (return))
   (set page/login_serial (+ page/login_serial 1))
   (var serial page/login_serial)
   (request page "DELETE" ($to_str "/models/login?id=" ($url/encode_component (text page/login/id))) nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (!= serial page/login_serial) (return))
       (set page/login/state (if (== code 200) (then (text data/state)) (else "failed")))
       (render_login page)
       (if_yes (== (text page/login/state) "complete") (load page)))))
 
-(fn connect_provider [page : ModelsPage, provider : Str, account : Str = ""] : Void
+(fn connect_provider [page : ModelsPage, provider : Str, account : Str = ""] : Nil
   (if_yes ($present? page/login)
     (var state (text page/login/state))
     (if_yes (|| (== state "pending") (== state "exchanging"))
@@ -151,24 +151,24 @@
   (var serial page/login_serial)
   (var body : Any {^provider provider})
   (if_yes (!= account "") (set body/account account))
-  (request page "POST" "/models/connect" body (fn [code : Int, data : Any] : Void
+  (request page "POST" "/models/connect" body (fn [code : Int, data : Any] : Nil
     (if_yes (!= serial page/login_serial) (return))
     (if (!= code 202)
       (then (notice page (text data/message "Sign-in could not start.") true))
       (else
         (set page/login data) (render_login page)
-        ($time/after 1000.0 (fn [] : Void (poll_login page serial 0))))))))
+        ($time/after 1000.0 (fn [] : Nil (poll_login page serial 0))))))))
 
-(fn account_action [page : ModelsPage, id : Str, action : Str] : Void
+(fn account_action [page : ModelsPage, id : Str, action : Str] : Nil
   (if_yes (|| page/busy page/loading) (return))
   (set page/busy true) (controls page)
-  (request page "POST" "/models/accounts" {^id id ^action action} (fn [code : Int, data : Any] : Void
+  (request page "POST" "/models/accounts" {^id id ^action action} (fn [code : Int, data : Any] : Nil
     (set page/busy false) (controls page)
     (if (== code 200)
       (then (notice page (text data/message "ChatGPT account selected.")) (load page))
       (else (notice page (text data/message "Account change could not finish.") true))))))
 
-(fn render_welcome [page : ModelsPage] : Void
+(fn render_welcome [page : ModelsPage] : Nil
   (var host ($dom/element "models_welcome"))
   (var selected : Any nil)
   (for account in (items page/accounts/accounts)
@@ -178,24 +178,24 @@
   ($dom/clear host) (set host/hidden false)
   (var id (text selected/id))
   (var confirm ($dom/render `(button ^type "button"
-    ^on_click %(fn [event : Any] : Void (account_action page id "acknowledge")) "Got it")))
+    ^on_click %(fn [event : Any] : Nil (account_action page id "acknowledge")) "Got it")))
   (var card ($dom/render `(section ^role "dialog" ^aria-modal "true" ^aria-labelledby "chatgpt_welcome_title"
     (h2 ^id "chatgpt_welcome_title" "You're using your ChatGPT plan")
     (p "Eligible requests in Gene Harness use your ChatGPT plan or credits. Manage app access and limits in ChatGPT Settings → Usage."))))
   ($dom/append card confirm)
-  ($dom/add_event_listener card "keydown" (fn [event : Any] : Void
+  ($dom/add_event_listener card "keydown" (fn [event : Any] : Nil
     (if_yes (== (text event/key) "Tab") ($dom/prevent_default event) ($dom/focus confirm))
     (if_yes (== (text event/key) "Escape") ($dom/prevent_default event) (account_action page id "acknowledge"))))
   ($dom/append host card) ($dom/focus confirm))
 
-(fn render_accounts [page : ModelsPage] : Void
+(fn render_accounts [page : ModelsPage] : Nil
   (var target ($dom/element "chatgpt_accounts")) ($dom/clear target)
   (if_yes ($absent? page/accounts) (return))
   (var section ($dom/render `(section (h2 "ChatGPT accounts")
     (p "Accounts and workspaces have separate registrations. Plan usage requires your permission.")
     (p (a ^href "https://chatgpt.com/settings/usage" ^target "_blank" ^rel "noopener noreferrer" "Manage usage in ChatGPT"))
     (button ^type "button" ^data-oai-siwc-button ""
-      ^on_click %(fn [event : Any] : Void (connect_provider page "chatgpt")) "Add ChatGPT account"))))
+      ^on_click %(fn [event : Any] : Nil (connect_provider page "chatgpt")) "Add ChatGPT account"))))
   (if_yes ($present? page/accounts/error)
     ($dom/append section ($dom/render `(p ^class_name "error" %(text page/accounts/error)))))
   (for account in (items page/accounts/accounts)
@@ -206,17 +206,17 @@
     (if_yes ($present? account/reason) ($dom/append row ($dom/render `(p %(text account/reason)))))
     (if_yes (! active)
       ($dom/append row ($dom/render `(button ^type "button" ^disabled %(|| page/busy page/loading)
-        ^on_click %(fn [event : Any] : Void (account_action page id "select")) "Use account"))))
+        ^on_click %(fn [event : Any] : Nil (account_action page id "select")) "Use account"))))
     ($dom/append row ($dom/render `(button ^type "button" ^data-oai-siwc-button ""
-      ^on_click %(fn [event : Any] : Void (connect_provider page "chatgpt" id)) "Reconnect")))
+      ^on_click %(fn [event : Any] : Nil (connect_provider page "chatgpt" id)) "Reconnect")))
     (if_yes (! (flag account/signed_out))
       ($dom/append row ($dom/render `(button ^type "button" ^disabled %(|| page/busy page/loading)
-        ^on_click %(fn [event : Any] : Void (account_action page id "sign_out")) "Sign out"))))
+        ^on_click %(fn [event : Any] : Nil (account_action page id "sign_out")) "Sign out"))))
     ($dom/append section row))
   ($dom/append target section)
   (render_welcome page))
 
-(fn render [page : ModelsPage] : Void
+(fn render [page : ModelsPage] : Nil
   (var errors ($dom/element "models_errors")) ($dom/clear errors)
   (for issue in (items page/file/errors)
     (var message (text issue/reason))
@@ -259,14 +259,14 @@
       ($dom/append card ($dom/render `(details (summary "Connect") (p %(connection_hint provider configured))))))
     (if_yes (== provider "openrouter")
       ($dom/append card ($dom/render `(button ^type "button"
-        ^on_click %(fn [event : Any] : Void (connect_provider page provider)) "Connect OpenRouter"))))
+        ^on_click %(fn [event : Any] : Nil (connect_provider page provider)) "Connect OpenRouter"))))
     (if_yes (== provider "chatgpt")
       ($dom/append card ($dom/render `(button ^type "button" ^data-oai-siwc-button ""
-        ^on_click %(fn [event : Any] : Void (connect_provider page provider)) "Continue with ChatGPT"))))
+        ^on_click %(fn [event : Any] : Nil (connect_provider page provider)) "Continue with ChatGPT"))))
     (if_yes ($present? configured)
       ($dom/append card ($dom/render `(p (code %(text configured/base_url)))))
       ($dom/append card ($dom/render `(button ^type "button" ^disabled %mutations_disabled
-        ^on_click %(fn [event : Any] : Void (remove_endpoint page provider)) "Remove endpoint"))))
+        ^on_click %(fn [event : Any] : Nil (remove_endpoint page provider)) "Remove endpoint"))))
     (var body ($dom/render `(tbody)))
     (var count 0)
     (for model in (items entry/models)
@@ -289,7 +289,7 @@
       ($dom/append row ($dom/render `(td %(if ($present? model/window) (then ($to_str (scalar model/window) " tokens")) (else "Context unknown")))))
       (var visibility ($dom/render `(td)))
       ($dom/append visibility ($dom/render `(button ^type "button" ^disabled %mutations_disabled
-        ^on_click %(fn [event : Any] : Void (set_hidden page provider id (! hidden))) %(if hidden (then "Show in picker") (else "Hide from picker")))))
+        ^on_click %(fn [event : Any] : Nil (set_hidden page provider id (! hidden))) %(if hidden (then "Show in picker") (else "Hide from picker")))))
       ($dom/append row visibility)
       (var choice ($dom/render `(td)))
       (var form ($dom/render `(form ^class_name "default_form")))
@@ -310,7 +310,7 @@
       (set effort/disabled disabled)
       ($dom/append form effort)
       ($dom/append form ($dom/render `(button ^type "submit" ^disabled %disabled "Set as default")))
-      ($dom/add_event_listener form "submit" (fn [event : Any] : Void
+      ($dom/add_event_listener form "submit" (fn [event : Any] : Nil
         ($dom/prevent_default event) (set_default page provider id ($dom/input_value effort))))
       ($dom/append choice form) ($dom/append row choice) ($dom/append body row))
     (if (> count 0)
@@ -327,12 +327,12 @@
         (h3 %provider) (p "Provider contribution is unavailable. Inspect its plugin or refresh after fixing the file.")
         (p (code %(text entry/base_url))) (a ^href "/plugins" "Inspect plugins")
         (button ^type "button" ^disabled %mutations_disabled
-          ^on_click %(fn [event : Any] : Void (remove_endpoint page provider)) "Remove endpoint"))))))
+          ^on_click %(fn [event : Any] : Nil (remove_endpoint page provider)) "Remove endpoint"))))))
   ($dom/set_input_value provider_input (if retained_provider (then previous_provider) (else first_provider)))
   (render_accounts page)
   (controls page))
 
-(fn finish_load [page : ModelsPage, file : Any, catalog : Any] : Void
+(fn finish_load [page : ModelsPage, file : Any, catalog : Any] : Nil
   (set page/file file) (set page/catalog catalog) (set page/ready true) (set page/loading false)
   (render page)
   (var pending (|| (flag catalog/refreshing)
@@ -344,28 +344,28 @@
     (then
       (set page/poll (+ page/poll 1))
       (var serial page/serial)
-      ($time/after 400.0 (fn [] : Void (if_yes (&& (== serial page/serial) (! page/busy)) (load page)))))
+      ($time/after 400.0 (fn [] : Nil (if_yes (&& (== serial page/serial) (! page/busy)) (load page)))))
     (else (set page/await_revision "") (set page/poll 0))))
 
-(fn failed_load [page : ModelsPage, code : Int, data : Any] : Void
+(fn failed_load [page : ModelsPage, code : Int, data : Any] : Nil
   (set page/loading false) (set page/ready false) (controls page)
   ($dom/clear ($dom/element "models_connections"))
   (notice page (if (== code 401)
     (then "Open this workspace's owner link, then return to Models.")
     (else (text data/message "Models are unavailable. Return to the workspace and inspect its plugins."))) true))
 
-(fn load [page : ModelsPage] : Void
+(fn load [page : ModelsPage] : Nil
   (set page/serial (+ page/serial 1)) (var serial page/serial)
   (set page/loading true) (controls page)
-  (request page "GET" "/status" nil (fn [code : Int, status : Any] : Void
+  (request page "GET" "/status" nil (fn [code : Int, status : Any] : Nil
     (if_yes (!= serial page/serial) (return))
     (if_yes (!= code 200) (failed_load page code status) (return))
     (set page/csrf (text status/csrf))
     ($dom/set_text ($dom/element "models_workspace") (text status/workspace))
-    (request page "GET" "/models/settings" nil (fn [loaded : Int, file : Any] : Void
+    (request page "GET" "/models/settings" nil (fn [loaded : Int, file : Any] : Nil
       (if_yes (!= serial page/serial) (return))
       (if_yes (!= loaded 200) (failed_load page loaded file) (return))
-      (request page "GET" "/models" nil (fn [ready : Int, catalog : Any] : Void
+      (request page "GET" "/models" nil (fn [ready : Int, catalog : Any] : Nil
         (if_yes (!= serial page/serial) (return))
         (if_yes (!= ready 200) (failed_load page ready catalog) (return))
         (if (!= (text file/digest) (text catalog/digest))
@@ -373,13 +373,13 @@
             (set page/loading false) (controls page)
             (notice page "Settings changed while loading. Refresh to review the current file." true))
           (else
-            (request page "GET" "/models/accounts" nil (fn [code : Int, accounts : Any] : Void
+            (request page "GET" "/models/accounts" nil (fn [code : Int, accounts : Any] : Nil
               (if_yes (!= serial page/serial) (return))
               (if (!= code 200)
                 (then (failed_load page code accounts))
                 (else (set page/accounts accounts) (finish_load page file catalog))))))))))))))
 
-(fn add_endpoint [page : ModelsPage] : Void
+(fn add_endpoint [page : ModelsPage] : Nil
   (if_yes (! (editable page)) (return))
   (var config : Any (copy_config page))
   (var entry : Any {^name ($str/trim ($dom/input_value ($dom/element "endpoint_name")))
@@ -394,7 +394,7 @@
   (var entries (items config/providers)) (entries .push entry) (set config/providers entries)
   (save page config))
 
-(fn add_model [page : ModelsPage] : Void
+(fn add_model [page : ModelsPage] : Nil
   (if_yes (! (editable page)) (return))
   (try
     (var config : Any (copy_config page))
@@ -420,33 +420,33 @@
     (set config/models entries) (save page config)
   catch Any (notice page "Check the model's context window and effort values." true)))
 
-(fn main [root : EventTarget] : Void
+(fn main [root : EventTarget] : Nil
   (var page (ModelsPage ^root root ^notice ($dom/element "models_notice") ^csrf "" ^file nil ^catalog nil
     ^!ready ^!busy ^!loading ^serial 0 ^poll 0 ^await_revision "" ^login nil ^login_serial 0 ^accounts nil))
-  ($dom/add_event_listener ($dom/element "models_search") "input" (fn [event : Any] : Void
+  ($dom/add_event_listener ($dom/element "models_search") "input" (fn [event : Any] : Nil
     (if_yes ($present? page/catalog) (render page))))
   (var appearance (start_appearance
-    (fn [method : Str, path : Str, data : Any, done : (Fn [Int Any] Void)] : Void
+    (fn [method : Str, path : Str, data : Any, done : (Fn [Int Any] Nil)] : Nil
       (owner_request page/csrf method path data done))
-    (fn [answer : Any] : Void (return))
+    (fn [answer : Any] : Nil (return))
     (== (query_value ($browser/search) "ui") "default")
-    ^on_error (fn [error : Any] : Void (notice page (text error/message "Appearance could not be saved.") true))))
+    ^on_error (fn [error : Any] : Nil (notice page (text error/message "Appearance could not be saved.") true))))
   (set page/appearance appearance)
   ($dom/add_event_listener ($dom/element "theme_toggle") "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var document ($dom/element "harness_document"))
       (var mode : Str document/dataset/mode)
       (change_appearance appearance {^mode (if (== mode "dark") "light" "dark")})))
-  ($dom/add_event_listener ($dom/element "models_refresh") "click" (fn [event : Any] : Void
+  ($dom/add_event_listener ($dom/element "models_refresh") "click" (fn [event : Any] : Nil
     (refresh_appearance appearance)
     (if_yes (|| page/busy page/loading) (return))
     (set page/await_revision (text page/catalog/id)) (set page/poll 0)
-    (request page "POST" "/models/refresh" {} (fn [code : Int, data : Any] : Void
+    (request page "POST" "/models/refresh" {} (fn [code : Int, data : Any] : Nil
       (if (== code 202) (then (notice page "Refreshing connections…") (load page))
         (else (notice page (text data/message) true)))))))
-  ($dom/add_event_listener ($dom/element "models_endpoint_form") "submit" (fn [event : Any] : Void
+  ($dom/add_event_listener ($dom/element "models_endpoint_form") "submit" (fn [event : Any] : Nil
     ($dom/prevent_default event) (add_endpoint page)))
-  ($dom/add_event_listener ($dom/element "models_model_form") "submit" (fn [event : Any] : Void
+  ($dom/add_event_listener ($dom/element "models_model_form") "submit" (fn [event : Any] : Nil
     ($dom/prevent_default event) (add_model page)))
-  (owner_connect "/models" (fn [code : Int, data : Any] : Void
+  (owner_connect "/models" (fn [code : Int, data : Any] : Nil
     (if (== code 200) (then (load page)) (else (failed_load page code data))))))

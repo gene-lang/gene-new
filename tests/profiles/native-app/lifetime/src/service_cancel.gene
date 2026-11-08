@@ -36,7 +36,7 @@
         (var signalled false)
         (while true
           (let part (await (req/body .AsyncReader:read 65536)))
-          (if ($nil? part) (then (break)))
+          (if ($absent? part) (then (break)))
           (set total (+ total ($binary/size part)))
           (if (! signalled)
             (do

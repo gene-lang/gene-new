@@ -38,7 +38,7 @@ proc eventMember(scope: Scope, name: string): Value =
   if ns.kind != vkNamespace:
     return NIL
   let binding = exportedBinding(ns, name)
-  if binding.kind == vkVoid: NIL else: binding
+  if binding.isMissing: NIL else: binding
 
 proc raiseEventError(scope: Scope, typeName, message: string,
                      extra: openArray[(string, Value)] = []) {.noreturn.} =

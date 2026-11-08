@@ -109,7 +109,7 @@
     (var record self)
     (let services (require_plugin_services record/h))
     (var event_record (row_record record/h "event_types" name))
-    (if (== event_record void)
+    (if ($absent? event_record)
       (fail (HarnessError ^message $"plugin event type ${name} is not registered")))
     (var event_type event_record/payload)
     (if (|| (!= event_type/origin "plugin") (!= event_type/owner record/owner))

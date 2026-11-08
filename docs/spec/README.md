@@ -6,7 +6,7 @@ Start with [the language guide](../language.md) for examples and ordinary usage.
 - [Reader and values](reader.md)
 - [Calls, paths, control, and eval](calls.md)
 - [Types and construction](types.md)
-- [Nil, void, and optional binding](nil-void.md)
+- [Absence (nil), Present, and optional binding](nil-void.md)
 - [Protocols and dispatch](protocols.md)
 - [Streams](streams.md)
 - [Tasks, channels, and actors](concurrency.md)

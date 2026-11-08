@@ -3,13 +3,13 @@
 (import [api_root] ^from "../src/web/contract.gene")
 (import [text flag] ^from "../src/common/launcher.gene")
 
-(type BrowserAppearance ^props {^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)
-  ^changed (Fn [Any] Void) ^error (Fn [Any] Void) ^report (Fn [Any] Void)
+(type BrowserAppearance ^props {^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)
+  ^changed (Fn [Any] Nil) ^error (Fn [Any] Nil) ^report (Fn [Any] Nil)
   ^answer Any ^sequence Int ^signature Str ^safe Bool ^queued PropMap ^posting Bool
   ^refreshing Bool ^refresh_again Bool ^report_pending Bool ^registry_revision Str ^observed_revision Str
   ^preview_ready PropMap ^preview_pending PropMap ^preview_links (List EventTarget)})
 
-(fn apply_answer [state : BrowserAppearance, answer : Any] : Void
+(fn apply_answer [state : BrowserAppearance, answer : Any] : Nil
   (if_yes ($absent? answer/rendered) (return))
   (var signature ($json/stringify answer))
   (if_yes (== signature state/signature)
@@ -44,21 +44,21 @@
 (fn appearance_path [state : BrowserAppearance] : Str
   ($to_str (api_root) "/appearance" (if state/safe "?ui=default" "")))
 
-(fn refresh_appearance [state : BrowserAppearance, report : Bool = false] : Void
+(fn refresh_appearance [state : BrowserAppearance, report : Bool = false] : Nil
   (if_yes report (set state/report_pending true))
   (set state/sequence (+ state/sequence 1))
   (if_yes state/refreshing (set state/refresh_again true) (return))
   (set state/refreshing true)
   (var sequence state/sequence)
   (state/api "GET" (appearance_path state) nil
-    (fn [code : Int, answer : Any] : Void
+    (fn [code : Int, answer : Any] : Nil
       (set state/refreshing false)
       (if state/refresh_again
         (then (set state/refresh_again false) (refresh_appearance state))
         (elif (&& (== code 200) (== sequence state/sequence)) (apply_answer state answer))))))
 
 # Broadcasts arrive on each conversation socket; only one owns page appearance.
-(fn appearance_event [state : BrowserAppearance, kind : Str, data : Any, selected : Bool] : Void
+(fn appearance_event [state : BrowserAppearance, kind : Str, data : Any, selected : Bool] : Nil
   (if_not selected (return))
   (match kind
     (when "appearance_changed" (refresh_appearance state))
@@ -75,14 +75,14 @@
   (for [key value] in state/queued (return true))
   false)
 
-(fn write_appearance [state : BrowserAppearance] : Void
+(fn write_appearance [state : BrowserAppearance] : Nil
   (if_yes (|| state/posting (! (queued_changes? state))) (return))
   (var fields : Any state/queued)
   (set state/queued {})
   (set state/posting true)
   (set state/sequence (+ state/sequence 1))
   (state/api "POST" (appearance_path state) fields
-    (fn [code : Int, answer : Any] : Void
+    (fn [code : Int, answer : Any] : Nil
       (set state/posting false)
       (if_yes (!= code 200)
         (state/error answer)
@@ -92,7 +92,7 @@
         (then (write_appearance state))
         (else (refresh_appearance state))))))
 
-(fn change_appearance [state : BrowserAppearance, fields : Any] : Void
+(fn change_appearance [state : BrowserAppearance, fields : Any] : Nil
   # Serialize this document's writes so each request carries the preceding
   # response's cookie. Rapid changes merge into the next small field map.
   (set state/sequence (+ state/sequence 1))
@@ -102,28 +102,28 @@
     (set state/queued/%name value))
   (write_appearance state))
 
-(fn start_appearance [api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), changed : (Fn [Any] Void), safe : Bool = false,
-  ^on_error on_error : (Fn [Any] Void) = (fn [error : Any] : Void (return)),
-  ^report report : (Fn [Any] Void) = (fn [answer : Any] : Void (return))] : BrowserAppearance
+(fn start_appearance [api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil), changed : (Fn [Any] Nil), safe : Bool = false,
+  ^on_error on_error : (Fn [Any] Nil) = (fn [error : Any] : Nil (return)),
+  ^report report : (Fn [Any] Nil) = (fn [answer : Any] : Nil (return))] : BrowserAppearance
   (var state (BrowserAppearance ^api api ^changed changed ^error on_error ^report report
     ^answer nil ^sequence 0 ^signature "" ^safe safe ^queued {} ^!posting ^!refreshing ^!refresh_again
     ^!report_pending ^registry_revision "" ^observed_revision "" ^preview_ready {} ^preview_pending {} ^preview_links []))
-  ($dom/add_event_listener ($dom/window) "focus" (fn [event : Any] : Void (refresh_appearance state)))
+  ($dom/add_event_listener ($dom/window) "focus" (fn [event : Any] : Nil (refresh_appearance state)))
   ($dom/add_event_listener ($dom/window) "visibilitychange"
-    (fn [event : Any] : Void (if_yes ($browser/visible?) (refresh_appearance state))))
+    (fn [event : Any] : Nil (if_yes ($browser/visible?) (refresh_appearance state))))
   ($dom/add_event_listener ($dom/element "harness_theme") "load"
-    (fn [event : Any] : Void (if_yes ($present? state/answer) (state/changed state/answer))))
+    (fn [event : Any] : Nil (if_yes ($present? state/answer) (state/changed state/answer))))
   (refresh_appearance state)
   state)
 
-(fn load_preview [state : BrowserAppearance, name : Str, loaded : (Fn [] Void)] : Bool
+(fn load_preview [state : BrowserAppearance, name : Str, loaded : (Fn [] Nil)] : Bool
   (if_yes (flag state/preview_ready/%name) (return true))
   (if_yes (flag state/preview_pending/%name) (return false))
   (set state/preview_pending/%name true)
   (var revision state/registry_revision)
   (var suffix (if state/safe "&ui=default" ""))
   (state/api "GET" $"${(api_root)}/appearance/preview?theme=${($url/encode_component name)}${suffix}" nil
-    (fn [code : Int, answer : Any] : Void
+    (fn [code : Int, answer : Any] : Nil
       (if_yes (!= revision state/registry_revision) (return))
       (if_yes (!= code 200)
         (set state/preview_pending/%name false) (state/error answer) (return))
@@ -132,11 +132,11 @@
       (var link ($dom/create_element "link"))
       ($dom/set_attribute link "rel" "stylesheet")
       ($dom/set_attribute link "href" answer/stylesheet)
-      ($dom/add_event_listener link "load" (fn [event : Any] : Void
+      ($dom/add_event_listener link "load" (fn [event : Any] : Nil
         (if_yes (== revision state/registry_revision)
           (set state/preview_ready/%name true)
           (loaded))))
-      ($dom/add_event_listener link "error" (fn [event : Any] : Void
+      ($dom/add_event_listener link "error" (fn [event : Any] : Nil
         (if_yes (== revision state/registry_revision)
           (set state/preview_pending/%name false)
           (state/error {^message "The theme preview could not be loaded. Refresh to try again."}))))
@@ -144,7 +144,7 @@
       ($dom/append ($dom/element "theme_preview_styles") link)))
   false)
 
-(fn appearance_control [state : BrowserAppearance, element : EventTarget, field : Str] : Void
+(fn appearance_control [state : BrowserAppearance, element : EventTarget, field : Str] : Nil
   (if_yes ($absent? state/answer) (return))
   (var saved : Any state/answer/saved)
   (var rendered : Any state/answer/rendered)
@@ -158,7 +158,7 @@
           (h4 "Light") (p "Text, surfaces and emphasis.") (span ^class_name "web_badge" "Sample"))
         (section ^data-mode "dark" ^class_name "theme_mode web_card"
           (h4 "Dark") (p "Text, surfaces and emphasis.") (span ^class_name "web_badge" "Sample")))))
-    (load_preview state preview_name (fn [] : Void (return)))
+    (load_preview state preview_name (fn [] : Nil (return)))
     (return))
   (var current : Any (?? saved/%field rendered/%field))
   (var value : Str current)

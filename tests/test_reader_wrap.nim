@@ -97,9 +97,9 @@ suite "execution — #@ is an ordinary call":
       (fn defaulted [x : Int = #@twice 3] x)
       [(+ 1 #@twice 20) (defaulted)
        (try #@twice "bad" catch TypeError "rejected")
-       #@identity nil #@identity void
+       #@identity nil #@identity nil
        #@quote (unbound syntax)]
-    """) == "[41 6 \"rejected\" nil void (unbound syntax)]"
+    """) == "[41 6 \"rejected\" nil nil (unbound syntax)]"
     check wrapEval("(fn quote_it! [x] x) #@quote_it! (+ 1 2)") == "(+ 1 2)"
 
 suite "formatting — preserve authored #@":

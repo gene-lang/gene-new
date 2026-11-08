@@ -35,13 +35,13 @@ let HttpRuntimeLogger = newRuntimeLogger("gene/http")
 proc httpNamespaceBinding(scope: Scope, name: string): Value =
   let app = if scope != nil: scope.application() else: currentApplication()
   let source = if app.stdlib != nil: app.stdlib else: app.builtinsScope()
-  let netNs = source.vars.getOrDefault("net", VOID)
+  let netNs = source.vars.getOrDefault("net", NIL)
   if netNs.kind != vkNamespace:
-    return VOID
-  let httpNs = netNs.nsScope.vars.getOrDefault("http", VOID)
+    return NIL
+  let httpNs = netNs.nsScope.vars.getOrDefault("http", NIL)
   if httpNs.kind != vkNamespace:
-    return VOID
-  httpNs.nsScope.vars.getOrDefault(name, VOID)
+    return NIL
+  httpNs.nsScope.vars.getOrDefault(name, NIL)
 
 proc raiseHttpError(message: string, scope: Scope, code = "") =
   var props = initPropTable()
@@ -124,16 +124,16 @@ proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope,
   let headerEnd = buf.find("\r\n\r\n")
   if headerEnd < 0:
     if buf.len > httpMaxHeaderBytes:
-      return (hpsBad, VOID, 0, 0, false)
-    return (hpsNeedMore, VOID, 0, 0, false)
+      return (hpsBad, NIL, 0, 0, false)
+    return (hpsNeedMore, NIL, 0, 0, false)
   if headerEnd > httpMaxHeaderBytes:
-    return (hpsBad, VOID, 0, 0, false)
+    return (hpsBad, NIL, 0, 0, false)
   let lines = buf[0 ..< headerEnd].split("\r\n")
   if lines.len == 0 or lines.len - 1 > httpMaxHeaderLines:
-    return (hpsBad, VOID, 0, 0, false)
+    return (hpsBad, NIL, 0, 0, false)
   let lineParts = lines[0].split(' ')
   if lineParts.len != 3 or not lineParts[2].startsWith("HTTP/"):
-    return (hpsBad, VOID, 0, 0, false)
+    return (hpsBad, NIL, 0, 0, false)
   let httpMethod = lineParts[0]
   let target = lineParts[1]
   var path = target
@@ -149,38 +149,38 @@ proc parseHttpRequestBuffer(buf: string, maxBodyBytes: int, scope: Scope,
     let line = lines[i]
     let colon = line.find(':')
     if colon <= 0:
-      return (hpsBad, VOID, 0, 0, false)
+      return (hpsBad, NIL, 0, 0, false)
     let key = line[0 ..< colon].strip().toLowerAscii()
     let val = line[colon + 1 .. ^1].strip()
     if key == "transfer-encoding":
       if headers.hasKey(key):
-        return (hpsBad, VOID, 0, 0, false)
+        return (hpsBad, NIL, 0, 0, false)
       transferEncoding = val.toLowerAscii()
     if key == "content-length" and headers.hasKey(key):
-      return (hpsBad, VOID, 0, 0, false)
+      return (hpsBad, NIL, 0, 0, false)
     headers[key] = newStr(val)
     if key == "content-length":
       try:
         contentLength = parseInt(val)
       except ValueError:
-        return (hpsBad, VOID, 0, 0, false)
+        return (hpsBad, NIL, 0, 0, false)
       if contentLength < 0:
-        return (hpsBad, VOID, 0, 0, false)
+        return (hpsBad, NIL, 0, 0, false)
   let chunked = transferEncoding == "chunked"
   if transferEncoding.len > 0 and
       (not headersOnly or not chunked or headers.hasKey("content-length")):
-    return (hpsBad, VOID, 0, 0, false)
+    return (hpsBad, NIL, 0, 0, false)
   if maxBodyBytes >= 0 and contentLength > maxBodyBytes:
-    return (hpsTooLarge, VOID, 0, 0, false)
+    return (hpsTooLarge, NIL, 0, 0, false)
   let bodyStart = headerEnd + 4
   if not headersOnly and buf.len < bodyStart + contentLength:
-    return (hpsNeedMore, VOID, 0, 0, false)
+    return (hpsNeedMore, NIL, 0, 0, false)
   let body = if headersOnly: "" else: buf[bodyStart ..< bodyStart + contentLength]
   var params: PropTable
   try:
     params = parseQueryEntries(query, scope)
   except GeneError:
-    return (hpsBad, VOID, 0, 0, false)
+    return (hpsBad, NIL, 0, 0, false)
   var props = initPropTable()
   props["method"] = newStr(httpMethod)
   props["path"] = newStr(path)
@@ -1435,11 +1435,11 @@ proc biHttpWsAccept(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   let headers = req.props["headers"]
   if headers.kind != vkMap:
     raiseHttpError("ws_accept expects a request value", scope)
-  let upgrade = headers.mapEntries.getOrDefault("upgrade", VOID)
+  let upgrade = headers.mapEntries.getOrDefault("upgrade", NIL)
   if upgrade.kind != vkString or
       upgrade.strVal.toLowerAscii() != "websocket":
     raiseHttpError("ws_accept: request is not a websocket upgrade", scope)
-  let key = headers.mapEntries.getOrDefault("sec-websocket-key", VOID)
+  let key = headers.mapEntries.getOrDefault("sec-websocket-key", NIL)
   if key.kind != vkString or key.strVal.len == 0:
     raiseHttpError("ws_accept: missing Sec-WebSocket-Key", scope)
   var props = initPropTable()
@@ -1469,7 +1469,7 @@ proc biHttpWsAccept(args: openArray[Value], call: ptr NativeCall): Value {.nimca
         raiseHttpError("ws_accept ^subprotocol expects a non-empty Str", scope)
       var offered = false
       let header = headers.mapEntries.getOrDefault("sec-websocket-protocol",
-                                                   VOID)
+                                                   NIL)
       if header.kind == vkString:
         for item in header.strVal.split(','):
           if item.strip() == protocol.strVal:
@@ -3139,7 +3139,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       rt.serving = false
       dropHttpRuntime(rt)
       if ownRegistration:
-        args[0].setNodeProp("listener", VOID)   # void deletes the prop
+        discard args[0].deleteNodeProp("listener")
     var shutdown = initPropTable()
     shutdown["complete"] = newBool(remainingCleanupLeases == 0 and
       remainingFileResources == 0 and cleanupTasks.len == 0 and

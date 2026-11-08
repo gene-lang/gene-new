@@ -43,16 +43,16 @@
 (fn patch_entry ^^private [entry, patch, warnings]
   (var expected (patch .get "expected_module"))
   (var target (patch .get "entry"))
-  (if (&& (!= expected void) (!= expected (entry .get "module")))
+  (if (&& ($present? expected) (!= expected (entry .get "module")))
     (then
       (warnings .push
         $"patch for ${target} skipped: expected module ${expected}")
       (return false)))
   (for field in ["config" "disabled" "isolate" "intercept"]
     (var value (patch .get field))
-    (if_not (== value void) (entry .put field value)))
+    (if_not ($absent? value) (entry .put field value)))
   (var inserted (patch .get "children"))
-  (if_not (== inserted void)
+  (if_not ($absent? inserted)
     (if_not (== (entry .get "group") true)
       (include_failure
         $"patch target ${target} is not a group"))

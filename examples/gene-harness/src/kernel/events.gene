@@ -31,10 +31,10 @@
   (if_not ($absent? h/event_store)
     (for envelope in (events_for h/event_store h/event_scope h/event_stream)
       (if_yes (["lifecycle" "message" "output" "trace"] .contains? ($to_str envelope/type))
-        (if_not (== envelope/payload/text void)
+        (if_not ($absent? envelope/payload/text)
           (var record {^kind envelope/type ^text envelope/payload/text ^seq envelope/seq})
           (for name in ["truncated" "original_bytes"]
-            (if_not (== (envelope/payload .get name) void)
+            (if_not ($absent? (envelope/payload .get name))
               (record .put name (envelope/payload .get name))))
           (h/log
             .get

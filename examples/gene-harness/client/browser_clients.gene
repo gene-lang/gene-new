@@ -6,7 +6,7 @@
 (type BrowserClients ^props {^root EventTarget ^safe Bool ^bridge Any
   ^mounts PropMap ^generation Int})
 
-(fn dispose [host : BrowserClients, name : Str] : Void
+(fn dispose [host : BrowserClients, name : Str] : Nil
   (var record : Any host/mounts/%name)
   (if_yes ($absent? record) (return))
   (set host/mounts/%name nil)
@@ -23,18 +23,18 @@
   (var subscriptions : (List Any) (if ($absent? record/subscriptions) [] record/subscriptions))
   (for subscription in subscriptions
     (try
-      (var revoke : (Fn [] Void) subscription)
+      (var revoke : (Fn [] Nil) subscription)
       (revoke)
     catch Any ($console/error "Browser contribution subscription cleanup failed.")))
   (try
     (if_yes ($present? mount/harness_controller/dispose)
-      (var cleanup : (Fn [] Void) mount/harness_controller/dispose)
+      (var cleanup : (Fn [] Nil) mount/harness_controller/dispose)
       (cleanup))
   catch Any ($console/error "Browser contribution cleanup failed."))
   (release_modal (text record/owner) true)
   ($dom/remove mount))
 
-(fn fail_client [host : BrowserClients, name : Str, message : Str] : Void
+(fn fail_client [host : BrowserClients, name : Str, message : Str] : Nil
   (var record : Any host/mounts/%name)
   (if_yes ($absent? record) (return))
   (dispose host name)
@@ -42,7 +42,7 @@
   (set host/mounts/%name {^^failed ^revision record/revision ^generation record/generation})
   ($console/error message))
 
-(fn update_clients [host : BrowserClients, descriptors : (List Any), status : Any] : Void
+(fn update_clients [host : BrowserClients, descriptors : (List Any), status : Any] : Nil
   (var wanted : PropMap {})
   (if_yes (! host/safe)
     (for descriptor in descriptors
@@ -79,20 +79,20 @@
           (set bridge/composer_actions composer))
         (var owner $"${name}:${generation}")
         (var subscriptions : (List Any) [])
-        (set bridge/subscribe (fn [callback : (Fn [Str Str Any] Void)] : (Fn [] Void)
+        (set bridge/subscribe (fn [callback : (Fn [Str Str Any] Nil)] : (Fn [] Nil)
           (var current : Any host/mounts/%name)
           (if_yes (|| ($absent? current) (flag current/failed) (!= (integer current/generation) generation))
-            (return (fn [] : Void (return))))
-          (var unsubscribe : (Fn [] Void)
+            (return (fn [] : Nil (return))))
+          (var unsubscribe : (Fn [] Nil)
             (if ($absent? source_bridge/subscribe_owned)
               (do
-                (var subscribe : (Fn [(Fn [Str Str Any] Void)] (Fn [] Void)) source_bridge/subscribe)
+                (var subscribe : (Fn [(Fn [Str Str Any] Nil)] (Fn [] Nil)) source_bridge/subscribe)
                 (subscribe callback))
               (do
-                (var subscribe_owned : (Fn [Str (Fn [Str Str Any] Void)] (Fn [] Void)) source_bridge/subscribe_owned)
+                (var subscribe_owned : (Fn [Str (Fn [Str Str Any] Nil)] (Fn [] Nil)) source_bridge/subscribe_owned)
                 (subscribe_owned ($to_str name) callback))))
           (var active true)
-          (var revoke (fn [] : Void
+          (var revoke (fn [] : Nil
             (if_yes (! active) (return))
             (set active false)
             (unsubscribe)))
@@ -109,17 +109,17 @@
           ($dom/append mount ($dom/render
             `(link ^rel "stylesheet" ^href %(text descriptor/stylesheet)))))
         ($browser/load_module (text descriptor/url)
-          (fn [module : Any] : Void
+          (fn [module : Any] : Nil
             (var current : Any host/mounts/%name)
             (if_yes (|| ($absent? current) (!= (integer current/generation) generation)) (return))
             (try
-              (var start : (Fn [EventTarget] Void) module/main)
+              (var start : (Fn [EventTarget] Nil) module/main)
               (start mount)
-              (var update : (Fn [Any] Void) mount/harness_controller/update)
+              (var update : (Fn [Any] Nil) mount/harness_controller/update)
               (update current/status)
             catch Any
               (fail_client host ($to_str name) "Browser contribution failed to mount.")))
-          (fn [message : Str] : Void
+          (fn [message : Str] : Nil
             (var current : Any host/mounts/%name)
             (if_yes (|| ($absent? current) (!= (integer current/generation) generation)) (return))
             (fail_client host ($to_str name) message))))
@@ -127,7 +127,7 @@
         (set record/status status)
         (if_yes (&& ($present? record/root/harness_controller/update) (! (flag record/failed)))
           (try
-            (var update : (Fn [Any] Void) record/root/harness_controller/update)
+            (var update : (Fn [Any] Nil) record/root/harness_controller/update)
             (update status)
           catch Any
             (fail_client host ($to_str name) "Browser contribution failed to update.")))))))
@@ -135,7 +135,7 @@
 (fn create_clients [root : EventTarget, safe : Bool, bridge : Any] : BrowserClients
   (var host (BrowserClients ^root root ^safe safe ^bridge bridge ^mounts {} ^generation 0))
   ($dom/add_event_listener ^^capture ($dom/window) "keydown"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (if_yes (|| ($event/is_composing event) (chord_recording?)) (return))
       (var handled (trap_modal_tab event))
       (for [name record] in host/mounts

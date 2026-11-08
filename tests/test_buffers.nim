@@ -51,7 +51,7 @@ suite "packed numeric buffers":
   test "alias identity, negative indices, and missing reads are unchanged":
     check evalBuffer("(var b ($buffer I16 [1 2 3])) (let shared b) " &
       "(shared .set -1 9) [(same? b shared) (b .get 2) " &
-      "($void? (b .get 99)) ($void? (b .get -99))]").print() ==
+      "($absent? (b .get 99)) ($absent? (b .get -99))]").print() ==
       "[true 9 true true]"
 
   test "bulk fill and copies preserve ranges and overlap in either direction":
@@ -105,5 +105,5 @@ suite "packed numeric buffers":
     expect GeneError:
       discard newPackedBuffer(newSym("F64"), bskF64, high(int) div 8 + 1)
     let buffer = newPackedBuffer(newSym("U8"), bskU8, 1)
-    check getCheckedBufferItem(buffer, high(int64)).kind == vkVoid
-    check getCheckedBufferItem(buffer, low(int64)).kind == vkVoid
+    check getCheckedBufferItem(buffer, high(int64)).kind == vkNil
+    check getCheckedBufferItem(buffer, low(int64)).kind == vkNil

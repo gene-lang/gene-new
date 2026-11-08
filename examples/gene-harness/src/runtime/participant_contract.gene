@@ -31,7 +31,7 @@
 (fn public_outcome [outcome]
   (freeze_turn_data {^done (== outcome/done true) ^reply (?? outcome/reply nil)
     ^attention (== outcome/attention true) ^has_questions ($present? outcome/questions)
-    ^has_prompt (!= outcome/prompt void) ^extensions (?? outcome/extensions {})}))
+    ^has_prompt ($present? outcome/prompt) ^extensions (?? outcome/extensions {})}))
 
 (fn public_turn_result [result]
   (let questions [])

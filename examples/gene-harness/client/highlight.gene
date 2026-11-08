@@ -53,7 +53,7 @@
 (fn atom_kind [word : Str, head : Bool] : Str
   (if_yes (|| (str/starts_with? word "^") (str/starts_with? word "@"))
     (return "property"))
-  (if_yes (member " true false nil void self _ " word) (return "literal"))
+  (if_yes (member " true false nil self _ " word) (return "literal"))
   (if_yes (member " + - * / % = == != < <= > >= && || ! ?? -> => ~ ... : " word)
     (return "keyword"))
   (if_yes (number_atom word) (return "number"))

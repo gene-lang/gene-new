@@ -5,8 +5,8 @@
 (import [Sidebar] ^from "../sidebar.gene")
 
 (type UiNode ^props {^key Str ^tag Str ^element EventTarget ^props PropMap ^form Str ^seen Int})
-(type UiNavigation ^props {^workspace Str ^active Str ^last_view Str ^presentation Str ^remembered PropMap ^versions PropMap ^snapshots PropMap ^views (List Any) ^side Str ^width Int ^bar_hidden Bool ^focus Str ^scroll F64 ^focus_pending Bool ^action_generation Int ^action_revision Str ^sidebar Sidebar ^restore (Fn [Any] Void) ^refresh (Fn [] Void)})
-(type UiClient ^props {^keyboard PropMap ^root EventTarget ^target EventTarget ^safe Bool ^ready Bool ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str ^notices Notices ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool ^navigation UiNavigation ^navigate (Fn [Str Str] Void) ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void) ^command (Fn [Str] Void) ^prompt (Fn [Str] Void) ^applied_tokens (List Str) ^browser_appearance Any ^appearance Str})
+(type UiNavigation ^props {^workspace Str ^active Str ^last_view Str ^presentation Str ^remembered PropMap ^versions PropMap ^snapshots PropMap ^views (List Any) ^side Str ^width Int ^bar_hidden Bool ^focus Str ^scroll F64 ^focus_pending Bool ^action_generation Int ^action_revision Str ^sidebar Sidebar ^restore (Fn [Any] Nil) ^refresh (Fn [] Nil)})
+(type UiClient ^props {^keyboard PropMap ^root EventTarget ^target EventTarget ^safe Bool ^ready Bool ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str ^notices Notices ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool ^navigation UiNavigation ^navigate (Fn [Str Str] Nil) ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^select (Fn [Str] Nil) ^command (Fn [Str] Nil) ^prompt (Fn [Str] Nil) ^applied_tokens (List Str) ^browser_appearance Any ^appearance Str})
 
 (fn text [value : Any, fallback : Str = ""] : Str
   (if_yes ($absent? value) (return fallback))
@@ -29,7 +29,7 @@
   (var result : (List Any) raw)
   result)
 
-(fn notice [ui : UiClient, value : Str, ^key key : Str = "feedback", ^origin origin : Any = nil, ^sticky sticky : Bool = false, ^severity severity : Str = "info", ^action action : Any = nil] : Void
+(fn notice [ui : UiClient, value : Str, ^key key : Str = "feedback", ^origin origin : Any = nil, ^sticky sticky : Bool = false, ^severity severity : Str = "info", ^action action : Any = nil] : Nil
   (var captured
     :
     Any
@@ -55,7 +55,7 @@
 (fn pending_key [ui : UiClient] : Str
   $"gene-harness/ui-pending/${ui/workspace}")
 
-(fn persist_view [ui : UiClient] : Void
+(fn persist_view [ui : UiClient] : Nil
   (if_yes (&& (!= ui/workspace "") ($present? ui/descriptor))
     (var origin {^session "" ^component ui/descriptor/name ^workspace ui/workspace})
     (var key (state_key ui))
@@ -84,7 +84,7 @@
     (return checked))
   ($dom/input_value node/element))
 
-(fn sync_controls [ui : UiClient] : Void
+(fn sync_controls [ui : UiClient] : Nil
   (var current (!= (text ui/descriptor/revision) ""))
   (var enabled
     (&&
@@ -116,7 +116,7 @@
   ($dom/set_text ($dom/element "ui_pending_owner")
     (if ($absent? ui/pending) "" $"Pending action · ${owner}")))
 
-(fn clear_saved_drafts [ui : UiClient, pending : Any] : Void
+(fn clear_saved_drafts [ui : UiClient, pending : Any] : Nil
   (var form (text pending/form))
   # Standalone action buttons have no form or submitted drafts to clear.
   (if_yes (== form "") (return))
@@ -136,12 +136,12 @@
     (if_yes (== (text item/form) form)
       (var name : Str item/name)
       (if_yes (== ($json/stringify (?? item/value nil)) ($json/stringify (?? pending/request/named/%name nil)))
-        (set drafts/%field_key void))))
+        (drafts .delete field_key))))
   (var still_dirty false)
   (for [field_key raw] in drafts
     (var item : Any raw)
     (if_yes (== (text item/form) form) (set still_dirty true)))
-  (if_not still_dirty (set forms/%form void))
+  (if_not still_dirty (forms .delete form))
   (var state (copy_map saved/state))
   # Close/reset a submitted form only after success. Preserve newer edits and
   # navigation, including when recovering its receipt from another view.

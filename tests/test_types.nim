@@ -1829,12 +1829,11 @@ suite "types — schema validation":
       discard runStr("(type Task ^props {^id Int}) (Task ^id 1 ^extra 2)")
   test "optional fields may be omitted":
     ck "(type Task ^props {^id Int ^done Bool?}) (var t (Task ^id 1)) t/id", "1"
-  test "void fields normalize as omitted at construction":
-    ck "(type Task ^props {^id Int ^done Bool?}) " &
-       "(var t (Task ^id 1 ^done void)) [(/id t) (/done t)]",
-       "[1 void]"
+  test "nil fields are stored as present nil":
+    ck "(type Task ^props {^id Int ^done Bool?}) (var t (Task ^id 1 ^done nil)) [(/id t) (/done t) ($has_key? t \"done\")]", "[1 nil true]"
     expect GeneError:
-      discard runStr("(type Task ^props {^id Int}) (Task ^id void)")
+      discard runStr("(type Task ^props {^id Int}) (Task ^id nil)")
+
   test "field annotations are checked at construction":
     expect GeneError:
       discard runStr("(type Task ^props {^id Int ^title Str}) (Task ^id \"bad\" ^title \"x\")")

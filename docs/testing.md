@@ -57,7 +57,7 @@ gene test examples/testing_demo.gene
   ...)
 ```
 
-- Assertions use ordinary Gene truthiness: `false`, `nil`, and `void` fail; other
+- Assertions use ordinary Gene truthiness: `false` and `nil` fail; other
   values, including zero and empty collections, pass. Use an explicit comparison
   when testing for exactly `true`.
 - An assertion returns `nil` on success. On failure, it raises `AssertionError`, a built-in nominal
@@ -176,9 +176,8 @@ unexpected recoverable error propagates unchanged so the runner reports its
 actual cause. Panic and cancellation are not matched or suppressed.
 
 These APIs use the same `AssertionError` type. `assert_equal` errors carry
-`has_comparison`, `actual`, and `expected` properties, plus `actual_present` and
-`expected_present` flags. These distinguish a captured `void` (whose property
-can be removed by normal property rules) from unavailable details; `nil` remains distinct.
+`has_comparison`, `actual`, and `expected` properties. A captured `nil` is
+stored like any value, so it stays distinct from unavailable details.
 Reports render values without re-evaluating expressions, bound large output,
 and show `<cycle>` for cyclic references.
 

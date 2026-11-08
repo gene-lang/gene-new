@@ -76,22 +76,23 @@ Replacing a type-direct message requires explicit override intent. A protocol
 impl's local message body expresses its replacement intent; omitted messages
 keep the nearest applicable ancestor body.
 
-## Absence has two meanings
+## Absence has one value
 
-`nil` is a stored absence value. `void` reports missing data or no result.
-Optional arguments get defaults; a field lookup reports what is actually there:
+`nil` is the one absence value: a missing read, an omitted optional argument and
+a function that ends in a statement all give `nil`. Whether a key is stored is a
+separate question that `$has_key?` answers:
 
 ```gene runnable
 (fn age_label [age : Int?] : Str
-  (if ($nil? age) "unknown" $"${age}"))
+  (if ($absent? age) "unknown" $"${age}"))
 
 (type Person ^props {^age Int?})
 (let person (Person))
-[(age_label) ($void? person/age) (?? person/age nil)]
-# ["unknown" true nil]
+[(age_label) person/age ($has_key? person "age")]
+# ["unknown" nil false]
 ```
 
-`T?` means `T | Nil`. It does not include Void. The
+`T?` means `T | Nil`, and `Present` is every value but nil. The
 [absence contract](spec/nil-void.md) states the boundary rules.
 
 ## Pipelines make data flow readable
@@ -107,8 +108,7 @@ an explicit consumer decides how much work happens:
 # [30 40]
 ```
 
-`map` preserves a result for each input, converting void to nil.
-`filter_map` explicitly drops void. Streams have close and cleanup rules,
+`map` preserves a result for each input. `filter_map` drops nil results. Streams have close and cleanup rules,
 so partial consumption has a defined lifetime.
 
 ## Tasks have a lifetime

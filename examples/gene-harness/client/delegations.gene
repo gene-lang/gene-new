@@ -29,20 +29,20 @@
   (var seconds (/ elapsed 1000))
   $"${seconds} s elapsed")
 
-(fn tick_elapsed [target : EventTarget, elapsed : Int, alive : (Fn [] Bool)] : Void
-  ($time/after 1000.0 (fn [] : Void
+(fn tick_elapsed [target : EventTarget, elapsed : Int, alive : (Fn [] Bool)] : Nil
+  ($time/after 1000.0 (fn [] : Nil
     (if_not (alive) (return))
     (var next (+ elapsed 1000))
     ($dom/set_text target (elapsed_text next))
     (tick_elapsed target next alive))))
 
-(fn session_link [session : Str, title : Str, open : (Fn [Str] Void)] : EventTarget
+(fn session_link [session : Str, title : Str, open : (Fn [Str] Nil)] : EventTarget
   ($dom/render `(a ^href %$"/?session=${($url/encode_component session)}&view=harness"
-    ^on_click %(fn [event : Any] : Void
+    ^on_click %(fn [event : Any] : Nil
       ($dom/prevent_default event)
       (open session)) %title)))
 
-(fn delegation_view [data : Any, open : (Fn [Str] Void), cancel : (Fn [] Void), alive : (Fn [] Bool)] : EventTarget
+(fn delegation_view [data : Any, open : (Fn [Str] Nil), cancel : (Fn [] Nil), alive : (Fn [] Bool)] : EventTarget
   (var state (dtext data/state))
   (var title (dtext data/title))
   (var section ($dom/render `(section ^class_name "card_block" ^aria-label %$"Delegation: ${title}")))
@@ -73,11 +73,11 @@
     ($dom/append controls (session_link (dtext data/session) "Open child session" open)))
   (if_yes (dflag data/can_cancel)
     ($dom/append controls ($dom/render `(button ^type "button"
-      ^on_click %(fn [event : Any] : Void (cancel)) "Cancel"))))
+      ^on_click %(fn [event : Any] : Nil (cancel)) "Cancel"))))
   ($dom/append section controls)
   section)
 
-(fn recovery_view [data : Any, action : (Fn [Str] Void)] : EventTarget
+(fn recovery_view [data : Any, action : (Fn [Str] Nil)] : EventTarget
   (var children : (List Str) data/children)
   ($dom/render `(section ^class_name "card_block" ^aria-label "Delegation recovery"
     (div ^class_name "card_header" (strong "Child work was interrupted"))
@@ -85,5 +85,5 @@
       (p "Continue with the interrupted results, or cancel this round.")
       (p %($str/join children ", ")))
     (div ^class_name "card_controls"
-      (button ^type "button" ^on_click %(fn [event : Any] : Void (action "continue")) "Continue")
-      (button ^type "button" ^on_click %(fn [event : Any] : Void (action "cancel")) "Cancel round")))))
+      (button ^type "button" ^on_click %(fn [event : Any] : Nil (action "continue")) "Continue")
+      (button ^type "button" ^on_click %(fn [event : Any] : Nil (action "cancel")) "Cancel round")))))

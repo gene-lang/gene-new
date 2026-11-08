@@ -206,7 +206,7 @@ console.log(double(21n)); // 42n
 | Gene | JavaScript |
 | --- | --- |
 | Int / F64 | bigint / number |
-| Nil / Void | null / undefined |
+| Nil | null (a host `undefined` is read as nil) |
 | List | Array |
 | PropMap | Object |
 | Nominal type | Generated class instance |
@@ -226,7 +226,7 @@ is a smaller browser example.
 For a browser client split across Gene files, load its entry with
 `($web/load "path/to/client.gene")` and pass that asset to
 `($web/script asset ^mount "root")`. The entry has the same
-`main [root : EventTarget] : Void` contract. `web/load` reads the import graph
+`main [root : EventTarget] : Nil` contract. `web/load` reads the import graph
 and serves only compiled Gene; it does not admit `js/fn` imports. Generated
 mounts, dependencies, and source maps are content-addressed together. A
 generated file names its source by file name, not absolute path, and the

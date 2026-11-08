@@ -135,7 +135,7 @@
   (let name ($to_str pair/1))
   (let id (binding_id registry name))
   (let keys record/keys/.get)
-  (if_yes (== (keys .get id) void)
+  (if_yes ($absent? (keys .get id))
     (let key (service_key $"harness/entry/${id}" EntrySelection ^check check_selection))
     (record/runtime .admit_service_key key)
     (keys .put id {^registry registry ^name name ^key key})
@@ -148,7 +148,7 @@
 
 (fn selection_changed [record, registry : Str, key : Str] ^^private
   (let id (binding_id registry key))
-  (if (== (record/keys .get; .get id) void) (return nil))
+  (if ($absent? (record/keys .get; .get id)) (return nil))
   (if_yes (== (record/updating .get id) true)
     (record/dirty .put id true)
     (return nil))
@@ -167,10 +167,10 @@
 (fn reconcile_selection ^^private [record, registry : Str, key : Str]
   (let id (binding_id registry key))
   (let binding (record/keys/.get .get id))
-  (if (== binding void) (return nil))
+  (if ($absent? binding) (return nil))
   (let selected (record/host .RegistryHost:selected registry key))
   (let previous (record/projections .get id))
-  (if_yes (!= previous void)
+  (if_yes ($present? previous)
     (if (&& ($present? selected) (== previous/row_id selected/row_id)) (return nil))
     previous/instance/.dispose
     # dispose queues retirement while a provider validation is admitted. Wait
@@ -276,7 +276,7 @@
             ^limits [policy/limits/max_memory_mb
                      policy/limits/timeout_ms]})
   (let cached (record/specs .get plugin/id))
-  (if (&& (!= cached void) (same? cached/plugin plugin) (== cached/key key))
+  (if (&& ($present? cached) (same? cached/plugin plugin) (== cached/key key))
     (return cached/spec))
   (let spec (adapt_plugin record plugin))
   (record/specs .put plugin/id {^plugin plugin ^key key ^spec spec})
@@ -324,7 +324,7 @@
     (if (failed_ids .contains? plugin/id)
       (then
         (let previous (record/current .get; .get plugin/id))
-        (if_yes (!= previous void)
+        (if_yes ($present? previous)
           (selected .push previous/plugin)
           (options .put plugin/id previous/options)))
       (else
@@ -394,7 +394,7 @@
       (admitted .put plugin/id (host_plugin_spec record plugin policy))))
   (let departed ($thaw #[]))
   (for [id cached] in record/specs
-    (if (== (admitted .get id) void) (departed .push id)))
+    (if ($absent? (admitted .get id)) (departed .push id)))
   (for id in departed (record/specs .delete id))
   (let desired ($thaw #[]))
   (for plugin in plugins (desired .push plugin))
@@ -430,7 +430,7 @@
   (for plugin in plugins
     (let prior (previous .get plugin/id))
     (if (failed .contains? plugin/id)
-      (if (!= prior void) (live .put plugin/id prior))
+      (if ($present? prior) (live .put plugin/id prior))
       (live .put plugin/id {^plugin plugin ^options (?? (entry_options .get plugin/id) #{})})))
   (record/current .set live)
   (if_not ($absent? retirement_failure) (fail retirement_failure))

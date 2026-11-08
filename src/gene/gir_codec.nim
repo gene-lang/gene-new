@@ -10,7 +10,9 @@ import ./[gir, printer, reader, types]
 # The number changes when the chunk layout or opcode/value meaning changes, so
 # a stale artifact fails closed. Path values replaced Selector values while
 # reusing the same bytecode slots, so that migration also advances the format.
-const GirArtifactFormat* = 40
+# Removing `void` (nil is the only absence value) changed the meaning of stored
+# constants, `Void` annotations and optional-path jumps, so it advanced it too.
+const GirArtifactFormat* = 41
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -89,7 +91,7 @@ proc needsSyntaxTree(value: Value, seen: var HashSet[uint64]): bool =
     if name in ["+", "-", "*", "/", "//", "<", ">", "<=", ">=", "==", "!=",
                 "!", "&&", "||", "??", "=", ":"]:
       return false
-    if name.len == 0 or name.toLowerAscii() in ["nil", "void", "true", "false", "nan", "inf"]:
+    if name.len == 0 or name.toLowerAscii() in ["nil", "true", "false", "nan", "inf"]:
       return true
     if name[0] notin {'a'..'z', 'A'..'Z', '_'}: return true
     for character in name:

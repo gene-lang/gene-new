@@ -97,7 +97,7 @@ proc equal*(a, b: Value): bool =
 
 proc containerBodyEqual(a, b: Value): bool =
   case a.kind
-  of vkNil, vkVoid: true
+  of vkNil: true
   of vkBool:   a.boolVal == b.boolVal
   of vkInt:    intCompare(a, b) == 0
   of vkFloat:  a.floatVal == b.floatVal
@@ -198,7 +198,7 @@ proc same*(a, b: Value): bool =
   if a.kind != b.kind:
     return false
   case a.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
+  of vkNil, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol:
     equal(a, b)
   of vkFunction:
@@ -218,7 +218,7 @@ proc hash*(v: Value): Hash =
   if v.isNil: return hash(0)
   var h: Hash = hash(ord(v.kind))
   case v.kind
-  of vkNil, vkVoid: discard
+  of vkNil: discard
   of vkBool:   h = h !& hash(v.boolVal)
   of vkInt:    h = h !& hash(v.intToString)
   of vkFloat:
@@ -325,7 +325,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
     # NaN is unequal to itself and therefore cannot be a stable key.
     let x = v.floatVal
     x == x
-  of vkNil, vkVoid, vkBool, vkInt, vkString, vkBytes, vkRegex, vkRange,
+  of vkNil, vkBool, vkInt, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkFunction, vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,

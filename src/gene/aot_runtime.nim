@@ -458,7 +458,7 @@ proc wrapperPointer(ctx: ptr AotContext, value: Value, argName: cstring,
   if value.kind != vkNode or not value.head.typeInheritsFrom(wrapperType):
     return ctx.fail("native entry argument '" & $argName & "' expects a " &
       wrapperType.typeName & " value")
-  let handle = value.props.getOrDefault($handleField, VOID)
+  let handle = value.props.getOrDefault($handleField, NIL)
   if handle.kind != vkCPtr:
     return ctx.fail("native entry argument '" & $argName & "' has no '" &
       $handleField & "' pointer")
@@ -499,7 +499,7 @@ proc geneTypedNativeArgTransfer(ctx: ptr AotContext, call: ptr AotCall,
   if status != AotOk:
     return status
   if value.kind == vkNode:
-    let handle = value.props.getOrDefault($handleField, VOID)
+    let handle = value.props.getOrDefault($handleField, NIL)
     if handle.kind == vkCPtr:
       # Relinquish, never close: the callee owns the address now, and closing
       # would run the release callback on memory it is about to use.
@@ -523,7 +523,7 @@ proc geneTypedNativeArgRestore(ctx: ptr AotContext, call: ptr AotCall,
   let arg = call.argAt(index)
   if arg.kind != vkNode:
     return
-  let handle = arg.props.getOrDefault($handleField, VOID)
+  let handle = arg.props.getOrDefault($handleField, NIL)
   if handle.kind == vkCPtr and handle.cPtrClosed:
     restoreCPtr(handle, value)
 

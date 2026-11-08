@@ -14,7 +14,7 @@ suite "testing — standalone assertions":
       [($assert true) ($assert 0) ($assert "") ($assert []) ($assert {})
        #@$assert (== 2 (+ 1 1))]
     """, "[nil nil nil nil nil nil]"
-    for condition in ["false", "nil", "void"]:
+    for condition in ["false", "nil"]:
       testingCheck "(try ($assert " & condition & ") catch AssertionError $err/message)",
         "\"assertion failed\""
 
@@ -63,10 +63,9 @@ suite "testing — assertion helpers":
     testingCheck """
       (import $test [assert_equal])
       [(assert_equal [1 2] #[1 2])
-       (try (assert_equal void nil)
-         catch AssertionError [$err/has_comparison $err/actual_present
-           $err/expected_present $err/actual $err/expected])]
-    """, "[nil [true true true void nil]]"
+       (try (assert_equal nil false)
+         catch AssertionError [$err/has_comparison $err/actual $err/expected])]
+    """, "[nil [true nil false]]"
 
   test "assert_raises invokes once and returns the matched typed error":
     testingCheck """
@@ -208,7 +207,6 @@ suite "testing — example lifecycle":
     for source in [
       "(describe \"x\" (it \"bad\" [a b] nil))",
       "(describe \"x\" (it \"bad\" [] ^^skip nil))",
-      "(describe \"x\" (it \"bad\" [] ^skip nil nil))",
       "(describe \"x\" (it \"bad\" [] ^skip \"\" nil))",
       "(describe \"x\" (let why \"later\") (it \"bad\" [] ^skip why nil))",
       "(describe \"x\" (it \"bad\" [] ^^unknown nil))",
@@ -297,17 +295,17 @@ suite "testing — example lifecycle":
       result/examples/0/diagnostics/0/actual
     """, "\"[]\""
 
-  test "diagnostics distinguish absent details from explicit nil and void":
+  test "diagnostics distinguish absent details from explicit nil":
     testingCheck """
       (import $test [describe it run assert_equal])
       (describe "details"
         (it "absent" []
           (fail (AssertionError ^message "custom" ^^has_comparison)))
-        (it "present" [] (assert_equal void nil)))
+        (it "present" [] (assert_equal nil false)))
       (let result (run ^!report))
       [result/failed result/examples/0/diagnostics/0/actual
        result/examples/1/diagnostics/0/actual result/examples/1/diagnostics/0/expected]
-    """, "[2 \"<unavailable>\" \"void\" \"nil\"]"
+    """, "[2 \"<unavailable>\" \"nil\" \"false\"]"
 
   test "explicit awaits complete while returned streams stay lazy":
     testingCheck """

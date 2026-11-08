@@ -6,8 +6,8 @@ ctor”, “native wrapper types”, “typed variable boundaries”, “numeric
 boundaries”, “mutable containers”, and “optionality lives on the type, not the
 key”.
 
-- `Any` is the gradual top; `Never` is the bottom. `Nil` and `Void` are
-  ordinary singleton types. Type expressions use the canonical constructors
+- `Any` is the gradual top; `Never` is the bottom. `Nil` is an ordinary singleton type and `Present` is
+  every value except nil (`Any = Present | Nil`). Type expressions use the canonical constructors
   exercised by the spec suite.
 - `(T ...)` performs closed-schema data construction and never runs `ctor`.
   `(new T ...)` runs the nearest `ctor` in `T`'s ancestry and fails if none is
@@ -16,15 +16,14 @@ key”.
   without a parent omits the header: `(type Root ...)`.
 - Optionality lives on the type: a prop-schema field or fixed positional/named
   parameter whose type explicitly admits nil (`T?`, `(? T)`, a union containing `Nil`) may be
-  omitted. An absent field reads as `void`; an omitted fixed parameter binds
+  omitted. An absent field reads as `nil`; an omitted fixed parameter binds
   `nil`; explicit `^a nil` stores a present nil, distinguishable by pattern.
   `Any` alone stays required. Explicit defaults take precedence over implicit
   nil defaults. Optional positional parameters must follow required ones and
   cannot precede rest parameters. Named parameters have no ordering restriction.
   Declaration names ending in `?` are compile errors with a
-  rewrite hint. An unchecked lookup of an omissible field includes `Void` in
-  its result type; `(?? p/age nil)` normalizes a missing `Int?` field to `Int?`.
-  See [nil/void and optional binding](nil-void.md).
+  rewrite hint. A lookup of an omissible field has the declared type.
+  See [absence and optional binding](nil-void.md).
 - Ctor construction pre-creates `self` with an in-progress marker. Until
   validation succeeds, it cannot be stored in
   globals/containers/cells, captured by escaping closures, spawned, sent, used
@@ -118,7 +117,7 @@ rounds once to IEEE binary32, and reads widen that stored value to the ordinary
 Gene float representation. F32 scalar annotations continue to perform range
 checks. Integer buffers reject overflow rather than truncate or wrap.
 
-Negative indexing, missing reads returning `void`, alias identity, explicit
+Negative indexing, missing reads returning `nil`, alias identity, explicit
 list conversion, and overlap-safe bulk copies are unchanged. A packed byte
 buffer copies directly to/from `Bytes` and UTF-8 at the I/O boundary; the
 result is detached from mutable buffer storage. Buffers remain non-Send by

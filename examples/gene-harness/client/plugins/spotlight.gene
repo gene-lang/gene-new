@@ -8,7 +8,7 @@
   ^items (List Any) ^active Int ^busy Bool ^awaiting_receipt Bool ^partial Bool ^parent Any ^command Any
   ^target Str ^query Str ^status Any ^steps PropMap ^step_key Str ^feedback Str ^availability Str})
 
-(fn close [spot : Spotlight, restore : Bool = true] : Void
+(fn close [spot : Spotlight, restore : Bool = true] : Nil
   (if_yes (! spot/open) (return))
   (set spot/open false)
   (set spot/opening (+ spot/opening 1))
@@ -19,14 +19,14 @@
   (set spot/target "") (set spot/query "") (set spot/step "")
   (set spot/feedback "") (set spot/availability "")
   ($dom/remove_attribute spot/input "aria-activedescendant")
-  (var release : (Fn [Str Bool] Void) spot/bridge/release)
+  (var release : (Fn [Str Bool] Nil) spot/bridge/release)
   (release spot/owner restore))
 
 (fn state [spot : Spotlight] : Any
   (var read : (Fn [] Any) spot/bridge/state)
   (read))
 
-(fn paint_selection [spot : Spotlight] : Void
+(fn paint_selection [spot : Spotlight] : Nil
   (var at 0)
   (for row in spot/items
     (var option ($dom/element $"${spot/owner}-option-${at}"))
@@ -65,7 +65,7 @@
     (return "This view is unavailable. Refresh the results."))
   "")
 
-(fn activate [spot : Spotlight, index : Int] : Void
+(fn activate [spot : Spotlight, index : Int] : Nil
   (if_yes (|| (! spot/open) spot/disposed spot/busy (< index 0) (>= index spot/items/.size)) (return))
   (var item : Any spot/items/%index)
   (var reason (unavailable spot item))
@@ -94,7 +94,7 @@
     (return))
   (set spot/busy true)
   (var opening spot/opening)
-  (var done (fn [code : Int, result : Any] : Void
+  (var done (fn [code : Int, result : Any] : Nil
     (if_yes (|| spot/disposed (! spot/open) (!= opening spot/opening)) (return))
     (if (|| (== code 200) (== code 201) (== code 202))
       (close spot false)
@@ -109,10 +109,10 @@
       (var expected : Any (if (== (text item/kind) "theme_choice") spot/command item/command))
       (var target (if (== (text item/kind) "theme_choice") spot/target (text (/session (state spot)))))
       (var command_text (if (== (text item/kind) "theme_choice") $"/theme ${(text item/value)}" "/help"))
-      (var send : (Fn [Str Str Any (Fn [Int Any] Void)] Void) spot/bridge/command)
+      (var send : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) spot/bridge/command)
       (send target command_text expected done))
     (do
-      (var navigate : (Fn [Any (Fn [Int Any] Void)] Void) spot/bridge/navigate)
+      (var navigate : (Fn [Any (Fn [Int Any] Nil)] Nil) spot/bridge/navigate)
       (navigate item done))))
 
 (fn availability [spot : Spotlight] : Str
@@ -120,7 +120,7 @@
   (for item in spot/items (reasons .push (unavailable spot item)))
   ($json/stringify reasons))
 
-(fn render_results [spot : Spotlight] : Void
+(fn render_results [spot : Spotlight] : Nil
   (set spot/availability (availability spot))
   ($dom/clear spot/list)
   ($dom/remove_attribute spot/input "aria-activedescendant")
@@ -133,7 +133,7 @@
     ($dom/append spot/list ($dom/render
       `(div ^id %$"${spot/owner}-option-${at}" ^class_name "spotlight-option" ^role "option"
          ^aria-selected "false" ^aria-disabled %(if (== reason "") "false" "true")
-         ^on_click %(fn [event : Any] : Void
+         ^on_click %(fn [event : Any] : Nil
            (if_yes (== generation spot/query_generation) (activate spot index)))
          (div ^class_name "spotlight-copy"
            (strong %(text item/title))
@@ -177,7 +177,7 @@
   result)
 
 (fn publish_results [spot : Spotlight, opening : Int, generation : Int, step_generation : Int,
-                     items : (List Any), partial : Bool] : Void
+                     items : (List Any), partial : Bool] : Nil
   (if_yes (|| spot/disposed (! spot/open) (!= spot/opening opening)
               (!= spot/query_generation generation) (!= spot/step_generation step_generation)
               (== spot/published generation)) (return))
@@ -186,7 +186,7 @@
   (set spot/active (if (== items/.size 0) -1 0))
   (render_results spot))
 
-(fn search [spot : Spotlight, query : Str] : Void
+(fn search [spot : Spotlight, query : Str] : Nil
   (if_yes (! spot/awaiting_receipt) (set spot/feedback ""))
   (set spot/query query)
   (set spot/query_generation (+ spot/query_generation 1))
@@ -211,18 +211,18 @@
     (publish_results spot opening generation step_generation options false) (return))
   (var local (local_results spot query))
   ($dom/set_text spot/message (if (== spot/feedback "") "Searching…" spot/feedback))
-  (var api : (Fn [Str Str Any (Fn [Int Any] Void)] Void) spot/bridge/api)
+  (var api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) spot/bridge/api)
   (api "GET" $"${(api_root)}/search/sessions?q=${($url/encode_component query)}&limit=50" nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (var merged (if (== code 200) (merge_results local (items data/results)) local))
       (publish_results spot opening generation step_generation merged (|| (!= code 200) (flag data/partial)))))
-  ($time/after 3000.0 (fn [] : Void (publish_results spot opening generation step_generation local true))))
+  ($time/after 3000.0 (fn [] : Nil (publish_results spot opening generation step_generation local true))))
 
-(fn open [spot : Spotlight] : Void
+(fn open [spot : Spotlight] : Nil
   (if_yes spot/disposed (return))
   (if_yes spot/open ($dom/focus spot/input) (return))
-  (var claim : (Fn [Str EventTarget (Fn [Bool] Void) EventTarget] Bool) spot/bridge/claim)
-  (if_yes (! (claim spot/owner spot/panel (fn [restore : Bool] : Void (close spot restore)) spot/button)) (return))
+  (var claim : (Fn [Str EventTarget (Fn [Bool] Nil) EventTarget] Bool) spot/bridge/claim)
+  (if_yes (! (claim spot/owner spot/panel (fn [restore : Bool] : Nil (close spot restore)) spot/button)) (return))
   (set spot/open true) (set spot/busy false) (set spot/awaiting_receipt false) (set spot/step "")
   (set spot/steps {})
   (set spot/opening (+ spot/opening 1))
@@ -270,7 +270,7 @@
       (set index (+ index 1))))
   false)
 
-(fn main [root : EventTarget] : Void
+(fn main [root : EventTarget] : Nil
   (var bridge : Any root/harness_bridge)
   (var owner (text root/harness_owner))
   (var button ($dom/render `(button ^type "button" ^class_name "spotlight-launcher" ^title "Search Harness (Cmd+K)" "Search ⌘K")))
@@ -289,8 +289,8 @@
     ^parent nil ^command nil ^target "" ^query "" ^status nil ^steps {} ^step_key "" ^feedback "" ^availability ""))
   # Publish cleanup before mounting anything that can fail.
   (set root/harness_controller
-    {^dispose (fn [] : Void (set spot/disposed true) ($dom/remove button) (close spot true))
-     ^update (fn [status : Any] : Void
+    {^dispose (fn [] : Nil (set spot/disposed true) ($dom/remove button) (close spot true))
+     ^update (fn [status : Any] : Nil
        (set spot/status status)
        (if_yes (&& spot/open spot/awaiting_receipt ($absent? (/pending_command (state spot))))
          (close spot true) (return))
@@ -308,11 +308,11 @@
   ($dom/append footer refresh) ($dom/append dialog footer)
   (var toolbar : EventTarget bridge/toolbar)
   ($dom/append toolbar button)
-  ($dom/add_event_listener button "click" (fn [event : Any] : Void (open spot)))
-  ($dom/add_event_listener close_button "click" (fn [event : Any] : Void (close spot)))
-  ($dom/add_event_listener refresh "click" (fn [event : Any] : Void (search spot spot/query)))
-  ($dom/add_event_listener input "input" (fn [event : Any] : Void
+  ($dom/add_event_listener button "click" (fn [event : Any] : Nil (open spot)))
+  ($dom/add_event_listener close_button "click" (fn [event : Any] : Nil (close spot)))
+  ($dom/add_event_listener refresh "click" (fn [event : Any] : Nil (search spot spot/query)))
+  ($dom/add_event_listener input "input" (fn [event : Any] : Nil
     (if_yes (! ($event/is_composing event)) (search spot ($dom/input_value input)))))
-  ($dom/add_event_listener panel "click" (fn [event : Any] : Void
+  ($dom/add_event_listener panel "click" (fn [event : Any] : Nil
     (var target : EventTarget event/target)
     (if_yes (== target panel) (close spot)))))

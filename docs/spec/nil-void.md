@@ -1,103 +1,108 @@
-# Nil, void, optional binding, and mapping
+# Absence: nil is the one absence value
 
-`nil : Nil` is a stored absence value. `void : Void` is missing/no-result,
-with operation-specific normalization. `T?` means `T | Nil`; it excludes Void.
-Neither singleton type is `Never`.
+`nil : Nil` is Gene's only absence value. There is no `void`. A missing
+property, key, or index read yields `nil`; so does a function that ends in a
+statement, a `(return)` with no value, and an omitted `T?` parameter. `T?` means
+`T | Nil`. `Never` is the uninhabited type and is unrelated to `Nil`.
 
-## Presence predicates
+## Presence
 
-`($absent? value)` is true exactly for `nil` and `void`.
-`($present? value)` is its opposite. Prefer the direct positive predicate to
-`(! ($absent? value))`; it is not a truthiness or emptiness check.
+`($absent? value)` is true exactly for `nil`. `($present? value)` is its
+opposite. Neither is a truthiness or emptiness check: `false`, zero, empty
+strings and empty collections are present. Only `false` and `nil` are falsy.
 
 ```gene
-[($present? nil) ($present? void) ($present? false) ($present? 0)
- ($present? "") ($present? [])]
-# [false false true true true true]
+[($present? nil) ($present? false) ($present? 0) ($present? "") ($present? [])]
+# [false true true true true]
+```
+
+`Present` is the type of every value except nil. It is a type, not a class: it
+carries no tag, cannot be a parent, and has no messages. `Any = Present | Nil`
+and `Present? = Any`. A runtime check against `Present` is "not nil", and it
+looks only at the value itself, not at its contents.
+
+```gene
+(fn require_value [x : Present] x)    # (require_value nil) raises
 ```
 
 ## Fixed parameters
 
-`x : T?` and `^x : T?` have an implicit nil default. Explicit `(? T)`, unions
-admitting Nil, and aliases expanding to those forms follow the same rule.
-An explicit default takes precedence. A supplied nil does not select a default.
-`Any` alone stays required. Parameter binding checks supplied arguments and
-then binds and checks defaults before entering the body.
+`x : T?` and `^x : T?` have an implicit nil default; so do `(? T)`, unions that
+admit `Nil`, and aliases expanding to them. An explicit default takes
+precedence, and a supplied nil does not select a default. `Any` alone stays
+required, and so does `Present`; `Present?` is optional. Optional positionals
+follow required positionals and cannot precede a rest parameter.
 
 ```gene
 (fn age_label [age : Int?] : Str
-  (if ($nil? age) "unknown" $"${age}"))
+  (if ($absent? age) "unknown" $"${age}"))
 
 (age_label)       # "unknown"
 (age_label nil)   # "unknown"
 (age_label 25)    # "25"
 ```
 
-Optional positional parameters follow required positionals and cannot precede
-a rest parameter. Named parameters may interleave with positionals. Rest
-parameters retain zero-or-more arity; their element annotation does not supply
-a default. Callable type vectors describe their existing explicit call shapes;
-a nullable type within `(Callable [Int?] R)` does not make that view's slot optional.
-Foreign ABI declarations also retain their own fixed call shapes; the implicit
-default is supplied by a Gene function's parameter binder.
+## Fields, storage, and presence
 
-A positional void is supplied and fails a `T?` check. Literal void named props
-are omitted by the reader; computed named Void remains supplied and is checked.
-A map that removed a void entry before argument spreading supplies no such key.
-
-## Fields and storage
-
-A declared field type constrains present values. An omissible field's unchecked
-lookup type is its declared type union Void. A required-field pattern on a
-validated nominal receiver proves presence and therefore excludes Void while
-preserving a possible stored nil. The same symbolic pattern can match raw Gene
-node data; a matching head alone does not prove that its fields satisfy a schema.
+A declared field type constrains a stored value. A field whose type admits nil
+may be omitted, and reading it gives `nil`; storing `^age nil` keeps the key.
+The two differ only in presence:
 
 ```gene
 (type Person ^props {^age Int?})
-(fn age_of [p : Person] : Int? (?? p/age nil))
+(fn age_of [p : Person] : Int? p/age)     # nil when omitted, with no (?? …)
+($has_key? (Person) "age")                # false
+($has_key? (Person ^age nil) "age")       # true
 ```
 
-For an omitted age, `p/age` is void; for `^age nil`, it is nil. Raw `p/age` does
-not satisfy an `Int?` return boundary when the key is absent.
+Writing nil stores nil. Removal is explicit:
 
-| Operation | Result of void |
+| Operation | Result |
 | --- | --- |
-| Raw prop/map storage | Delete/omit the entry |
-| List/body storage | Store nil, preserving position; check the normalized value's type |
-| `yield void` | Emit no item |
-| Missing lookup | Return void |
-| `map` callback | Normalize to nil, then store/emit and check the output type |
-| `filter_map` callback | Drop the result |
+| `(m .delete k)` | removes `k`, returns the removed value or nil; mutates, so a frozen receiver raises even for an absent key |
+| `(m .dissoc k)`, `($dissoc_in v /a/b)` | a new root without the entry; untouched children are shared; a missing entry still returns a new equal root |
+| `($has_key? v k)` | whether the key is stored, for a Map or a Node (typed records included) |
 
-## Mapping laws
+Typed records get `delete` and `$has_key?` too. `delete` makes the checks a
+prop write makes (frozen, native-wrapper, and unknown-field errors) and raises
+`cannot remove required field` for a required field. Equality compares stored
+entries, so an omitted field and a stored nil differ.
 
-Let `N(void) = nil`, and `N(v) = v` otherwise. `map` emits `N(f(x))` for each
-input. Lists and streams preserve one result per input; maps preserve keys.
-Sets retain ordinary deduplication. `filter_map` drops only void and retains
-nil, false, zero, and empty strings. Generic calls and direct sends share these
-rules: `($filter_map xs f)` and `(xs .filter_map f)` use the same operation.
+## Statement functions
+
+A function whose declared return type is exactly `Nil` discards its body's
+value and returns nil, and `(return)` or `(return nil)` ends it early;
+`(return value)` is a compile error. The rule reads the annotation after alias
+expansion: `(alias Unit Nil)` gives `: Unit` the same meaning. `Nil?` and unions
+containing `Nil` are ordinary return types.
+
+## Collections
+
+`map` yields one result per input, and nil results stay nil. `filter_map` maps
+and then drops nil results; it keeps `false`, `0`, `""` and empty collections.
+Generators emit what they `yield`, including nil, and end on fallthrough or
+`(return)`. Path and selector projections emit nil for a missing step.
 
 ```gene
-(fn keep_positive [x : Int] : (| Int Void) (if (> x 0) x void))
-($map [-1 2] keep_positive)                              # [nil 2]
-($into ($map ($to_stream [-1 2]) keep_positive) [])       # [nil 2]
-($filter_map [-1 2] keep_positive)                       # [2]
+($map [-1 2] keep_positive)           # [nil 2]
+($filter_map [-1 2] keep_positive)    # [2]
 ```
 
-For a finite sequence and a pure, total callback, eager map and fully collected
-lazy map produce equal data. Fusion must retain intermediate normalization:
+## JSON
 
-```text
-map(map(xs, f), g) = map(xs, x => g(N(f(x))))
+`$json/stringify` writes a stored nil as `null` and an absent key not at all.
+`^^omit_nil` leaves out every nil-valued map key at every depth; nil list
+elements are always written, because position carries meaning.
+
+```gene
+($json/stringify {^a nil ^b 1})              # {"a":null,"b":1}
+($json/stringify {^a nil ^b 1} ^^omit_nil)   # {"b":1}
 ```
 
-This is mathematical notation, not Gene syntax. Ordinary unnormalized function
-composition is sufficient when f cannot produce void. Laziness still changes
-evaluation timing, partial consumption, side effects, and error timing.
+## Removed names
 
-The iterate delimiter `=>` uses map normalization. Generator yield and Path
-stream projections retain their explicit non-emission/missing-result policies.
+`void`, `Void`, `$void?` and `$nil?` do not exist; each reports a targeted
+error naming its replacement. `C/Void` remains the C foreign-signature type.
 
-Coverage: `tests/test_nil_void.nim`, executable specs, pipeline tests, and shared
+Coverage: `tests/test_nil_void.nim`, executable specs, and the shared
 `nil_void.*` VM/web fixtures. Runnable introduction: `examples/nil_void_demo.gene`.

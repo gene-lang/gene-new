@@ -8,13 +8,13 @@
 (fn create_feature_events [] : FeatureEvents
   (FeatureEvents ^listeners [] ^sequence 0))
 
-(fn subscribe_feature [events : FeatureEvents, callback : (Fn [Str Str Any] Void),
-                       ^owner owner : Str = ""] : (Fn [] Void)
+(fn subscribe_feature [events : FeatureEvents, callback : (Fn [Str Str Any] Nil),
+                       ^owner owner : Str = ""] : (Fn [] Nil)
   (set events/sequence (+ events/sequence 1))
   (var id ($to_str events/sequence))
   (var record : Any {^id id ^owner owner ^callback callback ^^active})
   (events/listeners .push record)
-  (fn [] : Void
+  (fn [] : Nil
     (if_yes (! (flag record/active)) (return))
     (set record/active false)
     (var kept : (List Any) [])
@@ -27,7 +27,7 @@
     (if_yes (&& (flag listener/active) (== (text listener/owner) owner)) (return true)))
   false)
 
-(fn emit_feature_event [events : FeatureEvents, kind : Str, session : Str, data : Any] : Void
+(fn emit_feature_event [events : FeatureEvents, kind : Str, session : Str, data : Any] : Nil
   # Snapshot the listener set: replacement or subscription during a callback
   # cannot duplicate dispatch, and a revoked listener is skipped immediately.
   (var listeners : (List Any) [])
@@ -35,6 +35,6 @@
   (for listener in listeners
     (if_yes (! (flag listener/active)) (continue))
     (try
-      (var callback : (Fn [Str Str Any] Void) listener/callback)
+      (var callback : (Fn [Str Str Any] Nil) listener/callback)
       (callback kind session ($json/parse ($json/stringify data)))
     catch Any ($console/error "A browser feature listener failed."))))

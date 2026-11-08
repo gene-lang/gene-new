@@ -12,10 +12,10 @@ writeFile(source, """
 (fn name [file : Any] : Str ($files/name file))
 (fn mime [file : Any] : Str ($files/mime file))
 (fn size [file : Any] : Int ($files/size file))
-(fn read [file : Any, maximum : Int, yes : (Fn [Str] Void), no : (Fn [Str] Void)] : EventTarget
+(fn read [file : Any, maximum : Int, yes : (Fn [Str] Nil), no : (Fn [Str] Nil)] : EventTarget
   ($files/read_base64 file maximum yes no))
-(fn cancel [reader : EventTarget] : Void ($files/cancel reader))
-(fn noop [] : Int (var callback (fn [] : Void nil)) (callback) 1)
+(fn cancel [reader : EventTarget] : Nil ($files/cancel reader))
+(fn noop [] : Int (var callback (fn [] : Nil nil)) (callback) 1)
 """)
 let output = root / "out"
 createDir(output)
@@ -69,7 +69,7 @@ const cancelled = await new Promise(resolve => {
   api.cancel(reader);
 });
 assert.match(cancelled, /cancelled/);
-console.log('transpile files: picker, drop, paste, binary fidelity, bounds, errors, cancellation and Void callbacks passed');
+console.log('transpile files: picker, drop, paste, binary fidelity, bounds, errors, cancellation and Nil callbacks passed');
 """)
 let checked = execCmdEx("node_modules/.bin/tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution bundler --lib ES2022,DOM " &
   quoteShell(output / "files_fixture.ts"))

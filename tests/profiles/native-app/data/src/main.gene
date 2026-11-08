@@ -20,7 +20,7 @@
     (while row
       (let group row/group)
       (let previous (?? totals/%group nil))
-      (if ($nil? previous)
+      (if ($absent? previous)
         (then
           (if (>= ($size totals) 100)
             (then (fail (DataLimitError ^message "group limit exceeded"))))))

@@ -98,7 +98,7 @@ class GenexTlsPackageTests(unittest.TestCase):
       (var total 0)
       (while true
         (let part (await (req/body .AsyncReader:read 4096)))
-        (if ($nil? part) (then (break)))
+        (if ($absent? part) (then (break)))
         (set total (+ total ($binary/size part))))
       (text ($to_str total)))
     ^body_mode "stream" ^max_requests 1)

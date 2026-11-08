@@ -40,21 +40,21 @@
   workspace)
 
 (fn validate_entry [entry, ids]
-  (if (== entry/id void)
+  (if ($absent? entry/id)
     (fail (CompositionError ^message "composition entry requires id")))
   (var id ($to_str entry/id))
   (if (== id "") (fail (CompositionError ^message "composition entry id is empty")))
-  (if_not (== (ids .get id) void)
+  (if_not ($absent? (ids .get id))
     (fail (CompositionError ^message $"duplicate composition entry ${id}")))
   (ids .put id true)
   (if (== entry/builtin true)
     (then
       (if_not (== entry/disabled true)
         (fail (CompositionError ^message $"built-in record ${id} must be disabled")))
-      (if (|| (!= entry/module_digest void) (!= entry/closure void))
+      (if (|| ($present? entry/module_digest) ($present? entry/closure))
         (fail (CompositionError ^message $"built-in record ${id} cannot name a stored module"))))
     (else
-      (if (|| (== entry/module_digest void) (== entry/closure void) (== entry/interfaces void))
+      (if (|| ($absent? entry/module_digest) ($absent? entry/closure) ($absent? entry/interfaces))
         (fail
           (CompositionError ^message "composition entry requires module_digest closure interfaces")))
       (if_not (entry/closure .contains? entry/module_digest)
@@ -76,7 +76,7 @@
       (workspace/entries .set (fresh_list)))
     (else
       (var manifest (loaded/records .get "composition"))
-      (if (== manifest void)
+      (if ($absent? manifest)
         (fail (CompositionError ^message "composition generation has no composition record")))
       (if_not (== manifest/format 2)
         (fail
@@ -243,7 +243,7 @@
   out)
 
 (fn entry_limits [entry]
-  (if (== entry/limits void)
+  (if ($absent? entry/limits)
     (default_limits_data)
     entry/limits))
 

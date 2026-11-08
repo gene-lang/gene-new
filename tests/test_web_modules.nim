@@ -160,7 +160,7 @@ suite "web navigation host bindings":
     defer: removeDir(root)
     writeFile(root / "invalid.gene", """
       (mod invalid ^profile web)
-      (fn main [root : EventTarget] : Void (undefined_function root))
+      (fn main [root : EventTarget] : Nil (undefined_function root))
     """)
     for entry in ["missing", "invalid"]:
       writeFile(root / (entry & "_host.gene"),
@@ -173,7 +173,7 @@ suite "web navigation host bindings":
     writeFile(root / "panic.gene", """
       (mod panic_client ^profile web)
       (macro abort [] ($panic "web macro stopped"))
-      (fn main [root : EventTarget] : Void (abort))
+      (fn main [root : EventTarget] : Nil (abort))
     """)
     writeFile(root / "panic_host.gene",
       "(var caught (try ($web/load \"" & root / "panic.gene" &
@@ -193,13 +193,13 @@ suite "web navigation host bindings":
         (if_yes (&& ($dom/connected? previous) ($dom/contains? target previous))
           ($dom/focus previous))
         ($size ($dom/focusables target)))
-      (fn load [url : Str, ready : (Fn [Any] Void), error : (Fn [Str] Void)] : Void
+      (fn load [url : Str, ready : (Fn [Any] Nil), error : (Fn [Str] Nil)] : Nil
         ($browser/load_module url ready error))
     """)
     discard buildWebModule(root / "modal.gene", root / "out")
     writeFile(root / "entry.gene", """
       (mod entry ^profile web)
-      (fn main [target : EventTarget] : Void ($dom/set_attribute target "loaded" "yes"))
+      (fn main [target : EventTarget] : Nil ($dom/set_attribute target "loaded" "yes"))
     """)
     discard buildWebModule(root / "entry.gene", root / "out")
     writeFile(root / "out" / "check.mjs", """
@@ -245,7 +245,7 @@ suite "web navigation host bindings":
     defer: removeDir(root)
     writeFile(root / "navigation.gene", """
       (mod navigation ^profile web)
-      (fn install [target : EventTarget, handler : (Fn [Any] Void)] : Void
+      (fn install [target : EventTarget, handler : (Fn [Any] Nil)] : Nil
         ($dom/add_event_listener ^^capture target "keydown" handler)
         ($dom/remove_event_listener ^^capture target "keydown" handler))
       (fn shortcut [event : Any] : Bool
@@ -254,7 +254,7 @@ suite "web navigation host bindings":
           (! ($event/repeat event)) (! ($event/is_composing event))
           (== ($event/code event) "Digit2")))
       (fn focused [target : EventTarget] : Bool ($dom/focused? target))
-      (fn visit [url : Str] : Void ($browser/push_url url))
+      (fn visit [url : Str] : Nil ($browser/push_url url))
     """)
     discard buildWebModule(root / "navigation.gene", root / "out")
     writeFile(root / "out" / "check.mjs", """
@@ -311,9 +311,9 @@ suite "web JSON data properties":
     writeFile(root / "properties.gene", """
       (mod properties ^profile web)
       (fn parse [source : Str] : Any ($json/parse source))
-      (fn put [data : Any, key : Str, value : Any] : Void (set data/%key value))
+      (fn put [data : Any, key : Str, value : Any] : Nil (set data/%key value))
       (fn get [data : Any, key : Str] : Any data/%key)
-      (fn remove [data : Any, key : Str] : Void (set data/%key void))
+      (fn remove [data : Any, key : Str] : Nil (data .delete key))
       (fn names [data : PropMap] : (List Str)
         (var keys : (List Str) [])
         (for [key value] in data (keys .push ($to_str key)))
@@ -336,13 +336,13 @@ suite "web JSON data properties":
       put(data.nested, 'mount_checked', false);
       assert.equal(get(data, 'label_ready'), true);
       assert.equal(get(data, 'labelReady'), 'separate');
-      assert.equal(get(data, 'missing_key'), undefined);
+      assert.equal(get(data, 'missing_key'), null);
       assert.equal(get(data, '__proto__').safe, true);
       assert.equal(Object.getPrototypeOf(data), Object.prototype);
       assert.deepEqual(names(data), ['nested','labelReady','duplicate','__proto__','label_ready']);
       assert.equal(data.duplicate, 2n);
       remove(data, 'label_ready');
-      assert.equal(get(data, 'label_ready'), undefined);
+      assert.equal(get(data, 'label_ready'), null);
       assert.equal(get(data, 'labelReady'), 'separate');
       put(data, 'label_ready', false);
       assert.equal(parse(encode(data)).label_ready, false);

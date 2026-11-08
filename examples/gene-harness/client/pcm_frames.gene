@@ -1,6 +1,6 @@
 (mod pcm_frames ^profile web)
 
-(fn write_u32 [bytes : (Buffer U8), offset : Int, value : Int] : Void
+(fn write_u32 [bytes : (Buffer U8), offset : Int, value : Int] : Nil
   (var number value) (var i 0)
   (while (< i 4)
     (bytes .set (+ offset i) (// number 256))

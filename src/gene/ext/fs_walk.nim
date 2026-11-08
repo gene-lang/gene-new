@@ -52,7 +52,7 @@ proc walkPull(stream: Value): StreamPullResult {.nimcall.} =
   if state.kind == vkNil: return
   let scope = stream.streamItemScope
   while true:
-    let frames = state.mapEntries.getOrDefault("frames", VOID)
+    let frames = state.mapEntries.getOrDefault("frames", NIL)
     if frames.kind != vkList or frames.listItems.len == 0:
       return
     let top = frames.listItems[^1]

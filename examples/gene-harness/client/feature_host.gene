@@ -2,8 +2,8 @@
 # Features own no socket, sequence counter, authentication epoch or retry loop.
 (mod feature_host ^profile web)
 (type FeatureHost ^props {
-  ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)
-  ^error (Fn [Any Str] Void) ^feedback (Fn [Str Str Bool] Void) ^controls (Fn [] Void)
-  ^select (Fn [Str] Void) ^refresh (Fn [] Void) ^tab (Fn [Str] Any)
-  ^upsert (Fn [Any] Void) ^remember (Fn [] Void) ^apply_run (Fn [Str Any] Void)
-  ^emit (Fn [Str Str Any] Void) ^render (Fn [] Void)})
+  ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)
+  ^error (Fn [Any Str] Nil) ^feedback (Fn [Str Str Bool] Nil) ^controls (Fn [] Nil)
+  ^select (Fn [Str] Nil) ^refresh (Fn [] Nil) ^tab (Fn [Str] Any)
+  ^upsert (Fn [Any] Nil) ^remember (Fn [] Nil) ^apply_run (Fn [Str Any] Nil)
+  ^emit (Fn [Str Str Any] Nil) ^render (Fn [] Nil)})

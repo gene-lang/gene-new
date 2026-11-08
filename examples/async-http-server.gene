@@ -260,7 +260,7 @@
 # the list, so hand-written and discovered routes are the same plain data.
 
 (fn routed? [d]
-  (not (== d/%$meta/route void)))
+  (not ($absent? d/%$meta/route)))
 
 (fn route_entry [d]
   (var r d/%$meta/route)

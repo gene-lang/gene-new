@@ -40,7 +40,7 @@ suite "callable reflection":
        (target b/positional ... b/named ...)]
     """, "[false false false false [nil nil]]"
 
-  test "nil stays supplied while ordinary maps remove Void entries":
+  test "a supplied nil stays supplied":
     reflectionCheck """
       (fn target [^value : Any] value)
       (let s ($runtime/signature target))
@@ -48,20 +48,9 @@ suite "callable reflection":
       (let named n/named)
       [(target named ...)
        n/omitted_named
-       (try ($runtime/bind_shape s [] {^value (do void)}) false catch Any true)
+       (try ($runtime/bind_shape s [] {^value (do nil)}) false catch Any true)
        (try ($runtime/bind_shape s [] {}) false catch Any true)]
-    """, "[nil #[] true true]"
-
-  test "a supplied raw positional Void remains supplied through binding and invocation":
-    let scope = newGlobalScope()
-    scope.define("raw_args", newNativeFn("raw_args", proc(args: openArray[Value]): Value =
-      newList(@[VOID])))
-    check run(compileSource("""
-      (fn target [x : Void] true)
-      (let b ($runtime/bind_shape ($runtime/signature target) (raw_args) {}))
-      (let args b/positional)
-      [b/omitted_positional (target args ...)]
-    """), scope).print() == "[#[] true]"
+    """, "[nil #[] false true]"
 
   test "bound envelopes snapshot shape and preserve nested identity":
     reflectionCheck """
@@ -74,7 +63,7 @@ suite "callable reflection":
       (named .put "extra" 10)
       (nested .set 2)
       [(same? b/positional/0 nested) (same? b/named/y nested)
-       (b/positional/0 .get) b/positional/.size (== b/named/extra void)
+       (b/positional/0 .get) b/positional/.size ($absent? b/named/extra)
        (try (b/positional .push 1) false catch Any true)]
     """, "[true true 2 1 true true]"
 
@@ -153,7 +142,7 @@ suite "callable reflection":
       [s/positional/0/type s/signature s/target s/environment
        (try (s/positional/0 .put "name" "changed") false catch Any true)
        (try (s/positional .push nil) false catch Any true)]
-    """, "[Str void void void true true]"
+    """, "[Str nil nil nil true true]"
 
   test "generator invocation and producer contracts stay separate":
     reflectionCheck """
@@ -212,7 +201,7 @@ suite "callable reflection":
       (fn wrapper [x : Str, ^label : Str] : Str @wrapped target x)
       (let s ($runtime/signature wrapper))
       [s/positional/0/type s/named/0/name s/result s/wrapped]
-    """, "[Str \"label\" Str void]"
+    """, "[Str \"label\" Str nil]"
 
   test "a forged description cannot weaken actual callable checks":
     reflectionCheck """
@@ -332,7 +321,7 @@ suite "language callable reflection":
       [constructed s/category s/construction s/minimum_positional s/rest/type
        s/named/1/required value/name value/tag value/0 value/1
        (same? s/result Child)]
-    """, "[0 type data 1 Str false \"n\" void 1 \"two\" true]"
+    """, "[0 type data 1 Str false \"n\" nil 1 \"two\" true]"
 
   test "nil-admitting body fields still require a positional item":
     reflectionCheck """
@@ -428,7 +417,7 @@ suite "language callable reflection":
       (let s ($runtime/signature foreign))
       [s/category s/origin s/shape_known s/minimum_positional s/name
        s/address s/library s/invocation_errors/known]
-    """), scope).print() == "[native native_declared true 1 \"fixture\" void void false]"
+    """), scope).print() == "[native native_declared true 1 \"fixture\" nil nil false]"
 
   test "generic parameters cannot resolve to a same-named outer type":
     reflectionCheck """

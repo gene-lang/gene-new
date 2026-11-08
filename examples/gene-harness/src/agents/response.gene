@@ -74,7 +74,7 @@
         (if (|| ($absent? (#"^[A-Za-z0-9_.-]+$" .match name))
                 (== terminator "") ($present? (#"\s" .match terminator)))
           (read_error (+ index 1) "invalid attachment name or terminator"))
-        (if_not (== (attachments .get name) void)
+        (if_not ($absent? (attachments .get name))
           (read_error (+ index 1) $"duplicate attachment ${name}"))
         (let opening (+ index 1))
         (set index (+ index 1))

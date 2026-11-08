@@ -207,7 +207,7 @@ suite "net/http server e2e":
   (var total 0)
   (while true
     (let part (await (req/body .AsyncReader:read 4096)))
-    (if ($nil? part) (then (break)))
+    (if ($absent? part) (then (break)))
     (set total (+ total ($binary/size part))))
   (text ($to_str total)))
 (serve (Server ^host "127.0.0.1" ^port 8191) handle
@@ -237,7 +237,7 @@ suite "net/http server e2e":
         (var total 0)
         (while true
           (let part (await (req/body .AsyncReader:read 4096)))
-          (if ($nil? part) (then (break)))
+          (if ($absent? part) (then (break)))
           (set total (+ total ($binary/size part))))
         (text ($to_str total))))))
 (serve (Server ^host "127.0.0.1" ^port 8192) handle
@@ -270,7 +270,7 @@ suite "net/http server e2e":
         (var total 0)
         (while true
           (let part (await (req/body .AsyncReader:read 4096)))
-          (if ($nil? part) (then (break)))
+          (if ($absent? part) (then (break)))
           (set total (+ total ($binary/size part))))
         (text ($to_str total))))))
 (serve (Server ^host "127.0.0.1" ^port 8193) handle
@@ -306,7 +306,7 @@ suite "net/http server e2e":
     (var total 0)
     (while true
       (let part (await (req/body .AsyncReader:read 1024)))
-      (if ($nil? part) (then (break)))
+      (if ($absent? part) (then (break)))
       (set total (+ total ($binary/size part))))
     (text ($to_str total))
    ensure (set cleaned (+ cleaned 1))))
@@ -368,7 +368,7 @@ suite "net/http server e2e":
   (var payload "")
   (while true
     (let part (await (req/body .AsyncReader:read 4096)))
-    (if ($nil? part) (then (break)))
+    (if ($absent? part) (then (break)))
     (set payload ($to_str payload ($binary/to_str part))))
   (text payload))
 (serve (Server ^host "127.0.0.1" ^port 8198) handle
@@ -392,7 +392,7 @@ suite "net/http server e2e":
 (fn handle [req]
   (while true
     (let part (await (req/body .AsyncReader:read 4096)))
-    (if ($nil? part) (then (break))))
+    (if ($absent? part) (then (break))))
   (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8199) handle
   ^body_mode "stream" ^max_body_bytes 8 ^max_requests 3)
@@ -424,7 +424,7 @@ suite "net/http server e2e":
 (fn handle [req]
   (while true
     (let part (await (req/body .AsyncReader:read 4096)))
-    (if ($nil? part) (then (break))))
+    (if ($absent? part) (then (break))))
   (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8200) handle
   ^body_mode "stream" ^max_requests 1)
@@ -890,7 +890,7 @@ suite "net/http server e2e":
   (text ($to_str "job-" req/params/id)))
 (fn not-a-route [x] x)
 (fn routed? [d]
-  (not (== d/%$meta/route void)))
+  (not ($absent? d/%$meta/route)))
 (fn route-entry [d]
   (var r d/%$meta/route)
   (route ^method r/method ^path r/path ^handler d/value))

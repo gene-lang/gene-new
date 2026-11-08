@@ -2040,8 +2040,27 @@ proc declareSlotType(scope: Scope, index: int, typeExpr: Value) {.inline.} =
   scope.slotTypes[index] = TypeBinding(expr: typeExpr,
                                        weakScope: cast[pointer](scope))
 
+proc removedNameMessage(name: string): string =
+  ## The diagnostic for a name from the removed two-absence model, or "" for any
+  ## other name. These names no longer exist; the message says what replaced them.
+  case name
+  of "void":
+    "void was removed; absence is nil. Use : Nil for a procedure return, " &
+      ".delete or .dissoc to remove a key, and return nil from filter_map " &
+      "to drop an item."
+  of "Void":
+    "Void was removed; use Nil. In a C foreign signature, use C/Void."
+  of "$void?", "gene/void?":
+    "$void? was removed; use $absent?."
+  of "$nil?", "gene/nil?":
+    "$nil? was removed; use $absent?."
+  else:
+    ""
+
 proc raiseUndefinedSymbol(name: string) {.noReturn.} =
-  var error = newException(GeneError, "undefined symbol: " & name)
+  let removed = removedNameMessage(name)
+  var error = newException(GeneError,
+    if removed.len > 0: removed else: "undefined symbol: " & name)
   error.errorKind = gekUndefinedSymbol
   error.errorDetail = name
   raise error
@@ -2409,19 +2428,11 @@ proc putArg(named: var NamedArgs, name: string, value: Value) =
   let index = named.argIndex(name)
   let count = named.len
   if index >= 0:
-    if value.kind == vkVoid:
-      named.names.delete(index)
-      if named.values.len == count:
-        named.values.delete(index)
-      else:
-        for i in index ..< count - 1:
-          named.inlineValues[i] = named.inlineValues[i + 1]
-        named.inlineValues[count - 1] = NIL
-    elif named.values.len == count:
+    if named.values.len == count:
       named.values[index] = value
     else:
       named.inlineValues[index] = value
-  elif value.kind != vkVoid:
+  else:
     if count < MaxInlineNamedArgs and named.values.len == 0:
       named.names.add name
       named.inlineValues[count] = value
@@ -2474,6 +2485,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
                          named: NamedArgs): tuple[handled: bool, value: Value]
 proc applySelector(selector, target: Value, dispatchScope: Scope = nil): Value
 proc staticLookup(target, segment: Value): Value
+proc staticLookupValue(target, segment: Value): Value
 proc pathQualifiedMessageValue(text: string, scope: Scope): Value
 proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs):
@@ -2548,16 +2560,14 @@ proc isBareNilType(expr: Value): bool {.inline.} =
   ## and must still adapt its value normally.
   expr.kind == vkSymbol and expr.symVal == "Nil"
 
-proc isBareVoidType(expr: Value): bool {.inline.} =
-  expr.kind == vkSymbol and expr.symVal == "Void"
-
 proc isStatementReturnType(expr: Value): bool {.inline.} =
-  ## `Nil` and `Void` are *statement* signatures: the function is declared to
-  ## produce no useful value, so the body's trailing expression is discarded
-  ## and the frame yields the declared unit. That is what lets a body end on
-  ## real work instead of a bookkeeping `nil`, and what makes a bare `(return)`
-  ## legal in a `: Nil` function.
-  expr.isBareNilType or expr.isBareVoidType
+  ## A bare `Nil` return is a *statement* signature (value discarding): the
+  ## function is declared to produce no useful value, so the body's trailing
+  ## expression is discarded and the frame yields nil. That is what lets a body
+  ## end on real work instead of a bookkeeping `nil`, and what makes a bare
+  ## `(return)` legal in a `: Nil` function. `Nil?` and unions containing `Nil`
+  ## are ordinary return types.
+  expr.isBareNilType
 
 proc scopelessIntArgsOk(stack: seq[Value], argsStart, argCount: int):
     bool {.noinline.} =
@@ -3437,10 +3447,7 @@ proc buildHashMap(name: string, pairs: openArray[HashMapEntry]): Value =
   for entry in pairs:
     requireHashStableKey(name, entry.key)
     let idx = findHashMapKey(entries, entry.key)
-    if entry.val.kind == vkVoid:
-      if idx >= 0:
-        entries.delete(idx)
-    elif idx >= 0:
+    if idx >= 0:
       entries[idx].val = entry.val
     else:
       entries.add entry
@@ -3457,7 +3464,7 @@ proc requireOne(name: string, args: openArray[Value]) =
 # Absence vocabulary (design §1.6). `nil?`/`void?` test the exact singleton;
 # `absent?` is either absence form; `present?` is neither. `false`/`0`/`""`
 # are present — this is the distinction `||`-as-default blurs and `??` respects.
-const LeafValueKinds* = {vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString,
+const LeafValueKinds* = {vkNil, vkBool, vkInt, vkFloat, vkString,
                          vkSymbol, vkChar}
   ## Literals: values the reader produces with no interior node structure. This
   ## is exactly the set `buildBuiltins` gives scalar type identities to, and the
@@ -3480,14 +3487,6 @@ proc isLeafValue*(v: Value): bool {.inline.} =
 proc biIsLeaf(args: openArray[Value]): Value {.nimcall.} =
   requireOne("leaf?", args)
   newBool(args[0].isLeafValue)
-
-proc biIsNil(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("nil?", args)
-  newBool(args[0].kind == vkNil)
-
-proc biIsVoid(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("void?", args)
-  newBool(args[0].kind == vkVoid)
 
 proc biIsAbsent(args: openArray[Value]): Value {.nimcall.} =
   requireOne("absent?", args)
@@ -5842,7 +5841,7 @@ proc freezeValue(value: Value): Value =
   if container and freezeDepth == deepCopyCycleCheckDepth and valueHasCycle(value):
     raise newException(GeneError, "freeze cannot freeze a cyclic value")
   case value.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
+  of vkNil, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkLogger, vkEventMatcher, vkType, vkProtocol, vkProtocolMessage,
      vkEnumVariant:
@@ -6058,7 +6057,6 @@ proc sortedBindingNames(scope: Scope): seq[string] =
 proc declarationKind*(value: Value): string =
   case value.kind
   of vkNil: "Nil"
-  of vkVoid: "Void"
   of vkBool: "Bool"
   of vkInt: "Int"
   of vkFloat: "Float"
@@ -6114,18 +6112,20 @@ proc declarationKind*(value: Value): string =
   of vkEnumVariant: "EnumVariant"
 
 proc exportedBinding(ns: Value, name: string): Value =
+  ## The exported binding, or `MISSING` when `name` is not exported. A caller
+  ## that hands the result to Gene code converts `MISSING` to nil.
   if ns.kind != vkNamespace:
-    return VOID
+    return MISSING
   if ns.nsIsModuleRoot and name in ["this_mod", "this_pkg"]:
-    return VOID
+    return MISSING
   let namespaceScope {.cursor.} = ns.borrowedNsScope
   # A set probe hashes the name before it can see the set is empty, and the
   # standard-library namespaces every `$ns/fn` goes through exclude nothing.
   if namespaceScope.exportExcludedNames.len > 0 and
       name in namespaceScope.exportExcludedNames:
-    return VOID
+    return MISSING
   namespaceScope.materializeMirroredVars()
-  namespaceScope.vars.getOrDefault(name, VOID)
+  namespaceScope.vars.getOrDefault(name, MISSING)
 
 proc namespaceDeclarationNodes(ns: Value): seq[Value] =
   for name in sortedBindingNames(ns.nsScope):
@@ -6169,7 +6169,9 @@ proc biNamespaceLookup(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "Namespace/lookup expects 2 arguments, got " & $args.len)
   requireNamespace("Namespace/lookup", args[0])
   args[0].nsScope.materializeMirroredVars()
-  args[0].nsScope.vars.getOrDefault(keySegment("Namespace/lookup", args[1]), VOID)
+  let found = args[0].nsScope.vars.getOrDefault(
+    keySegment("Namespace/lookup", args[1]), MISSING)
+  if found.isMissing: NIL else: found
 
 proc biNamespaceDeclarations(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Namespace/declarations", args)
@@ -6212,11 +6214,11 @@ proc bindingsFromMap(name: string, value: Value): Table[string, Value] =
 proc evalPolicyProp(policy: Value, name: string): Value =
   case policy.kind
   of vkMap:
-    if policy.mapEntries.hasKey(name): policy.mapEntries[name] else: VOID
+    if policy.mapEntries.hasKey(name): policy.mapEntries[name] else: NIL
   of vkNode:
-    if policy.props.hasKey(name): policy.props[name] else: VOID
+    if policy.props.hasKey(name): policy.props[name] else: NIL
   else:
-    VOID
+    NIL
 
 proc validateEvalPolicyPropName(name: string) =
   case name
@@ -6240,7 +6242,7 @@ proc validateEvalPolicyPropNames(policy: Value) =
 
 proc evalPolicyNonNegativeInt(policy: Value, name: string): int64 =
   let value = evalPolicyProp(policy, name)
-  if value.kind in {vkNil, vkVoid}:
+  if value.kind in {vkNil}:
     return -1
   if value.kind != vkInt or not value.intFitsInt64 or value.intVal < 0:
     raise newException(GeneError,
@@ -6249,7 +6251,7 @@ proc evalPolicyNonNegativeInt(policy: Value, name: string): int64 =
 
 proc validateEvalPolicyFlag(policy: Value, name: string) =
   let value = evalPolicyProp(policy, name)
-  if value.kind in {vkNil, vkVoid}:
+  if value.kind in {vkNil}:
     return
   if value.kind != vkBool:
     raise newException(GeneError,
@@ -6259,7 +6261,7 @@ proc validateEvalPolicyFlag(policy: Value, name: string) =
       "env ^policy ^" & name & " true is not supported yet")
 
 proc validateEvalPolicy(policy: Value): tuple[maxMemoryMb, timeoutMs: int64] =
-  if policy.kind in {vkNil, vkVoid}:
+  if policy.kind in {vkNil}:
     return (-1'i64, -1'i64)
   if policy.kind notin {vkMap, vkNode}:
     raise newException(GeneError, "env ^policy must be a map or node")
@@ -6368,13 +6370,13 @@ proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
 proc invokeStreamCallback(stream, item: Value): Value
 proc closeStreamCallback(stream: Value) {.nimcall.}
 
-proc pullMappedStream(stream: Value, dropVoid: bool): StreamPullResult =
+proc pullMappedStream(stream: Value, dropNil: bool): StreamPullResult =
   let source = stream.streamSource
   while source.streamHasNext:
     let item = checkedStreamNext(source, "map item")
     let mapped = invokeStreamCallback(stream, item)
-    return StreamPullResult(has: true,
-      item: (if not dropVoid and mapped.kind == vkVoid: NIL else: mapped))
+    if dropNil and mapped.kind == vkNil: continue
+    return StreamPullResult(has: true, item: mapped)
   StreamPullResult(has: false, item: NIL)
 
 proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
@@ -6477,12 +6479,11 @@ proc collectCallbackResult(context: RootRef, args: openArray[Value],
   let mapped = args[0]
   let keep = case state.operation
              of "filter": mapped.isTruthy
-             of "filter_map": mapped.kind != vkVoid
+             of "filter_map": mapped.kind != vkNil
              of "each": false
              else: true
   if keep:
     let value = if state.operation == "filter": state.originals[state.index]
-                elif mapped.kind == vkVoid: NIL
                 else: mapped
     case state.receiver.kind
     of vkMap: state.entries[state.keys[state.index].strVal] = value
@@ -6557,9 +6558,9 @@ proc requestCollectionFrame(operation: string, receiver, callback: Value,
   raise request
 
 proc mapCollection(args: openArray[Value], call: ptr NativeCall,
-                   dropVoid: bool): Value =
-  let name = if dropVoid: "filter_map" else: "map"
-  let callback = if dropVoid: biFilterMap else: biMap
+                   dropNil: bool): Value =
+  let name = if dropNil: "filter_map" else: "map"
+  let callback = if dropNil: biFilterMap else: biMap
   let scope = if call != nil: call.dispatchScope else: nil
   if args.len == 1:
     return newSelectorCallStage(builtinNativeCallFn(name, callback, acceptsNamed = false), args)
@@ -6571,16 +6572,14 @@ proc mapCollection(args: openArray[Value], call: ptr NativeCall,
   case receiver.kind
   of vkStream:
     result = newLazyStream(receiver,
-      (if dropVoid: pullFilterMapStream else: pullMapStream),
+      (if dropNil: pullFilterMapStream else: pullMapStream),
       callable = args[1], close = closeStreamCallback)
   of vkList, vkSet:
     var items: seq[Value]
     let source = if receiver.kind == vkList: receiver.listItems else: receiver.setItems
     for item in source:
       let mapped = applyCall(args[1], [item], NamedArgs(), scope)
-      if mapped.kind == vkVoid:
-        if not dropVoid: items.add NIL
-      else: items.add mapped
+      if not (dropNil and mapped.kind == vkNil): items.add mapped
     if receiver.kind == vkList:
       result = newList(items, receiver.listImmutable)
     else:
@@ -6591,17 +6590,14 @@ proc mapCollection(args: openArray[Value], call: ptr NativeCall,
     var entries = initPropTable()
     for key, val in receiver.mapEntries:
       let mapped = applyCall(args[1], [val], NamedArgs(), scope)
-      if mapped.kind == vkVoid:
-        if not dropVoid: entries[key] = NIL
-      else: entries[key] = mapped
+      if not (dropNil and mapped.kind == vkNil): entries[key] = mapped
     result = newMap(entries, receiver.mapImmutable)
   of vkHashMap:
     var entries: seq[HashMapEntry]
     for entry in receiver.hashMapEntries:
       let mapped = applyCall(args[1], [entry.val], NamedArgs(), scope)
-      if mapped.kind == vkVoid:
-        if not dropVoid: entries.add HashMapEntry(key: entry.key, val: NIL)
-      else: entries.add HashMapEntry(key: entry.key, val: mapped)
+      if not (dropNil and mapped.kind == vkNil):
+        entries.add HashMapEntry(key: entry.key, val: mapped)
     result = newHashMap(entries)
   else:
     result = dispatchGenericForward(name, receiver, args[1 .. args.high], scope)
@@ -6795,20 +6791,18 @@ proc biInto(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
         raise newException(GeneError, "into Map expects [key value] stream items")
       let key = keySegment("into", pair.listItems[0])
       let val = pair.listItems[1]
-      if val.kind == vkVoid:
-        entries.del(key)
-      else:
-        entries[key] = val
+      entries[key] = val
     result = newMap(entries, args[1].mapImmutable)
   else:
     raise newException(GeneError, "into expects a List or Map target")
 
 proc readIndex(items: openArray[Value], rawIndex: int64): Value =
+  ## The item, or `MISSING` when the index is out of range.
   var idx = rawIndex
   if idx < 0:
     idx = int64(items.len) + idx
   if idx < 0 or idx >= int64(items.len):
-    return VOID
+    return MISSING
   items[int(idx)]
 
 proc invokeIndexedWitness(witness: Value, args: openArray[Value], name: string): Value =
@@ -6836,7 +6830,7 @@ proc indexReadSize(target, witness: Value): Value =
       "IndexRead:size must return a nonnegative Int")
 
 proc normalizeNumericIndex(segment, size: Value, writing: bool): Value =
-  ## Return VOID for an absent read. Keep arbitrary Int indices wide until the
+  ## Return MISSING for an absent read. Keep arbitrary Int indices wide until the
   ## bounds check; narrowing first would wrap a huge index into a valid slot.
   var raw = NIL
   case segment.kind
@@ -6847,7 +6841,7 @@ proc normalizeNumericIndex(segment, size: Value, writing: bool): Value =
     if f.classify notin {fcNormal, fcZero, fcNegZero} or f != f.trunc:
       if writing:
         raise newException(GeneError, "set index must be a finite whole-number index")
-      return VOID
+      return MISSING
     if f >= 9223372036854775808.0 or f < -9223372036854775808.0:
       raw = newIntFromDecimal(formatFloat(f, ffDecimal, 0).split('.')[0])
     else:
@@ -6855,7 +6849,7 @@ proc normalizeNumericIndex(segment, size: Value, writing: bool): Value =
   else:
     if writing:
       raise newException(GeneError, "set index must be an Int or Float")
-    return VOID
+    return MISSING
   let normalized =
     if intCompare(raw, newInt(0)) < 0: intAdd(size, raw)
     else: raw
@@ -6864,10 +6858,12 @@ proc normalizeNumericIndex(segment, size: Value, writing: bool): Value =
     if writing:
       raise newException(GeneError,
         "set index out of range: " & segment.print())
-    return VOID
+    return MISSING
   normalized
 
 proc readIndexedValue(target, segment: Value): Value =
+  ## The indexed item, or `MISSING` when there is none. Callers that return the
+  ## result to Gene code convert `MISSING` to nil.
   if target.kind == vkList and segment.isSmallInt:
     # A List and an ordinary Int index: the same from-the-end and bounds rules
     # as normalizeNumericIndex, without building Int values to compare.
@@ -6876,18 +6872,18 @@ proc readIndexedValue(target, segment: Value): Value =
     if index < 0:
       index = index +% int64(count)
     if index < 0 or index >= int64(count):
-      return VOID
+      return MISSING
     return target.listItems[int(index)]
   if target.kind notin {vkList, vkNode}:
-    return VOID
+    return MISSING
   if target.kind == vkNode and target.head.kind == vkType:
     let sizeFn = target.head.readyCoreWitness(cvSize)
     if sizeFn.kind != vkNil:
       let atFn = target.head.readyCoreWitness(cvAt)
       let index = normalizeNumericIndex(segment,
         indexReadSize(target, sizeFn), false)
-      if index.kind == vkVoid:
-        return VOID
+      if index.isMissing:
+        return MISSING
       return invokeIndexedWitness(atFn, [target, index], "IndexRead:at")
   # The items are read in place. Binding them to a local through an `if`
   # expression copied the whole list — a retain per element — for every
@@ -6895,7 +6891,7 @@ proc readIndexedValue(target, segment: Value): Value =
   template readItem(items: untyped): Value =
     block:
       let index = normalizeNumericIndex(segment, newInt(items.len), false)
-      if index.kind == vkVoid: VOID else: items[int(index.intVal)]
+      if index.isMissing: MISSING else: items[int(index.intVal)]
   if target.kind == vkList: readItem(target.listItems)
   else: readItem(target.body)
 
@@ -6927,7 +6923,7 @@ proc selectorPath(name: string, path: Value): seq[Value] =
 proc readUpdateChild(name: string, target, segment: Value): Value =
   case target.kind
   of vkMap:
-    target.mapEntries.getOrDefault(keySegment(name, segment), VOID)
+    target.mapEntries.getOrDefault(keySegment(name, segment), MISSING)
   of vkList:
     if segment.kind != vkInt:
       raise newException(GeneError, name & " expects an integer list path segment")
@@ -6946,9 +6942,9 @@ proc readUpdateChild(name: string, target, segment: Value): Value =
         of "props": newMap(copyEntries(target.props))
         of "body": newList(copyItems(target.body))
         of "meta": newMap(copyEntries(target.meta))
-        else: VOID
+        else: MISSING
     else:
-      VOID
+      MISSING
   else:
     raise newException(GeneError,
       name & " cannot update through " & $target.kind)
@@ -7150,8 +7146,11 @@ proc validatePatchedModuleRefGraphs(scope: Scope) =
         validatePatchedModuleRefValue(entry.value, scope, seenValues, seenScopes)
   validatePatchedModuleRefScope(scope, scope, seenValues, seenScopes)
 
-proc writeUpdateChild(name: string, target, segment, value: Value): Value =
-  if value.kind != vkVoid:
+proc writeUpdateChild(name: string, target, segment, value: Value,
+                      remove = false): Value =
+  ## "target with `segment` set to `value`", or, when `remove` is true, "target
+  ## without `segment`" (the persistent form of a delete). Both build a new root.
+  if not remove:
     rejectCallerEnvEscape(name & " functional update", value)
   if target.kind == vkNode and target.head.isNativeWrapperType:
     # A functional update *reconstructs* the node, so it is a construction path
@@ -7162,7 +7161,7 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
   of vkMap:
     var entries = copyEntries(target.mapEntries)
     let key = keySegment(name, segment)
-    if value.kind == vkVoid:
+    if remove:
       entries.del(key)
     else:
       entries[key] = value
@@ -7170,9 +7169,10 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
   of vkList:
     if segment.kind != vkInt:
       raise newException(GeneError, name & " expects an integer list path segment")
+    if remove:
+      raise newException(GeneError, name & " cannot remove a List element")
     var items = copyItems(target.listItems)
-    items[updateIndex(name, items.len, requireInt64(name, segment))] =
-      if value.kind == vkVoid: NIL else: value
+    items[updateIndex(name, items.len, requireInt64(name, segment))] = value
     newList(items, target.listImmutable)
   of vkNode:
     var head = target.head
@@ -7181,37 +7181,38 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
     var meta = copyEntries(target.meta)
     case segment.kind
     of vkInt:
-      body[updateIndex(name, body.len, requireInt64(name, segment))] =
-        if value.kind == vkVoid: NIL else: value
+      if remove:
+        raise newException(GeneError, name & " cannot remove a node body element")
+      body[updateIndex(name, body.len, requireInt64(name, segment))] = value
     of vkSymbol, vkString:
       let key = keySegment(name, segment)
       if target.props.hasKey(key) or key notin ["head", "props", "body", "meta"]:
-        if value.kind == vkVoid:
+        if remove:
           props.del(key)
         else:
           props[key] = value
       else:
         case key
         of "head":
-          if value.kind == vkVoid:
+          if remove:
             raise newException(GeneError, name & " cannot remove a node head")
           head = value
         of "props":
-          if value.kind == vkVoid:
+          if remove:
             props = initPropTable()
           elif value.kind == vkMap:
             props = copyEntries(value.mapEntries)
           else:
             raise newException(GeneError, name & " /props expects a map value")
         of "body":
-          if value.kind == vkVoid:
+          if remove:
             body = @[]
           elif value.kind == vkList:
             body = copyItems(value.listItems)
           else:
             raise newException(GeneError, name & " /body expects a list value")
         of "meta":
-          if value.kind == vkVoid:
+          if remove:
             meta = initPropTable()
           elif value.kind == vkMap:
             meta = copyEntries(value.mapEntries)
@@ -7236,7 +7237,7 @@ proc assocAt(name: string, target: Value, path: openArray[Value],
   if pos == path.high:
     return writeUpdateChild(name, target, segment, value)
   let child = readUpdateChild(name, target, segment)
-  if child.kind == vkVoid:
+  if child.isMissing:
     raise newException(GeneError, name & " missing intermediate path segment")
   writeUpdateChild(name, target, segment, assocAt(name, child, path, pos + 1, value))
 
@@ -7244,14 +7245,43 @@ proc updateAt(name: string, target: Value, path: openArray[Value],
               pos: int, updater: Value): Value =
   let segment = path[pos]
   if pos == path.high:
-    let current = readUpdateChild(name, target, segment)
+    var current = readUpdateChild(name, target, segment)
+    if current.isMissing: current = NIL
     var callArgs = [current]
     let nextValue = applyCall(updater, callArgs, NamedArgs())
     return writeUpdateChild(name, target, segment, nextValue)
   let child = readUpdateChild(name, target, segment)
-  if child.kind == vkVoid:
+  if child.isMissing:
     raise newException(GeneError, name & " missing intermediate path segment")
   writeUpdateChild(name, target, segment, updateAt(name, child, path, pos + 1, updater))
+
+proc shallowCopyContainer(name: string, target: Value): Value =
+  ## A new root equal to `target`, sharing every child. Used when a removal
+  ## finds nothing to remove: persistent operations never hand back their input,
+  ## because Maps and Lists are mutable and a later `put` would reach both.
+  case target.kind
+  of vkMap: newMap(copyEntries(target.mapEntries), target.mapImmutable)
+  of vkList: newList(copyItems(target.listItems), target.listImmutable)
+  of vkNode:
+    newNode(target.head, copyEntries(target.props), copyItems(target.body),
+            copyEntries(target.meta), target.nodeImmutable)
+  else:
+    raise newException(GeneError, name & " cannot update through " & $target.kind)
+
+proc dissocAt(name: string, target: Value, path: openArray[Value],
+              pos: int): Value =
+  ## `target` without the entry at `path[pos ..]`. A missing entry or a missing
+  ## intermediate segment leaves nothing to remove; the result is then an equal
+  ## new root, not an error (unlike `assocAt`, which cannot create the path).
+  let segment = path[pos]
+  if pos == path.high:
+    if target.kind == vkList:
+      raise newException(GeneError, name & " cannot remove a List element")
+    return writeUpdateChild(name, target, segment, NIL, remove = true)
+  let child = readUpdateChild(name, target, segment)
+  if child.isMissing:
+    return shallowCopyContainer(name, target)
+  writeUpdateChild(name, target, segment, dissocAt(name, child, path, pos + 1))
 
 proc biAssocIn(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
@@ -7264,6 +7294,14 @@ proc biUpdateIn(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "update_in expects 3 arguments, got " & $args.len)
   let path = selectorPath("update_in", args[1])
   updateAt("update_in", args[0], path, 0, args[2])
+
+proc biDissocIn(args: openArray[Value]): Value {.nimcall.} =
+  ## `($dissoc_in value path)`: `value` without the entry at `path`, as a new
+  ## value that shares every unchanged branch. Works on frozen input.
+  if args.len != 2:
+    raise newException(GeneError, "dissoc_in expects 2 arguments, got " & $args.len)
+  let path = selectorPath("dissoc_in", args[1])
+  dissocAt("dissoc_in", args[0], path, 0)
 
 proc requireList(name: string, value: Value) =
   if value.kind != vkList:
@@ -7320,12 +7358,12 @@ proc biListEmpty(args: openArray[Value]): Value {.nimcall.} =
 proc biListFirst(args: openArray[Value]): Value {.nimcall.} =
   requireOne("first", args)
   requireList("first", args[0])
-  if args[0].listItems.len > 0: args[0].listItems[0] else: VOID
+  if args[0].listItems.len > 0: args[0].listItems[0] else: NIL
 
 proc biListLast(args: openArray[Value]): Value {.nimcall.} =
   requireOne("last", args)
   requireList("last", args[0])
-  if args[0].listItems.len > 0: args[0].listItems[^1] else: VOID
+  if args[0].listItems.len > 0: args[0].listItems[^1] else: NIL
 
 proc biListGet(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -7341,7 +7379,7 @@ proc biListAssoc(args: openArray[Value]): Value {.nimcall.} =
   let index = updateIndex("List/assoc", args[0].listItems.len,
                           requireInt64("List/assoc", args[1]))
   var items = copyItems(args[0].listItems)
-  items[index] = (if args[2].kind == vkVoid: NIL else: args[2])
+  items[index] = args[2]
   newList(items, args[0].listImmutable)
 
 proc biListSetBang(args: openArray[Value]): Value {.nimcall.} =
@@ -7351,7 +7389,7 @@ proc biListSetBang(args: openArray[Value]): Value {.nimcall.} =
   rejectCallerEnvEscape("List/set", args[2])
   let index = updateIndex("List/set", args[0].listItems.len,
                           requireInt64("List/set", args[1]))
-  let stored = if args[2].kind == vkVoid: NIL else: strengthenStoredValue(args[2])
+  let stored = strengthenStoredValue(args[2])
   args[0].setListItem(index, stored)
   noteFunctionStore(args[0], stored)
   stored
@@ -7361,7 +7399,7 @@ proc biListPushBang(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "List/push expects 2 arguments, got " & $args.len)
   requireList("List/push", args[0])
   rejectCallerEnvEscape("List/push", args[1])
-  let stored = if args[1].kind == vkVoid: NIL else: strengthenStoredValue(args[1])
+  let stored = strengthenStoredValue(args[1])
   args[0].pushListItem(stored)
   noteFunctionStore(args[0], stored)
   stored
@@ -7391,11 +7429,7 @@ proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
   requirePropMap("Map/put", args[0])
   rejectCallerEnvEscape("Map/put", args[2])
   let stored = strengthenStoredValue(args[2])
-  if stored.kind == vkVoid:
-    # Removal probes by text so an absent key is not interned.
-    args[0].putMapEntry(keySegment("Map/put", args[1]), stored)
-  else:
-    args[0].putMapEntryById(keySegmentId("Map/put", args[1]), stored)
+  args[0].putMapEntryById(keySegmentId("Map/put", args[1]), stored)
   noteFunctionStore(args[0], stored)
   stored
 
@@ -7468,24 +7502,22 @@ proc biGensym(args: openArray[Value]): Value {.nimcall.} =
          $context.count)
 
 proc biMapDeleteBang(args: openArray[Value]): Value {.nimcall.} =
-  ## `(m .delete key)` removes the entry and returns what was there, or `void`
-  ## when the key was absent — so a caller can tell "removed something" from
-  ## "there was nothing" without a second lookup.
+  ## `(m .delete key)` removes the entry and returns what was there, or nil
+  ## when the key was absent. Use `$has_key?` first to tell an absent key from a
+  ## stored nil.
   ##
   ## The key may be a symbol or a string: `keySegment` converts before
   ## comparing, which is the same normalization `get` and `put` already use.
   ## Map iteration yields symbols while these take either, so
   ## `(m .delete k)` works directly on an iterated key.
   ##
-  ## Mutating, like `put`, and `putMapEntry` refuses an immutable Map. `assoc`
-  ## with `void` remains the persistent form.
+  ## Mutating, like `put`: an immutable Map refuses it even when the key is
+  ## absent. `dissoc` is the persistent form.
   if args.len != 2:
     raise newException(GeneError,
       "Map/delete expects 2 arguments, got " & $args.len)
   requirePropMap("Map/delete", args[0])
-  let key = keySegment("Map/delete", args[1])
-  result = args[0].mapEntries.getOrDefault(key, VOID)
-  args[0].putMapEntry(key, VOID)
+  args[0].deleteMapEntry(keySegment("Map/delete", args[1]))
 
 proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
@@ -7496,10 +7528,7 @@ proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
   of vkMap:
     var entries = copyEntries(args[0].mapEntries)
     let key = keySegment("Map/assoc", args[1])
-    if args[2].kind == vkVoid:
-      entries.del(key)
-    else:
-      entries[key] = args[2]
+    entries[key] = args[2]
     newMap(entries, args[0].mapImmutable)
   of vkHashMap:
     beginKeyOperation(args[0])
@@ -7512,6 +7541,16 @@ proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
   else:
     raise newException(GeneError, "Map/assoc expects a Map")
 
+proc biMapDissoc(args: openArray[Value]): Value {.nimcall.} =
+  ## `(m .dissoc key)`: a new Map without `key`. It always builds a new root,
+  ## even when `key` is absent, and keeps the input's frozenness, like `assoc`.
+  if args.len != 2:
+    raise newException(GeneError, "Map/dissoc expects 2 arguments, got " & $args.len)
+  requirePropMap("Map/dissoc", args[0])
+  var entries = copyEntries(args[0].mapEntries)
+  entries.del(keySegment("Map/dissoc", args[1]))
+  newMap(entries, args[0].mapImmutable)
+
 proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Map/get expects 2 arguments, got " & $args.len)
@@ -7519,16 +7558,16 @@ proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
   case args[0].kind
   of vkMap:
     let keyId = keySegmentLookupId("Map/get", args[1])
-    if keyId < 0: VOID
-    else: args[0].mapEntries.getOrDefaultById(keyId, VOID)
+    if keyId < 0: NIL
+    else: args[0].mapEntries.getOrDefaultById(keyId, NIL)
   of vkHashMap:
     beginKeyOperation(args[0])
     defer: endKeyOperation()
     requireHashStableKey("Map/get", args[1])
     let idx = findHashMapKey(args[0].hashMapEntries, args[1])
-    if idx >= 0: args[0].hashMapEntries[idx].val else: VOID
+    if idx >= 0: args[0].hashMapEntries[idx].val else: NIL
   else:
-    VOID
+    NIL
 
 proc biHasKey(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -7543,9 +7582,12 @@ proc biHasKey(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     defer: endKeyOperation()
     requireHashStableKey("has_key?", args[1])
     newBool(findHashMapKey(args[0].hashMapEntries, args[1]) >= 0)
+  of vkNode:
+    # Stored props only: no message dispatch, protocol, or default is consulted.
+    newBool(args[0].props.hasKey(keySegment("has_key?", args[1])))
   else:
     let scope = if call == nil: nil else: call.dispatchScope
-    raiseTypeError("has_key?", "Map", args[0], scope)
+    raiseTypeError("has_key?", "Map or Node", args[0], scope)
     FALSE
 
 proc requireRegex(name: string, value: Value) =
@@ -7584,7 +7626,7 @@ proc regexMatchValue(reVal: Value, s: string, start: int,
     tuple[found: bool, value: Value, first, endExclusive: int] =
   let found = regexFindBounds(reVal, s, start)
   if not found.found:
-    return (false, VOID, -1, start)
+    return (false, NIL, -1, start)
 
   var groups: seq[Value]
   for capture in found.captures:
@@ -7716,7 +7758,7 @@ proc biRegexMatch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   let scope = if call == nil: nil else: call.dispatchScope
   let matched = regexMatchValue(args[0], args[1].strVal, 0,
                                 builtInTypeHead(scope, "Match"))
-  if matched.found: matched.value else: VOID
+  if matched.found: matched.value else: NIL
 
 proc pullRegexFindAll(stream: Value): StreamPullResult {.nimcall.} =
   let stateCell = stream.streamSource
@@ -7803,17 +7845,32 @@ proc setCheckedNodeProp(node: Value, key: string, value: Value): Value =
   for field in typ.typeFields:
     if field.name != key:
       continue
-    if value.kind == vkVoid:
-      if not field.optional:
-        raise newException(GeneError,
-          "cannot remove required field '" & key & "' from " & typ.typeName)
-      node.setNodeProp(key, value)
-      return value
     let adapted = adaptFieldBoundary(typ.typeName, key, field.typeExpr, value,
                                      field.typeFieldScope(typ.typeScope))
     node.setNodeProp(key, adapted)
     return adapted
 
+  raise newException(GeneError,
+    typ.typeName & " has no field '" & key & "'")
+
+proc deleteCheckedNodeProp(node: Value, key: string): Value =
+  ## Remove prop `key` and return what was stored there, or nil when it was
+  ## absent. This is a prop write: it makes every check `setCheckedNodeProp`
+  ## makes, plus the schema rule that a required field cannot be removed.
+  if node.nodeImmutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  if node.head.kind != vkType:
+    return node.deleteNodeProp(key)
+  let typ = node.head
+  if typ.isNativeWrapperType and not node.nodeConstructing:
+    rejectNativeWrapperWrite("cannot delete field '" & key & "' on " & typ.typeName)
+  for field in typ.typeFields:
+    if field.name != key:
+      continue
+    if not field.optional:
+      raise newException(GeneError,
+        "cannot remove required field '" & key & "' from " & typ.typeName)
+    return node.deleteNodeProp(key)
   raise newException(GeneError,
     typ.typeName & " has no field '" & key & "'")
 
@@ -7835,7 +7892,7 @@ proc readSetPathChild(target, segment: Value): Value =
       readIndexedValue(target, segment)
     else:
       readUpdateChild("set", target, segment)
-  if result.kind == vkVoid:
+  if result.isMissing:
     raise newException(GeneError,
       "set path segment '" & segment.print() & "' is missing")
 
@@ -7849,6 +7906,15 @@ proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
                                   strengthenStoredValue(args[2]))
   noteFunctionStore(args[0], stored)
   stored
+
+proc biNodeDeleteBang(args: openArray[Value]): Value {.nimcall.} =
+  ## `(node .delete key)`: remove a prop and return what was stored, or nil.
+  ## Typed records keep their schema: a required field cannot be removed.
+  if args.len != 2:
+    raise newException(GeneError,
+      "Node/delete expects 2 arguments, got " & $args.len)
+  requireNode("Node/delete", args[0])
+  deleteCheckedNodeProp(args[0], keySegment("Node/delete", args[1]))
 
 proc biNodeRebuild(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
@@ -7891,8 +7957,7 @@ proc setMutableChild(target, segment, value: Value): Value =
   ## corrupted the heap whenever the typed-body validation raised — the arm
   ## that both declares locals and raises is exactly the codegen shape this
   ## file has been bitten by before.
-  if value.kind != vkVoid:
-    rejectCallerEnvEscape("set", value)
+  rejectCallerEnvEscape("set", value)
   var index = 0
   var stored = NIL
   var body: seq[Value] = @[]
@@ -7911,7 +7976,7 @@ proc setMutableChild(target, segment, value: Value): Value =
             "IndexWrite is required to set an indexed " & target.head.typeName)
         let index = normalizeNumericIndex(segment,
           indexReadSize(target, sizeFn), true)
-        let stored = if value.kind == vkVoid: NIL else: value
+        let stored = value
         return invokeIndexedWitness(putFn, [target, index, stored],
                                     "IndexWrite:put_at")
     case segment.kind
@@ -7924,7 +7989,7 @@ proc setMutableChild(target, segment, value: Value): Value =
         raise newException(GeneError, "cannot mutate immutable Node")
       index = int(normalizeNumericIndex(segment,
         newInt(target.body.len), true).intVal)
-      stored = if value.kind == vkVoid: NIL else: value
+      stored = value
       if target.head.kind == vkType and not target.nodeConstructing:
         # Validate the whole typed shape rather than this position alone: a
         # `^body [T...]` rest field means the position's type is not knowable
@@ -7951,7 +8016,7 @@ proc setMutableChild(target, segment, value: Value): Value =
       raise newException(GeneError, "cannot mutate immutable List")
     index = int(normalizeNumericIndex(segment,
       newInt(target.listItems.len), true).intVal)
-    stored = if value.kind == vkVoid: NIL else: value
+    stored = value
     target.setListItem(index, stored)
     result = stored
   else:
@@ -8040,7 +8105,7 @@ proc numericBufferStorage(elemType: Value): BufferStorageKind =
 
 proc checkedBufferItem(buffer, item: Value, where: string,
                        fallbackScope: Scope): Value =
-  let stored = if item.kind == vkVoid: NIL else: item
+  let stored = item
   let elemType = buffer.bufferElemType
   if elemType.isAnyTypeValue:
     return stored
@@ -8061,13 +8126,13 @@ proc newCheckedBuffer*(elemType: Value, items: openArray[Value],
   if storage != bskValues:
     result = newPackedBuffer(checkedType, storage, items.len)
     for i, item in items:
-      let stored = if item.kind == vkVoid: NIL else: item
+      let stored = item
       result.setBufferItem(i, adaptBoundary("buffer item", checkedType,
                                            stored, scope))
     return
   var checkedItems: seq[Value]
   for item in items:
-    let stored = if item.kind == vkVoid: NIL else: item
+    let stored = item
     if checkedType.isAnyTypeValue:
       checkedItems.add stored
     else:
@@ -8079,7 +8144,7 @@ proc getCheckedBufferItem*(buffer: Value, index: int64): Value =
     raise newException(GeneError, "Buffer/get expects a Buffer")
   let length = int64(buffer.bufferLen)
   let actual = if index < 0: length + index else: index
-  if actual < 0 or actual >= length: VOID
+  if actual < 0 or actual >= length: NIL
   else: buffer.bufferItem(int(actual))
 
 proc setCheckedBufferItem*(buffer: Value, index: int64, item: Value,
@@ -8539,7 +8604,7 @@ proc biPrint(args: openArray[Value]): Value {.nimcall.} =
   let sink = if activeTaskContext.kind == vkMap:
                activeTaskContext.mapEntries.getOrDefault("output", NIL)
              else: NIL
-  if sink.kind notin {vkNil, vkVoid}:
+  if sink.kind notin {vkNil}:
     if activeVmFiber != nil:
       requestOutputFrame(sink, parts.join(" "))
     discard applyCall(sink, [newStr(parts.join(" "))], NamedArgs(),
@@ -8555,7 +8620,7 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
   let sink = if activeTaskContext.kind == vkMap:
                activeTaskContext.mapEntries.getOrDefault("output", NIL)
              else: NIL
-  if sink.kind notin {vkNil, vkVoid}:
+  if sink.kind notin {vkNil}:
     if activeVmFiber != nil:
       requestOutputFrame(sink, parts.join(" ") & "\n")
     discard applyCall(sink, [newStr(parts.join(" ") & "\n")], NamedArgs(),
@@ -9167,7 +9232,7 @@ proc releaseOwnershipLeases(leases: var seq[NativeOwnershipLease],
     if lease.gensym != nil:
       continue
     if lease.mapEntry:
-      lease.target.putMapEntry(lease.auxiliary.strVal, VOID)
+      discard lease.target.deleteMapEntry(lease.auxiliary.strVal)
     else:
       lease.auxiliary.setCellValue(NIL)
       # The channel is private, capacity one, and its token is held here.
@@ -9195,7 +9260,7 @@ proc biSyncTrackEnter(args: openArray[Value],
   doAssert args.len == 2 and activeOwnershipLeases != nil
   requireMap("sync/track", args[0])
   requireStr("sync/track key", args[1])
-  if args[0].mapEntries.getOrDefault(args[1].strVal, VOID).kind != vkVoid:
+  if args[0].mapEntries.hasKey(args[1].strVal):
     raise newException(GeneError, "sync/track key is already registered")
   args[0].putMapEntry(args[1].strVal, TRUE)
   activeOwnershipLeases[].add NativeOwnershipLease(
@@ -9801,7 +9866,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # receiver messages for its standard text operations, registered below.
   for spec in [(vkInt, "Int"), (vkFloat, "Float"), (vkBool, "Bool"),
                (vkSymbol, "Sym"), (vkChar, "Char"),
-               (vkNil, "Nil"), (vkVoid, "Void")]:
+               (vkNil, "Nil")]:
     assert spec[0] in LeafValueKinds
     result.defineBuiltinType(spec[0], spec[1], newSeq[(string, Value)]())
   result.defineBuiltinType(vkString, "Str", strReceiverNatives())
@@ -10084,8 +10149,6 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.define("size", sizeFn)
   result.define("empty?", emptyFn)
   result.define("leaf?", builtinNativeFn("leaf?", biIsLeaf))
-  result.define("nil?", builtinNativeFn("nil?", biIsNil))
-  result.define("void?", builtinNativeFn("void?", biIsVoid))
   result.define("absent?", builtinNativeFn("absent?", biIsAbsent))
   result.define("present?", builtinNativeFn("present?", biIsPresent))
   result.define("first", firstFn)
@@ -10117,6 +10180,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # message that always raises a kind error must not sit in the table.
   let mapType = result.defineBuiltinType(vkMap, "Map", {
     "assoc": builtinNativeFn("Map/assoc", biMapAssoc),
+    "dissoc": builtinNativeFn("Map/dissoc", biMapDissoc),
     "get": builtinNativeFn("Map/get", biMapGet),
     "has_key?": hasKeyFn,
     "put": builtinNativeFn("Map/put", biMapPutBang),
@@ -10134,6 +10198,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # `builtinReceiverMessage` routes the instance case back to this same table.
   result.defineBuiltinType(vkNode, "Node", {
     "set_prop": builtinNativeFn("Node/set_prop", biNodeSetPropBang),
+    "delete": builtinNativeFn("Node/delete", biNodeDeleteBang),
+    "has_key?": hasKeyFn,
     "set_body": builtinNativeFn("Node/set_body", biNodeSetBodyBang),
     "push_body": builtinNativeFn("Node/push_body", biNodePushBodyBang),
     "head": headFn,
@@ -10483,6 +10549,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.define("into", intoFn)
   result.define("assoc_in", builtinNativeFn("assoc_in", biAssocIn))
   result.define("update_in", builtinNativeFn("update_in", biUpdateIn))
+  result.define("dissoc_in", builtinNativeFn("dissoc_in", biDissocIn))
   result.define("panic", builtinNativeFn("panic", biPanic))
   result.define("sleep", builtinNativeCallFn("sleep", biSleep,
                                           acceptsNamed = false))
@@ -10521,7 +10588,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # function spelling on both backends.
   block:
     let eachFn = exportedBinding(streamNs, "each")
-    if eachFn.kind != vkVoid:
+    if not eachFn.isMissing:
       result.define("each", eachFn)
   registerEventNamespace(result)
   registerTestingNamespace(result)
@@ -11142,7 +11209,7 @@ proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
   root.define("gene", newNamespace("gene", restricted))
   if completeGrants:
     # The incubating root is not part of the namespace grant inventory.
-    root.define("genex", VOID)
+    root.define("genex", NIL)
   app.sandboxRoots[key] = root
   root
 
@@ -11345,7 +11412,7 @@ proc biRuntimeBindCall(args: openArray[Value],
       raise newException(GeneError, "runtime/bind_call got unexpected argument: " & name)
   let limits = validateEvalPolicy(policy)
   for flag in ["allow_ffi", "allow_native_compile"]:
-    if evalPolicyProp(policy, flag).kind notin {vkNil, vkVoid}:
+    if evalPolicyProp(policy, flag).kind notin {vkNil}:
       raise newException(GeneError,
         "runtime/bind_call policy supports execution budgets; use sandbox " &
         "loading to restrict " & flag)
@@ -11884,15 +11951,14 @@ proc resolvePatternPath(path: Value, scope: Scope): Value =
       if current.isEnumType:
         current = current.enumVariantDescriptor(key)
       else:
-        let message = readyTypeDirectMessage(current, key)
-        current = if message.kind == vkNil: VOID else: message
+        current = readyTypeDirectMessage(current, key)
     of vkNamespace:
       current = current.exportedBinding(key)
     of vkModule:
       current = current.moduleRootNamespace.exportedBinding(key)
     else:
       return NIL
-    if current.kind == vkVoid:
+    if current.kind == vkNil:
       return NIL
   current
 
@@ -11980,7 +12046,7 @@ proc tryMatch(pat, target: Value, scope: Scope,
     if name == "_": return true            # wildcard
     binds[name] = target                   # bind
     true
-  of vkInt, vkFloat, vkString, vkBool, vkChar, vkNil, vkVoid:
+  of vkInt, vkFloat, vkString, vkBool, vkChar, vkNil:
     semanticEqual(pat, target)             # literal
   of vkList:
     let (items, ok) = patternItems(target)
@@ -12110,7 +12176,7 @@ proc forItems(coll: Value): seq[Value] =
     let stream = rangeStream(coll)
     while stream.streamHasNext:
       result.add checkedStreamNext(stream, "for item")
-  of vkNil, vkVoid:
+  of vkNil:
     discard
   else:
     raise newException(GeneError, "for: cannot iterate " & $coll.kind)
@@ -12147,7 +12213,7 @@ proc iteratorStream(coll: Value): Value =
     coll
   of vkRange:
     rangeStream(coll)
-  of vkNil, vkVoid:
+  of vkNil:
     var empty: seq[Value]
     newStream(empty)
   else:
@@ -14752,7 +14818,7 @@ proc biEnumFromName(args: openArray[Value]): Value =
     of vkSymbol: args[1].symVal
     of vkString: args[1].strVal
     else:
-      return VOID
+      return NIL
   args[0].enumVariantDescriptor(key)
 
 proc biEnumFromOrdinal(args: openArray[Value]): Value =
@@ -14761,14 +14827,14 @@ proc biEnumFromOrdinal(args: openArray[Value]): Value =
   if not args[0].isEnumType:
     raise newException(GeneError, "Enum/from_ordinal receiver must be an enum")
   if not args[1].intFitsInt64:
-    return VOID
+    return NIL
   let ordinal = args[1].intVal
   if ordinal < 0 or ordinal > int64(high(int)):
-    return VOID
+    return NIL
   for variant in args[0].enumVariants:
     if variant.enumVariantOrdinal == int(ordinal):
       return variant
-  VOID
+  NIL
 
 proc biEnumBacking(args: openArray[Value]): Value =
   let variant = requireEnumVariantReceiver("Enum/backing", args)
@@ -14782,7 +14848,7 @@ proc biEnumFromBacking(args: openArray[Value]): Value =
   for variant in args[0].enumVariants:
     if variant.enumVariantHasBacking and equal(variant.enumVariantBacking, args[1]):
       return variant
-  VOID
+  NIL
 
 proc enumReflectionMessage(name: string): Value =
   case name
@@ -14814,7 +14880,7 @@ proc convertMessage(scope: Scope, name: string,
     return direct                  # head/props/body/meta and most pipeline ops
   let streamNs = builtinBinding(scope, "stream")
   let binding = exportedBinding(streamNs, name)   # `each` lives only here
-  if binding.kind == vkVoid: NIL else: binding
+  if binding.isMissing: NIL else: binding
 
 proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value =
   if receiver.isEnumType:
@@ -14859,11 +14925,11 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
   of vkRegex:
     let regexNs = builtinBinding(scope, "regex")
     let binding = exportedBinding(regexNs, name)
-    if binding.kind == vkVoid: NIL else: binding
+    if binding.isMissing: NIL else: binding
   of vkLogger:
     let logNs = builtinBinding(scope, "log")
     let binding = exportedBinding(logNs, name)
-    if binding.kind == vkVoid: NIL else: binding
+    if binding.isMissing: NIL else: binding
   else:
     NIL
 
@@ -15025,7 +15091,7 @@ proc isSendableValue(value: Value, scope: Scope,
       return true
     seen.incl value.bits
   case value.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
+  of vkNil, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
      vkLogger, vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
@@ -16373,7 +16439,7 @@ proc namespaceForEnvSource(source: Value): Value =
   of vkNamespace:
     source
   else:
-    VOID
+    NIL
 
 proc normalizeEnvImport(app: Application, item: Value): Value =
   case item.kind
@@ -16452,7 +16518,7 @@ proc importNamespaceBindings(target: Scope, source: Value) =
   target.makeImplsVisible(sourceNs.nsScope)
   for name in sortedBindingNames(sourceNs.nsScope):
     let value = sourceNs.exportedBinding(name)
-    if value.kind != vkVoid:
+    if not value.isMissing:
       target.define(name, value)
 
 proc materializeEvalParent(env: Value, app: Application = nil,
@@ -16827,8 +16893,8 @@ proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
   ## recover it. super sends are rare; ordinary qualified sends are not.
   case qualifier.kind
   of vkProtocol:
-    var message = qualifier.protocolMessages.getOrDefault(name, VOID)
-    if message.kind == vkVoid:
+    var message = qualifier.protocolMessages.getOrDefault(name, MISSING)
+    if message.isMissing:
       let candidates = qualifier.protocolClosureByName(name)
       if candidates.len == 1:
         message = candidates[0]
@@ -16861,8 +16927,8 @@ proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
   of vkProtocol:
     if qualifier.isErrorProtocol and name == "message" and receiver.hasErrorWitness:
       return retainedErrorFormatter(receiver, scope)
-    var message = qualifier.protocolMessages.getOrDefault(name, VOID)
-    if message.kind == vkVoid:
+    var message = qualifier.protocolMessages.getOrDefault(name, MISSING)
+    if message.isMissing:
       let candidates = qualifier.protocolClosureByName(name)
       if candidates.len == 1:
         message = candidates[0]
@@ -17182,7 +17248,7 @@ when dispatchCacheEnabled:
           selector.body[i].strVal in ["this_mod", "this_pkg"]:
         return false
       let member = current.exportedBinding(selector.body[i].strVal)
-      if member.kind == vkVoid:
+      if member.isMissing:
         return false
       let namespaceScope {.cursor.} = current.borrowedNsScope
       if namespaceScope.namesGen == 0:
@@ -17237,7 +17303,7 @@ when dispatchCacheEnabled:
           let space {.cursor.} = current.borrowedNsScope
           if space.namesGen == 0: break remember
           let member = current.exportedBinding(segment.strVal)
-          if member.kind == vkVoid: break remember
+          if member.isMissing: break remember
           guards.add DispatchCacheEntry(
             recvTypeBits: cast[uint64](cast[pointer](space)),
             msgBits: space.namesGen, epoch: space.slotsGen)
@@ -17326,7 +17392,7 @@ proc findRuntimeMacroFunction(scope: Scope, definition: MacroDef, qualified = ""
     if scope.lookupOptional(parts[0], namespace):
       for i in 1 ..< parts.high:
         if namespace.kind == vkModule: namespace = namespace.moduleRootNamespace
-        if namespace.kind != vkNamespace: return VOID
+        if namespace.kind != vkNamespace: return MISSING
         namespace = namespace.nsScope.lookup(parts[i])
       if namespace.kind == vkModule: namespace = namespace.moduleRootNamespace
       if namespace.kind == vkNamespace:
@@ -17339,7 +17405,7 @@ proc findRuntimeMacroFunction(scope: Scope, definition: MacroDef, qualified = ""
         if entry.definition == definition:
           return escapeWeakFunctions(current.loadSlot(entry.slot, definition.name))
     current = current.parent
-  VOID
+  MISSING
 
 proc runtimeMacroFunction(scope: Scope, definition: MacroDef, head: Value): Value =
   var qualified = ""
@@ -17351,7 +17417,7 @@ proc runtimeMacroFunction(scope: Scope, definition: MacroDef, head: Value): Valu
       if item.kind == vkSymbol: names.add item.symVal
     qualified = names.join("/")
   result = findRuntimeMacroFunction(scope, definition, qualified)
-  if result.kind != vkVoid: return
+  if not result.isMissing: return
   raise newException(GeneError, "local macro '" & definition.name & "' is not initialized")
 
 proc defineRuntimeMacro(scope: Scope, specification: RuntimeMacroDefinition,
@@ -17391,7 +17457,7 @@ proc captureEnvMacros(env: Value, context: MacroBindings, scope: Scope) =
   for name, definition in context.definitions:
     if not definition.runtime or definition in captured.capturedDefinitions: continue
     let function = findRuntimeMacroFunction(scope, definition, name)
-    if function.kind == vkVoid: continue
+    if function.isMissing: continue
     captured.capturedDefinitions.add definition
     functions.add function
   env.setEnvCompilerMacros(captured)
@@ -17958,7 +18024,7 @@ proc applyProtocolDerive(scope: Scope, protocol, typ, request: Value) =
   var callArgs = [typ, request]
   let generated = applyCall(deriveFn, callArgs, NamedArgs(), scope)
   case generated.kind
-  of vkNil, vkVoid:
+  of vkNil:
     discard
   of vkNode:
     runGeneratedDeriveDecl(scope, protocol, typ, generated)
@@ -19032,9 +19098,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # counting as an outside owner when the iteration's scope is checked.
       discard rawValue
     elif returnType.isStatementReturnType:
-      # Declared `Nil`/`Void`: the frame yields the declared unit whatever the
-      # body left behind. No trailing `nil`, and `(return)` needs no argument.
-      retValue = if returnType.isBareNilType: NIL else: VOID
+      # Declared `Nil`: the frame yields nil whatever the body left behind. No
+      # trailing `nil`, and `(return)` needs no argument.
+      retValue = NIL
     else:
       # `rawValue` is often an expression such as `spop()`: evaluate it once.
       retValue = rawValue
@@ -19820,12 +19886,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if keyId != -2 and target.isPropMap:
               found = true
               if keyId >= 0:
-                field = target.mapEntries.getOrDefaultById(keyId, VOID)
+                field = target.mapEntries.getOrDefaultById(keyId, NIL)
               else:
-                field = VOID
+                field = NIL
             elif keyId >= 0 and target.isNodeValue:
-              field = target.props.getOrDefaultById(keyId, VOID)
-              found = field.kind != vkVoid
+              field = target.props.getOrDefaultById(keyId, MISSING)
+              found = not field.isMissing
             if found:
               let next = ip
               advanceInPlace(next, 2)
@@ -19979,9 +20045,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               values[i] = spop()
           var entries = initPropTable()
           for i, key in inst[].names:
-            if values[i].kind != vkVoid:
-              rejectCallerEnvEscape("map construction", values[i])
-              entries[key] = values[i]
+            rejectCallerEnvEscape("map construction", values[i])
+            entries[key] = values[i]
           spush newMap(entries, inst[].flag)
         of opMakeHashMap:
           var entries = newSeq[HashMapEntry](inst[].intArg)
@@ -20005,16 +20070,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             for i in countdown(proto.propNames.len - 1, 0):
               propValues[i] = spop()
             for i, key in proto.propNames:
-              if propValues[i].kind != vkVoid:
-                props[key] = propValues[i]
+              props[key] = propValues[i]
           var meta = initPropTable()
           if proto.metaNames.len > 0:
             var metaValues = newSeq[Value](proto.metaNames.len)
             for i in countdown(proto.metaNames.len - 1, 0):
               metaValues[i] = spop()
             for i, key in proto.metaNames:
-              if metaValues[i].kind != vkVoid:
-                meta[key] = metaValues[i]
+              meta[key] = metaValues[i]
           let head = spop()
           rejectCallerEnvEscape("node head construction", head)
           if head.kind == vkType:
@@ -20052,16 +20115,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 for i in countdown(values.high, 0):
                   values[i] = spop()
                 for i, name in stageProto.propNames:
-                  if values[i].kind != vkVoid:
-                    props[name] = values[i]
+                  props[name] = values[i]
               var meta = initPropTable()
               if stageProto.metaNames.len > 0:
                 var values = newSeq[Value](stageProto.metaNames.len)
                 for i in countdown(values.high, 0):
                   values[i] = spop()
                 for i, name in stageProto.metaNames:
-                  if values[i].kind != vkVoid:
-                    meta[name] = values[i]
+                  meta[name] = values[i]
               let head = spop()
               let detected = detectPipelineSlot(head, props, body)
               if detected.count > 1:
@@ -20099,7 +20160,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               inc ip
               let argsStart = sp - 2
               let value = materializedModuleRefValue(
-                scope, staticLookup(stack[argsStart], segment))
+                scope, staticLookupValue(stack[argsStart], segment))
               strunc(argsStart)
               spush value
               continue
@@ -20133,8 +20194,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let keyId = plainPathKeyId(stack[argsStart + 1])
             if keyId != -2:
               let value = materializedModuleRefValue(scope,
-                if keyId < 0: VOID
-                else: stack[argsStart].mapEntries.getOrDefaultById(keyId, VOID))
+                if keyId < 0: NIL
+                else: stack[argsStart].mapEntries.getOrDefaultById(keyId, NIL))
               strunc(argsStart)
               spush value
               continue
@@ -20144,8 +20205,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # error diagnostics and its head, props, body and meta.
             let keyId = plainPathKeyId(stack[argsStart + 1])
             if keyId >= 0:
-              let prop = stack[argsStart].props.getOrDefaultById(keyId, VOID)
-              if prop.kind != vkVoid:
+              let prop = stack[argsStart].props.getOrDefaultById(keyId, MISSING)
+              if not prop.isMissing:
                 let value = materializedModuleRefValue(scope, prop)
                 strunc(argsStart)
                 spush value
@@ -20688,7 +20749,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             of vkNamespace:
               source
             else:
-              VOID
+              NIL
           if sourceNs.kind != vkNamespace:
             raise newException(GeneError, "import source is not a namespace")
           scope.makeImplsVisible(sourceNs.nsScope)
@@ -20707,14 +20768,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if spec.wildcard and spec.alias.len == 0:
             for name in spec.wildcardNames:
               let value = wildcardNs.exportedBinding(name)
-              if value.kind == vkVoid:
+              if value.isMissing:
                 raise newException(GeneError,
                   "module compile interface export is unavailable at runtime: " &
                   spec.sourceLabel & "/" & name)
               scope.addWildcardFallback(name, value, spec.sourceLabel)
           for sel in spec.selections:
             let v = sourceNs.exportedBinding(sel.name)
-            if v.kind == vkVoid:
+            if v.isMissing:
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
           spush NIL
@@ -21260,12 +21321,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                       if keyId != -2 and target.isPropMap:
                         args[count] =
                           if keyId >= 0:
-                            target.mapEntries.valueBitsById(keyId, VOID.bits)
+                            target.mapEntries.valueBitsById(keyId, NIL.bits)
                           else:
-                            VOID.bits
+                            NIL.bits
                       elif keyId >= 0 and target.isNodeValue:
-                        args[count] = target.props.valueBitsById(keyId, VOID.bits)
-                        if args[count] == VOID.bits:
+                        args[count] = target.props.valueBitsById(keyId, MISSING.bits)
+                        if args[count] == MISSING.bits:
                           break fusedSend
                       else:
                         break fusedSend
@@ -22769,7 +22830,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             releaseFrameStack(gVmPools, frames)
           return RunStop(kind: rskYield, value: yielded)
         of opExplicitReturn:
-          let returnValue = if sp > 0: spop() else: VOID
+          let returnValue = if sp > 0: spop() else: NIL
           if curFrameKind == fkNormal and frames.len == returnDepth:
             frameReturn(returnValue)
           else:
@@ -22818,10 +22879,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # as the receiver when falling through.
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in conditional jump")
-          # Path traversal stops on void; an ordinary optional send also
-          # stops on nil. The compiler marks the former with flag=true.
-          if (if inst[].flag: stack[sp - 1].kind == vkVoid
-              else: stack[sp - 1].isAbsent):
+          # Path traversal and an optional send both stop on nil.
+          if stack[sp - 1].isAbsent:
             ip = inst[].intArg
         of opNot:
           if sp == 0:
@@ -25166,7 +25225,6 @@ proc typeNode(name: string, body: sink seq[Value] = @[]): Value =
 proc runtimeTypeExpr(value: Value): Value =
   case value.kind
   of vkNil: newSym("Nil")
-  of vkVoid: newSym("Void")
   of vkBool: newSym("Bool")
   of vkInt: newSym("Int")
   of vkFloat: newSym("Float")
@@ -25833,7 +25891,7 @@ proc matchesCAbiType(name: string, value: Value): tuple[known, ok: bool] =
   of "C/Bool":
     (true, value.kind == vkBool)
   of "C/Void":
-    (true, value.kind in {vkNil, vkVoid})
+    (true, value.kind in {vkNil})
   of "C/CStr":
     (true, value.kind == vkString and not value.strHasInteriorNul)
   else:
@@ -25850,8 +25908,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, false)
   of "Nil":
     (true, value.kind == vkNil)
-  of "Void":
-    (true, value.kind == vkVoid)
+  of "Present":
+    (true, value.kind != vkNil)
   of "Bool":
     (true, value.kind == vkBool)
   of "Str", "String":
@@ -26054,7 +26112,7 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
           if resolved.kind == vkModule:
             resolved = resolved.moduleRootNamespace
           if resolved.kind != vkNamespace:
-            resolved = VOID
+            resolved = NIL
             break
           resolved = resolved.exportedBinding(segments[i])
         if resolved.kind in {vkType, vkProtocol}:
@@ -26093,12 +26151,12 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
       if scope.lookupOptional(expr.body[0].symVal, resolved):
         for i in 1 ..< expr.body.len:
           if expr.body[i].kind != vkSymbol:
-            resolved = VOID
+            resolved = NIL
             break
           if resolved.kind == vkModule:
             resolved = resolved.moduleRootNamespace
           if resolved.kind != vkNamespace:
-            resolved = VOID
+            resolved = NIL
             break
           resolved = resolved.exportedBinding(expr.body[i].symVal)
         if resolved.kind in {vkType, vkProtocol}:
@@ -26397,7 +26455,7 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           if resolved.kind == vkModule:
             resolved = resolved.moduleRootNamespace
           if resolved.kind != vkNamespace:
-            resolved = VOID
+            resolved = NIL
             break
           resolved = resolved.exportedBinding(segments[i])
         if resolved.isTypeAlias:
@@ -26408,7 +26466,9 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           let typ = value.receiverType
           return typ.kind == vkType and
             scope.typeImplementsProtocol(typ, resolved)
-    raise newException(GeneError, "unknown type annotation: " & name)
+    let removed = removedNameMessage(name)
+    raise newException(GeneError,
+      if removed.len > 0: removed else: "unknown type annotation: " & name)
   of vkNode:
     let closedExpr = closeTypeExpr(expr, scope)
     if closedExpr.bits != expr.bits:
@@ -27051,7 +27111,7 @@ proc reflectionTypeLookup(expr: Value, scope: Scope): Value {.nimcall.} =
     if typ.kind in {vkType, vkProtocol}:
       if typ.isBuiltinSurfaceType: return newSym(typ.typeName)
       return typ
-  VOID
+  NIL
 
 proc reflectedMessageDeclaration(message: Value, scope: Scope): Value =
   if not message.protocolMessageIsBound: return message
@@ -27337,7 +27397,7 @@ proc checkedCallableArguments(payload: Value): Value =
     for key, typ in namedTypes:
       if key notin seen and not typeExprAdmitsNil(typ):
         raiseTypeError("Callable named argument '" & key & "'", "a supplied value",
-          VOID, scope)
+          NIL, scope)
     newList(@[newList(checkedArgs), payload.listItems[2], newList(checkedNamed),
       newInt(-1), newInt(-1), payload.listItems[4], payload.listItems[5],
       payload.listItems[6], payload.listItems[7]])
@@ -27373,14 +27433,16 @@ proc isSelectorCallStage(v: Value): bool =
   v.kind == vkNode and v.head.isSymbol("call_stage") and v.body.len > 0
 
 proc staticLookup(target, segment: Value): Value =
-  if target.kind == vkVoid:
-    return VOID
+  ## One path step. A miss (no such key, an index out of range, a target that
+  ## has no such member) answers `MISSING`, and a path stops at the first
+  ## missing step; a stored nil is a hit. `staticLookupValue` is the form that
+  ## hands a result to Gene code.
+  if target.isMissing:
+    return MISSING
   if target.kind == vkStream:
     var items: seq[Value]
     while target.streamHasNext:
-      let item = staticLookup(checkedStreamNext(target, "selector item"), segment)
-      if item.kind != vkVoid:
-        items.add item
+      items.add staticLookup(checkedStreamNext(target, "selector item"), segment)
     return newStream(items)
   case segment.kind
   of vkInt, vkFloat:
@@ -27395,28 +27457,28 @@ proc staticLookup(target, segment: Value): Value =
       (if segment.kind == vkSymbol: segment.symVal else: segment.strVal)
     case target.kind
     of vkMap:
-      if keyId < 0: VOID
-      else: target.mapEntries.getOrDefaultById(keyId, VOID)
+      if keyId < 0: MISSING
+      else: target.mapEntries.getOrDefaultById(keyId, MISSING)
     of vkNode:
       let prop =
-        if keyId < 0: VOID
-        else: target.props.getOrDefaultById(keyId, VOID)
-      if prop.kind != vkVoid:
+        if keyId < 0: MISSING
+        else: target.props.getOrDefaultById(keyId, MISSING)
+      if not prop.isMissing:
         prop
       elif target.errorEvidence != nil and
           target.errorEvidence.diagnostics.hasKey(key):
         target.errorEvidence.diagnostics[key]
       elif keyId < 0:
-        VOID
+        MISSING
       else:
         ensureNodeProjectionKeyIds()
         if keyId == nodeHeadKeyId: target.head
         elif keyId == nodePropsKeyId: newMap(target.errorProperties())
         elif keyId == nodeBodyKeyId: newList(target.body)
         elif keyId == nodeMetaKeyId: newMap(target.meta)
-        else: VOID
+        else: MISSING
     of vkList:
-      VOID
+      MISSING
     of vkNamespace:
       # Qualified access reads the namespace's own exports (not its parent chain).
       target.exportedBinding(key)
@@ -27427,10 +27489,10 @@ proc staticLookup(target, segment: Value): Value =
       # message, and a protocol's messages are reached only through `:` — so
       # `(x .P:m)` and `P/m` in value position are both errors that name the
       # replacement. A protocol has no other members, so a name it does not
-      # declare stays VOID rather than becoming a second diagnostic.
-      let own = target.protocolMessages.getOrDefault(key, VOID)
+      # declare stays missing rather than becoming a second diagnostic.
+      let own = target.protocolMessages.getOrDefault(key, MISSING)
       let declared =
-        if own.kind != vkVoid:
+        if not own.isMissing:
           own
         else:
           let candidates = target.protocolClosureByName(key)
@@ -27441,9 +27503,9 @@ proc staticLookup(target, segment: Value): Value =
               "ambiguous message '" & key & "' in protocol " &
               target.protocolName & "; qualify with the defining protocol")
           else:
-            VOID
-      if declared.kind == vkVoid:
-        VOID
+            MISSING
+      if declared.isMissing:
+        MISSING
       else:
         raise newException(GeneError,
           "'" & target.protocolName & "/" & key &
@@ -27452,34 +27514,40 @@ proc staticLookup(target, segment: Value): Value =
     of vkType:
       if target.isEnumType:
         let variant = target.enumVariantDescriptor(key)
-        if variant.kind != vkVoid:
+        if variant.kind != vkNil:
           variant
         else:
           let message = readyTypeDirectMessage(target, key)
-          if message.kind == vkNil: VOID else: message
+          if message.kind == vkNil: MISSING else: message
       else:
         # `T/m` is withdrawn as a callable path (design §3, decision 4). It was
         # *static* binding: `(Dog/bark p)` ran `Dog`'s body even when `p` was a
         # `Pup` that overrides it, and `(map xs Dog/bark)` did that per element.
         # Static impl selection is `super` only now. A missing member still
-        # answers VOID — only the case that used to succeed is rejected, and the
+        # answers a miss — only the case that used to succeed is rejected, and the
         # diagnostic names both replacements.
         let message = readyTypeDirectMessage(target, key)
         if message.kind == vkNil:
-          VOID
+          MISSING
         else:
           raise newException(GeneError,
             "'" & target.typeName & "/" & key &
             "' is not a callable path: use the bare send (x ." & key &
             ") or the message value Self:" & key & " (design §3)")
     else:
-      VOID
+      MISSING
   of vkNode:
     if segment.head.isSymbol("unquote"):
       raise newException(GeneError, "Path contains an unresolved dynamic segment")
-    VOID
+    MISSING
   else:
-    VOID
+    MISSING
+
+proc staticLookupValue(target, segment: Value): Value =
+  ## `staticLookup` for a caller that returns the step's result to Gene code:
+  ## a miss is nil.
+  let found = staticLookup(target, segment)
+  if found.isMissing: NIL else: found
 
 proc applySelectorCallStage(stage, target: Value): Value =
   if stage.body.len == 0:
@@ -27533,7 +27601,7 @@ proc selectorMissingResult(selector: Value, segment: Value): Value =
   if selector.props.hasKey("default"):
     selector.props["default"]
   else:
-    VOID
+    NIL
 
 proc pathQualifiedMessageValue(text: string, scope: Scope): Value =
   if not text.startsWith(".") and not text.startsWith("?."):
@@ -27553,7 +27621,7 @@ proc pathQualifiedMessageValue(text: string, scope: Scope): Value =
       raiseUndefinedSymbol(names[0])
     for i in 1 ..< names.len:
       qualifier = staticLookup(qualifier, newSym(names[i]))
-      if qualifier.kind == vkVoid:
+      if qualifier.isMissing:
         raiseUndefinedSymbol(names[0 .. i].join("/"))
     if qualifier.kind != vkProtocol:
       if qualifier.kind == vkType:
@@ -27611,11 +27679,11 @@ proc applySelector(selector, target: Value, dispatchScope: Scope = nil): Value =
     let segment = selector.body[0]
     case segment.kind
     of vkInt, vkSymbol:
-      return staticLookup(target, segment)
+      return staticLookupValue(target, segment)
     of vkString:
       if not segment.strVal.startsWith(".") and
           not segment.strVal.startsWith("?."):
-        return staticLookup(target, segment)
+        return staticLookupValue(target, segment)
     else:
       discard
   let strict = selector.selectorStrict
@@ -27650,7 +27718,7 @@ proc applySelector(selector, target: Value, dispatchScope: Scope = nil): Value =
           staticLookup(result, segment)
       else:
         staticLookup(result, segment)
-    if result.kind == vkVoid:
+    if result.isMissing:
       if strict:
         raisePathMissing(segment)
       return selector.selectorMissingResult(segment)
@@ -32386,9 +32454,7 @@ proc applyFfiCallable(callee: Value, args: openArray[Value],
 proc callNamedMap(named: NamedArgs): Value =
   var entries = initPropTable()
   for i, name in named.names:
-    let value = named.valueAt(i)
-    if value.kind != vkVoid:
-      entries[name] = value
+    entries[name] = named.valueAt(i)
   newMap(entries)
 
 proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs,
@@ -32680,8 +32746,7 @@ proc bindBudgetedCallScope(callee: Value, proto: FunctionProto,
   bindCallScopeImpl(callee, proto, args, named, callerScope, true)
 
 proc statementCallResult(typ, value: Value): Value {.inline.} =
-  if typ.isBareVoidType: VOID
-  elif typ.isBareNilType: NIL
+  if typ.isBareNilType: NIL
   else: value
 
 proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
@@ -32939,11 +33004,7 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
     if argIdx >= 0:
       inc matched
       let value = named.valueAt(argIdx)
-      if value.kind == vkVoid:
-        if not f.optional:
-          raise newException(GeneError,
-            "missing required field '" & f.name & "' for " & callee.typeName)
-      elif plainField(f.typeExpr, value):
+      if plainField(f.typeExpr, value):
         props.putById(f.nameId, value)
       else:
         let fieldScope = f.typeFieldScope(callee.typeScope)
@@ -33198,7 +33259,7 @@ proc notCallableMessage(callee, site: Value, scope: Scope): string =
       label = if parts[0] == "gene" and parts.len > 1:
                 "$" & parts[1 .. ^1].join("/")
               else: parts.join("/")
-      if callee.kind == vkVoid and parts[0] == "gene" and scope != nil:
+      if callee.kind == vkNil and parts[0] == "gene" and scope != nil:
         # Inspect only namespace exports on the failure path. Never evaluate
         # authored expressions or repeat a selector/protocol callback merely
         # to improve a diagnostic.
@@ -33206,16 +33267,18 @@ proc notCallableMessage(callee, site: Value, scope: Scope): string =
         var prefix = "gene"
         if not scope.lookupOptional("gene", current):
           return "cannot call " & label & ": gene is not defined here"
+        let removed = removedNameMessage(label)
+        if removed.len > 0: return removed
         for i in 1 ..< parts.len:
           case current.kind
           of vkNamespace: current = current.exportedBinding(parts[i])
           of vkModule: current = current.moduleRootNamespace.exportedBinding(parts[i])
           else: break
           prefix.add "/" & parts[i]
-          if current.kind == vkVoid:
+          if current.isMissing:
             return "cannot call " & label & ": " & prefix & " is not defined here"
-  if callee.kind == vkVoid:
-    return "cannot call " & label & ": the value is void (missing)"
+  if callee.kind == vkNil:
+    return "cannot call " & label & ": the value is nil"
   "cannot call " & label & ": value is " & callee.declarationKind &
     ", which is not callable"
 
@@ -34483,11 +34546,11 @@ proc sandboxGenerationRecord(name: string, handle: Value,
 proc sandboxOption(options: Value, name: string): Value =
   case options.kind
   of vkMap:
-    options.mapEntries.getOrDefault(name, VOID)
+    options.mapEntries.getOrDefault(name, NIL)
   of vkNode:
-    options.props.getOrDefault(name, VOID)
+    options.props.getOrDefault(name, NIL)
   else:
-    VOID
+    NIL
 
 proc validateSandboxOptionNames(options: Value) =
   const known = ["dir", "entry", "grants", "shared", "label", "policy"]
@@ -34511,7 +34574,7 @@ proc validateSandboxOptionNames(options: Value) =
 proc sandboxStringOption(options: Value, name: string,
                          optional = false): string =
   let value = options.sandboxOption(name)
-  if optional and value.kind in {vkVoid, vkNil}:
+  if optional and value.kind in {vkNil}:
     return ""
   if value.kind != vkString:
     raise newException(GeneError,
@@ -34819,7 +34882,7 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
   let shared = sandboxStringListOption(options, "shared")
   let label = sandboxStringOption(options, "label", optional = true)
   let policyValue = options.sandboxOption("policy")
-  if policyValue.kind in {vkVoid, vkNil}:
+  if policyValue.kind in {vkNil}:
     raise newException(GeneError,
       "SandboxTransaction/prepare requires ^policy")
   let limits = validateEvalPolicy(policyValue)

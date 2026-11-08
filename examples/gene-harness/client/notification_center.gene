@@ -5,10 +5,10 @@
 (import ^from "./question_editors.gene" [QuestionEditors QuestionEditor mount_question qtext qjson])
 (import ^from "./question_state.gene" [current_fetch waiting_batch])
 
-(type NotificationCenter ^props {^cards PropMap ^locals PropMap ^epoch Str ^open Bool ^new_messages Int ^on_open (Fn [] Void) ^ready Bool ^selected Str ^notices Notices ^questions QuestionEditors ^generation Int ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^select (Fn [Str] Void)})
+(type NotificationCenter ^props {^cards PropMap ^locals PropMap ^epoch Str ^open Bool ^new_messages Int ^on_open (Fn [] Nil) ^ready Bool ^selected Str ^notices Notices ^questions QuestionEditors ^generation Int ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^select (Fn [Str] Nil)})
 (type QuestionCard ^props {^session Str ^title Str ^attention Bool ^waiting Bool ^snapshot Any ^stale Bool ^generation Int ^loading Bool ^expanded Bool ^error Str ^element EventTarget ^heading EventTarget ^status EventTarget ^details EventTarget ^fields EventTarget ^toggle EventTarget})
 
-(fn update_center_count [center : NotificationCenter] : Void
+(fn update_center_count [center : NotificationCenter] : Nil
   (var count 0)
   (for [key raw] in center/cards
     (var card : QuestionCard raw)
@@ -36,7 +36,7 @@
     (if_yes (&& ($present? payload) (== (qtext payload/session) session)) (return true)))
   false)
 
-(fn paint_card [center : NotificationCenter, card : QuestionCard] : Void
+(fn paint_card [center : NotificationCenter, card : QuestionCard] : Nil
   (var pending (pending_for center card/session))
   (set card/element/hidden (! (|| card/attention card/waiting pending)))
   ($dom/set_text card/heading card/title)
@@ -88,7 +88,7 @@
             (mount_question center/questions card/session editor/batch recovery slot))))))
   (update_center_count center))
 
-(fn fetch_card [center : NotificationCenter, card : QuestionCard] : Void
+(fn fetch_card [center : NotificationCenter, card : QuestionCard] : Nil
   (if_yes (|| (! center/ready) card/loading (! card/stale) (! card/expanded) (! center/open))
     (return))
   (var generation card/generation)
@@ -100,7 +100,7 @@
     "GET"
     $"${(api_root)}/sessions/${session}/snapshot"
     nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set card/loading false)
       (if_not (current_fetch generation card/generation epoch center/epoch)
         (fetch_card center card)
@@ -141,14 +141,14 @@
   ($dom/add_event_listener
     toggle
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (set card/expanded (! card/expanded))
       (paint_card center card)
       (fetch_card center card)))
-  ($dom/add_event_listener open "click" (fn [event : Any] : Void (center/select session)))
+  ($dom/add_event_listener open "click" (fn [event : Any] : Nil (center/select session)))
   card)
 
-(fn invalidate_questions [center : NotificationCenter, session : Str = ""] : Void
+(fn invalidate_questions [center : NotificationCenter, session : Str = ""] : Nil
   (set center/generation (+ center/generation 1))
   (var generation center/generation)
   (for [key raw] in center/cards
@@ -159,13 +159,13 @@
       (paint_card center card)))
   ($time/after
     100.0
-    (fn [] : Void
+    (fn [] : Nil
       (if_yes (!= generation center/generation) (return))
       (for [key raw] in center/cards
         (var card : QuestionCard raw)
         (fetch_card center card)))))
 
-(fn center_sessions [center : NotificationCenter, sessions : (List Any), attention : (List Any)] : Void
+(fn center_sessions [center : NotificationCenter, sessions : (List Any), attention : (List Any)] : Nil
   (for [key raw] in center/cards
     (var card : QuestionCard raw)
     (set card/attention false))
@@ -188,7 +188,7 @@
     (var card : QuestionCard raw)
     (paint_card center card)))
 
-(fn center_snapshot [center : NotificationCenter, session : Str, snapshot : Any] : Void
+(fn center_snapshot [center : NotificationCenter, session : Str, snapshot : Any] : Nil
   (if_yes (== session "") (return))
   (var card (card_for center session))
   (set card/generation (+ card/generation 1))
@@ -200,12 +200,12 @@
   (set card/error "")
   (paint_card center card))
 
-(fn center_locals [center : NotificationCenter] : Void
+(fn center_locals [center : NotificationCenter] : Nil
   (for [key raw] in center/locals
     (if_yes ($absent? center/notices/items/%key)
       (var element : EventTarget raw/element)
       ($dom/remove element)
-      (set center/locals/%key void)))
+      (center/locals .delete key)))
   (for [key raw] in center/notices/items
     (var item : Notice raw)
     (var saved : Any center/locals/%key)
@@ -222,36 +222,36 @@
       ($dom/append element open)
       ($dom/append element ($dom/render `(button ^type "button" ^class_name "notice_dismiss"
         ^aria-label "Dismiss message" ^title "Dismiss message"
-        ^on_click %(fn [event : Any] : Void (remove_notice center/notices item/source item/scope item/key)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))
+        ^on_click %(fn [event : Any] : Nil (remove_notice center/notices item/source item/scope item/key)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))
       ($dom/append ($dom/element "notification_local") element)
       ($dom/add_event_listener
         open
         "click"
-        (fn [event : Any] : Void
+        (fn [event : Any] : Nil
           (if ($absent? item/action)
             ($dom/focus item/element)
             (do
-              (var action : (Fn [] Void) item/action)
+              (var action : (Fn [] Nil) item/action)
               (action)))))
       ($dom/add_event_listener
         element
         "focusin"
-        (fn [event : Any] : Void
+        (fn [event : Any] : Nil
           (set item/center_focused true)))
       ($dom/add_event_listener
         element
         "focusout"
-        (fn [event : Any] : Void
+        (fn [event : Any] : Nil
           (set item/center_focused false)))
       ($dom/add_event_listener
         element
         "mouseenter"
-        (fn [event : Any] : Void
+        (fn [event : Any] : Nil
           (set item/center_hovered true)))
       ($dom/add_event_listener
         element
         "mouseleave"
-        (fn [event : Any] : Void
+        (fn [event : Any] : Nil
           (set item/center_hovered false))))
     (var action_label (if ($absent? item/action) "" "Resolve original operation"))
     (var entity
@@ -272,7 +272,7 @@
         action_label)))
   (update_center_count center))
 
-(fn toggle_center [center : NotificationCenter, open : Bool] : Void
+(fn toggle_center [center : NotificationCenter, open : Bool] : Nil
   (set center/open open)
   (if_not open
     (for [key raw] in center/notices/items
@@ -297,7 +297,7 @@
       ($dom/focus ($dom/element "close_notifications")))
     ($dom/focus ($dom/element "notifications_button"))))
 
-(fn center_ready [center : NotificationCenter, ready : Bool] : Void
+(fn center_ready [center : NotificationCenter, ready : Bool] : Nil
   (if_yes (== ready center/ready) (return))
   (set center/ready ready)
   (for [key raw] in center/cards
@@ -305,29 +305,29 @@
     (paint_card center card)
     (fetch_card center card)))
 
-(fn create_center [notices : Notices, questions : QuestionEditors, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), select : (Fn [Str] Void)] : NotificationCenter
+(fn create_center [notices : Notices, questions : QuestionEditors, api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil), select : (Fn [Str] Nil)] : NotificationCenter
   (var center
-    (NotificationCenter ^cards {} ^locals {} ^epoch "" ^!open ^!ready ^new_messages 0 ^on_open (fn [] : Void nil) ^selected "" ^notices notices ^questions questions ^generation 0 ^api api ^select select))
-  (set notices/changed (fn [] : Void (center_locals center)))
+    (NotificationCenter ^cards {} ^locals {} ^epoch "" ^!open ^!ready ^new_messages 0 ^on_open (fn [] : Nil nil) ^selected "" ^notices notices ^questions questions ^generation 0 ^api api ^select select))
+  (set notices/changed (fn [] : Nil (center_locals center)))
   ($dom/add_event_listener
     ($dom/element "notifications_button")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (toggle_center center (! center/open))))
   ($dom/add_event_listener
     ($dom/element "close_notifications")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (toggle_center center false)))
   ($dom/add_event_listener
     ($dom/element "attention_shortcut")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (toggle_center center true)))
   ($dom/add_event_listener
     ($dom/element "notification_center")
     "keydown"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (if_yes (== ($event/key event) "Escape")
         ($dom/prevent_default event)
         (toggle_center center false))))

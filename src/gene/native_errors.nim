@@ -21,7 +21,7 @@ proc builtinNativeErrorMetadata*(name: string): NativeErrorMetadata =
     local = local.split('/')[1]
   case local
   of "assert", "test/assert_equal", "test/assert_raises",
-     "==", "!=", "same?", "not", "nil?", "void?", "present?",
+     "==", "!=", "same?", "not", "absent?", "present?",
      "+", "-", "*", "<", ">", "<=", ">=", "/", "//", "to_str",
      "range", "to_stream", "map", "filter", "filter_map", "each",
      "into", "take",
@@ -44,7 +44,7 @@ proc nativeErrorAcceptsCall*(metadata: NativeErrorMetadata,
   case metadata.identity
   of "gene/assert": positionalCount in 1..2
   of "gene/test/assert_equal", "gene/test/assert_raises": positionalCount in 2..3
-  of "gene/not", "gene/nil?", "gene/void?", "gene/present?",
+  of "gene/not", "gene/absent?", "gene/present?",
      "gene/to_stream", "gene/read_one", "gene/read_all", "gene/parse_int",
      "gene/size", "gene/empty?", "gene/Stream/next", "gene/Stream/peek",
      "gene/Stream/has_next", "gene/Stream/try_next", "gene/Stream/close",

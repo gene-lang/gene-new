@@ -652,7 +652,7 @@ suite "modules — file imports":
         newGlobalScope(app))
     check run(compileSource(
       "(import * : exports ^from \"./private_exports\") exports/hidden"),
-      newGlobalScope(app)).kind == vkVoid
+      newGlobalScope(app)).kind == vkNil
 
   test "explicit selected re-exports enter downstream wildcard interfaces":
     writeModule("reexport_base.gene",

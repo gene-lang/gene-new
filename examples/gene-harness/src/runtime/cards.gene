@@ -110,7 +110,7 @@
   ["fn" "let" "var" "set" "if" "if_yes" "if_not" "then" "else" "elif" "do" "for" "in"
    "while" "loop" "repeat" "break" "continue" "return" "match" "when" "try" "catch" "ensure"
    "scope" "quote" "quasiquote" "unquote" "spawn" "await" "path" "gene" "&&" "||" "!" ":"
-   "..." "_" "true" "false" "nil" "void" "$err"])
+   "..." "_" "true" "false" "nil" "$err"])
 
 (fn bound_names [form, found]
   (match form

@@ -14,7 +14,7 @@
   (|| (== tag "input") (== tag "textarea") (== tag "select")))
 
 (fn patch_node [ui : UiClient, tree : Any, parent : EventTarget, at : Int, path : Str, form : Str,
-  changed : (Fn [UiNode] Void), submit : (Fn [UiNode] Void)] : Void
+  changed : (Fn [UiNode] Nil), submit : (Fn [UiNode] Nil)] : Nil
   (var tag (text tree/tag "#text"))
   (var props (if (== tag "#text") {} (copy_map tree/props)))
   (var key (text props/key path))
@@ -49,11 +49,11 @@
           ($dom/set_attribute node/element name attribute)))
       (if_yes created
         (if_yes (input_tag tag)
-          ($dom/add_event_listener node/element "input" (fn [event : Any] : Void (changed node))))
+          ($dom/add_event_listener node/element "input" (fn [event : Any] : Nil (changed node))))
         (if_yes (&& (== tag "input") ($present? props/data-record-chord))
           (bind_recorder node changed))
         (if_yes (== tag "button")
-          ($dom/add_event_listener node/element "click" (fn [event : Any] : Void
+          ($dom/add_event_listener node/element "click" (fn [event : Any] : Nil
             (if_not ($absent? node/props/switch-view)
               ($dom/prevent_default event)
               (ui/navigate (text node/props/switch-view) (text node/props/presentation))
@@ -70,7 +70,7 @@
               (ui/navigate "harness" "")
               (ui/prompt (text node/props/prompt))))))
         (if_yes (== tag "form")
-          ($dom/add_event_listener node/element "submit" (fn [event : Any] : Void
+          ($dom/add_event_listener node/element "submit" (fn [event : Any] : Nil
             ($dom/prevent_default event) (submit node)))))
       (var children : (List Any) tree/children)
       (var index 0)
@@ -93,9 +93,9 @@
 
 # The recorder keeps keys from typing or running shortcuts and stores the chord.
 # Plain Tab and Shift+Tab still move focus, so the field never traps the keyboard.
-(fn bind_recorder [node : UiNode, changed : (Fn [UiNode] Void)] : Void
-  ($dom/add_event_listener node/element "focus" (fn [event : Any] : Void (set_chord_recorder node/element)))
-  ($dom/add_event_listener node/element "keydown" (fn [event : Any] : Void
+(fn bind_recorder [node : UiNode, changed : (Fn [UiNode] Nil)] : Nil
+  ($dom/add_event_listener node/element "focus" (fn [event : Any] : Nil (set_chord_recorder node/element)))
+  ($dom/add_event_listener node/element "keydown" (fn [event : Any] : Nil
     (if_yes ($event/is_composing event) (return))
     (var code ($event/code event))
     (if_yes (modifier_code? code) (return))
@@ -107,12 +107,12 @@
     (changed node))))
 
 (fn apply_tree [ui : UiClient, tree : Any,
-  changed : (Fn [UiNode] Void), submit : (Fn [UiNode] Void)] : Void
+  changed : (Fn [UiNode] Nil), submit : (Fn [UiNode] Nil)] : Nil
   (set ui/generation (+ ui/generation 1))
   (patch_node ui tree ui/target 0 "@root" "" changed submit)
   (for [key raw] in ui/nodes
     (var node : UiNode raw)
     (if_yes (!= node/seen ui/generation)
       ($dom/remove node/element)
-      (set ui/nodes/%key void)))
+      (ui/nodes .delete key)))
   (sync_controls ui))

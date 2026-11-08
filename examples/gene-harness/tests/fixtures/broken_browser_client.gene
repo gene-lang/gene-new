@@ -1,10 +1,10 @@
 (mod broken_browser_client ^profile web)
 (type MountFailure ^props {^message Str})
 (impl Error for MountFailure)
-(fn main [root : EventTarget] : Void
+(fn main [root : EventTarget] : Nil
   (set root/harness_cleanups 0)
   (set root/harness_controller
-    {^dispose (fn [] : Void
+    {^dispose (fn [] : Nil
       (var count : Int root/harness_cleanups)
       (set root/harness_cleanups (+ count 1)))})
   (var toolbar : EventTarget root/harness_bridge/toolbar)

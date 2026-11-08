@@ -453,7 +453,7 @@ suite "spec — reader surface from design":
     # backend — so compiling the host module only has to accept the form.
     fixture(["web_module"],
       "(web_module fixture_client " &
-      "(fn main [root : EventTarget] : Void void))")
+      "(fn main [root : EventTarget] : Nil nil))")
 
     covered.sort()
     check covered == dispatched
@@ -715,7 +715,7 @@ suite "spec — enums from design":
     check_eval("(enum Status ^backing Str (active \"A\") (closed \"C\")) " &
                "[(Status/active .backing) (Status .from_backing \"A\") " &
                " (Status .from_backing \"missing\")]",
-               "[\"A\" Status/active void]")
+               "[\"A\" Status/active nil]")
 
   test "enum messages and inline impls dispatch on variants":
     check_eval("(enum Direction " &
@@ -4351,8 +4351,8 @@ suite "spec — strings from design":
     check_eval("($graphemes \"" & s & "\")", "[\"e\u0301\" \"x\"]")
 
   test "to_str joins display conversions through either standard library spelling":
-    check_eval("[($to_str) (gene/to_str \"a\" 1 true nil void) " &
-               " (same? $to_str gene/to_str)]", "[\"\" \"a1truenilvoid\" true]")
+    check_eval("[($to_str) (gene/to_str \"a\" 1 true nil) " &
+               " (same? $to_str gene/to_str)]", "[\"\" \"a1truenil\" true]")
     check_eval("(let render $to_str) (render \"n=\" 42)", "\"n=42\"")
     check_eval("(fn render [n : Int] : Str ^errors [] ($to_str \"n=\" n)) " &
                "(render 42)", "\"n=42\"")
@@ -4745,12 +4745,12 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "[\"field 'n' for Counter\" 1]")
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter (Counter ^n 1)) " &
-               "[(try (counter .set_prop `n void) " &
+               "[(try (counter .delete `n) " &
                "  catch Error $err/message) counter/n]",
                "[\"cannot remove required field 'n' from Counter\" 1]")
     check_eval("(type MaybeCounter ^props {^n Int?}) " &
                "(var counter (MaybeCounter ^n 1)) " &
-               "(counter .set_prop `n void) (counter .props)",
+               "(counter .delete `n) (counter .props)",
                "{}")
 
   test "functional updates preserve typed instance schemas":
@@ -5041,7 +5041,7 @@ suite "spec — sequence indexing by integral Float (§7.4)":
     check_eval("(var l [10 20 30]) (var i 1.0) (set l/%i 99) l", "[10 99 30]")
     check_eval("(var l [10 20 30]) (var i 1) l/%i", "20")
   test "a non-integral Float names no element":
-    check_eval("(var l [10 20 30]) (var i 1.5) l/%i", "void")
+    check_eval("(var l [10 20 30]) (var i 1.5) l/%i", "nil")
     check_runtime_error("(var l [10 20 30]) (var i 1.5) (set l/%i 9)",
                         "whole-number index")
 
@@ -5061,11 +5061,11 @@ suite "spec — sequence indexing by integral Float (§7.4)":
     check_eval("(var b ($buffer F64 3.0)) (b .set 2.0 7.0) (b .get -1.0)",
                "7.0")
 
-  test "an out-of-range write raises where an out-of-range read is void":
+  test "an out-of-range write raises where an out-of-range read is nil":
     # `readIndex` yields `void` and `updateIndex` raises; the asymmetry is
     # deliberate and the web profile now matches it rather than growing the
     # array or dropping the store on the floor.
-    check_eval("(var l [10 20 30]) l/9", "void")
+    check_eval("(var l [10 20 30]) l/9", "nil")
     check_runtime_error("(var l [10 20]) (set l/9 5)", "index out of range")
     check_runtime_error("(var b ($buffer F64 3.0)) (b .set 9.0 1.0)",
                         "Buffer/set index out of range")
@@ -5330,18 +5330,18 @@ suite "spec — statement return types from design (§7.7)":
                "(fn note [x] : Nil (log .push x)) " &
                "(note 1) (note 2) log",
                "[1 2]")
-  test "a Void return discards the body value and yields void":
-    check_eval("(fn f [] : Void 42) (f)", "void")
-    check_eval("(fn f [] : Void \"anything\") (f)", "void")
+  test "a Nil return discards the body value and yields nil":
+    check_eval("(fn f [] : Nil 42) (f)", "nil")
+    check_eval("(fn f [] : Nil \"anything\") (f)", "nil")
   test "return needs no argument under a statement signature":
     check_eval("(fn f [] : Nil (return)) (f)", "nil")
     check_eval("(fn f [] : Nil (return nil)) (f)", "nil")
-    check_eval("(fn f [] : Void (return)) (f)", "void")
+    check_eval("(fn f [] : Nil (return)) (f)", "nil")
     # An explicit value is a compile error, not a silent discard: the
     # signature stays the single source of truth about what a call produces.
     check_compile_error("(fn f [] : Nil (return 42)) (f)",
                         "takes no value")
-    check_compile_error("(fn f [x] : Void (return x)) (f 1)",
+    check_compile_error("(fn f [x] : Nil (return x)) (f 1)",
                         "takes no value")
     # The implicit trailing value is still discarded — that is the whole point.
     check_eval("(fn f [] : Nil 42) (f)", "nil")
@@ -5354,7 +5354,7 @@ suite "spec — statement return types from design (§7.7)":
                "(fn f [x] : Nil (if_yes (< x 0) (return)) (log .push x)) " &
                "(f -1) (f 3) log",
                "[3]")
-  test "statement returns are bare Nil and Void, not any nil-admitting type":
+  test "statement returns are bare Nil and Nil, not any nil-admitting type":
     # `Int?` is a union that happens to admit nil; it still adapts normally.
     check_eval("(fn f [x : Int] : Int? (if (> x 0) x)) [(f 5) (f 0)]",
                "[5 nil]")
@@ -5527,7 +5527,7 @@ suite "spec — short-circuit operators from design":
   test "&& and || yield the last operand evaluated":
     check_eval("[(&& 1 2) (&& nil 2) (&& false 2) (&& 1 2 nil 4) (&&)]",
                "[2 nil false nil true]")
-    check_eval("[(|| nil \"d\") (|| void \"d\") (|| \"a\" \"b\") (||)]",
+    check_eval("[(|| nil \"d\") (|| false \"d\") (|| \"a\" \"b\") (||)]",
                "[\"d\" \"d\" \"a\" nil]")
 
   test "&& and || stop evaluating at the deciding operand":
@@ -5535,35 +5535,31 @@ suite "spec — short-circuit operators from design":
     check_eval("(|| nil false 3 (panic \"not reached\"))", "3")
     check_eval("(&& 1 nil (panic \"not reached\"))", "nil")
 
-  test "! is unary truthiness negation over false, nil, void":
-    check_eval("[(! nil) (! void) (! false) (! 1) (! \"\")]",
-               "[true true true false false]")
+  test "! is unary truthiness negation over false and nil":
+    check_eval("[(! nil) (! false) (! 1) (! \"\")]",
+               "[true true false false]")
     expect GeneError:
       discard compileSource("(! 1 2)")
     expect GeneError:
       discard compileSource("(!)")
 
 suite "spec — absence vocabulary from design §1.6":
-  test "nil?/void?/absent?/present? follow the two-absence truth table":
-    check_eval("[($nil? nil) ($nil? void) ($nil? false) ($nil? 0)]",
+  test "absent?/present? follow the one-absence truth table":
+    check_eval("[($absent? nil) ($absent? false) ($absent? 0) ($absent? \"\")]",
                "[true false false false]")
-    check_eval("[($void? void) ($void? nil) ($void? false)]",
-               "[true false false]")
-    check_eval("[($absent? nil) ($absent? void) ($absent? false) ($absent? 0) ($absent? \"\")]",
-               "[true true false false false]")
-    check_eval("[($present? nil) ($present? void) ($present? false) ($present? 0)]",
-               "[false false true true]")
+    check_eval("[($present? nil) ($present? false) ($present? 0) ($present? \"\")]",
+               "[false true true true]")
 
   test "?? yields the first present operand and keeps stored false":
-    check_eval("[(?? nil 5) (?? void 5) (?? nil void 7) (?? \"a\" \"b\") (??)]",
-               "[5 5 7 \"a\" nil]")
+    check_eval("[(?? nil 5) (?? nil nil 7) (?? \"a\" \"b\") (??)]",
+               "[5 7 \"a\" nil]")
     # The B1 distinction: `||` replaces a stored false, `??` keeps it.
     check_eval("[(?? false 5) (|| false 5)]", "[false 5]")
     check_eval("[(?? 0 5) (?? \"\" \"d\")]", "[0 \"\"]")
 
   test "?? short-circuits at the first present operand":
     check_eval("(var n 0) (?? 1 (set n 9)) n", "0")
-    check_eval("(?? nil void 3 (panic \"not reached\"))", "3")
+    check_eval("(?? nil nil 3 (panic \"not reached\"))", "3")
 
 suite "spec — type aliases from design §7.4.1":
   test "(alias ...) expands transparently in annotation position":
@@ -5830,9 +5826,8 @@ suite "spec — pattern destructuring from design":
                "acc",
                "[0 2 4]")
     check_eval("[(for item in nil item) " &
-               " (for item in void item) " &
                " (for item in [] item)]",
-               "[nil nil nil]")
+               "[nil nil]")
     expect GeneError:
       discard run(compileSource("(for x in 7 x)"),
                   newGlobalScope())
@@ -6111,7 +6106,7 @@ suite "spec — implicit self in message bodies from design §10":
     # `Env` keeps only the message that genuinely takes an `Env`.
     check_eval("[Env CallerEnv]", "[(type Env) (type CallerEnv)]")
     check_eval("(var x 1) (fn capture! [] (caller_env .snapshot [\"x\"])) " &
-               "($nil? (capture!))",
+               "($absent? (capture!))",
                "false")
     check_eval("[Date Time DateTime Timezone Duration Range]",
                "[(type Date) (type Time) (type DateTime) (type Timezone) " &
@@ -6197,7 +6192,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("[(== ($head 42) Int) (== ($head 1.5) Float) " &
                " (== ($head \"s\") Str) (== ($head (quote a)) Sym) " &
                " (== ($head true) Bool) (== ($head nil) Nil) " &
-               " (== ($head void) Void) (== ($head 'c') Char)]",
+               " (== ($head nil) Nil) (== ($head 'c') Char)]",
                "[true true true true true true true true]")
     check_eval("[(== ($head [1 2]) List) (== ($head {^a 1}) Map) " &
                " (== ($head {{\"a\" : 1}}) Map)]",
@@ -6360,8 +6355,8 @@ suite "spec — implicit self in message bodies from design §10":
     # explicit base case; `leaf?` is how a program says so without enumerating
     # kinds. The set is exactly the kinds that carry scalar type identities.
     check_eval("[($leaf? 42) ($leaf? 1.5) ($leaf? \"s\") ($leaf? (quote a)) " &
-               " ($leaf? true) ($leaf? nil) ($leaf? void) ($leaf? 'c')]",
-               "[true true true true true true true true]")
+               " ($leaf? true) ($leaf? nil) ($leaf? 'c')]",
+               "[true true true true true true true]")
     check_eval("[($leaf? [1 2]) ($leaf? {^a 1}) ($leaf? (quote (f 1)))]",
                "[false false false]")
     # A Cell is a leaf: its canonical body holds the current value, but that
@@ -6522,7 +6517,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(type P ^props {^a Int} " &
                "  (message me [] : Self self) " &
                "  (message all [xs : (List Self)] : Int ($size xs)) " &
-               "  (message maybe [o : Self?] : Bool ($nil? o))) " &
+               "  (message maybe [o : Self?] : Bool ($absent? o))) " &
                "(var p (P ^a 1)) " &
                "[(same? (p .me) p) (p .all [(P ^a 2)]) (p .maybe nil)]",
                "[true 1 true]")
@@ -6752,10 +6747,10 @@ suite "spec — absence-guarded sends (design §3)":
     "(impl P for X (message pm [] : Str \"x-pm\")) "
 
   test "an absent receiver yields itself; a present one dispatches":
-    check_eval(guarded & "[((X ^n 1) ?.msg) (nil ?.msg) (void ?.msg)]",
-               "[\"x\" nil void]")
-    check_eval(guarded & "[((X ^n 1) ?.P:pm) (nil ?.P:pm) (void ?.P:pm)]",
-               "[\"x-pm\" nil void]")
+    check_eval(guarded & "[((X ^n 1) ?.msg) (nil ?.msg)]",
+               "[\"x\" nil]")
+    check_eval(guarded & "[((X ^n 1) ?.P:pm) (nil ?.P:pm)]",
+               "[\"x-pm\" nil]")
     check_eval(guarded & "[((X ^n 1) ?.add 10) (nil ?.add 10)]", "[11 nil]")
 
   test "zero-argument path sends support qualified held and optional forms":
@@ -7414,7 +7409,7 @@ suite "spec — mutable containers from design":
                "(var ys [1 2]) " &
                "(ys .set 0 9) " &
                "(var zs []) " &
-               "(var pushed (zs .push void)) " &
+               "(var pushed (zs .push nil)) " &
                "(var m #{^a 1}) " &
                "(var m2 (m .assoc \"b\" 2)) " &
                "(var mm {^a 1}) " &
@@ -7462,19 +7457,19 @@ suite "spec — mutable containers from design":
                "[(n .head) (n .props) (n .body) (n .meta)]",
                "[foo {^a 1} [\"x\"] {}]")
 
-suite "spec — void normalization from design":
-  test "void does not persist in prop storage":
-    check_eval("[{^a void ^b 1} " &
-               " (quote (x ^a void ^b 1)) " &
+suite "spec — nil is stored, not dropped":
+  test "nil persists in prop storage":
+    check_eval("[{^a nil ^b 1} " &
+               " (quote (x ^a nil ^b 1)) " &
                " (do (type T ^props {^a Int?}) " &
-               "     (var t (T ^a void)) " &
+               "     (var t (T ^a nil)) " &
                "     t/a)]",
-               "[{^b 1} (x ^b 1) void]")
+               "[{^a nil ^b 1} (x ^a nil ^b 1) nil]")
 
 suite "spec — optionality lives on the type, not the key":
   test "a nil-admitting field type is omissible and nilable":
     check_eval("(type T ^props {^a Str?}) " &
-               "(var t (T)) [(if t/a 1 0) t/a]", "[0 void]")
+               "(var t (T)) [(if t/a 1 0) t/a]", "[0 nil]")
     check_eval("(type T ^props {^a Str?}) (T ^a nil)",
                "((type T) ^a nil)")
     check_eval("(type T ^props {^a (? Str)}) (T)", "((type T))")
@@ -7601,17 +7596,17 @@ suite "spec — streams from design":
                " (s .has_next)]",
                "[0 10 1 20 2 false]")
 
-  test "yield skips void and resumes while loops":
-    check_eval("(fn ^^generator nums [] : (Stream Int Never) " &
+  test "yield nil emits nil and resumes while loops":
+    check_eval("(fn ^^generator nums [] : (Stream Int? Never) " &
                "  (var i 0) " &
                "  (while (< i 3) " &
-               "    (yield (if (== i 1) void i)) " &
+               "    (yield (if (== i 1) nil i)) " &
                "    (set i (+ i 1)))) " &
                "(var s (nums)) " &
                "[(s .next) " &
                " (s .next) " &
                " (s .has_next)]",
-               "[0 2 false]")
+               "[0 nil true]")
 
   test "yield resumes for loops lazily":
     check_eval("(var hits ($cell 0)) " &
@@ -7655,16 +7650,16 @@ suite "spec — streams from design":
     expect GeneError:
       discard compileSource("(yield 1)")
 
-  test "yield-void skips the item but does not leave the generator":
-    check_eval("(fn ^^generator skip [] : (Stream Int Never) " &
+  test "yield nil emits nil and does not leave the generator":
+    check_eval("(fn ^^generator skip [] : (Stream Int? Never) " &
                "  (yield 1) " &
-               "  (yield void) " &
+               "  (yield nil) " &
                "  (yield 2)) " &
                "(var s (skip)) " &
                "[(s .next) " &
                " (s .next) " &
                " (s .has_next)]",
-               "[1 2 false]")
+               "[1 nil true]")
 
   test "natural fall-through closes the generator with no item remaining":
     check_eval("(fn ^^generator two [] : (Stream Int Never) " &
@@ -7832,7 +7827,7 @@ suite "spec — streams from design":
                "[(names .next) " &
                " (names .next) " &
                " (names .has_next)]",
-               "[\"Ada\" \"Bob\" false]")
+               "[\"Ada\" nil true]")
 
   test "selector strict and default options make missing lookup explicit":
     check_eval("(var fallback \"unknown\") " &
@@ -7852,9 +7847,9 @@ suite "spec — streams from design":
   test "list path sends expose behavior while selectors stay generic":
     check_eval("(var xs [10 20 30]) " &
                "[xs/.size xs/.empty? xs/.first xs/.last xs/size]",
-               "[3 false 10 30 void]")
+               "[3 false 10 30 nil]")
     check_eval("(var xs []) [xs/.empty? xs/.first xs/.last]",
-               "[true void void]")
+               "[true nil nil]")
     check_eval("(fn size [xs] xs/.size) (size [1 2 3])", "3")
 
   test "complex selector stages adapt stream helpers":
@@ -7877,7 +7872,7 @@ suite "spec — streams from design":
                "\"Ada\"")
     check_eval("(var plus +) " &
                "[((Path %plus) 4) ((Path %($key plus)) 4)]",
-               "[4 void]")
+               "[4 nil]")
 
   test "declarations is an ordinary stream selector stage":
     check_eval("(ns m (var b 2) (var a 1)) " &
@@ -7893,7 +7888,7 @@ suite "spec — streams from design":
                "        .next)) " &
                "(var v (($filter m/%$declarations (fn [d] (== d/name \"x\"))) " &
                "        .next)) " &
-               "[d/%$meta/doc d/kind (== v/%$meta/doc void)]",
+               "[d/%$meta/doc d/kind ($absent? v/%$meta/doc)]",
                "[\"hi\" \"Fn\" true]")
 
   test "this_mod exposes the current module declaration stream":
@@ -7986,7 +7981,7 @@ suite "spec — generic collection operations from design (§6.2)":
                " ($has_key? {{#[1 2] : nil}} #[1 2]) " &
                " ($has_key? {{#[1 2] : nil}} #[2 1])]",
                "[true true false true true false]")
-    check_eval("(try ($has_key? [] \"a\") catch TypeError $err/expected)", "\"Map\"")
+    check_eval("(try ($has_key? [] \"a\") catch TypeError $err/expected)", "\"Map or Node\"")
     check_eval_error("($contains? {} \"a\")", "use has_key? for Map keys")
     check_eval_error("($has_key? {{#[1] : 2}} [1])", "HashStable")
     check_shared_native("Map", "has_key?", "$has_key?")
@@ -8034,9 +8029,9 @@ suite "spec — generic collection operations from design (§6.2)":
                "2")
     check_eval("([1 2] .each (fn [x] x))", "nil")
 
-  test "map normalizes void results before collection storage":
-    check_eval("([1 2] .map (fn [x] (if (== x 1) x void)))", "[1 nil]")
-    check_eval("({^a 1 ^b 2} .map (fn [v] (if (== v 1) v void)))", "{^a 1 ^b nil}")
+  test "map keeps one result per input, including nil":
+    check_eval("([1 2] .map (fn [x] (if (== x 1) x nil)))", "[1 nil]")
+    check_eval("({^a 1 ^b 2} .map (fn [v] (if (== v 1) v nil)))", "{^a 1 ^b nil}")
 
   test "a receiver with no method raises the send's MessageError":
     check_eval("(try (42 .map (fn [x] x)) catch MessageError $err/receiver_type)",
@@ -8395,10 +8390,10 @@ suite "spec — bounded channels from design":
                "   (when (TryRecv/value _) false))]",
                "[true false 1 true]")
 
-  test "try_recv tags empty and preserves Void and Nil payloads":
+  test "try_recv tags empty and preserves Nil and Nil payloads":
     check_eval("(var ch ($channel ^capacity 3)) " &
                "(var empty (ch .try_recv)) " &
-               "(ch .send void) " &
+               "(ch .send false) " &
                "(ch .send nil) " &
                "(ch .send 9) " &
                "[(match empty ^!exhaustive (when TryRecv/empty `empty)) " &
@@ -8408,7 +8403,7 @@ suite "spec — bounded channels from design":
                "   (when (TryRecv/value v) v)) " &
                " (match (ch .try_recv) ^!exhaustive " &
                "   (when (TryRecv/value v) v))]",
-               "[empty void nil 9]")
+               "[empty false nil 9]")
     check_eval("(fn poll [ch : (Channel Int)] : (TryRecv Int) " &
                "  (ch .try_recv)) " &
                "(match (poll ($channel)) ^!exhaustive (when TryRecv/empty true))",
@@ -9262,7 +9257,7 @@ suite "spec — task context":
     check_eval("(scope (let worker (spawn ^lane root " &
       " [($map #{^a 1 ^b 2} (fn [x] ($sleep 1) (+ x 1))) " &
       "  ($filter [1 2 3] (fn [x] ($sleep 1) (> x 1))) " &
-      "  ($filter_map [1 2] (fn [x] ($sleep 1) (if (== x 1) void x))) " &
+      "  ($filter_map [1 2] (fn [x] ($sleep 1) (if (== x 1) nil x))) " &
       "  ([1 2] .map (fn [x] ($sleep 1) (* x 2)))])) (await worker))",
       "[#{^a 2 ^b 3} [2 3] [2] [2 4]]")
 
@@ -10150,7 +10145,7 @@ suite "spec — indexed value witnesses":
       "(var fractional 1.5) " &
       "[r/%huge r/%huge_float r/%fractional r/-3 r/%negative " &
       " (try (set r/%fractional 9) catch Any \"bad\") r/items]",
-      "[void void void void void \"bad\" [1 2]]")
+      "[nil nil nil nil nil \"bad\" [1 2]]")
     check_eval("(type HugeIndex ^props {}) " &
       "(impl IndexRead for HugeIndex " &
       " (message size [] : Int 18446744073709551617) " &
@@ -10172,9 +10167,9 @@ suite "spec — indexed value witnesses":
       "(var r #(Ring ^items [1])) (set r/0 9)",
       "cannot mutate immutable Node")
 
-  test "void normalizes to nil before the IndexWrite callback":
+  test "nil reaches the IndexWrite callback as nil":
     check_eval(ringDecl &
-      "(var r (Ring ^items [1])) (set r/0 void) r/items/0", "nil")
+      "(var r (Ring ^items [1])) (set r/0 nil) r/items/0", "nil")
 
   test "IndexRead size must be a nonnegative Int":
     check_eval_error("(type BadSize ^props {}) " &
@@ -10185,8 +10180,8 @@ suite "spec — indexed value witnesses":
     check_eval("(type Hole ^props {}) " &
       "(impl IndexRead for Hole " &
       " (message size [] : Int 1) " &
-      " (message at [index : Int] : Any void)) " &
-      "(var h (Hole)) h/0", "void")
+      " (message at [index : Int] : Any nil)) " &
+      "(var h (Hole)) h/0", "nil")
 
   test "a recursive indexed read raises instead of exhausting the VM stack":
     check_eval_error("(type LoopRead ^props {}) " &
@@ -10797,7 +10792,7 @@ suite "spec — db protocol from stdlib plan":
     check_eval("(import $db [Db]) " &
                "[(same? Db ($db/sqlite .lookup \"Db\")) " &
                " (same? Db ($db/postgres .lookup \"Db\")) " &
-               " (not (== ($db/postgres .lookup \"open\") void))]",
+               " ($present? ($db/postgres .lookup \"open\"))]",
                "[true true true]")
 
 suite "spec — store persistence protocol":
@@ -10829,14 +10824,14 @@ suite "spec — store persistence protocol":
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
                "(s .Store:put \"a\" {^x 1}) " &
-               "(s .Store:put \"void\" void) " &
+               "(s .Store:put \"void\" nil) " &
                "[(s .Store:get \"a\") " &
                " (s .Store:get \"void\") " &
                " (s .Store:has? \"a\") " &
                " (s .Store:has? \"missing\") " &
                " (s .Store:get \"missing\" ^default \"fallback\") " &
                " (try (s .Store:get \"missing\") catch StoreError $err/kind)]",
-               "[{^x 1} void true false \"fallback\" missing]")
+               "[{^x 1} nil true false \"fallback\" missing]")
 
   test "sqlite store supports full mode refs, keys, delete, clear, and close":
     check_eval("(import $db/sqlite [open]) " &
@@ -11898,7 +11893,7 @@ suite "spec — equality and guard sugar (design §1.5/§3)":
 suite "spec — serde data core (docs/stdlib.md stage 1)":
   test "scalars and containers round-trip under structural equality":
     check_eval("(import $serde [write_data read_data]) " &
-               "(var v {^a 1 ^b [1 2.5 \"x\" true nil void] " &
+               "(var v {^a 1 ^b [1 2.5 \"x\" true nil] " &
                "        ^c {^nested \"y\"} ^d 'q' ^e 0x0aff " &
                "        ^f 123456789012345678901234567890}) " &
                "(== v (read_data (write_data v)))",
@@ -13160,11 +13155,11 @@ suite "spec — runtime fast paths keep ordinary semantics":
 
   test "a dynamic one-segment path indexes Lists from either end":
     check_eval("""(var xs [10 20 30]) (var i 1) (var n -1) (var far 9) (var low -4) [xs/%i xs/%n xs/%far xs/%low]""",
-               """[20 30 void void]""")
+               """[20 30 nil nil]""")
 
   test "a dynamic one-segment path reads Map keys and message segments":
     check_eval("""(var m {^a 1 ^c nil}) (var k "a") (var z "zz") (var s (quote a)) (var xs [1 2 3]) (var msg ".size") [m/%k m/%z m/%s m/c xs/%msg]""",
-               """[1 void 1 nil 3]""")
+               """[1 nil 1 nil 3]""")
 
   test "a namespace member read sees every rebinding":
     check_eval("""(ns counter (var n 0) (fn bump [] (set n (+ n 1)))) (fn read [] counter/n) (var out []) (repeat i in 3 (out .push (read)) (counter/bump)) out""",
@@ -13195,16 +13190,16 @@ suite "spec — runtime fast paths keep ordinary semantics":
                """["V0" "V1" "V2"]""")
 
   test "Map get and put accept Str and Sym keys without interning a missed key":
-    check_eval("""(var m {}) (m .put "alpha" 1) (m .put (quote beta) 2) (m .put "gamma" nil) (var before [(m .get "alpha") (m .get (quote alpha)) (m .get "beta") (m .get "gamma") (m .get "spec_key_never_interned")]) (m .put "alpha" void) [before (m .get "alpha") ($size m)]""",
-               """[[1 1 2 nil void] void 2]""")
+    check_eval("""(var m {}) (m .put "alpha" 1) (m .put (quote beta) 2) (m .put "gamma" nil) (var before [(m .get "alpha") (m .get (quote alpha)) (m .get "beta") (m .get "gamma") (m .get "spec_key_never_interned")]) (m .delete "alpha") [before (m .get "alpha") ($size m)]""",
+               """[[1 1 2 nil nil] nil 2]""")
 
   test "Map iteration yields Sym keys in insertion order":
     check_eval("""(var out []) (for [k v] in {^b 2 ^a 1} (out .push [k v ($to_str k)])) out""",
                """[[b 2 "b"] [a 1 "a"]]""")
 
-  test "a Map literal drops void entries":
-    check_eval("""{^a 1 ^b void ^c 3}""",
-               """{^a 1 ^c 3}""")
+  test "a Map literal keeps nil entries":
+    check_eval("""{^a 1 ^b nil ^c 3}""",
+               """{^a 1 ^b nil ^c 3}""")
 
   test "json/parse reads plain, signed, long and fractional numbers":
     check_eval("""($json/parse "[0, -0, 007, 12, -34, 1.5, -2.5e3, 123456789012345678, 1234567890123456789, 12345678901234567890]")""",
@@ -13319,3 +13314,46 @@ suite "spec — a scheduler slice ends at a loop iteration or a function entry":
     ## where a spent slice ends. The peer is spawned second and finishes first.
     check_eval("""(fn rec [n] (if (< n 2) n (+ (rec (- n 1)) (rec (- n 2))))) (fn even_ [n] (if (== n 0) true (odd_ (- n 1)))) (fn odd_ [n] (if (== n 0) false (even_ (- n 1)))) (fn tail_ [n, acc] (if (== n 0) acc (tail_ (- n 1) (+ acc 1)))) (fn w [n] (var i 0) (while (< i n) (set i (+ i 1))) i) (fn l [n] (var i 0) (loop (set i (+ i 1)) (if (< i n) (continue)) (break)) i) (fn r [n] (var t 0) (repeat n (set t (+ t 1))) t) (fn f [xs] (var t 0) (for x in xs (for y in xs (set t (+ t 1)))) t) (fn first_to_finish [work] (let order []) (let a (spawn ^lane root (do (work) (order .push "work")))) (let b (spawn ^lane root (order .push "peer"))) (a .join) (b .join) order/0) (var xs []) (var i 0) (while (< i 200) (xs .push i) (set i (+ i 1))) [(first_to_finish (fn [] (rec 20))) (first_to_finish (fn [] (even_ 3000))) (first_to_finish (fn [] (tail_ 20000 0))) (first_to_finish (fn [] (w 20000))) (first_to_finish (fn [] (l 20000))) (first_to_finish (fn [] (r 20000))) (first_to_finish (fn [] (f xs)))]""",
                """["peer" "peer" "peer" "peer" "peer" "peer" "peer"]""")
+
+suite "spec — nil-only absence":
+  test "a missing read, an empty first, and a failed lookup are nil":
+    check_eval("(var m {^a 1}) [m/zz ([] .first) ({} .get \"x\") ([1 2] .get 5)]",
+               "[nil nil nil nil]")
+  test "deleting returns the removed value and nil when absent":
+    check_eval("(var m {^a 1 ^b nil}) [(m .delete \"a\") (m .delete \"a\") (m .delete \"b\") m]",
+               "[1 nil nil {}]")
+  test "a frozen map refuses delete even for an absent key":
+    check_runtime_error("(var m ($freeze {^a 1})) (m .delete \"zz\")", "immutable")
+  test "dissoc builds a new map and keeps frozenness":
+    check_eval("(var m {^a 1 ^b 2}) (var r (m .dissoc \"a\")) [r m (same? r m) (m .dissoc \"zz\")]",
+               "[{^b 2} {^a 1 ^b 2} false {^a 1 ^b 2}]")
+    check_eval("(($freeze {^a 1}) .dissoc \"a\")", "#{}")
+  test "dissoc_in removes a nested entry, shares siblings, and tolerates a missing path":
+    check_eval("(var m {^x {^a 1 ^b 2} ^y {^c 3}}) (var r ($dissoc_in m /x/a)) " &
+               "[r (same? r/y m/y) (same? r m) ($dissoc_in m /q/a)]",
+               "[{^x {^b 2} ^y {^c 3}} true false {^x {^a 1 ^b 2} ^y {^c 3}}]")
+  test "typed records: has_key? reads stored props; delete honors the schema":
+    check_eval("(type P ^props {^name Str ^age Int?}) (var p (P ^name \"A\" ^age 3)) " &
+               "[($has_key? p \"age\") (p .delete \"age\") ($has_key? p \"age\") p/age ($has_key? p \"name\")]",
+               "[true 3 false nil true]")
+    check_eval("(type P ^props {^name Str}) (var p (P ^name \"A\")) " &
+               "(try (p .delete \"name\") catch Error $err/message)",
+               "\"cannot remove required field 'name' from P\"")
+  test "filter_map drops nil and keeps false, zero and empty strings":
+    check_eval("($filter_map [1 2 3 4 5] (fn [v] ([nil false 0 \"\" []] .get (- v 1))))",
+               "[false 0 \"\" []]")
+  test "removed names get a targeted diagnostic":
+    check_eval("(try void catch Error $err/message)",
+               "\"void was removed; absence is nil. Use : Nil for a procedure return, .delete or .dissoc to remove a key, and return nil from filter_map to drop an item.\"")
+    check_eval("(try ($void? 1) catch Error $err/message)", "\"$void? was removed; use $absent?.\"")
+    check_eval("(try ($nil? 1) catch Error $err/message)", "\"$nil? was removed; use $absent?.\"")
+  test "Present is every value except nil":
+    check_eval("(fn f [x : Present] x) [(f false) (f 0) (f \"\") (f []) (try (f nil) catch TypeError \"rejected\")]",
+               "[false 0 \"\" [] \"rejected\"]")
+    check_eval("(fn g [x : Present?] x) (g)", "nil")
+    check_eval_error("(fn h [x : Any] x) (h)", "expects")
+  test "an alias of Nil discards the body value; Nil? does not":
+    check_eval("(alias Unit Nil) (fn f [] : Unit 42) (f)", "nil")
+    check_eval("(alias MaybeNil Nil?) (fn f [] : MaybeNil 42) (try (f) catch TypeError \"TypeError\")",
+               "\"TypeError\"")
+

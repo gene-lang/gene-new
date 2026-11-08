@@ -125,7 +125,7 @@
       (if (|| ($str/contains? ($to_str key) "data:image/") (opaque_value? item))
         (return true)))
     (return false))
-  (! ([Int Float Bool Nil Void] .contains? ($head value))))
+  (! ([Int Float Bool Nil Nil] .contains? ($head value))))
 
 # Opaque/custom preparation stays compatible with send. It simply cannot be
 # represented as an exact durable wire request until its adapter opts into

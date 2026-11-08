@@ -6,14 +6,14 @@ Import names when you use them repeatedly. These recipes show the common path;
 
 ## Presence
 
-Use `($present? value)` to test for a value other than `nil` or `void`, and
-`($absent? value)` to test for either absence value. Prefer `$present?` to
+Use `($present? value)` to test for a value other than `nil`, and
+`($absent? value)` to test for `nil`. Prefer `$present?` to
 negating `$absent?`.
 
 ```gene runnable
-[($present? nil) ($present? void) ($present? false) ($present? 0)
+[($present? nil) ($present? false) ($present? 0)
  ($present? "") ($present? [])]
-# [false false true true true true]
+# [false true true true true]
 ```
 
 Presence is separate from truthiness and emptiness: `false`, zero, empty
@@ -80,8 +80,8 @@ second way prints `(seen)`, so each one appears once. `==` also terminates on
 cycles: two are equal when nothing reachable from them differs. `$freeze` and
 `$thaw` raise a catchable error on a cyclic value.
 
-The web profile supports scalar display values: Str, Int, F64, Bool, Nil,
-Void and Sym. A bare `$` has no built-in concatenation behavior.
+The web profile supports scalar display values: Str, Int, F64, Bool, Nil
+and Sym. A bare `$` has no built-in concatenation behavior.
 
 `$str/lower` and `$str/upper` map ASCII letters only on the VM and web
 backends; every other character is unchanged. For example,
@@ -576,7 +576,7 @@ a Task yielding one row or nil. Close it through `IoResource`. Pass
                         ^^headers ^^own_reader))
 (try
   (let row (await (rows .next)))
-  (if ($nil? row) nil row/name)
+  (if ($absent? row) nil row/name)
   ensure (rows .IoResource:close))
 ```
 
@@ -593,9 +593,9 @@ Text helpers live under `$str`, and ordering helpers under `$order`.
 | Stream | `has_next`, `peek`, `next`, `try_next`, `close`, `map`, `filter_map`, `filter`, `take`, `drop`, `each`, `into`, `to_stream`, `to_pairs_stream` |
 
 `(xs .get index)` reads the same element as an indexed Path: zero-based,
-negative indices count from the end, and out-of-range reads return `void`.
+negative indices count from the end, and out-of-range reads return `nil`.
 Stored `nil` stays distinct from a missing element. In typed web code the result
-is `(| T Void)` for a `(List T)`; use `??` to supply a fallback when needed.
+is `T?` for a `(List T)`; use `??` to supply a fallback when needed.
 `(strings .join separator)` shares `$str/join`, requires string elements, and
 defaults to an empty separator. Both messages are available in the web profile.
 

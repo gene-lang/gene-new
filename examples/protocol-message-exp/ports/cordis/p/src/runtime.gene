@@ -449,14 +449,14 @@
 (fn admitted_service_key [runtime, candidate] ^^private
   (var key (canonical_service_key candidate))
   (var admitted (runtime/service_keys/.get .get key/id))
-  (if (|| (== admitted void) (! (same? admitted/token key/token)))
+  (if (|| ($absent? admitted) (! (same? admitted/token key/token)))
     (cordis_failure ServiceContractError $"service key ${key/id} is not admitted to this runtime"))
   admitted)
 
 (fn admitted_hook_key [runtime, candidate] ^^private
   (var key (canonical_hook_key candidate))
   (var admitted (runtime/hook_keys/.get .get key/id))
-  (if (|| (== admitted void) (! (same? admitted/token key/token)))
+  (if (|| ($absent? admitted) (! (same? admitted/token key/token)))
     (cordis_failure HookDispatchError $"hook key ${key/id} is not admitted to this runtime"))
   admitted)
 
@@ -704,7 +704,7 @@
   (var key (canonical_service_key candidate))
   (var keys runtime/service_keys/.get)
   (var existing (keys .get key/id))
-  (if_not (== existing void)
+  (if_not ($absent? existing)
     (if (same? existing/token key/token) (return nil))
     (cordis_failure
       ServiceContractError
@@ -718,7 +718,7 @@
   (var key (canonical_hook_key candidate))
   (var keys runtime/hook_keys/.get)
   (var existing (keys .get key/id))
-  (if_not (== existing void)
+  (if_not ($absent? existing)
     (if (same? existing/token key/token) (return nil))
     (cordis_failure HookDispatchError $"a different hook key is already admitted as ${key/id}"))
   (keys .put key/id key)
@@ -754,7 +754,7 @@
 
 (fn named_service_key [runtime, id : Str] ^^private
   (var key (runtime/service_keys/.get .get id))
-  (if (== key void) (cordis_failure ServiceContractError $"unknown admitted service id ${id}"))
+  (if ($absent? key) (cordis_failure ServiceContractError $"unknown admitted service id ${id}"))
   key)
 
 (fn fresh_private_realm [runtime] : Str ^^private
@@ -923,7 +923,7 @@
     (var realm (context_realm context canonical))
     (var address (service_address canonical realm))
     (var existing (reservations .get address))
-    (if (&& (!= existing void) (!= existing instance/uid))
+    (if (&& ($present? existing) (!= existing instance/uid))
       (plugin_error
         DuplicateProvider
         $"service ${canonical/id} already has a provider in realm ${realm}"
@@ -999,7 +999,7 @@
   (var key requirement/key)
   (var address (service_address key (context_realm context key)))
   (var provider (instance/runtime/providers/.get .get address))
-  (if (== provider void) (return nil))
+  (if ($absent? provider) (return nil))
   (if_not (&& provider/active/.get provider/available/.get (== provider/owner/state/.get InstanceState/active))
     (return nil))
   provider)
@@ -1098,7 +1098,7 @@
       true
       root/context)
     (for key in instance/plugin/provides
-      (if (== (instance/provided/.get .get key/id) void)
+      (if ($absent? (instance/provided/.get .get key/id))
         (plugin_error
           PluginActivationError
           $"plugin did not publish declared service ${key/id}"
@@ -1627,7 +1627,7 @@
   (var key (admitted_service_key scope/runtime candidate))
   (if_not (plugin_declares_provision? scope/owner key)
     (plugin_error ServiceContractError $"plugin did not declare provision ${key/id}" scope/owner))
-  (if_not (== (scope/owner/provided/.get .get key/id) void)
+  (if_not ($absent? (scope/owner/provided/.get .get key/id))
     (plugin_error DuplicateProvider $"plugin published ${key/id} more than once" scope/owner))
   (if (&& (! (absent? availability)) (! (callable? availability)))
     (plugin_error ServiceContractError "provider availability must be callable or nil" scope/owner))
@@ -1778,7 +1778,7 @@
   (var realm (context_realm context key))
   (var address (service_address key realm))
   (var provider (context/runtime/providers/.get .get address))
-  (if (|| (== provider void) (! provider/active/.get) (! provider/available/.get) (!= provider/owner/state/.get InstanceState/active))
+  (if (|| ($absent? provider) (! provider/active/.get) (! provider/available/.get) (!= provider/owner/state/.get InstanceState/active))
     (cordis_failure
       ServiceUnavailable
       $"service ${key/id} is unavailable in realm ${realm}"
@@ -1805,7 +1805,7 @@
       "|"
       ($hash config)))
   (var cached (context/runtime/binding_cache/.get .get cache_key))
-  (if_not (== cached void) (return cached))
+  (if_not ($absent? cached) (return cached))
   (var bound provider/value)
   (if_not (absent? key/bind)
     (try
@@ -1837,7 +1837,7 @@
   (try
     (context_require handle candidate head_config)
   catch ServiceUnavailable
-    void))
+    nil))
 
 # --- hooks ----------------------------------------------------------------
 
@@ -2027,9 +2027,9 @@
       (var option_name ($to_str name))
       (if_not (["subject" "terminal"] .contains? option_name)
         (cordis_failure HookDispatchError $"unknown dispatch option ^${option_name}")))
-    (if_not (== (options .get "subject") void)
+    (if_not ($absent? (options .get "subject"))
       (set subject (subject_record (options .get "subject"))))
-    (if_not (== (options .get "terminal") void) (set terminal (options .get "terminal"))))
+    (if_not ($absent? (options .get "terminal")) (set terminal (options .get "terminal"))))
   (if_not (absent? subject)
     (if_not (same? subject/runtime/token context/runtime/token)
       (cordis_failure HookDispatchError "hook subject belongs to another runtime")))
@@ -2090,7 +2090,7 @@
     ^service requirement/key/id
     ^realm realm
     ^provider (if (absent? provider)
-                void
+                nil
                 provider/owner/uid)
     ^status (if (absent? provider)
               "missing"
@@ -2284,7 +2284,7 @@
 
 (fn manifest_value [entry, name : Str, fallback] ^^private
   (var value (entry .get name))
-  (if (== value void)
+  (if ($absent? value)
     fallback
     value))
 
@@ -2349,20 +2349,20 @@
   (for entry in entries
     (validate_manifest_entry_fields entry)
     (var local_id (entry .get "id"))
-    (if (|| (== local_id void) (!= ($head local_id) Str) (== local_id "") ($str/contains? local_id ":"))
+    (if (|| ($absent? local_id) (!= ($head local_id) Str) (== local_id "") ($str/contains? local_id ":"))
       (cordis_failure CompositionError "manifest entry id must be a non-empty colon-free Str"))
     (if (== (siblings .get local_id) true)
       (cordis_failure CompositionError $"duplicate sibling entry id ${local_id}"))
     (siblings .put local_id true)
     (var id (if (absent? parent_id) local_id $"${parent_id}:${local_id}"))
     (var group_value (entry .get "group"))
-    (if (&& (!= group_value void) (!= ($head group_value) Bool))
+    (if (&& ($present? group_value) (!= ($head group_value) Bool))
       (cordis_failure CompositionError $"entry ${id} ^group must be Bool"))
     (var disabled_value (entry .get "disabled"))
-    (if (&& (!= disabled_value void) (!= ($head disabled_value) Bool))
+    (if (&& ($present? disabled_value) (!= ($head disabled_value) Bool))
       (cordis_failure CompositionError $"entry ${id} ^disabled must be Bool"))
     (var expected_plugin (entry .get "plugin_id"))
-    (if (&& (!= expected_plugin void) (!= ($head expected_plugin) Str))
+    (if (&& ($present? expected_plugin) (!= ($head expected_plugin) Str))
       (cordis_failure CompositionError $"entry ${id} ^plugin_id must be Str"))
     (var group (== (manifest_value entry "group" false) true))
     (var disabled (|| inherited_disabled (== (manifest_value entry "disabled" false) true)))
@@ -2371,7 +2371,7 @@
       (then
         (if_not (== ($head children) List)
           (cordis_failure CompositionError $"group ${id} children must be a list"))
-        (if_not (== (entry .get "module") void)
+        (if_not ($absent? (entry .get "module"))
           (cordis_failure CompositionError $"group ${id} cannot declare a module")))
       (else
         (if_not (== ($head (entry .get "module")) Str)
@@ -2537,13 +2537,13 @@
   (var entries (fresh_list))
   (for id in loader/order/.get
     (var entry (loader/entries/.get .get id))
-    (if_not (== entry void) (entries .push (loader_entry_snapshot entry))))
+    (if_not ($absent? entry) (entries .push (loader_entry_snapshot entry))))
   ($freeze {^state loader/state/.get ^mode mode ^changed changed ^entries entries}))
 
 (fn next_parent_context [loader, next_entries, parent_id] ^^private
   (if (absent? parent_id) (return loader/runtime/root/.get))
   (var parent (next_entries .get parent_id))
-  (if (== parent void)
+  (if ($absent? parent)
     (cordis_failure CompositionError $"manifest parent ${parent_id} was not reconciled"))
   parent/context)
 
@@ -2577,7 +2577,7 @@
     (var entry (old_entries .get id))
     (var desired (desired_ids .get id))
     (var remove
-      (|| (== desired void) desired/disabled
+      (|| ($absent? desired) desired/disabled
           (!= desired/group entry/group)
           (!= desired/module entry/module_path)
           # A host plugin is replaced when its admitted value changes.
@@ -2599,12 +2599,12 @@
     (var signature (entry_context_signature row parent_signature))
     (signatures .put row/id signature)
     (var existing (old_entries .get row/id))
-    (if (&& (!= existing void)
+    (if (&& ($present? existing)
             (!= existing/context_signature signature))
       (then
         (dispose_loader_entry loader existing)
         (old_entries .delete row/id)
-        (set existing void)))
+        (set existing nil)))
     (if row/disabled
       (then
         (var disabled_context
@@ -2618,7 +2618,7 @@
         (next_entries .put row/id disabled_entry)
         (next_order .push row/id))
       (else
-        (if (== existing void)
+        (if ($absent? existing)
           (then
             (var context (derive_loader_context loader parent_context row))
             (var host_plugin (admitted .get row/id))
@@ -2632,7 +2632,7 @@
                 # Entries fail individually, as in upstream Cordis: the failure
                 # is recorded on this entry and its siblings still install.
                 (try
-                  (if (== host_plugin void)
+                  (if ($absent? host_plugin)
                     (install_loader_entry loader row context)
                     (install_host_loader_entry loader row context host_plugin))
                 catch Any
@@ -2726,7 +2726,7 @@
   (var host_plugin (host_plugins .get row/id))
   (if_not (absent? host_plugin) (return (prepare_loader_entry loader row transaction host_plugin)))
   (var existing (old_entries .get row/id))
-  (if (&& (!= existing void) (! existing/group) (! existing/disabled) (! (absent? existing/module)) (absent? loader/options/descriptor_factory) (== existing/data/limits row/limits) (== existing/data/namespaces row/namespaces) (== existing/module_path row/module) (! (force_ids .contains? row/id)))
+  (if (&& ($present? existing) (! existing/group) (! existing/disabled) (! (absent? existing/module)) (absent? loader/options/descriptor_factory) (== existing/data/limits row/limits) (== existing/data/namespaces row/namespaces) (== existing/module_path row/module) (! (force_ids .contains? row/id)))
     (return
       {
         ^generation existing/generation
@@ -2881,7 +2881,7 @@
 (fn preserve_staged_instance_identities [old_entries, staged_entries] ^^private
   (for [id staged] in staged_entries
     (var old (old_entries .get id))
-    (if (&& (!= old void) (! (absent? old/instance)) (! (absent? staged/instance)))
+    (if (&& ($present? old) (! (absent? old/instance)) (! (absent? staged/instance)))
       (then
         (var old_record (instance_record old/instance))
         (var staged_record (instance_record staged/instance))
@@ -3164,10 +3164,10 @@
   (var changed (fresh_list))
   (for [id entry] in staged_entries
     (var old (old_entries .get id))
-    (if (|| (== old void) (!= old/data entry/data) (! (same? old/generation entry/generation)))
+    (if (|| ($absent? old) (!= old/data entry/data) (! (same? old/generation entry/generation)))
       (changed .push id)))
   (for [id old] in old_entries
-    (if (== (staged_entries .get id) void) (changed .push id)))
+    (if ($absent? (staged_entries .get id)) (changed .push id)))
   changed)
 
 (fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[], host_plugins = nil,
@@ -3248,7 +3248,7 @@
   (var admitted (fresh_map))
   (for row in rows
     (var plugin (plugins .get row/id))
-    (if_not (== plugin void) (admitted .put row/id plugin)))
+    (if_not ($absent? plugin) (admitted .put row/id plugin)))
   # A publication participant swaps host state for a whole candidate, so it
   # needs staged reconciliation. Without one, entries reconcile individually:
   # unchanged plugins stay live and a failed activation affects only its entry.
@@ -3282,7 +3282,7 @@
 (fn affected_uses_stop_start? [loader, affected] : Bool ^^private
   (for id in affected
     (var entry (loader/entries/.get .get id))
-    (if (&& (!= entry void) (! (absent? entry/plugin)) (== entry/plugin/reload "stop_start"))
+    (if (&& ($present? entry) (! (absent? entry/plugin)) (== entry/plugin/reload "stop_start"))
       (return true)))
   false)
 
@@ -3319,7 +3319,7 @@
   (while (>= index 0)
     (var entry (old_entries .get old_order/%index))
     (set index (- index 1))
-    (if (&& (!= entry void) (! (absent? entry/instance)))
+    (if (&& ($present? entry) (! (absent? entry/instance)))
       (then
         (var cleanup_error
           (unload_instance (instance_record entry/instance) true))
@@ -3356,9 +3356,9 @@
               ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil)))
         (else
           (var source (sources .get row/id))
-          (if_yes (== source void)
+          (if_yes ($absent? source)
             (var old (old_entries .get row/id))
-            (if (== old void)
+            (if ($absent? old)
               (cordis_failure RecoveryRequired
                 $"stop_start reload lost source for ${row/id}"))
             (set source
@@ -3403,7 +3403,7 @@
   (var out (fresh_list))
   (for id in ids
     (var entry (loader/entries/.get .get id))
-    (if (&& (!= entry void) (! (absent? entry/graph)))
+    (if (&& ($present? entry) (! (absent? entry/graph)))
       (var root_id entry/graph/root)
       (for node in entry/graph/nodes
         (if (== node/identity root_id)
@@ -3558,7 +3558,7 @@
   (while (>= index 0)
     (var entry (loader/entries/.get .get order/%index))
     (set index (- index 1))
-    (if_not (== entry void) (dispose_loader_entry loader entry)))
+    (if_not ($absent? entry) (dispose_loader_entry loader entry)))
   (loader/entries .set (fresh_map))
   (loader/order .set (fresh_list))
   (loader/generations .set (fresh_list))

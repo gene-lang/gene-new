@@ -197,17 +197,17 @@
 (fn validate_descriptor_events [h : Harness, descriptor]
   (var seen (fresh_map))
   (for event in (if ($absent? descriptor/events) (fresh_list) descriptor/events)
-    (if (|| (== event/name void) (== event/version void) (== event/ignorable void) (== event/schema void))
+    (if (|| ($absent? event/name) ($absent? event/version) ($absent? event/ignorable) ($absent? event/schema))
       (fail
         (CompositionError ^message $"plugin ${descriptor/id} event descriptor requires name version ignorable schema")))
     (if_not ($runtime/callable? event/schema)
       (fail (CompositionError ^message $"plugin ${descriptor/id} event schema must be callable")))
     (var name ($to_str event/name))
-    (if_not (== (seen .get name) void)
+    (if_not ($absent? (seen .get name))
       (fail (CompositionError ^message $"plugin ${descriptor/id} duplicates event type ${name}")))
     (seen .put name true)
     (var existing (row h "event_types" name))
-    (if_yes (&& (!= existing void) (|| (!= existing/origin "plugin") (!= existing/owner descriptor/id)))
+    (if_yes (&& ($present? existing) (|| (!= existing/origin "plugin") (!= existing/owner descriptor/id)))
       (fail (CompositionError ^message $"event type ${name} is already owned by ${existing/owner}"))))
   descriptor)
 
@@ -231,7 +231,7 @@
   (var descriptor_owner $"descriptor:${descriptor/id}")
   (remove_owner h descriptor_owner)
   (for event in (if ($absent? descriptor/events) (fresh_list) descriptor/events)
-    (if (|| (== event/name void) (== event/version void) (== event/ignorable void) (== event/schema void))
+    (if (|| ($absent? event/name) ($absent? event/version) ($absent? event/ignorable) ($absent? event/schema))
       (fail
         (CompositionError ^message $"plugin ${descriptor/id} event descriptor requires name version ignorable schema")))
     (var catalog_row (fresh_map))

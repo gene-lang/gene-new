@@ -13,8 +13,8 @@ type
   WebProfileError* = object of CatchableError
 
   WebTypeKind* = enum
-    wtkNil, wtkVoid, wtkBool, wtkStr, wtkSym, wtkInt, wtkF64,
-    wtkAny, wtkNever, wtkList, wtkPropMap, wtkMap, wtkNode, wtkRange,
+    wtkNil, wtkBool, wtkStr, wtkSym, wtkInt, wtkF64,
+    wtkAny, wtkPresent, wtkNever, wtkList, wtkPropMap, wtkMap, wtkNode, wtkRange,
     wtkCallback, wtkCallable, wtkTask, wtkStream, wtkNominal, wtkUnion,
     ## The one host type the profile names. It exists so an entry point and a
     ## listener registration can be *checked* rather than taking `Any`, whose
@@ -69,7 +69,7 @@ type
     errorTypes*: seq[WebType]
 
   WebExprKind* = enum
-    wekNil, wekVoid, wekBool, wekStr, wekSym, wekInt, wekF64,
+    wekNil, wekBool, wekStr, wekSym, wekInt, wekF64,
     wekBinding, wekList, wekPropMap, wekMap, wekNode, wekRange,
     wekIf, wekCall, wekBuiltin, wekCheck, wekNot, wekAnd, wekOr, wekCoalesce,
     wekBinary, wekDo,
@@ -625,27 +625,27 @@ proc unionType(types: varargs[WebType]): WebType =
   WebType(kind: wtkUnion, members: members)
 
 proc withoutAbsent(typ: WebType): WebType =
-  if typ.kind in {wtkNil, wtkVoid}: return webType(wtkNever)
+  if typ.kind == wtkNil: return webType(wtkNever)
   if typ.kind != wtkUnion: return typ
   var members: seq[WebType]
   for member in typ.members:
-    if member.kind notin {wtkNil, wtkVoid}: members.add member
+    if member.kind != wtkNil: members.add member
   if members.len == 0: webType(wtkNever)
   elif members.len == 1: members[0]
   else: WebType(kind: wtkUnion, members: members)
 
 proc withoutVoid(typ: WebType): WebType =
-  if typ.kind == wtkVoid: return webType(wtkNever)
+  if typ.kind == wtkNil: return webType(wtkNever)
   if typ.kind != wtkUnion: return typ
   var members: seq[WebType]
   for member in typ.members:
-    if member.kind != wtkVoid: members.add member
+    if member.kind != wtkNil: members.add member
   if members.len == 0: webType(wtkNever)
   elif members.len == 1: members[0]
   else: WebType(kind: wtkUnion, members: members)
 
 proc normalizeMapResult(typ: WebType): WebType =
-  if typ.kind == wtkVoid: return webType(wtkNil)
+  if typ.kind == wtkNil: return webType(wtkNil)
   if typ.kind == wtkUnion:
     var normalized: seq[WebType]
     for member in typ.members: normalized.add normalizeMapResult(member)
@@ -676,6 +676,11 @@ proc callbackType(signature: WebFunctionSig): WebType =
         result.namedKeys.add param.argName
 
 proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
+  if expected != nil and expected.kind == wtkPresent and actual != nil:
+    # `Present` is every value except nil. A gradual `Any` is checked at run time.
+    return actual.kind in {wtkAny, wtkPresent, wtkNever} or
+      not (actual.kind == wtkNil or
+           (actual.kind == wtkUnion and actual.members.anyIt(it.kind == wtkNil)))
   if expected == nil or actual == nil or expected.kind == wtkAny or
       actual.kind == wtkNever:
     return true
@@ -745,13 +750,13 @@ proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
 proc typeName(typ: WebType): string =
   case typ.kind
   of wtkNil: "Nil"
-  of wtkVoid: "Void"
   of wtkBool: "Bool"
   of wtkStr: "Str"
   of wtkSym: "Sym"
   of wtkInt: "Int"
   of wtkF64: "F64"
   of wtkAny: "Any"
+  of wtkPresent: "Present"
   of wtkNever: "Never"
   of wtkList: "(List " & typeName(typ.item) & ")"
   of wtkPropMap: "PropMap"
@@ -791,13 +796,13 @@ proc jsString(value: string): string
 proc tsType(typ: WebType): string =
   case typ.kind
   of wtkNil: "null"
-  of wtkVoid: "undefined"
   of wtkBool: "boolean"
   of wtkStr: "string"
   of wtkSym: "symbol"
   of wtkInt: "bigint"
   of wtkF64: "number"
   of wtkAny: "unknown"
+  of wtkPresent: "{}"
   of wtkNever: "never"
   of wtkList: "ReadonlyArray<" & tsType(typ.item) & ">"
   of wtkPropMap: "Record<string, unknown>"
@@ -832,13 +837,13 @@ proc tsType(typ: WebType): string =
 proc validatorSuffix(typ: WebType): string =
   case typ.kind
   of wtkNil: "nil"
-  of wtkVoid: "void"
   of wtkBool: "bool"
   of wtkStr: "str"
   of wtkSym: "sym"
   of wtkInt: "int"
   of wtkF64: "f64"
   of wtkAny: (if typ.name == "bound Self": "bound_self" else: "any")
+  of wtkPresent: "present"
   of wtkNever: "never"
   of wtkList: "list_" & validatorSuffix(typ.item)
   of wtkPropMap: "prop_map"
@@ -945,7 +950,7 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
                        webType(wtkNil))
     case value.symVal
     of "Nil": return webType(wtkNil)
-    of "Void": return webType(wtkVoid)
+    of "Present": return webType(wtkPresent)
     of "Bool": return webType(wtkBool)
     of "Str": return webType(wtkStr)
     of "Sym": return webType(wtkSym)
@@ -2022,13 +2027,13 @@ proc findField(analysis: WebAnalysis, typ: WebType,
   while declaration != nil:
     for field in declaration.fields:
       if field.sourceName == name:
-        return (if lookup and field.optional: unionType(field.typ, webType(wtkVoid)) else: field.typ)
+        return (if lookup and field.optional: unionType(field.typ, webType(wtkNil)) else: field.typ)
     if declaration.parentName.len == 0 or
         not analysis.typeDecls.hasKey(declaration.parentName): break
     declaration = analysis.typeDecls[declaration.parentName]
 
 proc pathFieldType(analysis: WebAnalysis, typ: WebType, key: string): WebType =
-  if typ.kind in {wtkNil, wtkVoid}: return webType(wtkVoid)
+  if typ.kind in {wtkNil}: return webType(wtkNil)
   if typ.kind == wtkUnion:
     var results: seq[WebType]
     for member in typ.members:
@@ -2298,7 +2303,6 @@ proc analyzeDatum(analysis: WebAnalysis, value: Value,
                   loc: SourceLoc): WebExpr =
   case value.kind
   of vkNil: result = WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
-  of vkVoid: result = WebExpr(kind: wekVoid, typ: webType(wtkVoid), loc: loc)
   of vkBool: result = WebExpr(kind: wekBool, typ: webType(wtkBool), loc: loc,
                               boolValue: value.boolVal)
   of vkInt: result = WebExpr(kind: wekInt, typ: webType(wtkInt), loc: loc,
@@ -2379,7 +2383,7 @@ proc isLiteralConstant(expr: WebExpr): bool =
   ## excluded — that is exactly what makes a module-level `const` safe here.
   if expr == nil: return false
   case expr.kind
-  of wekNil, wekVoid, wekBool, wekStr, wekSym, wekInt, wekF64:
+  of wekNil, wekBool, wekStr, wekSym, wekInt, wekF64:
     true
   of wekList, wekPropMap, wekMap:
     # Mutability of the literal form does not matter here: a module constant
@@ -2396,7 +2400,7 @@ proc isStatementType(typ: WebType): bool {.inline.} =
   ## discarded and the function yields the declared unit. Mirrors the VM's
   ## `isStatementReturnType`, and the two must stay in step or the same source
   ## means different things on the two backends.
-  typ != nil and (typ.kind == wtkNil or typ.kind == wtkVoid)
+  typ != nil and (typ.kind == wtkNil or typ.kind == wtkNil)
 
 proc explicitlyAdmitsNil(typ: WebType): bool =
   if typ.kind == wtkNil: return true
@@ -2404,8 +2408,27 @@ proc explicitlyAdmitsNil(typ: WebType): bool =
     for member in typ.members:
       if explicitlyAdmitsNil(member): return true
 
+proc admitsNilOrAny(typ: WebType): bool =
+  typ != nil and (typ.kind == wtkAny or explicitlyAdmitsNil(typ))
+
+proc comparisonNeedsHelper(op: string, left, right: WebType): bool =
+  ## `==`/`!=` go through `$gene_equal` whenever the left operand can hold a
+  ## structured value, and `same?` goes through `$gene_same` whenever both
+  ## operands can be nil: a host `undefined` is nil on the web, so `===` alone
+  ## would tell two nils apart. Plain `===` stays for everything else.
+  case op
+  of "==", "!=":
+    left.kind in {wtkList, wtkPropMap, wtkMap, wtkNode, wtkAny, wtkNominal,
+                  wtkRange, wtkUnion} or
+      (admitsNilOrAny(left) and admitsNilOrAny(right))
+  of "same?":
+    (admitsNilOrAny(left) and admitsNilOrAny(right)) or
+      left.kind == wtkRange or right.kind == wtkRange
+  else:
+    false
+
 proc statementUnit(typ: WebType): string {.inline.} =
-  if typ != nil and typ.kind == wtkVoid: "undefined" else: "null"
+  "null"
 
 proc requireType(analysis: WebAnalysis, loc: SourceLoc, actual,
                  expected: WebType, label: string) =
@@ -2480,7 +2503,7 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
   for index, param in signature.namedParams:
     if not param.named:
       if positional >= value.body.len:
-        result.children.add WebExpr(kind: wekMissing, typ: webType(wtkVoid), loc: loc)
+        result.children.add WebExpr(kind: wekMissing, typ: webType(wtkNil), loc: loc)
         continue
       let analyzed = analysis.analyzeExpr(value.body[positional], bindings,
                                           param.typ)
@@ -2500,7 +2523,7 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
       result.children.add analyzed
       namedSlots[param.argName] = index
     elif param.optional:
-      result.children.add WebExpr(kind: wekMissing, typ: webType(wtkVoid), loc: loc)
+      result.children.add WebExpr(kind: wekMissing, typ: webType(wtkNil), loc: loc)
     else:
       # Phrased to share a substring with the VM's "function 'f' missing named
       # argument: b", so one fixture can assert both backends refuse the same
@@ -2644,6 +2667,14 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       return analysis.analyzeCall(newNode(newNode(newSym("path"),
         body = @[newSym("gene"), newSym(messageName)]),
         body = @[value.head] & value.body[2 .. ^1]), bindings, expected)
+    if protocolMessage == nil and messageName == "delete" and
+        value.body.len == 3 and value.props.len == 0 and
+        receiver.typ.kind in {wtkAny, wtkPropMap, wtkMap}:
+      # `(m .delete key)`: remove the entry; the result is the removed value, or
+      # nil when the key was absent.
+      return WebExpr(kind: wekBuiltin, typ: webType(wtkAny), loc: loc,
+        text: "delete", children: @[receiver,
+          analysis.analyzeExpr(value.body[2], bindings)])
     if protocolMessage == nil and messageName == "to_stream" and
         receiver.typ.kind in {wtkList, wtkStream}:
       if value.body.len != 2 or value.props.len != 0:
@@ -2716,7 +2747,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if methodDecl == nil and receiver.typ.kind == wtkTask and
         messageName == "cancel":
       methodDecl = WebMethod(sourceName: messageName,
-        emittedName: messageName, returnType: webType(wtkVoid), loc: loc)
+        emittedName: messageName, returnType: webType(wtkNil), loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkStr and messageName in
         ["split", "trim", "lower", "upper", "empty?", "byte_size", "slice_bytes",
          "to_utf8", "starts_with?", "ends_with?", "contains?"]:
@@ -2758,7 +2789,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
                                typ: receiver.typ.item, loc: loc)]
         else: newSeq[WebParam]()
       let returnType = case messageName
-        of "get": unionType(receiver.typ.item, webType(wtkVoid))
+        of "get": unionType(receiver.typ.item, webType(wtkNil))
         of "join": webType(wtkStr)
         of "pop", "push": receiver.typ.item
         of "size": webType(wtkInt)
@@ -2860,8 +2891,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           raise webError(loc, "dom/" & listenerOp & " accepts only ^capture")
       let handlerType = webType(wtkCallback)
       handlerType.params = @[webType(wtkAny)]
-      handlerType.returnType = webType(wtkVoid)
-      return WebExpr(kind: wekDomListener, typ: webType(wtkVoid), loc: loc,
+      handlerType.returnType = webType(wtkNil)
+      return WebExpr(kind: wekDomListener, typ: webType(wtkNil), loc: loc,
         text: listenerOp,
         children: @[
           analysis.analyzeExpr(value.body[0], bindings, webType(wtkDomTarget)),
@@ -2903,7 +2934,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       var returnType: WebType
       case builtin
       of "to_str":
-        const displayable = {wtkStr, wtkInt, wtkF64, wtkBool, wtkNil, wtkVoid,
+        const displayable = {wtkStr, wtkInt, wtkF64, wtkBool, wtkNil,
                              wtkSym}
         result = WebExpr(kind: wekBuiltin, typ: webType(wtkStr), loc: loc,
                          text: builtin)
@@ -2997,10 +3028,10 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # string interpolation would print "[object HTMLElement]" instead of
         # something devtools can expand.
         paramTypes = @[webType(wtkAny)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/prevent_default", "dom/stop_propagation":
         paramTypes = @[webType(wtkAny)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       # --- document, window, events, storage, timing ----------------------
       # The surface a browser program needs to own its own main loop. Every one
       # of these is checked against lib.dom.d.ts by tools/check_host_bindings.
@@ -3020,28 +3051,28 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkDomTarget)
       of "dom/append":
         paramTypes = @[webType(wtkDomTarget), webType(wtkDomTarget)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/insert_at":
         paramTypes = @[webType(wtkDomTarget), webType(wtkDomTarget), webType(wtkInt)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/remove":
         paramTypes = @[webType(wtkDomTarget)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/remove_attribute":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/set_style":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/set_text":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/set_attribute":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/clear", "dom/focus", "dom/scroll_end":
         paramTypes = @[webType(wtkDomTarget)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/focused?":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkBool)
@@ -3059,13 +3090,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkList, webType(wtkDomTarget))
       of "dom/set_inert":
         paramTypes = @[webType(wtkDomTarget), webType(wtkBool)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/input_value":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkStr)
       of "dom/set_input_value":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/near_end":
         paramTypes = @[webType(wtkDomTarget), webType(wtkF64)]
         returnType = webType(wtkBool)
@@ -3074,13 +3105,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkF64)
       of "dom/set_scroll_top":
         paramTypes = @[webType(wtkDomTarget), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/text":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkStr)
       of "dom/set_class":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr), webType(wtkBool)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "dom/window":
         # Keyboard events do not reach an element unless it is focusable and
         # focused, so a game's key handlers belong on the window. Same for
@@ -3115,9 +3146,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # itself without reaching for a clock separately.
         let onFrame = webType(wtkCallback)
         onFrame.params = @[webType(wtkF64)]
-        onFrame.returnType = webType(wtkVoid)
+        onFrame.returnType = webType(wtkNil)
         paramTypes = @[onFrame]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "time/now":
         paramTypes = @[]
         returnType = webType(wtkF64)
@@ -3135,9 +3166,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # usually wanted.
         let onDue = webType(wtkCallback)
         onDue.params = @[]
-        onDue.returnType = webType(wtkVoid)
+        onDue.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkF64), onDue]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "time/sleep":
         # `(await ($time/sleep 200.0))` — the same wait as a `Task`, for the code
         # that *can* await: anything not on the listener ABI. A handler cannot
@@ -3154,42 +3185,42 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkStr)
       of "browser/replace_url", "browser/push_url":
         paramTypes = @[webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "browser/copy":
         let onDone = webType(wtkCallback)
         onDone.params = @[webType(wtkBool)]
-        onDone.returnType = webType(wtkVoid)
+        onDone.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkStr), onDone]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "browser/load_module":
         let onLoad = webType(wtkCallback)
         onLoad.params = @[webType(wtkAny)]
-        onLoad.returnType = webType(wtkVoid)
+        onLoad.returnType = webType(wtkNil)
         let onError = webType(wtkCallback)
         onError.params = @[webType(wtkStr)]
-        onError.returnType = webType(wtkVoid)
+        onError.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkStr), onLoad, onError]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "storage/get", "session_storage/get":
         paramTypes = @[webType(wtkStr)]
         returnType = unionType(webType(wtkStr), webType(wtkNil))
       of "storage/set":
         paramTypes = @[webType(wtkStr), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "session_storage/set":
         paramTypes = @[webType(wtkStr), webType(wtkStr)]
         returnType = webType(wtkBool)
       of "session_storage/remove":
         paramTypes = @[webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "image/load":
         # Load-then-callback rather than a Task, for the same reason http/get
         # is: a Task needs an enclosing `scope`, and page bootstrap has none.
         let onLoad = webType(wtkCallback)
         onLoad.params = @[webType(wtkDomTarget)]
-        onLoad.returnType = webType(wtkVoid)
+        onLoad.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkStr), onLoad]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "files/from_input":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkList, webType(wtkAny))
@@ -3205,12 +3236,12 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "files/read_base64":
         let callback = webType(wtkCallback)
         callback.params = @[webType(wtkStr)]
-        callback.returnType = webType(wtkVoid)
+        callback.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkAny), webType(wtkInt), callback, callback]
         returnType = webType(wtkDomTarget)
       of "files/cancel":
         paramTypes = @[webType(wtkDomTarget)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       # --- WebSocket --------------------------------------------------------
       #
       # The client half of the only persistent bidirectional transport a
@@ -3248,15 +3279,15 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "ws/on_open", "ws/on_close":
         let onEvent = webType(wtkCallback)
         onEvent.params = @[]
-        onEvent.returnType = webType(wtkVoid)
+        onEvent.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkDomTarget), onEvent]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "ws/on_text":
         let onText = webType(wtkCallback)
         onText.params = @[webType(wtkStr)]
-        onText.returnType = webType(wtkVoid)
+        onText.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkDomTarget), onText]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "ws/on_bytes":
         # `(Buffer U8)`, which is the one buffer type an `ArrayBuffer` wraps
         # without a copy or a reinterpretation. A caller wanting wider elements
@@ -3265,19 +3296,19 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # the other side.
         let onBytes = webType(wtkCallback)
         onBytes.params = @[WebType(kind: wtkBuffer, name: "U8")]
-        onBytes.returnType = webType(wtkVoid)
+        onBytes.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkDomTarget), onBytes]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "ws/send":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "ws/send_bytes":
         paramTypes = @[webType(wtkDomTarget),
                        WebType(kind: wtkBuffer, name: "U8")]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "ws/close":
         paramTypes = @[webType(wtkDomTarget)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "ws/open?":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkBool)
@@ -3304,27 +3335,27 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "gl/viewport":
         paramTypes = @[webType(wtkGl), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/clear_color":
         paramTypes = @[webType(wtkGl), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/clear":
         # Colour and depth together. Separating them would mean exposing the
         # bitmask, and no renderer here wants one without the other.
         paramTypes = @[webType(wtkGl)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/enable", "gl/disable", "gl/depth_func", "gl/cull_face",
          "gl/generate_mipmap":
         paramTypes = @[webType(wtkGl), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/create_buffer":
         paramTypes = @[webType(wtkGl)]
         returnType = WebType(kind: wtkGlObject, name: "Buffer")
       of "gl/bind_buffer":
         paramTypes = @[webType(wtkGl), webType(wtkStr),
                        WebType(kind: wtkGlObject, name: "Buffer")]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/buffer_data":
         # Handled here rather than through `paramTypes` because the element
         # type varies with the call: vertices are `(Buffer F32)` and indices
@@ -3351,7 +3382,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           resolved.add constant
         # Target and usage are resolved to their WebGL constant names here, so
         # the emitter never sees a Gene-side spelling.
-        return WebExpr(kind: wekBuiltin, typ: webType(wtkVoid), loc: loc,
+        return WebExpr(kind: wekBuiltin, typ: webType(wtkNil), loc: loc,
           text: builtin, keys: resolved, children: @[context, data])
       of "gl/create_shader":
         paramTypes = @[webType(wtkGl), webType(wtkStr)]
@@ -3360,11 +3391,11 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "Shader"),
                        webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/compile_shader":
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "Shader")]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/shader_compiled?":
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "Shader")]
@@ -3380,11 +3411,11 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "Program"),
                        WebType(kind: wtkGlObject, name: "Shader")]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/link_program", "gl/use_program":
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "Program")]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/program_linked?":
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "Program")]
@@ -3400,13 +3431,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkF64)
       of "gl/enable_attrib":
         paramTypes = @[webType(wtkGl), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/attrib_pointer":
         # location, size, component type, normalized, stride, offset
         paramTypes = @[webType(wtkGl), webType(wtkF64), webType(wtkF64),
                        webType(wtkStr), webType(wtkBool), webType(wtkF64),
                        webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/uniform_location":
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "Program"),
@@ -3416,49 +3447,49 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "UniformLocation"),
                        webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/uniform_3f":
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "UniformLocation"),
                        webType(wtkF64), webType(wtkF64), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/uniform_matrix4":
         # The one uniform that takes bulk data, and the reason `(Buffer F32)`
         # had to reach the profile before any of this could be written.
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "UniformLocation"),
                        WebType(kind: wtkBuffer, name: "F32")]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/create_vertex_array":
         paramTypes = @[webType(wtkGl)]
         returnType = WebType(kind: wtkGlObject, name: "VertexArray")
       of "gl/bind_vertex_array":
         paramTypes = @[webType(wtkGl),
                        WebType(kind: wtkGlObject, name: "VertexArray")]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/create_texture":
         paramTypes = @[webType(wtkGl)]
         returnType = WebType(kind: wtkGlObject, name: "Texture")
       of "gl/bind_texture":
         paramTypes = @[webType(wtkGl), webType(wtkStr),
                        WebType(kind: wtkGlObject, name: "Texture")]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/tex_image_2d":
         # Sourced from a loaded image, which is what `$image/load` returns.
         paramTypes = @[webType(wtkGl), webType(wtkStr), webType(wtkDomTarget)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/tex_parameter":
         paramTypes = @[webType(wtkGl), webType(wtkStr), webType(wtkStr),
                        webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/draw_arrays":
         paramTypes = @[webType(wtkGl), webType(wtkStr), webType(wtkF64),
                        webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "gl/draw_elements":
         paramTypes = @[webType(wtkGl), webType(wtkStr), webType(wtkF64),
                        webType(wtkStr), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "canvas/context":
         # The element is an EventTarget (a canvas is one); the result is the
         # 2D context, which is not.
@@ -3466,7 +3497,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkDomCanvas)
       of "canvas/set_size":
         paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "audio/context":
         # A `BaseAudioContext` is an `EventTarget`, so the handle needs no type
         # of its own — the same reasoning `canvas/context` uses for its cast.
@@ -3474,37 +3505,37 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkDomTarget)
       of "audio/resume", "audio/close":
         paramTypes = @[webType(wtkDomTarget)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "audio/capture_open", "audio/capture_open_raw":
         let frame = webType(wtkCallback)
         frame.params = @[WebType(kind: wtkBuffer, name: "U8")]
-        frame.returnType = webType(wtkVoid)
+        frame.returnType = webType(wtkNil)
         let level = webType(wtkCallback)
         level.params = @[webType(wtkF64)]
-        level.returnType = webType(wtkVoid)
+        level.returnType = webType(wtkNil)
         let error = webType(wtkCallback)
         error.params = @[webType(wtkStr)]
-        error.returnType = webType(wtkVoid)
+        error.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64), frame, level, error]
         returnType = webType(wtkDomTarget)
       of "audio/capture_finish", "audio/player_on_start", "audio/player_on_drain":
         let callback = webType(wtkCallback)
         callback.params = @[]
-        callback.returnType = webType(wtkVoid)
+        callback.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkDomTarget), callback]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "audio/capture_close", "audio/player_fade_stop":
         paramTypes = @[webType(wtkDomTarget)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "audio/player_open":
         let error = webType(wtkCallback)
         error.params = @[webType(wtkStr)]
-        error.returnType = webType(wtkVoid)
+        error.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkDomTarget), webType(wtkF64), error]
         returnType = webType(wtkDomTarget)
       of "audio/player_push":
         paramTypes = @[webType(wtkDomTarget), WebType(kind: wtkBuffer, name: "U8")]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "audio/player_queued_ms", "audio/player_played_bytes":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkF64)
@@ -3517,59 +3548,59 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "speech/recognize_start":
         let textCallback = webType(wtkCallback)
         textCallback.params = @[webType(wtkStr)]
-        textCallback.returnType = webType(wtkVoid)
+        textCallback.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkStr), textCallback, textCallback, textCallback]
         returnType = webType(wtkDomTarget)
       of "speech/recognize_stop", "speech/recognize_abort":
         paramTypes = @[webType(wtkDomTarget)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "speech/speak":
         let started = webType(wtkCallback)
         started.params = @[]
-        started.returnType = webType(wtkVoid)
+        started.returnType = webType(wtkNil)
         let ended = webType(wtkCallback)
         ended.params = @[webType(wtkStr)]
-        ended.returnType = webType(wtkVoid)
+        ended.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkStr), webType(wtkStr), webType(wtkF64), started, ended]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "speech/cancel":
         paramTypes = @[]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "audio/tone":
         # context, frequency (Hz), duration (s), gain (0..1)
         paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "audio/noise":
         # context, duration (s), gain (0..1)
         paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "canvas/width", "canvas/height":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkF64)
       of "canvas/set_fill", "canvas/set_stroke":
         paramTypes = @[webType(wtkDomCanvas), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "canvas/set_line_width":
         paramTypes = @[webType(wtkDomCanvas), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "canvas/set_smoothing":
         paramTypes = @[webType(wtkDomCanvas), webType(wtkBool)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "canvas/fill_rect", "canvas/stroke_rect", "canvas/clear_rect":
         paramTypes = @[webType(wtkDomCanvas), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "canvas/linear_gradient":
         paramTypes = @[webType(wtkDomCanvas), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64), webType(wtkF64)]
         returnType = webType(wtkDomGradient)
       of "canvas/add_color_stop":
         paramTypes = @[webType(wtkDomGradient), webType(wtkF64), webType(wtkStr)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "canvas/set_fill_gradient":
         paramTypes = @[webType(wtkDomCanvas), webType(wtkDomGradient)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "canvas/draw_image":
         # The nine-argument form: source rect and destination rect. A tile
         # atlas needs exactly this, and the shorter overloads are a strict
@@ -3578,16 +3609,16 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
                        webType(wtkF64), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64), webType(wtkF64)]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "http/request":
         # A result callback handles HTTP refusals and disconnected clients
         # explicitly. Network failure has status 0; HTTP statuses are intact.
         let onResult = webType(wtkCallback)
         onResult.params = @[webType(wtkInt), webType(wtkStr)]
-        onResult.returnType = webType(wtkVoid)
+        onResult.returnType = webType(wtkNil)
         paramTypes = @[webType(wtkStr), webType(wtkStr), webType(wtkStr),
                        webType(wtkPropMap), onResult]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "http/post_form", "http/get":
         # Continuation-passing rather than `Task`-returning, because the only
         # caller that matters is a DOM event handler: the listener ABI requires
@@ -3601,15 +3632,15 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         # error callback, makes silently discarding failures the default.
         let onOk = webType(wtkCallback)
         onOk.params = @[webType(wtkStr)]
-        onOk.returnType = webType(wtkVoid)
+        onOk.returnType = webType(wtkNil)
         paramTypes =
           if builtin == "http/get": @[webType(wtkStr), onOk]
           else: @[webType(wtkStr), webType(wtkStr), onOk]
-        returnType = webType(wtkVoid)
+        returnType = webType(wtkNil)
       of "size":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkInt)
-      of "nil?", "void?", "absent?", "present?":
+      of "absent?", "present?":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkBool)
       of "buffer":
@@ -3726,6 +3757,12 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           $paramTypes.len & " argument(s)")
       result = WebExpr(kind: wekBuiltin, typ: returnType, loc: loc,
                        text: builtin)
+      if builtin == "json/stringify":
+        # `^^omit_nil` leaves out every nil-valued key at every depth.
+        for key, flag in value.props:
+          if key != "omit_nil" or flag.kind != vkBool:
+            raise webError(loc, "web json/stringify accepts only ^omit_nil")
+          result.boolValue = flag.boolVal
       # WebGL enum arguments are resolved at compile time. Each one must be a
       # literal from `glEnums`, and the resolved constant names travel in
       # `keys` in argument order — so `INVALID_ENUM` becomes a compile error
@@ -4044,7 +4081,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       if i >= value.body.len:
         raise webError(loc, "web catch requires an error type")
       let errorType = value.body[i]
-      if errorType.kind in {vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString,
+      if errorType.kind in {vkNil, vkBool, vkInt, vkFloat, vkString,
                             vkChar, vkList, vkMap, vkSet, vkHashMap} or
           errorType.isSym("_") or
           (errorType.kind == vkNode and errorType.props.len > 0):
@@ -4086,8 +4123,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if value.body.len != 1:
       raise webError(loc, "yield expects one value")
     let yielded = analysis.analyzeExpr(value.body[0], bindings,
-      if value.body[0].kind == vkVoid: nil else: analysis.currentYield)
-    return WebExpr(kind: wekYield, typ: webType(wtkVoid), loc: loc,
+      analysis.currentYield)
+    return WebExpr(kind: wekYield, typ: webType(wtkNil), loc: loc,
                    children: @[yielded])
   if name == "scope":
     inc analysis.scopeDepth
@@ -4328,7 +4365,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     of wtkPropMap, wtkMap: itemType = webType(wtkList, webType(wtkAny))
     of wtkRange: itemType = webType(wtkInt)
     of wtkStr: itemType = webType(wtkStr)
-    of wtkNil, wtkVoid: itemType = webType(wtkAny)
+    of wtkNil: itemType = webType(wtkAny)
     else: raise webError(loc, "web for cannot iterate " & typeName(iterable.typ))
     inc analysis.loopDepth
     var loopBindings = copyBindings(bindings)
@@ -4434,15 +4471,15 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if value.body.len > 1:
       raise webError(loc, "web return expects zero or one value")
     if analysis.generatorDepth > 0:
-      if value.body.len == 1 and value.body[0].kind != vkVoid:
-        raise webError(loc, "generator return value must be void")
+      if value.body.len == 1 and value.body[0].kind != vkNil:
+        raise webError(loc, "generator return takes no value")
       return WebExpr(kind: wekReturn, typ: webType(wtkNever), loc: loc,
-        children: @[analysis.analyzeExpr(VOID, bindings)])
+        children: @[analysis.analyzeExpr(NIL, bindings)])
     # Same rule as the VM compiler: under a `Nil`/`Void` signature the frame
     # yields the declared unit, so a returned value could only be discarded.
     if analysis.currentReturn != nil and
         analysis.currentReturn.isStatementType and value.body.len == 1 and
-        value.body[0].kind notin {vkNil, vkVoid}:
+        value.body[0].kind notin {vkNil}:
       raise webError(loc,
         "return in a Nil/Void function takes no value; " &
         "use (return) or (return nil)")
@@ -4702,8 +4739,6 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
   case value.kind
   of vkNil:
     result = WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
-  of vkVoid:
-    result = WebExpr(kind: wekVoid, typ: webType(wtkVoid), loc: loc)
   of vkBool:
     result = WebExpr(kind: wekBool, typ: webType(wtkBool), loc: loc,
                      boolValue: value.boolVal)
@@ -4807,14 +4842,14 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
       let acceptedValue =
         if valueType == nil: nil
         else: WebType(kind: wtkUnion,
-          members: @[valueType, webType(wtkVoid)])
+          members: @[valueType, webType(wtkNil)])
       let item = analysis.analyzeExpr(entry.val, bindings, acceptedValue)
       if keyType == nil: keyType = key.typ
-      if valueType == nil and item.typ.kind != wtkVoid: valueType = item.typ
+      if valueType == nil and item.typ.kind != wtkNil: valueType = item.typ
       requireType(analysis, loc, key.typ, keyType, "map key")
       if valueType != nil:
         requireType(analysis, loc, item.typ,
-          WebType(kind: wtkUnion, members: @[valueType, webType(wtkVoid)]),
+          WebType(kind: wtkUnion, members: @[valueType, webType(wtkNil)]),
           "map value")
       result.children.add key
       result.children.add item
@@ -5612,7 +5647,6 @@ proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
      else: mangleWebName(name))
   case pattern.kind
   of vkNil: target & " === null"
-  of vkVoid: target & " === undefined"
   of vkBool: target & " === " & (if pattern.boolVal: "true" else: "false")
   of vkInt: target & " === " & pattern.intToString & "n"
   of vkFloat: target & " === " & $pattern.floatVal
@@ -5769,6 +5803,24 @@ proc emitCatchType(emitter: var WebEmitter, errorType: Value,
 
 proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string
 
+proc emitOperands(emitter: var WebEmitter, first, second: WebExpr):
+    tuple[left, right: string] =
+  ## Emit two operands in source order. When the right operand hoists
+  ## statements (a `do` with a binding, an `if`, a `try`), the left operand has
+  ## to be computed before them, or its effects would run second. The left value
+  ## is then bound to a temporary inserted ahead of those statements.
+  var left = emitter.emitExpr(first)
+  let mark = emitter.lines.len
+  let right = emitter.emitExpr(second)
+  if emitter.lines.len > mark and
+      not (left.len > 0 and left.allCharsInSet({'a'..'z', 'A'..'Z', '0'..'9', '_', '$'})):
+    let name = emitter.temp()
+    emitter.lines.insert(repeat(' ', emitter.indent * 2) & "const " & name &
+      " = " & left & ";", mark)
+    emitter.lineLocs.insert(emitter.currentLoc, mark)
+    left = name
+  (left, right)
+
 proc beginWebErrorGuard(emitter: var WebEmitter, checked: bool) =
   if checked:
     emitter.line("try {")
@@ -5846,7 +5898,6 @@ proc emitMessageResult(emitter: var WebEmitter, body: WebExpr,
 proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   case expr.kind
   of wekNil: "null"
-  of wekVoid: "undefined"
   of wekMissing: "$gene_missing"
   of wekCallableCall:
     let target = emitter.temp()
@@ -5874,7 +5925,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     var items: seq[string]
     for child in expr.children:
       let item = emitter.emitExpr(child)
-      if child.kind in {wekNil, wekVoid, wekBool, wekStr, wekSym, wekInt, wekF64}:
+      if child.kind in {wekNil, wekBool, wekStr, wekSym, wekInt, wekF64}:
         items.add item
       else:
         # Later children may emit statements (try, if, lazy pulls). Evaluate
@@ -5974,7 +6025,9 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "html/escape", "html/attr_escape":
       "$gene_html_escape(" & arguments[0] & ")"
     of "json/parse": "$gene_json_parse(" & arguments[0] & ")"
-    of "json/stringify": "$gene_json_stringify(" & arguments[0] & ")"
+    of "json/stringify":
+      "$gene_json_stringify(" & arguments[0] &
+        (if expr.boolValue: ", true" else: "") & ")"
     # gene/math lowers straight to `Math`, which is where the semantics were
     # borrowed from: the VM's floor/ceil/round follow C and JS rather than
     # rounding to an integer type, so the two backends agree by construction
@@ -6015,8 +6068,6 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     # Widening needs no guard: `Number` on a bigint is exact below 2^53 and the
     # nearest double above it, which is what the VM's `float64(intVal)` does.
     of "to_float": "Number(" & arguments[0] & ")"
-    of "nil?": "(" & arguments[0] & " === null)"
-    of "void?": "(" & arguments[0] & " === undefined)"
     of "absent?": "(" & arguments[0] & " == null)"
     of "present?": "(" & arguments[0] & " != null)"
     of "console/log": "console.log(" & arguments[0] & ")"
@@ -6352,6 +6403,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "node/head": arguments[0] & ".head"
     of "node/props": arguments[0] & ".props"
     of "node/body": arguments[0] & ".body"
+    of "delete": "$gene_delete(" & arguments[0] & ", " & arguments[1] & ")"
     of "to_stream": "new GeneStream(" & arguments[0] & ".slice()[Symbol.iterator]())"
     of "map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ")"
     of "filter_map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ", true)"
@@ -6365,12 +6417,14 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     validatorName(expr.typ) & "(" & emitter.emitExpr(expr.children[0]) &
       ", \"typed boundary\")"
   of wekBinary:
-    var left = emitter.emitExpr(expr.children[0])
-    var right = emitter.emitExpr(expr.children[1])
-    if expr.text in ["==", "!="] and expr.children[0].typ.kind in
-        {wtkList, wtkPropMap, wtkMap, wtkNode, wtkAny, wtkNominal}:
+    var (left, right) = emitter.emitOperands(expr.children[0], expr.children[1])
+    if expr.text in ["==", "!="] and comparisonNeedsHelper(expr.text,
+        expr.children[0].typ, expr.children[1].typ):
       (if expr.text == "!=": "!" else: "") &
         "$gene_equal(" & left & ", " & right & ")"
+    elif expr.text == "same?" and comparisonNeedsHelper("same?",
+        expr.children[0].typ, expr.children[1].typ):
+      "$gene_same(" & left & ", " & right & ")"
     else:
       let op =
         if expr.text == "==": "==="
@@ -6496,7 +6550,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       of wtkPropMap: "$gene_prop_pairs(" & source & ")"
       of wtkMap: "Array.from(" & source & ", entry => [...entry])"
       of wtkList: "(" & source & ").slice()"
-      of wtkNil, wtkVoid: "(" & source & ", [])"
+      of wtkNil: "(" & source & ", [])"
       else: source
     emitter.line("for (const " & itemName & " of " &
       iterable & ") {")
@@ -6593,16 +6647,18 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         capturedSegments.add captured
     var statements = "let " & current & " = " & receiver & "; "
     for segment in capturedSegments:
-      statements.add current & " = $gene_get(" & current & ", " & segment & "); "
+      # `$gene_get_raw` answers undefined for a missing step, which is how a
+      # stored nil (a hit) is told apart from a miss for `^strict` and `^default`.
+      statements.add current & " = $gene_get_raw(" & current & ", " & segment & "); "
       if expr.boolValue:
         statements.add "if (" & current & " === undefined) throw new GenePathMissing(" & segment & "); "
       elif defaultName.len > 0:
         statements.add "if (" & current & " === undefined) return " &
           defaultName & "; "
       else:
-        statements.add "if (" & current & " === undefined) return undefined; "
+        statements.add "if (" & current & " === undefined) return null; "
     "$gene_path_value((" & receiver & (if emitter.typescript: ": any" else: "") &
-      ") => { " & statements & "return " & current & "; })"
+      ") => { " & statements & "return " & current & " === undefined ? null : " & current & "; })"
   of wekMessage:
     if expr.children.len > 0:
       return "$gene_message_value(" & emitter.emitExpr(expr.children[0]) & ")"
@@ -6781,7 +6837,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         fields.add jsString(key) & ": " & arguments[i]
       var body: seq[string]
       for i in expr.propCount ..< arguments.len:
-        body.add(if expr.children[i].kind == wekVoid: "null" else: arguments[i])
+        body.add(if expr.children[i].kind == wekNil: "null" else: arguments[i])
       "new " & expr.text & "({" & fields.join(", ") & "}, [" &
         body.join(", ") & "], false, " &
         (if expr.immutable: "true" else: "false") & ")"
@@ -6930,7 +6986,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   of wekYield:
     let yielded = emitter.temp()
     emitter.line("const " & yielded & " = " & emitter.emitExpr(expr.children[0]) & ";")
-    emitter.line("if (" & yielded & " !== undefined) yield " & yielded & ";")
+    emitter.line("yield " & yielded & ";")
     "undefined"
   of wekAwait:
     "await $gene_await(" & emitter.emitExpr(expr.children[0]) & ")"
@@ -7132,9 +7188,9 @@ proc moduleAny(module: WebModule, predicate: proc(expr: WebExpr): bool): bool =
     if predicate(root): return true
 
 proc usesStructuralEquality(expr: WebExpr): bool =
-  if expr.kind == wekBinary and expr.text in ["==", "!="] and
-      expr.children[0].typ.kind in
-        {wtkList, wtkPropMap, wtkMap, wtkNode, wtkAny, wtkNominal}:
+  if expr.kind == wekBinary and expr.text in ["==", "!=", "same?"] and
+      comparisonNeedsHelper(expr.text, expr.children[0].typ,
+                            expr.children[1].typ):
     return true
   for child in expr.children:
     if usesStructuralEquality(child): return true
@@ -7332,6 +7388,8 @@ proc emitStructuralEquality(emitter: var WebEmitter,
     (if emitter.typescript: ": boolean" else: "") & " {")
   inc emitter.indent
   emitter.line("if (a === b) return true;")
+  # A host `undefined` is nil: nil equals only nil, whichever form it takes.
+  emitter.line("if (a == null || b == null) return a == b;")
   emitter.line("if (a?.[Symbol.for(\"gene.callable_view\")] === true || b?.[Symbol.for(\"gene.callable_view\")] === true) return false;")
   emitter.line("if (typeof a === \"symbol\" && typeof b === \"symbol\") return Symbol.keyFor(a) === Symbol.keyFor(b);")
   emitter.line("if (Array.isArray(a) || Array.isArray(b)) {")
@@ -7354,6 +7412,12 @@ proc emitStructuralEquality(emitter: var WebEmitter,
   if includeObjects:
     emitter.line("if (a && b && typeof a === \"object\" && typeof b === \"object\") {")
     inc emitter.indent
+    # Only Gene data compares by contents: plain objects and prop maps, nodes,
+    # ranges and record instances (marked at construction). Every other object
+    # (buffers, promises, tasks, streams, iterators, event targets, host class
+    # instances) is equal only to itself, as in the VM.
+    emitter.line("const $plain = (v" & (if emitter.typescript: ": any" else: "") & ") => { const p = Object.getPrototypeOf(v); return p === Object.prototype || p === null || v[Symbol.for(\"gene.record\")] === true || v.constructor?.name === \"GeneNode\" || v.constructor?.name === \"GeneRange\"; };")
+    emitter.line("if (!$plain(a) || !$plain(b)) return false;")
     emitter.line("const aKeys = Object.keys(a).filter(key => key !== \"meta\");")
     emitter.line("const bKeys = Object.keys(b).filter(key => key !== \"meta\");")
     emitter.line("if (aKeys.length !== bKeys.length) return false;")
@@ -7364,6 +7428,14 @@ proc emitStructuralEquality(emitter: var WebEmitter,
   emitter.line("return false;")
   dec emitter.indent
   emitter.line("}")
+  emitter.line()
+  # `same?` is identity, except that nil is one value: null and a host
+  # `undefined` are the same nil. The helper evaluates each operand once.
+  let sameParams =
+    if emitter.typescript: "a: any, b: any" else: "a, b"
+  emitter.line("function $gene_same(" & sameParams & ")" &
+    (if emitter.typescript: ": boolean" else: "") &
+    " { return a === b || (a == null && b == null) || (a != null && b != null && a.constructor?.name === \"GeneRange\" && b.constructor?.name === \"GeneRange\" && a.start === b.start && a.stop === b.stop && a.step === b.step && a.inclusive === b.inclusive); }")
   emitter.line()
 
 proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = false) =
@@ -7436,9 +7508,9 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
     inc emitter.indent
     case typ.kind
     of wtkNil:
+      # A host `undefined` is nil: convert it here so Gene code only sees null.
+      emitter.line("if (value === undefined) return null;")
       emitter.line("if (value !== null) $gene_type_error(where, \"Nil\", value);")
-    of wtkVoid:
-      emitter.line("if (value !== undefined) $gene_type_error(where, \"Void\", value);")
     of wtkBool:
       emitter.line("if (typeof value !== \"boolean\") $gene_type_error(where, \"Bool\", value);")
     of wtkStr:
@@ -7451,6 +7523,8 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
       emitter.line("if (typeof value !== \"number\") $gene_type_error(where, \"F64\", value);")
     of wtkAny:
       discard
+    of wtkPresent:
+      emitter.line("if (value == null) $gene_type_error(where, \"Present\", value);")
     of wtkNever:
       emitter.line("$gene_type_error(where, \"Never\", value);")
     of wtkList:
@@ -7764,6 +7838,7 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
   #
   # Non-enumerable so the closed-schema loop over `Object.keys` cannot see it
   # and reject the instance for carrying an undeclared field.
+  emitter.line("Object.defineProperty(this, Symbol.for(\"gene.record\"), { value: true });")
   emitter.line("if ($in_progress) Object.defineProperty(this, \"$gene_in_progress\", { value: true, writable: true, configurable: true, enumerable: false });")
   emitter.line("if (!$in_progress) { this.$gene_validate(); if (immutable) { Object.freeze(this.$gene_body); Object.freeze(this); } }")
   dec emitter.indent
@@ -8163,7 +8238,8 @@ proc emitModule(module: WebModule, typescript: bool,
       if param.named and not param.optional: needsNode = true
   needsRange = moduleUsesTypeKind(module, wtkRange) or
     moduleUsesExprKind(module, {wekRange})
-  needsPath = moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath})
+  needsPath = moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath}) or
+    moduleUsesBuiltin(module, ["delete"])
   needsDom = moduleUsesExprKind(module, {wekDomRender})
   let needsDomEvents = moduleUsesExprKind(module, {wekDomListener}) or
     moduleUsesTypeKind(module, wtkDomTarget)
@@ -8237,8 +8313,8 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("const $gene_prop_order = Symbol.for(\"gene.prop-order\");")
     emitter.line("function $gene_prop_map(entries" & dynamic & ")" & dynamic & " {")
     inc emitter.indent
-    emitter.line("const value = Object.fromEntries(entries.filter((entry" & dynamic & ") => entry[1] !== undefined));")
-    emitter.line("Object.defineProperty(value, $gene_prop_order, { value: entries.filter((entry" & dynamic & ") => entry[1] !== undefined).map((entry" & dynamic & ") => entry[0]) });")
+    emitter.line("const value = Object.fromEntries(entries.map((entry" & dynamic & ") => [entry[0], entry[1] === undefined ? null : entry[1]]));")
+    emitter.line("Object.defineProperty(value, $gene_prop_order, { value: entries.map((entry" & dynamic & ") => entry[0]) });")
     emitter.line("return value;")
     dec emitter.indent
     emitter.line("}")
@@ -8269,14 +8345,17 @@ proc emitModule(module: WebModule, typescript: bool,
       (if typescript: ": number" else: "") &
       " { return this.items.findIndex(entry => $gene_equal(entry[0], key)); }")
     emitter.line("get(key" & (if typescript: ": K" else: "") & ")" &
-      (if typescript: ": V | undefined" else: "") &
-      " { const index = this.indexOf(key); return index < 0 ? undefined : this.items[index][1]; }")
+      (if typescript: ": V | null" else: "") &
+      " { const index = this.indexOf(key); return index < 0 ? null : this.items[index][1]; }")
     emitter.line("has(key" & (if typescript: ": K" else: "") & ")" &
       (if typescript: ": boolean" else: "") &
       " { return this.indexOf(key) >= 0; }")
+    emitter.line("delete(key" & (if typescript: ": K" else: "") & ")" &
+      (if typescript: ": void" else: "") &
+      " { const index = this.indexOf(key); if (index >= 0) this.items.splice(index, 1); }")
     emitter.line("#insert(key" & (if typescript: ": K, value: V" else: ", value") &
       ")" & (if typescript: ": this" else: "") &
-      " { const index = this.indexOf(key); if (value === undefined) { if (index >= 0) this.items.splice(index, 1); } else if (index < 0) this.items.push([key, value]); else this.items[index][1] = value; return this; }")
+      " { if (value === undefined) value = null; const index = this.indexOf(key); if (index < 0) this.items.push([key, value]); else this.items[index][1] = value; return this; }")
     emitter.line("[Symbol.iterator]()" &
       (if typescript: ": Iterator<[K, V]>" else: "") &
       " { return this.items[Symbol.iterator](); }")
@@ -8341,9 +8420,9 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("function $gene_buffer_length(length" & anyType & ")" & numType & " { const n = $gene_index_value(length); if (n < 0) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"buffer length must be non-negative\" }, [], true); return n; }")
     emitter.line("function $gene_at(seq" & anyType & ", index" & anyType &
       ")" & anyType &
-      " { index = $gene_index_value(index); return index < 0 ? seq[seq.length + index] : seq[index]; }")
+      " { index = $gene_index_value(index); const found = index < 0 ? seq[seq.length + index] : seq[index]; return found === undefined ? null : found; }")
     emitter.line("function $gene_buffer_int_at(seq" & anyType & ", index" & anyType & ")" & anyType &
-      " { const value = $gene_at(seq, index); return value === undefined ? undefined : BigInt(value); }")
+      " { const value = $gene_at(seq, index); return value == null ? null : BigInt(value); }")
     emitter.line("function $gene_index(name" & strType & ", length" & numType &
       ", index" & anyType & ")" & numType &
       " { index = $gene_index_value(index); const at = index < 0 ? length + index : index;" &
@@ -8487,23 +8566,23 @@ proc emitModule(module: WebModule, typescript: bool,
     if moduleUsesBuiltin(module, ["map", "filter_map", "filter", "take", "into", "each"]):
       let anyType = if typescript: ": any" else: ""
       emitter.line("function $gene_stream_map(source" & anyType & ", mapper" &
-        anyType & ", dropVoid = false)" & anyType & " {")
+        anyType & ", dropNil = false, filtering = false)" & anyType & " {")
       inc emitter.indent
-      emitter.line("const mapValue = (item" & anyType & ") => { const value = $gene_invoke_callable(mapper, [item]); return value === undefined && !dropVoid ? null : value; };")
-      emitter.line("if (Array.isArray(source)) { const result" & anyType & " = []; for (const item of source) { const mapped = mapValue(item); if (mapped !== undefined) result.push(mapped); } return Object.isFrozen(source) ? Object.freeze(result) : result; }")
+      emitter.line("const mapValue = (item" & anyType & ") => { const value = $gene_invoke_callable(mapper, [item]); return value === undefined && !filtering ? null : value; };")
+      emitter.line("if (Array.isArray(source)) { const result" & anyType & " = []; for (const item of source) { const mapped = mapValue(item); if (mapped !== undefined && !(dropNil && mapped === null)) result.push(mapped); } return Object.isFrozen(source) ? Object.freeze(result) : result; }")
       if moduleUsesTypeKind(module, wtkMap) or moduleExprUsesTypeKind(module, wtkMap):
         emitter.line("if (source?.$gene_map === true) { const entries" &
           (if typescript: ": Array<[any, any]>" else: "") &
-          " = []; for (const [key, item] of source) { const mapped = mapValue(item); if (mapped !== undefined) entries.push([key, mapped]); } return new GeneMap(entries); }")
+          " = []; for (const [key, item] of source) { const mapped = mapValue(item); if (mapped !== undefined && !(dropNil && mapped === null)) entries.push([key, mapped]); } return new GeneMap(entries); }")
       if moduleUsesTypeKind(module, wtkPropMap) or moduleExprUsesTypeKind(module, wtkPropMap):
-        emitter.line("if (!source?.has_next) { const entries" & anyType & " = []; for (const [key, item] of $gene_prop_pairs(source)) { const mapped = mapValue(item); if (mapped !== undefined) entries.push([Symbol.keyFor(key), mapped]); } const result = $gene_prop_map(entries); return Object.isFrozen(source) ? Object.freeze(result) : result; }")
-      emitter.line("function* mapped() { while (source.has_next()) yield mapValue(source.next()); } return new GeneStream(mapped(), source);")
+        emitter.line("if (!source?.has_next) { const entries" & anyType & " = []; for (const [key, item] of $gene_prop_pairs(source)) { const mapped = mapValue(item); if (mapped !== undefined && !(dropNil && mapped === null)) entries.push([Symbol.keyFor(key), mapped]); } const result = $gene_prop_map(entries); return Object.isFrozen(source) ? Object.freeze(result) : result; }")
+      emitter.line("function* mapped() { while (source.has_next()) { const mapped = mapValue(source.next()); if (mapped === undefined || (dropNil && mapped === null)) continue; yield mapped; } } return new GeneStream(mapped(), source);")
       dec emitter.indent
       emitter.line("}")
       emitter.line("function $gene_stream_filter(source" & anyType &
         ", predicate" & anyType & ")" & anyType & " {")
       inc emitter.indent
-      emitter.line("return $gene_stream_map(source, (item" & anyType & ") => { const keep = $gene_invoke_callable(predicate, [item]); return keep !== false && keep != null ? item : undefined; }, true);")
+      emitter.line("return $gene_stream_map(source, (item" & anyType & ") => { const keep = $gene_invoke_callable(predicate, [item]); return keep !== false && keep != null ? item : undefined; }, false, true);")
       dec emitter.indent
       emitter.line("}")
       emitter.line("function $gene_stream_take(source" & anyType & ", count" &
@@ -8661,7 +8740,7 @@ proc emitModule(module: WebModule, typescript: bool,
     inc emitter.indent
     emitter.line("if (typeof value === \"string\") return value;")
     emitter.line("if (value === null) return \"nil\";")
-    emitter.line("if (value === undefined) return \"void\";")
+    emitter.line("if (value === undefined) return \"nil\";")
     emitter.line("if (typeof value === \"symbol\") return Symbol.keyFor(value) ?? value.description ?? \"\";")
     emitter.line("return String(value);")
     dec emitter.indent
@@ -9171,7 +9250,8 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("const result = value(); ws(); if (i !== text.length) throw new SyntaxError(`trailing JSON at ${i}`); return result;")
     dec emitter.indent
     emitter.line("}")
-    emitter.line("function $gene_json_stringify(value" & dynamic & ")" &
+    emitter.line("function $gene_json_stringify(value" & dynamic & ", omitNil" &
+      (if typescript: ": boolean = false" else: " = false") & ")" &
       (if typescript: ": string" else: "") & " {")
     inc emitter.indent
     emitter.line("const seen = new WeakSet();")
@@ -9180,7 +9260,7 @@ proc emitModule(module: WebModule, typescript: bool,
     inc emitter.indent
     emitter.line("if (item === null) return \"null\"; if (typeof item === \"bigint\") return item.toString(); if (typeof item === \"number\") { if (!Number.isFinite(item)) throw new TypeError(\"JSON cannot encode non-finite F64\"); return String(item); } if (typeof item === \"string\" || typeof item === \"boolean\") return JSON.stringify(item);")
     emitter.line("if (typeof item !== \"object\") throw new TypeError(`JSON cannot encode ${typeof item}`); if (seen.has(item)) throw new TypeError(\"JSON cannot encode cycles\"); seen.add(item);")
-    emitter.line("let result; if (Array.isArray(item)) result = `[${item.map(encode).join(\",\")}]`; else if (item?.$gene_map === true) result = `{${[...item].map(([key, val]) => { if (typeof key !== \"string\") throw new TypeError(\"JSON Map keys must be Str\"); return `${JSON.stringify(key)}:${encode(val)}`; }).join(\",\")}}`; else result = `{${Object.entries(item).map(([key, val]) => `${JSON.stringify(key)}:${encode(val)}`).join(\",\")}}`; seen.delete(item); return result;")
+    emitter.line("let result; if (Array.isArray(item)) result = `[${item.map(encode).join(\",\")}]`; else if (item?.$gene_map === true) result = `{${[...item].filter(([key, val]) => !(omitNil && val == null)).map(([key, val]) => { if (typeof key !== \"string\") throw new TypeError(\"JSON Map keys must be Str\"); return `${JSON.stringify(key)}:${encode(val)}`; }).join(\",\")}}`; else result = `{${Object.entries(item).filter(([key, val]) => !(omitNil && val == null)).map(([key, val]) => `${JSON.stringify(key)}:${encode(val)}`).join(\",\")}}`; seen.delete(item); return result;")
     dec emitter.indent
     emitter.line("}; return encode(value);")
     dec emitter.indent
@@ -9189,6 +9269,8 @@ proc emitModule(module: WebModule, typescript: bool,
   if needsPath:
     let dynamic = if typescript: ": any" else: ""
     emitter.line("function $gene_get(value" & dynamic & ", key" & dynamic & ")" &
+      dynamic & " { const found = $gene_get_raw(value, key); return found === undefined ? null : found; }")
+    emitter.line("function $gene_get_raw(value" & dynamic & ", key" & dynamic & ")" &
       dynamic & " {")
     inc emitter.indent
     emitter.line("if (value == null) return undefined;")
@@ -9210,9 +9292,22 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("return value[key];")
     dec emitter.indent
     emitter.line("}")
+    emitter.line("function $gene_delete(value" & dynamic & ", key" & dynamic & ")" & dynamic & " {")
+    inc emitter.indent
+    emitter.line("if (value == null) throw new TypeError(\"cannot mutate an absent value\");")
+    emitter.line("if (Object.isFrozen(value)) throw new TypeError(\"cannot mutate a frozen value\");")
+    emitter.line("if (value?.$gene_map === true) { const had = value.has(key); const old = had ? value.get(key) : null; if (had) value.delete(key); return old; }")
+    emitter.line("key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key);")
+    emitter.line("if (!Object.prototype.hasOwnProperty.call(value, key)) return null;")
+    emitter.line("const old = value[key]; delete value[key];")
+    emitter.line("if (value[$gene_prop_order]) { const at = value[$gene_prop_order].indexOf(key); if (at >= 0) value[$gene_prop_order].splice(at, 1); }")
+    emitter.line("return old === undefined ? null : old;")
+    dec emitter.indent
+    emitter.line("}")
     emitter.line("function $gene_set(value" & dynamic & ", key" & dynamic &
       ", next" & dynamic & ")" & dynamic & " {")
     inc emitter.indent
+    emitter.line("if (next === undefined) next = null;")
     emitter.line("if (value == null) throw new TypeError(\"cannot mutate an absent value\");")
     emitter.line("if (Object.isFrozen(value)) throw new TypeError(\"cannot mutate a frozen value\");")
     emitter.line("if (value[$gene_prop_order]) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); const order = value[$gene_prop_order]; const at = order.indexOf(key); if (next === undefined) { delete value[key]; if (at >= 0) order.splice(at, 1); } else { if (at < 0) order.push(key); Object.defineProperty(value, key, { value: next, enumerable: true, writable: true, configurable: true }); } return next; }")
@@ -9404,8 +9499,9 @@ proc emitDeclarations(module: WebModule): string =
     result.add "export declare class GeneMap<K, V> implements Iterable<[K, V]> {\n"
     result.add "  constructor(entries?: Iterable<[K, V]>);\n"
     result.add "  readonly size: number;\n"
-    result.add "  get(key: K): V | undefined;\n"
+    result.add "  get(key: K): V | null;\n"
     result.add "  has(key: K): boolean;\n"
+    result.add "  delete(key: K): void;\n"
     result.add "  [Symbol.iterator](): Iterator<[K, V]>;\n"
     result.add "}\n"
   if moduleUsesTypeKind(module, wtkNode):
@@ -9807,7 +9903,7 @@ proc checkWebEntry(module: WebModule, identity: string):
     raise webError(found.loc,
       "web module entry `main` takes its mount positionally, not as `^" &
       found.params[0].argName & "`")
-  if found.returnType.kind != wtkVoid:
+  if found.returnType.kind != wtkNil:
     raise webError(found.loc,
       "web module entry `main` must return Void, got " &
       typeName(found.returnType))

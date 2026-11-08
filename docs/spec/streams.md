@@ -31,7 +31,7 @@ retain normal closure semantics; aliasing a Stream shares its cursor.
 Executable `yield` requires a marker on its own enclosing callable. A nested
 generator does not make its factory a generator, and quoted yield forms remain
 data. Marked generators may omit their result annotation or contain no yield.
-Fallthrough and `(return)` end production; `(return void)` is also permitted.
+Fallthrough and `(return)` end production.  `(return nil)` is also permitted.
 Other explicit return values are invalid. A final body expression is discarded,
 including a Stream value; delegation uses `for ... yield`.
 
@@ -98,8 +98,8 @@ its limit. Close that original Stream when ownership ends:
 
 - Streams are lazy pull cursors. `has_next` is false at exhaustion;
   `peek`/`next` raise typed `EndOfStream`.
-- Raw `void` emissions are skipped. `map` converts callback void results to nil
-  before emission; `filter_map` explicitly drops them. Generator `return`
+- Emissions, including nil, are delivered. `map` emits every callback result;
+  `filter_map` drops nil results. Generator `return`
   terminates without yielding a return value; natural fallthrough is equivalent.
 - The first producer error is terminal, closes owned upstream resources once,
   and propagates once. Later pulls observe exhaustion.
@@ -112,8 +112,8 @@ its limit. Close that original Stream when ownership ends:
 - Mapping adapters acquire their upstream at construction. Close releases
   captured callbacks/arguments and closes an attached upstream even before
   the first pull. Lookahead caches one result without repeating callbacks;
-  reentrant pulls are rejected. Map normalizes callback void to nil;
-  filter_map and raw generator emissions skip void.
+  reentrant pulls are rejected. Map emits every callback result;
+  filter_map drops nil results.
 - `drop` skips a nonnegative Int count lazily before forwarding later items.
   It owns its upstream even for a zero count; close before the first pull
   closes that upstream without starting an unstarted generator. Closing after
@@ -133,7 +133,7 @@ its limit. Close that original Stream when ownership ends:
 - Channels are bounded FIFO queues. Close rejects future sends and permits
   buffered draining before `ChannelClosed`.
 - `try_recv` returns `TryRecv/empty` or `#(TryRecv/value payload)`, preserving
-  empty, `void`, `nil`, and ordinary payloads as distinct states.
+  empty, `nil`, and ordinary payloads as distinct states.
 
 ## Backends and measurement
 

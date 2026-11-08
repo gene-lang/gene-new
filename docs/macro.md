@@ -929,7 +929,7 @@ module-level macros run against a compile-time copy of their module.
   - to insert a value, insert data.
 ```
 
-Allowed in a module-level result: data (nil, void, Bool, numbers, Str, Bytes,
+Allowed in a module-level result: data (nil, Bool, numbers, Str, Bytes,
 Char, Sym, Regex, Range, Date, Time, DateTime, Timezone, Duration, and lists,
 maps, sets, hash maps, nodes and pipelines of data), intrinsics that every
 phase shares (the native functions of the `gene` root such as `$println`, and

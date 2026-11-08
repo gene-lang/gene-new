@@ -7,7 +7,7 @@
 
 (type Codec ^props {^state Any ^library Any ^lease Any
                     ^feed_fn Any ^pull_fn Any ^action_fn Any ^error_fn Any
-                    ^closed Cell}
+                    ^closed Cell ^ended Cell}
   (ctor [state library lease feed_fn pull_fn action_fn error_fn]
     (set self/state state)
     (set self/library library)
@@ -16,7 +16,8 @@
     (set self/pull_fn pull_fn)
     (set self/action_fn action_fn)
     (set self/error_fn error_fn)
-    (set self/closed ($cell false)))
+    (set self/closed ($cell false))
+    (set self/ended ($cell false)))
   (message feed [data : Bytes]
     (if self/closed/.get (fail (new ArchiveError "codec is closed")))
     (let bytes ($buffer C/UInt8 ($binary/to_list data)))
@@ -35,7 +36,10 @@
     (if (> count 0)
       ($binary/slice ($binary/from_list output/.to_list) 0 count)
       (if (== count 0) nil
-        (if (== count -1) void
+        (if (== count -1)
+          (do
+            (self/ended .set true)
+            nil)
           (fail (new ArchiveError (self/error_fn self/state)))))))
   (message action [kind : Int]
     (if self/closed/.get (fail (new ArchiveError "codec is closed")))
@@ -114,11 +118,11 @@
         (if self/eof/.get (return nil))
         (while true
           (let output (self/codec .pull max_bytes))
-          (if (== output void)
+          (if ($present? output) (return output))
+          (if self/codec/ended/.get
             (do
               (self/eof .set true)
               (return nil)))
-          (if (!= output nil) (return output))
           (let input (await (self/source .AsyncReader:read 65536)))
           (if (== input nil)
             (do
@@ -200,8 +204,8 @@
       (try
         (self/codec .action 2)
         (var part (self/codec .pull 65536))
-        (while (!= part void)
-          (if (== part nil)
+        (while (! self/codec/ended/.get)
+          (if ($absent? part)
             (fail (new ArchiveError "gzip finish made no progress")))
           (await ($io/write_all self/sink part))
           (set part (self/codec .pull 65536)))
@@ -238,11 +242,11 @@
           (self/codec .feed ($binary/slice data position amount))
           (set position (+ position amount))
           (var part (self/codec .pull 65536))
-          (while (!= part nil)
-            (if (== part void)
-              (fail (new ArchiveError "gzip ended before finish")))
+          (while ($present? part)
             (await ($io/write_all self/sink part))
-            (set part (self/codec .pull 65536))))
+            (set part (self/codec .pull 65536)))
+          (if self/codec/ended/.get
+            (fail (new ArchiveError "gzip ended before finish"))))
         length
         ensure (self/busy .set false))))
     (let task (spawn ^lane root (operation)))
@@ -262,11 +266,11 @@
       (try
         (self/codec .action 1)
         (var part (self/codec .pull 65536))
-        (while (!= part nil)
-          (if (== part void)
-            (fail (new ArchiveError "gzip ended during flush")))
+        (while ($present? part)
           (await ($io/write_all self/sink part))
           (set part (self/codec .pull 65536)))
+        (if self/codec/ended/.get
+          (fail (new ArchiveError "gzip ended during flush")))
         (await self/sink/.AsyncWriter:flush)
         nil
         ensure (self/busy .set false))))

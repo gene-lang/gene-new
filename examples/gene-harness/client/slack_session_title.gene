@@ -7,7 +7,7 @@
 (fn create_session_title [target : EventTarget] : SlackSessionTitle
   (SlackSessionTitle ^text "" ^target target))
 
-(fn paint_title [state : SlackSessionTitle, url : Str] : Void
+(fn paint_title [state : SlackSessionTitle, url : Str] : Nil
   (if_yes (&& ($present? state/rendered_text)
     (== (string_value state/rendered_text) state/text) (== (string_value state/rendered_url) url)) (return))
   (set state/rendered_text state/text) (set state/rendered_url url)
@@ -17,7 +17,7 @@
     `(a ^href %url ^target "_blank" ^rel "noopener noreferrer"
       ^title "Open Slack thread" %state/text))))
 
-(fn update_session_title [state : SlackSessionTitle, text : Str, shared : Any, session : Str] : Void
+(fn update_session_title [state : SlackSessionTitle, text : Str, shared : Any, session : Str] : Nil
   (set state/text text)
   (var transport (string_value shared/transport))
   (var url (if (&& (== transport "slack") (!= session ""))

@@ -82,7 +82,7 @@
       (var total 0)
       (while true
         (let part (await (request/body .AsyncReader:read 65536)))
-        (if ($nil? part) (then (break)))
+        (if ($absent? part) (then (break)))
         (set total (+ total ($binary/size part))))
       (return (text 200 ($to_str total)))))
   (if (== request/path "/stream")

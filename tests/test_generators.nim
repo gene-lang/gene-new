@@ -40,7 +40,7 @@ suite "explicit generator declarations":
       newGlobalScope()).intVal == 42
 
   test "known incompatible result contracts fail during compilation":
-    for annotation in ["Int", "Void", "(List Int)", "(| Int Nil)"]:
+    for annotation in ["Int", "Nil", "(List Int)", "(| Int Nil)"]:
       expect GeneError:
         discard compileSource("(fn ^^generator bad [] : " & annotation & " (return))")
     expect GeneError:

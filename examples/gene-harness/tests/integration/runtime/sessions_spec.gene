@@ -74,7 +74,7 @@
         (runtime .put "sessions" restored)
         (try
           ($assert (== ($size restored_events/streams/.get) 1) "startup retained session streams")
-          ($assert (== (restored_events/streams/.get .get "session:heartbeat") void)
+          ($assert ($absent? (restored_events/streams/.get .get "session:heartbeat"))
             "recovery retained the interrupted session stream")
           (let waiting (load_session restored "a"))
           ($assert (session_busy? waiting) "waiting round did not restore")

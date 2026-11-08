@@ -269,7 +269,6 @@ proc literalValue(value: Value): AbstractValue =
   result = AbstractValue(hasLiteral: true, literal: value)
   case value.kind
   of vkNil: result.kind = avScalar; result.typ = newSym("Nil")
-  of vkVoid: result.kind = avScalar; result.typ = newSym("Void")
   of vkBool: result.kind = avScalar; result.typ = newSym("Bool")
   of vkInt: result.kind = avScalar; result.typ = newSym("Int")
   of vkFloat: result.kind = avScalar; result.typ = newSym("Float")
@@ -379,7 +378,7 @@ proc valueFromType(analysis: ErrorAnalysis, typ: Value,
   result = unknownValue()
   result.typ = typ
   if typ.kind == vkSymbol:
-    if typ.symVal in ["Int", "I64", "I32", "Float", "F64", "Bool", "Str", "Nil", "Void", "Char"]:
+    if typ.symVal in ["Int", "I64", "I32", "Float", "F64", "Bool", "Str", "Nil", "Char"]:
       result.kind = avScalar
     elif typ.symVal == "List": result.kind = avList
     elif typ.symVal == "Range":
@@ -488,7 +487,7 @@ proc newErrorAnalysis*(root: Chunk,
     result.types[typ.info.identity] = typ
     builtins.values[name] = ErrorBinding(immutable: true,
       value: AbstractValue(kind: avType, nominal: typ, name: name))
-  for name in ["Int", "Str", "Bool", "Float", "F64", "I64", "I32", "Nil", "Void",
+  for name in ["Int", "Str", "Bool", "Float", "F64", "I64", "I32", "Nil", "Present",
                "Any", "Never", "List", "Map", "PropMap", "Range", "Callable", "Fn", "Task", "Stream"]:
     builtins.values[name] = ErrorBinding(immutable: true,
       value: AbstractValue(kind: avType, name: name, typ: newSym(name)))
@@ -892,7 +891,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
           result.errors.open = true
           break
     result.value = scalarValue("Bool")
-  of "same?", "not", "nil?", "void?", "present?":
+  of "same?", "not", "absent?", "present?":
     result.value = scalarValue("Bool")
   of "+", "-", "*", "<", ">", "<=", ">=":
     var allNumeric = true

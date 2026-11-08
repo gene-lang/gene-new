@@ -29,10 +29,10 @@ merely because a call uses a spread.
 ## Failed calls
 
 Calling a non-callable value names the authored head and the value's kind.
-A missing callee reports void; a missing `gene` namespace path names its first
+A missing callee reports nil; a missing `gene` namespace path names its first
 missing exported segment (for example, a denied `gene/fs`). Diagnostic
 construction does not reevaluate the callee, arguments, or Path callbacks.
-Ordinary missing property reads still return void. Native calls without an
+Ordinary missing property reads return nil. Native calls without an
 authored site retain the fallback `value is not callable: <Kind>` diagnostic.
 
 ## Fexpr evaluation boundaries
@@ -119,8 +119,8 @@ requires a raw Message. Views are not serializable or automatically Send.
 The positional vector is exact unless it ends in `T...`, which checks zero or
 more further arguments. `^named {^key T}` is a closed named shape. Explicitly
 nil-admitting types permit omission; `Any` remains required. Omitted arguments
-stay omitted, so target defaults run per invocation. Supplied runtime Void
-remains supplied; literal void props follow the reader's normal removal rule.
+stay omitted, so target defaults run per invocation. A supplied nil stays
+supplied.
 The target's own arity and parameter checks still apply after view checks.
 
 Inputs and results cross ordinary typed boundaries using the signature's
@@ -272,10 +272,7 @@ retain identity; borrowed CallerEnv and construction values cannot escape
 through the envelope.
 
 Omitted values are never filled with nil or computed defaults. Supplied nil
-stays supplied. Raw Void values already present in positional input remain
-supplied. Ordinary Gene maps remove Void-valued entries before this API runs;
-a named Void therefore cannot be transported through its PropMap input. Use
-ordinary direct named invocation for that case. Reflection does not change
+stays supplied, in positional input and in named properties alike. Reflection does not change
 the existing collection or call-envelope semantics.
 
 A description, including a copied or edited description, provides no authority
@@ -420,7 +417,7 @@ when argument evaluation itself must be guarded per item.
 Ranges, and user types with a type-direct conversion are accepted; a Map needs
 explicit `-> $to_pairs_stream`, with `[key value]` as one item. Unsupported
 scalars and nil are not singleton or empty streams. Conversion must produce a
-Stream and must not pull items. Per-item `void` results become `nil`; `nil`,
+Stream and must not pull items. Per-item results are delivered as they are; `nil`,
 Lists, Streams, and Tasks remain individual results.
 
 Preparation can fail immediately. Callback/dispatch/boundary failures occur
@@ -459,7 +456,7 @@ use their intrinsic meaning regardless of ordinary variables named `path`,
 `?.message` is the absence-guarded send. It is `.message` with one additional
 rule, applied to the receiver only:
 
-- the receiver is evaluated exactly once; if it is **absent** (`nil` or `void`)
+- the receiver is evaluated exactly once; if it is **absent** (`nil`)
   the send yields that receiver unchanged and no message is resolved, no
   argument or named-argument form is evaluated, and no impl runs;
 - a present receiver takes the ordinary dot-send path in full, so an unresolvable

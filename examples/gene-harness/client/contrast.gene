@@ -42,7 +42,7 @@
   (var b (luminance back))
   (/ (+ ($math/max a b) 0.05) (+ ($math/min a b) 0.05)))
 
-(fn update_ratio [element : EventTarget, role : Str, source : Str] : Void
+(fn update_ratio [element : EventTarget, role : Str, source : Str] : Nil
   (var probe ($dom/create_element "span"))
   (set probe/hidden true)
   ($dom/append element probe)

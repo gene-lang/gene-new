@@ -127,7 +127,7 @@
 
 # A receipt stores frozen data, which a live object such as `workspace` cannot be.
 (fn displayable_result [value]
-  (if ($nil? value) (return "nil"))
+  (if ($absent? value) (return "nil"))
   (try ($freeze value) catch Any ($to_str value)))
 
 (fn run_command [ctx]

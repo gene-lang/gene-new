@@ -12,11 +12,11 @@
 (fn navigation_key [ui : UiClient] : Str
   $"gene-harness/ui-navigation/${ui/workspace}")
 
-(fn navigation_notice [ui : UiClient, message : Str] : Void
+(fn navigation_notice [ui : UiClient, message : Str] : Nil
   (notice ^key "navigation" ^origin {^workspace ui/workspace}
     ^^sticky ^severity "error" ui message))
 
-(fn persist_navigation [ui : UiClient] : Void
+(fn persist_navigation [ui : UiClient] : Nil
   (if_yes (|| ui/safe (== ui/workspace "")) (return))
   (var nav ui/navigation)
   (if (storage_set (navigation_key ui)
@@ -26,11 +26,11 @@
     (notice ^key "navigation-storage" ^origin {^workspace ui/workspace} ^^sticky ^severity "error" ui
       "View selection could not be saved in this tab. Keep the page open.")))
 
-(fn update_url [ui : UiClient, push : Bool = false] : Void
+(fn update_url [ui : UiClient, push : Bool = false] : Nil
   (var url (view_url ui/session ui/navigation/active ui/navigation/presentation ui/safe))
   (if push ($browser/push_url url) ($browser/replace_url url)))
 
-(fn capture_view [ui : UiClient] : Void
+(fn capture_view [ui : UiClient] : Nil
   (if_yes ($absent? ui/descriptor) (return))
   (set ui/navigation/scroll ($dom/scroll_top ($dom/element "ui_panel")))
   (for [key raw] in ui/nodes
@@ -38,7 +38,7 @@
     (if_yes ($dom/focused? node/element) (set ui/navigation/focus node/key)))
   (persist_view ui))
 
-(fn restore_focus [ui : UiClient] : Void
+(fn restore_focus [ui : UiClient] : Nil
   (if_not ui/navigation/focus_pending (return))
   (set ui/navigation/focus_pending false)
   (var key ui/navigation/focus)
@@ -50,7 +50,7 @@
       ($dom/focus node/element)))
   ($dom/set_scroll_top ($dom/element "ui_panel") ui/navigation/scroll))
 
-(fn layout [ui : UiClient] : Void
+(fn layout [ui : UiClient] : Nil
   (var nav ui/navigation)
   (var bar ($dom/element "ui_host"))
   (set bar/hidden (&& (! ui/safe) nav/bar_hidden))
@@ -176,7 +176,7 @@
   (persist_navigation ui)
   true)
 
-(fn update_views [ui : UiClient, components : (List Any)] : Void
+(fn update_views [ui : UiClient, components : (List Any)] : Nil
   (var nav ui/navigation)
   (set nav/views components)
   (var fresh (!= nav/workspace ui/workspace))
@@ -215,22 +215,22 @@
           (persist_navigation ui)
           (nav/refresh))))))
 
-(fn install_router [ui : UiClient] : Void
+(fn install_router [ui : UiClient] : Nil
   ($dom/add_event_listener ($dom/element "ui_view_picker") "change"
-    (fn [event : Any] : Void (navigate ui ($dom/input_value ($dom/element "ui_view_picker")))))
+    (fn [event : Any] : Nil (navigate ui ($dom/input_value ($dom/element "ui_view_picker")))))
   ($dom/add_event_listener ($dom/element "ui_toggle") "click"
-    (fn [event : Any] : Void (toggle ui)))
+    (fn [event : Any] : Nil (toggle ui)))
   ($dom/add_event_listener ($dom/element "ui_side") "change"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (set ui/navigation/side ($dom/input_value ($dom/element "ui_side")))
       (persist_navigation ui) (layout ui)))
   ($dom/add_event_listener ($dom/element "ui_width") "change"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var width : Int ($json/parse ($dom/input_value ($dom/element "ui_width"))))
       (if_yes (&& (>= width 25) (<= width 70)) (set ui/navigation/width width))
       (persist_navigation ui) (layout ui)))
   ($dom/add_event_listener ^^capture ($dom/window) "keydown"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (if_yes (|| ui/safe (keyboard_owned?) (chord_recording?) ($event/is_composing event) ($event/repeat event)) (return))
       (var chord (event_chord event))
       (var handled false)

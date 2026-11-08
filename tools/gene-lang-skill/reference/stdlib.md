@@ -18,7 +18,7 @@ Reached bare-with-`$`: `($println x)`, `($size xs)`.
 
 ```text
 $ != * + - / // < <= == > >= not panic same?
-absent? nil? present? void? empty? leaf? contains? size first last
+absent? present? empty? leaf? contains? size first last
 head props body meta declarations construct_type
 map filter take into to_stream to_pairs_stream
 freeze freeze_shallow thaw assoc_in update_in key range
@@ -31,7 +31,7 @@ read_all read_one lex_all print println
 Arithmetic is prefix, and **`//` is remainder, not floor division**: `(/ 7 2)`
 is `3` (Int division truncates, `(/ 7.0 2)` is `3.5`) while `(// 7 2)` is `1`.
 
-`$absent?` is true only for `nil` and `void`; `$present?` is true for every
+`$absent?` is true only for `nil`; `$present?` is true for every
 other value, including `false`, zero, empty strings and empty collections.
 Prefer `($present? value)` to `(! ($absent? value))`.
 
@@ -43,7 +43,7 @@ stream remains lazy; `into` collects it and `each` drains it for effects.
 Bare, no sigil, because annotations resolve names structurally.
 
 ```text
-Nil Void Bool Int Float Str Sym Char List Map Node Range
+Nil Present Bool Int Float Str Sym Char List Map Node Range
 I8 I16 I32 I64 U8 U16 U32 U64 F32 F64 Buffer
 Cell AtomicCell Channel Task TaskOutcome Actor ReplyTo Stream
 Date DateTime Time Timezone Duration
@@ -117,7 +117,7 @@ already be a UTF-8 boundary.
 ($str/trim " ok ")                   # "ok"
 ("a,b" .split ",")                  # ["a" "b"]
 (" ok " .trim)                      # "ok"
-(["a" "b"] .get -1)                 # "b"; an out-of-range index returns void
+(["a" "b"] .get -1)                 # "b"; an out-of-range index returns nil
 (["a" "b"] .join ",")               # "a,b"; separator defaults to ""
 ```
 
@@ -164,7 +164,7 @@ and full-command forms work with the streaming and inherited-stdio variants.
 Imports require a module file executed with `gene run`; `gene eval` accepts
 bindings from its `Env` and cannot load imports.
 
-`(map .get key)` takes one argument after its receiver and returns `void` for
+`(map .get key)` takes one argument after its receiver and returns `nil` for
 a missing key. Supply a fallback using `??`, rather than a second argument:
 
 ```gene
@@ -220,9 +220,9 @@ retains its browser-specific empty-separator UTF-16 code-unit behavior.
 Use `s/.byte_size` for bytes or `($size ($chars s))` for code points. On the VM,
 `$size` remains a collection function and rejects strings. `Str` has no implicit
 `size` or `get` message.
-`List.get` supports negative indices and returns `void` when missing;
+`List.get` supports negative indices and returns `nil` when missing;
 `List.join` requires string elements. These new methods work on the VM and web
-profile; web `List.get` returns `(| T Void)` and can use `??` for a fallback.
+profile; web `List.get` returns `T?` and can use `??` for a fallback.
 
 In the web profile, DOM code can create elements and text nodes and set
 attributes without embedding JavaScript:

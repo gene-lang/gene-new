@@ -28,12 +28,12 @@ const clientModule = """
   (fn label [n : Int] : Str
     (if (== n 1) "1 item" "many items"))
 
-  (fn on_click [event : Any] : Void
+  (fn on_click [event : Any] : Nil
     (var target event/target)
     (set target/text_content (label 1))
-    void)
+    nil)
 
-  (fn main [root : EventTarget] : Void
+  (fn main [root : EventTarget] : Nil
     ($dom/add_event_listener root "click" on_click)))
 
 (var page_asset widget)
@@ -282,12 +282,12 @@ rejects("capture", """
 (var connection "server-only")
 
 (web_module widget
-  (fn on_click [event : Any] : Void
+  (fn on_click [event : Any] : Nil
     (var target event/target)
     (set target/text_content connection)
-    void)
+    nil)
 
-  (fn main [root : EventTarget] : Void
+  (fn main [root : EventTarget] : Nil
     ($dom/add_event_listener root "click" on_click)))
 """, "connection")
 
@@ -297,9 +297,9 @@ rejects("authored_import", """
 (web_module widget
   (import [helper] ^from "./helper.gene")
 
-  (fn on_click [event : Any] : Void void)
+  (fn on_click [event : Any] : Nil nil)
 
-  (fn main [root : EventTarget] : Void
+  (fn main [root : EventTarget] : Nil
     ($dom/add_event_listener root "click" on_click)))
 """, "import is outside an embedded web module")
 
@@ -309,9 +309,9 @@ rejects("host_shim", """
 (web_module widget
   (js/fn shim [x : Str] : Str ^from "./shim.mjs")
 
-  (fn on_click [event : Any] : Void void)
+  (fn on_click [event : Any] : Nil nil)
 
-  (fn main [root : EventTarget] : Void
+  (fn main [root : EventTarget] : Nil
     ($dom/add_event_listener root "click" on_click)))
 """, "js/fn is outside an embedded web module")
 
@@ -319,16 +319,16 @@ rejects("bad_entry", """
 (mod embed_host)
 
 (web_module widget
-  (fn main [root : Str] : Void
-    void))
+  (fn main [root : Str] : Nil
+    nil))
 """, "must take `EventTarget`")
 
 rejects("no_entry", """
 (mod embed_host)
 
 (web_module widget
-  (fn helper [] : Void
-    void))
+  (fn helper [] : Nil
+    nil))
 """, "has no entry")
 
 # A missing mount is reported by the bootstrap the composition site generated,
@@ -367,11 +367,11 @@ const ajaxModule = """
 (mod ajax_host)
 
 (web_module widget
-  (fn paint [row : Any, mark : Str] : Void
+  (fn paint [row : Any, mark : Str] : Nil
     (set row/text_content mark)
-    void)
+    nil)
 
-  (fn on_click [event : Any] : Void
+  (fn on_click [event : Any] : Nil
     (var target event/target)
     (var target_class : Str target/class_name)
     ($console/log $"click ${target_class}")
@@ -379,13 +379,13 @@ const ajaxModule = """
       ($dom/prevent_default event)
       (var id : Str target/dataset/id)
       ($http/post_form "/api/toggle" $"id=${id}"
-        (fn [body : Str] : Void
+        (fn [body : Str] : Nil
           ($console/log $"response for ${id}: ${body}")
           (paint target body)
-          void)))
-    void)
+          nil)))
+    nil)
 
-  (fn main [root : EventTarget] : Void
+  (fn main [root : EventTarget] : Nil
     ($dom/add_event_listener root "click" on_click)))
 """
 
@@ -495,9 +495,9 @@ const displayModule = """
     (var s "x")
     $"i=${42} f=${1.5} b=${true} s=${s} n=${nil}")
 
-  (fn main [root : EventTarget] : Void
+  (fn main [root : EventTarget] : Nil
     (set root/text_content (render))
-    void))
+    nil))
 """
 
 let displayPath = writeModule(workDir / "display", "app", displayModule)
@@ -532,9 +532,9 @@ const exportModule = """
 (mod export_host)
 
 (web_module widget
-  (fn main [root : EventTarget] : Void
+  (fn main [root : EventTarget] : Nil
     (set root/text_content "exported")
-    void))
+    nil))
 
 ($web/set_asset_base "/site/assets")
 (var page ($html/render

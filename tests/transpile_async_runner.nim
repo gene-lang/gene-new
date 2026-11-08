@@ -16,7 +16,7 @@ createDir(outDir)
 let sourcePath = workDir / "async_cancel.gene"
 writeFile(sourcePath, """
 (mod async_cancel ^profile web)
-(js/fn mark [] : Void ^from "./async_host.mjs")
+(js/fn mark [] : Nil ^from "./async_host.mjs")
 (fn run [] : Int
   (scope
     (let task (spawn 42))
@@ -42,7 +42,7 @@ let consumerPath = workDir / "cancel_consumer.gene"
 writeFile(consumerPath, """
 (mod cancel_consumer ^profile web)
 (import [cancelled_work] ^from "./cancel_producer.gene")
-(js/fn mark2 [] : Void ^from "./async_host.mjs")
+(js/fn mark2 [] : Nil ^from "./async_host.mjs")
 (fn guarded [] : Int
   (try
     (cancelled_work)

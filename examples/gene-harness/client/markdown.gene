@@ -41,7 +41,7 @@
   (var url (media_url id))
   (var unavailable ($dom/render `(span ^hidden true "Image unavailable.")))
   (var picture ($dom/render `(img ^src %url ^alt %alt ^loading "lazy"
-    ^on_error %(fn [event : Any] : Void
+    ^on_error %(fn [event : Any] : Nil
       (set event/current_target/hidden true) (set unavailable/hidden false)))))
   (var root ($dom/render `(span ^class_name "reply_image")))
   (var link ($dom/render `(a ^href %url ^target "_blank" ^rel "noopener noreferrer")))
@@ -71,7 +71,7 @@
       (return value)))
   "")
 
-(fn inline_text [parent : EventTarget, text : Str] : Void
+(fn inline_text [parent : EventTarget, text : Str] : Nil
   (var chars : (List Str) (str/split text ""))
   (var n ($size chars))
   (var ticks (next_delimiters chars "`" false))

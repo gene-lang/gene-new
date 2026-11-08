@@ -7,15 +7,15 @@
 (import [author_line] ^from "./slack_users.gene")
 
 (fn execution_view [text : Str, summary : Str, is_gene : Bool,
-                    expanded : Bool, on_copy : (Fn [Str] Void),
-                    on_toggle : (Fn [Bool] Void), ^on_mount on_mount : Any = nil] : EventTarget
+                    expanded : Bool, on_copy : (Fn [Str] Nil),
+                    on_toggle : (Fn [Bool] Nil), ^on_mount on_mount : Any = nil] : EventTarget
   (var pre ($dom/render `(pre)))
   (var colored (&& is_gene expanded))
   ($dom/append pre (code_view text colored))
   (var details ($dom/render
     `(details ^class_name "execution"
        ^open %expanded
-       ^on_toggle %(fn [event : Any] : Void
+       ^on_toggle %(fn [event : Any] : Nil
          (var opened : Bool event/current_target/open)
          (if_yes (&& opened is_gene (! colored))
            ($dom/clear pre)
@@ -24,14 +24,14 @@
          (on_toggle opened))
        (summary %summary)
        (button ^type "button" ^class_name "copy"
-         ^on_click %(fn [event : Any] : Void (on_copy text)) "Copy"))))
+         ^on_click %(fn [event : Any] : Nil (on_copy text)) "Copy"))))
   ($dom/append details pre)
   (if_not ($absent? on_mount)
-    (var mounted : (Fn [EventTarget] Void) on_mount) (mounted details))
+    (var mounted : (Fn [EventTarget] Nil) on_mount) (mounted details))
   details)
 
-(fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Void),
-                expanded : Bool, on_toggle : (Fn [Bool] Void),
+(fn block_view [block : Any, provisional : Bool, on_copy : (Fn [Str] Nil),
+                expanded : Bool, on_toggle : (Fn [Bool] Nil),
                 ^source_text source_text : Any = nil, ^on_speak on_speak : Any = nil,
                 ^resolve_author resolve_author : Any = nil, ^on_execution on_execution : Any = nil] : EventTarget
   (var role : Str block/role)
@@ -86,23 +86,23 @@
 # Render the conversation start without inserting synthetic records into paging.
 (fn append_history_start [target : EventTarget, session : Any,
   records : (List Any), preview : (List Any), has_older : Bool, loading : Bool,
-  on_copy : (Fn [Str] Void), on_load : (Fn [] Void)] : Void
+  on_copy : (Fn [Str] Nil), on_load : (Fn [] Nil)] : Nil
   (var first : Any (first_prompt_block session records preview))
   (if_not ($absent? first)
-    ($dom/append target (block_view first false on_copy false (fn [open : Bool] : Void nil))))
+    ($dom/append target (block_view first false on_copy false (fn [open : Bool] : Nil nil))))
   (if_yes has_older
     ($dom/append target
       ($dom/render
         `(button ^type "button" ^class_name "older_messages" ^disabled %loading
-           ^on_click %(fn [event : Any] : Void (on_load))
+           ^on_click %(fn [event : Any] : Nil (on_load))
            %(if loading "Loading…" "Load earlier messages"))))))
 
 (fn not_durable [block : Any] : Bool
   (var durable : Bool block/durable) (! durable))
 
 (fn step_view [blocks : (List Any), opened : Bool, active : Bool,
-               on_copy : (Fn [Str] Void), is_open : (Fn [Str] Bool),
-               on_toggle : (Fn [Str Bool] Void), ^on_speak on_speak : Any = nil,
+               on_copy : (Fn [Str] Nil), is_open : (Fn [Str] Bool),
+               on_toggle : (Fn [Str Bool] Nil), ^on_speak on_speak : Any = nil,
                ^output_view output_view : Any = nil, ^render_extra render_extra : Any = nil] : EventTarget
   (var first : Any blocks/0)
   (var round_id : Str first/round_id)
@@ -142,7 +142,7 @@
   (var was_open opened)
   (var details ($dom/render
     `(details ^class_name "step" ^open %opened
-       ^on_toggle %(fn [event : Any] : Void
+       ^on_toggle %(fn [event : Any] : Nil
          (var open : Bool event/current_target/open)
          # An initially open details element also emits toggle after rendering.
          # Only a real parent transition resets the Response disclosure.
@@ -165,9 +165,9 @@
       (var response (== phase "code"))
       (var expanded (if response (&& opened (! (is_open $"collapsed/${id}"))) (is_open id)))
       ($dom/append content (block_view block (not_durable block) on_copy expanded
-        (fn [open : Bool] : Void
+        (fn [open : Bool] : Nil
           (if response (on_toggle $"collapsed/${id}" (! open)) (on_toggle id open)))
-        ^on_execution (fn [panel : EventTarget] : Void
+        ^on_execution (fn [panel : EventTarget] : Nil
           (responses .push {^id id ^panel panel}))))))
   (if_not ($absent? output_view)
     (var output : EventTarget output_view) ($dom/append content output))
@@ -180,16 +180,16 @@
       (var media : (List Any) [])
       (if_not ($absent? block/media) (set media block/media))
       (if_yes (&& (> media/.size 0) ($present? render_extra))
-        (var media_render : (Fn [EventTarget Any] Void) render_extra) (media_render content block))
+        (var media_render : (Fn [EventTarget Any] Nil) render_extra) (media_render content block))
       (continue))
     (if ($absent? render_extra)
       ($dom/append content (block_view block (not_durable block) on_copy (is_open id)
-        (fn [open : Bool] : Void (on_toggle id open))))
-      (do (var render : (Fn [EventTarget Any] Void) render_extra) (render content block))))
+        (fn [open : Bool] : Nil (on_toggle id open))))
+      (do (var render : (Fn [EventTarget Any] Nil) render_extra) (render content block))))
   ($dom/append details content)
   details)
 
-(fn run_status_view [run : Any, prompt : Str, on_retry : (Fn [Str] Void), ^on_continue on_continue : Any = nil] : EventTarget
+(fn run_status_view [run : Any, prompt : Str, on_retry : (Fn [Str] Nil), ^on_continue on_continue : Any = nil] : EventTarget
   (var label (run_label run))
   (var status : Str run/state)
   (var resumable (if ($absent? run/resumable) (== status "paused") (status_flag run/resumable)))
@@ -217,10 +217,10 @@
         (set selection ($to_str selection " · " (status_text run/selection/requested_effort))))
       ($dom/append root ($dom/render `(span ^class_name "outcome_message"
         %($to_str "Continue keeps " selection ", unless you make a new picker choice. Session /model and /effort changes apply to new prompts.")))))
-    (var resume : (Fn [Str] Void) on_continue)
+    (var resume : (Fn [Str] Nil) on_continue)
     (for mode in ["manual" "automatic"]
       ($dom/append root ($dom/render `(button ^type "button"
-        ^on_click %(fn [event : Any] : Void (set event/current_target/disabled true) (resume mode))
+        ^on_click %(fn [event : Any] : Nil (set event/current_target/disabled true) (resume mode))
         %(if (== mode "manual") "Continue" "Continue until finished"))))))
   (if_yes (&& limited (|| (!= status "paused")
     (== (status_text run/continuation_stop) "failed")
@@ -230,5 +230,5 @@
   (if_yes (&& (! limited) (!= prompt "") (terminal status) (!= status "done"))
     ($dom/append root ($dom/render
       `(button ^type "button" ^class_name "edit_retry"
-         ^on_click %(fn [event : Any] : Void (on_retry prompt)) "Edit and retry"))))
+         ^on_click %(fn [event : Any] : Nil (on_retry prompt)) "Edit and retry"))))
   root)

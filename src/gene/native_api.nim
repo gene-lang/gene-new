@@ -1210,7 +1210,7 @@ proc geneWrapperField*(instance, wrapperType: Value,
       raise newException(GeneError,
         "expected a " & wrapperType.typeName & " value")
     result.status = gsOk
-    result.value = instance.props.getOrDefault(name, VOID)
+    result.value = instance.props.getOrDefault(name, NIL)
   except GeneError as e:
     result = errorResult(e)
   except GenePanic as e:

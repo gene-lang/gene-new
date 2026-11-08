@@ -669,7 +669,7 @@ proc geneManagedMapAt*(borrow: GeneNativeBorrow,
   let entry = borrow.requireBorrow()
   let value = entry.value
   requireFrozen(value, vkMap, "lookup")
-  borrow.domain.addRoot(value.mapEntries.getOrDefault(name, VOID),
+  borrow.domain.addRoot(value.mapEntries.getOrDefault(name, NIL),
                         source = entry)
 
 proc geneManagedNodeHead*(borrow: GeneNativeBorrow): GeneManagedRoot =
@@ -683,7 +683,7 @@ proc geneManagedNodeProp*(borrow: GeneNativeBorrow,
   let entry = borrow.requireBorrow()
   let value = entry.value
   requireFrozen(value, vkNode, "property")
-  borrow.domain.addRoot(value.props.getOrDefault(name, VOID), source = entry)
+  borrow.domain.addRoot(value.props.getOrDefault(name, NIL), source = entry)
 
 proc geneManagedNodeBodyAt*(borrow: GeneNativeBorrow,
                             index: int): GeneManagedRoot =

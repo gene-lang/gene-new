@@ -6,10 +6,10 @@
 
 (type SessionMenu ^props {^panel EventTarget ^error EventTarget ^session Any ^anchor Any ^pin Any ^share Any
   ^phase Str ^pending Bool ^generation Int
-  ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void)
-  ^updated (Fn [Any] Void) ^deleted (Fn [(List Any)] Void)})
+  ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)
+  ^updated (Fn [Any] Nil) ^deleted (Fn [(List Any)] Nil)})
 
-(fn close_session_menu [menu : SessionMenu, restore : Bool = false] : Void
+(fn close_session_menu [menu : SessionMenu, restore : Bool = false] : Nil
   (var anchor : Any menu/anchor)
   (if_not ($absent? anchor)
     (var button : EventTarget anchor)
@@ -17,7 +17,7 @@
     (if_yes restore ($dom/focus button)))
   (set menu/panel/hidden true) (set menu/session nil) (set menu/anchor nil))
 
-(fn position_session_menu [menu : SessionMenu] : Void
+(fn position_session_menu [menu : SessionMenu] : Nil
   (if_yes (|| menu/panel/hidden ($absent? menu/anchor)) (return))
   (var anchor : EventTarget menu/anchor)
   (var width ($dom/rect_width menu/panel)) (var height ($dom/rect_height menu/panel))
@@ -32,7 +32,7 @@
   ($dom/set_style menu/panel "top" $"${top}px"))
 
 (fn mutate_session [menu : SessionMenu, method : Str, changes : Any,
-    ^suffix suffix : Str = "", ^accepted accepted : Int = 200] : Void
+    ^suffix suffix : Str = "", ^accepted accepted : Int = 200] : Nil
   (if_yes menu/pending (return))
   (var generation menu/generation)
   (var id (text menu/session/id))
@@ -44,7 +44,7 @@
   (var controls ($dom/focusables menu/panel))
   (for control in controls (set control/disabled true))
   (menu/api method $"${(api_root)}/sessions/${($url/encode_component id)}${suffix}" changes
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (set menu/pending false)
       (if (== code accepted)
         (do
@@ -60,44 +60,44 @@
             (if_yes (== menu/phase "menu") (update_share_action menu menu/session))
             ($dom/set_text menu/error (text data/message "The conversation could not be updated. Try again."))))))))
 
-(fn update_share_action [menu : SessionMenu, session : Any] : Void
+(fn update_share_action [menu : SessionMenu, session : Any] : Nil
   (var share : EventTarget menu/share)
   (set share/hidden (! (can_share_session? session)))
   (set share/disabled (|| menu/pending (session_share_busy? session)))
   ($dom/set_text share (session_share_label session)))
 
-(fn edit_session_title [menu : SessionMenu] : Void
+(fn edit_session_title [menu : SessionMenu] : Nil
   (set menu/phase "rename") ($dom/clear menu/panel)
   ($dom/set_attribute menu/panel "role" "dialog")
   ($dom/set_attribute menu/panel "aria-label" "Rename conversation")
   (var input ($dom/render `(input ^type "text" ^maxlength "256" ^aria-label "Conversation title")))
   ($dom/set_input_value input (text menu/session/title))
-  (var form ($dom/render `(form ^on_submit %(fn [event : Any] : Void
+  (var form ($dom/render `(form ^on_submit %(fn [event : Any] : Nil
     ($dom/prevent_default event)
     (mutate_session menu "PATCH" {^title ($dom/input_value input)})))))
   ($dom/append form ($dom/render `(label "Rename conversation")))
   ($dom/append form input)
   ($dom/append form ($dom/render `(button ^type "submit" "Save")))
   ($dom/append form ($dom/render `(button ^type "button"
-    ^on_click %(fn [event : Any] : Void (close_session_menu menu true)) "Cancel")))
+    ^on_click %(fn [event : Any] : Nil (close_session_menu menu true)) "Cancel")))
   ($dom/append menu/panel form) ($dom/append menu/panel menu/error)
   (position_session_menu menu) ($dom/focus input))
 
-(fn confirm_session_delete [menu : SessionMenu] : Void
+(fn confirm_session_delete [menu : SessionMenu] : Nil
   (set menu/phase "delete") ($dom/clear menu/panel)
   ($dom/set_attribute menu/panel "role" "dialog")
   ($dom/set_attribute menu/panel "aria-label" "Delete conversation")
   ($dom/append menu/panel ($dom/render `(strong %$"Delete “${(text menu/session/title)}”?")))
   ($dom/append menu/panel ($dom/render `(p "This permanently deletes the conversation and any child conversations.")))
   (var confirm ($dom/render `(button ^type "button" ^class_name "danger"
-    ^on_click %(fn [event : Any] : Void (mutate_session menu "DELETE" {})) "Delete")))
+    ^on_click %(fn [event : Any] : Nil (mutate_session menu "DELETE" {})) "Delete")))
   ($dom/append menu/panel confirm)
   ($dom/append menu/panel ($dom/render `(button ^type "button"
-    ^on_click %(fn [event : Any] : Void (close_session_menu menu true)) "Cancel")))
+    ^on_click %(fn [event : Any] : Nil (close_session_menu menu true)) "Cancel")))
   ($dom/append menu/panel menu/error) (position_session_menu menu)
   ($dom/focus confirm))
 
-(fn open_session_menu [menu : SessionMenu, anchor : EventTarget, session : Any] : Void
+(fn open_session_menu [menu : SessionMenu, anchor : EventTarget, session : Any] : Nil
   (if_yes menu/pending (return))
   (if_yes (&& (! menu/panel/hidden) (== (text menu/session/id) (text session/id)))
     (close_session_menu menu) (return))
@@ -109,19 +109,19 @@
   ($dom/set_attribute menu/panel "aria-label" "Conversation actions")
   ($dom/set_attribute anchor "aria-expanded" "true")
   (var share ($dom/render `(button ^type "button" ^role "menuitem"
-    ^on_click %(fn [event : Any] : Void
+    ^on_click %(fn [event : Any] : Nil
       (mutate_session ^suffix "/slack" ^accepted 202 menu "POST" {})) "Add to Slack")))
   (set menu/share share) (update_share_action menu session)
   ($dom/append menu/panel share)
   (var rename ($dom/render `(button ^type "button" ^role "menuitem"
-    ^on_click %(fn [event : Any] : Void (edit_session_title menu)) "Rename")))
+    ^on_click %(fn [event : Any] : Nil (edit_session_title menu)) "Rename")))
   ($dom/append menu/panel rename)
   ($dom/append menu/panel ($dom/render `(button ^type "button" ^role "menuitem" ^class_name "danger"
-    ^on_click %(fn [event : Any] : Void (confirm_session_delete menu)) "Delete")))
+    ^on_click %(fn [event : Any] : Nil (confirm_session_delete menu)) "Delete")))
   (var pin ($dom/render `(button ^type "button" ^role "menuitem"
     ^disabled %($present? session/parent)
     ^title %(if ($absent? session/parent) "" "Child conversations inherit their parent's pin.")
-    ^on_click %(fn [event : Any] : Void (mutate_session menu "PATCH" {^pinned (! (flag menu/session/pinned))}))
+    ^on_click %(fn [event : Any] : Nil (mutate_session menu "PATCH" {^pinned (! (flag menu/session/pinned))}))
     %(if (flag session/pinned) "Unpin" "Pin"))))
   (set menu/pin pin) ($dom/append menu/panel pin)
   ($dom/append menu/panel menu/error) (set menu/panel/hidden false)
@@ -129,7 +129,7 @@
   (var choices ($dom/focusables menu/panel))
   (if_yes (> choices/.size 0) ($dom/focus choices/0)))
 
-(fn bind_session_menu [menu : SessionMenu, anchor : EventTarget, session : Any] : Void
+(fn bind_session_menu [menu : SessionMenu, anchor : EventTarget, session : Any] : Nil
   (if_yes (&& (! menu/panel/hidden) (== (text menu/session/id) (text session/id)))
     (set menu/anchor anchor)
     (if_yes (!= menu/phase "delete") (set menu/session session))
@@ -139,18 +139,18 @@
       ($dom/set_text pin (if (flag session/pinned) "Unpin" "Pin")))
     ($dom/set_attribute anchor "aria-expanded" "true")))
 
-(fn finish_session_menu_render [menu : SessionMenu] : Void
+(fn finish_session_menu_render [menu : SessionMenu] : Nil
   (if ($absent? menu/anchor) (close_session_menu menu) (position_session_menu menu)))
 
-(fn create_session_menu [api : (Fn [Str Str Any (Fn [Int Any] Void)] Void),
-  updated : (Fn [Any] Void), deleted : (Fn [(List Any)] Void)] : SessionMenu
+(fn create_session_menu [api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil),
+  updated : (Fn [Any] Nil), deleted : (Fn [(List Any)] Nil)] : SessionMenu
   (var panel ($dom/render `(div ^class_name "session_menu" ^hidden true)))
   (var error ($dom/render `(p ^class_name "session_menu_error" ^role "status")))
   (var menu (SessionMenu ^panel panel ^error error ^session nil ^anchor nil ^pin nil ^share nil ^phase "menu"
     ^!pending ^generation 0 ^api api ^updated updated ^deleted deleted))
   ($dom/append ($dom/body) panel)
-  ($dom/add_event_listener panel "click" (fn [event : Any] : Void ($dom/stop_propagation event)))
-  (var dismiss : (Fn [Any] Void) (fn [event : Any] : Void
+  ($dom/add_event_listener panel "click" (fn [event : Any] : Nil ($dom/stop_propagation event)))
+  (var dismiss : (Fn [Any] Nil) (fn [event : Any] : Nil
     (if_yes panel/hidden (return))
     (var target : EventTarget event/target)
     (if_yes (== target ($dom/window)) (close_session_menu menu) (return))
@@ -159,7 +159,7 @@
       (close_session_menu menu))))
   ($dom/add_event_listener ($dom/window) "click" dismiss)
   ($dom/add_event_listener ($dom/window) "focusin" dismiss)
-  ($dom/add_event_listener ($dom/window) "keydown" (fn [event : Any] : Void
+  ($dom/add_event_listener ($dom/window) "keydown" (fn [event : Any] : Nil
     (if_yes panel/hidden (return))
     (var key ($event/key event))
     (if_yes (== key "Escape")
@@ -175,6 +175,6 @@
       (if_yes (< next 0) (set next (- choices/.size 1)))
       (if_yes (>= next choices/.size) (set next 0))
       (if_yes (> choices/.size 0) ($dom/focus choices/%next)))))
-  ($dom/add_event_listener ($dom/window) "resize" (fn [event : Any] : Void (position_session_menu menu)))
-  ($dom/add_event_listener ^^capture ($dom/window) "scroll" (fn [event : Any] : Void (position_session_menu menu)))
+  ($dom/add_event_listener ($dom/window) "resize" (fn [event : Any] : Nil (position_session_menu menu)))
+  ($dom/add_event_listener ^^capture ($dom/window) "scroll" (fn [event : Any] : Nil (position_session_menu menu)))
   menu)

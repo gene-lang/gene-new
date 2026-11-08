@@ -6,196 +6,569 @@
       "source": "(protocol TextSplit (message split [separator : Str] : Str)) (impl TextSplit for Str (message split [separator : Str] : Str \"protocol text\")) (protocol Lookup (message get [index : Int] : Str)) (impl Lookup for List (message get [index : Int] : Str \"protocol list\")) [(\"x,y\" .TextSplit:split \",\") ((\"x,y\" .split \",\") .join \"|\") ([1] .Lookup:get 0) ($to_str ([1] .get 0))]",
       "web_source": "(mod receiver_qualified_protocols ^profile web) (protocol TextSplit (message split [separator : Str] : Str)) (impl TextSplit for Str (message split [separator : Str] : Str \"protocol text\")) (protocol Lookup (message get [index : Int] : Str)) (impl Lookup for List (message get [index : Int] : Str \"protocol list\")) (fn run [] : (List Str) [(\"x,y\" .TextSplit:split \",\") ((\"x,y\" .split \",\") .join \"|\") ([1] .Lookup:get 0) ($to_str (?? ([1] .get 0) 0))])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "protocol text"}, {"kind": "str", "value": "x|y"}, {"kind": "str", "value": "protocol list"}, {"kind": "str", "value": "1"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "protocol text"
+          },
+          {
+            "kind": "str",
+            "value": "x|y"
+          },
+          {
+            "kind": "str",
+            "value": "protocol list"
+          },
+          {
+            "kind": "str",
+            "value": "1"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "receiver.string_split",
       "source": "(\"é,,🙂,\" .split \",\")",
       "web_source": "(mod receiver_string_split ^profile web) (fn run [] : (List Str) (\"é,,🙂,\" .split \",\"))",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "é"}, {"kind": "str", "value": ""}, {"kind": "str", "value": "🙂"}, {"kind": "str", "value": ""}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "é"
+          },
+          {
+            "kind": "str",
+            "value": ""
+          },
+          {
+            "kind": "str",
+            "value": "🙂"
+          },
+          {
+            "kind": "str",
+            "value": ""
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "receiver.string_text",
       "source": "(let text \" Éa \") [text/.trim text/.lower text/.upper (\"Aé🙂Z\" .slice_bytes 1 4) (\"é\" .slice_bytes 0 1) (\"  x   \" .trim)]",
       "web_source": "(mod receiver_string_text ^profile web) (fn run [] : (List Str) (let text \" Éa \") [text/.trim text/.lower text/.upper (\"Aé🙂Z\" .slice_bytes 1 4) (\"é\" .slice_bytes 0 1) (\"  x   \" .trim)])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "Éa"}, {"kind": "str", "value": " Éa "}, {"kind": "str", "value": " ÉA "}, {"kind": "str", "value": "é"}, {"kind": "str", "value": ""}, {"kind": "str", "value": "x"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "Éa"
+          },
+          {
+            "kind": "str",
+            "value": " Éa "
+          },
+          {
+            "kind": "str",
+            "value": " ÉA "
+          },
+          {
+            "kind": "str",
+            "value": "é"
+          },
+          {
+            "kind": "str",
+            "value": ""
+          },
+          {
+            "kind": "str",
+            "value": "x"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "receiver.string_predicates",
       "source": "[(\"hello\" .contains? \"ell\") (\"hello\" .starts_with? \"he\") (\"hello\" .ends_with? \"no\") (\"\" .empty?) (\" \" .empty?)]",
       "web_source": "(mod receiver_string_predicates ^profile web) (fn run [] : (List Bool) [(\"hello\" .contains? \"ell\") (\"hello\" .starts_with? \"he\") (\"hello\" .ends_with? \"no\") (\"\" .empty?) (\" \" .empty?)])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": false}, {"kind": "bool", "value": true}, {"kind": "bool", "value": false}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": false
+          },
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": false
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "receiver.string_utf8",
       "source": "(let text \"Aé🙂\") [text/.byte_size (\"\" .byte_size) ($str/byte_size ($str/from_utf8 text/.to_utf8))]",
       "web_source": "(mod receiver_string_utf8 ^profile web) (fn run [] : (List Int) (let text \"Aé🙂\") [text/.byte_size (\"\" .byte_size) ($str/byte_size ($str/from_utf8 text/.to_utf8))])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "7"}, {"kind": "int", "value": "0"}, {"kind": "int", "value": "7"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "7"
+          },
+          {
+            "kind": "int",
+            "value": "0"
+          },
+          {
+            "kind": "int",
+            "value": "7"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "receiver.list_get",
-      "source": "(let xs [10 nil 30]) [(== (xs .get 0) 10) (== (xs .get -1) 30) ($nil? (xs .get 1)) ($void? (xs .get 3)) ($void? (xs .get -4)) ($void? ([] .get 0))]",
-      "web_source": "(mod receiver_list_get ^profile web) (fn run [] : (List Bool) (let xs : (List Int) [10 20 30]) (let empty : (List Int) []) [(== (?? (xs .get 0) 0) 10) (== (?? (xs .get -1) 0) 30) ($nil? ([nil] .get 0)) ($void? (xs .get 3)) ($void? (xs .get -4)) ($void? (empty .get 0))])",
+      "source": "(let xs [10 nil 30]) [(== (xs .get 0) 10) (== (xs .get -1) 30) ($absent? (xs .get 1)) ($absent? (xs .get 3)) ($absent? (xs .get -4)) ($absent? ([] .get 0))]",
+      "web_source": "(mod receiver_list_get ^profile web) (fn run [] : (List Bool) (let xs : (List Int) [10 20 30]) (let empty : (List Int) []) [(== (?? (xs .get 0) 0) 10) (== (?? (xs .get -1) 0) 30) ($absent? ([nil] .get 0)) ($absent? (xs .get 3)) ($absent? (xs .get -4)) ($absent? (empty .get 0))])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": true}, {"kind": "bool", "value": true}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "receiver.list_join",
       "source": "[([\"a\" \"b\"] .join) ([\"é\" \"🙂\"] .join \" / \") ([] .join \",\") ($str/join [\"x\" \"y\"])]",
       "web_source": "(mod receiver_list_join ^profile web) (fn run [] : (List Str) (let empty : (List Str) []) [([\"a\" \"b\"] .join) ([\"é\" \"🙂\"] .join \" / \") (empty .join \",\") ($str/join [\"x\" \"y\"])])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "ab"}, {"kind": "str", "value": "é / 🙂"}, {"kind": "str", "value": ""}, {"kind": "str", "value": "xy"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "ab"
+          },
+          {
+            "kind": "str",
+            "value": "é / 🙂"
+          },
+          {
+            "kind": "str",
+            "value": ""
+          },
+          {
+            "kind": "str",
+            "value": "xy"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "receiver.documentation_extraction",
       "source": "(let chapter \"Introduction## StatefulA small example## Next\") (let section ((chapter .split \"## Stateful\") .get 1)) ((section .split \"##\") .get 0)",
       "web_source": "(mod receiver_documentation_extraction ^profile web) (fn run [] : Str (let chapter \"Introduction## StatefulA small example## Next\") (let section (?? ((chapter .split \"## Stateful\") .get 1) \"\")) (?? ((section .split \"##\") .get 0) \"\"))",
-      "web_export": "run", "expected_value": {"kind": "str", "value": "A small example"},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "A small example"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "receiver.text_errors",
       "source": "[(try (\"x\" .slice_bytes 2 0) catch RuntimeError $err/message) (try (\"Aé\" .slice_bytes 2 1) catch RuntimeError $err/message) (try (\"x\" .slice_bytes -1 1) catch RuntimeError $err/message) (try (\"x\" .slice_bytes 0 9223372036854775808) catch RuntimeError $err/message) (try (\"x\" .slice_bytes 9223372036854775808 1) catch RuntimeError $err/message)]",
       "web_source": "(mod receiver_text_errors ^profile web) (fn run [] : (List Str) [(try (\"x\" .slice_bytes 2 0) catch RuntimeError $err/message) (try (\"Aé\" .slice_bytes 2 1) catch RuntimeError $err/message) (try (\"x\" .slice_bytes -1 1) catch RuntimeError $err/message) (try (\"x\" .slice_bytes 0 9223372036854775808) catch RuntimeError $err/message) (try (\"x\" .slice_bytes 9223372036854775808 1) catch RuntimeError $err/message)])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "str/slice_bytes start exceeds string byte size"}, {"kind": "str", "value": "str/slice_bytes start must be a UTF-8 boundary"}, {"kind": "str", "value": "str/slice_bytes start and max_bytes must be non-negative"}, {"kind": "str", "value": "str/slice_bytes max_bytes expects an Int in int64 range"}, {"kind": "str", "value": "str/slice_bytes start expects an Int in int64 range"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "str/slice_bytes start exceeds string byte size"
+          },
+          {
+            "kind": "str",
+            "value": "str/slice_bytes start must be a UTF-8 boundary"
+          },
+          {
+            "kind": "str",
+            "value": "str/slice_bytes start and max_bytes must be non-negative"
+          },
+          {
+            "kind": "str",
+            "value": "str/slice_bytes max_bytes expects an Int in int64 range"
+          },
+          {
+            "kind": "str",
+            "value": "str/slice_bytes start expects an Int in int64 range"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "receiver.evaluation_order",
       "source": "(var log []) (fn source [] (log .push \"receiver\") \"a,b\") (fn separator [] (log .push \"separator\") \",\") (let parts ((source) .split (separator))) [log parts]",
       "web_source": "(mod receiver_evaluation_order ^profile web) (fn source [log : (List Str)] : Str (log .push \"receiver\") \"a,b\") (fn separator [log : (List Str)] : Str (log .push \"separator\") \",\") (fn run [] : (List (List Str)) (var log : (List Str) []) (let parts ((source log) .split (separator log))) [log parts])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "list", "items": [{"kind": "str", "value": "receiver"}, {"kind": "str", "value": "separator"}]}, {"kind": "list", "items": [{"kind": "str", "value": "a"}, {"kind": "str", "value": "b"}]}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "str",
+                "value": "receiver"
+              },
+              {
+                "kind": "str",
+                "value": "separator"
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "str",
+                "value": "a"
+              },
+              {
+                "kind": "str",
+                "value": "b"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "path.message_web_rejected",
       "source": "(/.size [1 2])",
       "web_source": "(mod path_message_web_rejected ^profile web) (fn run [] : Int (/.size [1 2]))",
       "web_export": "run",
-      "expected_value": {"kind": "int", "value": "2"},
+      "expected_value": {
+        "kind": "int",
+        "value": "2"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "Path message dispatch is VM-only", "diagnostic": "portable web Path does not provide message segments"}
+      "profile": {
+        "status": "rejected",
+        "reason": "Path message dispatch is VM-only",
+        "diagnostic": "portable web Path does not provide message segments"
+      }
     },
     {
       "id": "path.identity_constructor",
       "source": "((Path) 7)",
       "web_source": "(mod path_identity_constructor ^profile web) (fn run [] : Int ((Path) 7))",
       "web_export": "run",
-      "expected_value": {"kind": "int", "value": "7"},
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "eligible"}
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "path.equality_vm_only",
       "source": "(== /a (Path \"a\"))",
       "web_source": "(mod path_equality_vm_only ^profile web) (fn run [] : Bool (== /a (Path \"a\")))",
       "web_export": "run",
-      "expected_value": {"kind": "bool", "value": true},
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "web Path values have no structural equality", "diagnostic": "web Path equality and identity are unavailable"}
+      "profile": {
+        "status": "rejected",
+        "reason": "web Path values have no structural equality",
+        "diagnostic": "web Path equality and identity are unavailable"
+      }
     },
     {
       "id": "path.dynamic_receiver",
       "source": "(let a {^b 4}) (let k \"b\") a/%k",
       "web_source": "(mod path_dynamic_receiver ^profile web) (fn run [] : Int (let a : Any {^b 4}) (let k : Str \"b\") a/%k)",
       "web_export": "run",
-      "expected_value": {"kind": "int", "value": "4"},
+      "expected_value": {
+        "kind": "int",
+        "value": "4"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "eligible"}
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "path.typed_callback",
       "source": "(fn get [p : Path] : Str (p {^a \"ok\"})) (get /a)",
       "web_source": "(mod path_typed_callback ^profile web) (fn get [p : Path] : Str (p {^a \"ok\"})) (fn run [] : Str (get /a))",
       "web_export": "run",
-      "expected_value": {"kind": "str", "value": "ok"},
+      "expected_value": {
+        "kind": "str",
+        "value": "ok"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "eligible"}
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "collection.reverse_vm_only",
       "source": "($reverse [1 2])",
       "web_source": "(mod reverse_vm_only ^profile web) (fn run [] : (List Int) ($reverse [1 2]))",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "2"}, {"kind": "int", "value": "1"}]},
-      "expected_error": null, "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "reverse is currently VM-only", "diagnostic": "portable web stdlib does not provide reverse"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "reverse is currently VM-only",
+        "diagnostic": "portable web stdlib does not provide reverse"
+      }
     },
     {
       "id": "collection.drop_vm_only",
       "source": "($drop [1 2] 1)",
       "web_source": "(mod drop_vm_only ^profile web) (fn run [] : (List Int) ($drop [1 2] 1))",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "2"}]},
-      "expected_error": null, "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "drop is currently VM-only", "diagnostic": "portable web stdlib does not provide drop"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "drop is currently VM-only",
+        "diagnostic": "portable web stdlib does not provide drop"
+      }
     },
     {
       "id": "collection.has_key_vm_only",
       "source": "($has_key? {^a nil} \"a\")",
       "web_source": "(mod has_key_vm_only ^profile web) (fn run [] : Bool ($has_key? {^a nil} \"a\"))",
       "web_export": "run",
-      "expected_value": {"kind": "bool", "value": true},
-      "expected_error": null, "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "has_key? is currently VM-only", "diagnostic": "portable web stdlib does not provide has_key?"}
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "has_key? is currently VM-only",
+        "diagnostic": "portable web stdlib does not provide has_key?"
+      }
     },
     {
       "id": "str.case_ascii_only",
       "source": "[($str/lower \"ÉA\") ($str/upper \"éa\") ($str/lower \"ABC\") ($str/upper \"ßz😀\") ($str/upper \"\")]",
       "web_source": "(mod str_case_ascii_only ^profile web) (fn run [] : (List Str) [($str/lower \"ÉA\") ($str/upper \"éa\") ($str/lower \"ABC\") ($str/upper \"ßz😀\") ($str/upper \"\")])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "str", "value": "Éa"}, {"kind": "str", "value": "éA"}, {"kind": "str", "value": "abc"}, {"kind": "str", "value": "ßZ😀"}, {"kind": "str", "value": ""}]},
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "Éa"
+          },
+          {
+            "kind": "str",
+            "value": "éA"
+          },
+          {
+            "kind": "str",
+            "value": "abc"
+          },
+          {
+            "kind": "str",
+            "value": "ßZ😀"
+          },
+          {
+            "kind": "str",
+            "value": ""
+          }
+        ]
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "eligible"}
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "str.lower_ascii_only",
       "source": "($str/lower \"ÉA\")",
       "web_source": "(mod str_lower_ascii_only ^profile web) (fn run [] : Str ($str/lower \"ÉA\"))",
       "web_export": "run",
-      "expected_value": {"kind": "str", "value": "Éa"},
+      "expected_value": {
+        "kind": "str",
+        "value": "Éa"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "eligible"}
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "numeric.f64_remainder_exact",
       "source": "[(// 1e20 3.0) (// 4294967297.0 4294967296.0)]",
       "web_source": "(mod numeric_remainder_exact ^profile web) (fn run [] : (List F64) [(// 1e20 3.0) (// 4294967297.0 4294967296.0)])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "f64", "value": "1.0"}, {"kind": "f64", "value": "1.0"}]},
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "f64",
+            "value": "1.0"
+          },
+          {
+            "kind": "f64",
+            "value": "1.0"
+          }
+        ]
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "eligible"}
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "numeric.remainder_mixed",
       "source": "(// 7 2.0)",
       "web_source": "(mod numeric_remainder_mixed ^profile web) (fn run [] : F64 (// 7 2.0))",
       "web_export": "run",
-      "expected_value": {"kind": "f64", "value": "1.0"},
+      "expected_value": {
+        "kind": "f64",
+        "value": "1.0"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "web arithmetic requires matching numeric types", "diagnostic": "expected Int, got F64"}
+      "profile": {
+        "status": "rejected",
+        "reason": "web arithmetic requires matching numeric types",
+        "diagnostic": "expected Int, got F64"
+      }
     },
     {
       "id": "binding.extra_value_rejected",
@@ -217,20 +590,6 @@
       "web_export": "run",
       "expected_value": {
         "kind": "nil"
-      },
-      "expected_error": null,
-      "expected_stdout": "",
-      "profile": {
-        "status": "eligible"
-      }
-    },
-    {
-      "id": "absence.void",
-      "source": "void",
-      "web_source": "(mod absence_void ^profile web) (fn run [] : Void void)",
-      "web_export": "run",
-      "expected_value": {
-        "kind": "void"
       },
       "expected_error": null,
       "expected_stdout": "",
@@ -268,8 +627,8 @@
     },
     {
       "id": "absence.coalesce",
-      "source": "[(?? nil \"fallback\") (?? void \"fallback\")]",
-      "web_source": "(mod coalesce ^profile web) (fn run [] : (List Str) [(?? nil \"fallback\") (?? void \"fallback\")])",
+      "source": "[(?? nil \"fallback\") (?? nil \"fallback\")]",
+      "web_source": "(mod coalesce ^profile web) (fn run [] : (List Str) [(?? nil \"fallback\") (?? nil \"fallback\")])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -765,30 +1124,45 @@
       "source": "($to_str)",
       "web_source": "(mod string_to_str_empty ^profile web) (fn run [] : Str ($to_str))",
       "web_export": "run",
-      "expected_value": { "kind": "str", "value": "" },
+      "expected_value": {
+        "kind": "str",
+        "value": ""
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": { "status": "eligible" }
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "string.to_str_scalars",
-      "source": "(gene/to_str \"n=\" 42 \";\" nil \";\" void \";\" true)",
-      "web_source": "(mod string_to_str_scalars ^profile web) (fn run [] : Str (gene/to_str \"n=\" 42 \";\" nil \";\" void \";\" true))",
+      "source": "(gene/to_str \"n=\" 42 \";\" nil \";\" nil \";\" true)",
+      "web_source": "(mod string_to_str_scalars ^profile web) (fn run [] : Str (gene/to_str \"n=\" 42 \";\" nil \";\" nil \";\" true))",
       "web_export": "run",
-      "expected_value": { "kind": "str", "value": "n=42;nil;void;true" },
+      "expected_value": {
+        "kind": "str",
+        "value": "n=42;nil;nil;true"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": { "status": "eligible" }
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "string.to_str_interpolation",
       "source": "(let a \"hello\") (let b 42) $\"${a}${b}\"",
       "web_source": "(mod string_to_str_interpolation ^profile web) (fn run [] : Str (let a \"hello\") (let b 42) $\"${a}${b}\")",
       "web_export": "run",
-      "expected_value": { "kind": "str", "value": "hello42" },
+      "expected_value": {
+        "kind": "str",
+        "value": "hello42"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": { "status": "eligible" }
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "list.structural_equality",
@@ -883,142 +1257,389 @@
       "source": "(macro properties [] `(do (let key \"k\") (let rec {^key 7}) (let a {^a 1 ^b 2}) [rec/key a/a a/b])) (properties)",
       "web_source": "(mod macro_property_and_path_roles ^profile web) (macro properties [] `(do (let key \"k\") (let rec {^key 7}) (let a {^a 1 ^b 2}) [rec/key a/a a/b])) (fn run [] : (List Int) (properties))",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "7"}, {"kind": "int", "value": "1"}, {"kind": "int", "value": "2"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "7"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.residual_pin",
       "source": "(macro is_same [x y] `(do (let a %x) (match %y (when %(quote (unquote a)) true) (when _ false)))) [(is_same 1 1) (is_same 1 2)]",
       "web_source": "(mod macro_residual_pin ^profile web) (macro is_same [x y] `(do (let a %x) (match %y (when %(quote (unquote a)) true) (when _ false)))) (fn run [] : (List Bool) [(is_same 1 1) (is_same 1 2)])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "bool", "value": true}, {"kind": "bool", "value": false}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": false
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.gensym_swap",
       "source": "(macro swap [a b] (let tmp ($gensym \"tmp\")) `(do (var %tmp %a) (set %a %b) (set %b %tmp))) (var tmp 1) (var y 2) (swap tmp y) [tmp y]",
       "web_source": "(mod macro_gensym_swap ^profile web) (macro swap [a b] (let tmp ($gensym \"tmp\")) `(do (var %tmp %a) (set %a %b) (set %b %tmp))) (fn run [] : (List Int) (var tmp 1) (var y 2) (swap tmp y) [tmp y])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "2"}, {"kind": "int", "value": "1"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.generated_macro",
       "source": "(macro make_adder [n] `(do (macro add_n [x] `(+ %x %%n)) (add_n 2))) (make_adder 3)",
       "web_source": "(mod macro_generated_macro ^profile web) (macro make_adder [n] `(do (macro add_n [x] `(+ %x %%n)) (add_n 2))) (fn run [] : Int (make_adder 3))",
       "web_export": "run",
-      "expected_value": {"kind": "int", "value": "5"},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "rejected", "reason": "generated local macros expand at runtime", "diagnostic": "local macros are outside the web profile"}
+      "expected_value": {
+        "kind": "int",
+        "value": "5"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "generated local macros expand at runtime",
+        "diagnostic": "local macros are outside the web profile"
+      }
     },
     {
       "id": "macro.function_local_definition",
       "source": "(fn run [] (macro twice [x] `(+ %x %x)) (twice 7)) (run)",
       "web_source": "(mod macro_function_local_definition ^profile web) (fn run [] : Int (macro twice [x] `(+ %x %x)) (twice 7))",
       "web_export": "run",
-      "expected_value": {"kind": "int", "value": "14"},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "rejected", "reason": "local macros expand at runtime", "diagnostic": "local macros are outside the web profile"}
+      "expected_value": {
+        "kind": "int",
+        "value": "14"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "local macros expand at runtime",
+        "diagnostic": "local macros are outside the web profile"
+      }
     },
     {
       "id": "macro.ordinary_body",
       "source": "(macro computed [x] (let n (+ x 1)) `(+ %n %(* n 2))) (computed 2)",
       "web_source": "(mod macro_ordinary_body ^profile web) (macro computed [x] (let n (+ x 1)) `(+ %n %(* n 2))) (fn run [] : Int (computed 2))",
       "web_export": "run",
-      "expected_value": {"kind": "int", "value": "9"},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "int",
+        "value": "9"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.scoped_bindings",
       "source": "(macro add_one [value] `(do (let tmp 1) (+ tmp %value))) (let tmp 100) [(add_one tmp) (add_one 3) tmp]",
       "web_source": "(mod macro_scoped_bindings ^profile web) (macro add_one [value] `(do (let tmp 1) (+ tmp %value))) (fn run [] : (List Int) (let tmp 100) [(add_one tmp) (add_one 3) tmp])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "2"}, {"kind": "int", "value": "4"}, {"kind": "int", "value": "100"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "4"
+          },
+          {
+            "kind": "int",
+            "value": "100"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.scoped_destructuring",
       "source": "(macro pick [body] `(do (let [a b] [2 3]) %body)) (let a 90) (let b 10) [(pick (+ a b)) a b]",
       "web_source": "(mod macro_scoped_destructuring ^profile web) (macro pick [body] `(do (let [a b] [2 3]) %body)) (fn run [] : (List Int) (let a 90) (let b 10) [(pick (+ a b)) a b])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "5"}, {"kind": "int", "value": "90"}, {"kind": "int", "value": "10"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "5"
+          },
+          {
+            "kind": "int",
+            "value": "90"
+          },
+          {
+            "kind": "int",
+            "value": "10"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.vector_and_lambda",
       "source": "(macro pair [a b] `[%a %b]) (macro lam [p body] `(fn [%p : Int] : Int %body)) (let double (lam n (* n 2))) (pair (double 4) 9)",
       "web_source": "(mod macro_vector_and_lambda ^profile web) (macro pair [a b] `[%a %b]) (macro lam [p body] `(fn [%p : Int] : Int %body)) (fn run [] : (List Int) (let double (lam n (* n 2))) (pair (double 4) 9))",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "8"}, {"kind": "int", "value": "9"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "8"
+          },
+          {
+            "kind": "int",
+            "value": "9"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.loop_bindings",
       "source": "(macro iter [body] `(do (var total 0) (for [a b] in [[1 2] [3 4]] (set total (+ total (+ a b)))) %body)) (let a 90) [(iter total) a]",
       "web_source": "(mod macro_loop_bindings ^profile web) (macro iter [body] `(do (var total 0) (for [a b] in [[1 2] [3 4]] (set total (+ total (+ a b)))) %body)) (fn run [] : (List Int) (let a 90) [(iter total) a])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "10"}, {"kind": "int", "value": "90"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "10"
+          },
+          {
+            "kind": "int",
+            "value": "90"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.callback_shadowing",
       "source": "(macro twice [x] `(+ %x %x)) (fn invoke [twice : (Callable [Int] Int)] : Int (twice 3)) [(invoke (fn [x : Int] : Int (* x 10))) (twice 3)]",
       "web_source": "(mod macro_callback_shadowing ^profile web) (macro twice [x] `(+ %x %x)) (fn invoke [twice : (Callable [Int] Int)] : Int (twice 3)) (fn run [] : (List Int) [(invoke (fn [x : Int] : Int (* x 10))) (twice 3)])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "30"}, {"kind": "int", "value": "6"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "30"
+          },
+          {
+            "kind": "int",
+            "value": "6"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.node_shape_pattern",
       "source": "(macro check [body] `(match (quote (quote 4)) (when (quote value) %body) (else 0))) (let value 90) [(check value) value]",
       "web_source": "(mod macro_node_shape_pattern ^profile web) (macro check [body] `(match (quote (quote 4)) (when (quote value) %body) (else 0))) (fn run [] : (List Int) (let value 90) [(check value) value])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "4"}, {"kind": "int", "value": "90"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "4"
+          },
+          {
+            "kind": "int",
+            "value": "90"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.parameter_default_shadowing",
       "source": "(macro twice [x] `(+ %x %x)) (fn invoke [twice value = (twice 3)] value) (invoke (fn [x] (* x 10)))",
       "web_source": "(mod macro_parameter_default_shadowing ^profile web) (macro twice [x] `(+ %x %x)) (fn invoke [twice : (Callable [Int] Int) value : Int = (twice 3)] : Int value) (fn run [] : Int (invoke (fn [x : Int] : Int (* x 10))))",
       "web_export": "run",
-      "expected_value": {"kind": "int", "value": "30"},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "int",
+        "value": "30"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.branch_bindings_stay_inside_result",
       "source": "(macro choose [] `(if true (do (let x 1) x) 0)) (let x 9) [(choose) x]",
       "web_source": "(mod macro_branch_bindings_stay_inside_result ^profile web) (macro choose [] `(if true (do (let x 1) x) 0)) (fn run [] : (List Int) (let x 9) [(choose) x])",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "1"}, {"kind": "int", "value": "9"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "9"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.branch_binding_read_profile_limit",
       "source": "(macro choose [] `(do (if true (let x 1)) x)) (let x 9) [(choose) x]",
       "web_source": "(mod macro_branch_binding_read_profile_limit ^profile web) (macro choose [] `(do (if true (let x 1)) x)) (fn run [] : (List Int) (let x 9) [(choose) x])",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "1"}, {"kind": "int", "value": "9"}]},
-      "expected_error": null, "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "web branch-local storage cannot serve a later enclosing-sequence read", "diagnostic": "only available inside its declaring branch"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "9"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "web branch-local storage cannot serve a later enclosing-sequence read",
+        "diagnostic": "only available inside its declaring branch"
+      }
     },
     {
       "id": "macro.pipeline_slot",
       "source": "(fn pair [a b] [a b]) (macro slot [] `_) (1 -> pair 0 (slot))",
       "web_source": "(mod macro_pipeline_slot ^profile web) (fn pair [a : Int b : Int] : (List Int) [a b]) (macro slot [] `_) (fn run [] : (List Int) (1 -> pair 0 (slot)))",
       "web_export": "run",
-      "expected_value": {"kind": "list", "items": [{"kind": "int", "value": "0"}, {"kind": "int", "value": "1"}]},
-      "expected_error": null, "expected_stdout": "", "profile": {"status": "eligible"}
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "0"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "macro.conditional_clause_rejected",
       "source": "(macro fallback [v] `(else %v)) (if false (then 1) (fallback 2))",
       "web_source": "(mod macro_conditional_clause_rejected ^profile web) (macro fallback [v] `(else %v)) (fn run [] : Int (if false (then 1) (fallback 2)))",
-      "expected_error": "expression positions", "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "macros expand in expression positions", "diagnostic": "expression positions"}
+      "expected_error": "expression positions",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "macros expand in expression positions",
+        "diagnostic": "expression positions"
+      }
     },
     {
       "id": "macro.match_clause_rejected",
       "source": "(macro otherwise [v] `(when _ %v)) (match 1 (when 2 2) (otherwise 3))",
       "web_source": "(mod macro_match_clause_rejected ^profile web) (macro otherwise [v] `(when _ %v)) (fn run [] : Int (match 1 (when 2 2) (otherwise 3)))",
-      "expected_error": "when/else", "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "macros cannot supply match clauses", "diagnostic": "when/else"}
+      "expected_error": "when/else",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "macros cannot supply match clauses",
+        "diagnostic": "when/else"
+      }
     },
     {
       "id": "macro.local_expansion",
@@ -1210,17 +1831,26 @@
       "web_source": "(mod match_exhaustiveness_required ^profile web) (fn run [] : Int (match 1 (when 1 11)))",
       "expected_error": "not exhaustive",
       "expected_stdout": "",
-      "profile": {"status": "rejected", "reason": "match requires coverage by default", "diagnostic": "not exhaustive"}
+      "profile": {
+        "status": "rejected",
+        "reason": "match requires coverage by default",
+        "diagnostic": "not exhaustive"
+      }
     },
     {
       "id": "match.partial_opt_out",
       "source": "(match 1 ^!exhaustive (when 1 11))",
       "web_source": "(mod match_partial_opt_out ^profile web) (fn run [] : Int (match 1 ^!exhaustive (when 1 11)))",
       "web_export": "run",
-      "expected_value": {"kind": "int", "value": "11"},
+      "expected_value": {
+        "kind": "int",
+        "value": "11"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "eligible"}
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "enum.payload_match",
@@ -1257,10 +1887,15 @@
       "source": "(protocol P (message p [self] : Str \"default\")) (type Dog ^props {}) (impl P for Dog (message p [self] : Str \"ancestor\")) (protocol Q ^inherit [P] (message q [self] : Str \"q\")) (type Pup : Dog ^props {}) (impl Q for Pup) ((Pup) .P:p)",
       "web_source": "(mod protocol_child_impl_keeps_ancestor_body ^profile web) (protocol P (message p [self] : Str \"default\")) (type Dog ^props {}) (impl P for Dog (message p [self] : Str \"ancestor\")) (protocol Q ^inherit [P] (message q [self] : Str \"q\")) (type Pup : Dog ^props {}) (impl Q for Pup) (fn run [] : Str ((Pup) .P:p))",
       "web_export": "run",
-      "expected_value": {"kind": "str", "value": "ancestor"},
+      "expected_value": {
+        "kind": "str",
+        "value": "ancestor"
+      },
       "expected_error": null,
       "expected_stdout": "",
-      "profile": {"status": "eligible"}
+      "profile": {
+        "status": "eligible"
+      }
     },
     {
       "id": "protocol.super_chain",
@@ -1551,9 +2186,9 @@
       }
     },
     {
-      "id": "stream.yield_skip_and_pull",
-      "source": "(fn ^^generator values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (let stream (values)) (let first (stream .next)) (if (stream .has_next) (+ first (stream .next)) 0)",
-      "web_source": "(mod stream_yield_pull ^profile web) (fn ^^generator values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (fn run [] : Int (let stream (values)) (let first (stream .next)) (if (stream .has_next) (+ first (stream .next)) 0))",
+      "id": "stream.yield_nil_and_pull",
+      "source": "(fn ^^generator values [] : (Stream Int? Never) (yield 1) (yield nil) (yield 2)) (let stream (values)) (let a (stream .next)) (let b (stream .next)) (let c (stream .next)) (if (stream .has_next) 0 (if ($absent? b) (+ (?? a 0) (?? c 0)) 0))",
+      "web_source": "(mod stream_yield_pull ^profile web) (fn ^^generator values [] : (Stream Int? Never) (yield 1) (yield nil) (yield 2)) (fn run [] : Int (let stream (values)) (let a (stream .next)) (let b (stream .next)) (let c (stream .next)) (if (stream .has_next) 0 (if ($absent? b) (+ (?? a 0) (?? c 0)) 0)))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -2076,11 +2711,11 @@
     },
     {
       "id": "statement_return.void_discards_body",
-      "source": "(fn f [] : Void 42) (f)",
-      "web_source": "(mod stmt_void ^profile web) (fn f [] : Void 42.0) (fn run [] : Void (f))",
+      "source": "(fn f [] : Nil 42) (f)",
+      "web_source": "(mod stmt_void ^profile web) (fn f [] : Nil 42.0) (fn run [] : Nil (f))",
       "web_export": "run",
       "expected_value": {
-        "kind": "void"
+        "kind": "nil"
       },
       "expected_error": null,
       "expected_stdout": "",
@@ -2721,8 +3356,8 @@
     },
     {
       "id": "portable.missing_integer_buffer_read",
-      "source": "(fn run [] : Bool (var b ($buffer U16 2)) ($void? (b .get 9.0))) (run)",
-      "web_source": "(mod portable_missing_integer_buffer_read ^profile web) (fn run [] : Bool (var b ($buffer U16 2)) ($void? (b .get 9.0)))",
+      "source": "(fn run [] : Bool (var b ($buffer U16 2)) ($absent? (b .get 9.0))) (run)",
+      "web_source": "(mod portable_missing_integer_buffer_read ^profile web) (fn run [] : Bool (var b ($buffer U16 2)) ($absent? (b .get 9.0)))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -2818,8 +3453,8 @@
     },
     {
       "id": "portable.prop_map_delete_reinsert",
-      "source": "(fn run [] : (List Sym) (var m {^a 1 ^b 2}) (set m/a void) (set m/a 3) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys) (run)",
-      "web_source": "(mod portable_prop_map_delete_reinsert ^profile web) (fn run [] : (List Sym) (var m {^a 1 ^b 2}) (set m/a void) (set m/a 3) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys)",
+      "source": "(fn run [] : (List Sym) (var m {^a 1 ^b 2}) (m .delete \"a\") (set m/a 3) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys) (run)",
+      "web_source": "(mod portable_prop_map_delete_reinsert ^profile web) (fn run [] : (List Sym) (var m {^a 1 ^b 2}) (m .delete \"a\") (set m/a 3) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys)",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -2856,9 +3491,9 @@
       }
     },
     {
-      "id": "portable.map_void_entry_removed",
-      "source": "(fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : void}}) (var total 0) (for [key value] in m (set total (+ total value))) total) (run)",
-      "web_source": "(mod portable_map_void_entry_removed ^profile web) (fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : void}}) (var total 0) (for [key value] in m (set total (+ total value))) total)",
+      "id": "portable.map_nil_entry_kept",
+      "source": "(fn run [] : Int (var m : (Map Str Int?) {{\"a\" : 1 \"b\" : nil}}) (var total 0) (for [key value] in m (set total (+ total (?? value 0)))) total) (run)",
+      "web_source": "(mod portable_map_void_entry_removed ^profile web) (fn run [] : Int (var m : (Map Str Int?) {{\"a\" : 1 \"b\" : nil}}) (var total 0) (for [key value] in m (set total (+ total (?? value 0)))) total)",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -2902,8 +3537,8 @@
     },
     {
       "id": "portable.for_absence_is_empty",
-      "source": "(fn run [] : Int (var total 7) (for value in nil (set total 0)) (for value in void (set total 0)) total) (run)",
-      "web_source": "(mod portable_for_absence_is_empty ^profile web) (fn run [] : Int (var total 7) (for value in nil (set total 0)) (for value in void (set total 0)) total)",
+      "source": "(fn run [] : Int (var total 7) (for value in nil (set total 0)) (for value in nil (set total 0)) total) (run)",
+      "web_source": "(mod portable_for_absence_is_empty ^profile web) (fn run [] : Int (var total 7) (for value in nil (set total 0)) (for value in nil (set total 0)) total)",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -3022,8 +3657,8 @@
     },
     {
       "id": "portable.absence_predicates",
-      "source": "(fn run [] : Bool (&& ($nil? nil) ($void? void) ($absent? nil) ($absent? void) ($present? false) ($present? 0) (! ($nil? void)) (! ($void? nil)))) (run)",
-      "web_source": "(mod portable_absence_predicates ^profile web) (fn run [] : Bool (&& ($nil? nil) ($void? void) ($absent? nil) ($absent? void) ($present? false) ($present? 0) (! ($nil? void)) (! ($void? nil))))",
+      "source": "(fn run [] : Bool (&& ($absent? nil) ($present? false) ($present? 0) (! ($present? nil)))) (run)",
+      "web_source": "(mod portable_absence_predicates ^profile web) (fn run [] : Bool (&& ($absent? nil) ($present? false) ($present? 0) (! ($present? nil))))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -3183,8 +3818,8 @@
     },
     {
       "id": "named.default_nil_and_void",
-      "source": "(fn f [^value : Int? = 2] : Int? value) (fn run [] : (List Any) [(f) (f ^value nil) (f ^value void)]) (run)",
-      "web_source": "(mod named_default_nil_and_void ^profile web) (fn f [^value : Int? = 2] : Int? value) (fn run [] : (List Any) [(f) (f ^value nil) (f ^value void)])",
+      "source": "(fn f [^value : Int? = 2] : Int? value) (fn run [] : (List Any) [(f) (f ^value nil) (f ^value nil)]) (run)",
+      "web_source": "(mod named_default_nil_and_void ^profile web) (fn f [^value : Int? = 2] : Int? value) (fn run [] : (List Any) [(f) (f ^value nil) (f ^value nil)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3197,8 +3832,7 @@
             "kind": "nil"
           },
           {
-            "kind": "int",
-            "value": "2"
+            "kind": "nil"
           }
         ]
       },
@@ -3472,8 +4106,8 @@
     },
     {
       "id": "pipeline.normalize_void",
-      "source": "(fn drop [x : Int] : (| Int Void) (if (== x 1) void x)) (fn run [] ([1 2 3] => drop -> $into [])) (run)",
-      "web_source": "(mod pipeline_normalize_void ^profile web) (fn drop [x : Int] : (| Int Void) (if (== x 1) void x)) (fn run [] : (List Int?) ([1 2 3] => drop -> $into []))",
+      "source": "(fn drop [x : Int] : (| Int Nil) (if (== x 1) nil x)) (fn run [] ([1 2 3] => drop -> $into [])) (run)",
+      "web_source": "(mod pipeline_normalize_void ^profile web) (fn drop [x : Int] : (| Int Nil) (if (== x 1) nil x)) (fn run [] : (List Int?) ([1 2 3] => drop -> $into []))",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3677,8 +4311,8 @@
     },
     {
       "id": "callable.named_void",
-      "source": "(fn target [^value : Void] : Bool true) (fn run [] : Bool (let f : (Callable [] Bool ^named {^value Void}) target) (f ^value (do void))) (run)",
-      "web_source": "(mod callable_named_void ^profile web) (fn target [^value : Void] : Bool true) (fn run [] : Bool (let f : (Callable [] Bool ^named {^value Void}) target) (f ^value (do void)))",
+      "source": "(fn target [^value : Nil] : Bool true) (fn run [] : Bool (let f : (Callable [] Bool ^named {^value Nil}) target) (f ^value (do nil))) (run)",
+      "web_source": "(mod callable_named_void ^profile web) (fn target [^value : Nil] : Bool true) (fn run [] : Bool (let f : (Callable [] Bool ^named {^value Nil}) target) (f ^value (do nil)))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -3979,8 +4613,8 @@
     },
     {
       "id": "callable.view_does_not_discard_result",
-      "source": "(fn run [] : Bool (let f : (Callable [Int] Void) (fn [x] (+ x 1))) (try (f 1) false catch TypeError true)) (run)",
-      "web_source": "(mod callable_view_does_not_discard_result ^profile web) (fn run [] : Bool (let f : (Callable [Int] Void) (fn [x] (+ x 1))) (try (f 1) false catch TypeError true))",
+      "source": "(fn run [] : Bool (let f : (Callable [Int] Nil) (fn [x] (+ x 1))) (try (f 1) false catch TypeError true)) (run)",
+      "web_source": "(mod callable_view_does_not_discard_result ^profile web) (fn run [] : Bool (let f : (Callable [Int] Nil) (fn [x] (+ x 1))) (try (f 1) false catch TypeError true))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -4522,8 +5156,8 @@
     },
     {
       "id": "nil_void.map_equivalence",
-      "source": "(fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : (List (List Int?)) [($map [-1 2] positive) ($into ($map ($to_stream [-1 2]) positive) []) ([-1 2] => positive -> $into [])]) (run)",
-      "web_source": "(mod nil_void_map_equivalence ^profile web) (fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : (List (List Int?)) [($map [-1 2] positive) ($into ($map ($to_stream [-1 2]) positive) []) ([-1 2] => positive -> $into [])])",
+      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (List (List Int?)) [($map [-1 2] positive) ($into ($map ($to_stream [-1 2]) positive) []) ([-1 2] => positive -> $into [])]) (run)",
+      "web_source": "(mod nil_void_map_equivalence ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (List (List Int?)) [($map [-1 2] positive) ($into ($map ($to_stream [-1 2]) positive) []) ([-1 2] => positive -> $into [])])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -4574,8 +5208,8 @@
     },
     {
       "id": "nil_void.filter_map",
-      "source": "(fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : (List (List Int)) [($filter_map [-1 2] positive) ($into ($filter_map ($to_stream [-1 2]) positive) [])]) (run)",
-      "web_source": "(mod nil_void_filter_map ^profile web) (fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : (List (List Int)) [($filter_map [-1 2] positive) ($into ($filter_map ($to_stream [-1 2]) positive) [])])",
+      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (List (List Int)) [($filter_map [-1 2] positive) ($into ($filter_map ($to_stream [-1 2]) positive) [])]) (run)",
+      "web_source": "(mod nil_void_filter_map ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (List (List Int)) [($filter_map [-1 2] positive) ($into ($filter_map ($to_stream [-1 2]) positive) [])])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -4608,8 +5242,8 @@
     },
     {
       "id": "nil_void.map_keys",
-      "source": "(fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : PropMap ($map {^a -1 ^b 2} positive)) (run)",
-      "web_source": "(mod nil_void_map_keys ^profile web) (fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : PropMap ($map {^a -1 ^b 2} positive))",
+      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($map {^a -1 ^b 2} positive)) (run)",
+      "web_source": "(mod nil_void_map_keys ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($map {^a -1 ^b 2} positive))",
       "web_export": "run",
       "expected_value": {
         "kind": "prop_map",
@@ -4637,8 +5271,8 @@
     },
     {
       "id": "nil_void.map_general",
-      "source": "(fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : (Map Str Int?) ($map {{\"a\": -1 \"b\": 2}} positive)) (run)",
-      "web_source": "(mod nil_void_map_general ^profile web) (fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : (Map Str Int?) ($map {{\"a\": -1 \"b\": 2}} positive))",
+      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (Map Str Int?) ($map {{\"a\": -1 \"b\": 2}} positive)) (run)",
+      "web_source": "(mod nil_void_map_general ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (Map Str Int?) ($map {{\"a\": -1 \"b\": 2}} positive))",
       "web_export": "run",
       "expected_value": {
         "kind": "map",
@@ -4672,8 +5306,8 @@
     },
     {
       "id": "nil_void.filter_map_keys",
-      "source": "(fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : PropMap ($filter_map {^a -1 ^b 2} positive)) (run)",
-      "web_source": "(mod nil_void_filter_map_keys ^profile web) (fn positive [x : Int] : (| Int Void) (if (> x 0) x void)) (fn run [] : PropMap ($filter_map {^a -1 ^b 2} positive))",
+      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($filter_map {^a -1 ^b 2} positive)) (run)",
+      "web_source": "(mod nil_void_filter_map_keys ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($filter_map {^a -1 ^b 2} positive))",
       "web_export": "run",
       "expected_value": {
         "kind": "prop_map",
@@ -4998,8 +5632,8 @@
     },
     {
       "id": "nil_void.void_callback",
-      "source": "(fn run [] : (List Nil) ($map [1 2] (fn [x : Int] : Void 42))) (run)",
-      "web_source": "(mod nil_void_void_callback ^profile web) (fn run [] : (List Nil) ($map [1 2] (fn [x : Int] : Void 42)))",
+      "source": "(fn run [] : (List Nil) ($map [1 2] (fn [x : Int] : Nil 42))) (run)",
+      "web_source": "(mod nil_void_void_callback ^profile web) (fn run [] : (List Nil) ($map [1 2] (fn [x : Int] : Nil 42)))",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5020,8 +5654,8 @@
     },
     {
       "id": "nil_void.optional_void_callback",
-      "source": "(fn run [] : (List Nil) ($map [1 2] (fn [x : Int?] : Void 42))) (run)",
-      "web_source": "(mod nil_void_optional_void_callback ^profile web) (fn run [] : (List Nil) ($map [1 2] (fn [x : Int?] : Void 42)))",
+      "source": "(fn run [] : (List Nil) ($map [1 2] (fn [x : Int?] : Nil 42))) (run)",
+      "web_source": "(mod nil_void_optional_void_callback ^profile web) (fn run [] : (List Nil) ($map [1 2] (fn [x : Int?] : Nil 42)))",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5042,38 +5676,8 @@
     },
     {
       "id": "nil_void.void_message",
-      "source": "(type A ^props {} (message value [x : Int?] : Void 42)) (fn run [] : Bool ($void? ((A) .value))) (run)",
-      "web_source": "(mod nil_void_void_message ^profile web) (type A ^props {} (message value [x : Int?] : Void 42)) (fn run [] : Bool ($void? ((A) .value)))",
-      "web_export": "run",
-      "expected_value": {
-        "kind": "bool",
-        "value": true
-      },
-      "expected_error": null,
-      "expected_stdout": "",
-      "profile": {
-        "status": "eligible"
-      }
-    },
-    {
-      "id": "nil_void.computed_void_argument",
-      "source": "(fn f [x : Int?] : Int? x) (fn runtime_void [] : Any void) (fn run [] : Bool (try (f (runtime_void)) false catch TypeError true)) (run)",
-      "web_source": "(mod nil_void_computed_void_argument ^profile web) (fn f [x : Int?] : Int? x) (fn runtime_void [] : Any void) (fn run [] : Bool (try (f (runtime_void)) false catch TypeError true))",
-      "web_export": "run",
-      "expected_value": {
-        "kind": "bool",
-        "value": true
-      },
-      "expected_error": null,
-      "expected_stdout": "",
-      "profile": {
-        "status": "eligible"
-      }
-    },
-    {
-      "id": "nil_void.computed_named_void",
-      "source": "(fn f [^x : Int?] : Int? x) (fn runtime_void [] : Any void) (fn run [] : Bool (try (f ^x (runtime_void)) false catch TypeError true)) (run)",
-      "web_source": "(mod nil_void_computed_named_void ^profile web) (fn f [^x : Int?] : Int? x) (fn runtime_void [] : Any void) (fn run [] : Bool (try (f ^x (runtime_void)) false catch TypeError true))",
+      "source": "(type A ^props {} (message value [x : Int?] : Nil 42)) (fn run [] : Bool ($absent? ((A) .value))) (run)",
+      "web_source": "(mod nil_void_void_message ^profile web) (type A ^props {} (message value [x : Int?] : Nil 42)) (fn run [] : Bool ($absent? ((A) .value)))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -5122,19 +5726,6 @@
       "profile": {
         "status": "rejected",
         "diagnostic": "expects",
-        "reason": "Violates the declaration or boundary contract."
-      }
-    },
-    {
-      "id": "nil_void.raw_optional_getter",
-      "source": "(type Person ^props {^age Int?}) (fn age [p : Person] : Int? p/age) (fn run [] : Int? (age (Person))) (run)",
-      "web_source": "(mod nil_void_raw_optional_getter ^profile web) (type Person ^props {^age Int?}) (fn age [p : Person] : Int? p/age) (fn run [] : Int? (age (Person)))",
-      "expected_value": null,
-      "expected_error": "Int?",
-      "expected_stdout": "",
-      "profile": {
-        "status": "rejected",
-        "diagnostic": "Void",
         "reason": "Violates the declaration or boundary contract."
       }
     },
@@ -5688,6 +6279,75 @@
             "value": "2"
           }
         ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "nil_void.json_omit_nil",
+      "source": "(fn run [] : Str ($json/stringify {^a nil ^b 1 ^c {^d nil ^e [1 2]}} ^^omit_nil)) (run)",
+      "web_source": "(mod nil_void_json_omit_nil ^profile web) (fn run [] : Str ($json/stringify {^a nil ^b 1 ^c {^d nil ^e [1 2]}} ^^omit_nil))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "{\"b\":1,\"c\":{\"e\":[1,2]}}"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "nil_void.json_keeps_nil",
+      "source": "(fn run [] : Str ($json/stringify {^a nil ^b 1})) (run)",
+      "web_source": "(mod nil_void_json_keeps_nil ^profile web) (fn run [] : Str ($json/stringify {^a nil ^b 1}))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "str",
+        "value": "{\"a\":null,\"b\":1}"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.operand_order_with_hoisted_right",
+      "source": "(fn mark [log : (List Int) n : Int] : Int (log .push n) n) (fn run [] : (List Int) (var log : (List Int) []) (+ (mark log 1) (do (let v (mark log 2)) v)) log) (run)",
+      "web_source": "(mod portable_operand_order_with_hoisted_right ^profile web) (fn mark [log : (List Int) n : Int] : Int (log .push n) n) (fn run [] : (List Int) (var log : (List Int) []) (+ (mark log 1) (do (let v (mark log 2)) v)) log)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "nil_void.present_rejects_only_nil",
+      "source": "(fn need [x : Present] : Bool true) (fn maybe [] : Any nil) (fn run [] : Bool (&& (need 0) (need false) (need \"\") (try (need (maybe)) false catch TypeError true))) (run)",
+      "web_source": "(mod nil_void_present_rejects_only_nil ^profile web) (fn need [x : Present] : Bool true) (fn maybe [] : Any nil) (fn run [] : Bool (&& (need 0) (need false) (need \"\") (try (need (maybe)) false catch TypeError true)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
       },
       "expected_error": null,
       "expected_stdout": "",

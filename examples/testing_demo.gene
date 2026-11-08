@@ -27,7 +27,7 @@
     (set t/items []))
 
   (after_each [t]
-    (set t/items void))
+    (t .delete "items"))
 
   (it "starts empty" [t]
     (assert_equal t/items []))

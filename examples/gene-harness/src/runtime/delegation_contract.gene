@@ -123,7 +123,7 @@
 (fn delegation_result_data [value, ^depth depth : Int = 0]
   (if (> depth 32) (delegation_error "invalid_result" "Delegation result exceeds 32 levels."))
   (let kind ($head value))
-  (if ([Void Nil Bool Int Float Str Sym] .contains? kind) (return value))
+  (if ([Nil Nil Bool Int Float Str Sym] .contains? kind) (return value))
   (if (== kind List)
     (return ($map value (fn [item] (delegation_result_data item ^depth (+ depth 1))))))
   (if_yes (== kind Map)

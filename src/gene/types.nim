@@ -79,8 +79,7 @@ type
     ## Cooperative task cancellation. Not caught by ordinary Gene `try/catch`.
 
   ValueKind* = enum
-    vkNil       ## explicit absence (`nil` : Nil)
-    vkVoid      ## no-value / skip / delete (`void` : Void)
+    vkNil       ## the one absence value (`nil` : Nil)
     vkBool
     vkInt       ## mathematical Int; fixnums/int64 fast paths, bigint on overflow
     vkFloat     ## Unannotated runtime float; represented as F64.
@@ -155,7 +154,7 @@ const
   PAYLOAD_MASK = 0x0000_FFFF_FFFF_FFFF'u64
 
   # Immediate tags (no allocation, no refcount).
-  VOID_TAG      = 0xFFF1'u64
+  MISSING_TAG   = 0xFFF1'u64   # internal not-found marker; never a user-visible value
   BOOL_TAG      = 0xFFF2'u64
   INT_TAG       = 0xFFF3'u64
   CHAR_TAG      = 0xFFF4'u64
@@ -1664,7 +1663,7 @@ proc isManaged*(v: Value): bool {.inline.} =
 
 proc isImmediateFloat(v: Value): bool {.inline.} =
   ## True when the bits decode as an IEEE float64 stored directly.
-  v.bits != 0 and (v.bits shr TAG_SHIFT) < VOID_TAG
+  v.bits != 0 and (v.bits shr TAG_SHIFT) < MISSING_TAG
 
 proc mkImm(tag: uint64, payload = 0'u64): Value {.inline.} =
   Value(bits: (tag shl TAG_SHIFT) or (payload and PAYLOAD_MASK))
@@ -4728,9 +4727,18 @@ proc rcReleaseFull(bits: uint64) =
 
 let
   NIL* = Value(bits: 0)
-  VOID* = mkImm(VOID_TAG)
+  ## Internal "no such entry" marker for table probes (`getOrDefault(key, MISSING)`).
+  ## It is not a Gene value: it must never be stored, returned to Gene code, or
+  ## published to a register. `kind` reports it as `vkNil` so that a leak
+  ## degrades to nil instead of a distinct value.
+  MISSING* = mkImm(MISSING_TAG)
   TRUE* = mkImm(BOOL_TAG, 1)
   FALSE* = mkImm(BOOL_TAG, 0)
+
+proc isMissing*(v: Value): bool {.inline.} =
+  ## True for the internal not-found marker `MISSING`, and only for it. A stored
+  ## nil is not missing.
+  (v.bits shr TAG_SHIFT) == MISSING_TAG
 
 # ---------------------------------------------------------------------------
 # Introspection accessors
@@ -4805,9 +4813,9 @@ const objKindValueKinds: array[ObjKind, ValueKind] = [
 proc kind*(v: Value): ValueKind {.inline, raises: [].} =
   if v.bits == 0: return vkNil
   let tag = v.bits shr TAG_SHIFT
-  if tag < VOID_TAG: return vkFloat   # direct float (incl. +/-Inf, canonical NaN)
+  if tag < MISSING_TAG: return vkFloat   # direct float (incl. +/-Inf, canonical NaN)
   case tag
-  of VOID_TAG: vkVoid
+  of MISSING_TAG: vkNil
   of BOOL_TAG: vkBool
   of INT_TAG: vkInt
   of CHAR_TAG: vkChar
@@ -5258,7 +5266,7 @@ proc setListItem*(v: Value, index: int, value: Value) =
   let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable List")
-  p.items[index] = (if value.kind == vkVoid: NIL else: value)
+  p.items[index] = value
 
 proc pushListItem*(v: Value, value: Value) =
   if v.tagOf != LIST_TAG:
@@ -5266,7 +5274,7 @@ proc pushListItem*(v: Value, value: Value) =
   let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable List")
-  p.items.add(if value.kind == vkVoid: NIL else: value)
+  p.items.add(value)
 
 proc putMapEntry*(v: Value, key: string, value: Value) =
   if v.tagOf != MAP_TAG:
@@ -5274,10 +5282,20 @@ proc putMapEntry*(v: Value, key: string, value: Value) =
   let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Map")
-  if value.kind == vkVoid:
-    p.entries.del(key)
-  else:
-    p.entries[key] = value
+  p.entries[key] = value
+
+proc deleteMapEntry*(v: Value, key: string): Value =
+  ## Remove `key` and return what was stored there, or nil when the key was
+  ## absent. Mutating, so an immutable Map refuses it even for an absent key.
+  if v.tagOf != MAP_TAG:
+    raise newException(FieldDefect, "value is not a Map")
+  let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Map")
+  result = p.entries.getOrDefault(key, MISSING)
+  if result.isMissing:
+    return NIL
+  p.entries.del(key)
 
 proc isPropMap*(v: Value): bool {.inline.} =
   ## A `{...}` PropMap (not a general HashMap), by tag alone.
@@ -5316,9 +5334,7 @@ proc plainPathKeyId*(selector: Value): int32 {.inline.} =
     result = -2
 
 proc putMapEntryById*(v: Value, keyId: int32, value: Value) =
-  ## `putMapEntry` for a caller that already holds the key id. `value` must not
-  ## be void: removal goes through `putMapEntry`, which probes without
-  ## interning.
+  ## `putMapEntry` for a caller that already holds the key id.
   if v.tagOf != MAP_TAG:
     raise newException(FieldDefect, "value is not a Map")
   let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
@@ -5332,10 +5348,20 @@ proc setNodeProp*(v: Value, key: string, value: Value) =
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Node")
-  if value.kind == vkVoid:
-    p.props.del(key)
-  else:
-    p.props[key] = value
+  p.props[key] = value
+
+proc deleteNodeProp*(v: Value, key: string): Value =
+  ## Remove prop `key` from a Node and return what was stored, or nil when the
+  ## key was absent. Mutating, so an immutable Node refuses it.
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  result = p.props.getOrDefault(key, MISSING)
+  if result.isMissing:
+    return NIL
+  p.props.del(key)
 
 proc setNodeBody*(v: Value, items: sink seq[Value]) =
   if v.tagOf != NODE_TAG:
@@ -5894,11 +5920,6 @@ proc newActorData(capacity: int, state, restartInit, handler,
                      restartWindowMs: restartWindowMs)
   initLock(result.lock)
 
-proc skipStreamVoids(data: StreamData) =
-  while not data.closed and data.index < data.items.len and
-      data.items[data.index].kind == vkVoid:
-    inc data.index
-
 proc closeStream*(v: Value)
 
 proc fillStreamBuffer(stream: Value, data: StreamData): bool =
@@ -5927,10 +5948,9 @@ proc fillStreamBuffer(stream: Value, data: StreamData): bool =
     if not pulled.has:
       stream.closeStream()
       return false
-    if pulled.item.kind != vkVoid:
-      data.buffer = pulled.item
-      data.buffered = true
-      return true
+    data.buffer = pulled.item
+    data.buffered = true
+    return true
   false
 
 proc streamHasNext*(v: Value): bool =
@@ -5953,7 +5973,6 @@ proc streamHasNext*(v: Value): bool =
     if not result:
       v.closeStream()
     return
-  data.skipStreamVoids()
   not data.closed and data.index < data.items.len
 
 proc streamPeek*(v: Value): Value =
@@ -7312,11 +7331,11 @@ proc enumVariants*(v: Value): seq[Value] =
 
 proc enumVariantDescriptor*(enumType: Value, name: string): Value =
   if not enumType.isEnumType:
-    return VOID
+    return NIL
   for variant in EnumData(objData(enumType)).variants:
     if EnumVariantData(objData(variant)).name == name:
       return variant
-  VOID
+  NIL
 
 proc isEnumVariant*(v: Value): bool {.inline.} =
   v.tagOf == OBJECT_TAG and objData(v).objKind == okEnumVariant
@@ -7352,7 +7371,7 @@ proc enumVariantBacking*(v: Value): Value =
   if not v.isEnumVariant:
     raise newException(FieldDefect, "value is not an enum variant")
   let data = EnumVariantData(objData(v))
-  if data.hasBacking: data.backing else: VOID
+  if data.hasBacking: data.backing else: NIL
 
 proc enumValueVariant*(v: Value): Value =
   if v.isEnumVariant:
@@ -7630,7 +7649,7 @@ proc newFloat*(v: float64): Value {.inline.} =
   let raw = cast[uint64](v)
   if raw == 0:
     return mkImm(FLOATZERO_TAG)            # +0.0 (raw 0 is reserved for nil)
-  if (raw shr TAG_SHIFT) >= VOID_TAG:
+  if (raw shr TAG_SHIFT) >= MISSING_TAG:
     return Value(bits: CANONICAL_NAN)      # negative NaN colliding with tag space
   Value(bits: raw)
 
@@ -7789,29 +7808,13 @@ proc newList*(items: sink seq[Value] = @[], immutable = false,
       if p.frozenGraphProofs == 0: break
   boxPtr(LIST_TAG, p)
 
-proc withoutVoidEntries(entries: sink PropTable): PropTable =
-  # Every Map is built through here. Walk the stored entries directly: the
-  # `pairs` iterator hands out each key as a copied string, which the common
-  # no-void answer never looks at.
-  var hasVoid = false
-  for i in 0 ..< entries.data.len:
-    if entries.data[i].val.kind == vkVoid:
-      hasVoid = true
-      break
-  if not hasVoid:
-    return entries
-  result = initPropTable()
-  for i in 0 ..< entries.data.len:
-    if entries.data[i].val.kind != vkVoid:
-      result.putById(entries.data[i].keyId, entries.data[i].val)
-
 proc newMap*(entries: sink PropTable = initPropTable(),
              immutable = false, deepFrozen = false): Value =
   let p = createObj(GeneMap)
   p.refCount = 1
   p.immutable = immutable
   p.deepFrozen = deepFrozen
-  p.entries = withoutVoidEntries(entries)
+  p.entries = entries
   if immutable and deepFrozen:
     p.frozenGraphProofs = FrozenPlainDataProofs
     for i in 0 ..< p.entries.data.len:
@@ -7926,9 +7929,9 @@ proc newNode*(head: Value,
   p.deepFrozen = deepFrozen
   p.constructing = constructing
   p.head = head
-  p.props = withoutVoidEntries(props)
+  p.props = props
   p.body = body
-  p.meta = withoutVoidEntries(meta)
+  p.meta = meta
   boxPtr(NODE_TAG, p)
 
 proc nodeResourceId*(v: Value): uint64 =
@@ -9535,10 +9538,7 @@ proc bufferByteString*(v: Value): string =
 proc newBuffer*(elemType: Value = NIL, items: sink seq[Value] = @[],
                 elemScope: Scope = nil): Value =
   for i in 0 ..< items.len:
-    if items[i].kind == vkVoid:
-      items[i] = NIL
-    else:
-      items[i] = escapeWeakFunctions(items[i])
+    items[i] = escapeWeakFunctions(items[i])
   boxObject(BufferData(objKind: okBuffer, elemType: elemType,
                        elemScope: elemScope, items: items))
 
@@ -10435,20 +10435,20 @@ proc internName*(v: string): string =
     release(internLock)
 
 # ---------------------------------------------------------------------------
-# Truthiness (design Section 1.6): false, nil, void are falsy.
+# Truthiness (design Section 1.6): false and nil are falsy.
 # ---------------------------------------------------------------------------
 
 proc isTruthy*(v: Value): bool {.inline.} =
   case v.kind
-  of vkNil, vkVoid: false
+  of vkNil: false
   of vkBool: v.boolVal
   else: true
 
 proc isAbsent*(v: Value): bool {.inline.} =
-  ## Absence in Gene's two-absence model (design §1.6): explicit empty `nil`
-  ## or missing/skipped `void`. Distinct from falsiness — `false`, `0`, and
-  ## `""` are present. This is the test behind `absent?`/`present?` and `??`.
-  v.kind == vkNil or v.kind == vkVoid
+  ## Absence is `nil`, Gene's one absence value. Distinct from falsiness —
+  ## `false`, `0`, and `""` are present. This is the test behind
+  ## `absent?`/`present?` and `??`.
+  v.kind == vkNil
 
 proc isImmutable*(v: Value): bool =
   case v.kind
@@ -10469,7 +10469,7 @@ proc frozenGraphProofs*(v: Value): uint8 =
   ## values also keep their full checks. An ancestor containing any such value
   ## receives no certificate; eligible children can still be skipped locally.
   case v.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar, vkSymbol:
+  of vkNil, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar, vkSymbol:
     FrozenPlainDataProofs
   of vkList:
     cast[ptr GeneList](v.bits and PAYLOAD_MASK).frozenGraphProofs
@@ -10496,7 +10496,7 @@ proc isDeepFrozen*(v: Value): bool =
   ## per publish rather than a bit read. Closing the gap means threading the
   ## flag through both builders.
   case v.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
+  of vkNil, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
      vkRange, vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar,
      vkSymbol, vkLogger, vkType, vkProtocol, vkProtocolMessage, vkEnumVariant,
      vkEventMatcher:

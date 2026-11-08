@@ -230,7 +230,7 @@ suite "native api — roots and trampoline":
     check geneBufferGet(buffer.value, 0).value.print() == "255"
     let outOfRange = geneBufferGet(buffer.value, 99)
     check outOfRange.status == gsOk
-    check outOfRange.value.kind == vkVoid
+    check outOfRange.value.kind == vkNil
     check geneNewBuffer(newSym("C/UInt8"), @[newInt(256)], scope).status == gsError
     check geneBufferSet(buffer.value, 0, newInt(256), scope).status == gsError
     check geneBufferLen(newInt(1)).status == gsError

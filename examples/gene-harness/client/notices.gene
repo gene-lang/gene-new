@@ -1,43 +1,43 @@
 # Local feedback and owner-derived conditions. No durable notification copies.
 (mod harness_notices ^profile web)
 
-(type Notices ^props {^items PropMap ^changed (Fn [] Void)})
+(type Notices ^props {^items PropMap ^changed (Fn [] Nil)})
 (type Notice ^props {^identity Str ^source Str ^scope Str ^key Str ^text Str ^severity Str ^origin Any ^element EventTarget ^label EventTarget ^version Int ^hovered Bool ^focused Bool ^center_hovered Bool ^center_focused Bool ^sticky Bool ^action Any})
 
 (fn notice_identity [source : Str, scope : Str, key : Str] : Str
   ($json/stringify [source scope key]))
 
 (fn create_notices [] : Notices
-  (Notices ^items {} ^changed (fn [] : Void nil)))
+  (Notices ^items {} ^changed (fn [] : Nil nil)))
 
-(fn remove_notice [notices : Notices, source : Str, scope : Str, key : Str] : Void
+(fn remove_notice [notices : Notices, source : Str, scope : Str, key : Str] : Nil
   (var identity (notice_identity source scope key))
   (var raw : Any notices/items/%identity)
   (if_yes ($absent? raw) (return))
   (var item : Notice raw)
   (set item/version (+ item/version 1))
   ($dom/remove item/element)
-  (set notices/items/%identity void)
+  (notices/items .delete identity)
   (notices/changed))
 
-(fn clear_notices [notices : Notices] : Void
+(fn clear_notices [notices : Notices] : Nil
   (for [key raw] in notices/items
     (var item : Notice raw)
     (set item/version (+ item/version 1))
     ($dom/remove item/element)
-    (set notices/items/%key void))
+    (notices/items .delete key))
   (notices/changed))
 
-(fn expire_notice [notices : Notices, item : Notice, version : Int] : Void
+(fn expire_notice [notices : Notices, item : Notice, version : Int] : Nil
   ($time/after
     6000.0
-    (fn [] : Void
+    (fn [] : Nil
       (if_yes (|| (!= item/version version) item/sticky) (return))
       (if (|| item/hovered item/focused item/center_hovered item/center_focused)
         (expire_notice notices item version)
         (remove_notice notices item/source item/scope item/key)))))
 
-(fn put_notice [notices : Notices, target : EventTarget, source : Str, scope : Str, key : Str, text : Str, severity : Str, sticky : Bool, origin : Any, ^action action : Any = nil] : Void
+(fn put_notice [notices : Notices, target : EventTarget, source : Str, scope : Str, key : Str, text : Str, severity : Str, sticky : Bool, origin : Any, ^action action : Any = nil] : Nil
   (if_yes (== text "")
     (remove_notice notices source scope key)
     (return))
@@ -54,27 +54,27 @@
     ($dom/append item/element item/label)
     ($dom/append item/element ($dom/render `(button ^type "button" ^class_name "notice_dismiss"
       ^aria-label "Dismiss message" ^title "Dismiss message"
-      ^on_click %(fn [event : Any] : Void (remove_notice notices item/source item/scope item/key)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))
+      ^on_click %(fn [event : Any] : Nil (remove_notice notices item/source item/scope item/key)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))
     ($dom/append target item/element)
     ($dom/add_event_listener
       item/element
       "mouseenter"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (set item/hovered true)))
     ($dom/add_event_listener
       item/element
       "mouseleave"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (set item/hovered false)))
     ($dom/add_event_listener
       item/element
       "focusin"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (set item/focused true)))
     ($dom/add_event_listener
       item/element
       "focusout"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (set item/focused false))))
   (set item/sticky sticky)
   (set item/action action)

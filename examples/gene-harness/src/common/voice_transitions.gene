@@ -28,7 +28,7 @@
     (if_yes (&& (== item/id id) (>= item/order state/commit)) (return item)))
   nil)
 
-(fn release_utterance [state : VoiceDrafts, id : Str, duration : Int] : Void
+(fn release_utterance [state : VoiceDrafts, id : Str, duration : Int] : Nil
   (var raw : Any (find_utterance state id))
   (if_yes ($absent? raw) (return))
   (var item : Utterance raw)
@@ -36,13 +36,13 @@
     (set item/state "finalizing")
     (set item/audio_ms duration)))
 
-(fn partial_utterance [state : VoiceDrafts, id : Str, value : Str] : Void
+(fn partial_utterance [state : VoiceDrafts, id : Str, value : Str] : Nil
   (var raw : Any (find_utterance state id))
   (if_yes ($absent? raw) (return))
   (var item : Utterance raw)
   (if_yes (|| (== item/state "capturing") (== item/state "finalizing")) (set item/text value)))
 
-(fn drain_utterances [state : VoiceDrafts] : Void
+(fn drain_utterances [state : VoiceDrafts] : Nil
   (if_yes state/disposed (return))
   (for item in state/utterances
     (if_yes (< item/order state/commit) (continue))
@@ -66,7 +66,7 @@
     (if_yes (>= item/order state/commit) (remaining .push item)))
   (set state/utterances remaining))
 
-(fn finish_utterance [state : VoiceDrafts, id : Str, value : Str, result : Str] : Void
+(fn finish_utterance [state : VoiceDrafts, id : Str, value : Str, result : Str] : Nil
   (var raw : Any (find_utterance state id))
   (if_yes ($absent? raw) (return))
   (var item : Utterance raw)
@@ -76,7 +76,7 @@
     (do (set item/state result) (set item/text value)))
   (drain_utterances state))
 
-(fn dispose_drafts [state : VoiceDrafts] : Void
+(fn dispose_drafts [state : VoiceDrafts] : Nil
   (set state/disposed true)
   (for item in state/utterances (set item/state "cancelled"))
   (set state/utterances []))

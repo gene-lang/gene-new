@@ -361,7 +361,6 @@ proc printBody(v: Value): string =
   if v.isNil: return "nil"
   case v.kind
   of vkNil:    "nil"
-  of vkVoid:   "void"
   of vkBool:   (if v.boolVal: "true" else: "false")
   of vkInt:    v.intToString
   of vkFloat:  printFloat(v.floatVal)

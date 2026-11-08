@@ -26,7 +26,7 @@
   (let started (exec_clock_ns))
   (loop
     (let part (await (endpoints/0 .AsyncReader:read 65536)))
-    (if ($nil? part) (break))
+    (if ($absent? part) (break))
     (set bytes (+ bytes ($binary/size part)))
     (set reads (+ reads 1))
     (if (== reads 1)

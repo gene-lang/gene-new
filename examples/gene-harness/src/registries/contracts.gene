@@ -3,12 +3,12 @@
 (import [HarnessError] ^from "../errors")
 
 (fn validate_seam_row [candidate]
-  (if (|| (== candidate/name void) (== candidate/value void))
+  (if (|| ($absent? candidate/name) ($absent? candidate/value))
     (fail (HarnessError ^message "a seam row requires ^name and ^value"))
     candidate))
 
 (fn validate_command_row [candidate]
-  (if (|| (== candidate/name void) (== candidate/doc void) (== candidate/run void))
+  (if (|| ($absent? candidate/name) ($absent? candidate/doc) ($absent? candidate/run))
     (fail (HarnessError ^message "a command row requires name doc run"))
     candidate))
 
@@ -214,7 +214,7 @@
   candidate)
 
 (fn validate_prompt_row [candidate]
-  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/render)) (&& ($present? candidate/render) (! ($runtime/callable? candidate/render))))
+  (if (|| ($absent? candidate/name) (== ($absent? candidate/text) ($absent? candidate/render)) (&& ($present? candidate/render) (! ($runtime/callable? candidate/render))))
     (fail
       (HarnessError ^message "a prompt row requires name and exactly one of text or callable render")))
   candidate)
@@ -233,14 +233,14 @@
   candidate)
 
 (fn validate_docs_row [candidate]
-  (if (|| (== candidate/name void) (== ($absent? candidate/text) ($absent? candidate/path)) (&& ($present? candidate/text) (!= ($head candidate/text) Str)) (&& ($present? candidate/path) (!= ($head candidate/path) Str)))
+  (if (|| ($absent? candidate/name) (== ($absent? candidate/text) ($absent? candidate/path)) (&& ($present? candidate/text) (!= ($head candidate/text) Str)) (&& ($present? candidate/path) (!= ($head candidate/path) Str)))
     (fail (HarnessError ^message "a docs row requires name and exactly one of text or path")))
   candidate)
 
 (fn validate_event_type_row [candidate]
-  (if (|| (== candidate/name void) (== candidate/version void) (== candidate/ignorable void))
+  (if (|| ($absent? candidate/name) ($absent? candidate/version) ($absent? candidate/ignorable))
     (fail (HarnessError ^message "an event type row requires name version ignorable")))
-  (if_yes (&& (!= candidate/schema void) (! ($runtime/callable? candidate/schema)))
+  (if_yes (&& ($present? candidate/schema) (! ($runtime/callable? candidate/schema)))
     (fail (HarnessError ^message "event type schema must be callable")))
   candidate)
 

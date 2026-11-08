@@ -15,12 +15,12 @@
   (var element : EventTarget recorder)
   (&& ($dom/connected? element) ($dom/focused? element)))
 
-(fn set_chord_recorder [element : Any] : Void
+(fn set_chord_recorder [element : Any] : Nil
   (var root ($dom/element "harness_root"))
   (set root/harness_recorder element))
 
 (fn claim_modal [owner : Str, root : EventTarget, panel : EventTarget,
-                 close : (Fn [Bool] Void), fallback : EventTarget] : Bool
+                 close : (Fn [Bool] Nil), fallback : EventTarget] : Bool
   (if_yes ($present? root/harness_modal) (return false))
   (var confirmations ($dom/focusables ($dom/element "confirmations")))
   (if_yes (> confirmations/.size 0) ($dom/focus confirmations/0) (return false))
@@ -43,7 +43,7 @@
     (if_yes (== control target) ($dom/focus target) (return true)))
   false)
 
-(fn release_modal [owner : Str, restore : Bool] : Void
+(fn release_modal [owner : Str, restore : Bool] : Nil
   (var host ($dom/element "harness_root"))
   (var active : Any host/harness_modal)
   (if_yes (|| ($absent? active) (!= (text active/owner) owner)) (return))
@@ -68,7 +68,7 @@
   (var root ($dom/element "harness_root"))
   (var active : Any root/harness_modal)
   (if_yes ($absent? active) (return false))
-  (var close : (Fn [Bool] Void) active/close)
+  (var close : (Fn [Bool] Nil) active/close)
   (close false)
   true)
 

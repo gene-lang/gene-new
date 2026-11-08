@@ -151,11 +151,11 @@ suite "unified callable — checked signatures":
        (try (required 10) false catch TypeError true)]
     """, "[0 11 12 true]"
 
-  test "explicit Void named values are preserved":
+  test "explicit Nil named values are preserved":
     unifyCallableCheck """
-      (fn target [^value : Void] true)
-      (let checked : (Callable [] Bool ^named {^value Void}) target)
-      (checked ^value (do void))
+      (fn target [^value : Nil] true)
+      (let checked : (Callable [] Bool ^named {^value Nil}) target)
+      (checked ^value (do nil))
     """, "true"
 
   test "declared errors are bounded while boundary errors remain TypeErrors":

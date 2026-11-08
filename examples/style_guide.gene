@@ -22,7 +22,6 @@
 (var scalar_examples
   [
     nil
-    void
     true
     false
     42

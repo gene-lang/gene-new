@@ -69,7 +69,7 @@
 
 (fn attachment [turn, name : Str] : Str
   (let text (turn/attachments .get name))
-  (if (== text void) (fail (OutcomeError ^message $"unknown attachment ${name}")))
+  (if ($absent? text) (fail (OutcomeError ^message $"unknown attachment ${name}")))
   text)
 
 (fn recall [turn, id : Str]
@@ -82,7 +82,7 @@
     ($to_str value)))
 
 (fn nonempty_prompt? [value] : Bool
-  (if (== value void) (return false))
+  (if ($absent? value) (return false))
   (if (== ($head value) Str)
     (!= value "")
     true))
@@ -112,7 +112,7 @@
     (then
       (if (|| ($absent? outcome/reply) (== ($str/trim outcome/reply) ""))
         (fail (OutcomeError ^message "done Outcome requires a non-empty reply")))
-      (if (|| (!= outcome/prompt void) (!= outcome/questions void))
+      (if (|| ($present? outcome/prompt) ($present? outcome/questions))
         (fail (OutcomeError ^message "done Outcome rejects prompt and questions")))
       (if turn/composition_queued/.get
         (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^extensions outcome/extensions)
@@ -237,7 +237,7 @@
     (rendered .push {^id item/id ^header (item_header item) ^value (value_text item/value)}))
   (if_not ($absent? validated)
     (let outcome validated/outcome)
-    (if_not (== outcome/prompt void)
+    (if_not ($absent? outcome/prompt)
       (let result_id (implicit_id turn "result"))
       (let line (if ($absent? result_line) "" $" line ${result_line}: Outcome ^prompt"))
       (rendered .push

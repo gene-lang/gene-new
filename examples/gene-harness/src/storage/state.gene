@@ -40,10 +40,10 @@
   scope)
 
 (fn event_version [event]
-  (if (== event/version void) 1 event/version))
+  (if ($absent? event/version) 1 event/version))
 
 (fn event_ignorable [event]
-  (if (== event/ignorable void) false event/ignorable))
+  (if ($absent? event/ignorable) false event/ignorable))
 
 (fn mark_stream_dirty [events : EventStore, key : Str]
   (ensure_projections_loaded events key)
@@ -54,12 +54,12 @@
   (require_open events)
   (var streams events/streams/.get)
   (var found (streams .get key))
-  (if_not (== found void) (return found))
+  (if_not ($absent? found) (return found))
   (var values (fresh_list))
   (var manifest events/last_manifest/.get)
   (if_not ($absent? manifest)
     (var descriptor (manifest/streams .get key))
-    (if_not (== descriptor void)
+    (if_not ($absent? descriptor)
       (for digest in descriptor/segments
         (var segment (events/backend .Store:get $"segment/${digest}"))
         (if ($absent? segment)
@@ -72,7 +72,7 @@
 
 (fn ensure_projections_loaded [events : EventStore, key : Str]
   (var projections events/projections/.get)
-  (if_not (== (projections .get key) void) (return nil))
+  (if_not ($absent? (projections .get key)) (return nil))
   (var plugin (fresh_map))
   (var core (fresh_map))
   (var manifest events/last_manifest/.get)
@@ -97,7 +97,7 @@
     (var quarantined events/quarantined/.get)
     (var seen (fresh_map))
     (for owner in quarantined (seen .put owner true))
-    (if (== known void)
+    (if ($absent? known)
       (validate_unknown_event quarantined seen envelope)
       (validate_known_event quarantined seen envelope known)))
   nil)
@@ -105,7 +105,7 @@
 (fn unload_event_stream [events : EventStore, scope : Str, stream : Str]
   (var key (stream_key scope stream))
   (with_event_writer events (fn []
-    (if_not (== (events/dirty_streams/.get .get key) void)
+    (if_not ($absent? (events/dirty_streams/.get .get key))
       (flush_event_store_unlocked events))
     (events/streams/.get .delete key)
     (events/projections/.get .delete key)
@@ -120,7 +120,7 @@
 (fn next_sequence [events : EventStore, key : Str] : Int
   (var sequences events/next_sequences/.get)
   (var found (sequences .get key))
-  (if (== found void) 1 found))
+  (if ($absent? found) 1 found))
 
 (fn set_next_sequence [events : EventStore, key : Str, value : Int]
   (var sequences events/next_sequences/.get)
@@ -130,7 +130,7 @@
 (fn update_projection [events : EventStore, key : Str, plugin : Str, state]
   (var all events/projections/.get)
   (var stream_states (all .get key))
-  (if (== stream_states void) (set stream_states (fresh_map)))
+  (if ($absent? stream_states) (set stream_states (fresh_map)))
   (stream_states .put plugin state)
   (all .put key stream_states)
   (events/projections .set all))
@@ -140,7 +140,7 @@
 (fn update_core_projection [events : EventStore, key : Str, name : Str, state]
   (var all events/core_projections/.get)
   (var states (all .get key))
-  (if (== states void) (set states (fresh_map)))
+  (if ($absent? states) (set states (fresh_map)))
   (if ($absent? state) (states .delete name) (states .put name (copy_data state)))
   (all .put key states)
   (events/core_projections .set all))
@@ -183,7 +183,7 @@
    origin : Str, owner : Str, projection : Str]
   (require_open events)
   (validate_scope scope)
-  (if (== event/type void)
+  (if ($absent? event/type)
     (fail (HarnessStateError ^message "event requires ^type")))
   (if_not (["core" "plugin"] .contains? origin)
     (fail (HarnessStateError ^message $"invalid event origin ${origin}")))
@@ -232,7 +232,7 @@
 # plugin origin; core code uses append_core_event so plugin/state remains a
 # core-defined record routed to a plugin projection.
 (fn append_event [events : EventStore, scope : Str, stream : Str, event]
-  (if (== event/plugin void)
+  (if ($absent? event/plugin)
     (append_core_event events scope stream event)
     (append_plugin_event events scope stream ($to_str event/plugin) event)))
 
@@ -275,7 +275,7 @@
   (require_open events)
   (ensure_projections_loaded events (stream_key scope stream))
   (var states (events/core_projections/.get .get (stream_key scope stream)))
-  (if (== states void) (return nil))
+  (if ($absent? states) (return nil))
   (var state (states .get key))
   (if ($absent? state) nil (copy_data state)))
 
@@ -283,7 +283,7 @@
   (require_open events)
   (ensure_projections_loaded events (stream_key scope stream))
   (var states (events/core_projections/.get .get (stream_key scope stream)))
-  (if (== states void) (fresh_map) (copy_data states)))
+  (if ($absent? states) (fresh_map) (copy_data states)))
 
 # Projection entries whose key starts with `prefix`. Only matching values are
 # copied, so a feature reading one record kind does not copy the whole stream.
@@ -292,7 +292,7 @@
   (ensure_projections_loaded events (stream_key scope stream))
   (var states (events/core_projections/.get .get (stream_key scope stream)))
   (var out (fresh_map))
-  (if (== states void) (return out))
+  (if ($absent? states) (return out))
   (for [key value] in states
     (if ($str/starts_with? ($to_str key) prefix) (out .put ($to_str key) (copy_data value))))
   out)
@@ -312,10 +312,10 @@
   (ensure_projections_loaded events (stream_key scope stream))
   (var all events/projections/.get)
   (var stream_states (all .get (stream_key scope stream)))
-  (if_not (== stream_states void)
+  (if_not ($absent? stream_states)
     (var found (stream_states .get plugin))
     # A detached copy, as `core_state` returns: changing it stores nothing.
-    (if_not (== found void) (copy_data found))))
+    (if_not ($absent? found) (copy_data found))))
 
 # Provenance travels in the same checkpoint as the state it describes. Reading
 # it needs no application projections, event segments, or plugin callbacks.
@@ -340,7 +340,7 @@
   (if (== plugin "")
     (fail (HarnessStateError
       ^message $"plugin event ${envelope/type} has no projection owner")))
-  (if_yes (== (seen .get plugin) void)
+  (if_yes ($absent? (seen .get plugin))
     (seen .put plugin true)
     (quarantined .push plugin)))
 
@@ -362,8 +362,8 @@
     (fail (HarnessStateError
       ^message $"event ${envelope/type} origin does not match its catalog row")))
   (var accepted_version (== envelope/version known/version))
-  (if_yes (&& (! accepted_version) (!= known/versions void))
-    (set accepted_version (!= (known/versions .get $"v${envelope/version}") void)))
+  (if_yes (&& (! accepted_version) ($present? known/versions))
+    (set accepted_version ($present? (known/versions .get $"v${envelope/version}"))))
   (if_yes (! accepted_version)
     (if_yes (== envelope/ignorable true) (return))
     (if (== envelope/origin "core")
@@ -380,9 +380,9 @@
         (if (== known/origin "plugin")
           envelope/payload/data envelope/payload))
       (var schema known/schema)
-      (if_yes (!= known/versions void)
+      (if_yes ($present? known/versions)
         (var version_schema (known/versions .get $"v${envelope/version}"))
-        (if_not (== version_schema void) (set schema version_schema)))
+        (if_not ($absent? version_schema) (set schema version_schema)))
       (var guarded ($runtime/guard_call schema schema_payload))
       (if_not guarded/ok (set schema_error guarded/message))
     catch Any
@@ -431,7 +431,7 @@
   (var seen (fresh_map))
   (var out (fresh_list))
   (for value in values
-    (if_yes (== (seen .get value) void)
+    (if_yes ($absent? (seen .get value))
       (seen .put value true)
       (out .push value)))
   out)
@@ -482,7 +482,7 @@
     (if_yes (|| (starts_with? key "segment/") (starts_with? key "projection/"))
       (var prefix (if (starts_with? key "segment/") 8 11))
       (var digest (slice_bytes key prefix (- (byte_size key) prefix)))
-      (if (== (retained .get digest) void)
+      (if ($absent? (retained .get digest))
         (backend .Store:delete key)))))
 
 (fn build_event_manifest [events : EventStore, generation : Int]

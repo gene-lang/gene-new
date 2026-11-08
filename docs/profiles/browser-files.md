@@ -14,19 +14,19 @@ It does not expose arbitrary local filesystem paths.
 | `($files/cancel reader)` | Abort a pending read. |
 
 `maximum` must be between zero and 64 MiB. Oversized files are rejected before
-reading. The callbacks use `(Fn [Str] Void)`; no caller task scope is required.
+reading. The callbacks use `(Fn [Str] Nil)`; no caller task scope is required.
 `on_read` receives only the encoded bytes, not a data URL. File input, clipboard,
 and drop handles can all use the same reader.
 
 ```gene
 (mod upload_example ^profile web)
-(fn main [root : EventTarget] : Void
+(fn main [root : EventTarget] : Nil
   (var input ($dom/element "upload"))
-  ($dom/add_event_listener input "change" (fn [event : Any] : Void
+  ($dom/add_event_listener input "change" (fn [event : Any] : Nil
     (for file in ($files/from_input input)
       ($files/read_base64 file 10485760
-        (fn [data : Str] : Void ($console/log "File ready for upload"))
-        (fn [message : Str] : Void ($console/error message)))))))
+        (fn [data : Str] : Nil ($console/log "File ready for upload"))
+        (fn [message : Str] : Nil ($console/error message)))))))
 ```
 
 For drop targets, prevent the browser's default navigation on `dragover` and

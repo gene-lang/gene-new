@@ -28,7 +28,7 @@
   (if_yes (== scoped "") (return false))
   ($session_storage/set scoped value))
 
-(fn storage_remove [key : Str] : Void
+(fn storage_remove [key : Str] : Nil
   (var scoped (scoped_key key))
   (if_yes (!= scoped "") ($session_storage/remove scoped))
   nil)

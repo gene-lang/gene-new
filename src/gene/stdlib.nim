@@ -998,7 +998,7 @@ proc htmlBooleanAttr(name: string): bool =
 
 proc htmlRawText(value: Value, tag: string, scope: Scope): string =
   case value.kind
-  of vkNil, vkVoid:
+  of vkNil:
     discard
   of vkString:
     let needle = "</" & tag.toLowerAscii()
@@ -1025,7 +1025,7 @@ proc htmlRawText(value: Value, tag: string, scope: Scope): string =
 
 proc renderHtmlValue(value: Value, scope: Scope): string =
   case value.kind
-  of vkNil, vkVoid:
+  of vkNil:
     result = ""
   of vkString:
     result = htmlTextEscape(value.strVal)
@@ -1049,13 +1049,13 @@ proc renderHtmlValue(value: Value, scope: Scope): string =
         raise newException(GeneError,
           "html/render invalid attribute name: " & name)
       if htmlBooleanAttr(name):
-        if attr.kind in {vkNil, vkVoid} or
+        if attr.kind in {vkNil} or
             (attr.kind == vkBool and not attr.boolVal):
           continue
         result.add ' '
         result.add name
         continue
-      if attr.kind in {vkNil, vkVoid}:
+      if attr.kind in {vkNil}:
         continue
       result.add ' '
       result.add name
@@ -1326,8 +1326,6 @@ proc cssCanonical(value: Value): string =
     field("S", value.strVal)
   of vkNil:
     result = "Z"
-  of vkVoid:
-    result = "V"
   of vkBool:
     result = if value.boolVal: "T" else: "F"
   of vkInt, vkFloat, vkChar:
@@ -1559,7 +1557,7 @@ proc renderCssKeyframes(value: Value, depth: int, scope: Scope): string =
 
 proc renderCssNode(value: Value, parent: string, depth: int,
                    scope: Scope): string =
-  if value.kind == vkNil or value.kind == vkVoid:
+  if value.kind == vkNil:
     return ""
   if value.kind == vkList:
     for item in value.listItems:
@@ -5405,8 +5403,8 @@ proc incrementalReplId(name: string, value: Value, scope: Scope,
                        requireOpen = true): int =
   if not nativeReceiverIs(scope, value, "ReplSession"):
     raise newException(GeneError, name & " expects a repl/Session")
-  let id = value.props.getOrDefault("id", VOID)
-  let closed = value.props.getOrDefault("closed", VOID)
+  let id = value.props.getOrDefault("id", NIL)
+  let closed = value.props.getOrDefault("closed", NIL)
   if id.kind != vkInt or closed.kind != vkCell or id.intVal <= 0 or
       id.intVal > nextIncrementalReplId:
     raise newException(GeneError, name & " received an invalid repl/Session")
@@ -6744,11 +6742,11 @@ proc jsonEscapeInto(s: string, into: var string) =
   into.add '"'
 
 proc jsonStringifyInto(value: Value, into: var string, scope: Scope,
-                       depth: int) =
+                       depth: int, omitNil = false) =
   if depth > jsonMaxDepth:
     raiseJsonValueError(scope, "json/stringify: nesting too deep")
   case value.kind
-  of vkNil, vkVoid: into.add "null"
+  of vkNil: into.add "null"
   of vkBool: into.add (if value.boolVal: "true" else: "false")
   of vkInt: into.addInt value.intVal
   of vkFloat: into.add $value.floatVal
@@ -6760,18 +6758,21 @@ proc jsonStringifyInto(value: Value, into: var string, scope: Scope,
     for item in value.listItems:
       if not first: into.add ','
       first = false
-      jsonStringifyInto(item, into, scope, depth + 1)
+      jsonStringifyInto(item, into, scope, depth + 1, omitNil)
     into.add ']'
   of vkMap:
     into.add '{'
     var first = true
     # By key id: the text is read in place instead of copied out per entry.
     for keyId, item in value.mapEntries.idPairs:
+      # `^^omit_nil` leaves out every nil-valued key at every depth; list
+      # elements are positional, so a nil element is always written as null.
+      if omitNil and item.kind == vkNil: continue
       if not first: into.add ','
       first = false
       jsonEscapeInto(propKeyText(keyId), into)
       into.add ':'
-      jsonStringifyInto(item, into, scope, depth + 1)
+      jsonStringifyInto(item, into, scope, depth + 1, omitNil)
     into.add '}'
   else:
     raiseJsonValueError(scope, "json/stringify: cannot serialize a " &
@@ -6780,8 +6781,18 @@ proc jsonStringifyInto(value: Value, into: var string, scope: Scope,
 proc biJsonStringify(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("json/stringify", args)
   let scope = if call == nil: nil else: call[].dispatchScope
+  var omitNil = false
+  if call != nil:
+    for i, name in call[].namedNames:
+      if name != "omit_nil":
+        raise newException(GeneError,
+          "json/stringify got unexpected named argument: " & name)
+      let flag = call[].namedValues[i]
+      if flag.kind != vkBool:
+        raiseTypeError("json/stringify ^omit_nil", "Bool", flag, scope)
+      omitNil = flag.boolVal
   var buffer = ""
-  jsonStringifyInto(args[0], buffer, scope, 0)
+  jsonStringifyInto(args[0], buffer, scope, 0, omitNil)
   newStr(buffer)
 
 
@@ -6895,7 +6906,7 @@ proc normalizeLogValue(value: Value, depth: int, items: var int,
   if items > maxItems:
     raise newException(GeneError, "log payload item count exceeds limit")
   case value.kind
-  of vkNil, vkVoid:
+  of vkNil:
     result = (NIL, newJNull())
   of vkBool:
     result = (value, newJBool(value.boolVal))
@@ -7186,7 +7197,7 @@ proc raiseSerdeError(scope: Scope, message: string, path: seq[string] = @[]) =
 proc serdeFastBareName(s: string): bool =
   ## Common identifiers and property keys can be accepted without probing the
   ## reader. Unusual spellings still use the authoritative read-back check.
-  if s.len == 0 or s in ["true", "false", "nil", "void"] or
+  if s.len == 0 or s in ["true", "false", "nil"] or
       s.startsWith(serdeReservedPrefix) or s.endsWith("..."):
     return false
   if s[0] notin {'A'..'Z', 'a'..'z', '_'}:
@@ -7506,7 +7517,7 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
   if serdeEmitSharedPrefix(w, v):
     return
   case v.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkString, vkBytes, vkChar,
+  of vkNil, vkBool, vkInt, vkString, vkBytes, vkChar,
      vkDate, vkTime, vkDateTime, vkRegex:
     w.sb.add print(v)
   of vkFloat:
@@ -7782,7 +7793,7 @@ proc serdeDataValueP(v: Value, onPath: var HashSet[uint64]): bool =
   if v.isNil:
     return true
   case v.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar,
+  of vkNil, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar,
      vkDate, vkTime, vkDateTime, vkRegex, vkSymbol, vkTimezone, vkDuration,
      vkRange:
     true
@@ -7884,8 +7895,8 @@ proc serdePolicyInt(policy: Value, key: string, fallback: int,
     else:
       raiseSerdeError(scope, "^policy expects a SerdePolicy or Map")
       return fallback
-  let v = entries.getOrDefault(key, VOID)
-  if v.kind == vkVoid:
+  let v = entries.getOrDefault(key, NIL)
+  if v.kind == vkNil:
     return fallback
   if v.kind != vkInt:
     raiseSerdeError(scope, "^policy " & key & " must be an Int")
@@ -7897,8 +7908,8 @@ proc serdePolicyBool(policy: Value, key: string, fallback: bool,
     if policy.kind == vkNode: policy.props
     elif policy.kind == vkMap: policy.mapEntries
     else: return fallback
-  let v = entries.getOrDefault(key, VOID)
-  if v.kind == vkVoid:
+  let v = entries.getOrDefault(key, NIL)
+  if v.kind == vkNil:
     return fallback
   if v.kind != vkBool:
     raiseSerdeError(scope, "^policy " & key & " must be a Bool")
@@ -7910,7 +7921,7 @@ proc serdeLimitsFrom(policy: Value, scope: Scope): SerdePolicyLimits =
                              maxDepth: serdeDefaultMaxDepth,
                              maxSymbols: serdeDefaultMaxSymbols,
                              allowRestore: false)
-  if policy.kind == vkNil or policy.kind == vkVoid:
+  if policy.kind == vkNil:
     return
   result.maxBytes = serdePolicyInt(policy, "max_bytes", result.maxBytes, scope)
   result.maxNodes = serdePolicyInt(policy, "max_nodes", result.maxNodes, scope)
@@ -8058,7 +8069,7 @@ proc serdeLookupRefPath(r: var SerdeReader, startScope: Scope,
       cur = nxt.value
     elif cur.kind == vkType and cur.isEnumType and i == segs.len - 1:
       let variant = enumVariantDescriptor(cur, seg)
-      if variant.kind == vkVoid:
+      if variant.kind == vkNil:
         raiseSerdeError(r.scope, "unresolved enum variant: '" & path & "'",
                         r.path)
       cur = variant
@@ -8344,7 +8355,7 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
 proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
   serdeCountValue(r, depth)
   case v.kind
-  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar,
+  of vkNil, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar,
      vkDate, vkTime, vkDateTime, vkRegex:
     v
   of vkSymbol:
@@ -8515,7 +8526,7 @@ proc dbConnHandleValue(name: string, conn: Value, expectedType: string,
   # still works.
   if not nativeReceiverIs(scope, conn, expectedType):
     raiseDbError(name & " expects a " & expectedType & " connection", scope)
-  let handle = conn.props.getOrDefault("handle", VOID)
+  let handle = conn.props.getOrDefault("handle", NIL)
   if handle.kind != vkCPtr:
     raiseDbError(name & ": connection has no native handle", scope)
   handle
@@ -8814,12 +8825,12 @@ proc sqliteExecScript(db: pointer, sql: string, where: string,
 proc sqliteFileBacked(conn: Value): bool =
   ## A connection from `sqlite/open_file`: SQLite's own pager and journal make
   ## each commit durable on disk, so there is no image to publish.
-  let storage = conn.props.getOrDefault("storage", VOID)
+  let storage = conn.props.getOrDefault("storage", NIL)
   storage.kind == vkString and storage.strVal == "file"
 
 proc sqlitePersist(conn: Value, db: pointer, call: ptr NativeCall,
                    scope: Scope) =
-  let path = conn.props.getOrDefault("path", VOID)
+  let path = conn.props.getOrDefault("path", NIL)
   if path.kind != vkString or path.strVal == ":memory:" or
       sqliteFileBacked(conn):
     return
@@ -9109,14 +9120,14 @@ proc biDbClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   let scope = if call == nil: nil else: call[].dispatchScope
   if args[0].kind != vkNode or args[0].head.kind != vkType:
     raiseDbError("Db/close expects a database connection", scope)
-  let handle = args[0].props.getOrDefault("handle", VOID)
+  let handle = args[0].props.getOrDefault("handle", NIL)
   if handle.kind != vkCPtr:
     raiseDbError("Db/close: connection has no native handle", scope)
   if nativeReceiverIs(scope, args[0], "SqliteDb") and handle.cPtrAddress in activeSqliteVisits:
     raiseDbError("Db/close: connection is active in a native row callback", scope)
   if nativeReceiverIs(scope, args[0], "SqliteDb") and
       not handle.cPtrClosed and
-      args[0].props.getOrDefault("path", VOID).kind == vkString and
+      args[0].props.getOrDefault("path", NIL).kind == vkString and
       args[0].props["path"].strVal != ":memory:":
     # Successful commits already publish the database image. Serializing here
     # would save an unfinished transaction, or let an older reader overwrite
@@ -9131,7 +9142,7 @@ proc biDbClosed(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   let scope = if call == nil: nil else: call[].dispatchScope
   if args[0].kind != vkNode or args[0].head.kind != vkType:
     raiseDbError("Db/closed? expects a database connection", scope)
-  let handle = args[0].props.getOrDefault("handle", VOID)
+  let handle = args[0].props.getOrDefault("handle", NIL)
   if handle.kind != vkCPtr:
     raiseDbError("Db/closed?: connection has no native handle", scope)
   if handle.cPtrClosed: TRUE else: FALSE
@@ -9533,7 +9544,7 @@ proc storeNamedOr(named: NamedArgs, name: string, fallback: Value): Value =
   if named.hasArg(name): named.getArg(name) else: fallback
 
 proc storeModeText(scope: Scope, value: Value, fallback = "data"): string =
-  if value.kind == vkNil or value.kind == vkVoid:
+  if value.kind == vkNil:
     return fallback
   case value.kind
   of vkSymbol: result = value.symVal
@@ -9868,23 +9879,23 @@ proc storeDecodeCheckpoint(scope: Scope, store: Value, generation: int64,
                            encoded: Table[string, string]): Value =
   let manifest = storeDecode(scope, "data", manifestText, NIL, "manifest")
   if manifest.kind != vkMap or
-      manifest.mapEntries.getOrDefault("schema", VOID).kind != vkInt or
+      manifest.mapEntries.getOrDefault("schema", NIL).kind != vkInt or
       manifest.mapEntries["schema"].intVal != storeCheckpointSchema or
-      manifest.mapEntries.getOrDefault("generation", VOID).kind != vkInt or
+      manifest.mapEntries.getOrDefault("generation", NIL).kind != vkInt or
       manifest.mapEntries["generation"].intVal != generation:
-    return VOID
-  let hashes = manifest.mapEntries.getOrDefault("hashes", VOID)
+    return MISSING
+  let hashes = manifest.mapEntries.getOrDefault("hashes", NIL)
   if hashes.kind != vkMap:
-    return VOID
+    return MISSING
   var records = initPropTable()
   let mode = storeModeOf(store, scope)
   let policy = storePolicyOf(store)
   for name, expected in hashes.mapEntries:
     if expected.kind != vkString or name notin encoded:
-      return VOID
+      return MISSING
     let data = encoded[name]
     if expected.strVal != "sha256:" & sha256Hex(data):
-      return VOID
+      return MISSING
     records[name] = storeDecode(scope, mode, data, policy, name)
   var resultProps = initPropTable()
   resultProps["generation"] = newInt(generation)
@@ -10128,7 +10139,7 @@ proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value,
       let manifest = storeDecode(scope, "data", manifestText, NIL, "manifest")
       if manifest.kind != vkMap:
         continue
-      let hashes = manifest.mapEntries.getOrDefault("hashes", VOID)
+      let hashes = manifest.mapEntries.getOrDefault("hashes", NIL)
       if hashes.kind != vkMap:
         continue
       var encoded = initTable[string, string]()
@@ -10143,7 +10154,7 @@ proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value,
         decodingRecords = true
         let loaded = storeDecodeCheckpoint(scope, store, generation,
                                            manifestText, encoded)
-        if loaded.kind != vkVoid:
+        if not loaded.isMissing:
           return loaded
     except GeneError as e:
       # A complete, checksummed generation that our policy cannot decode is
@@ -10190,7 +10201,7 @@ proc storeLoadSqliteCheckpoint(scope: Scope, store: Value): Value =
       let manifest = storeDecode(scope, "data", manifestText, NIL, "manifest")
       if manifest.kind != vkMap:
         continue
-      let hashes = manifest.mapEntries.getOrDefault("hashes", VOID)
+      let hashes = manifest.mapEntries.getOrDefault("hashes", NIL)
       if hashes.kind != vkMap:
         continue
       var encoded = initTable[string, string]()
@@ -10208,7 +10219,7 @@ proc storeLoadSqliteCheckpoint(scope: Scope, store: Value): Value =
         decodingRecords = true
         let loaded = storeDecodeCheckpoint(scope, store, generation,
                                            manifestText, encoded)
-        if loaded.kind != vkVoid:
+        if not loaded.isMissing:
           return loaded
     except GeneError as e:
       if decodingRecords or "payload exceeds max_" in e.msg:
@@ -11050,7 +11061,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
             (let left (- limit transferred))
             (let want (if (< left chunk_bytes) left chunk_bytes))
             (let part (await (reader .AsyncReader:read want)))
-            (if ($nil? part) (break))
+            (if ($absent? part) (break))
             (let got ($binary/size part))
             (if (== got 0)
               (fail (IoError ^message "reader returned empty Bytes"
@@ -11265,7 +11276,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
         (do
           (signal .join)
           (let source_closed ($csv/_source_closed reader))
-          (if ($nil? source_closed)
+          (if ($absent? source_closed)
             nil
             (match (source_closed .join)
               (when (TaskOutcome/ok _) nil)
@@ -11888,7 +11899,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
 
   # Extend the existing `fs` namespace (built in vm.nim) with sync helpers the
   # agent file tools need.
-  let fsNs = root.vars.getOrDefault("fs", VOID)
+  let fsNs = root.vars.getOrDefault("fs", NIL)
   if fsNs.kind == vkNamespace:
     fsNs.nsScope.define("FsFileLock", fsFileLockType)
     fsNs.nsScope.define("try_lock",
@@ -11938,8 +11949,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   let jsonScope = newScope(root)
   jsonScope.define("parse", builtinNativeCallFn("json/parse", biJsonParse))
   jsonScope.define("stringify", builtinNativeCallFn("json/stringify",
-                                                biJsonStringify,
-                                                acceptsNamed = false))
+                                                biJsonStringify))
   osScope.define("read_line_async", builtinNativeCallFn("os/read_line_async", biOsReadLineAsync,
                                                        acceptsNamed = false))
   jsonScope.define("JsonError", jsonError)

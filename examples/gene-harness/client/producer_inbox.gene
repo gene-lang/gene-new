@@ -6,10 +6,10 @@
 (import ^from "./components.gene" [render_element])
 (import ^from "./notices.gene" [Notices put_notice remove_notice clear_notices])
 
-(type ProducerInbox ^props {^cards PropMap ^epoch Str ^revision Int ^watermark Str ^opened Str ^ready Bool ^clearing Bool ^safe Bool ^selected Str ^pending PropMap ^sending PropMap ^notices Notices ^reference_generation Int ^api (Fn [Str Str Any (Fn [Int Any] Void)] Void) ^changed (Fn [Int] Void) ^navigate (Fn [Any] Void) ^draft (Fn [Str Str] Void)})
+(type ProducerInbox ^props {^cards PropMap ^epoch Str ^revision Int ^watermark Str ^opened Str ^ready Bool ^clearing Bool ^safe Bool ^selected Str ^pending PropMap ^sending PropMap ^notices Notices ^reference_generation Int ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^changed (Fn [Int] Nil) ^navigate (Fn [Any] Nil) ^draft (Fn [Str Str] Nil)})
 (type ProducerCard ^props {^message Any ^element EventTarget ^heading EventTarget ^summary EventTarget ^source EventTarget ^details EventTarget ^content EventTarget ^actions EventTarget ^status EventTarget ^revision Int ^buttons PropMap ^reference EventTarget ^clear EventTarget})
 
-(fn message_controls [inbox : ProducerInbox] : Void
+(fn message_controls [inbox : ProducerInbox] : Nil
   (var local 0) (var remote 0)
   (for [key item] in inbox/notices/items (set local (+ local 1)))
   (for [key raw] in inbox/cards
@@ -24,23 +24,23 @@
   (var section ($dom/element "notification_message_section"))
   (set section/hidden (== remote 0)))
 
-(fn producer_problem [inbox : ProducerInbox, message : Str] : Void
+(fn producer_problem [inbox : ProducerInbox, message : Str] : Nil
   (put_notice inbox/notices ($dom/element "notice") "inbox" "" "transport" message "error" true {}))
 
-(fn refresh_inbox [inbox : ProducerInbox] : Void
+(fn refresh_inbox [inbox : ProducerInbox] : Nil
   (if_not inbox/ready (return))
   (var epoch inbox/epoch)
   (inbox/api
     "GET"
     $"${(api_root)}/notifications"
     nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (!= epoch inbox/epoch) (return))
       (if (== code 200)
         (apply_inbox inbox data)
         (producer_problem inbox (qtext data/message "Messages could not be loaded."))))))
 
-(fn clear_producers [inbox : ProducerInbox, selected : (List Any)] : Void
+(fn clear_producers [inbox : ProducerInbox, selected : (List Any)] : Nil
   (if_yes (|| inbox/clearing (== selected/.size 0)) (return))
   (if_not inbox/ready (producer_problem inbox "Reconnect to clear server messages.") (return))
   (var epoch inbox/epoch)
@@ -49,26 +49,26 @@
     "POST"
     $"${(api_root)}/notifications/clear"
     {^messages selected}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (!= epoch inbox/epoch) (return))
       (set inbox/clearing false) (message_controls inbox)
       (if (== code 200)
         (refresh_inbox inbox)
         (producer_problem inbox "Clearing was not confirmed. Refresh messages before trying again.")))))
 
-(fn opened_inbox [inbox : ProducerInbox] : Void
+(fn opened_inbox [inbox : ProducerInbox] : Nil
   (if_not inbox/ready (return))
   # The snapshot observed at open is the boundary; later arrivals remain new.
   (var through : Int ($json/parse inbox/watermark))
   (inbox/api "POST" $"${(api_root)}/notifications/ack" {^through through}
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if (== code 200) (refresh_inbox inbox)
         (producer_problem inbox "Opening acknowledgment was not confirmed.")))))
 
 (fn action_key [request : Any] : Str
   (qtext request/request_id))
 
-(fn open_evidence [inbox : ProducerInbox, reference : Any] : Void
+(fn open_evidence [inbox : ProducerInbox, reference : Any] : Nil
   (set inbox/reference_generation (+ inbox/reference_generation 1))
   (var generation inbox/reference_generation)
   (var epoch inbox/epoch)
@@ -106,7 +106,7 @@
     "GET"
     path
     nil
-    (fn [code : Int, data : Any] : Void
+    (fn [code : Int, data : Any] : Nil
       (if_yes (|| (!= generation inbox/reference_generation) (!= epoch inbox/epoch)) (return))
       ($dom/set_text
         target
@@ -120,16 +120,16 @@
             (qtext data/display (qtext data/reply (qtext data/prompt))))
           (qtext data/message "Original receipt is unavailable."))))))
 
-(fn finish_action [inbox : ProducerInbox, key : Str, record : Any] : Void
+(fn finish_action [inbox : ProducerInbox, key : Str, record : Any] : Nil
   (var pending : Any inbox/pending/%key)
   (if_yes ($absent? pending) (return))
   (set pending/command (qtext record/id))
   (storage_set "gene-harness/notification-actions" (qjson inbox/pending))
   (var status (qtext record/status))
   (if_yes (== status "running")
-    ($time/after 500.0 (fn [] : Void (recover_action inbox key false)))
+    ($time/after 500.0 (fn [] : Nil (recover_action inbox key false)))
     (return))
-  (set inbox/pending/%key void)
+  (inbox/pending .delete key)
   (storage_set "gene-harness/notification-actions" (qjson inbox/pending))
   (remove_notice inbox/notices "notification-action" (qtext pending/request/session) key)
   (put_notice
@@ -145,7 +145,7 @@
     (!= status "done")
     {^session pending/request/session ^command record/id ^notification pending/request/notification}))
 
-(fn post_action [inbox : ProducerInbox, request : Any] : Void
+(fn post_action [inbox : ProducerInbox, request : Any] : Nil
   (var key (action_key request))
   (if_yes (|| (! inbox/ready) ($present? inbox/sending/%key)) (return))
   (set inbox/sending/%key true)
@@ -153,8 +153,8 @@
     "POST"
     $"${(api_root)}/notifications/action"
     request
-    (fn [code : Int, data : Any] : Void
-      (set inbox/sending/%key void)
+    (fn [code : Int, data : Any] : Nil
+      (inbox/sending .delete key)
       (match code
         (when 202 (finish_action inbox key data/receipt))
         (when 200 (do
@@ -166,9 +166,9 @@
               (inbox/draft (qtext data/session) (qtext data/text)))))
         (else
           (if_yes (|| (== code 400) (== code 404) (== code 409) (== code 410))
-            (set inbox/pending/%key void)
+            (inbox/pending .delete key)
             (storage_set "gene-harness/notification-actions" (qjson inbox/pending)))
-          (put_notice ^action (if ($absent? inbox/pending/%key) nil (fn [] : Void (recover_action inbox key true)))
+          (put_notice ^action (if ($absent? inbox/pending/%key) nil (fn [] : Nil (recover_action inbox key true)))
             inbox/notices
             ($dom/element "notice")
             "notification-action"
@@ -179,7 +179,7 @@
             true
             {^session request/session ^notification request/notification}))))))
 
-(fn recover_action [inbox : ProducerInbox, key : Str, retry : Bool] : Void
+(fn recover_action [inbox : ProducerInbox, key : Str, retry : Bool] : Nil
   (var pending : Any inbox/pending/%key)
   (if_yes (|| (! inbox/ready) ($absent? pending) ($present? inbox/sending/%key)) (return))
   (var session (qtext pending/request/session))
@@ -189,13 +189,13 @@
     "GET"
     $"${(api_root)}/sessions/${session}/requests/${($url/encode_component id)}?kind=command"
     nil
-    (fn [code : Int, data : Any] : Void
-      (set inbox/sending/%key void)
+    (fn [code : Int, data : Any] : Nil
+      (inbox/sending .delete key)
       (if_yes ($absent? inbox/pending/%key) (return))
       (if (== code 200)
         (then (finish_action inbox key data))
         (elif (&& (== code 404) retry) (post_action inbox pending/request))
-        (else (put_notice ^action (fn [] : Void (recover_action inbox key true))
+        (else (put_notice ^action (fn [] : Nil (recover_action inbox key true))
             inbox/notices
             ($dom/element "notice")
             "notification-action"
@@ -206,7 +206,7 @@
             true
             {^session session ^notification pending/request/notification}))))))
 
-(fn activate_action [inbox : ProducerInbox, message : Any, action : Any] : Void
+(fn activate_action [inbox : ProducerInbox, message : Any, action : Any] : Nil
   (if_not inbox/ready (return))
   (var session (qtext message/origin/session inbox/selected))
   (var request
@@ -228,8 +228,8 @@
     "GET"
     $"${(api_root)}/sessions/${session}/snapshot"
     nil
-    (fn [code : Int, data : Any] : Void
-      (set inbox/sending/%admission void)
+    (fn [code : Int, data : Any] : Nil
+      (inbox/sending .delete admission)
       (if_yes (!= code 200)
         (producer_problem inbox (qtext data/message))
         (return))
@@ -241,7 +241,7 @@
       (if_not (storage_set "gene-harness/notification-actions" (qjson inbox/pending))
         (producer_problem inbox "Browser storage is required to recover this action.")
         (return))
-      (put_notice ^action (fn [] : Void (recover_action inbox key true))
+      (put_notice ^action (fn [] : Nil (recover_action inbox key true))
         inbox/notices
         ($dom/element "notice")
         "notification-action"
@@ -253,7 +253,7 @@
         {^session session ^notification message/id})
       (post_action inbox request))))
 
-(fn render_producer [inbox : ProducerInbox, message : Any] : Void
+(fn render_producer [inbox : ProducerInbox, message : Any] : Nil
   (var id (qtext message/id))
   (var found : Any inbox/cards/%id)
   (var card
@@ -275,14 +275,14 @@
     ($dom/add_event_listener
       card/reference
       "click"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (inbox/navigate card/message/origin)))
     ($dom/append card/element card/status)
     ($dom/append card/element card/clear)
     ($dom/add_event_listener
       card/clear
       "click"
-      (fn [event : Any] : Void
+      (fn [event : Any] : Nil
         (clear_producers inbox [{^id card/message/id ^revision card/message/revision}])))
     ($dom/append ($dom/element "notification_messages") card/element))
   (var revision : Int message/revision)
@@ -301,11 +301,11 @@
         card/content
         (render_element
           message/detail
-          (fn [text : Str] : Void
+          (fn [text : Str] : Nil
             nil)
-          (fn [text : Str] : Void
+          (fn [text : Str] : Nil
             nil)
-          (fn [target : Str, presentation : Str] : Void
+          (fn [target : Str, presentation : Str] : Nil
             (inbox/navigate {^component target ^presentation presentation}))
           false
           buttons))
@@ -334,7 +334,7 @@
       ($dom/add_event_listener
         button
         "click"
-        (fn [event : Any] : Void
+        (fn [event : Any] : Nil
           (activate_action inbox card/message action)))
       ($dom/append card/actions button))
     (set button/hidden false))
@@ -344,7 +344,7 @@
       (set button/hidden true)))
   (set card/reference/hidden ($absent? message/origin/session)))
 
-(fn apply_inbox [inbox : ProducerInbox, data : Any] : Void
+(fn apply_inbox [inbox : ProducerInbox, data : Any] : Nil
   (if_yes (!= (qtext data/epoch) inbox/epoch) (return))
   (var revision : Int ($json/parse (qtext data/revision "0")))
   (if_yes (< revision inbox/revision) (return))
@@ -365,7 +365,7 @@
   (message_controls inbox)
   (remove_notice inbox/notices "inbox" "" "transport"))
 
-(fn producer_event [inbox : ProducerInbox, kind : Str, epoch : Str, data : Any] : Void
+(fn producer_event [inbox : ProducerInbox, kind : Str, epoch : Str, data : Any] : Nil
   (if_yes (!= epoch inbox/epoch)
     (set inbox/epoch epoch)
     (set inbox/clearing false)
@@ -386,7 +386,7 @@
       false
       data/data/origin)))
 
-(fn producer_ready [inbox : ProducerInbox, ready : Bool, selected : Str] : Void
+(fn producer_ready [inbox : ProducerInbox, ready : Bool, selected : Str] : Nil
   (var reconnect (&& ready (! inbox/ready)))
   (set inbox/ready ready)
   (set inbox/selected selected)
@@ -396,15 +396,15 @@
     (for [key pending] in inbox/pending
       (recover_action inbox ($to_str key) false))))
 
-(fn create_producer_inbox [notices : Notices, safe : Bool, api : (Fn [Str Str Any (Fn [Int Any] Void)] Void), changed : (Fn [Int] Void), navigate : (Fn [Any] Void), draft : (Fn [Str Str] Void)] : ProducerInbox
+(fn create_producer_inbox [notices : Notices, safe : Bool, api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil), changed : (Fn [Int] Nil), navigate : (Fn [Any] Nil), draft : (Fn [Str Str] Nil)] : ProducerInbox
   (var inbox
     (ProducerInbox ^cards {} ^epoch "" ^revision -1 ^watermark "0" ^opened "0" ^!ready ^!clearing ^safe safe ^selected "" ^pending (restored_map "gene-harness/notification-actions") ^sending {} ^notices notices ^reference_generation 0 ^api api ^changed changed ^navigate navigate ^draft draft))
   (var previous notices/changed)
-  (set notices/changed (fn [] : Void (previous) (message_controls inbox)))
+  (set notices/changed (fn [] : Nil (previous) (message_controls inbox)))
   ($dom/add_event_listener
     ($dom/element "clear_messages")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (var selected : (List Any) [])
       (for [key raw] in inbox/cards
         (var card : ProducerCard raw)
@@ -415,7 +415,7 @@
   ($dom/add_event_listener
     ($dom/element "ack_messages")
     "click"
-    (fn [event : Any] : Void
+    (fn [event : Any] : Nil
       (opened_inbox inbox)))
   (message_controls inbox)
   inbox)

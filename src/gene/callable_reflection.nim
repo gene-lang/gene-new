@@ -20,18 +20,18 @@ proc safeAnnotation(expr: Value, scope: Scope, lookup: ReflectionTypeLookup,
   ## Unknown/dynamic annotations become Void internally, never executable
   ## syntax in the public description. Copy only supported type structure,
   ## dropping metadata and owning borrowed nominal references.
-  if depth > 64: return VOID
+  if depth > 64: return MISSING
   if expr.isTypeAlias:
-    if expr.isOpaqueAbiAnnotation: return VOID
+    if expr.isOpaqueAbiAnnotation: return MISSING
     return safeAnnotation(expr.typeAliasExpr, scope, lookup, depth + 1, abstractSelf, unresolved)
   case expr.kind
   of vkType, vkProtocol: return expr
   of vkSymbol:
-    if expr.symVal in unresolved: return VOID
+    if expr.symVal in unresolved: return MISSING
     if abstractSelf and expr.symVal == "Self": return expr
     if expr.symVal.endsWith("?") and expr.symVal.len > 1:
       let base = safeAnnotation(newSym(expr.symVal[0 .. ^2]), scope, lookup, depth + 1, abstractSelf, unresolved)
-      if base.kind == vkVoid: return VOID
+      if base.isMissing: return MISSING
       return newNode(newSym("?"), body = @[base], immutable = true)
     let resolved = lookup(expr, scope)
     if resolved.kind in {vkType, vkProtocol}:
@@ -42,39 +42,39 @@ proc safeAnnotation(expr: Value, scope: Scope, lookup: ReflectionTypeLookup,
       let resolved = lookup(expr, scope)
       if resolved.kind in {vkType, vkProtocol, vkSymbol}:
         return safeAnnotation(resolved, scope, lookup, depth + 1, abstractSelf, unresolved)
-      return VOID
+      return MISSING
     if expr.head.kind != vkSymbol or expr.head.symVal notin
         ["?", "|", "&", "...", "List", "Buffer", "Task", "Stream",
          "Channel", "Callable", "Fn"]:
-      return VOID
+      return MISSING
     var body: seq[Value]
     for item in expr.body:
       let safe = safeAnnotation(item, scope, lookup, depth + 1, abstractSelf, unresolved)
-      if safe.kind == vkVoid: return VOID
+      if safe.isMissing: return MISSING
       body.add safe
     var props = initPropTable()
     for key, item in expr.props:
-      if key notin ["named", "errors"]: return VOID
+      if key notin ["named", "errors"]: return MISSING
       let safe = safeAnnotation(item, scope, lookup, depth + 1, abstractSelf, unresolved)
-      if safe.kind == vkVoid: return VOID
+      if safe.isMissing: return MISSING
       props[key] = safe
     return newNode(expr.head, props = props, body = body, immutable = true)
   of vkList:
     var items: seq[Value]
     for item in expr.listItems:
       let safe = safeAnnotation(item, scope, lookup, depth + 1, abstractSelf, unresolved)
-      if safe.kind == vkVoid: return VOID
+      if safe.isMissing: return MISSING
       items.add safe
     return newList(items, immutable = true)
   of vkMap:
     var props = initPropTable()
     for key, item in expr.mapEntries:
       let safe = safeAnnotation(item, scope, lookup, depth + 1, abstractSelf, unresolved)
-      if safe.kind == vkVoid: return VOID
+      if safe.isMissing: return MISSING
       props[key] = safe
     return newMap(props, immutable = true)
   else: discard
-  VOID
+  MISSING
 
 proc parameter(name, local: string, typ: Value, required, hasDefault: bool,
                scope: Scope, lookup: ReflectionTypeLookup, abstractSelf = false,
@@ -86,8 +86,8 @@ proc parameter(name, local: string, typ: Value, required, hasDefault: bool,
   props["has_default"] = newBool(hasDefault)
   let safe = safeAnnotation(if typ.kind == vkNil: newSym("Any") else: typ,
                             scope, lookup, abstractSelf = abstractSelf, unresolved = unresolved)
-  props["type_known"] = newBool(safe.kind != vkVoid)
-  props["type"] = if safe.kind == vkVoid: NIL else: safe
+  props["type_known"] = newBool(not safe.isMissing)
+  props["type"] = if safe.isMissing: NIL else: safe
   newMap(props, immutable = true)
 
 proc reflectedRestType*(value: Value): Value =
@@ -120,7 +120,7 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
   var scope: Scope
   var positional, named: seq[Value]
   var rest = NIL
-  var resultType = VOID
+  var resultType = MISSING
   var errors: seq[Value]
   var errorsChecked = false
   var minimum = 0
@@ -258,8 +258,8 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
   props["named"] = newList(named, immutable = true)
   props["rest"] = rest
   props["minimum_positional"] = newInt(minimum)
-  props["result_known"] = newBool(resultType.kind != vkVoid)
-  props["result"] = if resultType.kind == vkVoid: NIL else: resultType
+  props["result_known"] = newBool(not resultType.isMissing)
+  props["result"] = if resultType.isMissing: NIL else: resultType
   var deferred = initPropTable()
   deferred["known"] = FALSE
   if resultType.kind == vkNode and resultType.head.kind == vkSymbol and
@@ -275,7 +275,7 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
   var safeErrors: seq[Value]
   for typ in errors:
     let safe = safeAnnotation(typ, scope, lookup, abstractSelf = options.abstractSelf)
-    if safe.kind == vkVoid: errorProps["known"] = FALSE
+    if safe.isMissing: errorProps["known"] = FALSE
     else: safeErrors.add safe
   errorProps["types"] = if errorsChecked: newList(safeErrors, immutable = true) else: NIL
   props["invocation_errors"] = newMap(errorProps, immutable = true)
@@ -288,7 +288,7 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
     errorProps["known"] = FALSE
     errorProps["types"] = NIL
     props["invocation_errors"] = newMap(errorProps, immutable = true)
-  var complete = resultType.kind != vkVoid and errorProps["known"] == TRUE
+  var complete = not resultType.isMissing and errorProps["known"] == TRUE
   for p in positional: complete = complete and p.mapEntries["type_known"] == TRUE
   for p in named: complete = complete and p.mapEntries["type_known"] == TRUE
   if rest.kind != vkNil: complete = complete and rest.mapEntries["type_known"] == TRUE

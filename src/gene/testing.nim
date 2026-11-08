@@ -21,10 +21,6 @@ proc raiseAssertion(message: string, call: ptr NativeCall,
   props["message"] = newStr(message)
   if comparison:
     props["has_comparison"] = TRUE
-    # Preserve operand availability across property/exception boundaries that
-    # normalize Void by removing its property.
-    props["actual_present"] = TRUE
-    props["expected_present"] = TRUE
     props["actual"] = actual
     props["expected"] = expected
   let error = newException(GeneError, message)
@@ -110,7 +106,6 @@ proc testDiagnostic(error: ref GeneError, phase: string,
       for key in ["actual", "expected"]:
         props[key] = newStr(if value.props.hasKey(key):
           testDisplayValue(value.props[key])
-          elif value.props.getOrDefault(key & "_present", FALSE).isTruthy: "void"
           else: "<unavailable>")
     let diagnosticProps = value.errorProperties()
     if diagnosticProps.hasKey("trace"):
@@ -171,13 +166,13 @@ proc biTestRegisterExample(args: openArray[Value],
     if args.len != 4:
       raise newException(GeneError, "test/register_example expects four arguments")
     requireStr("test example description", args[0])
-    if args[3].kind != vkVoid and
+    if args[3].kind != vkNil and
         (args[3].kind != vkString or args[3].strVal.len == 0):
       raise newException(GeneError, "it ^skip requires a nonempty literal string")
     let callback = testCallback(args[1], args[2], call.loc)
     registry.groups[^1].children.add TestEntry(description: args[0].strVal,
       loc: call.loc, body: callback,
-      skipReason: if args[3].kind == vkVoid: "" else: args[3].strVal)
+      skipReason: if args[3].kind == vkNil: "" else: args[3].strVal)
   except GeneError as error:
     if registry.diagnostics.len == 0:
       registry.diagnostics.add testDiagnostic(error, "registration", scope, call.loc)
@@ -264,7 +259,7 @@ proc testDisplayValue(value: Value): string =
       add("}}")
     of vkString:
       add(print(newStr(v.strVal[0..<min(v.strVal.len, remaining)])))
-    of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkChar, vkSymbol, vkType,
+    of vkNil, vkBool, vkInt, vkFloat, vkChar, vkSymbol, vkType,
        vkProtocol, vkFunction, vkNativeFn:
       add(print(v))
     else:
@@ -429,8 +424,6 @@ proc registerTestingNamespace(root: Scope) =
   let assertionType = newType("AssertionError", NIL,
     @[TypeField(name: "message", typeExpr: newSym("Str"), scope: root),
       TypeField(name: "has_comparison", typeExpr: newSym("Bool"), optional: true, scope: root),
-      TypeField(name: "actual_present", typeExpr: newSym("Bool"), optional: true, scope: root),
-      TypeField(name: "expected_present", typeExpr: newSym("Bool"), optional: true, scope: root),
       TypeField(name: "actual", typeExpr: newSym("Any"), optional: true, scope: root),
       TypeField(name: "expected", typeExpr: newSym("Any"), optional: true, scope: root)],
     @[errorProtocol], root)

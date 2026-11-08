@@ -2062,7 +2062,6 @@ proc parseForm(r: var Reader, inList = false): Value =
     of "true": finish TRUE
     of "false": finish FALSE
     of "nil": finish NIL
-    of "void": finish VOID
     else:
       let lex = tok.lexeme
       if lex == "?~":

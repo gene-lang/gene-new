@@ -30,16 +30,16 @@ suite "errors — fail and catch":
     ck "(try ($str/nope \"a\") catch RuntimeError $err/message)",
        "\"cannot call $str/nope: gene/str/nope is not defined here\""
     ck "(let o {^a 1}) (try (o/b 1) catch RuntimeError $err/message)",
-       "\"cannot call o/b: the value is void (missing)\""
+       "\"cannot call o/b: the value is nil\""
     ck "(let n 1) (try (n 2) catch RuntimeError $err/message)",
        "\"cannot call n: value is Int, which is not callable\""
     ck "(let datum (quote (entry))) (try (datum) catch RuntimeError $err/message)",
        "\"cannot call datum: value is Node, which is not callable\""
-    ck "(let o {^a 1}) ($void? o/b)", "true"
+    ck "(let o {^a 1}) ($absent? o/b)", "true"
 
   test "call diagnostic does not repeat the callee or argument effects":
     ck "(var hits 0) " &
-       "(fn absent [] (set hits (+ hits 1)) void) " &
+       "(fn absent [] (set hits (+ hits 1)) nil) " &
        "(try ((absent) (set hits (+ hits 1))) catch RuntimeError nil) hits", "2"
 
   test "native calls without an authored site keep the fallback diagnostic":

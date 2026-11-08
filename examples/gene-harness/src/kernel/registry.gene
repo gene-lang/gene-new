@@ -38,13 +38,13 @@
 (fn registry_named [h : Harness, name : Str] : Registry
   (var registries h/registries/.get)
   (var found (registries .get name))
-  (if (== found void)
+  (if ($absent? found)
     (fail (HarnessError ^message $"registry ${name} is not defined"))
     found))
 
 (fn registry_exists? [h : Harness, name : Str] : Bool
   (var registries h/registries/.get)
-  (!= (registries .get name) void))
+  ($present? (registries .get name)))
 
 (fn registry [h : Harness, name : Str, ^unique unique : Bool = false, ^ordered ordered : Bool = false,
   ^schema schema = nil, ^on_remove on_remove = nil, ^owner owner : Str = "core", ^spec spec = nil] : Registry
@@ -73,7 +73,7 @@
             name)))))
   (var registries_cell h/registries)
   (var registries registries_cell/.get)
-  (if_not (== (registries .get name) void)
+  (if_not ($absent? (registries .get name))
     (fail (HarnessError ^message $"registry ${name} already defined")))
   (let declared (validate_registry_spec
     (?? spec {^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove})))
@@ -165,7 +165,7 @@
 (fn registry_names [h : Harness]
   (var out (fresh_list))
   (let view (registry_read_view h))
-  (let registries (if (== view void) h/registries/.get view))
+  (let registries (if ($absent? view) h/registries/.get view))
   (for [name value] in registries
     (out .push ($to_str name)))
   out)
@@ -228,13 +228,13 @@
     (then
       (let snapshot (current_snapshot h/snapshots))
       (return snapshot/registries)))
-  void)
+  nil)
 
 (fn registry_row_records [h : Harness, registry_name : Str]
   (let view (registry_read_view h))
-  (if_not (== view void)
+  (if_not ($absent? view)
     (let records (view .get registry_name))
-    (if (== records void)
+    (if ($absent? records)
       (fail (HarnessError ^message $"registry ${registry_name} is not defined")))
     (return records))
   (var r (registry_named h registry_name))
@@ -262,15 +262,15 @@
   (immutable_view results))
 
 (fn row_record [h : Harness, registry_name : Str, key : Str]
-  (var found void)
+  (var found nil)
   (for record in (registry_row_records h registry_name)
-    (if (&& (== found void) (== record/key key)) (set found record)))
+    (if (&& ($absent? found) (== record/key key)) (set found record)))
   found)
 
 (fn row [h : Harness, registry_name : Str, key : Str]
   (var found (row_record h registry_name key))
-  (if (== found void)
-    void
+  (if ($absent? found)
+    nil
     found/payload))
 
 (fn ^^private ledger_record [h : Harness, owner : Str, row_id : Str]
@@ -298,7 +298,7 @@
   (var row_index_cell h/row_index)
   (var row_index row_index_cell/.get)
   (var record (row_index .get row_id))
-  (if (== record void) (return false))
+  (if ($absent? record) (return false))
   (if (queue_registry_change? h)
     (then
       (queue_composition_change
@@ -330,7 +330,7 @@
 
 (fn contribute
   [h : Harness, owner : Str, registry_name : Str, payload,
-   ^key key = void,
+   ^key key = nil,
    ^priority priority : Int = 0,
    ^config_order config_order : Int = 0,
    ^replace replace : Bool = false] : Str
@@ -367,18 +367,18 @@
   (if (&& r/unique (== logical_key ""))
     (fail (HarnessError ^message $"registry ${registry_name} requires a logical key")))
 
-  (var existing void)
+  (var existing nil)
   (for candidate in r/rows/.get
-    (if (&& (== existing void) (== candidate/key logical_key))
+    (if (&& ($absent? existing) (== candidate/key logical_key))
       (set existing candidate)))
-  (if_yes (&& (== r/spec/same_owner true) (!= existing void)
+  (if_yes (&& (== r/spec/same_owner true) ($present? existing)
               (!= existing/owner owner))
     (fail (HarnessError
       ^message $"registry ${registry_name} key ${logical_key} is owned by ${existing/owner}")))
-  (if_yes (&& r/unique (!= existing void) (! replace))
+  (if_yes (&& r/unique ($present? existing) (! replace))
     (fail (HarnessError
       ^message $"registry ${registry_name} key ${logical_key} already exists")))
-  (if_yes (&& r/unique (!= existing void))
+  (if_yes (&& r/unique ($present? existing))
     (remove_registry_row h existing/row_id))
   (var row_id (next_registry_row_id h owner registry_name))
   (var acquired h/next_row_id/.get)
@@ -539,7 +539,7 @@
 
 (fn ^^private policy_for_owner [h : Harness, owner : Str]
   (var policy (h/plugin_policies .get; .get owner))
-  (if (== policy void)
+  (if ($absent? policy)
     {^limits (default_execution_limits) ^^host ^context nil}
     policy))
 
