@@ -8252,7 +8252,10 @@ proc emitModule(module: WebModule, typescript: bool,
     moduleUsesTypeKind(module, wtkPresent) or
     moduleExprUsesTypeKind(module, wtkPresent)
   needsMap = moduleUsesTypeKind(module, wtkMap) or
-    moduleUsesExprKind(module, {wekMap}) or needsPresentEquality
+    moduleUsesExprKind(module, {wekMap})
+  let needsMapEquality =
+    needsMap or moduleExprUsesTypeKind(module, wtkMap) or
+    needsPresentEquality
   let needsPropMap = moduleUsesTypeKind(module, wtkPropMap) or
     moduleExprUsesTypeKind(module, wtkPropMap) or needsPath or
     moduleUsesBuiltin(module, ["json/parse"])
@@ -8361,9 +8364,11 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("delete(key" & (if typescript: ": K" else: "") & ")" &
       (if typescript: ": void" else: "") &
       " { const index = this.indexOf(key); if (index >= 0) this.items.splice(index, 1); }")
+    let nilValue = if typescript: "null as unknown as V" else: "null"
     emitter.line("#insert(key" & (if typescript: ": K, value: V" else: ", value") &
       ")" & (if typescript: ": this" else: "") &
-      " { if (value === undefined) value = null; const index = this.indexOf(key); if (index < 0) this.items.push([key, value]); else this.items[index][1] = value; return this; }")
+      " { if (value === undefined) value = " & nilValue &
+      "; const index = this.indexOf(key); if (index < 0) this.items.push([key, value]); else this.items[index][1] = value; return this; }")
     emitter.line("[Symbol.iterator]()" &
       (if typescript: ": Iterator<[K, V]>" else: "") &
       " { return this.items[Symbol.iterator](); }")
@@ -9428,7 +9433,7 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
-  var needsEquality = needsMap or moduleUsesStructuralEquality(module)
+  var needsEquality = needsMapEquality or moduleUsesStructuralEquality(module)
   if needsEquality:
     let needsObjectEquality =
       moduleExprUsesTypeKind(module, wtkPropMap) or
@@ -9436,7 +9441,7 @@ proc emitModule(module: WebModule, typescript: bool,
       moduleExprUsesTypeKind(module, wtkNominal) or
       moduleExprUsesTypeKind(module, wtkAny) or
       needsPresentEquality
-    emitter.emitStructuralEquality(needsMap, needsObjectEquality)
+    emitter.emitStructuralEquality(needsMapEquality, needsObjectEquality)
   emitter.emitValidators(module)
   # Constants first: a literal has no dependencies, so one pass in source
   # order is enough and no ordering contract is needed.
