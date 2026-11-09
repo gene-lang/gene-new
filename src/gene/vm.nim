@@ -11314,6 +11314,8 @@ proc newGlobalScope*(app: Application): Scope =
   result.moduleRoot = true
   result.moduleBase = nil
   result.moduleStatic = true
+  result.define(CurrentNamespaceBindingName,
+                newNamespace("<root>", result, moduleRoot = true))
 
 proc newGlobalScope*(): Scope =
   newGlobalScope(currentApplication())
@@ -11572,7 +11574,13 @@ proc bindThisModule*(scope: Scope, name: string, path = "",
   ## metadata and is exposed through the compiler-provided `this_mod` binding.
   ## `this_pkg` is bound the same way: each loaded Module links to its owning
   ## Package lexically, never through a process-global current package.
-  let root = newNamespace(name, scope, path, moduleRoot = true)
+  var root = scope.vars.getOrDefault(CurrentNamespaceBindingName, MISSING)
+  if root.isMissing or root.kind != vkNamespace:
+    root = newNamespace(name, scope, path, moduleRoot = true)
+    scope.define(CurrentNamespaceBindingName, root)
+  else:
+    root.setNsName(name)
+    root.setNsModulePath(path)
   scope.moduleRoot = true
   scope.moduleBase = nil
   scope.moduleStatic = true
@@ -13477,6 +13485,43 @@ proc moduleRootScope(scope: Scope): Scope =
       return current
     current = current.parent
 
+proc namespaceIsOwnedByScope(target: Value, scope: Scope): bool =
+  if target.kind != vkNamespace or target.nsScope == nil:
+    return false
+  let root = moduleRootScope(scope)
+  if root == nil:
+    return false
+  var current = target.nsScope
+  while current != nil:
+    if current == root:
+      return true
+    current = current.parent
+  false
+
+proc defineNamespaceMember(target, nameValue, fnValue: Value,
+                           scope: Scope): Value =
+  if target.kind != vkNamespace:
+    raiseValueSemanticError("TypeError",
+      "namespace extension target must be a Namespace")
+  if nameValue.kind notin {vkString, vkSymbol}:
+    raiseValueSemanticError("TypeError",
+      "namespace extension name must be a Str or Sym")
+  let name = keySegment("namespace extension", nameValue)
+  validateBindingName(name)
+  if fnValue.kind != vkFunction:
+    raiseValueSemanticError("TypeError",
+      "namespace extension value must be a Function")
+  if not namespaceIsOwnedByScope(target, scope):
+    raiseValueSemanticError("RuntimeError",
+      "namespace extension is not authorized for namespace '" &
+      target.nsName & "'")
+  if currentEventLane() != target.nsOwnerLane:
+    raiseValueSemanticError("RuntimeLaneError",
+      "namespace extension must run on the namespace owner lane")
+  fnValue.setFnName(name)
+  target.nsScope.define(name, fnValue)
+  fnValue
+
 proc stagingRoot(scope: Scope): Scope =
   var current = scope
   while current != nil:
@@ -15116,9 +15161,9 @@ proc chunkCapturesSendable(chunk: Chunk, fnScope, visibleScope: Scope,
     of opFail, opPanic:
       if mode == csmWorker:
         return false
-    of opMakeNamespace, opImportImpl:
-      # import_impl publishes into the application's impl registry and bumps
-      # its epoch, which only the owner lane may write.
+    of opMakeNamespace, opDefineNamespaceMember, opImportImpl:
+      # Namespace mutation and import_impl publish into application/namespace
+      # state, which only the owner lane may write.
       if mode == csmWorker:
         return false
     else:
@@ -19076,7 +19121,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       var owner = frames.pop()
       strunc(curStackBase)
       loadFrameRegs(owner)
-      let ns = newNamespace(nsName, nsScope)
+      let ns = nsScope.vars.getOrDefault(CurrentNamespaceBindingName, MISSING)
+      if ns.isMissing or ns.kind != vkNamespace:
+        raise newException(GeneError,
+          "internal: namespace body lost its current namespace")
       scope.define(nsName, ns)
       spush ns
     elif curFrameKind == fkTryBody:
@@ -20754,9 +20802,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush NIL
         of opMakeNamespace:
           # Run the ns body in a fresh child scope; its bindings become the
-          # namespace's exports. Bind the namespace in the enclosing scope.
+          # namespace's exports. The namespace value is created first so the
+          # body can refer to it through the private `$ns` binding.
           let nsScope = newScope(scope)
           nsScope.moduleStatic = inst[].flag
+          let ns = newNamespace(inst[].name, nsScope)
+          nsScope.define(CurrentNamespaceBindingName, ns)
           # Hoisted: pushFrame moves the chunk register into the frame.
           let nsBody = chunk.subchunks[inst[].intArg]
           pushFrame()
@@ -20765,6 +20816,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           curOwnedScope = nsScope
           curNamespaceName = inst[].name
           continue
+        of opDefineNamespaceMember:
+          if sp < 3:
+            raise newException(GeneError,
+              "VM stack underflow in namespace extension")
+          let target = spop()
+          let fnValue = spop()
+          let nameValue = spop()
+          spush defineNamespaceMember(target, nameValue, fnValue, scope)
         of opSetModuleName:
           var module: Value
           if scope.lookupOptional("this_mod", module):

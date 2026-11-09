@@ -15,6 +15,7 @@ type
   WebTypeKind* = enum
     wtkNil, wtkBool, wtkStr, wtkSym, wtkInt, wtkF64,
     wtkAny, wtkPresent, wtkNever, wtkList, wtkPropMap, wtkMap, wtkNode, wtkRange,
+    wtkNamespace,
     wtkCallback, wtkCallable, wtkTask, wtkStream, wtkNominal, wtkUnion,
     ## The one host type the profile names. It exists so an entry point and a
     ## listener registration can be *checked* rather than taking `Any`, whose
@@ -376,6 +377,7 @@ type
     inProtocolDefault: bool
     implementations: seq[WebImplDecl]
     currentNamespace: seq[string]
+    currentNamespaceBinding: string
     currentFunction: string
     # Nearest enclosing form the analyzer has descended through, so a
     # diagnostic about a positionless scalar still names a place in the source.
@@ -763,6 +765,7 @@ proc typeName(typ: WebType): string =
   of wtkMap: "(Map " & typeName(typ.params[0]) & " " & typeName(typ.params[1]) & ")"
   of wtkNode: "Node"
   of wtkRange: "Range"
+  of wtkNamespace: "Namespace"
   of wtkDomTarget: "EventTarget"
   of wtkDomCanvas: "Canvas2D"
   of wtkDomGradient: "Gradient"
@@ -809,6 +812,7 @@ proc tsType(typ: WebType): string =
   of wtkMap: "GeneMap<" & tsType(typ.params[0]) & ", " & tsType(typ.params[1]) & ">"
   of wtkNode: "GeneNode"
   of wtkRange: "GeneRange"
+  of wtkNamespace: "{ [name: string]: unknown }"
   of wtkDomTarget: "EventTarget"
   of wtkDomCanvas: "CanvasRenderingContext2D"
   of wtkDomGradient: "CanvasGradient"
@@ -850,6 +854,7 @@ proc validatorSuffix(typ: WebType): string =
   of wtkMap: "map_" & validatorSuffix(typ.params[0]) & "_" & validatorSuffix(typ.params[1])
   of wtkNode: "node"
   of wtkRange: "range"
+  of wtkNamespace: "namespace"
   of wtkDomTarget: "event_target"
   of wtkDomCanvas: "canvas2d"
   of wtkDomGradient: "gradient"
@@ -968,6 +973,7 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
     of "PropMap": return webType(wtkPropMap)
     of "Node": return webType(wtkNode)
     of "Range": return webType(wtkRange)
+    of "Namespace": return webType(wtkNamespace)
     of "EventTarget": return webType(wtkDomTarget)
     of "Canvas2D": return webType(wtkDomCanvas)
     of "Gradient": return webType(wtkDomGradient)
@@ -2688,6 +2694,14 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       if receiver.typ.kind == wtkStream: return receiver
       return WebExpr(kind: wekBuiltin, typ: webType(wtkStream, receiver.typ.item),
         loc: loc, text: "to_stream", children: @[receiver])
+    if protocolMessage == nil and messageName == "lookup" and
+        receiver.typ.kind == wtkNamespace:
+      if value.body.len != 3 or value.props.len != 0:
+        raise webError(loc, "web Namespace/lookup expects one key")
+      return WebExpr(kind: wekBuiltin, typ: webType(wtkAny), loc: loc,
+        text: "namespace_lookup",
+        children: @[receiver, analysis.analyzeExpr(value.body[2], bindings,
+                                                     webType(wtkStr))])
     var methodDecl = if protocolMessage == nil:
                        analysis.findMethod(receiver.typ, messageName)
                      else: nil
@@ -2906,6 +2920,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           analysis.analyzeExpr(value.body[2], bindings, handlerType),
           analysis.analyzeExpr(value.props.getOrDefault("capture", FALSE),
                                bindings, webType(wtkBool))])
+    if value.head.kind == vkNode and value.head.head.isSym("path") and
+        value.head.body.len >= 3 and value.head.body[0].isSym("gene") and
+        value.head.body[1].isSym("ns"):
+      var callee = analysis.analyzeExpr(value.head, bindings)
+      callee.typ = WebType(kind: wtkCallable, name: "bare",
+                           returnType: webType(wtkAny))
+      return analysis.analyzeCallableInvocation(value, callee, bindings, loc)
     if value.head.kind == vkNode and value.head.head.isSym("path") and not
         (value.head.body.len == 2 and value.head.body[0].kind == vkSymbol and
          analysis.enumDecls.hasKey(value.head.body[0].symVal)):
@@ -3806,6 +3827,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         value.head.body[1].isSym("actor"):
       raise webError(loc,
         "actors are outside the web profile: actors require the VM scheduler")
+    if value.head.kind == vkNode and value.head.head.isSym("path") and
+        value.head.body.len >= 3 and value.head.body[0].isSym("gene") and
+        value.head.body[1].isSym("ns"):
+      var callee = analysis.analyzeExpr(value.head, bindings)
+      callee.typ = WebType(kind: wtkCallable, name: "bare",
+                           returnType: webType(wtkAny))
+      return analysis.analyzeCallableInvocation(value, callee, bindings, loc)
     raise webError(loc, "dynamic calls are outside the web profile")
   let name = value.head.symVal
   case name
@@ -3905,6 +3933,28 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   if name == "path":
     if value.body.len < 2:
       raise webError(loc, "web path requires a base and member")
+    if value.body[0].isSym("gene") and value.body[1].isSym("ns"):
+      if analysis.currentNamespaceBinding.len == 0:
+        raise webError(loc, "$ns is not available here")
+      let base = WebExpr(kind: wekBinding, typ: webType(wtkNamespace), loc: loc,
+                         text: analysis.currentNamespaceBinding)
+      if value.body.len == 2:
+        return base
+      result = WebExpr(kind: wekPath, typ: webType(wtkAny), loc: loc,
+                       children: @[base])
+      for i in 2 ..< value.body.len:
+        let segment = value.body[i]
+        if segment.kind == vkSymbol:
+          result.keys.add segment.symVal
+        elif segment.kind == vkInt:
+          result.keys.add segment.intToString
+        elif segment.kind == vkNode and segment.head.isSym("unquote") and
+            segment.body.len == 1:
+          result.keys.add ""
+          result.children.add analysis.analyzeExpr(segment.body[0], bindings)
+        else:
+          raise webError(loc, "web $ns path segment must be static or `%` dynamic")
+      return
     if value.body[0].isSym("gene") and value.body[1].isSym("err_msg"):
       if not bindings.hasKey(WebCatchErrorBindingName):
         raise webError(loc, "$err_msg is only available inside a catch body")
@@ -5247,6 +5297,11 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
         raise webError(memberLoc,
           "web ns accepts only static fn and nested ns declarations")
       if member.head.isSym("fn"):
+        if member.body.len > 0 and member.body[0].kind == vkNode and
+            member.body[0].head.isSym("path"):
+          raise webError(memberLoc,
+            "qualified fn declarations inside a web ns body are not yet " &
+            "supported; declare the extension after the ns form")
         registerFunction(member, path, memberLoc)
         declaration.functions.add headers[^1].fn
       elif member.head.isSym("ns"):
@@ -5254,6 +5309,48 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       else:
         raise webError(memberLoc, "web ns member '" & member.head.symVal &
           "' is outside the static namespace profile")
+
+  proc findNamespaceByPath(module: WebModule,
+                           path: seq[string]): WebNamespace =
+    for namespace in module.namespaces:
+      if namespace.path == path:
+        return namespace
+
+  proc registerQualifiedFunction(form: Value, loc: SourceLoc) =
+    if form.body.len == 0 or form.body[0].kind != vkNode or
+        not form.body[0].head.isSym("path"):
+      raise webError(loc, "web qualified fn requires a path name")
+    let path = form.body[0]
+    var segments: seq[string]
+    for segment in path.body:
+      if segment.kind == vkSymbol:
+        segments.add segment.symVal
+      elif segment.kind == vkNode and segment.head.isSym("unquote") and
+          segment.body.len == 1 and segment.body[0].kind == vkSymbol and
+          analysis.constants.hasKey(segment.body[0].symVal):
+        let constant = analysis.constants[segment.body[0].symVal]
+        if constant.value.kind != wekStr:
+          raise webError(loc,
+            "web dynamic namespace segment must resolve to a literal Str")
+        segments.add constant.value.text
+      else:
+        raise webError(loc,
+          "web namespace extension requires static or module-literal path " &
+          "segments; other dynamic extension needs the web initialization phase")
+    if segments.len < 2:
+      raise webError(loc, "web qualified fn requires a target and member name")
+    let targetPath = segments[0 ..< segments.high]
+    let memberName = segments[^1]
+    let target = findNamespaceByPath(moduleResult, targetPath)
+    if target == nil:
+      raise webError(loc, "web namespace extension target must be a statically " &
+        "declared namespace in this module")
+    var body = form.body
+    body[0] = newSym(memberName)
+    let simpleForm = newNode(form.head, form.props, body, form.meta,
+                             form.nodeImmutable)
+    registerFunction(simpleForm, targetPath, loc)
+    target.functions.add(headers[^1].fn)
 
   for i in 1 ..< analysis.unit.forms.len:
     let form = analysis.unit.forms[i]
@@ -5325,6 +5422,10 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     if form.head.symVal in ["const", "let"]:
       result.constants.add registerConstant(form, loc)
       continue
+    if form.head.symVal == "fn" and form.body.len > 0 and
+        form.body[0].kind == vkNode and form.body[0].head.isSym("path"):
+      registerQualifiedFunction(form, loc)
+      continue
     if form.head.symVal != "fn":
       let hint =
         if form.head.symVal == "var":
@@ -5338,6 +5439,11 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     var bindings = initTable[string, WebBinding]()
     analysis.currentReturn = header.fn.returnType
     analysis.currentNamespace = header.fn.namespacePath
+    analysis.currentNamespaceBinding = ""
+    if header.fn.namespacePath.len > 0:
+      let namespace = findNamespaceByPath(result, header.fn.namespacePath)
+      if namespace != nil:
+        analysis.currentNamespaceBinding = namespace.emittedName
     analysis.currentFunction = header.fn.sourceName
     analysis.analyzeParameterBindings(header.fn.params, bindings, allowAsync = true)
     if header.fn.generator:
@@ -5373,6 +5479,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   analysis.resolveAsync(result.functions)
   analysis.currentReturn = nil
   analysis.currentNamespace = @[]
+  analysis.currentNamespaceBinding = ""
   for declaration in result.types:
     let selfType = WebType(kind: wtkNominal, name: declaration.sourceName)
     analysis.annotationSelf = selfType
@@ -6013,6 +6120,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     for child in expr.children: arguments.add emitter.emitExpr(child)
     case expr.text
     of "error_message": "$gene_error_text(" & arguments[0] & ")"
+    of "namespace_lookup": "$gene_namespace_lookup(" & arguments.join(", ") & ")"
     of "str/join": arguments[0] & ".join(" & (if arguments.len == 1: "\"\"" else: arguments[1]) & ")"
     of "str/split": arguments[0] & ".split(" & arguments[1] & ")"
     of "str/trim": arguments[0] & ".trim()"
@@ -7548,6 +7656,9 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
       # would be pure cost on the largest arrays in the program.
       emitter.line("if (!(value instanceof " & jsTypedArrayName(typ.name) &
         ")) $gene_type_error(where, \"" & typeName(typ) & "\", value);")
+    of wtkNamespace:
+      emitter.line("if (value === null || typeof value !== \"object\") " &
+        "$gene_type_error(where, \"Namespace\", value);")
     of wtkGl, wtkGlObject:
       # WebGL resource classes are not constructible and, in a worker or a
       # headless test, may not exist as globals at all — `value instanceof
@@ -8343,6 +8454,15 @@ proc emitModule(module: WebModule, typescript: bool,
   if moduleUsesTypeKind(module, wtkList) or moduleExprUsesTypeKind(module, wtkList):
     let dynamic = if typescript: ": any" else: ""
     emitter.line("function $gene_list_push(target" & dynamic & ", value" & dynamic & ")" & dynamic & " { const stored = value === undefined ? null : value; target.push(stored); return stored; }")
+    emitter.line()
+  if moduleUsesBuiltin(module, ["namespace_lookup"]):
+    let dynamic = if typescript: ": any" else: ""
+    emitter.line("function $gene_namespace_lookup(namespace" & dynamic &
+      ", key" & (if typescript: ": string" else: "") & ")" & dynamic & " {")
+    inc emitter.indent
+    emitter.line("return Object.prototype.hasOwnProperty.call(namespace, key) ? namespace[key] : null;")
+    dec emitter.indent
+    emitter.line("}")
     emitter.line()
   if needsMap:
     emitter.line("export class GeneMap" &

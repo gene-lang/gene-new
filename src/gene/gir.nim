@@ -13,6 +13,7 @@ const
   PipelineMessageName* = "\x00gene_prepared_message"
   PipelineArgumentsName* = "\x00gene_prepared_arguments"
   PipelineItemName* = "\x00gene_prepared_item"
+  CurrentNamespaceBindingName* = "\x00gene_ns"
   BlockBindingPrefix* = "\x00gene_block:"
   MaxCaptureLevels* = 8 # activation levels a closure copies from (CapturePlan)
 
@@ -62,6 +63,7 @@ type
     opApplySelectorTop
     opMakeFn
     opMakeNamespace
+    opDefineNamespaceMember
     opSetModuleName
     opMakeEnv
     opEval
@@ -1609,6 +1611,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " fn=" & $inst.intArg
   of opMakeNamespace:
     result.add " ns=" & $inst.intArg & " name=" & inst.name
+  of opDefineNamespaceMember:
+    discard
   of opSetModuleName:
     result.add " name=" & inst.name
   of opMakeEnv:

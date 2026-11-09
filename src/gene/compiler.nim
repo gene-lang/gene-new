@@ -178,6 +178,7 @@ type
     declaredUnitNames: HashSet[string]
     preparedUnitNames: ref HashSet[string] # immutable source-context prepass
     namespacePath: seq[string]
+    currentNamespaceBinding: string # lexical binding that `$ns` resolves to
     moduleMacroExports: ref Table[string, MacroDef]
     moduleSyntaxFnExports: ref HashSet[string]
     # Functions whose call scope only their closures keep from pooling;
@@ -441,7 +442,9 @@ proc validateDeclarationCase(kind, name: string) =
       kind & " '" & name & "' must start uppercase; lowercase names are " &
       "namespaces and functions (design §2.1)")
 
-proc validateBindingName(name: string, allowFexprName = false) =
+proc validateBindingName*(name: string, allowFexprName = false) =
+  if name.len == 0:
+    raise newException(GeneError, "binding name must not be empty")
   if name in reservedStdlibRoots:
     raise newException(GeneError,
       "reserved standard-library root cannot be bound: " & name)
@@ -1088,6 +1091,7 @@ proc childCompiler(c: Compiler): Compiler =
            declaredUnitNames: c.declaredUnitNames,
            preparedUnitNames: c.preparedUnitNames,
            namespacePath: c.namespacePath,
+           currentNamespaceBinding: c.currentNamespaceBinding,
            moduleMacroExports: c.moduleMacroExports,
            moduleSyntaxFnExports: c.moduleSyntaxFnExports,
            closurePoolCandidates: c.closurePoolCandidates,
@@ -1463,8 +1467,8 @@ proc chunkNeedsCallScope(chunk: Chunk): bool =
     of opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
        opCallParentLocal1, opCallOuterLocal1, opSetOuterLocal, opDefineName,
        opDefineLocal, opSetModuleName, opMakeFn, opPreparePipelineCall,
-       opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol, opMakeImpl,
-       opImport, opImportImpl,
+       opMakeNamespace, opDefineNamespaceMember, opMakeType, opMakeEnum,
+       opMakeProtocol, opMakeImpl, opImport, opImportImpl,
        opMatch, opMatchBind, opMatchBindReplace, opForEach, opTry,
        opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
       return true
@@ -1797,25 +1801,59 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
     proto.rewriteBareIntReturnAdds()
     proto.chunk.rewriteSelfRecursiveCalls()
 
-proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq[string]] =
+type FunctionNameSpec = object
+  name: string          # simple local binding name
+  memberName: string    # static final segment of a qualified declaration
+  path: Value           # NIL for a simple name, path node for a qualified name
+  typeParams: seq[string]
+
+proc isDeclarationPath(v: Value): bool =
+  v.kind == vkNode and v.head.kind == vkSymbol and v.head.symVal == "path"
+
+proc pathStaticFinalName(path: Value): string =
+  if path.body.len == 0: return ""
+  let final = path.body[^1]
+  case final.kind
+  of vkSymbol: final.symVal
+  of vkString: final.strVal
+  else: ""
+
+proc parseFunctionTypeParams(form: Value, result: var FunctionNameSpec) =
+  var seen = initTable[string, bool]()
+  for arg in form.body:
+    if arg.kind != vkSymbol:
+      raise newException(GeneError, "generic function type parameters must be names")
+    if arg.symVal.len == 0:
+      raise newException(GeneError, "generic function type parameter requires a name")
+    if seen.hasKey(arg.symVal):
+      raise newException(GeneError, "duplicate generic type parameter: " & arg.symVal)
+    seen[arg.symVal] = true
+    result.typeParams.add arg.symVal
+
+proc functionNameAndTypeParams(form: Value): FunctionNameSpec =
   if form.kind == vkSymbol:
-    return (form.symVal, @[])
+    return FunctionNameSpec(name: form.symVal)
+  if isDeclarationPath(form):
+    result.path = form
+    result.memberName = pathStaticFinalName(form)
+    if result.memberName.len > 0:
+      validateBindingName(result.memberName)
+    return
+  if form.kind == vkNode and isDeclarationPath(form.head):
+    result.path = form.head
+    result.memberName = pathStaticFinalName(form.head)
+    if result.memberName.len > 0:
+      validateBindingName(result.memberName)
+    parseFunctionTypeParams(form, result)
+    return
   if form.kind == vkNode and form.head.kind == vkSymbol:
     result.name = form.head.symVal
     if result.name.len == 0:
       raise newException(GeneError, "generic function requires a name")
-    var seen = initTable[string, bool]()
-    for arg in form.body:
-      if arg.kind != vkSymbol:
-        raise newException(GeneError, "generic function type parameters must be names")
-      if arg.symVal.len == 0:
-        raise newException(GeneError, "generic function type parameter requires a name")
-      if seen.hasKey(arg.symVal):
-        raise newException(GeneError, "duplicate generic type parameter: " & arg.symVal)
-      seen[arg.symVal] = true
-      result.typeParams.add arg.symVal
+    parseFunctionTypeParams(form, result)
     return
-  raise newException(GeneError, "function name must be a symbol or (name type...)")
+  raise newException(GeneError,
+    "function name must be a symbol, a qualified path, or (name type...)")
 
 proc compileSubBody(c: var Compiler, forms: openArray[Value],
                     pattern: Value = NIL, scoped = false,
@@ -5515,31 +5553,63 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   var name = ""
   var definesName = false
   var typeParams: seq[string]
+  var qualifiedPath = NIL
+  var qualifiedTargetBinding = ""
   if body.len > 0 and (body[0].kind == vkSymbol or body[0].kind == vkNode):
     let nameSpec = functionNameAndTypeParams(body[0])
-    name = nameSpec.name
+    name = if nameSpec.path.kind == vkNil: nameSpec.name else: nameSpec.memberName
     typeParams = nameSpec.typeParams
-    definesName = name.len > 0
+    definesName = nameSpec.path.kind == vkNil and nameSpec.name.len > 0
+    qualifiedPath = nameSpec.path
     idx = 1
   elif inferredName.len > 0:
     name = inferredName
   if idx >= body.len or body[idx].kind != vkList:
     raise newException(GeneError, "fn requires a parameter vector")
 
+  if qualifiedPath.kind != vkNil:
+    if qualifiedPath.body.len < 2:
+      raise newException(GeneError,
+        "qualified function name requires a target namespace and member name")
+    let targetPath = newNode(newSym("path"),
+      body = qualifiedPath.body[0 ..< qualifiedPath.body.high])
+    qualifiedTargetBinding = c.nextTemp("namespace_target")
+    compileExpr(c, targetPath)
+    c.emitDefineBinding(qualifiedTargetBinding, immutable = true)
+    discard c.emit(opPop)
+    let final = qualifiedPath.body[^1]
+    if final.kind == vkNode and final.head.isSymbol("unquote"):
+      if final.body.len != 1:
+        raise newException(GeneError, "function name unquote requires one expression")
+      compileExpr(c, final.body[0])
+    elif final.kind == vkSymbol:
+      c.emitConst newSym(final.symVal)
+    elif final.kind == vkString:
+      c.emitConst newStr(final.strVal)
+    else:
+      raise newException(GeneError,
+        "qualified function name must end in a symbol, string, or %expression")
+
   if definesName and c.useLocalSlots:
     discard c.reserveLocal(name)
-  if name.len > 0:
+  if name.len > 0 and qualifiedPath.kind == vkNil:
     # Register before compiling the body so recursive ordinary calls can use
-    # fused call opcodes. A later `set` removes this proof.
+    # fused call opcodes. This includes the inferred name of a lambda being
+    # assigned to a local. A later `set` removes this proof.
     c.ordinaryFnNames[name] = true
   let errorRow = compileErrorRow(c, node)
   let generator = node.generatorMarker
-  if generator and name.len > 0: c.generatorFnNames[name] = true
+  if generator and name.len > 0 and qualifiedPath.kind == vkNil:
+    c.generatorFnNames[name] = true
+  let savedNamespaceBinding = c.currentNamespaceBinding
+  if qualifiedTargetBinding.len > 0:
+    c.currentNamespaceBinding = qualifiedTargetBinding
   let proto = buildFunctionProto(c, name, body[idx], body, idx + 1,
                                  typeParams = typeParams,
                                  checksErrors = errorRow.checks,
                                  errorTypeCount = errorRow.count,
                                  generator = generator)
+  c.currentNamespaceBinding = savedNamespaceBinding
   let isPublic = definesName and node.bits in c.staticTopLevelImpls and
     not node.declarationIsPrivate
   proto.publicErrorInterface = isPublic
@@ -5551,12 +5621,16 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   for key, val in node.meta:
     proto.declMetaKeys.add key
     proto.declMetaValues.add val
-  c.recordLocalFunctionSig(name, proto)
+  if definesName:
+    c.recordLocalFunctionSig(name, proto)
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if definesName:
     c.emitDefineBinding(name, immutable = true)
     c.ordinaryFnNames[name] = true
     if generator: c.generatorFnNames[name] = true
+  elif qualifiedTargetBinding.len > 0:
+    c.emitLoadBinding(qualifiedTargetBinding)
+    discard c.emit(opDefineNamespaceMember)
 
 proc compileFexpr(c: var Compiler, node: Value) =
   ## `(fn name! [params] body...)` — runtime fexpr / syntax callable (design
@@ -5856,6 +5930,29 @@ proc collectCompileInterfaceForm(form: Value,
     if name.len > 0 and not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(category: cbcMacro)
   of "fn":
+    if form.body.len > 0 and form.body[0].kind in {vkSymbol, vkNode} and
+        form.declarationIsPrivate == false:
+      let spec = functionNameAndTypeParams(form.body[0])
+      if spec.path.kind != vkNil:
+        # A statically qualified name can extend an already known namespace in
+        # this compilation unit. Runtime-selected targets and dynamic names do
+        # not produce compile-interface entries.
+        if spec.memberName.len > 0 and spec.path.body.len >= 2:
+          var dest = target
+          var staticTarget = true
+          for i in 0 ..< spec.path.body.high:
+            let segment = spec.path.body[i]
+            if segment.kind != vkSymbol:
+              staticTarget = false
+              break
+            let entry = dest.entries.getOrDefault(segment.symVal)
+            if entry.category != cbcNamespace or entry.namespace == nil:
+              staticTarget = false
+              break
+            dest = entry.namespace
+          if staticTarget:
+            dest.entries[spec.memberName] = CompileInterfaceEntry(category: cbcValue)
+        return
     let name = form.declaredName
     if name.len > 1 and name.endsWith("!"):
       if not form.declarationIsPrivate:
@@ -7392,6 +7489,7 @@ proc compileNs(c: var Compiler, node: Value) =
   for i in 1 ..< body.len:
     nsForms.add body[i]
   nsCompiler.namespacePath = c.namespacePath & @[name]
+  nsCompiler.currentNamespaceBinding = CurrentNamespaceBindingName
   ## Make this namespace's own declarations visible inside its body, innermost
   ## first. The interface is taken from the parent's rather than rebuilt so
   ## native Type identities keep their namespace-qualified spelling; a private
@@ -7800,6 +7898,14 @@ proc compilePath(c: var Compiler, node: Value) =
   let parts = node.body
   if parts.len == 0:
     c.emitConst NIL
+    return
+  if parts.len >= 2 and parts[0].isSymbol("gene") and parts[1].isSymbol("ns"):
+    let binding =
+      if c.currentNamespaceBinding.len > 0: c.currentNamespaceBinding
+      else: CurrentNamespaceBindingName
+    c.emitLoadBinding(binding)
+    if parts.len > 2:
+      c.compilePathSuffix(parts, 2, node)
     return
   if parts.len >= 2 and parts[0].isSymbol("gene") and parts[1].isSymbol("ex"):
     raise newException(GeneError, "$ex was renamed to $err")

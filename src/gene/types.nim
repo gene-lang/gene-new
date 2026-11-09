@@ -880,6 +880,7 @@ type
     scope: Scope          # the namespace's own bindings (its exports)
     moduleRoot: bool      # true only for loader-created module root namespaces
     modulePath: string    # non-empty only for file-backed module roots
+    ownerLane: int        # lane that created it; namespace writes stay owner-only
 
   ModuleData = ref object of GeneObjectData
     valueRefs: int          # boxed Value owners; release-time self-cycle audit
@@ -5417,6 +5418,11 @@ proc fnName*(v: Value): lent string =
     raise newException(FieldDefect, "value is not a Function")
   cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).name
 
+proc setFnName*(v: Value, name: sink string) =
+  if v.tagOf != FUNCTION_TAG:
+    raise newException(FieldDefect, "value is not a Function")
+  cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).name = name
+
 proc isSyntaxFn*(v: Value): bool {.inline.} =
   ## True for named fexpr syntax callables (design §3/§11.1); false for every other
   ## value, including ordinary functions.
@@ -5596,6 +5602,16 @@ proc setNsName*(v: Value, name: sink string) =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")
   NamespaceData(objData(v)).name = name
+
+proc setNsModulePath*(v: Value, path: sink string) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
+    raise newException(FieldDefect, "value is not a Namespace")
+  NamespaceData(objData(v)).modulePath = path
+
+proc nsOwnerLane*(v: Value): int =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
+    raise newException(FieldDefect, "value is not a Namespace")
+  NamespaceData(objData(v)).ownerLane
 
 proc borrowedNsScope*(v: Value): lent Scope =
   ## The namespace must remain alive and unchanged for the borrow's lifetime.
@@ -9820,9 +9836,11 @@ proc newNativeContextFn*(name: string, context: RootRef,
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNamespace*(name: string, scope: Scope, modulePath = "",
-                   moduleRoot = false): Value =
+                   moduleRoot = false,
+                   ownerLane = currentEventLane()): Value =
   boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope,
-                          moduleRoot: moduleRoot, modulePath: modulePath))
+                          moduleRoot: moduleRoot, modulePath: modulePath,
+                          ownerLane: ownerLane))
 
 var moduleIdentitySeq: int
 

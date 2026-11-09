@@ -194,3 +194,54 @@ in `tests/fixtures/native_callback_fixture.c`, including foreign-thread and
 reentrant entry attempts. The SQLite `visit_text_rows` binding is the first
 real library consumer. Native API compatibility coverage remains in
 `tests/test_native_api.nim`.
+
+## Namespace extension declarations
+
+A function declaration may name a namespace member with a qualified path:
+
+```gene
+(ns math
+  (fn add [a : Int b : Int] : Int (+ a b)))
+
+(fn math/square [x : Int] : Int (* x x))
+(fn math/double [x : Int] : Int (math/add x x))
+```
+
+The final path segment is the installed member name. Intermediate `%`
+segments are evaluated as member keys through ordinary path lookup and must
+select a `Namespace` before traversal continues:
+
+```gene
+(ns outer (ns inner (fn value [] 41)))
+(let key "inner")
+(let name "answer")
+(fn outer/%key/%name [] (outer/inner/value))
+```
+
+Dynamic segments are evaluated once, at declaration time. A qualified
+declaration returns the function value and installs it in the target
+namespace. Duplicate names, invalid declaration names, wrong target types, and
+extensions of built-in or imported namespaces are errors.
+
+Inside a namespace or a function installed into one, `$ns` is the target
+namespace. It is captured per closure:
+
+```gene
+(ns n (fn a [] 1))
+(fn n/b [] ($ns/a))
+```
+
+`$ns` is available at a module root as that module's root namespace. A
+function that uses `$ns`, or otherwise captures a module namespace, is not
+`Send`; an otherwise sendable function that does not capture it remains
+sendable.
+
+Dynamic names do not create static compile-interface entries. A call through
+a dynamic path is resolved and checked at runtime. Static qualified
+declarations may contribute to the compile interface when their target is a
+namespace known in the same compilation unit.
+
+The web profile supports static qualified declarations and module-literal
+dynamic path values with `$ns` and runtime-checked dynamic calls. Arbitrary
+runtime namespace extension and top-level initialization loops are outside the
+current web profile and are rejected explicitly.

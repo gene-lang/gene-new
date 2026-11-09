@@ -12,7 +12,7 @@ import ./[gir, printer, reader, types]
 # reusing the same bytecode slots, so that migration also advances the format.
 # Removing `void` (nil is the only absence value) changed the meaning of stored
 # constants, `Void` annotations and optional-path jumps, so it advanced it too.
-const GirArtifactFormat* = 41
+const GirArtifactFormat* = 42
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.

@@ -6,5 +6,11 @@
   (ns constants
     (fn one [] : Int 1)))
 
+(fn math/square [x : Int] : Int (* x x))
+(let member "cube")
+(fn math/%member [x : Int] : Int (let x2 (* x x)) (* x2 x))
+(fn math/from_ns [x : Int] : Int ($ns/add x x))
+
 (fn run [] : (List Int)
-  [(math/twice 3) (math/constants/one)])
+  [(math/twice 3) (math/constants/one) (math/square 4) (math/cube 2)
+   (math/from_ns 5)])

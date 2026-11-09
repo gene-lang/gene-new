@@ -4088,6 +4088,43 @@ suite "vm — namespaces":
     expect GeneError: discard runStr("($declarations [1])")
     expect GeneError: discard runStr("([1] .bindings)")
     expect GeneError: discard runStr("([1] .lookup \"a\")")
+  test "qualified fn declarations extend an existing namespace":
+    ck "(ns n (fn a [] 1)) (fn n/b [] 2) (n/b)", "2"
+    ck "(ns n (fn a [] 1)) (fn n/b [] (n/a)) (n/b)", "1"
+  test "dynamic final names install the evaluated member name":
+    ck "(ns n (fn a [] 1)) (let name \"b\") (fn n/%name [] 2) [(n/b) ($to_str (n .lookup \"b\"))]",
+       "[2 \"(fn b)\"]"
+  test "dynamic target segments are resolved as namespace keys":
+    ck "(ns a (ns b (fn x [] 7))) (let k \"b\") (let f \"y\") " &
+       "(fn a/%k/%f [] ($ns/x)) (a/b/y)", "7"
+  test "a qualified function captures its own target namespace":
+    ck "(ns a (fn x [] 1)) (ns b (fn x [] 2)) " &
+       "(fn a/fa [] ($ns/x)) (fn b/fb [] ($ns/x)) [(a/fa) (b/fb)]",
+       "[1 2]"
+  test "module root $ns resolves to the root namespace":
+    ck "(fn top [] 41) (var f ($ns .lookup \"top\")) (f)", "41"
+  test "only a used $ns target makes an installed function non-Send":
+    ck "(ns n) " &
+       "(fn n/uses [] ($ns .lookup \"uses\")) " &
+       "(fn n/plain [] 1) " &
+       "(let ch ($channel ^capacity 1)) " &
+       "[(try (ch .try_send n/uses) \"sent\" catch TypeError \"rejected\") " &
+       " (try (ch .try_send n/plain) \"sent\" catch TypeError \"rejected\")]",
+       "[\"rejected\" \"sent\"]"
+  test "namespace extension rejects duplicates and invalid names":
+    expect GeneError: discard runStr("(ns n (fn a [] 1)) (fn n/a [] 2)")
+    expect GeneError: discard runStr("(ns n) (let bad \"a!\") (fn n/%bad [] 1)")
+  test "namespace extension rejects non-namespace targets and built-ins":
+    expect GeneError: discard runStr("(var n 1) (fn n/x [] 1)")
+    expect GeneError: discard runStr("(fn gene/str/foo [] 1)")
+  test "qualified declaration survives GIR cloning":
+    let chunk = compileSource("(ns n (fn a [] 1)) (fn n/b [] 2) (n/b)")
+    let module = CompiledModule(identity: "test/namespace-extension",
+      chunk: chunk, macroExports: initTable[string, MacroDef](),
+      syntaxFnExports: @[], compileInterface: CompileNamespaceInterface(
+        entries: initTable[string, CompileInterfaceEntry]()))
+    check run(cloneCompiledModule(module).chunk,
+              newGlobalScope()).print() == "2"
 
 suite "vm — env and eval":
   test "fexpr caller environments expose pooled frame parameters and locals":
