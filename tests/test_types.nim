@@ -1,5 +1,5 @@
 import gene/[compiler, types, vm, printer]
-import std/[dynlib, unittest]
+import std/[dynlib, strutils, unittest]
 
 when sizeof(pointer) == sizeof(clong):
   type TestCPtrDiff = clong
@@ -7275,3 +7275,23 @@ suite "StrBuilder":
       [($to_str b)
        (try ($freeze b) catch Error "freeze")]
     """, "[\"(StrBuilder \\\"a\\\")\" \"freeze\"]"
+
+  test "module macros cannot insert a compile-time builder":
+    var message = ""
+    try:
+      discard compileSource("""
+        (macro phase_buffer [] ($StrBuilder "original"))
+        (fn make_buffer [] (phase_buffer))
+      """)
+    except GeneError as error:
+      message = error.msg
+    check message.contains("cannot insert compile-time")
+    check message.contains("StrBuilder")
+
+  test "a captured builder keeps a function out of Send":
+    ck """
+      (let b (StrBuilder "x"))
+      (let held (fn [] b))
+      (let channel ($channel ^capacity 1))
+      (try (channel .try_send held) "sent" catch TypeError "rejected")
+    """, "\"rejected\""

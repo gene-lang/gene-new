@@ -84,7 +84,6 @@ type
     vkInt       ## mathematical Int; fixnums/int64 fast paths, bigint on overflow
     vkFloat     ## Unannotated runtime float; represented as F64.
     vkString    ## immutable UTF-8 string
-    vkStrBuilder ## mutable UTF-8 string builder
     vkBytes     ## immutable byte string
     vkRegex     ## immutable compiled PCRE regular expression
     vkRange     ## immutable integer range
@@ -101,6 +100,10 @@ type
     vkHashMap   ## immutable any-key hashed map
     vkNode      ## general node (head + props + body + meta)
     vkPipeline  ## reader/compiler-only sequenced `->`/`=>` pipeline syntax
+    # Runtime values start here. Compiler and GIR code distinguish inert
+    # data/syntax (up to vkPipeline) from live runtime objects by this boundary;
+    # a mutable runtime value must not be inserted above.
+    vkStrBuilder ## mutable UTF-8 string builder
     vkFunction  ## closure: params + body + captured scope
     vkCallableView ## checked invocation view, distinct from its original target
     vkNativeFn  ## built-in function implemented in Nim

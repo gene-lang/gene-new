@@ -3456,6 +3456,13 @@ suite "vm — fused sends":
       borrowedCount
     check run(decoded, newGlobalScope()).print() == sendResult
 
+  test "the GIR codec rejects live StrBuilder constants":
+    var original = CompiledModule(identity: "test/strbuilder-codec",
+      chunk: newChunk())
+    original.chunk.constants.add newStrBuilder("hello")
+    expect ValueError:
+      discard cloneCompiledModule(original)
+
   test "cloned chunks and modules keep their borrowed sends":
     # Restoring a copy clears every borrow mark, then derives them again.
     proc borrowedSends(chunk: Chunk): int =
