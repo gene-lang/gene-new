@@ -116,6 +116,32 @@ to the VM; use explicit character/grapheme iteration for native text work.
 # ["Grace" "Ada & Grace" "ok"]
 ```
 
+### Mutable string building
+
+`StrBuilder` is a mutable, native string buffer for append-heavy construction.
+It is a built-in type with a direct constructor; it is not written with `new`:
+
+```gene
+(let b (StrBuilder "a" "b"))
+(b .append "c" "d")
+(b .append_char '\n')
+[b/.to_str b/.size]
+# ["abcd\n" 5]
+```
+
+| StrBuilder method | Behavior |
+| --- | --- |
+| `append Str...` | Append one or more strings and return the builder. |
+| `append_char Char` | Append one Unicode scalar and return the builder. |
+| `clear` | Empty the buffer and return the builder. |
+| `size` | Return the buffered UTF-8 byte length. |
+| `to_str` | Return an immutable `Str` snapshot; the builder remains usable. |
+
+`to_str` copies the current contents. Later appends do not change earlier
+snapshots. A `StrBuilder` has mutable identity, is not implicitly `Send`, and
+is rejected by `$freeze`; finish it with `to_str` before moving text across a
+task boundary. The web profile does not yet provide `StrBuilder`.
+
 `($binary/decode_utf8 bytes)` decodes a `Bytes` value strictly, rejecting invalid
 UTF-8, overlong encodings, surrogate code points and values above U+10FFFF. Use
 it when accepting uploaded text or other encoded input. The existing

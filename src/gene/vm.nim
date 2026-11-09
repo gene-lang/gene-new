@@ -5816,6 +5816,7 @@ proc freezeRejectName(value: Value): string =
   of vkCPtr: "C pointer"
   of vkCSlice: "C slice"
   of vkBuffer: "Buffer"
+  of vkStrBuilder: "StrBuilder"
   of vkDeviceBuffer: "device/Buffer"
   of vkFfiLibrary: "ffi/Library"
   of vkFfiCallable: "ffi/Callable"
@@ -5910,7 +5911,8 @@ proc freezeValue(value: Value): Value =
     copied
   of vkFunction, vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
-     vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer,
+     vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkStrBuilder,
+     vkDeviceBuffer,
      vkFfiLibrary, vkFfiCallable,
      # A bus, a subscription handle, and the mutable sinks are live runtime
      # objects, not data: an event that reached one would carry publication
@@ -6061,6 +6063,7 @@ proc declarationKind*(value: Value): string =
   of vkInt: "Int"
   of vkFloat: "Float"
   of vkString: "Str"
+  of vkStrBuilder: "StrBuilder"
   of vkBytes: "Bytes"
   of vkRegex: "Regex"
   of vkRange: "Range"
@@ -8063,6 +8066,54 @@ proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   else:
     args[0].pushNodeBody(item)
     item
+
+proc requireStrBuilder(name: string, value: Value) =
+  if value.kind != vkStrBuilder:
+    raise newException(GeneError, name & " expects a StrBuilder")
+
+proc biStrBuilderConstruct(args: openArray[Value]): Value {.nimcall.} =
+  result = newStrBuilder()
+  for item in args:
+    requireStr("StrBuilder", item)
+    appendStrBuilder(result, item.strVal)
+
+proc biStrBuilderAppend(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 2:
+    raise newException(GeneError,
+      "StrBuilder/append expects at least one Str")
+  requireStrBuilder("StrBuilder/append", args[0])
+  for i in 1 ..< args.len:
+    requireStr("StrBuilder/append value", args[i])
+    appendStrBuilder(args[0], args[i].strVal)
+  args[0]
+
+proc biStrBuilderAppendChar(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "StrBuilder/append_char expects one Char")
+  requireStrBuilder("StrBuilder/append_char", args[0])
+  if args[1].kind != vkChar:
+    raise newException(GeneError,
+      "StrBuilder/append_char expects a Char")
+  appendStrBuilder(args[0], $args[1].charVal)
+  args[0]
+
+proc biStrBuilderClear(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("StrBuilder/clear", args)
+  requireStrBuilder("StrBuilder/clear", args[0])
+  clearStrBuilder(args[0])
+  args[0]
+
+proc biStrBuilderSize(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("StrBuilder/size", args)
+  requireStrBuilder("StrBuilder/size", args[0])
+  newInt(args[0].strBuilderVal.len)
+
+proc biStrBuilderToStr(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("StrBuilder/to_str", args)
+  requireStrBuilder("StrBuilder/to_str", args[0])
+  var copy = args[0].strBuilderVal
+  newStr(copy)
 
 proc requireBuffer(name: string, value: Value) =
   if value.kind != vkBuffer:
@@ -10223,6 +10274,20 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     "to_list": builtinNativeFn("Buffer/to_list", biBufferToList),
     "to_bytes": builtinNativeFn("Buffer/to_bytes", biBufferToBytes),
     "elem_type": builtinNativeFn("Buffer/elem_type", biBufferElemType)})
+  let strBuilderCtor = sharedBuiltinNative("StrBuilder/construct",
+    builtinNativeFn("StrBuilder", biStrBuilderConstruct))
+  result.defineBuiltinType(vkStrBuilder, "StrBuilder", {
+    "append": sharedBuiltinNative("StrBuilder/append",
+      builtinNativeFn("StrBuilder/append", biStrBuilderAppend)),
+    "append_char": sharedBuiltinNative("StrBuilder/append_char",
+      builtinNativeFn("StrBuilder/append_char", biStrBuilderAppendChar)),
+    "clear": sharedBuiltinNative("StrBuilder/clear",
+      builtinNativeFn("StrBuilder/clear", biStrBuilderClear)),
+    "size": sharedBuiltinNative("StrBuilder/size",
+      builtinNativeFn("StrBuilder/size", biStrBuilderSize)),
+    "to_str": sharedBuiltinNative("StrBuilder/to_str",
+      builtinNativeFn("StrBuilder/to_str", biStrBuilderToStr))},
+    ctor = strBuilderCtor)
   # The fixed-width numeric names, bound as values so they can be *passed*
   # rather than only annotated. `matchesBuiltinType` has always known them, so
   # `(fn f [x : F32] ...)` already worked; what did not work was
@@ -15177,7 +15242,7 @@ proc isSendableValue(value: Value, scope: Scope,
     # Immutable, and its only edge is a Type — which is itself sendable.
     isSendableValue(value.eventMatcherTarget, scope, seen, mode)
   of vkModule, vkEnv, vkCallerEnv, vkCell, vkStream, vkActorContext,
-     vkActorStep, vkCPtr, vkCSlice, vkBuffer,
+     vkActorStep, vkCPtr, vkCSlice, vkBuffer, vkStrBuilder,
      vkDeviceBuffer, vkFfiLibrary, vkFfiCallable,
      vkPipeline,
      # A version 1 bus is lane-owned and synchronous (events.md §9.1): using
@@ -25234,6 +25299,7 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkInt: newSym("Int")
   of vkFloat: newSym("Float")
   of vkString: newSym("Str")
+  of vkStrBuilder: newSym("StrBuilder")
   of vkBytes: newSym("Bytes")
   of vkRegex: newSym("Regex")
   of vkRange: newSym("Range")
@@ -25973,6 +26039,8 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkList)
   of "Buffer":
     (true, value.kind == vkBuffer)
+  of "StrBuilder":
+    (true, value.kind == vkStrBuilder)
   of "device/Buffer":
     (true, value.kind == vkDeviceBuffer)
   of "ffi/Library":

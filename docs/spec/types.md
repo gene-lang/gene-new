@@ -126,3 +126,16 @@ contracts.
 
 Representation and boundary regression coverage is in `tests/test_buffers.nim`
 and the native API/type suites.
+
+## Mutable text buffer
+
+`StrBuilder` is a built-in, native `Str` accumulator. Its representation is a
+Nim string with amortized append growth; it is deliberately not a schema type
+or a native wrapper. `(StrBuilder "a" "b")` constructs an empty or preloaded
+builder, `append` and `append_char` mutate it, and `clear` empties it. Each
+mutation returns the same builder. `size` reports the buffered UTF-8 byte
+length, and `to_str` returns an immutable snapshot without changing or
+invalidating the builder.
+
+A builder has mutable identity, is not implicitly `Send`, and `$freeze`
+rejects it. The web profile does not yet provide this type.

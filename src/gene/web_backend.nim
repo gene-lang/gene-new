@@ -953,6 +953,8 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
     of "Present": return webType(wtkPresent)
     of "Bool": return webType(wtkBool)
     of "Str": return webType(wtkStr)
+    of "StrBuilder":
+      raise webError(loc, "StrBuilder is not provided by the web profile")
     of "Sym": return webType(wtkSym)
     of "Int": return webType(wtkInt)
     of "F64": return webType(wtkF64)
@@ -2574,6 +2576,8 @@ proc analyzeCallableInvocation(analysis: WebAnalysis, value: Value,
 proc analyzeCall(analysis: WebAnalysis, value: Value,
                  bindings: var Table[string, WebBinding], expected: WebType): WebExpr =
   let loc = analysis.locFor(value)
+  if value.head.kind == vkSymbol and value.head.symVal == "StrBuilder":
+    raise webError(loc, "StrBuilder is not provided by the web profile")
   if value.head.kind == vkSymbol and bindings.hasKey(value.head.symVal):
     requireWebBinding(value.head.symVal, bindings[value.head.symVal], loc)
   var directSend: Value

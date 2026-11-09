@@ -365,6 +365,7 @@ proc printBody(v: Value): string =
   of vkInt:    v.intToString
   of vkFloat:  printFloat(v.floatVal)
   of vkString: escapeStr(v.strVal)
+  of vkStrBuilder: "(StrBuilder " & escapeStr(v.strBuilderVal) & ")"
   of vkBytes:  printBytes(v.bytesVal)
   of vkRegex:  printRegex(v.regexPattern, v.regexFlags)
   of vkDate:   printDate(v)

@@ -183,7 +183,7 @@ proc containerBodyEqual(a, b: Value): bool =
   of vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
-     vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer,
+     vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkStrBuilder, vkDeviceBuffer,
      vkFfiLibrary, vkFfiCallable, vkLogger, vkEventBus, vkEventSubscription,
      vkEventMatcher, vkRecordingSink, vkNullSink, vkCompositeSink,
      vkType, vkProtocol, vkProtocolMessage,
@@ -206,7 +206,7 @@ proc same*(a, b: Value): bool =
   of vkList, vkMap, vkSet, vkHashMap, vkNode, vkPipeline,
      vkCallableView, vkNativeFn, vkNamespace, vkModule,
      vkEnv, vkCallerEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
-     vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer,
+     vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkStrBuilder,
      vkDeviceBuffer, vkFfiLibrary, vkFfiCallable, vkLogger,
      vkEventBus, vkEventSubscription, vkEventMatcher, vkRecordingSink,
      vkNullSink, vkCompositeSink,
@@ -306,7 +306,7 @@ proc hash*(v: Value): Hash =
   of vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
-     vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer,
+     vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkStrBuilder, vkDeviceBuffer,
      vkFfiLibrary, vkFfiCallable, vkLogger, vkEventBus, vkEventSubscription,
      vkEventMatcher, vkRecordingSink, vkNullSink, vkCompositeSink,
      vkType, vkProtocol, vkProtocolMessage,
@@ -325,7 +325,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
     # NaN is unequal to itself and therefore cannot be a stable key.
     let x = v.floatVal
     x == x
-  of vkNil, vkBool, vkInt, vkString, vkBytes, vkRegex, vkRange,
+  of vkNil, vkBool, vkInt, vkString, vkStrBuilder, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkFunction, vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,

@@ -84,6 +84,7 @@ type
     vkInt       ## mathematical Int; fixnums/int64 fast paths, bigint on overflow
     vkFloat     ## Unannotated runtime float; represented as F64.
     vkString    ## immutable UTF-8 string
+    vkStrBuilder ## mutable UTF-8 string builder
     vkBytes     ## immutable byte string
     vkRegex     ## immutable compiled PCRE regular expression
     vkRange     ## immutable integer range
@@ -824,6 +825,7 @@ type
     okModule
     okBigInt
     okBytes
+    okStrBuilder
     okRegex
     okRange
     okDate
@@ -891,6 +893,9 @@ type
 
   BytesData = ref object of GeneObjectData
     data: string
+
+  StrBuilderData = ref object of GeneObjectData
+    buffer: string
 
   RegexData = ref object of GeneObjectData
     pattern: string
@@ -2127,6 +2132,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
     discard
   of okBytes:
     discard
+  of okStrBuilder:
+    discard
   of okRegex:
     discard
   of okRange:
@@ -2325,6 +2332,8 @@ proc clearObjectEdges(data: GeneObjectData) =
     discard
   of okBytes:
     BytesData(data).data.setLen(0)
+  of okStrBuilder:
+    StrBuilderData(data).buffer.setLen(0)
   of okRegex:
     let d = RegexData(data)
     d.pattern.setLen(0)
@@ -4768,6 +4777,7 @@ const objKindValueKinds: array[ObjKind, ValueKind] = [
   okModule: vkModule,
   okBigInt: vkInt,
   okBytes: vkBytes,
+  okStrBuilder: vkStrBuilder,
   okRegex: vkRegex,
   okRange: vkRange,
   okDate: vkDate,
@@ -7661,6 +7671,23 @@ proc newStr*(v: sink string): Value =
 
 proc newBytes*(v: sink string): Value =
   boxObject(BytesData(objKind: okBytes, data: v))
+
+proc newStrBuilder*(v: sink string = ""): Value =
+  boxObject(StrBuilderData(objKind: okStrBuilder, buffer: v))
+
+proc strBuilderData*(v: Value): StrBuilderData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okStrBuilder:
+    raise newException(FieldDefect, "value is not a StrBuilder")
+  StrBuilderData(objData(v))
+
+proc strBuilderVal*(v: Value): lent string =
+  strBuilderData(v).buffer
+
+proc appendStrBuilder*(v: Value, text: sink string) =
+  strBuilderData(v).buffer.add text
+
+proc clearStrBuilder*(v: Value) =
+  strBuilderData(v).buffer.setLen(0)
 
 proc canonicalRegexFlags*(flags: string): string =
   var seen: set[char]

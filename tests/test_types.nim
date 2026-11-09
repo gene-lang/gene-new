@@ -7227,3 +7227,51 @@ suite "types — function boundaries":
        "catch TypeError $err/expected)", "\"Path\""
     ck "(try (fn keep [f : Callable] f) (keep (quote (not-callable))) " &
        "catch TypeError $err/expected)", "\"Callable\""
+
+
+suite "StrBuilder":
+  test "constructor, append, append_char, size and to_str":
+    ck """
+      (let b (StrBuilder "a" "b"))
+      (b .append "c" "d")
+      (b .append_char '\n')
+      [b/.to_str b/.size]
+    """, "[\"abcd\\n\" 5]"
+
+  test "append_char encodes one Unicode scalar":
+    ck """
+      (let b (StrBuilder))
+      (b .append_char 'é')
+      [b/.to_str b/.size]
+    """, "[\"é\" 2]"
+
+  test "to_str is a snapshot and clear keeps the builder usable":
+    ck """
+      (let b (StrBuilder "a"))
+      (let before b/.to_str)
+      (b .append "b")
+      (let after b/.to_str)
+      (b .clear)
+      [before after b/.to_str b/.size]
+    """, "[\"a\" \"ab\" \"\" 0]"
+
+  test "StrBuilder is a type and has identity":
+    ck """
+      (fn text [b : StrBuilder] : Str b/.to_str)
+      (let a (StrBuilder "x"))
+      (let b (StrBuilder "x"))
+      [(text a) (same? a a) (same? a b) (== a a) (== a b)]
+    """, "[\"x\" true false true false]"
+
+  test "constructor and append reject non-Str values":
+    ck """
+      [(try (StrBuilder 1) catch Error "constructor")
+       (try ((StrBuilder) .append 1) catch Error "append")]
+    """, "[\"constructor\" \"append\"]"
+
+  test "StrBuilder prints its snapshot and refuses deep freeze":
+    ck """
+      (let b (StrBuilder "a"))
+      [($to_str b)
+       (try ($freeze b) catch Error "freeze")]
+    """, "[\"(StrBuilder \\\"a\\\")\" \"freeze\"]"

@@ -2417,6 +2417,8 @@ proc macroMatchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
     (true, value.kind == vkHashMap)
   of "Bytes":
     (true, value.kind == vkBytes)
+  of "StrBuilder":
+    (true, value.kind == vkStrBuilder)
   of "Regex":
     (true, value.kind == vkRegex)
   of "Date":
@@ -4541,9 +4543,10 @@ proc incompatibleGeneratorResult(c: Compiler, annotation: Value,
       return true
     return name in ["Nil", "Present", "Never", "Bool", "Int", "Float", "F64",
       "F32", "I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64",
-      "Char", "Str", "Symbol", "List", "Map", "PropMap", "Set", "HashMap",
-      "Node", "Type", "Task", "Channel", "Cell", "AtomicCell", "Buffer",
-      "Bytes", "Range", "Callable", "Fn", "Date", "Time", "DateTime", "Duration"]
+      "Char", "Str", "StrBuilder", "Symbol", "List", "Map", "PropMap", "Set",
+      "HashMap", "Node", "Type", "Task", "Channel", "Cell", "AtomicCell",
+      "Buffer", "Bytes", "Range", "Callable", "Fn", "Date", "Time",
+      "DateTime", "Duration"]
   if annotation.kind == vkNode and annotation.head.kind == vkSymbol:
     if annotation.head.isSymbol("|"):
       if annotation.body.len == 0: return true
