@@ -1801,6 +1801,8 @@ proc rewriteSelfRecursiveCalls(parent: Chunk) =
     proto.rewriteBareIntReturnAdds()
     proto.chunk.rewriteSelfRecursiveCalls()
 
+const QualifiedFnDirectMeta = "\x00gene_qualified_fn_direct"
+
 type FunctionNameSpec = object
   name: string          # simple local binding name
   memberName: string    # static final segment of a qualified declaration
@@ -5567,6 +5569,57 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   if idx >= body.len or body[idx].kind != vkList:
     raise newException(GeneError, "fn requires a parameter vector")
 
+  if qualifiedPath.kind != vkNil and
+      not node.meta.hasKey(QualifiedFnDirectMeta):
+    if qualifiedPath.body.len < 2:
+      raise newException(GeneError,
+        "qualified function name requires a target namespace and member name")
+    # A qualified declaration runs inside a one-shot wrapper activation. The
+    # wrapper receives the already-evaluated target and member name, so each
+    # executed declaration gets its own capture scope even when the same source
+    # form runs again in a loop.
+    let namespaceParam = c.nextTemp("namespace_target")
+    let nameParam = c.nextTemp("namespace_name")
+    let targetExpr = newNode(newSym("path"),
+      body = qualifiedPath.body[0 ..< qualifiedPath.body.high])
+    let final = qualifiedPath.body[^1]
+    let nameExpr =
+      if final.kind == vkNode and final.head.isSymbol("unquote"):
+        if final.body.len != 1:
+          raise newException(GeneError,
+            "function name unquote requires one expression")
+        final.body[0]
+      elif final.kind == vkSymbol:
+        newNode(newSym("quote"), body = @[newSym(final.symVal)])
+      elif final.kind == vkString:
+        newStr(final.strVal)
+      else:
+        raise newException(GeneError,
+          "qualified function name must end in a symbol, string, or %expression")
+    let innerPath = newNode(newSym("path"), body = @[
+      newSym(namespaceParam),
+      newNode(newSym("unquote"), body = @[newSym(nameParam)])])
+    var innerName = innerPath
+    if typeParams.len > 0:
+      var params: seq[Value]
+      for param in typeParams: params.add newSym(param)
+      innerName = newNode(innerPath, body = params)
+    var innerBody = node.body
+    innerBody[0] = innerName
+    var innerMeta = initPropTable()
+    for key, value in node.meta:
+      innerMeta[key] = value
+    innerMeta[QualifiedFnDirectMeta] = TRUE
+    let innerDecl = newNode(newSym("fn"), props = node.props,
+      body = innerBody, meta = innerMeta,
+      immutable = node.nodeImmutable)
+    let wrapper = newNode(newSym("fn"), body = @[
+      newList(@[newSym(namespaceParam), newSym(nameParam)]),
+      innerDecl])
+    let call = newNode(wrapper, body = @[targetExpr, nameExpr])
+    compileExpr(c, call)
+    return
+
   if qualifiedPath.kind != vkNil:
     if qualifiedPath.body.len < 2:
       raise newException(GeneError,
@@ -5619,6 +5672,7 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
   # Declaration meta (@route ..., @doc ...) rides the proto as raw data so
   # Module/declarations records can expose it (proposal §8 route discovery).
   for key, val in node.meta:
+    if key == QualifiedFnDirectMeta: continue
     proto.declMetaKeys.add key
     proto.declMetaValues.add val
   if definesName:

@@ -4103,6 +4103,26 @@ suite "vm — namespaces":
        "[1 2]"
   test "module root $ns resolves to the root namespace":
     ck "(fn top [] 41) (var f ($ns .lookup \"top\")) (f)", "41"
+  test "a qualified declaration captures its target per execution":
+    ck "(ns a (fn value [] 1)) (ns b (fn value [] 2)) " &
+       "(var target a) (var i 0) " &
+       "(while (< i 2) " &
+       "  (let name (if (== i 0) (then \"fa\") (else \"fb\"))) " &
+       "  (fn target/%name [] ($ns/value)) " &
+       "  (set target b) (set i (+ i 1))) " &
+       "[((a .lookup \"fa\")) ((b .lookup \"fb\"))]",
+       "[1 2]"
+  test "module root $ns and functions capturing it are not Send":
+    ck "(let payload (StrBuilder \"private\")) " &
+       "(fn uses_root [] ($ns .lookup \"payload\")) " &
+       "(let first ($channel ^capacity 1)) " &
+       "(let second ($channel ^capacity 1)) " &
+       "[(try (first .try_send $ns) \"sent\" catch TypeError \"rejected\") " &
+       " (try (second .try_send uses_root) \"sent\" catch TypeError \"rejected\")]",
+       "[\"rejected\" \"rejected\"]"
+  test "namespace context exists during macro phase initialization":
+    ck "(ns n (fn a [] 7) (fn b [] ($ns/a))) " &
+       "(macro answer [] (n/b)) (answer)", "7"
   test "only a used $ns target makes an installed function non-Send":
     ck "(ns n) " &
        "(fn n/uses [] ($ns .lookup \"uses\")) " &

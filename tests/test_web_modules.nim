@@ -464,3 +464,44 @@ suite "web optional parameter defaults":
       except WebProfileError as error:
         diagnostic = error.msg
       check "async parameter defaults are limited to top-level functions" in diagnostic
+
+suite "web namespace values":
+  test "a qualified extension keeps its declaration-site lexical lookup":
+    var message = ""
+    try:
+      discard analyzeWebModule("""
+        (mod namespace_lexical ^profile web)
+        (ns n (fn helper [] : Int 2))
+        (fn n/test [] : Int (helper))
+      """, "namespace_lexical.gene")
+    except WebProfileError as error:
+      message = error.msg
+    check "helper" in message
+    check "unknown or unsupported web function" in message
+
+  test "namespace values are branded identity values":
+    let root = createTempDir("gene-web-namespace-identity-", "")
+    defer: removeDir(root)
+    writeFile(root / "namespace_identity.gene", """
+      (mod namespace_identity ^profile web)
+      (ns a)
+      (ns b)
+      (fn typed [x : Namespace y : Namespace] : Bool (== x y))
+      (fn any_equal [x : Any y : Any] : Bool (== x y))
+      (fn take_ns [x : Namespace] : Bool true)
+      (fn array_as_any [] : Any [1])
+      (fn probe [] : (List Bool)
+        [(typed a b)
+         (any_equal a b)
+         (any_equal a a)
+         (try (take_ns (array_as_any)) catch TypeError false)])
+    """)
+    discard buildWebModule(root / "namespace_identity.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {probe} from './namespace_identity.mjs';
+      assert.deepEqual(probe(), [false, false, true, false]);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0

@@ -15279,10 +15279,16 @@ proc isSendableValue(value: Value, scope: Scope,
         return false
     true
   of vkNamespace:
+    # Built-in singleton namespaces are immutable and share the builtin root.
+    # A module-root namespace has that same parent, but exposes a mutable
+    # module scope (including module-local non-Send values), so it is not a
+    # sendable value. User namespaces below a module root are already excluded
+    # by the parent test.
     let root =
       if scope == nil: builtinsScope()
       else: scope.application().builtinsScope()
-    value.nsScope != nil and value.nsScope.parent == root
+    value.nsScope != nil and not value.nsIsModuleRoot and
+      value.nsScope.parent == root
   of vkEventMatcher:
     # Immutable, and its only edge is a Type — which is itself sendable.
     isSendableValue(value.eventMatcherTarget, scope, seen, mode)

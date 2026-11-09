@@ -11,6 +11,19 @@
 (fn math/%member [x : Int] : Int (let x2 (* x x)) (* x2 x))
 (fn math/from_ns [x : Int] : Int ($ns/add x x))
 
+(ns empty_a)
+(ns empty_b)
+(fn same_ns_typed [a : Namespace b : Namespace] : Bool (== a b))
+(fn same_ns_any [a : Any b : Any] : Bool (== a b))
+(fn takes_ns [x : Namespace] : Bool true)
+(fn array_as_any [] : Any [1])
+
+(fn ns_probe [] : (List Bool)
+  [(same_ns_typed empty_a empty_b)
+   (same_ns_any empty_a empty_b)
+   (same_ns_any empty_a empty_a)
+   (try (takes_ns (array_as_any)) catch TypeError false)])
+
 (fn run [] : (List Int)
   [(math/twice 3) (math/constants/one) (math/square 4) (math/cube 2)
    (math/from_ns 5)])

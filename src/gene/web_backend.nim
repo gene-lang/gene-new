@@ -126,6 +126,7 @@ type
     async*: bool
     publicExport*: bool
     namespacePath*: seq[string]
+    extensionDeclaration*: bool
     checkedErrors*: bool
     errorTypes*: seq[WebType]
 
@@ -355,6 +356,7 @@ type
     synchronousDefaults: seq[WebExpr]
     ## Module-level `let` constants, visible to every function body.
     constants: Table[string, WebConstant]
+    namespaceValues: Table[string, WebBinding]
     loopDepth: int
     currentReturn: WebType
     asyncDepth: int
@@ -4841,6 +4843,10 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
       result = WebExpr(kind: wekBinding,
         typ: callbackType(signature),
         loc: loc, text: signature.valueName)
+    elif analysis.namespaceValues.hasKey(value.symVal):
+      let binding = analysis.namespaceValues[value.symVal]
+      result = WebExpr(kind: wekBinding, typ: binding.typ, loc: loc,
+                       text: binding.emittedName)
     elif analysis.constants.hasKey(value.symVal):
       let constant = analysis.constants[value.symVal]
       result = WebExpr(kind: wekBinding, typ: constant.typ, loc: loc,
@@ -5290,6 +5296,9 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     let declaration = WebNamespace(sourceName: form.body[0].symVal,
       emittedName: mangleWebName(path.join("$")), path: path)
     moduleResult.namespaces.add declaration
+    if path.len == 1:
+      analysis.namespaceValues[path[0]] = WebBinding(
+        typ: webType(wtkNamespace), emittedName: declaration.emittedName)
     for i in 1 ..< form.body.len:
       let member = form.body[i]
       let memberLoc = analysis.locFor(member, loc)
@@ -5350,6 +5359,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     let simpleForm = newNode(form.head, form.props, body, form.meta,
                              form.nodeImmutable)
     registerFunction(simpleForm, targetPath, loc)
+    headers[^1].fn.extensionDeclaration = true
     target.functions.add(headers[^1].fn)
 
   for i in 1 ..< analysis.unit.forms.len:
@@ -5438,7 +5448,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   for header in headers:
     var bindings = initTable[string, WebBinding]()
     analysis.currentReturn = header.fn.returnType
-    analysis.currentNamespace = header.fn.namespacePath
+    analysis.currentNamespace =
+      if header.fn.extensionDeclaration: @[] else: header.fn.namespacePath
     analysis.currentNamespaceBinding = ""
     if header.fn.namespacePath.len > 0:
       let namespace = findNamespaceByPath(result, header.fn.namespacePath)
@@ -7505,6 +7516,7 @@ proc emitStructuralEquality(emitter: var WebEmitter,
   # A host `undefined` is nil: nil equals only nil, whichever form it takes.
   emitter.line("if (a == null || b == null) return a == b;")
   emitter.line("if (a?.[Symbol.for(\"gene.callable_view\")] === true || b?.[Symbol.for(\"gene.callable_view\")] === true) return false;")
+  emitter.line("if ((a != null && typeof a === \"object\" && a[Symbol.for(\"gene.namespace\")] === true) || (b != null && typeof b === \"object\" && b[Symbol.for(\"gene.namespace\")] === true)) return a === b;")
   emitter.line("if (typeof a === \"symbol\" && typeof b === \"symbol\") return Symbol.keyFor(a) === Symbol.keyFor(b);")
   emitter.line("if (Array.isArray(a) || Array.isArray(b)) {")
   inc emitter.indent
@@ -7657,7 +7669,7 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
       emitter.line("if (!(value instanceof " & jsTypedArrayName(typ.name) &
         ")) $gene_type_error(where, \"" & typeName(typ) & "\", value);")
     of wtkNamespace:
-      emitter.line("if (value === null || typeof value !== \"object\") " &
+      emitter.line("if (!$gene_is_namespace(value)) " &
         "$gene_type_error(where, \"Namespace\", value);")
     of wtkGl, wtkGlObject:
       # WebGL resource classes are not constructible and, in a worker or a
@@ -8454,6 +8466,25 @@ proc emitModule(module: WebModule, typescript: bool,
   if moduleUsesTypeKind(module, wtkList) or moduleExprUsesTypeKind(module, wtkList):
     let dynamic = if typescript: ": any" else: ""
     emitter.line("function $gene_list_push(target" & dynamic & ", value" & dynamic & ")" & dynamic & " { const stored = value === undefined ? null : value; target.push(stored); return stored; }")
+    emitter.line()
+  let needsNamespaceRuntime = module.namespaces.len > 0 or
+    moduleUsesTypeKind(module, wtkNamespace) or
+    moduleExprUsesTypeKind(module, wtkNamespace)
+  if needsNamespaceRuntime:
+    let dynamic = if typescript: ": any" else: ""
+    emitter.line("function $gene_is_namespace(value" & dynamic & ")" &
+      (if typescript: ": boolean" else: "") & " {")
+    inc emitter.indent
+    emitter.line("return value != null && typeof value === \"object\" && " &
+      "!Array.isArray(value) && value[Symbol.for(\"gene.namespace\")] === true;")
+    dec emitter.indent
+    emitter.line("}")
+    emitter.line("function $gene_namespace(members" & dynamic & ")" & dynamic & " {")
+    inc emitter.indent
+    emitter.line("Object.defineProperty(members, Symbol.for(\"gene.namespace\"), { value: true });")
+    emitter.line("return Object.freeze(members);")
+    dec emitter.indent
+    emitter.line("}")
     emitter.line()
   if moduleUsesBuiltin(module, ["namespace_lookup"]):
     let dynamic = if typescript: ": any" else: ""
@@ -9599,7 +9630,7 @@ proc emitModule(module: WebModule, typescript: bool,
             child.path[0 ..< namespace.path.len] == namespace.path:
           members.add jsString(child.sourceName) & ": " & child.emittedName
       emitter.line((if namespace.path.len == 1: "export " else: "") &
-        "const " & namespace.emittedName & " = Object.freeze({" &
+        "const " & namespace.emittedName & " = $gene_namespace({" &
         members.join(", ") & "});")
     emitter.line()
   result = emitter.lines.join("\n")
