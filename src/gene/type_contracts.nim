@@ -234,6 +234,10 @@ proc callableSignatureMismatch*(expected, actual: Value): string =
     return "rest parameter shape"
   if not signatureTypeEqual(e.restType, a.restType):
     return "rest parameter type"
+  if (e.namedRest.len != 0) != (a.namedRest.len != 0):
+    return "named rest parameter shape"
+  if not signatureTypeEqual(e.namedRestType, a.namedRestType):
+    return "named rest parameter type"
   if e.namedParams.len != a.namedParams.len:
     return "named parameter shape"
   for i in 0 ..< e.namedParams.len:

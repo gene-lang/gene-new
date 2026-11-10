@@ -2396,6 +2396,7 @@ proc retainInferredReturnSources(analysis: ErrorAnalysis, owner: AnalyzedFunctio
     for parameter in returned.proto.params: locals.add parameter
     for parameter in returned.proto.namedParams: locals.add parameter.local
     if returned.proto.restParam.len > 0: locals.add returned.proto.restParam
+    if returned.proto.namedRest.len > 0: locals.add returned.proto.namedRest
   if not returned.summary.declared:
     for dependency in returned.summary.dependencies:
       if dependency.target.kind == vkSymbol and dependency.target.symVal in locals and
@@ -2434,6 +2435,8 @@ proc inferFunction(analysis: ErrorAnalysis, function: AnalyzedFunction): bool =
                            immutable = false, declaredType = param.typeExpr)
   if proto.restParam.len > 0:
     environment.bindValue(proto.restParam, AbstractValue(kind: avList, resultType: proto.restType))
+  if proto.namedRest.len > 0:
+    environment.bindValue(proto.namedRest, AbstractValue(kind: avMap))
   function.summary.declaredRow = analysis.rowFromTypes(proto.signatureErrorExprs, function.environment)
   let permitted = if function.summary.declared: function.summary.declaredRow
                   else: function.summary.inferredRow
@@ -2442,6 +2445,7 @@ proc inferFunction(analysis: ErrorAnalysis, function: AnalyzedFunction): bool =
   for param in proto.namedParams:
     analysis.retainTypeReferences(param.typeExpr, function.environment, function, proto.sourceLoc, permitted)
   analysis.retainTypeReferences(proto.restType, function.environment, function, proto.sourceLoc, permitted)
+  analysis.retainTypeReferences(proto.namedRestType, function.environment, function, proto.sourceLoc, permitted)
   analysis.retainTypeReferences(proto.returnType, function.environment, function, proto.sourceLoc, permitted)
   for typ in proto.signatureErrorExprs:
     analysis.retainTypeReferences(typ, function.environment, function, proto.sourceLoc, permitted)

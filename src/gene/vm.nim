@@ -13375,6 +13375,7 @@ proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
   for expr in original.paramTypes:
     proto.paramTypes.add resolve(expr)
   proto.restType = resolve(original.restType)
+  proto.namedRestType = resolve(original.namedRestType)
   proto.namedParams = @[]
   for param in original.namedParams:
     var resolved = param
@@ -13443,6 +13444,7 @@ proc validateUniversalSelf(proto: FunctionProto, scope: Scope) =
     for expr in fn.paramTypes:
       checkAnnotation(expr)
     checkAnnotation(fn.restType)
+    checkAnnotation(fn.namedRestType)
     checkAnnotation(fn.returnType)
     for param in fn.namedParams:
       checkAnnotation(param.typeExpr)
@@ -14369,6 +14371,7 @@ proc validateProtocolContract(pending: PendingProtocolContract) =
     for expr in proto.paramTypes:
       discard resolveDeclarationAnnotation(expr, scope, protocol)
     discard resolveDeclarationAnnotation(proto.restType, scope, protocol)
+    discard resolveDeclarationAnnotation(proto.namedRestType, scope, protocol)
     discard resolveDeclarationAnnotation(proto.returnType, scope, protocol)
     for param in proto.namedParams:
       discard resolveDeclarationAnnotation(param.typeExpr, scope, protocol)
@@ -15096,6 +15099,8 @@ proc functionCallLocalNames(proto: FunctionProto): HashSet[string] =
     result.incl name
   if proto.restParam.len > 0:
     result.incl proto.restParam
+  if proto.namedRest.len > 0:
+    result.incl proto.namedRest
   for param in proto.namedParams:
     result.incl param.local
 
@@ -15850,6 +15855,7 @@ proc publishSpawnFunctionProto(proto: FunctionProto,
     publishSpawnChunk(proto.scopelessChunk, seenScopes, seenValues, seenChunks)
   for value in proto.paramTypes:
     publishSpawnValue(value, seenScopes, seenValues, seenChunks)
+  publishSpawnValue(proto.namedRestType, seenScopes, seenValues, seenChunks)
   for param in proto.namedParams:
     publishSpawnValue(param.typeExpr, seenScopes, seenValues, seenChunks)
     if param.defaultValue.optional:
@@ -17480,6 +17486,9 @@ proc appendSplicedCall(body: var seq[Value], named: var NamedArgs, value: Value)
     for item in value.listItems: body.add item
   of vkMap:
     for key, item in value.mapEntries: named.putArg(key, item)
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      named.putArg(keySegment("call splice", entry.key), entry.val)
   of vkNode:
     for key, item in value.props: named.putArg(key, item)
     for item in value.body: body.add item
@@ -25808,11 +25817,13 @@ proc visibleProtocolQualifiers(scope: Scope): seq[tuple[value: Value, path: stri
           not current.slotDefined(index):
         continue
       visibleRoots.incl name
-      pending.add (value: current.slots[index], path: name)
+      let path = if name == CurrentNamespaceBindingName: "" else: name
+      pending.add (value: current.slots[index], path: path)
     for name, value in current.vars:
       if name notin visibleRoots:
         visibleRoots.incl name
-        pending.add (value: value, path: name)
+        let path = if name == CurrentNamespaceBindingName: "" else: name
+        pending.add (value: value, path: path)
     current = current.parent
   var next = 0
   while next < pending.len:
@@ -25839,10 +25850,12 @@ proc visibleProtocolQualifiers(scope: Scope): seq[tuple[value: Value, path: stri
             not owner.slotDefined(index):
           continue
         seen.incl name
-        pending.add (value: owner.slots[index], path: item.path & "/" & name)
+        let path = if item.path.len == 0: name else: item.path & "/" & name
+        pending.add (value: owner.slots[index], path: path)
       for name, value in owner.vars:
         if name notin seen and name notin owner.exportExcludedNames:
-          pending.add (value: value, path: item.path & "/" & name)
+          let path = if item.path.len == 0: name else: item.path & "/" & name
+          pending.add (value: value, path: path)
   qualifiers
 
 proc visibleProtocolMessageHints(scope: Scope, recvType: Value,
@@ -32722,7 +32735,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       if p.arg == key:
         found = true
         break
-    if not found:
+    if not found and proto.namedRest.len == 0:
       raise newException(GeneError,
         "function '" & callee.fnName & "' got unexpected named argument: " & key)
 
@@ -32857,6 +32870,29 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       else:
         raise newException(GeneError,
           "function '" & callee.fnName & "' missing named argument: " & p.arg)
+  if proto.namedRest.len > 0:
+    var props = initPropTable()
+    for keyIndex, key in named.names:
+      var explicit = false
+      for p in proto.namedParams:
+        if p.arg == key:
+          explicit = true
+          break
+      if explicit: continue
+      var value = named.valueAt(keyIndex)
+      rejectCallerEnvEscape("named rest parameter '" & proto.namedRest & "'", value)
+      if proto.namedRestType.kind != vkNil:
+        let typeExpr = instantiateTypeExpr(proto.namedRestType, typeBindings,
+                                           proto.typeParams)
+        if not (bareScalarSatisfied(typeExpr, value)):
+          value = adaptNamedBoundary(blkRestParameter, proto.namedRest,
+                                     typeExpr, value, callScope)
+      props[key] = value
+    let rest = newMap(props)
+    if proto.namedRestSlot >= 0:
+      callScope.defineFreshCallSlot(proto.namedRestSlot, rest)
+    else:
+      callScope.define(proto.namedRest, rest)
   var rt = NIL
   if proto.hasReturnType:
     rt = instantiateTypeExpr(proto.returnType, typeBindings, proto.typeParams)

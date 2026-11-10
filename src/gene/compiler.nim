@@ -214,6 +214,8 @@ type
     rest: string
     restType: Value
     named: seq[NamedParam]
+    namedRest: string
+    namedRestType: Value
 
   ParamAdornment = object
     typeExpr: Value
@@ -1663,6 +1665,7 @@ proc canUseTypedIntRecur1(proto: FunctionProto): bool =
     proto.positionalSlots.len == 1 and proto.positionalSlots[0] >= 0 and
     proto.positionalSlotMaySet.len == 1 and not proto.positionalSlotMaySet[0] and
     proto.restParam.len == 0 and proto.namedParams.len == 0 and
+    proto.namedRest.len == 0 and
     proto.hasParamTypes and proto.paramTypes.len == 1 and
     proto.paramTypes[0].isBareIntType and proto.hasReturnType and
     proto.returnType.isBareIntType and not proto.isGenerator and
@@ -2085,8 +2088,21 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
       inc i
       if i >= items.len or items[i].kind != vkSymbol:
         raise newException(GeneError, "named parameter requires a name")
-      let arg = rejectOptionalSuffix(items[i].symVal, "named parameter",
-        "write `^" & items[i].symVal[0 .. ^2] &
+      let namedItem = items[i]
+      if namedItem.symVal.isRestParam:
+        if result.namedRest.len > 0:
+          raise newException(GeneError, "duplicate named rest parameter")
+        result.namedRest = namedItem.symVal[0 .. ^4]
+        if result.namedRest.len == 0:
+          raise newException(GeneError, "named rest parameter requires a name")
+        inc i
+        let restAdornment = c.parseParamAdornment(paramList, defaultContext, items, i)
+        if restAdornment.defaultValue.optional:
+          raise newException(GeneError, "named rest parameter cannot have a default")
+        result.namedRestType = restAdornment.typeExpr
+        continue
+      let arg = rejectOptionalSuffix(namedItem.symVal, "named parameter",
+        "write `^" & namedItem.symVal[0 .. ^2] &
         " : T?` — a nil-admitting type is optional (omitted binds nil)")
       if arg.len == 0:
         raise newException(GeneError, "named parameter requires a name")
@@ -2224,6 +2240,9 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
       inc i
       if i >= items.len or items[i].kind != vkSymbol:
         raise newException(GeneError, "named parameter requires a name")
+      if items[i].symVal.isRestParam:
+        raise newException(GeneError,
+          "named rest parameters are not supported in macro/fexpr parameters")
       let arg = rejectOptionalSuffix(items[i].symVal, "named parameter",
         "use a default (`^" & items[i].symVal[0 .. ^2] &
         " = nil`) for an optional macro/fexpr parameter")
@@ -4403,7 +4422,7 @@ proc detectNativeCompileOp(specs: ParamSpecs, body: openArray[Value],
   ## entry still performs normal boundary checks before these ops run.
   if typeParams.len != 0 or checksErrors or sawYield:
     return (ncoNone, 0)
-  if specs.rest.len != 0 or specs.named.len != 0:
+  if specs.rest.len != 0 or specs.named.len != 0 or specs.namedRest.len != 0:
     return (ncoNone, 0)
   if specs.hasOptionalPositional or body.len != bodyStart + 1:
     return (ncoNone, 0)
@@ -4538,7 +4557,8 @@ proc detectAotExpr(c: Compiler, name: string, specs: ParamSpecs,
                    checksErrors, sawYield: bool): Value =
   if typeParams.len != 0 or checksErrors or sawYield:
     return NIL
-  if specs.rest.len != 0 or specs.named.len != 0 or specs.hasOptionalPositional:
+  if specs.rest.len != 0 or specs.named.len != 0 or specs.namedRest.len != 0 or
+      specs.hasOptionalPositional:
     return NIL
   if body.len != bodyStart + 1:
     return NIL
@@ -4669,6 +4689,11 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     if seenLocals.hasKey(specs.rest):
       raise newException(GeneError, "duplicate parameter binding: " & specs.rest)
     seenLocals[specs.rest] = true
+  if specs.namedRest.len > 0:
+    if seenLocals.hasKey(specs.namedRest):
+      raise newException(GeneError,
+        "duplicate parameter binding: " & specs.namedRest)
+    seenLocals[specs.namedRest] = true
   var fnCompiler = c.childCompiler()
   fnCompiler.inStatementFn =
     returnType.kind == vkSymbol and returnType.symVal == "Nil"
@@ -4697,6 +4722,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   var restSlot = -1
   if specs.rest.len > 0:
     restSlot = fnCompiler.reserveLocal(specs.rest)
+  var namedRestSlot = -1
+  if specs.namedRest.len > 0:
+    namedRestSlot = fnCompiler.reserveLocal(specs.namedRest)
   # In a message/ctor body the receiver `self` is a compiler-owned immutable
   # binding — `(set self ...)` is a compile error (design §10/§12.1), so it
   # cannot be retargeted mid-body. Re-mark it after the param loop cleared it,
@@ -4707,7 +4735,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   fnCompiler.allowYield = true
   fnCompiler.inFunction = true
   fnCompiler.inGenerator = generator
-  if "self" in specs.positional or specs.rest == "self":
+  if "self" in specs.positional or specs.rest == "self" or
+      specs.namedRest == "self":
     fnCompiler.selfAvailable = true
   for p in specs.named:
     if p.local == "self":
@@ -4761,6 +4790,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     else: -1
   let simpleCall = typeParams.len == 0 and not checksErrors and
                    specs.rest.len == 0 and specs.named.len == 0 and
+                   specs.namedRest.len == 0 and
                    not hasParamTypes and not hasNamedParamTypes and
                    returnType.kind == vkNil and not fnCompiler.inGenerator and
                    not specs.hasOptionalPositional
@@ -4826,6 +4856,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     let lowerBody = normalizeMessageCallTree(rawLowerBody)
     let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.inGenerator or
         specs.rest.len != 0 or specs.named.len != 0 or
+        specs.namedRest.len != 0 or
         specs.hasComputedPositionalDefault or lowerBody.kind == vkNil or
         aotReturnRepr.kind == arkNone or
         not allAotParamsRepresentable or
@@ -4862,6 +4893,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       aotParamReprs.len == specs.positional.len and
       typeParams.len == 0 and not checksErrors and not fnCompiler.inGenerator and
       specs.rest.len == 0 and specs.named.len == 0 and
+      specs.namedRest.len == 0 and
       not specs.hasOptionalPositional
     if scalarLowerable and start < body.len:
       let rawLowerBody =
@@ -4893,13 +4925,15 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     typeParams.len == 0 and not checksErrors and specs.positional.len == 1 and
     specs.requiredPositionalCount == 1 and positionalSlots.len == 1 and
     positionalSlots[0] >= 0 and specs.rest.len == 0 and specs.named.len == 0 and
+    specs.namedRest.len == 0 and
     hasParamTypes and specs.positionalTypes.len == 1 and
     specs.positionalTypes[0].isBareIntType and returnType.isBareIntType and
     not fnCompiler.inGenerator and specs.positionalDefaults.len == 1 and
     not specs.positionalDefaults[0].optional
   var fastBindPositionalInt =
     typeParams.len == 0 and not checksErrors and not fnCompiler.inGenerator and
-    specs.rest.len == 0 and specs.named.len == 0 and specs.positional.len > 0 and
+    specs.rest.len == 0 and specs.named.len == 0 and
+    specs.namedRest.len == 0 and specs.positional.len > 0 and
     specs.requiredPositionalCount == specs.positional.len and
     positionalSlots.len == specs.positional.len and hasParamTypes and
     specs.positionalTypes.len == specs.positional.len and returnType.isBareIntType and
@@ -4912,7 +4946,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
         break
   var fastBindRequiredNamed =
     typeParams.len == 0 and not fnCompiler.inGenerator and specs.rest.len == 0 and
-    specs.named.len > 0 and
+    specs.named.len > 0 and specs.namedRest.len == 0 and
     specs.requiredPositionalCount == specs.positional.len and
     specs.positionalDefaults.len == specs.positional.len and
     positionalSlots.len == specs.positional.len and
@@ -4948,6 +4982,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          paramDefaults: specs.positionalDefaults,
                          restParam: specs.rest, restType: specs.restType,
                          namedParams: specs.named,
+                         namedRest: specs.namedRest,
+                         namedRestType: specs.namedRestType,
+                         namedRestSlot: namedRestSlot,
                          hasNamedParamTypes: hasNamedParamTypes,
                          returnType: returnType,
                          hasReturnType: returnType.kind != vkNil,
@@ -8432,7 +8469,8 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
                                tail = tail)] = node
       return
   if knownOrdinary and node.props.len == 0 and
-      node.head.kind == vkSymbol and node.body.len == 2:
+      node.head.kind == vkSymbol and node.body.len == 2 and
+      not node.body.hasValueSpread:
     let fastKind = nativeFastLoadKind(node.head.symVal)
     if fastKind != nfkNone and not c.hasLexicalBinding(node.head.symVal):
       compileExpr(c, node.body[0])
@@ -8454,7 +8492,8 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
           discard c.emit(opNativeFast2, ord(fastKind), name = node.head.symVal)
       return
   if knownOrdinary and node.props.len == 0 and
-      node.head.kind == vkSymbol and node.body.len == 1:
+      node.head.kind == vkSymbol and node.body.len == 1 and
+      not node.body.hasValueSpread:
     let direct = c.lexicalCallSlot(node.head.symVal)
     if direct.slot >= 0:
       let argKnownBareInt = c.exprKnownBareInt(node.body[0])
@@ -11200,6 +11239,7 @@ proc collectAnnotationNames(proto: FunctionProto, names: var HashSet[string]) =
   ## Type annotations are resolved by name in the call scope's chain.
   for expr in proto.paramTypes: collectSymbolNames(expr, names)
   collectSymbolNames(proto.restType, names)
+  collectSymbolNames(proto.namedRestType, names)
   collectSymbolNames(proto.returnType, names)
   for expr in proto.signatureErrorExprs: collectSymbolNames(expr, names)
   for param in proto.namedParams: collectSymbolNames(param.typeExpr, names)

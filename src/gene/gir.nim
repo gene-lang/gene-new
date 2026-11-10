@@ -411,6 +411,9 @@ type
     restParam*: string
     restType*: Value        # `xs... : T` element type; NIL for an untyped rest
     namedParams*: seq[NamedParam]
+    namedRest*: string
+    namedRestType*: Value
+    namedRestSlot*: int = -1
     hasNamedParamTypes*: bool
     returnType*: Value
     hasReturnType*: bool
@@ -1225,6 +1228,7 @@ proc supportsScalarBinding*(proto: FunctionProto): bool =
   if proto == nil or proto.isSyntaxFn or proto.isMacroBody or
       proto.isGenerator or proto.checksErrors or proto.typeParams.len != 0 or
       proto.restParam.len != 0 or proto.namedParams.len != 0 or
+      proto.namedRest.len != 0 or
       proto.requiredPositional != proto.params.len or
       proto.positionalSlots.len != proto.params.len or
       proto.paramTypes.len != proto.params.len or
@@ -1848,6 +1852,11 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
         header.add " rest=" & fn.restParam
         if fn.restType.kind != vkNil:
           header.add ":" & fn.restType.print()
+      if fn.namedRest.len > 0:
+        var desc = fn.namedRest
+        if fn.namedRestType.kind != vkNil:
+          desc.add " " & fn.namedRestType.print()
+        header.add " named-rest=" & desc
       if fn.namedParams.len > 0:
         var names: seq[string]
         for p in fn.namedParams:
@@ -3878,7 +3887,8 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
     proto.returnKnownBareInt
   if proto.isGenerator or proto.isSyntaxFn or proto.checksErrors or
       not (proto.simpleCall or typedIntOk) or proto.restParam.len != 0 or
-      proto.namedParams.len != 0 or proto.typeParams.len != 0 or
+      proto.namedParams.len != 0 or proto.namedRest.len != 0 or
+      proto.typeParams.len != 0 or
       (proto.hasParamTypes and not typedIntOk) or
       (proto.hasReturnType and not typedIntOk) or
       proto.requiredPositional != proto.params.len or

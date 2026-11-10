@@ -41,6 +41,8 @@ proc strictCallableSignature(value: Value): Value =
         typeExpr: closeTypeExpr(parameter.typeExpr, scope),
         defaultValue: ParamDefault(optional: parameter.defaultValue.optional))
     signature.restType = closeTypeExpr(normalized.restType, scope)
+    signature.namedRest = normalized.namedRest
+    signature.namedRestType = closeTypeExpr(normalized.namedRestType, scope)
     let resultType = if normalized.hasReturnType: normalized.returnType else: NIL
     signature.returnType = closeTypeExpr(resultType, scope)
   except GeneError:

@@ -505,3 +505,69 @@ suite "web namespace values":
     let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
     checkpoint ran.output
     check ran.exitCode == 0
+
+suite "web named rest and property spread":
+  test "named rest collects unmatched props and spread forwards them":
+    let root = createTempDir("gene-web-named-rest-", "")
+    defer: removeDir(root)
+    writeFile(root / "named_rest.gene", """
+      (mod named_rest ^profile web)
+      (fn take [^x : Int] : Int x)
+      (fn collect [^attrs...] : PropMap attrs)
+      (fn typed [^opts... : Int] : Int opts/count)
+      (fn via_map [] : PropMap
+        (let attrs {^class "card" ^id "main"})
+        (collect attrs...))
+      (fn via_explicit [] : PropMap
+        (collect ^class "card" ^id "main"))
+      (fn override [] : Int
+        (let attrs {^x 2})
+        (take ^x "discarded" attrs...))
+      (fn via_general_map [] : PropMap
+        (let attrs {{"class": "card"}})
+        (collect attrs...))
+      (fn typed_run [] : Int
+        (typed ^count 2))
+      (fn typed_bad [] : Bool
+        (try (typed ^count "bad") false catch Any true))
+    """)
+    discard buildWebModule(root / "named_rest.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {via_map, via_explicit, via_general_map, override, typed_run, typed_bad} from './named_rest.mjs';
+      assert.equal(via_map().class, 'card');
+      assert.equal(via_map().id, 'main');
+      assert.equal(via_explicit().class, 'card');
+      assert.equal(via_explicit().id, 'main');
+      assert.equal(via_general_map().class, 'card');
+      assert.equal(override(), 2n);
+      assert.equal(typed_run(), 2n);
+      assert.equal(typed_bad(), true);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
+  test "imported named rest signatures keep collecting and spreading props":
+    let root = createTempDir("gene-web-import-named-rest-", "")
+    defer: removeDir(root)
+    writeFile(root / "attrs_lib.gene", """
+      (mod attrs_lib ^profile web)
+      (fn collect [^attrs...] : PropMap attrs)
+    """)
+    writeFile(root / "attrs_main.gene", """
+      (mod attrs_main ^profile web)
+      (import [collect] ^from "./attrs_lib.gene")
+      (fn run [] : PropMap
+        (let attrs {^class "card"})
+        (collect attrs...))
+    """)
+    discard buildWebModule(root / "attrs_main.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {run} from './attrs_main.mjs';
+      assert.equal(run().class, 'card');
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0

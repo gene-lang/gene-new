@@ -120,6 +120,7 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
   var scope: Scope
   var positional, named: seq[Value]
   var rest = NIL
+  var namedRest = NIL
   var resultType = MISSING
   var errors: seq[Value]
   var errorsChecked = false
@@ -166,6 +167,10 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
     if proto.restParam.len > 0:
       rest = parameter(proto.restParam, proto.restParam, proto.restType, false, false,
                        scope, lookup, options.abstractSelf, proto.typeParams)
+    if proto.namedRest.len > 0:
+      namedRest = parameter(proto.namedRest, proto.namedRest, proto.namedRestType,
+                            false, false, scope, lookup,
+                            options.abstractSelf, proto.typeParams)
     if proto.hasReturnType:
       resultType = safeAnnotation(proto.returnType, scope, lookup,
         abstractSelf = options.abstractSelf, unresolved = proto.typeParams)
@@ -256,6 +261,7 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
   props["shape_known"] = TRUE
   props["positional"] = newList(positional, immutable = true)
   props["named"] = newList(named, immutable = true)
+  props["named_rest"] = namedRest
   props["rest"] = rest
   props["minimum_positional"] = newInt(minimum)
   props["result_known"] = newBool(not resultType.isMissing)
@@ -292,6 +298,8 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
   for p in positional: complete = complete and p.mapEntries["type_known"] == TRUE
   for p in named: complete = complete and p.mapEntries["type_known"] == TRUE
   if rest.kind != vkNil: complete = complete and rest.mapEntries["type_known"] == TRUE
+  if namedRest.kind != vkNil:
+    complete = complete and namedRest.mapEntries["type_known"] == TRUE
   props["completeness"] = newSym(if complete: "known" else: "partial")
   newNode(newSym("SignatureDescription"), props = props, immutable = true)
 
@@ -317,11 +325,13 @@ proc bindArgumentShape*(description, positional, named: Value): Value =
     invalid("expected a positional List and named PropMap")
   let parameters = d.getOrDefault("positional", NIL)
   let names = d.getOrDefault("named", NIL)
+  let namedRest = d.getOrDefault("named_rest", NIL)
   let minimum = d.getOrDefault("minimum_positional", NIL)
   let rest = d.getOrDefault("rest", NIL)
   if parameters.kind != vkList or names.kind != vkList or minimum.kind != vkInt or
       minimum.intVal < 0 or minimum.intVal > parameters.listItems.len or
-      rest.kind notin {vkNil, vkMap}:
+      rest.kind notin {vkNil, vkMap} or
+      namedRest.kind notin {vkNil, vkMap}:
     invalid("malformed argument shape")
   if positional.listItems.len < minimum.intVal or
       (rest.kind == vkNil and positional.listItems.len > parameters.listItems.len):
@@ -339,7 +349,8 @@ proc bindArgumentShape*(description, positional, named: Value): Value =
       if required == TRUE: invalid("missing named argument: " & name.strVal)
       omittedNamed.add name
   for key, _ in named.mapEntries:
-    if key notin allowed: invalid("unexpected named argument: " & key)
+    if key notin allowed and namedRest.kind == vkNil:
+      invalid("unexpected named argument: " & key)
   var omittedPositional: seq[Value]
   for i in positional.listItems.len ..< parameters.listItems.len:
     omittedPositional.add newInt(i)

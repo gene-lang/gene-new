@@ -88,6 +88,14 @@ suite "callable reflection":
        (try (target args ...) false catch TypeError true)]
     """, "[#[\"wrong\"] true]"
 
+  test "named rest parameters describe and bind extra names":
+    reflectionCheck """
+      (fn f [x : Int ^opts... : Int] : Int opts/count)
+      (let s ($runtime/signature f))
+      (let b ($runtime/bind_shape s [1] {^count 2}))
+      [s/named_rest/name s/named_rest/type_known s/named_rest/type b/named/count]
+    """, "[\"opts\" true Int 2]"
+
   test "checked views describe their outer contract over opaque targets":
     reflectionCheck """
       (let checked : (Callable [Int Int...] Int ^named {^label Str?} ^errors []) +)

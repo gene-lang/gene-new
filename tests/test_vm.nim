@@ -4146,6 +4146,90 @@ suite "vm — namespaces":
     check run(cloneCompiledModule(module).chunk,
               newGlobalScope()).print() == "2"
 
+suite "vm — named rest and property spread":
+  test "named rest collects unmatched named arguments":
+    ck "(fn f [^attrs...] attrs) (f ^a 1 ^b 2)",
+       "{^a 1 ^b 2}"
+    ck "(fn f [^attrs...] attrs) (f)", "{}"
+    ck "(fn f [x ^attrs...] [x attrs]) (f 1 ^a 2)",
+       "[1 {^a 2}]"
+    ck "(fn f [^name ^attrs...] [name attrs]) (f ^name \"Ada\" ^role \"admin\")",
+       "[\"Ada\" {^role \"admin\"}]"
+    ck "(fn f [^attrs... body...] [attrs body]) (f ^a 1 \"p\" \"q\")",
+       "[{^a 1} [\"p\" \"q\"]]"
+
+  test "named rest annotations and defaults are enforced":
+    ck "(fn f [^opts... : Int] opts) (f ^a 1 ^b 2)", "{^a 1 ^b 2}"
+    ck "(fn f [^opts... : Int] opts) " &
+       "(try (f ^a \"bad\") catch TypeError \"type-error\")",
+       "\"type-error\""
+    expect GeneError: discard runStr("(fn f [^opts... = 1] opts)")
+    expect GeneError: discard runStr("(fn f [^a... ^b...] 1)")
+
+  test "single-argument and mixed call splices use the splice path":
+    ck "(fn f [^a] a) (let attrs {^a 42}) (f attrs...)", "42"
+    ck "(fn f [a ^opts...] [a opts]) (let attrs {^a 42}) (f 1 attrs...)",
+       "[1 {^a 42}]"
+    ck "(fn f [^a] a) (f {^a 42}...)", "42"
+
+  test "spread maps merge with last-wins replacement before binding":
+    ck "(fn take [^x : Int] : Int x) (let override {^x 2}) " &
+       "(take ^x \"discarded\" override...)", "2"
+    ck "(fn take [^x : Int] : Int x) " &
+       "(take ^x \"discarded\" {^x 2}...)", "2"
+    ck "(fn take [^x : Int] : Int x) (let checked : " &
+       "(Callable [] Int ^named {^x Int}) take) (let override {^x 2}) " &
+       "[(take ^x \"discarded\" override...) " &
+       " (checked ^x \"discarded\" override...)]",
+       "[2 2]"
+    ck "(fn take [^opts... : Int] opts) (let override {^x 2}) " &
+       "(take ^x \"discarded\" override...)", "{^x 2}"
+
+  test "spread expressions evaluate once even when overwritten":
+    ck "(var calls 0) (fn make [] (set calls (+ calls 1)) {^x 2}) " &
+       "(fn take [^x] x) [(take (make)...) calls]",
+       "[2 1]"
+    ck "(var calls 0) (fn make [] (set calls (+ calls 1)) \"bad\") " &
+       "(fn take [^x : Int] : Int x) (let override {^x 2}) " &
+       "[(take ^x (make) override...) calls]",
+       "[2 1]"
+    ck "(var calls 0) (fn make [] (set calls (+ calls 1)) (fail \"boom\")) " &
+       "(fn take [^x : Int] : Int x) (let override {^x 2}) " &
+       "[(try (take ^x (make) override...) catch Any \"caught\") calls]",
+       "[\"caught\" 1]"
+
+  test "general maps spread as named arguments and reject bad keys":
+    ck "(fn f [^a ^b] [a b]) (let m {{\"a\": 1 \"b\": 2}}) (f m...)",
+       "[1 2]"
+    ck "(fn f [^a] a) " &
+       "(try (f {{[1]: 2}}...) catch Any \"key-error\")",
+       "\"key-error\""
+
+  test "named rest works for messages and data construction":
+    ck "(type T ^props {}) " &
+       "(protocol P (message m [self ^opts...] : Any opts)) " &
+       "(impl P for T (message m [self ^opts...] : Any opts)) " &
+       "(let t (T)) (t .P:m ^a 1 ^b 2)",
+       "{^a 1 ^b 2}"
+    ck "(type D ^props {^a Int ^b Int}) (let attrs {^a 1 ^b 2}) " &
+       "(let d (D attrs...)) [d/a d/b]",
+       "[1 2]"
+    ck "(type C ^props {^a Int} " &
+       "(ctor [^opts...] (self .set_prop `a opts/a))) " &
+       "(let c (new C ^a 5)) c/a",
+       "5"
+
+  test "named rest survives GIR cloning":
+    let chunk = compileSource(
+      "(fn f [^attrs...] attrs) " &
+      "(let attrs {^a 1}) (f attrs...)")
+    let module = CompiledModule(identity: "test/named-rest",
+      chunk: chunk, macroExports: initTable[string, MacroDef](),
+      syntaxFnExports: @[], compileInterface: CompileNamespaceInterface(
+        entries: initTable[string, CompileInterfaceEntry]()))
+    check run(cloneCompiledModule(module).chunk,
+              newGlobalScope()).print() == "{^a 1}"
+
 suite "vm — env and eval":
   test "fexpr caller environments expose pooled frame parameters and locals":
     ck "(fn show! [e] (eval e ^in caller_env)) " &

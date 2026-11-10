@@ -163,6 +163,7 @@ version is a language compatibility promise.
 
 | Date | Change | Migration |
 | --- | --- | --- |
+| 2026-11-09 | Added property spread and named rest parameters: `^attrs...` collects unmatched named arguments, and `attrs...` spreads a map's entries into a call's named arguments. | A named rest binds a PropMap. A map spread contributes named arguments and a list spread positionals; a later value with the same name replaces an earlier one. General Maps are accepted as spread operands; Streams are not. |
 | 2026-11-09 | Added `(fn ns/member ...)` namespace extension declarations, dynamic `%` name segments, and `$ns`. | Static qualified declarations extend an existing namespace. Dynamic names are installed at runtime and do not create static call interfaces. The web profile supports static and module-literal names. |
 | 2026-11-01 | Added `$runtime/messages`, and a message's literal `@doc` now reaches its signature. | Use it to list what a receiver accepts. |
 | 2026-11-01 | Printing and `==` terminate on cyclic values, and `$freeze` and `$thaw` raise a catchable error. These previously overflowed the native stack and killed the process. | Printed cycles show `(cycle)` and, in a cyclic value only, repeated containers show `(seen)`. Acyclic values print as before. |

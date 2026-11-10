@@ -20,11 +20,20 @@ arguments run; message names may not end in `!`, and there is no lexical
 callable fallback.
 
 Call and `new` spreads merge the operand's anatomy: List elements become
-positionals, PropMap entries become named arguments, and a node contributes
-both props and body while dropping its head. A spliced prop replaces an
-earlier named value with the same key. Use `$body` explicitly when only a
-node's positional contents are wanted. Named properties must not disappear
-merely because a call uses a spread.
+positionals, PropMap and general Map entries become named arguments, and a node
+contributes both props and body while dropping its head. General Map keys must
+be symbols or strings. Streams are not spread operands. A spliced prop replaces
+an earlier named value with the same key; the effective final named set is what
+the callee binds and type-checks. Use `$body` explicitly when only a node's
+positional contents are wanted. Named properties must not disappear merely
+because a call uses a spread.
+
+A function may declare one named rest parameter, `^attrs...`. It receives a
+PropMap of named arguments that did not match an explicit named parameter, and
+it receives an empty PropMap when there are none. An optional annotation on a
+named rest applies to each captured value, not to the map itself. Positional
+rest parameters are independent, so `[^attrs... body...]` collects the two
+channels separately.
 
 ## Failed calls
 

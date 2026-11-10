@@ -213,6 +213,29 @@ A rest parameter ends in `...`. At a call site, `value ...` spreads its contents
 (total values ...) # 6
 ```
 
+A named rest parameter ends in `...` after the `^` marker and collects named
+arguments that did not match an explicit named parameter:
+
+```gene runnable
+(fn forward [^attrs... body...] : Any
+  [attrs body])
+(forward ^class "card" "hello")
+# [{^class "card"} ["hello"]]
+```
+
+```gene runnable
+(fn tag [^attrs...] : Any attrs)
+(let attrs {^class "card" ^id "main"})
+(tag attrs...)
+# {^class "card" ^id "main"}
+```
+
+The binder is a property map and is empty when no extra named arguments are
+supplied. A call-site map spread contributes named arguments; a list spread
+contributes positional arguments. A later named value replaces an earlier one
+with the same key, including a value introduced by a spread. A function
+without a named rest still rejects unmatched named arguments.
+
 Defaults run at call time and may refer to earlier parameters. For exact
 named-argument and callable-shape rules, see [calls](spec/calls.md) and
 [optional binding](spec/nil-void.md).

@@ -114,11 +114,13 @@ type
     hasDefault*: bool
     defaultSource*: Value
     defaultExpr*: WebExpr
+    namedRest*: bool
 
   WebFunction* = ref object
     sourceName*: string
     emittedName*: string
     params*: seq[WebParam]
+    namedRest*: WebParam
     returnType*: WebType
     body*: WebExpr
     loc*: SourceLoc
@@ -321,6 +323,7 @@ type
     ## call's props onto slots; a callee with no named parameter needs nothing
     ## beyond `params` and does not pay for the copy.
     namedParams: seq[WebParam]
+    namedRest: WebParam
     returnType: WebType
     callName: string
     valueName: string
@@ -1357,6 +1360,28 @@ proc parseParams(analysis: WebAnalysis, value: Value,
     let name = items[i]
     if name.kind != vkSymbol:
       raise webError(loc, "web parameters must be simple named bindings")
+    if named and name.symVal.endsWith("...") and name.symVal.len > 3:
+      let restName = name.symVal[0 ..< name.symVal.len - 3]
+      var j = i + 1
+      var typ = webType(wtkAny)
+      if j < items.len and items[j].isSym(":"):
+        if j + 1 >= items.len or items[j + 1].isSym("="):
+          raise webError(loc, "web named rest parameter '" & restName &
+            "' requires a type after ':'")
+        typ = if abstractSelf: analysis.parseAbstractAnnotation(items[j + 1], loc)
+              else: analysis.parseAnnotation(items[j + 1], loc)
+        j += 2
+      if j < items.len and items[j].isSym("="):
+        raise webError(loc, "web named rest parameter '" & restName &
+          "' cannot have a default")
+      result.add WebParam(sourceName: restName,
+                          emittedName: mangleWebName(restName), typ: typ,
+                          loc: loc, named: false, optional: false,
+                          argName: restName, namedRest: true)
+      i = j
+      continue
+    if name.symVal.endsWith("...") and not named:
+      raise webError(loc, "positional rest parameters are outside the web profile")
     var local = name.symVal
     var j = i + 1
     if named and j < items.len and items[j].kind == vkSymbol and
@@ -1458,11 +1483,17 @@ proc parseFunctionHeader(analysis: WebAnalysis, form: Value): WebFunction =
     raise webError(loc,
       "exported web function '" & form.body[0].symVal &
       "' requires a return annotation")
+  let parsed = parseParams(analysis, form.body[1], loc, allowNamed = true)
   result = WebFunction(sourceName: form.body[0].symVal,
                        emittedName: mangleWebName(form.body[0].symVal),
-                       params: parseParams(analysis, form.body[1], loc,
-                                           allowNamed = true),
                        returnType: analysis.parseAnnotation(form.body[3], loc), loc: loc)
+  for param in parsed:
+    if param.namedRest:
+      if result.namedRest.namedRest:
+        raise webError(loc, "duplicate web named rest parameter")
+      result.namedRest = param
+    else:
+      result.params.add param
   # `async` is not a syntactic property of one body — see `resolveAsync`.
   result.generator = webGeneratorMarker(form, loc)
 
@@ -2455,11 +2486,38 @@ proc requireType(analysis: WebAnalysis, loc: SourceLoc, actual,
         "use '=>' in the pipeline"
     raise webError(loc, message)
 
+proc analyzeCallableInvocation(analysis: WebAnalysis, value: Value,
+    callee: WebExpr, bindings: var Table[string, WebBinding], loc: SourceLoc): WebExpr
+
+proc callHasSpread(value: Value): bool =
+  var i = 0
+  while i < value.body.len:
+    let item = value.body[i]
+    if item.isSym("..."):
+      return true
+    if i + 1 < value.body.len and value.body[i + 1].isSym("..."):
+      return true
+    if item.kind == vkNode and item.head.isSym("...") and item.body.len == 1:
+      return true
+    if item.kind == vkSymbol and item.symVal.len > 3 and
+        item.symVal.endsWith("..."):
+      return true
+    inc i
+
 proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
                       bindings: var Table[string, WebBinding],
                       expected: WebType, sourceName: string,
                       signature: WebFunctionSig,
                       loc: SourceLoc): WebExpr =
+  if signature.namedRest.namedRest or callHasSpread(value):
+    let callee = WebExpr(kind: wekBinding, typ: webType(wtkAny), loc: loc,
+                         text: signature.valueName)
+    result = analysis.analyzeCallableInvocation(value, callee, bindings, loc)
+    result.typ = signature.returnType
+    if not signature.external and analysis.signatures.hasKey(sourceName):
+      analysis.callSites.add WebCallSite(expr: result, callee: sourceName,
+                                         caller: analysis.currentFunction)
+    return
   let positionalCount =
     if signature.namedParams.len == 0: signature.params.len
     else:
@@ -4944,7 +5002,7 @@ proc awaitsAtRuntime(expr: WebExpr): bool =
   ## `resolveAsync` has settled every call site.
   if expr == nil: return false
   if expr.kind in {wekAwait, wekScope}: return true
-  if expr.kind == wekCall and expr.boolValue: return true
+  if expr.kind in {wekCall, wekCallableCall} and expr.boolValue: return true
   for child in expr.children:
     if awaitsAtRuntime(child): return true
 
@@ -5278,9 +5336,11 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     for param in fn.params:
       paramTypes.add param.typ
       if param.named or param.optional: anyNamed = true
+    if fn.namedRest.namedRest: anyNamed = true
     analysis.signatures[fn.sourceName] = WebFunctionSig(
       params: paramTypes,
       namedParams: (if anyNamed: fn.params else: @[]),
+      namedRest: fn.namedRest,
       returnType: fn.returnType,
       callName: (if anyNamed or fn.checkedErrors: fn.emittedName else: "$gene_impl_" & fn.emittedName),
       valueName: fn.emittedName, generator: fn.generator and not anyNamed and not fn.checkedErrors,
@@ -5457,6 +5517,12 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
         analysis.currentNamespaceBinding = namespace.emittedName
     analysis.currentFunction = header.fn.sourceName
     analysis.analyzeParameterBindings(header.fn.params, bindings, allowAsync = true)
+    if header.fn.namedRest.namedRest:
+      let rest = header.fn.namedRest
+      if bindings.hasKey(rest.sourceName):
+        raise webError(rest.loc, "duplicate web parameter: " & rest.sourceName)
+      bindings[rest.sourceName] = WebBinding(typ: webType(wtkPropMap),
+        scopeId: analysis.bindingScopeId, emittedName: rest.emittedName)
     if header.fn.generator:
       if header.fn.returnType.kind != wtkStream:
         raise webError(header.fn.loc,
@@ -6036,9 +6102,10 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       emitter.line("const " & saved & " = " & emitter.emitExpr(expr.children[i]) & ";")
       args.add saved
     for flag in expr.patterns: splices.add(if flag.boolVal: "true" else: "false")
-    "$gene_invoke_callable(" & target & ", [" & args.join(", ") & "], {" &
+    let call = "$gene_invoke_callable(" & target & ", [" & args.join(", ") & "], {" &
       named.join(", ") & "}, " & emitter.emitExpr(expr.children[^1]) &
       ", [" & splices.join(", ") & "])"
+    if expr.boolValue: "await " & call else: call
   of wekBool: (if expr.boolValue: "true" else: "false")
   of wekStr: jsString(expr.text)
   of wekSym: "Symbol.for(" & jsString(expr.text) & ")"
@@ -7148,6 +7215,9 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
   for param in fn.params:
     let annotation = if emitter.typescript: ": " & tsType(param.typ) else: ""
     params.add param.emittedName & annotation
+  if fn.namedRest.namedRest:
+    params.add fn.namedRest.emittedName &
+      (if emitter.typescript: ": Record<string, any>" else: "")
   let returnAnnotation =
     if emitter.typescript: ": " & tsType(fn.returnType) else: ""
   let implementationReturn = if fn.generator and emitter.typescript:
@@ -7191,6 +7261,9 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
       else: ""
     wrapperParams.add param.emittedName &
       (if emitter.typescript and param.optional and fn.params[i .. ^1].allIt(it.optional): "?" else: "") & annotation
+  if fn.namedRest.namedRest:
+    wrapperParams.add fn.namedRest.emittedName &
+      (if emitter.typescript: ": Record<string, " & tsType(fn.namedRest.typ) & ">" else: "")
   let wrapperReturn = if fn.async and emitter.typescript:
                         ": Promise<" & tsType(fn.returnType) & ">"
                       else: returnAnnotation
@@ -7217,6 +7290,23 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
       emitter.line(param.emittedName & " = " & checked & ";")
     checkedArgs.add param.emittedName &
       (if emitter.typescript and (param.named or param.optional): " as " & tsType(param.typ) else: "")
+  if fn.namedRest.namedRest:
+    let rest = fn.namedRest
+    let restIndex = fn.params.len
+    emitter.line("if (arguments.length <= " & $restIndex & " || $gene_is_missing(" &
+      rest.emittedName & ")) " & rest.emittedName & " = {};")
+    emitter.line("else if (" & rest.emittedName & " === null || typeof " &
+      rest.emittedName & " !== \"object\" || Array.isArray(" & rest.emittedName &
+      ")) $gene_type_error(" & jsString(fn.sourceName & " argument " &
+      rest.sourceName) & ", \"PropMap\", " & rest.emittedName & ");")
+    if rest.typ.kind notin {wtkAny, wtkPropMap}:
+      emitter.line("for (const [" & rest.emittedName & "_key, " &
+        rest.emittedName & "_value] of Object.entries(" & rest.emittedName & ")) " &
+        rest.emittedName & "[" & rest.emittedName & "_key] = " &
+        validatorName(rest.typ) & "(" & rest.emittedName & "_value, " &
+        jsString(fn.sourceName & " named rest argument") & " + \" ^\" + " &
+        rest.emittedName & "_key);")
+    checkedArgs.add rest.emittedName
   for index, param in fn.params:
     if not param.named and not param.optional: continue
     emitter.line("if (" & omitted[index] & ") {")
@@ -7256,7 +7346,8 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
   emitter.line("Object.defineProperty(" & fn.emittedName &
     ", Symbol.for(\"gene.callable_shape\"), { value: { positionals: " &
     $positional & ", required: " & $required & ", names: [" & names.join(", ") & "], order: [" &
-    order.join(", ") & "] } });")
+    order.join(", ") & "], namedRest: " &
+    (if fn.namedRest.namedRest: "true" else: "false") & " } });")
   emitter.line()
 
 proc collectValidatorTypes(typ: WebType, types: var seq[WebType]) =
@@ -7568,6 +7659,7 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
   var types: seq[WebType]
   for fn in module.functions & module.defaultBodies:
     for param in fn.params: collectValidatorTypes(param.typ, types)
+    if fn.namedRest.namedRest: collectValidatorTypes(fn.namedRest.typ, types)
     for error in fn.errorTypes: collectValidatorTypes(error, types)
     collectValidatorTypes(fn.returnType, types)
   for extern in module.externs:
@@ -8223,13 +8315,30 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   inc emitter.indent
   emitter.line("const args" & arr & " = []; const named = Object.assign(Object.create(null), supplied);")
   emitter.line("const merge = (props" & a & ") => { for (const key of Object.keys(props)) { if (props[key] === undefined) delete named[key]; else named[key] = props[key]; } };")
-  emitter.line("for (let i = 0; i < parts.length; i++) { const part = parts[i]; if (!splices[i]) { args.push(part); } else if (Array.isArray(part)) { args.push(...part); } else if ($gene_is_node(part)) { merge(part.props); args.push(...part.body); } else if (part != null && Array.isArray(part.$gene_body)) { for (const key of Object.keys(part)) if (key !== \"$gene_body\") { if (part[key] === undefined) delete named[key]; else named[key] = part[key]; } args.push(...part.$gene_body); } else if (part != null && (Object.getPrototypeOf(part) === Object.prototype || Object.getPrototypeOf(part) === null)) { merge(part); } else { $gene_type_error(\"Callable spread\", \"List, Map, or Node\", part); } }")
+  emitter.line("for (let i = 0; i < parts.length; i++) { const part = parts[i]; if (!splices[i]) { args.push(part); } else if (Array.isArray(part)) { args.push(...part); } else if ($gene_is_node(part)) { merge(part.props); args.push(...part.body); } else if (part != null && Array.isArray(part.$gene_body)) { for (const key of Object.keys(part)) if (key !== \"$gene_body\") { if (part[key] === undefined) delete named[key]; else named[key] = part[key]; } args.push(...part.$gene_body); } else if (part != null && part.$gene_map === true) { for (const [key, value] of part) { const text = typeof key === \"symbol\" ? Symbol.keyFor(key) : key; if (typeof text !== \"string\") $gene_type_error(\"Callable spread key\", \"Sym or Str\", key); if (value === undefined) delete named[text]; else named[text] = value; } } else if (part != null && (Object.getPrototypeOf(part) === Object.prototype || Object.getPrototypeOf(part) === null)) { merge(part); } else { $gene_type_error(\"Callable spread\", \"List, Map, or Node\", part); } }")
   emitter.line("if (target != null && target[Symbol.for(\"gene.callable_view\")] === true) return target.invoke(args, named, site);")
   emitter.line("if (typeof target === \"function\") {")
   inc emitter.indent
   emitter.line("if (target.prototype && typeof target.prototype.$gene_validate === \"function\") return new target(named, args);")
   emitter.line("const shape = target[$gene_callable_shape];")
-  emitter.line("if (shape) { if (args.length < (shape.required ?? shape.positionals) || args.length > shape.positionals) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + shape.positionals + \" positional arguments\" }); for (const key of Object.keys(named)) if (!shape.names.includes(key)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument: \" + key }); return target(...shape.order.map((entry" & a & ") => typeof entry === \"number\" ? (entry < args.length ? args[entry] : $gene_missing) : Object.prototype.hasOwnProperty.call(named, entry) ? named[entry] : $gene_missing)); }")
+  emitter.line("if (shape) {")
+  inc emitter.indent
+  emitter.line("if (args.length < (shape.required ?? shape.positionals) || args.length > shape.positionals) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + shape.positionals + \" positional arguments\" }, [], true);")
+  emitter.line("const ordered" & arr & " = shape.order.map((entry" & a & ") => typeof entry === \"number\" ? (entry < args.length ? args[entry] : $gene_missing) : Object.prototype.hasOwnProperty.call(named, entry) ? named[entry] : $gene_missing);")
+  emitter.line("if (shape.namedRest) {")
+  inc emitter.indent
+  emitter.line("const extra" & a & " = Object.create(null);")
+  emitter.line("for (const key of Object.keys(named)) if (!shape.names.includes(key)) extra[key] = named[key];")
+  emitter.line("ordered.push(extra);")
+  dec emitter.indent
+  emitter.line("} else {")
+  inc emitter.indent
+  emitter.line("for (const key of Object.keys(named)) if (!shape.names.includes(key)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument: \" + key }, [], true);")
+  dec emitter.indent
+  emitter.line("}")
+  emitter.line("return target(...ordered);")
+  dec emitter.indent
+  emitter.line("}")
   emitter.line("if (Object.keys(named).length !== 0) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument\" });")
   emitter.line("if (args.length !== target.length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + target.length + \" positional arguments\" });")
   emitter.line("return target(...args);")
@@ -8339,7 +8448,7 @@ proc emitModule(module: WebModule, typescript: bool,
     for msg in impl.methods: needsOptional = needsOptional or msg.params.anyIt(it.optional)
   needsOptional = needsOptional or module.moduleAny(usesOptionalParameters)
   let needsMissing = needsCallable or needsOptional or moduleUsesExprKind(module, {wekMissing}) or
-    module.functions.anyIt(it.params.anyIt(it.named))
+    module.functions.anyIt(it.namedRest.namedRest or it.params.anyIt(it.named))
   if needsMissing:
     let a = if typescript: ": any" else: ""
     emitter.line("const $gene_missing" & a & " = Object.freeze({ [Symbol.for(\"gene.call.missing\")]: true });")
@@ -9780,6 +9889,9 @@ proc emitDeclarations(module: WebModule): string =
       params.add param.emittedName & (if param.optional and fn.params[i .. ^1].allIt(it.optional): "?" else: "") & ": " &
         (if param.named or param.optional: "(" & tsType(param.typ) & ") | undefined"
          else: tsType(param.typ))
+    if fn.namedRest.namedRest:
+      params.add fn.namedRest.emittedName & ": Record<string, " &
+        tsType(fn.namedRest.typ) & ">"
     result.add "export declare function " & fn.emittedName & "(" &
       params.join(", ") & "): " &
       (if fn.async: "Promise<" & tsType(fn.returnType) & ">"
@@ -9794,6 +9906,9 @@ proc emitDeclarations(module: WebModule): string =
         params.add param.emittedName & (if param.optional and fn.params[i .. ^1].allIt(it.optional): "?" else: "") & ": " &
           (if param.named or param.optional: "(" & tsType(param.typ) & ") | undefined"
            else: tsType(param.typ))
+      if fn.namedRest.namedRest:
+        params.add fn.namedRest.emittedName & ": Record<string, " &
+          tsType(fn.namedRest.typ) & ">"
       result.add "  " & mangleWebName(fn.sourceName.split('/')[^1]) & ": (" &
         params.join(", ") & ") => " &
         (if fn.async: "Promise<" & tsType(fn.returnType) & ">"
@@ -10394,9 +10509,13 @@ proc loadWebGraph(sourcePath: string,
         # own module, which is every call site that matters for an API — and
         # the call would fail on arity rather than on anything a reader could
         # act on.
+        var mappedRest = found.namedRest
+        if mappedRest.namedRest:
+          mappedRest.typ = remapType(mappedRest.typ, dependency, typeAliases)
         imported[selection.localName] = WebFunctionSig(
           params: paramTypes,
           namedParams: (if anyNamed: mappedParams else: @[]),
+          namedRest: mappedRest,
           returnType: remapType(found.returnType, dependency, typeAliases),
           callName: mangleWebName(selection.localName),
           valueName: mangleWebName(selection.localName),

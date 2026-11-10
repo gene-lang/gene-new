@@ -12,7 +12,7 @@ import ./[gir, printer, reader, types]
 # reusing the same bytecode slots, so that migration also advances the format.
 # Removing `void` (nil is the only absence value) changed the meaning of stored
 # constants, `Void` annotations and optional-path jumps, so it advanced it too.
-const GirArtifactFormat* = 42
+const GirArtifactFormat* = 43
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -495,6 +495,14 @@ proc validateUnlinkedFunction(fn: FunctionProto) =
   if fn.annotationSelfBits != 0 or fn.contractResolved or fn.signatureHadSelf or
       fn.builtinErrorMessage or fn.boundExecutionPolicy != nil:
     raise newException(ValueError, "executable GIR contains runtime-only invocation metadata")
+  if fn.namedRest.len > 0:
+    if fn.namedRestSlot < 0 or fn.namedRestSlot >= fn.localNames.len or
+        fn.localNames[fn.namedRestSlot] != fn.namedRest:
+      raise newException(ValueError,
+        "executable GIR contains an invalid named-rest slot")
+  elif fn.namedRestSlot != -1 and fn.namedRestSlot != 0:
+    raise newException(ValueError,
+      "executable GIR contains a named-rest slot without a binding")
 
 proc toJsonHook(chunk: Chunk,
                 options = initToJsonOptions()): JsonNode =
