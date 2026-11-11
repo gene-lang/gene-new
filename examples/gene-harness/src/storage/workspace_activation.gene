@@ -28,7 +28,7 @@
     (if (|| (!= live/active true) (!= (status_of h ($to_str id)) "ready")
             (&& ($present? entry/module_digest) (!= entry/module_digest live/options/digest)))
       (set reason $"${id} is not active at its requested revision")))
-  (if (&& ($absent? reason) (> ($size workspace/errors/.get) 0))
+  (if (&& ($absent? reason) (> ($map_size workspace/errors/.get) 0))
     (set reason "The desired composition contains quarantined entries"))
   (if_yes (&& ($absent? reason) ($present? readiness))
     (set reason (try (readiness) catch Any $err/message)))

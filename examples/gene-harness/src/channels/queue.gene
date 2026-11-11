@@ -307,7 +307,7 @@
     (let queue (require_queue state session))
     (if_not ($absent? queue/batch)
       (return {^kind "recover" ^batch (state/batches .get queue/batch)}))
-    (if (> ($size queue/holds) 0) (return {^kind "held"}))
+    (if (> ($map_size queue/holds) 0) (return {^kind "held"}))
     (if_yes ($present? members)
       (if (!= ($head members) List) (channel_error "invalid_request" "Batch members must be an ordered ID list."))
       (let seen {})

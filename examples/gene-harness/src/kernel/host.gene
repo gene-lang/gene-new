@@ -36,7 +36,7 @@
           (if (|| (!= ($head value) Str) (== value ""))
             (fail (HarnessError ^message "plugin requirement names must be nonempty strings")))))
       (elif (== ($head requirement) Map)
-        (if_not (&& (== ($size requirement) 1) (== ($head requirement/registry) Str)
+        (if_not (&& (== ($map_size requirement) 1) (== ($head requirement/registry) Str)
                     (!= requirement/registry ""))
           (fail (HarnessError ^message "registry requirement must be {^registry NAME}"))))
       (else

@@ -85,7 +85,7 @@
       (let next ($thaw ($freeze (stored_bindings_in candidate))))
       (change next)
       # Restoring the last override leaves no override, not an empty one.
-      (if (== ($size next) 0)
+      (if (== ($map_size next) 0)
         (then (candidate .delete "keyboard_bindings"))
         (else (candidate .put "keyboard_bindings" next)))
       (written .set candidate)))

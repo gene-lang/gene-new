@@ -305,12 +305,12 @@
       (if (&& ($present? (choice .get key)) ($present? (pins .get key))
               (!= (choice .get key) (pins .get key)))
         (fail (ServiceError ^code "invalid_request" ^message $"${key} is fixed by this host's launch or profile settings"))))
-    (if (> ($size choice) 0)
+    (if (> ($map_size choice) 0)
       (then
         (let base (effective_config service/runtime))
         (try (select_provider ^allow_unready true service/runtime (session_settings {^model_settings choice} base))
           catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message)))))
-    (update_session service/runtime/sessions session {^model_settings (if (== ($size choice) 0)
+    (update_session service/runtime/sessions session {^model_settings (if (== ($map_size choice) 0)
       (then nil) (else choice))})
     (choice_preview handle session choice))))
 

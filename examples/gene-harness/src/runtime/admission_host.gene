@@ -26,7 +26,7 @@
   (let selected (try (select_provider ^allow_unready true runtime
     (session_settings {^model_settings choice} base))
     catch Any
-      (if (&& (!= $err/code "not_ready") (> ($size choice) 0)) (return {^error $err/message}))
+      (if (&& (!= $err/code "not_ready") (> ($map_size choice) 0)) (return {^error $err/message}))
       {^reason $err/message}))
   (let warnings [])
   (if ($present? selected/reason) (warnings .push selected/reason))
