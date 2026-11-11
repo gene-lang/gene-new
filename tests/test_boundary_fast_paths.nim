@@ -187,6 +187,42 @@ suite "field writes by key id":
       (let c (C ^n 0)) (repeat i in 1000 (c .inc 1))
       c/n""", "1000"
 
+suite "a range in an inlined for loop":
+  const rangePrelude = """
+    (fn collect [r] (var out []) (for i in r (out .push i)) out)
+    """
+
+  test "the items a range yields":
+    fastCk rangePrelude & """
+      [(collect ($range 0 5)) (collect ($range 5 5)) (collect ($range 5 0))
+       (collect ($range 0 10 3)) (collect ($range 10 0 -3))
+       (collect ($range 1 4 1 true))]""",
+      "[[0 1 2 3 4] [] [] [0 3 6 9] [10 7 4 1] [1 2 3 4]]"
+
+  test "break, continue, return, nesting, and bindings in the body":
+    fastCk """
+      (fn sum_to [n] (var t 0) (for i in ($range 0 n) (set t (+ t i))) t)
+      (fn with_break [n] (var t 0) (for i in ($range 0 n) (if (> i 5) (break)) (set t (+ t i))) t)
+      (fn with_continue [n] (var t 0) (for i in ($range 0 n) (if (== (// i 2) 0) (continue)) (set t (+ t i))) t)
+      (fn nested [n] (var t 0) (for i in ($range 0 n) (for j in ($range 0 i) (set t (+ t j)))) t)
+      (fn body_var [n] (var out []) (for i in ($range 0 n) (var sq (* i i)) (out .push sq)) out)
+      (fn value_of [] (for i in ($range 0 3) i))
+      (fn returns_early [n] (for i in ($range 0 n) (if (== i 3) (return i))) -1)
+      (fn closures [] (var fs []) (for i in ($range 0 3) (fs .push (fn [] i))) (fs .map (fn [f] (f))))
+      [(sum_to 100000) (with_break 100) (with_continue 10) (nested 20)
+       (body_var 5) (value_of) (returns_early 10) (closures)]""",
+      "[4999950000 15 25 1140 [0 1 4 9 16] nil 3 [0 1 2]]"
+
+  test "values at the integer limits match the stream":
+    # The stream closes itself as it produces a value whose successor would
+    # overflow, which drops that value. The inlined loop keeps that.
+    fastCk rangePrelude & """
+      [(collect ($range 9223372036854775805 9223372036854775807 1 true))
+       (collect ($range -9223372036854775806 -9223372036854775808 -1 true))
+       (collect ($range 0 9223372036854775807 4611686018427387904))]""",
+      "[[9223372036854775805 9223372036854775806] " &
+      "[-9223372036854775806 -9223372036854775807] [0]]"
+
 suite "a List boundary with a scalar item type":
   const listPrelude = """
     (fn total [xs : (List Int)] ($size xs))

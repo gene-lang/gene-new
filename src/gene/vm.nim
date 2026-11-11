@@ -23234,6 +23234,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 "map_for expects a Map or a node, got " &
                 receiverDisplayType(stack[sp - 1]) &
                 "; use for for a list-like value")
+            if stack[sp - 1].kind == vkRange:
+              # A range is immutable and yields integers, so it needs neither
+              # a snapshot nor a stream: it stays where the snapshot would be,
+              # with its next value above it for opForInlineNext.
+              spush newInt(stack[sp - 1].rangeStart)
+              continue
             # A stream runs the frame loop over the same body, which closes it
             # on every exit: the opForEach after the inlined loop.
             ip = inst[].depth
@@ -23291,6 +23297,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             continue
         of opForInlineNext:
           # [snapshot, index] from opForInlineBegin are the top of the stack.
+          if stack[sp - 2].kind != vkList:
+            # [range, next value]. The values are those `pullRangeStream`
+            # delivers, in its order. That includes its treatment of a value
+            # whose successor would overflow: the stream closes itself as it
+            # produces that value, which drops it, so the loop ends before it
+            # here too.
+            let current = stack[sp - 1].intVal
+            let step = stack[sp - 2].rangeStep
+            if stack[sp - 2].rangeDone(current) or
+                not current.rangeCanAdvance(step):
+              ip = inst[].depth
+              continue
+            if inst[].names.len != 0:
+              scope.clearSlotRange(inst[].intArg + 1, inst[].names.len)
+            scope.redefineSlot(inst[].intArg, inst[].name, stack[sp - 1])
+            stack[sp - 1] = newInt(current + step)
+            continue
           let index = stack[sp - 1].intVal
           if index >= stack[sp - 2].listItems.len:
             ip = inst[].depth
