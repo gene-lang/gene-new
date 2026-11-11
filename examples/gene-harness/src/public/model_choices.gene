@@ -9,7 +9,7 @@
     (if (== preset/name name)
       (return {^provider preset/provider ^model preset/model ^effort (?? preset/effort "auto")})))
   (let matches [])
-  (for [key provider] in (?? catalog/providers {})
+  (map_for [key provider] in (?? catalog/providers {})
     (for model in (?? provider/models [])
       (if (|| (== model/id name) (== model/label name))
         (matches .push {^provider ($to_str key) ^model model/id ^effort effort}))))

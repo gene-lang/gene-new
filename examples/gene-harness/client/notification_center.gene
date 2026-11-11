@@ -10,11 +10,11 @@
 
 (fn update_center_count [center : NotificationCenter] : Nil
   (var count 0)
-  (for [key raw] in center/cards
+  (map_for [key raw] in center/cards
     (var card : QuestionCard raw)
     (if_yes (! card/element/hidden) (set count (+ count 1))))
   (var origins : PropMap {})
-  (for [key raw] in center/notices/items
+  (map_for [key raw] in center/notices/items
     (var item : Notice raw)
     (if_yes item/sticky
       (var session (qtext item/origin/session))
@@ -32,7 +32,7 @@
   (set section/hidden (== count 0)))
 
 (fn pending_for [center : NotificationCenter, session : Str] : Bool
-  (for [key payload] in center/questions/pending
+  (map_for [key payload] in center/questions/pending
     (if_yes (&& ($present? payload) (== (qtext payload/session) session)) (return true)))
   false)
 
@@ -64,7 +64,7 @@
       card/fields
       $"center/${card/session}"))
   (var completed : (List Any) [])
-  (for [key view] in center/questions/mounts
+  (map_for [key view] in center/questions/mounts
     (var slot ($to_str key))
     (var identity (qtext view/key))
     (if_yes (&& (str/starts_with? slot "pending/") ($absent? center/questions/pending/%identity))
@@ -76,7 +76,7 @@
     ($dom/remove target))
   (if_yes card/expanded
     (var current_batch (waiting_batch card/snapshot))
-    (for [key payload] in center/questions/pending
+    (map_for [key payload] in center/questions/pending
       (if_yes (&& ($present? payload) (== (qtext payload/session) card/session) (!= (qtext payload/batch_id) (qtext current_batch/id)))
         (var identity ($to_str key))
         (var editor : QuestionEditor center/questions/editors/%identity)
@@ -151,7 +151,7 @@
 (fn invalidate_questions [center : NotificationCenter, session : Str = ""] : Nil
   (set center/generation (+ center/generation 1))
   (var generation center/generation)
-  (for [key raw] in center/cards
+  (map_for [key raw] in center/cards
     (var card : QuestionCard raw)
     (if_yes (|| (== session "") (== session card/session))
       (set card/generation (+ card/generation 1))
@@ -161,12 +161,12 @@
     100.0
     (fn [] : Nil
       (if_yes (!= generation center/generation) (return))
-      (for [key raw] in center/cards
+      (map_for [key raw] in center/cards
         (var card : QuestionCard raw)
         (fetch_card center card)))))
 
 (fn center_sessions [center : NotificationCenter, sessions : (List Any), attention : (List Any)] : Nil
-  (for [key raw] in center/cards
+  (map_for [key raw] in center/cards
     (var card : QuestionCard raw)
     (set card/attention false))
   (for session in sessions
@@ -182,9 +182,9 @@
     (set card/attention true)
     (if_yes (|| card/stale ($absent? card/snapshot))
       (set card/waiting (== (qtext session/status) "waiting"))))
-  (for [key payload] in center/questions/pending
+  (map_for [key payload] in center/questions/pending
     (if_not ($absent? payload) (card_for center (qtext payload/session))))
-  (for [key raw] in center/cards
+  (map_for [key raw] in center/cards
     (var card : QuestionCard raw)
     (paint_card center card)))
 
@@ -201,12 +201,12 @@
   (paint_card center card))
 
 (fn center_locals [center : NotificationCenter] : Nil
-  (for [key raw] in center/locals
+  (map_for [key raw] in center/locals
     (if_yes ($absent? center/notices/items/%key)
       (var element : EventTarget raw/element)
       ($dom/remove element)
       (center/locals .delete key)))
-  (for [key raw] in center/notices/items
+  (map_for [key raw] in center/notices/items
     (var item : Notice raw)
     (var saved : Any center/locals/%key)
     (var element
@@ -275,7 +275,7 @@
 (fn toggle_center [center : NotificationCenter, open : Bool] : Nil
   (set center/open open)
   (if_not open
-    (for [key raw] in center/notices/items
+    (map_for [key raw] in center/notices/items
       (var item : Notice raw)
       (set item/center_hovered false)
       (set item/center_focused false)))
@@ -291,7 +291,7 @@
     (do
       (center/on_open)
       (center_locals center)
-      (for [key raw] in center/cards
+      (map_for [key raw] in center/cards
         (var card : QuestionCard raw)
         (fetch_card center card))
       ($dom/focus ($dom/element "close_notifications")))
@@ -300,7 +300,7 @@
 (fn center_ready [center : NotificationCenter, ready : Bool] : Nil
   (if_yes (== ready center/ready) (return))
   (set center/ready ready)
-  (for [key raw] in center/cards
+  (map_for [key raw] in center/cards
     (var card : QuestionCard raw)
     (paint_card center card)
     (fetch_card center card)))

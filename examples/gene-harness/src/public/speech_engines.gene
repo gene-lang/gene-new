@@ -27,7 +27,7 @@
   (let language (?? settings/language "en"))
   (let prompt (?? settings/context ""))
   (let parts [])
-  (for [name value] in {^language language ^prompt prompt ^response_format "json"}
+  (map_for [name value] in {^language language ^prompt prompt ^response_format "json"}
     (parts .push ($binary/from_str
       $"--${boundary}\r\nContent-Disposition: form-data; name=\"${name}\"\r\n\r\n${value}\r\n")))
   (parts .push ($binary/from_str

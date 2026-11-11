@@ -22,7 +22,7 @@
 (fn validate_model_settings [value]
   (if (!= ($head value) Map)
     (fail (ProviderError ^message "model_settings must be an inert map")))
-  (for [key field] in value
+  (map_for [key field] in value
     (if_not (["provider" "model" "effort"] .contains? ($to_str key))
       (fail (ProviderError ^message $"Unknown model setting ${key}")))
     (if (|| (!= ($head field) Str) (== ($str/trim field) ""))

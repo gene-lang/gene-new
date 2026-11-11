@@ -23,7 +23,7 @@
 
 (fn ^^private snapshot_registries [h : Harness]
   (let snapshot {})
-  (for [name registry] in h/registries/.get
+  (map_for [name registry] in h/registries/.get
     (let records [])
     (for record in registry/rows/.get
       (records .push
@@ -47,7 +47,7 @@
     (let plugins [])
     (let states ($cell nil))
     (let seen {})
-    (for [id plugin] in h/plugins/.get
+    (map_for [id plugin] in h/plugins/.get
       (seen .put id true)
       (let policy (h/plugin_policies/.get .get ($to_str id)))
       (plugins .push
@@ -73,7 +73,7 @@
               ^module_digest entry/module_digest
               ^error (h/workspace/errors/.get .get entry/id)}))))
     (let registry_owners {})
-    (for [name definition] in h/registries/.get
+    (map_for [name definition] in h/registries/.get
       (registry_owners .put name {^owner definition/owner ^revision definition/revision}))
     (let snapshot
       (publish_snapshot ^plugins plugins ^registry_owners registry_owners
@@ -86,7 +86,7 @@
 
 (fn ^^private clone_registries [h : Harness]
   (var out (fresh_map))
-  (for [name source] in h/registries/.get
+  (map_for [name source] in h/registries/.get
     (var cloned
       (Registry ^name source/name ^unique source/unique ^ordered source/ordered
         ^schema source/schema ^on_remove source/on_remove ^owner source/owner
@@ -97,13 +97,13 @@
 
 (fn ^^private clone_ledger [h : Harness]
   (var out (fresh_map))
-  (for [owner row_ids] in h/ledger/.get
+  (map_for [owner row_ids] in h/ledger/.get
     (out .put owner (copy_list row_ids)))
   out)
 
 (fn ^^private clone_row_index [h : Harness]
   (var out (fresh_map))
-  (for [row_id record] in h/row_index/.get
+  (map_for [row_id record] in h/row_index/.get
     (out .put row_id record))
   out)
 
@@ -320,10 +320,10 @@
   # Cordis stages every loader-owned activation revision. Remove their
   # discoverable rows from the candidate while old snapshot rows and effects
   # remain usable until their retirement tickets drain.
-  (for [id prior] in previous
+  (map_for [id prior] in previous
     (hide_owner_rows h ($to_str id)))
   (let departed_registries [])
-  (for [name registry] in h/registries/.get
+  (map_for [name registry] in h/registries/.get
     (if ($present? (previous .get registry/owner))
       (departed_registries .push ($to_str name))))
   (for name in departed_registries
@@ -334,8 +334,8 @@
   (if_not ($absent? prepare) (prepare))
   (var plugins (fresh_list))
   (var failed (fresh_list))
-  (for [id plugin] in h/plugins/.get (plugins .push plugin))
-  (for [id message] in h/plugin_errors/.get (failed .push ($to_str id)))
+  (map_for [id plugin] in h/plugins/.get (plugins .push plugin))
+  (map_for [id message] in h/plugin_errors/.get (failed .push ($to_str id)))
   # Reconcile the candidate before publishing its immutable registry view.
   # A rejected candidate leaves the previous registry tables and leases live.
   (var result
@@ -465,7 +465,7 @@
 (fn ^^private plugin_ids [h : Harness] : Any
   # Gene maps keep insertion order, so ids come back in install order.
   (var out (fresh_list))
-  (for [k v] in h/plugins/.get
+  (map_for [k v] in h/plugins/.get
     (out .push ($to_str k)))
   out)
 

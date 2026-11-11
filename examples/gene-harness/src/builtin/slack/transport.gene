@@ -94,13 +94,13 @@
     (if (&& account/enabled (! ($has_key? apps account/app))) (apps .put account/app account)))
   (let jobs transport/jobs/.get)
   (let remove [])
-  (for [app job] in jobs
+  (map_for [app job] in jobs
     (let name ($to_str app))
     (if_yes (!= job/account (apps .get name))
       job/task/.cancel job/task/.join
       (remove .push name)))
   (for id in remove (jobs .delete id))
-  (for [app account] in apps
+  (map_for [app account] in apps
     (let name ($to_str app))
     (if_not ($has_key? jobs name)
       (let task (spawn_owned transport "Slack Socket Mode" socket_loop [transport name account]))
@@ -132,6 +132,6 @@
   (let main transport/task/.get)
   (if_not ($absent? main) main/.cancel main/.join)
   (let jobs (transport/jobs .swap {}))
-  (for [id job] in jobs job/task/.cancel)
-  (for [id job] in jobs job/task/.join)
+  (map_for [id job] in jobs job/task/.cancel)
+  (map_for [id job] in jobs job/task/.join)
   nil)

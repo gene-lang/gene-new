@@ -15,7 +15,7 @@
 
 (fn appearance_tabs [runtime]
   (let result [])
-  (for [id value] in runtime/services/values/appearance/tabs/.get
+  (map_for [id value] in runtime/services/values/appearance/tabs/.get
     (result .push {^tab ($to_str id) ^saved value/saved ^rendered value/rendered}))
   result)
 

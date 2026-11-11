@@ -15,7 +15,7 @@
   (if (== ($head value) List)
     (then (for item in value (visit item callback)) (return nil)))
   (if (== ($head value) Map)
-    (then (for [key item] in value (visit item callback)) (return nil)))
+    (then (map_for [key item] in value (visit item callback)) (return nil)))
   (match value
     (when (node : Node)
       (if (["quote" "quasiquote"] .contains? ($to_str ($head value))) (return nil))

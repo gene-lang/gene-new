@@ -22,7 +22,7 @@
   (let owners (state/owners .swap {}))
   (let errors [])
   (if_not ($absent? state/client/.get)
-    (for [session present] in owners
+    (map_for [session present] in owners
       (try (close_session state/client/.get ($to_str session))
         catch Any (errors .push $err/message))))
   (if_not errors/.empty?

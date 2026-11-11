@@ -11,8 +11,8 @@
 
 (fn message_controls [inbox : ProducerInbox] : Nil
   (var local 0) (var remote 0)
-  (for [key item] in inbox/notices/items (set local (+ local 1)))
-  (for [key raw] in inbox/cards
+  (map_for [key item] in inbox/notices/items (set local (+ local 1)))
+  (map_for [key raw] in inbox/cards
     (var card : ProducerCard raw)
     (if_not card/element/hidden (set remote (+ remote 1)))
     (set card/clear/disabled (|| (! inbox/ready) inbox/clearing)))
@@ -214,7 +214,7 @@
   (if_yes (&& ($absent? action/function) ($absent? action/command))
     (post_action inbox request)
     (return))
-  (for [key pending] in inbox/pending
+  (map_for [key pending] in inbox/pending
     (if_yes (&& (== (qtext pending/request/notification) (qtext message/id)) (== (qtext pending/request/action) (qtext action/id)))
       (recover_action inbox ($to_str key) true)
       (return)))
@@ -338,7 +338,7 @@
           (activate_action inbox card/message action)))
       ($dom/append card/actions button))
     (set button/hidden false))
-  (for [key saved] in card/buttons
+  (map_for [key saved] in card/buttons
     (if_yes ($absent? action_ids/%key)
       (var button : EventTarget saved/element)
       (set button/hidden true)))
@@ -357,7 +357,7 @@
     (var id (qtext message/id))
     (set seen/%id true)
     (render_producer inbox message))
-  (for [key raw] in inbox/cards
+  (map_for [key raw] in inbox/cards
     (var card : ProducerCard raw)
     (if_yes ($absent? seen/%key) (set card/element/hidden true)))
   (var count : Int data/new_messages)
@@ -370,7 +370,7 @@
     (set inbox/epoch epoch)
     (set inbox/clearing false)
     (set inbox/revision -1)
-    (for [key raw] in inbox/cards
+    (map_for [key raw] in inbox/cards
       (var card : ProducerCard raw)
       (set card/revision 0)))
   (if_yes (== kind "notifications/state") (apply_inbox inbox data))
@@ -393,7 +393,7 @@
   (message_controls inbox)
   (if_yes reconnect
     (refresh_inbox inbox)
-    (for [key pending] in inbox/pending
+    (map_for [key pending] in inbox/pending
       (recover_action inbox ($to_str key) false))))
 
 (fn create_producer_inbox [notices : Notices, safe : Bool, api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil), changed : (Fn [Int] Nil), navigate : (Fn [Any] Nil), draft : (Fn [Str Str] Nil)] : ProducerInbox
@@ -406,7 +406,7 @@
     "click"
     (fn [event : Any] : Nil
       (var selected : (List Any) [])
-      (for [key raw] in inbox/cards
+      (map_for [key raw] in inbox/cards
         (var card : ProducerCard raw)
         (if_not card/element/hidden
           (selected .push {^id card/message/id ^revision card/message/revision})))

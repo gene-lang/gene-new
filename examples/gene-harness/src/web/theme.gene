@@ -37,7 +37,7 @@
 (fn css_name [name] : Str ($str/join ($str/split ($to_str name) "_") "-"))
 
 (fn merge_tokens [target, source]
-  (for [key value] in (?? source {}) (target .put (css_name key) value))
+  (map_for [key value] in (?? source {}) (target .put (css_name key) value))
   target)
 
 (fn resolve_theme [name : Str = "default", themes = builtin_themes, trail = []]
@@ -55,7 +55,7 @@
     # A child's shared choice wins over a mode-specific value in its parent.
     # The child's own mode map remains the most specific choice.
     (if_yes (!= mode "shared")
-      (for [key value] in (?? source/tokens/shared {})
+      (map_for [key value] in (?? source/tokens/shared {})
         (let name (css_name key))
         (if ($present? (result/tokens/%mode .get name)) (result/tokens/%mode .put name value))))
     (merge_tokens result/tokens/%mode source/tokens/%mode))
@@ -66,7 +66,7 @@
   (merge_tokens result/icons source/icons)
   (for face in (?? source/fonts [])
     (let prepared {})
-    (for [key value] in face (prepared .put (css_name key) value))
+    (map_for [key value] in face (prepared .put (css_name key) value))
     (if (&& (["default" "minimal"] .contains? name)
             (! ($str/starts_with? face/src "https:")) (! ($str/starts_with? face/src "/")))
       (prepared .put "src" ($web/font ($path/join this_pkg/root "assets" face/src))))
@@ -82,7 +82,7 @@
 
 (fn token_declarations [tokens]
   (let declarations [])
-  (for [name value] in tokens
+  (map_for [name value] in tokens
     (declarations .push (decl_value $"--${name}" value)))
   declarations)
 
@@ -112,7 +112,7 @@
 # a plugin replaces a single step with an ordinary rem value.
 (fn density_tokens [source]
   (let tokens {})
-  (for [key value] in source
+  (map_for [key value] in source
     (let name ($to_str key))
     (let scaled (|| ($str/starts_with? name "space-") (== name "control-height")))
     (let already_scaled (|| ($str/contains? value "--density") ($str/contains? value "var(--space-")
@@ -130,24 +130,24 @@
   (for key in ["field-surface" "sidebar-surface" "code-surface" "notice-surface" "message-user-surface"]
     (selected .put key true))
   (for source in [theme/tokens/light theme/tokens/dark]
-    (for [key value] in source (selected .put key true)))
+    (map_for [key value] in source (selected .put key true)))
   # Recompute shared aliases whose dependencies change with a mode. The page's
   # density steps remain inherited; a local --density never recomputes them.
   (var changed true)
   (while changed
     (set changed false)
-    (for [key value] in theme/tokens/shared
+    (map_for [key value] in theme/tokens/shared
       (let name ($to_str key))
       (if (|| (density_owned? name) ($present? (selected .get name))) (continue))
       (var dependent false)
-      (for [target ignored] in selected
+      (map_for [target ignored] in selected
         (let token ($to_str target))
         (if (density_owned? token) (continue))
         (if_yes (|| ($str/contains? value $"var(--${token})") ($str/contains? value $"var(--${token},"))
           (set dependent true) (break)))
       (if_yes dependent (selected .put name true) (set changed true))))
   (let tokens {})
-  (for [key ignored] in selected
+  (map_for [key ignored] in selected
     (let name ($to_str key))
     (if_not (density_owned? name)
       (tokens .put name (?? (theme/tokens/%mode .get name) (theme/tokens/shared .get name) "initial"))))
@@ -167,7 +167,7 @@
 
 (fn panel_scope [tokens, selector : Str] : Str
   (let derived {})
-  (for [name value] in tokens
+  (map_for [name value] in tokens
     (if (|| ($str/starts_with? value "var(--") ($str/starts_with? value "color-mix("))
       (derived .put name value)))
   # The lower bound prevents an outer mode from overriding a nested mode.
@@ -182,7 +182,7 @@
     (let tokens (mode_tokens theme mode))
     (let colors (resolved_tokens theme mode))
     (let global_values {})
-    (for [key value] in theme/tokens/%mode
+    (map_for [key value] in theme/tokens/%mode
       (if (density_owned? ($to_str key)) (global_values .put key value)))
     (nodes .push (rule (if (== mode "light") ":root:not([data-mode=dark])" ":root[data-mode=dark]") (token_declarations (density_tokens global_values))...))
     (let selector (if (== mode "light") ":root, [data-mode=\"light\"]" ":root[data-mode=\"dark\"], [data-mode=\"dark\"]"))
@@ -192,9 +192,9 @@
     (set scopes ($to_str scopes (panel_scope tokens
       (if (== mode "light") ":root:not([data-mode=dark]), [data-mode=light]" ":root[data-mode=dark], [data-mode=dark]")))))
   (let icons {})
-  (for [name svg] in theme/icons (icons .put $"icon-${name}" (svg_url svg)))
+  (map_for [name svg] in theme/icons (icons .put $"icon-${name}" (svg_url svg)))
   (nodes .push (rule ":root" (token_declarations icons)...))
-  (for [name svg] in theme/icons
+  (map_for [name svg] in theme/icons
     (nodes .push (rule $".icon[data-icon=\"${name}\"]" (decl_value "--icon" $"var(--icon-${name})"))))
   (for node in (font_nodes theme) (nodes .push node))
   (let narrow (narrow_breakpoint theme))
@@ -239,17 +239,17 @@
 
 (fn alias_font_value [value : Str, aliases] : Str
   (var result value)
-  (for [family alias] in aliases
+  (map_for [family alias] in aliases
     (set result ($regex/replace_all (font_alias_pattern ($to_str family)) result alias)))
   result)
 
 (fn preview_font_tokens [values, aliases]
   (let tokens ($thaw ($freeze values)))
-  (if (== ($size aliases) 0) (return tokens))
+  (if (== ($map_size aliases) 0) (return tokens))
   (for name in ["font-sans" "font-mono" "font-display"]
     (let value (try (color_value values name) catch Any (?? (values .get name) "")))
     (tokens .put name (alias_font_value value aliases)))
-  (for [key value] in values
+  (map_for [key value] in values
     (if ($str/starts_with? ($to_str key) "type-")
       (tokens .put key (alias_font_value value aliases))))
   tokens)
@@ -274,7 +274,7 @@
       (decl_value "color-scheme" mode) (token_declarations (preview_font_tokens (density_tokens (resolved_tokens theme mode)) aliases))...))
     (set scopes ($to_str scopes (panel_scope (mode_tokens theme mode) $"${scope} [data-mode=\"${mode}\"]"))))
   (let icons {})
-  (for [name svg] in theme/icons (icons .put $"icon-${name}" (svg_url svg)))
+  (map_for [name svg] in theme/icons (icons .put $"icon-${name}" (svg_url svg)))
   (nodes .push (rule scope (token_declarations icons)...))
   (let preview_faces [])
   (for face in theme/fonts

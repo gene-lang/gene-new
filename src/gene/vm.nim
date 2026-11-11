@@ -7058,13 +7058,22 @@ proc isIndexedNode(v: Value): bool =
 proc indexedItemsView(v: Value): Value =
   ## A snapshot of the items an IndexRead type exposes. This is deliberately
   ## separate from the raw node body: patterns and spread keep reading `body`.
+  ## The size witness runs once; every position is then read through the
+  ## already-resolved `at` witness.
   let sizeFn = v.head.readyCoreWitness(cvSize)
   let atFn = v.head.readyCoreWitness(cvAt)
+  if atFn.kind == vkNil:
+    raise newException(GeneError,
+      "IndexRead requires at for " & v.head.typeName)
   let count = indexReadSize(v, sizeFn)
-  var items = newSeqOfCap[Value](int(count.intVal))
+  if not count.intFitsInt64 or count.intVal > int64(high(int)):
+    raise newException(GeneError,
+      "IndexRead:size result is too large to snapshot for " & v.head.typeName)
+  let n = int(count.intVal)
+  var items = newSeqOfCap[Value](n)
   var i = 0
-  while i < int(count.intVal):
-    let item = readIndexedValue(v, newInt(i))
+  while i < n:
+    let item = invokeIndexedWitness(atFn, [v, newInt(i)], "IndexRead:at")
     items.add(if item.isMissing: NIL else: item)
     inc i
   newList(items, immutable = v.nodeImmutable)
@@ -7588,42 +7597,55 @@ proc requireNode(name: string, value: Value) =
 proc biListSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("size", args)
   let scope = if call == nil: nil else: call.dispatchScope
-  let resolved = resolveListFamily("size", args[0], [], scope)
-  if resolved.handled: return resolved.value
+  let runningOp = builtinBinding(scope, "size")
+  let direct = typeDirectOverride("size", args[0], [], scope, runningOp)
+  if direct.handled: return direct.value
   if args[0].kind == vkNode:
-    let sizeFn = args[0].head.readyCoreWitness(cvSize)
-    return indexReadSize(args[0], sizeFn)
-  case resolved.source.kind
+    if isIndexedNode(args[0]):
+      return indexReadSize(args[0], args[0].head.readyCoreWitness(cvSize))
+    raiseMessageError("size", receiverDisplayType(args[0]), scope,
+                      nodeViewHint = true)
+  if args[0].kind in {vkMap, vkHashMap}:
+    raiseMessageError("size", receiverDisplayType(args[0]), scope,
+                      familyHint = "use $map_size for a Map's entries")
+  case args[0].kind
   of vkList:
-    newInt(resolved.source.listItems.len)
+    newInt(args[0].listItems.len)
   of vkSet:
-    newInt(resolved.source.setItems.len)
+    newInt(args[0].setItems.len)
   of vkBytes:
-    newInt(resolved.source.bytesVal.len)
+    newInt(args[0].bytesVal.len)
   else:
     raise newException(GeneError,
       "size expects a list-like value, got " &
-      receiverDisplayType(resolved.source))
+      receiverDisplayType(args[0]))
 
 proc biListEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("empty?", args)
   let scope = if call == nil: nil else: call.dispatchScope
-  let resolved = resolveListFamily("empty?", args[0], [], scope)
-  if resolved.handled: return resolved.value
+  let runningOp = builtinBinding(scope, "empty?")
+  let direct = typeDirectOverride("empty?", args[0], [], scope, runningOp)
+  if direct.handled: return direct.value
   if args[0].kind == vkNode:
-    let sizeFn = args[0].head.readyCoreWitness(cvSize)
-    return newBool(indexReadSize(args[0], sizeFn).intIsZero)
-  case resolved.source.kind
+    if isIndexedNode(args[0]):
+      return newBool(indexReadSize(args[0],
+        args[0].head.readyCoreWitness(cvSize)).intIsZero)
+    raiseMessageError("empty?", receiverDisplayType(args[0]), scope,
+                      nodeViewHint = true)
+  if args[0].kind in {vkMap, vkHashMap}:
+    raiseMessageError("empty?", receiverDisplayType(args[0]), scope,
+                      familyHint = "use $map_empty? for a Map's entries")
+  case args[0].kind
   of vkList:
-    newBool(resolved.source.listItems.len == 0)
+    newBool(args[0].listItems.len == 0)
   of vkSet:
-    newBool(resolved.source.setItems.len == 0)
+    newBool(args[0].setItems.len == 0)
   of vkBytes:
-    newBool(resolved.source.bytesVal.len == 0)
+    newBool(args[0].bytesVal.len == 0)
   else:
     raise newException(GeneError,
       "empty? expects a list-like value, got " &
-      receiverDisplayType(resolved.source))
+      receiverDisplayType(args[0]))
 
 proc biListFirst(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("first", args)
@@ -17322,7 +17344,8 @@ proc cloneSuperChunk(chunk: Chunk, owner: FunctionProto,
   for i, body in chunk.subchunks:
     result.subchunks[i] = cloneSuperChunk(body, childOwner(body), cloned)
   for i, loop in chunk.forLoops:
-    result.forLoops[i] = ForProto(pattern: loop.pattern, reuseScope: loop.reuseScope,
+    result.forLoops[i] = ForProto(pattern: loop.pattern,
+      reuseScope: loop.reuseScope, mapFamily: loop.mapFamily,
       body: cloneSuperChunk(loop.body, childOwner(loop.body), cloned))
   for i, match in chunk.matches:
     var clauses: seq[MatchClause]

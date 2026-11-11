@@ -27,7 +27,7 @@
     (let table (state .get name))
     (if ($absent? table) (continue))
     (let remove [])
-    (for [id record] in table
+    (map_for [id record] in table
       (if (&& (== name "outbox") (== record/intent/mode "thread") (!= record/linked true)) (continue))
       (if (&& (== name "controls") (!= record/state "done")) (continue))
       (if (! (["ignored" "denied" "handed_off" "consumed" "discarded" "admitted"

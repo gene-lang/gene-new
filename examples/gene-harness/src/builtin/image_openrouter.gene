@@ -99,7 +99,7 @@
 
 (fn routing_options [options]
   (if (!= ($head options) Map) (image_error "invalid_configuration" "generator_options must be a map."))
-  (for [key value] in options
+  (map_for [key value] in options
     (if_not (["only" "allow_fallbacks"] .contains? ($to_str key))
       (image_error "invalid_configuration" "OpenRouter image options support only only and allow_fallbacks.")))
   (let only (?? options/only []))
@@ -213,7 +213,7 @@
     (if ($absent? call/candidate) "" ($to_str "\nRefine the final reference image. Revision:\n" call/revision))))
   (let body {^model settings/model ^prompt prompt ^n 1 ^provider settings/routing})
   (if (!= settings/send_output_format false) (body .put "output_format" "png"))
-  (for [key value] in (?? settings/size_parameters {^size settings/size})
+  (map_for [key value] in (?? settings/size_parameters {^size settings/size})
     (body .put key value))
   (if settings/send_background (body .put "background" settings/background))
   (let references ($thaw ($freeze call/reference_images)))

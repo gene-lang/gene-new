@@ -32,7 +32,7 @@
 
 (fn appearance_answer [saved, themes = builtin_themes]
   (let rendered ($thaw ($freeze defaults)))
-  (for [name value] in saved (rendered .put name value))
+  (map_for [name value] in saved (rendered .put name value))
   (if ($absent? (themes .get rendered/theme)) (rendered .put "theme" "default"))
   # Invalid inheritance falls back too, without replacing the saved choice.
   (let assets (active_theme_assets rendered/theme themes))
@@ -68,7 +68,7 @@
     (return (response 200 (appearance_answer saved (installed_themes runtime safe)))))
   (let changes (validate_fields (request_data request)))
   (let merged ($thaw ($freeze saved)))
-  (for [name value] in changes (merged .put name value))
+  (map_for [name value] in changes (merged .put name value))
   (let result (response 200 (appearance_answer merged (installed_themes runtime safe))))
   (if_yes (!= saved merged)
     (result/headers .put "set-cookie" $"${cookie_name}=${(encode_saved merged)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")

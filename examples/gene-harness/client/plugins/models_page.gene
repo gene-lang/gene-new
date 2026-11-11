@@ -239,7 +239,7 @@
   (var previous_provider ($dom/input_value provider_input))
   (var first_provider "") (var retained_provider false)
   ($dom/clear provider_input)
-  (for [key entry] in providers
+  (map_for [key entry] in providers
     (var provider ($to_str key))
     (if_yes (== first_provider "") (set first_provider provider))
     (if_yes (== provider previous_provider) (set retained_provider true))
@@ -338,7 +338,7 @@
   (var pending (|| (flag catalog/refreshing)
     (&& (!= page/await_revision "") (== page/await_revision (text catalog/id)))))
   (var providers : PropMap catalog/providers)
-  (for [name entry] in providers
+  (map_for [name entry] in providers
     (if_yes ($str/starts_with? (text entry/connection/reason) "Checking") (set pending true)))
   (if (&& pending (< page/poll 30))
     (then

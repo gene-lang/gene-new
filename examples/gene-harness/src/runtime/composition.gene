@@ -12,7 +12,7 @@
   (if (== ($head value) Map)
     (then
       (let copied {})
-      (for [key item] in value
+      (map_for [key item] in value
         (copied .put key (immutable_view item)))
       (return ($freeze_shallow copied))))
   (if (== ($head value) List)
@@ -188,7 +188,7 @@
   (if_not state/closing/.get
     (for live in current/instances
       (if (== live instance) (return true))))
-  (for [id counter] in state/counts/.get
+  (map_for [id counter] in state/counts/.get
     (if (> counter/.load 0)
       (then
         (let snapshot (state/snapshots .get; .get id))
@@ -217,7 +217,7 @@
   (for retirement in ready (state/retire retirement/ticket))
   (let expired [])
   (let current state/current/.get)
-  (for [id counter] in state/counts/.get
+  (map_for [id counter] in state/counts/.get
     (if (&& (== counter/.load 0) (!= ($to_str id) ($to_str current/id)))
       (expired .push id)))
   (for id in expired
@@ -227,7 +227,7 @@
 
 (fn begin_close_composition_state [state : CompositionState]
   (if state/closed/.get (return nil))
-  (for [id counter] in state/counts/.get
+  (map_for [id counter] in state/counts/.get
     (if (> counter/.load 0)
       (then
         (let held ($map ($filter state/leases/.get

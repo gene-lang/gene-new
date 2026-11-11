@@ -47,7 +47,7 @@
     (var focused : Str "")
     (for id in ["session_filter" "kind_filter" "status_filter" "trigger_filter" "since_filter" "until_filter"]
       (if_yes ($dom/focused? ($dom/element id)) (set focused id)))
-    (for [name raw] in state/widgets
+    (map_for [name raw] in state/widgets
       (var widget : EventTarget raw)
       ($dom/append state/pool widget))
     ($dom/clear state/target)

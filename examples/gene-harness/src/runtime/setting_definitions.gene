@@ -31,7 +31,7 @@
   (if_not ($absent? value/uses)
     (if (!= ($head value/uses) Map)
       (fail (ServiceError ^code "invalid_request" ^message "Decision ^uses is a map from use id to an engine entry.")))
-    (for [use entry] in value/uses
+    (map_for [use entry] in value/uses
       (require_entry entry $"The ${use} entry")
       (if ($absent? entry/engine)
         (fail (ServiceError ^code "invalid_request" ^message $"The ${use} entry needs an ^engine.")))))

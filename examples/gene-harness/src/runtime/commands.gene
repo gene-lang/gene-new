@@ -245,7 +245,7 @@
         {^name entry/0 ^usage entry/1 ^doc entry/2 ^run entry/3 ^^raw_input}))))
 
 (fn command_session_busy? [manager, session : Str]
-  (for [key task] in manager/active/.get
+  (map_for [key task] in manager/active/.get
     (if ($str/starts_with? ($to_str key) $"${session}:") (return true)))
   (let mode (manager/modes/states/.get .get session))
   (if_not ($absent? mode/running) (return true))
@@ -570,9 +570,9 @@ Stopped."""))))
 (fn quiesce_command_manager [manager]
   (manager/accepting .set false)
   (if_not ($absent? manager/modes) (close_input_modes manager/modes))
-  (for [id task] in manager/active/.get
+  (map_for [id task] in manager/active/.get
     task/.cancel)
-  (for [id watcher] in manager/watchers/.get
+  (map_for [id watcher] in manager/watchers/.get
     watcher/.join)
   nil)
 

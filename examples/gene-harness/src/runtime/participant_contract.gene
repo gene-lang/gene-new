@@ -11,7 +11,7 @@
 (fn freeze_bindings [value]
   (if (!= ($head value) Map) (return (freeze_turn_data value)))
   (let out {})
-  (for [key item] in value
+  (map_for [key item] in value
     (out .put ($to_str key) (if ($runtime/callable? item) item (freeze_bindings item))))
   ($freeze_shallow out))
 (type ParticipantCommit ^props {^items Any})
@@ -69,7 +69,7 @@
   (let seen {})
   (for item in value
     (if (!= ($head item) Map) (contract_error name phase "A request item must be a map."))
-    (for [key field] in item
+    (map_for [key field] in item
       (if_not (["id" "value" "source" "settled"] .contains? ($to_str key))
         (contract_error name phase $"Unknown request item field ${key}.")))
     (if (|| (!= ($head item/id) Str)
@@ -101,7 +101,7 @@
     (then
       (if ($absent? value) (return nil))
       (if (!= ($head value) Map) (contract_error name phase "Outcome validation must return a verdict map or nil."))
-      (for [key field] in value
+      (map_for [key field] in value
         (if_not (["error" "request_items" "defer_done"] .contains? ($to_str key))
           (contract_error name phase $"Unknown validation verdict field ${key}.")))
       (if (&& ($present? value/error)

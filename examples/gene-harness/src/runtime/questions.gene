@@ -81,7 +81,7 @@
 (fn submitted_digest [values, dismiss : Bool] : Str
   (let names [])
   (if (== ($head values) Map)
-    (for [key value] in values (names .push ($to_str key))))
+    (map_for [key value] in values (names .push ($to_str key))))
   (let pairs [])
   (for key in ($order/sort names) (pairs .push [key (values .get key)]))
   ($crypto/sha256 ($serde/write_data {^answers pairs ^dismiss dismiss})))
@@ -91,7 +91,7 @@
     (fail (QuestionError ^message "answers must be a map")))
   (let ids {})
   (for question in questions (ids .put question/id true))
-  (for [id value] in values
+  (map_for [id value] in values
     (if ($absent? (ids .get id))
       (fail (QuestionError ^message $"unknown question ${id}"))))
   (let answers {})

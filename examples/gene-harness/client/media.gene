@@ -159,7 +159,7 @@
 (fn start_upload [media : MediaComposer] : Nil
   (if_yes media/working (return))
   (var next : Any nil)
-  (for [session items] in media/drafts
+  (map_for [session items] in media/drafts
     (var entries : (List Any) items)
     (for item in entries
       (var state : Str item/state)

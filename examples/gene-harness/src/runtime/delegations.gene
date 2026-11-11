@@ -45,7 +45,7 @@
 
 (fn parent_admissions [parent, ^round round = nil]
   (let result [])
-  (for [id record] in parent/records
+  (map_for [id record] in parent/records
     (for admission in record/admissions
       (if (|| ($absent? round) (== admission/owner_round round))
         (result .push admission))))
@@ -58,7 +58,7 @@
 
 (fn checkpoint_delegations [service, parent, ^changed changed = []]
   (save_delegation_parent service/runtime parent ^changed changed)
-  (for [id record] in parent/records
+  (map_for [id record] in parent/records
     (service/children .put record/session {^parent parent/session ^id id}))
   (if_not ($absent? service/checkpoint) (service/checkpoint "saved" parent/session))
   parent)
@@ -200,7 +200,7 @@
     (let parent (service/parents .get session))
     (if ($absent? parent) (return []))
     (let items [])
-    (for [id record] in parent/records
+    (map_for [id record] in parent/records
       (for admission in record/admissions
         (if (&& (!= admission/owner_round round) (! (&& carry (== admission/carry true)))) (continue))
         (if (&& (terminal_delegation? admission/state) (!= admission/seen true))
@@ -503,7 +503,7 @@
 
 (fn pending_items_unlocked [service, parent, round : Str, turn : Int]
   (let items [])
-  (for [id record] in parent/records
+  (map_for [id record] in parent/records
     (for admission in record/admissions
       (if (!= admission/owner_round round) (continue))
       (if (&& (terminal_delegation? admission/state) (!= admission/seen true))
@@ -537,8 +537,8 @@
     (if (== event/type "turn/response") (responded .put ($to_str event/payload/turn) true)))
   (var changed false)
   (let by_source (admissions_by_source parent))
-  (for [round owner] in parent/rounds
-    (for [turn sources] in (?? owner/requests {})
+  (map_for [round owner] in parent/rounds
+    (map_for [turn sources] in (?? owner/requests {})
       (if_not (== (responded .get ($to_str turn)) true) (continue))
       (for source in sources
         (let admission (by_source .get source))
@@ -561,7 +561,7 @@
     (if (|| (! (terminal_delegation? admission/state)) (!= admission/outbox_queued true))
       (reconcile_child service parent admission)))
   (if recovering (restore_seen_results service parent))
-  (for [round owner] in parent/rounds
+  (map_for [round owner] in parent/rounds
     (if owner/closed (continue))
     (let receipt (service/callbacks/owner parent/session ($to_str round)))
     (if_yes (|| ($absent? receipt) (terminal_delegation? receipt/state)
@@ -583,7 +583,7 @@
 
 (fn running_delegations [service, parent_session : Str, round : Str]
   (var total 0) (var own 0)
-  (for [session parent] in service/parents
+  (map_for [session parent] in service/parents
     (for admission in (parent_admissions parent)
       (if (&& (!= admission/state "running")
               (! (service/callbacks/active admission/session admission/request_id))) (continue))
@@ -596,7 +596,7 @@
   (if (|| service/stopping/.get service/runtime/stopping/.get) (return nil))
   (let limits (delegation_limits (effective_config service/runtime)))
   (let queue [])
-  (for [session parent] in service/parents
+  (map_for [session parent] in service/parents
     (for admission in (parent_admissions parent)
       (if (== admission/state "queued")
         (queue .push {^parent parent ^admission admission}))))
@@ -655,7 +655,7 @@
   (service/gate (fn []
     (service/inbox .set [])
     (let removed [])
-    (for [session parent] in service/parents
+    (map_for [session parent] in service/parents
       (if ($absent? (service/runtime/sessions/index/.get .get ($to_str session)))
         (then (removed .push ($to_str session)))
         (else
@@ -664,7 +664,7 @@
     (for session in removed
       (remove_delegation_parent service/runtime session)
       (let parent (service/parents .get session))
-      (for [id record] in parent/records (service/children .delete record/session))
+      (map_for [id record] in parent/records (service/children .delete record/session))
       (service/parents .delete session))
     (dispatch_delegations service)))
   nil)
@@ -726,7 +726,7 @@
   (for session in (delegation_parent_sessions runtime)
     (if_not ($absent? (runtime/sessions/index/.get .get session))
       (let parent (delegation_parent service session))
-      (for [id record] in parent/records
+      (map_for [id record] in parent/records
         (service/children .put record/session {^parent session ^id ($to_str id)}))))
   (hosts/.get .push service)
   service)
@@ -764,9 +764,9 @@
   (if ($absent? service) (return nil))
   (service/stopping .set true)
   (service/gate (fn []
-    (for [session parent] in service/parents
+    (map_for [session parent] in service/parents
       (with_session_gate service/runtime/sessions $"round/${session}" (fn []
-        (for [round owner] in parent/rounds
+        (map_for [round owner] in parent/rounds
           (if owner/closed (continue))
           (let receipt (service/callbacks/owner parent/session ($to_str round)))
           (if (|| ($absent? receipt) (== receipt/state "running"))
@@ -814,7 +814,7 @@
     (let parent (service/parents .get session))
     (if ($absent? parent) (return {^records [] ^recovery nil}))
     (let records [])
-    (for [id record] in parent/records
+    (map_for [id record] in parent/records
       (for admission in record/admissions
         (let data (public_delegation service record admission))
         (data .delete "result")
@@ -825,7 +825,7 @@
             (data .put "reply" ($str/join ($take ($graphemes text) 2048) ""))))
         (records .push data)))
     (var recovery nil)
-    (for [round owner] in parent/rounds
+    (map_for [round owner] in parent/rounds
       (if (&& owner/hold (! owner/closed))
         (set recovery {^round ($to_str round) ^children (?? owner/cutoff [])})))
     {^records records ^recovery recovery})))

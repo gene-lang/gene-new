@@ -11,7 +11,7 @@
 (fn model_choice_options [snapshot]
   (let options [])
   (var complete true)
-  (for [key entry] in (?? snapshot/providers {})
+  (map_for [key entry] in (?? snapshot/providers {})
     (let provider ($to_str key))
     (let ready (== entry/connection/state "ready"))
     (if (|| (! ready) (== entry/stale true)) (set complete false))
@@ -59,7 +59,7 @@
 
 (fn providers_section [snapshot]
   (let rows [])
-  (for [key entry] in (?? snapshot/providers {})
+  (map_for [key entry] in (?? snapshot/providers {})
     (let name ($to_str key))
     (let connection (?? entry/connection {}))
     (let count ($size (?? entry/models [])))

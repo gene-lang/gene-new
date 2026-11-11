@@ -98,7 +98,7 @@
 
 (fn validate_definition [input, now]
   (if (!= ($head input) Map) (invalid "Trigger definition must be an inert map"))
-  (for [key value] in input
+  (map_for [key value] in input
     (if_not (["id" "kind" "request" "every_ms" "at" "cron" "timezone" "missed" "overlap"
       "continue_session" "enabled" "retention" "model_settings" "tags" "docs" "doc"] .contains? ($to_str key))
       (invalid $"Unknown trigger field ${key}")))
@@ -107,7 +107,7 @@
   (if_not (["heartbeat" "scheduled" "cron"] .contains? definition/kind) (invalid "Invalid trigger kind"))
   (if (|| (!= ($head definition/request) Str) (== ($str/trim definition/request) ""))
     (invalid "A trigger needs a request"))
-  (for [key default] in {^missed "skip" ^overlap "skip" ^!continue_session ^^enabled}
+  (map_for [key default] in {^missed "skip" ^overlap "skip" ^!continue_session ^^enabled}
     (if ($absent? (definition .get key)) (definition .put key default)))
   (if_not (["skip" "once"] .contains? definition/missed) (invalid "Invalid missed policy"))
   (if_not (["skip" "queue_one"] .contains? definition/overlap) (invalid "Invalid overlap policy"))
@@ -153,7 +153,7 @@
 
 (fn update_trigger [s, id : Str, changes]
   (if (!= ($head changes) Map) (invalid "Trigger changes must be an inert map"))
-  (for [key value] in changes
+  (map_for [key value] in changes
     (if (!= ($to_str key) "model_settings") (invalid $"Unknown trigger update field ${key}")))
   (s/gate (fn []
     (let stored (s/host .PluginHost:record definition_kind id))
@@ -187,7 +187,7 @@
 
 (fn list_occurrences [s, ^trigger trigger = nil, ^active active : Bool = false]
   (let result [])
-  (for [id occurrence] in (occurrence_map s)
+  (map_for [id occurrence] in (occurrence_map s)
     (if (&& active (! (["due" "started"] .contains? occurrence/state))) (continue))
     (if (|| ($absent? trigger) (== occurrence/trigger trigger)) (result .push occurrence)))
   ($order/sort_by result (fn [occurrence] occurrence/at_ms)))
@@ -197,7 +197,7 @@
   (let waiting {})
   (for occurrence in (list_occurrences s ^^active)
     (if ($present? occurrence/waiting_reason) (waiting .put occurrence/trigger occurrence/waiting_reason)))
-  (for [id definition] in (definitions s)
+  (map_for [id definition] in (definitions s)
     (if_not (== definition/deleted true)
       (if ($present? (waiting .get id)) (definition .put "waiting_reason" (waiting .get id)))
       (result .push definition)))
@@ -319,7 +319,7 @@
 
 (fn ^^private prune_occurrences [s]
   (let keep (setting "trigger_occurrence_keep" 256))
-  (for [id definition] in (definitions s)
+  (map_for [id definition] in (definitions s)
     (let candidates [])
     (for occurrence in (list_occurrences s ^trigger ($to_str id))
       (if_not (["finished" "skipped"] .contains? occurrence/state) (continue))
@@ -381,7 +381,7 @@
       (check_model s definition)
       (definition .put "plugin_fingerprint" fingerprint)
       (save_definition s definition)))
-  (for [id definition] in stored
+  (map_for [id definition] in stored
     (if_yes (&& ($present? definition/plugin_fingerprint) ($absent? (live .get id)) (!= definition/deleted true))
       (definition .put "deleted" true)
       (definition .put "enabled" false)

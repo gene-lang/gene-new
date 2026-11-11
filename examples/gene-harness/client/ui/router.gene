@@ -33,7 +33,7 @@
 (fn capture_view [ui : UiClient] : Nil
   (if_yes ($absent? ui/descriptor) (return))
   (set ui/navigation/scroll ($dom/scroll_top ($dom/element "ui_panel")))
-  (for [key raw] in ui/nodes
+  (map_for [key raw] in ui/nodes
     (var node : UiNode raw)
     (if_yes ($dom/focused? node/element) (set ui/navigation/focus node/key)))
   (persist_view ui))
@@ -84,7 +84,7 @@
     ($dom/set_style panel $"--${key}" ""))
   (var applied : (List Str) [])
   (if_yes own_tokens
-    (for [raw_key raw_value] in overrides
+    (map_for [raw_key raw_value] in overrides
       (var key ($to_str raw_key))
       ($dom/set_style panel $"--${key}" (text raw_value))
       (applied .push key)))
@@ -115,7 +115,7 @@
 
 # One action's chord. The default applies until the first status arrives.
 (fn action_chord [ui : UiClient, action : Str, fallback : Str] : Str
-  (for [id bound] in ui/keyboard
+  (map_for [id bound] in ui/keyboard
     (if_yes (== ($to_str id) action) (return (text bound))))
   fallback)
 
@@ -234,7 +234,7 @@
       (if_yes (|| ui/safe (keyboard_owned?) (chord_recording?) ($event/is_composing event) ($event/repeat event)) (return))
       (var chord (event_chord event))
       (var handled false)
-      (for [id bound] in ui/keyboard
+      (map_for [id bound] in ui/keyboard
         (if_yes (&& (! ($str/starts_with? ($to_str id) "composer/")) (== (text bound) chord))
           (set handled (run_action ui ($to_str id)))))
       (if_yes handled ($dom/prevent_default event)))))

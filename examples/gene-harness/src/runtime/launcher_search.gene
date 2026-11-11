@@ -11,7 +11,7 @@
   (var inspected 0)
   (var partial false)
   (let q ($str/lower ($str/trim query)))
-  (for [id record] in manager/index/.get
+  (map_for [id record] in manager/index/.get
     (if_yes (|| (>= inspected 20000) (> ($os/monotonic_ms) deadline))
       (set partial true) (break))
     (set inspected (+ inspected 1))

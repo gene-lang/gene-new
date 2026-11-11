@@ -626,3 +626,23 @@ suite "web map-family operations":
       except WebProfileError as error:
         message = error.msg
       check "map_" in message
+
+  test "dynamic size preserves the Map rejection through Any":
+    let root = createTempDir("gene-web-map-any-size-", "")
+    defer: removeDir(root)
+    writeFile(root / "map_any_size.gene", """
+      (mod map_any_size ^profile web)
+      (fn size_any [value : Any] : Int ($size value))
+      (fn map_size_any [] : Int (size_any {{"x": 1}}))
+      (fn list_size_any [] : Int (size_any [1 2]))
+    """)
+    discard buildWebModule(root / "map_any_size.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {map_size_any, list_size_any} from './map_any_size.mjs';
+      assert.throws(map_size_any, /map_size/);
+      assert.equal(list_size_any(), 2n);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0

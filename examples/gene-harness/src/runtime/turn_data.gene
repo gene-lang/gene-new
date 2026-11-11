@@ -11,7 +11,7 @@
     (return ($freeze_shallow ($map value (fn [item] (freeze_turn_data item ^depth (+ depth 1)))))))
   (if_yes (== kind Map)
     (let result {})
-    (for [key item] in value
+    (map_for [key item] in value
       (if_not ([Str Sym] .contains? ($head key))
         (fail (TurnDataError ^message "Turn extension data keys must be strings or symbols.")))
       (result .put key (freeze_turn_data item ^depth (+ depth 1))))

@@ -72,7 +72,7 @@
     (else (return))))
 
 (fn queued_changes? [state : BrowserAppearance] : Bool
-  (for [key value] in state/queued (return true))
+  (map_for [key value] in state/queued (return true))
   false)
 
 (fn write_appearance [state : BrowserAppearance] : Nil
@@ -97,7 +97,7 @@
   # response's cookie. Rapid changes merge into the next small field map.
   (set state/sequence (+ state/sequence 1))
   (var changes : PropMap fields)
-  (for [key value] in changes
+  (map_for [key value] in changes
     (var name ($to_str key))
     (set state/queued/%name value))
   (write_appearance state))

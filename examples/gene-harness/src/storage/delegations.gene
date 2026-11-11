@@ -14,7 +14,7 @@
 
 (fn delegation_parent_sessions [runtime]
   (let result [])
-  (for [key value] in (core_states runtime/events "workspace" "workspace")
+  (map_for [key value] in (core_states runtime/events "workspace" "workspace")
     (if (&& ($str/starts_with? ($to_str key) "delegation_parent/") (!= value/deleted true))
       (result .push value/session)))
   result)

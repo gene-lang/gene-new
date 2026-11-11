@@ -76,7 +76,7 @@
       (validate_record_name kind "-")
       (if ($absent? events) (return []))
       (let out [])
-      (for [storage_key stored] in
+      (map_for [storage_key stored] in
           (core_states_with_prefix events "workspace" "workspace" $"record|${kind}|")
         (out .push {^key stored/key ^value stored/value}))
       ($order/sort_by out (fn [item] item/key)))

@@ -263,12 +263,12 @@
 
 (fn pending_count [voice : Voice] : Int
   (var count 0)
-  (for [id value] in voice/pending (if_yes ($present? value) (set count (+ count 1))))
+  (map_for [id value] in voice/pending (if_yes ($present? value) (set count (+ count 1))))
   count)
 
 (fn drop_pending [voice : Voice, id : Str] : Nil
   (var keep : PropMap {})
-  (for [key value] in voice/pending
+  (map_for [key value] in voice/pending
     (if_yes (&& (!= ($to_str key) id) ($present? value))
       (var name ($to_str key)) (set keep/%name value)))
   (set voice/pending keep)
@@ -402,7 +402,7 @@
   (cancel_speech voice)
   (if_not ($absent? voice/host)
     (close_host_audio (host_audio voice)) (set voice/host nil))
-  (for [id pending] in voice/pending
+  (map_for [id pending] in voice/pending
     (finish_utterance voice/drafts ($to_str id) "" "cancelled"))
   (set voice/pending {})
   (if_yes (!= voice/session "") (store_draft voice))
@@ -422,14 +422,14 @@
     (disable_voice voice) (return))
   (if_yes (== kind "host/reconnecting")
     (if_yes (!= voice/capture_id "") (finish_utterance voice/drafts voice/capture_id "" "cancelled"))
-    (for [id pending] in voice/pending (finish_utterance voice/drafts ($to_str id) "" "failed"))
+    (map_for [id pending] in voice/pending (finish_utterance voice/drafts ($to_str id) "" "failed"))
     (store_draft voice)
     (set voice/pending {}) (set voice/capture_id "") (set voice/recording false)
     (set voice/finalizing false) (set voice/speaking false) (set voice/queue [])
     (set voice/feedback "Reconnecting voice. Interrupted recordings and speech are not resumed.") (paint voice) (return))
   (if_yes (== kind "engines/changed")
     (if_yes (!= voice/capture_id "") (finish_utterance voice/drafts voice/capture_id "" "cancelled"))
-    (for [id pending] in voice/pending (finish_utterance voice/drafts ($to_str id) "" "failed"))
+    (map_for [id pending] in voice/pending (finish_utterance voice/drafts ($to_str id) "" "failed"))
     (store_draft voice)
     (set voice/pending {}) (set voice/capture_id "") (set voice/recording false)
     (set voice/finalizing false) (set voice/speaking false) (set voice/queue [])

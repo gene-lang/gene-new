@@ -15,11 +15,11 @@
   (set ctx/subscriptions [])
   (for subscription in subscriptions subscription/.cancel)
   (let jobs (service/snapshot_jobs .swap {}))
-  (for [id slot] in jobs
+  (map_for [id slot] in jobs
     (while ($absent? slot/.get) ($sleep 1))
     (let job slot/.get)
     job/.cancel)
-  (for [id slot] in jobs
+  (map_for [id slot] in jobs
     (let job slot/.get)
     job/.join)
   nil)

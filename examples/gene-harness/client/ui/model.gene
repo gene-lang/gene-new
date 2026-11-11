@@ -93,7 +93,7 @@
       (! ui/loading)
       (! ui/render_error)
       (== ui/rendered_revision (text ui/descriptor/revision))))
-  (for [key raw] in ui/nodes
+  (map_for [key raw] in ui/nodes
     (var node : UiNode raw)
     (if_yes (== node/tag "button")
       (set node/element/disabled
@@ -131,14 +131,14 @@
   # Form args capture the original record revision. A newly edited form with
   # another revision must not be cleared by an earlier receipt.
   (if_yes (!= ($json/stringify (?? forms/%form nil)) ($json/stringify (?? pending/form_context nil))) (return))
-  (for [field_key raw] in drafts
+  (map_for [field_key raw] in drafts
     (var item : Any raw)
     (if_yes (== (text item/form) form)
       (var name : Str item/name)
       (if_yes (== ($json/stringify (?? item/value nil)) ($json/stringify (?? pending/request/named/%name nil)))
         (drafts .delete field_key))))
   (var still_dirty false)
-  (for [field_key raw] in drafts
+  (map_for [field_key raw] in drafts
     (var item : Any raw)
     (if_yes (== (text item/form) form) (set still_dirty true)))
   (if_not still_dirty (forms .delete form))
@@ -146,7 +146,7 @@
   # Close/reset a submitted form only after success. Preserve newer edits and
   # navigation, including when recovering its receipt from another view.
   (if_not still_dirty
-    (for [name value] in (copy_map pending/success_state)
+    (map_for [name value] in (copy_map pending/success_state)
       (if_yes (== ($json/stringify (?? state/%name nil)) ($json/stringify (?? pending/view_state/%name nil)))
         (set state/%name value))))
   (set saved/state state)

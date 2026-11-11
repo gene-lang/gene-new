@@ -29,7 +29,7 @@
     (let snapshot_ref ($cell ctx/snapshot))
     (let bindings (discovery_bindings h snapshot_ref))
     # Bound once: later inputs may shadow these names with their own variables.
-    (for [name value] in (host_object_bindings h ctx/session ctx/runtime/root) (bindings .put name value))
+    (map_for [name value] in (host_object_bindings h ctx/session ctx/runtime/root) (bindings .put name value))
     (bindings .put "doc" (fn [name : Str] (doc h name ^snapshot snapshot_ref/.get)))
     (let environment (env ^bindings bindings))
     (set state {^handle ($repl/open environment) ^names {} ^snapshot snapshot_ref})
@@ -45,7 +45,7 @@
       (state/names .put name true)))
   (let turn (operator_turn ctx))
   (let helper_bindings (operator_bindings {} turn ctx/snapshot))
-  (for [name value] in helper_bindings ($repl/bind state/handle ($to_str name) value))
+  (map_for [name value] in helper_bindings ($repl/bind state/handle ($to_str name) value))
   (let context (operator_context ctx turn))
   (let scope (operator_scope ctx context))
   (let value (try ($runtime/with_context scope/context (fn []
@@ -64,6 +64,6 @@
 
 (fn close_repls [sessions]
   (let ids [])
-  (for [id state] in sessions/.get (ids .push ($to_str id)))
+  (map_for [id state] in sessions/.get (ids .push ($to_str id)))
   (for id in ids (close_repl sessions id))
   nil)

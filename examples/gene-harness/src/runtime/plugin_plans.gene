@@ -44,7 +44,7 @@
 
 (fn effective_entries [workspace, entries]
   (let all {})
-  (for [name default] in workspace/profile_plugins/.get
+  (map_for [name default] in workspace/profile_plugins/.get
     (let id ($to_str name))
     (all .put id {^id id ^^builtin ^!disabled ^module_digest nil}))
   (for entry in entries
@@ -129,9 +129,9 @@
   (let old (effective_entries workspace before))
   (let desired_by_id (effective_entries workspace after))
   (let ids [])
-  (for [id value] in old
+  (map_for [id value] in old
     (ids .push ($to_str id)))
-  (for [id value] in desired_by_id
+  (map_for [id value] in desired_by_id
     (if_not (ids .contains? ($to_str id)) (ids .push ($to_str id))))
   (let changes [])
   (for id in ids
@@ -182,7 +182,7 @@
     (let catalog (plugin_catalog runtime))
     (let current {})
     (for row in catalog/plugins (current .put row/id row))
-    (for [name entry] in effective
+    (map_for [name entry] in effective
       (let id ($to_str name))
       (if (== entry/disabled true) (continue))
       (var data nil)
@@ -219,7 +219,7 @@
     # rows. Count an observed provider only if the plan keeps that generation.
     # An edited/new provider remains unverified until candidate activation.
     (let selected (current_snapshot runtime/h/snapshots))
-    (for [name definition] in (?? selected/registry_owners {})
+    (map_for [name definition] in (?? selected/registry_owners {})
       (let owner definition/owner)
       (let desired (effective .get owner))
       (let live (current .get owner))
@@ -227,14 +227,14 @@
               (&& ($present? desired) (!= desired/disabled true)
                   (== live/active_digest (?? desired/module_digest "builtin"))))
         (claim_capability providers claims ["$registries" ($to_str name)] owner)))
-    (for [key claim] in claims
+    (map_for [key claim] in claims
       (let registry (runtime/h/registries/.get .get claim/registry))
       (if (&& (== registry/unique true) (> claim/owners/.size 1))
         (conflicts .push claim)))
     (if_not conflicts/.empty?
       (warnings .push "Multiple plugins claim the same unique entry. Explicit replacement rules must resolve these claims during activation."))
     (let missing [])
-    (for [id data] in descriptors
+    (map_for [id data] in descriptors
       (for pair in data/requires
         # Core-owned bindings are outside the optional plugin set.
         (var host_binding false)
@@ -350,7 +350,7 @@
           (return {^id id ^revision revision ^state "saved" ^activation "unverified"}))
         (let admissions [])
         (let effective (effective_entries workspace plan/entries))
-        (for [name entry] in effective
+        (map_for [name entry] in effective
           (let plugin_id ($to_str name))
           (if (== entry/disabled true) (continue))
           (if ($absent? entry/module_digest)

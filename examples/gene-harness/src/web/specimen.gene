@@ -54,7 +54,7 @@
 (fn scale_samples [theme, mode : Str]
   (let tokens (resolved_tokens theme mode))
   (let rows [])
-  (for [name value] in tokens
+  (map_for [name value] in tokens
     (let key ($to_str name))
     (if (|| ($str/starts_with? key "space-") ($str/starts_with? key "type-")
             ($str/starts_with? key "radius-") ($str/starts_with? key "border-")
@@ -64,7 +64,7 @@
 
 (fn mode_samples [theme, mode : Str, declared, section : Str, prefix : Str]
   (let icons [])
-  (for [raw_name svg] in theme/icons
+  (map_for [raw_name svg] in theme/icons
     (let name ($to_str raw_name))
     (icons .push `(span ^class_name "web_badge" (icon ^name %name) %name)))
   (let classes [])
@@ -147,7 +147,7 @@
     (let wanted (?? (context/view_state .get field) "default"))
     (let name (if ($present? (themes .get wanted)) wanted "default"))
     (let options [])
-    (for [key theme] in themes
+    (map_for [key theme] in themes
       (options .push `(option ^value %($to_str key) %(?? theme/title ($to_str key)))))
     (pickers .push `(label %field (select ^key %$"compare/${field}" ^state %field ^value %name %options...)))
     (try

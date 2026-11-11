@@ -8857,7 +8857,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("function $gene_size(value" &
       (if typescript: ": any" else: "") & ")" &
       (if typescript: ": bigint" else: "") &
-      " { return BigInt(Array.isArray(value) || typeof value === \"string\" ? value.length : value.size); }")
+      " { if (Array.isArray(value) || typeof value === \"string\") return BigInt(value.length); if (value != null && typeof value === \"object\" && !Array.isArray(value) && (value.$gene_map === true || Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) return $gene_raise_type_error(\"size\", \"a list-like value; use $map_size for a Map's entries\", value); return BigInt(value.size); }")
   if moduleUsesBuiltin(module, ["map_size", "map_empty?"]):
     emitter.line("function $gene_map_size(value" &
       (if typescript: ": any" else: "") & ")" &

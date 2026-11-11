@@ -107,7 +107,7 @@
   (let result ($thaw ($freeze (model_entry candidate/builtin_models id))))
   (if (&& ($absent? result/efforts) ($present? candidate/default_efforts))
     (result .put "efforts" ($thaw ($freeze candidate/default_efforts))))
-  (for [key value] in discovered (result .put key value))
+  (map_for [key value] in discovered (result .put key value))
   result)
 
 (fn model_listed? [runtime, candidate, id]
@@ -197,7 +197,7 @@
 
 (fn session_settings [metadata, settings]
   (if ($absent? metadata/model_settings) (return settings))
-  (if (== ($size metadata/model_settings) 0) (return settings))
+  (if (== ($map_size metadata/model_settings) 0) (return settings))
   (let effective ($thaw ($freeze settings)))
   (let chosen metadata/model_settings)
   (if (&& ($present? chosen/provider) (!= chosen/provider settings/provider))

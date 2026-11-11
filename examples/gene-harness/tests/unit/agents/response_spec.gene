@@ -13,7 +13,7 @@
 
   (it "keeps block-like text inside multiline code strings" []
     (let response (split_response "(let text \"hello\n<<<not a block\nbye\")\ntext\n"))
-    (assert_equal ($size response/attachments) 0)
+    (assert_equal ($map_size response/attachments) 0)
     (assert_equal response/forms/.size 2))
 
   (it "rejects unreadable code" []

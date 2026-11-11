@@ -27,14 +27,14 @@
   (let owner (open_authority ($path/join runtime/state_root "channels" "owner")))
   (recover_deliveries owner)
   (let dirty (read runtime/services/values/channel_queues (fn [state]
-    (let ids {}) (for [id queue] in state/queues (ids .put ($to_str id) true)) ids)))
+    (let ids {}) (map_for [id queue] in state/queues (ids .put ($to_str id) true)) ids)))
   (let service (ChannelService ^runtime runtime ^controller controller ^owner owner ^gate ($sync/gate)
     ^closed ($cell false) ^settings ($cell (?? (/settings (snapshot runtime/services/values/channel_queues)) {}))
     ^health ($cell {}) ^dirty ($cell dirty) ^retry_at ($cell {}) ^subscriptions []
     ^next_send ($cell {}) ^ticking ($cell false)))
   # Continuations of channel rounds need their transport's initiator even
   # before that transport's plugin activates.
-  (for [id account] in (/accounts (snapshot owner))
+  (map_for [id account] in (/accounts (snapshot owner))
     (try (ensure_channel_initiator runtime/h account/transport) catch Error nil))
   (finish_shares service)
   (let mark (fn [id]
@@ -414,14 +414,14 @@
   (if ($absent? service) (return []))
   (read service/runtime/services/values/channel_queues (fn [state]
     (let result [])
-    (for [id record] in state/outbox
+    (map_for [id record] in state/outbox
       (if (&& (== record/intent/session session)
               (|| (["uncertain" "failed"] .contains? record/status) (== record/last_error "uncertain")))
         (result .push {^id record/intent/id
           ^status (if (== record/last_error "uncertain") "uncertain" record/status)})))
     (let queue (state/queues .get session))
     (if_not ($absent? queue)
-      (for [id hold] in queue/holds
+      (map_for [id hold] in queue/holds
         (if (== hold/reason "uncertain_admission")
           (result .push {^id hold/source ^status "uncertain_admission"}))))
     result)))
@@ -432,11 +432,11 @@
 (fn tick_channels [service]
   (if service/closed/.get (return nil))
   (finish_shares service)
-  (for [id changed] in (take_changes service/runtime/services/values/channel_queues)
+  (map_for [id changed] in (take_changes service/runtime/services/values/channel_queues)
     (if (!= ($to_str id) "revision") (service/dirty/.get .put ($to_str id) true)))
-  (for [id due] in service/retry_at/.get
+  (map_for [id due] in service/retry_at/.get
     (if (<= due ($os/wall_ms)) (service/dirty/.get .put ($to_str id) true)))
-  (for [session ignored] in (service/dirty .swap {})
+  (map_for [session ignored] in (service/dirty .swap {})
     (let id ($to_str session))
     (let status (queue_status service/runtime/services/values/channel_queues id))
     (let binding status/binding)

@@ -37,7 +37,7 @@
 
 (fn source_without_locations [form]
   (if (== ($head form) List) (return ($map form source_without_locations)))
-  (if (== ($head form) Map) (return ($map form source_without_locations)))
+  (if (== ($head form) Map) (return ($map_map form source_without_locations)))
   (match form
     (when (node : Node)
       (let meta ($meta form))
@@ -45,8 +45,8 @@
       ($node/rebuild form
         ^head (source_without_locations ($head form))
         ^body ($map ($body form) source_without_locations)
-        ^props ($map ($props form) source_without_locations)
-        ^meta ($map meta source_without_locations)))
+        ^props ($map_map ($props form) source_without_locations)
+        ^meta ($map_map meta source_without_locations)))
     (else form)))
 
 (fn canonical_module_source
@@ -235,7 +235,7 @@
       (fail
         (CompositionError ^message $"plugin ${descriptor/id} event descriptor requires name version ignorable schema")))
     (var catalog_row (fresh_map))
-    (for [name value] in event
+    (map_for [name value] in event
       (catalog_row .put name value))
     (catalog_row .put "origin" "plugin")
     (catalog_row .put "owner" ($to_str descriptor/id))

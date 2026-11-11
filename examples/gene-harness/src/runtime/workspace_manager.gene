@@ -186,7 +186,7 @@
       (manager/statuses/.get .put entry/id status)
       (set changed true)))
   # A directory removed or renamed outside the manager disappears from the list.
-  (for [id status] in (data_copy manager/statuses/.get)
+  (map_for [id status] in (data_copy manager/statuses/.get)
     (if_yes ($absent? (present .get ($to_str id)))
       (manager_forget_status manager ($to_str id))
       (set changed true)))

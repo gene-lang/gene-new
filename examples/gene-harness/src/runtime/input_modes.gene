@@ -156,7 +156,7 @@
 (fn expire_modes [manager, ^now now = nil]
   (let instant (?? now ($os/monotonic_ms)))
   (let due [])
-  (for [session state] in manager/states/.get
+  (map_for [session state] in manager/states/.get
     (let loaded (manager/runtime/sessions/loaded/.get .get session))
     (if (|| ($absent? loaded) (== loaded/viewers/.get 0))
       (then
@@ -176,7 +176,7 @@
 
 (fn publication_changed [manager, previous, snapshot]
   (let withdrawn [])
-  (for [session state] in manager/states/.get
+  (map_for [session state] in manager/states/.get
     (let live (mode_record snapshot state/row/payload/name))
     (if (same_mode_row? state/row live)
       (state .put "row" live)
@@ -204,7 +204,7 @@
   (if (manager/closed .swap true) (return nil))
   manager/publication/.cancel
   (let sessions [])
-  (for [session state] in manager/states/.get (sessions .push ($to_str session)))
+  (map_for [session state] in manager/states/.get (sessions .push ($to_str session)))
   (for session in sessions (close_mode manager session "shutdown"))
   (for task in manager/jobs/.get task/.join)
   (manager/jobs .set [])

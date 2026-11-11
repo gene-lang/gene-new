@@ -24,7 +24,7 @@
 
 (fn close_clients [clients]
   (let open (clients/clients .swap {}))
-  (for [id client] in open (close_api client))
+  (map_for [id client] in open (close_api client))
   nil)
 
 # A client that cannot be opened (credentials, network) made no request, so

@@ -36,7 +36,7 @@
 (fn reconcile_image_calls [runtime, state]
   (let calls {})
   (for attempt in state/attempts
-    (for [field role] in {^generation_call "generation" ^review_call "review" ^repair_call "repair"}
+    (map_for [field role] in {^generation_call "generation" ^review_call "review" ^repair_call "repair"}
       (let id (attempt .get field))
       (if_not ($absent? id) (calls .put id {^attempt attempt ^role role}))))
   (for event in (events_for runtime/events "session" state/session)
@@ -62,7 +62,7 @@
 (fn recover_image_runs [runtime]
   (let store (open_media_store runtime/state_root))
   (recover_media_reservations store)
-  (for [session record] in runtime/sessions/index/.get
+  (map_for [session record] in runtime/sessions/index/.get
     (for state in (image_runs runtime ($to_str session))
       (if (!= state/state "running") (continue))
       (reconcile_image_candidates store state)

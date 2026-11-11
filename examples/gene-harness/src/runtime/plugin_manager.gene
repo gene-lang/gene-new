@@ -69,7 +69,7 @@
   (let defaults workspace/profile_plugins/.get)
   (let stored {})
   (let ids [])
-  (for [id ignored] in defaults
+  (map_for [id ignored] in defaults
     (ids .push ($to_str id)))
   (for entry in (composition_entries workspace)
     (stored .put entry/id entry)
@@ -112,7 +112,7 @@
     (for pair in (?? metadata/declared/requires [])
       (requirements .push (requirement_status snapshot pair)))
     (let observed [])
-    (for [registry records] in snapshot/registries
+    (map_for [registry records] in snapshot/registries
       (for record in records
         (if_yes (== record/owner id)
           (observed .push (contribution_data registry record/key record/payload)))))

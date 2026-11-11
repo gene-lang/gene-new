@@ -21,7 +21,7 @@
   (notices/changed))
 
 (fn clear_notices [notices : Notices] : Nil
-  (for [key raw] in notices/items
+  (map_for [key raw] in notices/items
     (var item : Notice raw)
     (set item/version (+ item/version 1))
     ($dom/remove item/element)

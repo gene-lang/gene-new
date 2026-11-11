@@ -17,12 +17,12 @@
 
 (fn record_application_result [workspace : Workspace, h : Harness, result, ^readiness readiness = nil]
   (let expected {})
-  (for [id default] in workspace/profile_plugins/.get
+  (map_for [id default] in workspace/profile_plugins/.get
     (expected .put ($to_str id) {^id ($to_str id) ^!disabled}))
   (for entry in (composition_entries workspace) (expected .put entry/id entry))
   (let active h/composition/.current_revisions)
   (var reason nil)
-  (for [id entry] in expected
+  (map_for [id entry] in expected
     (if (== entry/disabled true) (continue))
     (let live (active .get id))
     (if (|| (!= live/active true) (!= (status_of h ($to_str id)) "ready")

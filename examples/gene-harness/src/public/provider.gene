@@ -19,7 +19,7 @@
   (if ($absent? spec) (return nil))
   (if (!= ($head spec) Map)
     (fail (ProviderError ^message "Invalid credential source")))
-  (for [key value] in spec
+  (map_for [key value] in spec
     (if_not (["env" "command"] .contains? ($to_str key))
       (fail (ProviderError ^message "Invalid credential source"))))
   (if (== ($present? spec/env) ($present? spec/command))

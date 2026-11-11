@@ -13,7 +13,7 @@
 (fn validate_fields [fields]
   (if (!= ($head fields) Map)
     (fail (AppearanceError ^code "invalid_request" ^message "Appearance must be a map of preferences.")))
-  (for [name value] in fields
+  (map_for [name value] in fields
     (if_not (valid_field? ($to_str name) value)
       (fail (AppearanceError ^code "invalid_request" ^message $"Invalid appearance preference ${name}."))))
   fields)

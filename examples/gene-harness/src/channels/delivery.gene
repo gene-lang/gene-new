@@ -98,14 +98,14 @@
 (fn pending_output [queues]
   (read queues (fn [state]
     (let result [])
-    (for [id record] in state/outbox
+    (map_for [id record] in state/outbox
       (if (!= record/status "delivered") (result .push record)))
     ($order/sort_by result /sequence))))
 
 (fn due_output [queues]
   (read queues (fn [state]
     (let result [])
-    (for [id record] in state/outbox
+    (map_for [id record] in state/outbox
       (if (&& (!= record/status "delivered") (<= (?? record/next_check_at 0) ($os/wall_ms)))
         (result .push record)))
     ($order/sort_by result /sequence))))
@@ -237,7 +237,7 @@
 # call from a lost success response. Preserve uncertainty instead of replaying.
 (fn recover_deliveries [owner]
   (mutate owner (fn [state]
-    (for [id record] in state/deliveries
+    (map_for [id record] in state/deliveries
       (for part in record/parts
         (if (== part/status "sending")
           # Removing a known status message is idempotent, unlike posting one.
@@ -391,12 +391,12 @@
   (let owner service/owner)
   (let state (read owner (fn [state]
     (let active {})
-    (for [id record] in state/deliveries
+    (map_for [id record] in state/deliveries
       (if (["accepted" "uncertain"] .contains? record/status) (active .put ($to_str id) record)))
     {^accounts state/accounts ^rate_limits (?? state/rate_limits {}) ^deliveries active})))
   (let deliveries [])
-  (for [id delivery] in state/deliveries (deliveries .push delivery))
-  (for [id until] in (?? state/rate_limits {}) (backoff_until service ($to_str id) until))
+  (map_for [id delivery] in state/deliveries (deliveries .push delivery))
+  (map_for [id until] in (?? state/rate_limits {}) (backoff_until service ($to_str id) until))
   (for delivery in deliveries
     (let account (state/accounts .get delivery/intent/account))
     (if ($absent? account) (continue))

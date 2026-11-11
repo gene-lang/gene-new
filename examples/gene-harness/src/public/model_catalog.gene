@@ -20,7 +20,7 @@
     (fail (ProviderError ^message "Model list offset must be nonnegative and limit must be 1–200")))
   (let words ($str/split ($str/lower ($str/trim query)) " "))
   (let matches [])
-  (for [key entry] in (?? snapshot/providers {})
+  (map_for [key entry] in (?? snapshot/providers {})
     (let name ($to_str key))
     (if (|| (!= entry/connection/state "ready")
             (&& ($present? provider) (!= provider name))) (continue))
@@ -94,7 +94,7 @@
       (if_not (order .contains? id) (order .push id))
       (let previous (?? (entries .get id) {}))
       (let merged ($thaw ($freeze previous)))
-      (for [key value] in model (merged .put key value))
+      (map_for [key value] in model (merged .put key value))
       (merged .put "provider" provider)
       (merged .put "source" source)
       (entries .put id merged)))
@@ -175,7 +175,7 @@
   (try
     (let saved ($serde/read_data ($fs/read_text path)))
     (if (!= saved/version 1) (return nil))
-    (for [name entry] in saved/providers
+    (map_for [name entry] in saved/providers
       (try
         (let models (canonical_models entry/models))
         (catalog/discovered/.get .put name
@@ -186,7 +186,7 @@
 
 (fn save_catalog_cache [catalog]
   (let providers {})
-  (for [name found] in catalog/discovered/.get
+  (map_for [name found] in catalog/discovered/.get
     (providers .put name {^models (?? found/models []) ^transport (?? found/transport nil)
       ^provider_transport found/provider_transport ^updated_ms (?? found/updated_ms nil)}))
   (try
@@ -328,7 +328,7 @@
   # In-memory observations survive a contribution publication in this host.
   # Descriptor hashes still decide whether a connection can be reused; the
   # disk cache intentionally contains no connection/account record.
-  (for [name found] in (?? seed {})
+  (map_for [name found] in (?? seed {})
     (try
       (catalog/discovered/.get .put ($to_str name)
         {^connection (canonical_connection found/connection ($to_str name))

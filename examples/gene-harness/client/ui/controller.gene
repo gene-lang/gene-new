@@ -30,7 +30,7 @@
 
 (fn specimen_ratios [ui : UiClient] : Nil
   (var ready true)
-  (for [key raw] in ui/nodes
+  (map_for [key raw] in ui/nodes
     (var node : UiNode raw)
     (if_yes ($present? node/props/data-preview-theme)
       (if ($absent? ui/browser_appearance)
@@ -40,7 +40,7 @@
           (if_not (load_preview appearance (text node/props/data-preview-theme) (fn [] : Nil (specimen_ratios ui)))
             (set ready false))))))
   (if_not ready (return))
-  (for [key raw] in ui/nodes
+  (map_for [key raw] in ui/nodes
     (var node : UiNode raw)
     (var classes (text node/props/class))
     (if_yes ($str/starts_with? classes "theme_ratio contrast_")
@@ -50,7 +50,7 @@
 (fn appearance_controls [ui : UiClient] : Nil
   (if_yes ($present? ui/browser_appearance)
     (var appearance : BrowserAppearance ui/browser_appearance)
-    (for [key raw] in ui/nodes
+    (map_for [key raw] in ui/nodes
       (var node : UiNode raw)
       (if_yes ($present? node/props/data-appearance)
         (appearance_control appearance node/element node/props/data-appearance)))))
@@ -185,11 +185,11 @@
   # Keep the form's captured revision while retaining the clicked button's
   # action arguments. Current field values are collected last below.
   (if_not (== node/tag "form")
-    (for [key value] in (copy_map node/props/args)
+    (map_for [key value] in (copy_map node/props/args)
       (set named/%key value))
     (if ($present? node/props/positional)
       (set args (body_args node/props/positional))))
-  (for [key raw] in ui/nodes
+  (map_for [key raw] in ui/nodes
     (var input : UiNode raw)
     (if_yes (&& (== input/form form) ($present? input/props/field))
       (var field : Str input/props/field)
@@ -320,7 +320,7 @@
   ($dom/clear ui/target)
   (var value (saved_view ui (state_key ui)))
   (var restored (copy_map value/state))
-  (for [key initial] in ui/state
+  (map_for [key initial] in ui/state
     (if_not ($absent? restored/%key) (set ui/state/%key restored/%key)))
   (set ui/drafts (copy_map value/drafts))
   (set ui/forms (copy_map value/forms))
@@ -402,7 +402,7 @@
 (fn open_reference [ui : UiClient, reference : Any] : Nil
   (if_yes (|| ui/safe ($absent? reference/component)) (return))
   (if_not (navigate ui (text reference/component) (text reference/presentation)) (return))
-  (for [key value] in (copy_map reference/view_state)
+  (map_for [key value] in (copy_map reference/view_state)
     (if_not ($absent? ui/descriptor/view_state/%key) (set ui/state/%key value)))
   (persist_view ui)
   (set ui/last_data "")

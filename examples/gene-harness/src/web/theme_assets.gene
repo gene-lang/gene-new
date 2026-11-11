@@ -10,7 +10,7 @@
 (fn catalog_cache [themes]
   (let revision ($to_str ($web/asset_base) "|" (themes_revision themes)))
   (if_yes ($absent? (catalogs .get revision))
-    (if (>= ($size catalogs) 8) (set catalogs {}))
+    (if (>= ($map_size catalogs) 8) (set catalogs {}))
     (catalogs .put revision {^resolved {} ^active {} ^previews {}}))
   (catalogs .get revision))
 

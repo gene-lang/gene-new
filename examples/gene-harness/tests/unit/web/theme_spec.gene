@@ -120,7 +120,7 @@
     ($assert (== tokens/empty-heading-measure "40rem"))
     ($assert (== tokens/models-welcome-width "30rem"))
     ($assert (== tokens/site-footer-note-measure "30rem"))
-    (for [name value] in tokens ($assert (! ($str/starts_with? ($to_str name) "size-")))))
+    (map_for [name value] in tokens ($assert (! ($str/starts_with? ($to_str name) "size-")))))
 
   (it "resolves inherited tokens and detects cycles" []
     (let themes ($thaw ($freeze builtin_themes)))

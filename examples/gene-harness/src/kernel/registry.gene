@@ -98,7 +98,7 @@
   (if (|| (!= ($head spec) Map) (!= ($head spec/name) Str) (== spec/name "")
           ($str/starts_with? spec/name "$"))
     (fail (HarnessError ^message "registry spec requires a nonempty name")))
-  (for [field value] in spec
+  (map_for [field value] in spec
     (if_not (["name" "unique" "ordered" "schema" "key" "callbacks" "reserved"
               "on_remove" "prepare" "signature" "same_owner"] .contains? ($to_str field))
       (fail (HarnessError ^message $"unknown registry spec field ${field}"))))
@@ -121,7 +121,7 @@
     (fail (HarnessError ^message "registry signature must name a declared callback field")))
   (if (!= ($head (?? spec/reserved {})) Map)
     (fail (HarnessError ^message "registry reserved names must map to their owners")))
-  (for [key owner] in (?? spec/reserved {})
+  (map_for [key owner] in (?? spec/reserved {})
     (if (!= ($head owner) Str) (fail (HarnessError ^message "reserved owner must be a string"))))
   spec)
 
@@ -166,7 +166,7 @@
   (var out (fresh_list))
   (let view (registry_read_view h))
   (let registries (if ($absent? view) h/registries/.get view))
-  (for [name value] in registries
+  (map_for [name value] in registries
     (out .push ($to_str name)))
   out)
 
@@ -356,7 +356,7 @@
     (fail (HarnessError ^message
       $"registry ${registry_name} key ${logical_key} is reserved by ${reserved_label}")))
   (let guarded (fresh_map))
-  (for [field value] in checked (guarded .put field value))
+  (map_for [field value] in checked (guarded .put field value))
   (if_not ($absent? r/spec/signature)
     (guarded .put "signature" ($runtime/signature (checked .get r/spec/signature))))
   (for field in (?? r/spec/callbacks [])
@@ -488,7 +488,7 @@
       (errors .push ($to_str $err/message)))
     (set i (- i 1)))
   (var owned_registries (fresh_list))
-  (for [name r] in h/registries/.get
+  (map_for [name r] in h/registries/.get
     (if (&& (== r/owner owner) (!= r/owner "core"))
       (owned_registries .push ($to_str name))))
   (for name in owned_registries

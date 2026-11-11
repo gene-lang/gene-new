@@ -46,7 +46,7 @@
 
 (fn close_shells [sessions]
   (let ids [])
-  (for [id state] in sessions/.get (ids .push ($to_str id)))
+  (map_for [id state] in sessions/.get (ids .push ($to_str id)))
   (for id in ids (close_shell sessions id))
   nil)
 

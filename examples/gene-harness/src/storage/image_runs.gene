@@ -26,7 +26,7 @@
 
 (fn image_runs [runtime, session : Str]
   (let result [])
-  (for [key state] in (core_states runtime/events "session" session)
+  (map_for [key state] in (core_states runtime/events "session" session)
     (if ($str/starts_with? ($to_str key) "image/run/")
       (result .push (read_image_run runtime session state/round))))
   result)

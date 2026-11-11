@@ -26,7 +26,7 @@
   (if (|| (!= ($head candidate) Map) (!= ($head candidate/name) Str) (== candidate/name ""))
     (invalid_definition candidate/name "A turn participant requires a nonempty name."))
   (let fields ($into (callback_fields) ["name" "priority" "request_record" "summary" "tags" "docs"]))
-  (for [key value] in candidate
+  (map_for [key value] in candidate
     (if_not (fields .contains? ($to_str key))
       (invalid_definition candidate/name $"Unknown turn participant field ${key}.")))
   (if (!= ($head (?? candidate/priority 0)) Int)
@@ -64,7 +64,7 @@
               ($present? (row runtime/h "functions" owner)))
         (invalid_definition candidate/name "The public data binding namespace conflicts with an existing or reserved binding."))))
   (let prepared {})
-  (for [key value] in candidate (prepared .put key value))
+  (map_for [key value] in candidate (prepared .put key value))
   (prepared .put "_host" native)
   (prepared .put "_owner" owner)
   (let policy (runtime/h/plugin_policies/.get .get owner))

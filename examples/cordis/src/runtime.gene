@@ -296,7 +296,7 @@
 
 (fn copy_map [source] ^^private
   (var out (fresh_map))
-  (for [key value] in source
+  (map_for [key value] in source
     (out .put key value))
   out)
 
@@ -467,7 +467,7 @@
   (if (== id "") (cordis_failure ServiceContractError "service key id cannot be empty"))
   (if_not (callable? check)
     (cordis_failure ServiceContractError "service key check must be callable"))
-  (for [name value] in {^config_schema config_schema ^merge_config merge_config ^bind bind}
+  (map_for [name value] in {^config_schema config_schema ^merge_config merge_config ^bind bind}
     (if (&& (! (absent? value)) (! (callable? value)))
       (cordis_failure ServiceContractError $"service key ${name} must be callable or nil")))
   (var key
@@ -783,7 +783,7 @@
     (else
       (if_not (== ($head value) Map)
         (cordis_failure ConfigValidationError "derive ^isolate must be a list or map"))
-      (for [id choice] in value
+      (map_for [id choice] in value
         (var key (named_service_key runtime ($to_str id)))
         (if (== choice true)
           (rows .push [key (fresh_private_realm runtime)])
@@ -808,7 +808,7 @@
     (else
       (if_not (== ($head value) Map)
         (cordis_failure ConfigValidationError "derive ^intercept must be a list or map"))
-      (for [id config] in value
+      (map_for [id config] in value
         (rows .push [(named_service_key runtime ($to_str id)) ($freeze config)]))))
   rows)
 
@@ -816,7 +816,7 @@
   (var parent (context_record handle))
   (if_not (== ($head options) Map)
     (cordis_failure ConfigValidationError "Context/derive expects a map"))
-  (for [name value] in options
+  (map_for [name value] in options
     (var option_name ($to_str name))
     (if_not (["isolate" "intercept" "limits"] .contains? option_name)
       (cordis_failure ConfigValidationError $"unknown Context/derive option ^${option_name}")))
@@ -824,7 +824,7 @@
   (for row in (normalize_isolations parent/runtime (options .get "isolate"))
     (realms .put row/0/id row/1))
   (var overlays (fresh_map))
-  (for [id rows] in parent/overlays
+  (map_for [id rows] in parent/overlays
     (overlays .put id (copy_list rows)))
   (for row in (normalize_intercepts parent/runtime (options .get "intercept"))
     (var configs (?? (overlays .get row/0/id) (fresh_list)))
@@ -1144,7 +1144,7 @@
   (var root instance/root_effect/.get)
   (var cleanup_failure nil)
   (if_not (absent? root) (root/accepting .set false))
-  (while (> ($size instance/invocations/.get) 0)
+  (while (> ($map_size instance/invocations/.get) 0)
     ($sleep 0))
   # Withdraw first, then wait for the exact consumer closure to quiesce before
   # provider cleanup. No new binding can enter after this point.
@@ -1278,7 +1278,7 @@
   (instance/dispose_requested .set true)
   (request_transition instance false)
   # Self-disposal is queued until the current invocation releases its lease.
-  (if (== ($size instance/invocations/.get) 0)
+  (if (== ($map_size instance/invocations/.get) 0)
     (while (! (absent? instance/transition/.get))
       instance/transition/.get/.join))
   nil)
@@ -1696,7 +1696,7 @@
   (if (&& (== ($head left) Map) (== ($head right) Map))
     (then
       (var out (copy_map left))
-      (for [key value] in right
+      (map_for [key value] in right
         (out .put key value))
       out)
     (else
@@ -1868,7 +1868,7 @@
   (if_not (absent? options)
     (if_not (== ($head options) Map)
       (plugin_error HookDispatchError "hook options must be a map" scope/owner))
-    (for [name value] in options
+    (map_for [name value] in options
       (var option_name ($to_str name))
       (if_not (["prepend" "global"] .contains? option_name)
         (plugin_error HookDispatchError $"unknown hook option ^${option_name}" scope/owner))
@@ -2023,7 +2023,7 @@
   (if_not (absent? options)
     (if_not (== ($head options) Map)
       (cordis_failure HookDispatchError "dispatch options must be a map"))
-    (for [name value] in options
+    (map_for [name value] in options
       (var option_name ($to_str name))
       (if_not (["subject" "terminal"] .contains? option_name)
         (cordis_failure HookDispatchError $"unknown dispatch option ^${option_name}")))
@@ -2121,7 +2121,7 @@
   (for instance in runtime/instances/.get
     (instances .push (instance_snapshot instance)))
   (var services (fresh_list))
-  (for [address provider] in runtime/providers/.get
+  (map_for [address provider] in runtime/providers/.get
     (services .push
       {
         ^service provider/key/id
@@ -2134,7 +2134,7 @@
     (realms .push
       {^context context/id ^alive context/alive/.get ^services ($freeze (copy_map context/realms))}))
   (var hooks (fresh_list))
-  (for [id rows] in runtime/hooks/.get
+  (map_for [id rows] in runtime/hooks/.get
     (var active 0)
     (for record in rows
       (if (&& record/active/.get (! record/consumed/.get)) (set active (+ active 1))))
@@ -2291,7 +2291,7 @@
 (fn validate_manifest_limit_map [loader, value] ^^private
   (if (absent? value) (return loader/options/default_limits))
   (if_not (== ($head value) Map) (cordis_failure CompositionError "entry limits must be a map"))
-  (for [name item] in value
+  (map_for [name item] in value
     (var key ($to_str name))
     (if_not (["max_memory_mb" "timeout_ms"] .contains? key)
       (cordis_failure CompositionError $"unknown entry limit ^${key}"))
@@ -2318,7 +2318,7 @@
 (fn validate_service_id_map [loader, value, field : Str] ^^private
   (if (absent? value) (return #{}))
   (if_not (== ($head value) Map) (cordis_failure CompositionError $"entry ${field} must be a map"))
-  (for [id config] in value
+  (map_for [id config] in value
     (named_service_key loader/runtime ($to_str id)))
   ($freeze value))
 
@@ -2337,7 +2337,7 @@
       "intercept"
       "namespaces"
       "limits"])
-  (for [name value] in entry
+  (map_for [name value] in entry
     (var key ($to_str name))
     (if_not (allowed .contains? key)
       (cordis_failure CompositionError $"unknown manifest entry field ^${key}"))))
@@ -2403,7 +2403,7 @@
 
 (fn validate_manifest [loader, manifest] ^^private
   (if_not (== ($head manifest) Map) (cordis_failure CompositionError "manifest must be a map"))
-  (for [name value] in manifest
+  (map_for [name value] in manifest
     (var key ($to_str name))
     (if_not (["format" "entries"] .contains? key)
       (cordis_failure CompositionError $"unknown manifest field ^${key}")))
@@ -2672,13 +2672,13 @@
 (fn clone_direct_provider_layer ^^private [live, candidate, replaced_direct]
   (var providers (fresh_map))
   (var reservations (fresh_map))
-  (for [address provider] in live/providers/.get
+  (map_for [address provider] in live/providers/.get
     (if (&& (! (runtime_instance_is_loader_owned? provider/owner))
             (! (instance_in_records? replaced_direct provider/owner)))
       (providers .put address provider)))
   # Reservations exist even for unavailable or failed providers, so cloning
   # only the visible provider table would let a candidate claim a live slot.
-  (for [address uid] in live/reservations/.get
+  (map_for [address uid] in live/reservations/.get
     (var owner nil)
     (for instance in live/instances/.get
       (if (== instance/uid uid) (set owner instance)))
@@ -2689,7 +2689,7 @@
   (candidate/providers .set providers)
   (candidate/reservations .set reservations)
   (var hooks (fresh_map))
-  (for [id rows] in live/hooks/.get
+  (map_for [id rows] in live/hooks/.get
     (var retained (fresh_list))
     (for record in rows
       (if (&& (! (runtime_instance_is_loader_owned? record/owner))
@@ -2811,7 +2811,7 @@
 
 (fn old_entry_context_tokens [entries] ^^private
   (var tokens (fresh_list))
-  (for [id entry] in entries
+  (map_for [id entry] in entries
     (tokens .push entry/context/token))
   tokens)
 
@@ -2879,7 +2879,7 @@
   (runtime/reservations .set reservations))
 
 (fn preserve_staged_instance_identities [old_entries, staged_entries] ^^private
-  (for [id staged] in staged_entries
+  (map_for [id staged] in staged_entries
     (var old (old_entries .get id))
     (if (&& ($present? old) (! (absent? old/instance)) (! (absent? staged/instance)))
       (then
@@ -2910,7 +2910,7 @@
 
 (fn generation_reused? [entries, generation] : Bool ^^private
   (if (absent? generation) (return false))
-  (for [id entry] in entries
+  (map_for [id entry] in entries
     (if (&& (! (absent? entry/generation)) (same? entry/generation generation)) (return true)))
   false)
 
@@ -2926,7 +2926,7 @@
 
 (fn retiring_consumer_closure [live, retiring] ^^private
   (var closure (fresh_list))
-  (for [id instance] in retiring
+  (map_for [id instance] in retiring
     (closure .push instance))
   (set closure (expand_owned_replacements closure))
   (var changed true)
@@ -3015,7 +3015,7 @@
 
 (fn withdraw_closure_providers [providers, closure] ^^private
   (var next (copy_map providers))
-  (for [address provider] in providers
+  (map_for [address provider] in providers
     (if (&& (! (runtime_instance_is_loader_owned? provider/owner)) (instance_object_in_records? closure provider/owner))
       (next .delete address)))
   next)
@@ -3025,9 +3025,9 @@
   (for instance in closure
     (for provider in instance/providers/.get
       (keys .put provider/key/id provider/key)))
-  (for [address provider] in candidate/providers/.get
+  (map_for [address provider] in candidate/providers/.get
     (if (runtime_instance_is_loader_owned? provider/owner) (keys .put provider/key/id provider/key)))
-  (for [id key] in keys
+  (map_for [id key] in keys
     (notify_service runtime key)))
 
 (fn publish_staged_runtime ^^private
@@ -3036,7 +3036,7 @@
   (var deferred (! (absent? loader/options/retirement)))
   (var old_resources (copy_list live/resources/.get))
   (var retiring (fresh_map))
-  (for [id entry] in old_entries
+  (map_for [id entry] in old_entries
     (if_not (absent? entry/instance)
       (retiring .put id (instance_record entry/instance))))
   (var closure (retiring_consumer_closure live retiring))
@@ -3102,7 +3102,7 @@
 
   (if_yes deferred
     (var old_generations (fresh_list))
-    (for [id entry] in old_entries
+    (map_for [id entry] in old_entries
       (if (&& (! (absent? entry/generation))
               (! (generation_reused? staged/entries entry/generation))
               (! (old_generations .contains? entry/generation)))
@@ -3115,7 +3115,7 @@
     (loader/retirements/.get .push record)
     (live/contexts .set contexts)
     (var generations (fresh_list))
-    (for [id entry] in staged/entries
+    (map_for [id entry] in staged/entries
       (if_not (absent? entry/generation)
         (if_not (generations .contains? entry/generation) (generations .push entry/generation))))
     (loader/generations .set generations)
@@ -3138,7 +3138,7 @@
           (unload_instance old_instance true))
         (if_not (absent? cleanup_error)
           (retirement_errors .push cleanup_error)))))
-  (for [id entry] in old_entries
+  (map_for [id entry] in old_entries
     (if (&& (! (absent? entry/generation))
             (! (generation_reused? staged/entries entry/generation)))
       (try entry/generation/.release catch Any
@@ -3149,7 +3149,7 @@
   (rebuild_runtime_indexes live)
   (runtime_await_settled (Runtime ^token live/token))
   (var generations (fresh_list))
-  (for [id entry] in staged/entries
+  (map_for [id entry] in staged/entries
     (if_not (absent? entry/generation)
       (if_not (generations .contains? entry/generation)
         (generations .push entry/generation))))
@@ -3162,11 +3162,11 @@
 
 (fn staged_changed_ids [old_entries, staged_entries] ^^private
   (var changed (fresh_list))
-  (for [id entry] in staged_entries
+  (map_for [id entry] in staged_entries
     (var old (old_entries .get id))
     (if (|| ($absent? old) (!= old/data entry/data) (! (same? old/generation entry/generation)))
       (changed .push id)))
-  (for [id old] in old_entries
+  (map_for [id old] in old_entries
     (if ($absent? (staged_entries .get id)) (changed .push id)))
   changed)
 
@@ -3176,7 +3176,7 @@
   (var old_entries (copy_map loader/entries/.get))
   (var old_order (copy_list loader/order/.get))
   (var retiring (fresh_map))
-  (for [id entry] in old_entries
+  (map_for [id entry] in old_entries
     (if_not (absent? entry/instance)
       (retiring .put id (instance_record entry/instance))))
   (var closure (retiring_consumer_closure loader/runtime retiring))
@@ -3236,7 +3236,7 @@
   (var rows (validate_manifest loader manifest))
   (var ids (fresh_map))
   (for row in rows (ids .put row/id row))
-  (for [id plugin] in plugins
+  (map_for [id plugin] in plugins
     (var row (ids .get id))
     (if (|| (absent? row) row/group)
       (cordis_failure CompositionError $"host plugin ${id} has no plugin entry"))
@@ -3308,7 +3308,7 @@
       $err))
   # The reduced guarantee begins only after every module descriptor validates.
   transaction/.commit
-  (for [id entry] in old_entries
+  (map_for [id entry] in old_entries
     (if_not (absent? entry/instance)
       (var instance (instance_record entry/instance))
       (instance/gate_open .set false)
@@ -3388,7 +3388,7 @@
     (loader/generations .set generations)
     (cordis_failure RecoveryRequired
       "stop_start reload failed after old composition teardown" $err))
-  (for [id old] in old_entries
+  (map_for [id old] in old_entries
     (if (&& (! (absent? old/generation))
             (! (generation_reused? next_entries old/generation)))
       old/generation/.release))

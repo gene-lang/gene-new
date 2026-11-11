@@ -13,7 +13,7 @@
   (if_yes (!= saved "")
     (try
       (set controller/saved ($json/parse saved))
-      (for [key record] in controller/saved
+      (map_for [key record] in controller/saved
         (var session : Str record/session)
         (if (== ($json/stringify record/handled) "true")
           (set controller/items/%key true)

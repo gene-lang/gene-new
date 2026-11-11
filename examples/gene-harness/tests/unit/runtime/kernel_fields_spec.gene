@@ -22,7 +22,7 @@
       (return false)))
   (if (== head Map)
     (then
-      (for [name child] in value (if (private_harness_path? child fields) (return true)))
+      (map_for [name child] in value (if (private_harness_path? child fields) (return true)))
       (return false)))
   (if (== ($to_str head) "path")
     (if (private_segments? ($body value) fields) (return true)))
@@ -39,7 +39,7 @@
   (if (private_harness_path? head fields) (return true))
   (for child in ($body value)
     (if (&& (! (same? child value)) (private_harness_path? child fields)) (return true)))
-  (for [name child] in ($props value)
+  (map_for [name child] in ($props value)
     (if (&& (! (same? child value)) (private_harness_path? child fields)) (return true)))
   false)
 

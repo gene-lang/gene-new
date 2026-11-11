@@ -21,14 +21,14 @@
     (for record in (?? (snapshot/registries .get "ui_defaults") [])
       (if_yes (== record/key "default")
         (set defaults {})
-        (for [key value] in record/payload
+        (map_for [key value] in record/payload
           (if (!= ($to_str key) "name") (defaults .put ($to_str key) value))))))
   (?? saved defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^tokens {}}))
 
 (fn validate_theme_colors [colors, declared = []]
   (if (!= ($head colors) Map) (ui_error "invalid_request" "Theme overrides must be a map of tokens."))
   (let normalized {})
-  (for [raw_key color] in colors
+  (map_for [raw_key color] in colors
     (let key (css_name raw_key))
     (if_not (|| (public_tokens .contains? ($to_str key)) (declared .contains? ($to_str key)))
       (ui_error "invalid_request" $"Unknown theme token ${key}."))
@@ -40,7 +40,7 @@
 # Theme overrides belong to an explicit mode: {^light {...} ^dark {...}}.
 (fn validate_theme [theme, declared = []]
   (let normalized {})
-  (for [key colors] in theme
+  (map_for [key colors] in theme
     (if_not (theme_modes .contains? ($to_str key))
       (ui_error "invalid_request" "Theme overrides require light/dark mode maps."))
     (normalized .put key (validate_theme_colors colors declared)))

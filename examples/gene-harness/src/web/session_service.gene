@@ -595,7 +595,7 @@
 (fn remove_session [service, id : Str, revision : Int]
   (require_record service/runtime/sessions id)
   (let ids [id])
-  (for [key record] in service/runtime/sessions/index/.get
+  (map_for [key record] in service/runtime/sessions/index/.get
     (if (== record/parent/session id) (ids .push ($to_str key))))
   (if_not (delete_session ^^explicit ^revision revision service/runtime/sessions id)
     (fail (RoundError ^code "busy" ^message "Stop running work and answer or dismiss pending questions before deleting this conversation.")))
@@ -910,7 +910,7 @@
   (let status_sequence (next_status_sequence service))
   (let catalog_revision (?? (/id (catalog_snapshot service/runtime)) nil))
   (var running 0)
-  (for [id frame] in service/runtime/services/values/controller/rounds/.get
+  (map_for [id frame] in service/runtime/services/values/controller/rounds/.get
     (if_not ($absent? frame/task) (set running (+ running 1))))
   (let commands (command_descriptors service/runtime/h composition))
   (let plugins [])

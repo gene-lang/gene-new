@@ -48,11 +48,11 @@
     (for descriptor in descriptors
       (var name (text descriptor/name))
       (set wanted/%name descriptor)))
-  (for [name record] in host/mounts
+  (map_for [name record] in host/mounts
     (var next : Any wanted/%name)
     (if_yes (&& ($present? record)
       (|| ($absent? next) (!= next/revision record/revision))) (dispose host ($to_str name))))
-  (for [name descriptor] in wanted
+  (map_for [name descriptor] in wanted
     (var record : Any host/mounts/%name)
     (if ($absent? record)
       (do
@@ -63,7 +63,7 @@
         (var composer ($dom/create_element "span"))
         (var source_bridge : PropMap host/bridge)
         (var bridge : PropMap {})
-        (for [key value] in source_bridge (set bridge/%key value))
+        (map_for [key value] in source_bridge (set bridge/%key value))
         (var capabilities : Any {})
         (if_yes ($present? source_bridge/capabilities_for)
           (var provide_capabilities : (Fn [Str] Any) source_bridge/capabilities_for)
@@ -138,7 +138,7 @@
     (fn [event : Any] : Nil
       (if_yes (|| ($event/is_composing event) (chord_recording?)) (return))
       (var handled (trap_modal_tab event))
-      (for [name record] in host/mounts
+      (map_for [name record] in host/mounts
         (if_yes (&& (! handled) ($present? record) (! (flag record/failed))
                     ($present? record/root/harness_controller/key))
           (try

@@ -5,7 +5,7 @@
   # Documentation is part of the captured package closure, not a search up a
   # mutable checkout. Keep existing chapter paths as stable authoring names.
   (let reference ($pkg/dependency this_pkg "gene_reference"))
-  (for [prefix root] in
+  (map_for [prefix root] in
       [["examples/gene-harness/" this_pkg/root]
        ["tools/gene-lang-skill/" reference/root]]
     (if_yes ($str/starts_with? relative_path prefix)

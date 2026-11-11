@@ -101,7 +101,7 @@
   (if_not ($absent? candidate/extensions)
     (if (!= ($head candidate/extensions) Map)
       (fail (OutcomeError ^message "Outcome extensions must be a map of registered keys.")))
-    (if (&& (! checked) (> ($size candidate/extensions) 0))
+    (if (&& (! checked) (> ($map_size candidate/extensions) 0))
       (fail (OutcomeError ^message "Outcome extension data requires leased schema validation."))))
   (let outcome candidate)
   (if_yes (&& checked ($present? value/suspension))
@@ -136,14 +136,14 @@
 
 (fn plain_form [form]
   (if (== ($head form) List) (return ($map form plain_form)))
-  (if (== ($head form) Map) (return ($map form plain_form)))
+  (if (== ($head form) Map) (return ($map_map form plain_form)))
   (match form
     (when (node : Node)
       (let body ($map ($node/body form) plain_form))
-      (let props ($map ($node/props form) plain_form))
+      (let props ($map_map ($node/props form) plain_form))
       # These symbols are only printed as headers, never evaluated. Restore
       # static reader paths so the next request uses the model's source style.
-      (if_yes (&& (== ($head form) (quote path)) (> body/.size 0) (== ($size props) 0))
+      (if_yes (&& (== ($head form) (quote path)) (> body/.size 0) (== ($map_size props) 0))
         (var static true)
         (let parts [])
         (for segment in body
@@ -162,7 +162,7 @@
 
 (fn rewrite_prompt_form [form]
   (if (== ($head form) List) (return ($map form rewrite_prompt_form)))
-  (if (== ($head form) Map) (return ($map form rewrite_prompt_form)))
+  (if (== ($head form) Map) (return ($map_map form rewrite_prompt_form)))
   (match form
     (when (node : Node)
       (let head ($head form))
@@ -184,7 +184,7 @@
           (let quoted `(quote %value_form))
           (return
             ($node/rebuild ^head (quote append_prompt_at) ^body [body/0 line quoted value] form))))
-      ($node/rebuild ^body ($map body rewrite_prompt_form) ^props ($map ($node/props form) rewrite_prompt_form)
+      ($node/rebuild ^body ($map body rewrite_prompt_form) ^props ($map_map ($node/props form) rewrite_prompt_form)
         form))
     (else
       form)))
@@ -200,7 +200,7 @@
   (let meta ($node/meta form))
   (let line (?? meta/line 1))
   (let props {})
-  (for [key value] in ($node/props form)
+  (map_for [key value] in ($node/props form)
     (let name ($to_str key))
     (if (["view" "update"] .contains? name)
       (then

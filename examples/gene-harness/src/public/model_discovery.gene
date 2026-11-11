@@ -50,7 +50,7 @@
       (let value (raw_pricing .get key))
       (if (|| (== ($head value) Str) (== ($head value) Int) (== ($head value) Float))
         (pricing .put key value)))
-    (if (> ($size pricing) 0) (model .put "pricing" pricing))
+    (if (> ($map_size pricing) 0) (model .put "pricing" pricing))
     (result .push model))
   result)
 

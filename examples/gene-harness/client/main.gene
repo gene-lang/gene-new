@@ -379,7 +379,7 @@
     (render_plugin_slot client target slot))
   (if_not ($absent? client/component_buttons)
     (var slots : PropMap client/component_buttons)
-    (for [slot entries] in slots
+    (map_for [slot entries] in slots
       (var buttons : (List Any) entries)
       (for item in buttons
         (var button : EventTarget item/element)

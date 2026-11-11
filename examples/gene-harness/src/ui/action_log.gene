@@ -118,7 +118,7 @@
       (if_yes (action_terminal? record/status)
         (set changed false)
         (return (copy_data record)))
-      (for [key value] in changes
+      (map_for [key value] in changes
         (if (== ($to_str key) "append_output")
           (record .put "output" (byte_prefix ($to_str record/output value) 16384))
           (record .put key value)))

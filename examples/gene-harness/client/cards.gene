@@ -138,7 +138,7 @@
   (var tag : Str tree/tag)
   (var element ($dom/create_element tag))
   (var props : PropMap tree/props)
-  (for [raw_name value] in props
+  (map_for [raw_name value] in props
     (var name : Str ($to_str raw_name))
     (if_yes (|| (! (plain_attribute name)) ($absent? value)) (continue))
     (var attribute_text : Str value)
@@ -269,7 +269,7 @@
   (var tag : Str tree/tag)
   (var element ($dom/create_element tag))
   (var props : PropMap tree/props)
-  (for [raw_name value] in props
+  (map_for [raw_name value] in props
     (var name : Str ($to_str raw_name))
     (if_yes (|| (! (plain_attribute name)) ($absent? value)) (continue))
     (var attribute_text : Str value)

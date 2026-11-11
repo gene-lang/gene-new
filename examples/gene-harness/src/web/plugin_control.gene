@@ -10,7 +10,7 @@
 (fn start_plugin_job [control : PluginControl, kind : Str, request]
   (if control/closed/.get (fail "plugin manager is stopping"))
   (if (== kind "apply")
-    (for [id job] in control/jobs/.get
+    (map_for [id job] in control/jobs/.get
       (if (&& (== job/kind "apply") (== job/plan request/id) (== job/state "running"))
         (return {^id ($to_str id) ^state "running"}))))
   (let id ($crypto/random_hex 16))
@@ -57,8 +57,8 @@
 (fn close_plugin_control [control : PluginControl]
   (control/closed .set true)
   (let tasks (control/tasks .swap {}))
-  (for [id task] in tasks
+  (map_for [id task] in tasks
     task/.cancel)
-  (for [id task] in tasks
+  (map_for [id task] in tasks
     task/.join)
   nil)

@@ -15,7 +15,7 @@
   (if (!= ($head required) Map) (return "stored plugin interface requirements must be a map"))
   (for name in ["core" "plugin_api"]
     (if_not (required .has_key? name) (return $"stored plugin interface requirements omit ${name}")))
-  (for [name version] in required
+  (map_for [name version] in required
     (if (|| (!= ($head version) Str) (== version ""))
       (return $"interface ${name} requires one exact version string, not a supported-version set")))
   "")
@@ -23,7 +23,7 @@
 (fn interface_diagnostic [required, offered] : Str
   (let invalid (requirements_diagnostic required))
   (if (!= invalid "") (return invalid))
-  (for [field version] in required
+  (map_for [field version] in required
     (let name ($to_str field))
     (let available (offered .get name))
     (if ($absent? available)
@@ -39,7 +39,7 @@
   (if (!= ($head declared) Map)
     (fail (InterfacePolicyError ^message "@interfaces must declare a map of exact required versions.")))
   (let required (latest_interfaces))
-  (for [key version] in declared (required .put key version))
+  (map_for [key version] in declared (required .put key version))
   (let invalid (requirements_diagnostic required))
   (if (!= invalid "") (fail (InterfacePolicyError ^message invalid)))
   required)

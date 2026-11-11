@@ -15,7 +15,7 @@
     (index .put "scheduled" {^id "scheduled" ^title "Nightly cleanup" ^kind "cron" ^!pinned
       ^first_request "Check overnight jobs" ^last_active "2026-10-21"})
     (let manager {^index ($cell index) ^metadata_revision 7 ^runtime {^epoch "search-test"}})
-    ($assert (== ($size index) 162) ($to_str index))
+    ($assert (== ($map_size index) 162) ($to_str index))
     (let found (search_sessions manager "neelde"))
     ($assert (! found/partial) ($to_str found))
     ($assert (== found/results/0/session "needle") ($to_str found))
@@ -26,7 +26,7 @@
     ($assert (== scheduled/results/0/session "scheduled"))
     (let archived (search_sessions manager "archive"))
     ($assert (== archived/results/.size 50))
-    ($assert (== ($size index) 162)))
+    ($assert (== ($map_size index) 162)))
   (it "matches conversation content without generic type aliases or permanent partial notices" []
     (var long "")
     (var at 0)

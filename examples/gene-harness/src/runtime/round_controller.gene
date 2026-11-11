@@ -94,7 +94,7 @@
   # Reconcile ended task blockers before any transport or delegation resumes.
   (if_not ($absent? runtime/services/values/channel_queues)
     (let queues (/queues (channel_queue_snapshot runtime/services/values/channel_queues)))
-    (for [id queue] in queues
+    (map_for [id queue] in queues
       (let session ($to_str id))
       (if_not ($absent? (runtime/sessions/index/.get .get session))
         (observe_channel_rounds runtime/services/values/channel_queues session (/receipts (round_state controller session))))))
@@ -327,7 +327,7 @@
   (let saved (copy_data receipt))
   (match outcome ^!exhaustive
     (when (TaskOutcome/ok result)
-      (for [name value] in result
+      (map_for [name value] in result
         (saved .put name value)))
     (when (TaskOutcome/error error)
       (saved .put "state" "failed")
@@ -676,7 +676,7 @@
     (fail failure)))
 
 (fn resume_continuations [controller : RoundController]
-  (for [id metadata] in controller/runtime/sessions/index/.get
+  (map_for [id metadata] in controller/runtime/sessions/index/.get
     (if_not (["paused" "failed"] .contains? metadata/status) (continue))
     (let session ($to_str id))
     (let loaded (load_session controller/runtime/sessions session))
@@ -874,24 +874,24 @@
 (fn close_round_controller [controller : RoundController]
   (if (controller/closed .swap true) (return nil))
   (dispatch_round_event controller/runtime "host/stopping" {})
-  (for [session frame] in controller/rounds/.get
+  (map_for [session frame] in controller/rounds/.get
     (if_not ($absent? frame/task) frame/task/.cancel))
-  (for [session frame] in controller/rounds/.get
+  (map_for [session frame] in controller/rounds/.get
     (if_not ($absent? frame/watcher) frame/watcher/.join))
   (controller/rounds .set {})
   nil)
 
 (fn request_stop [controller : RoundController, session : Str, code : Int, confirmed : Bool]
   (let others [])
-  (for [id frame] in controller/rounds/.get
+  (map_for [id frame] in controller/rounds/.get
     (if (&& ($present? frame/task) (!= ($to_str id) session)) (others .push ($to_str id))))
   (let runtime controller/runtime)
   (if_not ($absent? runtime/services/values/commands)
-    (for [id task] in runtime/services/values/commands/active/.get
+    (map_for [id task] in runtime/services/values/commands/active/.get
       (if (|| (== session "") (! ($str/starts_with? ($to_str id) $"${session}:")))
         (others .push $"command ${id}"))))
   (if_not ($absent? runtime/services/values/actions)
-    (for [id task] in runtime/services/values/actions/active/.get (others .push $"view action ${id}")))
+    (map_for [id task] in runtime/services/values/actions/active/.get (others .push $"view action ${id}")))
   (let names ($str/join others ", "))
   (if (&& (! others/.empty?) (! confirmed))
     (fail
@@ -918,7 +918,7 @@
     ($fs/write_text_atomic $"${runtime/state_root}/restart_notice"
       ($serde/write_data {^at ($to_str ($now)) ^port runtime/listen_port})))
   (let running [])
-  (for [id frame] in controller/rounds/.get
+  (map_for [id frame] in controller/rounds/.get
     (if_not ($absent? frame/task) (running .push {^id ($to_str id) ^task frame/task})))
   (let cancelled {})
   (for entry in running

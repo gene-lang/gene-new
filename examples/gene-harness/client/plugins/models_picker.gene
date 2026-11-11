@@ -32,7 +32,7 @@
   (var state : Any (context picker))
   (var ready : Int 0)
   (var providers : PropMap picker/catalog/providers)
-  (for [key entry] in providers
+  (map_for [key entry] in providers
     (if_yes (== (text entry/connection/state) "ready") (set ready (+ ready 1))))
   (set picker/required (&& (> ready 1) (== (text picker/catalog/default/provider) "")
     (flag picker/preview/model/automatic_provider)))
@@ -226,7 +226,7 @@
       (&& ($present? current/pins/model) (!= (text current/pins/model) (text preset/model)))))
     ($dom/append picker/results button))
   (var providers : PropMap picker/catalog/providers)
-  (for [key entry] in providers
+  (map_for [key entry] in providers
     (var provider ($to_str key))
     (var connection : Any entry/connection)
     (var billing (text connection/billing "unknown"))
@@ -266,7 +266,7 @@
     ($dom/append picker/results ($dom/render `(p "Search to see all models, including OpenRouter."))))
   (var custom ($dom/render `(div ^class_name "models-custom")))
   (var provider_input ($dom/render `(select ^aria-label "Provider for model id")))
-  (for [key entry] in providers
+  (map_for [key entry] in providers
     (var provider ($to_str key))
     (if_yes (&& (== (text entry/connection/state) "ready")
       (|| ($absent? current/pins/provider) (== (text current/pins/provider) provider)))

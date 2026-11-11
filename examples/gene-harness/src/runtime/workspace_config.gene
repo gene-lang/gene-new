@@ -77,8 +77,8 @@
   (if (== scope "shared")
     (then
       (let values {})
-      (for [key definition] in definitions (values .put ($to_str key) definition/default))
-      (for [key value] in stored (values .put ($to_str key) value))
+      (map_for [key definition] in definitions (values .put ($to_str key) definition/default))
+      (map_for [key value] in stored (values .put ($to_str key) value))
       values)
     (else (resolve_config ($thaw ($freeze stored)) definitions (shared_settings_root runtime)))))
 
@@ -106,7 +106,7 @@
   (if ($absent? name) (return nil))
   (let complete (if ($present? values) (then values) (else (current_scope_values runtime scope))))
   (if ($absent? values)
-    (for [key value] in drafts (complete .put ($to_str key) value)))
+    (map_for [key value] in drafts (complete .put ($to_str key) value)))
   (let source (row runtime/h "setting_choices" name))
   (if ($absent? source)
     (return {^source name ^options [] ^complete false ^closed false
@@ -232,7 +232,7 @@
       (if ($present? (explicit .get field)) (entry .put field (explicit .get field))))
     (entry .put "owner" record/owner))
   (let listed [])
-  (for [name entry] in groups (listed .push entry))
+  (map_for [name entry] in groups (listed .push entry))
   ($order/sort_by listed group_sort_key))
 
 # Explicit order first (unordered groups after), then label, then the stable name.
@@ -274,7 +274,7 @@
 
 (fn request_keys [changes, reset]
   (let keys [])
-  (for [key value] in changes (keys .push ($to_str key)))
+  (map_for [key value] in changes (keys .push ($to_str key)))
   (for key in reset
     (if (keys .contains? key) (invalid $"${key} cannot be both set and reset in one save."))
     (keys .push key))
@@ -303,7 +303,7 @@
           (fail (ServiceError ^code "revision_conflict"
             ^message "Workspace settings changed. Read them again before saving.")))
         (let candidate ($thaw ($freeze config)))
-        (for [key value] in changes (candidate .put ($to_str key) value))
+        (map_for [key value] in changes (candidate .put ($to_str key) value))
         (for key in reset (candidate .delete key))
         (if ($present? mutate) (mutate candidate))
         (let complete (scope_values runtime "workspace" candidate))
@@ -355,16 +355,16 @@
     (if_not (supports_scope? definition "shared")
       (invalid $"${key} has no shared value; it is a workspace setting."))
     (definitions .put key definition))
-  (for [key value] in changes
+  (map_for [key value] in changes
     (check_setting_value (definitions .get ($to_str key)) value))
   # Choices are checked against the whole candidate read under the lock, so a
   # single-field edit sees the saved values it depends on.
   (let saved (write_shared_settings (shared_settings_root runtime) expected
     (fn [values]
-      (for [key value] in changes (values .put ($to_str key) value))
+      (map_for [key value] in changes (values .put ($to_str key) value))
       (for key in reset (values .delete key))
       (let complete (scope_values runtime "shared" values))
-      (for [key value] in changes
+      (map_for [key value] in changes
         (check_choice runtime (definitions .get ($to_str key)) value complete "shared")))))
   (announce runtime "shared" saved/digest keys)
   (let views [])

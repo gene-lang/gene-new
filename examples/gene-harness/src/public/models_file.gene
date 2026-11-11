@@ -11,7 +11,7 @@
 
 (fn fields [value, allowed, label]
   (if (!= ($head value) Map) (config_error $"${label} must be an inert map"))
-  (for [key item] in value
+  (map_for [key item] in value
     (if_not (allowed .contains? ($to_str key))
       (config_error $"Unknown ${label} field ${key}"))))
 
@@ -51,7 +51,7 @@
   (if ($present? value/pricing)
     (then
       (fields value/pricing ["prompt" "completion" "request" "image" "input_cache_read" "input_cache_write"] "pricing")
-      (for [key price] in value/pricing
+      (map_for [key price] in value/pricing
         (if_not (|| (== ($head price) Str) (== ($head price) Int) (== ($head price) Float))
           (config_error "Model prices must be numbers or decimal strings")))))
   ($thaw ($freeze value)))

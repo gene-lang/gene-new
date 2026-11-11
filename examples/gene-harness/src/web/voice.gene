@@ -67,9 +67,9 @@
   nil)
 
 (fn cancel_peer_streams [hub : VoiceHub, peer]
-  (for [id stream] in peer/captures (cancel_stream hub stream))
-  (for [id stream] in peer/speaks (cancel_stream hub stream))
-  (for [kind stream] in peer/warming (cancel_stream hub stream))
+  (map_for [id stream] in peer/captures (cancel_stream hub stream))
+  (map_for [id stream] in peer/speaks (cancel_stream hub stream))
+  (map_for [kind stream] in peer/warming (cancel_stream hub stream))
   (peer .put "captures" {}) (peer .put "speaks" {}) (peer .put "warming" {})
   nil)
 
@@ -203,9 +203,9 @@
   (if (|| (!= data/rate 16000) (!= data/channels 1) (!= data/encoding "s16le")
           (!= ($head data/id) Str) (== data/id "") (> ($str/byte_size data/id) 128)
           (!= ($head data/stream) Int) (< data/stream 1) (> data/stream 4294967295)
-          (>= ($size peer/captures) 4))
+          (>= ($map_size peer/captures) 4))
     (voice_error "invalid_request" "Capture needs a fresh id, stream, and 16 kHz mono s16le format; at most four utterances may finalize."))
-  (if (> ($size peer/used) 4096) (voice_error "unavailable" "Reconnect voice to start a fresh set of streams."))
+  (if (> ($map_size peer/used) 4096) (voice_error "unavailable" "Reconnect voice to start a fresh set of streams."))
   (let key ($to_str data/stream))
   (if (|| ($has_key? peer/used key) ($has_key? peer/captures data/id))
     (voice_error "invalid_request" "Capture stream ids cannot be reused on this socket."))
@@ -214,7 +214,7 @@
   (let choice (choose_speech_engine hub/host/runtime peer/settings "recognizer"))
   (if_not ($absent? choice/reason) (voice_error "unavailable" choice/reason))
   (capture .put "mode" choice/row/mode)
-  (for [key value] in {^segments [] ^cursor 0 ^text "" ^!cancelled ^segment_bytes 0 ^silence_ms 0
+  (map_for [key value] in {^segments [] ^cursor 0 ^text "" ^!cancelled ^segment_bytes 0 ^silence_ms 0
     ^!segment_voiced ^started ($os/monotonic_ms) ^first_frame_ms 0 ^last_segment_ms 0 ^released 0 ^client_points {} ^job ""} (capture .put key value))
   (peer/captures .put data/id capture)
   (start_voice_job hub capture (fn [] (recognition_loop hub peer capture)))
@@ -223,7 +223,7 @@
 (fn microphone_frame [hub : VoiceHub, peer, bytes : Bytes]
   (let frame (decode_audio_frame bytes))
   (var capture nil)
-  (for [id item] in peer/captures (if (== item/stream frame/stream) (set capture item)))
+  (map_for [id item] in peer/captures (if (== item/stream frame/stream) (set capture item)))
   (if_yes ($absent? capture)
     # A rejected start can already have microphone frames in flight. Discard
     # that stream without terminating the other accepted utterances.
@@ -315,7 +315,7 @@
 
 (fn active_speaks [peer] : Int
   (var count 0)
-  (for [id speak] in peer/speaks (if_not speak/cancelled (set count (+ count 1))))
+  (map_for [id speak] in peer/speaks (if_not speak/cancelled (set count (+ count 1))))
   count)
 
 (fn start_speech [hub : VoiceHub, peer, data]
@@ -325,7 +325,7 @@
           (>= (active_speaks peer) 2) ($has_key? peer/speaks data/id))
     (voice_error "invalid_request" "Speech needs a fresh id, a reply id and a stream; at most two active speaks may run."))
   (let key ($to_str data/stream))
-  (if (> ($size peer/used) 4096) (voice_error "unavailable" "Reconnect voice to start a fresh set of streams."))
+  (if (> ($map_size peer/used) 4096) (voice_error "unavailable" "Reconnect voice to start a fresh set of streams."))
   (if ($has_key? peer/used key) (voice_error "invalid_request" "Audio stream ids cannot be reused on this socket."))
   (peer/used .put key true)
   (let text (if (== ($head data/reply) Str) (reply_speech hub peer/session data/reply) (announcement_text data)))
@@ -379,7 +379,7 @@
                 (capture .put "released" ($os/monotonic_ms)))))
           (elif (== data/type "speak") (start_speech hub peer data))
           (elif (== data/type "speak/cancel")
-            (for [id speak] in peer/speaks
+            (map_for [id speak] in peer/speaks
               (if (|| ($absent? data/id) (== speak/id data/id)) (cancel_stream hub speak))))
           (elif (== data/type "player")
             (let speak (peer/speaks .get data/id))
@@ -415,7 +415,7 @@
       (then
         (if_yes (&& (== request/type "capture/start") (== ($head request/stream) Int)
                     (> request/stream 0) (<= request/stream 4294967295)
-                    (! ($has_key? peer/used ($to_str request/stream))) (< ($size peer/used) 4096))
+                    (! ($has_key? peer/used ($to_str request/stream))) (< ($map_size peer/used) 4096))
           (peer/used .put ($to_str request/stream) true)
           (peer/discarded .put ($to_str request/stream) true))
         (control peer {^type (if (== request/type "speak") "speak/error" "capture/error")
@@ -436,17 +436,17 @@
 
 (fn maintain_voice [hub : VoiceHub]
   (if_not (speech_resources_current? hub/speech)
-    (for [key peer] in hub/peers/.get
+    (map_for [key peer] in hub/peers/.get
       (if (owns_voice? hub peer)
         (control peer {^type "engines/changed" ^message "Speech engines changed. Reconnecting voice."}))
       (cancel_peer_streams hub peer))
     (cool_speech hub/speech))
-  (for [key peer] in hub/peers/.get
+  (map_for [key peer] in hub/peers/.get
     (if_yes (|| (! (peer/authorized)) (&& (! peer/hello) (> (- ($os/monotonic_ms) peer/created) 5000))
                 (&& (!= peer/token "") (! (owns_voice? hub peer))))
       (control peer {^type "released" ^message "Voice ownership or its engine changed. Enable voice again."})
       (cancel_peer_streams hub peer) (ws_close peer/connection))
-    (for [id capture] in peer/captures
+    (map_for [id capture] in peer/captures
       (if_yes (|| (&& (== capture/state "capturing") (> (- ($os/monotonic_ms) capture/started) 121000))
                   (&& (> capture/released 0) (> (- ($os/monotonic_ms) capture/released)
                     (recognition_timeout_ms (/ (* capture/bytes 1000) 32000)))))
@@ -466,11 +466,11 @@
 
 (fn close_voice_hub [hub : VoiceHub]
   (hub/closed .set true)
-  (for [key peer] in hub/peers/.get
+  (map_for [key peer] in hub/peers/.get
     (cancel_peer_streams hub peer) (ws_close peer/connection))
   (let tasks (hub/jobs .swap {}))
-  (for [id task] in tasks (if_not ($absent? task) task/.cancel))
-  (for [id task] in tasks (if_not ($absent? task) task/.join))
+  (map_for [id task] in tasks (if_not ($absent? task) task/.cancel))
+  (map_for [id task] in tasks (if_not ($absent? task) task/.join))
   (close_speech_service hub/speech)
   (hub/peers .set {})
   nil)

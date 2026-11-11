@@ -32,7 +32,7 @@
   definition/default)
 
 (fn needs_shared? [definitions, workspace_values] : Bool
-  (for [key definition] in definitions
+  (map_for [key definition] in definitions
     (if (&& (supports_scope? definition "shared") (! (stored? workspace_values ($to_str key))))
       (return true)))
   false)
@@ -44,7 +44,7 @@
     (then (/values (read_shared_settings shared_root)))
     (else {})))
   (let result workspace_values)
-  (for [key definition] in definitions
+  (map_for [key definition] in definitions
     (let name ($to_str key))
     (if_not (model_setting_keys .contains? name)
       (result .put name (layered_value definition workspace_values shared))))

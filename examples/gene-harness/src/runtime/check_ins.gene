@@ -193,7 +193,7 @@
   (let overhead (?? limits/overhead_tokens 0))
   (let state_bytes ($str/byte_size ($json/stringify state)))
   (var largest 0)
-  (for [id question] in questions
+  (map_for [id question] in questions
     (set largest ($math/max largest ($str/byte_size ($json/stringify question)))))
   (&& (<= (+ overhead (estimated_tokens ($str/byte_size (decision_input_text state questions)))) limits/request_tokens)
       (<= (+ overhead (estimated_tokens (+ state_bytes largest 64))) limits/question_tokens)))

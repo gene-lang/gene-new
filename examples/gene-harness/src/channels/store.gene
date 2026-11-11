@@ -8,7 +8,7 @@
 
 (fn shallow [value]
   (let result {})
-  (for [name item] in value (result .put ($to_str name) item))
+  (map_for [name item] in value (result .put ($to_str name) item))
   result)
 
 (fn bucket_id [id : Str] ($str/slice_bytes ($crypto/sha256 id) 0 2))
@@ -33,13 +33,13 @@
 (fn load_manifest [backend, manifest]
   (let state (copy manifest/scalars))
   (let buckets {})
-  (for [name shards] in manifest/tables
+  (map_for [name shards] in manifest/tables
     (let table {})
     (let cached {})
-    (for [bucket digest] in shards
+    (map_for [bucket digest] in shards
       (let entries (load_record backend "channel/bucket/" digest))
       (cached .put ($to_str bucket) entries)
-      (for [id record_digest] in entries
+      (map_for [id record_digest] in entries
         (let record (load_record backend "channel/record/" record_digest))
         (table .put ($to_str id) (if (== manifest/leaf_encoding 1) record/value record))))
     (state .put ($to_str name) table)
@@ -51,7 +51,7 @@
   (let tables (copy store/manifest/.get/tables))
   (let buckets (shallow store/buckets/.get))
   (let scalars {})
-  (for [field value] in next
+  (map_for [field value] in next
     (let name ($to_str field))
     (if (!= ($head value) Map) (then (scalars .put name value) (continue)))
     (let old (previous .get name))
@@ -62,13 +62,13 @@
     (let ids {})
     (if (|| ($absent? changes) ($absent? (changes .get name)))
       (then
-        (for [id ignored] in (?? old {}) (ids .put ($to_str id) true))
-        (for [id ignored] in value (ids .put ($to_str id) true)))
+        (map_for [id ignored] in (?? old {}) (ids .put ($to_str id) true))
+        (map_for [id ignored] in value (ids .put ($to_str id) true)))
       (else (for id in keys (ids .put id true))))
     (let shards (shallow (?? (tables .get name) {})))
     (let cached (shallow (?? (buckets .get name) {})))
     (let dirty {})
-    (for [id ignored] in ids
+    (map_for [id ignored] in ids
       (let key ($to_str id))
       (let current (value .get key))
       (if (&& (== store/manifest/.get/leaf_encoding 1) ($has_key? tables name)
@@ -81,9 +81,9 @@
       (if (! ($has_key? value key))
         (entries .delete key)
         (entries .put key (stored_record store "channel/record/" {^value current}))))
-    (for [bucket entries] in dirty
+    (map_for [bucket entries] in dirty
       (let id ($to_str bucket))
-      (if (== ($size entries) 0)
+      (if (== ($map_size entries) 0)
         (then (shards .delete id) (cached .delete id))
         (else
           (shards .put id (stored_record store "channel/bucket/" entries))
@@ -100,11 +100,11 @@
     (let filename ($path/join directory generation "channel_manifest.gene"))
     (if_not ($fs/exists? filename) (continue))
     (let manifest ($serde/read_data ($fs/read_text filename)))
-    (for [name shards] in manifest/tables
-      (for [bucket digest] in shards
+    (map_for [name shards] in manifest/tables
+      (map_for [bucket digest] in shards
         (let id ($to_str "channel/bucket/" digest))
         (retained .put id true)
-        (for [key record] in (load_record store/backend "channel/bucket/" digest)
+        (map_for [key record] in (load_record store/backend "channel/bucket/" digest)
           (retained .put ($to_str "channel/record/" record) true)))))
   (for id in store/backend/.Store:keys
     (if (&& (id .starts_with? "channel/") (! ($has_key? retained id)))
@@ -163,7 +163,7 @@
     (let previous_queues store/state/.get/queues)
     (let next (if ($absent? changes) (copy store/state/.get) (shallow store/state/.get)))
     (if_not ($absent? changes)
-      (for [field ids] in changes
+      (map_for [field ids] in changes
         (let name ($to_str field))
         (let table (if ($absent? ids) (copy (?? (next .get name) {}))
           (shallow (?? (next .get name) {}))))
@@ -182,7 +182,7 @@
       (if_not ($absent? store/checkpoint) (store/checkpoint "after" (copy next) (copy result)))
       (store/state .set next)
       (store/changed/.get .put "revision" next/revision)
-      (for [session queue] in (?? next/queues {})
+      (map_for [session queue] in (?? next/queues {})
         (if (!= queue ((?? previous_queues {}) .get ($to_str session)))
           (store/changed/.get .put ($to_str session) true)))
       # Publication is already durable. Failed best-effort GC is retried on a

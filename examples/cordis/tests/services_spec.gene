@@ -38,9 +38,9 @@
       (merge_count .set (+ merge_count/.get 1))
       (var out ($thaw #{}))
       (if_not ($absent? left)
-        (for [key value] in left (out .put key value)))
+        (map_for [key value] in left (out .put key value)))
       (if_not ($absent? right)
-        (for [key value] in right (out .put key value)))
+        (map_for [key value] in right (out .put key value)))
       out)
     (fn bind_greeting [provider, definition_context, use_context, config]
       (bind_count .set (+ bind_count/.get 1))

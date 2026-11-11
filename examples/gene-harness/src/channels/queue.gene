@@ -61,7 +61,7 @@
 
 (fn clear_temporary [queue, source : Str]
   (let remove [])
-  (for [id hold] in queue/holds
+  (map_for [id hold] in queue/holds
     (if (&& (== hold/kind "temporary") (== hold/source source)) (remove .push ($to_str id))))
   (for id in remove (queue/holds .delete id))
   (if_not remove/.empty? (queue_changed queue)))
@@ -166,7 +166,7 @@
   (read store (fn [state]
   (let queue (require_queue state session))
   (let holds [])
-  (for [id hold] in queue/holds (holds .push hold))
+  (map_for [id hold] in queue/holds (holds .push hold))
   (let pending ($size ($filter queue/order (fn [id] (== (/status (state/messages .get id)) "queued")))))
   {^session session ^revision queue/revision ^holds holds ^held (! holds/.empty?)
    ^pending pending ^batch queue/batch ^binding (state/bindings .get queue/binding)})))
@@ -218,7 +218,7 @@
     (if (|| (!= queue/revision expected) (!= queue/batch batch_id) (!= batch/status "prepared"))
       (channel_error "stale" "Review the current queue and claimed batch before resolving it."))
     (var held false)
-    (for [id hold] in queue/holds
+    (map_for [id hold] in queue/holds
       (if (&& (== hold/reason "uncertain_admission") (== hold/source batch_id)) (set held true)))
     (if_not held (channel_error "conflict" "Only an uncertain admission needs owner resolution."))
     (for id in batch/members
@@ -241,7 +241,7 @@
       (channel_error "not_found" "The channel session was deleted."))
     (if (!= queue/revision expected) (channel_error "stale" "The queue changed; inspect its current state before resuming."))
     (let remove [])
-    (for [id hold] in queue/holds
+    (map_for [id hold] in queue/holds
       (if (== hold/kind "operator") (remove .push ($to_str id))))
     (for id in remove (queue/holds .delete id))
     (if_not remove/.empty? (queue_changed queue))

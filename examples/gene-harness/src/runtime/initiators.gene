@@ -18,7 +18,7 @@
           (!= ($head candidate/kind) Str) (! ($runtime/callable? candidate/normalize))
           (!= ($head candidate/operator) Bool))
     (initiator_error "An initiator needs name, prefix, kind, operator policy and normalize callback."))
-  (for [key value] in candidate
+  (map_for [key value] in candidate
     (if_not (["name" "prefix" "kind" "transport" "operator" "normalize" "exact"
               "requires_continuation" "check_in" "summary" "tags" "docs"] .contains? ($to_str key))
       (initiator_error $"Unknown initiator field ${key}.")))
@@ -67,7 +67,7 @@
             (== candidate/transport existing/transport))
       (initiator_error $"Channel transport ${candidate/transport} already has an initiator.")))
   (let prepared {})
-  (for [key value] in candidate (prepared .put key value))
+  (map_for [key value] in candidate (prepared .put key value))
   (prepared .put "_owner" owner)
   (prepared .put "_host" native)
   (if_not native

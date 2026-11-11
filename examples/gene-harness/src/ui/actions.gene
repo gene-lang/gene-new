@@ -89,7 +89,7 @@
       ^output (fn [text] (action_output manager/log id ($to_str text)))})
     (notify_action manager/log admitted/record)
     (let completed [])
-    (for [old_id old] in manager/watchers/.get
+    (map_for [old_id old] in manager/watchers/.get
       (if old/.done? (completed .push old_id)))
     (for old_id in completed (manager/watchers/.get .delete old_id))
     (let task (spawn ^lane root
@@ -131,8 +131,8 @@
 
 (fn quiesce_ui_actions [manager : UiActionManager]
   (manager/accepting .set false)
-  (for [id task] in manager/active/.get task/.cancel)
-  (for [id watcher] in manager/watchers/.get watcher/.join)
+  (map_for [id task] in manager/active/.get task/.cancel)
+  (map_for [id watcher] in manager/watchers/.get watcher/.join)
   nil)
 
 (fn close_ui_actions [manager : UiActionManager]

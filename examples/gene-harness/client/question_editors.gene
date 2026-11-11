@@ -170,7 +170,7 @@
   (if_yes ($absent? payload)
     (var answers : PropMap {})
     (if_not dismiss
-      (for [raw_id value] in editor/answers
+      (map_for [raw_id value] in editor/answers
         (var id ($to_str raw_id))
         (if_yes (&& ($present? value) (!= (qjson editor/skips/%id) "true") (!= (qjson value) "\"\""))
           (set answers/%id value))))
@@ -224,7 +224,7 @@
 
 (fn resume_replies [controller : QuestionEditors] : Nil
   (if_not controller/ready (return))
-  (for [key payload] in controller/pending
+  (map_for [key payload] in controller/pending
     (if_not ($absent? payload)
       (var empty : (List Any) [])
       (var editor
@@ -250,7 +250,7 @@
 
 (fn question_ready [controller : QuestionEditors, ready : Bool] : Nil
   (set controller/ready ready)
-  (for [key raw] in controller/editors
+  (map_for [key raw] in controller/editors
     (var editor : QuestionEditor raw)
     (sync_question controller editor)))
 

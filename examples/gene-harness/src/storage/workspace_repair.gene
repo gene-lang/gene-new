@@ -25,7 +25,7 @@
         ($to_str entry/id ": stored "
           (if (entry_enabled? entry) "enabled" "disabled")
           (if (== entry/replaces_builtin true) " (replaces built-in)" "")))))
-  (for [id message] in workspace/errors/.get
+  (map_for [id message] in workspace/errors/.get
     (out .push
       (if ($absent? active)
         $"${id}: ${message}"

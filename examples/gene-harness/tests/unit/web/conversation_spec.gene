@@ -4,7 +4,7 @@
 (fn record [phase, turn, text, seq, ^props props = {}]
   (let value {^id $"s/${seq}" ^seq ($to_str seq) ^round_id "r" ^turn turn
     ^phase phase ^role "assistant" ^text text ^order seq ^^durable})
-  (for [key item] in props (value .put key item)) value)
+  (map_for [key item] in props (value .put key item)) value)
 
 (describe "Receiving-turn projection"
   (it "replaces resumed input, appends only delegation additions, and preserves provenance" []

@@ -115,7 +115,7 @@
   # public build tools alongside the fake vendor binaries. PATH is a prefix;
   # vendor commands and credential roots are separately overridden below.
   (let tools (test_native_tools))
-  (for [name path] in tools ($fs/create_symlink path ($path/join bin ($to_str name))))
+  (map_for [name path] in tools ($fs/create_symlink path ($path/join bin ($to_str name))))
   (let environment
     {^GENE_HARNESS_ROOT ($path/join workspace "manager-root")
      ^GENE_HARNESS_CLAUDE_COMMAND ($path/join bin "claude")

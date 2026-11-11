@@ -71,11 +71,11 @@
   (unregister_chatgpt_refresh state/refresh_registration)
   (state/refresh_wake .try_send nil)
   (let catalogs []) (let watches [])
-  (for [revision catalog] in state/catalogs (catalogs .push catalog))
-  (for [revision watch] in state/watches (watches .push watch))
+  (map_for [revision catalog] in state/catalogs (catalogs .push catalog))
+  (map_for [revision watch] in state/watches (watches .push watch))
   (for catalog in catalogs (close_model_catalog catalog))
   (for watch in watches (close_file_watch watch))
-  (for [id attempt] in state/logins (close_login attempt))
+  (map_for [id attempt] in state/logins (close_login attempt))
   state/refresh_worker/.get/.join
   state/refresh_wake/.close
   (for task in state/refresh_tasks/.get task/.join)
@@ -91,7 +91,7 @@
   (for record in (registry_row_records runtime/h "providers")
     (if (&& (!= record/owner "model_endpoints") (! (names .contains? record/key)))
       (names .push record/key)))
-  (for [id plugin] in runtime/h/plugins/.get
+  (map_for [id plugin] in runtime/h/plugins/.get
     (if (== ($to_str id) "model_endpoints") (continue))
     (for pair in (?? plugin/provides [])
       (if (&& (== ($head pair) List) (== pair/.size 2) (== pair/0 "providers")
@@ -214,7 +214,7 @@
   # A catalog started by a plugin under another id: use it when it is the
   # only open one, rather than choosing between activations by order.
   (let open [])
-  (for [revision catalog] in state/catalogs (if_not catalog/closed/.get (open .push catalog)))
+  (map_for [revision catalog] in state/catalogs (if_not catalog/closed/.get (open .push catalog)))
   (if (== open/.size 1) open/0 selected))
 
 (fn require_catalog [handle] ^^private
@@ -275,7 +275,7 @@
   ($runtime/with_context nil (fn []
     (run_composition_change service/runtime/h/snapshots (fn []
       (let catalogs [])
-      (for [revision catalog] in service/config/state/catalogs (catalogs .push catalog))
+      (map_for [revision catalog] in service/config/state/catalogs (catalogs .push catalog))
       (for catalog in catalogs
         (if (&& (== catalog/root origin/root) (! catalog/closed/.get))
           (catalog_failure ^transport expected catalog provider status)))))))
@@ -352,7 +352,7 @@
   (let resolved_root (manager_root_path ^explicit root))
   (state/root .set resolved_root)
   (var seed nil)
-  (for [prior_revision prior] in state/catalogs
+  (map_for [prior_revision prior] in state/catalogs
     (if (&& (== prior/root resolved_root) (! prior/closed/.get))
       (set seed ($thaw ($freeze prior/discovered/.get)))))
   (let catalog (open_model_catalog ^start false
@@ -388,7 +388,7 @@
   (if (! available) (fail (ServiceError ^code "unavailable" ^message "This provider is disabled or replaced.")))
   (let expired [])
   (var registration nil)
-  (for [id attempt] in state/logins
+  (map_for [id attempt] in state/logins
     (if (["pending" "exchanging"] .contains? attempt/status/.get)
       (fail (ServiceError ^code "busy" ^message "Finish or cancel the pending sign-in first.")))
     (if (&& (== provider "chatgpt") ($absent? account) (== attempt/provider "chatgpt")
@@ -425,7 +425,7 @@
   ($runtime/with_context nil (fn []
     (run_composition_change service/runtime/h/snapshots (fn []
       (let catalogs [])
-      (for [revision catalog] in service/config/state/catalogs (catalogs .push catalog))
+      (map_for [revision catalog] in service/config/state/catalogs (catalogs .push catalog))
       (for catalog in catalogs (adopt_catalog_connection catalog "chatgpt" connection))))))
   nil)
 
@@ -461,7 +461,7 @@
 (fn model_login_callback [handle, params] ^^private
   (let service (require_service handle))
   (let state service/config/state)
-  (for [id attempt] in state/logins
+  (map_for [id attempt] in state/logins
     (let callback_state (if (== attempt/provider "openrouter")
       (then (?? params/state params/openrouter_state)) (else params/state)))
     (if (== callback_state attempt/state)

@@ -37,7 +37,7 @@
   (if (!= ($head supplied) Map) (ui_error "invalid_request" "View state must be a map."))
   (if (> ($str/byte_size ($json/stringify supplied)) 16384) (ui_error "too_large" "View state is too large."))
   (let state ($thaw ($freeze candidate/view_state)))
-  (for [key value] in supplied
+  (map_for [key value] in supplied
     (if_not (candidate/view_state .has_key? key) (ui_error "invalid_request" $"Unknown view-state field ${key}."))
     (if_not ([Str Bool Int Float Nil] .contains? ($head value)) (ui_error "invalid_request" "View state must contain scalar values."))
     (let initial (candidate/view_state .get key))

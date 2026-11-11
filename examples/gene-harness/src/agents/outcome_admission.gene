@@ -14,14 +14,14 @@
       (if (!= ($head raw) Map)
         (fail (OutcomeError ^message "Outcome extensions must be a map of registered keys.")))
       (let extensions {})
-      (for [key value] in raw (extensions .put key value))
-      (for [alias key] in self/aliases
+      (map_for [key value] in raw (extensions .put key value))
+      (map_for [alias key] in self/aliases
         (if_not (fields .has_key? alias) (continue))
         (if (extensions .has_key? key)
           (fail (OutcomeError ^message $"Outcome supplies both ${key} and its short spelling ${alias}.")))
         (extensions .put key (fields .get alias))
         (fields .delete alias))
-      (if (|| (fields .has_key? "extensions") (> ($size extensions) 0))
+      (if (|| (fields .has_key? "extensions") (> ($map_size extensions) 0))
         (fields .put "extensions" extensions))
       (let construct ($runtime/bind_call ^named fields Outcome call/body))
       (construct))))
@@ -48,7 +48,7 @@
       ^has_prompt ($present? value/prompt)}})
   (let result (normalize_extension_fields snapshot context value/extensions))
   (if_not ($absent? result/error) (fail (OutcomeError ^message result/error)))
-  (if (|| ($present? value/extensions) (> ($size result/values) 0))
+  (if (|| ($present? value/extensions) (> ($map_size result/values) 0))
     (fields .put "extensions" result/values))
   (for warning in result/warnings
     (if_not ($absent? turn/console) (turn/console warning)))

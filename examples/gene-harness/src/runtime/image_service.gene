@@ -110,7 +110,7 @@
       (pending .put payload/call payload))
     (if (&& (== event/type "model/result") (== payload/final true))
       (pending .delete payload/call)))
-  (for [id requested] in pending
+  (map_for [id requested] in pending
     (record_result service/runtime (requested .assoc "session" live/state/session)
       ($to_str id) 1 "cancelled" true 0
       ^usage (if (== requested/image/role "generation") (?? live/pending_usage nil) nil)
@@ -498,7 +498,7 @@
 (fn close_image_host [handle]
   (let service (service_record handle))
   (try
-    (for [id live] in service/live
+    (map_for [id live] in service/live
       (if (== live/state/state "running")
         (finish_run service live "cancelled" ^!publish
           ^detail {^stage "execution" ^code "shutdown" ^message "Image execution stopped with the host."})))

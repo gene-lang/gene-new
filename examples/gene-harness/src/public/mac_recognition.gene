@@ -23,7 +23,7 @@
         nil))
     (worker .put "dispatch_error" (fn []
         (let streams (worker/streams .swap {}))
-        (for [key stream] in streams (stream/error "SpeechAnalyzer disconnected. Enable voice again to restart it."))))
+        (map_for [key stream] in streams (stream/error "SpeechAnalyzer disconnected. Enable voice again to restart it."))))
     (set ready true)
     worker
   ensure (if_not ready (close_worker worker))))

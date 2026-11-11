@@ -46,7 +46,7 @@
       (return nil)))
   (if (== ($head value) Map)
     (then
-      (for [key item] in value
+      (map_for [key item] in value
         (mark_body_references runtime item live))))
   (if (== ($head value) List)
     (then
@@ -60,7 +60,7 @@
     (if (> runtime/body_users/.load 0) (return false))
     (let live {})
     (mark_body_references runtime (core_states runtime/events "workspace" "workspace") live)
-    (for [id record] in runtime/sessions/index/.get
+    (map_for [id record] in runtime/sessions/index/.get
       (mark_body_references runtime (core_states runtime/events "session" ($to_str id)) live)
       (for event in (events_for runtime/events "session" ($to_str id))
         (if (== event/type "model/request")

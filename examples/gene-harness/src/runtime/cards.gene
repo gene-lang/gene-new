@@ -44,7 +44,7 @@
 
 (fn card_records [runtime, session : Str]
   (let found [])
-  (for [key state] in (core_states runtime/events "session" session)
+  (map_for [key state] in (core_states runtime/events "session" session)
     (if (&& ($str/starts_with? ($to_str key) "card/") ($present? state))
       (found .push state)))
   ($order/sort_by found (fn [card] (?? card/created_ms 0))))
@@ -122,7 +122,7 @@
       (for item in body (bound_names item found)))
     (else
       (if (== ($head form) List) (for item in form (bound_names item found)))
-      (if (== ($head form) Map) (for [key value] in form (bound_names value found)))))
+      (if (== ($head form) Map) (map_for [key value] in form (bound_names value found)))))
   found)
 
 (fn collect_symbols [form, found]
@@ -134,7 +134,7 @@
 (fn free_names [form, quoted : Bool, found]
   (if (&& (! quoted) (== ($head form) Sym)) (found .push ($to_str form)))
   (if (== ($head form) List) (for item in form (free_names item quoted found)))
-  (if (== ($head form) Map) (for [key value] in form (free_names value quoted found)))
+  (if (== ($head form) Map) (map_for [key value] in form (free_names value quoted found)))
   (match form
     (when (node : Node)
       (let head ($to_str ($head node)))
@@ -147,7 +147,7 @@
           (if (> ($size body) 0) (free_names body/0 false found))
           (return found)))
       (free_names ($head node) inner found)
-      (for [key value] in ($node/props node) (free_names value inner found))
+      (map_for [key value] in ($node/props node) (free_names value inner found))
       # A method call reads as (receiver ~ method args...); the method name
       # after ~ is a message, not a binding.
       (var message false)
@@ -175,7 +175,7 @@
 (fn source_warnings [runtime, snapshot, session : Str, source]
   (let bindings (workspace_bindings ^extra {^context {}} runtime/h snapshot session runtime/root))
   (let warnings [])
-  (for [name text] in source
+  (map_for [name text] in source
     (if_not ($absent? text)
       (let form ($first ($into ($parse/read_all ^source "card" text) [])))
       (let missing (unresolved_names form bindings))
@@ -328,7 +328,7 @@
 (fn flush_card_progress [runtime, session : Str]
   (if ($absent? runtime/services/values/cards) (return 0))
   (let pending [])
-  (for [key entry] in runtime/services/values/cards/transient/.get
+  (map_for [key entry] in runtime/services/values/cards/transient/.get
     (if (== entry/session session) (pending .push entry)))
   (for entry in pending
     (with_card_gate runtime session entry/id (fn []
@@ -383,7 +383,7 @@
 
 (fn prune_receipts [runtime, session : Str]
   (let receipts [])
-  (for [key state] in (core_states runtime/events "session" session)
+  (map_for [key state] in (core_states runtime/events "session" session)
     (if (&& ($str/starts_with? ($to_str key) "card_action/") ($present? state))
       (receipts .push state)))
   (if (<= receipts/.size action_retention) (return nil))
@@ -423,7 +423,7 @@
 # commits a click in the session, while the card still names its input.
 (fn resolve_earlier_admissions [runtime, session : Str]
   (if (== (runtime/services/values/cards/resolved/.get .get session) true) (return nil))
-  (for [key state] in (core_states runtime/events "session" session)
+  (map_for [key state] in (core_states runtime/events "session" session)
     (if (&& ($str/starts_with? ($to_str key) "card_action/") ($present? state)
             (== state/status "admitted") (!= state/epoch runtime/epoch))
       (resolved_receipt runtime session state)))
@@ -519,7 +519,7 @@
       (prune_receipts runtime session)))
 
 (fn finish_receipt [runtime, session : Str, receipt, changes]
-  (for [key value] in changes (receipt .put key value))
+  (map_for [key value] in changes (receipt .put key value))
   (receipt .put "finished_ms" ($os/wall_ms))
   (save_receipt runtime session receipt))
 

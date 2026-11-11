@@ -57,7 +57,7 @@
     (names .put name true)
     # Capture the definition now. Later mutations cannot change this turn.
     (let copy {})
-    (for [key value] in participant (copy .put key value))
+    (map_for [key value] in participant (copy .put key value))
     (copy .put "priority" priority)
     (selected .push ($freeze_shallow copy)))
   (let by_name ($order/sort_by selected /name))
@@ -82,8 +82,8 @@
 
 (fn transaction_scope [transaction]
   (let result {})
-  (for [key value] in (?? ($runtime/context) {}) (result .put key value))
-  (for [key value] in (?? transaction/scope {}) (result .put key value))
+  (map_for [key value] in (?? ($runtime/context) {}) (result .put key value))
+  (map_for [key value] in (?? transaction/scope {}) (result .put key value))
   result)
 
 (fn invoke_participant [transaction, entry, phase : Str, value]

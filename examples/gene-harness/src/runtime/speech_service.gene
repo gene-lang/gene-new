@@ -50,7 +50,7 @@
 (fn speech_catalog [service : SpeechService]
   (let result {})
   (let settings (speech_settings service))
-  (for [kind registry] in {^recognizer "speech_recognizers" ^synthesizer "speech_synthesizers"}
+  (map_for [kind registry] in {^recognizer "speech_recognizers" ^synthesizer "speech_synthesizers"}
     (let list [])
     (for engine in (rows service/runtime/h registry)
       (list .push {^name engine/name ^summary (?? engine/summary engine/name)
@@ -96,7 +96,7 @@
     opened)))
 
 (fn speech_resources_current? [service : SpeechService] : Bool
-  (for [kind opened] in service/resources/.get
+  (map_for [kind opened] in service/resources/.get
     (let current (row_record service/runtime/h opened/registry opened/row/name))
     (if (!= current/row_id opened/row_id) (return false)))
   true)
@@ -105,7 +105,7 @@
   (service/gate (fn []
     (if_not service/dirty/.get (return nil))
     (let resources (service/resources .swap {}))
-    (for [kind opened] in resources
+    (map_for [kind opened] in resources
       (try (opened/row/close opened/resource) catch Any nil))
     # Also collect an open result abandoned by a cancelled host job.
     (for registry in ["speech_recognizers" "speech_synthesizers"]

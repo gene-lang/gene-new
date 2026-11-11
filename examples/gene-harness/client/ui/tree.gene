@@ -36,13 +36,13 @@
   (if (== tag "#text")
     ($dom/set_text node/element (text tree))
     (do
-      (for [old_name value] in node/props
+      (map_for [old_name value] in node/props
         (var name ($to_str old_name))
         (if_yes (&& (! (metadata name)) ($absent? props/%name))
           ($dom/remove_attribute node/element name)))
       (set node/props props)
       ($dom/set_attribute node/element "data-ui-key" key)
-      (for [raw_name value] in props
+      (map_for [raw_name value] in props
         (var name ($to_str raw_name))
         (if_not (metadata name)
           (var attribute : Str value)
@@ -110,7 +110,7 @@
   changed : (Fn [UiNode] Nil), submit : (Fn [UiNode] Nil)] : Nil
   (set ui/generation (+ ui/generation 1))
   (patch_node ui tree ui/target 0 "@root" "" changed submit)
-  (for [key raw] in ui/nodes
+  (map_for [key raw] in ui/nodes
     (var node : UiNode raw)
     (if_yes (!= node/seen ui/generation)
       ($dom/remove node/element)

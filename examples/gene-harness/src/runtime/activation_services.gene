@@ -74,7 +74,7 @@
 (fn ^^private all_records [services : ActivationServices]
   (services/gate (fn []
     (let out [])
-    (for [token record] in services/records/.get (out .push record))
+    (map_for [token record] in services/records/.get (out .push record))
     out)))
 
 (fn ^^private start_record [record]

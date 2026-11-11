@@ -99,7 +99,7 @@
   (if_not initial
     (append_message ^settled rendered/settled ^round round/id ^turn turn runtime session "user" rendered/full)
     (let record ($thaw ($freeze_shallow incoming/annotations)))
-    (for [key value] in {^type "turn/request" ^turn turn ^round round/id
+    (map_for [key value] in {^type "turn/request" ^turn turn ^round round/id
       ^for_turn turn ^combine "append" ^full rendered/full ^settled rendered/settled}
       (record .put key value))
     (transcript runtime session record))
@@ -156,7 +156,7 @@
 
 (fn suspension_result [suspension, round, request : Str, count : Int, number : Int]
   (let record (copy_data suspension))
-  (for [key value] in {^request request ^request_sources (?? round/request_sources [])
+  (map_for [key value] in {^request request ^request_sources (?? round/request_sources [])
     ^request_items_ref (?? round/request_items_ref nil) ^turn_count count ^last_turn number}
     (record .put key value))
   record)
@@ -504,7 +504,7 @@
                 (>= (+ (?? round/task_turns_base 0) count) round/next_check_turn))
       (let record (run_check_in runtime session round (+ (?? round/task_turns_base 0) count) ^interval interval))
       (if_yes ($present? record)
-        (for [key value] in record/counters (round .put ($to_str key) value))
+        (map_for [key value] in record/counters (round .put ($to_str key) value))
         (round .put "last_check_in" (check_in_summary record))
         (if (== record/action "pause") (set pause record))
         (set limit (checked_limit round configured_limit))

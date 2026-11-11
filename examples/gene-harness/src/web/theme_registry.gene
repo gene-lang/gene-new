@@ -20,16 +20,16 @@
     (if (&& ($present? (candidate .get key)) (!= ($head (candidate .get key)) Str))
       (theme_error $"Theme ${key} must be text.")))
   (if (&& ($present? candidate/extends) (!= ($head candidate/extends) Str)) (theme_error "Theme extends must name a theme."))
-  (for [mode tokens] in (?? candidate/tokens {})
+  (map_for [mode tokens] in (?? candidate/tokens {})
     (if_not (["shared" "light" "dark"] .contains? ($to_str mode)) (theme_error "Theme tokens require shared/light/dark maps."))
     (if (!= ($head tokens) Map) (theme_error "Theme tokens must be maps."))
-    (for [name value] in tokens
+    (map_for [name value] in tokens
       (if (&& (["sidebar_width" "sidebar-width" "panel_min" "panel-min" "main_min" "main-min"] .contains? ($to_str name))
               (|| (!= ($head value) Str) ($absent? (#"^([0-9]+([.][0-9]+)?|[.][0-9]+)rem$" .match value))))
         (theme_error "Theme column sizes must be plain rem lengths."))
       (if (|| ($absent? (#"^[a-z][a-z0-9_-]*$" .match ($to_str name))) (!= ($head value) Str))
         (theme_error "Theme tokens require valid names and CSS strings."))))
-  (for [name svg] in (?? candidate/icons {}) (validate_icon {^name (css_name name) ^svg svg}))
+  (map_for [name svg] in (?? candidate/icons {}) (validate_icon {^name (css_name name) ^svg svg}))
   (if_yes ($present? candidate/fonts)
     (if (!= ($head candidate/fonts) List) (theme_error "Theme fonts must be a list."))
     (for face in candidate/fonts
@@ -52,7 +52,7 @@
     (plugin_icons .put record/payload/name record/payload/svg))
   # Plugin drawings are defaults; explicit drawings in a theme win.
   (let root_icons plugin_icons)
-  (for [name svg] in themes/default/icons (root_icons .put name svg))
+  (map_for [name svg] in themes/default/icons (root_icons .put name svg))
   (themes/default .put "icons" root_icons)
   (for record in (?? snapshot/registries/themes [])
     (themes .put record/payload/name record/payload))
@@ -80,7 +80,7 @@
 
 (fn theme_catalog [themes]
   (let result [])
-  (for [name theme] in themes
+  (map_for [name theme] in themes
     (result .push {^name ($to_str name) ^title (?? theme/title ($to_str name)) ^doc (?? theme/doc "")}))
   result)
 

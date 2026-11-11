@@ -154,7 +154,7 @@
     (fail (HarnessError ^message "a feature slot row requires a nonempty name of at most 128 bytes")))
   (if (&& ($present? candidate/takeover) (!= ($head candidate/takeover) Bool))
     (fail (HarnessError ^message "a feature slot takeover flag must be a boolean")))
-  (for [key value] in candidate
+  (map_for [key value] in candidate
     (if_not (["name" "takeover" "summary" "tags" "docs"] .contains? ($to_str key))
       (fail (HarnessError ^message $"Unknown feature slot field ${key}"))))
   candidate)

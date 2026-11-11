@@ -138,14 +138,14 @@
   (if (|| (!= ($head props) Map) (!= ($head children) List))
     (component_error "web component props and children must be a map and list"))
   (if_yes (== tag "icon")
-    (if (|| (!= ($size props) 1) (!= ($head props/name) Str)
+    (if (|| (!= ($map_size props) 1) (!= ($head props/name) Str)
             ($absent? (#"^[a-z][a-z0-9-]{0,79}$" .match props/name)) (! children/.empty?))
       (component_error "icon requires a name and no children"))
     (return {^tag "span" ^props {^class "icon" ^data-icon props/name ^aria-hidden "true"} ^children []}))
   (if_yes (== tag "host_widget")
     (if ($absent? widgets)
       (component_error "host_widget is only available in conversation_sidebar"))
-    (if (|| (!= ($size props) 1) (! (sidebar_widgets .contains? props/name)) (! children/.empty?))
+    (if (|| (!= ($map_size props) 1) (! (sidebar_widgets .contains? props/name)) (! children/.empty?))
       (component_error "host_widget requires one supported name and no children"))
     (if_not ($absent? (widgets .get props/name))
       (component_error $"duplicate sidebar widget ${props/name}"))
@@ -154,7 +154,7 @@
   (if_not (|| (component_tags .contains? tag) (&& (|| interactive ($present? card)) (interactive_tags .contains? tag)))
     (component_error $"unsupported web component element ${tag}"))
   (let attributes {})
-  (for [key item] in props
+  (map_for [key item] in props
     (let name ($to_str key))
     (if_yes ($absent? card)
       (if_not (|| (component_attributes .contains? name) (&& interactive (interactive_attributes .contains? name)))
@@ -190,7 +190,7 @@
       (continue))
     (if_yes (== name "success_state")
       (if (!= ($head item) Map) (component_error "success_state must be a map"))
-      (for [field value] in item
+      (map_for [field value] in item
         (if_not ([Str Int Float Bool Nil] .contains? ($head value))
           (component_error "success_state values must be scalar data")))
       (attributes .put "success-state" item)
@@ -391,7 +391,7 @@
     (if (!= ($head candidate/view_state) Map) (component_error "view_state must declare a map of defaults"))
     (if (|| ($absent? candidate/render) (! (["panel" "view"] .contains? candidate/slot)))
       (component_error "stateful views need a panel or view render callback"))
-    (for [key value] in candidate/view_state
+    (map_for [key value] in candidate/view_state
       (if_not ([Str Bool Int Float Nil] .contains? ($head value))
         (component_error "view state defaults must be scalar data")))
     (if_not ($absent? candidate/actions)

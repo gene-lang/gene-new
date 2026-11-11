@@ -78,13 +78,13 @@
   (if (< idle_timeout_ms 0)
     (fail (SessionError ^code "invalid_request" ^message "idle timeout must be non-negative")))
   ($fs/make_dir $"${state_root}/sessions")
-  (for [key intent] in (core_states events "workspace" "workspace")
+  (map_for [key intent] in (core_states events "workspace" "workspace")
     (if (&& ($str/starts_with? ($to_str key) "session_delete/") (!= intent/done true))
       (finish_session_deletion events ($to_str key) intent)))
   (let index {})
   # Workspace projections are authoritative if a crash preceded index publication.
   # This reads projection metadata, never session event segments or plugins.
-  (for [key record] in (core_states events "workspace" "workspace")
+  (map_for [key record] in (core_states events "workspace" "workspace")
     (if (&& ($str/starts_with? ($to_str key) "session/") (!= record/deleted true)) (index .put record/id record)))
   (let manager (SessionManager ^runtime runtime ^events events ^state_root state_root
     ^index ($cell index) ^loaded ($cell {}) ^idle_timeout_ms idle_timeout_ms ^closed ($cell false)
@@ -108,7 +108,7 @@
   (let interrupted [])
   (let reasons {})
   (let corrections [])
-  (for [id record] in manager/index/.get
+  (map_for [id record] in manager/index/.get
     # The workspace index is a listing projection. The round projection is
     # available without loading transcript segments or the full receipt blob.
     (let saved (core_state manager/events "session" ($to_str id) "round"))
@@ -134,7 +134,7 @@
     (let reason (?? (reasons .get id) (if (|| (== round/state "cancelled")
       (&& ($present? round) (== (cancelled .get round/id) true))) "cancelled" "interrupted")))
     (let warnings [])
-    (for [key patch] in (core_states manager/events "session" id)
+    (map_for [key patch] in (core_states manager/events "session" id)
       (if_yes (&& ($str/starts_with? ($to_str key) "patch/") (== patch/state "started"))
         (let warning (recover_patch_temporaries manager/runtime/root patch/files))
         (warnings .push warning)
@@ -201,7 +201,7 @@
 (fn update_session_unlocked [manager : SessionManager, id : Str, changes]
   (let previous (require_record manager id))
   (let record (copy_data (require_record manager id)))
-  (for [key value] in changes
+  (map_for [key value] in changes
     (if (== key "id")
       (fail (SessionError ^code "invalid_request" ^message "session identity cannot change")))
     (record .put key value))
@@ -224,7 +224,7 @@
       (update_session_unlocked manager parent/id {^^attention})))
   (if_yes (&& (!= record/kind "child") ($present? changes/pinned))
     (let children [])
-    (for [child_id child] in manager/index/.get
+    (map_for [child_id child] in manager/index/.get
       (if (== child/parent/session id) (children .push ($to_str child_id))))
     (for child in children (update_session_unlocked manager child {^pinned record/pinned})))
   (copy_data record))
@@ -315,7 +315,7 @@
       (!= until "")))
   (let query ($str/lower q))
   (let results [])
-  (for [id record] in manager/index/.get
+  (map_for [id record] in manager/index/.get
     (if (&& (! filtered) (== record/kind "child")) (continue))
     (if (&& (! filtered) (!= record/kind "interactive") (! record/pinned)) (continue))
     (if (&& ($present? kind) (!= record/kind kind)) (continue))
@@ -393,7 +393,7 @@
   (require_open manager)
   (let due [])
   (let now ($os/monotonic_ms))
-  (for [id state] in manager/loaded/.get
+  (map_for [id state] in manager/loaded/.get
     (if (>= (- now state/last_access/.get) manager/idle_timeout_ms) (due .push ($to_str id))))
   (var count 0)
   (for id in due
@@ -406,7 +406,7 @@
   (with_session_gate manager $"round/${root}" (fn []
     (let ids [id])
     (if_yes (== root id)
-      (for [child_id child] in manager/index/.get
+      (map_for [child_id child] in manager/index/.get
         (if (== child/parent/session id) (ids .push ($to_str child_id)))))
     (with_delete_gates manager ids 0 root (fn []
       (let remove (fn []
@@ -473,12 +473,12 @@
 
 (fn close_session_manager [manager : SessionManager]
   (if manager/closed/.get (return nil))
-  (for [id state] in manager/loaded/.get
+  (map_for [id state] in manager/loaded/.get
     (if (session_running? state)
       (fail (SessionError ^code "busy" ^message $"session ${id} still has a round"))))
   (flush_event_store manager/events)
   (let ids [])
-  (for [id state] in manager/loaded/.get
+  (map_for [id state] in manager/loaded/.get
     (ids .push ($to_str id)))
   (for id in ids
     (unload_event_stream manager/events "session" id))

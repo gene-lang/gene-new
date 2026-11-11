@@ -55,10 +55,10 @@
 (fn workspace_bindings [h : Harness, snapshot, session : Str, workspace_root : Str,
                         ^extra extra = {}]
   (let bindings (function_bindings snapshot))
-  (for [name value] in (host_object_bindings h session workspace_root) (bindings .put name value))
+  (map_for [name value] in (host_object_bindings h session workspace_root) (bindings .put name value))
   (bindings .put "doc" (fn [name : Str] (doc h name ^snapshot snapshot)))
-  (for [name value] in (discovery_bindings h ($cell snapshot)) (bindings .put name value))
-  (for [name value] in extra (bindings .put name value))
+  (map_for [name value] in (discovery_bindings h ($cell snapshot)) (bindings .put name value))
+  (map_for [name value] in extra (bindings .put name value))
   bindings)
 
 (fn question_validators [snapshot]

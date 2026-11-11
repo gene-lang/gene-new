@@ -15,7 +15,7 @@
 
 (fn schema_verdict [name : Str, value]
   (if (!= ($head value) Map) (schema_failure name "An Outcome schema must return {^value DATA} or {^error TEXT}."))
-  (for [key field] in value
+  (map_for [key field] in value
     (if_not (["value" "error" "warning" "suspend"] .contains? ($to_str key))
       (schema_failure name $"Unknown Outcome schema verdict field ${key}.")))
   (let accepted (value .has_key? "value"))
@@ -37,7 +37,7 @@
   (if (|| (!= ($head candidate) Map) (!= ($head candidate/name) Str) (== candidate/name "")
           (! ($runtime/callable? candidate/schema)))
     (schema_failure candidate/name "An Outcome extension needs a name and callable schema."))
-  (for [key value] in candidate
+  (map_for [key value] in candidate
     (if_not (["name" "schema" "alias" "summary" "tags" "docs"] .contains? ($to_str key))
       (schema_failure candidate/name $"Unknown Outcome extension field ${key}.")))
   candidate)
@@ -54,7 +54,7 @@
       (schema_failure candidate/name "Outcome extension keys belong to their contributor's namespace; short spellings belong to the host.")))
   (let schema candidate/schema)
   (let prepared {})
-  (for [key value] in candidate (prepared .put key value))
+  (map_for [key value] in candidate (prepared .put key value))
   (prepared .put "_host" native)
   (prepared .put "_owner" owner)
   (prepared .put "schema" (fn [context value]
@@ -88,7 +88,7 @@
   (for record in (?? (snapshot/registries .get "outcome_extensions") [])
     (definitions .push record/payload)
     (known .put record/payload/name true))
-  (for [key value] in input
+  (map_for [key value] in input
     (if_not (&& ([Str Sym] .contains? ($head key)) (known .has_key? ($to_str key)))
       (return {^error $"Unknown Outcome extension ${key}; use an active owner's declared field."})))
   (let values {})

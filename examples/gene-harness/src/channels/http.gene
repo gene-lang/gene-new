@@ -20,7 +20,7 @@
   (let settings {^public_url url})
   (for row in (transport_rows service/runtime)
     (if ($runtime/callable? row/settings)
-      (for [field value] in (?? (transport_call row "settings" {^data data}) {})
+      (map_for [field value] in (?? (transport_call row "settings" {^data data}) {})
         (settings .put ($to_str field) value))))
   (mutate service/runtime/services/values/channel_queues (fn [state] (state .put "settings" settings) settings))
   (service/settings .set settings)

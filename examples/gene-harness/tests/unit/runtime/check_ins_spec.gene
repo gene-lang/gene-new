@@ -15,7 +15,7 @@
 
 (fn distribution [overrides]
   (let base {^advancing 0.0 ^verifying 0.0 ^repeating 0.0 ^blocked 0.0 ^drifting 0.0})
-  (for [key value] in overrides (base .put ($to_str key) value))
+  (map_for [key value] in overrides (base .put ($to_str key) value))
   base)
 
 # A turn as the loop records it: the response and its turn/end evidence.
@@ -47,7 +47,7 @@
     ($assert (== good/value/operator_now/value 0.12))
     ($assert ($absent? good/value/extra))
     ($assert (== good/value/progress/confidence 0.8))
-    (for [label answers] in
+    (map_for [label answers] in
       {^missing {^progress {^choice "advancing" ^probabilities (distribution {^advancing 1.0})}}
        ^unknown_option {^progress {^choice "finished" ^probabilities (distribution {^advancing 1.0})} ^operator_now {^noul 0.1}}
        ^incomplete {^progress {^choice "advancing" ^probabilities {^advancing 1.0}} ^operator_now {^noul 0.1}}

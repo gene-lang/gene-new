@@ -73,7 +73,7 @@
   (let signature (key [record/status record/result/parts]))
   (if (== record/share_observed signature) (return nil))
   (let intent {})
-  (for [field value] in record/intent
+  (map_for [field value] in record/intent
     (if (!= field "parts") (intent .put ($to_str field) value)))
   {^intent intent ^status record/status ^result {^parts record/result/parts} ^signature signature})
 
@@ -81,7 +81,7 @@
   (let source_transport (read service/runtime/services/values/channel_queues (fn [state] state/source/transport)))
   (let candidates (read service/runtime/services/values/channel_queues (fn [state]
     (let found [])
-    (for [id record] in state/outbox
+    (map_for [id record] in state/outbox
       (if (&& (== record/intent/mode "thread") (!= record/linked true))
         (found .push {^id ($to_str id) ^session record/intent/session})))
     found)))

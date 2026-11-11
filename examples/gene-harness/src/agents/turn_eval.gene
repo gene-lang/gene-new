@@ -101,7 +101,7 @@
       (then
         # Bindings hold live objects, so copy the map without copying its values.
         (let values {})
-        (for [name value] in bindings (values .put name value))
+        (map_for [name value] in bindings (values .put name value))
         (values .put "Outcome" (?? outcome_binding Outcome))
         (if ($absent? (values .get "workspace"))
           (values .put "workspace" {^root workspace_root}))

@@ -293,7 +293,7 @@
   (var states (events/core_projections/.get .get (stream_key scope stream)))
   (var out (fresh_map))
   (if ($absent? states) (return out))
-  (for [key value] in states
+  (map_for [key value] in states
     (if ($str/starts_with? ($to_str key) prefix) (out .put ($to_str key) (copy_data value))))
   out)
 
@@ -322,8 +322,8 @@
 (fn manifest_state_writers [manifest]
   (let result [])
   (if_not ($absent? manifest)
-    (for [stream descriptor] in manifest/streams
-      (for [id record] in (?? descriptor/state_writers {})
+    (map_for [stream descriptor] in manifest/streams
+      (map_for [id record] in (?? descriptor/state_writers {})
         (result .push (copy_data record)))))
   result)
 
@@ -397,19 +397,19 @@
   (require_open events)
   (events/catalog .set known_types)
   (events/quarantined .set (fresh_list))
-  (for [stream values] in events/streams/.get
+  (map_for [stream values] in events/streams/.get
     (for envelope in values (validate_loaded_envelope events envelope)))
   # A startup repair must validate cold streams too before it can append to
   # any stream. Newly loaded envelopes use the installed catalog exactly once.
   (if_yes all_streams
     (let manifest events/last_manifest/.get)
-    (for [stream descriptor] in (?? manifest/streams {})
+    (map_for [stream descriptor] in (?? manifest/streams {})
       (if ($absent? (events/streams/.get .get stream))
         (current_events events ($to_str stream)))))
   (copy_data events/quarantined/.get))
 
 (fn validate_envelope_formats [events : EventStore]
-  (for [stream values] in events/streams/.get
+  (map_for [stream values] in events/streams/.get
     (for envelope in values (validate_loaded_envelope events envelope)))
   (events/formats_validated .set true)
   events)
@@ -489,10 +489,10 @@
   (var descriptors (fresh_map))
   (var previous events/last_manifest/.get)
   (if_not ($absent? previous)
-    (for [key descriptor] in previous/streams
+    (map_for [key descriptor] in previous/streams
       (descriptors .put key descriptor)))
   (var streams events/streams/.get)
-  (for [key ignored] in events/dirty_streams/.get
+  (map_for [key ignored] in events/dirty_streams/.get
     (if (== ignored "deleted")
       (then (descriptors .delete key) (continue)))
     (var values (streams .get key))
@@ -515,7 +515,7 @@
   (events/streams .set streams)
 
   (var current_digests (fresh_list))
-  (for [key descriptor] in descriptors
+  (map_for [key descriptor] in descriptors
     (for digest in descriptor/segments (current_digests .push digest))
     (current_digests .push descriptor/projection))
 
@@ -552,7 +552,7 @@
     (fail (HarnessStateError ^message "event store predates this Harness; start a fresh workspace")))
   (var sequences (fresh_map))
   (let writers {})
-  (for [key descriptor] in manifest/streams
+  (map_for [key descriptor] in manifest/streams
     (sequences .put key descriptor/next_seq)
     (writers .put key (copy_data (?? descriptor/state_writers {}))))
   {^streams (fresh_map) ^sequences sequences ^projections (fresh_map)
@@ -621,7 +621,7 @@
     (current_events events (stream_key "session" session)))
   (var repairs (fresh_list))
   (var interrupted_calls (fresh_list))
-  (for [key values] in events/streams/.get
+  (map_for [key values] in events/streams/.get
     (if_yes (&& ($present? session) (!= ($to_str key) (stream_key "session" session)))
       (continue))
     (var open_turns (fresh_map))
@@ -643,11 +643,11 @@
               envelope/payload/attempt))
           (if (== envelope/payload/final true)
             (open_calls .delete id)))))
-    (for [id requested] in open_calls
+    (map_for [id requested] in open_calls
       (interrupted_calls .push
         {^request requested
          ^attempt (+ (?? (last_attempts .get id) 0) 1)}))
-    (for [turn envelope] in open_turns
+    (map_for [turn envelope] in open_turns
       (repairs .push envelope)))
   (for pending in interrupted_calls
     (let requested pending/request)

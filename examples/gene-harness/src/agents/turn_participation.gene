@@ -37,7 +37,7 @@
     (if packet/value/.empty? (continue))
     (let definition (definition_for transaction packet/name))
     (if (== definition/_host true)
-      (for [key value] in (?? definition/request_record {}) (annotations .put key value))))
+      (map_for [key value] in (?? definition/request_record {}) (annotations .put key value))))
   {^items items ^annotations annotations})
 
 (fn participant_bindings [transaction]
@@ -57,11 +57,11 @@
     (let definition (definition_for transaction packet/name))
     (if (|| (!= definition/_host true) (!= ($head packet/value) Map))
       (bad_phase_result transaction packet/name "bindings" "Participant bindings must be a map."))
-    (for [name value] in packet/value
+    (map_for [name value] in packet/value
       (if (bindings .has_key? name)
         (bad_phase_result transaction packet/name "bindings" $"Participant binding ${name} is already owned."))
       (bindings .put name value)))
-  (for [owner data] in public
+  (map_for [owner data] in public
     (let source (public_sources .get owner))
     (if (bindings .has_key? owner)
       (bad_phase_result transaction source "bindings" "A public data namespace conflicts with a host binding."))

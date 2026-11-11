@@ -73,7 +73,7 @@
   (message current_plugins []
     (let record (composition_record self))
     (let plugins {})
-    (for [id revision] in record/current/.get
+    (map_for [id revision] in record/current/.get
       (plugins .put id revision/plugin))
     plugins)
   # Status consumers need entry states only, without the binding projection.
@@ -89,17 +89,17 @@
     (let states {})
     (let snapshot record/loader/.inspect)
     (for entry in snapshot/entries (states .put entry/id entry/state))
-    (for [id revision] in record/current/.get
+    (map_for [id revision] in record/current/.get
       (revisions .put id {^plugin revision/plugin ^options revision/options
         ^active (== (states .get id) "active")}))
     revisions)
   (message inspect []
     (let record (composition_record self))
     (let snapshot ($thaw #{}))
-    (for [name value] in record/loader/.inspect
+    (map_for [name value] in record/loader/.inspect
       (snapshot .put name value))
     (let selected ($thaw #[]))
-    (for [id projection] in record/projections
+    (map_for [id projection] in record/projections
       (let binding (record/keys .get; .get id))
       (selected .push {^registry binding/registry ^key binding/name ^row_id projection/row_id}))
     (snapshot .put "bindings" selected)
@@ -223,7 +223,7 @@
           (record/base_owner .set fx)
           (fx .defer (fn []
             (if (same? record/base_owner/.get fx) (record/base_owner .set nil))))
-          (for [id binding] in record/keys/.get
+          (map_for [id binding] in record/keys/.get
             (selection_changed record binding/registry binding/name)))))))
   (compositions/.get .push record)
   # Without a publication participant, Cordis reconciles entry by entry like
@@ -301,7 +301,7 @@
       # Children can activate while their parent is still loading. Publish
       # selected-entry bindings only after all of this activation's rows exist.
       (ready .set true)
-      (for [id pair] in changed
+      (map_for [id pair] in changed
         (selection_changed record pair/0 pair/1)))))
 
 (fn failed_entries [snapshot] ^^private
@@ -369,7 +369,7 @@
             ($str/starts_with? plugin/id "descriptor:"))
       (fail (CompositionError ^message $"plugin id ${plugin/id} is reserved by Harness")))
     (let supplied (?? (entry_options .get plugin/id) #{}))
-    (for [name value] in supplied
+    (map_for [name value] in supplied
       (if_not (["module" "limits" "init_limits" "host" "digest" "closure" "core_interface"] .contains? ($to_str name))
         (fail (CompositionError ^message $"unknown Harness entry option ${name}"))))
     (let source (supplied .get "module"))
@@ -393,7 +393,7 @@
     (if ($absent? source)
       (admitted .put plugin/id (host_plugin_spec record plugin policy))))
   (let departed ($thaw #[]))
-  (for [id cached] in record/specs
+  (map_for [id cached] in record/specs
     (if ($absent? (admitted .get id)) (departed .push id)))
   (for id in departed (record/specs .delete id))
   (let desired ($thaw #[]))

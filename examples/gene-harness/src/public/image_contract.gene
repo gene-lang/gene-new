@@ -12,7 +12,7 @@
 
 (fn normalize_image_request [input, defaults]
   (if (!= ($head input) Map) (image_error "invalid_request" "Image request must be a map."))
-  (for [key value] in input
+  (map_for [key value] in input
     (if_not ((input_fields) .contains? ($to_str key))
       (image_error "invalid_request" $"Unknown image input ${key}; MVP output is PNG only.")))
   (let values {^prompt input/prompt ^reference_images [] ^max_attempts 3
@@ -37,7 +37,7 @@
 (fn image_limits [config]
   (let result {^run_timeout_ms 590000 ^generation_timeout_ms 240000
     ^review_timeout_ms 60000 ^persistence_margin_ms 5000})
-  (for [key fallback] in result
+  (map_for [key fallback] in result
     (let value (?? (config .get key) fallback))
     (if (|| (!= ($head value) Int) (< value 1) (> value 86400000))
       (image_error "invalid_request" $"Image ${key} must be an integer from 1 through 86400000."))
@@ -73,7 +73,7 @@
 (fn image_usage [value, ^depth depth : Int = 0]
   (if (|| (!= ($head value) Map) (> depth 4)) (return nil))
   (let result {})
-  (for [key item] in value
+  (map_for [key item] in value
     (if ($absent? (#"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$" .match ($to_str key))) (continue))
     (if (&& ([Int Float] .contains? ($head item)) (== item item)
             (> item -1e100) (< item 1e100))

@@ -21,8 +21,8 @@
   (round .put "logical_items_ref" (write_body runtime ($serde/write_data retained)))
   (round .put "request_sources" (request_sources rendered/items))
   (let payload {})
-  (for [key value] in record_fields (payload .put key value))
-  (for [key value] in {^type "turn/request" ^turn round/last_turn
+  (map_for [key value] in record_fields (payload .put key value))
+  (map_for [key value] in {^type "turn/request" ^turn round/last_turn
     ^for_turn (+ round/last_turn 1) ^combine "replace" ^round round/id
     ^full rendered/full ^settled rendered/settled ^at_ms ($os/wall_ms)}
     (payload .put key value))

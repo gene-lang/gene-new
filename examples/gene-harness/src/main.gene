@@ -43,7 +43,7 @@
       (parsed/options .put "workspace" (initialize_manager_workspace ^root parsed/options/root)))
     (if_yes (["web" "manager"] .contains? parsed/command)
       (if (> parsed/words/.size 1) (problem "web accepts host options, not additional commands."))
-      (for [key value] in parsed/options
+      (map_for [key value] in parsed/options
         (if_not (["workspace" "root" "port" "restart-port" "startup-id" "script" "offline" "supervised" "recovery" "managed" "provider" "model" "effort"] .contains? ($to_str key))
           (problem $"--${key} requires a client command.")))
       (if (== parsed/options/recovery true) (return (serve_recovery parsed/options)))

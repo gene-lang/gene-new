@@ -57,7 +57,7 @@
 
 (fn query_string [values] : Str
   (let parts [])
-  (for [name value] in values
+  (map_for [name value] in values
     (parts .push ($to_str ($url/encode_component ($to_str name)) "=" ($url/encode_component value))))
   ($str/join parts "&"))
 

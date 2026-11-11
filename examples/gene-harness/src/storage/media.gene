@@ -44,11 +44,11 @@
   (let digests {})
   (var bytes 0)
   (var records ($size index/assets))
-  (for [id asset] in index/assets
+  (map_for [id asset] in index/assets
     (if_not ($has_key? digests asset/digest)
       (set bytes (+ bytes asset/size))
       (digests .put asset/digest true)))
-  (for [id reservation] in index/reservations
+  (map_for [id reservation] in index/reservations
     (if (== ($to_str id) excluding) (continue))
     (if (|| (!= ($head reservation/bytes) Int) (< reservation/bytes 1)
             (!= reservation/records 1))
@@ -73,12 +73,12 @@
     (media_error "invalid_request" "Invalid generated-media reservation."))
   (media_gate (fn []
     (let index (read_index store))
-    (for [id asset] in index/assets
+    (map_for [id asset] in index/assets
       (if_yes (&& (== asset/generation/run run) (== asset/generation/attempt attempt))
         (if (|| (!= asset/generation/session session) (!= asset/generation/round round))
           (media_error "invalid_request" "Committed media belongs to another conversation."))
         (return {^id asset/id ^^committed ^media (media_descriptor store asset/id)})))
-    (for [id reservation] in index/reservations
+    (map_for [id reservation] in index/reservations
       (if_yes (&& (== reservation/run run) (== reservation/attempt attempt))
         (if (|| (!= reservation/bytes amount) (!= reservation/session session)
                 (!= reservation/round round))
@@ -109,7 +109,7 @@
   (media_gate (fn []
     (let index (read_index store))
     (let interrupted [])
-    (for [id reservation] in index/reservations (interrupted .push reservation))
+    (map_for [id reservation] in index/reservations (interrupted .push reservation))
     (if_not interrupted/.empty?
       (index .put "reservations" {})
       (write_index store index))
@@ -117,7 +117,7 @@
     # Only unreferenced digest objects are disposable; committed attempts are
     # retained regardless of whether their run checkpoint was written.
     (let live {})
-    (for [id asset] in index/assets
+    (map_for [id asset] in index/assets
       (if ($absent? (#"^[0-9a-f]{64}$" .match asset/digest))
         (media_error "unavailable" "Damaged media object identity."))
       (live .put asset/digest true))
@@ -160,7 +160,7 @@
 (fn generated_media [store : MediaStore, ^session session = nil, ^run run = nil]
   (let records [])
   (let index (read_index store))
-  (for [id record] in index/assets
+  (map_for [id record] in index/assets
     (if (&& (== record/source "generated")
             (|| ($absent? session) (== record/generation/session session))
             (|| ($absent? run) (== record/generation/run run)))

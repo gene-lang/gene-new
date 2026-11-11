@@ -81,7 +81,7 @@
   (let body (if (== http_method "POST") ($json/stringify data) nil))
   (if_yes (== http_method "GET")
     (let query [])
-    (for [key value] in data
+    (map_for [key value] in data
       (query .push ($to_str ($url/encode_component ($to_str key)) "=" ($url/encode_component ($to_str value)))))
     (if_not query/.empty? (set address ($to_str address "?" ($str/join query "&")))))
   (let request {^method method ^http_method http_method ^url address ^headers headers ^body body ^params data})

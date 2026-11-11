@@ -17,7 +17,7 @@
   (if (!= ($head input) Map) (delegation_error "invalid_configuration" "delegation settings must be a map."))
   (let limits {^max_running 8 ^max_per_parent 4 ^max_per_round 16
     ^turn_limit 12 ^max_turns 24 ^timeout_ms 600000 ^max_timeout_ms 600000})
-  (for [raw_key fallback] in limits
+  (map_for [raw_key fallback] in limits
     (let key ($to_str raw_key))
     (let value (?? (input .get key) fallback))
     (let maximum (if (["timeout_ms" "max_timeout_ms"] .contains? key)
@@ -128,7 +128,7 @@
     (return ($map value (fn [item] (delegation_result_data item ^depth (+ depth 1))))))
   (if_yes (== kind Map)
     (let result {})
-    (for [key item] in value
+    (map_for [key item] in value
       (if_not ([Str Sym] .contains? ($head key))
         (delegation_error "invalid_result" "Delegation result map keys must be strings or symbols."))
       (result .put key (delegation_result_data item ^depth (+ depth 1))))

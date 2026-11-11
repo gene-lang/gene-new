@@ -28,7 +28,7 @@
     ^bot_user (identifier identity/bot_user "bot user ID")
     ^operator (identifier identity/operator "operator ID") ^^enabled})
   (mutate owner (fn [state]
-    (for [name existing] in state/accounts
+    (map_for [name existing] in state/accounts
       (if (&& (!= ($to_str name) id) (== existing/transport transport) (== existing/team record/team)
               (== (?? existing/app existing/bot_user) (?? record/app record/bot_user)))
         (channel_error "conflict" "This transport app/team already has a configured account.")))
@@ -63,7 +63,7 @@
     (let previous (state/routes .get id))
     (if (&& ($present? previous) (!= previous/workspace canonical))
       (channel_error "conflict" "Moving a channel to another workspace requires an explicit migration."))
-    (for [other candidate] in state/routes
+    (map_for [other candidate] in state/routes
       (if (&& enabled candidate/enabled (!= ($to_str other) id) (== candidate/workspace canonical))
         (channel_error "conflict" "The workspace already has an enabled channel binding.")))
     (let record {^id id ^owner state/id ^transport selected/transport ^account account ^team selected/team ^channel channel
@@ -97,7 +97,7 @@
 (fn public_authority [owner]
   (let state (snapshot owner))
   (let accounts [])
-  (for [id account] in state/accounts
+  (map_for [id account] in state/accounts
     (accounts .push {^id ($to_str id) ^transport account/transport ^team account/team ^app account/app
       ^bot_user account/bot_user ^operator account/operator ^enabled account/enabled}))
   {^owner state/id ^revision state/revision ^policy_revision state/policy_revision
@@ -108,6 +108,6 @@
 (fn transport_accounts [owner, transport : Str]
   (read owner (fn [state]
     (let result [])
-    (for [id account] in state/accounts
+    (map_for [id account] in state/accounts
       (if (== account/transport transport) (result .push (copy account))))
     ($order/sort_by result /id))))

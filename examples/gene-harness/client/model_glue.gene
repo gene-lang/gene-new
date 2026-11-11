@@ -79,7 +79,7 @@
   (var drafts (model_drafts client))
   (var choice : PropMap drafts/trigger_choice)
   (var present false)
-  (for [key value] in choice (set present true))
+  (map_for [key value] in choice (set present true))
   (if_yes present
     (set payload/model_settings ($json/parse ($json/stringify drafts/trigger_choice)))))
 

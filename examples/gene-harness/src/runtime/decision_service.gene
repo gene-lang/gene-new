@@ -49,7 +49,7 @@
 (fn close_decision_service [service]
   (if (service/closed .swap true) (return nil))
   (services .set ($filter services/.get (fn [item] (! (same? item/token service/token)))))
-  (for [name entry] in service/resources/.get
+  (map_for [name entry] in service/resources/.get
     (try (entry/row/close entry/resource) catch Any nil))
   (service/resources .set {})
   nil)
@@ -65,9 +65,9 @@
 
 # Malformed questions are a caller bug, so they raise.
 (fn validate_questions [questions]
-  (if (|| (!= ($head questions) Map) (== ($size questions) 0) (> ($size questions) 16))
+  (if (|| (!= ($head questions) Map) (== ($map_size questions) 0) (> ($map_size questions) 16))
     (question_error "Questions are a map of 1 to 16 question ids."))
-  (for [id question] in questions
+  (map_for [id question] in questions
     (let name ($to_str id))
     (if_not (snake_id? name) (question_error $"Question id ${name} must be lowercase snake_case."))
     (if (!= ($head question) Map) (question_error $"Question ${name} must be a map."))
@@ -76,9 +76,9 @@
     (if_not (nonempty_text? question/instructions) (question_error $"Question ${name} needs instructions."))
     (match question/type
       (when "choice"
-        (if (|| (!= ($head question/criteria) Map) (< ($size question/criteria) 2) (> ($size question/criteria) 255))
+        (if (|| (!= ($head question/criteria) Map) (< ($map_size question/criteria) 2) (> ($map_size question/criteria) 255))
           (question_error $"Choice ${name} needs 2 to 255 criteria."))
-        (for [option text] in question/criteria
+        (map_for [option text] in question/criteria
           (if_not (snake_id? ($to_str option)) (question_error $"Choice ${name} option ${option} must be lowercase snake_case."))
           (if_not (nonempty_text? text) (question_error $"Choice ${name} option ${option} needs a description."))))
       (when "score"
@@ -93,7 +93,7 @@
 
 (fn distribution [probabilities, options] ^^private
   (if (!= ($head probabilities) Map) (return {^error "probabilities is not a map"}))
-  (if (!= ($size probabilities) options/.size) (return {^error "probabilities do not cover exactly the options"}))
+  (if (!= ($map_size probabilities) options/.size) (return {^error "probabilities do not cover exactly the options"}))
   (var total 0.0)
   (for option in options
     (let value (probabilities .get option))
@@ -111,7 +111,7 @@
   (match question/type
     (when "choice"
       (let options [])
-      (for [key text] in question/criteria (options .push ($to_str key)))
+      (map_for [key text] in question/criteria (options .push ($to_str key)))
       (if_not (&& (== ($head answer/choice) Str) (options .contains? answer/choice))
         (return {^error "choice is not one of the options"}))
       (let checked (distribution answer/probabilities options))
@@ -142,7 +142,7 @@
 (fn validate_answers [questions, answers]
   (if (!= ($head answers) Map) (return {^error "answers is not a map"}))
   (let result {})
-  (for [id question] in questions
+  (map_for [id question] in questions
     (let name ($to_str id))
     (let answer (answers .get name))
     (if ($absent? answer) (return {^error $"answer ${name} is missing"}))
@@ -166,7 +166,7 @@
 
 (fn entry_settings [entry] ^^private
   (let settings {})
-  (for [key value] in entry
+  (map_for [key value] in entry
     (if_not (["engine" "uses"] .contains? ($to_str key)) (settings .put ($to_str key) value)))
   settings)
 
@@ -224,7 +224,7 @@
 (fn size_estimate [state, questions, overhead : Int] ^^private
   (let state_bytes ($str/byte_size ($json/stringify state)))
   (var largest 0)
-  (for [id question] in questions
+  (map_for [id question] in questions
     (set largest ($math/max largest ($str/byte_size ($json/stringify question)))))
   {^request_tokens (+ overhead (estimated_tokens ($str/byte_size (decision_input_text state questions))))
    ^question_tokens (+ overhead (estimated_tokens (+ state_bytes largest 64)))})

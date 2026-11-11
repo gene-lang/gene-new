@@ -13432,6 +13432,45 @@ suite "spec — node collection families":
       "[($respond_to? r \"size\") ($respond_to? r \"map_map\")]",
       "[true true]")
 
+  test "indexed count and empty avoid materializing items":
+    check_eval("(var size_calls 0) (var at_calls 0) " &
+      "(type Counted ^props {^items List}) " &
+      "(impl IndexRead for Counted " &
+      " (message size [] : Int (set size_calls (+ size_calls 1)) ($size self/items)) " &
+      " (message at [i : Int] : Any (set at_calls (+ at_calls 1)) self/items/%i)) " &
+      "(let r (Counted ^items [10 20 30])) " &
+      "[(do (let n ($size r)) [n size_calls at_calls]) " &
+      " (do (set size_calls 0) (set at_calls 0) " &
+      "  (let e ($empty? r)) [e size_calls at_calls])]",
+      "[[3 1 0] [false 1 0]]")
+    check_eval("(var size_calls 0) (var at_calls 0) " &
+      "(type Counted ^props {^items List}) " &
+      "(impl IndexRead for Counted " &
+      " (message size [] : Int (set size_calls (+ size_calls 1)) ($size self/items)) " &
+      " (message at [i : Int] : Any (set at_calls (+ at_calls 1)) self/items/%i)) " &
+      "(let r (Counted ^items [10 20 30])) " &
+      "[($map r (fn [x] (+ x 1))) size_calls at_calls]",
+      "[[11 21 31] 1 3]")
+    check_eval("(type Huge ^props {}) " &
+      "(impl IndexRead for Huge " &
+      " (message size [] : Int 18446744073709551617) " &
+      " (message at [i : Int] : Any i)) " &
+      "(let h (Huge)) " &
+      "[($size h) ($empty? h) " &
+      " (try ($map h (fn [x] x)) catch Any \"too large\")]",
+      "[18446744073709551617 false \"too large\"]")
+
+  test "super-context cloning retains the map_for family":
+    check_eval("(type A ^props {}) (type B ^props {}) " &
+      "(fn make [parent] " &
+      "  (type C : parent ^props {} " &
+      "    (message entries [] " &
+      "      (let out []) " &
+      "      (map_for [k v] in {^x 1} (out .push [k v])) out)) C) " &
+      "(let C1 (make A)) (let C2 (make B)) " &
+      "[((C1) .entries) ((C2) .entries)]",
+      "[[[x 1]] [[x 1]]]")
+
   test "typed node JSON writes props only when the body has no items":
     check_eval("(type P ^props {^x Int ^y Int?}) " &
       "($json/stringify (P ^x 1))", "\"{\\\"x\\\":1}\"")

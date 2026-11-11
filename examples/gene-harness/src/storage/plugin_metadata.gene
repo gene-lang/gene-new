@@ -13,7 +13,7 @@
   (let result [])
   (for item in values
     (if_yes (&& registry_requirements (== ($head item) Map))
-      (if_not (&& (== ($size item) 1) (== ($head item/registry) Str) (!= item/registry ""))
+      (if_not (&& (== ($map_size item) 1) (== ($head item/registry) Str) (!= item/registry ""))
         (fail (PluginMetadataError ^message "registry requirement must be {^registry NAME}")))
       (result .push ["$registries" item/registry])
       (continue))
@@ -142,12 +142,12 @@
   (let workspace h/workspace)
   (if (|| ($absent? workspace) ($absent? workspace/history_build/.get)) (return nil))
   (let diagnostics [])
-  (for [id active] in h/composition/.current_revisions
+  (map_for [id active] in h/composition/.current_revisions
     (let owner ($to_str id))
     (if_not active/active (continue))
     (try
       (let contributions [])
-      (for [registry records] in snapshot/registries
+      (map_for [registry records] in snapshot/registries
         (for record in records
           (if_yes (== record/owner owner)
             (contributions .push (contribution_data registry record/key record/payload)))))
