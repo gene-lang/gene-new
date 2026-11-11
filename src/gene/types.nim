@@ -408,6 +408,7 @@ type
     constructing: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
+    partsChecked: bool     # see `nodePartsChecked`
     inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     resourceId: uint64
     errorEvidence: ErrorEvidence
@@ -5494,6 +5495,7 @@ proc setNodeProp*(v: Value, key: string, value: Value) =
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Node")
   noteInertStore(p.inertEpoch, value)
+  p.partsChecked = false
   p.props[key] = value
 
 proc deleteNodeProp*(v: Value, key: string): Value =
@@ -5507,6 +5509,7 @@ proc deleteNodeProp*(v: Value, key: string): Value =
   result = p.props.getOrDefault(key, MISSING)
   if result.isMissing:
     return NIL
+  p.partsChecked = false
   p.props.del(key)
 
 proc setNodeBody*(v: Value, items: sink seq[Value]) =
@@ -5517,9 +5520,37 @@ proc setNodeBody*(v: Value, items: sink seq[Value]) =
     raise newException(GeneError, "cannot mutate immutable Node")
   for i in 0 ..< items.len:
     noteInertStore(p.inertEpoch, items[i])
+  p.partsChecked = false
   p.body = items
 
 proc pushNodeBody*(v: Value, item: Value) =
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  noteInertStore(p.inertEpoch, item)
+  p.partsChecked = false
+  p.body.add item
+
+proc nodePartsChecked*(v: Value): bool {.inline.} =
+  ## A typed node whose props and body were all found to need no boundary work
+  ## against its type's schema, and that only `pushCheckedNodeBody` has written
+  ## to since. Every other writer of a node's contents clears it. While it
+  ## holds, validating the node again would change nothing and cannot fail:
+  ## whether a value needs boundary work depends on its kind alone
+  ## (`bareScalarSatisfied` in the VM), and the node still holds the same
+  ## values.
+  v.tagOf == NODE_TAG and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).partsChecked
+
+proc markNodePartsChecked*(v: Value) =
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).partsChecked = true
+
+proc pushCheckedNodeBody*(v: Value, item: Value) =
+  ## `pushNodeBody` for an item the caller has already checked against the
+  ## schema of a node whose parts are checked; the node stays checked.
   if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
@@ -5537,6 +5568,7 @@ proc setNodeBodyItem*(v: Value, index: int, item: Value) =
   if index < 0 or index >= p.body.len:
     raise newException(GeneError, "node body index out of range: " & $index)
   noteInertStore(p.inertEpoch, item)
+  p.partsChecked = false
   p.body[index] = item
 
 proc setNodePartsAfterModuleRefPatch*(v: Value, props: sink PropTable,
@@ -5549,6 +5581,7 @@ proc setNodePartsAfterModuleRefPatch*(v: Value, props: sink PropTable,
   if p.inertEpoch != 0:
     p.inertEpoch = 0
     retireInertStamps()
+  p.partsChecked = false
   p.props = props
   p.body = body
 
@@ -8261,6 +8294,7 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
   of vkNode:
     let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
     retirePatchedStamp(p.inertEpoch)
+    p.partsChecked = false
     p.head = patchPendingModuleRef(p.head, name, target, seen)
     for i in 0 ..< p.props.data.len:
       p.props.data[i].val =
@@ -9199,6 +9233,7 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
     if not v.nodeImmutable and not
         (v.head.kind == vkSymbol and v.head.symVal == "Path"):
       let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+      node.partsChecked = false
       node.head = escapedHead
       node.props = move props
       node.body = move body
