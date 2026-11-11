@@ -2568,6 +2568,19 @@ proc bareScalarSatisfied*(typeExpr, value: Value): bool {.inline.} =
       return value.kind == entry.kind
   false
 
+proc bareScalarKind(typeExpr: Value, kind: var ValueKind): bool =
+  ## The value kind that satisfies an exact-kind scalar annotation, the
+  ## `bareScalarSatisfied` table read the other way. False for `Any` and for
+  ## every other annotation.
+  if typeExpr.kind != vkSymbol:
+    return false
+  let id = typeExpr.symbolId
+  for entry in gBareScalarAnnotations:
+    if entry.id == id:
+      kind = entry.kind
+      return true
+  false
+
 proc checkedDefinitionValue(label: string, annotation, value: Value,
                              scope: Scope): Value {.noinline.} =
   ## Keep the scalar test outside the large computed-goto dispatch function.
@@ -27239,9 +27252,23 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           return true
         if expr.body.len != 1:
           raise newException(GeneError, "(List T) expects one item type")
-        for item in value.listItems:
-          if not matchesTypeExpr(expr.body[0], item, scope):
+        # For an exact-kind scalar item type, an item of that kind matches
+        # (the same fact `bareScalarSatisfied` rests on), so the name need not
+        # be resolved once per item. A list found to hold only that kind
+        # remembers it until an item of another kind is stored.
+        var scalarKind: ValueKind
+        let scalarItems = bareScalarKind(expr.body[0], scalarKind)
+        if scalarItems and value.listItemsAllOfKind(scalarKind):
+          return true
+        var allOfKind = scalarItems
+        for i in 0 ..< value.listItems.len:
+          if scalarItems and value.listItems[i].kind == scalarKind:
+            continue
+          allOfKind = false
+          if not matchesTypeExpr(expr.body[0], value.listItems[i], scope):
             return false
+        if allOfKind:
+          value.noteListItemsKind(scalarKind)
         return true
       of "Tuple":
         if value.kind != vkList:

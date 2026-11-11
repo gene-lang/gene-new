@@ -72,3 +72,59 @@ suite "typed node push checks only the new item when that is exact":
       (var total 0)
       (repeat i in 5000 (set total (+ total bag/%i)))
       [total bag/4999 bag/x]""", "[12497500 4999 1]"
+
+suite "a List boundary with a scalar item type":
+  const listPrelude = """
+    (fn total [xs : (List Int)] ($size xs))
+    (fn names [xs : (List Str)] ($size xs))
+    (fn floats [xs : (List Float)] ($size xs))
+    (fn nested [xs : (List (List Int))] ($size xs))
+    (fn anys [xs : (List Any)] ($size xs))
+    """
+
+  test "a list checked once is rechecked after a store of another kind":
+    fastCk listPrelude & """
+      (let xs [1 2 3]) (let first [(total xs) (total xs)])
+      (xs .push "s")
+      (let ys [1 2]) (total ys) (set ys/0 "a")
+      (let es []) (let empty (total es)) (es .push "s")
+      [first
+       (try (total xs) catch TypeError $err_msg)
+       (try (total ys) catch TypeError $err_msg)
+       empty
+       (try (total es) catch TypeError $err_msg)]""",
+      """[[3 3] "parameter 'xs' expected (List Int), got (List Any)" """ &
+      """"parameter 'xs' expected (List Int), got (List Any)" 0 """ &
+      """"parameter 'xs' expected (List Int), got (List Str)"]"""
+
+  test "stores of the same kind keep the list accepted":
+    fastCk listPrelude & """
+      (let ms [1 2]) (total ms) (ms .push 3) (ms .push 4)
+      (let zs [1 2]) (total zs) (zs .push 99999999999999999999999)
+      (let fr ($freeze [1 2]))
+      [(total ms) (total zs) (total fr) (total fr)]""", "[4 3 2 2]"
+
+  test "the same list against other item types":
+    fastCk listPrelude & """
+      (let ws [1 2]) (total ws)
+      (let fs [1.5 2.5]) (let ok [(floats fs) (floats fs)]) (fs .push 3)
+      [(try (names ws) catch TypeError $err_msg)
+       (try (floats ws) catch TypeError $err_msg)
+       (anys ws) ok
+       (try (floats fs) catch TypeError $err_msg)]""",
+      """["parameter 'xs' expected (List Str), got (List Int)" """ &
+      """"parameter 'xs' expected (List Float), got (List Int)" 2 [2 2] """ &
+      """"parameter 'xs' expected (List Float), got (List Any)"]"""
+
+  test "a nested item type is still checked item by item":
+    fastCk listPrelude & """
+      (let ns [[1] [2]]) (let ok [(nested ns) (nested ns)])
+      (ns/0 .push "x")
+      [ok (try (nested ns) catch TypeError $err_msg)]""",
+      """[[2 2] "parameter 'xs' expected (List (List Int)), got (List Any)"]"""
+
+  test "a function pushed into a checked list":
+    fastCk listPrelude & """
+      (fn outer [] (var q 2) (fn local [] q) (let hs [1]) (total hs) (hs .push local) hs)
+      (try (total (outer)) catch TypeError $err_msg)""",
+      """"parameter 'xs' expected (List Int), got (List Any)""""

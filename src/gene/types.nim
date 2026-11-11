@@ -359,6 +359,7 @@ type
     frozenGraphProofs: uint8 # predicate-specific, certified at construction
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
+    itemsKind: uint8       # see `listItemsAllOfKind`; 0 = not known
     inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     items: seq[Value]
 
@@ -5402,6 +5403,28 @@ proc finishNodeConstruction*(v: Value) =
     raise newException(FieldDefect, "value is not a Node")
   cast[ptr GeneNode](v.bits and PAYLOAD_MASK).constructing = false
 
+template noteListItemKind(p: ptr GeneList, value: Value) =
+  if p.itemsKind != 0 and uint8(ord(value.kind)) + 1 != p.itemsKind:
+    p.itemsKind = 0
+
+proc listItemsAllOfKind*(v: Value, kind: ValueKind): bool {.inline.} =
+  ## Whether every item of this List is known to be of `kind`. A cache of a
+  ## fact about the list's own items: `noteListItemsKind` records it after a
+  ## caller has looked at each one, a later store of another kind clears it,
+  ## and the two procs that replace the items wholesale clear it too. It lets
+  ## a `(List Int)` boundary answer without visiting the items again.
+  v.tagOf == LIST_TAG and
+    cast[ptr GeneList](v.bits and PAYLOAD_MASK).itemsKind == uint8(ord(kind)) + 1
+
+proc noteListItemsKind*(v: Value, kind: ValueKind) =
+  ## The caller has checked that every item of this List is of `kind`.
+  if v.tagOf != LIST_TAG:
+    raise newException(FieldDefect, "value is not a List")
+  let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+  # Another lane can be reading a published list; it is not written to here.
+  if not isSharedFlag(p.shared):
+    p.itemsKind = uint8(ord(kind)) + 1
+
 proc setListItem*(v: Value, index: int, value: Value) =
   if v.tagOf != LIST_TAG:
     raise newException(FieldDefect, "value is not a List")
@@ -5409,6 +5432,7 @@ proc setListItem*(v: Value, index: int, value: Value) =
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable List")
   noteInertStore(p.inertEpoch, value)
+  noteListItemKind(p, value)
   p.items[index] = value
 
 proc pushListItem*(v: Value, value: Value) =
@@ -5418,6 +5442,7 @@ proc pushListItem*(v: Value, value: Value) =
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable List")
   noteInertStore(p.inertEpoch, value)
+  noteListItemKind(p, value)
   p.items.add(value)
 
 proc putMapEntry*(v: Value, key: string, value: Value) =
@@ -8270,6 +8295,7 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
   of vkList:
     let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
     retirePatchedStamp(p.inertEpoch)
+    p.itemsKind = 0
     for i in 0 ..< p.items.len:
       p.items[i] = patchPendingModuleRef(p.items[i], name, target, seen)
   of vkMap:
@@ -9062,6 +9088,7 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
           if items[j].isPromotedBindingFunction:
             holdsPromoted = true
         if not v.listImmutable:
+          cast[ptr GeneList](v.bits and PAYLOAD_MASK).itemsKind = 0
           cast[ptr GeneList](v.bits and PAYLOAD_MASK).items = move items
           if holdsPromoted:
             markEscapedFunctionHolder(v)
