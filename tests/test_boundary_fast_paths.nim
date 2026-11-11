@@ -73,6 +73,56 @@ suite "typed node push checks only the new item when that is exact":
       (repeat i in 5000 (set total (+ total bag/%i)))
       [total bag/4999 bag/x]""", "[12497500 4999 1]"
 
+suite "field writes by key id":
+  const fieldPrelude = """
+    (type P ^props {^x Int ^y Float ^name Str? ^tags (List Str) ^any Any})
+    (let p (P ^x 1 ^y 2.0 ^tags ["a"] ^any nil))
+    """
+
+  test "writes through a path, put with a string, and put with a symbol":
+    fastCk fieldPrelude & """
+      (set p/x 5) (set p/y 1.5) (set p/name "n") (set p/any [1 2])
+      (let a (p .put "x" 7)) (let b (p .put (quote x) 8)) (let c (set p/x 9))
+      [a b c p]""",
+      """[7 8 9 ((type P) ^x 9 ^y 1.5 ^tags ["a"] ^any [1 2] ^name "n")]"""
+
+  test "a value the field rejects, and a field that does not exist":
+    fastCk fieldPrelude & """
+      [(try (set p/x "s") catch TypeError $err_msg)
+       (try (set p/y 1) catch TypeError $err_msg)
+       (try (set p/tags [1]) catch TypeError $err_msg)
+       (try (set p/x nil) catch TypeError $err_msg)
+       (try (p .put "x" 1.5) catch TypeError $err_msg)
+       (try (set p/zzz 1) catch Error $err_msg)
+       (try (p .put "nope" 1) catch Error $err_msg)
+       p]""",
+      """["field 'x' for P expected Int, got Str" """ &
+      """"field 'y' for P expected Float, got Int" """ &
+      """"field 'tags' for P expected (List Str), got (List Int)" """ &
+      """"field 'x' for P expected Int, got Nil" """ &
+      """"field 'x' for P expected Int, got Float" """ &
+      """"P has no field 'zzz'" "P has no field 'nope'" """ &
+      """((type P) ^x 1 ^y 2.0 ^tags ["a"] ^any nil)]"""
+
+  test "an optional field takes nil and an Int field takes a big integer":
+    fastCk fieldPrelude & """
+      (set p/name "n") (set p/name nil) (set p/x 99999999999999999999999)
+      [p/name p/x]""", "[nil 99999999999999999999999]"
+
+  test "a frozen typed node and an untyped node":
+    fastCk fieldPrelude & """
+      (let frozen ($freeze p))
+      (let plain (quote (data ^a 1)))
+      (set plain/a 2) (set plain/b "new")
+      [(try (set frozen/x 2) catch Error $err_msg) plain]""",
+      """["cannot mutate immutable Node" (data ^a 2 ^b "new")]"""
+
+  test "a message that writes its own field":
+    fastCk """
+      (type C ^props {^n Int} (message inc [d] (set self/n (+ self/n d))))
+      (let c (C ^n 0)) (repeat i in 1000 (c .inc 1))
+      c/n""", "1000"
+
 suite "a List boundary with a scalar item type":
   const listPrelude = """
     (fn total [xs : (List Int)] ($size xs))

@@ -5523,6 +5523,17 @@ proc setNodeProp*(v: Value, key: string, value: Value) =
   p.partsChecked = false
   p.props[key] = value
 
+proc setNodePropById*(v: Value, keyId: int32, value: Value) =
+  ## `setNodeProp` for a caller that already holds the key id.
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  noteInertStore(p.inertEpoch, value)
+  p.partsChecked = false
+  p.props.putById(keyId, value)
+
 proc deleteNodeProp*(v: Value, key: string): Value =
   ## Remove prop `key` from a Node and return what was stored, or nil when the
   ## key was absent. Mutating, so an immutable Node refuses it.

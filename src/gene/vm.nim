@@ -8143,26 +8143,40 @@ proc biRegexSplit(args: openArray[Value]): Value {.nimcall.} =
       items.add newStr(part)
     newList(items)
 
-proc setCheckedNodeProp(node: Value, key: string, value: Value): Value =
+proc setCheckedNodeProp(node: Value, keyId: int32, value: Value): Value =
+  ## The checked writer of one prop, by key id. On a typed node the key must
+  ## name a declared field and the value passes that field's boundary. The
+  ## schema is read in place: copying the field list allocated every field's
+  ## name on each write. A value its annotation needs no boundary work for
+  ## (`bareScalarSatisfied`, or no annotation) is stored as it is, which is
+  ## what the boundary would return.
   if node.nodeImmutable:
     raise newException(GeneError, "cannot mutate immutable Node")
-  if node.head.kind != vkType:
-    node.setNodeProp(key, value)
+  let typ {.cursor.} = node.borrowedNodeHead
+  if typ.kind != vkType:
+    node.setNodePropById(keyId, value)
     return value
 
-  let typ = node.head
   if typ.isNativeWrapperType and not node.nodeConstructing:
-    rejectNativeWrapperWrite("cannot set field '" & key & "' on " & typ.typeName)
-  for field in typ.typeFields:
-    if field.name != key:
-      continue
-    let adapted = adaptFieldBoundary(typ.typeName, key, field.typeExpr, value,
-                                     field.typeFieldScope(typ.typeScope))
-    node.setNodeProp(key, adapted)
-    return adapted
+    rejectNativeWrapperWrite("cannot set field '" & propKeyText(keyId) &
+                             "' on " & typ.typeName)
+  if not typ.isEnumType:
+    template fields: untyped = typ.borrowedTypeFields
+    for i in 0 ..< fields.len:
+      if fields[i].nameId != keyId:
+        continue
+      let adapted =
+        if fields[i].typeExpr.kind == vkNil or
+            bareScalarSatisfied(fields[i].typeExpr, value):
+          value
+        else:
+          adaptFieldBoundary(typ.typeName, fields[i].name, fields[i].typeExpr,
+                             value, fields[i].typeFieldScope(typ.typeScope))
+      node.setNodePropById(keyId, adapted)
+      return adapted
 
   raise newException(GeneError,
-    typ.typeName & " has no field '" & key & "'")
+    typ.typeName & " has no field '" & propKeyText(keyId) & "'")
 
 proc deleteCheckedNodeProp(node: Value, key: string): Value =
   ## Remove prop `key` and return what was stored there, or nil when it was
@@ -8294,7 +8308,7 @@ proc biNodePut(args: openArray[Value]): Value {.nimcall.} =
   if args[1].kind notin {vkSymbol, vkString}:
     raise newException(GeneError, "put takes a name, not an index")
   rejectCallerEnvEscape("Node/put", args[2])
-  let stored = setCheckedNodeProp(args[0], keySegment("Node/put", args[1]),
+  let stored = setCheckedNodeProp(args[0], keySegmentId("Node/put", args[1]),
                                   strengthenStoredValue(args[2]))
   noteFunctionStore(args[0], stored)
   stored
@@ -8318,7 +8332,7 @@ proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
       "Node/set_prop expects 3 arguments, got " & $args.len)
   requireNode("Node/set_prop", args[0])
   rejectCallerEnvEscape("Node/set_prop", args[2])
-  let stored = setCheckedNodeProp(args[0], keySegment("Node/set_prop", args[1]),
+  let stored = setCheckedNodeProp(args[0], keySegmentId("Node/set_prop", args[1]),
                                   strengthenStoredValue(args[2]))
   noteFunctionStore(args[0], stored)
   stored
@@ -8399,7 +8413,7 @@ proc setMutableChild(target, segment, value: Value): Value =
     of vkSymbol, vkString:
       # Props keep their own checked writer, which already owns immutability,
       # the closed schema, `void` removal, and boundary adaptation.
-      result = setCheckedNodeProp(target, keySegment("set", segment), value)
+      result = setCheckedNodeProp(target, keySegmentId("set", segment), value)
     of vkInt, vkFloat:
       if target.nodeImmutable:
         raise newException(GeneError, "cannot mutate immutable Node")
