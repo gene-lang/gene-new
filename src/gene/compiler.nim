@@ -1563,6 +1563,39 @@ proc chunkNeedsCallScopeSlotNames(chunk: Chunk): bool =
       discard
   false
 
+proc chunkAssignsOuterName(chunk: Chunk, name: string): bool =
+  ## Whether `chunk`, or anything nested in it, assigns `name` in a scope
+  ## outside its own.
+  if chunk == nil:
+    return false
+  for inst in chunk.instructions:
+    if inst.op in {opSetOuterLocal, opSetName} and inst.name == name:
+      return true
+  for body in chunk.subchunks:
+    if body.chunkAssignsOuterName(name): return true
+  for loop in chunk.forLoops:
+    if loop.body.chunkAssignsOuterName(name): return true
+  for match in chunk.matches:
+    for clause in match.clauses:
+      if clause.body.chunkAssignsOuterName(name): return true
+    if match.elseBody.chunkAssignsOuterName(name): return true
+  for attempt in chunk.tries:
+    if attempt.body.chunkAssignsOuterName(name): return true
+    for clause in attempt.catches:
+      if clause.body.chunkAssignsOuterName(name): return true
+    if attempt.ensureBody.chunkAssignsOuterName(name): return true
+  for proto in chunk.functions:
+    if proto.chunk.chunkAssignsOuterName(name): return true
+  false
+
+proc closuresMaySetName(chunk: Chunk, name: string): bool =
+  ## Whether a function defined in `chunk` can assign the binding `name` of
+  ## `chunk`'s own scope. A parameter such a closure can assign must keep its
+  ## declared type on the activation, or the assignment goes unchecked.
+  for proto in chunk.functions:
+    if proto.chunk.chunkAssignsOuterName(name): return true
+  false
+
 proc chunkMaySetSlot(chunk: Chunk, slot: int): bool =
   if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
       chunk.matches.len > 0 or chunk.tries.len > 0:
@@ -4772,7 +4805,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   var positionalSlotMaySet: seq[bool]
   var positionalParamsMaySet = false
   for slot in positionalSlots:
-    let maySet = fnCompiler.chunk.chunkMaySetSlot(slot)
+    let maySet = fnCompiler.chunk.chunkMaySetSlot(slot) or
+      (slot >= 0 and slot < fnCompiler.localNames.len and
+       fnCompiler.chunk.closuresMaySetName(fnCompiler.localNames[slot]))
     positionalSlotMaySet.add maySet
     positionalParamsMaySet = positionalParamsMaySet or maySet
 
