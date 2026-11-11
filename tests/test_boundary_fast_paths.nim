@@ -73,6 +73,70 @@ suite "typed node push checks only the new item when that is exact":
       (repeat i in 5000 (set total (+ total bag/%i)))
       [total bag/4999 bag/x]""", "[12497500 4999 1]"
 
+suite "scalar annotations on the scopeless calling convention":
+  const calls = """
+    (fn id_int [a : Int] a)
+    (fn add_p [a : Int b : Int] (+ a b))
+    (fn addf [a : Float b : Float] (+ a b))
+    (fn mixed [a : Str b c : Bool] [a b c])
+    (fn ret_any [a : Int] : Any a)
+    (fn ret_const [a : Str] : Int 5)
+    (fn ret_checked [a : Str] : Int a)
+    (fn deep [n : Int] (id_int (id_int n)))
+    (fn down [n : Int] (if (< n 1) 0 (+ n (down (- n 1)))))
+    (fn named_like [Int : Str] Int)
+    """
+
+  test "the admitted shapes get a scopeless chunk, the others do not":
+    let chunk = compileSource(calls & " nil")
+    for name in ["id_int", "add_p", "addf", "mixed", "ret_any", "ret_const"]:
+      checkpoint name
+      check chunk.protoNamed(name).scopelessChunk != nil
+    # A declared result the compiler cannot prove keeps its return boundary.
+    check chunk.protoNamed("ret_checked").scopelessChunk == nil
+
+  test "arguments that satisfy the annotations":
+    fastCk calls & """
+      [(id_int 5) (add_p 2 3) (addf 1.5 2.0) (mixed "s" [1] true)
+       (ret_any 3) (ret_const "x") (deep 4) (down 100) (named_like "x")]""",
+      """[5 5 3.5 ["s" [1] true] 3 5 4 5050 "x"]"""
+
+  test "an argument the scan rejects takes the classic convention":
+    # A big integer is an Int that is not a small one; the classic binder
+    # accepts it.
+    fastCk calls & "(id_int 99999999999999999999999)", "99999999999999999999999"
+
+  test "mismatches raise the same errors as before":
+    fastCk calls & """
+      [(try (id_int "s") catch TypeError $err_msg)
+       (try (add_p 2 "x") catch TypeError $err_msg)
+       (try (add_p 2 1.5) catch TypeError $err_msg)
+       (try (addf 1 2) catch TypeError $err_msg)
+       (try (addf 1.5 2) catch TypeError $err_msg)
+       (try (mixed "s" [1] 1) catch TypeError $err_msg)
+       (try (mixed nil 1 true) catch TypeError $err_msg)
+       (try (ret_const 1) catch TypeError $err_msg)
+       (try (ret_checked "s") catch TypeError $err_msg)
+       (try (id_int 1 2) catch Error $err_msg)
+       (try (id_int) catch Error $err_msg)]""",
+      """["parameter 'a' expected Int, got Str" """ &
+      """"parameter 'b' expected Int, got Str" """ &
+      """"parameter 'b' expected Int, got Float" """ &
+      """"parameter 'a' expected Float, got Int" """ &
+      """"parameter 'b' expected Float, got Int" """ &
+      """"parameter 'c' expected Bool, got Int" """ &
+      """"parameter 'a' expected Str, got Nil" """ &
+      """"parameter 'a' expected Str, got Int" """ &
+      """"return from 'ret_checked' expected Int, got Str" """ &
+      """"function 'id_int' expects 1..1 argument(s), got 2" """ &
+      """"function 'id_int' expects 1..1 argument(s), got 0"]"""
+
+  test "calls through a value and through a native":
+    fastCk calls & """
+      (var f id_int)
+      [(f 6) (try (f (quote sym)) catch TypeError $err_msg) ([1 2 3] .map id_int)]""",
+      """[6 "parameter 'a' expected Int, got Sym" [1 2 3]]"""
+
 suite "field writes by key id":
   const fieldPrelude = """
     (type P ^props {^x Int ^y Float ^name Str? ^tags (List Str) ^any Any})

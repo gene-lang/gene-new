@@ -452,7 +452,8 @@ type
     scopelessChunk*: Chunk       # opLoadArg rewrite of chunk for leaf
                                  # param-only bodies, or nil (see
                                  # deriveScopelessChunk)
-    scopelessNeedsIntArgs*: bool # typed admission: every arg must be vkInt;
+    scopelessNeedsIntArgs*: bool # typed admission: every arg must satisfy its
+                                 # parameter annotation (vkInt when all are Int);
                                  # VM sites verify (or trust inst.flag) before
                                  # entering scopelessChunk, else classic path
     scopelessReadsFields*: bool  # scopelessChunk reads a one-key field; VM
@@ -3887,12 +3888,26 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
   let typedIntOk =
     (proto.fastBindUnaryInt or proto.fastBindPositionalInt) and
     proto.returnKnownBareInt
+  # Scalar admission: every parameter is untyped or carries an annotation the
+  # positional scalar binder admits (`supportsScalarBinding`), so binding again
+  # reduces to a kind test per argument, made at the VM sites against the
+  # annotations themselves; a miss takes the classic convention, which adapts
+  # the value or raises the canonical error. A scopeless frame has no return
+  # boundary, so the result must need none: either no return type is declared
+  # or the compiler proved the declared one redundant. The body can hold no
+  # assignment to a parameter (opSetLocal is not a scopeless op), which is the
+  # only use the classic convention makes of a parameter's declared type after
+  # binding.
+  let typedScalarOk =
+    proto.fastBindPositionalScalars and
+    (not proto.hasReturnType or proto.returnBoundaryRedundant)
+  let typedOk = typedIntOk or typedScalarOk
   if proto.isGenerator or proto.isSyntaxFn or proto.checksErrors or
-      not (proto.simpleCall or typedIntOk) or proto.restParam.len != 0 or
+      not (proto.simpleCall or typedOk) or proto.restParam.len != 0 or
       proto.namedParams.len != 0 or proto.namedRest.len != 0 or
       proto.typeParams.len != 0 or
-      (proto.hasParamTypes and not typedIntOk) or
-      (proto.hasReturnType and not typedIntOk) or
+      (proto.hasParamTypes and not typedOk) or
+      (proto.hasReturnType and not typedOk) or
       proto.requiredPositional != proto.params.len or
       proto.localNames.len != proto.params.len:
     return

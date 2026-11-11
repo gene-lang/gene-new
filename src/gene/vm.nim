@@ -2621,6 +2621,20 @@ proc scopelessIntArgsOk(stack: seq[Value], argsStart, argCount: int):
       return false
   true
 
+proc scopelessScalarArgsOk(proto: FunctionProto, stack: seq[Value],
+                           argsStart, argCount: int): bool {.noinline.} =
+  ## Typed scopeless admission for parameters that are not all bare Int: each
+  ## argument must be one its annotation needs no boundary work for, which is
+  ## the test the positional scalar binder makes (`canBindScalarArguments`).
+  ## An unannotated parameter takes anything. A miss falls back to the classic
+  ## convention.
+  for i in 0 ..< argCount:
+    let annotation {.cursor.} = proto.paramTypes[i]
+    if annotation.kind != vkNil and
+        not bareScalarSatisfied(annotation, stack[argsStart + i]):
+      return false
+  true
+
 proc scopelessFieldReadsOk(proto: FunctionProto,
                            calleeScope, callerScope: Scope): bool {.inline.} =
   ## A scopeless body reads fields with the caller's scope register, where
@@ -21676,8 +21690,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if proto.scopelessChunk != nil and argCount == proto.params.len and
                   proto.canBypassCallBudget(calleeScope, scope) and
                   proto.scopelessFieldReadsOk(calleeScope, scope) and
-                  (not proto.scopelessNeedsIntArgs or inst[].flag or
-                   scopelessIntArgsOk(stack, argsStart, argCount)):
+                  (not proto.scopelessNeedsIntArgs or
+                   (if proto.fastBindUnaryInt or proto.fastBindPositionalInt:
+                      # Every parameter is bare Int, so a compile-time proof
+                      # that every argument is one settles it.
+                      inst[].flag or
+                        scopelessIntArgsOk(stack, argsStart, argCount)
+                    else:
+                      scopelessScalarArgsOk(proto, stack, argsStart, argCount))):
                 # Scopeless call: the args already on the shared stack become
                 # the callee's frame region (opLoadArg reads them at
                 # base+index) and the callee keeps the CALLER's scope register
@@ -22272,7 +22292,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   proto.canBypassCallBudget(calleeScope, scope) and
                   proto.scopelessFieldReadsOk(calleeScope, scope) and
                   (not proto.scopelessNeedsIntArgs or
-                   scopelessIntArgsOk(stack, argsStart, argCount)):
+                   (if proto.fastBindUnaryInt or proto.fastBindPositionalInt:
+                      scopelessIntArgsOk(stack, argsStart, argCount)
+                    else:
+                      scopelessScalarArgsOk(proto, stack, argsStart, argCount))):
                 # Scopeless call (see the direct-call site): shift the args
                 # down over the callee so they sit at the frame base, then
                 # enter without any scope acquire/bind/release.
