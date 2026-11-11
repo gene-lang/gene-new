@@ -43,7 +43,7 @@
 (fn index_usage [index, ^excluding excluding = nil]
   (let digests {})
   (var bytes 0)
-  (var records ($size index/assets))
+  (var records ($map_size index/assets))
   (map_for [id asset] in index/assets
     (if_not ($has_key? digests asset/digest)
       (set bytes (+ bytes asset/size))
@@ -61,7 +61,7 @@
   (let index (read_index store))
   (let usage (index_usage index))
   {^bytes usage/bytes ^records usage/records
-   ^reservations ($size index/reservations)})
+   ^reservations ($map_size index/reservations)})
 
 # Reserving capacity is durable and idempotent for one run/attempt. All upload
 # paths account for reservations, even when they use a separately opened store.

@@ -470,13 +470,13 @@
           (let metadata (if (|| ($present? model_settings) (== source/kind "trigger"))
             {^model_settings (?? model_settings {})} stored))
           (let settings (session_settings metadata base))
-          (if (&& (== source/kind "trigger") (> ($size (?? model_settings {})) 0))
+          (if (&& (== source/kind "trigger") (> ($map_size (?? model_settings {})) 0))
             (settings .put "selection_source" "trigger"))
           (let reason (readiness_report controller/runtime settings))
           (if ($present? reason) (return {^reason reason}))
           (let selection (try (resolve_selection controller/runtime settings)
             catch ProviderError
-              (return {^reason $err/message ^code (if (&& user_source ($present? model_settings) (> ($size model_settings) 0))
+              (return {^reason $err/message ^code (if (&& user_source ($present? model_settings) (> ($map_size model_settings) 0))
                 (then "invalid_request") (else "not_ready"))})))
           (if (&& ($present? expected_transport) (!= expected_transport selection/transport))
             (return {^reason "Provider connection changed since the source round; start a new round deliberately."}))
@@ -488,7 +488,7 @@
   (let metadata (require_record controller/runtime/sessions session))
   (let changes {})
   (if (&& (|| user_source persist_model_settings) ($present? model_settings))
-    (changes .put "model_settings" (if (== ($size model_settings) 0) nil model_settings)))
+    (changes .put "model_settings" (if (== ($map_size model_settings) 0) nil model_settings)))
   (let display_request (if (&& (== ($str/trim text) "") (! attachments/.empty?))
     $"Attachment: ${attachments/0/name}" text))
   (if source/operator (changes .put "attention" false))
@@ -506,7 +506,7 @@
         (if (== prefix "") (set prefix "New conversation"))
         (changes .put "title" ($str/trim prefix))
         (changes .put "revision" (+ (?? metadata/revision 0) 1)))))
-  (if (> ($size changes) 0) (update_session controller/runtime/sessions session changes))
+  (if (> ($map_size changes) 0) (update_session controller/runtime/sessions session changes))
   (let receipt
     {
       ^id $"round-${($str/slice_bytes ($crypto/sha256 session) 0 16)}-${sequence}"

@@ -66,7 +66,7 @@
   (if_yes (== ($head value) Map)
     (let result {})
     (map_for [key item] in value (result .put key (store_part runtime item)))
-    (if (&& (== ($size value) 1)
+    (if (&& (== ($map_size value) 1)
             (|| ($has_key? value "harness_blob") ($has_key? value "harness_literal")))
       (return {^harness_literal result}))
     (return result))
@@ -87,7 +87,7 @@
 
 (fn load_part [runtime, value]
   (if_yes (== ($head value) Map)
-    (if (== ($size value) 1)
+    (if (== ($map_size value) 1)
       (then
         (if_not ($absent? value/harness_blob)
           (if (== ($head value/harness_blob) Str)
