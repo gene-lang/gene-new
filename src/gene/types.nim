@@ -359,6 +359,7 @@ type
     frozenGraphProofs: uint8 # predicate-specific, certified at construction
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     items: seq[Value]
 
   GeneMap = object
@@ -370,6 +371,7 @@ type
     frozenGraphProofs: uint8
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     entries: PropTable
 
   HashMapEntry* = object
@@ -406,6 +408,7 @@ type
     constructing: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     resourceId: uint64
     errorEvidence: ErrorEvidence
     head: Value
@@ -949,9 +952,11 @@ type
     microseconds: int64
 
   SetData = ref object of GeneObjectData
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     items: seq[Value]
 
   HashMapData = ref object of GeneObjectData
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     entries: seq[HashMapEntry]
 
   PipelineData = ref object of GeneObjectData
@@ -2546,6 +2551,70 @@ proc tryCollectObjectCycle(seed: GeneObjectData) =
 template threadedRc: bool =
   compileOption("threads")
 
+const
+  FrozenNoCallerEnv* = 1'u8
+  FrozenNoScopeCapture* = 2'u8
+  FrozenNoWeakScope* = 4'u8
+  FrozenPlainDataProofs = FrozenNoCallerEnv or FrozenNoScopeCapture or FrozenNoWeakScope
+
+# ---------------------------------------------------------------------------
+# Escape-inert stamps
+# ---------------------------------------------------------------------------
+#
+# `escapeWeakFunctions` runs on every return and every store, and its scan
+# (`mayNeedEscape`) visits everything reachable from the value. Most values
+# hold nothing the pass acts on, and stay that way. A stamp records that.
+#
+# A value is *escape-inert* when `mayNeedEscape` answers false for it under
+# every guard and for either `markHolder`. For a leaf that is a property of
+# the leaf alone (`leafEscapeInert`). A List, Map, Node, Set or HashMap is
+# inert when everything it reaches is.
+#
+# Invariant: a container whose `inertEpoch` equals `escapeInertEpoch` is
+# escape-inert, and so is every container it reaches, each carrying the same
+# stamp or a `FrozenNoWeakScope` proof. The scan stamps a container after it has walked the whole subtree and
+# met no other kind of leaf. Three things could break the invariant, and each
+# one moves the epoch instead, which retires every stamp at once:
+#
+# - A store into a stamped container of a value that is not inert right now
+#   (`noteInertStore`). The store procs below (`setListItem` to
+#   `setNodeBodyItem`), the module-reference patcher and the escape walk
+#   itself are the only writers of a container's contents:
+#   the container objects are private to this module and are only lent out.
+#   A store into a container with no current stamp needs nothing, because by
+#   the invariant no stamped container reaches it.
+# - A leaf that turns from inert to not. Only a type does: it drops its scope
+#   edge again in `weakenOwnedTypeEnvironment`. A function that can change
+#   (`weakable`) is never counted inert.
+# - A pending module reference patched in place.
+#
+# The epoch is process-wide because containers cross lanes. A container that
+# has been published to another lane is never stamped: the scan would be
+# writing to an object another thread can read. It keeps a stamp it already
+# had, which is only ever read from then on. Stamps are 32 bits; once the
+# epoch passes them no stamp matches and the scan is simply what it was
+# before.
+var escapeInertEpoch: uint64 = 1
+
+proc currentInertEpoch(): uint64 {.inline.} =
+  when compileOption("threads"):
+    atomicLoadN(addr escapeInertEpoch, ATOMIC_RELAXED)
+  else:
+    escapeInertEpoch
+
+proc retireInertStamps() =
+  when compileOption("threads"):
+    discard atomicFetchAdd(addr escapeInertEpoch, 1'u64, ATOMIC_RELAXED)
+  else:
+    inc escapeInertEpoch
+
+template inertStampCurrent(stamp: uint32): bool =
+  stamp != 0 and uint64(stamp) == currentInertEpoch()
+
+when defined(geneInertStampTests):
+  var inertStampSkips*: int   # scans answered by a stamp
+  proc inertEpochForTest*(): uint64 = currentInertEpoch()
+
 when compileOption("threads"):
   var errorEvidenceLocks: array[64, Lock]
   for lock in errorEvidenceLocks.mitems: initLock(lock)
@@ -3283,6 +3352,8 @@ proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
   if owned > 0 and owned == typ.valueRefs:
     # Scope destruction can release this same type again. Detach first so a
     # nested release cannot revisit the scope field being destroyed.
+    # The type was escape-inert while it held its scope and is not any more.
+    retireInertStamps()
     var retired = move typ.scope
     retired = nil
 
@@ -5269,6 +5340,62 @@ proc errorProperties*(v: Value): PropTable =
     for key, value in evidence.diagnostics:
       if not result.hasKey(key): result[key] = value
 
+proc leafEscapeInert(v: Value): bool =
+  ## Whether `mayNeedEscape` is false for `v` whatever the guard, decided
+  ## without looking inside it. A container answers by its stamp. This must
+  ## agree with the leaf cases of `mayNeedEscape`.
+  if not v.isManaged:
+    return true
+  case v.bits shr TAG_SHIFT
+  of LIST_TAG:
+    let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+    (p.frozenGraphProofs and FrozenNoWeakScope) != 0 or
+      inertStampCurrent(p.inertEpoch)
+  of MAP_TAG:
+    let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+    (p.frozenGraphProofs and FrozenNoWeakScope) != 0 or
+      inertStampCurrent(p.inertEpoch)
+  of NODE_TAG:
+    inertStampCurrent(cast[ptr GeneNode](v.bits and PAYLOAD_MASK).inertEpoch)
+  of FUNCTION_TAG:
+    # A binding can be promoted and weakened again; a weak function needs its
+    # scope kept. Any other function never changes and never needs the pass.
+    let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+    not p.weakable and (p.scope != nil or p.weakScope == nil)
+  of CYCLE_OBJECT_TAG, OBJECT_TAG:
+    let data {.cursor.} = objData(v)
+    case v.kind
+    of vkProtocolMessage:
+      if data.objKind != okBoundMessage:
+        return true
+      let message {.cursor.} = BoundMessageData(data)
+      not (message.boundScope == nil and message.weakScope != nil)
+    of vkType:
+      if data.objKind != okType:
+        return true
+      let typ {.cursor.} = TypeData(data)
+      not (typ.scope == nil and typ.weakScope != nil)
+    of vkSet:
+      inertStampCurrent(SetData(data).inertEpoch)
+    of vkHashMap:
+      inertStampCurrent(HashMapData(data).inertEpoch)
+    of vkCallableView, vkPipeline, vkStream, vkTask, vkChannel, vkActorRef,
+       vkActorContext, vkActorStep, vkReplyTo, vkEnv, vkBuffer, vkFfiCallable:
+      false
+    else:
+      true
+  else:
+    true
+
+template noteInertStore(stamp: var uint32, value: Value) =
+  ## `value` is about to be written into the container that owns `stamp`.
+  if stamp != 0:
+    if uint64(stamp) != currentInertEpoch():
+      stamp = 0
+    elif not leafEscapeInert(value):
+      stamp = 0
+      retireInertStamps()
+
 proc finishNodeConstruction*(v: Value) =
   if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
@@ -5280,6 +5407,7 @@ proc setListItem*(v: Value, index: int, value: Value) =
   let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable List")
+  noteInertStore(p.inertEpoch, value)
   p.items[index] = value
 
 proc pushListItem*(v: Value, value: Value) =
@@ -5288,6 +5416,7 @@ proc pushListItem*(v: Value, value: Value) =
   let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable List")
+  noteInertStore(p.inertEpoch, value)
   p.items.add(value)
 
 proc putMapEntry*(v: Value, key: string, value: Value) =
@@ -5296,6 +5425,7 @@ proc putMapEntry*(v: Value, key: string, value: Value) =
   let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Map")
+  noteInertStore(p.inertEpoch, value)
   p.entries[key] = value
 
 proc deleteMapEntry*(v: Value, key: string): Value =
@@ -5354,6 +5484,7 @@ proc putMapEntryById*(v: Value, keyId: int32, value: Value) =
   let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Map")
+  noteInertStore(p.inertEpoch, value)
   p.entries.putById(keyId, value)
 
 proc setNodeProp*(v: Value, key: string, value: Value) =
@@ -5362,6 +5493,7 @@ proc setNodeProp*(v: Value, key: string, value: Value) =
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Node")
+  noteInertStore(p.inertEpoch, value)
   p.props[key] = value
 
 proc deleteNodeProp*(v: Value, key: string): Value =
@@ -5383,6 +5515,8 @@ proc setNodeBody*(v: Value, items: sink seq[Value]) =
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Node")
+  for i in 0 ..< items.len:
+    noteInertStore(p.inertEpoch, items[i])
   p.body = items
 
 proc pushNodeBody*(v: Value, item: Value) =
@@ -5391,6 +5525,7 @@ proc pushNodeBody*(v: Value, item: Value) =
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Node")
+  noteInertStore(p.inertEpoch, item)
   p.body.add item
 
 proc setNodeBodyItem*(v: Value, index: int, item: Value) =
@@ -5401,6 +5536,7 @@ proc setNodeBodyItem*(v: Value, index: int, item: Value) =
     raise newException(GeneError, "cannot mutate immutable Node")
   if index < 0 or index >= p.body.len:
     raise newException(GeneError, "node body index out of range: " & $index)
+  noteInertStore(p.inertEpoch, item)
   p.body[index] = item
 
 proc setNodePartsAfterModuleRefPatch*(v: Value, props: sink PropTable,
@@ -5410,6 +5546,9 @@ proc setNodePartsAfterModuleRefPatch*(v: Value, props: sink PropTable,
   if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.inertEpoch != 0:
+    p.inertEpoch = 0
+    retireInertStamps()
   p.props = props
   p.body = body
 
@@ -7832,12 +7971,6 @@ proc newSymFromKeyId*(id: int32): Value {.inline.} =
 proc newBool*(v: bool): Value {.inline.} =
   if v: TRUE else: FALSE
 
-const
-  FrozenNoCallerEnv* = 1'u8
-  FrozenNoScopeCapture* = 2'u8
-  FrozenNoWeakScope* = 4'u8
-  FrozenPlainDataProofs = FrozenNoCallerEnv or FrozenNoScopeCapture or FrozenNoWeakScope
-
 proc frozenGraphProofs*(v: Value): uint8
 
 proc newList*(items: sink seq[Value] = @[], immutable = false,
@@ -8063,6 +8196,13 @@ proc containsPendingModuleRef*(v: Value, name: string,
     discard
   false
 
+template retirePatchedStamp(stamp: var uint32) =
+  ## The patcher writes whatever a module reference resolves to, a function
+  ## included, straight into a container that may already carry a stamp.
+  if stamp != 0:
+    stamp = 0
+    retireInertStamps()
+
 proc patchPendingModuleRef*(v: Value, name: string, target: Value,
                             seen: var HashSet[uint64]): Value =
   ## Construction-time allocate/patch/seal support. This deliberately bypasses
@@ -8096,15 +8236,18 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
       stages, v.pipelineImmutable)
   of vkList:
     let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+    retirePatchedStamp(p.inertEpoch)
     for i in 0 ..< p.items.len:
       p.items[i] = patchPendingModuleRef(p.items[i], name, target, seen)
   of vkMap:
     let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+    retirePatchedStamp(p.inertEpoch)
     for i in 0 ..< p.entries.data.len:
       p.entries.data[i].val =
         patchPendingModuleRef(p.entries.data[i].val, name, target, seen)
   of vkHashMap:
     let data = HashMapData(objData(v))
+    retirePatchedStamp(data.inertEpoch)
     for i in 0 ..< data.entries.len:
       data.entries[i].key =
         patchPendingModuleRef(data.entries[i].key, name, target, seen)
@@ -8112,10 +8255,12 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
         patchPendingModuleRef(data.entries[i].val, name, target, seen)
   of vkSet:
     let data = SetData(objData(v))
+    retirePatchedStamp(data.inertEpoch)
     for i in 0 ..< data.items.len:
       data.items[i] = patchPendingModuleRef(data.items[i], name, target, seen)
   of vkNode:
     let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+    retirePatchedStamp(p.inertEpoch)
     p.head = patchPendingModuleRef(p.head, name, target, seen)
     for i in 0 ..< p.props.data.len:
       p.props.data[i].val =
@@ -8495,6 +8640,8 @@ type
     overflow: HashSet[uint64]
     overflowUsed: bool
     scan: ptr StampedSet   # the thread's reusable set, while this walk owns it
+    epoch: uint32          # what an inert container is stamped with; 0 = none
+    impure: int            # leaves met so far that are not escape-inert
 
   EscapeWalk = object
     visited: EscapeVisited
@@ -8549,6 +8696,111 @@ proc clearVisited(visited: var EscapeVisited) =
     visited.overflow.clear()
     visited.overflowUsed = false
 
+when defined(geneInertStampVerify):
+  proc mayNeedEscapeReference(v: Value, guard: WeakScopeGuard,
+                              visited: var HashSet[uint64],
+                              markHolder: bool): bool =
+    ## The scan as it was before stamps existed: it enters every container.
+    ## A build with -d:geneInertStampVerify runs it wherever a stamp answered,
+    ## and stops the process if the two disagree.
+    when not defined(geneDisableFrozenGraphProofs):
+      if (v.frozenGraphProofs and FrozenNoWeakScope) != 0:
+        return false
+    case v.bits shr TAG_SHIFT
+    of LIST_TAG:
+      if visited.containsOrIncl(v.bits):
+        return false
+      let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+      let mark = not p.holdsEscapedFn
+      for i in 0 ..< p.items.len:
+        if mayNeedEscapeReference(p.items[i], guard, visited, mark):
+          return true
+      false
+    of MAP_TAG:
+      if visited.containsOrIncl(v.bits):
+        return false
+      let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+      let mark = not p.holdsEscapedFn
+      for i in 0 ..< p.entries.data.len:
+        if mayNeedEscapeReference(p.entries.data[i].val, guard, visited, mark):
+          return true
+      false
+    of NODE_TAG:
+      if visited.containsOrIncl(v.bits):
+        return false
+      let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+      let mark = not p.holdsEscapedFn
+      if mayNeedEscapeReference(p.head, guard, visited, mark):
+        return true
+      for i in 0 ..< p.props.data.len:
+        if mayNeedEscapeReference(p.props.data[i].val, guard, visited, mark):
+          return true
+      for i in 0 ..< p.body.len:
+        if mayNeedEscapeReference(p.body[i], guard, visited, mark):
+          return true
+      for i in 0 ..< p.meta.data.len:
+        if mayNeedEscapeReference(p.meta.data[i].val, guard, visited, mark):
+          return true
+      false
+    of FUNCTION_TAG:
+      let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+      if p.scope != nil:
+        markHolder and p.weakable
+      else:
+        p.weakScope != nil and not weakScopeProtected(guard, p.weakScope)
+    of CYCLE_OBJECT_TAG, OBJECT_TAG:
+      case v.kind
+      of vkProtocolMessage:
+        if objData(v).objKind != okBoundMessage:
+          return false
+        let data = BoundMessageData(objData(v))
+        data.boundScope == nil and data.weakScope != nil and
+          not weakScopeProtected(guard, data.weakScope)
+      of vkType:
+        if objData(v).objKind != okType:
+          return false
+        let data = TypeData(objData(v))
+        data.scope == nil and data.weakScope != nil and
+          not weakScopeProtected(guard, data.weakScope)
+      of vkCallableView:
+        mayNeedEscapeReference(v.callableViewTarget, guard, visited, false)
+      of vkSet:
+        if visited.containsOrIncl(v.bits):
+          return false
+        for item in v.setItems:
+          if mayNeedEscapeReference(item, guard, visited, false):
+            return true
+        false
+      of vkHashMap:
+        if visited.containsOrIncl(v.bits):
+          return false
+        for entry in v.hashMapEntries:
+          if mayNeedEscapeReference(entry.key, guard, visited, false) or
+              mayNeedEscapeReference(entry.val, guard, visited, false):
+            return true
+        false
+      of vkPipeline, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
+         vkActorStep, vkReplyTo, vkEnv, vkBuffer, vkFfiCallable:
+        true
+      else:
+        false
+    else:
+      false
+
+  var inertStampVerified*: int   # stamp answers the reference scan confirmed
+
+  proc verifyInertStamp(v: Value, guard: WeakScopeGuard, markHolder: bool) =
+    var visited = initHashSet[uint64]()
+    if mayNeedEscapeReference(v, guard, visited, markHolder):
+      stderr.writeLine "gene: escape-inert stamp on a value that needs escaping"
+      stderr.flushFile()
+      quit(70)
+    inc inertStampVerified
+
+template stampAnswered(v: Value, guard: WeakScopeGuard, markHolder: bool) =
+  when defined(geneInertStampVerify):
+    verifyInertStamp(v, guard, markHolder)
+
 proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
                    markHolder: bool): bool =
   ## Whether escaping `v` can change anything: a weak function or type scope the
@@ -8557,6 +8809,14 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
   ## directly in a list, map or node the walk would still have to mark. The scan
   ## reads values in place without copying them, and reaches each container
   ## once, so cycles and shared structure end it.
+  ##
+  ## It also keeps the escape-inert stamps (see `escapeInertEpoch`). A
+  ## container with a current stamp is not entered. One whose subtree was
+  ## walked to the end without meeting a leaf that is not inert gets the
+  ## stamp. `visited.impure` counts those leaves, so a container compares the
+  ## count before and after its own subtree. A container met a second time
+  ## without a stamp is either still being walked (a cycle) or was found
+  ## impure, and counts as impure for whoever reached it.
   when defined(geneGraphProofTests):
     if collectingFrozenEscapeStats: inc frozenEscapeStats.visits
   when not defined(geneDisableFrozenGraphProofs):
@@ -8564,29 +8824,55 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
       when defined(geneGraphProofTests):
         if collectingFrozenEscapeStats: inc frozenEscapeStats.skips
       return false
+  template stampIfInert(stamp: var uint32, shared: untyped, impureBefore: int) =
+    if visited.impure == impureBefore:
+      if isSharedFlag(shared):
+        # Another lane can be reading this object, so nothing is written to
+        # it. Left without a stamp, it must not sit under a stamped
+        # container either: a store into it would retire nothing.
+        inc visited.impure
+      elif visited.epoch != 0:
+        stamp = visited.epoch
   case v.bits shr TAG_SHIFT
   of LIST_TAG:
-    if not visited.firstVisit(v.bits):
-      return false
     let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+    if inertStampCurrent(p.inertEpoch):
+      stampAnswered(v, guard, markHolder)
+      return false
+    if not visited.firstVisit(v.bits):
+      inc visited.impure
+      return false
+    let impureBefore = visited.impure
     let mark = not p.holdsEscapedFn
     for i in 0 ..< p.items.len:
       if mayNeedEscape(p.items[i], guard, visited, mark):
         return true
+    stampIfInert(p.inertEpoch, p.shared, impureBefore)
     false
   of MAP_TAG:
-    if not visited.firstVisit(v.bits):
-      return false
     let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+    if inertStampCurrent(p.inertEpoch):
+      stampAnswered(v, guard, markHolder)
+      return false
+    if not visited.firstVisit(v.bits):
+      inc visited.impure
+      return false
+    let impureBefore = visited.impure
     let mark = not p.holdsEscapedFn
     for i in 0 ..< p.entries.data.len:
       if mayNeedEscape(p.entries.data[i].val, guard, visited, mark):
         return true
+    stampIfInert(p.inertEpoch, p.shared, impureBefore)
     false
   of NODE_TAG:
-    if not visited.firstVisit(v.bits):
-      return false
     let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+    if inertStampCurrent(p.inertEpoch):
+      stampAnswered(v, guard, markHolder)
+      return false
+    if not visited.firstVisit(v.bits):
+      inc visited.impure
+      return false
+    let impureBefore = visited.impure
     let mark = not p.holdsEscapedFn
     if mayNeedEscape(p.head, guard, visited, mark):
       return true
@@ -8599,9 +8885,12 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
     for i in 0 ..< p.meta.data.len:
       if mayNeedEscape(p.meta.data[i].val, guard, visited, mark):
         return true
+    stampIfInert(p.inertEpoch, p.shared, impureBefore)
     false
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+    if p.weakable or (p.scope == nil and p.weakScope != nil):
+      inc visited.impure
     if p.scope != nil:
       markHolder and p.weakable
     else:
@@ -8612,30 +8901,49 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
       if objData(v).objKind != okBoundMessage:
         return false
       let data = BoundMessageData(objData(v))
-      data.boundScope == nil and data.weakScope != nil and
-        not weakScopeProtected(guard, data.weakScope)
+      if data.boundScope == nil and data.weakScope != nil:
+        inc visited.impure
+        return not weakScopeProtected(guard, data.weakScope)
+      false
     of vkType:
       if objData(v).objKind != okType:
         return false
       let data = TypeData(objData(v))
-      data.scope == nil and data.weakScope != nil and
-        not weakScopeProtected(guard, data.weakScope)
+      if data.scope == nil and data.weakScope != nil:
+        inc visited.impure
+        return not weakScopeProtected(guard, data.weakScope)
+      false
     of vkCallableView:
+      inc visited.impure
       mayNeedEscape(v.callableViewTarget, guard, visited, false)
     of vkSet:
-      if not visited.firstVisit(v.bits):
+      let data {.cursor.} = SetData(objData(v))
+      if inertStampCurrent(data.inertEpoch):
+        stampAnswered(v, guard, markHolder)
         return false
-      for item in v.setItems:
-        if mayNeedEscape(item, guard, visited, false):
+      if not visited.firstVisit(v.bits):
+        inc visited.impure
+        return false
+      let impureBefore = visited.impure
+      for i in 0 ..< data.items.len:
+        if mayNeedEscape(data.items[i], guard, visited, false):
           return true
+      stampIfInert(data.inertEpoch, data.shared, impureBefore)
       false
     of vkHashMap:
-      if not visited.firstVisit(v.bits):
+      let data {.cursor.} = HashMapData(objData(v))
+      if inertStampCurrent(data.inertEpoch):
+        stampAnswered(v, guard, markHolder)
         return false
-      for entry in v.hashMapEntries:
-        if mayNeedEscape(entry.key, guard, visited, false) or
-            mayNeedEscape(entry.val, guard, visited, false):
+      if not visited.firstVisit(v.bits):
+        inc visited.impure
+        return false
+      let impureBefore = visited.impure
+      for i in 0 ..< data.entries.len:
+        if mayNeedEscape(data.entries[i].key, guard, visited, false) or
+            mayNeedEscape(data.entries[i].val, guard, visited, false):
           return true
+      stampIfInert(data.inertEpoch, data.shared, impureBefore)
       false
     of vkPipeline, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
        vkActorStep, vkReplyTo, vkEnv, vkBuffer, vkFfiCallable:
@@ -8646,6 +8954,24 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
     false
 
 proc escapeWalk(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value
+
+proc containerInertStampCurrent(v: Value): bool {.inline.} =
+  ## Whether `v` is a container carrying a current escape-inert stamp.
+  case v.bits shr TAG_SHIFT
+  of LIST_TAG:
+    inertStampCurrent(cast[ptr GeneList](v.bits and PAYLOAD_MASK).inertEpoch)
+  of MAP_TAG:
+    inertStampCurrent(cast[ptr GeneMap](v.bits and PAYLOAD_MASK).inertEpoch)
+  of NODE_TAG:
+    inertStampCurrent(cast[ptr GeneNode](v.bits and PAYLOAD_MASK).inertEpoch)
+  of CYCLE_OBJECT_TAG, OBJECT_TAG:
+    let data {.cursor.} = objData(v)
+    case data.objKind
+    of okSet: inertStampCurrent(SetData(data).inertEpoch)
+    of okHashMap: inertStampCurrent(HashMapData(data).inertEpoch)
+    else: false
+  else:
+    false
 
 proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
   template escapeNested(value: Value): Value =
@@ -9174,6 +9500,9 @@ proc escapeWalk(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
       when defined(geneGraphProofTests):
         if collectingFrozenEscapeStats: inc frozenEscapeStats.walkSkips
       return v
+  if containerInertStampCurrent(v):
+    stampAnswered(v, guard, true)
+    return v
   ## Escapes each container once. A container met again gets what its first
   ## escape produced, or itself while that escape is still running: it is then
   ## part of a cycle, and a mutable container changes in place, so the reference
@@ -9213,7 +9542,18 @@ proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
     if p.scope != nil or p.weakScope == nil or
         weakScopeProtected(guard, p.weakScope):
       return v
+  elif containerInertStampCurrent(v):
+    # Nothing in here needs the pass, whatever the guard.
+    when defined(geneGraphProofTests):
+      if collectingFrozenEscapeStats: inc frozenEscapeStats.visits
+    when defined(geneInertStampTests): inc inertStampSkips
+    stampAnswered(v, guard, false)
+    return v
   var walk: EscapeWalk
+  block:
+    let epoch = currentInertEpoch()
+    if epoch <= uint64(high(uint32)):
+      walk.visited.epoch = uint32(epoch)
   # The scan below only reads: it runs no destructor and calls nothing that
   # could start another escape, so it may use the thread's reusable set. The
   # walk after it mutates and can release values, and keeps its own.

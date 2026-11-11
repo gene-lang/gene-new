@@ -25,6 +25,7 @@ include test_pipeline
 include test_unify_callable
 include test_vm
 include test_closure_param_types
+include test_escape_inert
 include test_modules
 include test_package
 include test_system_dependency
