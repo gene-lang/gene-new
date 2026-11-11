@@ -178,7 +178,7 @@ suite "loops — for":
   test "for with a destructuring pattern":
     ck "(var s 0) (for [a b] in [[1 2] [3 4]] (set s (+ s (* a b)))) s", "14"
   test "for over a map yields key/value pairs":
-    ck "(var pair nil) (for [k v] in {^a 1} (set pair [k v])) pair", "[a 1]"
+    ck "(var pair nil) (map_for [k v] in {^a 1} (set pair [k v])) pair", "[a 1]"
   test "for over a stream pulls items lazily":
     ck "(var hits ($cell 0)) " &
        "(var source ($map ($to_stream [1 2 3]) " &

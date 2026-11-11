@@ -480,14 +480,14 @@ suite "errors — static catch or declare":
       (fn same [x : Int] : Int ^errors [] x)
       (fn collect [] ^errors []
         [($into ($range 0 3) [])
-         ($map {^a 1} same)
+         ($map_map {^a 1} same)
          ($into ($take ($to_stream [1 2 3]) 2) [])])
       (collect)
     """), newGlobalScope(newApplication())).print() == "[[0 1 2] {^a 1} [1 2]]"
     expect GeneError:
       discard strictErrorCompile("""
         (fn same [x : Int] : Int ^errors [] x)
-        (fn invalid [] ^errors [] ($take ($map {^a 1} same) 1))
+        (fn invalid [] ^errors [] ($take ($map_map {^a 1} same) 1))
       """)
 
   test "native message summaries include invocation state failures":
@@ -505,7 +505,7 @@ suite "errors — static catch or declare":
       (fn mutate [] ^errors [RuntimeError] (#[1] .push 2))
       (try (mutate) catch RuntimeError true)
     """), newGlobalScope(newApplication())).boolVal
-    check run(strictErrorCompile("[([1 2] .size) ($empty? {^a 1})]"),
+    check run(strictErrorCompile("[([1 2] .size) ($map_empty? {^a 1})]"),
               newGlobalScope(newApplication())).print() == "[2 false]"
 
   test "outcome-returning methods contain producer errors but retain state errors":

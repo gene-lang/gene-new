@@ -75,6 +75,13 @@ arbitrary keys and reads through `(m .get "k")`.
 `freeze` is deep, `freeze_shallow` is shallow, `thaw` is deep. `assoc` returns a
 new root; `set`/`push`/`put` mutate a mutable container in place.
 
+The list family (`for`, `size`, `map`, `filter`, `filter_map`, `each`,
+`first`, `take`, and the rest) reads items. The map family (`map_for`,
+`map_size`, `map_map`, `map_filter`, `map_filter_map`, `map_each`,
+`to_pairs_stream`, `has_key?`) reads Map entries and node props. A Map passed
+to a list-family operation raises and names the map-family spelling. A node's
+body is explicit: `value/.body`.
+
 ## Paths
 
 A glued path navigates. A glued *leading* slash is a Path literal — a
@@ -163,7 +170,7 @@ whole `->` or `=>` atom is a delimiter — `->name` and `a->b` stay symbols.
 
 (var [a, b] pair)                 # positional destructuring
 (var {^x x} record)               # prop destructuring
-(for [k v] in {^a 1 ^b 2} …)      # map iteration yields pairs
+(map_for [k v] in {^a 1 ^b 2} …)  # map iteration yields pairs
 ```
 
 Commas are separators in parameter, binding, and pattern vectors — use them

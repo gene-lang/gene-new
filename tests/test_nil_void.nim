@@ -67,7 +67,7 @@ suite "nil — map and filter_map":
   test "map preserves keys and filter_map removes nil results":
     check nilEval("""
       (fn f [x] (if (== x 1) nil x))
-      [($map {^a 1 ^b 2} f) ($filter_map {^a 1 ^b 2} f)]
+      [($map_map {^a 1 ^b 2} f) ($map_filter_map {^a 1 ^b 2} f)]
     """) == "[{^a nil ^b 2} {^b 2}]"
   test "a generator yields nil as an item":
     check nilEval("""

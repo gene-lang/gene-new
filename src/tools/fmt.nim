@@ -245,7 +245,7 @@ proc headerBodyCount(head: string, body: openArray[Value]): int =
   of "if", "if_yes", "if_not", "while", "when", "elif", "match", "case",
      "let", "var", "const", "set", "spawn":
     1
-  of "for", "repeat":
+  of "for", "map_for", "repeat":
     if body.len >= 3 and body[1].isSym("in"): 3 else: 1
   of "impl":
     if body.len >= 3 and body[1].isSym("for"): 3 else: 1
@@ -577,7 +577,7 @@ proc prefersMultiline(v: Value): bool =
     bodyCount > 0
   of "match", "try":
     bodyCount > 1
-  of "for":
+  of "for", "map_for":
     bodyCount > headerBodyCount(head, v.body)
   of "while", "repeat", "scope", "loop", "do":
     bodyCount > headerBodyCount(head, v.body)

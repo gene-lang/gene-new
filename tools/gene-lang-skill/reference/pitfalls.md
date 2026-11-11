@@ -116,7 +116,7 @@ returns `(do (var x 1))` the first call and `(do (var x 1) (+ 5 5))` the second:
 ```gene
 (fn build [forms]
   (var b (quote (do)))          # same node every call
-  (for f in forms (b .push_body f))
+  (for f in forms (b .push f))
   b)
 ```
 
@@ -160,7 +160,7 @@ iterated key against a string is silently always false, so a filter written that
 way copies everything:
 
 ```gene
-(for [k v] in {^a 1}
+(map_for [k v] in {^a 1}
   (== k "a")          # false — k is the symbol a
   (== k (quote a))    # true
   (== ($to_str k) "a"))  # true, and the usual fix

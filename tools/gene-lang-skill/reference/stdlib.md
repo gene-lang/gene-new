@@ -20,7 +20,8 @@ Reached bare-with-`$`: `($println x)`, `($size xs)`.
 $ != * + - / // < <= == > >= not panic same?
 absent? present? empty? leaf? contains? size first last
 head props body meta declarations construct_type
-map filter take into to_stream to_pairs_stream
+map filter take into to_stream
+map_size map_empty? map_map map_filter map_filter_map map_each to_pairs_stream
 freeze freeze_shallow thaw assoc_in update_in key range
 to_str to_sym to_int to_float hash chars graphemes
 cell atomic_cell channel buffer bytes Set set_has? set_size Regex
@@ -35,8 +36,10 @@ is `3` (Int division truncates, `(/ 7.0 2)` is `3.5`) while `(// 7 2)` is `1`.
 other value, including `false`, zero, empty strings and empty collections.
 Prefer `($present? value)` to `(! ($absent? value))`.
 
-`map`, `filter` and `filter_map` accept eager collections and streams. A
-stream remains lazy; `into` collects it and `each` drains it for effects.
+`map`, `filter` and `filter_map` are list-family operations: they read List
+items, Stream items, or indexed-node items. A Map uses `map_map`,
+`map_filter`, and `map_filter_map`; its pair loop is `map_for`. A stream
+remains lazy; `into` collects it and `each` drains it for effects.
 
 ## Root types
 
@@ -189,9 +192,9 @@ Sent bare on the receiver: `xs/.size`, `(xs .push v)`.
 |---|---|
 | `Str` | `split` `trim` `lower` `upper` `empty?` `byte_size` `slice_bytes` `to_utf8` `starts_with?` `ends_with?` `contains?` |
 | `List` | `assoc` `get` `join` `set` `push` `size` `empty?` `first` `last` `contains?` `to_stream` |
-| `Map` | `assoc` `get` `put` `delete` `to_stream` `to_pairs_stream` |
-| `Node` | `set_prop` `set_body` `push_body` `head` `props` `body` `meta` |
-| `Stream` | `has_next` `peek` `next` `try_next` `close` `map` `filter` `take` `into` `each` `to_pairs_stream` |
+| `Map` | `assoc` `get` `put` `delete` `map_size` `map_empty?` `map_map` `map_filter` `map_filter_map` `map_each` `to_pairs_stream` |
+| `Node` | `get` `assoc` `dissoc` `put` `set` `push` `set_body` `delete` `has_key?` `head` `props` `body` `meta` |
+| `Stream` | `has_next` `peek` `next` `try_next` `close` `map` `filter` `take` `into` `each` |
 | `Buffer` | `len` `get` `set` `fill` `copy_from` `to_list` `to_bytes` `elem_type` |
 | `Cell` | `get` `set` `swap` `update` |
 | `AtomicCell` | `load` `store` `swap` `compare_exchange` |
@@ -239,6 +242,8 @@ bindings. `set_attribute` accepts an EventTarget followed by name/value strings.
 
 Collection operations exposed as root functions and messages (`size`, `empty?`,
 `first`, `last`, `contains?`, `to_stream`) share the *same* function value,
-so `($size xs)` and `xs/.size` are interchangeable.
+so `($size xs)` and `xs/.size` are interchangeable. The same holds for the
+map family. A node's list-family messages exist only when its type implements
+`IndexRead`; every node answers the map family from its stored props.
 String messages such as `empty?` and `contains?` instead share their `$str`
 functions, preserving the distinction between text and collection operations.

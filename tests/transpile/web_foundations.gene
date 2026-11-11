@@ -10,6 +10,6 @@
 
 (fn run [] : Int
   (var total 0)
-  (for [key value] in {^a 1 ^b 2}
+  (map_for [key value] in {^a 1 ^b 2}
     (set total (+ total value)))
   (+ total (+ (inspect_box (make)) values/.size)))

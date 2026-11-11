@@ -66,6 +66,11 @@ A final set segment uses IndexWrite and returns the actual stored value. If Inde
 
 General unqualified sends remain type-direct: `(x .get 0)` requires a direct message, while `(x .IndexRead:at 0)` is explicit protocol dispatch. This proposal grants fallback to listed VM operations only. Existing to_stream, assoc_in/update_in, destructuring, and call spreading keep their present contracts; implementing IndexRead does not implicitly opt into those different lifetimes/representations.
 
+The later [collection-view contract](../spec/collections.md) supersedes the
+send statement: `IndexRead` now makes a type list-like for `for` and the
+list-family operations, and the built-in Node `get`/`set` Int-key messages
+follow the Int Path segment. `assoc` still rejects an indexed type.
+
 ## Ordering and bounded sorting
 
 Numeric operators keep existing numeric/NaN behavior. For non-numeric values of the same nominal Type, ValueOrder supplies the operator fallback. Built-in Str (Unicode scalar order), Date, and Duration may gain explicit VM fast paths. Unrelated types have no implicit order.

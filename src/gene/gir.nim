@@ -756,6 +756,7 @@ type
     pattern*: Value              # loop-variable pattern
     body*: Chunk                 # loop body
     reuseScope*: bool            # body cannot retain its iteration scope
+    mapFamily*: bool             # map_for: entries instead of items
 
   MatchClause* = object
     pattern*: Value
@@ -1742,9 +1743,10 @@ proc formatInstruction(inst: Instruction): string =
   of opMatchBind, opMatchBindReplace:
     result.add " pattern=" & $inst.intArg
   of opForEach:
-    result.add " for=" & $inst.intArg
+    result.add (if inst.flag: " map_for=" else: " for=") & $inst.intArg
   of opForInlineBegin:
-    result.add " for=" & $inst.intArg & " stream=" & $inst.depth
+    result.add (if inst.flag: " map_for=" else: " for=") & $inst.intArg &
+      " stream=" & $inst.depth
   of opForInlineNext:
     result.add " slot=" & $inst.intArg & " name=" & inst.name &
       " exit=" & $inst.depth

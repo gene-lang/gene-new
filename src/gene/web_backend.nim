@@ -2734,8 +2734,25 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     else:
       raise webError(loc, "web send requires a statically known message")
     validateWebMessageName(messageName, loc)
+    if protocolMessage == nil and receiver.typ.kind in {wtkPropMap, wtkMap} and
+        messageName in ["size", "empty?", "map", "filter_map", "filter", "each"]:
+      let replacement = case messageName
+        of "size": "map_size"
+        of "empty?": "map_empty?"
+        of "map": "map_map"
+        of "filter": "map_filter"
+        of "filter_map": "map_filter_map"
+        of "each": "map_each"
+        else: messageName
+      raise webError(loc, "web no message '" & messageName &
+        "' on Map; use $" & replacement)
+    if protocolMessage == nil and messageName in
+        ["map_size", "map_empty?", "map_map", "map_filter", "map_filter_map", "map_each"]:
+      return analysis.analyzeCall(newNode(newNode(newSym("path"),
+        body = @[newSym("gene"), newSym(messageName)]),
+        body = @[value.head] & value.body[2 .. ^1]), bindings, expected)
     if protocolMessage == nil and messageName in ["map", "filter_map", "filter"] and
-        receiver.typ.kind in {wtkList, wtkStream, wtkMap, wtkPropMap}:
+        receiver.typ.kind in {wtkList, wtkStream}:
       return analysis.analyzeCall(newNode(newNode(newSym("path"),
         body = @[newSym("gene"), newSym(messageName)]),
         body = @[value.head] & value.body[2 .. ^1]), bindings, expected)
@@ -3725,8 +3742,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           else: @[webType(wtkStr), webType(wtkStr), onOk]
         returnType = webType(wtkNil)
       of "size":
-        paramTypes = @[webType(wtkAny)]
-        returnType = webType(wtkInt)
+        if value.body.len != 1:
+          raise webError(loc, "web size expects one value")
+        let input = analysis.analyzeExpr(value.body[0], bindings)
+        if input.typ.kind in {wtkPropMap, wtkMap}:
+          raise webError(loc, "web size expects a list-like value, got Map; use $map_size")
+        return WebExpr(kind: wekBuiltin, typ: webType(wtkInt), loc: loc,
+          text: "size", children: @[input])
       of "absent?", "present?":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkBool)
@@ -3776,32 +3798,69 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           raise webError(loc, "web to_stream expects a List or Stream")
         return WebExpr(kind: wekBuiltin, typ: webType(wtkStream, input.typ.item),
           loc: loc, text: builtin, children: @[input])
+      of "map_size", "map_empty?", "map_map", "map_filter", "map_filter_map", "map_each":
+        if builtin in ["map_size", "map_empty?"] and value.body.len != 1:
+          raise webError(loc, "web " & builtin & " expects one Map")
+        if builtin notin ["map_size", "map_empty?"] and value.body.len != 2:
+          raise webError(loc, "web " & builtin & " expects a Map and callback")
+        let input = analysis.analyzeExpr(value.body[0], bindings)
+        if input.typ.kind notin {wtkPropMap, wtkMap}:
+          raise webError(loc, "web " & builtin &
+            " expects a Map or a node, got " & typeName(input.typ))
+        if builtin == "map_size":
+          return WebExpr(kind: wekBuiltin, typ: webType(wtkInt), loc: loc,
+            text: "map_size", children: @[input])
+        if builtin == "map_empty?":
+          return WebExpr(kind: wekBuiltin, typ: webType(wtkBool), loc: loc,
+            text: "map_empty?", children: @[input])
+        let inputItem = if input.typ.kind == wtkMap: input.typ.params[1]
+                        else: webType(wtkAny)
+        let callbackExpected = WebType(kind: wtkCallback, name: "callable context",
+          params: @[inputItem], returnType: webType(wtkAny))
+        let callback = analysis.analyzeExpr(value.body[1], bindings, callbackExpected)
+        if builtin == "map_each":
+          return WebExpr(kind: wekBuiltin, typ: webType(wtkNil), loc: loc,
+            text: "map_each", children: @[input, callback])
+        let itemType = if builtin == "map_filter": inputItem
+                       elif builtin == "map_filter_map": withoutVoid(callback.typ.returnType)
+                       else: normalizeMapResult(callback.typ.returnType)
+        let resultType = case input.typ.kind
+          of wtkMap: WebType(kind: wtkMap, params: @[input.typ.params[0], itemType])
+          of wtkPropMap: webType(wtkPropMap)
+          else: input.typ
+        return WebExpr(kind: wekBuiltin, typ: resultType,
+          loc: loc, text: builtin, children: @[input, callback])
       of "map", "filter_map", "filter":
         if value.body.len != 2:
           raise webError(loc, "web " & builtin & " expects a collection and callback")
         let input = analysis.analyzeExpr(value.body[0], bindings)
-        if input.typ.kind notin {wtkStream, wtkList, wtkPropMap, wtkMap}:
-          raise webError(loc, "web " & builtin & " expects a List, Map, PropMap, or Stream")
-        let inputItem = case input.typ.kind
-          of wtkList, wtkStream: input.typ.item
-          of wtkMap: input.typ.params[1]
-          else: webType(wtkAny)
+        if input.typ.kind in {wtkPropMap, wtkMap}:
+          let replacement = case builtin
+            of "map": "$map_map"
+            of "filter": "$map_filter"
+            of "filter_map": "$map_filter_map"
+            else: "$map_map"
+          raise webError(loc, "web " & builtin &
+            " expects a list-like value, got Map; use " & replacement)
+        if input.typ.kind notin {wtkStream, wtkList}:
+          raise webError(loc, "web " & builtin & " expects a List or Stream")
+        let inputItem = if input.typ.kind in {wtkList, wtkStream}: input.typ.item
+                        else: webType(wtkAny)
         let callbackExpected = WebType(kind: wtkCallback, name: "callable context",
           params: @[inputItem], returnType: webType(wtkAny))
         let callback = analysis.analyzeExpr(value.body[1], bindings, callbackExpected)
         let itemType = if builtin == "filter": inputItem
                        elif builtin == "filter_map": withoutVoid(callback.typ.returnType)
                        else: normalizeMapResult(callback.typ.returnType)
-        let resultType = case input.typ.kind
-          of wtkMap: WebType(kind: wtkMap, params: @[input.typ.params[0], itemType])
-          of wtkPropMap: webType(wtkPropMap)
-          else: webType(input.typ.kind, itemType)
+        let resultType = webType(input.typ.kind, itemType)
         return WebExpr(kind: wekBuiltin, typ: resultType,
           loc: loc, text: builtin, children: @[input, callback])
       of "each":
         if value.body.len != 2:
           raise webError(loc, "web each expects a sequence and a callback")
         let input = analysis.analyzeExpr(value.body[0], bindings)
+        if input.typ.kind in {wtkPropMap, wtkMap}:
+          raise webError(loc, "web each expects a list-like value, got Map; use $map_each")
         if input.typ.kind notin {wtkStream, wtkList}:
           raise webError(loc, "web each expects a List or Stream")
         let callbackExpected = WebType(kind: wtkCallback, name: "callable context",
@@ -4467,22 +4526,42 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let body = analysis.analyzeSequence(bodyForms, loopBindings, nil, loc)
     dec analysis.loopDepth
     inc analysis.nextBranchGroup
+    # The repeat index shadows within the loop only. Capture its emitted name
+    # for the loop header, then restore the enclosing binding (or remove the
+    # introduced name) before retaining body-local diagnostics.
+    var loopIndexEmitted = ""
+    if indexName.len > 0:
+      loopIndexEmitted = emittedBinding(indexName, loopBindings[indexName])
+      if bindings.hasKey(indexName):
+        loopBindings[indexName] = bindings[indexName]
+      else:
+        loopBindings.del(indexName)
     retainBranchNames(bindings, loopBindings, analysis.nextBranchGroup, previousBindingScope)
     return WebExpr(kind: wekRepeat, typ: webType(wtkNil), loc: loc,
-      text: if indexName.len > 0: emittedBinding(indexName, loopBindings[indexName]) else: "",
-      children: @[count, body])
-  if name == "for":
+      text: loopIndexEmitted, children: @[count, body])
+  if name in ["for", "map_for"]:
+    let mapFamily = name == "map_for"
     if value.body.len < 3 or not value.body[1].isSym("in"):
-      raise webError(loc, "web for requires `for pattern in iterable`")
+      raise webError(loc, "web " & name & " requires `" & name & " pattern in iterable`")
     let iterable = analysis.analyzeExpr(value.body[2], bindings)
+    if mapFamily:
+      if iterable.typ.kind notin {wtkPropMap, wtkMap, wtkNil}:
+        raise webError(loc, "web map_for expects a Map or nil, got " &
+          typeName(iterable.typ))
+    elif iterable.typ.kind in {wtkPropMap, wtkMap}:
+      raise webError(loc, "web for cannot iterate a Map; use " &
+        "(map_for [key value] in …)")
     var itemType: WebType
     case iterable.typ.kind
     of wtkList, wtkStream: itemType = iterable.typ.item
-    of wtkPropMap, wtkMap: itemType = webType(wtkList, webType(wtkAny))
+    of wtkPropMap:
+      itemType = webType(wtkList, webType(wtkAny))
+    of wtkMap:
+      itemType = webType(wtkList, webType(wtkAny))
     of wtkRange: itemType = webType(wtkInt)
     of wtkStr: itemType = webType(wtkStr)
     of wtkNil: itemType = webType(wtkAny)
-    else: raise webError(loc, "web for cannot iterate " & typeName(iterable.typ))
+    else: raise webError(loc, "web " & name & " cannot iterate " & typeName(iterable.typ))
     inc analysis.loopDepth
     var loopBindings = copyBindings(bindings)
     let previousBindingScope = analysis.bindingScopeId
@@ -4514,6 +4593,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let body = analysis.analyzeSequence(bodyForms, loopBindings, nil, loc)
     dec analysis.loopDepth
     return WebExpr(kind: wekFor, typ: webType(wtkNil), loc: loc,
+      boolValue: mapFamily,
       text: if value.body[0].kind == vkSymbol:
               emittedBinding(value.body[0].symVal, patternBindings[value.body[0].symVal])
             else: "",
@@ -6592,6 +6672,12 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         ", " & arguments[2] & ")"
     of "http/request": "$gene_http_result(" & arguments.join(", ") & ")"
     of "size": "$gene_size(" & arguments[0] & ")"
+    of "map_size": "$gene_map_size(" & arguments[0] & ")"
+    of "map_empty?": "($gene_map_size(" & arguments[0] & ") === 0n)"
+    of "map_map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ")"
+    of "map_filter_map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ", true)"
+    of "map_filter": "$gene_stream_filter(" & arguments[0] & ", " & arguments[1] & ")"
+    of "map_each": "$gene_stream_each(" & arguments[0] & ", " & arguments[1] & ")"
     of "node/head": arguments[0] & ".head"
     of "node/props": arguments[0] & ".props"
     of "node/body": arguments[0] & ".body"
@@ -8438,7 +8524,9 @@ proc emitModule(module: WebModule, typescript: bool,
     moduleUsesExprKind(module, {wekCallableCall, wekMessage, wekSelector}) or
     moduleUsesTypeKind(module, wtkStream) or
     module.functions.anyIt(it.generator) or
-    moduleUsesBuiltin(module, ["to_stream", "map", "filter_map", "filter", "take", "into", "each"]) or
+    moduleUsesBuiltin(module, ["to_stream", "map", "filter_map", "filter",
+      "map_map", "map_filter_map", "map_filter", "map_each",
+      "take", "into", "each"]) or
     module.impls.anyIt(it.protocolName == "Callable")
   var needsOptional = (module.functions & module.defaultBodies).anyIt(it.params.anyIt(it.optional))
   for typ in module.types:
@@ -8488,13 +8576,16 @@ proc emitModule(module: WebModule, typescript: bool,
     moduleUsesTypeKind(module, wtkPresent) or
     moduleExprUsesTypeKind(module, wtkPresent)
   needsMap = moduleUsesTypeKind(module, wtkMap) or
-    moduleUsesExprKind(module, {wekMap})
+    moduleUsesExprKind(module, {wekMap}) or
+    moduleUsesBuiltin(module, ["map_size", "map_empty?", "map_map",
+      "map_filter", "map_filter_map", "map_each"])
   let needsMapEquality =
     needsMap or moduleExprUsesTypeKind(module, wtkMap) or
     needsPresentEquality
   let needsPropMap = moduleUsesTypeKind(module, wtkPropMap) or
     moduleExprUsesTypeKind(module, wtkPropMap) or needsPath or
-    moduleUsesBuiltin(module, ["json/parse"])
+    moduleUsesBuiltin(module, ["json/parse", "map_size", "map_empty?",
+      "map_map", "map_filter", "map_filter_map", "map_each"])
   needsStream = moduleUsesTypeKind(module, wtkStream)
   # Keyed on what the emitted code actually references, not on `fn.async`: a
   # function is async as soon as it calls one, and such a caller may never touch
@@ -8507,7 +8598,9 @@ proc emitModule(module: WebModule, typescript: bool,
   let needsNodeBrand = needsNode or needsPath or needsDom or needsPatternFields
   for fn in module.functions:
     if fn.generator: needsStream = true
-  if moduleUsesBuiltin(module, ["to_stream", "map", "filter_map", "filter", "take", "into", "each"]):
+  if moduleUsesBuiltin(module, ["to_stream", "map", "filter_map", "filter",
+      "map_map", "map_filter_map", "map_filter", "map_each",
+      "take", "into", "each"]):
     needsStream = true
   if needsAsync or needsGeneCatch:
     # Cancellation is branded with a registry symbol, not a `kind` string: a
@@ -8765,6 +8858,11 @@ proc emitModule(module: WebModule, typescript: bool,
       (if typescript: ": any" else: "") & ")" &
       (if typescript: ": bigint" else: "") &
       " { return BigInt(Array.isArray(value) || typeof value === \"string\" ? value.length : value.size); }")
+  if moduleUsesBuiltin(module, ["map_size", "map_empty?"]):
+    emitter.line("function $gene_map_size(value" &
+      (if typescript: ": any" else: "") & ")" &
+      (if typescript: ": bigint" else: "") &
+      " { return BigInt(value != null && value.$gene_map === true ? value.size : Object.keys(value ?? {}).length); }")
   if needsStream:
     emitter.line("export class GeneEndOfStream extends Error {")
     inc emitter.indent
@@ -8840,7 +8938,9 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
-    if moduleUsesBuiltin(module, ["map", "filter_map", "filter", "take", "into", "each"]):
+    if moduleUsesBuiltin(module, ["map", "filter_map", "filter",
+        "map_map", "map_filter_map", "map_filter", "map_each",
+        "take", "into", "each"]):
       let anyType = if typescript: ": any" else: ""
       emitter.line("function $gene_stream_map(source" & anyType & ", mapper" &
         anyType & ", dropNil = false, filtering = false)" & anyType & " {")

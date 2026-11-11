@@ -323,7 +323,7 @@ const CoreSpecialFormNames* = [
   "let", "var", "const", "set", "new",
   "fn", "macro", "quote", "quasiquote", "Path", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
-  "for", "break", "continue", "yield", "return", "try", "scope",
+  "for", "map_for", "break", "continue", "yield", "return", "try", "scope",
   "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
   "protocol", "impl", "derive", "import_impl", "web_module"
 ]
@@ -3346,7 +3346,8 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
         if local in inner.publicMacroNames and not value.declarationIsPrivate:
           c.publicMacroNames.incl qualified
       return newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
-    if value.head.isSymbol("for") and value.body.len >= 3:
+    if (value.head.isSymbol("for") or value.head.isSymbol("map_for")) and
+        value.body.len >= 3:
       var body = value.body
       body[2] = c.expandMacroTree(unit, body[2], loc, locs, provenance)
       var inner = c.childCompiler()
@@ -9014,7 +9015,7 @@ proc inlineForForm(c: Compiler, form: Value): bool =
     of "do", "if", "then", "elif", "else", "if_yes", "if_not", "&&", "||",
        "??", "!", "while", "loop", "repeat":
       discard
-    of "for":
+    of "for", "map_for":
       if form.body.len < 3 or not inlineForName(form.body[0]) or
           not form.body[1].isSymbol("in"):
         return false
@@ -9041,7 +9042,8 @@ const inlineForOps = {
   opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJumpIfPresentOrPop,
   opForInlineBegin, opForInlineNext}
 
-proc compileForProto(c: var Compiler, body: openArray[Value]): ForProto =
+proc compileForProto(c: var Compiler, body: openArray[Value],
+                     mapFamily = false): ForProto =
   ## The loop body as its own chunk, run as one frame per item.
   var bodyCompiler = c.childCompiler()
   bodyCompiler.loopDepth = c.loopDepth + 1
@@ -9062,10 +9064,11 @@ proc compileForProto(c: var Compiler, body: openArray[Value]): ForProto =
   discard bodyCompiler.emit(opReturn)
   bodyCompiler.chunk.localNames = bodyCompiler.localNames
   ForProto(pattern: body[0], body: bodyCompiler.chunk,
-    reuseScope: chunkCanPoolCallScope(bodyCompiler.chunk, nestedLoops = true))
+    reuseScope: chunkCanPoolCallScope(bodyCompiler.chunk, nestedLoops = true),
+    mapFamily: mapFamily)
 
 proc compileInlineFor(c: var Compiler, body: openArray[Value],
-                      loopIndex: int): bool =
+                      loopIndex: int, mapFamily = false): bool =
   ## A `for` whose body passes `inlineForForm` runs in the enclosing frame.
   ## opForInlineBegin keeps the item snapshot and an index on the operand
   ## stack, the loop variable is a block-local slot, and each iteration ends in
@@ -9084,7 +9087,7 @@ proc compileInlineFor(c: var Compiler, body: openArray[Value],
   inner.inlineBlockBindings = initHashSet[string]()
   inner.ownMacroNames = initHashSet[string]()
   inner.ownValueNames = initHashSet[string]()
-  let begin = inner.emit(opForInlineBegin, loopIndex)
+  let begin = inner.emit(opForInlineBegin, loopIndex, flag = mapFamily)
   let slot = inner.reserveLocal(body[0].symVal)
   let enter = inner.emit(opLoopEnter)
   let start = inner.chunk.instructions.len
@@ -9139,16 +9142,19 @@ proc compileInlineFor(c: var Compiler, body: openArray[Value],
       c.mutableBindingNames.incl instruction.name
   true
 
-proc compileFor(c: var Compiler, node: Value) =
+proc compileFor(c: var Compiler, node: Value, mapFamily = false) =
   let body = node.body
+  let label = if mapFamily: "map_for" else: "for"
   if body.len < 3:
-    raise newException(GeneError, "for requires a pattern, in, and an iterable")
+    raise newException(GeneError,
+      label & " requires a pattern, in, and an iterable")
   if body[1].kind != vkSymbol or body[1].symVal != "in":
-    raise newException(GeneError, "for requires 'in' after the pattern")
+    raise newException(GeneError,
+      label & " requires 'in' after the pattern")
   if c.allowYield and body.bodyContainsYield(3):
     let iterName = c.nextTemp("iter")
     compileExpr(c, body[2])                   # iterable on the stack
-    discard c.emit(opMakeIterator)
+    discard c.emit(opMakeIterator, flag = mapFamily)
     c.emitDefineBinding(iterName)
 
     let enter = c.emit(opLoopEnter)
@@ -9184,7 +9190,7 @@ proc compileFor(c: var Compiler, node: Value) =
       if not c.inlineForForm(body[i]):
         bodyOk = false
         break
-  let fp = c.compileForProto(body)
+  let fp = c.compileForProto(body, mapFamily)
   if bodyOk:
     # The frame body compiles the same forms. When it needs an instruction
     # the inline form may not use, do not attempt the inline form at all.
@@ -9193,9 +9199,9 @@ proc compileFor(c: var Compiler, node: Value) =
         bodyOk = false
         break
   let loopIndex = c.chunk.addForLoop(fp)
-  if bodyOk and c.compileInlineFor(body, loopIndex):
+  if bodyOk and c.compileInlineFor(body, loopIndex, mapFamily):
     return
-  discard c.emit(opForEach, loopIndex)
+  discard c.emit(opForEach, loopIndex, flag = mapFamily)
 
 proc compileYield(c: var Compiler, node: Value) =
   if not c.allowYield:
@@ -10256,7 +10262,7 @@ proc ownsResultBindings(value: Value): bool =
         return value.body.len > 1 and
           value.body[0].kind in {vkSymbol, vkNode} and
           value.body[1].kind == vkList
-      of "for":
+      of "for", "map_for":
         return value.body.len > 2 and ownsResultBindings(value.body[2])
       of "match":
         return value.body.len > 0 and ownsResultBindings(value.body[0])
@@ -10309,7 +10315,7 @@ proc resultCanUseFrameSlots(c: Compiler, value: Value): bool =
       if head == "quote": return true
       if head in ["fn", "macro", "type", "protocol", "enum", "alias", "ns",
           "impl", "import", "import_impl", "env", "eval", "try", "match",
-          "for", "scope", "supervisor", "spawn", "await", "yield"] or
+          "for", "map_for", "scope", "supervisor", "spawn", "await", "yield"] or
           head.endsWith("!") or (c.hasMacros and c.macros.hasKey(head)):
         return false
       if head in ["let", "var", "const"] and
@@ -10561,6 +10567,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       return
     of "for":
       compileFor(c, node)
+      return
+    of "map_for":
+      compileFor(c, node, mapFamily = true)
       return
     of "break":
       compileBreak(c, node)

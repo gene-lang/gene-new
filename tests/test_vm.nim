@@ -515,7 +515,7 @@ suite "VM — proper tail calls":
     beginTailCallStats()
     let sendValue = runStr(
       "(type Box ^props {^n Int} " &
-      "  (ctor [n] (self .set_prop `n n)) " &
+      "  (ctor [n] (self .put `n n)) " &
       "  (message down [] " &
       "    (if (== self/n 0) 0 " &
       "      ((new Box (- self/n 1)) .down)))) " &
@@ -1552,8 +1552,8 @@ suite "gir — disassembly":
        "(total [{^amount 2} {^amount 3}])", "5"
     ck "(fn f [xs] (var t 0) (for x in xs (if (> x 1) (then (set t (+ t x))) " &
        "  (else (set t (- t 1))))) t) (f [1 2 3])", "4"
-    # Maps iterate [key value] pairs, strings their characters.
-    ck "(fn f [m] (var n 0) (for kv in m (set n (+ n 1))) n) (f {^a 1 ^b 2})", "2"
+    # Map entries are read by the map family; strings iterate characters.
+    ck "(fn f [m] (var n 0) (map_for kv in m (set n (+ n 1))) n) (f {^a 1 ^b 2})", "2"
     ck "(fn f [s] (var n 0) (for c in s (set n (+ n 1))) n) (f \"abc\")", "3"
 
   test "a repeat index belongs to its loop, as a for variable does":
@@ -2769,7 +2769,7 @@ suite "vm — functions and closures":
        "(run)", "[true 42 true]"
     ck "(type Box ^props {^f Any}) " &
        "(fn copy_map [source] (var out ($thaw #{})) " &
-       "  (for [k v] in source (out .put k v)) out) " &
+       "  (map_for [k v] in source (out .put k v)) out) " &
        "(fn run [] (fn local [] nil) (var box (Box ^f local)) " &
        "  (same? ((copy_map {^p box}) .get \"p\") box)) " &
        "(run)", "true"
@@ -3995,7 +3995,7 @@ suite "vm — container update built-ins":
     # the same normalization `get` and `put` use. Map iteration yields symbols,
     # so an iterated key can be deleted directly.
     ck "(var m {^a 1 ^b 2}) (m .delete (quote a)) m", "{^b 2}"
-    ck "(var m {^a 1 ^b 2}) (for [k v] in {^a 1} (m .delete k)) m", "{^b 2}"
+    ck "(var m {^a 1 ^b 2}) (map_for [k v] in {^a 1} (m .delete k)) m", "{^b 2}"
     expect GeneError:
       discard runStr("(#{^a 1} .delete \"a\")")
     expect GeneError:
@@ -4021,15 +4021,15 @@ suite "vm — container update built-ins":
     ck "(var m {^a 1}) (m .get (quote a))", "1"
     expect GeneError: discard runStr("([1] .get \"a\")")
 
-  test "Node/set_prop mutates mutable node props":
+  test "Node/put mutates mutable node props":
     ck "(var n (quote (user ^name \"Ada\"))) " &
-       "[(n .set_prop \"name\" \"Bob\") (/name n)]",
+       "[(n .put \"name\" \"Bob\") (/name n)]",
        "[\"Bob\" \"Bob\"]"
     ck "(var n (quote (user ^name \"Ada\"))) " &
-       "[(n .set_prop \"name\" nil) (/name n)]",
+       "[(n .put \"name\" nil) (/name n)]",
        "[nil nil]"
     expect GeneError:
-      discard runStr("(#(user ^name \"Ada\") .set_prop \"name\" \"Bob\")")
+      discard runStr("(#(user ^name \"Ada\") .put \"name\" \"Bob\")")
 
 suite "vm — entrypoint support":
   test "top-level bindings can be looked up and called after run":
@@ -4215,9 +4215,19 @@ suite "vm — named rest and property spread":
        "(let d (D attrs...)) [d/a d/b]",
        "[1 2]"
     ck "(type C ^props {^a Int} " &
-       "(ctor [^opts...] (self .set_prop `a opts/a))) " &
+       "(ctor [^opts...] (self .put `a opts/a))) " &
        "(let c (new C ^a 5)) c/a",
        "5"
+
+  test "map_for survives GIR cloning":
+    let chunk = compileSource(
+      "(var out []) (map_for [k v] in {^a 1} (out .push [k v])) out")
+    let module = CompiledModule(identity: "test/map-for",
+      chunk: chunk, macroExports: initTable[string, MacroDef](),
+      syntaxFnExports: @[], compileInterface: CompileNamespaceInterface(
+        entries: initTable[string, CompileInterfaceEntry]()))
+    check run(cloneCompiledModule(module).chunk,
+              newGlobalScope()).print() == "[[a 1]]"
 
   test "named rest survives GIR cloning":
     let chunk = compileSource(

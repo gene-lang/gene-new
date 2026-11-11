@@ -24,7 +24,8 @@ proc builtinNativeErrorMetadata*(name: string): NativeErrorMetadata =
      "==", "!=", "same?", "not", "absent?", "present?",
      "+", "-", "*", "<", ">", "<=", ">=", "/", "//", "to_str",
      "range", "to_stream", "map", "filter", "filter_map", "each",
-     "into", "take",
+     "map_size", "map_empty?", "map_map", "map_filter", "map_filter_map",
+     "map_each", "to_pairs_stream", "into", "take",
      "read_one", "read_all", "parse_int", "size", "empty?", "List/push",
      "Stream/next", "Stream/peek", "Stream/has_next", "Stream/try_next",
      "Stream/close", "Task/join":

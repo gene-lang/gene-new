@@ -19,7 +19,7 @@ const lspSample = """
   ^props {^id Int ^title Str}
   (message label [self] self/title)
   (ctor [id : Int]
-    (self .set_prop `id id)))
+    (self .put `id id)))
 
 (enum Color red green (rgb Int))
 

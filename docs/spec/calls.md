@@ -35,6 +35,14 @@ named rest applies to each captured value, not to the map itself. Positional
 rest parameters are independent, so `[^attrs... body...]` collects the two
 channels separately.
 
+A Path with a symbol or string segment reads a stored prop first. When no
+stored prop shadows the name, it reads the node anatomy: `head` is the head,
+`props` and `meta` are the projections, and `body` is the positional body.
+The `$assoc_in` and `$dissoc_in` families keep this anatomy behavior. Keyed
+Node messages (`get`, `assoc`, `dissoc`, `put`, and `delete`) instead treat
+those names as ordinary stored props. See
+[collection views](collections.md#keyed-node-operations).
+
 ## Failed calls
 
 Calling a non-callable value names the authored head and the value's kind.
@@ -448,7 +456,7 @@ MVP compiler-dispatched heads:
 <!-- compiler-head-dispatch:start -->
 ```text
 do if if_yes if_not && || ?? ! let var const set new fn macro quote quasiquote
-Path path msg ns env eval import import_impl mod match while loop repeat for break
+Path path msg ns env eval import import_impl mod match while loop repeat for map_for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
 protocol impl derive web_module
 ```

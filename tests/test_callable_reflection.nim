@@ -346,7 +346,7 @@ suite "language callable reflection":
       (type Parent ^props {^n Int}
         (ctor [other : Self, ^offset : Int = 1] ^errors []
           (set called (+ called 1))
-          (self .set_prop `n (+ other/n offset))))
+          (self .put `n (+ other/n offset))))
       (type Child : Parent ^props {})
       (let s ($runtime/constructor_signature Child))
       (let before called)

@@ -925,6 +925,14 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     if not valid: result.errors = oneError("RuntimeError")
     result.value = AbstractValue(kind: avRange, typ: newSym("Range"),
                                   resultType: newSym("Int"))
+  of "map_size":
+    if args.len != 1 or args[0].kind notin {avMap, avUnknown}:
+      result.errors.open = true
+    result.value = AbstractValue(kind: avScalar, typ: newSym("Int"))
+  of "map_empty?":
+    if args.len != 1 or args[0].kind notin {avMap, avUnknown}:
+      result.errors.open = true
+    result.value = AbstractValue(kind: avScalar, typ: newSym("Bool"))
   of "to_stream":
     if args.len != 1: result.errors = oneError("RuntimeError")
     if args.len > 0 and args[0].kind == avStream:
@@ -936,7 +944,8 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
       result.errors.open = true
       result.value = AbstractValue(kind: avStream)
   of "map", "filter", "filter_map", "each", "stream/map", "stream/filter",
-      "stream/filter_map", "stream/each":
+      "stream/filter_map", "stream/each",
+      "map_map", "map_filter", "map_filter_map", "map_each":
     if args.len == 1:
       result.value = AbstractValue(kind: avSelector)
       return

@@ -423,6 +423,7 @@ suite "spec — reader surface from design":
     fixture(["loop", "continue"], "(loop (continue))")
     fixture(["repeat"], "(repeat 0 nil)")
     fixture(["for"], "(for x in [] x)")
+    fixture(["map_for"], "(map_for [k v] in {} nil)")
     fixture(["yield"], "(fn ^^generator items [] (yield 1))")
     fixture(["return"], "(fn early [] (return 1))")
     fixture(["try"], "(try 1 ensure nil)")
@@ -583,7 +584,7 @@ suite "spec — sequenced value pipelines":
                "[before (pending -> $into []) log]",
                "[0 [1 2 3] [1 2 3]]")
     check_eval("(var log []) (fn keep [x] (log .push x)) " &
-               "[({^a 1 ^b 2} -> $each keep) log]",
+               "[({^a 1 ^b 2} -> $map_each keep) log]",
                "[nil [1 2]]")
     check_eval("(var log []) (fn keep [x] (log .push x) x) " &
                "(fn twice [x] (* x 2)) " &
@@ -4669,7 +4670,7 @@ suite "spec — nominal types from design":
 suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "new invokes the type constructor unless its head collides":
     check_eval("(type Point ^props {^x Int} " &
-               "  (ctor [x : Int] (self .set_prop `x x))) " &
+               "  (ctor [x : Int] (self .put `x x))) " &
                "(var point (new Point 42)) point/x",
                "42")
     check_compile_error("(let new (fn [_] \"shadowed\")) (new Point 42)",
@@ -4678,17 +4679,17 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "ctor mutates pre-created self and returns the validated instance":
     check_eval("(type Point ^props {^x F64 ^y F64} " &
                "  (ctor [x : F64, y : F64] " &
-               "    (self .set_prop `x x) " &
-               "    (self .set_prop `y y))) " &
+               "    (self .put `x x) " &
+               "    (self .put `y y))) " &
                "(var p (new Point 10.0 20.0)) [p/x p/y]",
                "[10.0 20.0]")
 
   test "ctor uses function-style argument matching with named defaults":
     check_eval("(type User ^props {^name Str ^age Int ^active Bool} " &
                "  (ctor [name : Str, ^age : Int = 0, ^active : Bool = true] " &
-               "    (self .set_prop `name name) " &
-               "    (self .set_prop `age age) " &
-               "    (self .set_prop `active active))) " &
+               "    (self .put `name name) " &
+               "    (self .put `age age) " &
+               "    (self .put `active active))) " &
                "(var u (new User \"Ada\" ^age 37)) [u/name u/age u/active]",
                "[\"Ada\" 37 true]")
 
@@ -4698,7 +4699,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(type Port ^props {^value Int} " &
                "  (ctor [n : Int] ^errors [ValidationError] " &
                "    (if (&& (>= n 0) (<= n 65535)) " &
-               "      (self .set_prop `value n) " &
+               "      (self .put `value n) " &
                "      (fail (ValidationError ^message \"invalid port\"))))) " &
                "(var ok (new Port 8080)) " &
                "[(try (new Port 99999) catch ValidationError $err/message) " &
@@ -4710,18 +4711,18 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(try (new Bad) catch Any \"required field unset\")",
                "\"required field unset\"")
     check_eval("(type Sneaky ^props {^a Int} " &
-               "  (ctor [] (self .set_prop `a 1) " &
-               "           (self .set_prop `zzz 9))) " &
+               "  (ctor [] (self .put `a 1) " &
+               "           (self .put `zzz 9))) " &
                "(try (new Sneaky) catch Any \"unknown field\")",
                "\"unknown field\"")
     check_eval("(type Typed ^props {^a Int} " &
-               "  (ctor [] (self .set_prop `a \"nope\"))) " &
+               "  (ctor [] (self .put `a \"nope\"))) " &
                "(try (new Typed) catch TypeError $err/where)",
                "\"field 'a' for Typed\"")
 
   test "(T ...) is direct data construction and never runs the ctor":
     check_eval("(type Port2 ^props {^value Int} " &
-               "  (ctor [n : Int] (self .set_prop `value (* n 2)))) " &
+               "  (ctor [n : Int] (self .put `value (* n 2)))) " &
                "(var direct (Port2 ^value 8080)) " &
                "(var made (new Port2 8080)) " &
                "[direct/value made/value]",
@@ -4729,18 +4730,18 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
 
   test "direct construction still schema-validates on a ctor type":
     check_eval("(type Port3 ^props {^value Int} " &
-               "  (ctor [n : Int] (self .set_prop `value n))) " &
+               "  (ctor [n : Int] (self .put `value n))) " &
                "(try (Port3 ^value \"nope\") catch TypeError $err/where)",
                "\"field 'value' for Port3\"")
     check_eval("(type Port4 ^props {^value Int} " &
-               "  (ctor [n : Int] (self .set_prop `value n))) " &
+               "  (ctor [n : Int] (self .put `value n))) " &
                "(try (Port4) catch Any \"missing field\")",
                "\"missing field\"")
 
   test "typed instance property writes preserve field types":
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter (Counter ^n 1)) " &
-               "[(try (counter .set_prop `n \"bad\") " &
+               "[(try (counter .put `n \"bad\") " &
                "  catch TypeError $err/where) counter/n]",
                "[\"field 'n' for Counter\" 1]")
     check_eval("(type Counter ^props {^n Int}) " &
@@ -4771,7 +4772,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(var value (NamedOnly ^n 1)) " &
                "[(try (value .set_body [\"undeclared\"]) " &
                "  catch Error $err/message) " &
-               " (try (value .push_body \"undeclared\") " &
+               " (try (value .push \"undeclared\") " &
                "  catch Error $err/message) value]",
                "[\"NamedOnly expects 0 body item(s), got 1\" " &
                "\"NamedOnly expects 0 body item(s), got 1\" " &
@@ -4784,7 +4785,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "the immutable node reader preserves typed-instance immutability":
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter #(Counter ^n 1)) " &
-               "[(try (counter .set_prop `n 2) " &
+               "[(try (counter .put `n 2) " &
                "  catch Error $err/message) counter]",
                "[\"cannot mutate immutable Node\" #((type Counter) ^n 1)]")
 
@@ -4817,14 +4818,14 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(type Animal ^props {^name Str}) " &
                "(type Dog : Animal ^props {^breed Str} " &
                "  (ctor [name : Str, breed : Str] " &
-               "    (self .set_prop `name name) " &
-               "    (self .set_prop `breed breed))) " &
+               "    (self .put `name name) " &
+               "    (self .put `breed breed))) " &
                "(var d (new Dog \"Rex\" \"Lab\")) [d/name d/breed]",
                "[\"Rex\" \"Lab\"]")
 
   test "new inherits the nearest ancestor ctor":
     check_eval("(type Animal ^props {^name Str} " &
-               "  (ctor [name : Str] (self .set_prop `name name))) " &
+               "  (ctor [name : Str] (self .put `name name))) " &
                "(type Dog : Animal) " &
                "(var dog (new Dog \"Rex\")) dog",
                "((type Dog) ^name \"Rex\")")
@@ -4832,8 +4833,8 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "ctor fills body fields through mutable node APIs":
     check_eval("(type Pair ^body [Int Int] " &
                "  (ctor [a : Int, b : Int] " &
-               "    (self .push_body a) " &
-               "    (self .push_body b))) " &
+               "    (self .push a) " &
+               "    (self .push b))) " &
                "(var pr (new Pair 1 2)) [pr/0 pr/1]",
                "[1 2]")
     check_eval("(type Solo ^body [Int] (ctor [] nil)) " &
@@ -4848,17 +4849,17 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(var leaked nil) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked self) " &
-               "    (self .set_prop `x 1))) " &
+               "    (self .put `x 1))) " &
                "[(try (new T) catch Any \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(var box ($cell nil)) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (box .set self) " &
-               "    (self .set_prop `x 1))) " &
+               "    (self .put `x 1))) " &
                "[(try (new T) catch Any \"blocked\") (box .get)]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
-               "  (ctor [] [self] (self .set_prop `x 1))) " &
+               "  (ctor [] [self] (self .put `x 1))) " &
                "(try (new T) catch Any \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} ^impl [Error] " &
@@ -4873,31 +4874,31 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(var leaked nil) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked (fn [] self)) " &
-               "    (self .set_prop `x 1))) " &
+               "    (self .put `x 1))) " &
                "[(try (new T) catch Any \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
                "  (message inspect [self] self/x) " &
                "  (ctor [] (self .inspect) " &
-               "    (self .set_prop `x 1))) " &
+               "    (self .put `x 1))) " &
                "(try (new T) catch Any \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} " &
                "  (ctor [] (spawn self) " &
-               "    (self .set_prop `x 1))) " &
+               "    (self .put `x 1))) " &
                "(try (new T) catch Any \"blocked\")",
                "\"blocked\"")
     check_eval("(var ch ($channel ^capacity 1)) " &
                "(type T ^props {^x Int} ^impl [Send] " &
                "  (ctor [] (ch .send self) " &
-               "    (self .set_prop `x 1))) " &
+               "    (self .put `x 1))) " &
                "(impl Send for T) " &
                "(try (new T) catch Any \"blocked\")",
                "\"blocked\"")
 
   test "successful construction clears the publication guard":
     check_eval("(type T ^props {^x Int} ^impl [Send] " &
-               "  (ctor [] (self .set_prop `x 1))) " &
+               "  (ctor [] (self .put `x 1))) " &
                "(impl Send for T) " &
                "(var ch ($channel ^capacity 1)) (var value (new T)) " &
                "(ch .send value) " &
@@ -4942,7 +4943,7 @@ suite "spec — native wrapper types (design §16.6)":
                "  (ctor [h : Str] (set self/handle h))) " &
                "(var c (new Conn \"H\")) " &
                "[(try (set c/handle \"junk\") catch Error $err/message) " &
-               " (try (c .set_prop `handle \"junk\") catch Any \"no\") " &
+               " (try (c .put `handle \"junk\") catch Any \"no\") " &
                " (try ($assoc_in c /handle \"junk\") catch Any \"no\") " &
                " c/handle]",
                "[\"cannot set field 'handle' on Conn: native wrapper fields " &
@@ -5445,7 +5446,7 @@ suite "spec — proper tail calls from design §3.1":
       "(fn count_down [n] : F64 " &
       "  (if (== n 0) 0.0 (count_down (- n 1)))) " &
       "(type Box ^props {^n Int} " &
-      "  (ctor [n] (self .set_prop `n n)) " &
+      "  (ctor [n] (self .put `n n)) " &
       "  (message down [] " &
       "    (if (== self/n 0) 0 " &
       "      ((new Box (- self/n 1)) .down)))) " &
@@ -5806,11 +5807,11 @@ suite "spec — pattern destructuring from design":
     # Drive `for` itself (its iteratorStream path), not the to_stream helpers,
     # accumulating each visited item so ordering is asserted.
     check_eval("(var acc []) " &
-               "(for [k v] in {^a 1 ^b 2} (set acc [acc... [k v]])) " &
+               "(map_for [k v] in {^a 1 ^b 2} (set acc [acc... [k v]])) " &
                "acc",
                "[[a 1] [b 2]]")
     check_eval("(var acc []) " &
-               "(for [k v] in {{\"x\" : 1 \"y\" : 2}} (set acc [acc... [k v]])) " &
+               "(map_for [k v] in {{\"x\" : 1 \"y\" : 2}} (set acc [acc... [k v]])) " &
                "acc",
                "[[\"x\" 1] [\"y\" 2]]")
     check_eval("(var acc []) " &
@@ -5818,9 +5819,15 @@ suite "spec — pattern destructuring from design":
                "acc",
                "[3 1 2]")
     check_eval("(var acc []) " &
-               "(for x in (quote (foo 1 2 3)) (set acc [acc... x])) " &
+               "(for x in ($body (quote (foo 1 2 3))) (set acc [acc... x])) " &
                "acc",
                "[1 2 3]")
+    expect GeneError:
+      discard run(compileSource("(for x in (quote (foo 1 2 3)) x)"),
+                  newGlobalScope())
+    expect GeneError:
+      discard run(compileSource("(for [k v] in {^a 1} nil)"),
+                  newGlobalScope())
     check_eval("(var acc []) " &
                "(for x in ($range 0 4 2 true) (set acc [acc... x])) " &
                "acc",
@@ -6261,7 +6268,7 @@ suite "spec — implicit self in message bodies from design §10":
                "[[1 [2 3] 4] 1]")
     # A typed instance's body destructures the same way.
     check_eval("(type P ^props {^a Int} ^body [Any...]) (var p (P ^a 1)) " &
-               "(p .push_body 7) (p .push_body 8) " &
+               "(p .push 7) (p .push 8) " &
                "(match p (when (P ^a k xs...) [k xs]) (else \"no\"))",
                "[1 [7 8]]")
     # The macro-time matcher is a separate implementation and needs the same
@@ -6381,7 +6388,7 @@ suite "spec — implicit self in message bodies from design §10":
                "[(n .head) (n .props) (n .body) (n .meta)]",
                "[f {} [1 2] {}]")
     check_eval("(type P ^props {^a Int}) (var p (P ^a 1)) " &
-               "[(try (p .set_prop \"b\" 2) " &
+               "[(try (p .put \"b\" 2) " &
                "  catch Error $err/message) " &
                " (p .head) (p .body) (p .props)]",
                "[\"P has no field 'b'\" (type P) [] {^a 1}]")
@@ -7273,7 +7280,7 @@ suite "spec — binding forms from design §12.1":
     # validated atomically at publication. The negative case — a ctor that
     # leaves a required field unset — is NOT asserted here: a ctor whose
     # validation raises corrupts the heap, which reproduces on an unmodified
-    # build with `set_prop` and no `set` at all. Recorded as its own defect.
+    # build with `put` and no `set` at all. Recorded as its own defect.
     check_eval("(type C ^props {^x Int} (ctor [v : Int] (set self/x v))) " &
                "(var c (new C 5)) c/x",
                "5")
@@ -7415,7 +7422,7 @@ suite "spec — mutable containers from design":
                "(var mm {^a 1}) " &
                "(mm .put \"b\" 3) " &
                "(var n (quote (user ^name \"Ada\"))) " &
-               "(n .set_prop \"name\" \"Bob\") " &
+               "(n .put \"name\" \"Bob\") " &
                "[xs xs2 ys pushed zs m m2 (mm .get \"b\") (/name n)]",
                "[#[1 2 3] #[1 20 3] [9 2] nil [nil] #{^a 1} #{^a 1 ^b 2} 3 \"Bob\"]")
 
@@ -7431,7 +7438,7 @@ suite "spec — mutable containers from design":
                "[9 2 3 4]")
     check_eval("(var m {^a 1}) (m .put \"b\" 2) (m .get \"b\")", "2")
     check_eval("(var n (quote (user ^name \"Ada\"))) " &
-               "(n .set_prop \"name\" \"Bob\") (/name n)",
+               "(n .put \"name\" \"Bob\") (/name n)",
                "\"Bob\"")
 
   test "built-in sends use the unqualified form":
@@ -7994,12 +8001,12 @@ suite "spec — generic collection operations from design (§6.2)":
   test "eager kinds answer in their own kind":
     check_eval("([1 2 3] .map (fn [x] (* x x)))", "[1 4 9]")
     check_eval("((Set 1 2 3) .map (fn [x] (* x x)))", "(Set 1 4 9)")
-    check_eval("({^a 1 ^b 2} .map (fn [v] (* v 10)))", "{^a 10 ^b 20}")
+    check_eval("({^a 1 ^b 2} .map_map (fn [v] (* v 10)))", "{^a 10 ^b 20}")
 
   test "filter keeps truthy items in the receiver's kind":
     check_eval("([1 2 3 4] .filter (fn [x] (> x 2)))", "[3 4]")
     check_eval("((Set 1 2 3 4) .filter (fn [x] (> x 2)))", "(Set 3 4)")
-    check_eval("({^a 1 ^b 2 ^c 3} .filter (fn [v] (> v 1)))", "{^b 2 ^c 3}")
+    check_eval("({^a 1 ^b 2 ^c 3} .map_filter (fn [v] (> v 1)))", "{^b 2 ^c 3}")
 
   test "a Map callback sees the value, not the pair":
     check_eval("(var pairs (($to_pairs_stream {^a 1 ^b 2}) .into [])) pairs",
@@ -8024,14 +8031,14 @@ suite "spec — generic collection operations from design (§6.2)":
                "hits/.get",
                "3")
     check_eval("(var hits ($cell 0)) " &
-               "({^a 1 ^b 2} .each (fn [v] (hits .set v))) " &
+               "({^a 1 ^b 2} .map_each (fn [v] (hits .set v))) " &
                "hits/.get",
                "2")
     check_eval("([1 2] .each (fn [x] x))", "nil")
 
   test "map keeps one result per input, including nil":
     check_eval("([1 2] .map (fn [x] (if (== x 1) x nil)))", "[1 nil]")
-    check_eval("({^a 1 ^b 2} .map (fn [v] (if (== v 1) v nil)))", "{^a 1 ^b nil}")
+    check_eval("({^a 1 ^b 2} .map_map (fn [v] (if (== v 1) v nil)))", "{^a 1 ^b nil}")
 
   test "a receiver with no method raises the send's MessageError":
     check_eval("(try (42 .map (fn [x] x)) catch MessageError $err/receiver_type)",
@@ -9255,7 +9262,7 @@ suite "spec — task context":
 
   test "collection callbacks can await and preserve eager receiver shapes":
     check_eval("(scope (let worker (spawn ^lane root " &
-      " [($map #{^a 1 ^b 2} (fn [x] ($sleep 1) (+ x 1))) " &
+      " [($map_map #{^a 1 ^b 2} (fn [x] ($sleep 1) (+ x 1))) " &
       "  ($filter [1 2 3] (fn [x] ($sleep 1) (> x 1))) " &
       "  ($filter_map [1 2] (fn [x] ($sleep 1) (if (== x 1) nil x))) " &
       "  ([1 2] .map (fn [x] ($sleep 1) (* x 2)))])) (await worker))",
@@ -10074,7 +10081,7 @@ suite "spec — semantic equality and hashing":
       "(let b #(FailingKey ^n 2)) " &
       "(let values {{a : 1}}) " &
       "[(try (values .assoc b 2) catch RuntimeError \"failed\") " &
-      " ($size values)]", "[\"failed\" 1]")
+      " ($map_size values)]", "[\"failed\" 1]")
 
   test "equality-only values and nested keys have no structural hash escape":
     let declaration = "(type EqOnly ^props {^n Int}) " &
@@ -13190,11 +13197,11 @@ suite "spec — runtime fast paths keep ordinary semantics":
                """["V0" "V1" "V2"]""")
 
   test "Map get and put accept Str and Sym keys without interning a missed key":
-    check_eval("""(var m {}) (m .put "alpha" 1) (m .put (quote beta) 2) (m .put "gamma" nil) (var before [(m .get "alpha") (m .get (quote alpha)) (m .get "beta") (m .get "gamma") (m .get "spec_key_never_interned")]) (m .delete "alpha") [before (m .get "alpha") ($size m)]""",
+    check_eval("""(var m {}) (m .put "alpha" 1) (m .put (quote beta) 2) (m .put "gamma" nil) (var before [(m .get "alpha") (m .get (quote alpha)) (m .get "beta") (m .get "gamma") (m .get "spec_key_never_interned")]) (m .delete "alpha") [before (m .get "alpha") ($map_size m)]""",
                """[[1 1 2 nil nil] nil 2]""")
 
   test "Map iteration yields Sym keys in insertion order":
-    check_eval("""(var out []) (for [k v] in {^b 2 ^a 1} (out .push [k v ($to_str k)])) out""",
+    check_eval("""(var out []) (map_for [k v] in {^b 2 ^a 1} (out .push [k v ($to_str k)])) out""",
                """[[b 2 "b"] [a 1 "a"]]""")
 
   test "a Map literal keeps nil entries":
@@ -13357,3 +13364,82 @@ suite "spec — nil-only absence":
     check_eval("(alias MaybeNil Nil?) (fn f [] : MaybeNil 42) (try (f) catch TypeError \"TypeError\")",
                "\"TypeError\"")
 
+
+suite "spec — node collection families":
+  const nodeFixture = "(type P ^props {^x Int ^y Int?}) " &
+    "(type B ^props {^x Int} ^body [Int...]) " &
+    "(let p (P ^x 1)) (let b (B ^x 1 10 20 30)) " &
+    "(let q (quote (a ^k 1 b c))) (let m {^x 1}) "
+
+  test "keyed node messages use stored props and body indices":
+    check_eval(nodeFixture &
+      "[(p .get \"x\") (p .get \"y\") (p .get (quote x)) " &
+      " (b .get 0) (b .get -1) (b .get 9) (q .get 0) (q .get \"k\")]",
+      "[1 nil 1 10 30 nil b 1]")
+    check_eval(nodeFixture &
+      "[(p .assoc \"x\" 2) p (b .assoc 0 5) " &
+      " ((P ^x 1 ^y 2) .dissoc \"y\")]",
+      "[((type P) ^x 2) ((type P) ^x 1) ((type B) ^x 1 5 20 30) ((type P) ^x 1)]")
+    check_eval(nodeFixture &
+      "(var qq (quote (a ^k 1 b c))) (qq .put \"k\" 9) (qq .push 9) " &
+      "(qq .set 0 7) qq", "(a ^k 9 7 c 9)")
+
+  test "map family reads node props and list family rejects non-indexed nodes":
+    check_eval(nodeFixture &
+      "[($map_size p) ($map_size (P ^x 1 ^y 2)) ($map_size b) ($map_size q) " &
+      " (p .map_size) ($map_size (quote (a b c)))]",
+      "[1 2 1 1 1 0]")
+    check_eval(nodeFixture &
+      "($map_map p (fn [v] (* v 10)))", "{^x 10}")
+    check_eval(nodeFixture &
+      "(var out []) (map_for [k v] in p (out .push [k v])) out", "[[x 1]]")
+    check_runtime_error(nodeFixture & "(for v in b nil)", "/.body")
+    check_runtime_error(nodeFixture & "($size p)", "/.body")
+    check_runtime_error(nodeFixture & "(b .map (fn [x] x))", "/.body")
+    check_eval(nodeFixture &
+      "[($respond_to? b \"map\") ($respond_to? b \"map_map\")]",
+      "[false true]")
+
+  test "list family rejects maps and names the map-family operation":
+    check_runtime_error(nodeFixture & "($size m)", "map_size")
+    check_runtime_error(nodeFixture & "($map m (fn [x] x))", "map_map")
+    check_runtime_error(nodeFixture & "(for [k v] in m nil)", "map_for")
+    check_eval("(let m {^x 1 ^y 2}) [($map_size m) ($map_empty? m) " &
+      "($map_map m (fn [v] (* v 10)))]",
+      "[2 false {^x 10 ^y 20}]")
+
+  test "indexed types use IndexRead for list-family operations":
+    check_eval("(type Ring ^props {^items List}) " &
+      "(impl IndexRead for Ring " &
+      " (message size [] : Int ($size self/items)) " &
+      " (message at [index : Int] : Any self/items/%index)) " &
+      "(var r (Ring ^items [10 20 30])) " &
+      "[(r .get 0) (r .get -1) (== (r .get 9) nil) " &
+      " ($size r) ($first r) ($last r) ($map r (fn [x] (+ x 1))) " &
+      " ($map_size r) (r .size) r/.map_size]",
+      "[10 30 true 3 10 30 [11 21 31] 1 3 1]")
+    check_eval("(type Ring ^props {^items List}) " &
+      "(impl IndexRead for Ring " &
+      " (message size [] : Int ($size self/items)) " &
+      " (message at [index : Int] : Any self/items/%index)) " &
+      "(var r (Ring ^items [10 20 30])) (var out []) " &
+      "(for x in r (out .push x)) out", "[10 20 30]")
+    check_eval("(type Ring ^props {^items List}) " &
+      "(impl IndexRead for Ring " &
+      " (message size [] : Int ($size self/items)) " &
+      " (message at [index : Int] : Any self/items/%index)) " &
+      "(let r (Ring ^items [10 20 30])) " &
+      "[($respond_to? r \"size\") ($respond_to? r \"map_map\")]",
+      "[true true]")
+
+  test "typed node JSON writes props only when the body has no items":
+    check_eval("(type P ^props {^x Int ^y Int?}) " &
+      "($json/stringify (P ^x 1))", "\"{\\\"x\\\":1}\"")
+    check_runtime_error("(type B ^props {^x Int} ^body [Int...]) " &
+      "($json/stringify (B ^x 1 2))", "body items")
+    check_runtime_error("($json/stringify (quote (a ^k 1)))", "non-Type head")
+
+  test "projections inherit receiver immutability":
+    check_runtime_error("(type P ^props {^x Int}) " &
+      "(let p ($freeze (P ^x 1))) (($props p) .put \"x\" 2)", "immutable")
+    check_runtime_error("(($body ($freeze [1 2])) .push 3)", "immutable")

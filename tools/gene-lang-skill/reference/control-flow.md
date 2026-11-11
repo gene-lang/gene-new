@@ -96,7 +96,7 @@ a nil default. Patterns destructure lists, maps, typed values, and enum payloads
 
 ```gene
 (for value in values …)          # over a list, stream, or range
-(for [k v] in a_map …)           # map iteration yields pairs
+(map_for [k v] in a_map …)       # map iteration yields pairs
 (repeat index in count …)        # indexed
 (while (> current 0) …)
 (loop … (break))                 # unbounded
@@ -144,7 +144,7 @@ The same operations exist as functions taking the stream first —
 `($stream/each stream f)`.
 
 Message surface: `has_next` `peek` `next` `try_next` `close` `map` `filter`
-`take` `into` `each` `to_pairs_stream`.
+`take` `into` `each`.
 
 `peek`/`next` raise `EndOfStream` at exhaustion; `try_next` returns a tagged
 result instead — `TryNext/exhausted`, `#(TryNext/value item)`, or

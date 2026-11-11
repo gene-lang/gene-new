@@ -52,8 +52,9 @@ key”.
   Deep `freeze` rejects a wrapper (its reachable native state cannot be made
   immutable), while `freeze_shallow` and `thaw` return it unchanged; serde
   reopens one through `serde_state`/`serde_restore` rather than reconstructing
-  it. Native receiver guards admit a wrapper Type or a nominal descendant, by
-  Type identity and never by name. `^sealed` is reserved and rejected.
+  it. `$json/stringify` rejects a wrapper instance at any depth. Native
+  receiver guards admit a wrapper Type or a nominal descendant, by Type
+  identity and never by name. `^sealed` is reserved and rejected.
 - Persistent updates return a new root; explicit mutation operations change only mutable
   containers. `freeze` is deep, `freeze_shallow` is shallow, and `thaw` is deep.
 - Native call borrows may pin a C pointer against explicit close, ownership

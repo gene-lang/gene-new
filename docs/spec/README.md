@@ -8,6 +8,7 @@ Start with [the language guide](../language.md) for examples and ordinary usage.
 - [Types and construction](types.md)
 - [Absence (nil), Present, and optional binding](nil-void.md)
 - [Protocols and dispatch](protocols.md)
+- [Collection views and operations](collections.md)
 - [Streams](streams.md)
 - [Tasks, channels, and actors](concurrency.md)
 - [Experimental TCP byte I/O](async-io-tcp.md)

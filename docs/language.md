@@ -281,7 +281,7 @@ selected for a receiver. Type queries describe direct data construction;
 
 ```gene runnable
 (type Point ^props {^x Int}
-  (ctor [x : Int] (self .set_prop `x x))
+  (ctor [x : Int] (self .put `x x))
   (message copy [] : Self (Point ^x self/x)))
 (let data ($runtime/signature Point))
 (let ctor ($runtime/constructor_signature Point))
@@ -522,8 +522,30 @@ directly or import its name:
 (join ["Ada" "Grace"] ", ") # "Ada, Grace"
 ```
 
-`map`, `filter`, and `filter_map` operate on eager collections and lazy streams.
-A Path can be the callback:
+The list family (`map`, `filter`, `filter_map`, `each`, `size`, `empty?`,
+`first`, `last`, `contains?`, `take`, `drop`, `reverse`, `to_stream`, `join`,
+and `into` as a source) reads a List's items, a Stream's items, or a node's
+logical items when its type implements `IndexRead`. A Map has entries, so the
+list family rejects it and names the corresponding map-family operation.
+
+The map family reads entries: `map_size`, `map_empty?`, `map_map`,
+`map_filter`, `map_filter_map`, `map_each`, `to_pairs_stream`, and
+`has_key?`. It also reads the stored props of any node. Use `map_for` to
+iterate a Map's `[key value]` pairs or a node's props:
+
+```gene runnable
+(let scores {^Ada 7 ^Grace 9})
+[(map_for [name score] in scores [name score])
+ ($map_size scores)
+ ($map_map scores (fn [score] (* score 10)))]
+# [[[Ada 7] [Grace 9]] 2 {^Ada 70 ^Grace 90}]
+```
+
+Use `N/.body` or `($body N)` when a node's positional body is intended.
+The operation name, never the receiver's declaration, selects the view. See
+[collections](spec/collections.md).
+
+A Path can be the callback to a list-family operation:
 
 ```gene runnable
 (let people [{^name "Ada"} {^name "Grace"}])

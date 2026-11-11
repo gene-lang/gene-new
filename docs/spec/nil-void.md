@@ -92,7 +92,10 @@ Generators emit what they `yield`, including nil, and end on fallthrough or
 
 `$json/stringify` writes a stored nil as `null` and an absent key not at all.
 `^^omit_nil` leaves out every nil-valued map key at every depth; nil list
-elements are always written, because position carries meaning.
+elements are always written, because position carries meaning. A typed node
+whose body has no items is written as its stored props, so an omitted optional
+field is absent and a stored nil is `null`. A node with body items, a plain
+node with a non-Type head, and a native-wrapper instance are rejected.
 
 ```gene
 ($json/stringify {^a nil ^b 1})              # {"a":null,"b":1}

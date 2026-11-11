@@ -939,7 +939,31 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
                        lexicalHint = false, protocol = "",
                        missingImpl = false,
                        protocolValue = NIL,
-                       receiverValue = NIL) {.noreturn.}
+                       receiverValue = NIL,
+                       nodeViewHint = false,
+                       familyHint = "") {.noreturn.}
+proc nodePropsProjection(v: Value): Value
+proc indexedItemsView(v: Value): Value
+proc isIndexedNode(v: Value): bool
+proc receiverDisplayType(receiver: Value): string
+proc isListFamilyName(name: string): bool =
+  name in ["for", "size", "empty?", "map", "filter", "filter_map", "each",
+           "first", "last", "contains?", "take", "drop", "reverse",
+           "to_stream", "join", "into"]
+
+proc typeDirectOverride(name: string, receiver: Value,
+                        rest: openArray[Value], scope: Scope,
+                        runningOp: Value): tuple[handled: bool, value: Value]
+proc resolveListFamilyWithOp(name: string, receiver: Value,
+                             rest: openArray[Value], scope: Scope,
+                             runningOp: Value):
+                             tuple[handled: bool, value: Value, source: Value]
+proc resolveListFamily(name: string, receiver: Value,
+                       rest: openArray[Value], scope: Scope):
+                       tuple[handled: bool, value: Value, source: Value]
+proc resolveMapFamily(name: string, receiver: Value,
+                      rest: openArray[Value], scope: Scope):
+                      tuple[handled: bool, value: Value, source: Value]
 proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc isUrlModulePath*(path: string): bool
@@ -3103,31 +3127,31 @@ proc biNe(args: openArray[Value]): Value {.nimcall.} =
     if not semanticEqual(args[i-1], args[i]): return TRUE
   FALSE
 
-proc biContains(args: openArray[Value]): Value {.nimcall.} =
-  ## (xs .contains? x) — structural-equality membership for List and Set
-  ## receivers (design §1.5: membership follows ==). Maps are deliberately
-  ## unsupported: key-vs-value membership would be ambiguous.
+proc biContains(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Structural-equality membership. Together with the other list-family
+  ## operations, an IndexRead node is read through its logical items.
   if args.len != 2:
     raise newException(GeneError,
       "contains? expects (collection, item), got " & $args.len & " arguments")
-  case args[0].kind
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveListFamily("contains?", args[0], args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  case source.kind
   of vkList:
-    for item in args[0].listItems:
+    for item in source.listItems:
       if semanticEqual(item, args[1]): return TRUE
     FALSE
   of vkSet:
-    beginKeyOperation(args[0])
+    beginKeyOperation(source)
     defer: endKeyOperation()
     requireHashStableKey("Set/contains?", args[1])
-    for item in args[0].setItems:
+    for item in source.setItems:
       if semanticEqual(item, args[1]): return TRUE
     FALSE
-  of vkMap, vkHashMap:
-    raise newException(GeneError,
-      "contains? expects a List or Set, got Map; use has_key? for Map keys")
   else:
     raise newException(GeneError,
-      "contains? expects a List or Set, got " & $args[0].kind)
+      "contains? expects a List or Set, got " & receiverDisplayType(source))
 
 proc biSame(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -3571,21 +3595,31 @@ proc projectMeta(v: Value): PropTable =
   if v.kind == vkNode: v.meta
   else: initPropTable()
 
+proc projectionImmutable(v: Value): bool =
+  case v.kind
+  of vkNode: v.nodeImmutable
+  of vkList: v.listImmutable
+  of vkMap: v.mapImmutable
+  else: false
+
+proc nodePropsProjection(v: Value): Value =
+  newMap(projectProps(v), immutable = projectionImmutable(v))
+
 proc biHead(args: openArray[Value]): Value {.nimcall.} =
   requireOne("head", args)
   projectHead(args[0])
 
 proc biProps(args: openArray[Value]): Value {.nimcall.} =
   requireOne("props", args)
-  newMap(projectProps(args[0]))
+  newMap(projectProps(args[0]), immutable = projectionImmutable(args[0]))
 
 proc biBody(args: openArray[Value]): Value {.nimcall.} =
   requireOne("body", args)
-  newList(projectBody(args[0]))
+  newList(projectBody(args[0]), immutable = projectionImmutable(args[0]))
 
 proc biMeta(args: openArray[Value]): Value {.nimcall.} =
   requireOne("meta", args)
-  newMap(projectMeta(args[0]))
+  newMap(projectMeta(args[0]), immutable = projectionImmutable(args[0]))
 
 proc requireCell(name: string, value: Value) =
   if value.kind != vkCell:
@@ -5672,52 +5706,52 @@ proc dispatchGenericForward(name: string, receiver: Value,
 
 proc biToStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("to_stream", args)
-  if args[0].kind == vkStream:
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveListFamily("to_stream", args[0], [], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  if source.kind == vkStream:
     # A conversion into the lazy tier is the identity on something already in
     # it. Without this a caller normalizing an unknown receiver — the `=>`
     # pipeline stage does exactly that — would have to branch on the runtime
     # kind to avoid raising on the case that needs no work.
-    return args[0]
-  if args[0].kind == vkRange:
-    return rangeStream(args[0])
-  if args[0].kind in {vkMap, vkHashMap}:
-    # A Map's lazy tier is its pairs (design §6.2); there is no item order to
-    # invent for one, so say which conversion the caller meant.
-    raise newException(GeneError,
-      "to_stream expects a List, Set, Range, or Stream; " &
-      "a Map converts with to_pairs_stream")
-  if args[0].kind notin {vkList, vkSet}:
-    let scope = if call == nil: nil else: call.dispatchScope
-    result = dispatchGenericForward("to_stream", args[0], [], scope)
+    return source
+  if source.kind == vkRange:
+    return rangeStream(source)
+  if source.kind notin {vkList, vkSet}:
+    result = dispatchGenericForward("to_stream", source, [], scope)
     if result.kind != vkStream:
       raiseTypeError("to_stream result", "Stream", result, scope)
     return
   var items: seq[Value]
-  case args[0].kind
+  case source.kind
   of vkList:
-    for item in args[0].listItems:
+    for item in source.listItems:
       items.add item
   of vkSet:
-    for item in args[0].setItems:
+    for item in source.setItems:
       items.add item
   else:
     discard
   newStream(items)
 
-proc biToPairsStream(args: openArray[Value]): Value {.nimcall.} =
+proc biToPairsStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("to_pairs_stream", args)
-  if args[0].kind notin {vkMap, vkHashMap}:
-    raise newException(GeneError, "to_pairs_stream expects a Map")
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveMapFamily("to_pairs_stream", args[0], [], scope)
+  if resolved.handled: return resolved.value
   var pairs: seq[Value]
-  case args[0].kind
+  case resolved.source.kind
   of vkMap:
-    for key, value in args[0].mapEntries:
+    for key, value in resolved.source.mapEntries:
       pairs.add newList(@[newSym(key), value])
   of vkHashMap:
-    for entry in args[0].hashMapEntries:
+    for entry in resolved.source.hashMapEntries:
       pairs.add newList(@[entry.key, entry.val])
   else:
-    discard
+    raise newException(GeneError,
+      "to_pairs_stream expects a Map or a node, got " &
+      receiverDisplayType(resolved.source))
   newStream(pairs)
 
 proc biStreamHasNext(args: openArray[Value]): Value {.nimcall.} =
@@ -6570,40 +6604,30 @@ proc mapCollection(args: openArray[Value], call: ptr NativeCall,
   if args.len != 2:
     raise newException(GeneError, name & " expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
-  if activeVmFiber != nil and receiver.kind in {vkList, vkMap, vkHashMap, vkSet}:
-    requestCollectionFrame(name, receiver, args[1], scope)
-  case receiver.kind
+  let resolved = resolveListFamily(name, receiver, args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  if activeVmFiber != nil and source.kind in {vkList, vkSet}:
+    requestCollectionFrame(name, source, args[1], scope)
+  case source.kind
   of vkStream:
-    result = newLazyStream(receiver,
+    result = newLazyStream(source,
       (if dropNil: pullFilterMapStream else: pullMapStream),
       callable = args[1], close = closeStreamCallback)
   of vkList, vkSet:
     var items: seq[Value]
-    let source = if receiver.kind == vkList: receiver.listItems else: receiver.setItems
-    for item in source:
+    let itemsSource = if source.kind == vkList: source.listItems else: source.setItems
+    for item in itemsSource:
       let mapped = applyCall(args[1], [item], NamedArgs(), scope)
       if not (dropNil and mapped.kind == vkNil): items.add mapped
-    if receiver.kind == vkList:
-      result = newList(items, receiver.listImmutable)
+    if source.kind == vkList:
+      result = newList(items, source.listImmutable)
     else:
-      beginKeyOperation(receiver)
+      beginKeyOperation(source)
       defer: endKeyOperation()
       result = buildSet(name, items)
-  of vkMap:
-    var entries = initPropTable()
-    for key, val in receiver.mapEntries:
-      let mapped = applyCall(args[1], [val], NamedArgs(), scope)
-      if not (dropNil and mapped.kind == vkNil): entries[key] = mapped
-    result = newMap(entries, receiver.mapImmutable)
-  of vkHashMap:
-    var entries: seq[HashMapEntry]
-    for entry in receiver.hashMapEntries:
-      let mapped = applyCall(args[1], [entry.val], NamedArgs(), scope)
-      if not (dropNil and mapped.kind == vkNil):
-        entries.add HashMapEntry(key: entry.key, val: mapped)
-    result = newHashMap(entries)
   else:
-    result = dispatchGenericForward(name, receiver, args[1 .. args.high], scope)
+    result = dispatchGenericForward(name, source, args[1 .. args.high], scope)
 
 proc biMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   mapCollection(args, call, false)
@@ -6621,42 +6645,152 @@ proc biFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     raise newException(GeneError,
       "filter expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
-  if activeVmFiber != nil and receiver.kind in {vkList, vkMap, vkHashMap, vkSet}:
-    requestCollectionFrame("filter", receiver, args[1], scope)
-  case receiver.kind
+  let resolved = resolveListFamily("filter", receiver, args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  if activeVmFiber != nil and source.kind in {vkList, vkSet}:
+    requestCollectionFrame("filter", source, args[1], scope)
+  case source.kind
   of vkStream:
-    result = newLazyStream(receiver, pullFilterStream,
+    result = newLazyStream(source, pullFilterStream,
       callable = args[1], close = closeStreamCallback)
   of vkList:
     var items: seq[Value]
-    for item in receiver.listItems:
+    for item in source.listItems:
       var callArgs = [item]
       if applyCall(args[1], callArgs, NamedArgs(), scope).isTruthy:
         items.add item
-    result = newList(items, receiver.listImmutable)
-  of vkMap:
-    var entries = initPropTable()
-    for key, val in receiver.mapEntries:
-      var callArgs = [val]
-      if applyCall(args[1], callArgs, NamedArgs(), scope).isTruthy:
-        entries[key] = val
-    result = newMap(entries, receiver.mapImmutable)
-  of vkHashMap:
-    var entries: seq[HashMapEntry]
-    for entry in receiver.hashMapEntries:
-      var callArgs = [entry.val]
-      if applyCall(args[1], callArgs, NamedArgs(), scope).isTruthy:
-        entries.add entry
-    result = newHashMap(entries)
+    result = newList(items, source.listImmutable)
   of vkSet:
     var items: seq[Value]
-    for item in receiver.setItems:
+    for item in source.setItems:
       var callArgs = [item]
       if applyCall(args[1], callArgs, NamedArgs(), scope).isTruthy:
         items.add item
     result = newSet(items)
   else:
-    result = dispatchGenericForward("filter", receiver, args[1 .. args.high], scope)
+    result = dispatchGenericForward("filter", source, args[1 .. args.high], scope)
+
+proc biMapSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("map_size", args)
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveMapFamily("map_size", args[0], [], scope)
+  if resolved.handled: return resolved.value
+  case resolved.source.kind
+  of vkMap: newInt(resolved.source.mapEntries.len)
+  of vkHashMap: newInt(resolved.source.hashMapEntries.len)
+  else: raise newException(GeneError,
+    "map_size expects a Map or a node, got " &
+    receiverDisplayType(resolved.source))
+
+proc biMapEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("map_empty?", args)
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveMapFamily("map_empty?", args[0], [], scope)
+  if resolved.handled: return resolved.value
+  case resolved.source.kind
+  of vkMap: newBool(resolved.source.mapEntries.len == 0)
+  of vkHashMap: newBool(resolved.source.hashMapEntries.len == 0)
+  else: raise newException(GeneError,
+    "map_empty? expects a Map or a node, got " &
+    receiverDisplayType(resolved.source))
+
+proc mapEntryCollection(args: openArray[Value], call: ptr NativeCall,
+                        name, baseOperation: string, dropNil: bool): Value =
+  let scope = if call == nil: nil else: call.dispatchScope
+  if args.len == 1:
+    return newSelectorCallStage(builtinBinding(scope, name), args)
+  if args.len != 2:
+    raise newException(GeneError,
+      name & " expects 1 or 2 arguments, got " & $args.len)
+  let receiver = args[0]
+  let resolved = resolveMapFamily(name, receiver, args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  if activeVmFiber != nil and source.kind in {vkMap, vkHashMap}:
+    requestCollectionFrame(baseOperation, source, args[1], scope)
+  case source.kind
+  of vkMap:
+    var entries = initPropTable()
+    for key, value in source.mapEntries:
+      let mapped = applyCall(args[1], [value], NamedArgs(), scope)
+      if not (dropNil and mapped.kind == vkNil): entries[key] = mapped
+    result = newMap(entries, source.mapImmutable)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in source.hashMapEntries:
+      let mapped = applyCall(args[1], [entry.val], NamedArgs(), scope)
+      if not (dropNil and mapped.kind == vkNil):
+        entries.add HashMapEntry(key: entry.key, val: mapped)
+    result = newHashMap(entries)
+  else:
+    raise newException(GeneError,
+      name & " expects a Map or a node, got " &
+      receiverDisplayType(source))
+
+proc eachEntryCollection(args: openArray[Value], call: ptr NativeCall,
+                         name: string): Value =
+  let scope = if call == nil: nil else: call.dispatchScope
+  if args.len != 2:
+    raise newException(GeneError, name & " expects 2 arguments, got " & $args.len)
+  let receiver = args[0]
+  let resolved = resolveMapFamily(name, receiver, args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  if activeVmFiber != nil and source.kind in {vkMap, vkHashMap}:
+    requestCollectionFrame("each", source, args[1], scope)
+  case source.kind
+  of vkMap:
+    for _, value in source.mapEntries:
+      discard applyCall(args[1], [value], NamedArgs(), scope)
+  of vkHashMap:
+    for entry in source.hashMapEntries:
+      discard applyCall(args[1], [entry.val], NamedArgs(), scope)
+  else:
+    raise newException(GeneError,
+      name & " expects a Map or a node, got " &
+      receiverDisplayType(source))
+  NIL
+
+proc biMapMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  mapEntryCollection(args, call, "map_map", "map", false)
+
+proc biMapFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope = if call == nil: nil else: call.dispatchScope
+  if args.len == 1:
+    return newSelectorCallStage(builtinBinding(scope, "map_filter"), args)
+  if args.len != 2:
+    raise newException(GeneError,
+      "map_filter expects 1 or 2 arguments, got " & $args.len)
+  let receiver = args[0]
+  let resolved = resolveMapFamily("map_filter", receiver, args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  if activeVmFiber != nil and source.kind in {vkMap, vkHashMap}:
+    requestCollectionFrame("filter", source, args[1], scope)
+  case source.kind
+  of vkMap:
+    var entries = initPropTable()
+    for key, value in source.mapEntries:
+      if applyCall(args[1], [value], NamedArgs(), scope).isTruthy:
+        entries[key] = value
+    result = newMap(entries, source.mapImmutable)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in source.hashMapEntries:
+      if applyCall(args[1], [entry.val], NamedArgs(), scope).isTruthy:
+        entries.add entry
+    result = newHashMap(entries)
+  else:
+    raise newException(GeneError,
+      "map_filter expects a Map or a node, got " &
+      receiverDisplayType(source))
+
+proc biMapFilterMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  mapEntryCollection(args, call, "map_filter_map", "filter_map", true)
+
+proc biMapEach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  eachEntryCollection(args, call, "map_each")
 
 proc biTake(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   var scope: Scope = nil
@@ -6670,12 +6804,15 @@ proc biTake(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "take expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
-  case receiver.kind
+  let resolved = resolveListFamily("take", receiver, args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  case source.kind
   of vkStream:
     var remaining = requireInt64("take count", args[1])
     if remaining < 0:
       raise newException(GeneError, "take count must be non-negative")
-    result = newLazyStream(receiver, pullTakeStream, remaining = remaining,
+    result = newLazyStream(source, pullTakeStream, remaining = remaining,
       close = closeStreamCallback)
     if remaining == 0:
       result.detachStreamSource()
@@ -6683,29 +6820,32 @@ proc biTake(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     let n = requireInt64("take count", args[1])
     if n < 0:
       raise newException(GeneError, "take count must be non-negative")
-    let count = min(n, int64(receiver.listItems.len))
+    let count = min(n, int64(source.listItems.len))
     var items = newSeq[Value](count)
     for i in 0 ..< count:
-      items[int(i)] = receiver.listItems[int(i)]
-    result = newList(items, receiver.listImmutable)
+      items[int(i)] = source.listItems[int(i)]
+    result = newList(items, source.listImmutable)
   else:
-    result = dispatchGenericForward("take", receiver, args[1 .. args.high], scope)
+    result = dispatchGenericForward("take", source, args[1 .. args.high], scope)
 
 proc biReverse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("reverse", args)
   let receiver = args[0]
-  case receiver.kind
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveListFamily("reverse", receiver, [], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  case source.kind
   of vkList:
-    var items = newSeq[Value](receiver.listItems.len)
+    var items = newSeq[Value](source.listItems.len)
     for i in 0 ..< items.len:
-      items[i] = receiver.listItems[items.high - i]
-    result = newList(items, receiver.listImmutable)
+      items[i] = source.listItems[items.high - i]
+    result = newList(items, source.listImmutable)
   of vkStream:
     raise newException(GeneError,
       "reverse needs a List; collect the stream with $into first")
   else:
-    let scope = if call == nil: nil else: call.dispatchScope
-    result = dispatchGenericForward("reverse", receiver, [], scope)
+    result = dispatchGenericForward("reverse", source, [], scope)
 
 proc requireDropCount(value: Value) =
   if value.kind != vkInt:
@@ -6721,28 +6861,31 @@ proc biDrop(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "drop expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
-  case receiver.kind
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveListFamily("drop", receiver, args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  case source.kind
   of vkList, vkStream:
     let count = args[1]
     requireDropCount(count)
-    if receiver.kind == vkStream:
+    if source.kind == vkStream:
       if count.intFitsInt64:
-        result = newLazyStream(receiver, pullDropStream, remaining = count.intVal,
+        result = newLazyStream(source, pullDropStream, remaining = count.intVal,
           close = closeStreamCallback)
       else:
-        result = newLazyStream(receiver, pullDropStream, callable = newCell(count),
+        result = newLazyStream(source, pullDropStream, callable = newCell(count),
           close = closeStreamCallback)
     else:
-      let first = if count.intCompareToInt64(receiver.listItems.len) >= 0:
-                    receiver.listItems.len
+      let first = if count.intCompareToInt64(source.listItems.len) >= 0:
+                    source.listItems.len
                   else: int(count.intVal)
-      var items = newSeq[Value](receiver.listItems.len - first)
+      var items = newSeq[Value](source.listItems.len - first)
       for i in 0 ..< items.len:
-        items[i] = receiver.listItems[first + i]
-      result = newList(items, receiver.listImmutable)
+        items[i] = source.listItems[first + i]
+      result = newList(items, source.listImmutable)
   else:
-    let scope = if call == nil: nil else: call.dispatchScope
-    result = dispatchGenericForward("drop", receiver, args[1 .. args.high], scope)
+    result = dispatchGenericForward("drop", source, args[1 .. args.high], scope)
 
 proc biInto(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   var scope: Scope = nil
@@ -6755,41 +6898,44 @@ proc biInto(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "into expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
-  # `into` collects an iterable receiver (§6.2): the lazy Stream, the eager
+  let resolved = resolveListFamily("into", receiver, args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  # `into` collects an iterable receiver: the lazy Stream, the eager
   # List/Set, or a Range — each drained once, then projected into the target.
-  var source: seq[Value]
-  case receiver.kind
+  var items: seq[Value]
+  case resolved.source.kind
   of vkStream:
+    let stream = resolved.source
     try:
-      while receiver.streamHasNext:
-        source.add checkedStreamNext(receiver, "into item")
+      while stream.streamHasNext:
+        items.add checkedStreamNext(stream, "into item")
     except CatchableError:
       try:
-        receiver.closeStream()
+        stream.closeStream()
       except CatchableError:
         discard
       raise
-    receiver.closeStream()
+    stream.closeStream()
   of vkList:
-    source = copyItems(receiver.listItems)
+    items = copyItems(resolved.source.listItems)
   of vkSet:
-    for item in receiver.setItems:
-      source.add item
+    for item in resolved.source.setItems:
+      items.add item
   of vkRange:
-    let s = rangeStream(receiver)
+    let s = rangeStream(resolved.source)
     while s.streamHasNext:
-      source.add checkedStreamNext(s, "into item")
+      items.add checkedStreamNext(s, "into item")
   else:
-    return dispatchGenericForward("into", receiver, args[1 .. args.high], scope)
+    return dispatchGenericForward("into", resolved.source, args[1 .. args.high], scope)
   case args[1].kind
   of vkList:
-    var items = copyItems(args[1].listItems)
-    for item in source:
-      items.add item
-    result = newList(items, args[1].listImmutable)
+    var targetItems = copyItems(args[1].listItems)
+    for item in items:
+      targetItems.add item
+    result = newList(targetItems, args[1].listImmutable)
   of vkMap:
     var entries = copyEntries(args[1].mapEntries)
-    for pair in source:
+    for pair in items:
       if pair.kind != vkList or pair.listItems.len != 2:
         raise newException(GeneError, "into Map expects [key value] stream items")
       let key = keySegment("into", pair.listItems[0])
@@ -6898,6 +7044,118 @@ proc readIndexedValue(target, segment: Value): Value =
   if target.kind == vkList: readItem(target.listItems)
   else: readItem(target.body)
 
+proc isIndexedNode(v: Value): bool =
+  if v.kind != vkNode or v.head.kind != vkType:
+    return false
+  try:
+    v.head.readyCoreWitness(cvSize).kind != vkNil
+  except GeneError as error:
+    # A plain typed value has no core-witness plan at all. That is not an
+    # indexed value; only a genuinely pending declaration is surfaced.
+    if "ValueProtocolPending" in error.msg: false
+    else: raise
+
+proc indexedItemsView(v: Value): Value =
+  ## A snapshot of the items an IndexRead type exposes. This is deliberately
+  ## separate from the raw node body: patterns and spread keep reading `body`.
+  let sizeFn = v.head.readyCoreWitness(cvSize)
+  let atFn = v.head.readyCoreWitness(cvAt)
+  let count = indexReadSize(v, sizeFn)
+  var items = newSeqOfCap[Value](int(count.intVal))
+  var i = 0
+  while i < int(count.intVal):
+    let item = readIndexedValue(v, newInt(i))
+    items.add(if item.isMissing: NIL else: item)
+    inc i
+  newList(items, immutable = v.nodeImmutable)
+
+proc receiverDisplayType(receiver: Value): string =
+  let typ = receiver.receiverType
+  if typ.kind == vkType: typ.typeName
+  else: declarationKind(receiver)
+
+proc mapFamilyName(name: string): string =
+  case name
+  of "size": "map_size"
+  of "empty?": "map_empty?"
+  of "map": "map_map"
+  of "filter": "map_filter"
+  of "filter_map": "map_filter_map"
+  of "each": "map_each"
+  else: ""
+
+proc typeDirectOverride(name: string, receiver: Value,
+                        rest: openArray[Value], scope: Scope,
+                        runningOp: Value): tuple[handled: bool, value: Value] =
+  let recvType = receiver.receiverType
+  if recvType.kind == vkType:
+    let impl = readyTypeDirectMessage(recvType, name)
+    if impl.kind != vkNil and not same(impl, runningOp):
+      var callArgs = newSeqOfCap[Value](rest.len + 1)
+      callArgs.add receiver
+      for arg in rest: callArgs.add arg
+      return (true, applyCall(impl, callArgs, NamedArgs(), scope))
+  (false, NIL)
+
+proc resolveListFamilyWithOp(name: string, receiver: Value,
+                             rest: openArray[Value], scope: Scope,
+                             runningOp: Value):
+                             tuple[handled: bool, value: Value, source: Value] =
+  let direct = typeDirectOverride(name, receiver, rest, scope, runningOp)
+  if direct.handled:
+    return (true, direct.value, NIL)
+  if receiver.kind in {vkMap, vkHashMap}:
+    let mapName = mapFamilyName(name)
+    let hint = if mapName.len > 0:
+      "use $" & mapName & " for a Map's entries"
+    elif name == "contains?":
+      "use has_key? for Map keys"
+    else:
+      "a Map has entries; use the map-family operations"
+    raiseMessageError(name, receiverDisplayType(receiver), scope,
+                      familyHint = hint)
+  if receiver.kind == vkNode:
+    if isIndexedNode(receiver):
+      return (false, NIL, indexedItemsView(receiver))
+    raiseMessageError(name, receiverDisplayType(receiver), scope,
+                      nodeViewHint = true)
+  (false, NIL, receiver)
+
+proc resolveListFamily(name: string, receiver: Value,
+                       rest: openArray[Value], scope: Scope):
+                       tuple[handled: bool, value: Value, source: Value] =
+  resolveListFamilyWithOp(name, receiver, rest, scope,
+                          builtinBinding(scope, name))
+
+proc resolveMapFamily(name: string, receiver: Value,
+                      rest: openArray[Value], scope: Scope):
+                      tuple[handled: bool, value: Value, source: Value] =
+  let runningOp = builtinBinding(scope, name)
+  let direct = typeDirectOverride(name, receiver, rest, scope, runningOp)
+  if direct.handled:
+    return (true, direct.value, NIL)
+  case receiver.kind
+  of vkMap, vkHashMap:
+    (false, NIL, receiver)
+  of vkNode:
+    (false, NIL, nodePropsProjection(receiver))
+  else:
+    var hint = ""
+    let listName =
+      case name
+      of "map_size": "size"
+      of "map_empty?": "empty?"
+      of "map_map": "map"
+      of "map_filter": "filter"
+      of "map_filter_map": "filter_map"
+      of "map_each": "each"
+      else: ""
+    if listName.len > 0:
+      hint = "; use $" & listName
+    raise newException(GeneError,
+      name & " expects a Map or a node, got " & receiverDisplayType(receiver) &
+      hint)
+
 proc updateIndex(name: string, itemsLen: int, rawIndex: int64): int =
   var idx = rawIndex
   if idx < 0:
@@ -6942,9 +7200,9 @@ proc readUpdateChild(name: string, target, segment: Value): Value =
       else:
         case key
         of "head": target.head
-        of "props": newMap(copyEntries(target.props))
-        of "body": newList(copyItems(target.body))
-        of "meta": newMap(copyEntries(target.meta))
+        of "props": newMap(copyEntries(target.props), target.nodeImmutable)
+        of "body": newList(copyItems(target.body), target.nodeImmutable)
+        of "meta": newMap(copyEntries(target.meta), target.nodeImmutable)
         else: MISSING
     else:
       MISSING
@@ -7327,51 +7585,61 @@ proc requireNode(name: string, value: Value) =
   if value.kind != vkNode:
     raise newException(GeneError, name & " expects a Node")
 
-proc biListSize(args: openArray[Value]): Value {.nimcall.} =
+proc biListSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("size", args)
-  case args[0].kind
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveListFamily("size", args[0], [], scope)
+  if resolved.handled: return resolved.value
+  if args[0].kind == vkNode:
+    let sizeFn = args[0].head.readyCoreWitness(cvSize)
+    return indexReadSize(args[0], sizeFn)
+  case resolved.source.kind
   of vkList:
-    newInt(args[0].listItems.len)
-  of vkMap:
-    newInt(args[0].mapEntries.len)
+    newInt(resolved.source.listItems.len)
   of vkSet:
-    newInt(args[0].setItems.len)
-  of vkHashMap:
-    newInt(args[0].hashMapEntries.len)
+    newInt(resolved.source.setItems.len)
   of vkBytes:
-    newInt(args[0].bytesVal.len)
+    newInt(resolved.source.bytesVal.len)
   else:
-    if args[0].kind == vkNode and args[0].head.kind == vkType:
-      let sizeFn = args[0].head.readyCoreWitness(cvSize)
-      if sizeFn.kind != vkNil:
-        return indexReadSize(args[0], sizeFn)
-    raise newException(GeneError, "size expects a collection")
+    raise newException(GeneError,
+      "size expects a list-like value, got " &
+      receiverDisplayType(resolved.source))
 
-proc biListEmpty(args: openArray[Value]): Value {.nimcall.} =
+proc biListEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("empty?", args)
-  case args[0].kind
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveListFamily("empty?", args[0], [], scope)
+  if resolved.handled: return resolved.value
+  if args[0].kind == vkNode:
+    let sizeFn = args[0].head.readyCoreWitness(cvSize)
+    return newBool(indexReadSize(args[0], sizeFn).intIsZero)
+  case resolved.source.kind
   of vkList:
-    newBool(args[0].listItems.len == 0)
-  of vkMap:
-    newBool(args[0].mapEntries.len == 0)
+    newBool(resolved.source.listItems.len == 0)
   of vkSet:
-    newBool(args[0].setItems.len == 0)
-  of vkHashMap:
-    newBool(args[0].hashMapEntries.len == 0)
+    newBool(resolved.source.setItems.len == 0)
   of vkBytes:
-    newBool(args[0].bytesVal.len == 0)
+    newBool(resolved.source.bytesVal.len == 0)
   else:
-    raise newException(GeneError, "empty? expects a collection")
+    raise newException(GeneError,
+      "empty? expects a list-like value, got " &
+      receiverDisplayType(resolved.source))
 
-proc biListFirst(args: openArray[Value]): Value {.nimcall.} =
+proc biListFirst(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("first", args)
-  requireList("first", args[0])
-  if args[0].listItems.len > 0: args[0].listItems[0] else: NIL
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveListFamily("first", args[0], [], scope)
+  if resolved.handled: return resolved.value
+  requireList("first", resolved.source)
+  if resolved.source.listItems.len > 0: resolved.source.listItems[0] else: NIL
 
-proc biListLast(args: openArray[Value]): Value {.nimcall.} =
+proc biListLast(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("last", args)
-  requireList("last", args[0])
-  if args[0].listItems.len > 0: args[0].listItems[^1] else: NIL
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveListFamily("last", args[0], [], scope)
+  if resolved.handled: return resolved.value
+  requireList("last", resolved.source)
+  if resolved.source.listItems.len > 0: resolved.source.listItems[^1] else: NIL
 
 proc biListGet(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -7904,6 +8172,111 @@ proc readSetPathChild(target, segment: Value): Value =
     raise newException(GeneError,
       "set path segment '" & segment.print() & "' is missing")
 
+proc setMutableChild(target, segment, value: Value): Value
+proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.}
+
+proc biNodeGet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Node/get expects 2 arguments, got " & $args.len)
+  requireNode("Node/get", args[0])
+  case args[1].kind
+  of vkSymbol, vkString:
+    projectProps(args[0]).getOrDefault(keySegment("Node/get", args[1]), NIL)
+  of vkInt, vkFloat:
+    let item = readIndexedValue(args[0], args[1])
+    if item.isMissing: NIL else: item
+  else:
+    raise newException(GeneError,
+      "Node/get expects a Sym, Str, or Int key, got " & $args[1].kind)
+
+proc nodeWithStoredProps(name: string, target: Value,
+                         props: sink PropTable): Value =
+  ## Persistent prop update that deliberately does not route through Path
+  ## anatomy. The head, body, meta, class and frozen flag stay put; schema and
+  ## native-wrapper checks match the other rebuild paths.
+  if target.head.isNativeWrapperType:
+    rejectNativeWrapperWrite(name & " cannot rebuild " & target.head.typeName)
+  var checkedProps = props
+  var checkedBody = copyItems(target.body)
+  if target.head.kind == vkType:
+    rejectNativeWrapperConstruction(target.head, name)
+    validateTypedNodeParts(target.head, checkedProps, checkedBody, tnvmMutation)
+  newNode(target.head, checkedProps, checkedBody, copyEntries(target.meta),
+          target.nodeImmutable)
+
+proc biNodeAssoc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "Node/assoc expects 3 arguments, got " & $args.len)
+  requireNode("Node/assoc", args[0])
+  rejectCallerEnvEscape("Node/assoc", args[2])
+  case args[1].kind
+  of vkSymbol, vkString:
+    var props = copyEntries(projectProps(args[0]))
+    props[keySegment("Node/assoc", args[1])] = strengthenStoredValue(args[2])
+    nodeWithStoredProps("Node/assoc", args[0], props)
+  of vkInt, vkFloat:
+    if isIndexedNode(args[0]):
+      raise newException(GeneError,
+        "assoc cannot update index " & args[1].print() & " of " &
+        args[0].head.typeName & ": it indexes through IndexRead; use " &
+        "(set value/" & args[1].print() & " new) or " &
+        "($assoc_in value /items/" & args[1].print() & " new)")
+    if args[0].head.kind == vkType and not args[0].nodeConstructing:
+      if args[0].head.isNativeWrapperType:
+        rejectNativeWrapperWrite("Node/assoc cannot modify " & args[0].head.typeName)
+    var body = copyItems(args[0].body)
+    body[updateIndex("Node/assoc", body.len, requireInt64("Node/assoc", args[1]))] =
+      strengthenStoredValue(args[2])
+    if args[0].head.kind == vkType:
+      var props = copyEntries(projectProps(args[0]))
+      validateTypedNodeParts(args[0].head, props, body, tnvmMutation)
+    newNode(args[0].head, copyEntries(projectProps(args[0])), body,
+            copyEntries(args[0].meta), args[0].nodeImmutable)
+  else:
+    raise newException(GeneError,
+      "Node/assoc expects a Sym, Str, or Int key, got " & $args[1].kind)
+
+proc biNodeDissoc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Node/dissoc expects 2 arguments, got " & $args.len)
+  requireNode("Node/dissoc", args[0])
+  case args[1].kind
+  of vkSymbol, vkString:
+    var props = copyEntries(projectProps(args[0]))
+    props.del(keySegment("Node/dissoc", args[1]))
+    nodeWithStoredProps("Node/dissoc", args[0], props)
+  of vkInt, vkFloat:
+    raise newException(GeneError,
+      "Node/dissoc cannot remove a node body element")
+  else:
+    raise newException(GeneError,
+      "Node/dissoc expects a Sym, Str, or Int key, got " & $args[1].kind)
+
+proc biNodePut(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "Node/put expects 3 arguments, got " & $args.len)
+  requireNode("Node/put", args[0])
+  if args[1].kind notin {vkSymbol, vkString}:
+    raise newException(GeneError, "put takes a name, not an index")
+  rejectCallerEnvEscape("Node/put", args[2])
+  let stored = setCheckedNodeProp(args[0], keySegment("Node/put", args[1]),
+                                  strengthenStoredValue(args[2]))
+  noteFunctionStore(args[0], stored)
+  stored
+
+proc biNodeSet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "Node/set expects 3 arguments, got " & $args.len)
+  requireNode("Node/set", args[0])
+  if args[1].kind notin {vkInt, vkFloat}:
+    raise newException(GeneError, "set takes an index, not a name")
+  setMutableChild(args[0], args[1], args[2])
+
+proc biNodePush(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "Node/push expects 2 arguments, got " & $args.len)
+  biNodePushBodyBang(args)
+
 proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
@@ -8048,14 +8421,14 @@ proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
-      "Node/push_body expects 2 arguments, got " & $args.len)
-  requireNode("Node/push_body", args[0])
-  rejectCallerEnvEscape("Node/push_body", args[1])
+      "Node/push expects 2 arguments, got " & $args.len)
+  requireNode("Node/push", args[0])
+  rejectCallerEnvEscape("Node/push", args[1])
   let item = strengthenStoredValue(args[1])
   noteFunctionStore(args[0], item)
   if args[0].head.kind == vkType and not args[0].nodeConstructing:
     if args[0].head.isNativeWrapperType:
-      rejectNativeWrapperWrite("Node/push_body cannot modify " &
+      rejectNativeWrapperWrite("Node/push cannot modify " &
                                args[0].head.typeName)
     var props = copyEntries(args[0].props)
     var body = copyItems(args[0].body)
@@ -10059,7 +10432,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.define("==", app.nativeEq)
   result.define("!=", app.nativeNe)
   result.define("contains?",
-                sharedBuiltinNative("contains?", builtinNativeFn("contains?", biContains)))
+                sharedBuiltinNative("contains?",
+                  builtinNativeCallFn("contains?", biContains, acceptsNamed = false)))
   result.define("same?", builtinNativeFn("same?", biSame))
   result.define("hash", builtinNativeFn("hash", biHash))
   result.define("not", builtinNativeFn("not", biNot))
@@ -10168,14 +10542,19 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # message on one or more container types, so `($size xs)` and `(xs .size)`
   # have to name the same function value rather than two natives that merely
   # behave alike. `contains?` is bound further up and captured here.
-  let sizeFn = sharedBuiltinNative("size", builtinNativeFn("size", biListSize))
-  let emptyFn = sharedBuiltinNative("empty?", builtinNativeFn("empty?", biListEmpty))
-  let firstFn = sharedBuiltinNative("first", builtinNativeFn("first", biListFirst))
-  let lastFn = sharedBuiltinNative("last", builtinNativeFn("last", biListLast))
+  let sizeFn = sharedBuiltinNative("size",
+    builtinNativeCallFn("size", biListSize, acceptsNamed = false))
+  let emptyFn = sharedBuiltinNative("empty?",
+    builtinNativeCallFn("empty?", biListEmpty, acceptsNamed = false))
+  let firstFn = sharedBuiltinNative("first",
+    builtinNativeCallFn("first", biListFirst, acceptsNamed = false))
+  let lastFn = sharedBuiltinNative("last",
+    builtinNativeCallFn("last", biListLast, acceptsNamed = false))
   let toStreamFn = sharedBuiltinNative("to_stream",
     builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false))
   let toPairsStreamFn = sharedBuiltinNative("to_pairs_stream",
-                                            builtinNativeFn("to_pairs_stream", biToPairsStream))
+    builtinNativeCallFn("to_pairs_stream", biToPairsStream,
+                        acceptsNamed = false))
   # The generic collection operations (design §6.2) are call-fns so the
   # dispatcher can reach the send's scope: a receiver whose type declares no
   # such method raises the send path's recoverable MessageError, never a kind
@@ -10188,6 +10567,18 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     builtinNativeCallFn("filter_map", biFilterMap, acceptsNamed = false))
   let filterFn = sharedBuiltinNative("filter",
     builtinNativeCallFn("filter", biFilter, acceptsNamed = false))
+  let mapSizeFn = sharedBuiltinNative("map_size",
+    builtinNativeCallFn("map_size", biMapSize, acceptsNamed = false))
+  let mapEmptyFn = sharedBuiltinNative("map_empty?",
+    builtinNativeCallFn("map_empty?", biMapEmpty, acceptsNamed = false))
+  let mapMapFn = sharedBuiltinNative("map_map",
+    builtinNativeCallFn("map_map", biMapMap, acceptsNamed = false))
+  let mapFilterMapFn = sharedBuiltinNative("map_filter_map",
+    builtinNativeCallFn("map_filter_map", biMapFilterMap, acceptsNamed = false))
+  let mapFilterFn = sharedBuiltinNative("map_filter",
+    builtinNativeCallFn("map_filter", biMapFilter, acceptsNamed = false))
+  let mapEachFn = sharedBuiltinNative("map_each",
+    builtinNativeCallFn("map_each", biMapEach, acceptsNamed = false))
   let takeFn = sharedBuiltinNative("take",
     builtinNativeCallFn("take", biTake, acceptsNamed = false))
   let reverseFn = sharedBuiltinNative("reverse",
@@ -10204,6 +10595,12 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   discard result.lookupOptional("contains?", containsFn)
   result.define("size", sizeFn)
   result.define("empty?", emptyFn)
+  result.define("map_size", mapSizeFn)
+  result.define("map_empty?", mapEmptyFn)
+  result.define("map_map", mapMapFn)
+  result.define("map_filter", mapFilterFn)
+  result.define("map_filter_map", mapFilterMapFn)
+  result.define("map_each", mapEachFn)
   result.define("leaf?", builtinNativeFn("leaf?", biIsLeaf))
   result.define("absent?", builtinNativeFn("absent?", biIsAbsent))
   result.define("present?", builtinNativeFn("present?", biIsPresent))
@@ -10212,7 +10609,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.defineBuiltinType(vkList, "List", {
     "assoc": builtinNativeFn("List/assoc", biListAssoc),
     "get": builtinNativeFn("List/get", biListGet),
-    "join": sharedBuiltinNative("str/join", builtinNativeFn("str/join", biStrJoin)),
+    "join": sharedBuiltinNative("str/join",
+      builtinNativeCallFn("str/join", biStrJoin, acceptsNamed = false)),
     "set": builtinNativeFn("List/set", biListSetBang),
     "push": builtinNativeFn("List/push", biListPushBang),
     "size": sizeFn,
@@ -10241,10 +10639,12 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     "has_key?": hasKeyFn,
     "put": builtinNativeFn("Map/put", biMapPutBang),
     "delete": builtinNativeFn("Map/delete", biMapDeleteBang),
-    "map": mapFn,
-    "filter_map": filterMapFn,
-    "filter": filterFn,
-    "each": eachFn,
+    "map_size": mapSizeFn,
+    "map_empty?": mapEmptyFn,
+    "map_map": mapMapFn,
+    "map_filter": mapFilterFn,
+    "map_filter_map": mapFilterMapFn,
+    "map_each": mapEachFn,
     "to_pairs_stream": toPairsStreamFn})
   gScalarTypes[vkHashMap] = mapType
   # `Node` carries the mutators and the four anatomy projections. The
@@ -10253,15 +10653,26 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # distinction between universal anatomy and the concrete `Node` type, and
   # `builtinReceiverMessage` routes the instance case back to this same table.
   result.defineBuiltinType(vkNode, "Node", {
-    "set_prop": builtinNativeFn("Node/set_prop", biNodeSetPropBang),
+    "get": builtinNativeCallFn("Node/get", biNodeGet, acceptsNamed = false),
+    "assoc": builtinNativeCallFn("Node/assoc", biNodeAssoc, acceptsNamed = false),
+    "dissoc": builtinNativeCallFn("Node/dissoc", biNodeDissoc, acceptsNamed = false),
+    "put": builtinNativeFn("Node/put", biNodePut),
+    "set": builtinNativeCallFn("Node/set", biNodeSet, acceptsNamed = false),
+    "push": builtinNativeFn("Node/push", biNodePush),
     "delete": builtinNativeFn("Node/delete", biNodeDeleteBang),
     "has_key?": hasKeyFn,
     "set_body": builtinNativeFn("Node/set_body", biNodeSetBodyBang),
-    "push_body": builtinNativeFn("Node/push_body", biNodePushBodyBang),
     "head": headFn,
     "props": propsFn,
     "body": bodyFn,
-    "meta": metaFn})
+    "meta": metaFn,
+    "map_size": mapSizeFn,
+    "map_empty?": mapEmptyFn,
+    "map_map": mapMapFn,
+    "map_filter": mapFilterFn,
+    "map_filter_map": mapFilterMapFn,
+    "map_each": mapEachFn,
+    "to_pairs_stream": toPairsStreamFn})
   result.defineBuiltinType(vkBuffer, "Buffer", {
     "len": builtinNativeFn("Buffer/len", biBufferLen),
     "get": builtinNativeFn("Buffer/get", biBufferGet),
@@ -10650,8 +11061,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     "each": exportedBinding(streamNs, "each"),
     # Identity, so a caller normalizing an unknown receiver into the lazy tier
     # need not first ask whether it is already there.
-    "to_stream": toStreamFn,
-    "to_pairs_stream": toPairsStreamFn})
+    "to_stream": toStreamFn})
   # `each` completes design §6.2's generic set at the root. It was the one
   # operation reachable only as `gene/stream/each`, which left `$each` void
   # while `$map` and `$into` resolved — and a terminal `=>` stage needs the
@@ -12227,23 +12637,47 @@ proc tryMatch(pat, target: Value, scope: Scope,
   else:
     raise newException(GeneError, "unsupported pattern: " & print(pat))
 
-proc forItems(coll: Value): seq[Value] =
+proc forMapPairs(coll: Value): seq[Value] =
+  ## The map-family's entries: no view inference, and a node's body is never
+  ## consulted. A plain or typed node contributes its stored props.
+  case coll.kind
+  of vkMap:
+    result = newSeqOfCap[Value](coll.mapEntries.len)
+    for id, value in coll.mapEntries.idPairs:
+      result.add newList(@[newSymFromKeyId(id), value])
+  of vkHashMap:
+    for entry in coll.hashMapEntries:
+      result.add newList(@[entry.key, entry.val])
+  of vkNode:
+    let props = projectProps(coll)
+    result = newSeqOfCap[Value](props.len)
+    for id, value in props.idPairs:
+      result.add newList(@[newSymFromKeyId(id), value])
+  of vkNil:
+    discard
+  else:
+    raise newException(GeneError,
+      "map_for expects a Map or a node, got " & receiverDisplayType(coll) &
+      "; use for for a list-like value")
+
+proc forItems(coll: Value, mapFamily = false): seq[Value] =
+  if mapFamily:
+    return forMapPairs(coll)
   case coll.kind
   of vkList:
     result = coll.listItems
   of vkNode:
-    result = coll.body
-  of vkMap:
-    # A map key is already a symbol id; going through its text would copy the
-    # string and intern it again for every entry.
-    result = newSeqOfCap[Value](coll.mapEntries.len)
-    for id, v in coll.mapEntries.idPairs:
-      result.add newList(@[newSymFromKeyId(id), v])
+    if isIndexedNode(coll):
+      result = indexedItemsView(coll).listItems
+    else:
+      raise newException(GeneError,
+        "for requires a list-like value, got " & receiverDisplayType(coll) &
+        "; use (for x in value/.body …) for its body items or map_for for its props")
+  of vkMap, vkHashMap:
+    raise newException(GeneError,
+      "for cannot iterate a Map; use (map_for [key value] in …)")
   of vkSet:
     for it in coll.setItems: result.add it
-  of vkHashMap:
-    for entry in coll.hashMapEntries:
-      result.add newList(@[entry.key, entry.val])
   of vkString:
     for r in coll.strVal.runes:
       result.add newChar(r)
@@ -12257,31 +12691,32 @@ proc forItems(coll: Value): seq[Value] =
   of vkNil:
     discard
   else:
-    raise newException(GeneError, "for: cannot iterate " & $coll.kind)
+    raise newException(GeneError,
+      "for requires a list-like value, got " & receiverDisplayType(coll))
 
-proc inlineForSnapshot(coll: Value): Value {.noinline.} =
+proc inlineForSnapshot(coll: Value, mapFamily = false): Value {.noinline.} =
   ## opForInlineBegin's item snapshot. Kept out of the dispatch function so the
   ## allocation and its failure paths do not change its code for other loops.
-  newList(forItems(coll))
+  newList(forItems(coll, mapFamily))
 
-proc iteratorStream(coll: Value): Value =
+proc iteratorStream(coll: Value, mapFamily = false): Value =
+  if mapFamily:
+    return newStream(forMapPairs(coll))
   case coll.kind
   of vkList:
     newStream(copyItems(coll.listItems))
   of vkNode:
-    newStream(copyItems(coll.body))
-  of vkMap:
-    var pairs = newSeqOfCap[Value](coll.mapEntries.len)
-    for id, v in coll.mapEntries.idPairs:
-      pairs.add newList(@[newSymFromKeyId(id), v])
-    newStream(pairs)
+    if isIndexedNode(coll):
+      newStream(indexedItemsView(coll).listItems)
+    else:
+      raise newException(GeneError,
+        "for requires a list-like value, got " & receiverDisplayType(coll) &
+        "; use (for x in value/.body …) for its body items or map_for for its props")
+  of vkMap, vkHashMap:
+    raise newException(GeneError,
+      "for cannot iterate a Map; use (map_for [key value] in …)")
   of vkSet:
     newStream(copyItems(coll.setItems))
-  of vkHashMap:
-    var pairs: seq[Value]
-    for entry in coll.hashMapEntries:
-      pairs.add newList(@[entry.key, entry.val])
-    newStream(pairs)
   of vkString:
     var chars: seq[Value]
     for r in coll.strVal.runes:
@@ -12295,7 +12730,8 @@ proc iteratorStream(coll: Value): Value =
     var empty: seq[Value]
     newStream(empty)
   else:
-    raise newException(GeneError, "for: cannot iterate " & $coll.kind)
+    raise newException(GeneError,
+      "for requires a list-like value, got " & receiverDisplayType(coll))
 
 proc bindMatchedValues(scope: Scope, binds: Table[string, Value],
                        replaceExisting: bool) =
@@ -15018,6 +15454,14 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     else:
       discard
   case receiver.kind
+  of vkMap, vkHashMap:
+    # Map messages normally come from the Map type table. `has_key?` is the one
+    # send that deliberately skips a user type's direct message, so its built-in
+    # Map implementation is reached through this fallback.
+    if name == "has_key?":
+      typeDirectMessage(gScalarTypes[vkMap], name)
+    else:
+      NIL
   of vkSet:
     case name
     of "contains?":
@@ -15038,8 +15482,15 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     # Only a *typed* instance reaches here: a data node's dispatch face is
     # already the `Node` type, so `receiverType` resolved it. An instance is
     # structurally a node, so the same table answers its anatomy projections
-    # and mutators (§1.2) — one table, two receiver classes.
-    typeDirectMessage(gScalarTypes[vkNode], name)
+    # and mutators — one table, two receiver classes. List-family messages are
+    # additionally available when the type implements IndexRead; they reuse
+    # the List table's shared natives, which then read the items view.
+    let nodeMessage = typeDirectMessage(gScalarTypes[vkNode], name)
+    if nodeMessage.kind != vkNil:
+      return nodeMessage
+    if isIndexedNode(receiver):
+      return typeDirectMessage(gScalarTypes[vkList], name)
+    NIL
   of vkRegex:
     let regexNs = builtinBinding(scope, "regex")
     let binding = exportedBinding(regexNs, name)
@@ -17070,7 +17521,7 @@ proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
   of vkNil:
     # `Self:name` names no qualifier: the bare type-direct send.
     ensureTypeContractReady(scope, recvType)
-    if recvType.kind == vkType:
+    if recvType.kind == vkType and name != "has_key?":
       result = readyTypeDirectMessage(recvType, name)
     if result.kind == vkNil:
       result = builtinReceiverMessage(scope, receiver, name)
@@ -21364,7 +21815,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # the first positional argument.
           var receiver = spop()
           if receiver.nodeConstructing and inst[].name notin
-              ["set_prop", "set_body", "push_body"]:
+              ["put", "set", "push", "set_body"]:
             raise newException(GeneError,
               "cannot dispatch '" & inst[].name &
               "' on an in-progress constructed instance")
@@ -21500,7 +21951,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             # published, so the result depends only on the type, the epoch and
             # the contract made ready above: it is cached even while impls are
             # in scope or a module is still assembling its declarations.
-            if recvType.kind == vkType:
+            if recvType.kind == vkType and inst[].name != "has_key?":
               when dispatchCacheEnabled:
                 # site = this instruction's index (ip was advanced at loop top).
                 let site = ip - 1
@@ -21525,7 +21976,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 if recvType.kind == vkType: recvType.typeName
                 else: declarationKind(receiver)
               raiseMessageError(inst[].name, recvTypeName, scope, lexicalHint,
-                                receiverValue = recvType)
+                                receiverValue = recvType,
+                                nodeViewHint = receiver.kind == vkNode and
+                                  isListFamilyName(inst[].name))
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           if inst[].intArg > 0:
@@ -22650,19 +23103,27 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush target
         of opForInlineBegin:
           if stack[sp - 1].kind in {vkStream, vkRange}:
+            if inst[].flag:
+              raise newException(GeneError,
+                "map_for expects a Map or a node, got " &
+                receiverDisplayType(stack[sp - 1]) &
+                "; use for for a list-like value")
             # A stream runs the frame loop over the same body, which closes it
             # on every exit: the opForEach after the inlined loop.
             ip = inst[].depth
             continue
           # The snapshot a frame loop takes replaces the collection, with the
           # next index above it for opForInlineNext.
-          stack[sp - 1] = inlineForSnapshot(stack[sp - 1])
+          stack[sp - 1] = inlineForSnapshot(stack[sp - 1], inst[].flag)
           spush newInt(0)
         of opForEach:
           var coll = spop()
           let fp = chunk.forLoops[inst[].intArg]
           if coll.kind == vkRange:
             coll = rangeStream(coll)
+          if fp.mapFamily and coll.kind == vkStream:
+            raise newException(GeneError,
+              "map_for expects a Map or a node, got Stream; use for for list-like values")
           if coll.kind == vkStream:
             var item = NIL
             try:
@@ -22685,7 +23146,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             curForPattern = fp.pattern
             curForBody = fp.body
             continue
-          let items = forItems(coll)
+          let items = forItems(coll, fp.mapFamily)
           if items.len == 0:
             spush NIL
             continue
@@ -22716,7 +23177,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                              stack[sp - 2].listItems[index])
           stack[sp - 1] = newInt(index + 1)
         of opMakeIterator:
-          spush iteratorStream(spop())
+          spush iteratorStream(spop(), inst[].flag)
         of opIteratorHasNext:
           let stream = spop()
           requireStream("for iterator", stream)
@@ -25897,7 +26358,9 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
                        lexicalHint = false, protocol = "",
                        missingImpl = false,
                        protocolValue = NIL,
-                       receiverValue = NIL) {.noreturn.} =
+                       receiverValue = NIL,
+                       nodeViewHint = false,
+                       familyHint = "") {.noreturn.} =
   ## Design §3/§9: a `~` send that resolves to no message on the
   ## receiver's type. Recoverable MessageError (a TypeError subtype).
   ## `lexicalHint` marks the case where the message name also names a lexical
@@ -25909,6 +26372,12 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
       "no implementation of message '" & message & "' for " & receiverType
     else:
       "no message '" & message & "' on " & receiverType
+  if familyHint.len > 0:
+    full = full & "; " & familyHint
+  if nodeViewHint:
+    let mapName = mapFamilyName(message)
+    full = full & "; use value/.body for its body items" &
+      (if mapName.len > 0: " or $" & mapName & " for its props" else: "")
   if lexicalHint:
     full = full & "; '" & message &
       "' is a function — did you mean to call it, not send it?"
@@ -27628,9 +28097,12 @@ proc staticLookup(target, segment: Value): Value =
       else:
         ensureNodeProjectionKeyIds()
         if keyId == nodeHeadKeyId: target.head
-        elif keyId == nodePropsKeyId: newMap(target.errorProperties())
-        elif keyId == nodeBodyKeyId: newList(target.body)
-        elif keyId == nodeMetaKeyId: newMap(target.meta)
+        elif keyId == nodePropsKeyId:
+          newMap(target.errorProperties(), target.nodeImmutable)
+        elif keyId == nodeBodyKeyId:
+          newList(target.body, target.nodeImmutable)
+        elif keyId == nodeMetaKeyId:
+          newMap(target.meta, target.nodeImmutable)
         else: MISSING
     of vkList:
       MISSING
@@ -33379,7 +33851,7 @@ proc releaseOwnedWrapperFields(instance: Value) =
   ## Scoped to wrapper types on purpose: an ordinary Gene type's field happens
   ## to hold a pointer, it does not own the resource by declaration.
   ##
-  ## Props *and* body: `push_body` is one of the mutations an in-progress
+  ## Props *and* body: `push` is one of the mutations an in-progress
   ## instance may perform (§7.1.1), so a declared `^body` position can hold an
   ## owned handle just as a prop can.
   proc releaseOwned(value: Value) =

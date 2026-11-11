@@ -3386,8 +3386,8 @@
     },
     {
       "id": "portable.prop_map_pairs",
-      "source": "(fn run [] : (List Sym) (var keys : (List Sym) []) (for [key value] in {^b 2 ^a 1} (keys .push key)) keys) (run)",
-      "web_source": "(mod portable_prop_map_pairs ^profile web) (fn run [] : (List Sym) (var keys : (List Sym) []) (for [key value] in {^b 2 ^a 1} (keys .push key)) keys)",
+      "source": "(fn run [] : (List Sym) (var keys : (List Sym) []) (map_for [key value] in {^b 2 ^a 1} (keys .push key)) keys) (run)",
+      "web_source": "(mod portable_prop_map_pairs ^profile web) (fn run [] : (List Sym) (var keys : (List Sym) []) (map_for [key value] in {^b 2 ^a 1} (keys .push key)) keys)",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3410,8 +3410,8 @@
     },
     {
       "id": "portable.prop_map_numeric_key_order",
-      "source": "(fn run [] : (List Sym) (var m {^a 3}) (var ten \"10\") (var two \"2\") (set m/%ten 1) (set m/%two 2) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys) (run)",
-      "web_source": "(mod portable_prop_map_numeric_key_order ^profile web) (fn run [] : (List Sym) (var m {^a 3}) (var ten \"10\") (var two \"2\") (set m/%ten 1) (set m/%two 2) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys)",
+      "source": "(fn run [] : (List Sym) (var m {^a 3}) (var ten \"10\") (var two \"2\") (set m/%ten 1) (set m/%two 2) (var keys : (List Sym) []) (map_for [key value] in m (keys .push key)) keys) (run)",
+      "web_source": "(mod portable_prop_map_numeric_key_order ^profile web) (fn run [] : (List Sym) (var m {^a 3}) (var ten \"10\") (var two \"2\") (set m/%ten 1) (set m/%two 2) (var keys : (List Sym) []) (map_for [key value] in m (keys .push key)) keys)",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3438,8 +3438,8 @@
     },
     {
       "id": "portable.prop_map_mutation_snapshot",
-      "source": "(fn run [] : Int (var m {^a 1 ^b 2}) (var total 0) (for [key value] in m (set total (+ total value)) (set m/b 99)) total) (run)",
-      "web_source": "(mod portable_prop_map_mutation_snapshot ^profile web) (fn run [] : Int (var m {^a 1 ^b 2}) (var total 0) (for [key value] in m (set total (+ total value)) (set m/b 99)) total)",
+      "source": "(fn run [] : Int (var m {^a 1 ^b 2}) (var total 0) (map_for [key value] in m (set total (+ total value)) (set m/b 99)) total) (run)",
+      "web_source": "(mod portable_prop_map_mutation_snapshot ^profile web) (fn run [] : Int (var m {^a 1 ^b 2}) (var total 0) (map_for [key value] in m (set total (+ total value)) (set m/b 99)) total)",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -3453,8 +3453,8 @@
     },
     {
       "id": "portable.prop_map_delete_reinsert",
-      "source": "(fn run [] : (List Sym) (var m {^a 1 ^b 2}) (m .delete \"a\") (set m/a 3) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys) (run)",
-      "web_source": "(mod portable_prop_map_delete_reinsert ^profile web) (fn run [] : (List Sym) (var m {^a 1 ^b 2}) (m .delete \"a\") (set m/a 3) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys)",
+      "source": "(fn run [] : (List Sym) (var m {^a 1 ^b 2}) (m .delete \"a\") (set m/a 3) (var keys : (List Sym) []) (map_for [key value] in m (keys .push key)) keys) (run)",
+      "web_source": "(mod portable_prop_map_delete_reinsert ^profile web) (fn run [] : (List Sym) (var m {^a 1 ^b 2}) (m .delete \"a\") (set m/a 3) (var keys : (List Sym) []) (map_for [key value] in m (keys .push key)) keys)",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -3477,8 +3477,8 @@
     },
     {
       "id": "portable.typed_map_pairs",
-      "source": "(fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : 2}}) (var total 0) (for [key value] in m (set total (+ total value))) total) (run)",
-      "web_source": "(mod portable_typed_map_pairs ^profile web) (fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : 2}}) (var total 0) (for [key value] in m (set total (+ total value))) total)",
+      "source": "(fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : 2}}) (var total 0) (map_for [key value] in m (set total (+ total value))) total) (run)",
+      "web_source": "(mod portable_typed_map_pairs ^profile web) (fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : 2}}) (var total 0) (map_for [key value] in m (set total (+ total value))) total)",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -3492,8 +3492,8 @@
     },
     {
       "id": "portable.map_nil_entry_kept",
-      "source": "(fn run [] : Int (var m : (Map Str Int?) {{\"a\" : 1 \"b\" : nil}}) (var total 0) (for [key value] in m (set total (+ total (?? value 0)))) total) (run)",
-      "web_source": "(mod portable_map_void_entry_removed ^profile web) (fn run [] : Int (var m : (Map Str Int?) {{\"a\" : 1 \"b\" : nil}}) (var total 0) (for [key value] in m (set total (+ total (?? value 0)))) total)",
+      "source": "(fn run [] : Int (var m : (Map Str Int?) {{\"a\" : 1 \"b\" : nil}}) (var total 0) (map_for [key value] in m (set total (+ total (?? value 0)))) total) (run)",
+      "web_source": "(mod portable_map_void_entry_removed ^profile web) (fn run [] : Int (var m : (Map Str Int?) {{\"a\" : 1 \"b\" : nil}}) (var total 0) (map_for [key value] in m (set total (+ total (?? value 0)))) total)",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -3507,8 +3507,8 @@
     },
     {
       "id": "portable.for_shadows_outer_binding",
-      "source": "(fn run [] : Int (var key 42) (for [key value] in {^a 1} nil) key) (run)",
-      "web_source": "(mod portable_for_shadows_outer_binding ^profile web) (fn run [] : Int (var key 42) (for [key value] in {^a 1} nil) key)",
+      "source": "(fn run [] : Int (var key 42) (map_for [key value] in {^a 1} nil) key) (run)",
+      "web_source": "(mod portable_for_shadows_outer_binding ^profile web) (fn run [] : Int (var key 42) (map_for [key value] in {^a 1} nil) key)",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -5242,8 +5242,8 @@
     },
     {
       "id": "nil_void.map_keys",
-      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($map {^a -1 ^b 2} positive)) (run)",
-      "web_source": "(mod nil_void_map_keys ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($map {^a -1 ^b 2} positive))",
+      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($map_map {^a -1 ^b 2} positive)) (run)",
+      "web_source": "(mod nil_void_map_keys ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($map_map {^a -1 ^b 2} positive))",
       "web_export": "run",
       "expected_value": {
         "kind": "prop_map",
@@ -5271,8 +5271,8 @@
     },
     {
       "id": "nil_void.map_general",
-      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (Map Str Int?) ($map {{\"a\": -1 \"b\": 2}} positive)) (run)",
-      "web_source": "(mod nil_void_map_general ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (Map Str Int?) ($map {{\"a\": -1 \"b\": 2}} positive))",
+      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (Map Str Int?) ($map_map {{\"a\": -1 \"b\": 2}} positive)) (run)",
+      "web_source": "(mod nil_void_map_general ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : (Map Str Int?) ($map_map {{\"a\": -1 \"b\": 2}} positive))",
       "web_export": "run",
       "expected_value": {
         "kind": "map",
@@ -5306,8 +5306,8 @@
     },
     {
       "id": "nil_void.filter_map_keys",
-      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($filter_map {^a -1 ^b 2} positive)) (run)",
-      "web_source": "(mod nil_void_filter_map_keys ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($filter_map {^a -1 ^b 2} positive))",
+      "source": "(fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($map_filter_map {^a -1 ^b 2} positive)) (run)",
+      "web_source": "(mod nil_void_filter_map_keys ^profile web) (fn positive [x : Int] : (| Int Nil) (if (> x 0) x nil)) (fn run [] : PropMap ($map_filter_map {^a -1 ^b 2} positive))",
       "web_export": "run",
       "expected_value": {
         "kind": "prop_map",

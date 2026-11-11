@@ -1849,7 +1849,7 @@ suite "cli — gene parse/fmt/compile":
 (protocol Drawable (message draw [] : Str))
 (fn area [p : Point] : Int (* p/x p/y))
 (type Counter ^props {^n Int}
-  (ctor [start] ($println "COUNTER-CTOR-RAN") (self .set_prop `n start)))
+  (ctor [start] ($println "COUNTER-CTOR-RAN") (self .put `n start)))
 (type Conn ^props {^host Str ^live Bool}
   (message serde_state [self] {^host self/host})
   (message serde_restore [state] (Conn ^host state/host ^^live)))
@@ -1928,7 +1928,7 @@ suite "cli — gene parse/fmt/compile":
 # stage 6: SerdeRef module singleton -> identity value_ref
 (check "value-ref-form" (contains? (write REGISTRY) "serde_value_ref"))
 (var reg2 (read (write REGISTRY)))
-(reg2 .set_prop `marker 99)
+(reg2 .put `marker 99)
 (check "value-ref-identity" (== 99 REGISTRY/marker))
 # a non-SerdeRef module instance serializes by value, not as a value_ref
 (check "plain-by-value" (! (contains? (write (Point ^x 1 ^y 2)) "value_ref")))

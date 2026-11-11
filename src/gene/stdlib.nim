@@ -770,11 +770,17 @@ proc biMathClamp(args: openArray[Value]): Value {.nimcall.} =
   let x = args[0].toFloat
   if x < lo: args[1] elif x > hi: args[2] else: args[0]
 
-proc biStrJoin(args: openArray[Value]): Value {.nimcall.} =
+proc biStrJoin(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len notin 1..2:
     raise newException(GeneError, "str/join expects 1..2 arguments, got " & $args.len)
-  if args[0].kind != vkList:
-    raise newException(GeneError, "str/join expects a List")
+  let scope = if call == nil: nil else: call.dispatchScope
+  let resolved = resolveListFamilyWithOp("join", args[0], args[1 .. ^1],
+    scope, typeDirectMessage(gScalarTypes[vkList], "join"))
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  if source.kind != vkList:
+    raise newException(GeneError,
+      "str/join expects a list-like value, got " & receiverDisplayType(source))
   let sep =
     if args.len == 2:
       requireStr("str/join separator", args[1])
@@ -782,7 +788,7 @@ proc biStrJoin(args: openArray[Value]): Value {.nimcall.} =
     else:
       ""
   var parts: seq[string]
-  for item in args[0].listItems:
+  for item in source.listItems:
     requireStr("str/join item", item)
     parts.add item.strVal
   newStr(parts.join(sep))
@@ -1747,39 +1753,35 @@ proc biUrlFormatQuery(args: openArray[Value]): Value {.nimcall.} =
   newStr(parts.join("&"))
 
 proc biEach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## The generic `each` (design §6.2): runs `f` on every item and returns
-  ## `nil`. Streams pull lazily; the eager kinds iterate their own items —
-  ## a Map's callback sees the value, like its `map`/`filter`.
+  ## The list-family `each`: runs `f` on every item and returns `nil`.
+  ## Streams pull lazily; an IndexRead node is read through its items view.
   var scope: Scope = nil
   if call != nil: scope = call.dispatchScope
   if args.len != 2:
     raise newException(GeneError, "each expects 2 arguments, got " & $args.len)
   let receiver = args[0]
-  if receiver.kind notin {vkStream, vkList, vkMap, vkHashMap, vkSet}:
-    return dispatchGenericForward("each", receiver, args[1 .. args.high], scope)
-  if activeVmFiber != nil and receiver.kind != vkStream:
-    requestCollectionFrame("each", receiver, args[1], scope)
+  let resolved = resolveListFamily("each", receiver, args[1 .. ^1], scope)
+  if resolved.handled: return resolved.value
+  let source = resolved.source
+  if source.kind notin {vkStream, vkList, vkSet}:
+    return dispatchGenericForward("each", source, args[1 .. args.high], scope)
+  if activeVmFiber != nil and source.kind != vkStream:
+    requestCollectionFrame("each", source, args[1], scope)
   # The private driver stays within this consuming call. Its resumable item
   # frame allows ordinary callbacks to await even inside a spawned consumer.
-  let driver = newLazyStream(receiver, pullMapStream,
+  let driver = newLazyStream(source, pullMapStream,
     callable = args[1], close = closeStreamCallback)
   try:
-    case receiver.kind
+    case source.kind
     of vkStream:
-      while receiver.streamHasNext:
+      while source.streamHasNext:
         discard invokeStreamCallback(driver,
-          checkedStreamNext(receiver, "each item"))
+          checkedStreamNext(source, "each item"))
     of vkList:
-      for item in receiver.listItems:
+      for item in source.listItems:
         discard invokeStreamCallback(driver, item)
-    of vkMap:
-      for _, item in receiver.mapEntries:
-        discard invokeStreamCallback(driver, item)
-    of vkHashMap:
-      for entry in receiver.hashMapEntries:
-        discard invokeStreamCallback(driver, entry.val)
     of vkSet:
-      for item in receiver.setItems:
+      for item in source.setItems:
         discard invokeStreamCallback(driver, item)
     else:
       discard
@@ -6774,6 +6776,28 @@ proc jsonStringifyInto(value: Value, into: var string, scope: Scope,
       into.add ':'
       jsonStringifyInto(item, into, scope, depth + 1, omitNil)
     into.add '}'
+  of vkNode:
+    if value.head.kind == vkType and value.head.isNativeWrapperType:
+      raiseJsonValueError(scope, "json/stringify: " & value.head.typeName &
+        " is a native wrapper; serialize an explicit data value built from its fields")
+    if value.head.kind != vkType:
+      raiseJsonValueError(scope,
+        "json/stringify: cannot serialize a Node with a non-Type head; " &
+        "pass value/.props")
+    if value.body.len > 0:
+      raiseJsonValueError(scope, "json/stringify: " & value.head.typeName &
+        " value has " & $value.body.len & " body items; pass value/.props or value/.body")
+    into.add '{'
+    var first = true
+    let props = projectProps(value)
+    for keyId, item in props.idPairs:
+      if omitNil and item.kind == vkNil: continue
+      if not first: into.add ','
+      first = false
+      jsonEscapeInto(propKeyText(keyId), into)
+      into.add ':'
+      jsonStringifyInto(item, into, scope, depth + 1, omitNil)
+    into.add '}'
   else:
     raiseJsonValueError(scope, "json/stringify: cannot serialize a " &
                         $value.kind)
@@ -10697,7 +10721,9 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   stdStreamScope.define("to_stream",
     builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false))
   stdStreamScope.define("to_pairs_stream",
-                        builtinNativeFn("to_pairs_stream", biToPairsStream))
+    sharedBuiltinNative("to_pairs_stream",
+      builtinNativeCallFn("to_pairs_stream", biToPairsStream,
+                          acceptsNamed = false)))
   # The generic collection operations (§6.2) must bind the same process-wide
   # dispatchers the root and the type tables hold — `sharedBuiltinNative`
   # returns those instances; the fresh values built here are discarded.
@@ -10830,7 +10856,8 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   mathScope.define("tau", newFloat(TAU))
   root.define("math", newNamespace("math", mathScope))
   let strScope = newScope(root)
-  strScope.define("join", sharedBuiltinNative("str/join", builtinNativeFn("str/join", biStrJoin)))
+  strScope.define("join", sharedBuiltinNative("str/join",
+    builtinNativeCallFn("str/join", biStrJoin, acceptsNamed = false)))
   for (name, native) in strReceiverNatives():
     strScope.define(name, native)
   strScope.define("from_utf8", builtinNativeFn("str/from_utf8", biStrFromUtf8))

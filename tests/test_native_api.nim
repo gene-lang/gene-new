@@ -413,7 +413,7 @@ suite "native api — roots and trampoline":
     check run(compileSource("conn/backend"), scope).print() == "\"demo\""
     check run(compileSource("($head conn)"), scope).print() == "(type Conn)"
     check run(compileSource(
-      "(try (conn .set_prop `handle \"junk\") catch Error $err/message)"),
+      "(try (conn .put `handle \"junk\") catch Error $err/message)"),
       scope).print() ==
       "\"cannot set field 'handle' on Conn: native wrapper fields are " &
       "initializer-only\""
@@ -533,13 +533,13 @@ suite "native api — roots and trampoline":
     let scope = geneModuleScope(module)
     # Each ctor installs a handle and then leaves `label` unset, so schema
     # validation — not the body — is what fails. `Bag` covers the declared
-    # *body* position: `push_body` is one of the mutations an in-progress
+    # *body* position: `push` is one of the mutations an in-progress
     # instance may perform, so the unwind has to reach body items too.
     discard run(compileSource(
       "(type Conn ^repr native_wrapper ^props {^handle Any ^label Str} " &
       "  (ctor [] (set self/handle (open_handle)))) " &
       "(type Bag ^repr native_wrapper ^body [Any] ^props {^label Str} " &
-      "  (ctor [] (self .push_body (open_handle))))"), scope)
+      "  (ctor [] (self .push (open_handle))))"), scope)
     let failed = run(compileSource(
       "(try (new Conn) catch Error $err/message)"), scope)
     check "left required field 'label' unset" in failed.print()

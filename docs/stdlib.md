@@ -612,11 +612,20 @@ Generic operations live at the `gene` root and share their implementation with
 receiver messages: `($map xs f)` and `(xs .map f)` are the same operation.
 Text helpers live under `$str`, and ordering helpers under `$order`.
 
-| Receiver | Operations |
-| --- | --- |
-| List | `assoc`, `get`, `join`, `set`, `push`, `size`, `empty?`, `first`, `last`, `contains?`, `map`, `filter_map`, `filter`, `take`, `drop`, `reverse`, `each`, `into`, `to_stream` |
-| Map (PropMap or HashMap) | `assoc`, `get`, `has_key?`, `put`, `delete`, `map`, `filter_map`, `filter`, `each`, `to_pairs_stream` |
-| Stream | `has_next`, `peek`, `next`, `try_next`, `close`, `map`, `filter_map`, `filter`, `take`, `drop`, `each`, `into`, `to_stream`, `to_pairs_stream` |
+The operation name selects the view: list-family operations read items,
+map-family operations read entries. A Map passed to `size`, `map`, `filter`,
+`filter_map`, `each`, or a loop is rejected with the corresponding map-family
+spelling in the diagnostic. A node's body is always explicit with
+`value/.body` (or `$body`); map-family operations read a node's stored props.
+A node whose type implements `IndexRead` is list-like for the list family and
+uses the witness snapshot; a node without `IndexRead` is not.
+
+| Receiver | List family | Map family |
+| --- | --- | --- |
+| List | `assoc`, `get`, `join`, `set`, `push`, `size`, `empty?`, `first`, `last`, `contains?`, `map`, `filter_map`, `filter`, `take`, `drop`, `reverse`, `each`, `into`, `to_stream` | rejected |
+| Map (PropMap or HashMap) | rejected; use the map-family name | `assoc`, `get`, `has_key?`, `put`, `delete`, `map_size`, `map_empty?`, `map_map`, `map_filter`, `map_filter_map`, `map_each`, `to_pairs_stream` |
+| Stream | `has_next`, `peek`, `next`, `try_next`, `close`, `map`, `filter_map`, `filter`, `take`, `drop`, `each`, `into`, `to_stream` | rejected |
+| Node | list family only with `IndexRead`; use `value/.body` otherwise | keyed operations plus `map_size`, `map_empty?`, `map_map`, `map_filter`, `map_filter_map`, `map_each`, `to_pairs_stream` |
 
 `(xs .get index)` reads the same element as an indexed Path: zero-based,
 negative indices count from the end, and out-of-range reads return `nil`.
@@ -666,9 +675,11 @@ profile rejects them explicitly.
 `ValueEq` and `ValueHash` select equality and hash behavior for a nominal Type.
 They apply inside Lists, Sets, and general-key Maps as well as to `==` and
 `$hash`. An equality-only Type cannot be used as a key. `same?` still checks
-identity. `IndexRead` supplies `size` and numeric path reads; `IndexWrite`
-supplies final numeric `set` writes. Unqualified messages such as `(x .get 0)`
-do not dispatch through these protocols.
+identity. `IndexRead` supplies `size`, numeric path reads, `for`, and the list
+family's items view; `IndexWrite` supplies final numeric `set` writes. The
+built-in Node messages `get` and `set` with an Int key follow the Int Path
+segment. `assoc` rejects an indexed type, while patterns, spread, and the
+`$assoc_in` family continue to read the raw body.
 
 `gene/order` supplies stable List sorting. `sort_by` evaluates its key function
 once per item and preserves input order when keys compare equal:

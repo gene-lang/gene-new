@@ -316,7 +316,7 @@ suite "web JSON data properties":
       (fn remove [data : Any, key : Str] : Nil (data .delete key))
       (fn names [data : PropMap] : (List Str)
         (var keys : (List Str) [])
-        (for [key value] in data (keys .push ($to_str key)))
+        (map_for [key value] in data (keys .push ($to_str key)))
         keys)
       (fn encode [data : Any] : Str ($json/stringify data))
     """)
@@ -571,3 +571,58 @@ suite "web named rest and property spread":
     let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
     checkpoint ran.output
     check ran.exitCode == 0
+
+suite "web map-family operations":
+  test "map family reads entries and list family rejects maps":
+    let root = createTempDir("gene-web-map-family-", "")
+    defer: removeDir(root)
+    writeFile(root / "map_family.gene", """
+      (mod map_family ^profile web)
+      (fn size_probe [] : Int
+        (let m {^x 1 ^y 2})
+        ($map_size m))
+      (fn empty_probe [] : Bool
+        (let m {^x 1})
+        ($map_empty? m))
+      (fn map_probe [] : (Map Str Int)
+        (let m {{"x": 1 "y": 2}})
+        ($map_map m (fn [v : Int] : Int (* v 10))))
+      (fn filter_probe [] : (Map Str Int)
+        (let m {{"x": 1 "y": 2}})
+        ($map_filter m (fn [v : Int] : Bool (> v 1))))
+      (fn pair_probe [] : (List Any)
+        (var out : (List Any) [])
+        (let m {{"x": 1 "y": 2}})
+        (map_for [k v] in m (out .push {^key k ^value v}))
+        out)
+    """)
+    discard buildWebModule(root / "map_family.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {size_probe, empty_probe, map_probe, filter_probe, pair_probe} from './map_family.mjs';
+      assert.equal(size_probe(), 2n);
+      assert.equal(empty_probe(), false);
+      assert.equal(map_probe().get('x'), 10n);
+      assert.equal(map_probe().get('y'), 20n);
+      assert.equal(filter_probe().has('x'), false);
+      assert.equal(filter_probe().get('y'), 2n);
+      assert.deepEqual(pair_probe().map(pair => [pair.key, pair.value]), [['x', 1n], ['y', 2n]]);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
+  test "list-family names on a Map are rejected at web compile time":
+    for source in [
+      "(let m {^x 1}) ($size m)",
+      "(let m {^x 1}) (for [k v] in m nil)",
+      "(let m {^x 1}) (m .map (fn [v : Any] : Any v))",
+      "(let m {^x 1}) ($each m (fn [v : Any] : Any v))"
+    ]:
+      var message = ""
+      try:
+        discard analyzeWebModule("(mod map_reject ^profile web) " & source,
+                                 "map_reject.gene")
+      except WebProfileError as error:
+        message = error.msg
+      check "map_" in message
