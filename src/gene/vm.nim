@@ -8535,7 +8535,11 @@ proc setMutableChild(target, segment, value: Value): Value =
   ## corrupted the heap whenever the typed-body validation raised — the arm
   ## that both declares locals and raises is exactly the codegen shape this
   ## file has been bitten by before.
-  rejectCallerEnvEscape("set", value)
+  # An unmanaged value (nil, Bool, small Int, Char, Symbol, immediate Float)
+  # can hold neither a CallerEnv nor an in-progress construction, so only a
+  # managed one makes the call.
+  if value.isManaged:
+    rejectCallerEnvEscape("set", value)
   var index = 0
   var stored = NIL
   var body: seq[Value] = @[]
@@ -8614,9 +8618,15 @@ proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
   var target = stack[baseIndex]
   for i in 0 ..< segCount - 1:
     target = readSetPathChild(target, stack[baseIndex + 1 + i])
+  # Strengthening and recording a stored function both return at once for an
+  # unmanaged value, and the writes of a loop mostly store such values, so
+  # only a managed one makes the calls.
+  let value {.cursor.} = stack[baseIndex + segCount + 1]
   result = setMutableChild(target, stack[baseIndex + segCount],
-                           strengthenStoredValue(stack[baseIndex + segCount + 1]))
-  noteFunctionStore(target, result)
+                           if value.isManaged: strengthenStoredValue(value)
+                           else: value)
+  if result.isManaged:
+    noteFunctionStore(target, result)
 
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
