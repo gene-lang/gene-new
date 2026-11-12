@@ -33890,24 +33890,28 @@ proc constructTypedInstanceParts(callee: Value, args: openArray[Value],
   # the boundary would resolve the annotation by name twice to say the same.
   template plainField(typeExpr, value: Value): bool =
     typeExpr.kind == vkNil or bareScalarSatisfied(typeExpr, value)
-  # The schema is borrowed from `callee`, which the caller keeps alive.
+  # The schema is borrowed from `callee`, which the caller keeps alive, and
+  # indexed in place: `for f in fields` copies the whole list, every field name
+  # included, on each construction.
   template fields: untyped = callee.borrowedTypeFields
   template bodyFields: untyped = callee.borrowedTypeBodyFields
-  if args.len != 0 and bodyFields.len == 0:
+  let bodyCount = bodyFields.len
+  if args.len != 0 and bodyCount == 0:
     raise newException(GeneError,
       "constructing " & callee.typeName & " takes named fields only")
   var body: seq[Value]
   var restBody = -1
-  for i, f in bodyFields:
-    if f.rest:
+  for i in 0 ..< bodyCount:
+    if bodyFields[i].rest:
       restBody = i
       break
   if restBody < 0:
-    if args.len != bodyFields.len:
+    if args.len != bodyCount:
       raise newException(GeneError,
         "constructing " & callee.typeName & " expects " &
-        $bodyFields.len & " body item(s), got " & $args.len)
-    for i, f in bodyFields:
+        $bodyCount & " body item(s), got " & $args.len)
+    for i in 0 ..< bodyCount:
+      template f: untyped = bodyFields[i]
       if plainField(f.typeExpr, args[i]):
         body.add args[i]
       else:
@@ -33920,44 +33924,46 @@ proc constructTypedInstanceParts(callee: Value, args: openArray[Value],
         "constructing " & callee.typeName & " expects at least " &
         $restBody & " body item(s), got " & $args.len)
     for i in 0 ..< restBody:
-      let f = bodyFields[i]
+      template f: untyped = bodyFields[i]
       let fieldScope = f.typeBodyFieldScope(callee.typeScope)
       body.add adaptRefBodyField(callee.typeName, i,
                              f.typeExpr, args[i], fieldScope)
-    let restType = bodyFields[restBody]
+    template restType: untyped = bodyFields[restBody]
     let fieldScope = restType.typeBodyFieldScope(callee.typeScope)
     for i in restBody ..< args.len:
       body.add adaptRefBodyField(callee.typeName, i,
                              restType.typeExpr, args[i], fieldScope)
+  let fieldCount = fields.len
   var props = initPropTable()
-  props.reserve(min(names.len, fields.len))
+  props.reserve(min(names.len, fieldCount))
   var matched = 0
-  for f in fields:
+  for fi in 0 ..< fieldCount:
     var argIdx = -1
     for i in 0 ..< names.len:
-      if names[i] == f.name:
+      if names[i] == fields[fi].name:
         argIdx = i
         break
     if argIdx >= 0:
       inc matched
       let value = values[argIdx]
-      if plainField(f.typeExpr, value):
-        props.putById(f.nameId, value)
+      if plainField(fields[fi].typeExpr, value):
+        props.putById(fields[fi].nameId, value)
       else:
-        let fieldScope = f.typeFieldScope(callee.typeScope)
-        props.putById(f.nameId,
-                      adaptRefField(callee.typeName, f.name,
-                                    f.typeExpr, value, fieldScope))
-    elif not f.optional:
+        let fieldScope = fields[fi].typeFieldScope(callee.typeScope)
+        props.putById(fields[fi].nameId,
+                      adaptRefField(callee.typeName, fields[fi].name,
+                                    fields[fi].typeExpr, value, fieldScope))
+    elif not fields[fi].optional:
       raise newException(GeneError,
-        "missing required field '" & f.name & "' for " & callee.typeName)
+        "missing required field '" & fields[fi].name & "' for " &
+        callee.typeName)
   # Field names are distinct, so when every argument was matched none is
   # unknown.
   if matched != names.len:
     for key in names:
       var known = false
-      for f in fields:
-        if f.name == key:
+      for fi in 0 ..< fieldCount:
+        if fields[fi].name == key:
           known = true
           break
       if not known:
