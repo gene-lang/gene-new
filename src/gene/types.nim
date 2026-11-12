@@ -352,7 +352,10 @@ type
 
   GeneList = object
     refCount: int
-    shared: int
+    # A flag, not a count. Half a word wide so that the stamp shares the word
+    # and the object stays the size it was.
+    shared: int32
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     deepFrozen: bool
@@ -360,19 +363,18 @@ type
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
     itemsKind: uint8       # see `listItemsAllOfKind`; 0 = not known
-    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     items: seq[Value]
 
   GeneMap = object
     refCount: int
-    shared: int
+    shared: int32          # a flag; see GeneList
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     deepFrozen: bool
     frozenGraphProofs: uint8
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
-    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     entries: PropTable
 
   HashMapEntry* = object
@@ -397,7 +399,8 @@ type
 
   GeneNode = object
     refCount: int
-    shared: int
+    shared: int32          # a flag; see GeneList
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     ## Deep immutability, distinct from `immutable` (events.md §6.5).
@@ -410,7 +413,6 @@ type
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
     partsChecked: bool     # see `nodePartsChecked`
-    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     resourceId: uint64
     errorEvidence: ErrorEvidence
     head: Value
@@ -2628,13 +2630,13 @@ template withErrorEvidenceLock(node: ptr GeneNode, body: untyped) =
   else:
     body
 
-template isSharedFlag(flag: var int): bool =
+template isSharedFlag(flag: var (int | int32)): bool =
   when threadedRc:
     atomicLoadN(addr flag, ATOMIC_ACQUIRE) != 0
   else:
     flag != 0
 
-template markSharedFlag(flag: var int) =
+template markSharedFlag(flag: var (int | int32)) =
   when threadedRc:
     if atomicLoadN(addr flag, ATOMIC_ACQUIRE) == 0:
       atomicStoreN(addr flag, 1, ATOMIC_RELEASE)
