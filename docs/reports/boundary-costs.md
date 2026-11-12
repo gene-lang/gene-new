@@ -3,19 +3,68 @@
 Work on branch `perf/python-gap`, 2026-11-11, from `37bd3631`. It implements
 the order suggested by a comparison of Gene with CPython 3.14: remove the
 costs that grow with the size of the data first, then the largest constant
-costs the comparison found.
+costs the comparison found. Sections 10 to 12 are a second round, on
+2026-11-12, from fresh profiles of the first round's result.
 
 Every change is internal. Programs see the same values, the same errors and
 the same identities as before, with one exception that is a bug fix (section
-7). Each fast path was compared against the runtime before it existed, on
-the cases in `tests/test_boundary_fast_paths.nim` and
+7). Section 10 changes what an internal error does: a Nim Defect now ends the
+process at once instead of unwinding, which only code that caught a Defect on
+purpose could observe. Each fast path was compared against the runtime before
+it existed, on the cases in `tests/test_boundary_fast_paths.nim` and
 `tests/test_escape_inert.nim`.
 
 ## Result
 
-Release builds of `37bd3631` ("before") and of the branch ("after") on an
-Apple M4 Pro, CPython 3.14.3. Raw output and provenance are in
-`benchmarks/baselines/2026-11-11-boundary-costs/`.
+### Against Python, at the branch head
+
+`benchmarks/run_kernels.gene` at `c324a6f5`, five alternating rounds of fresh
+processes after one warmup, on an Apple M4 Pro with CPython 3.14.3. The
+baseline is the branch as the first round left it (`e7f2cc31`), so the last
+column is what the second round changed. Each ratio is the median of the
+per-round ratios. Raw output and provenance are in
+`benchmarks/baselines/2026-11-12-panics/kernels/`.
+
+| Kernel | Gene ms | Python ms | Gene / Python | `e7f2cc31` ms | `e7f2cc31` / Python | Gene / `e7f2cc31` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fib30 | 103 | 58 | 1.8 | 127 | 2.2 | 0.80 |
+| while_arith_3M | 135 | 92 | 1.5 | 183 | 2.0 | 0.74 |
+| for_range_3M | 118 | 54 | 2.2 | 151 | 2.8 | 0.77 |
+| repeat_3M | 117 | 55 | 2.1 | 160 | 2.9 | 0.73 |
+| list_push_index_1M | 128 | 46 | 2.7 | 162 | 3.5 | 0.78 |
+| list_push_for_1M | 99 | 40 | 2.5 | 122 | 3.1 | 0.79 |
+| map_strkey_500k | 220 | 86 | 2.6 | 255 | 3.0 | 0.85 |
+| field_rw_2M | 270 | 80 | 3.4 | 344 | 4.4 | 0.78 |
+| alloc_record_1M | 186 | 59 | 3.1 | 245 | 4.2 | 0.75 |
+| send_2M | 400 | 59 | 6.8 | 489 | 8.5 | 0.80 |
+| closure_2M | 241 | 51 | 4.6 | 302 | 5.8 | 0.81 |
+| str_interp_500k | 118 | 57 | 2.0 | 132 | 2.3 | 0.88 |
+| float_3M | 141 | 56 | 2.5 | 186 | 3.3 | 0.76 |
+| map_literal_1M | 163 | 77 | 2.2 | 206 | 2.7 | 0.79 |
+| accessor_10k_records_200k | 35 | 8 | 4.4 | 59 | 7.5 | 0.59 |
+| store_10k_records_200k | 31 | 6 | 5.2 | 39 | 6.5 | 0.79 |
+| typed_list_param_1k_500k | 47 | 12 | 3.9 | 209 | 18.3 | 0.22 |
+| field_write_2M | 121 | 16 | 7.6 | 168 | 10.5 | 0.73 |
+| typed_call_3M | 228 | 72 | 3.1 | 283 | 3.9 | 0.79 |
+
+Most of the 0.73 to 0.88 is section 10; the three rows below 0.7 are
+section 11. Python times under 20 ms carry several percent of rounding.
+
+The general suite (`benchmarks/run_general.gene`, 5,000 items), same
+binaries:
+
+| Workload | Gene ms/batch | Python ms/batch | Gene / Python | Speedup over `e7f2cc31` |
+| --- | ---: | ---: | ---: | ---: |
+| integer_loop | 0.297 | 0.183 | 1.62 | 1.28 |
+| closure_dispatch | 1.359 | 0.395 | 3.44 | 1.29 |
+| records | 1.469 | 0.890 | 1.65 | 1.20 |
+| text_index | 5.281 | 1.668 | 3.17 | 1.22 |
+| json_roundtrip | 1.320 | 2.743 | 0.48 | 1.11 |
+| event_replay | 1.547 | 0.629 | 2.46 | 1.18 |
+
+The rest of this section is the first round: release builds of `37bd3631`
+("before") and of the branch at `98f8e870` ("after"). Raw output and
+provenance are in `benchmarks/baselines/2026-11-11-boundary-costs/`.
 
 ### By size
 
@@ -82,9 +131,9 @@ construction is the exception worth watching: it is 1% to 7% slower in every
 round here and 3% slower in the kernel run below, and nothing in this work
 should have touched it.
 
-### Against Python
+### Against Python, after the first round
 
-`benchmarks/run_kernels.gene` at the branch head `98f8e870`, five
+`benchmarks/run_kernels.gene` at `98f8e870`, five
 alternating rounds of fresh processes after one warmup, with the baseline
 binary in each round. Each ratio is the median of the per-round ratios. Times
 are whole milliseconds, so the Python times under 20 ms carry several percent
@@ -187,8 +236,11 @@ need no boundary work against its schema, and that only a checked push has
 written to it since. Whether a value needs boundary work depends on its kind
 alone, and the node still holds the same values, so while the mark holds
 revalidation would change nothing. A push then checks only the new item.
-Every other writer of a node clears the mark. A node with a container
-annotation never gets it and keeps the full validation.
+Every other writer of a node clears the mark. A node holding a container
+never gets it and keeps the full validation. As first written, a node checked
+while still empty kept the mark when a List was pushed into a container rest
+field, so a later change to that List through another reference went
+unreported; section 12 has the fix.
 
 An indexed write, `(set node/3 v)`, had the same shape: it copied the body,
 strengthened every item again and validated the whole node. It now checks
@@ -314,43 +366,205 @@ Tried and not kept:
 The pattern in all three: code added inline to the dispatch loop costs every
 instruction a little, so new fast paths go in out-of-line procs.
 
-## 10. Not done
+## 10. Defects end the process (`--panics:on`)
 
-- The per-instruction costs: instruction size, the dispatch preamble, and the
-  frame and scope traffic of every call (section 9 removed part of the
-  last). These are the remaining 2x to 6x on calls and loops.
-- Message sends, which are still the largest ratio against Python among the
-  constant costs (8.7x).
-- What is left of the boundary kernels is the call itself: an accessor is one
-  call and one return, about 300 ns against Python's 40, and a `(List Int)`
-  parameter still takes the general binder, about 430 ns a call.
-- Annotated calls outside the shapes in section 4.
-- The run-time meaning of a parameterized annotation, which is an owner
-  decision.
+With panics off, Nim assumes that a call into any Nim procedure can raise a
+Defect (`canRaiseConservative`). So every callee loads the thread-local error
+flag, which on macOS is a call to `_tlv_get_addr`, and every call site tests
+it afterwards. That preamble also makes the small helpers in `types.nim` too
+large for clang to inline into the dispatch loop: in the profiles, the
+local-load check (`materializedModuleRefValue`) and the `Value` copy hook were
+calls in every loop.
+
+With panics on, a Defect (an index, overflow, range or field check, an
+assertion, or a `raise` of one) prints its message and ends the process,
+`raises: []` is honoured, and a procedure that cannot raise a
+`CatchableError` loses the preamble. The same source with only the flag
+changed, five paired rounds of the kernels:
+
+| Kernel | Panics off ms | Panics on ms | On / off |
+| --- | ---: | ---: | ---: |
+| fib30 | 127 | 102 | 0.80 |
+| while_arith_3M | 179 | 136 | 0.76 |
+| for_range_3M | 148 | 118 | 0.80 |
+| repeat_3M | 161 | 115 | 0.71 |
+| list_push_index_1M | 163 | 127 | 0.79 |
+| list_push_for_1M | 127 | 97 | 0.79 |
+| map_strkey_500k | 259 | 225 | 0.87 |
+| field_rw_2M | 334 | 265 | 0.80 |
+| alloc_record_1M | 249 | 208 | 0.84 |
+| send_2M | 486 | 398 | 0.81 |
+| closure_2M | 297 | 231 | 0.78 |
+| str_interp_500k | 130 | 116 | 0.89 |
+| float_3M | 182 | 140 | 0.78 |
+| map_literal_1M | 200 | 165 | 0.82 |
+| accessor_10k_records_200k | 60 | 50 | 0.84 |
+| store_10k_records_200k | 38 | 29 | 0.76 |
+| typed_list_param_1k_500k | 209 | 161 | 0.77 |
+| field_write_2M | 163 | 124 | 0.76 |
+| typed_call_3M | 284 | 224 | 0.78 |
+
+Every kernel was faster in every round, the results were identical, and the
+binary is 1.2 MB smaller. In the profiles of the panics build, the two helpers
+above are inlined and the flag reads halve.
+
+What it changes. Gene never recovered from a Defect: the dispatch loop and the
+CLI catch only Gene's own exception types, so an uncaught Defect already ended
+the program with the same message and exit status 1. Three things differ:
+
+- Code that caught a Defect on purpose. There were four: three tested whether
+  an integer fits in int64 by catching `intVal`'s FieldDefect, and one asked a
+  value that might not be a type for its type name. They now test first
+  (`tryIntVal`, `isNamedType`). The other catch-alls in the tree (`except:`
+  and `except Exception`) clean up and re-raise, or sit in destructors; they
+  still catch every `CatchableError`.
+- `std/unittest` caught a Defect and failed one test; now the test binary
+  stops at the first one. The one test that expected a Defect
+  (`test_values`, `expect FieldDefect`) checks `tryIntVal` instead. The
+  language specs had stopped there, after 124, before the four sites were
+  fixed.
+- `finally` blocks and destructors do not run on the way out of a Defect.
+
+The switch is in `config.nims`, so every build and test uses it, and
+`--version` reports it (`panics=true`).
+
+## 11. Three costs that belonged to one operation each
+
+Fresh profiles of the panics build found three costs that each belong to one
+operation. Each was measured in seven paired rounds against the panics build,
+and each of the three kernels was faster in all seven.
+
+- **A `(List Int)` parameter closed its annotation twice per call**
+  (`4d61de2d`, `typed_list_param` 0.28 of the time). `closeTypeExpr` ran from
+  the boundary check and again from the adaptation, 37% of such a call, and
+  for built-in names it always gives back the annotation itself. A List that
+  the item-kind cache of section 3 already accepts now needs no boundary work,
+  the same test `bareScalarSatisfied` makes for a scalar, at call, field and
+  construction boundaries. Such a parameter also takes the scalar binder and
+  the scopeless convention, with that test made per call; anything else takes
+  the general path. A typed node's checked mark keeps the kind-only test,
+  since a List's answer can change behind the node.
+- **`$size` of a List looked for an override by name** (`a6890800`, accessor
+  0.69). It resolved the receiver type's `size` message and the running op
+  through two string lookups, a quarter of the accessor kernel. A List
+  dispatches `size` to the built-in `List` type, whose `size` message is the
+  native itself (one process-wide value, the one `$size` is bound to), and a
+  built-in type's messages never change. So a List answers at once. `$empty?`
+  likewise.
+- **Construction copied the field list** (`493a955a`, construction 0.86).
+  `for f in fields` over the borrowed schema made Nim copy the whole
+  `seq[TypeField]`, every name in it, on each construction, and destroy the
+  copy after. The loops index the list in place, as the other schema loops in
+  `vm.nim` already did.
+
+## 12. Stores, field writes, and a bug
+
+- **Binding stores** (`1196a794`). Every store asked whether its
+  Application holds a strict error registration, reaching the Application
+  through a type test (`of`). A process-wide flag, set when the first
+  registration is added and never cleared, answers with one load until a
+  program makes one.
+- **Field writes of unmanaged values** (`c324a6f5`). A `set` through a path
+  made three calls that return at once for nil, a Bool, a small Int, a Char, a
+  Symbol or an immediate Float: the borrowed-authority check, strengthening of
+  weak functions and the record of a stored function. Only a managed value
+  makes them now. The path writer is still the one seam every `set` goes
+  through.
+
+Against the commit before them, in two runs of seven paired rounds: the
+store change made plain loops 6% to 7% faster in one run and 2% to 4% in the
+other; with the field-write change, field writes were 3% to 6% faster and
+sends and typed calls 2%, and `fib30` was 1% slower in six rounds of seven.
+That is close to what two builds of the same source differ by, so these two
+are kept for their mechanism as much as for the measurement.
+
+Tried and not kept: `assignSlot`'s plain case written into the dispatch loop.
+Section 10 suggests the inline cost of section 9 came from the error-flag test
+each inlined copy carried. Not all of it did: with panics on, the inline store
+made the loops slower than the same source with the call (`while_arith` 6%,
+`repeat` 4%, list push and index 3%, map lookups 2%), in five to seven rounds
+of seven. New fast paths still go out of line.
+
+**A bug from section 2** (`1f2c89fa`). A push checks only its new item while
+the node carries the checked mark, and the mark rests on every stored value
+passing its annotation by kind alone. A node checked while still empty kept
+the mark when a List was pushed into a rest field whose type names a
+container, such as `^body [IntList...]` with `IntList` an alias of
+`(List Int)`. A later change to that List through another reference was then
+not reported by the next push, as it is on `37bd3631`. Such a push now checks
+its item and clears the mark, and the next write validates the whole node.
+The test's expected value is the base runtime's output.
+
+## 13. Not done
+
+The first round's version of this section said the accessor kernel's
+remaining cost was the call itself. It was not: a quarter of it was `$size`
+looking for an override (section 11). What the profiles show is left,
+largest first:
+
+- **The scope of every call.** A closure call or a send acquires a pooled
+  scope, inherits its context, binds its slots, seeds the Self type and
+  releases it all on return, 11% to 18% of those kernels. Releasing drops the
+  parent reference, a cycle-candidate registration (`rememberCycle`) per call.
+  The scopeless convention covers leaf functions that read only their
+  parameters; extending it to closures that only read their captures, and to
+  messages, is the next step for `closure_2M` (4.6x) and `send_2M` (6.8x).
+- **The frame of every call.** `frames.add` builds a sixteen-field `Frame`
+  and `frames.setLen` destroys it, about 18% of `fib30`. Reusing frame slots in
+  place means changing every one of the hundred-odd frame-stack operations in
+  `vm.nim`. A smaller step: the generated `Frame` destructor makes six release
+  calls even after the return has moved the registers back, most of them on
+  nil fields, about 6% of `fib30`; a destructor that tests them first would
+  save most of that.
+- **Field writes** (7.6x). What is left is the generic path writer and the
+  checked prop writer. A per-site field slot cache, like the send cache, would
+  answer most of it.
+- **Helpers left out of line.** `kind`, the `Value` copy hook and
+  `smallIntAddKnown` are marked inline, but clang leaves them as calls in
+  `runLoop`, 3% to 8% together.
+- Instruction size, and the dispatch preamble, which carries the execution
+  limit contract (`tests/test_poll_window.nim`).
+- Annotated calls outside the admitted shapes, and the run-time meaning of a
+  parameterized annotation, which is an owner decision.
 
 ## Verification
 
-The gate was run on a copy of the tree at `98f8e870`, the last code commit:
-`test_all` in the verification build, the language specs, the poll-window
-test, `test_rc` and `test_value_backend_boundaries`.
+Second round. The full set ran on a copy of the tree at `46b80b9d`, the
+panics commit, and was compared with the same suites on `e7f2cc31`, the
+commit before it. The core suites ran again on `c324a6f5`, the last code
+commit, and the Harness suite on `c324a6f5` and `37bd3631` side by side.
 
-- `test_all` with `-d:geneInertStampVerify`: 1,929 pass. Five fail, the same
-  five that fail on `37bd3631` (section 8). No stamp was contradicted by the
-  reference scan.
-- `spec_runner`: 942 pass.
-- `test_poll_window`: 8 pass. Samples still land on the same instructions
-  with windowed and exact polling.
-- `test_rc` and `test_value_backend_boundaries`: the failures are the same
-  54 and 1 as on `37bd3631`, compared by name.
+- `test_all` with `-d:geneInertStampVerify`: 1,933 pass at `c324a6f5`
+  (four more than before, the new fast-path tests). Five fail, the same five
+  that fail on `37bd3631` (section 8). No stamp was contradicted.
+- `spec_runner`: 942 pass at both commits. Before the four Defect catches
+  were fixed, the panics build stopped after 124.
+- `test_poll_window`: 8 pass at both.
+- `test_rc` (`-d:geneRcStats`) and `test_value_backend_boundaries`: the
+  same 54 and 1 failures as on `e7f2cc31`, compared by name.
+- The native ABI, release, package, timezone, process and exec suites of
+  `nimble test` pass, as do the Python tests except `test_genex_tls_package`,
+  whose wrong-CA handshake times out on `e7f2cc31` too. The wasm test fails
+  the same three cases on both: they still expect `void`, which the nil/void
+  change removed.
+- The Harness suite (`examples/gene-harness`, `gene test`): 740 pass and 130
+  fail on `37bd3631`, `46b80b9d` and `c324a6f5`, and the failing tests are
+  the same by name. Almost all stop on the collection migration that is not
+  finished in Harness code: `for` over a Map (65) or a Node (24), and `$size`
+  of a Map (14). Several more fail after a host did not start for the same
+  reason, when the test helper awaits the host process a second time.
 
-Each fast path was also run against the baseline binary on edge cases
-(errors, aliasing, frozen values, big integers, integer limits, arity) with
-identical output; those cases are the expected values in the test files.
+At `c324a6f5` the AtomicArc configuration type-checks (`nim check
+--mm:atomicArc`) and the wasm test passes the same 45 cases and fails the same
+three. The AtomicArc suites were not run, nor was ASan.
 
-The AtomicArc and wasm configurations type-check (`nim check`). Their test
-suites were not run, nor was ASan, nor the Harness suite. The changes to instruction counts in section 6 move scheduler
-slice boundaries, which is the kind of change that has exposed latent races
-in Harness code before, so that suite should run before a merge.
+First round, at `98f8e870`: `test_all` in the verification build passed
+1,929 with the same five failures, the specs 942, the poll-window test 8, and
+`test_rc` and `test_value_backend_boundaries` failed the same 54 and 1 as on
+`37bd3631`. Each fast path in both rounds was also run against the binary
+before it on edge cases (errors, aliasing, frozen values, big integers,
+integer limits, arity) with identical output; those cases are the expected
+values in the test files.
 
 ## Reproducing
 
@@ -365,3 +579,11 @@ nim c -r -d:geneScopeReuseTests -d:geneInertStampTests -d:geneInertStampVerify \
 
 The "By size" table alternates `boundaries.gene` on the two binaries by hand;
 `boundaries.tsv` holds the rows with the round and the binary in front.
+
+The paired rounds of sections 10 to 12:
+
+```sh
+P=benchmarks/baselines/2026-11-12-panics/pairs
+bash $P/pairn.sh 7 out.tsv benchmarks/kernels/kernels.gene A=path/to/gene-a B=path/to/gene-b
+python3 $P/summn.py out.tsv A B
+```

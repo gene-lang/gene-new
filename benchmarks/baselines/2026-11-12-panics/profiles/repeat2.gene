@@ -1,0 +1,2 @@
+(fn bench [n] (var total 0) (repeat i in n (set total (+ total 1))) total)
+(bench 3000000000)

@@ -1,0 +1,4 @@
+(fn len_typed [xs : (List Int)] 1)
+(fn bench [n xs] (var total 0) (repeat i in n (set total (+ total (len_typed xs)))) total)
+(var ints []) (repeat i in 1000 (ints .push i))
+(bench 300000000 ints)
