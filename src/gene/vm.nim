@@ -2033,10 +2033,18 @@ template ownApplicationView(scope: Scope): Application =
   ## round trip and a cycle-candidate registration just to read one field.
   cast[Application](cast[pointer](scope.application))
 
+var gStrictErrorRegistered: bool
+  ## Set once any Application adds a strict error registration, and never
+  ## cleared. Until then no binding store has a registration to check, and
+  ## `checkStrictBindingUpdate` answers from this one load instead of reaching
+  ## the scope's Application through a type test.
+
 proc checkStrictBindingUpdate(scope: Scope, name: string,
                               value: Value) {.inline.} =
   ## Runs before every binding store. Almost no program holds a strict error
   ## registration, so that test stays at the call site.
+  if not atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
+    return
   if scope == nil or scope.application == nil:
     return
   if scope.hasOwnApplication and
