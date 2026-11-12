@@ -8592,11 +8592,19 @@ proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
       # failure leaves the node, and its checked mark, unchanged.
       let rest {.cursor.} = bodyFields[bodyFields.len - 1]
       let index = args[0].body.len
-      let checked =
-        if bareScalarSatisfied(rest.typeExpr, item): item
-        else: adaptBodyFieldBoundary(typ.typeName, index, rest.typeExpr, item,
-                                     rest.typeBodyFieldScope(typ.typeScope))
-      args[0].pushCheckedNodeBody(checked)
+      if bareScalarSatisfied(rest.typeExpr, item):
+        args[0].pushCheckedNodeBody(item)
+        return item
+      # Checking the new item alone is still exact for this push. But the
+      # mark rests on every stored value passing by its kind alone
+      # (`nodePartsChecked`), and this one does not: a List checked against
+      # `(List Int)` now can change behind the node. Keeping the mark let the
+      # next push skip the validation that reports such a List. So this push
+      # clears it, and the next write validates the whole node.
+      let checked = adaptBodyFieldBoundary(typ.typeName, index, rest.typeExpr,
+                                           item,
+                                           rest.typeBodyFieldScope(typ.typeScope))
+      args[0].pushNodeBody(checked)
       return checked
     var props = copyEntries(args[0].props)
     var body = copyItems(args[0].body)

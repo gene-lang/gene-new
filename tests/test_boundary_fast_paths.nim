@@ -21,6 +21,17 @@ suite "typed node push checks only the new item when that is exact":
       [(try (b .push 2) catch TypeError $err/where) b]""",
       """["field 'xs' for B" ((type B) ^xs [1 "bad"] 1)]"""
 
+  test "an alias that broke a pushed container item is still reported":
+    # The node was checked while empty; pushing a List kept the mark, so the
+    # next push skipped the validation that reports the List changed behind
+    # it. The expected value is the base runtime's.
+    fastCk """
+      (alias IntList (List Int))
+      (type L ^props {^n Int} ^body [IntList...])
+      (let n (L ^n 1)) (let a [1]) (n .push a) (a .push "bad")
+      [(try (n .push [2]) catch TypeError $err/where) n]""",
+      """["body field 0 for L" ((type L) ^n 1 [1 "bad"])]"""
+
   test "a rejected item leaves the node as it was and later pushes work":
     fastCk """
       (type Bag ^props {^x Int} ^body [Int...])
