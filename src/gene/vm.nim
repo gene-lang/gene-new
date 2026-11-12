@@ -7633,6 +7633,13 @@ proc requireNode(name: string, value: Value) =
 
 proc biListSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("size", args)
+  # A List dispatches `size` to the built-in `List` type, whose `size` message
+  # is this native itself: `sizeFn`, the one process-wide value `$size` is
+  # bound to. A built-in type's messages never change after construction, so a
+  # List has no override to look for, and resolving the type and the running
+  # op by name was a quarter of a loop that only counts.
+  if args[0].kind == vkList:
+    return newInt(args[0].listItems.len)
   let scope = if call == nil: nil else: call.dispatchScope
   let runningOp = builtinBinding(scope, "size")
   let direct = typeDirectOverride("size", args[0], [], scope, runningOp)
@@ -7659,6 +7666,9 @@ proc biListSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
 proc biListEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("empty?", args)
+  # As in `biListSize`: `List`'s `empty?` message is `emptyFn`, this native.
+  if args[0].kind == vkList:
+    return newBool(args[0].listItems.len == 0)
   let scope = if call == nil: nil else: call.dispatchScope
   let runningOp = builtinBinding(scope, "empty?")
   let direct = typeDirectOverride("empty?", args[0], [], scope, runningOp)

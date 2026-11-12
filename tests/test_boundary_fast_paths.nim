@@ -371,6 +371,24 @@ suite "direct construction reads its named arguments in place":
       """"cannot mutate immutable Node" """ &
       """"enum Color is not directly constructible; use a variant"]"""
 
+suite "size and empty? of a List skip the override lookup":
+  test "a List, a send, a type with its own messages, and other receivers":
+    fastCk """
+      (type Bag ^props {^n Int} (message size [] 42) (message empty? [] true))
+      (var xs []) (repeat i in 5 (xs .push i))
+      [($size xs) ($empty? xs) ($size []) ($empty? []) (xs .size) (xs .empty?)
+       ($size (Bag ^n 1)) ($empty? (Bag ^n 1))
+       (try ($size {^a 1}) catch Error $err_msg)
+       (try ($empty? 3) catch Error $err_msg)
+       (try ($size) catch Error $err_msg)
+       (try ($size (quote (a 1 2))) catch Error $err_msg)]""",
+      """[5 false 0 true 5 false 42 true """ &
+      """"no message 'size' on Map; use $map_size for a Map's entries" """ &
+      """"empty? expects a list-like value, got Int" """ &
+      """"size expects 1 argument, got 0" """ &
+      """"no message 'size' on Node; use value/.body for its body items """ &
+      """or $map_size for its props"]"""
+
 suite "an indexed read of a List through a local index":
   test "in range, out of range, from the end, and other targets":
     fastCk """
