@@ -8383,6 +8383,83 @@ proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].setNodeBody(body)
   args[1]
 
+proc typedNodePartsSettled(node: Value): bool =
+  ## Whether `validateTypedNodeParts` would accept this typed node's props and
+  ## body as they are and change none of them. True when every declared field
+  ## is present or optional, no other prop exists, the body has the length its
+  ## schema asks for, and every stored value is one its annotation needs no
+  ## boundary work for. Anything else, a container annotation above all, keeps
+  ## the full validation.
+  let typ {.cursor.} = node.borrowedNodeHead
+  if typ.kind != vkType or typ.isEnumType or typ.isNativeWrapperType:
+    return false
+  template settled(typeExpr, value: Value): bool =
+    typeExpr.kind == vkNil or bareScalarSatisfied(typeExpr, value)
+  template bodyFields: untyped = typ.borrowedTypeBodyFields
+  let last = bodyFields.len - 1
+  var restAt = -1
+  for i in 0 .. last:
+    if bodyFields[i].rest:
+      restAt = i
+      break
+  if restAt < 0:
+    if node.body.len != bodyFields.len:
+      return false
+  elif restAt != last or node.body.len < restAt:
+    return false
+  var present = 0
+  template fields: untyped = typ.borrowedTypeFields
+  for i in 0 ..< fields.len:
+    var stored: Value
+    if node.props.tryGetById(fields[i].nameId, stored):
+      if not settled(fields[i].typeExpr, stored):
+        return false
+      inc present
+    elif not fields[i].optional:
+      return false
+  if present != node.props.len:
+    return false
+  for i in 0 ..< node.body.len:
+    if not settled(bodyFields[min(i, last)].typeExpr, node.body[i]):
+      return false
+  true
+
+proc typedNodeChecked(node: Value): bool =
+  ## The node carries the checked mark, or earns it now. While it holds,
+  ## validating the node again would change nothing (see `nodePartsChecked`).
+  if node.nodePartsChecked:
+    return true
+  if not typedNodePartsSettled(node):
+    return false
+  node.markNodePartsChecked()
+  true
+
+proc setCheckedTypedBodyItem(target: Value, index: int, value: Value,
+                             stored: var Value): bool {.noinline.} =
+  ## The indexed write into a typed node's body, when checking the new item
+  ## alone is exact. The full route copies the body, strengthens every item
+  ## again and validates the whole node. With the parts checked the
+  ## validation would change nothing, and when every body field is an
+  ## exact-kind scalar the items already there hold nothing to strengthen. So
+  ## both conditions are required. False when the full route must run.
+  let typ {.cursor.} = target.borrowedNodeHead
+  if typ.kind != vkType or typ.isEnumType:
+    return false
+  template bodyFields: untyped = typ.borrowedTypeBodyFields
+  var kind: ValueKind
+  for i in 0 ..< bodyFields.len:
+    if not bareScalarKind(bodyFields[i].typeExpr, kind):
+      return false
+  if not typedNodeChecked(target):
+    return false
+  let field {.cursor.} = bodyFields[min(index, bodyFields.len - 1)]
+  stored =
+    if bareScalarSatisfied(field.typeExpr, value): value
+    else: adaptBodyFieldBoundary(typ.typeName, index, field.typeExpr, value,
+                                 field.typeBodyFieldScope(typ.typeScope))
+  target.setCheckedNodeBodyItem(index, stored)
+  true
+
 proc setMutableChild(target, segment, value: Value): Value =
   ## The one checked in-place mutation seam (design §12.1). `set` calls only
   ## this, so a write cannot skip a gate by taking a different route, and the
@@ -8441,10 +8518,13 @@ proc setMutableChild(target, segment, value: Value): Value =
         # reimplementing it — that writer already validates detached parts and
         # publishes atomically, and duplicating the sequence here corrupted the
         # heap whenever the validation raised.
-        body = copyItems(target.body)
-        body[index] = stored
-        discard biNodeSetBodyBang([target, newList(body)])
-        result = target.body[index]
+        if setCheckedTypedBodyItem(target, index, value, stored):
+          result = stored
+        else:
+          body = copyItems(target.body)
+          body[index] = stored
+          discard biNodeSetBodyBang([target, newList(body)])
+          result = target.body[index]
       else:
         target.setNodeBodyItem(index, stored)
         result = stored
@@ -8481,43 +8561,6 @@ proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
                            strengthenStoredValue(stack[baseIndex + segCount + 1]))
   noteFunctionStore(target, result)
 
-proc typedNodePartsNeedNoBoundary(node: Value): bool =
-  ## Whether `validateTypedNodeParts` would accept this typed node's props and
-  ## body as they are, changing none of them, and would accept one more body
-  ## item in the rest position if that item passes. True when the type ends in
-  ## a rest body field that the body has reached, every declared field is
-  ## present or optional, no other prop exists, and every stored value is one
-  ## its annotation needs no boundary work for. Anything else, a container
-  ## annotation above all, keeps the full validation.
-  let typ {.cursor.} = node.borrowedNodeHead
-  if typ.kind != vkType or typ.isEnumType or typ.isNativeWrapperType:
-    return false
-  template settled(typeExpr, value: Value): bool =
-    typeExpr.kind == vkNil or bareScalarSatisfied(typeExpr, value)
-  template bodyFields: untyped = typ.borrowedTypeBodyFields
-  let fixed = bodyFields.len - 1
-  if fixed < 0 or not bodyFields[fixed].rest or node.body.len < fixed:
-    return false
-  for i in 0 ..< fixed:
-    if bodyFields[i].rest:
-      return false
-  var present = 0
-  template fields: untyped = typ.borrowedTypeFields
-  for i in 0 ..< fields.len:
-    var stored: Value
-    if node.props.tryGetById(fields[i].nameId, stored):
-      if not settled(fields[i].typeExpr, stored):
-        return false
-      inc present
-    elif not fields[i].optional:
-      return false
-  if present != node.props.len:
-    return false
-  for i in 0 ..< node.body.len:
-    if not settled(bodyFields[min(i, fixed)].typeExpr, node.body[i]):
-      return false
-  true
-
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
@@ -8530,20 +8573,19 @@ proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
     if args[0].head.isNativeWrapperType:
       rejectNativeWrapperWrite("Node/push cannot modify " &
                                args[0].head.typeName)
-    if args[0].nodePartsChecked or typedNodePartsNeedNoBoundary(args[0]):
+    let typ {.cursor.} = args[0].borrowedNodeHead
+    template bodyFields: untyped = typ.borrowedTypeBodyFields
+    if not typ.isEnumType and bodyFields.len > 0 and
+        bodyFields[bodyFields.len - 1].rest and typedNodeChecked(args[0]):
       # Validating the whole node would leave what it holds as it is, so only
       # the new item is checked. The check runs before the node is touched: a
       # failure leaves the node, and its checked mark, unchanged.
-      let typ {.cursor.} = args[0].borrowedNodeHead
-      template bodyFields: untyped = typ.borrowedTypeBodyFields
       let rest {.cursor.} = bodyFields[bodyFields.len - 1]
       let index = args[0].body.len
       let checked =
         if bareScalarSatisfied(rest.typeExpr, item): item
         else: adaptBodyFieldBoundary(typ.typeName, index, rest.typeExpr, item,
                                      rest.typeBodyFieldScope(typ.typeScope))
-      if not args[0].nodePartsChecked:
-        args[0].markNodePartsChecked()
       args[0].pushCheckedNodeBody(checked)
       return checked
     var props = copyEntries(args[0].props)

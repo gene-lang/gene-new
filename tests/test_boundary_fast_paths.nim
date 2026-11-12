@@ -278,3 +278,51 @@ suite "a List boundary with a scalar item type":
       (fn outer [] (var q 2) (fn local [] q) (let hs [1]) (total hs) (hs .push local) hs)
       (try (total (outer)) catch TypeError $err_msg)""",
       """"parameter 'xs' expected (List Int), got (List Any)""""
+
+suite "indexed writes into a typed node's body":
+  test "a write checks its own position and keeps the rest":
+    fastCk """
+      (type Pair ^props {^x Int} ^body [Int Str])
+      (type Bag ^props {^x Int} ^body [Int...])
+      (let p (Pair ^x 1 2 "s"))
+      (set p/0 5) (set p/1 "t")
+      (let b (Bag ^x 1 0 1 2))
+      (let last (set b/-1 99))
+      [p last b
+       (try (set p/0 "bad") catch TypeError $err_msg)
+       (try (set p/1 5) catch TypeError $err_msg)
+       (try (set p/2 5) catch Error $err_msg)
+       (try (set b/1 "bad") catch TypeError $err_msg)
+       b]""",
+      """[((type Pair) ^x 1 5 "t") 99 ((type Bag) ^x 1 0 1 99) """ &
+      """"body field 0 for Pair expected Int, got Str" """ &
+      """"body field 1 for Pair expected Str, got Int" """ &
+      """"set index out of range: 2" """ &
+      """"body field 1 for Bag expected Int, got Str" """ &
+      """((type Bag) ^x 1 0 1 99)]"""
+
+  test "a field broken through an alias is still reported":
+    fastCk """
+      (type L ^props {^xs (List Int)} ^body [Int...])
+      (let xs [1]) (let l (L ^xs xs 1 2)) (xs .push "bad")
+      (try (set l/0 5) catch TypeError $err_msg)""",
+      """"field 'xs' for L expected (List Int), got (List Any)""""
+
+  test "an untyped body keeps the full route, which strengthens its items":
+    fastCk """
+      (type A ^props {^x Int} ^body [Any...])
+      (fn mk [] (var q 4) (fn local [] q) (let a (A ^x 1 local 2)) (set a/1 3) a)
+      (let a (mk))
+      [(a/0) a/1]""", "[4 3]"
+
+  test "a frozen node, and many writes":
+    fastCk """
+      (type Bag ^props {^x Int} ^body [Int...])
+      (let frozen ($freeze (Bag ^x 1 1 2)))
+      (let b (Bag ^x 1))
+      (repeat i in 3000 (b .push i))
+      (repeat i in 3000 (set b/%i (* i 2)))
+      (var total 0)
+      (repeat i in 3000 (set total (+ total b/%i)))
+      [(try (set frozen/0 1) catch Error $err_msg) total b/2999]""",
+      """["cannot mutate immutable Node" 8997000 5998]"""

@@ -5597,6 +5597,19 @@ proc pushCheckedNodeBody*(v: Value, item: Value) =
   noteInertStore(p.inertEpoch, item)
   p.body.add item
 
+proc setCheckedNodeBodyItem*(v: Value, index: int, item: Value) =
+  ## `setNodeBodyItem` for an item the caller has already checked against the
+  ## schema of a node whose parts are checked; the node stays checked.
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  if index < 0 or index >= p.body.len:
+    raise newException(GeneError, "node body index out of range: " & $index)
+  noteInertStore(p.inertEpoch, item)
+  p.body[index] = item
+
 proc setNodeBodyItem*(v: Value, index: int, item: Value) =
   if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
