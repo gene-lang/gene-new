@@ -2497,6 +2497,14 @@ proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs,
                   site: Value = NIL): Value
 proc constructTypedInstance(callee: Value, args: openArray[Value],
                             named: NamedArgs, immutable = false): Value
+proc constructTypedInstanceParts(callee: Value, args: openArray[Value],
+                                 names: openArray[string],
+                                 values: openArray[Value],
+                                 immutable: bool): Value
+proc constructAtCallSite(callee: Value, chunk: Chunk, at: int,
+                         names: openArray[string],
+                         namedValues, args: openArray[Value],
+                         constructed: var Value): bool {.noinline.}
 proc newNativeWrapper*(wrapperType: Value,
                        props: openArray[(string, Value)]): Value
 proc registerNativeTypeIdentity*(identity: string, typ: Value)
@@ -22442,6 +22450,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               strunc(calleeIndex)
               spush fastNative.value
               continue
+          if callee.kind == vkType:
+            var constructed: Value
+            if constructAtCallSite(callee, chunk, ip - 1, inst[].names,
+                stack.toOpenArray(calleeIndex + 1, calleeIndex + namedCount),
+                stack.toOpenArray(argsStart, sp - 1), constructed):
+              strunc(calleeIndex)
+              spush constructed
+              continue
           var named: NamedArgs
           if namedCount > 0:
             named = namedArgsFromStack(inst[].names, stack, calleeIndex + 1)
@@ -33795,12 +33811,41 @@ proc validateConstructedInstance(typ, instance: Value) =
     instance.setNodeProp(key, value)
   instance.setNodeBody(body)
 
+proc constructAtCallSite(callee: Value, chunk: Chunk, at: int,
+                         names: openArray[string],
+                         namedValues, args: openArray[Value],
+                         constructed: var Value): bool {.noinline.} =
+  ## Direct construction, `(T ^x 1 ...)`, from the call instruction at `at`:
+  ## what applyCall's type branch does when it reaches constructTypedInstance,
+  ## with the named arguments read in place. Building NamedArgs copied the
+  ## instruction's names, one string allocation each. False, with nothing
+  ## done, for every other type callee. Out of line, like runSetPath, to keep
+  ## the dispatch loop small.
+  if callee.isEnumType or callee.typeContractPending or
+      callee.typeNativeCtor.kind != vkNil:
+    return false
+  let site = chunk.callSites.getOrDefault(at, NIL)
+  constructed = constructTypedInstanceParts(callee, args, names, namedValues,
+    immutable = site.kind == vkNode and site.nodeImmutable)
+  true
+
 proc constructTypedInstance(callee: Value, args: openArray[Value],
                             named: NamedArgs, immutable: bool): Value =
+  if named.values.len == named.names.len:
+    constructTypedInstanceParts(callee, args, named.names, named.values, immutable)
+  else:
+    constructTypedInstanceParts(callee, args, named.names,
+      named.inlineValues.toOpenArray(0, named.names.len - 1), immutable)
+
+proc constructTypedInstanceParts(callee: Value, args: openArray[Value],
+                                 names: openArray[string],
+                                 values: openArray[Value],
+                                 immutable: bool): Value =
   ## Direct typed-data construction (design §7.1.1): map named arguments to
   ## props and positional arguments to body fields, validate against the full
   ## schema, stamp the head with the type. Never runs a ctor — `(T ...)` is
-  ## the canonical replay-safe data form.
+  ## the canonical replay-safe data form. `names` and `values` are the named
+  ## arguments, read in place: a call site passes its own instruction's names.
   if callee.isTypeAlias:
     raise newException(GeneError,
       "type alias '" & callee.typeName & "' is not constructible; it names " &
@@ -33861,13 +33906,17 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
       body.add adaptRefBodyField(callee.typeName, i,
                              restType.typeExpr, args[i], fieldScope)
   var props = initPropTable()
-  props.reserve(min(named.len, fields.len))
+  props.reserve(min(names.len, fields.len))
   var matched = 0
   for f in fields:
-    let argIdx = named.argIndex(f.name)
+    var argIdx = -1
+    for i in 0 ..< names.len:
+      if names[i] == f.name:
+        argIdx = i
+        break
     if argIdx >= 0:
       inc matched
-      let value = named.valueAt(argIdx)
+      let value = values[argIdx]
       if plainField(f.typeExpr, value):
         props.putById(f.nameId, value)
       else:
@@ -33880,8 +33929,8 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
         "missing required field '" & f.name & "' for " & callee.typeName)
   # Field names are distinct, so when every argument was matched none is
   # unknown.
-  if matched != named.len:
-    for key in named.names:
+  if matched != names.len:
+    for key in names:
       var known = false
       for f in fields:
         if f.name == key:

@@ -326,3 +326,36 @@ suite "indexed writes into a typed node's body":
       (repeat i in 3000 (set total (+ total b/%i)))
       [(try (set frozen/0 1) catch Error $err_msg) total b/2999]""",
       """["cannot mutate immutable Node" 8997000 5998]"""
+
+suite "direct construction reads its named arguments in place":
+  test "order, optional fields, bodies and immutable construction":
+    fastCk """
+      (type Pt ^props {^x Int ^y Int})
+      (type Opt ^props {^x Int ^y Str?})
+      (type B ^props {^n Int} ^body [Int Str...])
+      (type Big ^props {^a Int ^b Int ^c Int ^d Int ^e Int ^f Int ^g Int ^h Int ^i Int ^j Int})
+      [(Pt ^x 1 ^y 2) (Pt ^y 2 ^x 1) (Opt ^x 1) (B ^n 1 2 "a" "b") #(Pt ^x 1 ^y 2)
+       (Big ^j 10 ^a 1 ^b 2 ^c 3 ^d 4 ^e 5 ^f 6 ^g 7 ^h 8 ^i 9)]""",
+      """[((type Pt) ^x 1 ^y 2) ((type Pt) ^x 1 ^y 2) ((type Opt) ^x 1) """ &
+      """((type B) ^n 1 2 "a" "b") #((type Pt) ^x 1 ^y 2) """ &
+      """((type Big) ^a 1 ^b 2 ^c 3 ^d 4 ^e 5 ^f 6 ^g 7 ^h 8 ^i 9 ^j 10)]"""
+
+  test "the same errors as before":
+    fastCk """
+      (type Pt ^props {^x Int ^y Int})
+      (type B ^props {^n Int} ^body [Int Str...])
+      [(try (Pt ^x 1) catch Error $err_msg)
+       (try (Pt ^x 1 ^y 2 ^z 3) catch Error $err_msg)
+       (try (Pt ^x 1 ^y "s") catch TypeError $err_msg)
+       (try (B ^n 1) catch Error $err_msg)
+       (try (B ^n 1 2 3) catch TypeError $err_msg)
+       (try (Pt 1 2) catch Error $err_msg)
+       (try (do (let p #(Pt ^x 1 ^y 2)) (set p/x 3)) catch Error $err_msg)
+       (try (do (enum Color red green) (Color)) catch Error $err_msg)]""",
+      """["missing required field 'y' for Pt" "Pt has no field 'z'" """ &
+      """"field 'y' for Pt expected Int, got Str" """ &
+      """"constructing B expects at least 1 body item(s), got 0" """ &
+      """"body field 1 for B expected Str, got Int" """ &
+      """"constructing Pt takes named fields only" """ &
+      """"cannot mutate immutable Node" """ &
+      """"enum Color is not directly constructible; use a variant"]"""
