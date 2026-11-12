@@ -359,3 +359,13 @@ suite "direct construction reads its named arguments in place":
       """"constructing Pt takes named fields only" """ &
       """"cannot mutate immutable Node" """ &
       """"enum Color is not directly constructible; use a variant"]"""
+
+suite "an indexed read of a List through a local index":
+  test "in range, out of range, from the end, and other targets":
+    fastCk """
+      (var xs []) (repeat i in 1000 (xs .push (* i 2)))
+      (fn at [v k] v/%k)
+      (let big 99999999999999999999999)
+      [(at xs 999) (at xs 1000) (at xs -1) (at xs -1000) (at xs -1001) (at [] 0)
+       (at xs 1.0) (at xs big) (at (quote (a 1 2)) 1) (at {^a 1} "a")]""",
+      "[1998 nil 1998 0 nil nil 2 nil 2 1]"

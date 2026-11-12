@@ -20912,15 +20912,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                  (segment.kind == vkString and
                   not segment.strVal.startsWith(".") and
                   not segment.strVal.startsWith("?."))):
-              rejectCallerEnvEscape("selector construction", segment)
+              # An immediate value carries no borrowed authority and no
+              # construction, so the check could only answer no.
+              if segment.isManaged:
+                rejectCallerEnvEscape("selector construction", segment)
               if instructionBudget > 0:
                 dec remainingBudget
               if evalBudget != nil:
                 pollDispatch()
               inc ip
               let argsStart = sp - 2
-              let value = materializedModuleRefValue(
-                scope, staticLookupValue(stack[argsStart], segment))
+              let value =
+                if targetKind == vkList and segment.isSmallInt:
+                  # What staticLookupValue reaches for a List and an Int,
+                  # without its two outer calls.
+                  let found = readIndexedValue(stack[argsStart], segment)
+                  materializedModuleRefValue(scope,
+                    if found.isMissing: NIL else: found)
+                else:
+                  materializedModuleRefValue(
+                    scope, staticLookupValue(stack[argsStart], segment))
               strunc(argsStart)
               spush value
               continue
