@@ -5208,6 +5208,10 @@ proc materializedModuleRefValue(scope: Scope, value: Value): Value {.inline.} =
   ## The overwhelmingly common path is one nil pointer check. Only a module
   ## currently carrying unresolved structural slots pays for inspecting the
   ## loaded value itself.
+  ##
+  ## Making the check a template at the call sites removed the call, but put
+  ## sixteen copies of it into the dispatch loop, and plain loops were 5% to
+  ## 7% slower in every paired round while calls were faster. It stays a proc.
   if scope.moduleRefs == nil or scope.moduleRefs.pendingStructural == 0 or
       not value.isPendingModuleRef:
     return value
@@ -19172,21 +19176,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curFnName = f.fnName
     curFrameKind = f.kind
     if f.extra == nil:
-      curInitializationLease = nil
-      curEnsureValue = NIL
-      curEnsureBody = nil
-      curEnsureScope = nil
-      curPendingError = nil
-      curPendingPanic = nil
-      curPendingCancel = nil
-      curPendingReturn = nil
-      curForItems = @[]
+      # Every return runs this, and on an ordinary return each register here
+      # already holds its default. Assigning the default anyway is not free:
+      # each managed type's assignment is an out-of-line sink hook, which also
+      # reads the thread's error flag. So a register is written only when it
+      # holds something else.
+      if curInitializationLease != nil: curInitializationLease = nil
+      if curEnsureValue.bits != NIL.bits: curEnsureValue = NIL
+      if curEnsureBody != nil: curEnsureBody = nil
+      if curEnsureScope != nil: curEnsureScope = nil
+      if curPendingError != nil: curPendingError = nil
+      if curPendingPanic != nil: curPendingPanic = nil
+      if curPendingCancel != nil: curPendingCancel = nil
+      if curPendingReturn != nil: curPendingReturn = nil
+      if curForItems.len != 0: curForItems = @[]
       curForIndex = 0
-      curForStream = NIL
-      curForPattern = NIL
-      curForBody = nil
-      curOwnedScope = nil
-      curNamespaceName = ""
+      if curForStream.bits != NIL.bits: curForStream = NIL
+      if curForPattern.bits != NIL.bits: curForPattern = NIL
+      if curForBody != nil: curForBody = nil
+      if curOwnedScope != nil: curOwnedScope = nil
+      if curNamespaceName.len != 0: curNamespaceName = ""
     else:
       curInitializationLease = f.extra.initializationLease
       curEnsureValue = f.extra.ensureValue
