@@ -12,4 +12,5 @@ current behavior. Open designs live in [proposals](../proposals/README.md).
 | [General-purpose runtime optimization](general-runtime-optimization.md) | Lower ordinary application overhead (2026-10-10 and 2026-10-11). | `benchmarks/baselines/2026-10-1[01]-general-runtime` |
 | [Pooled call-scope metadata](scope-pool-reset-investigation.md) | Investigation and fix of a finding from that work. | `tests/fixtures/scope_pool_metadata_probe.nim` |
 | [Typed boundaries and stdlib dispatch](types-stdlib-optimization.md) | Cheaper type-contract checks and standard-library calls (2026-10-14). | `benchmarks/baselines/2026-10-14-types-stdlib` |
+| [Boundary costs that grew with the data](boundary-costs.md) | Returns, stores, typed-node pushes and `(List T)` checks no longer scale with the data; field writes, range loops and annotated leaf calls (2026-11-11). | `benchmarks/baselines/2026-11-11-boundary-costs` |
 | [Harness computer use and media](harness-computer-media.md) | Computer use, screenshots and uploads in the Harness, with its [verification record](harness-computer-media-verification.md). | |
