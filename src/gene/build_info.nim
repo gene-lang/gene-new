@@ -30,5 +30,6 @@ proc geneBuildInfo*(): string =
   "Gene " & GeneVersion & " (" & GeneBuildMode & "; " & hostOS & "/" &
     hostCPU & "; Nim " & NimVersion & "; mm=" & GeneMemoryManager &
     "; nim-opt=" & GeneOptimization &
+    "; panics=" & $defined(nimPanics) &
     "; bounds=" & $compileOption("boundChecks") &
     "; overflow=" & $compileOption("overflowChecks") & ")"

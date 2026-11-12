@@ -2693,9 +2693,7 @@ proc requireNums(name: string, args: openArray[Value]) =
 proc requireInt64(name: string, value: Value): int64 =
   if value.kind != vkInt:
     raise newException(GeneError, name & " expects an Int")
-  try:
-    value.intVal
-  except FieldDefect:
+  if not value.tryIntVal(result):
     raise newException(GeneError, name & " expects an Int in int64 range")
 
 proc biAdd(args: openArray[Value]): Value {.nimcall.} =
@@ -8999,11 +8997,8 @@ proc biBufferToBytes(args: openArray[Value]): Value {.nimcall.} =
   var elemName = ""
   if elemType.kind == vkSymbol:
     elemName = elemType.symVal
-  else:
-    try:
-      elemName = elemType.typeName
-    except FieldDefect:
-      elemName = ""
+  elif elemType.isNamedType:
+    elemName = elemType.typeName
   if elemName != "U8":
     raise newException(GeneError,
       "Buffer/to_bytes requires a (Buffer U8), got " &

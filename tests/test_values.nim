@@ -40,8 +40,13 @@ suite "value — NaN boxing":
     check x.intToString == "9223372036854775808"
     check y.intToString == "-9223372036854775809"
     check intCompare(x, newInt(high(int64))) > 0
-    expect FieldDefect:
-      discard x.intVal
+    # `intVal` would end the process on a FieldDefect (`--panics:on`), so the
+    # out-of-range case is tested through the non-raising forms.
+    var narrowed: int64
+    check not x.tryIntVal(narrowed)
+    check not x.intFitsInt64
+    check newInt(high(int64)).tryIntVal(narrowed)
+    check narrowed == high(int64)
 
   test "non-zero floats are stored directly":
     let x = newFloat(3.5)

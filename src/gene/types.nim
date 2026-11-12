@@ -4954,14 +4954,31 @@ proc intVal*(v: Value): int64 {.inline.} =
   else:
     raise newException(FieldDefect, "value is not an Int")
 
-proc intFitsInt64*(v: Value): bool =
-  if v.kind != vkInt:
-    return false
-  try:
-    discard v.intVal
+proc tryIntVal*(v: Value, value: var int64): bool =
+  ## The int64 an Int holds, without raising: false for a non-Int and for a
+  ## big Int outside int64. Builds run with `--panics:on` (config.nims), where
+  ## `intVal`'s FieldDefect ends the process, so test with this rather than
+  ## catching it.
+  case v.bits shr TAG_SHIFT
+  of INT_TAG:
+    value = decodeSmallInt(v.bits)
     true
-  except FieldDefect:
+  of INT64_TAG:
+    value = cast[ptr GeneInt64](v.bits and PAYLOAD_MASK).i
+    true
+  of OBJECT_TAG:
+    if objData(v).objKind != okBigInt:
+      return false
+    let converted = bigToInt64(BigIntData(objData(v)).value)
+    if converted.ok:
+      value = converted.value
+    converted.ok
+  else:
     false
+
+proc intFitsInt64*(v: Value): bool =
+  var ignored: int64
+  v.tryIntVal(ignored)
 
 proc floatVal*(v: Value): float64 {.inline.} =
   if v.isImmediateFloat:
@@ -7392,15 +7409,19 @@ proc releaseFfiLibraryBorrow*(v: Value) =
       "ffi/Library has no native borrow")
   dec data.nativeBorrows
 
+proc isNamedType*(v: Value): bool {.inline.} =
+  ## Whether `typeName` and `typeParent` accept `v`: a type or an enum.
+  v.tagOf == OBJECT_TAG and objData(v).objKind in {okType, okEnum}
+
 proc typeName*(v: Value): string =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
+  if not v.isNamedType:
     raise newException(FieldDefect, "value is not a Type")
   case objData(v).objKind
   of okEnum: EnumData(objData(v)).name
   else: TypeData(objData(v)).name
 
 proc typeParent*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
+  if not v.isNamedType:
     raise newException(FieldDefect, "value is not a Type")
   if objData(v).objKind == okEnum:
     return NIL
