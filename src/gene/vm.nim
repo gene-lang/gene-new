@@ -799,6 +799,10 @@ var gAnyAnnotationId = -1'i32
   ## Bare Any has no check or adaptation. -1 cannot match an interned symbol
   ## before the built-in surface has initialized the id.
 
+var gListAnnotationId = -1'i32
+  ## The interned `List` head, for `bareScalarListSatisfied`. Filled with
+  ## `gAnyAnnotationId`.
+
 var gRefinementTypes: HashSet[uint64]
   ## Identities of the fixed-width numeric types — `I8`..`U64`, `F32`, `F64`.
   ##
@@ -2589,6 +2593,29 @@ proc bareScalarKind(typeExpr: Value, kind: var ValueKind): bool =
       return true
   false
 
+proc bareScalarListSatisfied(typeExpr, value: Value): bool {.noinline.} =
+  ## `(List T)` for an exact-kind scalar `T`, on a List already known to hold
+  ## only `T`'s kind (`listItemsAllOfKind`). That needs no boundary work:
+  ## `List` and the scalar names are built-ins that `closeTypeExpr` leaves
+  ## symbolic in every scope, the general match reads the same cache, and a
+  ## scalar item type adapts nothing. The general path closed the annotation
+  ## twice per call, a third of a call with this parameter. Props on the
+  ## annotation would be closed too, so an annotation with any takes it still.
+  if typeExpr.kind != vkNode or value.kind != vkList:
+    return false
+  let head = typeExpr.head
+  if head.kind != vkSymbol or head.symbolId != gListAnnotationId or
+      typeExpr.body.len != 1 or typeExpr.props.len != 0:
+    return false
+  var kind: ValueKind
+  bareScalarKind(typeExpr.body[0], kind) and value.listItemsAllOfKind(kind)
+
+template boundaryWorkFree(typeExpr, value: Value): bool =
+  ## `bareScalarSatisfied`, or a `(List T)` that `bareScalarListSatisfied`
+  ## admits. Kept out of `runLoop`, whose loops slow down when code is added.
+  bareScalarSatisfied(typeExpr, value) or
+    bareScalarListSatisfied(typeExpr, value)
+
 proc checkedDefinitionValue(label: string, annotation, value: Value,
                              scope: Scope): Value {.noinline.} =
   ## Keep the scalar test outside the large computed-goto dispatch function.
@@ -2639,7 +2666,7 @@ proc scopelessScalarArgsOk(proto: FunctionProto, stack: seq[Value],
   for i in 0 ..< argCount:
     let annotation {.cursor.} = proto.paramTypes[i]
     if annotation.kind != vkNil and
-        not bareScalarSatisfied(annotation, stack[argsStart + i]):
+        not boundaryWorkFree(annotation, stack[argsStart + i]):
       return false
   true
 
@@ -8201,7 +8228,7 @@ proc setCheckedNodeProp(node: Value, keyId: int32, value: Value): Value =
         continue
       let adapted =
         if fields[i].typeExpr.kind == vkNil or
-            bareScalarSatisfied(fields[i].typeExpr, value):
+            boundaryWorkFree(fields[i].typeExpr, value):
           value
         else:
           adaptFieldBoundary(typ.typeName, fields[i].name, fields[i].typeExpr,
@@ -8414,6 +8441,8 @@ proc typedNodePartsSettled(node: Value): bool =
   if typ.kind != vkType or typ.isEnumType or typ.isNativeWrapperType:
     return false
   template settled(typeExpr, value: Value): bool =
+    # By kind alone (`nodePartsChecked`): not `boundaryWorkFree`, whose List
+    # answer can change behind the node.
     typeExpr.kind == vkNil or bareScalarSatisfied(typeExpr, value)
   template bodyFields: untyped = typ.borrowedTypeBodyFields
   let last = bodyFields.len - 1
@@ -10915,6 +10944,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                     ("Char", vkChar)]:
         gBareScalarAnnotations.add (newSym(entry[0]).symbolId, entry[1])
       gAnyAnnotationId = newSym("Any").symbolId
+      gListAnnotationId = newSym("List").symbolId
   let deviceScope = newScope(result)
   deviceScope.define("buffer", builtinNativeCallFn("device/buffer", biDeviceBuffer,
                                                acceptsNamed = false))
@@ -13378,7 +13408,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     if proto.hasParamTypes and i < proto.paramTypes.len and
         proto.paramTypes[i].kind != vkNil:
       declaredType = proto.paramTypes[i]
-      if not (bareScalarSatisfied(declaredType, value)):
+      if not (boundaryWorkFree(declaredType, value)):
         value = adaptNamedBoundary(blkParameter, proto.params[i],
                               declaredType, value, result)
     result.defineFreshCallSlot(proto.positionalSlots[i], value)
@@ -13391,7 +13421,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     var declaredType = NIL
     if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
       declaredType = p.typeExpr
-      if not (bareScalarSatisfied(declaredType, value)):
+      if not (boundaryWorkFree(declaredType, value)):
         value = adaptNamedBoundary(blkParameter, p.local, declaredType,
                               value, result)
     result.defineFreshCallSlot(proto.namedSlots[i], value)
@@ -13436,7 +13466,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     if proto.hasParamTypes and i < proto.paramTypes.len and
         proto.paramTypes[i].kind != vkNil:
       declaredType = proto.paramTypes[i]
-      if not (bareScalarSatisfied(declaredType, value)):
+      if not (boundaryWorkFree(declaredType, value)):
         value = adaptNamedBoundary(blkParameter, proto.params[i],
                               declaredType, value, result)
     result.defineFreshCallSlot(proto.positionalSlots[i], value)
@@ -13449,7 +13479,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     var declaredType = NIL
     if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
       declaredType = p.typeExpr
-      if not (bareScalarSatisfied(declaredType, value)):
+      if not (boundaryWorkFree(declaredType, value)):
         value = adaptNamedBoundary(blkParameter, p.local, declaredType,
                               value, result)
     result.defineFreshCallSlot(proto.namedSlots[i], value)
@@ -33399,7 +33429,7 @@ proc canBindScalarArguments(proto: FunctionProto, args: openArray[Value],
       args.len != proto.params.len:
     return false
   for i, annotation in proto.paramTypes:
-    if annotation.kind != vkNil and not bareScalarSatisfied(annotation, args[i]):
+    if annotation.kind != vkNil and not boundaryWorkFree(annotation, args[i]):
       return false
   true
 
@@ -33514,7 +33544,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                          proto.typeParams)
       declaredType = typeExpr
-      if not (bareScalarSatisfied(typeExpr, value)):
+      if not (boundaryWorkFree(typeExpr, value)):
         value = adaptNamedBoundary(blkParameter, positional[i],
                               typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
@@ -33532,7 +33562,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
         let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                            proto.typeParams)
         declaredType = typeExpr
-        if not (bareScalarSatisfied(typeExpr, value)):
+        if not (boundaryWorkFree(typeExpr, value)):
           value = adaptNamedBoundary(blkParameter, p.local, typeExpr,
                                 value, callScope)
       if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
@@ -33554,7 +33584,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                          proto.typeParams)
       declaredType = typeExpr
-      if not (bareScalarSatisfied(typeExpr, value)):
+      if not (boundaryWorkFree(typeExpr, value)):
         boundValue = adaptNamedBoundary(blkParameter, positional[i],
                                    typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
@@ -33584,7 +33614,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
           let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                              proto.typeParams)
           declaredType = typeExpr
-          if not (bareScalarSatisfied(typeExpr, value)):
+          if not (boundaryWorkFree(typeExpr, value)):
             value = adaptNamedBoundary(blkParameter, p.local, typeExpr,
                                   value, callScope)
         if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
@@ -33610,7 +33640,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       if proto.namedRestType.kind != vkNil:
         let typeExpr = instantiateTypeExpr(proto.namedRestType, typeBindings,
                                            proto.typeParams)
-        if not (bareScalarSatisfied(typeExpr, value)):
+        if not (boundaryWorkFree(typeExpr, value)):
           value = adaptNamedBoundary(blkRestParameter, proto.namedRest,
                                      typeExpr, value, callScope)
       props[key] = value
@@ -33889,7 +33919,7 @@ proc constructTypedInstanceParts(callee: Value, args: openArray[Value],
   # An untyped field, or a satisfied exact-kind scalar, is stored as given:
   # the boundary would resolve the annotation by name twice to say the same.
   template plainField(typeExpr, value: Value): bool =
-    typeExpr.kind == vkNil or bareScalarSatisfied(typeExpr, value)
+    typeExpr.kind == vkNil or boundaryWorkFree(typeExpr, value)
   # The schema is borrowed from `callee`, which the caller keeps alive, and
   # indexed in place: `for f in fields` copies the whole list, every field name
   # included, on each construction.

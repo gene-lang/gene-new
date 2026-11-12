@@ -290,6 +290,46 @@ suite "a List boundary with a scalar item type":
       (try (total (outer)) catch TypeError $err_msg)""",
       """"parameter 'xs' expected (List Int), got (List Any)""""
 
+suite "a (List T) parameter of a scalar T binds like a scalar one":
+  const listParams = """
+    (fn len_typed [xs : (List Int)] 1)
+    (fn reassign [xs : (List Int)] (set xs ["a"]) xs)
+    (fn two [a : Int xs : (List Str)] [a ($size xs)])
+    (fn anys [xs : (List Any)] 1)
+    (fn nested [xs : (List (List Int))] 1)
+    """
+
+  test "the scalar binder admits it, and a leaf body gets a scopeless chunk":
+    let chunk = compileSource(listParams & " nil")
+    for name in ["len_typed", "reassign", "two"]:
+      checkpoint name
+      check chunk.protoNamed(name).fastBindPositionalScalars
+    check chunk.protoNamed("len_typed").scopelessChunk != nil
+    for name in ["anys", "nested"]:
+      checkpoint name
+      check not chunk.protoNamed(name).fastBindPositionalScalars
+
+  test "a checked list, a list that changed, a parameter assignment, errors":
+    fastCk listParams & """
+      (let ys [1 2 3])
+      (let first [(len_typed ys) (len_typed ys) (len_typed ys)])
+      (ys .push "s")
+      (let zs [1])
+      [first
+       (try (len_typed ys) catch TypeError $err_msg)
+       (try (reassign zs) catch TypeError $err_msg)
+       (try (reassign zs) catch TypeError $err_msg)
+       (two 1 ["a" "b"]) (two 1 ["a" "b"])
+       (try (two 1 [1]) catch TypeError $err_msg)
+       (try (len_typed {^a 1}) catch TypeError $err_msg)
+       (try (len_typed) catch Error $err_msg)]""",
+      """[[1 1 1] "parameter 'xs' expected (List Int), got (List Any)" """ &
+      """"set 'xs' expected (List Int), got (List Str)" """ &
+      """"set 'xs' expected (List Int), got (List Str)" [1 2] [1 2] """ &
+      """"parameter 'xs' expected (List Str), got (List Int)" """ &
+      """"parameter 'xs' expected (List Int), got (Map Int)" """ &
+      """"function 'len_typed' expects 1..1 argument(s), got 0"]"""
+
 suite "indexed writes into a typed node's body":
   test "a write checks its own position and keeps the rest":
     fastCk """

@@ -1237,14 +1237,24 @@ proc supportsScalarBinding*(proto: FunctionProto): bool =
       proto.paramDefaults.len != proto.params.len or
       (not proto.hasParamTypes and not proto.hasReturnType):
     return false
+  template exactScalar(annotation: Value): bool =
+    annotation.kind == vkSymbol and annotation.symVal in
+      ["Int", "Integer", "Float", "F64", "Str", "String",
+       "Bool", "Sym", "Symbol", "Char"]
   template admitted(annotation: Value): bool =
-    annotation.kind == vkNil or
-      (annotation.kind == vkSymbol and annotation.symVal in
-        ["Any", "Int", "Integer", "Float", "F64", "Str", "String",
-         "Bool", "Sym", "Symbol", "Char"])
+    annotation.kind == vkNil or exactScalar(annotation) or
+      (annotation.kind == vkSymbol and annotation.symVal == "Any")
+  # A parameter may also be `(List T)` of an exact-kind scalar: the runtime
+  # check (`bareScalarListSatisfied`) admits a List already known to hold only
+  # T's kind, and anything else takes the general binder.
+  template admittedParam(annotation: Value): bool =
+    admitted(annotation) or
+      (annotation.kind == vkNode and annotation.head.kind == vkSymbol and
+       annotation.head.symVal == "List" and annotation.body.len == 1 and
+       annotation.props.len == 0 and exactScalar(annotation.body[0]))
   if not admitted(proto.returnType): return false
   for i, annotation in proto.paramTypes:
-    if not admitted(annotation) or proto.paramDefaults[i].optional or
+    if not admittedParam(annotation) or proto.paramDefaults[i].optional or
         proto.positionalSlots[i] < 0 or
         proto.positionalSlots[i] >= proto.localNames.len:
       return false
