@@ -12,3 +12,8 @@ release build of branch `perf/python-gap`.
   rounds after one warmup.
 - `general/`: `benchmarks/run_general.gene` at 5,000 items with the baseline
   binary.
+- `profiles/`: `sample` call graphs (3 s each) of the five kernels beside
+  them, on the branch binary at `51e3fbe8`, and `self_and_callers.py`, which
+  prints each leaf's self time and callers. Report section 9.
+- `kernels-final/`: `run_kernels.gene` again at `98f8e870`, after the
+  interpreter-core commits.

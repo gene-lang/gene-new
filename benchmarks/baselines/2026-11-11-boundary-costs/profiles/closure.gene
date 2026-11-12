@@ -1,0 +1,3 @@
+(fn make_adder [k] (fn [x] (+ x k)))
+(fn bench [n] (let add (make_adder 3)) (var total 0) (repeat i in n (set total (add total))) total)
+(bench 300000000)

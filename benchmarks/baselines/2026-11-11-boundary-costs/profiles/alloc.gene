@@ -1,0 +1,3 @@
+(type Pt ^props {^x Int ^y Int})
+(fn bench [n] (var total 0) (repeat i in n (let p (Pt ^x i ^y 2)) (set total (+ total p/x))) total)
+(bench 300000000)

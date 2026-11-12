@@ -84,32 +84,45 @@ should have touched it.
 
 ### Against Python
 
-`benchmarks/run_kernels.gene`, five alternating rounds of fresh processes
-after one warmup. Each ratio is the median of the per-round ratios. Times are
-whole milliseconds, so the Python times under 20 ms carry several percent of
-rounding.
+`benchmarks/run_kernels.gene` at the branch head `98f8e870`, five
+alternating rounds of fresh processes after one warmup, with the baseline
+binary in each round. Each ratio is the median of the per-round ratios. Times
+are whole milliseconds, so the Python times under 20 ms carry several percent
+of rounding. The same run before section 9's commits is in `kernels/`.
 
 | Kernel | Gene ms | Python ms | Gene / Python | Baseline ms | Baseline / Python | Gene / Baseline |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| fib30 | 127 | 59 | 2.2 | 123 | 2.1 | 1.03 |
-| while_arith_3M | 178 | 92 | 1.9 | 180 | 2.0 | 0.99 |
-| for_range_3M | 150 | 54 | 2.8 | 446 | 8.3 | 0.33 |
-| repeat_3M | 157 | 54 | 2.9 | 151 | 2.8 | 1.04 |
-| list_push_index_1M | 170 | 45 | 3.6 | 168 | 3.7 | 0.99 |
-| list_push_for_1M | 123 | 38 | 3.2 | 122 | 3.2 | 1.02 |
-| map_strkey_500k | 252 | 86 | 2.9 | 262 | 3.1 | 0.97 |
-| field_rw_2M | 331 | 77 | 4.2 | 595 | 7.8 | 0.56 |
-| alloc_record_1M | 292 | 60 | 4.9 | 280 | 4.6 | 1.03 |
-| send_2M | 505 | 57 | 8.7 | 740 | 13.0 | 0.69 |
-| closure_2M | 320 | 52 | 6.2 | 313 | 6.0 | 1.02 |
-| str_interp_500k | 136 | 57 | 2.4 | 138 | 2.4 | 1.01 |
-| float_3M | 182 | 56 | 3.2 | 182 | 3.2 | 0.99 |
-| map_literal_1M | 199 | 80 | 2.5 | 197 | 2.6 | 1.0 |
-| accessor_10k_records_200k | 61 | 8 | 7.6 | 31114 | 3889.3 | 0.0 |
-| store_10k_records_200k | 40 | 6 | 6.7 | 61932 | 10322.0 | 0.0 |
-| typed_list_param_1k_500k | 214 | 12 | 17.8 | 9291 | 774.7 | 0.02 |
-| field_write_2M | 159 | 16 | 9.9 | 410 | 25.6 | 0.39 |
-| typed_call_3M | 275 | 72 | 3.8 | 281 | 3.9 | 0.98 |
+| fib30 | 126 | 59 | 2.2 | 122 | 2.1 | 1.04 |
+| while_arith_3M | 178 | 92 | 1.9 | 178 | 1.9 | 1.0 |
+| for_range_3M | 148 | 54 | 2.7 | 443 | 8.1 | 0.34 |
+| repeat_3M | 162 | 54 | 3.0 | 151 | 2.8 | 1.06 |
+| list_push_index_1M | 166 | 45 | 3.7 | 166 | 3.7 | 1.0 |
+| list_push_for_1M | 124 | 38 | 3.3 | 119 | 3.1 | 1.04 |
+| map_strkey_500k | 257 | 86 | 3.0 | 254 | 3.0 | 1.02 |
+| field_rw_2M | 341 | 77 | 4.4 | 589 | 7.6 | 0.57 |
+| alloc_record_1M | 250 | 59 | 4.2 | 274 | 4.5 | 0.92 |
+| send_2M | 484 | 57 | 8.5 | 734 | 12.9 | 0.66 |
+| closure_2M | 292 | 52 | 5.6 | 313 | 6.1 | 0.95 |
+| str_interp_500k | 128 | 57 | 2.2 | 138 | 2.4 | 0.93 |
+| float_3M | 181 | 58 | 3.1 | 182 | 3.2 | 0.99 |
+| map_literal_1M | 194 | 75 | 2.6 | 200 | 2.7 | 0.99 |
+| accessor_10k_records_200k | 59 | 8 | 7.4 | 31107 | 3889.8 | 0.0 |
+| store_10k_records_200k | 38 | 6 | 6.3 | 62096 | 10349.3 | 0.0 |
+| typed_list_param_1k_500k | 205 | 12 | 17.4 | 9210 | 767.5 | 0.02 |
+| field_write_2M | 157 | 17 | 9.6 | 407 | 24.3 | 0.39 |
+| typed_call_3M | 277 | 73 | 3.8 | 276 | 3.8 | 1.0 |
+
+Three loop kernels are slower than the baseline in both runs of this
+comparison: `repeat_3M` by 4% and 6%, `fib30` by 3% and 4%, `list_push_for_1M`
+by 4% and 4%. No change on the branch adds work to the `repeat` loop.
+`fib30` was already 3% slower before section 9's commits, one of which made
+its returns cheaper. `list_push_for_1M` pushes to a list, where the branch
+added two byte tests per push (the stamp and the item kind), far too little
+for 5 ms over a million pushes. Two builds of identical semantics have
+differed by up to 17% on single kernels on this machine, which is the likely
+cause, but it is not shown here. It would take a baseline
+rebuilt with a perturbed layout, or the generated code compared for the loop
+handlers, to settle it.
 
 The general suite (`benchmarks/run_general.gene`, defaults) is unchanged, as
 expected: none of its workloads passes a large value across a boundary.
@@ -253,11 +266,59 @@ Int`. A parameter a nested function assigns now keeps its type, and the
   doc` tests, where `gene doc` prints a hidden `gene_ns` binding and then
   crashes), 54 in `test_rc`, and one in `test_value_backend_boundaries`.
 
-## 9. Not done
+## 9. The interpreter core, from caller-stack profiles
 
-- The per-instruction costs: instruction size, the dispatch preamble, frame
-  and scope traffic on every call. These are the remaining 2x to 6x on calls
-  and loops, and they need profiles with caller stacks first.
+The comparison's last step asked for profiles with caller stacks before any
+work on the interpreter core. `profiles/` in the evidence folder holds five,
+taken with `sample` on the branch binary as of `51e3fbe8`: a send, a closure
+call, record construction, a field read and write, and a list index read.
+`profiles/self_and_callers.py` gives each leaf's self time and its callers.
+
+What they show, beyond the dispatch loop itself (37% to 50% of samples):
+
+- **Calls pay for hooks, not work.** In the closure and send kernels the
+  largest named costs are `=sink`/`=copy` hooks on `Scope`, `Chunk`, seqs and
+  exception refs, a `Value` copy, and the thread-local error flag those hooks
+  read (`_tlv_get_addr`, 6% to 7%). Most of the sinks came from one place:
+  every return reset fifteen frame registers to their defaults, though they
+  already held them.
+- **Construction copied names.** About a tenth of the construction kernel was
+  `namedArgsFromStack` copying the call instruction's argument names, one
+  string allocation each, plus the matching `rawAlloc`/`rawDealloc`.
+- **An index read made three calls.** `xs/%i` was already fused, but still
+  ran the borrowed-authority check on the integer and reached
+  `readIndexedValue` through two generic lookup procs.
+- **Scope pooling costs a cycle-candidate registration per call**
+  (`rememberCycle` under `releaseCallScope`): releasing the pooled scope drops
+  its parent reference. Keeping the parent in the pool would avoid it but
+  retains the parent's graph, which was rejected before; it was left alone.
+
+Changes, each measured in paired rounds against the commit before it:
+
+| Commit | Change | Effect |
+| --- | --- | --- |
+| `b4ac7882` | Reset a frame register only when it is not already its default | Scoped calls 7% to 12% faster |
+| `c3a4e3ac` | Direct construction reads the instruction's names in place, out of line | Record construction 12% to 15% faster |
+| `98f8e870` | List and small-Int index skips the generic lookup and the authority check | Index reads 7% faster |
+
+Tried and not kept:
+
+- Turning the local-load check (`materializedModuleRefValue`) into a template
+  removed a call per load, and calls got faster, but sixteen inlined copies
+  made plain loops 5% to 7% slower in every round.
+- The same construction path inline at the call site made loops 3% to 5%
+  slower; out of line it does not.
+- Guarding the field resets in `releaseCallScope` like the frame registers
+  had no measurable effect, so it was reverted.
+
+The pattern in all three: code added inline to the dispatch loop costs every
+instruction a little, so new fast paths go in out-of-line procs.
+
+## 10. Not done
+
+- The per-instruction costs: instruction size, the dispatch preamble, and the
+  frame and scope traffic of every call (section 9 removed part of the
+  last). These are the remaining 2x to 6x on calls and loops.
 - Message sends, which are still the largest ratio against Python among the
   constant costs (8.7x).
 - What is left of the boundary kernels is the call itself: an accessor is one
@@ -269,11 +330,11 @@ Int`. A parameter a nested function assigns now keeps its type, and the
 
 ## Verification
 
-The gate was run on a copy of the final tree: `test_all` in the verification
-build, the language specs, the poll-window test, `test_rc` and
-`test_value_backend_boundaries`.
+The gate was run on a copy of the tree at `98f8e870`, the last code commit:
+`test_all` in the verification build, the language specs, the poll-window
+test, `test_rc` and `test_value_backend_boundaries`.
 
-- `test_all` with `-d:geneInertStampVerify`: 1,926 pass. Five fail, the same
+- `test_all` with `-d:geneInertStampVerify`: 1,929 pass. Five fail, the same
   five that fail on `37bd3631` (section 8). No stamp was contradicted by the
   reference scan.
 - `spec_runner`: 942 pass.
