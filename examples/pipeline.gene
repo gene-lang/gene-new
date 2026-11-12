@@ -129,7 +129,7 @@
 (show "map values" values)
 
 # Explicit Map `each` visits values without converting to pairs.
-(counts -> $each $println)
+(counts -> $map_each $println)
 
 # --- 6. A stage's callee and arguments are evaluated once ----------------
 
