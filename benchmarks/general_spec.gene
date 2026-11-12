@@ -78,7 +78,7 @@
     (changed/rows/5 .put "result" [99])
     (assert_raises (fn [] (record_sample variant changed 17 100 600 1)) AssertionError)
     (assert_equal variant/wall_ms [])
-    (for [name group] in variant/rows (assert_equal group/batch_ms [])))
+    (map_for [name group] in variant/rows (assert_equal group/batch_ms [])))
   (it "rejects missing, duplicate and unknown workloads" []
     (let missing (payload))
     (missing .put "rows" [])
