@@ -1,0 +1,6 @@
+(fn add_t [a : Int b : Int] : Int (+ a b))
+(fn bench_typed_call [n]
+  (var total 0)
+  (repeat i in n (set total (add_t total i)))
+  total)
+(fn main [] ($println (bench_typed_call 5000000)))

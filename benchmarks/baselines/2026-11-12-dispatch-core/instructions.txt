@@ -65,3 +65,11 @@ field-write   G1 17,686 M / 2,438 M   FL 17,687 M / 2,405 M     0%
 # Entered at every backward opJump instead, the call in opJump's handler
 # changed the code of the others: a call with a local +3.2%, field writes
 # +4.2% in instructions, with no fastLoop run in either.
+
+# Default builds: 9cd8bc6a (F) against fastLoop with numbers other than small
+# Ints through tryFastNativeKind2 (FX), and FX with `for` over a range (FR).
+float         F 13,222 M / 1,903 M   FX  9,236 M / 1,119 M   -30% / -41%
+for-range     F 10,591 M / 1,573 M   FR  8,545 M / 1,145 M   -19% / -27%
+scoped        F 15,141 M             FX 15,147 M              0%
+typed-calls   F 10,352 M, 10,366 M   FR 10,357 M, 10,370 M    0% (paired time
+              1.07 in 7 rounds with the same instructions: placement)

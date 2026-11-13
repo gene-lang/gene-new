@@ -18964,8 +18964,12 @@ const fastLoopOps = {opPushConst, opLoadLocal, opLoadLocalFast, opPop, opNot,
   opSetLocalPop, opNativeFast2, opIntAdd2, opIntSub2, opIntMul2, opIntLt2,
   opIntGt2, opIntLe2, opIntGe2, opNativeFastConst, opIntAddConst,
   opIntSubConst, opIntMulConst, opIntLtConst, opIntGtConst, opIntLeConst,
-  opIntGeConst, opCompareConstJumpIfFalse, opCompareLocalsJumpIfFalse}
+  opIntGeConst, opCompareConstJumpIfFalse, opCompareLocalsJumpIfFalse,
+  opForInlineNext}
   ## The instructions `fastLoop` runs.
+
+const fastLoopNumberKinds = {nfkAdd, nfkSub, nfkMul, nfkLt, nfkGt, nfkLe, nfkGe}
+  ## The kinds `tryFastNativeKind2` answers for any two numbers without raising.
 
 proc scanFastLoopBody(chunk: Chunk, first, last, at: int): bool {.noinline.} =
   if chunk.fastLoopJumps.len != chunk.instructions.len:
@@ -19150,13 +19154,24 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
         break
       let b {.cursor.} = stack[sp - 1]
       let a {.cursor.} = stack[sp - 2]
-      if not (a.isSmallInt and b.isSmallInt):
-        break
       var value: Value
-      if not intResult(binaryKind(op, inst), a, b, value):
+      if a.isSmallInt and b.isSmallInt and
+          intResult(binaryKind(op, inst), a, b, value):
+        stack[sp - 2] = value
+        dec sp
+        inc ip
+        continue
+      # Any other pair: opNativeFast2's handler asks tryFastNativeKind2,
+      # which cannot raise for these kinds. The typed ones go elsewhere.
+      let kind = NativeFastKind(inst[].intArg)
+      if op != opNativeFast2 or kind notin fastLoopNumberKinds:
         break
-      stack[sp - 2] = value
+      let other = tryFastNativeKind2(kind, a, b)
+      if not other.handled:
+        break
       dec sp
+      discard move stack[sp]
+      stack[sp - 1] = other.value
       inc ip
     of opNativeFastConst, opIntAddConst, opIntSubConst, opIntMulConst,
        opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst,
@@ -19166,30 +19181,61 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
         break
       let a {.cursor.} = stack[sp - 1]
       let b {.cursor.} = chunk.constants[index]
-      if not (a.isSmallInt and (inst[].flag or b.isSmallInt)):
-        break
       let kind = binaryKind(op, inst)
-      if op == opCompareConstJumpIfFalse:
-        if kind notin {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe} or
-            ip + 1 >= count:
-          break
-        let x = a.smallIntVal
-        let y = b.smallIntVal
-        let holds =
-          case kind
-          of nfkLt: x < y
-          of nfkGt: x > y
-          of nfkLe: x <= y
-          of nfkGe: x >= y
-          of nfkEq: x == y
-          else: x != y
-        dec sp                      # a small Int needs no release
-        ip = (if holds: ip + 2 else: chunk.instructions[ip + 1].intArg)
-        continue
-      var value: Value
-      if not intResult(kind, a, b, value):
+      if a.isSmallInt and (inst[].flag or b.isSmallInt):
+        if op == opCompareConstJumpIfFalse:
+          if kind notin {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe} or
+              ip + 1 >= count:
+            break
+          let x = a.smallIntVal
+          let y = b.smallIntVal
+          let holds =
+            case kind
+            of nfkLt: x < y
+            of nfkGt: x > y
+            of nfkLe: x <= y
+            of nfkGe: x >= y
+            of nfkEq: x == y
+            else: x != y
+          dec sp                    # a small Int needs no release
+          ip = (if holds: ip + 2 else: chunk.instructions[ip + 1].intArg)
+          continue
+        var value: Value
+        if intResult(kind, a, b, value):
+          stack[sp - 1] = value
+          inc ip
+          continue
+      # Any other operand: the handler's Int case and tryFastNativeKind2
+      # give the same results, and neither raises for these kinds. A fused
+      # comparison then pushes its Bool for the opJumpIfFalse after it.
+      if op notin {opNativeFastConst, opCompareConstJumpIfFalse} or
+          kind notin fastLoopNumberKinds:
         break
-      stack[sp - 1] = value
+      let other = tryFastNativeKind2(kind, a, b)
+      if not other.handled:
+        break
+      stack[sp - 1] = other.value
+      inc ip
+    of opForInlineNext:
+      # The handler's range case: [range, next value] are the top of the
+      # stack. A List snapshot, or a body with bindings of its own to clear,
+      # is left to runLoop.
+      if sp < 2 or inst[].names.len != 0:
+        break
+      let source {.cursor.} = stack[sp - 2]
+      let slot = inst[].intArg
+      if source.kind != vkRange or not stack[sp - 1].isSmallInt or
+          slot < 0 or slot >= scope.slots.len or
+          scope.managedBindingPins.len != 0 or
+          atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
+        break
+      let current = stack[sp - 1].smallIntVal
+      let step = source.rangeStep
+      if source.rangeDone(current) or not current.rangeCanAdvance(step):
+        ip = inst[].depth
+        continue
+      scope.redefineSlot(slot, inst[].name, stack[sp - 1])
+      stack[sp - 1] = newInt(current + step)
       inc ip
     of opCompareLocalsJumpIfFalse:
       if ip + 3 >= count:
@@ -19198,7 +19244,15 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
       let right = chunk.instructions[ip + 1].intArg
       if not slotReady(left) or not slotReady(right) or
           not scope.slots[left].isSmallInt or not scope.slots[right].isSmallInt:
-        break
+        # The handler then runs as the opLoadLocal it replaced, and the
+        # comparison and jump after it one at a time.
+        if not slotReady(left) or (scope.moduleRefs != nil and
+            scope.moduleRefs.pendingStructural != 0 and
+            scope.slots[left].isPendingModuleRef):
+          break
+        push scope.slots[left]
+        inc ip
+        continue
       let x = scope.slots[left].smallIntVal
       let y = scope.slots[right].smallIntVal
       var holds: bool

@@ -35,6 +35,9 @@ The quick-trained builds leave the specs out and repeat to within 0.003%.
 - `pairs/pgo-call-budget.tsv`: `DP`, `D4P`.
 - `pairs/quick-call-budget.tsv`: `D1Q`, `R2Q` (`R2Q1`).
 - `pairs/default-fast-loop.tsv`: `G1`, `FL` (the D5 fast loop, default build).
+- `pairs/default-fast-loop-floats.tsv`, `pairs/default-fast-loop-for-range.tsv`:
+  `F` (`9cd8bc6a`) against `FX` (numbers) and `FR` (numbers and `for` over a
+  range).
 - `pairs/default-call-budget.tsv`: `H`, `G1` (`0f225ea6`, the call-budget
   guard without the shared return paths, default build).
 - `kernels-default-fast-loop/`: `benchmarks/run_kernels.gene` with the default

@@ -1,0 +1,5 @@
+(fn bench_float [n]
+  (var x 0.0)
+  (repeat i in n (set x (+ (* x 0.999) 1.5)))
+  x)
+(fn main [] ($println (bench_float 10000000)))

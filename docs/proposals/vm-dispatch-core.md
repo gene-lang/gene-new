@@ -144,7 +144,7 @@ both profile-free attempts to steer the compiler moved it the wrong way. D1's
 shared returns made loops slower; declaring Nim's raising procs `cold` made the
 `while` loop run 8.6% more instructions.
 
-`fastLoop` is a separate small proc that runs the fast paths of 29 simple
+`fastLoop` is a separate small proc that runs the fast paths of 30 simple
 instructions (local loads and stores, constants, pops, jumps, `!`, `&&`/`||`
 jumps, and the small-Int cases of the native and typed arithmetic and
 comparisons, fused compare-and-jump included) exactly as their `runLoop`
@@ -155,6 +155,13 @@ loop, and only for a loop made only of those instructions, worked out once
 per loop (`Chunk.fastLoopJumps`). Entering at every backward jump put a call
 in `opJump`, which every iteration runs, and changed the code of other
 handlers: a call with a local ran 3.2% more instructions.
+
+Two extensions followed. Numbers other than small Ints go through
+`tryFastNativeKind2`, as `opNativeFast2`'s and `opNativeFastConst`'s handlers
+send them, for the kinds it answers without raising (add, subtract, multiply,
+the orderings): the `float` kernel is 0.59–0.64. `opForInlineNext`'s range
+case runs there too, so `for` over a range stays in `fastLoop`: `for_range` is
+0.74. Both 7 of 7 rounds, with no other kernel running more instructions.
 
 In the default build, `repeat` is 0.60 of its time, a bare loop 0.62 and
 `while` 0.67 (7 of 7 rounds each, `while` now about CPython's time), with 26%

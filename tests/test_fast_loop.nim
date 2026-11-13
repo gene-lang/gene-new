@@ -25,8 +25,38 @@ const fastLoopPrograms = [
   """(fn f [] (var x 1) (repeat i in 70 (set x (+ x x))) x) (f)""",
   """(fn f [] (var x 0) (repeat i in 5 (set x (- x 140737488355327))) x) (f)""",
   """(fn f [] (var x 3) (repeat i in 30 (set x (* x 7))) x) (f)""",
-  # Floats, and a division by zero inside the loop.
+  # Floats, mixed with Ints, and Ints past the small range through constants.
   """(fn f [] (var t 0.5) (repeat i in 10 (set t (+ t 1))) t) (f)""",
+  """(fn f [n] (var x 0.0) (repeat i in n (set x (+ (* x 0.999) 1.5))) x)
+     (f 1000)""",
+  """(fn f [] (var x 0.0) (var i 0)
+       (while (< x 10.5) (set x (+ x 0.75)) (set i (+ i 1)))
+       [x i])
+     (f)""",
+  """(fn f [] (var x 1.5) (var y 7) (var c 0)
+       (while (> y x) (set y (- y 1)) (set c (+ c 1)))
+       [x y c])
+     (f)""",
+  """(fn f [] (var x 2) (repeat i in 40 (set x (* x 3))) x) (f)""",
+  """(fn f [] (var x 2.5) (var c 0)
+       (repeat i in 20 (if (>= x 100.0) (set c (+ c 1))) (set x (* x 1.5)))
+       [x c])
+     (f)""",
+  # `for` over a range: steps, an empty range, a body with its own binding,
+  # a List, and a range that ends at the top of the Int range.
+  """(fn f [n] (var total 0) (for i in ($range 0 n) (set total (+ total i))) total)
+     (f 1000)""",
+  """(fn f [] (var t 0) (for i in ($range 10 0 -3) (set t (+ (* t 10) i))) t) (f)""",
+  """(fn f [] (var t 0) (for i in ($range 5 5) (set t (+ t 1))) t) (f)""",
+  """(fn f [] (var t 0) (for i in ($range 0 6) (let d (* i 2)) (set t (+ t d))) t)
+     (f)""",
+  """(fn f [] (var t 0) (for i in [3 4 5] (set t (+ t i))) t) (f)""",
+  """(fn f [] (var c 0)
+       (for i in ($range 9223372036854775800 9223372036854775807)
+         (set c (+ c 1)))
+       c)
+     (f)""",
+  # A division by zero inside the loop.
   """(fn f [] (var r 0) (repeat i in 3 (set r (// 7 (- 1 i)))) r) (f)""",
   """(fn f [] (var r 0) (repeat i in 3 (set r (/ 7 (- 1 i)))) r) (f)""",
   # Truthiness of nil and Bools, `!`, `&&` and `||`.
@@ -68,6 +98,9 @@ const fastLoopPrograms = [
   """(var total 0) (repeat i in 100 (set total (+ total i))) total""",
 ]
 
+const forRangeKernel = """(fn f [n] (var total 0)
+  (for i in ($range 0 n) (set total (+ total i))) total) (f 1000)"""
+
 suite "fastLoop":
   test "every program gives the same result with fastLoop on and off":
     for source in fastLoopPrograms:
@@ -79,7 +112,8 @@ suite "fastLoop":
       var before = fastLoopRuns
       discard fastLoopOutcome(fastLoopPrograms[0], true)
       discard fastLoopOutcome(fastLoopPrograms[1], true)
-      check fastLoopRuns >= before + 2
+      discard fastLoopOutcome(forRangeKernel, true)
+      check fastLoopRuns >= before + 3
       before = fastLoopRuns
       discard fastLoopOutcome(fastLoopPrograms[0], false)
       check fastLoopRuns == before
