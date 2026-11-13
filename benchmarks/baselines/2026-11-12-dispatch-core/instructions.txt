@@ -11,3 +11,20 @@ while-long  D3P     27,658 M      27,658 M
 while-long  D4P     25,178 M
 scoped      DP      14,624 M
 scoped      D4P     14,279 M      (69 fewer per call)
+
+# Two PGO builds of 43d52531 (the head after the call-budget guard), the same
+# instrumented binary trained twice with scripts/train-quick.sh (no Harness
+# specs). The profiles overlap 100.000%; the binaries are the same size.
+while-long  R2Q1    22,869 M
+while-long  R2Q2    22,870 M
+scoped      R2Q1    13,863 M
+scoped      R2Q2    13,863 M
+# The same source with the full train.sh (R2P) runs more:
+while-long  R2P     25,939 M
+scoped      R2P     14,554 M
+
+# Quick-trained 908bb4e0 (D1Q) against quick-trained 43d52531 (R2Q1):
+while-long    D1Q 23,110 M   R2Q1 22,857 M   -1.1%
+scoped        D1Q 14,298 M   R2Q1 13,863 M   -3.0% (87 fewer per call)
+map-literal   D1Q 12,957 M   R2Q1 12,897 M   -0.5% (scripts/map-literal.gene, 3 M iterations)
+field-write   D1Q 18,355 M   R2Q1 18,234 M   -0.7% (scripts/field-write.gene, 10 M iterations)

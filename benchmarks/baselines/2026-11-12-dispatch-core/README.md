@@ -19,16 +19,23 @@ Builds, by label:
 | `D2P` | `908bb4e0` plus every call entry shared | PGO |
 | `D3P` | `908bb4e0` plus call entry shared except a plain non-tail call | PGO |
 | `D4P` | `908bb4e0` plus the call-budget guard, with the policy flag still set at the two production install points; `113c9fa9` moved it behind the field's setter, which changes no code path in a call | PGO |
+| `R2P` | `43d52531` | PGO |
+| `D1Q`, `R2Q1`, `R2Q2` | `908bb4e0`, `43d52531`, `43d52531` | PGO with `scripts/train-quick.sh` |
 
-Every PGO build trains with `tools/pgo/train.sh` from its own tree after
-`dd124778` (the two training programs fixed); the Harness specs in the training
-pass 401 or 402 of 412 each time.
+The PGO builds above the last row train with `tools/pgo/train.sh` from their
+own tree after `dd124778` (the two training programs fixed); the Harness specs
+in the training pass 401 or 402 of 412 each time. Those counts depend on timing
+and dominate the profile, so these builds vary by up to 3% between trainings.
+The quick-trained builds leave the specs out and repeat to within 0.003%.
 
 - `pairs/default-returns.tsv`: `H`, `D`.
 - `pairs/pgo-returns.tsv`: `N`, `H`, `HP`, `DP`.
 - `pairs/pgo-shared-calls.tsv`: `HP`, `DP`, `D2P`.
 - `pairs/pgo-hybrid-calls.tsv`: `DP`, `D3P`, `HP`.
 - `pairs/pgo-call-budget.tsv`: `DP`, `D4P`.
+- `pairs/quick-call-budget.tsv`: `D1Q`, `R2Q` (`R2Q1`).
+- `kernels-pgo/`, `kernels-quick/`: `benchmarks/run_kernels.gene` with `R2P`
+  and `R2Q1` as `gene`, CPython 3.14.3 as `python` and `H` as `baseline`.
 - `instructions.txt`: instructions retired (`/usr/bin/time -l`) for
   `scripts/while-long.gene` (20 M iterations of the `while` kernel) and
   `scripts/scoped-calls.gene` (5 M calls of a function with a local). Counts

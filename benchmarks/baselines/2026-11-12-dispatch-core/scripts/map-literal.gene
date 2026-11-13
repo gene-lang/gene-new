@@ -1,0 +1,7 @@
+(fn bench_map_literal [n]
+  (var total 0)
+  (repeat i in n
+    (let m {^a i ^b 2})
+    (set total (+ total m/a m/b)))
+  total)
+(fn main [] ($println (bench_map_literal 3000000)))

@@ -145,10 +145,20 @@ the training (mostly the Harness specs) and 1 for the final build.
 
 ## Measurement
 
+`train.sh`'s counts are dominated by the Harness specs (30 times the rest
+together), whose paths depend on timing, so two builds of nearly the same source
+with it differ by up to 3% in the instructions a kernel runs. Without the specs
+(`benchmarks/baselines/2026-11-12-dispatch-core/scripts/train-quick.sh`, 20 s
+instead of 10 minutes) the profile repeats (100.000% edge overlap) and two
+builds of one source run the same instructions to within 0.003%. That build is
+also faster on these kernels: 12% fewer instructions in the `while` loop and 5%
+fewer per call than with the full training.
+
 Every stage is measured in paired rotating rounds against its parent
 (`benchmarks/baselines/2026-11-12-panics/pairs/pairn.sh`), on the kernels and
-on a call-cost program, with both sides built by the `speedy_pgo` recipe and
-the same training. A default build's result is recorded but does not decide.
+on a call-cost program, and by instructions retired, with both sides built by
+the `speedy_pgo` recipe and the quick training, so that a difference is the
+source's. A default build's result is recorded but does not decide.
 Every stage must pass `tests/test_all.nim`, the spec runner,
 `tests/test_poll_window.nim`, `tests/test_rc.nim` (with `-d:geneRcStats`) and
 `tests/test_value_backend_boundaries.nim` with the parent's results. A stage
