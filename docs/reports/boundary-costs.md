@@ -592,6 +592,37 @@ Not kept:
   collector never runs in these kernels anyway; ARC was no faster and laid out
   several kernels worse.
 
+## 15. Call scopes: kept context and frame-cell locals (2026-11-13)
+
+Evidence in `benchmarks/baselines/2026-11-13-call-scopes/`.
+
+- **Kept context** (`9c929dac`, then the Self type dropped). A pooled call
+  scope whose parent is a loaded module's root keeps what it inherited
+  (parent, Application, module base and refs, budget) between calls; storing
+  it again was an ORC round trip each. A scope under any other parent is
+  cleared as before: an activation's locals must be released on time, and a
+  plain run root may be about to be dropped. The pool drops what it keeps
+  before any trial deletion (`retirementStartHook`) and when the outermost
+  run returns. Keeping the message Self type too saved more instructions
+  (sends 4.7 points) but needed the callee's at each dispatch-loop call site,
+  which moved `runLoop`'s blocks: eight kernels ran 3-9% more cycles on the
+  same instructions. Without it, sends are 0.87 of their time.
+- **Locals in frame cells** (the leaf half of D3). A scopeless body may now
+  define and `set` locals of its own, kept in cells after its arguments on
+  the operand stack (`opStoreArg`), and write through a `set` path. A body is
+  admitted when no read or `set` of a local can find it undefined and no
+  definition can repeat one (a forward dataflow, since such bodies have no
+  loop): a `var` in one branch of an `if` stays visible after it. A call with
+  one local runs 20% fewer instructions and 25% fewer cycles, per call.
+
+The new opStoreArg arm still moves blocks: str_interp runs 1.07-1.08 and
+field_write 1.03-1.06 of their time on the same instructions. Moving the
+handler out of line made it worse.
+
+D3's other half, a body that calls out, needs the scope register to hold the
+defining scope and outer depths one less, and a borrowed-scope mark on the
+frame for the return, unwind and tail-call paths in `runLoop`; it is not done.
+
 ## Verification
 
 Second round. The full set ran on a copy of the tree at `46b80b9d`, the
