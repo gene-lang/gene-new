@@ -255,9 +255,11 @@ suite "VM — scope ownership and reuse":
       let root = getTempDir() / "gene-pooled-context"
       createDir(root)
       let path = root / "pooled.gene"
+      # Typed locals keep both bodies off the scopeless convention, so their
+      # calls take pooled call scopes.
       writeFile(path, "(type Item ^props {^n Int} " &
-        "(message direct [] (let k 1) (* self/n k))) " &
-        "(fn add1 [x] (let y 1) (+ x y)) (var item (Item ^n 7))")
+        "(message direct [] (let k : Int 1) (* self/n k))) " &
+        "(fn add1 [x] (let y : Int 1) (+ x y)) (var item (Item ^n 7))")
       let app = newApplication(root)
       let moduleScope = app.loadFileModule(path).moduleRootNamespace.nsScope
       let scope = newGlobalScope(app)
@@ -271,7 +273,7 @@ suite "VM — scope ownership and reuse":
       # root, which takes the same pooled scope next, leaves it holding none.
       # Trial deletion, and the run's return, drop what is held.
       check run(compileSource(
-          "(fn local [x] (let z 2) (+ x z)) " &
+          "(fn local [x] (let z : Int 2) (+ x z)) " &
           "[(add1 1) (pooled) (item .direct) (pooled) (local 1) (pooled) " &
           " (add1 2) (retire_then_pooled) (add1 3)]"),
         scope).print() == "[2 1 7 1 3 0 3 0 4]"

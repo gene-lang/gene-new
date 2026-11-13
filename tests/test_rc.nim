@@ -331,6 +331,17 @@ when defined(geneRcStats):
         (test)
       """) == 0
 
+    test "locals of a scopeless call release their values":
+      # The same body with a typed local keeps its call scope. What either
+      # leaves after the run is the last call's values, so it must not grow
+      # with the number of calls, and must match the classic convention.
+      const scopeless = "(fn pair [x] (let y [x x]) (let z {^a y}) z/a) "
+      const classic = "(fn pair [x] (let q : Int 1) (let y [x x]) " &
+                      "(let z {^a y}) z/a) "
+      let once = leakedManaged(scopeless & "(pair 1)")
+      check leakedManaged(scopeless & "(repeat i in 50 (pair i))") == once
+      check once == leakedManaged(classic & "(pair 1)")
+
     test "scalar program leaks nothing (measurement sanity)":
       check leakedManaged("(+ 1 2)") == 0
 

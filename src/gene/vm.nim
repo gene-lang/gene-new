@@ -21192,6 +21192,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # Scopeless calls: arguments live on the shared operand stack at the
           # frame's base (they were never popped into a scope).
           spush stack[curStackBase + inst[].intArg]
+        of opStoreArg:
+          # A scopeless body's own local, in its cell after the arguments
+          # (deriveScopelessChunk); `let` and `set` leave the value on top.
+          if sp == 0:
+            raise newException(GeneError, "VM stack underflow in var")
+          stack[curStackBase + inst[].intArg] = stack[sp - 1]
         of opSendLocal:
           # A receiver's opLoadLocal, fused with the send after it
           # (`tryBorrowedSend`); anything that does not take the borrowed

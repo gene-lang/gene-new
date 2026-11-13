@@ -195,6 +195,7 @@ type
     opLoopEnter              # record inline loop exit/continue targets and operand base
     opLoopLeave              # retire the inline loop target
     opLoadStdlibPath          # constant Path from gene; depth indexes extra cache slots
+    opStoreArg                # scopeless calls: stack[curStackBase + intArg] = top; the value stays
 
   Instruction* = object
     op*: OpCode
@@ -1595,9 +1596,9 @@ proc formatInstruction(inst: Instruction): string =
   of opLoadName, opLoadNativeFast, opDefineName, opRedefineName, opSetName,
      opRefBegin, opRefFinish, opRefAbort, opRefGet, opRefGetStructural:
     result.add " name=" & inst.name
-  of opLoadLocal, opLoadLocalFast, opLoadArg, opDefineLocal, opRedefineLocal,
-     opSetLocal, opSetLocalPop, opCompareLocalsJumpIfFalse, opLoadLocalField,
-     opSendLocal:
+  of opLoadLocal, opLoadLocalFast, opLoadArg, opStoreArg, opDefineLocal,
+     opRedefineLocal, opSetLocal, opSetLocalPop, opCompareLocalsJumpIfFalse,
+     opLoadLocalField, opSendLocal:
     result.add " slot=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name
@@ -3878,13 +3879,77 @@ const scopelessOps = {
   # (opMakeListSplice is excluded: it indexes chunk.listBuilds, which the
   # derived scopeless chunk does not copy).
   opMakeList, opMakeMap,
+  # `(set base/seg… value)`: the write reads only its stack operands and the
+  # target's own schema, never the scope register, so a message such as
+  # `(message inc [d] (set self/n (+ self/n d)))` needs no call scope.
+  opSetPath,
   opExplicitReturn, opReturn, opReturnBareInt}
 
+const scopelessJumpOps = {opJump, opJumpIfFalse, opJumpIfFalseOrPop,
+  opJumpIfTrueOrPop, opJumpIfPresentOrPop, opJumpIfAbsent}
+
+proc localsDefinedWhereUsed(chunk: Chunk, params: int): bool =
+  ## For a body whose jumps all go forward: whether every read and `set` of a
+  ## local (slot `params` and up, at most 64 of them) finds it defined on
+  ## every path, and no definition can repeat one. A scope raises in both
+  ## cases (undefined symbol, duplicate binding) where a frame cell would
+  ## answer nil or store again, so such a body keeps the classic convention.
+  ## A `var` in one branch of an `if` stays visible after it, which is why
+  ## order in the code is not enough.
+  let n = chunk.instructions.len
+  var reached = newSeq[bool](n + 1)
+  var surely = newSeq[uint64](n + 1)    # defined on every path to here
+  var maybe = newSeq[uint64](n + 1)     # defined on some path to here
+  reached[0] = true
+  template flow(target: int, s, m: uint64) =
+    if target >= 0 and target <= n:
+      if reached[target]:
+        surely[target] = surely[target] and s
+        maybe[target] = maybe[target] or m
+      else:
+        reached[target] = true
+        surely[target] = s
+        maybe[target] = m
+  for i, inst in chunk.instructions:
+    if not reached[i]:
+      continue
+    var s = surely[i]
+    var m = maybe[i]
+    let local = inst.intArg - params
+    let bit = if local >= 0 and local < 64: 1'u64 shl local else: 0'u64
+    case inst.op
+    of opDefineLocal:
+      if (m and bit) != 0:
+        return false
+      s = s or bit
+      m = m or bit
+    of opSetLocal, opLoadLocal, opLoadLocalFast:
+      if local >= 0 and (s and bit) == 0:
+        return false
+    else:
+      discard
+    case inst.op
+    of opJump:
+      flow(inst.intArg, s, m)
+    of opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
+       opJumpIfPresentOrPop, opJumpIfAbsent:
+      flow(inst.intArg, s, m)
+      flow(i + 1, s, m)
+    of opReturn, opExplicitReturn, opReturnBareInt, opReturnIntAdd2:
+      discard
+    else:
+      flow(i + 1, s, m)
+  true
+
 proc deriveScopelessChunk*(proto: FunctionProto) =
-  ## Scopeless calling convention: a leaf, param-only, untyped body can run
-  ## with the CALLER's scope register — arguments stay on the shared operand
-  ## stack and opLoadArg reads them at base+index — so the call needs no scope
-  ## acquire/bind/release at all. The original chunk stays intact for every
+  ## Scopeless calling convention: a leaf, untyped body can run with the
+  ## CALLER's scope register — arguments stay on the shared operand stack and
+  ## opLoadArg reads them at base+index — so the call needs no scope
+  ## acquire/bind/release at all. Its own locals live there too, in cells
+  ## after the arguments that the derived chunk's first instructions push
+  ## (one nil each); `let` and `set` of one store into its cell (opStoreArg),
+  ## and the frame's return releases them with the arguments. The original
+  ## chunk stays intact for every
   ## scope-based entry point (applyCall, actors, fibers, protocol dispatch);
   ## only the VM's direct-call fast path uses scopelessChunk, so a call path
   ## without the integration degrades to the classic convention instead of
@@ -3919,7 +3984,7 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
       (proto.hasParamTypes and not typedOk) or
       (proto.hasReturnType and not typedOk) or
       proto.requiredPositional != proto.params.len or
-      proto.localNames.len != proto.params.len:
+      proto.localNames.len < proto.params.len:
     return
   for i, slot in proto.positionalSlots:
     if slot != i:
@@ -3928,6 +3993,9 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
   if chunk == nil or chunk.functions.len != 0 or chunk.subchunks.len != 0:
     return
   var readsFields = false
+  let extra = proto.localNames.len - proto.params.len
+  if extra > 64:
+    return
   for i, inst in chunk.instructions:
     if inst.op == opApplySelectorTop:
       # A one-key read of a constant path, such as `p/x` or `self/value`. Its
@@ -3940,19 +4008,53 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
         return
       readsFields = true
       continue
+    case inst.op
+    of opDefineLocal, opSetLocal:
+      # A local of the body's own, never a parameter: the classic convention
+      # adapts an assignment to a parameter's declared type.
+      if inst.intArg < proto.params.len or inst.intArg >= proto.localNames.len:
+        return
+      continue
+    of opLoadLocal, opLoadLocalFast:
+      if inst.intArg < 0 or inst.intArg >= proto.localNames.len:
+        return
+    of scopelessJumpOps:
+      # Forward only: with no loop, code order is execution order.
+      if inst.intArg <= i:
+        return
+    else:
+      discard
     if inst.op notin scopelessOps:
       return
-    if inst.op in {opLoadLocal, opLoadLocalFast} and
-        (inst.intArg < 0 or inst.intArg >= proto.params.len):
-      return
-  var rewritten = chunk.instructions
-  for i in 0 ..< rewritten.len:
-    if rewritten[i].op in {opLoadLocal, opLoadLocalFast}:
-      rewritten[i].op = opLoadArg
+  if extra > 0 and not chunk.localsDefinedWhereUsed(proto.params.len):
+    return
+  # The cells are pushed before the body runs, so every instruction index
+  # moves by `extra`.
+  var nilConstant = -1
+  var rewritten = newSeqOfCap[Instruction](chunk.instructions.len + extra)
+  var locs = newSeqOfCap[SourceLoc](chunk.instructionLocs.len + extra)
+  var constants = chunk.constants
+  if extra > 0:
+    nilConstant = constants.len
+    constants.add NIL
+  for _ in 0 ..< extra:
+    rewritten.add Instruction(op: opPushConst, intArg: nilConstant)
+    if chunk.instructionLocs.len > 0:
+      locs.add chunk.instructionLocs[0]
+  for inst in chunk.instructions:
+    var copied = inst
+    case copied.op
+    of opLoadLocal, opLoadLocalFast: copied.op = opLoadArg
+    of opDefineLocal, opSetLocal: copied.op = opStoreArg
+    of scopelessJumpOps: copied.intArg += extra
+    else: discard
+    rewritten.add copied
+  for loc in chunk.instructionLocs:
+    locs.add loc
   let alt = newChunk(chunk.sourceName)
-  alt.constants = chunk.constants
+  alt.constants = move constants
   alt.instructions = move rewritten
-  alt.instructionLocs = chunk.instructionLocs
+  alt.instructionLocs = move locs
   alt.localNames = chunk.localNames
   alt.owner = proto
   proto.scopelessNeedsIntArgs = proto.hasParamTypes

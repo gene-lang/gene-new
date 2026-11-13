@@ -557,6 +557,16 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
     validateSummary(fn.errorSummary)
     restoreChunk(fn.chunk, fn)
     restoreChunk(fn.scopelessChunk, fn)
+    if fn.scopelessChunk != nil:
+      # A scopeless body addresses its frame's cells by index: arguments and
+      # locals may be read, only locals written.
+      for inst in fn.scopelessChunk.instructions:
+        if (inst.op == opLoadArg and
+            (inst.intArg < 0 or inst.intArg >= fn.localNames.len)) or
+            (inst.op == opStoreArg and
+            (inst.intArg < fn.params.len or inst.intArg >= fn.localNames.len)):
+          raise newException(ValueError,
+            "encoded GIR contains a scopeless frame index out of range")
     for defaultValue in fn.paramDefaults:
       restoreChunk(defaultValue.defaultChunk, nil)
     for parameter in fn.namedParams:

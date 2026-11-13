@@ -84,6 +84,42 @@ suite "typed node push checks only the new item when that is exact":
       (repeat i in 5000 (set total (+ total bag/%i)))
       [total bag/4999 bag/x]""", "[12497500 4999 1]"
 
+suite "locals on the scopeless calling convention":
+  const locals = """
+    (fn chain [x] (let y (* x 2)) (let z (+ y 1)) (+ y z))
+    (fn reassign [x] (var y 1) (set y (+ y x)) y)
+    (fn cond [x] (if (> x 0) (do (let y 1) (+ x y)) x))
+    (fn pair [x] (let y [x x]) (let z {^a y}) z/a)
+    (fn bad [x] (let y (+ x "s")) y)
+    (fn outer [x] (chain x))
+    (fn typed [x] (let y : Int 3) (+ x y))
+    (fn set_param [x] (set x 1) x)
+    (fn looped [n] (var t 0) (repeat i in n (set t (+ t i))) t)
+    (fn mk [x] (let y x) (fn [] y))
+    (fn branchvar [flag] (if flag (var x 1) nil) x)
+    (fn both [flag] (if flag (var x 1) (var x 2)) x)
+    """
+
+  test "a leaf whose locals are defined on every path to their uses gets one":
+    let chunk = compileSource(locals & " nil")
+    for name in ["chain", "reassign", "cond", "pair", "bad", "both"]:
+      checkpoint name
+      check chunk.protoNamed(name).scopelessChunk != nil
+    # A typed local, a parameter assigned, a loop, a closure, and a local
+    # read on a path that may not have defined it keep the call scope.
+    for name in ["typed", "set_param", "looped", "mk", "branchvar"]:
+      checkpoint name
+      check chunk.protoNamed(name).scopelessChunk == nil
+
+  test "results, errors, tail calls and calls from a native are unchanged":
+    # Expected values are the classic convention's.
+    fastCk locals & """
+      [(chain 3) (reassign 4) (cond 5) (cond -1) (pair 3)
+       (try (bad 1) catch Error $err_msg) (outer 2) ([1 2] .map chain)
+       (typed 1) (set_param 9) (looped 4) ((mk 7))
+       (branchvar true) (try (branchvar false) catch Error 0) (both true) (both false)]""",
+      """[13 5 6 -1 [3 3] "+ expects numbers, got vkString" 9 [5 9] 4 1 6 7 1 0 1 2]"""
+
 suite "scalar annotations on the scopeless calling convention":
   const calls = """
     (fn id_int [a : Int] a)
