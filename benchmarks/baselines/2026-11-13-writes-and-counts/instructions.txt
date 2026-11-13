@@ -46,3 +46,24 @@ closure       K 14,711 M / 2,258 M   ARC 14,503 M / 2,261 M
 list-push     K 16,973 M / 2,505 M   ARC 17,517 M / 2,725 M
 field-write   K 13,351 M / 1,794 M   ARC 13,862 M / 1,998 M
 map-literal   K 22,914 M / 3,356 M   ARC 23,274 M / 3,432 M
+
+# Later the same day, each against the commit before.
+#   S    60407486 interpolation parts appended in place
+#   N    8917a7fd NativeCall borrows its name, location and scope
+#   FI   5e46f412 the finishImplAssembly test inline
+interpolation   C 17,563 M / 2,812 M   S 13,114 M / 2,024 M   -25% / -27%   (3 M)
+map-strkey      C 21,724 M / 3,664 M   S 18,929 M / 3,040 M   -13% / -15%   (2 M puts, 2 M gets)
+interpolation   S 13,096 M / 1,997 M   N 12,245 M / 1,849 M   -6.5%
+map-strkey      S 18,896 M / 2,977 M   N 17,800 M / 2,879 M   -5.8%
+send            S 22,698 M             N 22,689 M               0%
+# FI against N:
+fib             N  2,347 M / 486 M     FI  2,298 M / 482 M     -2.1%   (fib 30)
+while-long      N 18,213 M             FI 18,119 M             -0.5%
+scoped-calls    N 15,152 M             FI 14,975 M             -1.2%
+send            N 22,690 M             FI 22,504 M             -0.8%
+closure         N 14,870 M             FI 14,688 M             -1.2%
+alloc           N 21,744 M             FI 21,728 M             -0.1%
+typed-call      N 20,488 M             FI 20,483 M              0%
+typed-list-param N 12,561 M            FI 12,374 M             -1.5%
+# typed-list-param, B / C / FI: 12,536 M / 12,531 M / 12,346 M (its paired
+# 1.045 in pairs/kernels-head.tsv has no instruction behind it; a 45 ms row).

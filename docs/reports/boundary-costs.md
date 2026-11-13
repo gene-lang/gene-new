@@ -558,6 +558,29 @@ Together, against `9c1c159a` in seven paired rounds: field_write 0.75,
 alloc_record 0.82, send 0.89, field_rw 0.91 (7 of 7 each), every other kernel
 0.97 to 1.03.
 
+Three more the same day:
+
+- **Interpolation** (`60407486`). `to_str` built each part's text as a string
+  of its own and then copied it in. A Str or a small Int is now appended in
+  place, with the same text: 25% fewer instructions for an interpolation, 13%
+  for the map kernel, whose keys are interpolated.
+- **What a native call copies** (`8917a7fd`). A native that takes the call
+  context got its own name and the call's source location copied into the
+  `NativeCall`, two strings, and its scope as a counted reference that 229
+  natives counted again. They are borrowed now: the creator holds them for
+  the call, and a `NativeCall` is never kept. 6.5% fewer instructions for an
+  interpolation, 5.8% for the map kernel.
+- **Every return** called `finishImplAssembly`, which almost always returns at
+  once. The return path tests first: `fib` 2.1% fewer instructions, calls and
+  closures 1.2%.
+
+At `5e46f412` against `9c1c159a`, seven paired rounds: str_interp 0.65,
+map_strkey 0.79, field_write 0.81, alloc_record 0.84, send 0.90, field_rw
+0.90, each 7 of 7; the rest 0.98 to 1.05, none with more instructions.
+Against CPython 3.14.3 (`run_kernels.gene`): str_interp 2.1x to 1.3x,
+map_strkey 2.6x to 2.1x, field_write 7.3x to 5.5x, alloc_record 3.1x to 2.6x,
+field_rw 3.5x to 3.0x, send 6.9x to 6.1x.
+
 Not kept:
 
 - `kind` forced inline (`always_inline`). Clang keeps about 400 calls to
