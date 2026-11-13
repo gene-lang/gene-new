@@ -23,9 +23,14 @@ The kernel file has no call with a local; `instructions.txt` and
 - `pairs/kernels-out-of-line.tsv`: `Y` = `X` with opStoreArg's handler out
   of line: worse (str_interp 1.10, list pushes 1.05). Not kept.
 
-The remaining str_interp and field_write cost (up to 6% in one batch) runs the
-same instructions as `B`: it is the new opStoreArg arm moving `runLoop`'s
-blocks, which no profile-free build controls.
+The str_interp row is not a cost of the new code. `str-interp/` traces it:
+the kernel's string buffers alternate between two allocator cells, and it runs
+8-9% slower on either build when one of them is the only free cell of a full
+chunk, which is the state the head's heap is in when the kernel starts. With
+the same heap before it, the head and `B` take the same time. An earlier
+version of this file blamed the opStoreArg arm; the head without that arm is
+as slow (`str-interp/kernels-by-step.tsv`). field_write measured 1.02 to 1.06
+across batches and has not been traced.
 
 D3 as proposed (`docs/proposals/vm-dispatch-core.md`) keeps a non-leaf body's
 locals in its frame too, with the scope register holding the defining scope.

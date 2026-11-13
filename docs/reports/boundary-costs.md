@@ -615,9 +615,18 @@ Evidence in `benchmarks/baselines/2026-11-13-call-scopes/`.
   loop): a `var` in one branch of an `if` stays visible after it. A call with
   one local runs 20% fewer instructions and 25% fewer cycles, per call.
 
-The new opStoreArg arm still moves blocks: str_interp runs 1.07-1.08 and
-field_write 1.03-1.06 of their time on the same instructions. Moving the
-handler out of line made it worse.
+`str_interp` reads 1.07 of its time at the head, and that is not the
+interpreter. Each iteration allocates a string and frees the last, so its
+buffers alternate between two allocator cells; when one is the only free cell
+of a full chunk, the loop runs 8% to 9% slower on the same instructions
+within 0.2%. A lone free cell placed before the kernel does that to
+`3d499e85` too (336 against 308 ms, 7 of 7 rounds), and with the same heap
+before it both builds take the same time. The head starts the kernel in that
+state because the `inc` message no longer takes a pooled scope, whose slots
+were in the same size class. The head without the opStoreArg arm is as slow,
+so the arm is not the cause. Steps and files:
+`benchmarks/baselines/2026-11-13-call-scopes/str-interp/`. `field_write`
+measured 1.02 to 1.06 across batches and has not been traced.
 
 D3's other half, a body that calls out, needs the scope register to hold the
 defining scope and outer depths one less, and a borrowed-scope mark on the
