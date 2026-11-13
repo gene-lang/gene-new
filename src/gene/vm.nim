@@ -20108,7 +20108,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         captureContinuation(ip - 1)
         fiber.waitTask = pending
         return RunStop(kind: rskSuspend, value: NIL)
-    scope.finishImplAssembly(chunk)
+    # Tested here: nearly every return has no assembly and no pending core
+    # types, and the call alone was about 3% of a recursive function's time.
+    if scope.implAssembly != nil or scope.corePendingTypes.len > 0:
+      scope.finishImplAssembly(chunk)
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
     trimTailTraceFrames(frames.len)
