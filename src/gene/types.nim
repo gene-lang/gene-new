@@ -223,6 +223,16 @@ proc installContinuationEdgesHook*(hook: ContinuationEdgesHook) =
   ## by released-generation retirement (VM-2) for suspended generators.
   continuationEdgesHook = hook
 
+type RetirementStartHook* = proc() {.nimcall, raises: [].}
+
+var retirementStartHook: RetirementStartHook
+
+proc installRetirementStartHook*(hook: RetirementStartHook) =
+  ## Installed once by the VM. Trial deletion counts every owner of a scope,
+  ## Type and Application; the VM's pooled call scopes keep module context
+  ## that no enumerated edge accounts for, so the hook drops it first.
+  retirementStartHook = hook
+
 proc rcRetain(bits: uint64) {.raises: [].}
 proc rcRelease(bits: uint64) {.raises: [].}
 
@@ -591,6 +601,9 @@ type
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
+    loadedModuleBase*: bool # a module root bound by bindThisModule, whose own
+                            # load, cache, reload and retirement govern its
+                            # lifetime; a plain run or eval root is not one
     sandboxGenerationReleased*: bool # generation released or discarded; retirement root
     moduleBase*: Scope      # cached ancestor module root; roots identify self via moduleRoot
     moduleStatic*: bool     # unconditional module/namespace declaration scope
@@ -3979,6 +3992,8 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
   ## stored in `assumedInternal`.
   when not nimRefCountReadable:
     return 0
+  if retirementStartHook != nil:
+    retirementStartHook()
   let privateRetirement = context != nil and context.privateCompilerContext and
     context.compilerOwnerLane == currentEventLane()
   when defined(gcAtomicArc):

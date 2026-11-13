@@ -12278,6 +12278,7 @@ proc bindThisModule*(scope: Scope, name: string, path = "",
   scope.moduleRoot = true
   scope.moduleBase = nil
   scope.moduleStatic = true
+  scope.loadedModuleBase = true
   # A named module base is enumerable for reload (file modules, the reload
   # replacement, native modules). Already retained by moduleCache, so this adds
   # no lifetime beyond the module itself.
@@ -13227,7 +13228,9 @@ proc seedFunctionProtocolEntry(scope: Scope, callee: Value) {.inline.} =
     if FunctionProto(code).chunk.privateLocalSlots.len > 0:
       scope.privateSlots = FunctionProto(code).chunk.privateLocalSlots
     let selfBits = FunctionProto(code).annotationSelfBits
-    if selfBits != 0:
+    # A pooled scope was given it at acquisition; storing it again would be
+    # a retain and a release of the Type.
+    if selfBits != 0 and scope.annotationSelfType.bits != selfBits:
       scope.annotationSelfType = ownedValueFromBits(selfBits)
 
 proc resetCallScope(scope, parent: Scope, names: seq[string], mirror = false) =
@@ -13297,7 +13300,8 @@ proc acquireCallScope(parent: Scope, names: seq[string]): Scope =
 proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
                             names: seq[string],
                             keepSlotNames = true,
-                            resetSlots = true): Scope =
+                            resetSlots = true,
+                            selfBits = 0'u64): Scope =
   # Only simpleCall functions (no opDefineName/opSetName, no opTaskScope,
   # no opSupervisor, no opSpawn, no closure holding the scope) reach
   # this path. That exclusion guarantees vars/varTypes/impls/ownsTasks/
@@ -13309,6 +13313,13 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
     dec pools.callScopesLen
     result = move pools.callScopes[pools.callScopesLen]
   result.inheritScopeContext(parent)
+  # `selfBits` is the callee's annotation Self type, which the caller seeds
+  # (seedFunctionProtocolEntry). A pooled scope may still hold the one its
+  # last call had (see releaseCallScope); one call to the same message keeps
+  # it with no count, and any other call gets its own, or none.
+  if result.annotationSelfType.bits != selfBits:
+    result.annotationSelfType =
+      if selfBits != 0: ownedValueFromBits(selfBits) else: NIL
   result.slotMirror = false
   result.simpleCallScope = true
   result.runtimeMacroSlots = nil
@@ -13333,8 +13344,10 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
 
 proc acquireSimpleCallScope(parent: Scope, names: seq[string],
                             keepSlotNames = true,
-                            resetSlots = true): Scope =
-  acquireSimpleCallScope(gVmPools, parent, names, keepSlotNames, resetSlots)
+                            resetSlots = true,
+                            selfBits = 0'u64): Scope =
+  acquireSimpleCallScope(gVmPools, parent, names, keepSlotNames, resetSlots,
+                         selfBits)
 
 proc bindSingleSimpleCallSlot(scope: Scope, slot: int, value: Value) {.inline.} =
   scope.slots[slot] = value
@@ -13592,14 +13605,28 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     return
   scope.strictErrorLease = nil
   scope.compilerMacros = nil
-  scope.annotationSelfType = NIL
   scope.runtimeMacroSlots = nil
   scope.implAssembly = nil
   if scope.simpleCallScope:
     scope.clearDefinedCallSlots()
     if scope.slotTypes.len != 0:
       scope.slotTypes.setLen(0)
-    scope.inheritScopeContext(nil)
+    # A scope whose parent is a loaded module's root keeps what it inherited
+    # from it (parent, Application, module base and refs, budget) and its
+    # annotation Self type: the next call of a function of that module stores
+    # none of them again, and dropping and re-taking each was an ORC count
+    # round trip with a cycle-candidate registration. The module outlives the
+    # pool's hold, which flushCallScopePool ends before trial deletion and
+    # when the outermost run returns. Any other parent may be an activation,
+    # or a run's root its host is about to drop, so its context goes now.
+    when not defined(gcAtomicArc):
+      let keepContext = scope.parent != nil and scope.parent.loadedModuleBase
+    else:
+      const keepContext = false
+    if not keepContext:
+      scope.inheritScopeContext(nil)
+      if scope.annotationSelfType.bits != 0:
+        scope.annotationSelfType = NIL
     scope.moduleExecutionPolicy = nil
     scope.moduleRoot = false
     scope.moduleStatic = false
@@ -13614,7 +13641,12 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
       inc pools.callScopesLen
     else:
       scope.simpleCallScope = false
+      if keepContext:
+        scope.inheritScopeContext(nil)
+        if scope.annotationSelfType.bits != 0:
+          scope.annotationSelfType = NIL
     return
+  scope.annotationSelfType = NIL
   for i in 0 ..< scope.slots.len:
     scope.slots[i] = NIL
   # Composite annotations own managed values too. A pooled scope must not
@@ -13668,6 +13700,44 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
 
 proc releaseCallScope(scope: Scope) =
   releaseCallScope(gVmPools, scope)
+
+proc flushCallScopePool(pools: var VmPools) =
+  ## Drop the module context and Self types that pooled call scopes keep (see
+  ## releaseCallScope), so nothing the pool holds outlives the run that
+  ## pooled it or is counted by trial deletion as an outside owner.
+  for i in 0 ..< pools.callScopesLen:
+    let scope {.cursor.} = pools.callScopes[i]
+    scope.inheritScopeContext(nil)
+    if scope.annotationSelfType.bits != 0:
+      scope.annotationSelfType = NIL
+
+when defined(geneScopeReuseTests):
+  proc pooledCallScopesHoldingContext*(): int =
+    ## Pooled call scopes on this thread that still hold a parent or a Self
+    ## type, for the tests of releaseCallScope's retention and its flushes.
+    for i in 0 ..< gVmPools.callScopesLen:
+      let scope {.cursor.} = gVmPools.callScopes[i]
+      if scope.parent != nil or scope.annotationSelfType.bits != 0:
+        inc result
+
+proc flushCallScopePoolBeforeRetirement() {.nimcall, raises: [].} =
+  {.cast(raises: []).}:
+    flushCallScopePool(gVmPools)
+
+installRetirementStartHook(flushCallScopePoolBeforeRetirement)
+
+var vmEntryDepth {.threadvar.}: int
+  ## Nesting of `run`, `runPooled` and `runFiber` on this thread. When the
+  ## outermost returns, its host may drop the scopes and Application it ran,
+  ## so the call-scope pool lets go of their context then.
+
+template enterVm() =
+  ## First statement of an entry: its defer runs after the entry's others.
+  inc vmEntryDepth
+  defer:
+    dec vmEntryDepth
+    if vmEntryDepth == 0:
+      flushCallScopePool(gVmPools)
 
 const plainLoopBodyOps = {
   opNoop, opPushConst, opPop, opNot, opLoadName, opLoadStdlibPath, opLoadNativeFast, opLoadLocal,
@@ -22074,7 +22144,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     if proto.poolCallScope:
                       acquireSimpleCallScope(gVmPools, calleeScope, proto.localNames,
                         proto.callScopeNeedsSlotNames,
-                        proto.callScopeNeedsSlotReset)
+                        proto.callScopeNeedsSlotReset,
+                        proto.annotationSelfBits)
                     else:
                       let fresh = newScope(calleeScope)
                       fresh.prepareSlots(proto.localNames)
@@ -22245,7 +22316,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                       if proto.poolCallScope:
                         acquireSimpleCallScope(gVmPools, calleeScope, proto.localNames,
                           proto.callScopeNeedsSlotNames,
-                          proto.callScopeNeedsSlotReset)
+                          proto.callScopeNeedsSlotReset,
+                          proto.annotationSelfBits)
                       else:
                         let fresh = newScope(calleeScope)
                         fresh.prepareSlots(proto.localNames)
@@ -22844,7 +22916,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                       if proto.poolCallScope:
                         acquireSimpleCallScope(gVmPools, calleeScope, proto.localNames,
                           proto.callScopeNeedsSlotNames,
-                          proto.callScopeNeedsSlotReset)
+                          proto.callScopeNeedsSlotReset,
+                          proto.annotationSelfBits)
                       else:
                         let fresh = newScope(calleeScope)
                         fresh.prepareSlots(proto.localNames)
@@ -23092,7 +23165,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                       if fnProto.poolCallScope:
                         acquireSimpleCallScope(gVmPools, calleeScope, fnProto.localNames,
                           fnProto.callScopeNeedsSlotNames,
-                          fnProto.callScopeNeedsSlotReset)
+                          fnProto.callScopeNeedsSlotReset,
+                          fnProto.annotationSelfBits)
                       else:
                         let fresh = newScope(calleeScope)
                         fresh.prepareSlots(fnProto.localNames)
@@ -24786,6 +24860,7 @@ proc abandonReplInput(scope: Scope, chunk: Chunk, requiredTypesLen: int) =
     scope.requiredImplTypes.setLen(requiredTypesLen)
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
+  enterVm()
   defer:
     if macroContextRetirementHook != nil: macroContextRetirementHook()
   if chunk.errorsMode == ecmStrict and not chunk.errorChecksComplete:
@@ -24968,6 +25043,7 @@ proc runReplSessionForEnv*(env: Value,
 
 proc runPooled(chunk: Chunk, scope: Scope,
                validateImplRequirements = true): Value =
+  enterVm()
   withScheduler(scope):
     if chunk.localNames.len == 0:
       return run(chunk, scope, validateImplRequirements)
@@ -25353,6 +25429,7 @@ proc scheduleActor(actor: Value, scope: Scope) =
     enqueueRunnable(f)
 
 proc runFiber(f: Fiber) =
+  enterVm()
   rejectNativeCallbackWait("task execution")
   ## Run or resume `f` until it completes or parks. A spawn/await fiber settles its
   ## task and wakes its awaiters; an actor handler fiber applies its ActorStep (or
@@ -34129,7 +34206,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
           if proto.poolCallScope or policyPooledScope:
             acquireSimpleCallScope(callee.fnScope, proto.localNames,
               proto.callScopeNeedsSlotNames,
-              proto.callScopeNeedsSlotReset)
+              proto.callScopeNeedsSlotReset, proto.annotationSelfBits)
           else:
             let fresh = newScope(callee.fnScope)
             fresh.prepareSlots(proto.localNames)
