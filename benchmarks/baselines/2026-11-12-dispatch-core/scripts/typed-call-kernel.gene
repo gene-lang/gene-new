@@ -1,0 +1,5 @@
+(fn now [] ($os/monotonic_ms))
+(fn add_t [a : Int b : Int] : Int (+ a b))
+(fn bench_typed_call [n] (var total 0) (repeat i in n (set total (add_t total 1))) total)
+(var t (now)) (bench_typed_call 3000000) ($println $"typed_call_3M\t${(- (now) t)}")
+(set t (now)) (bench_typed_call 3000000) ($println $"typed_call_3M_b\t${(- (now) t)}")

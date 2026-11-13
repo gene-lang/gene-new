@@ -72,4 +72,6 @@ float         F 13,222 M / 1,903 M   FX  9,236 M / 1,119 M   -30% / -41%
 for-range     F 10,591 M / 1,573 M   FR  8,545 M / 1,145 M   -19% / -27%
 scoped        F 15,141 M             FX 15,147 M              0%
 typed-calls   F 10,352 M, 10,366 M   FR 10,357 M, 10,370 M    0% (paired time
-              1.07 in 7 rounds with the same instructions: placement)
+              1.07 in 7 rounds of the full kernel file under load 7-15; alone,
+              11 rounds under load 2.6, 0.94 and 0.96:
+              pairs/default-typed-call-recheck.tsv)

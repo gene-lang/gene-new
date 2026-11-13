@@ -38,6 +38,8 @@ The quick-trained builds leave the specs out and repeat to within 0.003%.
 - `pairs/default-fast-loop-floats.tsv`, `pairs/default-fast-loop-for-range.tsv`:
   `F` (`9cd8bc6a`) against `FX` (numbers) and `FR` (numbers and `for` over a
   range).
+- `pairs/default-typed-call-recheck.tsv`: `F`, `FR` on
+  `scripts/typed-call-kernel.gene`, 11 rounds.
 - `pairs/default-call-budget.tsv`: `H`, `G1` (`0f225ea6`, the call-budget
   guard without the shared return paths, default build).
 - `kernels-default-fast-loop/`: `benchmarks/run_kernels.gene` with the default
