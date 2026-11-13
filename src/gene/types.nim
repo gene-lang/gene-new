@@ -7585,12 +7585,14 @@ proc typeConstructor*(v: Value): Value =
 proc typeScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
     raise newException(FieldDefect, "value is not a Type")
+  # Cursors and casts: a counted local costs an ORC increment and a
+  # decrement that registers a cycle candidate.
   if objData(v).objKind == okEnum:
-    let data = EnumData(objData(v))
+    let data {.cursor.} = cast[EnumData](objData(v))
     if data.scope != nil:
       return data.scope
     return cast[Scope](data.weakScope)
-  let data = TypeData(objData(v))
+  let data {.cursor.} = cast[TypeData](objData(v))
   if data.scope != nil:
     data.scope
   else:
@@ -8501,8 +8503,17 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
   ## reclaimed after its ordinary references are dropped. A `binding` stored in
   ## a scope's slots or vars escapes in place and re-weakens on release.
   case v.bits shr TAG_SHIFT
-  of FUNCTION_TAG, NODE_TAG, OBJECT_TAG, CYCLE_OBJECT_TAG:
+  of FUNCTION_TAG, OBJECT_TAG, CYCLE_OBJECT_TAG:
     discard
+  of NODE_TAG:
+    # Of the Nodes, only a Path can hold functions to weaken. Decided by tag,
+    # since a record stored in a local comes through here on every store.
+    # Borrowed: copying a typed instance's head retained and released its
+    # Type on every store of the instance.
+    let head {.cursor.} = v.borrowedNodeHead
+    if head.tagOf == SYMBOL_TAG and head.symVal == "Path":
+      return weakenScopeFunctions(v, owner)
+    return v
   else:
     # Every binding store passes through here; only the kinds tested below
     # can carry a scope edge, and each of them has one of these four tags.
@@ -8523,11 +8534,6 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
       return cloneBoundMessageScope(v, owner, weak = true)
     if data.boundScope == nil and capture != owner:
       return cloneBoundMessageScope(v, capture, weak = false)
-  # Borrowed: copying a typed instance's head retained and released its Type
-  # on every store of the instance.
-  if v.kind == vkNode and v.borrowedNodeHead.kind == vkSymbol and
-      v.borrowedNodeHead.symVal == "Path":
-    return weakenScopeFunctions(v, owner)
   if v.kind == vkCallableView:
     let target = functionForScopeStorage(v.callableViewTarget, owner, binding)
     if target.bits != v.callableViewTarget.bits:
@@ -10691,7 +10697,7 @@ proc replaceScopeImpls*(scope: Scope, impls: sink seq[ProtocolImpl]) =
   scope.impls = impls
   previous.setLen(0)
 
-proc typeContractPending*(typ: Value): bool =
+proc typeContractPending*(typ: Value): bool {.inline.} =
   typ.tagOf == OBJECT_TAG and objData(typ).objKind == okType and
     TypeData(objData(typ)).contractPending
 

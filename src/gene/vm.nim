@@ -1021,7 +1021,13 @@ proc valueImplementsCallable(value: Value, scope: Scope): bool
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool
 proc validateLookupImpls(scope: Scope)
 proc readyTypeDirectMessage(typ: Value, name: string): Value
-proc ensureTypeContractReady(scope: Scope, typ: Value)
+proc ensureTypeContractReadyIn(scope: Scope, typ: Value)
+template ensureTypeContractReady(scope: Scope, typ: Value) =
+  ## Raises unless `typ`'s contract is ready. The scope argument, often
+  ## `typ.typeScope`, is evaluated only for a type whose contract is still
+  ## pending: reading it returns a counted Scope, on every construction.
+  if typeContractPending(typ):
+    ensureTypeContractReadyIn(scope, typ)
 proc builtinBinding(scope: Scope, name: string): Value
 proc isBuiltinCallable(value: Value): bool
 proc receiverType(value: Value): Value
@@ -15162,7 +15168,7 @@ proc resolveImplAssembly(assembly: ImplAssembly) =
       declaration.published = true
       progress = true
 
-proc ensureTypeContractReady(scope: Scope, typ: Value) =
+proc ensureTypeContractReadyIn(scope: Scope, typ: Value) =
   if scope == nil or not typ.typeContractPending: return
   let assemblies = relevantImplAssemblies(scope)
   for assembly in assemblies: resolveImplAssembly(assembly)
@@ -22567,7 +22573,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               callee = ownedValueFromBits(entry.calleeBits)
           if callee.kind == vkNil:
             let recvType = receiver.receiverType
-            ensureTypeContractReady(scope, recvType)
+            # The call, not the template's inline test: runLoop stays as it was.
+            ensureTypeContractReadyIn(scope, recvType)
             # An unqualified send reaches only type-direct messages, walking the
             # parent chain (design §3/§9). Protocol messages are always qualified —
             # `(x .P:m)` — so a protocol impl is never reached by a bare name.
@@ -34274,9 +34281,12 @@ proc constructAtCallSite(callee: Value, chunk: Chunk, at: int,
   if callee.isEnumType or callee.typeContractPending or
       callee.typeNativeCtor.kind != vkNil:
     return false
-  let site = chunk.callSites.getOrDefault(at, NIL)
+  # Read in place: `getOrDefault` copied the site node, a retain and a release.
+  var immutable = false
+  chunk.callSites.withValue(at, site):
+    immutable = site[].isNodeValue and site[].nodeImmutable
   constructed = constructTypedInstanceParts(callee, args, names, namedValues,
-    immutable = site.kind == vkNode and site.nodeImmutable)
+                                            immutable)
   true
 
 proc constructTypedInstance(callee: Value, args: openArray[Value],
@@ -34364,11 +34374,16 @@ proc constructTypedInstanceParts(callee: Value, args: openArray[Value],
   props.reserve(min(names.len, fieldCount))
   var matched = 0
   for fi in 0 ..< fieldCount:
+    # A call site usually names the fields in declaration order, so the
+    # argument at the field's own position is tried before the scan.
     var argIdx = -1
-    for i in 0 ..< names.len:
-      if names[i] == fields[fi].name:
-        argIdx = i
-        break
+    if fi < names.len and names[fi] == fields[fi].name:
+      argIdx = fi
+    else:
+      for i in 0 ..< names.len:
+        if names[i] == fields[fi].name:
+          argIdx = i
+          break
     if argIdx >= 0:
       inc matched
       let value = values[argIdx]
