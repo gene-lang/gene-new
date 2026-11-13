@@ -1,0 +1,196 @@
+diff --git a/src/gene/vm.nim b/src/gene/vm.nim
+index 2e21352e..a105fbb6 100644
+--- a/src/gene/vm.nim
++++ b/src/gene/vm.nim
+@@ -18948,6 +18948,177 @@ proc weakScopeLiveOnStack(ctx: pointer, target: pointer): bool {.nimcall.} =
+       current = current.parent
+   false
+ 
++type FastRun = object
++  ip, sp: int
++
++const fastLoopOps = {opPushConst, opLoadLocal, opLoadLocalFast, opPop, opJump,
++  opJumpIfFalse, opSetLocalPop, opNativeFast2, opNativeFastConst,
++  opCompareConstJumpIfFalse, opCompareLocalsJumpIfFalse}
++
++proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
++              startIp, startSp: int): FastRun {.noinline.} =
++  ## Runs the instructions from `startIp` whose fast path applies, exactly as
++  ## `runLoop`'s handlers would, and stops at the first one it does not run
++  ## (another opcode, a value its fast path does not take, or anything that
++  ## could raise), leaving that instruction for `runLoop`. Only called with no
++  ## budget active, so nothing here counts instructions or polls.
++  var ip = startIp
++  var sp = startSp
++  template push(v: Value) =
++    block:
++      var pushed = v
++      if sp >= stack.len:
++        spGrow(stack)
++      stack[sp] = move pushed
++      inc sp
++  let count = chunk.instructions.len
++  while ip < count:
++    let inst = addr chunk.instructions[ip]
++    case inst[].op
++    of opPushConst:
++      push chunk.constants[inst[].intArg]
++      inc ip
++    of opLoadLocal:
++      let slot = inst[].intArg
++      if slot < 0 or slot >= scope.slots.len or not scope.slotDefined(slot):
++        break
++      if scope.moduleRefs != nil and scope.moduleRefs.pendingStructural != 0 and
++          scope.slots[slot].isPendingModuleRef:
++        break
++      push scope.slots[slot]
++      inc ip
++    of opLoadLocalFast:
++      push scope.slots[inst[].intArg]
++      inc ip
++    of opPop:
++      if sp == 0:
++        break
++      dec sp
++      discard move stack[sp]
++      inc ip
++    of opJump:
++      ip = inst[].intArg
++    of opJumpIfFalse:
++      if sp == 0:
++        break
++      dec sp
++      let cond = move stack[sp]
++      if cond.isTruthy:
++        inc ip
++      else:
++        ip = inst[].intArg
++    of opSetLocalPop:
++      if sp == 0:
++        break
++      let slot = inst[].intArg
++      # assignSlot's own fast case, where it cannot raise.
++      if slot < 0 or slot >= scope.slots.len or not scope.slotDefined(slot) or
++          scope.slotTypes.len != 0 or stack[sp - 1].isHeapBacked or
++          atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
++        break
++      scope.assignSlot(slot, inst[].name, stack[sp - 1])
++      dec sp
++      discard move stack[sp]
++      ip += 2                       # and the opPop it covers
++    of opNativeFast2:
++      if sp < 2:
++        break
++      let b = stack[sp - 1]
++      let a = stack[sp - 2]
++      if not (a.isSmallInt and b.isSmallInt):
++        break
++      var value: Value
++      case NativeFastKind(inst[].intArg)
++      of nfkAdd:
++        if not smallIntAddKnown(a, b, value): break
++      of nfkSub:
++        if not smallIntSubKnown(a, b, value): break
++      of nfkLt: value = newBool(a.smallIntVal < b.smallIntVal)
++      of nfkGt: value = newBool(a.smallIntVal > b.smallIntVal)
++      of nfkLe: value = newBool(a.smallIntVal <= b.smallIntVal)
++      of nfkGe: value = newBool(a.smallIntVal >= b.smallIntVal)
++      of nfkMul: value = intMul(a, b)
++      of nfkDiv:
++        if b.smallIntVal == 0: break
++        value = newInt(a.smallIntVal div b.smallIntVal)
++      of nfkRem:
++        if b.smallIntVal == 0: break
++        value = newInt(a.smallIntVal mod b.smallIntVal)
++      of nfkEq: value = newBool(a.bits == b.bits)
++      of nfkNe: value = newBool(a.bits != b.bits)
++      else: break
++      stack[sp - 2] = value
++      dec sp
++      inc ip
++    of opNativeFastConst, opCompareConstJumpIfFalse:
++      if sp < 1:
++        break
++      let a = stack[sp - 1]
++      let b = chunk.constants[inst[].depth]
++      if not (a.isSmallInt and (inst[].flag or b.isSmallInt)):
++        break
++      let kind = NativeFastKind(inst[].intArg)
++      if inst[].op == opCompareConstJumpIfFalse:
++        let x = a.smallIntVal
++        let y = b.smallIntVal
++        var holds: bool
++        case kind
++        of nfkLt: holds = x < y
++        of nfkGt: holds = x > y
++        of nfkLe: holds = x <= y
++        of nfkGe: holds = x >= y
++        of nfkEq: holds = x == y
++        of nfkNe: holds = x != y
++        else: break
++        dec sp
++        ip = if holds: ip + 2 else: chunk.instructions[ip + 1].intArg
++        continue
++      var value: Value
++      case kind
++      of nfkAdd:
++        if not smallIntAddKnown(a, b, value): break
++      of nfkSub:
++        if not smallIntSubKnown(a, b, value): break
++      of nfkLt: value = newBool(a.smallIntVal < b.smallIntVal)
++      of nfkGt: value = newBool(a.smallIntVal > b.smallIntVal)
++      of nfkLe: value = newBool(a.smallIntVal <= b.smallIntVal)
++      of nfkGe: value = newBool(a.smallIntVal >= b.smallIntVal)
++      of nfkMul: value = intMul(a, b)
++      of nfkDiv:
++        if b.smallIntVal == 0: break
++        value = newInt(a.smallIntVal div b.smallIntVal)
++      of nfkRem:
++        if b.smallIntVal == 0: break
++        value = newInt(a.smallIntVal mod b.smallIntVal)
++      of nfkEq: value = newBool(a.bits == b.bits)
++      of nfkNe: value = newBool(a.bits != b.bits)
++      else: break
++      stack[sp - 1] = value
++      inc ip
++    of opCompareLocalsJumpIfFalse:
++      let left = inst[].intArg
++      let right = chunk.instructions[ip + 1].intArg
++      if left < 0 or left >= scope.slots.len or not scope.slotDefined(left) or
++          right < 0 or right >= scope.slots.len or
++          not scope.slotDefined(right) or not scope.slots[left].isSmallInt or
++          not scope.slots[right].isSmallInt:
++        break
++      let x = scope.slots[left].smallIntVal
++      let y = scope.slots[right].smallIntVal
++      var holds: bool
++      case NativeFastKind(chunk.instructions[ip + 2].intArg)
++      of nfkLt: holds = x < y
++      of nfkGt: holds = x > y
++      of nfkLe: holds = x <= y
++      of nfkGe: holds = x >= y
++      of nfkEq: holds = x == y
++      of nfkNe: holds = x != y
++      else: break
++      ip = if holds: ip + 4 else: chunk.instructions[ip + 3].intArg
++    else:
++      break
++  FastRun(ip: ip, sp: sp)
++
+ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
+              ipArg: var int, stopOnYield: bool,
+              validateArg = true, fiber: Fiber = nil,
+@@ -20614,6 +20785,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
+           dec remainingBudget
+         if evalBudget != nil:
+           pollDispatch()
++        elif instructionBudget <= 0 and
++            chunk.instructions[ip].op in fastLoopOps:
++          let ran = fastLoop(chunk, scope, stack, ip, sp)
++          if ran.ip != ip:
++            ip = ran.ip
++            sp = ran.sp
++            continue
+         let inst = addr chunk.instructions[ip]
+         let op = inst[].op
+         inc ip

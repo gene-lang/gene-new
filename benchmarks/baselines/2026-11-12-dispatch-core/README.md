@@ -48,3 +48,6 @@ The quick-trained builds leave the specs out and repeat to within 0.003%.
 body and each dispatch case in the generated C; `findtab.py`, `jtab.py` and
 `jtab32.py`, which locate the dispatch jump table in a disassembly and map each
 opcode to its handler's address.
+
+`patches/fast-loop-prototype.patch`: the D5 prototype on `0f225ea6`, not
+committed (measured in `instructions.txt`).

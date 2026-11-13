@@ -135,6 +135,25 @@ loop or block scope, which make a child of the current scope. The VM takes the
 convention only when no budget or policy applies to the call, since
 `applyCallBudget` may need a scope of the call's own to hold one.
 
+**D5. A small loop for the hot instructions.** Without a profile, the hot
+handlers' code depends on register allocation over all of `runLoop`: the
+`while` kernel spends about 94 instructions per dispatch, and both
+profile-free attempts to steer the compiler moved it the wrong way. D1's
+shared returns made loops slower; declaring Nim's raising procs `cold` made the
+`while` loop run 8.6% more instructions. A separate small proc that runs only
+the fast paths of the common simple instructions, and hands any other
+instruction or any case that could raise back to `runLoop`, is compiled on
+its own. A prototype for eleven instructions
+(`benchmarks/baselines/2026-11-12-dispatch-core/patches/fast-loop-prototype.patch`)
+cut the `while` loop's instructions by 18% and its cycles by 16%, and field
+writes' cycles by 10%. It cost a call with a local 3.8% more instructions at the
+loop's entry test. The small loop still pays about 77 instructions per
+instruction: `newBool`, `smallIntAddKnown` and `intMul` stay out-of-line calls,
+and every slot and stack access is bounds-checked. The cost of the design is
+a second implementation of each covered fast path, which must stay exactly
+equal to `runLoop`'s; differential tests would have to run every suite with
+it on and off.
+
 **D4. Threaded dispatch.** PGO copies the dispatch into hot handlers; the
 default build keeps one central dispatch block. LLVM duplicates a block that
 ends in an indirect branch into its predecessors only while it is small, so a
