@@ -3141,6 +3141,13 @@ proc rcRetain(bits: uint64) =
   rcRetainOther(bits)
 
 proc rcRetainFull(bits: uint64) =
+  ## The object arms here and in `rcReleaseFull` read the box through cursors
+  ## and `cast`, not counted locals and checked conversions (`TypeData(data)`):
+  ## each counted local was an ORC increment plus a decrement that registers a
+  ## cycle candidate (`rememberCycle`), two of each on every retain or release
+  ## of a Type, so on every construction of a record. The box's own reference
+  ## keeps the object alive throughout, and the tag and `objKind` tests have
+  ## established the dynamic type the cast names.
   case bits shr TAG_SHIFT
   of STRING_TAG: retainManual(cast[ptr GeneString](bits and PAYLOAD_MASK))
   of INT64_TAG:  retainManual(cast[ptr GeneInt64](bits and PAYLOAD_MASK))
@@ -3159,10 +3166,10 @@ proc rcRetainFull(bits: uint64) =
   of FUNCTION_TAG:  retainManual(cast[ptr GeneFunction](bits and PAYLOAD_MASK))
   of NATIVE_FN_TAG: retainManual(cast[ptr GeneNativeFn](bits and PAYLOAD_MASK))
   of CYCLE_OBJECT_TAG:
-    let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
     case data.objKind
     of okEnv:
-      let d = EnvData(data)
+      let d {.cursor.} = cast[EnvData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr d.cycleRefs, 1, ATOMIC_RELAXED)
@@ -3171,7 +3178,7 @@ proc rcRetainFull(bits: uint64) =
       else:
         inc d.cycleRefs
     of okCell, okAtomicCell:
-      let d = CellData(data)
+      let d {.cursor.} = cast[CellData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr d.cycleRefs, 1, ATOMIC_RELAXED)
@@ -3183,9 +3190,9 @@ proc rcRetainFull(bits: uint64) =
       discard
     GC_ref(data)
   of OBJECT_TAG:
-    let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
     if data.objKind == okModule:
-      let module = ModuleData(data)
+      let module {.cursor.} = cast[ModuleData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr module.valueRefs, 1, ATOMIC_RELAXED)
@@ -3194,7 +3201,7 @@ proc rcRetainFull(bits: uint64) =
       else:
         inc module.valueRefs
     elif data.objKind == okProtocol:
-      let protocol = ProtocolData(data)
+      let protocol {.cursor.} = cast[ProtocolData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr protocol.valueRefs, 1, ATOMIC_RELAXED)
@@ -3203,7 +3210,7 @@ proc rcRetainFull(bits: uint64) =
       else:
         inc protocol.valueRefs
     elif data.objKind == okType:
-      let typ = TypeData(data)
+      let typ {.cursor.} = cast[TypeData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr typ.valueRefs, 1, ATOMIC_RELAXED)
@@ -4750,11 +4757,11 @@ proc rcReleaseFull(bits: uint64) =
     releaseManual(p):
       reset(p[]); dealloc(p); trackFree(GeneNativeFn)
   of CYCLE_OBJECT_TAG:
-    let data = cast[GeneObjectData](cast[pointer](payload))
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
     var shouldTryCycle = false
     case data.objKind
     of okEnv:
-      let d = EnvData(data)
+      let d {.cursor.} = cast[EnvData](data)
       let newRefs =
         when threadedRc:
           if isSharedFlag(data.shared):
@@ -4769,7 +4776,7 @@ proc rcReleaseFull(bits: uint64) =
           d.cycleRefs
       shouldTryCycle = newRefs > 0
     of okCell, okAtomicCell:
-      let d = CellData(data)
+      let d {.cursor.} = cast[CellData](data)
       let newRefs =
         when threadedRc:
           if isSharedFlag(data.shared):
@@ -4794,13 +4801,18 @@ proc rcReleaseFull(bits: uint64) =
           weakenOwnedFunctions(candidates)
     else:
       discard
-    GC_unref(data)
     if shouldTryCycle:
-      tryCollectObjectCycle(data)
+      # `data` is a cursor; the trial deletion starts from an owned reference,
+      # as it did when this local was counted.
+      let seed: GeneObjectData = data
+      GC_unref(data)
+      tryCollectObjectCycle(seed)
+    else:
+      GC_unref(data)
   of OBJECT_TAG:
-    let data = cast[GeneObjectData](cast[pointer](payload))
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
     if data.objKind == okModule:
-      let module = ModuleData(data)
+      let module {.cursor.} = cast[ModuleData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchSub(addr module.valueRefs, 1, ATOMIC_ACQ_REL)
@@ -4809,7 +4821,7 @@ proc rcReleaseFull(bits: uint64) =
       else:
         dec module.valueRefs
     elif data.objKind == okProtocol:
-      let protocol = ProtocolData(data)
+      let protocol {.cursor.} = cast[ProtocolData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchSub(addr protocol.valueRefs, 1, ATOMIC_ACQ_REL)
@@ -4818,7 +4830,7 @@ proc rcReleaseFull(bits: uint64) =
       else:
         dec protocol.valueRefs
     elif data.objKind == okType:
-      let typ = TypeData(data)
+      let typ {.cursor.} = cast[TypeData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchSub(addr typ.valueRefs, 1, ATOMIC_ACQ_REL)
