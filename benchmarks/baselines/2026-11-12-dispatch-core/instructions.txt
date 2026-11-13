@@ -1,0 +1,13 @@
+# Instructions retired, from `/usr/bin/time -l BINARY run PROGRAM`, whole process.
+# while-long: scripts/while-long.gene, 20,000,000 iterations of the while kernel.
+# scoped: 5,000,000 calls of (fn add_local [x] (let y 3) (+ x y)) from a repeat loop.
+# Labels as in README.md.
+
+program     build   run 1         run 2
+while-long  HP      27,817 M      27,819 M
+while-long  DP      25,178 M      25,178 M      (25,179 M in a later batch)
+while-long  D2P     24,981 M      24,960 M
+while-long  D3P     27,658 M      27,658 M
+while-long  D4P     25,178 M
+scoped      DP      14,624 M
+scoped      D4P     14,279 M      (69 fewer per call)
