@@ -1,7 +1,13 @@
 # The Python side of kernels.gene: the same kernels, names and iteration counts.
 import time
 def now(): return time.perf_counter()*1000
-def report(name, start, result): print(f"{name}\t{now()-start:.0f}\t{result}")
+def gene(value):
+    """The result as Gene prints it, so run_kernels.gene can compare it with
+    Gene's exactly."""
+    if isinstance(value, list): return "[" + " ".join(gene(v) for v in value) + "]"
+    if isinstance(value, str): return '"' + value + '"'
+    return str(value)
+def report(name, start, result): print(f"{name}\t{now()-start:.0f}\t{gene(result)}")
 
 def fib(n): return n if n < 2 else fib(n-1) + fib(n-2)
 def bench_fib(): return fib(30)

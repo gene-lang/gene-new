@@ -20,6 +20,19 @@
     (rows .put cells/0 {^ms ($parse/parse_int cells/1) ^result cells/2}))
   rows)
 
+(fn agree [expected label rows]
+  # `rows`, kernel name -> {^ms ^result} from the variant `label`, must name
+  # exactly the kernels in `expected`, kernel name -> the Gene binary's
+  # result, and give the same result for each. A variant that repeats a wrong
+  # answer is stable, so only this comparison catches it.
+  ($assert (== ($map_size rows) ($map_size expected))
+    $"${label} ran ${($map_size rows)} kernels, gene ${($map_size expected)}")
+  (map_for [name result] in expected
+    ($assert ($has_key? rows name) $"${label} did not run ${name}")
+    (let row (rows .get name))
+    ($assert (== row/result result)
+      $"${label} disagrees with gene on ${name}: ${row/result} against ${result}")))
+
 (fn median_of [values]
   (let summary (distribution values))
   summary/median)
@@ -49,11 +62,15 @@
   (let names [])
   (let times {})
   (let results {})
+  (let expected {})
   (repeat round in (+ samples 1)
     (for variant in variants
       (let rows (parse_rows (capture variant/executable variant/arguments) variant/label))
       (if (&& (== round 0) (== variant/label "gene"))
-        (map_for [name row] in rows (names .push name)))
+        (map_for [name row] in rows
+          (names .push name)
+          (expected .put name row/result)))
+      (agree expected variant/label rows)
       (map_for [name row] in rows
         (let key $"${variant/label}\t${name}")
         (set raw $"${raw}${round}\t${variant/label}\t${name}\t${row/ms}\t${row/result}\n")
