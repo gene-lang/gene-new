@@ -11785,14 +11785,17 @@ proc applyCallBudget(proto: FunctionProto, boundScope: var Scope,
   ## depleted budget is never stored on a shared closure.
   # Roots are borrowed (moduleRootAddr), and the caller's is needed only when
   # the callee's module has an execution policy to enter.
-  let calleeRoot {.cursor.} = cast[Scope](
-    if rootsKnown: cast[pointer](calleeRootHint)
-    else: lexicalScope.moduleRootAddr())
-  let entersPolicy = calleeRoot != nil and
-    calleeRoot.moduleExecutionPolicy != nil and
-    cast[pointer](calleeRoot) != (
-      if rootsKnown: cast[pointer](callerRootHint)
-      else: callerScope.moduleRootAddr())
+  var calleeRoot {.cursor.}: Scope = nil
+  var entersPolicy = false
+  if modulePoliciesInstalled():
+    calleeRoot = cast[Scope](
+      if rootsKnown: cast[pointer](calleeRootHint)
+      else: lexicalScope.moduleRootAddr())
+    entersPolicy = calleeRoot != nil and
+      calleeRoot.moduleExecutionPolicy != nil and
+      cast[pointer](calleeRoot) != (
+        if rootsKnown: cast[pointer](callerRootHint)
+        else: callerScope.moduleRootAddr())
   let callerBudget =
     if callerScope != nil and callerScope.evalBudget != nil:
       callerScope.evalBudget
@@ -19976,6 +19979,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     else:
       frameReturn(retValue)
 
+  template loopCallBudget(proto: FunctionProto, boundScope: var Scope,
+                          lexicalScope: Scope) =
+    ## `applyCallBudget` for a call made here, skipped when it would do
+    ## nothing: no budget runs (`activeVmBudget` is this loop's `evalBudget`) or
+    ## sits on the caller's scope, no module policy exists, none is bound to
+    ## the function and none sits on the callee's scope.
+    if scope.evalBudget != nil or evalBudget != nil or
+        modulePoliciesInstalled() or
+        (proto != nil and proto.boundExecutionPolicy != nil) or
+        boundScope.evalBudget != nil:
+      applyCallBudget(proto, boundScope, lexicalScope, scope)
+
   template requestReturn(mode: PendingReturnMode, value: Value) =
     ## Return from the current frame through `runPendingReturn`.
     pendingReturnValue = value
@@ -20369,7 +20384,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         contractProto.callScopeNeedsSlotNames,
         contractProto.callScopeNeedsSlotReset)
       checkedScope.bindSimpleCallSlots(contractProto, [callPayload])
-      applyCallBudget(contractProto, checkedScope, scope, scope)
+      loopCallBudget(contractProto, checkedScope, scope)
       let checks = checkedView.callableViewSignature.props.hasKey("errors")
       let errors = callableViewErrors(checkedView)
       strunc(operandBase)
@@ -21737,7 +21752,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 else:
                     calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
-                applyCallBudget(proto, callScope, calleeScope, scope)
+                loopCallBudget(proto, callScope, calleeScope)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
                   callee.fnName, sp, inst[].tail,
@@ -21913,7 +21928,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(argsStart)
-                applyCallBudget(proto, callScope, calleeScope, scope)
+                loopCallBudget(proto, callScope, calleeScope)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
                   callee.fnName, argsStart, inst[].tail,
@@ -21953,14 +21968,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                                      stack[argsStart])
                   boundReturnType = proto.returnType
                   usedUnaryIntFast = true
-                  applyCallBudget(proto, boundScope, calleeScope, scope)
+                  loopCallBudget(proto, boundScope, calleeScope)
                 elif proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
                   boundScope = bindPositionalIntCallScope(callee, proto,
                     stack.toOpenArray(argsStart, (sp - 1)),
                     argsKnownBareInt = inst[].flag)
                   boundReturnType = proto.returnType
-                  applyCallBudget(proto, boundScope, calleeScope, scope)
+                  loopCallBudget(proto, boundScope, calleeScope)
                 else:
                   let bound =
                     if argCount == 0:
@@ -22510,7 +22525,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)        # consume callee + args
-                applyCallBudget(proto, callScope, calleeScope, scope)
+                loopCallBudget(proto, callScope, calleeScope)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
                   callee.fnName, calleeIndex, inst[].tail,
@@ -22528,13 +22543,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     callee.fnName, stack.toOpenArray(argsStart, (sp - 1)),
                     inst[].names, stack, calleeIndex + 1)
                   boundReturnType = proto.returnType
-                  applyCallBudget(proto, boundScope, calleeScope, scope)
+                  loopCallBudget(proto, boundScope, calleeScope)
                 elif namedCount == 0 and proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
                   boundScope = bindPositionalIntCallScope(callee, proto,
                     stack.toOpenArray(argsStart, (sp - 1)))
                   boundReturnType = proto.returnType
-                  applyCallBudget(proto, boundScope, calleeScope, scope)
+                  loopCallBudget(proto, boundScope, calleeScope)
                 else:
                   var named: NamedArgs
                   if namedCount > 0:
@@ -22757,7 +22772,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)
-                applyCallBudget(fnProto, callScope, calleeScope, scope)
+                loopCallBudget(fnProto, callScope, calleeScope)
                 enterBytecodeCall(fnProto.chunk, callScope,
                   fnProto.poolCallScope, fnProto.frameNeedsImplValidation,
                   NIL, "", false, @[], callee.fnName, calleeIndex, inst[].tail,
@@ -22772,7 +22787,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundScope = bindPositionalIntCallScope(callee, fnProto,
                                                           args)
                   boundReturnType = fnProto.returnType
-                  applyCallBudget(fnProto, boundScope, calleeScope, scope)
+                  loopCallBudget(fnProto, boundScope, calleeScope)
                 else:
                   var bound = bindBudgetedCallScope(callee, fnProto, args, named, scope)
                   boundScope = bound.scope

@@ -601,8 +601,9 @@ type
     ## Immutable policy installed by the trusted sandbox host after a
     ## declaration-only module load. A fresh budget is created whenever an
     ## external call enters this module, so escaped functions and protocol
-    ## methods cannot bypass the loader's supervision boundary.
-    moduleExecutionPolicy*: ModuleExecutionPolicy
+    ## methods cannot bypass the loader's supervision boundary. Written only
+    ## through `moduleExecutionPolicy=`, which keeps `modulePoliciesInstalled`.
+    moduleExecutionPolicy: ModuleExecutionPolicy
     sandboxGenerationId*: uint64
     ownsTasks*: bool
     ownedTasks*: seq[Value]
@@ -1408,6 +1409,26 @@ type
     qualifier: Value      # the Protocol, or NIL for `Self:`
     boundScope: Scope     # where the value was written — impls resolve there
     weakScope: pointer    # scope-owned binding back-reference
+
+var moduleExecutionPolicyInstalled: bool
+  ## Set before any scope is given a module execution policy, and never
+  ## cleared. Until then no call can enter one, so the call budget code does
+  ## not look for the callee's and the caller's module roots, which walks both
+  ## scope chains on every call.
+
+proc modulePoliciesInstalled*(): bool {.inline.} =
+  atomicLoadN(addr moduleExecutionPolicyInstalled, ATOMIC_ACQUIRE)
+
+proc moduleExecutionPolicy*(scope: Scope): ModuleExecutionPolicy {.inline.} =
+  scope.moduleExecutionPolicy
+
+proc `moduleExecutionPolicy=`*(scope: Scope,
+                               policy: ModuleExecutionPolicy) {.inline.} =
+  ## The only writer of the field outside this module, so a policy never
+  ## exists while `modulePoliciesInstalled` is false.
+  if policy != nil:
+    atomicStoreN(addr moduleExecutionPolicyInstalled, true, ATOMIC_RELEASE)
+  scope.moduleExecutionPolicy = policy
 
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
