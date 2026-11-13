@@ -192,6 +192,26 @@ suite "field writes by key id":
       [(try (set frozen/x 2) catch Error $err_msg) plain]""",
       """["cannot mutate immutable Node" (data ^a 2 ^b "new")]"""
 
+  test "unmanaged values of each kind, an inherited field and other heads":
+    fastCk """
+      (type Q ^props {^b Bool ^c Char ^f Float ^s Symbol ^a Any ^n Int})
+      (type R : Q ^props {^m Int})
+      (let q (Q ^b true ^c 'a' ^f 1.0 ^s (quote x) ^a 1 ^n 2))
+      (set q/b false) (set q/c 'z') (set q/f 2.5) (set q/s (quote y))
+      (set q/a nil) (set q/a 'c') (set q/n -3)
+      (let r (R ^b true ^c 'a' ^f 1.0 ^s (quote x) ^a 1 ^n 2 ^m 4))
+      (set r/n 7) (set r/m 8)
+      (let h (quote ("head" ^a 1))) (set h/a 2)
+      [q r h
+       (try (set q/b 1) catch TypeError $err_msg)
+       (try (set q/c true) catch TypeError $err_msg)
+       (try (set r/m 1.5) catch TypeError $err_msg)]""",
+      """[((type Q) ^!b ^c 'z' ^f 2.5 ^s y ^a 'c' ^n -3) """ &
+      """((type R) ^^b ^c 'a' ^f 1.0 ^s x ^a 1 ^n 7 ^m 8) ("head" ^a 2) """ &
+      """"field 'b' for Q expected Bool, got Int" """ &
+      """"field 'c' for Q expected Char, got Bool" """ &
+      """"field 'm' for R expected Int, got Float"]"""
+
   test "a message that writes its own field":
     fastCk """
       (type C ^props {^n Int} (message inc [d] (set self/n (+ self/n d))))

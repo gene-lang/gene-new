@@ -8608,6 +8608,32 @@ proc setMutableChild(target, segment, value: Value): Value =
     raise newException(GeneError,
       "set cannot assign through " & declarationKind(target))
 
+proc trySetUnmanagedProp(node: Value, keyId: int32, value: Value): bool =
+  ## `setMutableChild`'s write of an unmanaged value (nil, Bool, small Int,
+  ## Char, Symbol, immediate Float) to one prop of a mutable Node, done in one
+  ## place: the head is a Symbol, or a record Type that declares the key with
+  ## no annotation or one the value's kind satisfies. Such a value holds no
+  ## caller environment and no function, so the general path would make no
+  ## other call and store it as it is. Anything else returns false having
+  ## changed nothing, and the general path stores the value or raises.
+  if node.nodeImmutable:
+    return false
+  let head {.cursor.} = node.borrowedNodeHead
+  if head.isSymbolValue:
+    node.setNodePropById(keyId, value)
+    return true
+  if not head.isRecordType:
+    return false
+  let fields = addr head.borrowedTypeFields
+  for i in 0 ..< fields[].len:
+    if fields[][i].nameId == keyId:
+      if fields[][i].typeExpr.isNil or
+          bareScalarSatisfied(fields[][i].typeExpr, value):
+        node.setNodePropById(keyId, value)
+        return true
+      return false
+  false
+
 proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
     {.noinline.} =
   ## Out of line on purpose. The dispatch switch is I-cache sensitive — the
@@ -8615,6 +8641,13 @@ proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
   ## cost 3-7% across the call family on two independent paired batches.
   ## Operands are read in place: the stack keeps owning them until the arm
   ## truncates, so an unwind has exactly one owner to release.
+  if segCount == 1:
+    let value {.cursor.} = stack[baseIndex + 2]
+    let base {.cursor.} = stack[baseIndex]
+    let segment {.cursor.} = stack[baseIndex + 1]
+    if not value.isManaged and base.isNodeValue and segment.isSymbolValue and
+        trySetUnmanagedProp(base, segment.symbolId, value):
+      return value
   var target = stack[baseIndex]
   for i in 0 ..< segCount - 1:
     target = readSetPathChild(target, stack[baseIndex + 1 + i])

@@ -5515,6 +5515,9 @@ proc isNodeValue*(v: Value): bool {.inline.} =
   ## A Node, typed instances included, by tag alone.
   v.tagOf == NODE_TAG
 
+proc isSymbolValue*(v: Value): bool {.inline.} =
+  v.tagOf == SYMBOL_TAG
+
 proc plainPathKeyId*(selector: Value): int32 {.inline.} =
   ## For the selector of a plain one-key read (`row/amount`) — a Node with no
   ## props whose single segment is a Sym, or a Str other than a `.msg` /
@@ -7496,6 +7499,13 @@ proc isNativeWrapperType*(v: Value): bool {.inline.} =
   ## than walking the ancestry keeps the construction and write gates O(1).
   v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
     TypeData(objData(v)).repr == trNativeWrapper
+
+proc isRecordType*(v: Value): bool {.inline.} =
+  ## A Type whose instances keep their fields as props a checked write may
+  ## store into: not an Enum, and not a native wrapper, whose props hold
+  ## native state.
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
+    TypeData(objData(v)).repr != trNativeWrapper
 
 proc typeFields*(v: Value): seq[TypeField] =
   ## Full field schema, parent fields first (inheritance is merged at newType).
