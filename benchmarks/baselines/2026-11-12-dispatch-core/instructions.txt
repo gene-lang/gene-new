@@ -54,3 +54,14 @@ while-long    G1 24,460 M / 3,694 M   FL 20,018 M / 3,108 M   -18% / -16%
 scoped        G1 15,119 M / 2,358 M   FL 15,691 M / 2,354 M   +3.8% /  0%
 map-literal   G1 13,728 M / 2,037 M   FL 13,948 M / 2,103 M   +1.6% / +3%
 field-write   G1 17,685 M / 2,538 M   FL 16,575 M / 2,287 M   -6.3% / -10%
+
+# Default builds: 0f225ea6 (G1) against fastLoop as committed, entered at
+# opLoopEnter for loops made only of its instructions (FL). Instructions /
+# cycles, one run each.
+while-long    G1 24,486 M / 3,553 M   FL 18,079 M / 2,338 M   -26% / -34%
+scoped        G1 15,123 M / 2,413 M   FL 15,121 M / 2,314 M     0%
+map-literal   G1 13,727 M / 2,003 M   FL 13,729 M / 1,965 M     0%
+field-write   G1 17,686 M / 2,438 M   FL 17,687 M / 2,405 M     0%
+# Entered at every backward opJump instead, the call in opJump's handler
+# changed the code of the others: a call with a local +3.2%, field writes
+# +4.2% in instructions, with no fastLoop run in either.

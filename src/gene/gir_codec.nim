@@ -517,6 +517,7 @@ proc toJsonHook(chunk: Chunk,
   var portable = chunk[]
   portable.owner = nil
   portable.dispatchCache = @[]
+  portable.fastLoopJumps = @[]
   portable.spawnPublished = false
   portable.spawnPublishedSuperBits = 0
   portable.plainLoopBody = 0
@@ -641,6 +642,7 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
       else: discard
     chunk.owner = owner
     chunk.dispatchCache = @[]
+    chunk.fastLoopJumps = @[]
     chunk.spawnPublished = false
     chunk.spawnPublishedSuperBits = 0
     chunk.plainLoopBody = 0
@@ -718,7 +720,8 @@ proc copyExecutionTemplate[T](source: T, copies: var Table[pointer, pointer]): T
       result.add copyExecutionTemplate(value, copies)
   elif T is object or T is tuple:
     for name, original, copied in fieldPairs(source, result):
-      when T is typeof(default(Chunk)[]) and name in ["owner", "dispatchCache", "spawnPublished",
+      when T is typeof(default(Chunk)[]) and name in ["owner", "dispatchCache", "fastLoopJumps",
+                                                  "spawnPublished",
                                                   "spawnPublishedSuperBits", "plainLoopBody"]:
         discard
       else:

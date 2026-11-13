@@ -6,11 +6,13 @@ against about 2. On `perf/python-gap` the call-budget guard (`113c9fa9`) is
 kept. D1's shared return paths (`908bb4e0`) were reverted (`0f225ea6`)
 because they paid only with a profile, and call entry stays inline after two
 attempts. D2 is answered: without a profile, block placement, not code size,
-decides the dispatch loop's speed. D3 and D4 are open. Evidence is in
+decides the dispatch loop's speed. D5, a separate small loop for the hot
+instructions, is implemented; D3 and D4 are open. Evidence is in
 `benchmarks/baselines/2026-11-12-dispatch-core/`.
 
 **Stages:** D1 (one copy of the frame paths), D2 (layout check), D3 (frame-local
-slots), D4 (threaded dispatch, optional).
+slots), D4 (threaded dispatch, optional), D5 (a small loop for the hot
+instructions).
 
 ## Why
 
@@ -135,24 +137,35 @@ loop or block scope, which make a child of the current scope. The VM takes the
 convention only when no budget or policy applies to the call, since
 `applyCallBudget` may need a scope of the call's own to hold one.
 
-**D5. A small loop for the hot instructions.** Without a profile, the hot
-handlers' code depends on register allocation over all of `runLoop`: the
-`while` kernel spends about 94 instructions per dispatch, and both
-profile-free attempts to steer the compiler moved it the wrong way. D1's
+**D5. A small loop for the hot instructions.** Implemented. Without a
+profile, the hot handlers' code depends on register allocation over all of
+`runLoop`: the `while` kernel spent about 94 instructions per dispatch, and
+both profile-free attempts to steer the compiler moved it the wrong way. D1's
 shared returns made loops slower; declaring Nim's raising procs `cold` made the
-`while` loop run 8.6% more instructions. A separate small proc that runs only
-the fast paths of the common simple instructions, and hands any other
-instruction or any case that could raise back to `runLoop`, is compiled on
-its own. A prototype for eleven instructions
-(`benchmarks/baselines/2026-11-12-dispatch-core/patches/fast-loop-prototype.patch`)
-cut the `while` loop's instructions by 18% and its cycles by 16%, and field
-writes' cycles by 10%. It cost a call with a local 3.8% more instructions at the
-loop's entry test. The small loop still pays about 77 instructions per
-instruction: `newBool`, `smallIntAddKnown` and `intMul` stay out-of-line calls,
-and every slot and stack access is bounds-checked. The cost of the design is
-a second implementation of each covered fast path, which must stay exactly
-equal to `runLoop`'s; differential tests would have to run every suite with
-it on and off.
+`while` loop run 8.6% more instructions.
+
+`fastLoop` is a separate small proc that runs the fast paths of 29 simple
+instructions (local loads and stores, constants, pops, jumps, `!`, `&&`/`||`
+jumps, and the small-Int cases of the native and typed arithmetic and
+comparisons, fused compare-and-jump included) exactly as their `runLoop`
+handlers do, and returns at the first instruction it does not run, or the
+first case its handler would raise in or treat beyond its fast path. It runs
+only with no budget active. `runLoop` enters it at `opLoopEnter`, once per
+loop, and only for a loop made only of those instructions, worked out once
+per loop (`Chunk.fastLoopJumps`). Entering at every backward jump put a call
+in `opJump`, which every iteration runs, and changed the code of other
+handlers: a call with a local ran 3.2% more instructions.
+
+In the default build, `repeat` is 0.60 of its time, a bare loop 0.62 and
+`while` 0.67 (7 of 7 rounds each, `while` now about CPython's time), with 26%
+fewer instructions in the `while` loop; every other kernel runs the same
+instructions and is within 2%. `tests/test_fast_loop.nim` runs a corpus of
+loops with it on and off (`fastLoopEnabled`) and compares results and errors,
+checks that the kernels do run in it (`-d:geneFastLoopTests`), and that a
+budgeted loop still stops at its deadline. Its cost is a second
+implementation of each covered fast path; a change to one of those handlers
+must change `fastLoop` too, and the differential test is where a difference
+shows. Loops that call, send, construct or `break` stay in `runLoop`.
 
 **D4. Threaded dispatch.** PGO copies the dispatch into hot handlers; the
 default build keeps one central dispatch block. LLVM duplicates a block that

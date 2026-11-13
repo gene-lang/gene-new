@@ -27,6 +27,7 @@ include test_vm
 include test_closure_param_types
 include test_escape_inert
 include test_boundary_fast_paths
+include test_fast_loop
 include test_modules
 include test_package
 include test_system_dependency

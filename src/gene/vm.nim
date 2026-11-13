@@ -18948,6 +18948,274 @@ proc weakScopeLiveOnStack(ctx: pointer, target: pointer): bool {.nimcall.} =
       current = current.parent
   false
 
+var fastLoopEnabled* = true
+  ## Whether `runLoop` hands loop bodies to `fastLoop`. Tests turn it off to
+  ## run the same programs through `runLoop` alone and compare.
+
+type FastRun = object
+  ip, sp: int
+
+when defined(geneFastLoopTests):
+  var fastLoopRuns*: int
+    ## How many times `fastLoop` was entered, for the tests that check it runs.
+
+const fastLoopOps = {opPushConst, opLoadLocal, opLoadLocalFast, opPop, opNot,
+  opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop, opSetLocal,
+  opSetLocalPop, opNativeFast2, opIntAdd2, opIntSub2, opIntMul2, opIntLt2,
+  opIntGt2, opIntLe2, opIntGe2, opNativeFastConst, opIntAddConst,
+  opIntSubConst, opIntMulConst, opIntLtConst, opIntGtConst, opIntLeConst,
+  opIntGeConst, opCompareConstJumpIfFalse, opCompareLocalsJumpIfFalse}
+  ## The instructions `fastLoop` runs.
+
+proc scanFastLoopBody(chunk: Chunk, first, last, at: int): bool {.noinline.} =
+  if chunk.fastLoopJumps.len != chunk.instructions.len:
+    chunk.fastLoopJumps.setLen(chunk.instructions.len)
+  var only = first >= 0 and first < last and last <= chunk.instructions.len and
+    at >= 0 and at < chunk.instructions.len
+  if only:
+    for i in first ..< last:
+      if chunk.instructions[i].op notin fastLoopOps:
+        only = false
+        break
+    chunk.fastLoopJumps[at] = (if only: 1 else: 2)
+  only
+
+proc fastLoopBody(chunk: Chunk, first, last, at: int): bool {.inline.} =
+  ## Whether the loop whose instructions are `first ..< last`, entered by the
+  ## opLoopEnter at `at`, is made only of instructions `fastLoop` runs.
+  ## Entering `fastLoop` for a loop that also calls or constructs costs more
+  ## than it saves, since `fastLoop` returns at that instruction every
+  ## iteration. Worked out once per loop.
+  if at < chunk.fastLoopJumps.len and chunk.fastLoopJumps[at] != 0:
+    chunk.fastLoopJumps[at] == 1
+  else:
+    scanFastLoopBody(chunk, first, last, at)
+
+{.push boundChecks: off, overflowChecks: off.}
+proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
+              startIp, startSp: int): FastRun {.noinline.} =
+  ## Runs the instructions from `startIp` for as long as each is one of a few
+  ## simple ones whose fast path applies, exactly as `runLoop`'s handler for it
+  ## would, and stops at the first other one, leaving it for `runLoop`. It never
+  ## raises: a case the handler would raise in, or treat beyond its fast path,
+  ## is left to `runLoop`. Called only with no budget running, so nothing here
+  ## counts instructions or polls.
+  ##
+  ## Without a profile, the C compiler allocates `runLoop`'s registers and
+  ## places its blocks over the whole dispatch loop, and its hot handlers ran
+  ## about 94 instructions per dispatch (docs/proposals/vm-dispatch-core.md).
+  ## A small proc is compiled on its own. Every index below is tested before
+  ## use, so this proc runs without the compiler's checks.
+  when defined(geneFastLoopTests):
+    inc fastLoopRuns
+  var ip = startIp
+  var sp = startSp
+  let count = chunk.instructions.len
+  let constantCount = chunk.constants.len
+  template push(v: Value) =
+    block:
+      var pushed = v
+      if sp >= stack.len:
+        spGrow(stack)
+      stack[sp] = move pushed
+      inc sp
+  template truthy(v: Value): bool =
+    (if v.bits == TRUE.bits: true
+     elif v.bits == FALSE.bits or v.bits == 0: false
+     else: v.isTruthy)
+  template slotReady(slot: int): bool =
+    slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot)
+  template intResult(kind: NativeFastKind, a, b: Value, value: var Value): bool =
+    ## The small-Int case of the native fast arithmetic and comparisons.
+    block:
+      let x = a.smallIntVal
+      let y = b.smallIntVal
+      var handled = true
+      case kind
+      of nfkAdd:
+        let s = x +% y
+        if fitsSmallInt(s): value = smallIntOf(s) else: handled = false
+      of nfkSub:
+        let s = x -% y
+        if fitsSmallInt(s): value = smallIntOf(s) else: handled = false
+      of nfkLt: value = (if x < y: TRUE else: FALSE)
+      of nfkGt: value = (if x > y: TRUE else: FALSE)
+      of nfkLe: value = (if x <= y: TRUE else: FALSE)
+      of nfkGe: value = (if x >= y: TRUE else: FALSE)
+      of nfkMul: value = intMul(a, b)
+      of nfkDiv:
+        if y == 0:
+          handled = false
+        else:
+          let q = x div y
+          value = (if fitsSmallInt(q): smallIntOf(q) else: newInt(q))
+      of nfkRem:
+        if y == 0:
+          handled = false
+        else:
+          let r = x mod y
+          value = smallIntOf(r)
+      of nfkEq: value = (if a.bits == b.bits: TRUE else: FALSE)
+      of nfkNe: value = (if a.bits != b.bits: TRUE else: FALSE)
+      else: handled = false
+      handled
+  template binaryKind(op: OpCode, inst: ptr Instruction): NativeFastKind =
+    case op
+    of opNativeFast2, opNativeFastConst, opCompareConstJumpIfFalse:
+      NativeFastKind(inst[].intArg)
+    of opIntAdd2, opIntAddConst: nfkAdd
+    of opIntSub2, opIntSubConst: nfkSub
+    of opIntMul2, opIntMulConst: nfkMul
+    of opIntLt2, opIntLtConst: nfkLt
+    of opIntGt2, opIntGtConst: nfkGt
+    of opIntLe2, opIntLeConst: nfkLe
+    of opIntGe2, opIntGeConst: nfkGe
+    else: nfkNone
+  while ip >= 0 and ip < count:
+    let inst = addr chunk.instructions[ip]
+    let op = inst[].op
+    case op
+    of opPushConst:
+      let index = inst[].intArg
+      if index < 0 or index >= constantCount:
+        break
+      push chunk.constants[index]
+      inc ip
+    of opLoadLocal:
+      let slot = inst[].intArg
+      if not slotReady(slot):
+        break
+      if scope.moduleRefs != nil and scope.moduleRefs.pendingStructural != 0 and
+          scope.slots[slot].isPendingModuleRef:
+        break
+      push scope.slots[slot]
+      inc ip
+    of opLoadLocalFast:
+      let slot = inst[].intArg
+      if slot < 0 or slot >= scope.slots.len:
+        break
+      push scope.slots[slot]
+      inc ip
+    of opPop:
+      if sp == 0:
+        break
+      dec sp
+      discard move stack[sp]
+      inc ip
+    of opNot:
+      if sp == 0:
+        break
+      stack[sp - 1] = (if truthy(stack[sp - 1]): FALSE else: TRUE)
+      inc ip
+    of opJump:
+      ip = inst[].intArg
+    of opJumpIfFalse:
+      if sp == 0:
+        break
+      dec sp
+      let cond = move stack[sp]
+      ip = (if truthy(cond): ip + 1 else: inst[].intArg)
+    of opJumpIfFalseOrPop, opJumpIfTrueOrPop:
+      if sp == 0:
+        break
+      let holds = truthy(stack[sp - 1])
+      if holds == (op == opJumpIfTrueOrPop):
+        ip = inst[].intArg
+      else:
+        dec sp
+        discard move stack[sp]
+        inc ip
+    of opSetLocal, opSetLocalPop:
+      if sp == 0:
+        break
+      let slot = inst[].intArg
+      # assignSlot's own fast case, in which it cannot raise.
+      if not slotReady(slot) or scope.slotTypes.len != 0 or
+          stack[sp - 1].isHeapBacked or scope.managedBindingPins.len != 0 or
+          atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
+        break
+      if op == opSetLocalPop and
+          (ip + 1 >= count or chunk.instructions[ip + 1].op != opPop):
+        break
+      scope.assignSlot(slot, inst[].name, stack[sp - 1])
+      if op == opSetLocalPop:
+        dec sp
+        discard move stack[sp]
+        ip += 2                     # and the opPop it covers
+      else:
+        inc ip
+    of opNativeFast2, opIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,
+       opIntLe2, opIntGe2:
+      if sp < 2:
+        break
+      let b {.cursor.} = stack[sp - 1]
+      let a {.cursor.} = stack[sp - 2]
+      if not (a.isSmallInt and b.isSmallInt):
+        break
+      var value: Value
+      if not intResult(binaryKind(op, inst), a, b, value):
+        break
+      stack[sp - 2] = value
+      dec sp
+      inc ip
+    of opNativeFastConst, opIntAddConst, opIntSubConst, opIntMulConst,
+       opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst,
+       opCompareConstJumpIfFalse:
+      let index = inst[].depth
+      if sp < 1 or index < 0 or index >= constantCount:
+        break
+      let a {.cursor.} = stack[sp - 1]
+      let b {.cursor.} = chunk.constants[index]
+      if not (a.isSmallInt and (inst[].flag or b.isSmallInt)):
+        break
+      let kind = binaryKind(op, inst)
+      if op == opCompareConstJumpIfFalse:
+        if kind notin {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe} or
+            ip + 1 >= count:
+          break
+        let x = a.smallIntVal
+        let y = b.smallIntVal
+        let holds =
+          case kind
+          of nfkLt: x < y
+          of nfkGt: x > y
+          of nfkLe: x <= y
+          of nfkGe: x >= y
+          of nfkEq: x == y
+          else: x != y
+        dec sp                      # a small Int needs no release
+        ip = (if holds: ip + 2 else: chunk.instructions[ip + 1].intArg)
+        continue
+      var value: Value
+      if not intResult(kind, a, b, value):
+        break
+      stack[sp - 1] = value
+      inc ip
+    of opCompareLocalsJumpIfFalse:
+      if ip + 3 >= count:
+        break
+      let left = inst[].intArg
+      let right = chunk.instructions[ip + 1].intArg
+      if not slotReady(left) or not slotReady(right) or
+          not scope.slots[left].isSmallInt or not scope.slots[right].isSmallInt:
+        break
+      let x = scope.slots[left].smallIntVal
+      let y = scope.slots[right].smallIntVal
+      var holds: bool
+      case NativeFastKind(chunk.instructions[ip + 2].intArg)
+      of nfkLt: holds = x < y
+      of nfkGt: holds = x > y
+      of nfkLe: holds = x <= y
+      of nfkGe: holds = x >= y
+      of nfkEq: holds = x == y
+      of nfkNe: holds = x != y
+      else: break
+      ip = (if holds: ip + 4 else: chunk.instructions[ip + 3].intArg)
+    else:
+      break
+  FastRun(ip: ip, sp: sp)
+{.pop.}
+
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
              validateArg = true, fiber: Fiber = nil,
@@ -23498,6 +23766,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opLoopEnter:
           inlineLoops.add InlineLoopTarget(frameDepth: frames.len, stackBase: sp,
             breakIp: inst[].intArg, continueIp: inst[].depth)
+          # A loop made only of fastLoop's instructions runs there, up to its
+          # opLoopLeave, for as long as fastLoop can run it. Entering here, once
+          # per loop, keeps the call out of opJump, which every iteration runs.
+          if fastLoopEnabled and evalBudget == nil and instructionBudget <= 0 and
+              fastLoopBody(chunk, ip, inst[].intArg, ip - 1):
+            let ran = fastLoop(chunk, scope, stack, ip, sp)
+            ip = ran.ip
+            sp = ran.sp
         of opLoopLeave:
           if inlineLoops.len == 0 or inlineLoops[^1].frameDepth != frames.len:
             raise newException(GeneError, "inline loop target is missing")

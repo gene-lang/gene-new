@@ -931,6 +931,9 @@ type
     imports*: seq[ImportSpec]
     importImpls*: seq[ImportImplSpec]
     dispatchCache*: seq[DispatchCacheEntry] # inline send cache; lazily sized to instructions.len
+    fastLoopJumps*: seq[uint8] # runtime state, like dispatchCache: per
+                               # opLoopEnter, 1 when its loop is all fastLoop
+                               # instructions, 2 when not, 0 not yet looked at
     stdlibCacheSlots*: int # compiler-owned extra slots after instruction cache entries
     ## Runtime state, like dispatchCache: set once a spawn's publication walk
     ## has covered this chunk and found nothing below it that can change, so

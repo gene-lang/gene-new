@@ -7831,6 +7831,15 @@ proc smallIntVal*(v: Value): int64 {.inline.} =
 # int64. The unchecked operators say so: a checked `+` would give these
 # two-instruction helpers a raise path, and with it an error-flag test in
 # every arithmetic opcode that calls them.
+template fitsSmallInt*(s: int64): bool =
+  ## Whether `s` is in a small Int's range. A template, so that it is never an
+  ## out-of-line call (pass a variable: `s` is read twice).
+  s >= SMALL_INT_MIN and s <= SMALL_INT_MAX
+
+template smallIntOf*(s: int64): Value =
+  ## The small Int `s`, which the caller has checked with `fitsSmallInt`.
+  Value(bits: (INT_TAG shl TAG_SHIFT) or (cast[uint64](s) and PAYLOAD_MASK))
+
 proc smallIntAddKnown*(a, b: Value, outValue: var Value): bool {.inline.} =
   let s = a.smallIntVal +% b.smallIntVal
   if s < SMALL_INT_MIN or s > SMALL_INT_MAX:
