@@ -5530,6 +5530,9 @@ proc isNodeValue*(v: Value): bool {.inline.} =
 proc isSymbolValue*(v: Value): bool {.inline.} =
   v.tagOf == SYMBOL_TAG
 
+proc isStrValue*(v: Value): bool {.inline.} =
+  v.tagOf == STRING_TAG
+
 proc plainPathKeyId*(selector: Value): int32 {.inline.} =
   ## For the selector of a plain one-key read (`row/amount`) — a Node with no
   ## props whose single segment is a Sym, or a Str other than a `.msg` /

@@ -9173,10 +9173,21 @@ proc displayStr(v: Value, scope: Scope = nil): string =
   print(v)
 
 proc biToStr(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
-  var resultStr = ""
+  ## String interpolation's join. A Str or a small Int, the usual parts, is
+  ## appended in place, with the text `displayStr` would give: building that
+  ## text as a string of its own for each part cost an allocation and a copy.
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
+  var size = 0
   for arg in args:
-    resultStr.add displayStr(arg, scope)
+    size += (if arg.isStrValue: arg.strVal.len else: 8)
+  var resultStr = newStringOfCap(size)
+  for arg in args:
+    if arg.isStrValue:
+      resultStr.add arg.strVal
+    elif arg.isSmallInt:
+      resultStr.addInt arg.smallIntVal
+    else:
+      resultStr.add displayStr(arg, scope)
   newStr(resultStr)
 
 proc biToInt(args: openArray[Value]): Value {.nimcall.} =
