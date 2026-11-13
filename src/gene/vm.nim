@@ -3559,9 +3559,9 @@ proc requireOne(name: string, args: openArray[Value]) =
   if args.len != 1:
     raise newException(GeneError, name & " expects 1 argument, got " & $args.len)
 
-# Absence vocabulary (design §1.6). `nil?`/`void?` test the exact singleton;
-# `absent?` is either absence form; `present?` is neither. `false`/`0`/`""`
-# are present — this is the distinction `||`-as-default blurs and `??` respects.
+# Absence vocabulary (nil-void.md): nil is the one absence value; `absent?`
+# is nil and `present?` is anything else. `false`/`0`/`""` are present — this
+# is the distinction `||`-as-default blurs and `??` respects.
 const LeafValueKinds* = {vkNil, vkBool, vkInt, vkFloat, vkString,
                          vkSymbol, vkChar}
   ## Literals: values the reader produces with no interior node structure. This
@@ -8527,7 +8527,7 @@ proc setMutableChild(target, segment, value: Value): Value =
   ## The one checked in-place mutation seam (design §12.1). `set` calls only
   ## this, so a write cannot skip a gate by taking a different route, and the
   ## gates run in one fixed order: caller-env escape · immutability · segment
-  ## kind · `void` · boundary adaptation against the declared prop *or body*
+  ## kind · boundary adaptation against the declared prop *or body*
   ## field. Node body positions had no in-place writer at all before this, so
   ## routing them anywhere else would have reintroduced the unchecked-write bug
   ## class that typed props just had. Per-field write permission, if it is ever
@@ -8570,7 +8570,7 @@ proc setMutableChild(target, segment, value: Value): Value =
     case segment.kind
     of vkSymbol, vkString:
       # Props keep their own checked writer, which already owns immutability,
-      # the closed schema, `void` removal, and boundary adaptation.
+      # the closed schema, and boundary adaptation.
       result = setCheckedNodeProp(target, keySegmentId("set", segment), value)
     of vkInt, vkFloat:
       if target.nodeImmutable:
@@ -8599,7 +8599,7 @@ proc setMutableChild(target, segment, value: Value): Value =
       raise newException(GeneError,
         "set path segment must be a Sym, Str, or Int (or integral Float)")
   of vkMap:
-    # `putMapEntry` already owns immutability and `void`-removes the entry.
+    # `putMapEntry` already owns immutability; writing nil stores nil.
     target.putMapEntry(keySegment("set", segment), value)
     result = value
   of vkList:
@@ -21397,7 +21397,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let argsStart = sp - 2
           if stack[argsStart].isPropMap:
             # `row/amount` on a Map: what applySelector does for a plain
-            # one-key selector is this one table read. An absent key is void
+            # one-key selector is this one table read. An absent key is nil
             # either way, and any other selector shape falls through.
             let keyId = plainPathKeyId(stack[argsStart + 1])
             if keyId != -2:
@@ -23012,9 +23012,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               args.add(if i == bodySlot: item else: value)
             for i, name in bundle[1].listItems:
               if hasAuthoredSite:
-                # A checked invocation already has a resolved named layout.
-                # Preserve supplied Void just as the ordinary opCall path does;
-                # putArg implements splice removal and is inappropriate here.
+                # A checked invocation already has a resolved named layout:
+                # the names are kept in order, values copied below, as the
+                # ordinary opCall path does. putArg merges by name instead.
                 named.names.add name.strVal
               else:
                 named.putArg(name.strVal,
@@ -26276,8 +26276,8 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
   if defaultValue.defaultChunk != nil:
     run(defaultValue.defaultChunk, scope)
   else:
-    # Optional without an explicit default: `^name : T?`. Binding nil (not
-    # void) keeps the binding inside its own nil-admitting annotation.
+    # Optional without an explicit default: `^name : T?` binds nil, which its
+    # own nil-admitting annotation accepts.
     NIL
 
 proc checkedAddI64(a, b: int64, outValue: var int64): bool {.inline.} =

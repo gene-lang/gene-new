@@ -4,7 +4,7 @@
 ##
 ##   * `bits == 0`                      -> `nil` (so a zero-initialized Value is nil)
 ##   * top 16 bits < 0xFFF1             -> an IEEE float64 stored directly
-##   * top 16 bits in 0xFFF1..0xFFF6    -> a void/bool/small-int/char/+0.0/symbol
+##   * top 16 bits in 0xFFF1..0xFFF6    -> a missing-marker/bool/small-int/char/+0.0/symbol
 ##                                         immediate (no allocation)
 ##   * top 16 bits >= 0xFFF7            -> a *managed* heap pointer (cycle-tracked
 ##                                         object, string, list, map, node,
