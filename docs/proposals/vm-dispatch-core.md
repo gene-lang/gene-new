@@ -1,10 +1,13 @@
 # VM dispatch core
 
-**Status:** Proposed 2026-11-12. On `perf/python-gap`: D1's return half
-(`908bb4e0`) and the call-budget guard (`113c9fa9`) are implemented; call entry
-stays inline after two measured attempts. D2 is answered: without a profile,
-block placement, not code size, decides the dispatch loop's speed. D3 and D4
-are open. Evidence is in `benchmarks/baselines/2026-11-12-dispatch-core/`.
+**Status:** Proposed 2026-11-12. The default build (no profile) stays the
+build Gene is measured and shipped with: a PGO build takes about 13 minutes
+against about 2. On `perf/python-gap` the call-budget guard (`113c9fa9`) is
+kept. D1's shared return paths (`908bb4e0`) were reverted (`0f225ea6`)
+because they paid only with a profile, and call entry stays inline after two
+attempts. D2 is answered: without a profile, block placement, not code size,
+decides the dispatch loop's speed. D3 and D4 are open. Evidence is in
+`benchmarks/baselines/2026-11-12-dispatch-core/`.
 
 **Stages:** D1 (one copy of the frame paths), D2 (layout check), D3 (frame-local
 slots), D4 (threaded dispatch, optional).
@@ -86,7 +89,8 @@ until `dd124778`.
 **D1. One copy of the frame paths.** A return instruction parks its value,
 saves `ip` and sets it past every chunk's end. The dispatch header's
 end-of-chunk test, which runs before every instruction anyway, sends it to the
-one copy of the return paths. Done for returns.
+one copy of the return paths. Implemented in `908bb4e0` and reverted in
+`0f225ea6`: it paid only in the profiled build.
 
 For calls, neither way of sharing `enterBytecodeCall` paid, so call entry
 stays inline:
@@ -108,9 +112,10 @@ thread-local and walks the callee's and the caller's scope chains to their
 module roots. The dispatch loop now skips it exactly when it would do nothing:
 no budget on the caller's scope or running in the loop, none bound to the
 function or on the callee's scope, and no module policy installed anywhere
-(`modulePoliciesInstalled`, kept by the only writer of the field). Under PGO
-closures and calls with a local are 0.96–0.97, field-writing sends 0.97, with
-69 fewer instructions per call and other kernels unchanged.
+(`modulePoliciesInstalled`, kept by the only writer of the field). In the
+default build, without the shared returns, a call with a local runs 68 fewer
+instructions and is 0.96 (7 of 7 rounds), closures and sends 0.96–0.99, fib
+0.96–0.99; loops run the same instructions and are within 2%.
 
 **D3. Frame-local slots.** A function whose scope cannot escape keeps its
 locals in its frame's region of the operand stack, as scopeless calls already
@@ -130,18 +135,24 @@ loop or block scope, which make a child of the current scope. The VM takes the
 convention only when no budget or policy applies to the call, since
 `applyCallBudget` may need a scope of the call's own to hold one.
 
-**D4. Threaded dispatch.** PGO already copies the dispatch into hot handlers.
-A source-level computed goto would need the code before the `case` to be small
-and free of `continue`; it is not worth doing for builds that have a profile.
+**D4. Threaded dispatch.** PGO copies the dispatch into hot handlers; the
+default build keeps one central dispatch block. LLVM duplicates a block that
+ends in an indirect branch into its predecessors only while it is small, so a
+dispatch header with fewer instructions, or a source-level computed goto,
+which needs that code free of `continue`, would give the default build
+threaded dispatch.
 
-## Open decision: which build to measure and ship
+## Decision: the default build
 
 `bin/gene` from `nim c src/gene.nim` has no profile, so its speed after any
 change to `runLoop` is partly the luck of block placement, and D1 made it
-1–13% slower while making the profiled build 0–19% faster. CPython's
-releases are profile-guided. A PGO build takes about 13 minutes on this
-machine against about 2 for the default: 2 for the instrumented build, 10 for
-the training (mostly the Harness specs) and 1 for the final build.
+1–13% slower while making the profiled build 0–19% faster. A PGO build takes
+about 13 minutes on this machine against about 2 for the default: 2 for the
+instrumented build, 10 for the training (mostly the Harness specs) and 1 for
+the final build. The owner chose the default build (2026-11-12), so a change
+to `runLoop` must pay without a profile. Branch weights given in the source
+(`likely`, `unlikely`) are the profile-free way to tell the compiler which
+paths are hot.
 
 ## Measurement
 
@@ -156,9 +167,10 @@ fewer per call than with the full training.
 
 Every stage is measured in paired rotating rounds against its parent
 (`benchmarks/baselines/2026-11-12-panics/pairs/pairn.sh`), on the kernels and
-on a call-cost program, and by instructions retired, with both sides built by
-the `speedy_pgo` recipe and the quick training, so that a difference is the
-source's. A default build's result is recorded but does not decide.
+on a call-cost program, and by instructions retired, with both sides default
+builds. Instruction counts separate the work a change removes from the
+placement it disturbs; a PGO comparison with the quick training is a useful
+second view, since its builds repeat.
 Every stage must pass `tests/test_all.nim`, the spec runner,
 `tests/test_poll_window.nim`, `tests/test_rc.nim` (with `-d:geneRcStats`) and
 `tests/test_value_backend_boundaries.nim` with the parent's results. A stage

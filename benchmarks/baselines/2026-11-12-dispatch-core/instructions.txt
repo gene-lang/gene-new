@@ -28,3 +28,10 @@ while-long    D1Q 23,110 M   R2Q1 22,857 M   -1.1%
 scoped        D1Q 14,298 M   R2Q1 13,863 M   -3.0% (87 fewer per call)
 map-literal   D1Q 12,957 M   R2Q1 12,897 M   -0.5% (scripts/map-literal.gene, 3 M iterations)
 field-write   D1Q 18,355 M   R2Q1 18,234 M   -0.7% (scripts/field-write.gene, 10 M iterations)
+
+# Default builds (no profile): b25adf33 (H) against 0f225ea6, the call-budget
+# guard without the shared return paths (G1). One run each.
+while-long    H 24,485 M   G1 24,461 M   -0.1%
+scoped        H 15,460 M   G1 15,120 M   -2.2% (68 fewer per call)
+map-literal   H 13,728 M   G1 13,726 M    0.0%
+field-write   H 17,687 M   G1 17,685 M    0.0%

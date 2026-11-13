@@ -34,6 +34,8 @@ The quick-trained builds leave the specs out and repeat to within 0.003%.
 - `pairs/pgo-hybrid-calls.tsv`: `DP`, `D3P`, `HP`.
 - `pairs/pgo-call-budget.tsv`: `DP`, `D4P`.
 - `pairs/quick-call-budget.tsv`: `D1Q`, `R2Q` (`R2Q1`).
+- `pairs/default-call-budget.tsv`: `H`, `G1` (`0f225ea6`, the call-budget
+  guard without the shared return paths, default build).
 - `kernels-pgo/`, `kernels-quick/`: `benchmarks/run_kernels.gene` with `R2P`
   and `R2Q1` as `gene`, CPython 3.14.3 as `python` and `H` as `baseline`.
 - `instructions.txt`: instructions retired (`/usr/bin/time -l`) for
