@@ -584,7 +584,7 @@ proc biHttpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   if args.len > 1:
     raise newException(GeneError,
       "http/listen expects at most one Server argument")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if call != nil:
     for name in call[].namedNames:
       if name notin ["host", "port", "tls"]:
@@ -636,7 +636,7 @@ proc biHttpStop(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   ## drains in-flight requests up to ^drain_timeout_ms, then returns. Valid on
   ## a Server value produced by listen (before or during serve).
   requireOne("http/stop", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let rt = httpRuntimeFor(args[0])
   if rt == nil:
     raiseHttpError("http/stop expects a Server value from http/listen", scope)
@@ -648,7 +648,7 @@ proc biHttpStop(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biHttpStatus(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## (status server) — diagnostics snapshot of a listening/serving server.
   requireOne("http/status", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let rt = httpRuntimeFor(args[0])
   if rt == nil:
     raiseHttpError("http/status expects a Server value from http/listen",
@@ -705,7 +705,7 @@ proc pollHttpTlsReloadCompletions() =
       gHttpTlsReloadPending.delete(i)
 
 proc biHttpReloadTls(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 2:
     raiseHttpError("Server.reload_tls expects a TLS config Map", scope)
   let rt = httpRuntimeFor(args[0])
@@ -1428,7 +1428,7 @@ proc biHttpWsAccept(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   ## handler to upgrade this request. Handlers are optional; delivery-only
   ## endpoints pass just ^on_open.
   requireOne("http/ws_accept", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let req = args[0]
   if req.kind != vkNode or not req.props.hasKey("headers"):
     raiseHttpError("ws_accept expects a request value", scope)
@@ -1576,7 +1576,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   if args.len notin [1, 2]:
     raise newException(GeneError,
       "http/serve expects (Server, handler), got " & $args.len & " arguments")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args[0].kind != vkNode or not args[0].props.hasKey("port"):
     raiseHttpError("http/serve expects a Server value with ^host and ^port",
                    scope)
@@ -3175,17 +3175,17 @@ proc httpHelperParts(name: string, args: openArray[Value],
     " arguments")
 
 proc biHttpText(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let (status, body) = httpHelperParts("http/text", args, 200)
   newHttpResponseValue(scope, status, body, "text/plain; charset=utf-8")
 
 proc biHttpHtml(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let (status, body) = httpHelperParts("http/html", args, 200)
   newHttpResponseValue(scope, status, body, "text/html; charset=utf-8")
 
 proc biHttpJson(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let (status, body) = httpHelperParts("http/json", args, 200)
   newHttpResponseValue(scope, status, body, "application/json")
 
@@ -3195,7 +3195,7 @@ proc biHttpBytes(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   if args.len != 2:
     raise newException(GeneError,
       "http/bytes expects (status, bytes), got " & $args.len & " arguments")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let status = int(requireInt64("http/bytes status", args[0]))
   let body =
     if args[1].kind == vkBytes: args[1].bytesVal
@@ -3205,7 +3205,7 @@ proc biHttpBytes(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   newHttpResponseValue(scope, status, body, "application/octet-stream")
 
 proc biHttpStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if scope == nil or args.len notin [1, 2]:
     raiseHttpError("http/stream expects (reader) or (status, reader)", scope)
   let status = if args.len == 1: 200
@@ -3297,7 +3297,7 @@ proc biHttpStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
           props = props, immutable = true)
 
 proc biHttpNotFound(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let body =
     if args.len >= 1:
       requireStr("http/not_found", args[0])
@@ -3307,7 +3307,7 @@ proc biHttpNotFound(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   newHttpResponseValue(scope, 404, body, "text/html; charset=utf-8")
 
 proc biHttpRedirect(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var status = 302
   var location: Value
   if args.len == 1:

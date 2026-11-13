@@ -638,12 +638,17 @@ type
   ## arguments stay as an openArray parameter on NativeProc to keep the hot
   ## builtin path allocation-free.
   NativeCall* = object
-    calleeName*: string
+    ## `calleeNameAddr` and `locAddr` are borrowed for the call and read with
+    ## `calleeName` and `loc`: copying the name and the location's source
+    ## name allocated two strings on every call of such a native.
+    calleeNameAddr*: ptr string  # the called native's own name
     namedNames*: seq[string]
     namedValues*: seq[Value]
-    dispatchScope*: Scope
+    dispatchScope* {.cursor.}: Scope
+      # the caller's scope, which the caller holds for the whole call; a
+      # counted field cost an increment and a cycle-candidate registration
     site*: Value             # the source call-site node, or NIL (design §3)
-    loc*: SourceLoc          # bytecode call location when available
+    locAddr*: ptr SourceLoc  # bytecode call location when available
 
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
@@ -5783,6 +5788,26 @@ proc nativeFnName*(v: Value): lent string {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).name
+
+proc nativeFnNameAddr*(v: Value): ptr string {.inline.} =
+  ## Where `nativeFnName` lives, for a `NativeCall` made while `v` is held.
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  let p = cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK)
+  addr p[].name
+
+proc calleeName*(call: NativeCall): string =
+  if call.calleeNameAddr == nil: "" else: call.calleeNameAddr[]
+
+let noCallLoc = SourceLoc()
+
+proc loc*(call: NativeCall): lent SourceLoc =
+  if call.locAddr == nil:
+    return noCallLoc
+  call.locAddr[]
+
+proc loc*(call: ptr NativeCall): lent SourceLoc =
+  call[].loc
 
 proc nativeImpl*(v: Value): NativeProc {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:

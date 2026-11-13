@@ -30,7 +30,7 @@ proc raiseIoTestingError(scope: Scope, kind, operation: string, id: uint64,
 
 proc ioTestingRecord(value: Value, call: ptr NativeCall,
                      operation: string): IoTestingRecord =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let app = if scope == nil: currentApplication() else: scope.application()
   let typ = builtinBinding(scope, "IoTestResource")
   if value.kind != vkNode or typ.kind != vkType or value.head.bits != typ.bits:
@@ -99,7 +99,7 @@ proc ioTestingRetire(record: IoTestingRecord, scope: Scope) =
 proc biIoTestingNew(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "io/testing/new expects no positional arguments")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if scope == nil:
     raise newException(GeneError, "io/testing/new needs a call scope")
   if currentEventLane() != schedulerForScope(scope).rootLane:
@@ -136,7 +136,7 @@ proc biIoTestingNew(args: openArray[Value], call: ptr NativeCall): Value {.nimca
 proc biIoTestingRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "AsyncReader:read expects max_bytes")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let record = ioTestingRecord(args[0], call, "read")
   let amount = requireInt64("AsyncReader:read max_bytes", args[1])
   if amount < 1 or amount > DefaultIoResourceBytes:
@@ -152,7 +152,7 @@ proc biIoTestingRead(args: openArray[Value], call: ptr NativeCall): Value {.nimc
 proc biIoTestingWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2 or args[1].kind != vkBytes:
     raise newException(GeneError, "AsyncWriter:write expects Bytes")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let record = ioTestingRecord(args[0], call, "write")
   let payload = args[1].bytesVal
   let admission = ioTestingAdmission(record, iodWrite, payload.len, scope, "write")
@@ -168,7 +168,7 @@ proc biIoTestingWrite(args: openArray[Value], call: ptr NativeCall): Value {.nim
 proc biIoTestingFlush(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "AsyncWriter:flush expects a receiver")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let record = ioTestingRecord(args[0], call, "flush")
   let admission = ioTestingAdmission(record, iodFlush, 0, scope, "flush")
   let operation = nativeNewIoOperation(scope)
@@ -180,7 +180,7 @@ proc biIoTestingFlush(args: openArray[Value], call: ptr NativeCall): Value {.nim
 proc biIoTestingClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "IoResource:close expects a receiver")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let record = ioTestingRecord(args[0], call, "close")
   if record.lifecycle.ioSnapshot().phase != iopOpen:
     return NIL
@@ -197,7 +197,7 @@ proc biIoTestingClose(args: openArray[Value], call: ptr NativeCall): Value {.nim
 proc biIoTestingWaitClosed(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "IoResource:wait_closed expects a receiver")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let record = ioTestingRecord(args[0], call, "wait_closed")
   if record.lifecycle.ioSnapshot().phase == iopClosed:
     if record.closeFailure.len == 0:
@@ -212,7 +212,7 @@ proc biIoTestingWaitClosed(args: openArray[Value], call: ptr NativeCall): Value 
 proc biIoTestingCompleteRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2 or args[1].kind notin {vkNil, vkBytes}:
     raise newException(GeneError, "io/testing/complete_read expects Bytes or nil")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let record = ioTestingRecord(args[0], call, "complete_read")
   if record.readTask.kind != vkTask:
     raise newException(GeneError, "there is no pending read")
@@ -234,7 +234,7 @@ proc biIoTestingCompleteRead(args: openArray[Value], call: ptr NativeCall): Valu
 proc biIoTestingCompleteWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2 or args[1].kind != vkInt:
     raise newException(GeneError, "io/testing/complete_write expects an Int")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let record = ioTestingRecord(args[0], call, "complete_write")
   if record.writeTask.kind != vkTask:
     raise newException(GeneError, "there is no pending write or flush")

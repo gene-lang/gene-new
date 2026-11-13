@@ -3892,7 +3892,7 @@ proc managedPackageModuleOpen(lease: Value, path, name: string,
 
 proc biManagedPackageModuleValue(args: openArray[Value],
                                  call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raise newException(GeneError, "NativeModule.module expects one receiver")
   let record = managedPackageModuleRecord(args[0], scope)
@@ -3902,7 +3902,7 @@ proc biManagedPackageModuleValue(args: openArray[Value],
 
 proc biManagedPackageModuleClose(args: openArray[Value],
                                  call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raise newException(GeneError, "NativeModule.close expects one receiver")
   let record = managedPackageModuleRecord(args[0], scope)
@@ -3912,7 +3912,7 @@ proc biManagedPackageModuleClose(args: openArray[Value],
 
 proc biManagedPackageModuleWaitClosed(args: openArray[Value],
                                       call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raise newException(GeneError,
       "NativeModule.wait_closed expects one receiver")
@@ -3930,7 +3930,7 @@ proc biManagedPackageModuleWaitClosed(args: openArray[Value],
 
 proc biManagedPackageModuleStatus(args: openArray[Value],
                                   call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raise newException(GeneError, "NativeModule.status expects one receiver")
   let record = managedPackageModuleRecord(args[0], scope)

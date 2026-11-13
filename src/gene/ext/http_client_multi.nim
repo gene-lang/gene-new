@@ -1470,7 +1470,7 @@ when compileOption("threads") and not defined(geneWasm) and
 
   proc biOwnedHttpBodyRead(args: openArray[Value],
                            call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if args.len != 2:
       raiseHttpClientError("BodyReader.read expects max_bytes", scope)
     let record = ownedBodyRecord(args[0], scope, "read")
@@ -1500,7 +1500,7 @@ when compileOption("threads") and not defined(geneWasm) and
 
   proc biOwnedHttpBodyClose(args: openArray[Value],
                             call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if args.len != 1:
       raiseHttpClientError("BodyReader.close expects one receiver", scope)
     let record = ownedBodyRecord(args[0], scope, "close")
@@ -1516,7 +1516,7 @@ when compileOption("threads") and not defined(geneWasm) and
 
   proc biOwnedHttpBodyWaitClosed(args: openArray[Value],
                                  call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if args.len != 1:
       raiseHttpClientError("BodyReader.wait_closed expects one receiver", scope)
     let record = ownedBodyRecord(args[0], scope, "wait_closed")
@@ -1528,7 +1528,7 @@ when compileOption("threads") and not defined(geneWasm) and
 
   proc biOwnedHttpClientOpen(args: openArray[Value],
                              call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if scope == nil or args.len != 0:
       raiseHttpClientError("net/http_client/open expects named options only",
                            scope)
@@ -1641,7 +1641,7 @@ when compileOption("threads") and not defined(geneWasm) and
   proc startOwnedHttpClientRequest(args: openArray[Value],
                                    call: ptr NativeCall,
                                    streaming: bool): Value =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if scope == nil or args.len != 1:
       raiseHttpClientError("Client.request expects named options", scope)
     let client = ownedClientRecord(args[0], scope, "request")
@@ -1894,7 +1894,7 @@ when compileOption("threads") and not defined(geneWasm) and
 
   proc biOwnedHttpClientClose(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if args.len != 1:
       raiseHttpClientError("Client close expects one receiver", scope)
     let record = ownedClientRecord(args[0], scope, "close")
@@ -1903,7 +1903,7 @@ when compileOption("threads") and not defined(geneWasm) and
 
   proc biOwnedHttpClientWaitClosed(args: openArray[Value],
                                    call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if args.len != 1:
       raiseHttpClientError("Client wait_closed expects one receiver", scope)
     let record = ownedClientRecord(args[0], scope, "wait_closed")
@@ -1947,7 +1947,7 @@ else:
 
   proc biOwnedHttpClientOpen(args: openArray[Value],
                              call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     try:
       raiseHttpClientError("owned HTTP Client requires a threaded native VM",
                            scope, kind = "unavailable")

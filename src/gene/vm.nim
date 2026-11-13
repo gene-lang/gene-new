@@ -2707,7 +2707,7 @@ proc biPathConstruct(args: openArray[Value], call: ptr NativeCall): Value {.nimc
     for i, name in call.namedNames:
       props[name] = call.namedValues[i]
   var parts: seq[Value]
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   for part in args:
     if part.kind == vkString:
       let message = pathQualifiedMessageValue(part.strVal, scope)
@@ -3207,7 +3207,7 @@ proc biContains(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   if args.len != 2:
     raise newException(GeneError,
       "contains? expects (collection, item), got " & $args.len & " arguments")
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("contains?", args[0], args[1 .. ^1], scope)
   if resolved.handled: return resolved.value
   let source = resolved.source
@@ -3813,7 +3813,7 @@ proc biTaskCancel(args: openArray[Value]): Value {.nimcall.} =
 proc biTaskDetach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Task/detach", args)
   requireTask("Task/detach", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   discard scope.unregisterOwnedTask(args[0])
   args[0]
 
@@ -3889,7 +3889,7 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args.len != 2:
     raise newException(GeneError, "Channel/send expects 2 arguments, got " & $args.len)
   requireChannel("Channel/send", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var workerLease: SchedulerWorkerLease
   var workerLeaseOpen = false
   defer:
@@ -3936,7 +3936,7 @@ proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nim
   let state = args[0].channelSendState()
   if state.closed or state.full:
     return FALSE
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let pushed = args[0].tryPushChannel(checkedChannelSendItem(args[0], args[1],
                                              "Channel/try_send item", scope))
   if not pushed.pushed:
@@ -3982,7 +3982,7 @@ proc nativeChannelTrySendManaged*(channel, item: Value,
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/recv", args)
   requireChannel("Channel/recv", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var workerLease: SchedulerWorkerLease
   var workerLeaseOpen = false
   defer:
@@ -4075,7 +4075,7 @@ proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nim
   requireOne("Channel/try_recv", args)
   requireChannel("Channel/try_recv", args[0])
   pollOsExecAsyncCompletions()
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let popped = args[0].tryPopChannel()
   if not popped.popped:
     return tryRecvEmpty(scope)
@@ -5357,7 +5357,7 @@ proc readFormsFromString(name: string, value: Value, scope: Scope,
 
 proc biReadOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("read_one", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let forms = readFormsFromString("read_one", args[0], scope)
   if forms.len == 0:
     return NIL
@@ -5376,7 +5376,7 @@ proc biReadIncomplete(args: openArray[Value]): Value {.nimcall.} =
 
 proc biReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("read_all", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   var source = ""
   var located = false
   if call != nil:
@@ -5451,7 +5451,7 @@ proc biLexAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("lex_all", args)
   if args[0].kind != vkString:
     raise newException(GeneError, "lex_all expects a Str")
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let tokenType = builtInTypeHead(scope, "Token")
   var tokens: seq[Value]
   try:
@@ -5784,7 +5784,7 @@ proc dispatchGenericForward(name: string, receiver: Value,
 
 proc biToStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("to_stream", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("to_stream", args[0], [], scope)
   if resolved.handled: return resolved.value
   let source = resolved.source
@@ -5815,7 +5815,7 @@ proc biToStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
 proc biToPairsStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("to_pairs_stream", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveMapFamily("to_pairs_stream", args[0], [], scope)
   if resolved.handled: return resolved.value
   var pairs: seq[Value]
@@ -5860,7 +5860,7 @@ proc biStreamClose(args: openArray[Value]): Value {.nimcall.} =
 proc biStreamTryNext(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Stream/try_next", args)
   requireStream("Stream/try_next", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   try:
     if not args[0].streamHasNext:
       return tryNextExhausted(scope)
@@ -6751,7 +6751,7 @@ proc biFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
 
 proc biMapSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("map_size", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveMapFamily("map_size", args[0], [], scope)
   if resolved.handled: return resolved.value
   case resolved.source.kind
@@ -6763,7 +6763,7 @@ proc biMapSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 
 proc biMapEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("map_empty?", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveMapFamily("map_empty?", args[0], [], scope)
   if resolved.handled: return resolved.value
   case resolved.source.kind
@@ -6775,7 +6775,7 @@ proc biMapEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
 proc mapEntryCollection(args: openArray[Value], call: ptr NativeCall,
                         name, baseOperation: string, dropNil: bool): Value =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len == 1:
     return newSelectorCallStage(builtinBinding(scope, name), args)
   if args.len != 2:
@@ -6808,7 +6808,7 @@ proc mapEntryCollection(args: openArray[Value], call: ptr NativeCall,
 
 proc eachEntryCollection(args: openArray[Value], call: ptr NativeCall,
                          name: string): Value =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 2:
     raise newException(GeneError, name & " expects 2 arguments, got " & $args.len)
   let receiver = args[0]
@@ -6834,7 +6834,7 @@ proc biMapMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   mapEntryCollection(args, call, "map_map", "map", false)
 
 proc biMapFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len == 1:
     return newSelectorCallStage(builtinBinding(scope, "map_filter"), args)
   if args.len != 2:
@@ -6909,7 +6909,7 @@ proc biTake(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
 proc biReverse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("reverse", args)
   let receiver = args[0]
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("reverse", receiver, [], scope)
   if resolved.handled: return resolved.value
   let source = resolved.source
@@ -6939,7 +6939,7 @@ proc biDrop(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "drop expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("drop", receiver, args[1 .. ^1], scope)
   if resolved.handled: return resolved.value
   let source = resolved.source
@@ -7681,7 +7681,7 @@ proc biListSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   # op by name was a quarter of a loop that only counts.
   if args[0].kind == vkList:
     return newInt(args[0].listItems.len)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let runningOp = builtinBinding(scope, "size")
   let direct = typeDirectOverride("size", args[0], [], scope, runningOp)
   if direct.handled: return direct.value
@@ -7710,7 +7710,7 @@ proc biListEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   # As in `biListSize`: `List`'s `empty?` message is `emptyFn`, this native.
   if args[0].kind == vkList:
     return newBool(args[0].listItems.len == 0)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let runningOp = builtinBinding(scope, "empty?")
   let direct = typeDirectOverride("empty?", args[0], [], scope, runningOp)
   if direct.handled: return direct.value
@@ -7737,7 +7737,7 @@ proc biListEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
 proc biListFirst(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("first", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("first", args[0], [], scope)
   if resolved.handled: return resolved.value
   requireList("first", resolved.source)
@@ -7745,7 +7745,7 @@ proc biListFirst(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
 proc biListLast(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("last", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("last", args[0], [], scope)
   if resolved.handled: return resolved.value
   requireList("last", resolved.source)
@@ -7972,7 +7972,7 @@ proc biHasKey(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     # Stored props only: no message dispatch, protocol, or default is consulted.
     newBool(args[0].props.hasKey(keySegment("has_key?", args[1])))
   else:
-    let scope = if call == nil: nil else: call.dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
     raiseTypeError("has_key?", "Map or Node", args[0], scope)
     FALSE
 
@@ -8141,7 +8141,7 @@ proc biRegexMatch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     raise newException(GeneError, "regex/match expects 2 arguments, got " & $args.len)
   requireRegex("regex/match receiver", args[0])
   requireStr("regex/match input", args[1])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let matched = regexMatchValue(args[0], args[1].strVal, 0,
                                 builtInTypeHead(scope, "Match"))
   if matched.found: matched.value else: NIL
@@ -8181,7 +8181,7 @@ proc biRegexFindAll(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     raise newException(GeneError, "regex/find_all expects 2 arguments, got " & $args.len)
   requireRegex("regex/find_all receiver", args[0])
   requireStr("regex/find_all input", args[1])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let matchType = builtInTypeHead(scope, "Match")
   let state = newCell(newList(@[args[0], args[1], newInt(0), matchType]))
   newLazyStream(state, pullRegexFindAll)
@@ -8908,7 +8908,7 @@ proc zeroForElementType(elemType: Value, scope: Scope): Value =
     "got " & closed.print())
 
 proc biBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   var source: Value
   case args.len
   of 1:
@@ -8963,7 +8963,7 @@ proc biBufferSetBang(args: openArray[Value],
     raise newException(GeneError,
       "Buffer/set expects 3 arguments, got " & $args.len)
   requireBuffer("Buffer/set", args[0])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   setCheckedBufferItem(args[0], requireBufferIndex("Buffer/set", args[1]),
                        args[2], scope)
 
@@ -8997,7 +8997,7 @@ proc biBufferFillBang(args: openArray[Value],
       "Buffer/fill expects 2 or 4 arguments, got " & $args.len)
   requireBuffer("Buffer/fill", args[0])
   rejectCallerEnvEscape("Buffer/fill", args[1])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   # Checked once for the whole range — see `fillBufferItems`.
   let item = escapeWeakFunctions(
     checkedBufferItem(args[0], args[1], "Buffer/fill item", scope))
@@ -9052,7 +9052,7 @@ proc biBufferCopyFromBang(args: openArray[Value],
   if dstType.isAnyTypeValue or dstType.bits == srcType.bits:
     copyBufferItems(args[0], dstStart, args[1], srcStart, srcEnd)
   else:
-    let scope = if call == nil: nil else: call.dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
     for k in 0 ..< srcEnd - srcStart:
       let item = getCheckedBufferItem(args[1], srcStart + k)
       discard setCheckedBufferItem(args[0], dstStart + k, item, scope)
@@ -9131,7 +9131,7 @@ proc biDeviceBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   if args[0].kind != vkString:
     raiseTypeError("device/buffer backend", "Str", args[0],
                    if call == nil: nil else: call.dispatchScope)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let elemType = closeTypeExpr(bufferTypeExprArg("device/buffer elem_type", args[1]),
                                scope)
   let rawLen = requireInt64("device/buffer length", args[2])
@@ -9818,7 +9818,7 @@ proc biRuntimeGcStats(args: openArray[Value],
   entries["cleanup_leases"] = NIL
   entries["cycle_candidates"] = NIL
   entries["materialized_resource_leases"] = newInt(materializedLeaseCount())
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let app = if scope == nil: currentApplication() else: scope.application()
   entries["native_module_records"] =
     if nativeModuleAdapter.recordCount == nil: NIL
@@ -9891,7 +9891,7 @@ when defined(geneRcStats):
     if args.len != 0:
       raise newException(GeneError,
         "runtime/test_collect expects no arguments")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let scheduler = schedulerForScope(scope)
     if currentEventLane() != scheduler.rootLane:
       raise newException(GeneError,
@@ -9908,7 +9908,7 @@ proc biRuntimeRequireRootLane(args: openArray[Value],
   if args.len != 0:
     raise newException(GeneError,
       "runtime/require_root_lane expects no arguments")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let scheduler = schedulerForScope(scope)
   if currentEventLane() != scheduler.rootLane:
     let message = "operation requires the scheduler root lane"
@@ -10271,7 +10271,7 @@ proc biRespondTo(args: openArray[Value], call: ptr NativeCall): Value
     else:
       raise newException(GeneError,
         "respond_to? expects a Sym or Str message name, got " & $args[1].kind)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let typ = args[0].receiverType
   if typ.kind == vkType and typeDirectMessage(typ, name).kind != vkNil:
     return TRUE
@@ -12129,7 +12129,7 @@ proc biRuntimeGuardCall(args: openArray[Value],
   if args.len != 2:
     raise newException(GeneError,
       "runtime/guard_call expects a callable and one argument")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   try:
     let value = applyCall(args[0], [args[1]], NamedArgs(), scope)
     var entries = initPropTable()
@@ -12148,7 +12148,7 @@ proc biRuntimeGuardCall(args: openArray[Value],
 proc biRuntimeCallable(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.} =
   requireOne("runtime/callable?", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   newBool(args[0].valueImplementsCallable(scope))
 
 proc biRuntimeBindCall(args: openArray[Value],
@@ -17256,7 +17256,7 @@ proc biTaskJoin(args: openArray[Value],
       se.task = task
       raise se
     pumpUntilDone(task)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   taskJoinOutcome(task, scope)
 
 proc biTaskDone(args: openArray[Value]): Value {.nimcall.} =
@@ -28527,7 +28527,7 @@ proc biRuntimeMessages(args: openArray[Value], call: ptr NativeCall): Value {.ni
   ## and the description does not retain the receiver. A message that a send
   ## would refuse, such as an ambiguous one, is listed with the reason.
   requireOne("runtime/messages", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let receiver = args[0]
   let recvType = receiver.receiverType
   var items: seq[Value]
@@ -34759,12 +34759,12 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if named.len != 0 and not callee.nativeAcceptsNamed:
       raise newException(GeneError,
         "native function '" & callee.nativeFnName & "' does not accept named arguments")
-    var call = NativeCall(calleeName: callee.nativeFnName,
+    var call = NativeCall(calleeNameAddr: callee.nativeFnNameAddr,
                           namedNames: named.names,
                           namedValues: named.toSeq(),
                           dispatchScope: dispatchScope,
                           site: site,
-                          loc: loc)
+                          locAddr: addr loc)
     if contextImpl != nil:
       contextImpl(callee.nativeContext, args, addr call)
     else:
@@ -35839,7 +35839,7 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   # Refused rather than defaulted. A caller with no Application cannot be handed
   # a fresh one: the mod would load against an empty module cache and register
   # into types nothing else holds, which fails later and somewhere else.
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if scope == nil or scope.application == nil:
     raise newException(GeneError,
       "runtime/load_sandboxed cannot resolve the calling application")
@@ -36262,7 +36262,7 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
   if args.len != 2:
     raise newException(GeneError,
       "SandboxTransaction/prepare expects options")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let resolved = sandboxTransactionRecord(
     "SandboxTransaction/prepare", args[0], scope)
   let transaction = resolved.record
@@ -36404,7 +36404,7 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
 proc biSandboxTransactionCommit(args: openArray[Value],
                                 call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxTransaction/commit", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let resolved = sandboxTransactionRecord(
     "SandboxTransaction/commit", args[0], scope)
   let transaction = resolved.record
@@ -36461,7 +36461,7 @@ proc biSandboxTransactionCommit(args: openArray[Value],
 proc biSandboxTransactionDiscard(args: openArray[Value],
                                  call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxTransaction/discard", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let resolved = sandboxTransactionRecord(
     "SandboxTransaction/discard", args[0], scope)
   let transaction = resolved.record
@@ -36513,7 +36513,7 @@ proc biSandboxTransactionDiscard(args: openArray[Value],
 proc biSandboxGenerationModule(args: openArray[Value],
                                call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxGeneration/module", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let generation = sandboxGenerationRecord(
     "SandboxGeneration/module", args[0], scope).record
   if generation.state notin {sgsPrepared, sgsCommitted}:
@@ -36524,7 +36524,7 @@ proc biSandboxGenerationModule(args: openArray[Value],
 proc biSandboxGenerationGraph(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxGeneration/graph", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let generation = sandboxGenerationRecord(
     "SandboxGeneration/graph", args[0], scope).record
   if generation.state notin {sgsPrepared, sgsCommitted, sgsReleased}:
@@ -36549,7 +36549,7 @@ proc implsWithoutGeneration(app: Application,
 proc biSandboxGenerationRelease(args: openArray[Value],
                                 call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxGeneration/release", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let generation = sandboxGenerationRecord(
     "SandboxGeneration/release", args[0], scope).record
   case generation.state
