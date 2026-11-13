@@ -37,6 +37,9 @@ The quick-trained builds leave the specs out and repeat to within 0.003%.
 - `pairs/default-fast-loop.tsv`: `G1`, `FL` (the D5 fast loop, default build).
 - `pairs/default-call-budget.tsv`: `H`, `G1` (`0f225ea6`, the call-budget
   guard without the shared return paths, default build).
+- `kernels-default-fast-loop/`: `benchmarks/run_kernels.gene` with the default
+  build of `9cd8bc6a` as `gene`, CPython 3.14.3 as `python` and `H` as
+  `baseline`.
 - `kernels-pgo/`, `kernels-quick/`: `benchmarks/run_kernels.gene` with `R2P`
   and `R2Q1` as `gene`, CPython 3.14.3 as `python` and `H` as `baseline`.
 - `instructions.txt`: instructions retired (`/usr/bin/time -l`) for
