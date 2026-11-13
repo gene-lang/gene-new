@@ -341,6 +341,7 @@ proc addStrictDependencies(lease: StrictErrorLease, dependencies: seq[ErrorProof
         registration.name = parts[0]
     lease.registrations.add registration
     app.strictErrorRegistrations.add registration
+    atomicStoreN(addr gStrictErrorRegistered, true, ATOMIC_RELEASE)
     if target.kind == vkFunction and (not target.fnChecksErrors or dependency.returnDepth > 0) and
         target.fnCode of FunctionProto:
       let summary = FunctionProto(target.fnCode).errorSummary

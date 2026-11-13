@@ -12,7 +12,7 @@ import ./[gir, printer, reader, types]
 # reusing the same bytecode slots, so that migration also advances the format.
 # Removing `void` (nil is the only absence value) changed the meaning of stored
 # constants, `Void` annotations and optional-path jumps, so it advanced it too.
-const GirArtifactFormat* = 44
+const GirArtifactFormat* = 45
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -517,6 +517,7 @@ proc toJsonHook(chunk: Chunk,
   var portable = chunk[]
   portable.owner = nil
   portable.dispatchCache = @[]
+  portable.fastLoopJumps = @[]
   portable.spawnPublished = false
   portable.spawnPublishedSuperBits = 0
   portable.plainLoopBody = 0
@@ -641,6 +642,7 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
       else: discard
     chunk.owner = owner
     chunk.dispatchCache = @[]
+    chunk.fastLoopJumps = @[]
     chunk.spawnPublished = false
     chunk.spawnPublishedSuperBits = 0
     chunk.plainLoopBody = 0
@@ -718,7 +720,8 @@ proc copyExecutionTemplate[T](source: T, copies: var Table[pointer, pointer]): T
       result.add copyExecutionTemplate(value, copies)
   elif T is object or T is tuple:
     for name, original, copied in fieldPairs(source, result):
-      when T is typeof(default(Chunk)[]) and name in ["owner", "dispatchCache", "spawnPublished",
+      when T is typeof(default(Chunk)[]) and name in ["owner", "dispatchCache", "fastLoopJumps",
+                                                  "spawnPublished",
                                                   "spawnPublishedSuperBits", "plainLoopBody"]:
         discard
       else:

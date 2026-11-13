@@ -45,7 +45,7 @@
   (for word in words
     (counts .put word (+ (?? (counts .get word) 0) 1)))
   (var total 0)
-  (for [word count] in counts (set total (+ total (* count ($str/byte_size ($to_str word))))))
+  (map_for [word count] in counts (set total (+ total (* count ($str/byte_size ($to_str word))))))
   total)
 
 (fn render_rows [n]

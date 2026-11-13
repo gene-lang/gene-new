@@ -1,0 +1,142 @@
+# Costs that used to grow with the size of the data crossing a function or
+# container boundary, and the cost of annotated scalar calls.
+#
+#   gene run benchmarks/boundaries.gene
+#
+# Each row is one kernel: its name, the iterations of the batch that was kept,
+# its time in ms, and ns per iteration including the loop. `$os/monotonic_ms`
+# ticks in whole milliseconds, so a batch is repeated with four times the
+# iterations until it runs for 100 ms. Run it on two binaries in alternation
+# and compare per round; a single run on a loaded machine can be 40% off.
+
+(type Row ^props {^id Int ^name Str})
+(type State ^props {^items (List Any)})
+(type Bag ^props {^x Int} ^body [Int...])
+
+(fn pass [x] x)
+(fn items_of [state] state/items)
+
+(fn make_ints [n] (var xs []) (repeat i in n (xs .push i)) xs)
+(fn make_maps [n] (var xs []) (repeat i in n (xs .push {^id i ^name "item"})) xs)
+(fn make_rows [n] (var xs []) (repeat i in n (xs .push (Row ^id i ^name "item"))) xs)
+
+(fn k_empty [n v] (var t 0) (repeat i in n (set t (+ t 1))) t)
+(fn k_return [n v] (var t 0) (repeat i in n (pass v) (set t (+ t 1))) t)
+(fn k_accessor [n state] (var t 0) (repeat i in n (items_of state) (set t (+ t 1))) t)
+(fn k_store [n v] (let m {}) (repeat i in n (m .put "k" v)) 0)
+(fn k_push [n v] (repeat i in n (let xs []) (xs .push v)) 0)
+(fn k_mutate_then_return [n v]
+  (var t 0)
+  (repeat i in n (v .push i) (pass v) (set t (+ t 1)))
+  t)
+
+(fn fill_typed [n] (let b (Bag ^x 1)) (repeat i in n (b .push i)) 0)
+(fn fill_plain [n] (let q (quote (a))) (repeat i in n (q .push i)) 0)
+(fn fill_list [n] (let xs []) (repeat i in n (xs .push i)) 0)
+
+(fn id_u [a] a)
+(fn id_int [a : Int] a)
+(fn id_int_ret [a : Int] : Int a)
+(fn add_u [a b] (+ a b))
+(fn add_params [a : Int b : Int] (+ a b))
+(fn add_t [a : Int b : Int] : Int (+ a b))
+(fn addf_u [a b] (+ a b))
+(fn addf_t [a : Float b : Float] : Float (+ a b))
+(fn size_u [s] ($str/byte_size s))
+(fn size_t [s : Str] : Int ($str/byte_size s))
+(fn k_id_u [n] (var t 0) (repeat i in n (set t (id_u i))) t)
+(fn k_id_int [n] (var t 0) (repeat i in n (set t (id_int i))) t)
+(fn k_id_int_ret [n] (var t 0) (repeat i in n (set t (id_int_ret i))) t)
+(fn k_add_u [n] (var t 0) (repeat i in n (set t (add_u t 1))) t)
+(fn k_add_params [n] (var t 0) (repeat i in n (set t (add_params t 1))) t)
+(fn k_add_t [n] (var t 0) (repeat i in n (set t (add_t t 1))) t)
+(fn k_addf_u [n] (var t 0.0) (repeat i in n (set t (addf_u t 1.0))) t)
+(fn k_addf_t [n] (var t 0.0) (repeat i in n (set t (addf_t t 1.0))) t)
+(fn k_size_u [n s] (var t 0) (repeat i in n (set t (size_u s))) t)
+(fn k_size_t [n s] (var t 0) (repeat i in n (set t (size_t s))) t)
+
+(type Point ^props {^x Int ^y Int})
+(type Counter ^props {^n Int} (message inc [d] (set self/n (+ self/n d))))
+(fn k_field_read [n] (let p (Point ^x 1 ^y 2)) (var t 0) (repeat i in n (set t (+ t p/x))) t)
+(fn k_field_write [n] (let p (Point ^x 1 ^y 2)) (repeat i in n (set p/x i)) p/x)
+(fn k_map_write [n] (let m {^x 1 ^y 2}) (repeat i in n (set m/x i)) m/x)
+(fn k_send_inc [n] (let c (Counter ^n 0)) (repeat i in n (c .inc 1)) c/n)
+(fn k_new_record [n] (var t 0) (repeat i in n (let p (Point ^x i ^y 2)) (set t i)) t)
+
+(fn k_repeat [n] (var t 0) (repeat i in n (set t (+ t i))) t)
+(fn k_for_range [n] (var t 0) (for i in ($range 0 n) (set t (+ t i))) t)
+
+(fn len_untyped [xs] 1)
+(fn len_typed [xs : (List Int)] 1)
+(fn k_list_param_untyped [n xs] (var t 0) (repeat i in n (set t (+ t (len_untyped xs)))) t)
+(fn k_list_param_typed [n xs] (var t 0) (repeat i in n (set t (+ t (len_typed xs)))) t)
+
+(fn row [name n elapsed]
+  ($println $"${name}\t${n}\t${elapsed}\t${(/ (* elapsed 1000000.0) n)}"))
+
+(fn timed [name work arg]
+  (var n 200)
+  (var elapsed 0)
+  (while (< elapsed 100)
+    (let start ($os/monotonic_ms))
+    (work n arg)
+    (set elapsed (- ($os/monotonic_ms) start))
+    (if (< elapsed 100) (set n (* n 4))))
+  (row name n elapsed))
+
+(fn once [name n work]
+  (let start ($os/monotonic_ms))
+  (work n)
+  (row name n (- ($os/monotonic_ms) start)))
+
+(fn calls [name work]
+  (timed name (fn [n arg] (work n)) nil))
+
+(fn main [args] : Int
+  (timed "loop only" k_empty nil)
+  (for size in [100 10000]
+    (let ints (make_ints size))
+    (let maps (make_maps size))
+    (let rows (make_rows size))
+    (let state {^items (make_maps size) ^name "s"})
+    (let typed_state (State ^items (make_rows size)))
+    (timed $"return a list of ${size} integers" k_return ints)
+    (timed $"return a list of ${size} maps" k_return maps)
+    (timed $"return a list of ${size} typed records" k_return rows)
+    (timed $"return a frozen list of ${size} typed records" k_return ($freeze (make_rows size)))
+    (timed $"accessor returning ${size} maps from a map" k_accessor state)
+    (timed $"accessor returning ${size} records from a typed record" k_accessor typed_state)
+    (timed $"store a list of ${size} maps into a map" k_store maps)
+    (timed $"push a list of ${size} maps onto a new list" k_push maps)
+    (timed $"push one integer, then return the list of ${size}+ integers" k_mutate_then_return (make_ints size)))
+  (for count in [2000 8000]
+    (once $"push ${count} integers to a typed node body" count fill_typed)
+    (once $"push ${count} integers to a plain node body" count fill_plain)
+    (once $"push ${count} integers to a list" count fill_list))
+  (for count in [1000 4000]
+    (let bag (Bag ^x 1))
+    (repeat i in count (bag .push i))
+    (let start ($os/monotonic_ms))
+    (repeat i in count (set bag/%i (+ i 1)))
+    (row $"write ${count} items of a typed node body by index" count (- ($os/monotonic_ms) start)))
+  (calls "read a record field" k_field_read)
+  (calls "write a record field" k_field_write)
+  (calls "write a Map entry by path" k_map_write)
+  (calls "send a message that increments a field" k_send_inc)
+  (calls "construct a two-field record" k_new_record)
+  (calls "repeat loop summing" k_repeat)
+  (calls "for over ($range 0 n) summing" k_for_range)
+  (let thousand (make_ints 1000))
+  (timed "call f(xs), untyped, 1000 integers" k_list_param_untyped thousand)
+  (timed "call f(xs : (List Int)), 1000 integers" k_list_param_typed thousand)
+  (calls "call (id a), untyped" k_id_u)
+  (calls "call (id a), [a : Int]" k_id_int)
+  (calls "call (id a), [a : Int] : Int" k_id_int_ret)
+  (calls "call (add a b), untyped" k_add_u)
+  (calls "call (add a b), Int parameters only" k_add_params)
+  (calls "call (add a b), Int parameters and result" k_add_t)
+  (calls "call (add a b) on floats, untyped" k_addf_u)
+  (calls "call (add a b), Float parameters and result" k_addf_t)
+  (timed "call (size s), untyped" k_size_u "hello")
+  (timed "call (size s), [s : Str] : Int" k_size_t "hello")
+  0)

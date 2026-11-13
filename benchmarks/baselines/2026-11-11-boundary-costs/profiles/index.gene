@@ -1,0 +1,2 @@
+(fn bench [n] (var xs []) (repeat i in 1000 (xs .push (* i 2))) (var total 0) (repeat r in n (repeat i in 1000 (set total (+ total xs/%i)))) total)
+(bench 300000000)

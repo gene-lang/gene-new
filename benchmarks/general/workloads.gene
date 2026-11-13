@@ -62,7 +62,7 @@
       (counts .put word (+ (?? (counts .get word) 0) 1))
       (set total (+ total 1))))
   (let entries [])
-  (for [key count] in counts (entries .push [($to_str key) count]))
+  (map_for [key count] in counts (entries .push [($to_str key) count]))
   [total ($order/sort_by entries /0)])
 
 (fn json_roundtrip [input]
@@ -87,7 +87,7 @@
       (else (account .put "balance" event/amount)))
     (account .put "revision" (+ account/revision 1)))
   (let result [])
-  (for [key account] in state
+  (map_for [key account] in state
     (result .push [($to_str key) account/balance account/revision]))
   ($order/sort_by result /0))
 

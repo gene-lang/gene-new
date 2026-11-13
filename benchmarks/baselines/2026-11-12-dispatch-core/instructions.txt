@@ -1,0 +1,77 @@
+# Instructions retired, from `/usr/bin/time -l BINARY run PROGRAM`, whole process.
+# while-long: scripts/while-long.gene, 20,000,000 iterations of the while kernel.
+# scoped: 5,000,000 calls of (fn add_local [x] (let y 3) (+ x y)) from a repeat loop.
+# Labels as in README.md.
+
+program     build   run 1         run 2
+while-long  HP      27,817 M      27,819 M
+while-long  DP      25,178 M      25,178 M      (25,179 M in a later batch)
+while-long  D2P     24,981 M      24,960 M
+while-long  D3P     27,658 M      27,658 M
+while-long  D4P     25,178 M
+scoped      DP      14,624 M
+scoped      D4P     14,279 M      (69 fewer per call)
+
+# Two PGO builds of 43d52531 (the head after the call-budget guard), the same
+# instrumented binary trained twice with scripts/train-quick.sh (no Harness
+# specs). The profiles overlap 100.000%; the binaries are the same size.
+while-long  R2Q1    22,869 M
+while-long  R2Q2    22,870 M
+scoped      R2Q1    13,863 M
+scoped      R2Q2    13,863 M
+# The same source with the full train.sh (R2P) runs more:
+while-long  R2P     25,939 M
+scoped      R2P     14,554 M
+
+# Quick-trained 908bb4e0 (D1Q) against quick-trained 43d52531 (R2Q1):
+while-long    D1Q 23,110 M   R2Q1 22,857 M   -1.1%
+scoped        D1Q 14,298 M   R2Q1 13,863 M   -3.0% (87 fewer per call)
+map-literal   D1Q 12,957 M   R2Q1 12,897 M   -0.5% (scripts/map-literal.gene, 3 M iterations)
+field-write   D1Q 18,355 M   R2Q1 18,234 M   -0.7% (scripts/field-write.gene, 10 M iterations)
+
+# Default builds (no profile): b25adf33 (H) against 0f225ea6, the call-budget
+# guard without the shared return paths (G1). One run each.
+while-long    H 24,485 M   G1 24,461 M   -0.1%
+scoped        H 15,460 M   G1 15,120 M   -2.2% (68 fewer per call)
+map-literal   H 13,728 M   G1 13,726 M    0.0%
+field-write   H 17,687 M   G1 17,685 M    0.0%
+
+# Default builds: 0f225ea6 (G1) against the same source with the runtime's
+# raising procs (raiseExceptionEx, raiseIndexError2/4, raiseOverflow,
+# raiseRangeErrorI/U, raiseObjectConversionError, raiseDivByZero) declared
+# __attribute__((cold)) in vm.nim's C (COLD). Not kept: the hot paths run more
+# instructions, and cycles rose with them.
+while-long    G1 24,484 M   COLD 26,599 M   +8.6%
+scoped        G1 15,119 M   COLD 15,939 M   +5.4%
+map-literal   G1 13,726 M   COLD 14,044 M   +2.3%
+field-write   G1 17,685 M   COLD 17,895 M   +1.2%
+
+# Default builds: 0f225ea6 (G1) against the same source with
+# patches/fast-loop-prototype.patch (FL): a separate small proc that runs the
+# fast paths of eleven simple instructions and returns to runLoop at the first
+# one it does not run. Instructions, then cycles (one run each).
+while-long    G1 24,460 M / 3,694 M   FL 20,018 M / 3,108 M   -18% / -16%
+scoped        G1 15,119 M / 2,358 M   FL 15,691 M / 2,354 M   +3.8% /  0%
+map-literal   G1 13,728 M / 2,037 M   FL 13,948 M / 2,103 M   +1.6% / +3%
+field-write   G1 17,685 M / 2,538 M   FL 16,575 M / 2,287 M   -6.3% / -10%
+
+# Default builds: 0f225ea6 (G1) against fastLoop as committed, entered at
+# opLoopEnter for loops made only of its instructions (FL). Instructions /
+# cycles, one run each.
+while-long    G1 24,486 M / 3,553 M   FL 18,079 M / 2,338 M   -26% / -34%
+scoped        G1 15,123 M / 2,413 M   FL 15,121 M / 2,314 M     0%
+map-literal   G1 13,727 M / 2,003 M   FL 13,729 M / 1,965 M     0%
+field-write   G1 17,686 M / 2,438 M   FL 17,687 M / 2,405 M     0%
+# Entered at every backward opJump instead, the call in opJump's handler
+# changed the code of the others: a call with a local +3.2%, field writes
+# +4.2% in instructions, with no fastLoop run in either.
+
+# Default builds: 9cd8bc6a (F) against fastLoop with numbers other than small
+# Ints through tryFastNativeKind2 (FX), and FX with `for` over a range (FR).
+float         F 13,222 M / 1,903 M   FX  9,236 M / 1,119 M   -30% / -41%
+for-range     F 10,591 M / 1,573 M   FR  8,545 M / 1,145 M   -19% / -27%
+scoped        F 15,141 M             FX 15,147 M              0%
+typed-calls   F 10,352 M, 10,366 M   FR 10,357 M, 10,370 M    0% (paired time
+              1.07 in 7 rounds of the full kernel file under load 7-15; alone,
+              11 rounds under load 2.6, 0.94 and 0.96:
+              pairs/default-typed-call-recheck.tsv)

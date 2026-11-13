@@ -1,0 +1,5 @@
+(fn make_records [n] (var xs []) (repeat i in n (xs .push {^id i ^name "item" ^amount (* i 3)})) xs)
+(fn items_of [state] state/items)
+(fn bench [n state] (var total 0) (repeat i in n (set total (+ total ($size (items_of state))))) total)
+(let state {^items (make_records 10000) ^name "s"})
+(bench 300000000 state)

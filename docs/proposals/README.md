@@ -18,6 +18,7 @@ remain open.
 | [Package distribution](package-distribution.md) | PKG-1–3: installation, native artifacts, releases and registries. |
 | [Value operations](value-operations.md) | VAL-1–3: equality, hashing, indexing and ordering protocols. |
 | [VM reliability](vm-reliability.md) | VM-0–3: lifetime ledger, repairs, generation retirement, soak. |
+| [VM dispatch core](vm-dispatch-core.md) | D1–D4: one copy of the frame paths, layout under PGO, frame-local slots, threaded dispatch. |
 | [AtomicArc retirement](atomic-arc-retirement.md) | AAR-0–3: retiring generations and cycles under the threaded memory model. |
 | [Native application profile](python-replacement-profile.md) | Implementation order and qualification for the stages above. |
 

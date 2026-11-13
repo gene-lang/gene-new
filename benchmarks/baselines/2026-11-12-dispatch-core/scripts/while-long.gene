@@ -1,0 +1,7 @@
+(fn bench_while [n]
+  (var i 0) (var total 0)
+  (while (< i n)
+    (set total (+ total (// (* i 7) 13)))
+    (set i (+ i 1)))
+  total)
+(fn main [] ($println (bench_while 20000000)))
