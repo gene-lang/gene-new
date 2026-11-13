@@ -130,13 +130,6 @@ type
     kind: RunStopKind
     value: Value
 
-  PendingReturnMode = enum
-    ## How `runLoop`'s one copy of the return paths takes the value a return
-    ## instruction handed it.
-    prmValue              # return the parked value as `frameReturn` would
-    prmStackTop           # `opReturn`: pop the operand stack as `frameReturn` would
-    prmBareInt            # return the parked value as `frameReturnBareInt` would
-
   GeneReturn = object of CatchableError
     value: Value
     targetDepth: int
@@ -19134,15 +19127,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var terminalCleanups: seq[TerminalCleanup]
   var deferredCancel: ref GeneCancel
   var deferredError: ref GeneError
-  # A return instruction does not expand the return paths itself: each
-  # expansion of `frameReturn` covers every frame kind, and one per return
-  # instruction made them most of runLoop's code. The instruction parks its
-  # value here, saves `ip` and sets it to `ReturnPendingIp`, past every chunk's
-  # end, so the dispatch header's end-of-chunk test runs `runPendingReturn`.
-  const ReturnPendingIp = high(int)
-  var pendingReturnValue: Value
-  var pendingReturnMode = prmValue
-  var pendingReturnIp = 0
 
   template terminalAtCurrentFrame(): ref GeneCancel =
     (if terminalCleanups.len > 0 and terminalCleanups[^1].depth == frames.len:
@@ -19991,31 +19975,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         boundScope.evalBudget != nil:
       applyCallBudget(proto, boundScope, lexicalScope, scope)
 
-  template requestReturn(mode: PendingReturnMode, value: Value) =
-    ## Return from the current frame through `runPendingReturn`.
-    pendingReturnValue = value
-    pendingReturnMode = mode
-    pendingReturnIp = ip
-    ip = ReturnPendingIp
-    continue
-
-  template runPendingReturn() =
-    ## The return a return instruction asked for, or nil when the chunk ran
-    ## out. `frameReturnBareInt`'s fast case is tested first; every other case
-    ## is `frameReturn`, which a bare-Int return reaches only with a value it
-    ## would not adapt. The parked value lives in a local until the return
-    ## ends, as it did in the instruction that parked it.
-    let mode = pendingReturnMode
-    if mode == prmBareInt and pendingReturnValue.kind == vkInt and
-        returnType.kind == vkNil and curFrameKind == fkNormal and
-        not validateImplRequirements:
-      let retValue = move pendingReturnValue
-      finishFastNormalReturn(retValue)
-    else:
-      var returning = move pendingReturnValue
-      frameReturn(if mode == prmStackTop: (if sp > 0: spop() else: NIL)
-                  else: move returning)
-
   template enterRecur1Frame(arg: Value, argKnownBareInt: bool) =
     let proto = chunk.owner
     if not argKnownBareInt and proto.hasParamTypes and proto.paramTypes.len > 0 and
@@ -20643,11 +20602,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       while true:
         {.computedGoto.}
         if ip >= chunk.instructions.len:
-          if ip == ReturnPendingIp:
-            ip = pendingReturnIp
-          else:
-            pendingReturnMode = prmValue   # the chunk ran out: return nil
-          runPendingReturn()
+          frameReturn(NIL)
           continue
         if instructionBudget > 0:
           if remainingBudget <= 0 and sliceMayEndHere():
@@ -22116,7 +22071,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               var args = [a, b]
               matched = applyCall(callee, args, NamedArgs(), scope).isTruthy
           if matched:
-            requestReturn(prmBareInt, a)
+            frameReturnBareInt(a)
+            continue
           ip += 4
         of opResolveMessage, opSend:
           # Receiver-first message send (docs/spec/protocols.md): an unqualified send
@@ -23784,7 +23740,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opExplicitReturn:
           let returnValue = if sp > 0: spop() else: NIL
           if curFrameKind == fkNormal and frames.len == returnDepth:
-            requestReturn(prmValue, returnValue)
+            frameReturn(returnValue)
           else:
             var signal: ref GeneReturn
             new(signal)
@@ -24023,9 +23979,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             protocolBits = qualifier.bits
           spush newBoundMessage(qualifier, inst[].name, protocolBits, scope)
         of opReturn:
-          requestReturn(prmStackTop, NIL)
+          frameReturn(if sp > 0: spop() else: NIL)
         of opReturnBareInt:
-          requestReturn(prmBareInt, if sp > 0: spop() else: NIL)
+          frameReturnBareInt(if sp > 0: spop() else: NIL)
         of opReturnIntAdd2:
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in int add return")
@@ -24035,12 +23991,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           strunc(top - 2)
           var value: Value
           if a.isSmallInt and b.isSmallInt and smallIntAddKnown(a, b, value):
-            requestReturn(prmBareInt, value)
+            frameReturnBareInt(value)
+            continue
           if a.kind == vkInt and b.kind == vkInt:
-            requestReturn(prmBareInt, intAdd(a, b))
+            frameReturnBareInt(intAdd(a, b))
+            continue
           let callee = scope.loadNativeFast(nfkAdd, inst[].name)
           var args = [a, b]
-          requestReturn(prmBareInt, applyCall(callee, args, NamedArgs(), scope))
+          frameReturnBareInt(applyCall(callee, args, NamedArgs(), scope))
         of opCheckType:
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in type check")
