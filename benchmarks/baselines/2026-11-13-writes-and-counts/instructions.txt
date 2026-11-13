@@ -1,0 +1,48 @@
+# Instructions retired / cycles elapsed (/usr/bin/time -l), default builds
+# (`nim c src/gene.nim`), one run each unless two are shown. Counts repeat to
+# within 0.1% between runs; cycles move with the machine's load.
+#
+#   B    9c1c159a
+#   FW   B + field-write fast path (8680f69c)
+#   RC   FW + cursors in retain/release (7c87bc6b)
+#   C    RC + construction trims (723a5dff)
+#   K    C + `kind` as two table reads, forced inline (patches/kind-always-inline.patch; dropped)
+#   ARC  K built with --mm:arc (no cycle collector; not kept)
+
+# Field-write fast path. scripts/field-write.gene (10 M writes).
+field-write   B 17,776 M / 2,580 M   FW 13,414 M / 1,839 M   -25% / -28%
+              B 17,745 M / 2,557 M   FW 13,391 M / 1,850 M
+# scripts/send.gene at 10 M sends (its message writes its own field).
+send-10M      B 51,373 M / 7,773 M   FW 47,073 M / 7,117 M   -8.4%
+
+# Retain/release cursors, then construction trims. 5 M iterations.
+alloc         B 25,486 M / 3,726 M   FW 25,478 M / 3,733 M   RC 22,825 M / 3,194 M   C 21,751 M / 3,055 M
+send          B 25,689 M / 3,831 M   FW 23,537 M / 3,683 M   RC 22,655 M / 3,583 M   C 22,697 M / 3,423 M
+field-write   B 17,698 M / 2,363 M   FW 13,400 M / 1,823 M   RC 13,394 M / 1,974 M   C 13,420 M / 1,859 M   (10 M)
+closure       B 14,846 M / 2,306 M   FW 14,848 M / 2,265 M   RC 14,848 M / 2,309 M
+map-literal   B 22,847 M / 3,293 M   FW 22,853 M / 3,443 M   RC 22,843 M / 3,298 M
+
+# `kind` forced inline (K) against C. runLoop kept ~400 out-of-line calls to
+# `kind` whether its body was a `case` or two table reads; only
+# always_inline removed them (runLoop 907 KB -> 943 KB).
+alloc         C 21,691 M / 3,097 M   K 21,441 M / 3,002 M   -1.2%
+send          C 22,650 M / 3,418 M   K 22,425 M / 3,367 M   -1.0%
+closure       C 14,845 M / 2,351 M   K 14,694 M / 2,247 M   -1.0%
+list-push     C 17,008 M / 2,525 M   K 16,933 M / 2,426 M   -0.4%
+field-write   C 13,397 M / 1,877 M   K 13,332 M / 1,868 M   -0.5%
+for-range     C 37,587 M / 5,260 M   K 37,365 M / 5,283 M   -0.6%   (30 M)
+typed-call    C 20,495 M / 2,947 M   K 20,030 M / 2,776 M   -2.3%   (10 M)
+typed-list-param C 12,564 M / 1,820 M   K 12,967 M / 1,917 M   +3.2%
+# The typed-list-param loss has a mechanism: with `kind` inlined into it,
+# scopelessScalarArgsOk no longer inlines into runLoop (2.5% of samples as a
+# call of its own) and bareScalarListSatisfied's share doubles. Not kept.
+
+# ARC against ORC, same source (K). rememberCycle is only a call: ORC's
+# collector never runs in these kernels, and without it the code is laid out
+# worse. Not kept.
+alloc         K 21,462 M / 2,997 M   ARC 21,491 M / 3,108 M
+send          K 22,451 M / 3,304 M   ARC 22,231 M / 3,409 M
+closure       K 14,711 M / 2,258 M   ARC 14,503 M / 2,261 M
+list-push     K 16,973 M / 2,505 M   ARC 17,517 M / 2,725 M
+field-write   K 13,351 M / 1,794 M   ARC 13,862 M / 1,998 M
+map-literal   K 22,914 M / 3,356 M   ARC 23,274 M / 3,432 M

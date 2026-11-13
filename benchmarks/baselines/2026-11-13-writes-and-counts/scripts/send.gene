@@ -1,0 +1,8 @@
+(type Counter ^props {^n Int}
+  (message inc [d] (set self/n (+ self/n d)))
+  (message value [] self/n))
+(fn bench_send [n]
+  (let c (Counter ^n 0))
+  (repeat i in n (c .inc 1))
+  c/.value)
+(fn main [] ($println (bench_send 5000000)))

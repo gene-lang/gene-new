@@ -516,16 +516,58 @@ largest first:
   calls even after the return has moved the registers back, most of them on
   nil fields, about 6% of `fib30`; a destructor that tests them first would
   save most of that.
-- **Field writes** (7.6x). What is left is the generic path writer and the
-  checked prop writer. A per-site field slot cache, like the send cache, would
-  answer most of it.
+- **Field writes** (7.6x before section 14). Section 14 stores an unmanaged
+  value in one place; a managed value still takes the generic path writer and
+  the checked prop writer. A per-site field slot cache, like the send cache,
+  would answer more of it.
 - **Helpers left out of line.** `kind`, the `Value` copy hook and
   `smallIntAddKnown` are marked inline, but clang leaves them as calls in
-  `runLoop`, 3% to 8% together.
+  `runLoop`, 3% to 8% together. Forcing `kind` inline is not free: see
+  section 14.
 - Instruction size, and the dispatch preamble, which carries the execution
   limit contract (`tests/test_poll_window.nim`).
 - Annotated calls outside the admitted shapes, and the run-time meaning of a
   parameterized annotation, which is an owner decision.
+
+## 14. Field writes, hidden counts, and construction (2026-11-13)
+
+Three commits on `9c1c159a`, default builds; evidence in
+`benchmarks/baselines/2026-11-13-writes-and-counts/`.
+
+- **One-key writes of unmanaged values** (`8680f69c`). `(set p/x v)` went
+  through `runSetPath`, `setMutableChild` and `setCheckedNodeProp`, with five
+  more calls under them. For a value that holds no caller environment and no
+  function, the out-of-line `runSetPath` now stores it in one place when the
+  node is mutable and its head is a Symbol or a record Type declaring the key
+  with an annotation the value's kind satisfies (or none). Anything else takes
+  the general path, which raises as before. Field writes run 25% fewer
+  instructions.
+- **Counts the code never asked for** (`7c87bc6b`). Retaining or releasing a
+  Type, Module, Protocol, Env or Cell value bound the box and its subtype as
+  counted locals: two ORC increments and two decrements, each decrement a
+  cycle-candidate registration (`rememberCycle`), around the one count the
+  code changed. Constructing a record retains and releases its Type, so
+  `rememberCycle` was 10% of `alloc_record`. Cursors and casts remove them:
+  10% fewer instructions there.
+- **Construction** (`723a5dff`). The type's scope, a counted read, is
+  evaluated only when its contract is pending; the call site is read in
+  place; argument names are tried in declaration order first; a Node stored
+  into a local is decided by its tag. 4.7% fewer instructions.
+
+Together, against `9c1c159a` in seven paired rounds: field_write 0.75,
+alloc_record 0.82, send 0.89, field_rw 0.91 (7 of 7 each), every other kernel
+0.97 to 1.03.
+
+Not kept:
+
+- `kind` forced inline (`always_inline`). Clang keeps about 400 calls to
+  `kind` in `runLoop` whether its body is a `case` or two table reads; only
+  forcing removes them. Typed calls and sends ran 1% to 2% fewer instructions,
+  but the typed-list-parameter kernel 3% more: `scopelessScalarArgsOk` grew
+  past the inliner's budget and left `runLoop`.
+- `--mm:arc`. With no cycle collector there is no `rememberCycle`, but the
+  collector never runs in these kernels anyway; ARC was no faster and laid out
+  several kernels worse.
 
 ## Verification
 

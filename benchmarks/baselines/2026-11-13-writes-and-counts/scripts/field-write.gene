@@ -1,0 +1,6 @@
+(type Pt ^props {^x Int ^y Int})
+(fn bench_field_write [n]
+  (let p (Pt ^x 1 ^y 2))
+  (repeat i in n (set p/x i))
+  p/x)
+(fn main [] ($println (bench_field_write 10000000)))

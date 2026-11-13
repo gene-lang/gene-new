@@ -1,0 +1,8 @@
+(type Pt ^props {^x Int ^y Int})
+(fn bench_alloc [n]
+  (var total 0)
+  (repeat i in n
+    (let p (Pt ^x i ^y 2))
+    (set total (+ total p/x)))
+  total)
+(fn main [] ($println (bench_alloc 5000000)))
