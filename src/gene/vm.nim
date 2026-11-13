@@ -13140,6 +13140,10 @@ type
     frameStacksLen: int
     callScopes: array[MaxCallScopePool, Scope]
     callScopesLen: int
+    callScopesKeepContext: bool
+      ## Some pooled scope may still hold a module's context (see
+      ## releaseCallScope). Clear while none does, so the flushes at every
+      ## fiber step and trial deletion cost one test.
 
 var gVmPools {.threadvar.}: VmPools
 
@@ -13630,6 +13634,8 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     if pools.callScopesLen < MaxCallScopePool:
       pools.callScopes[pools.callScopesLen] = scope
       inc pools.callScopesLen
+      if keepContext:
+        pools.callScopesKeepContext = true
     else:
       scope.simpleCallScope = false
       if keepContext:
@@ -13694,6 +13700,9 @@ proc flushCallScopePool(pools: var VmPools) =
   ## Drop the module context that pooled call scopes keep (see
   ## releaseCallScope), so nothing the pool holds outlives the run that
   ## pooled it or is counted by trial deletion as an outside owner.
+  if not pools.callScopesKeepContext:
+    return
+  pools.callScopesKeepContext = false
   for i in 0 ..< pools.callScopesLen:
     pools.callScopes[i].inheritScopeContext(nil)
 
