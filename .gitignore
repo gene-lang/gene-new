@@ -39,6 +39,8 @@ tests/*
 benchmarks/bench_core
 benchmarks/bench_self_type
 benchmarks/bench_pipeline
+# Measurement evidence stays on the machine that produced it.
+benchmarks/baselines/
 
 # Built by `nimble wasm`; see web/README.md.
 web/gene.js

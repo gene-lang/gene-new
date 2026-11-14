@@ -819,7 +819,7 @@ proc ingressSymbol(value: Value, label: string): string =
 
 proc biIngressHandleOpen(args: openArray[Value],
                          call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if scope == nil or args.len != 2 or args[0].kind != vkFfiLibrary or
       args[0].ffiLibraryClosed:
     raise newException(GeneError,
@@ -896,7 +896,7 @@ proc biIngressHandleOpen(args: openArray[Value],
 
 proc biIngressHandleClose(args: openArray[Value],
                           call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raise newException(GeneError,
       "NativeIngressSubscription.close expects one receiver")
@@ -907,7 +907,7 @@ proc biIngressHandleClose(args: openArray[Value],
 
 proc biIngressHandleWaitClosed(args: openArray[Value],
                                call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raise newException(GeneError,
       "NativeIngressSubscription.wait_closed expects one receiver")
@@ -915,7 +915,7 @@ proc biIngressHandleWaitClosed(args: openArray[Value],
 
 proc biIngressHandleStatus(args: openArray[Value],
                            call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raise newException(GeneError,
       "NativeIngressSubscription.status expects one receiver")

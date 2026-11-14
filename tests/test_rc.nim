@@ -219,6 +219,48 @@ when defined(geneRcStats):
         check leakedManaged("(let p (Path \".Self:head\")) p",
           useLocalSlots = slots) == 0
 
+    test "namespaces bound in their own scope are reclaimed":
+      # Every run root binds the namespace `$ns` reads, and that namespace
+      # holds the root back: a cycle through a boxed Value. The namespace's
+      # edge must not own while only that binding holds it, or every root
+      # (and the list it binds here) outlives its run.
+      for source in [
+          "(let x [1 2]) x",
+          "(let x [1 2]) $ns",
+          "(let x [1 2]) ($ns .lookup \"x\")",
+          "(let x [1 2]) (fn top [] 41) (var f ($ns .lookup \"top\")) (f)"]:
+        for slots in [true, false]:
+          checkpoint source
+          check leakedManaged(source, useLocalSlots = slots) == 0
+
+    test "a namespace outliving its declaring run keeps its bindings":
+      discard run(compileSource("nil"), newGlobalScope())
+      GC_fullCollect()
+      let before = liveManaged
+      block:
+        var root, inner: Value
+        block:
+          var scope = newGlobalScope()
+          root = run(compileSource("(fn top [] 41) $ns"), scope)
+          inner = run(compileSource("(ns inner (fn f [] 42)) inner"),
+                      newGlobalScope())
+          scope = nil
+        GC_fullCollect()
+        var reader = newGlobalScope()
+        reader.define("root", root)
+        reader.define("inner", inner)
+        check run(compileSource("[((root .lookup \"top\")) (inner/f)]"),
+                  reader).print() == "[41 42]"
+        reader = nil
+        root = NIL
+        GC_fullCollect()
+        # The root namespace, its scope and `top` are gone; `inner` still
+        # holds `f`. Releasing `inner` is not checked: its scope's parent edge
+        # keeps the run root that binds it, the parent cycle limit the next
+        # test records.
+        check liveManaged == before + 1
+        inner = NIL
+
     test "a returned child-scope Path exposes the existing parent cycle limit":
       for slots in [true, false]:
         let closureLeak = leakedManaged("""
@@ -330,6 +372,17 @@ when defined(geneRcStats):
           (try ((Boom) .raise) catch Boom nil))
         (test)
       """) == 0
+
+    test "locals of a scopeless call release their values":
+      # The same body with a typed local keeps its call scope. What either
+      # leaves after the run is the last call's values, so it must not grow
+      # with the number of calls, and must match the classic convention.
+      const scopeless = "(fn pair [x] (let y [x x]) (let z {^a y}) z/a) "
+      const classic = "(fn pair [x] (let q : Int 1) (let y [x x]) " &
+                      "(let z {^a y}) z/a) "
+      let once = leakedManaged(scopeless & "(pair 1)")
+      check leakedManaged(scopeless & "(repeat i in 50 (pair i))") == once
+      check once == leakedManaged(classic & "(pair 1)")
 
     test "scalar program leaks nothing (measurement sanity)":
       check leakedManaged("(+ 1 2)") == 0

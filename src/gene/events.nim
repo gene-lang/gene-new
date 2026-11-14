@@ -368,7 +368,7 @@ proc errorPolicyFromValue(scope: Scope, value: Value): EventErrorPolicy =
 
 proc biEventBusNew(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 0:
     raise newException(GeneError,
       "event/Bus takes named properties only, got " & $args.len &
@@ -393,7 +393,7 @@ proc biEventBusNew(args: openArray[Value], call: ptr NativeCall): Value
 
 proc biEventExact(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 1:
     raise newException(GeneError,
       "event/exact expects 1 argument, got " & $args.len)
@@ -405,7 +405,7 @@ proc biEventExact(args: openArray[Value], call: ptr NativeCall): Value
 
 proc biEventBusSubscribe(args: openArray[Value], call: ptr NativeCall): Value
                         {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 3:
     raise newException(GeneError,
       "Bus/subscribe expects a selector and a handler, got " &
@@ -561,7 +561,7 @@ proc eventBusPublish(scope: Scope, bus: Value, event: Value): Value =
 
 proc biEventBusPublish(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 2:
     raise newException(GeneError,
       "Bus/publish expects 1 event, got " & $(args.len - 1))
@@ -573,7 +573,7 @@ proc biEventBusPublish(args: openArray[Value], call: ptr NativeCall): Value
 
 proc biEventBusClose(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   ## §7.4: cancel every subscription, release the handlers, idempotent.
   ## Without it there is no deterministic way to release a bus's handlers,
   ## since §7.3 rules out collection-driven cancellation.
@@ -592,7 +592,7 @@ proc biEventBusClose(args: openArray[Value], call: ptr NativeCall): Value
 
 proc biEventBusClosed(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 1:
     raise newException(GeneError, "Bus/closed? takes no arguments")
   requireEventBus(args[0])
@@ -601,7 +601,7 @@ proc biEventBusClosed(args: openArray[Value], call: ptr NativeCall): Value
 
 proc biEventBusSubscriptionCount(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   ## Active subscriptions. Diagnostic surface for tests and `close` checks.
   if args.len != 1:
     raise newException(GeneError, "Bus/subscription_count takes no arguments")
@@ -620,7 +620,7 @@ proc biEventBusSubscriptionCount(args: openArray[Value], call: ptr NativeCall): 
 
 proc biEventSubscriptionCancel(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 1:
     raise newException(GeneError, "Subscription/cancel takes no arguments")
   if args[0].kind != vkEventSubscription:
@@ -634,7 +634,7 @@ proc biEventSubscriptionCancel(args: openArray[Value], call: ptr NativeCall): Va
 
 proc biEventSubscriptionActive(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 1:
     raise newException(GeneError, "Subscription/active? takes no arguments")
   if args[0].kind != vkEventSubscription:
@@ -713,7 +713,7 @@ proc emitToSink(scope: Scope, sink: Value, event: Value): Value =
 
 proc biEventSinkEmit(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 2:
     raise newException(GeneError,
       "EventSink/emit expects 1 event, got " & $(args.len - 1))
@@ -721,14 +721,14 @@ proc biEventSinkEmit(args: openArray[Value], call: ptr NativeCall): Value
 
 proc biRecordingSinkNew(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 0:
     raise newException(GeneError, "event/RecordingSink takes no arguments")
   newRecordingSink()
 
 proc biRecordingSinkEvents(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 1:
     raise newException(GeneError, "RecordingSink/events takes no arguments")
   if args[0].kind != vkRecordingSink:
@@ -741,7 +741,7 @@ proc biRecordingSinkEvents(args: openArray[Value], call: ptr NativeCall): Value
 
 proc biRecordingSinkClear(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 1:
     raise newException(GeneError, "RecordingSink/clear takes no arguments")
   if args[0].kind != vkRecordingSink:
@@ -752,14 +752,14 @@ proc biRecordingSinkClear(args: openArray[Value], call: ptr NativeCall): Value
 
 proc biNullSinkNew(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 0:
     raise newException(GeneError, "event/NullSink takes no arguments")
   newNullSink()
 
 proc biCompositeSinkNew(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 1:
     raise newException(GeneError,
       "event/CompositeSink expects one List of sinks")
@@ -773,7 +773,7 @@ proc biCompositeSinkNew(args: openArray[Value], call: ptr NativeCall): Value
 
 proc biCompositeSinkSinks(args: openArray[Value], call: ptr NativeCall): Value
                   {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 1:
     raise newException(GeneError, "CompositeSink/sinks takes no arguments")
   if args[0].kind != vkCompositeSink:

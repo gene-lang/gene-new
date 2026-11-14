@@ -12,7 +12,7 @@ import ./[gir, printer, reader, types]
 # reusing the same bytecode slots, so that migration also advances the format.
 # Removing `void` (nil is the only absence value) changed the meaning of stored
 # constants, `Void` annotations and optional-path jumps, so it advanced it too.
-const GirArtifactFormat* = 44
+const GirArtifactFormat* = 45
 
 proc validateModuleSourcePath(path: string) =
   # Empty remains available to host-created, explicitly path-bound chunks.
@@ -517,6 +517,7 @@ proc toJsonHook(chunk: Chunk,
   var portable = chunk[]
   portable.owner = nil
   portable.dispatchCache = @[]
+  portable.fastLoopJumps = @[]
   portable.spawnPublished = false
   portable.spawnPublishedSuperBits = 0
   portable.plainLoopBody = 0
@@ -556,6 +557,36 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
     validateSummary(fn.errorSummary)
     restoreChunk(fn.chunk, fn)
     restoreChunk(fn.scopelessChunk, fn)
+    if fn.scopelessChunk != nil:
+      # A scopeless body addresses its frame's cells by index: arguments and
+      # locals may be read, only locals written. The locals' cells exist
+      # because the chunk starts by pushing one nil for each, and no jump may
+      # land among those pushes and run one twice.
+      let alt = fn.scopelessChunk
+      let cells = fn.localNames.len - fn.params.len
+      var valid = cells >= 0 and alt.instructions.len >= cells
+      if valid:
+        for i in 0 ..< cells:
+          let push = alt.instructions[i]
+          if push.op != opPushConst or push.intArg < 0 or
+              push.intArg >= alt.constants.len or
+              alt.constants[push.intArg].kind != vkNil:
+            valid = false
+      if valid:
+        for inst in alt.instructions:
+          case inst.op
+          of opLoadArg:
+            if inst.intArg < 0 or inst.intArg >= fn.localNames.len: valid = false
+          of opStoreArg:
+            if inst.intArg < fn.params.len or inst.intArg >= fn.localNames.len:
+              valid = false
+          of opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
+             opJumpIfPresentOrPop, opJumpIfAbsent:
+            if inst.intArg < cells: valid = false
+          else: discard
+      if not valid:
+        raise newException(ValueError,
+          "encoded GIR contains an invalid scopeless frame layout")
     for defaultValue in fn.paramDefaults:
       restoreChunk(defaultValue.defaultChunk, nil)
     for parameter in fn.namedParams:
@@ -641,6 +672,7 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
       else: discard
     chunk.owner = owner
     chunk.dispatchCache = @[]
+    chunk.fastLoopJumps = @[]
     chunk.spawnPublished = false
     chunk.spawnPublishedSuperBits = 0
     chunk.plainLoopBody = 0
@@ -718,7 +750,8 @@ proc copyExecutionTemplate[T](source: T, copies: var Table[pointer, pointer]): T
       result.add copyExecutionTemplate(value, copies)
   elif T is object or T is tuple:
     for name, original, copied in fieldPairs(source, result):
-      when T is typeof(default(Chunk)[]) and name in ["owner", "dispatchCache", "spawnPublished",
+      when T is typeof(default(Chunk)[]) and name in ["owner", "dispatchCache", "fastLoopJumps",
+                                                  "spawnPublished",
                                                   "spawnPublishedSuperBits", "plainLoopBody"]:
         discard
       else:

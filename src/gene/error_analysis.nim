@@ -638,12 +638,7 @@ proc numeric(value: AbstractValue): bool =
     value.typ.symVal in ["Int", "I64", "I32", "Float", "F64"]
 
 proc literalInt64(value: AbstractValue, integer: var int64): bool =
-  if value == nil or not value.hasLiteral or value.literal.kind != vkInt: return false
-  try:
-    integer = value.literal.intVal
-    true
-  except FieldDefect:
-    false
+  value != nil and value.hasLiteral and value.literal.tryIntVal(integer)
 
 proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnvironment,
                   function: AnalyzedFunction = nil, depth = 0,

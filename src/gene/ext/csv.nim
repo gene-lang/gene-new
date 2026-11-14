@@ -248,7 +248,7 @@ proc csvTakeReadyRow(state: var CsvParserState, headers: var seq[string],
   csvRowValue(row, headers, hasHeaders, state)
 
 proc biCsvParseRows(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var state = CsvParserState(delimiter: ',', maxFieldBytes: csvDefaultMaxFieldBytes,
     maxRecordBytes: csvDefaultMaxRecordBytes, maxColumns: csvDefaultMaxColumns,
     scope: scope)
@@ -293,7 +293,7 @@ proc biCsvParseRows(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   result = newList(rows)
 
 proc biCsvEncodeRow(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var state = CsvParserState(delimiter: ',', maxFieldBytes: csvDefaultMaxFieldBytes,
     maxRecordBytes: csvDefaultMaxRecordBytes, maxColumns: csvDefaultMaxColumns,
     scope: scope)
@@ -397,7 +397,7 @@ proc csvAdvance(record: CsvReaderRecord, scope: Scope): Value =
     raise
 
 proc biCsvReader(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var state = CsvParserState(delimiter: ',', maxFieldBytes: csvDefaultMaxFieldBytes,
     maxRecordBytes: csvDefaultMaxRecordBytes, maxColumns: csvDefaultMaxColumns,
     scope: scope)
@@ -443,7 +443,7 @@ proc biCsvReader(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     csvReaderRecords[result.nodeResourceId] = record
 
 proc biCsvReaderFeed(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 2:
     raiseCsvError(CsvParserState(scope: scope), "reader feed expects two arguments")
   let record = csvReaderRecord(args[0], scope)
@@ -466,14 +466,14 @@ proc biCsvReaderFeed(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   NIL
 
 proc biCsvReaderStep(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raiseCsvError(CsvParserState(scope: scope), "reader step expects one argument")
   csvAdvance(csvReaderRecord(args[0], scope), scope)
 
 proc biCsvReaderFinishNext(args: openArray[Value],
                            call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raiseCsvError(CsvParserState(scope: scope), "reader finish expects one argument")
   let record = csvReaderRecord(args[0], scope)
@@ -482,14 +482,14 @@ proc biCsvReaderFinishNext(args: openArray[Value],
 
 proc biCsvReaderSourceClosed(args: openArray[Value],
                              call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raiseCsvError(CsvParserState(scope: scope),
       "source close state expects one argument")
   csvReaderRecord(args[0], scope).sourceClosedTask
 
 proc biCsvReaderNext(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raiseCsvError(CsvParserState(scope: scope), "next expects no arguments")
   let record = csvReaderRecord(args[0], scope)
@@ -508,7 +508,7 @@ proc biCsvReaderNext(args: openArray[Value], call: ptr NativeCall): Value {.nimc
     record.pending = result
 
 proc biCsvReaderClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raiseCsvError(CsvParserState(scope: scope), "close expects no arguments")
   let record = csvReaderRecord(args[0], scope)
@@ -552,7 +552,7 @@ proc biCsvReaderClose(args: openArray[Value], call: ptr NativeCall): Value {.nim
 
 proc biCsvReaderWaitClosed(args: openArray[Value],
                            call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raiseCsvError(CsvParserState(scope: scope), "wait_closed expects no arguments")
   let record = csvReaderRecord(args[0], scope)

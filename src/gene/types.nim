@@ -4,7 +4,7 @@
 ##
 ##   * `bits == 0`                      -> `nil` (so a zero-initialized Value is nil)
 ##   * top 16 bits < 0xFFF1             -> an IEEE float64 stored directly
-##   * top 16 bits in 0xFFF1..0xFFF6    -> a void/bool/small-int/char/+0.0/symbol
+##   * top 16 bits in 0xFFF1..0xFFF6    -> a missing-marker/bool/small-int/char/+0.0/symbol
 ##                                         immediate (no allocation)
 ##   * top 16 bits >= 0xFFF7            -> a *managed* heap pointer (cycle-tracked
 ##                                         object, string, list, map, node,
@@ -223,6 +223,17 @@ proc installContinuationEdgesHook*(hook: ContinuationEdgesHook) =
   ## by released-generation retirement (VM-2) for suspended generators.
   continuationEdgesHook = hook
 
+type RetirementStartHook* = proc() {.nimcall, raises: [].}
+
+var retirementStartHook: RetirementStartHook
+
+proc installRetirementStartHook*(hook: RetirementStartHook) =
+  ## Installed once by the VM. Trial deletion counts every owner of a module
+  ## root and of an Application; the VM's pooled call scopes keep module
+  ## context that no enumerated edge accounts for, so the hook drops it before
+  ## a retirement that needs those counts exact.
+  retirementStartHook = hook
+
 proc rcRetain(bits: uint64) {.raises: [].}
 proc rcRelease(bits: uint64) {.raises: [].}
 
@@ -352,18 +363,23 @@ type
 
   GeneList = object
     refCount: int
-    shared: int
+    # A flag, not a count. Half a word wide so that the stamp shares the word
+    # and the object stays the size it was.
+    shared: int32
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     deepFrozen: bool
     frozenGraphProofs: uint8 # predicate-specific, certified at construction
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
+    itemsKind: uint8       # see `listItemsAllOfKind`; 0 = not known
     items: seq[Value]
 
   GeneMap = object
     refCount: int
-    shared: int
+    shared: int32          # a flag; see GeneList
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     deepFrozen: bool
@@ -394,7 +410,8 @@ type
 
   GeneNode = object
     refCount: int
-    shared: int
+    shared: int32          # a flag; see GeneList
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     when defined(geneAtomicGenerationRetirementProbe): rawPublished: int
     immutable: bool
     ## Deep immutability, distinct from `immutable` (events.md §6.5).
@@ -406,6 +423,7 @@ type
     constructing: bool
     holdsEscapedFn: bool   # holds a promoted binding function; recheck on release
     cycleWatched: bool     # returned out of a closure cycle; recheck on release
+    partsChecked: bool     # see `nodePartsChecked`
     resourceId: uint64
     errorEvidence: ErrorEvidence
     head: Value
@@ -584,6 +602,9 @@ type
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
+    loadedModuleBase*: bool # a module root bound by bindThisModule, whose own
+                            # load, cache, reload and retirement govern its
+                            # lifetime; a plain run or eval root is not one
     sandboxGenerationReleased*: bool # generation released or discarded; retirement root
     moduleBase*: Scope      # cached ancestor module root; roots identify self via moduleRoot
     moduleStatic*: bool     # unconditional module/namespace declaration scope
@@ -594,8 +615,9 @@ type
     ## Immutable policy installed by the trusted sandbox host after a
     ## declaration-only module load. A fresh budget is created whenever an
     ## external call enters this module, so escaped functions and protocol
-    ## methods cannot bypass the loader's supervision boundary.
-    moduleExecutionPolicy*: ModuleExecutionPolicy
+    ## methods cannot bypass the loader's supervision boundary. Written only
+    ## through `moduleExecutionPolicy=`, which keeps `modulePoliciesInstalled`.
+    moduleExecutionPolicy: ModuleExecutionPolicy
     sandboxGenerationId*: uint64
     ownsTasks*: bool
     ownedTasks*: seq[Value]
@@ -630,12 +652,17 @@ type
   ## arguments stay as an openArray parameter on NativeProc to keep the hot
   ## builtin path allocation-free.
   NativeCall* = object
-    calleeName*: string
+    ## `calleeNameAddr` and `locAddr` are borrowed for the call and read with
+    ## `calleeName` and `loc`: copying the name and the location's source
+    ## name allocated two strings on every call of such a native.
+    calleeNameAddr*: ptr string  # the called native's own name
     namedNames*: seq[string]
     namedValues*: seq[Value]
-    dispatchScope*: Scope
+    dispatchScope* {.cursor.}: Scope
+      # the caller's scope, which the caller holds for the whole call; a
+      # counted field cost an increment and a cycle-candidate registration
     site*: Value             # the source call-site node, or NIL (design §3)
-    loc*: SourceLoc          # bytecode call location when available
+    locAddr*: ptr SourceLoc  # bytecode call location when available
 
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
@@ -877,7 +904,9 @@ type
 
   NamespaceData = ref object of GeneObjectData
     name: string
-    scope: Scope          # the namespace's own bindings (its exports)
+    scope: Scope          # the namespace's own bindings (its exports); nil while weak
+    weakScope: pointer    # that scope, for a namespace bound in it (`$ns`)
+    valueRefs: int        # boxed Value owners; release-time self-binding audit
     moduleRoot: bool      # true only for loader-created module root namespaces
     modulePath: string    # non-empty only for file-backed module roots
     ownerLane: int        # lane that created it; namespace writes stay owner-only
@@ -949,9 +978,11 @@ type
     microseconds: int64
 
   SetData = ref object of GeneObjectData
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     items: seq[Value]
 
   HashMapData = ref object of GeneObjectData
+    inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     entries: seq[HashMapEntry]
 
   PipelineData = ref object of GeneObjectData
@@ -1400,6 +1431,26 @@ type
     boundScope: Scope     # where the value was written — impls resolve there
     weakScope: pointer    # scope-owned binding back-reference
 
+var moduleExecutionPolicyInstalled: bool
+  ## Set before any scope is given a module execution policy, and never
+  ## cleared. Until then no call can enter one, so the call budget code does
+  ## not look for the callee's and the caller's module roots, which walks both
+  ## scope chains on every call.
+
+proc modulePoliciesInstalled*(): bool {.inline.} =
+  atomicLoadN(addr moduleExecutionPolicyInstalled, ATOMIC_ACQUIRE)
+
+proc moduleExecutionPolicy*(scope: Scope): ModuleExecutionPolicy {.inline.} =
+  scope.moduleExecutionPolicy
+
+proc `moduleExecutionPolicy=`*(scope: Scope,
+                               policy: ModuleExecutionPolicy) {.inline.} =
+  ## The only writer of the field outside this module, so a policy never
+  ## exists while `modulePoliciesInstalled` is false.
+  if policy != nil:
+    atomicStoreN(addr moduleExecutionPolicyInstalled, true, ATOMIC_RELEASE)
+  scope.moduleExecutionPolicy = policy
+
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
 # ---------------------------------------------------------------------------
@@ -1711,6 +1762,8 @@ proc boxObject(data: GeneObjectData): Value =
     TypeData(data).valueRefs = 1
   of okModule:
     ModuleData(data).valueRefs = 1
+  of okNamespace:
+    NamespaceData(data).valueRefs = 1
   of okProtocol:
     ProtocolData(data).valueRefs = 1
   of okEnv:
@@ -2328,6 +2381,7 @@ proc clearObjectEdges(data: GeneObjectData) =
   case data.objKind
   of okNamespace:
     NamespaceData(data).scope = nil
+    NamespaceData(data).weakScope = nil
   of okModule:
     let d = ModuleData(data)
     clearValueSlot(d.root)
@@ -2546,6 +2600,71 @@ proc tryCollectObjectCycle(seed: GeneObjectData) =
 template threadedRc: bool =
   compileOption("threads")
 
+const
+  FrozenNoCallerEnv* = 1'u8
+  FrozenNoScopeCapture* = 2'u8
+  FrozenNoWeakScope* = 4'u8
+  FrozenPlainDataProofs = FrozenNoCallerEnv or FrozenNoScopeCapture or FrozenNoWeakScope
+
+# ---------------------------------------------------------------------------
+# Escape-inert stamps
+# ---------------------------------------------------------------------------
+#
+# `escapeWeakFunctions` runs on every return and every store, and its scan
+# (`mayNeedEscape`) visits everything reachable from the value. Most values
+# hold nothing the pass acts on, and stay that way. A stamp records that.
+#
+# A value is *escape-inert* when `mayNeedEscape` answers false for it under
+# every guard and for either `markHolder`. For a leaf that is a property of
+# the leaf alone (`leafEscapeInert`). A List, Map, Node, Set or HashMap is
+# inert when everything it reaches is.
+#
+# Invariant: a container whose `inertEpoch` equals `escapeInertEpoch` is
+# escape-inert, and so is every container it reaches, each carrying the same
+# stamp or a `FrozenNoWeakScope` proof. The scan stamps a container after it has walked the whole subtree and
+# met no other kind of leaf. Three things could break the invariant, and each
+# one moves the epoch instead, which retires every stamp at once:
+#
+# - A store into a stamped container of a value that is not inert right now
+#   (`noteInertStore`). The store procs below (`setListItem` to
+#   `setNodeBodyItem`), the module-reference patcher and the escape walk
+#   itself are the only writers of a container's contents:
+#   the container objects are private to this module and are only lent out.
+#   A store into a container with no current stamp needs nothing, because by
+#   the invariant no stamped container reaches it.
+# - A leaf that turns from inert to not. Only a type and a namespace do: they
+#   drop their scope edge again in `weakenOwnedTypeEnvironment` and
+#   `weakenOwnedNamespaceScope`. A function that can change (`weakable`) is
+#   never counted inert.
+# - A pending module reference patched in place.
+#
+# The epoch is process-wide because containers cross lanes. A container that
+# has been published to another lane is never stamped: the scan would be
+# writing to an object another thread can read. It keeps a stamp it already
+# had, which is only ever read from then on. Stamps are 32 bits; once the
+# epoch passes them no stamp matches and the scan is simply what it was
+# before.
+var escapeInertEpoch: uint64 = 1
+
+proc currentInertEpoch(): uint64 {.inline.} =
+  when compileOption("threads"):
+    atomicLoadN(addr escapeInertEpoch, ATOMIC_RELAXED)
+  else:
+    escapeInertEpoch
+
+proc retireInertStamps() =
+  when compileOption("threads"):
+    discard atomicFetchAdd(addr escapeInertEpoch, 1'u64, ATOMIC_RELAXED)
+  else:
+    inc escapeInertEpoch
+
+template inertStampCurrent(stamp: uint32): bool =
+  stamp != 0 and uint64(stamp) == currentInertEpoch()
+
+when defined(geneInertStampTests):
+  var inertStampSkips*: int   # scans answered by a stamp
+  proc inertEpochForTest*(): uint64 = currentInertEpoch()
+
 when compileOption("threads"):
   var errorEvidenceLocks: array[64, Lock]
   for lock in errorEvidenceLocks.mitems: initLock(lock)
@@ -2557,13 +2676,13 @@ template withErrorEvidenceLock(node: ptr GeneNode, body: untyped) =
   else:
     body
 
-template isSharedFlag(flag: var int): bool =
+template isSharedFlag(flag: var (int | int32)): bool =
   when threadedRc:
     atomicLoadN(addr flag, ATOMIC_ACQUIRE) != 0
   else:
     flag != 0
 
-template markSharedFlag(flag: var int) =
+template markSharedFlag(flag: var (int | int32)) =
   when threadedRc:
     if atomicLoadN(addr flag, ATOMIC_ACQUIRE) == 0:
       atomicStoreN(addr flag, 1, ATOMIC_RELEASE)
@@ -2738,7 +2857,9 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var StampedSet) =
     # a published object may retain a non-owning link into its defining scope.
     template pin(scope: Scope) = pinPublishedScope(scope)
     case data.objKind
-    of okNamespace: pin(NamespaceData(data).scope)
+    of okNamespace:
+      pin(NamespaceData(data).scope)
+      pin(cast[Scope](NamespaceData(data).weakScope))
     of okType:
       let d {.cursor.} = TypeData(data)
       when defined(geneAtomicGenerationRetirementProbe):
@@ -3047,6 +3168,13 @@ proc rcRetain(bits: uint64) =
   rcRetainOther(bits)
 
 proc rcRetainFull(bits: uint64) =
+  ## The object arms here and in `rcReleaseFull` read the box through cursors
+  ## and `cast`, not counted locals and checked conversions (`TypeData(data)`):
+  ## each counted local was an ORC increment plus a decrement that registers a
+  ## cycle candidate (`rememberCycle`), two of each on every retain or release
+  ## of a Type, so on every construction of a record. The box's own reference
+  ## keeps the object alive throughout, and the tag and `objKind` tests have
+  ## established the dynamic type the cast names.
   case bits shr TAG_SHIFT
   of STRING_TAG: retainManual(cast[ptr GeneString](bits and PAYLOAD_MASK))
   of INT64_TAG:  retainManual(cast[ptr GeneInt64](bits and PAYLOAD_MASK))
@@ -3065,10 +3193,10 @@ proc rcRetainFull(bits: uint64) =
   of FUNCTION_TAG:  retainManual(cast[ptr GeneFunction](bits and PAYLOAD_MASK))
   of NATIVE_FN_TAG: retainManual(cast[ptr GeneNativeFn](bits and PAYLOAD_MASK))
   of CYCLE_OBJECT_TAG:
-    let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
     case data.objKind
     of okEnv:
-      let d = EnvData(data)
+      let d {.cursor.} = cast[EnvData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr d.cycleRefs, 1, ATOMIC_RELAXED)
@@ -3077,7 +3205,7 @@ proc rcRetainFull(bits: uint64) =
       else:
         inc d.cycleRefs
     of okCell, okAtomicCell:
-      let d = CellData(data)
+      let d {.cursor.} = cast[CellData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr d.cycleRefs, 1, ATOMIC_RELAXED)
@@ -3089,9 +3217,9 @@ proc rcRetainFull(bits: uint64) =
       discard
     GC_ref(data)
   of OBJECT_TAG:
-    let data = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
     if data.objKind == okModule:
-      let module = ModuleData(data)
+      let module {.cursor.} = cast[ModuleData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr module.valueRefs, 1, ATOMIC_RELAXED)
@@ -3100,7 +3228,7 @@ proc rcRetainFull(bits: uint64) =
       else:
         inc module.valueRefs
     elif data.objKind == okProtocol:
-      let protocol = ProtocolData(data)
+      let protocol {.cursor.} = cast[ProtocolData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr protocol.valueRefs, 1, ATOMIC_RELAXED)
@@ -3109,7 +3237,7 @@ proc rcRetainFull(bits: uint64) =
       else:
         inc protocol.valueRefs
     elif data.objKind == okType:
-      let typ = TypeData(data)
+      let typ {.cursor.} = cast[TypeData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchAdd(addr typ.valueRefs, 1, ATOMIC_RELAXED)
@@ -3120,6 +3248,15 @@ proc rcRetainFull(bits: uint64) =
       if not isSharedFlag(data.shared) and typ.scopeEscaped and
           typ.scope == nil and typ.weakScope != nil:
         typ.scope = cast[Scope](typ.weakScope)
+    elif data.objKind == okNamespace:
+      let ns {.cursor.} = cast[NamespaceData](data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchAdd(addr ns.valueRefs, 1, ATOMIC_RELAXED)
+        else:
+          inc ns.valueRefs
+      else:
+        inc ns.valueRefs
     GC_ref(data)
   else: discard
 
@@ -3283,6 +3420,8 @@ proc weakenOwnedTypeEnvironment(typ: TypeData, bits: uint64) =
   if owned > 0 and owned == typ.valueRefs:
     # Scope destruction can release this same type again. Detach first so a
     # nested release cannot revisit the scope field being destroyed.
+    # The type was escape-inert while it held its scope and is not any more.
+    retireInertStamps()
     var retired = move typ.scope
     retired = nil
 
@@ -3686,6 +3825,7 @@ proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
     case data.objKind
     of okNamespace:
       scopeRef(cast[NamespaceData](data).scope)
+      weakScope(cast[NamespaceData](data).weakScope)
     of okType:
       let d {.cursor.} = cast[TypeData](data)
       scopeRef(d.scope)
@@ -3871,6 +4011,12 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
   ## stored in `assumedInternal`.
   when not nimRefCountReadable:
     return 0
+  # An ended activation's own retirement needs no flush: the pool holds no
+  # reference to it, only to module roots and the Application, which stay
+  # alive either way. Generations, evaluation roots and runtime contexts are
+  # where those owners must be exact.
+  if retirementStartHook != nil and (generations or complete or context != nil):
+    retirementStartHook()
   let privateRetirement = context != nil and context.privateCompilerContext and
     context.compilerOwnerLane == currentEventLane()
   when defined(gcAtomicArc):
@@ -4431,6 +4577,30 @@ proc shallowOwnedReferences(owner: Scope, target: uint64, exact: var bool): int 
     inc varIndex
   total
 
+proc weakenOwnedNamespaceScope(ns: NamespaceData) =
+  # A namespace bound in its own scope (the binding `$ns` reads) closes a
+  # cycle through a boxed Value, which ORC cannot see. Once that binding is
+  # its only owner, its scope edge stops owning; an escape or a new outside
+  # binding (promoteNamespaceScope) makes it strong again. Only such a
+  # namespace has `weakScope` set, so the others return at once.
+  #
+  # The test is a count, not a walk: this runs on every release of a
+  # namespace bound outside its scope, `a/f` included. While the edge is
+  # strong the scope is alive and still holds its binding, so one owner is
+  # that binding. A namespace its scope also binds under another name, or
+  # holds in a container, stays strong: the same limit as an aliased
+  # function's.
+  if ns.valueRefs != 1 or ns.weakScope == nil or ns.scope == nil or
+      isSharedFlag(ns.shared):
+    return
+  let owner {.cursor.} = ns.scope
+  if owner.isLoadedModuleRoot:
+    return
+  # Escape-inert while it held its scope, and not any more.
+  retireInertStamps()
+  var retired = move ns.scope
+  retired = nil
+
 var weakeningOwnedFunctions {.threadvar.}: bool
 
 proc weakenOwnedFunctions(candidates: FunctionCandidates) =
@@ -4654,11 +4824,11 @@ proc rcReleaseFull(bits: uint64) =
     releaseManual(p):
       reset(p[]); dealloc(p); trackFree(GeneNativeFn)
   of CYCLE_OBJECT_TAG:
-    let data = cast[GeneObjectData](cast[pointer](payload))
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
     var shouldTryCycle = false
     case data.objKind
     of okEnv:
-      let d = EnvData(data)
+      let d {.cursor.} = cast[EnvData](data)
       let newRefs =
         when threadedRc:
           if isSharedFlag(data.shared):
@@ -4673,7 +4843,7 @@ proc rcReleaseFull(bits: uint64) =
           d.cycleRefs
       shouldTryCycle = newRefs > 0
     of okCell, okAtomicCell:
-      let d = CellData(data)
+      let d {.cursor.} = cast[CellData](data)
       let newRefs =
         when threadedRc:
           if isSharedFlag(data.shared):
@@ -4698,13 +4868,18 @@ proc rcReleaseFull(bits: uint64) =
           weakenOwnedFunctions(candidates)
     else:
       discard
-    GC_unref(data)
     if shouldTryCycle:
-      tryCollectObjectCycle(data)
+      # `data` is a cursor; the trial deletion starts from an owned reference,
+      # as it did when this local was counted.
+      let seed: GeneObjectData = data
+      GC_unref(data)
+      tryCollectObjectCycle(seed)
+    else:
+      GC_unref(data)
   of OBJECT_TAG:
-    let data = cast[GeneObjectData](cast[pointer](payload))
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
     if data.objKind == okModule:
-      let module = ModuleData(data)
+      let module {.cursor.} = cast[ModuleData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchSub(addr module.valueRefs, 1, ATOMIC_ACQ_REL)
@@ -4713,7 +4888,7 @@ proc rcReleaseFull(bits: uint64) =
       else:
         dec module.valueRefs
     elif data.objKind == okProtocol:
-      let protocol = ProtocolData(data)
+      let protocol {.cursor.} = cast[ProtocolData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchSub(addr protocol.valueRefs, 1, ATOMIC_ACQ_REL)
@@ -4722,7 +4897,7 @@ proc rcReleaseFull(bits: uint64) =
       else:
         dec protocol.valueRefs
     elif data.objKind == okType:
-      let typ = TypeData(data)
+      let typ {.cursor.} = cast[TypeData](data)
       when threadedRc:
         if isSharedFlag(data.shared):
           discard atomicFetchSub(addr typ.valueRefs, 1, ATOMIC_ACQ_REL)
@@ -4731,6 +4906,16 @@ proc rcReleaseFull(bits: uint64) =
       else:
         dec typ.valueRefs
       weakenOwnedTypeEnvironment(typ, bits)
+    elif data.objKind == okNamespace:
+      let ns {.cursor.} = cast[NamespaceData](data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchSub(addr ns.valueRefs, 1, ATOMIC_ACQ_REL)
+        else:
+          dec ns.valueRefs
+      else:
+        dec ns.valueRefs
+      weakenOwnedNamespaceScope(ns)
     GC_unref(data)
   else: discard
 
@@ -4879,14 +5064,31 @@ proc intVal*(v: Value): int64 {.inline.} =
   else:
     raise newException(FieldDefect, "value is not an Int")
 
-proc intFitsInt64*(v: Value): bool =
-  if v.kind != vkInt:
-    return false
-  try:
-    discard v.intVal
+proc tryIntVal*(v: Value, value: var int64): bool =
+  ## The int64 an Int holds, without raising: false for a non-Int and for a
+  ## big Int outside int64. Builds run with `--panics:on` (config.nims), where
+  ## `intVal`'s FieldDefect ends the process, so test with this rather than
+  ## catching it.
+  case v.bits shr TAG_SHIFT
+  of INT_TAG:
+    value = decodeSmallInt(v.bits)
     true
-  except FieldDefect:
+  of INT64_TAG:
+    value = cast[ptr GeneInt64](v.bits and PAYLOAD_MASK).i
+    true
+  of OBJECT_TAG:
+    if objData(v).objKind != okBigInt:
+      return false
+    let converted = bigToInt64(BigIntData(objData(v)).value)
+    if converted.ok:
+      value = converted.value
+    converted.ok
+  else:
     false
+
+proc intFitsInt64*(v: Value): bool =
+  var ignored: int64
+  v.tryIntVal(ignored)
 
 proc floatVal*(v: Value): float64 {.inline.} =
   if v.isImmediateFloat:
@@ -5269,10 +5471,91 @@ proc errorProperties*(v: Value): PropTable =
     for key, value in evidence.diagnostics:
       if not result.hasKey(key): result[key] = value
 
+proc leafEscapeInert(v: Value): bool =
+  ## Whether `mayNeedEscape` is false for `v` whatever the guard, decided
+  ## without looking inside it. A container answers by its stamp. This must
+  ## agree with the leaf cases of `mayNeedEscape`.
+  if not v.isManaged:
+    return true
+  case v.bits shr TAG_SHIFT
+  of LIST_TAG:
+    let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+    (p.frozenGraphProofs and FrozenNoWeakScope) != 0 or
+      inertStampCurrent(p.inertEpoch)
+  of MAP_TAG:
+    let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+    (p.frozenGraphProofs and FrozenNoWeakScope) != 0 or
+      inertStampCurrent(p.inertEpoch)
+  of NODE_TAG:
+    inertStampCurrent(cast[ptr GeneNode](v.bits and PAYLOAD_MASK).inertEpoch)
+  of FUNCTION_TAG:
+    # A binding can be promoted and weakened again; a weak function needs its
+    # scope kept. Any other function never changes and never needs the pass.
+    let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+    not p.weakable and (p.scope != nil or p.weakScope == nil)
+  of CYCLE_OBJECT_TAG, OBJECT_TAG:
+    let data {.cursor.} = objData(v)
+    case v.kind
+    of vkProtocolMessage:
+      if data.objKind != okBoundMessage:
+        return true
+      let message {.cursor.} = BoundMessageData(data)
+      not (message.boundScope == nil and message.weakScope != nil)
+    of vkType:
+      if data.objKind != okType:
+        return true
+      let typ {.cursor.} = TypeData(data)
+      not (typ.scope == nil and typ.weakScope != nil)
+    of vkNamespace:
+      let ns {.cursor.} = cast[NamespaceData](data)
+      not (ns.scope == nil and ns.weakScope != nil)
+    of vkSet:
+      inertStampCurrent(SetData(data).inertEpoch)
+    of vkHashMap:
+      inertStampCurrent(HashMapData(data).inertEpoch)
+    of vkCallableView, vkPipeline, vkStream, vkTask, vkChannel, vkActorRef,
+       vkActorContext, vkActorStep, vkReplyTo, vkEnv, vkBuffer, vkFfiCallable:
+      false
+    else:
+      true
+  else:
+    true
+
+template noteInertStore(stamp: var uint32, value: Value) =
+  ## `value` is about to be written into the container that owns `stamp`.
+  if stamp != 0:
+    if uint64(stamp) != currentInertEpoch():
+      stamp = 0
+    elif not leafEscapeInert(value):
+      stamp = 0
+      retireInertStamps()
+
 proc finishNodeConstruction*(v: Value) =
   if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
   cast[ptr GeneNode](v.bits and PAYLOAD_MASK).constructing = false
+
+template noteListItemKind(p: ptr GeneList, value: Value) =
+  if p.itemsKind != 0 and uint8(ord(value.kind)) + 1 != p.itemsKind:
+    p.itemsKind = 0
+
+proc listItemsAllOfKind*(v: Value, kind: ValueKind): bool {.inline.} =
+  ## Whether every item of this List is known to be of `kind`. A cache of a
+  ## fact about the list's own items: `noteListItemsKind` records it after a
+  ## caller has looked at each one, a later store of another kind clears it,
+  ## and the two procs that replace the items wholesale clear it too. It lets
+  ## a `(List Int)` boundary answer without visiting the items again.
+  v.tagOf == LIST_TAG and
+    cast[ptr GeneList](v.bits and PAYLOAD_MASK).itemsKind == uint8(ord(kind)) + 1
+
+proc noteListItemsKind*(v: Value, kind: ValueKind) =
+  ## The caller has checked that every item of this List is of `kind`.
+  if v.tagOf != LIST_TAG:
+    raise newException(FieldDefect, "value is not a List")
+  let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+  # Another lane can be reading a published list; it is not written to here.
+  if not isSharedFlag(p.shared):
+    p.itemsKind = uint8(ord(kind)) + 1
 
 proc setListItem*(v: Value, index: int, value: Value) =
   if v.tagOf != LIST_TAG:
@@ -5280,6 +5563,8 @@ proc setListItem*(v: Value, index: int, value: Value) =
   let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable List")
+  noteInertStore(p.inertEpoch, value)
+  noteListItemKind(p, value)
   p.items[index] = value
 
 proc pushListItem*(v: Value, value: Value) =
@@ -5288,6 +5573,8 @@ proc pushListItem*(v: Value, value: Value) =
   let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable List")
+  noteInertStore(p.inertEpoch, value)
+  noteListItemKind(p, value)
   p.items.add(value)
 
 proc putMapEntry*(v: Value, key: string, value: Value) =
@@ -5296,6 +5583,7 @@ proc putMapEntry*(v: Value, key: string, value: Value) =
   let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Map")
+  noteInertStore(p.inertEpoch, value)
   p.entries[key] = value
 
 proc deleteMapEntry*(v: Value, key: string): Value =
@@ -5318,6 +5606,12 @@ proc isPropMap*(v: Value): bool {.inline.} =
 proc isNodeValue*(v: Value): bool {.inline.} =
   ## A Node, typed instances included, by tag alone.
   v.tagOf == NODE_TAG
+
+proc isSymbolValue*(v: Value): bool {.inline.} =
+  v.tagOf == SYMBOL_TAG
+
+proc isStrValue*(v: Value): bool {.inline.} =
+  v.tagOf == STRING_TAG
 
 proc plainPathKeyId*(selector: Value): int32 {.inline.} =
   ## For the selector of a plain one-key read (`row/amount`) — a Node with no
@@ -5354,6 +5648,7 @@ proc putMapEntryById*(v: Value, keyId: int32, value: Value) =
   let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Map")
+  noteInertStore(p.inertEpoch, value)
   p.entries.putById(keyId, value)
 
 proc setNodeProp*(v: Value, key: string, value: Value) =
@@ -5362,7 +5657,20 @@ proc setNodeProp*(v: Value, key: string, value: Value) =
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Node")
+  noteInertStore(p.inertEpoch, value)
+  p.partsChecked = false
   p.props[key] = value
+
+proc setNodePropById*(v: Value, keyId: int32, value: Value) =
+  ## `setNodeProp` for a caller that already holds the key id.
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  noteInertStore(p.inertEpoch, value)
+  p.partsChecked = false
+  p.props.putById(keyId, value)
 
 proc deleteNodeProp*(v: Value, key: string): Value =
   ## Remove prop `key` from a Node and return what was stored, or nil when the
@@ -5375,6 +5683,7 @@ proc deleteNodeProp*(v: Value, key: string): Value =
   result = p.props.getOrDefault(key, MISSING)
   if result.isMissing:
     return NIL
+  p.partsChecked = false
   p.props.del(key)
 
 proc setNodeBody*(v: Value, items: sink seq[Value]) =
@@ -5383,6 +5692,9 @@ proc setNodeBody*(v: Value, items: sink seq[Value]) =
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Node")
+  for i in 0 ..< items.len:
+    noteInertStore(p.inertEpoch, items[i])
+  p.partsChecked = false
   p.body = items
 
 proc pushNodeBody*(v: Value, item: Value) =
@@ -5391,7 +5703,48 @@ proc pushNodeBody*(v: Value, item: Value) =
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
   if p.immutable:
     raise newException(GeneError, "cannot mutate immutable Node")
+  noteInertStore(p.inertEpoch, item)
+  p.partsChecked = false
   p.body.add item
+
+proc nodePartsChecked*(v: Value): bool {.inline.} =
+  ## A typed node whose props and body were all found to need no boundary work
+  ## against its type's schema, and that only `pushCheckedNodeBody` has written
+  ## to since. Every other writer of a node's contents clears it. While it
+  ## holds, validating the node again would change nothing and cannot fail:
+  ## whether a value needs boundary work depends on its kind alone
+  ## (`bareScalarSatisfied` in the VM), and the node still holds the same
+  ## values.
+  v.tagOf == NODE_TAG and cast[ptr GeneNode](v.bits and PAYLOAD_MASK).partsChecked
+
+proc markNodePartsChecked*(v: Value) =
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).partsChecked = true
+
+proc pushCheckedNodeBody*(v: Value, item: Value) =
+  ## `pushNodeBody` for an item the caller has already checked against the
+  ## schema of a node whose parts are checked; the node stays checked.
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  noteInertStore(p.inertEpoch, item)
+  p.body.add item
+
+proc setCheckedNodeBodyItem*(v: Value, index: int, item: Value) =
+  ## `setNodeBodyItem` for an item the caller has already checked against the
+  ## schema of a node whose parts are checked; the node stays checked.
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.immutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  if index < 0 or index >= p.body.len:
+    raise newException(GeneError, "node body index out of range: " & $index)
+  noteInertStore(p.inertEpoch, item)
+  p.body[index] = item
 
 proc setNodeBodyItem*(v: Value, index: int, item: Value) =
   if v.tagOf != NODE_TAG:
@@ -5401,6 +5754,8 @@ proc setNodeBodyItem*(v: Value, index: int, item: Value) =
     raise newException(GeneError, "cannot mutate immutable Node")
   if index < 0 or index >= p.body.len:
     raise newException(GeneError, "node body index out of range: " & $index)
+  noteInertStore(p.inertEpoch, item)
+  p.partsChecked = false
   p.body[index] = item
 
 proc setNodePartsAfterModuleRefPatch*(v: Value, props: sink PropTable,
@@ -5410,6 +5765,10 @@ proc setNodePartsAfterModuleRefPatch*(v: Value, props: sink PropTable,
   if v.tagOf != NODE_TAG:
     raise newException(FieldDefect, "value is not a Node")
   let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  if p.inertEpoch != 0:
+    p.inertEpoch = 0
+    retireInertStamps()
+  p.partsChecked = false
   p.props = props
   p.body = body
 
@@ -5504,6 +5863,26 @@ proc nativeFnName*(v: Value): lent string {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).name
+
+proc nativeFnNameAddr*(v: Value): ptr string {.inline.} =
+  ## Where `nativeFnName` lives, for a `NativeCall` made while `v` is held.
+  if v.tagOf != NATIVE_FN_TAG:
+    raise newException(FieldDefect, "value is not a NativeFn")
+  let p = cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK)
+  addr p[].name
+
+proc calleeName*(call: NativeCall): string =
+  if call.calleeNameAddr == nil: "" else: call.calleeNameAddr[]
+
+let noCallLoc = SourceLoc()
+
+proc loc*(call: NativeCall): lent SourceLoc =
+  if call.locAddr == nil:
+    return noCallLoc
+  call.locAddr[]
+
+proc loc*(call: ptr NativeCall): lent SourceLoc =
+  call[].loc
 
 proc nativeImpl*(v: Value): NativeProc {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
@@ -5615,9 +5994,25 @@ proc nsOwnerLane*(v: Value): int =
 
 proc borrowedNsScope*(v: Value): lent Scope =
   ## The namespace must remain alive and unchanged for the borrow's lifetime.
+  ## A namespace that only its own scope holds keeps that scope weakly; the
+  ## weak edge is read in place as a Scope, so this stays a borrow.
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")
-  NamespaceData(objData(v)).scope
+  if NamespaceData(objData(v)).scope != nil:
+    return NamespaceData(objData(v)).scope
+  cast[ptr Scope](addr NamespaceData(objData(v)).weakScope)[]
+
+proc promoteNamespaceScope*(v: Value) =
+  ## A namespace bound in its own scope gains an owner outside it (an
+  ## enclosing binding, a Module): it keeps that scope alive until that
+  ## binding is its only owner again.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
+    raise newException(FieldDefect, "value is not a Namespace")
+  let data {.cursor.} = cast[NamespaceData](objData(v))
+  if data.weakScope == nil or isSharedFlag(data.shared):
+    return
+  if data.scope == nil:
+    data.scope = cast[Scope](data.weakScope)
 
 proc nsScope*(v: Value): Scope =
   ## Retain the scope independently of the namespace that owns it.
@@ -7169,15 +7564,19 @@ proc releaseFfiLibraryBorrow*(v: Value) =
       "ffi/Library has no native borrow")
   dec data.nativeBorrows
 
+proc isNamedType*(v: Value): bool {.inline.} =
+  ## Whether `typeName` and `typeParent` accept `v`: a type or an enum.
+  v.tagOf == OBJECT_TAG and objData(v).objKind in {okType, okEnum}
+
 proc typeName*(v: Value): string =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
+  if not v.isNamedType:
     raise newException(FieldDefect, "value is not a Type")
   case objData(v).objKind
   of okEnum: EnumData(objData(v)).name
   else: TypeData(objData(v)).name
 
 proc typeParent*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
+  if not v.isNamedType:
     raise newException(FieldDefect, "value is not a Type")
   if objData(v).objKind == okEnum:
     return NIL
@@ -7298,12 +7697,14 @@ proc typeConstructor*(v: Value): Value =
 proc typeScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
     raise newException(FieldDefect, "value is not a Type")
+  # Cursors and casts: a counted local costs an ORC increment and a
+  # decrement that registers a cycle candidate.
   if objData(v).objKind == okEnum:
-    let data = EnumData(objData(v))
+    let data {.cursor.} = cast[EnumData](objData(v))
     if data.scope != nil:
       return data.scope
     return cast[Scope](data.weakScope)
-  let data = TypeData(objData(v))
+  let data {.cursor.} = cast[TypeData](objData(v))
   if data.scope != nil:
     data.scope
   else:
@@ -7566,6 +7967,15 @@ proc smallIntVal*(v: Value): int64 {.inline.} =
 # int64. The unchecked operators say so: a checked `+` would give these
 # two-instruction helpers a raise path, and with it an error-flag test in
 # every arithmetic opcode that calls them.
+template fitsSmallInt*(s: int64): bool =
+  ## Whether `s` is in a small Int's range. A template, so that it is never an
+  ## out-of-line call (pass a variable: `s` is read twice).
+  s >= SMALL_INT_MIN and s <= SMALL_INT_MAX
+
+template smallIntOf*(s: int64): Value =
+  ## The small Int `s`, which the caller has checked with `fitsSmallInt`.
+  Value(bits: (INT_TAG shl TAG_SHIFT) or (cast[uint64](s) and PAYLOAD_MASK))
+
 proc smallIntAddKnown*(a, b: Value, outValue: var Value): bool {.inline.} =
   let s = a.smallIntVal +% b.smallIntVal
   if s < SMALL_INT_MIN or s > SMALL_INT_MAX:
@@ -7832,12 +8242,6 @@ proc newSymFromKeyId*(id: int32): Value {.inline.} =
 proc newBool*(v: bool): Value {.inline.} =
   if v: TRUE else: FALSE
 
-const
-  FrozenNoCallerEnv* = 1'u8
-  FrozenNoScopeCapture* = 2'u8
-  FrozenNoWeakScope* = 4'u8
-  FrozenPlainDataProofs = FrozenNoCallerEnv or FrozenNoScopeCapture or FrozenNoWeakScope
-
 proc frozenGraphProofs*(v: Value): uint8
 
 proc newList*(items: sink seq[Value] = @[], immutable = false,
@@ -8063,6 +8467,13 @@ proc containsPendingModuleRef*(v: Value, name: string,
     discard
   false
 
+template retirePatchedStamp(stamp: var uint32) =
+  ## The patcher writes whatever a module reference resolves to, a function
+  ## included, straight into a container that may already carry a stamp.
+  if stamp != 0:
+    stamp = 0
+    retireInertStamps()
+
 proc patchPendingModuleRef*(v: Value, name: string, target: Value,
                             seen: var HashSet[uint64]): Value =
   ## Construction-time allocate/patch/seal support. This deliberately bypasses
@@ -8096,15 +8507,19 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
       stages, v.pipelineImmutable)
   of vkList:
     let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+    retirePatchedStamp(p.inertEpoch)
+    p.itemsKind = 0
     for i in 0 ..< p.items.len:
       p.items[i] = patchPendingModuleRef(p.items[i], name, target, seen)
   of vkMap:
     let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+    retirePatchedStamp(p.inertEpoch)
     for i in 0 ..< p.entries.data.len:
       p.entries.data[i].val =
         patchPendingModuleRef(p.entries.data[i].val, name, target, seen)
   of vkHashMap:
     let data = HashMapData(objData(v))
+    retirePatchedStamp(data.inertEpoch)
     for i in 0 ..< data.entries.len:
       data.entries[i].key =
         patchPendingModuleRef(data.entries[i].key, name, target, seen)
@@ -8112,10 +8527,13 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
         patchPendingModuleRef(data.entries[i].val, name, target, seen)
   of vkSet:
     let data = SetData(objData(v))
+    retirePatchedStamp(data.inertEpoch)
     for i in 0 ..< data.items.len:
       data.items[i] = patchPendingModuleRef(data.items[i], name, target, seen)
   of vkNode:
     let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+    retirePatchedStamp(p.inertEpoch)
+    p.partsChecked = false
     p.head = patchPendingModuleRef(p.head, name, target, seen)
     for i in 0 ..< p.props.data.len:
       p.props.data[i].val =
@@ -8197,8 +8615,17 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
   ## reclaimed after its ordinary references are dropped. A `binding` stored in
   ## a scope's slots or vars escapes in place and re-weakens on release.
   case v.bits shr TAG_SHIFT
-  of FUNCTION_TAG, NODE_TAG, OBJECT_TAG, CYCLE_OBJECT_TAG:
+  of FUNCTION_TAG, OBJECT_TAG, CYCLE_OBJECT_TAG:
     discard
+  of NODE_TAG:
+    # Of the Nodes, only a Path can hold functions to weaken. Decided by tag,
+    # since a record stored in a local comes through here on every store.
+    # Borrowed: copying a typed instance's head retained and released its
+    # Type on every store of the instance.
+    let head {.cursor.} = v.borrowedNodeHead
+    if head.tagOf == SYMBOL_TAG and head.symVal == "Path":
+      return weakenScopeFunctions(v, owner)
+    return v
   else:
     # Every binding store passes through here; only the kinds tested below
     # can carry a scope edge, and each of them has one of these four tags.
@@ -8219,11 +8646,6 @@ proc functionForScopeStorage*(v: Value, owner: Scope, binding = false): Value =
       return cloneBoundMessageScope(v, owner, weak = true)
     if data.boundScope == nil and capture != owner:
       return cloneBoundMessageScope(v, capture, weak = false)
-  # Borrowed: copying a typed instance's head retained and released its Type
-  # on every store of the instance.
-  if v.kind == vkNode and v.borrowedNodeHead.kind == vkSymbol and
-      v.borrowedNodeHead.symVal == "Path":
-    return weakenScopeFunctions(v, owner)
   if v.kind == vkCallableView:
     let target = functionForScopeStorage(v.callableViewTarget, owner, binding)
     if target.bits != v.callableViewTarget.bits:
@@ -8495,6 +8917,8 @@ type
     overflow: HashSet[uint64]
     overflowUsed: bool
     scan: ptr StampedSet   # the thread's reusable set, while this walk owns it
+    epoch: uint32          # what an inert container is stamped with; 0 = none
+    impure: int            # leaves met so far that are not escape-inert
 
   EscapeWalk = object
     visited: EscapeVisited
@@ -8549,6 +8973,115 @@ proc clearVisited(visited: var EscapeVisited) =
     visited.overflow.clear()
     visited.overflowUsed = false
 
+when defined(geneInertStampVerify):
+  proc mayNeedEscapeReference(v: Value, guard: WeakScopeGuard,
+                              visited: var HashSet[uint64],
+                              markHolder: bool): bool =
+    ## The scan as it was before stamps existed: it enters every container.
+    ## A build with -d:geneInertStampVerify runs it wherever a stamp answered,
+    ## and stops the process if the two disagree.
+    when not defined(geneDisableFrozenGraphProofs):
+      if (v.frozenGraphProofs and FrozenNoWeakScope) != 0:
+        return false
+    case v.bits shr TAG_SHIFT
+    of LIST_TAG:
+      if visited.containsOrIncl(v.bits):
+        return false
+      let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+      let mark = not p.holdsEscapedFn
+      for i in 0 ..< p.items.len:
+        if mayNeedEscapeReference(p.items[i], guard, visited, mark):
+          return true
+      false
+    of MAP_TAG:
+      if visited.containsOrIncl(v.bits):
+        return false
+      let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+      let mark = not p.holdsEscapedFn
+      for i in 0 ..< p.entries.data.len:
+        if mayNeedEscapeReference(p.entries.data[i].val, guard, visited, mark):
+          return true
+      false
+    of NODE_TAG:
+      if visited.containsOrIncl(v.bits):
+        return false
+      let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+      let mark = not p.holdsEscapedFn
+      if mayNeedEscapeReference(p.head, guard, visited, mark):
+        return true
+      for i in 0 ..< p.props.data.len:
+        if mayNeedEscapeReference(p.props.data[i].val, guard, visited, mark):
+          return true
+      for i in 0 ..< p.body.len:
+        if mayNeedEscapeReference(p.body[i], guard, visited, mark):
+          return true
+      for i in 0 ..< p.meta.data.len:
+        if mayNeedEscapeReference(p.meta.data[i].val, guard, visited, mark):
+          return true
+      false
+    of FUNCTION_TAG:
+      let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+      if p.scope != nil:
+        markHolder and p.weakable
+      else:
+        p.weakScope != nil and not weakScopeProtected(guard, p.weakScope)
+    of CYCLE_OBJECT_TAG, OBJECT_TAG:
+      case v.kind
+      of vkProtocolMessage:
+        if objData(v).objKind != okBoundMessage:
+          return false
+        let data = BoundMessageData(objData(v))
+        data.boundScope == nil and data.weakScope != nil and
+          not weakScopeProtected(guard, data.weakScope)
+      of vkType:
+        if objData(v).objKind != okType:
+          return false
+        let data = TypeData(objData(v))
+        data.scope == nil and data.weakScope != nil and
+          not weakScopeProtected(guard, data.weakScope)
+      of vkNamespace:
+        let data {.cursor.} = cast[NamespaceData](objData(v))
+        data.scope == nil and data.weakScope != nil and
+          not weakScopeProtected(guard, data.weakScope)
+      of vkCallableView:
+        mayNeedEscapeReference(v.callableViewTarget, guard, visited, false)
+      of vkSet:
+        if visited.containsOrIncl(v.bits):
+          return false
+        for item in v.setItems:
+          if mayNeedEscapeReference(item, guard, visited, false):
+            return true
+        false
+      of vkHashMap:
+        if visited.containsOrIncl(v.bits):
+          return false
+        for entry in v.hashMapEntries:
+          if mayNeedEscapeReference(entry.key, guard, visited, false) or
+              mayNeedEscapeReference(entry.val, guard, visited, false):
+            return true
+        false
+      of vkPipeline, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
+         vkActorStep, vkReplyTo, vkEnv, vkBuffer, vkFfiCallable:
+        true
+      else:
+        false
+    else:
+      false
+
+  var inertStampVerified*: int   # stamp answers the reference scan confirmed
+
+  proc verifyInertStamp(v: Value, guard: WeakScopeGuard, markHolder: bool) =
+    var visited = initHashSet[uint64]()
+    if mayNeedEscapeReference(v, guard, visited, markHolder):
+      stderr.writeLine "gene: escape-inert stamp on a value that needs escaping"
+      stderr.flushFile()
+      quit(70)
+    inc inertStampVerified
+
+template stampAnswered(v: Value, guard: WeakScopeGuard, markHolder: bool) =
+  when defined(geneInertStampVerify):
+    verifyInertStamp(v, guard, markHolder)
+
 proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
                    markHolder: bool): bool =
   ## Whether escaping `v` can change anything: a weak function or type scope the
@@ -8557,6 +9090,14 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
   ## directly in a list, map or node the walk would still have to mark. The scan
   ## reads values in place without copying them, and reaches each container
   ## once, so cycles and shared structure end it.
+  ##
+  ## It also keeps the escape-inert stamps (see `escapeInertEpoch`). A
+  ## container with a current stamp is not entered. One whose subtree was
+  ## walked to the end without meeting a leaf that is not inert gets the
+  ## stamp. `visited.impure` counts those leaves, so a container compares the
+  ## count before and after its own subtree. A container met a second time
+  ## without a stamp is either still being walked (a cycle) or was found
+  ## impure, and counts as impure for whoever reached it.
   when defined(geneGraphProofTests):
     if collectingFrozenEscapeStats: inc frozenEscapeStats.visits
   when not defined(geneDisableFrozenGraphProofs):
@@ -8564,29 +9105,55 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
       when defined(geneGraphProofTests):
         if collectingFrozenEscapeStats: inc frozenEscapeStats.skips
       return false
+  template stampIfInert(stamp: var uint32, shared: untyped, impureBefore: int) =
+    if visited.impure == impureBefore:
+      if isSharedFlag(shared):
+        # Another lane can be reading this object, so nothing is written to
+        # it. Left without a stamp, it must not sit under a stamped
+        # container either: a store into it would retire nothing.
+        inc visited.impure
+      elif visited.epoch != 0:
+        stamp = visited.epoch
   case v.bits shr TAG_SHIFT
   of LIST_TAG:
-    if not visited.firstVisit(v.bits):
-      return false
     let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+    if inertStampCurrent(p.inertEpoch):
+      stampAnswered(v, guard, markHolder)
+      return false
+    if not visited.firstVisit(v.bits):
+      inc visited.impure
+      return false
+    let impureBefore = visited.impure
     let mark = not p.holdsEscapedFn
     for i in 0 ..< p.items.len:
       if mayNeedEscape(p.items[i], guard, visited, mark):
         return true
+    stampIfInert(p.inertEpoch, p.shared, impureBefore)
     false
   of MAP_TAG:
-    if not visited.firstVisit(v.bits):
-      return false
     let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+    if inertStampCurrent(p.inertEpoch):
+      stampAnswered(v, guard, markHolder)
+      return false
+    if not visited.firstVisit(v.bits):
+      inc visited.impure
+      return false
+    let impureBefore = visited.impure
     let mark = not p.holdsEscapedFn
     for i in 0 ..< p.entries.data.len:
       if mayNeedEscape(p.entries.data[i].val, guard, visited, mark):
         return true
+    stampIfInert(p.inertEpoch, p.shared, impureBefore)
     false
   of NODE_TAG:
-    if not visited.firstVisit(v.bits):
-      return false
     let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+    if inertStampCurrent(p.inertEpoch):
+      stampAnswered(v, guard, markHolder)
+      return false
+    if not visited.firstVisit(v.bits):
+      inc visited.impure
+      return false
+    let impureBefore = visited.impure
     let mark = not p.holdsEscapedFn
     if mayNeedEscape(p.head, guard, visited, mark):
       return true
@@ -8599,9 +9166,12 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
     for i in 0 ..< p.meta.data.len:
       if mayNeedEscape(p.meta.data[i].val, guard, visited, mark):
         return true
+    stampIfInert(p.inertEpoch, p.shared, impureBefore)
     false
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](v.bits and PAYLOAD_MASK)
+    if p.weakable or (p.scope == nil and p.weakScope != nil):
+      inc visited.impure
     if p.scope != nil:
       markHolder and p.weakable
     else:
@@ -8612,30 +9182,55 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
       if objData(v).objKind != okBoundMessage:
         return false
       let data = BoundMessageData(objData(v))
-      data.boundScope == nil and data.weakScope != nil and
-        not weakScopeProtected(guard, data.weakScope)
+      if data.boundScope == nil and data.weakScope != nil:
+        inc visited.impure
+        return not weakScopeProtected(guard, data.weakScope)
+      false
     of vkType:
       if objData(v).objKind != okType:
         return false
       let data = TypeData(objData(v))
-      data.scope == nil and data.weakScope != nil and
-        not weakScopeProtected(guard, data.weakScope)
+      if data.scope == nil and data.weakScope != nil:
+        inc visited.impure
+        return not weakScopeProtected(guard, data.weakScope)
+      false
+    of vkNamespace:
+      let data {.cursor.} = cast[NamespaceData](objData(v))
+      if data.scope == nil and data.weakScope != nil:
+        inc visited.impure
+        return not weakScopeProtected(guard, data.weakScope)
+      false
     of vkCallableView:
+      inc visited.impure
       mayNeedEscape(v.callableViewTarget, guard, visited, false)
     of vkSet:
-      if not visited.firstVisit(v.bits):
+      let data {.cursor.} = SetData(objData(v))
+      if inertStampCurrent(data.inertEpoch):
+        stampAnswered(v, guard, markHolder)
         return false
-      for item in v.setItems:
-        if mayNeedEscape(item, guard, visited, false):
+      if not visited.firstVisit(v.bits):
+        inc visited.impure
+        return false
+      let impureBefore = visited.impure
+      for i in 0 ..< data.items.len:
+        if mayNeedEscape(data.items[i], guard, visited, false):
           return true
+      stampIfInert(data.inertEpoch, data.shared, impureBefore)
       false
     of vkHashMap:
-      if not visited.firstVisit(v.bits):
+      let data {.cursor.} = HashMapData(objData(v))
+      if inertStampCurrent(data.inertEpoch):
+        stampAnswered(v, guard, markHolder)
         return false
-      for entry in v.hashMapEntries:
-        if mayNeedEscape(entry.key, guard, visited, false) or
-            mayNeedEscape(entry.val, guard, visited, false):
+      if not visited.firstVisit(v.bits):
+        inc visited.impure
+        return false
+      let impureBefore = visited.impure
+      for i in 0 ..< data.entries.len:
+        if mayNeedEscape(data.entries[i].key, guard, visited, false) or
+            mayNeedEscape(data.entries[i].val, guard, visited, false):
           return true
+      stampIfInert(data.inertEpoch, data.shared, impureBefore)
       false
     of vkPipeline, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
        vkActorStep, vkReplyTo, vkEnv, vkBuffer, vkFfiCallable:
@@ -8646,6 +9241,24 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
     false
 
 proc escapeWalk(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value
+
+proc containerInertStampCurrent(v: Value): bool {.inline.} =
+  ## Whether `v` is a container carrying a current escape-inert stamp.
+  case v.bits shr TAG_SHIFT
+  of LIST_TAG:
+    inertStampCurrent(cast[ptr GeneList](v.bits and PAYLOAD_MASK).inertEpoch)
+  of MAP_TAG:
+    inertStampCurrent(cast[ptr GeneMap](v.bits and PAYLOAD_MASK).inertEpoch)
+  of NODE_TAG:
+    inertStampCurrent(cast[ptr GeneNode](v.bits and PAYLOAD_MASK).inertEpoch)
+  of CYCLE_OBJECT_TAG, OBJECT_TAG:
+    let data {.cursor.} = objData(v)
+    case data.objKind
+    of okSet: inertStampCurrent(SetData(data).inertEpoch)
+    of okHashMap: inertStampCurrent(HashMapData(data).inertEpoch)
+    else: false
+  else:
+    false
 
 proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
   template escapeNested(value: Value): Value =
@@ -8666,6 +9279,14 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
           return v
         data.scope = cast[Scope](data.weakScope)
         data.scopeEscaped = true
+    v
+  of vkNamespace:
+    let data {.cursor.} = cast[NamespaceData](objData(v))
+    if data.scope == nil and data.weakScope != nil and
+        not isSharedFlag(data.shared):
+      if weakScopeProtected(guard, data.weakScope):
+        return v
+      data.scope = cast[Scope](data.weakScope)
     v
   of vkCallableView:
     let target = escapeNested(v.callableViewTarget)
@@ -8702,6 +9323,7 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
           if items[j].isPromotedBindingFunction:
             holdsPromoted = true
         if not v.listImmutable:
+          cast[ptr GeneList](v.bits and PAYLOAD_MASK).itemsKind = 0
           cast[ptr GeneList](v.bits and PAYLOAD_MASK).items = move items
           if holdsPromoted:
             markEscapedFunctionHolder(v)
@@ -8873,6 +9495,7 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
     if not v.nodeImmutable and not
         (v.head.kind == vkSymbol and v.head.symVal == "Path"):
       let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+      node.partsChecked = false
       node.head = escapedHead
       node.props = move props
       node.body = move body
@@ -9174,6 +9797,9 @@ proc escapeWalk(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
       when defined(geneGraphProofTests):
         if collectingFrozenEscapeStats: inc frozenEscapeStats.walkSkips
       return v
+  if containerInertStampCurrent(v):
+    stampAnswered(v, guard, true)
+    return v
   ## Escapes each container once. A container met again gets what its first
   ## escape produced, or itself while that escape is still running: it is then
   ## part of a cycle, and a mutable container changes in place, so the reference
@@ -9213,7 +9839,18 @@ proc escapeWeakFunctions*(v: Value, guard: WeakScopeGuard): Value =
     if p.scope != nil or p.weakScope == nil or
         weakScopeProtected(guard, p.weakScope):
       return v
+  elif containerInertStampCurrent(v):
+    # Nothing in here needs the pass, whatever the guard.
+    when defined(geneGraphProofTests):
+      if collectingFrozenEscapeStats: inc frozenEscapeStats.visits
+    when defined(geneInertStampTests): inc inertStampSkips
+    stampAnswered(v, guard, false)
+    return v
   var walk: EscapeWalk
+  block:
+    let epoch = currentInertEpoch()
+    if epoch <= uint64(high(uint32)):
+      walk.visited.epoch = uint32(epoch)
   # The scan below only reads: it runs no destructor and calls nothing that
   # could start another escape, so it may use the thread's reusable set. The
   # walk after it mutates and can release values, and keeps its own.
@@ -9842,6 +10479,18 @@ proc newNamespace*(name: string, scope: Scope, modulePath = "",
                           moduleRoot: moduleRoot, modulePath: modulePath,
                           ownerLane: ownerLane))
 
+proc newScopeOwnedNamespace*(name: string, scope: Scope, modulePath = "",
+                             moduleRoot = false,
+                             ownerLane = currentEventLane()): Value =
+  ## A namespace that will be bound in `scope` itself, as the namespace `$ns`
+  ## reads there. It holds that scope weakly until it has an owner outside it
+  ## (`promoteNamespaceScope`, or an escape); a strong edge would close a cycle
+  ## through the scope's binding that nothing can collect.
+  boxObject(NamespaceData(objKind: okNamespace, name: name,
+                          weakScope: cast[pointer](scope),
+                          moduleRoot: moduleRoot, modulePath: modulePath,
+                          ownerLane: ownerLane))
+
 var moduleIdentitySeq: int
 
 proc nextModuleIdentity(): int =
@@ -10190,7 +10839,7 @@ proc replaceScopeImpls*(scope: Scope, impls: sink seq[ProtocolImpl]) =
   scope.impls = impls
   previous.setLen(0)
 
-proc typeContractPending*(typ: Value): bool =
+proc typeContractPending*(typ: Value): bool {.inline.} =
   typ.tagOf == OBJECT_TAG and objData(typ).objKind == okType and
     TypeData(objData(typ)).contractPending
 

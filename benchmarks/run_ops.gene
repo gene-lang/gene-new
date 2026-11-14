@@ -93,7 +93,7 @@
       (== variant/sha256 ($crypto/sha256 ($fs/read_bytes variant/executable)))
       "operation benchmark executable changed during measurement")
     (let rows [])
-    (for [name group] in variant/rows
+    (map_for [name group] in variant/rows
       (rows .push
         {
           ^name name

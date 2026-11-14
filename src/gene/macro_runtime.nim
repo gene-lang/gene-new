@@ -307,8 +307,9 @@ proc initializeMacroInstance(state: MacroRuntimeState,
         let name = form.body[0].symVal
         let nested = newScope(target)
         nested.moduleStatic = target.moduleStatic
-        let ns = newNamespace(name, nested)
+        let ns = newScopeOwnedNamespace(name, nested)
         nested.define(CurrentNamespaceBindingName, ns)
+        ns.promoteNamespaceScope()
         target.define(name, ns)
         var childDefinitions = definitions
         initializeForms(form.body[1 .. ^1], nested, path & @[name], childDefinitions)

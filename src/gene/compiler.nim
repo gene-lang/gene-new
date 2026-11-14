@@ -1563,6 +1563,39 @@ proc chunkNeedsCallScopeSlotNames(chunk: Chunk): bool =
       discard
   false
 
+proc chunkAssignsOuterName(chunk: Chunk, name: string): bool =
+  ## Whether `chunk`, or anything nested in it, assigns `name` in a scope
+  ## outside its own.
+  if chunk == nil:
+    return false
+  for inst in chunk.instructions:
+    if inst.op in {opSetOuterLocal, opSetName} and inst.name == name:
+      return true
+  for body in chunk.subchunks:
+    if body.chunkAssignsOuterName(name): return true
+  for loop in chunk.forLoops:
+    if loop.body.chunkAssignsOuterName(name): return true
+  for match in chunk.matches:
+    for clause in match.clauses:
+      if clause.body.chunkAssignsOuterName(name): return true
+    if match.elseBody.chunkAssignsOuterName(name): return true
+  for attempt in chunk.tries:
+    if attempt.body.chunkAssignsOuterName(name): return true
+    for clause in attempt.catches:
+      if clause.body.chunkAssignsOuterName(name): return true
+    if attempt.ensureBody.chunkAssignsOuterName(name): return true
+  for proto in chunk.functions:
+    if proto.chunk.chunkAssignsOuterName(name): return true
+  false
+
+proc closuresMaySetName(chunk: Chunk, name: string): bool =
+  ## Whether a function defined in `chunk` can assign the binding `name` of
+  ## `chunk`'s own scope. A parameter such a closure can assign must keep its
+  ## declared type on the activation, or the assignment goes unchecked.
+  for proto in chunk.functions:
+    if proto.chunk.chunkAssignsOuterName(name): return true
+  false
+
 proc chunkMaySetSlot(chunk: Chunk, slot: int): bool =
   if chunk.subchunks.len > 0 or chunk.forLoops.len > 0 or
       chunk.matches.len > 0 or chunk.tries.len > 0:
@@ -4772,7 +4805,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   var positionalSlotMaySet: seq[bool]
   var positionalParamsMaySet = false
   for slot in positionalSlots:
-    let maySet = fnCompiler.chunk.chunkMaySetSlot(slot)
+    let maySet = fnCompiler.chunk.chunkMaySetSlot(slot) or
+      (slot >= 0 and slot < fnCompiler.localNames.len and
+       fnCompiler.chunk.closuresMaySetName(fnCompiler.localNames[slot]))
     positionalSlotMaySet.add maySet
     positionalParamsMaySet = positionalParamsMaySet or maySet
 
@@ -5269,7 +5304,7 @@ proc compileIf(c: var Compiler, node: Value, tail = false) =
 
 # && and || evaluate operands left to right, stop at the first falsy (&&) or
 # truthy (||) operand, and yield the last operand evaluated — not a coerced
-# Bool — so `(|| maybe-void "default")` works as a default-value form.
+# Bool — so `(|| maybe_nil "default")` works as a default-value form.
 proc compileShortCircuit(c: var Compiler, node: Value, op: OpCode,
                          emptyValue: Value, tail = false) =
   let body = node.body
@@ -7952,7 +7987,7 @@ proc compilePathSuffix(c: var Compiler, parts: seq[Value], start: int,
                        site: Value) =
   # Static path messages use the ordinary VM call path, so Gene message
   # bodies can suspend without a nested synchronous invocation. Property
-  # traversal still stops the complete path when a segment produces void.
+  # traversal still stops the complete path when a segment produces nil.
   # Dynamic segments are resolved before any traversal by the Path contract;
   # retain the complete selector for those paths rather than interleave them
   # with message calls.
@@ -7971,15 +8006,11 @@ proc compilePathSuffix(c: var Compiler, parts: seq[Value], start: int,
     if i > first:
       compileSelectorParts(c, parts.toOpenArray(first, i - 1))
       discard c.emit(opApplySelectorTop)
-      let missing = c.emitJump(opJumpIfAbsent)
-      c.chunk.instructions[missing].flag = true
-      missingJumps.add missing
+      missingJumps.add c.emitJump(opJumpIfAbsent)
     c.compilePathSend(parts[i], site)
     first = i + 1
     if first < parts.len:
-      let missing = c.emitJump(opJumpIfAbsent)
-      c.chunk.instructions[missing].flag = true
-      missingJumps.add missing
+      missingJumps.add c.emitJump(opJumpIfAbsent)
   if first < parts.len:
     compileSelectorParts(c, parts.toOpenArray(first, parts.high))
     discard c.emit(opApplySelectorTop)
@@ -9712,7 +9743,7 @@ proc compileType(c: var Compiler, node: Value) =
         "write `^" & (if key.len > 1: key[0 .. ^2] else: key) &
         " T?` — a nil-admitting type marks the field optional")
       # A field whose type explicitly admits nil (T?, (? T), (| ... Nil))
-      # may be omitted at construction; absent reads as void. `Any` stays
+      # may be omitted at construction; absent reads as nil. `Any` stays
       # required — gradual slack is not an optionality marker.
       fields.add TypeField(name: key,
                            optional: typeExprAdmitsNil(schema.mapEntries[key]),
@@ -10470,7 +10501,7 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       compileShortCircuit(c, node, opJumpIfTrueOrPop, NIL, tail = tail)
       return
     of "??":
-      # Absence-coalescing: yield the first present (non-nil, non-void)
+      # Absence-coalescing: yield the first present (non-nil)
       # operand, else the last. Short-circuits like ||, but tests absence
       # rather than falsiness, so a stored `false`/`0`/`""` is kept.
       compileShortCircuit(c, node, opJumpIfPresentOrPop, NIL, tail = tail)

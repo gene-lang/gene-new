@@ -1225,6 +1225,10 @@ proc unavailableBuildFeature(command: string) =
 proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
   scope.materializeMirroredVars()
   for name in scope.vars.keys:
+    # NUL-prefixed names are the compiler's own bindings: block bindings and
+    # the namespace a scope belongs to, which would make the walk below loop.
+    if name.startsWith('\x00'):
+      continue
     if includeThisModule or name notin ["this_mod", "this_pkg"]:
       result.add name
   result.sort()
@@ -1232,8 +1236,7 @@ proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
 proc writeDocDeclarations(scope: Scope, includeThisModule = false) =
   var declarations = initTable[string, string]()
   for name in docDeclarationNames(scope, includeThisModule):
-    if not name.startsWith(BlockBindingPrefix):
-      declarations[name] = declarationKind(scope.vars[name])
+    declarations[name] = declarationKind(scope.vars[name])
   if scope.compilerMacros != nil and scope.compilerMacros of MacroBindings:
     let context = MacroBindings(scope.compilerMacros)
     for name in context.ownedNames:

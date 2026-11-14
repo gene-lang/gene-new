@@ -115,7 +115,7 @@ proc walkPull(stream: Value): StreamPullResult {.nimcall.} =
     return StreamPullResult(has: true, item: newMap(fields))
 
 proc biFsWalk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if scope == nil or args.len != 1 or args[0].kind != vkString:
     raiseFsWalkError(scope, "FsError", "fs/walk expects one Str root")
   var maxDepth = fsWalkDefaultDepth

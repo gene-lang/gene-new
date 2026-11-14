@@ -243,6 +243,47 @@ suite "VM — scope ownership and reuse":
         check observedIterationScopes[i] != observedIterationScopes[i - 1]
 
   when defined(geneScopeReuseTests):
+    proc nativePooledContext(args: openArray[Value]): Value {.nimcall.} =
+      newInt(pooledCallScopesHoldingContext())
+
+    proc nativeRetireThenPooled(args: openArray[Value]): Value {.nimcall.} =
+      # Any trial deletion starts by dropping what the pool keeps.
+      discard retireEvaluationScope(newScope())
+      newInt(pooledCallScopesHoldingContext())
+
+    test "pooled call scopes keep a loaded module's context only within a run":
+      let root = getTempDir() / "gene-pooled-context"
+      createDir(root)
+      let path = root / "pooled.gene"
+      # Typed locals keep both bodies off the scopeless convention, so their
+      # calls take pooled call scopes.
+      writeFile(path, "(type Item ^props {^n Int} " &
+        "(message direct [] (let k : Int 1) (* self/n k))) " &
+        "(fn add1 [x] (let y : Int 1) (+ x y)) (var item (Item ^n 7))")
+      let app = newApplication(root)
+      let moduleScope = app.loadFileModule(path).moduleRootNamespace.nsScope
+      let scope = newGlobalScope(app)
+      scope.define("item", moduleScope.lookup("item"))
+      scope.define("add1", moduleScope.lookup("add1"))
+      scope.define("pooled", newNativeFn("pooled", nativePooledContext))
+      scope.define("retire_then_pooled",
+                   newNativeFn("retire_then_pooled", nativeRetireThenPooled))
+      # Calls of the module's own functions and messages leave their scopes
+      # holding its context while the run lasts; a call under a plain run
+      # root, which takes the same pooled scope next, leaves it holding none.
+      # Trial deletion, and the run's return, drop what is held.
+      check run(compileSource(
+          "(fn local [x] (let z : Int 2) (+ x z)) " &
+          "[(add1 1) (pooled) (item .direct) (pooled) (local 1) (pooled) " &
+          " (add1 2) (retire_then_pooled) (add1 3)]"),
+        scope).print() == "[2 1 7 1 3 0 3 0 4]"
+      check pooledCallScopesHoldingContext() == 0
+      # A message's Self type is never seen by the next, unrelated call.
+      check run(compileSource(
+          "[(item .direct) (try ((fn [] (let s : Self 1) s)) catch Error $err_msg)]"),
+        scope).print() ==
+        "[7 \"Self requires a declaring receiver type \u2014 inside a message or ctor body\"]"
+
     test "a failed runtime refcount layout probe disables iteration reuse":
       withUnsupportedScopeRefcounts:
         let soleOwner = newScope()

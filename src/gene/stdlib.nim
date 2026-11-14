@@ -773,7 +773,7 @@ proc biMathClamp(args: openArray[Value]): Value {.nimcall.} =
 proc biStrJoin(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len notin 1..2:
     raise newException(GeneError, "str/join expects 1..2 arguments, got " & $args.len)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamilyWithOp("join", args[0], args[1 .. ^1],
     scope, typeDirectMessage(gScalarTypes[vkList], "join"))
   if resolved.handled: return resolved.value
@@ -936,7 +936,7 @@ proc strReceiverNatives(): seq[(string, Value)] =
 
 proc biParseInt(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("parse_int", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args[0].kind != vkString:
     raiseReaderError("parse_int", "expects a Str", "ParseError", scope)
   let s = args[0].strVal.strip()
@@ -1088,7 +1088,7 @@ proc renderHtmlValue(value: Value, scope: Scope): string =
 
 proc biHtmlRender(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("html/render", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   newStr(renderHtmlValue(args[0], scope))
 
 when not defined(geneWasm):
@@ -1111,7 +1111,7 @@ when not defined(geneWasm):
   proc biWebLoad(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     requireOne("web/load", args)
     requireStr("web/load path", args[0])
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let readSource = proc(path: string): string =
       fsReadBytes(path)
     let asset = try:
@@ -1131,7 +1131,7 @@ when not defined(geneWasm):
   proc biWebModuleUrl(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     ## A published, compiled Gene entry, for lifecycle-managed client mounts.
     requireOne("web/module_url", args)
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let asset = webAssetArgument("web/module_url", args[0], scope)
     newStr(scope.application().webAssetUrl(webAssetEntryFile(asset)))
 
@@ -1143,7 +1143,7 @@ when not defined(geneWasm):
     ## plumbing, script-data escaping, and a base64 map in every page response
     ## onto the critical path. `script-src 'self'` admits this with no nonce.
     requireOne("web/script", args)
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let asset = webAssetArgument("web/script", args[0], scope)
     var mountId = ""
     if call != nil:
@@ -1173,7 +1173,7 @@ when not defined(geneWasm):
         "web/stylesheet expects (name, css), got " & $args.len & " arguments")
     requireStr("web/stylesheet name", args[0])
     requireStr("web/stylesheet css", args[1])
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     var props = initPropTable()
     props["rel"] = newStr("stylesheet")
     props["href"] = newStr(scope.application().publishWebStylesheet(
@@ -1183,7 +1183,7 @@ when not defined(geneWasm):
   proc biWebFont(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     requireOne("web/font", args)
     requireStr("web/font path", args[0])
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let path = args[0].strVal
     discard webFontContentType(path)
     newStr(scope.application().publishWebFont(path, fsReadBytes(path)))
@@ -1191,7 +1191,7 @@ when not defined(geneWasm):
   proc biWebAssetBase(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 0:
       raise newException(GeneError, "web/asset_base takes no arguments")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     newStr(scope.application().webAssetBase())
 
   proc biWebSetAssetBase(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -1199,7 +1199,7 @@ when not defined(geneWasm):
     ## deployment needs, and the reason the base is not a process root.
     requireOne("web/set_asset_base", args)
     requireStr("web/set_asset_base", args[0])
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     scope.application().webAssetBase = args[0].strVal
     NIL
 
@@ -1210,7 +1210,7 @@ when not defined(geneWasm):
     requireOne("web/set_source_maps", args)
     if args[0].kind != vkBool:
       raise newException(GeneError, "web/set_source_maps expects a Bool")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     scope.application().webSourceMapsEnabled = args[0].boolVal
     NIL
 
@@ -1225,7 +1225,7 @@ when not defined(geneWasm):
     ## render the page first, then ask.
     if args.len != 0:
       raise newException(GeneError, "web/published_routes takes no arguments")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let app = scope.application()
     var fileNames: seq[string]
     for fileName, route in app.webRoutes:
@@ -1633,7 +1633,7 @@ proc validateCssScopeCollisions(value: Value,
 
 proc biCssRender(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("css/render", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   var scopedClasses = initTable[string, string]()
   validateCssScopeCollisions(args[0], scopedClasses)
   newStr(renderCssNode(args[0], "", 0, scope))
@@ -1717,7 +1717,7 @@ proc biUrlEncodeComponent(args: openArray[Value]): Value {.nimcall.} =
 proc biUrlDecodeComponent(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("url/decode_component", args)
   requireStr("url/decode_component", args[0])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   newStr(urlDecodeComponent(args[0].strVal, plusIsSpace = false, scope))
 
 proc parseQueryEntries(query: string,
@@ -1739,7 +1739,7 @@ proc parseQueryEntries(query: string,
 proc biUrlParseQuery(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("url/parse_query", args)
   requireStr("url/parse_query", args[0])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   newMap(parseQueryEntries(args[0].strVal, scope))
 
 proc biUrlFormatQuery(args: openArray[Value]): Value {.nimcall.} =
@@ -1846,7 +1846,7 @@ proc requirePackageAuthority(scope: Scope, authority, operation: string) =
 proc biPkgApplication(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "pkg/application expects no arguments")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if scope == nil:
     raise newException(GeneError, "pkg/application requires an Application")
   let app = scope.application()
@@ -1865,7 +1865,7 @@ proc biPkgCanonicalDigest(args: openArray[Value]): Value {.nimcall.} =
 
 proc packageResourceBytes(args: openArray[Value], call: ptr NativeCall,
                           text: bool): Value =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 2 or args[1].kind != vkString:
     raisePackageResourceError(scope, "pkg/read requires a Package and path Str")
   let pkg = selectedPackageValue(scope, args[0])
@@ -1917,7 +1917,7 @@ proc biPkgReadText(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   result = packageResourceBytes(args, call, true)
 
 proc biPkgDependency(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 2 or args[1].kind != vkString:
     raisePackageResourceError(scope, "pkg/dependency expects Package and alias Str")
   let pkg = selectedPackageValue(scope, args[0])
@@ -1929,7 +1929,7 @@ proc biPkgDependency(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   result = scope.application().packagesById[id].packageValue()
 
 proc biPkgMaterialize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requirePackageAuthority(scope, "fs", "pkg/materialize")
   when defined(emscripten) or defined(geneWasm):
     raisePackageResourceError(scope, "pkg/materialize is unavailable on this target")
@@ -1997,7 +1997,7 @@ proc biPkgMaterialize(args: openArray[Value], call: ptr NativeCall): Value {.nim
 
 proc biPkgNativeBinary(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 2 or args[1].kind != vkString:
     raisePackageResourceError(scope,
       "pkg/native_binary expects Package and recipe alias Str")
@@ -2028,7 +2028,7 @@ proc requireMaterialized(scope: Scope, value: Value):
     release(resourceRecordLock)
 
 proc biMaterializedPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raisePackageResourceError(scope, "MaterializedResource/path expects receiver")
   let record = requireMaterialized(scope, args[0])
@@ -2037,7 +2037,7 @@ proc biMaterializedPath(args: openArray[Value], call: ptr NativeCall): Value {.n
   result = newStr(record.path)
 
 proc biMaterializedClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1:
     raisePackageResourceError(scope, "MaterializedResource/close expects receiver")
   let record = requireMaterialized(scope, args[0])
@@ -2072,7 +2072,7 @@ proc currentNativeModuleRuntimeIdentity(): string =
 
 proc biPkgNativeModule(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requirePackageAuthority(scope, "ffi", "pkg/native_module")
   if scope == nil or args.len != 2 or args[1].kind != vkString:
     raisePackageResourceError(scope,
@@ -2171,7 +2171,7 @@ proc pathBaseName(path: string): string =
   result = if slash < 0: normalized else: normalized[slash + 1 .. ^1]
 
 proc biPathNormalize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1: raisePathError("path/normalize expects one path", scope)
   try:
     result = newStr(pathLexicalNormalize(pathInput("path/normalize", args[0], scope)))
@@ -2179,7 +2179,7 @@ proc biPathNormalize(args: openArray[Value], call: ptr NativeCall): Value {.nimc
     raisePathError("path/normalize: " & e.msg, scope)
 
 proc biPathJoin(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len == 0: raisePathError("path/join expects at least one path", scope)
   var joined = pathInput("path/join", args[0], scope)
   for i in 1 ..< args.len:
@@ -2197,7 +2197,7 @@ proc biPathJoin(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     raisePathError("path/join: " & e.msg, scope)
 
 proc biPathParent(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1: raisePathError("path/parent expects one path", scope)
   try:
     let p = pathLexicalNormalize(pathInput("path/parent", args[0], scope))
@@ -2210,7 +2210,7 @@ proc biPathParent(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     raisePathError("path/parent: " & e.msg, scope)
 
 proc biPathName(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1: raisePathError("path/name expects one path", scope)
   try:
     result = newStr(pathBaseName(pathInput("path/name", args[0], scope)))
@@ -2218,7 +2218,7 @@ proc biPathName(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     raisePathError("path/name: " & e.msg, scope)
 
 proc biPathExtension(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 1: raisePathError("path/extension expects one path", scope)
   try:
     let name = pathBaseName(pathInput("path/extension", args[0], scope))
@@ -2228,7 +2228,7 @@ proc biPathExtension(args: openArray[Value], call: ptr NativeCall): Value {.nimc
     raisePathError("path/extension: " & e.msg, scope)
 
 proc biPathRelative(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args.len != 2: raisePathError("path/relative expects target and base", scope)
   try:
     let target = pathLexicalNormalize(pathInput("path/relative", args[0], scope))
@@ -2276,7 +2276,7 @@ proc biOsGetEnv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     raise newException(GeneError,
       "os/get_env expects (name) or (name, default), got " &
       $args.len & " arguments")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("os/get_env name", args[0])
   if existsEnv(args[0].strVal):
     newStr(getEnv(args[0].strVal))
@@ -2312,7 +2312,7 @@ proc biOsLaunchDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 proc biOsSetCwd(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("os/set_cwd", args)
   requireStr("os/set_cwd", args[0])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   try:
     setCurrentDir(args[0].strVal)
   except OSError as error:
@@ -2369,7 +2369,7 @@ proc parseOsExecCommand(name: string, args: openArray[Value],
   ## Positional argv is literal. Shell parsing requires an explicit ^^full and
   ## exactly one command string. Keep the named form for existing callers, but
   ## do not guess how to combine it with positional arguments.
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   var namedCmd, namedArgs, full = false
   if call != nil:
     for i, key in call.namedNames:
@@ -2478,7 +2478,7 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
         activeVmFiber.nativeTask = task
         call.dispatchScope.registerOwnedTask(task)
       return finishNativeTask()
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let command = parseOsExecCommand("os/exec", args, call)
   let cmd = command.cmd
   let procArgs = command.args
@@ -2601,7 +2601,7 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   ## arrives: ^stdout receives raw chunks and ^stdout_line receives complete
   ## stdout lines without the trailing newline. The final return value keeps the
   ## same captured-output shape as os/exec.
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let command = parseOsExecCommand("os/exec_stream", args, call)
   let cmd = command.cmd
   let procArgs = command.args
@@ -2829,7 +2829,7 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   ## Run a subprocess attached to this process's stdin/stdout/stderr and return
   ## its exit status. This is for terminal handoff cases where captured
   ## `os/exec` would break interactive behavior.
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let command = parseOsExecCommand("os/exec_stdio", args, call)
   let cmd = command.cmd
   let procArgs = command.args
@@ -4011,7 +4011,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        inheritStdio: bool,
                        args: openArray[Value],
                        call: ptr NativeCall): Value =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let command = parseOsExecCommand(name, args, call)
   let cmd = command.cmd
   let procArgs = command.args
@@ -5047,7 +5047,7 @@ proc httpRequestTarget(url: string): string =
 
 proc biHttpClientStart(name: string, streaming: bool,
                        args: openArray[Value], call: ptr NativeCall): Value =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   when not compileOption("threads"):
     raiseHttpClientError(name & " requires a threaded runtime build", scope)
   if args.len != 0:
@@ -5249,7 +5249,7 @@ proc biOsProcessId(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   newInt(getCurrentProcessId())
 
 proc biOsSpawnDetached(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let command = parseOsExecCommand("os/spawn_detached", args, call)
   var output = ""
   if call != nil:
@@ -5271,7 +5271,7 @@ proc biOsSpawnDetached(args: openArray[Value], call: ptr NativeCall): Value {.ni
   NIL
 
 proc biOsProcessAlive(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   requireOne("os/process_alive?", args)
   let pid = requireInt64("os/process_alive?", args[0])
   if pid <= 0 or pid > int64(high(cint)):
@@ -5284,7 +5284,7 @@ proc biOsProcessAlive(args: openArray[Value], call: ptr NativeCall): Value {.nim
   NIL
 
 proc biOsExit(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireOne("os/exit", args)
   let status = requireInt64("os/exit", args[0])
   if status < 0 or status > 255:
@@ -5361,7 +5361,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     pollStdinLineCompletions()
     if stdinLineTask.kind == vkTask:
       raise newException(GeneError, "stdin already has a pending line read")
-    let scope = if call == nil: nil else: call.dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
     stdinLineTask = newExternalTask()
     if scope != nil:
       scope.registerIoTask(stdinLineTask)
@@ -5746,7 +5746,7 @@ proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 proc biFsTryLock(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("fs/try_lock", args)
   requireStr("fs/try_lock path", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   try:
     let fd = fsTryLock(args[0].strVal)
     if fd < 0:
@@ -5764,7 +5764,7 @@ proc biFsTryLock(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
 proc biFsFileLockClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("FsFileLock/close", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args[0].kind != vkNode or args[0].nodeResourceId == 0:
     raise newException(GeneError, "FsFileLock/close expects an FsFileLock")
   acquire(resourceRecordLock)
@@ -5795,7 +5795,7 @@ proc fsWatcherRecord(name: string, handle: Value,
     release(resourceRecordLock)
   if result == nil:
     raise newException(GeneError, name & " received an invalid FsWatcher")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if result.application != nil and
       (scope == nil or scope.application != result.application):
     raise newException(GeneError, name & " watcher belongs to another application")
@@ -5949,7 +5949,7 @@ proc biFsWatch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
       else:
         raise newException(GeneError,
           "fs/watch got unexpected named argument: " & name)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   try:
     let root = fsRealPath(args[0].strVal)
     let changeType = builtinBinding(scope, "FsChange")
@@ -5976,7 +5976,7 @@ proc biFsWatch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 proc biFsWatcherRecv(args: openArray[Value],
                             call: ptr NativeCall): Value {.nimcall.} =
   requireOne("FsWatcher/recv", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let record = fsWatcherRecord("FsWatcher/recv", args[0], call)
   var workerLease: SchedulerWorkerLease
   var workerLeaseOpen = false
@@ -6026,7 +6026,7 @@ proc biFsWatcherClose(args: openArray[Value],
 proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/read_text expects (path)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/read_text path", args[0])
   if activeVmFiber != nil:
     if activeVmFiber.nativeTask.kind != vkTask:
@@ -6048,7 +6048,7 @@ proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
   ## survives instead of being interpreted as UTF-8 and mangled.
   if args.len != 1:
     raise newException(GeneError, "fs/read_bytes expects (path)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/read_bytes path", args[0])
   if activeVmFiber != nil:
     if activeVmFiber.nativeTask.kind != vkTask:
@@ -6064,7 +6064,7 @@ proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
 proc biFsReadTextPage(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("fs/read_text_page", args)
   requireStr("fs/read_text_page path", args[0])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   var first = 1'i64
   var lines = 400'i64
   var maxBytes = 1048576'i64
@@ -6096,7 +6096,7 @@ proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.n
   ## with the high bit set survives instead of being mangled by UTF-8 handling.
   if args.len != 2:
     raise newException(GeneError, "fs/write_bytes expects (path, bytes)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/write_bytes path", args[0])
   if args[1].kind != vkBytes:
     raise newException(GeneError,
@@ -6117,7 +6117,7 @@ proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.n
 proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "fs/write_text expects (path, text)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/write_text path", args[0])
   requireStr("fs/write_text text", args[1])
   if activeVmFiber != nil:
@@ -6144,7 +6144,7 @@ proc biFsWriteTextAtomicSync(args: openArray[Value],
   if args.len != 2:
     raise newException(GeneError,
       "fs/write_text_atomic expects (path, text)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/write_text_atomic path", args[0])
   requireStr("fs/write_text_atomic text", args[1])
   var ownerOnly = false
@@ -6182,7 +6182,7 @@ proc biFsWriteBytesAtomicSync(args: openArray[Value],
   if args.len != 2:
     raise newException(GeneError,
       "fs/write_bytes_atomic expects (path, bytes)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/write_bytes_atomic path", args[0])
   if args[1].kind != vkBytes:
     raise newException(GeneError,
@@ -6210,7 +6210,7 @@ proc biFsRename(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     raise newException(GeneError, "fs/rename expects source and destination paths")
   requireStr("fs/rename source", args[0])
   requireStr("fs/rename destination", args[1])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   try:
     when defined(posix) and not defined(geneWasm) and not defined(emscripten):
       if renamePath(args[0].strVal.cstring, args[1].strVal.cstring) != 0:
@@ -6224,7 +6224,7 @@ proc biFsRename(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biFsExists(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/exists? expects (path)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/exists? path", args[0])
   try:
     newBool(fsPathExists(args[0].strVal))
@@ -6235,7 +6235,7 @@ proc biFsInfo(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/info expects (path)")
   requireStr("fs/info path", args[0])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   var follow = true
   if call != nil:
     for index, name in call.namedNames:
@@ -6272,7 +6272,7 @@ proc biFsInfo(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
 proc biFsSetMode(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2: raise newException(GeneError, "fs/set_mode expects (path, mode)")
   requireStr("fs/set_mode path", args[0])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let mode = requireInt64("fs/set_mode mode", args[1])
   if mode < 0 or mode > 0o7777: raiseOsError("fs/set_mode mode must be within 0..4095", scope)
   try:
@@ -6292,7 +6292,7 @@ proc biFsCreateSymlink(args: openArray[Value], call: ptr NativeCall): Value {.ni
   if args.len != 2: raise newException(GeneError, "fs/create_symlink expects (target, path)")
   requireStr("fs/create_symlink target", args[0])
   requireStr("fs/create_symlink path", args[1])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   try: createSymlink(args[0].strVal, args[1].strVal)
   except CatchableError as error: raiseFilesystemOperationError("fs/create_symlink", error, scope)
   NIL
@@ -6300,7 +6300,7 @@ proc biFsCreateSymlink(args: openArray[Value], call: ptr NativeCall): Value {.ni
 proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/list_dir expects (path)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/list_dir path", args[0])
   try:
     var names: seq[Value]
@@ -6313,7 +6313,7 @@ proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 proc biFsMakeDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/make_dir expects (path)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/make_dir path", args[0])
   try:
     fsMakeDir(args[0].strVal)
@@ -6324,7 +6324,7 @@ proc biFsMakeDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 proc biFsRemove(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/remove expects (path)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/remove path", args[0])
   try:
     fsRemoveFile(args[0].strVal)
@@ -6335,7 +6335,7 @@ proc biFsRemove(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/real_path expects (path)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   requireStr("fs/real_path path", args[0])
   try:
     newStr(fsRealPath(args[0].strVal))
@@ -6346,7 +6346,7 @@ proc biFsRemoveDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args.len != 1:
     raise newException(GeneError, "fs/remove_dir expects (path)")
   requireStr("fs/remove_dir path", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   try:
     if symlinkExists(args[0].strVal):
       raise newException(IOError, "refusing to remove a directory symlink")
@@ -6667,7 +6667,7 @@ proc biParseReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimca
       "parse/read_all ^locs is not available with ^max_depth or " &
       "^reject_duplicate_props")
   requireStr("parse/read_all", args[0])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   try:
     return newStream(readAll(args[0].strVal, source, options))
   except ReadError as e:
@@ -6682,7 +6682,7 @@ proc biJsonParse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   ## untrusted peer.
   requireOne("json/parse", args)
   requireStr("json/parse", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var p = JsonParser(input: args[0].strVal, pos: 0, scope: scope,
                      maxDepth: jsonMaxDepth)
   if call != nil:
@@ -6804,7 +6804,7 @@ proc jsonStringifyInto(value: Value, into: var string, scope: Scope,
 
 proc biJsonStringify(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("json/stringify", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var omitNil = false
   if call != nil:
     for i, name in call[].namedNames:
@@ -8443,7 +8443,7 @@ proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
 
 proc biSerdeWriteData(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("serde/write_data", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   newStr(serdeWriteDataText(args[0], scope))
 
 proc biSerdeDataP(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -8486,7 +8486,7 @@ proc biSerdeReadData(args: openArray[Value], call: ptr NativeCall): Value {.nimc
     raise newException(GeneError,
       "serde/read_data expects a Str plus optional ^policy")
   requireStr("serde/read_data", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var policy = NIL
   if call != nil:
     for i, name in call[].namedNames:
@@ -8501,7 +8501,7 @@ proc biSerdeReadData(args: openArray[Value], call: ptr NativeCall): Value {.nimc
 
 proc biSerdeWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("serde/write", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   newStr(serdeWriteFullText(args[0], scope))
 
 proc biSerdeRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -8509,7 +8509,7 @@ proc biSerdeRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     raise newException(GeneError,
       "serde/read expects a Str plus optional ^policy")
   requireStr("serde/read", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var policy = NIL
   if call != nil:
     for i, name in call[].namedNames:
@@ -8880,7 +8880,7 @@ proc sqlitePersistIfCommitted(conn: Value, db: pointer, mutated: bool,
 proc biSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("sqlite/open", args)
   requireStr("sqlite/open path", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var databasePath = args[0].strVal
   var initialContent = ""
   if databasePath != ":memory:":
@@ -8953,7 +8953,7 @@ proc biSqliteOpenFile(args: openArray[Value], call: ptr NativeCall): Value {.nim
   ## Durability pragmas are the caller's choice and record.
   requireOne("sqlite/open_file", args)
   requireStr("sqlite/open_file path", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var create = false
   var busyMs = 5000'i64
   if call != nil:
@@ -9013,7 +9013,7 @@ proc biSqliteExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   if args.len != 2:
     raise newException(GeneError, "Db/exec expects (conn, sql), got " & $args.len)
   requireStr("Db/exec sql", args[1])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/exec", args[0], scope)
   let conn = args[0]
   discard sqliteExecScript(db, args[1].strVal, "Db/exec", scope,
@@ -9053,7 +9053,7 @@ proc biSqliteVisitTextRows(args: openArray[Value], call: ptr NativeCall): Value 
   if args.len != 3:
     raise newException(GeneError, operation & " expects (conn, sql, callback)")
   requireStr(operation & " sql", args[1])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle(operation, args[0], scope)
   let signature = newNode(newSym("Callable"), body = @[
     newList(@[newNode(newSym("List"), body = @[newSym("Str")]),
@@ -9107,7 +9107,7 @@ proc biSqliteQuery(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args.len < 2:
     raise newException(GeneError, "Db/query expects (conn, sql, params...)")
   requireStr("Db/query sql", args[1])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/query", args[0], scope)
   let conn = args[0]
   let resultSet = sqliteRunStmt(db, args[1].strVal, args[2..^1], "Db/query",
@@ -9119,7 +9119,7 @@ proc biSqliteQueryOne(args: openArray[Value], call: ptr NativeCall): Value {.nim
   if args.len < 2:
     raise newException(GeneError, "Db/query_one expects (conn, sql, params...)")
   requireStr("Db/query_one sql", args[1])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/query_one", args[0], scope)
   let conn = args[0]
   let resultSet = sqliteRunStmt(db, args[1].strVal, args[2..^1],
@@ -9131,7 +9131,7 @@ proc biSqliteExecute(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   if args.len < 2:
     raise newException(GeneError, "Db/execute expects (conn, sql, params...)")
   requireStr("Db/execute sql", args[1])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/execute", args[0], scope)
   let conn = args[0]
   let resultSet = sqliteRunStmt(db, args[1].strVal, args[2..^1], "Db/execute",
@@ -9141,7 +9141,7 @@ proc biSqliteExecute(args: openArray[Value], call: ptr NativeCall): Value {.nimc
 
 proc biDbClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Db/close", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args[0].kind != vkNode or args[0].head.kind != vkType:
     raiseDbError("Db/close expects a database connection", scope)
   let handle = args[0].props.getOrDefault("handle", NIL)
@@ -9163,7 +9163,7 @@ proc biDbClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 
 proc biDbClosed(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Db/closed?", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if args[0].kind != vkNode or args[0].head.kind != vkType:
     raiseDbError("Db/closed? expects a database connection", scope)
   let handle = args[0].props.getOrDefault("handle", NIL)
@@ -9189,7 +9189,7 @@ proc dbRunTransaction(conn, callable: Value, scope: Scope,
 proc biSqliteTransaction(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Db/transaction expects (conn, fn)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let transactionResult = dbRunTransaction(args[0], args[1], scope,
     proc(conn: Value, sql: string, scope: Scope) =
       discard sqliteExecScript(sqliteHandle("Db/transaction", conn, scope), sql,
@@ -9339,7 +9339,7 @@ proc pgRun(conn: Value, sql: string, params: openArray[Value], where: string,
 proc biPostgresOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("postgres/open", args)
   requireStr("postgres/open conninfo", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   loadPgApi(scope)
   let db = gPgApi.connectdb(args[0].strVal.cstring)
   if db == nil:
@@ -9360,7 +9360,7 @@ proc biPostgresExec(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   if args.len != 2:
     raise newException(GeneError, "Db/exec expects (conn, sql), got " & $args.len)
   requireStr("Db/exec sql", args[1])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   discard pgRun(args[0], args[1].strVal, [], "Db/exec", scope)
   NIL
 
@@ -9368,14 +9368,14 @@ proc biPostgresQuery(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   if args.len < 2:
     raise newException(GeneError, "Db/query expects (conn, sql, params...)")
   requireStr("Db/query sql", args[1])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   newList(pgRun(args[0], args[1].strVal, args[2..^1], "Db/query", scope).rows)
 
 proc biPostgresQueryOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len < 2:
     raise newException(GeneError, "Db/query_one expects (conn, sql, params...)")
   requireStr("Db/query_one sql", args[1])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let rows = pgRun(args[0], args[1].strVal, args[2..^1], "Db/query_one",
                    scope).rows
   if rows.len == 0: NIL else: rows[0]
@@ -9384,14 +9384,14 @@ proc biPostgresExecute(args: openArray[Value], call: ptr NativeCall): Value {.ni
   if args.len < 2:
     raise newException(GeneError, "Db/execute expects (conn, sql, params...)")
   requireStr("Db/execute sql", args[1])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   newInt(pgRun(args[0], args[1].strVal, args[2..^1], "Db/execute",
                scope).changes)
 
 proc biPostgresTransaction(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Db/transaction expects (conn, fn)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   dbRunTransaction(args[0], args[1], scope,
     proc(conn: Value, sql: string, scope: Scope) =
       discard pgRun(conn, sql, [], "Db/transaction", scope))
@@ -9683,7 +9683,7 @@ proc storeSqliteEnsureSchema(db: pointer, tableName, keyColumn,
 
 proc biStoreSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("store/sqlite/open", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   discard sqliteHandle("store/sqlite/open", args[0], scope)
   let named = storeNamed(call)
   let tableName = storeSqlIdent(scope,
@@ -9723,7 +9723,7 @@ proc biStoreSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.ni
 proc biStorePut(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "Store/put expects (store, key, value)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let kind = storeRequire(scope, args[0], call)
   requireStr("Store/put key", args[1])
   let key = args[1].strVal
@@ -9751,7 +9751,7 @@ proc biStorePut(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biStoreGet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Store/get expects (store, key)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let kind = storeRequire(scope, args[0], call)
   requireStr("Store/get key", args[1])
   let key = args[1].strVal
@@ -9791,7 +9791,7 @@ proc biStoreGet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biStoreHas(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Store/has? expects (store, key)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let kind = storeRequire(scope, args[0], call)
   requireStr("Store/has? key", args[1])
   let key = args[1].strVal
@@ -9810,7 +9810,7 @@ proc biStoreHas(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biStoreDelete(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Store/delete expects (store, key)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let kind = storeRequire(scope, args[0], call)
   requireStr("Store/delete key", args[1])
   let key = args[1].strVal
@@ -9844,7 +9844,7 @@ proc storeKeyFromFsName(scope: Scope, name: string): tuple[ok: bool, key: string
 
 proc biStoreKeys(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Store/keys", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let kind = storeRequire(scope, args[0], call)
   var keys: seq[Value]
   if kind == "SqliteStore":
@@ -9868,7 +9868,7 @@ proc biStoreKeys(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
 proc biStoreClear(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Store/clear", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let kind = storeRequire(scope, args[0], call)
   if kind == "SqliteStore":
     let db = storeSqliteDb(args[0], scope)
@@ -10091,7 +10091,7 @@ proc biStoreCheckpoint(args: openArray[Value], call: ptr NativeCall): Value {.ni
   if args.len != 3:
     raise newException(GeneError,
       "Store/checkpoint expects (store, generation, records)")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let kind = storeRequire(scope, args[0], call)
   if args[1].kind != vkInt or args[1].intVal < 1:
     raiseStoreError(scope, "invalid_key",
@@ -10252,7 +10252,7 @@ proc storeLoadSqliteCheckpoint(scope: Scope, store: Value): Value =
 
 proc biStoreLoadCheckpoint(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Store/load_checkpoint", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let kind = storeRequire(scope, args[0], call)
   if kind == "SqliteStore":
     storeLoadSqliteCheckpoint(scope, args[0])
@@ -10261,7 +10261,7 @@ proc biStoreLoadCheckpoint(args: openArray[Value], call: ptr NativeCall): Value 
 
 proc biStoreClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Store/close", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let kind = storeRequire(scope, args[0])
   storeClose(args[0])
   NIL
@@ -10269,7 +10269,7 @@ proc biStoreClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
 proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "store/fs/open expects no positional arguments")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let named = storeNamed(call)
   if not named.hasArg("root"):
     raiseStoreError(scope, "invalid_key", "store/fs/open requires ^root")
@@ -10317,7 +10317,7 @@ proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
   ## One dispatcher for every AOT entry. `NativeCallProc` is `nimcall` and
   ## cannot capture the entry pointer, so entries are keyed by the same name
   ## the VM reports back as `calleeName`.
-  let name = call.calleeName
+  let name = call[].calleeName
   if not aotEntries.hasKey(name):
     raise newException(GeneError,
       "no AOT entry registered for '" & name.rsplit('\x1f', 1)[^1] & "'")
@@ -10510,7 +10510,7 @@ proc biAotLoad(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 proc biIoWriteAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2 or args[1].kind != vkBytes:
     raise newException(GeneError, "io/write_all expects a writer and Bytes")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if currentEventLane() != schedulerForScope(scope).rootLane:
     raiseValueSemanticError("RuntimeLaneError", "io/write_all requires the root lane")
   let app = if scope == nil: currentApplication() else: scope.application()
@@ -10523,7 +10523,7 @@ proc biIoRetainCleanup(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1 or args[0].kind != vkTask:
     raise newException(GeneError, "io/_retain_cleanup expects one Task")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if scope == nil or currentEventLane() != schedulerForScope(scope).rootLane:
     raiseValueSemanticError("RuntimeLaneError",
       "io/_retain_cleanup requires the root lane")
@@ -10533,7 +10533,7 @@ proc biIoRetainCleanup(args: openArray[Value],
 proc biIoCopy(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "io/copy expects a reader and writer")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if currentEventLane() != schedulerForScope(scope).rootLane:
     raiseValueSemanticError("RuntimeLaneError", "io/copy requires the root lane")
   let app = if scope == nil: currentApplication() else: scope.application()

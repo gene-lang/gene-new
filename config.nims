@@ -54,6 +54,18 @@ block:
     quit("gene needs an ARC-family memory manager (orc, arc, atomicArc), " &
          "not --mm:" & memoryManager)
 
+# Defects (index, overflow, range, field, assertion) end the process with an
+# error report instead of unwinding. With panics off, Nim assumes a call into
+# any Nim proc can raise a Defect, so every callee loads the thread-local error
+# flag (a `_tlv_get_addr` call on macOS) and every call site tests it
+# afterwards. That preamble also keeps the small helpers in types.nim out of
+# line from the VM's dispatch loop: every interpreter kernel runs 11-29% faster
+# with panics on (docs/reports/boundary-costs.md). Gene never recovered from a
+# Defect: the dispatch loop and the CLI catch only Gene's own exception types.
+# So code must not catch one (`except FieldDefect`, or a bare `except:` relied
+# on to see one); test the condition first, e.g. `tryIntVal` before `intVal`.
+switch("panics", "on")
+
 # Linux and wasm: keep std/osproc's fork launcher. Nim 2.2.12 switched Linux
 # to its posix_spawn path, which applies a working directory by changing the
 # parent's cwd around the spawn (racy across threads, and left changed when the

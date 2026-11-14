@@ -4371,6 +4371,14 @@ suite "spec — strings from design":
                "(var user (User ^name \"Ada\")) " &
                "$\"hello ${user}\"",
                "\"hello Ada\"")
+    # Strs and small Ints are appended in place; every other part goes
+    # through the printer. Expected text from the build before that.
+    check_eval("(let s \"s\") (let e \"\") (let l [1 2]) (let sym (quote sym)) " &
+               "$\"a${-5}b${0}c${140737488355327}d${140737488355328}" &
+               "e${-140737488355329}f${99999999999999999999}g${1.5}h${nil}" &
+               "i${true}k${sym}l${l}m${s}o${e}p$(- 0 140737488355328)\"",
+               "\"a-5b0c140737488355327d140737488355328e-140737488355329" &
+               "f99999999999999999999g1.5hnilitrueksyml[1 2]msop-140737488355328\"")
 
 suite "spec — hashable collections and bytes from design":
   test "Bytes literals read as immutable byte strings":

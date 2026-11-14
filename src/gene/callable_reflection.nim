@@ -17,7 +17,7 @@ proc symbol(value: Value, name: string): bool =
 
 proc safeAnnotation(expr: Value, scope: Scope, lookup: ReflectionTypeLookup,
                     depth = 0, abstractSelf = false, unresolved: seq[string] = @[]): Value =
-  ## Unknown/dynamic annotations become Void internally, never executable
+  ## Unknown/dynamic annotations become MISSING internally, never executable
   ## syntax in the public description. Copy only supported type structure,
   ## dropping metadata and owning borrowed nominal references.
   if depth > 64: return MISSING

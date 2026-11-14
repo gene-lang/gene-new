@@ -799,6 +799,10 @@ var gAnyAnnotationId = -1'i32
   ## Bare Any has no check or adaptation. -1 cannot match an interned symbol
   ## before the built-in surface has initialized the id.
 
+var gListAnnotationId = -1'i32
+  ## The interned `List` head, for `bareScalarListSatisfied`. Filled with
+  ## `gAnyAnnotationId`.
+
 var gRefinementTypes: HashSet[uint64]
   ## Identities of the fixed-width numeric types — `I8`..`U64`, `F32`, `F64`.
   ##
@@ -1017,7 +1021,14 @@ proc valueImplementsCallable(value: Value, scope: Scope): bool
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool
 proc validateLookupImpls(scope: Scope)
 proc readyTypeDirectMessage(typ: Value, name: string): Value
-proc ensureTypeContractReady(scope: Scope, typ: Value)
+proc ensureTypeContractReadyIn(scope: Scope, typ: Value)
+template ensureTypeContractReady(scope: Scope, typ: Value) =
+  ## Raises unless `typ`'s contract is ready. The scope argument, often
+  ## `typ.typeScope`, is evaluated only for a type whose contract is still
+  ## pending: reading it returns a counted Scope, on every construction.
+  ## `typ` is evaluated twice, so pass a name or a plain element read.
+  if typeContractPending(typ):
+    ensureTypeContractReadyIn(scope, typ)
 proc builtinBinding(scope: Scope, name: string): Value
 proc isBuiltinCallable(value: Value): bool
 proc receiverType(value: Value): Value
@@ -2029,10 +2040,18 @@ template ownApplicationView(scope: Scope): Application =
   ## round trip and a cycle-candidate registration just to read one field.
   cast[Application](cast[pointer](scope.application))
 
+var gStrictErrorRegistered: bool
+  ## Set once any Application adds a strict error registration, and never
+  ## cleared. Until then no binding store has a registration to check, and
+  ## `checkStrictBindingUpdate` answers from this one load instead of reaching
+  ## the scope's Application through a type test.
+
 proc checkStrictBindingUpdate(scope: Scope, name: string,
                               value: Value) {.inline.} =
   ## Runs before every binding store. Almost no program holds a strict error
   ## registration, so that test stays at the call site.
+  if not atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
+    return
   if scope == nil or scope.application == nil:
     return
   if scope.hasOwnApplication and
@@ -2497,6 +2516,14 @@ proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs,
                   site: Value = NIL): Value
 proc constructTypedInstance(callee: Value, args: openArray[Value],
                             named: NamedArgs, immutable = false): Value
+proc constructTypedInstanceParts(callee: Value, args: openArray[Value],
+                                 names: openArray[string],
+                                 values: openArray[Value],
+                                 immutable: bool): Value
+proc constructAtCallSite(callee: Value, chunk: Chunk, at: int,
+                         names: openArray[string],
+                         namedValues, args: openArray[Value],
+                         constructed: var Value): bool {.noinline.}
 proc newNativeWrapper*(wrapperType: Value,
                        props: openArray[(string, Value)]): Value
 proc registerNativeTypeIdentity*(identity: string, typ: Value)
@@ -2568,6 +2595,42 @@ proc bareScalarSatisfied*(typeExpr, value: Value): bool {.inline.} =
       return value.kind == entry.kind
   false
 
+proc bareScalarKind(typeExpr: Value, kind: var ValueKind): bool =
+  ## The value kind that satisfies an exact-kind scalar annotation, the
+  ## `bareScalarSatisfied` table read the other way. False for `Any` and for
+  ## every other annotation.
+  if typeExpr.kind != vkSymbol:
+    return false
+  let id = typeExpr.symbolId
+  for entry in gBareScalarAnnotations:
+    if entry.id == id:
+      kind = entry.kind
+      return true
+  false
+
+proc bareScalarListSatisfied(typeExpr, value: Value): bool {.noinline.} =
+  ## `(List T)` for an exact-kind scalar `T`, on a List already known to hold
+  ## only `T`'s kind (`listItemsAllOfKind`). That needs no boundary work:
+  ## `List` and the scalar names are built-ins that `closeTypeExpr` leaves
+  ## symbolic in every scope, the general match reads the same cache, and a
+  ## scalar item type adapts nothing. The general path closed the annotation
+  ## twice per call, a third of a call with this parameter. Props on the
+  ## annotation would be closed too, so an annotation with any takes it still.
+  if typeExpr.kind != vkNode or value.kind != vkList:
+    return false
+  let head = typeExpr.head
+  if head.kind != vkSymbol or head.symbolId != gListAnnotationId or
+      typeExpr.body.len != 1 or typeExpr.props.len != 0:
+    return false
+  var kind: ValueKind
+  bareScalarKind(typeExpr.body[0], kind) and value.listItemsAllOfKind(kind)
+
+template boundaryWorkFree(typeExpr, value: Value): bool =
+  ## `bareScalarSatisfied`, or a `(List T)` that `bareScalarListSatisfied`
+  ## admits. Kept out of `runLoop`, whose loops slow down when code is added.
+  bareScalarSatisfied(typeExpr, value) or
+    bareScalarListSatisfied(typeExpr, value)
+
 proc checkedDefinitionValue(label: string, annotation, value: Value,
                              scope: Scope): Value {.noinline.} =
   ## Keep the scalar test outside the large computed-goto dispatch function.
@@ -2608,6 +2671,20 @@ proc scopelessIntArgsOk(stack: seq[Value], argsStart, argCount: int):
       return false
   true
 
+proc scopelessScalarArgsOk(proto: FunctionProto, stack: seq[Value],
+                           argsStart, argCount: int): bool {.noinline.} =
+  ## Typed scopeless admission for parameters that are not all bare Int: each
+  ## argument must be one its annotation needs no boundary work for, which is
+  ## the test the positional scalar binder makes (`canBindScalarArguments`).
+  ## An unannotated parameter takes anything. A miss falls back to the classic
+  ## convention.
+  for i in 0 ..< argCount:
+    let annotation {.cursor.} = proto.paramTypes[i]
+    if annotation.kind != vkNil and
+        not boundaryWorkFree(annotation, stack[argsStart + i]):
+      return false
+  true
+
 proc scopelessFieldReadsOk(proto: FunctionProto,
                            calleeScope, callerScope: Scope): bool {.inline.} =
   ## A scopeless body reads fields with the caller's scope register, where
@@ -2631,7 +2708,7 @@ proc biPathConstruct(args: openArray[Value], call: ptr NativeCall): Value {.nimc
     for i, name in call.namedNames:
       props[name] = call.namedValues[i]
   var parts: seq[Value]
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   for part in args:
     if part.kind == vkString:
       let message = pathQualifiedMessageValue(part.strVal, scope)
@@ -2658,9 +2735,7 @@ proc requireNums(name: string, args: openArray[Value]) =
 proc requireInt64(name: string, value: Value): int64 =
   if value.kind != vkInt:
     raise newException(GeneError, name & " expects an Int")
-  try:
-    value.intVal
-  except FieldDefect:
+  if not value.tryIntVal(result):
     raise newException(GeneError, name & " expects an Int in int64 range")
 
 proc biAdd(args: openArray[Value]): Value {.nimcall.} =
@@ -3133,7 +3208,7 @@ proc biContains(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   if args.len != 2:
     raise newException(GeneError,
       "contains? expects (collection, item), got " & $args.len & " arguments")
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("contains?", args[0], args[1 .. ^1], scope)
   if resolved.handled: return resolved.value
   let source = resolved.source
@@ -3485,9 +3560,9 @@ proc requireOne(name: string, args: openArray[Value]) =
   if args.len != 1:
     raise newException(GeneError, name & " expects 1 argument, got " & $args.len)
 
-# Absence vocabulary (design §1.6). `nil?`/`void?` test the exact singleton;
-# `absent?` is either absence form; `present?` is neither. `false`/`0`/`""`
-# are present — this is the distinction `||`-as-default blurs and `??` respects.
+# Absence vocabulary (nil-void.md): nil is the one absence value; `absent?`
+# is nil and `present?` is anything else. `false`/`0`/`""` are present — this
+# is the distinction `||`-as-default blurs and `??` respects.
 const LeafValueKinds* = {vkNil, vkBool, vkInt, vkFloat, vkString,
                          vkSymbol, vkChar}
   ## Literals: values the reader produces with no interior node structure. This
@@ -3739,7 +3814,7 @@ proc biTaskCancel(args: openArray[Value]): Value {.nimcall.} =
 proc biTaskDetach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Task/detach", args)
   requireTask("Task/detach", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   discard scope.unregisterOwnedTask(args[0])
   args[0]
 
@@ -3815,7 +3890,7 @@ proc biChannelSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   if args.len != 2:
     raise newException(GeneError, "Channel/send expects 2 arguments, got " & $args.len)
   requireChannel("Channel/send", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var workerLease: SchedulerWorkerLease
   var workerLeaseOpen = false
   defer:
@@ -3862,7 +3937,7 @@ proc biChannelTrySend(args: openArray[Value], call: ptr NativeCall): Value {.nim
   let state = args[0].channelSendState()
   if state.closed or state.full:
     return FALSE
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let pushed = args[0].tryPushChannel(checkedChannelSendItem(args[0], args[1],
                                              "Channel/try_send item", scope))
   if not pushed.pushed:
@@ -3908,7 +3983,7 @@ proc nativeChannelTrySendManaged*(channel, item: Value,
 proc biChannelRecv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Channel/recv", args)
   requireChannel("Channel/recv", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   var workerLease: SchedulerWorkerLease
   var workerLeaseOpen = false
   defer:
@@ -4001,7 +4076,7 @@ proc biChannelTryRecv(args: openArray[Value], call: ptr NativeCall): Value {.nim
   requireOne("Channel/try_recv", args)
   requireChannel("Channel/try_recv", args[0])
   pollOsExecAsyncCompletions()
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let popped = args[0].tryPopChannel()
   if not popped.popped:
     return tryRecvEmpty(scope)
@@ -5181,6 +5256,10 @@ proc materializedModuleRefValue(scope: Scope, value: Value): Value {.inline.} =
   ## The overwhelmingly common path is one nil pointer check. Only a module
   ## currently carrying unresolved structural slots pays for inspecting the
   ## loaded value itself.
+  ##
+  ## Making the check a template at the call sites removed the call, but put
+  ## sixteen copies of it into the dispatch loop, and plain loops were 5% to
+  ## 7% slower in every paired round while calls were faster. It stays a proc.
   if scope.moduleRefs == nil or scope.moduleRefs.pendingStructural == 0 or
       not value.isPendingModuleRef:
     return value
@@ -5279,7 +5358,7 @@ proc readFormsFromString(name: string, value: Value, scope: Scope,
 
 proc biReadOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("read_one", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let forms = readFormsFromString("read_one", args[0], scope)
   if forms.len == 0:
     return NIL
@@ -5298,7 +5377,7 @@ proc biReadIncomplete(args: openArray[Value]): Value {.nimcall.} =
 
 proc biReadAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("read_all", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   var source = ""
   var located = false
   if call != nil:
@@ -5373,7 +5452,7 @@ proc biLexAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("lex_all", args)
   if args[0].kind != vkString:
     raise newException(GeneError, "lex_all expects a Str")
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let tokenType = builtInTypeHead(scope, "Token")
   var tokens: seq[Value]
   try:
@@ -5706,9 +5785,14 @@ proc dispatchGenericForward(name: string, receiver: Value,
 
 proc biToStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("to_stream", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("to_stream", args[0], [], scope)
-  if resolved.handled: return resolved.value
+  if resolved.handled:
+    # A type's own to_stream answers here, before the generic forward below:
+    # its result keeps the same contract.
+    if resolved.value.kind != vkStream:
+      raiseTypeError("to_stream result", "Stream", resolved.value, scope)
+    return resolved.value
   let source = resolved.source
   if source.kind == vkStream:
     # A conversion into the lazy tier is the identity on something already in
@@ -5737,7 +5821,7 @@ proc biToStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
 proc biToPairsStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("to_pairs_stream", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveMapFamily("to_pairs_stream", args[0], [], scope)
   if resolved.handled: return resolved.value
   var pairs: seq[Value]
@@ -5782,7 +5866,7 @@ proc biStreamClose(args: openArray[Value]): Value {.nimcall.} =
 proc biStreamTryNext(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Stream/try_next", args)
   requireStream("Stream/try_next", args[0])
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   try:
     if not args[0].streamHasNext:
       return tryNextExhausted(scope)
@@ -6673,7 +6757,7 @@ proc biFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
 
 proc biMapSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("map_size", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveMapFamily("map_size", args[0], [], scope)
   if resolved.handled: return resolved.value
   case resolved.source.kind
@@ -6685,7 +6769,7 @@ proc biMapSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 
 proc biMapEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("map_empty?", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveMapFamily("map_empty?", args[0], [], scope)
   if resolved.handled: return resolved.value
   case resolved.source.kind
@@ -6697,7 +6781,7 @@ proc biMapEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
 proc mapEntryCollection(args: openArray[Value], call: ptr NativeCall,
                         name, baseOperation: string, dropNil: bool): Value =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len == 1:
     return newSelectorCallStage(builtinBinding(scope, name), args)
   if args.len != 2:
@@ -6730,7 +6814,7 @@ proc mapEntryCollection(args: openArray[Value], call: ptr NativeCall,
 
 proc eachEntryCollection(args: openArray[Value], call: ptr NativeCall,
                          name: string): Value =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len != 2:
     raise newException(GeneError, name & " expects 2 arguments, got " & $args.len)
   let receiver = args[0]
@@ -6756,7 +6840,7 @@ proc biMapMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   mapEntryCollection(args, call, "map_map", "map", false)
 
 proc biMapFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   if args.len == 1:
     return newSelectorCallStage(builtinBinding(scope, "map_filter"), args)
   if args.len != 2:
@@ -6831,7 +6915,7 @@ proc biTake(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
 proc biReverse(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("reverse", args)
   let receiver = args[0]
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("reverse", receiver, [], scope)
   if resolved.handled: return resolved.value
   let source = resolved.source
@@ -6861,7 +6945,7 @@ proc biDrop(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "drop expects 1 or 2 arguments, got " & $args.len)
   let receiver = args[0]
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("drop", receiver, args[1 .. ^1], scope)
   if resolved.handled: return resolved.value
   let source = resolved.source
@@ -7596,7 +7680,14 @@ proc requireNode(name: string, value: Value) =
 
 proc biListSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("size", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  # A List dispatches `size` to the built-in `List` type, whose `size` message
+  # is this native itself: `sizeFn`, the one process-wide value `$size` is
+  # bound to. A built-in type's messages never change after construction, so a
+  # List has no override to look for, and resolving the type and the running
+  # op by name was a quarter of a loop that only counts.
+  if args[0].kind == vkList:
+    return newInt(args[0].listItems.len)
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let runningOp = builtinBinding(scope, "size")
   let direct = typeDirectOverride("size", args[0], [], scope, runningOp)
   if direct.handled: return direct.value
@@ -7622,7 +7713,10 @@ proc biListSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 
 proc biListEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("empty?", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  # As in `biListSize`: `List`'s `empty?` message is `emptyFn`, this native.
+  if args[0].kind == vkList:
+    return newBool(args[0].listItems.len == 0)
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let runningOp = builtinBinding(scope, "empty?")
   let direct = typeDirectOverride("empty?", args[0], [], scope, runningOp)
   if direct.handled: return direct.value
@@ -7649,7 +7743,7 @@ proc biListEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
 proc biListFirst(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("first", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("first", args[0], [], scope)
   if resolved.handled: return resolved.value
   requireList("first", resolved.source)
@@ -7657,7 +7751,7 @@ proc biListFirst(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
 proc biListLast(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("last", args)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("last", args[0], [], scope)
   if resolved.handled: return resolved.value
   requireList("last", resolved.source)
@@ -7884,7 +7978,7 @@ proc biHasKey(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     # Stored props only: no message dispatch, protocol, or default is consulted.
     newBool(args[0].props.hasKey(keySegment("has_key?", args[1])))
   else:
-    let scope = if call == nil: nil else: call.dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
     raiseTypeError("has_key?", "Map or Node", args[0], scope)
     FALSE
 
@@ -8053,7 +8147,7 @@ proc biRegexMatch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     raise newException(GeneError, "regex/match expects 2 arguments, got " & $args.len)
   requireRegex("regex/match receiver", args[0])
   requireStr("regex/match input", args[1])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let matched = regexMatchValue(args[0], args[1].strVal, 0,
                                 builtInTypeHead(scope, "Match"))
   if matched.found: matched.value else: NIL
@@ -8093,7 +8187,7 @@ proc biRegexFindAll(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     raise newException(GeneError, "regex/find_all expects 2 arguments, got " & $args.len)
   requireRegex("regex/find_all receiver", args[0])
   requireStr("regex/find_all input", args[1])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let matchType = builtInTypeHead(scope, "Match")
   let state = newCell(newList(@[args[0], args[1], newInt(0), matchType]))
   newLazyStream(state, pullRegexFindAll)
@@ -8130,26 +8224,42 @@ proc biRegexSplit(args: openArray[Value]): Value {.nimcall.} =
       items.add newStr(part)
     newList(items)
 
-proc setCheckedNodeProp(node: Value, key: string, value: Value): Value =
+proc setCheckedNodeProp(node: Value, keyId: int32, value: Value): Value =
+  ## The checked writer of one prop, by key id. On a typed node the key must
+  ## name a declared field and the value passes that field's boundary. The
+  ## schema is read in place: copying the field list allocated every field's
+  ## name on each write. A value its annotation needs no boundary work for
+  ## (`bareScalarSatisfied`, or no annotation) is stored as it is, which is
+  ## what the boundary would return.
   if node.nodeImmutable:
     raise newException(GeneError, "cannot mutate immutable Node")
-  if node.head.kind != vkType:
-    node.setNodeProp(key, value)
+  let typ {.cursor.} = node.borrowedNodeHead
+  if typ.kind != vkType:
+    node.setNodePropById(keyId, value)
     return value
 
-  let typ = node.head
   if typ.isNativeWrapperType and not node.nodeConstructing:
-    rejectNativeWrapperWrite("cannot set field '" & key & "' on " & typ.typeName)
-  for field in typ.typeFields:
-    if field.name != key:
-      continue
-    let adapted = adaptFieldBoundary(typ.typeName, key, field.typeExpr, value,
-                                     field.typeFieldScope(typ.typeScope))
-    node.setNodeProp(key, adapted)
-    return adapted
+    rejectNativeWrapperWrite("cannot set field '" & propKeyText(keyId) &
+                             "' on " & typ.typeName)
+  if not typ.isEnumType:
+    # One borrowed address for the whole scan: asking the type for its field
+    # list at each use was a call per field examined, and this is the writer
+    # of every `set` and `put` of a prop.
+    let fields = addr typ.borrowedTypeFields
+    for i in 0 ..< fields[].len:
+      template field: untyped = fields[][i]
+      if field.nameId != keyId:
+        continue
+      if field.typeExpr.isNil or boundaryWorkFree(field.typeExpr, value):
+        node.setNodePropById(keyId, value)
+        return value
+      result = adaptFieldBoundary(typ.typeName, field.name, field.typeExpr,
+                                  value, field.typeFieldScope(typ.typeScope))
+      node.setNodePropById(keyId, result)
+      return
 
   raise newException(GeneError,
-    typ.typeName & " has no field '" & key & "'")
+    typ.typeName & " has no field '" & propKeyText(keyId) & "'")
 
 proc deleteCheckedNodeProp(node: Value, key: string): Value =
   ## Remove prop `key` and return what was stored there, or nil when it was
@@ -8281,7 +8391,7 @@ proc biNodePut(args: openArray[Value]): Value {.nimcall.} =
   if args[1].kind notin {vkSymbol, vkString}:
     raise newException(GeneError, "put takes a name, not an index")
   rejectCallerEnvEscape("Node/put", args[2])
-  let stored = setCheckedNodeProp(args[0], keySegment("Node/put", args[1]),
+  let stored = setCheckedNodeProp(args[0], keySegmentId("Node/put", args[1]),
                                   strengthenStoredValue(args[2]))
   noteFunctionStore(args[0], stored)
   stored
@@ -8305,7 +8415,7 @@ proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
       "Node/set_prop expects 3 arguments, got " & $args.len)
   requireNode("Node/set_prop", args[0])
   rejectCallerEnvEscape("Node/set_prop", args[2])
-  let stored = setCheckedNodeProp(args[0], keySegment("Node/set_prop", args[1]),
+  let stored = setCheckedNodeProp(args[0], keySegmentId("Node/set_prop", args[1]),
                                   strengthenStoredValue(args[2]))
   noteFunctionStore(args[0], stored)
   stored
@@ -8342,11 +8452,90 @@ proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].setNodeBody(body)
   args[1]
 
+proc typedNodePartsSettled(node: Value): bool =
+  ## Whether `validateTypedNodeParts` would accept this typed node's props and
+  ## body as they are and change none of them. True when every declared field
+  ## is present or optional, no other prop exists, the body has the length its
+  ## schema asks for, and every stored value is one its annotation needs no
+  ## boundary work for. Anything else, a container annotation above all, keeps
+  ## the full validation.
+  let typ {.cursor.} = node.borrowedNodeHead
+  if typ.kind != vkType or typ.isEnumType or typ.isNativeWrapperType:
+    return false
+  template settled(typeExpr, value: Value): bool =
+    # By kind alone (`nodePartsChecked`): not `boundaryWorkFree`, whose List
+    # answer can change behind the node.
+    typeExpr.kind == vkNil or bareScalarSatisfied(typeExpr, value)
+  template bodyFields: untyped = typ.borrowedTypeBodyFields
+  let last = bodyFields.len - 1
+  var restAt = -1
+  for i in 0 .. last:
+    if bodyFields[i].rest:
+      restAt = i
+      break
+  if restAt < 0:
+    if node.body.len != bodyFields.len:
+      return false
+  elif restAt != last or node.body.len < restAt:
+    return false
+  var present = 0
+  template fields: untyped = typ.borrowedTypeFields
+  for i in 0 ..< fields.len:
+    var stored: Value
+    if node.props.tryGetById(fields[i].nameId, stored):
+      if not settled(fields[i].typeExpr, stored):
+        return false
+      inc present
+    elif not fields[i].optional:
+      return false
+  if present != node.props.len:
+    return false
+  for i in 0 ..< node.body.len:
+    if not settled(bodyFields[min(i, last)].typeExpr, node.body[i]):
+      return false
+  true
+
+proc typedNodeChecked(node: Value): bool =
+  ## The node carries the checked mark, or earns it now. While it holds,
+  ## validating the node again would change nothing (see `nodePartsChecked`).
+  if node.nodePartsChecked:
+    return true
+  if not typedNodePartsSettled(node):
+    return false
+  node.markNodePartsChecked()
+  true
+
+proc setCheckedTypedBodyItem(target: Value, index: int, value: Value,
+                             stored: var Value): bool {.noinline.} =
+  ## The indexed write into a typed node's body, when checking the new item
+  ## alone is exact. The full route copies the body, strengthens every item
+  ## again and validates the whole node. With the parts checked the
+  ## validation would change nothing, and when every body field is an
+  ## exact-kind scalar the items already there hold nothing to strengthen. So
+  ## both conditions are required. False when the full route must run.
+  let typ {.cursor.} = target.borrowedNodeHead
+  if typ.kind != vkType or typ.isEnumType:
+    return false
+  template bodyFields: untyped = typ.borrowedTypeBodyFields
+  var kind: ValueKind
+  for i in 0 ..< bodyFields.len:
+    if not bareScalarKind(bodyFields[i].typeExpr, kind):
+      return false
+  if not typedNodeChecked(target):
+    return false
+  let field {.cursor.} = bodyFields[min(index, bodyFields.len - 1)]
+  stored =
+    if bareScalarSatisfied(field.typeExpr, value): value
+    else: adaptBodyFieldBoundary(typ.typeName, index, field.typeExpr, value,
+                                 field.typeBodyFieldScope(typ.typeScope))
+  target.setCheckedNodeBodyItem(index, stored)
+  true
+
 proc setMutableChild(target, segment, value: Value): Value =
   ## The one checked in-place mutation seam (design §12.1). `set` calls only
   ## this, so a write cannot skip a gate by taking a different route, and the
   ## gates run in one fixed order: caller-env escape · immutability · segment
-  ## kind · `void` · boundary adaptation against the declared prop *or body*
+  ## kind · boundary adaptation against the declared prop *or body*
   ## field. Node body positions had no in-place writer at all before this, so
   ## routing them anywhere else would have reintroduced the unchecked-write bug
   ## class that typed props just had. Per-field write permission, if it is ever
@@ -8360,7 +8549,11 @@ proc setMutableChild(target, segment, value: Value): Value =
   ## corrupted the heap whenever the typed-body validation raised — the arm
   ## that both declares locals and raises is exactly the codegen shape this
   ## file has been bitten by before.
-  rejectCallerEnvEscape("set", value)
+  # An unmanaged value (nil, Bool, small Int, Char, Symbol, immediate Float)
+  # can hold neither a CallerEnv nor an in-progress construction, so only a
+  # managed one makes the call.
+  if value.isManaged:
+    rejectCallerEnvEscape("set", value)
   var index = 0
   var stored = NIL
   var body: seq[Value] = @[]
@@ -8385,8 +8578,8 @@ proc setMutableChild(target, segment, value: Value): Value =
     case segment.kind
     of vkSymbol, vkString:
       # Props keep their own checked writer, which already owns immutability,
-      # the closed schema, `void` removal, and boundary adaptation.
-      result = setCheckedNodeProp(target, keySegment("set", segment), value)
+      # the closed schema, and boundary adaptation.
+      result = setCheckedNodeProp(target, keySegmentId("set", segment), value)
     of vkInt, vkFloat:
       if target.nodeImmutable:
         raise newException(GeneError, "cannot mutate immutable Node")
@@ -8400,10 +8593,13 @@ proc setMutableChild(target, segment, value: Value): Value =
         # reimplementing it — that writer already validates detached parts and
         # publishes atomically, and duplicating the sequence here corrupted the
         # heap whenever the validation raised.
-        body = copyItems(target.body)
-        body[index] = stored
-        discard biNodeSetBodyBang([target, newList(body)])
-        result = target.body[index]
+        if setCheckedTypedBodyItem(target, index, value, stored):
+          result = stored
+        else:
+          body = copyItems(target.body)
+          body[index] = stored
+          discard biNodeSetBodyBang([target, newList(body)])
+          result = target.body[index]
       else:
         target.setNodeBodyItem(index, stored)
         result = stored
@@ -8411,7 +8607,7 @@ proc setMutableChild(target, segment, value: Value): Value =
       raise newException(GeneError,
         "set path segment must be a Sym, Str, or Int (or integral Float)")
   of vkMap:
-    # `putMapEntry` already owns immutability and `void`-removes the entry.
+    # `putMapEntry` already owns immutability; writing nil stores nil.
     target.putMapEntry(keySegment("set", segment), value)
     result = value
   of vkList:
@@ -8433,12 +8629,29 @@ proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
   ## cost 3-7% across the call family on two independent paired batches.
   ## Operands are read in place: the stack keeps owning them until the arm
   ## truncates, so an unwind has exactly one owner to release.
+  if segCount == 1:
+    # An unmanaged value (nil, Bool, small Int, Char, Symbol, immediate
+    # Float) under a Symbol key of a Node. It holds no caller environment and
+    # no function, so of setMutableChild's gates only the checked prop writer
+    # applies, and nothing is strengthened or recorded afterwards: the write
+    # is that one call, with the writer's own errors.
+    let value {.cursor.} = stack[baseIndex + 2]
+    let base {.cursor.} = stack[baseIndex]
+    let segment {.cursor.} = stack[baseIndex + 1]
+    if not value.isManaged and base.isNodeValue and segment.isSymbolValue:
+      return setCheckedNodeProp(base, segment.symbolId, value)
   var target = stack[baseIndex]
   for i in 0 ..< segCount - 1:
     target = readSetPathChild(target, stack[baseIndex + 1 + i])
+  # Strengthening and recording a stored function both return at once for an
+  # unmanaged value, and the writes of a loop mostly store such values, so
+  # only a managed one makes the calls.
+  let value {.cursor.} = stack[baseIndex + segCount + 1]
   result = setMutableChild(target, stack[baseIndex + segCount],
-                           strengthenStoredValue(stack[baseIndex + segCount + 1]))
-  noteFunctionStore(target, result)
+                           if value.isManaged: strengthenStoredValue(value)
+                           else: value)
+  if result.isManaged:
+    noteFunctionStore(target, result)
 
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -8452,6 +8665,29 @@ proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
     if args[0].head.isNativeWrapperType:
       rejectNativeWrapperWrite("Node/push cannot modify " &
                                args[0].head.typeName)
+    let typ {.cursor.} = args[0].borrowedNodeHead
+    template bodyFields: untyped = typ.borrowedTypeBodyFields
+    if not typ.isEnumType and bodyFields.len > 0 and
+        bodyFields[bodyFields.len - 1].rest and typedNodeChecked(args[0]):
+      # Validating the whole node would leave what it holds as it is, so only
+      # the new item is checked. The check runs before the node is touched: a
+      # failure leaves the node, and its checked mark, unchanged.
+      let rest {.cursor.} = bodyFields[bodyFields.len - 1]
+      let index = args[0].body.len
+      if bareScalarSatisfied(rest.typeExpr, item):
+        args[0].pushCheckedNodeBody(item)
+        return item
+      # Checking the new item alone is still exact for this push. But the
+      # mark rests on every stored value passing by its kind alone
+      # (`nodePartsChecked`), and this one does not: a List checked against
+      # `(List Int)` now can change behind the node. Keeping the mark let the
+      # next push skip the validation that reports such a List. So this push
+      # clears it, and the next write validates the whole node.
+      let checked = adaptBodyFieldBoundary(typ.typeName, index, rest.typeExpr,
+                                           item,
+                                           rest.typeBodyFieldScope(typ.typeScope))
+      args[0].pushNodeBody(checked)
+      return checked
     var props = copyEntries(args[0].props)
     var body = copyItems(args[0].body)
     body.add item
@@ -8658,7 +8894,7 @@ proc zeroForElementType(elemType: Value, scope: Scope): Value =
     "got " & closed.print())
 
 proc biBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   var source: Value
   case args.len
   of 1:
@@ -8713,7 +8949,7 @@ proc biBufferSetBang(args: openArray[Value],
     raise newException(GeneError,
       "Buffer/set expects 3 arguments, got " & $args.len)
   requireBuffer("Buffer/set", args[0])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   setCheckedBufferItem(args[0], requireBufferIndex("Buffer/set", args[1]),
                        args[2], scope)
 
@@ -8747,7 +8983,7 @@ proc biBufferFillBang(args: openArray[Value],
       "Buffer/fill expects 2 or 4 arguments, got " & $args.len)
   requireBuffer("Buffer/fill", args[0])
   rejectCallerEnvEscape("Buffer/fill", args[1])
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   # Checked once for the whole range — see `fillBufferItems`.
   let item = escapeWeakFunctions(
     checkedBufferItem(args[0], args[1], "Buffer/fill item", scope))
@@ -8802,7 +9038,7 @@ proc biBufferCopyFromBang(args: openArray[Value],
   if dstType.isAnyTypeValue or dstType.bits == srcType.bits:
     copyBufferItems(args[0], dstStart, args[1], srcStart, srcEnd)
   else:
-    let scope = if call == nil: nil else: call.dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
     for k in 0 ..< srcEnd - srcStart:
       let item = getCheckedBufferItem(args[1], srcStart + k)
       discard setCheckedBufferItem(args[0], dstStart + k, item, scope)
@@ -8851,11 +9087,8 @@ proc biBufferToBytes(args: openArray[Value]): Value {.nimcall.} =
   var elemName = ""
   if elemType.kind == vkSymbol:
     elemName = elemType.symVal
-  else:
-    try:
-      elemName = elemType.typeName
-    except FieldDefect:
-      elemName = ""
+  elif elemType.isNamedType:
+    elemName = elemType.typeName
   if elemName != "U8":
     raise newException(GeneError,
       "Buffer/to_bytes requires a (Buffer U8), got " &
@@ -8884,7 +9117,7 @@ proc biDeviceBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   if args[0].kind != vkString:
     raiseTypeError("device/buffer backend", "Str", args[0],
                    if call == nil: nil else: call.dispatchScope)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let elemType = closeTypeExpr(bufferTypeExprArg("device/buffer elem_type", args[1]),
                                scope)
   let rawLen = requireInt64("device/buffer length", args[2])
@@ -8926,10 +9159,21 @@ proc displayStr(v: Value, scope: Scope = nil): string =
   print(v)
 
 proc biToStr(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  let scope = if call == nil: nil else: call.dispatchScope
-  var resultStr = ""
+  ## String interpolation's join. A Str or a small Int, the usual parts, is
+  ## appended in place, with the text `displayStr` would give: building that
+  ## text as a string of its own for each part cost an allocation and a copy.
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
+  var size = 0
   for arg in args:
-    resultStr.add displayStr(arg, scope)
+    size += (if arg.isStrValue: arg.strVal.len else: 8)
+  var resultStr = newStringOfCap(size)
+  for arg in args:
+    if arg.isStrValue:
+      resultStr.add arg.strVal
+    elif arg.isSmallInt:
+      resultStr.addInt arg.smallIntVal
+    else:
+      resultStr.add displayStr(arg, scope)
   newStr(resultStr)
 
 proc biToInt(args: openArray[Value]): Value {.nimcall.} =
@@ -9560,7 +9804,7 @@ proc biRuntimeGcStats(args: openArray[Value],
   entries["cleanup_leases"] = NIL
   entries["cycle_candidates"] = NIL
   entries["materialized_resource_leases"] = newInt(materializedLeaseCount())
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let app = if scope == nil: currentApplication() else: scope.application()
   entries["native_module_records"] =
     if nativeModuleAdapter.recordCount == nil: NIL
@@ -9633,7 +9877,7 @@ when defined(geneRcStats):
     if args.len != 0:
       raise newException(GeneError,
         "runtime/test_collect expects no arguments")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let scheduler = schedulerForScope(scope)
     if currentEventLane() != scheduler.rootLane:
       raise newException(GeneError,
@@ -9650,7 +9894,7 @@ proc biRuntimeRequireRootLane(args: openArray[Value],
   if args.len != 0:
     raise newException(GeneError,
       "runtime/require_root_lane expects no arguments")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let scheduler = schedulerForScope(scope)
   if currentEventLane() != scheduler.rootLane:
     let message = "operation requires the scheduler root lane"
@@ -10013,7 +10257,7 @@ proc biRespondTo(args: openArray[Value], call: ptr NativeCall): Value
     else:
       raise newException(GeneError,
         "respond_to? expects a Sym or Str message name, got " & $args[1].kind)
-  let scope = if call == nil: nil else: call.dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let typ = args[0].receiverType
   if typ.kind == vkType and typeDirectMessage(typ, name).kind != vkNil:
     return TRUE
@@ -10754,6 +10998,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                     ("Char", vkChar)]:
         gBareScalarAnnotations.add (newSym(entry[0]).symbolId, entry[1])
       gAnyAnnotationId = newSym("Any").symbolId
+      gListAnnotationId = newSym("List").symbolId
   let deviceScope = newScope(result)
   deviceScope.define("buffer", builtinNativeCallFn("device/buffer", biDeviceBuffer,
                                                acceptsNamed = false))
@@ -11569,14 +11814,17 @@ proc applyCallBudget(proto: FunctionProto, boundScope: var Scope,
   ## depleted budget is never stored on a shared closure.
   # Roots are borrowed (moduleRootAddr), and the caller's is needed only when
   # the callee's module has an execution policy to enter.
-  let calleeRoot {.cursor.} = cast[Scope](
-    if rootsKnown: cast[pointer](calleeRootHint)
-    else: lexicalScope.moduleRootAddr())
-  let entersPolicy = calleeRoot != nil and
-    calleeRoot.moduleExecutionPolicy != nil and
-    cast[pointer](calleeRoot) != (
-      if rootsKnown: cast[pointer](callerRootHint)
-      else: callerScope.moduleRootAddr())
+  var calleeRoot {.cursor.}: Scope = nil
+  var entersPolicy = false
+  if modulePoliciesInstalled():
+    calleeRoot = cast[Scope](
+      if rootsKnown: cast[pointer](calleeRootHint)
+      else: lexicalScope.moduleRootAddr())
+    entersPolicy = calleeRoot != nil and
+      calleeRoot.moduleExecutionPolicy != nil and
+      cast[pointer](calleeRoot) != (
+        if rootsKnown: cast[pointer](callerRootHint)
+        else: callerScope.moduleRootAddr())
   let callerBudget =
     if callerScope != nil and callerScope.evalBudget != nil:
       callerScope.evalBudget
@@ -11747,7 +11995,7 @@ proc newGlobalScope*(app: Application): Scope =
   result.moduleBase = nil
   result.moduleStatic = true
   result.define(CurrentNamespaceBindingName,
-                newNamespace("<root>", result, moduleRoot = true))
+                newScopeOwnedNamespace("<root>", result, moduleRoot = true))
 
 proc newGlobalScope*(): Scope =
   newGlobalScope(currentApplication())
@@ -11867,7 +12115,7 @@ proc biRuntimeGuardCall(args: openArray[Value],
   if args.len != 2:
     raise newException(GeneError,
       "runtime/guard_call expects a callable and one argument")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   try:
     let value = applyCall(args[0], [args[1]], NamedArgs(), scope)
     var entries = initPropTable()
@@ -11886,7 +12134,7 @@ proc biRuntimeGuardCall(args: openArray[Value],
 proc biRuntimeCallable(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.} =
   requireOne("runtime/callable?", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   newBool(args[0].valueImplementsCallable(scope))
 
 proc biRuntimeBindCall(args: openArray[Value],
@@ -12013,9 +12261,12 @@ proc bindThisModule*(scope: Scope, name: string, path = "",
   else:
     root.setNsName(name)
     root.setNsModulePath(path)
+    # The Module below owns the root namespace from outside its scope.
+    root.promoteNamespaceScope()
   scope.moduleRoot = true
   scope.moduleBase = nil
   scope.moduleStatic = true
+  scope.loadedModuleBase = true
   # A named module base is enumerable for reload (file modules, the reload
   # replacement, native modules). Already retained by moduleCache, so this adds
   # no lifetime beyond the module itself.
@@ -12877,6 +13128,10 @@ type
     frameStacksLen: int
     callScopes: array[MaxCallScopePool, Scope]
     callScopesLen: int
+    callScopesKeepContext: bool
+      ## Some pooled scope may still hold a module's context (see
+      ## releaseCallScope). Clear while none does, so the flushes at every
+      ## fiber step and trial deletion cost one test.
 
 var gVmPools {.threadvar.}: VmPools
 
@@ -13004,6 +13259,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string], mirror = false) =
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
+  scope.loadedModuleBase = false
   scope.moduleStatic = false
   if scope.requiredImplTypes.len != 0:
     scope.requiredImplTypes.setLen(0)
@@ -13217,7 +13473,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     if proto.hasParamTypes and i < proto.paramTypes.len and
         proto.paramTypes[i].kind != vkNil:
       declaredType = proto.paramTypes[i]
-      if not (bareScalarSatisfied(declaredType, value)):
+      if not (boundaryWorkFree(declaredType, value)):
         value = adaptNamedBoundary(blkParameter, proto.params[i],
                               declaredType, value, result)
     result.defineFreshCallSlot(proto.positionalSlots[i], value)
@@ -13230,7 +13486,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     var declaredType = NIL
     if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
       declaredType = p.typeExpr
-      if not (bareScalarSatisfied(declaredType, value)):
+      if not (boundaryWorkFree(declaredType, value)):
         value = adaptNamedBoundary(blkParameter, p.local, declaredType,
                               value, result)
     result.defineFreshCallSlot(proto.namedSlots[i], value)
@@ -13275,7 +13531,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     if proto.hasParamTypes and i < proto.paramTypes.len and
         proto.paramTypes[i].kind != vkNil:
       declaredType = proto.paramTypes[i]
-      if not (bareScalarSatisfied(declaredType, value)):
+      if not (boundaryWorkFree(declaredType, value)):
         value = adaptNamedBoundary(blkParameter, proto.params[i],
                               declaredType, value, result)
     result.defineFreshCallSlot(proto.positionalSlots[i], value)
@@ -13288,7 +13544,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     var declaredType = NIL
     if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
       declaredType = p.typeExpr
-      if not (bareScalarSatisfied(declaredType, value)):
+      if not (boundaryWorkFree(declaredType, value)):
         value = adaptNamedBoundary(blkParameter, p.local, declaredType,
                               value, result)
     result.defineFreshCallSlot(proto.namedSlots[i], value)
@@ -13330,16 +13586,34 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     return
   scope.strictErrorLease = nil
   scope.compilerMacros = nil
-  scope.annotationSelfType = NIL
   scope.runtimeMacroSlots = nil
   scope.implAssembly = nil
   if scope.simpleCallScope:
     scope.clearDefinedCallSlots()
     if scope.slotTypes.len != 0:
       scope.slotTypes.setLen(0)
-    scope.inheritScopeContext(nil)
+    # A scope whose parent is a loaded module's root keeps what it inherited
+    # from it (parent, Application, module base and refs, budget): the next
+    # call of a function of that module stores none of it again, and
+    # dropping and re-taking each was an ORC count round trip with a
+    # cycle-candidate registration. The module outlives the pool's hold,
+    # which flushCallScopePool ends before trial deletion and when the
+    # outermost run returns. Any other parent may be an activation, or a
+    # run's root its host is about to drop, so its context goes now. The
+    # Self type always goes: keeping it needed the callee's at every call
+    # site in the dispatch loop, and that cost more in code placement than
+    # the retain and release it saved.
+    if scope.annotationSelfType.bits != 0:
+      scope.annotationSelfType = NIL
+    when not defined(gcAtomicArc):
+      let keepContext = scope.parent != nil and scope.parent.loadedModuleBase
+    else:
+      const keepContext = false
+    if not keepContext:
+      scope.inheritScopeContext(nil)
     scope.moduleExecutionPolicy = nil
     scope.moduleRoot = false
+    scope.loadedModuleBase = false
     scope.moduleStatic = false
     if scope.wildcardFallbacks.len != 0:
       scope.wildcardFallbacks.clear()
@@ -13350,9 +13624,14 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     if pools.callScopesLen < MaxCallScopePool:
       pools.callScopes[pools.callScopesLen] = scope
       inc pools.callScopesLen
+      if keepContext:
+        pools.callScopesKeepContext = true
     else:
       scope.simpleCallScope = false
+      if keepContext:
+        scope.inheritScopeContext(nil)
     return
+  scope.annotationSelfType = NIL
   for i in 0 ..< scope.slots.len:
     scope.slots[i] = NIL
   # Composite annotations own managed values too. A pooled scope must not
@@ -13383,6 +13662,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
+  scope.loadedModuleBase = false
   scope.moduleStatic = false
   if scope.requiredImplTypes.len != 0:
     scope.requiredImplTypes.setLen(0)
@@ -13406,6 +13686,47 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
 
 proc releaseCallScope(scope: Scope) =
   releaseCallScope(gVmPools, scope)
+
+proc flushCallScopePool(pools: var VmPools) =
+  ## Drop the module context that pooled call scopes keep (see
+  ## releaseCallScope), so nothing the pool holds outlives the run that
+  ## pooled it or is counted by trial deletion as an outside owner.
+  if not pools.callScopesKeepContext:
+    return
+  pools.callScopesKeepContext = false
+  for i in 0 ..< pools.callScopesLen:
+    pools.callScopes[i].inheritScopeContext(nil)
+
+when defined(geneScopeReuseTests):
+  proc pooledCallScopesHoldingContext*(): int =
+    ## Pooled call scopes on this thread that still hold a parent or a Self
+    ## type, for the tests of releaseCallScope's retention and its flushes.
+    for i in 0 ..< gVmPools.callScopesLen:
+      let scope {.cursor.} = gVmPools.callScopes[i]
+      if scope.parent != nil or scope.annotationSelfType.bits != 0:
+        inc result
+
+proc flushCallScopePoolBeforeRetirement() {.nimcall, raises: [].} =
+  {.cast(raises: []).}:
+    flushCallScopePool(gVmPools)
+
+installRetirementStartHook(flushCallScopePoolBeforeRetirement)
+
+var vmEntryDepth {.threadvar.}: int
+  ## Nesting of the dispatch loop's entries on this thread: `run`,
+  ## `runPooled`, `runFiber` and a generator stream's pull and close, which a
+  ## native consumer may make outside any of the others. When the outermost
+  ## returns, its host may drop the scopes and Application it ran, so the
+  ## call-scope pool lets go of their context then. Under ORC only this lane
+  ## runs Gene code, so no other thread's pool holds any.
+
+template enterVm() =
+  ## First statement of an entry: its defer runs after the entry's others.
+  inc vmEntryDepth
+  defer:
+    dec vmEntryDepth
+    if vmEntryDepth == 0:
+      flushCallScopePool(gVmPools)
 
 const plainLoopBodyOps = {
   opNoop, opPushConst, opPop, opNot, opLoadName, opLoadStdlibPath, opLoadNativeFast, opLoadLocal,
@@ -14917,7 +15238,7 @@ proc resolveImplAssembly(assembly: ImplAssembly) =
       declaration.published = true
       progress = true
 
-proc ensureTypeContractReady(scope: Scope, typ: Value) =
+proc ensureTypeContractReadyIn(scope: Scope, typ: Value) =
   if scope == nil or not typ.typeContractPending: return
   let assemblies = relevantImplAssemblies(scope)
   for assembly in assemblies: resolveImplAssembly(assembly)
@@ -16994,7 +17315,7 @@ proc biTaskJoin(args: openArray[Value],
       se.task = task
       raise se
     pumpUntilDone(task)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   taskJoinOutcome(task, scope)
 
 proc biTaskDone(args: openArray[Value]): Value {.nimcall.} =
@@ -18736,6 +19057,328 @@ proc weakScopeLiveOnStack(ctx: pointer, target: pointer): bool {.nimcall.} =
       current = current.parent
   false
 
+var fastLoopEnabled* = true
+  ## Whether `runLoop` hands loop bodies to `fastLoop`. Tests turn it off to
+  ## run the same programs through `runLoop` alone and compare.
+
+type FastRun = object
+  ip, sp: int
+
+when defined(geneFastLoopTests):
+  var fastLoopRuns*: int
+    ## How many times `fastLoop` was entered, for the tests that check it runs.
+
+const fastLoopOps = {opPushConst, opLoadLocal, opLoadLocalFast, opPop, opNot,
+  opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop, opSetLocal,
+  opSetLocalPop, opNativeFast2, opIntAdd2, opIntSub2, opIntMul2, opIntLt2,
+  opIntGt2, opIntLe2, opIntGe2, opNativeFastConst, opIntAddConst,
+  opIntSubConst, opIntMulConst, opIntLtConst, opIntGtConst, opIntLeConst,
+  opIntGeConst, opCompareConstJumpIfFalse, opCompareLocalsJumpIfFalse,
+  opForInlineNext}
+  ## The instructions `fastLoop` runs.
+
+const fastLoopNumberKinds = {nfkAdd, nfkSub, nfkMul, nfkLt, nfkGt, nfkLe, nfkGe}
+  ## The kinds `tryFastNativeKind2` answers for any two numbers without raising.
+
+proc scanFastLoopBody(chunk: Chunk, first, last, at: int): bool {.noinline.} =
+  if chunk.fastLoopJumps.len != chunk.instructions.len:
+    chunk.fastLoopJumps.setLen(chunk.instructions.len)
+  var only = first >= 0 and first < last and last <= chunk.instructions.len and
+    at >= 0 and at < chunk.instructions.len
+  if only:
+    for i in first ..< last:
+      if chunk.instructions[i].op notin fastLoopOps:
+        only = false
+        break
+    chunk.fastLoopJumps[at] = (if only: 1 else: 2)
+  only
+
+proc fastLoopBody(chunk: Chunk, first, last, at: int): bool {.inline.} =
+  ## Whether the loop whose instructions are `first ..< last`, entered by the
+  ## opLoopEnter at `at`, is made only of instructions `fastLoop` runs.
+  ## Entering `fastLoop` for a loop that also calls or constructs costs more
+  ## than it saves, since `fastLoop` returns at that instruction every
+  ## iteration. Worked out once per loop.
+  if at < chunk.fastLoopJumps.len and chunk.fastLoopJumps[at] != 0:
+    chunk.fastLoopJumps[at] == 1
+  else:
+    scanFastLoopBody(chunk, first, last, at)
+
+{.push boundChecks: off, overflowChecks: off.}
+proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
+              startIp, startSp: int): FastRun {.noinline.} =
+  ## Runs the instructions from `startIp` for as long as each is one of a few
+  ## simple ones whose fast path applies, exactly as `runLoop`'s handler for it
+  ## would, and stops at the first other one, leaving it for `runLoop`. It never
+  ## raises: a case the handler would raise in, or treat beyond its fast path,
+  ## is left to `runLoop`. Called only with no budget running, so nothing here
+  ## counts instructions or polls.
+  ##
+  ## Without a profile, the C compiler allocates `runLoop`'s registers and
+  ## places its blocks over the whole dispatch loop, and its hot handlers ran
+  ## about 94 instructions per dispatch (docs/proposals/vm-dispatch-core.md).
+  ## A small proc is compiled on its own. Every index below is tested before
+  ## use, so this proc runs without the compiler's checks.
+  when defined(geneFastLoopTests):
+    inc fastLoopRuns
+  var ip = startIp
+  var sp = startSp
+  let count = chunk.instructions.len
+  let constantCount = chunk.constants.len
+  template push(v: Value) =
+    block:
+      var pushed = v
+      if sp >= stack.len:
+        spGrow(stack)
+      stack[sp] = move pushed
+      inc sp
+  template truthy(v: Value): bool =
+    (if v.bits == TRUE.bits: true
+     elif v.bits == FALSE.bits or v.bits == 0: false
+     else: v.isTruthy)
+  template slotReady(slot: int): bool =
+    slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot)
+  template intResult(kind: NativeFastKind, a, b: Value, value: var Value): bool =
+    ## The small-Int case of the native fast arithmetic and comparisons.
+    block:
+      let x = a.smallIntVal
+      let y = b.smallIntVal
+      var handled = true
+      case kind
+      of nfkAdd:
+        let s = x +% y
+        if fitsSmallInt(s): value = smallIntOf(s) else: handled = false
+      of nfkSub:
+        let s = x -% y
+        if fitsSmallInt(s): value = smallIntOf(s) else: handled = false
+      of nfkLt: value = (if x < y: TRUE else: FALSE)
+      of nfkGt: value = (if x > y: TRUE else: FALSE)
+      of nfkLe: value = (if x <= y: TRUE else: FALSE)
+      of nfkGe: value = (if x >= y: TRUE else: FALSE)
+      of nfkMul: value = intMul(a, b)
+      of nfkDiv:
+        if y == 0:
+          handled = false
+        else:
+          let q = x div y
+          value = (if fitsSmallInt(q): smallIntOf(q) else: newInt(q))
+      of nfkRem:
+        if y == 0:
+          handled = false
+        else:
+          let r = x mod y
+          value = smallIntOf(r)
+      of nfkEq: value = (if a.bits == b.bits: TRUE else: FALSE)
+      of nfkNe: value = (if a.bits != b.bits: TRUE else: FALSE)
+      else: handled = false
+      handled
+  template binaryKind(op: OpCode, inst: ptr Instruction): NativeFastKind =
+    case op
+    of opNativeFast2, opNativeFastConst, opCompareConstJumpIfFalse:
+      NativeFastKind(inst[].intArg)
+    of opIntAdd2, opIntAddConst: nfkAdd
+    of opIntSub2, opIntSubConst: nfkSub
+    of opIntMul2, opIntMulConst: nfkMul
+    of opIntLt2, opIntLtConst: nfkLt
+    of opIntGt2, opIntGtConst: nfkGt
+    of opIntLe2, opIntLeConst: nfkLe
+    of opIntGe2, opIntGeConst: nfkGe
+    else: nfkNone
+  while ip >= 0 and ip < count:
+    let inst = addr chunk.instructions[ip]
+    let op = inst[].op
+    case op
+    of opPushConst:
+      let index = inst[].intArg
+      if index < 0 or index >= constantCount:
+        break
+      push chunk.constants[index]
+      inc ip
+    of opLoadLocal:
+      let slot = inst[].intArg
+      if not slotReady(slot):
+        break
+      if scope.moduleRefs != nil and scope.moduleRefs.pendingStructural != 0 and
+          scope.slots[slot].isPendingModuleRef:
+        break
+      push scope.slots[slot]
+      inc ip
+    of opLoadLocalFast:
+      let slot = inst[].intArg
+      if slot < 0 or slot >= scope.slots.len:
+        break
+      push scope.slots[slot]
+      inc ip
+    of opPop:
+      if sp == 0:
+        break
+      dec sp
+      discard move stack[sp]
+      inc ip
+    of opNot:
+      if sp == 0:
+        break
+      stack[sp - 1] = (if truthy(stack[sp - 1]): FALSE else: TRUE)
+      inc ip
+    of opJump:
+      ip = inst[].intArg
+    of opJumpIfFalse:
+      if sp == 0:
+        break
+      dec sp
+      let cond = move stack[sp]
+      ip = (if truthy(cond): ip + 1 else: inst[].intArg)
+    of opJumpIfFalseOrPop, opJumpIfTrueOrPop:
+      if sp == 0:
+        break
+      let holds = truthy(stack[sp - 1])
+      if holds == (op == opJumpIfTrueOrPop):
+        ip = inst[].intArg
+      else:
+        dec sp
+        discard move stack[sp]
+        inc ip
+    of opSetLocal, opSetLocalPop:
+      if sp == 0:
+        break
+      let slot = inst[].intArg
+      # assignSlot's own fast case, in which it cannot raise.
+      if not slotReady(slot) or scope.slotTypes.len != 0 or
+          stack[sp - 1].isHeapBacked or scope.managedBindingPins.len != 0 or
+          atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
+        break
+      if op == opSetLocalPop and
+          (ip + 1 >= count or chunk.instructions[ip + 1].op != opPop):
+        break
+      scope.assignSlot(slot, inst[].name, stack[sp - 1])
+      if op == opSetLocalPop:
+        dec sp
+        discard move stack[sp]
+        ip += 2                     # and the opPop it covers
+      else:
+        inc ip
+    of opNativeFast2, opIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,
+       opIntLe2, opIntGe2:
+      if sp < 2:
+        break
+      let b {.cursor.} = stack[sp - 1]
+      let a {.cursor.} = stack[sp - 2]
+      var value: Value
+      if a.isSmallInt and b.isSmallInt and
+          intResult(binaryKind(op, inst), a, b, value):
+        stack[sp - 2] = value
+        dec sp
+        inc ip
+        continue
+      # Any other pair: opNativeFast2's handler asks tryFastNativeKind2,
+      # which cannot raise for these kinds. The typed ones go elsewhere.
+      let kind = NativeFastKind(inst[].intArg)
+      if op != opNativeFast2 or kind notin fastLoopNumberKinds:
+        break
+      let other = tryFastNativeKind2(kind, a, b)
+      if not other.handled:
+        break
+      dec sp
+      discard move stack[sp]
+      stack[sp - 1] = other.value
+      inc ip
+    of opNativeFastConst, opIntAddConst, opIntSubConst, opIntMulConst,
+       opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst,
+       opCompareConstJumpIfFalse:
+      let index = inst[].depth
+      if sp < 1 or index < 0 or index >= constantCount:
+        break
+      let a {.cursor.} = stack[sp - 1]
+      let b {.cursor.} = chunk.constants[index]
+      let kind = binaryKind(op, inst)
+      if a.isSmallInt and (inst[].flag or b.isSmallInt):
+        if op == opCompareConstJumpIfFalse:
+          if kind notin {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe} or
+              ip + 1 >= count:
+            break
+          let x = a.smallIntVal
+          let y = b.smallIntVal
+          let holds =
+            case kind
+            of nfkLt: x < y
+            of nfkGt: x > y
+            of nfkLe: x <= y
+            of nfkGe: x >= y
+            of nfkEq: x == y
+            else: x != y
+          dec sp                    # a small Int needs no release
+          ip = (if holds: ip + 2 else: chunk.instructions[ip + 1].intArg)
+          continue
+        var value: Value
+        if intResult(kind, a, b, value):
+          stack[sp - 1] = value
+          inc ip
+          continue
+      # Any other operand: the handler's Int case and tryFastNativeKind2
+      # give the same results, and neither raises for these kinds. A fused
+      # comparison then pushes its Bool for the opJumpIfFalse after it.
+      if op notin {opNativeFastConst, opCompareConstJumpIfFalse} or
+          kind notin fastLoopNumberKinds:
+        break
+      let other = tryFastNativeKind2(kind, a, b)
+      if not other.handled:
+        break
+      stack[sp - 1] = other.value
+      inc ip
+    of opForInlineNext:
+      # The handler's range case: [range, next value] are the top of the
+      # stack. A List snapshot, or a body with bindings of its own to clear,
+      # is left to runLoop.
+      if sp < 2 or inst[].names.len != 0:
+        break
+      let source {.cursor.} = stack[sp - 2]
+      let slot = inst[].intArg
+      if source.kind != vkRange or not stack[sp - 1].isSmallInt or
+          slot < 0 or slot >= scope.slots.len or
+          scope.managedBindingPins.len != 0 or
+          atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
+        break
+      let current = stack[sp - 1].smallIntVal
+      let step = source.rangeStep
+      if source.rangeDone(current) or not current.rangeCanAdvance(step):
+        ip = inst[].depth
+        continue
+      scope.redefineSlot(slot, inst[].name, stack[sp - 1])
+      stack[sp - 1] = newInt(current + step)
+      inc ip
+    of opCompareLocalsJumpIfFalse:
+      if ip + 3 >= count:
+        break
+      let left = inst[].intArg
+      let right = chunk.instructions[ip + 1].intArg
+      if not slotReady(left) or not slotReady(right) or
+          not scope.slots[left].isSmallInt or not scope.slots[right].isSmallInt:
+        # The handler then runs as the opLoadLocal it replaced, and the
+        # comparison and jump after it one at a time.
+        if not slotReady(left) or (scope.moduleRefs != nil and
+            scope.moduleRefs.pendingStructural != 0 and
+            scope.slots[left].isPendingModuleRef):
+          break
+        push scope.slots[left]
+        inc ip
+        continue
+      let x = scope.slots[left].smallIntVal
+      let y = scope.slots[right].smallIntVal
+      var holds: bool
+      case NativeFastKind(chunk.instructions[ip + 2].intArg)
+      of nfkLt: holds = x < y
+      of nfkGt: holds = x > y
+      of nfkLe: holds = x <= y
+      of nfkGe: holds = x >= y
+      of nfkEq: holds = x == y
+      of nfkNe: holds = x != y
+      else: break
+      ip = (if holds: ip + 4 else: chunk.instructions[ip + 3].intArg)
+    else:
+      break
+  FastRun(ip: ip, sp: sp)
+{.pop.}
+
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
              validateArg = true, fiber: Fiber = nil,
@@ -19036,21 +19679,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curFnName = f.fnName
     curFrameKind = f.kind
     if f.extra == nil:
-      curInitializationLease = nil
-      curEnsureValue = NIL
-      curEnsureBody = nil
-      curEnsureScope = nil
-      curPendingError = nil
-      curPendingPanic = nil
-      curPendingCancel = nil
-      curPendingReturn = nil
-      curForItems = @[]
+      # Every return runs this, and on an ordinary return each register here
+      # already holds its default. Assigning the default anyway is not free:
+      # each managed type's assignment is an out-of-line sink hook, which also
+      # reads the thread's error flag. So a register is written only when it
+      # holds something else.
+      if curInitializationLease != nil: curInitializationLease = nil
+      if curEnsureValue.bits != NIL.bits: curEnsureValue = NIL
+      if curEnsureBody != nil: curEnsureBody = nil
+      if curEnsureScope != nil: curEnsureScope = nil
+      if curPendingError != nil: curPendingError = nil
+      if curPendingPanic != nil: curPendingPanic = nil
+      if curPendingCancel != nil: curPendingCancel = nil
+      if curPendingReturn != nil: curPendingReturn = nil
+      if curForItems.len != 0: curForItems = @[]
       curForIndex = 0
-      curForStream = NIL
-      curForPattern = NIL
-      curForBody = nil
-      curOwnedScope = nil
-      curNamespaceName = ""
+      if curForStream.bits != NIL.bits: curForStream = NIL
+      if curForPattern.bits != NIL.bits: curForPattern = NIL
+      if curForBody != nil: curForBody = nil
+      if curOwnedScope != nil: curOwnedScope = nil
+      if curNamespaceName.len != 0: curNamespaceName = ""
     else:
       curInitializationLease = f.extra.initializationLease
       curEnsureValue = f.extra.ensureValue
@@ -19519,7 +20167,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         captureContinuation(ip - 1)
         fiber.waitTask = pending
         return RunStop(kind: rskSuspend, value: NIL)
-    scope.finishImplAssembly(chunk)
+    # Tested here: nearly every return has no assembly and no pending core
+    # types, and the call alone was about 3% of a recursive function's time.
+    if scope.implAssembly != nil or scope.corePendingTypes.len > 0:
+      scope.finishImplAssembly(chunk)
     if validateImplRequirements and scope.requiredImplTypes.len != 0:
       scope.validateRequiredImpls()
     trimTailTraceFrames(frames.len)
@@ -19614,6 +20265,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if ns.isMissing or ns.kind != vkNamespace:
         raise newException(GeneError,
           "internal: namespace body lost its current namespace")
+      # The enclosing binding owns the namespace, and so its scope.
+      ns.promoteNamespaceScope()
       scope.define(nsName, ns)
       spush ns
     elif curFrameKind == fkTryBody:
@@ -19745,6 +20398,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       finishFrameReturn(retValue)
     else:
       frameReturn(retValue)
+
+  template loopCallBudget(proto: FunctionProto, boundScope: var Scope,
+                          lexicalScope: Scope) =
+    ## `applyCallBudget` for a call made here, skipped when it would do
+    ## nothing: no budget runs (`activeVmBudget` is this loop's `evalBudget`) or
+    ## sits on the caller's scope, no module policy exists, none is bound to
+    ## the function and none sits on the callee's scope.
+    if scope.evalBudget != nil or evalBudget != nil or
+        modulePoliciesInstalled() or
+        (proto != nil and proto.boundExecutionPolicy != nil) or
+        boundScope.evalBudget != nil:
+      applyCallBudget(proto, boundScope, lexicalScope, scope)
 
   template enterRecur1Frame(arg: Value, argKnownBareInt: bool) =
     let proto = chunk.owner
@@ -20114,7 +20779,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         contractProto.callScopeNeedsSlotNames,
         contractProto.callScopeNeedsSlotReset)
       checkedScope.bindSimpleCallSlots(contractProto, [callPayload])
-      applyCallBudget(contractProto, checkedScope, scope, scope)
+      loopCallBudget(contractProto, checkedScope, scope)
       let checks = checkedView.callableViewSignature.props.hasKey("errors")
       let errors = callableViewErrors(checkedView)
       strunc(operandBase)
@@ -20518,6 +21183,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # Scopeless calls: arguments live on the shared operand stack at the
           # frame's base (they were never popped into a scope).
           spush stack[curStackBase + inst[].intArg]
+        of opStoreArg:
+          # A scopeless body's own local, in its cell after the arguments
+          # (deriveScopelessChunk); `let` and `set` leave the value on top.
+          if sp == 0:
+            raise newException(GeneError, "VM stack underflow in var")
+          stack[curStackBase + inst[].intArg] = stack[sp - 1]
         of opSendLocal:
           # A receiver's opLoadLocal, fused with the send after it
           # (`tryBorrowedSend`); anything that does not take the borrowed
@@ -20759,15 +21430,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                  (segment.kind == vkString and
                   not segment.strVal.startsWith(".") and
                   not segment.strVal.startsWith("?."))):
-              rejectCallerEnvEscape("selector construction", segment)
+              # An immediate value carries no borrowed authority and no
+              # construction, so the check could only answer no.
+              if segment.isManaged:
+                rejectCallerEnvEscape("selector construction", segment)
               if instructionBudget > 0:
                 dec remainingBudget
               if evalBudget != nil:
                 pollDispatch()
               inc ip
               let argsStart = sp - 2
-              let value = materializedModuleRefValue(
-                scope, staticLookupValue(stack[argsStart], segment))
+              let value =
+                if targetKind == vkList and segment.isSmallInt:
+                  # What staticLookupValue reaches for a List and an Int,
+                  # without its two outer calls.
+                  let found = readIndexedValue(stack[argsStart], segment)
+                  materializedModuleRefValue(scope,
+                    if found.isMissing: NIL else: found)
+                else:
+                  materializedModuleRefValue(
+                    scope, staticLookupValue(stack[argsStart], segment))
               strunc(argsStart)
               spush value
               continue
@@ -20796,7 +21478,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let argsStart = sp - 2
           if stack[argsStart].isPropMap:
             # `row/amount` on a Map: what applySelector does for a plain
-            # one-key selector is this one table read. An absent key is void
+            # one-key selector is this one table read. An absent key is nil
             # either way, and any other selector shape falls through.
             let keyId = plainPathKeyId(stack[argsStart + 1])
             if keyId != -2:
@@ -21295,7 +21977,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # body can refer to it through the private `$ns` binding.
           let nsScope = newScope(scope)
           nsScope.moduleStatic = inst[].flag
-          let ns = newNamespace(inst[].name, nsScope)
+          let ns = newScopeOwnedNamespace(inst[].name, nsScope)
           nsScope.define(CurrentNamespaceBindingName, ns)
           # Hoisted: pushFrame moves the chunk register into the frame.
           let nsBody = chunk.subchunks[inst[].intArg]
@@ -21467,7 +22149,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 else:
                     calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
-                applyCallBudget(proto, callScope, calleeScope, scope)
+                loopCallBudget(proto, callScope, calleeScope)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
                   callee.fnName, sp, inst[].tail,
@@ -21596,8 +22278,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if proto.scopelessChunk != nil and argCount == proto.params.len and
                   proto.canBypassCallBudget(calleeScope, scope) and
                   proto.scopelessFieldReadsOk(calleeScope, scope) and
-                  (not proto.scopelessNeedsIntArgs or inst[].flag or
-                   scopelessIntArgsOk(stack, argsStart, argCount)):
+                  (not proto.scopelessNeedsIntArgs or
+                   (if proto.fastBindUnaryInt or proto.fastBindPositionalInt:
+                      # Every parameter is bare Int, so a compile-time proof
+                      # that every argument is one settles it.
+                      inst[].flag or
+                        scopelessIntArgsOk(stack, argsStart, argCount)
+                    else:
+                      scopelessScalarArgsOk(proto, stack, argsStart, argCount))):
                 # Scopeless call: the args already on the shared stack become
                 # the callee's frame region (opLoadArg reads them at
                 # base+index) and the callee keeps the CALLER's scope register
@@ -21637,7 +22325,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(argsStart)
-                applyCallBudget(proto, callScope, calleeScope, scope)
+                loopCallBudget(proto, callScope, calleeScope)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
                   callee.fnName, argsStart, inst[].tail,
@@ -21677,14 +22365,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                                      stack[argsStart])
                   boundReturnType = proto.returnType
                   usedUnaryIntFast = true
-                  applyCallBudget(proto, boundScope, calleeScope, scope)
+                  loopCallBudget(proto, boundScope, calleeScope)
                 elif proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
                   boundScope = bindPositionalIntCallScope(callee, proto,
                     stack.toOpenArray(argsStart, (sp - 1)),
                     argsKnownBareInt = inst[].flag)
                   boundReturnType = proto.returnType
-                  applyCallBudget(proto, boundScope, calleeScope, scope)
+                  loopCallBudget(proto, boundScope, calleeScope)
                 else:
                   let bound =
                     if argCount == 0:
@@ -21966,7 +22654,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               callee = ownedValueFromBits(entry.calleeBits)
           if callee.kind == vkNil:
             let recvType = receiver.receiverType
-            ensureTypeContractReady(scope, recvType)
+            # The call, not the template's inline test: runLoop stays as it was.
+            ensureTypeContractReadyIn(scope, recvType)
             # An unqualified send reaches only type-direct messages, walking the
             # parent chain (design §3/§9). Protocol messages are always qualified —
             # `(x .P:m)` — so a protocol impl is never reached by a bare name.
@@ -22192,7 +22881,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   proto.canBypassCallBudget(calleeScope, scope) and
                   proto.scopelessFieldReadsOk(calleeScope, scope) and
                   (not proto.scopelessNeedsIntArgs or
-                   scopelessIntArgsOk(stack, argsStart, argCount)):
+                   (if proto.fastBindUnaryInt or proto.fastBindPositionalInt:
+                      scopelessIntArgsOk(stack, argsStart, argCount)
+                    else:
+                      scopelessScalarArgsOk(proto, stack, argsStart, argCount))):
                 # Scopeless call (see the direct-call site): shift the args
                 # down over the callee so they sit at the frame base, then
                 # enter without any scope acquire/bind/release.
@@ -22232,7 +22924,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)        # consume callee + args
-                applyCallBudget(proto, callScope, calleeScope, scope)
+                loopCallBudget(proto, callScope, calleeScope)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
                   callee.fnName, calleeIndex, inst[].tail,
@@ -22250,13 +22942,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     callee.fnName, stack.toOpenArray(argsStart, (sp - 1)),
                     inst[].names, stack, calleeIndex + 1)
                   boundReturnType = proto.returnType
-                  applyCallBudget(proto, boundScope, calleeScope, scope)
+                  loopCallBudget(proto, boundScope, calleeScope)
                 elif namedCount == 0 and proto.canFastBindPositionalInt and
                     argCount == proto.params.len:
                   boundScope = bindPositionalIntCallScope(callee, proto,
                     stack.toOpenArray(argsStart, (sp - 1)))
                   boundReturnType = proto.returnType
-                  applyCallBudget(proto, boundScope, calleeScope, scope)
+                  loopCallBudget(proto, boundScope, calleeScope)
                 else:
                   var named: NamedArgs
                   if namedCount > 0:
@@ -22287,6 +22979,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if fastNative.handled:
               strunc(calleeIndex)
               spush fastNative.value
+              continue
+          if callee.kind == vkType:
+            var constructed: Value
+            if constructAtCallSite(callee, chunk, ip - 1, inst[].names,
+                stack.toOpenArray(calleeIndex + 1, calleeIndex + namedCount),
+                stack.toOpenArray(argsStart, sp - 1), constructed):
+              strunc(calleeIndex)
+              spush constructed
               continue
           var named: NamedArgs
           if namedCount > 0:
@@ -22393,9 +23093,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               args.add(if i == bodySlot: item else: value)
             for i, name in bundle[1].listItems:
               if hasAuthoredSite:
-                # A checked invocation already has a resolved named layout.
-                # Preserve supplied Void just as the ordinary opCall path does;
-                # putArg implements splice removal and is inappropriate here.
+                # A checked invocation already has a resolved named layout:
+                # the names are kept in order, values copied below, as the
+                # ordinary opCall path does. putArg merges by name instead.
                 named.names.add name.strVal
               else:
                 named.putArg(name.strVal,
@@ -22471,7 +23171,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     calleeScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)
-                applyCallBudget(fnProto, callScope, calleeScope, scope)
+                loopCallBudget(fnProto, callScope, calleeScope)
                 enterBytecodeCall(fnProto.chunk, callScope,
                   fnProto.poolCallScope, fnProto.frameNeedsImplValidation,
                   NIL, "", false, @[], callee.fnName, calleeIndex, inst[].tail,
@@ -22486,7 +23186,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundScope = bindPositionalIntCallScope(callee, fnProto,
                                                           args)
                   boundReturnType = fnProto.returnType
-                  applyCallBudget(fnProto, boundScope, calleeScope, scope)
+                  loopCallBudget(fnProto, boundScope, calleeScope)
                 else:
                   var bound = bindBudgetedCallScope(callee, fnProto, args, named, scope)
                   boundScope = bound.scope
@@ -23131,6 +23831,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 "map_for expects a Map or a node, got " &
                 receiverDisplayType(stack[sp - 1]) &
                 "; use for for a list-like value")
+            if stack[sp - 1].kind == vkRange:
+              # A range is immutable and yields integers, so it needs neither
+              # a snapshot nor a stream: it stays where the snapshot would be,
+              # with its next value above it for opForInlineNext.
+              spush newInt(stack[sp - 1].rangeStart)
+              continue
             # A stream runs the frame loop over the same body, which closes it
             # on every exit: the opForEach after the inlined loop.
             ip = inst[].depth
@@ -23188,6 +23894,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             continue
         of opForInlineNext:
           # [snapshot, index] from opForInlineBegin are the top of the stack.
+          if stack[sp - 2].kind != vkList:
+            # [range, next value]. The values are those `pullRangeStream`
+            # delivers, in its order. That includes its treatment of a value
+            # whose successor would overflow: the stream closes itself as it
+            # produces that value, which drops it, so the loop ends before it
+            # here too.
+            let current = stack[sp - 1].intVal
+            let step = stack[sp - 2].rangeStep
+            if stack[sp - 2].rangeDone(current) or
+                not current.rangeCanAdvance(step):
+              ip = inst[].depth
+              continue
+            if inst[].names.len != 0:
+              scope.clearSlotRange(inst[].intArg + 1, inst[].names.len)
+            scope.redefineSlot(inst[].intArg, inst[].name, stack[sp - 1])
+            stack[sp - 1] = newInt(current + step)
+            continue
           let index = stack[sp - 1].intVal
           if index >= stack[sp - 2].listItems.len:
             ip = inst[].depth
@@ -23218,6 +23941,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opLoopEnter:
           inlineLoops.add InlineLoopTarget(frameDepth: frames.len, stackBase: sp,
             breakIp: inst[].intArg, continueIp: inst[].depth)
+          # A loop made only of fastLoop's instructions runs there, up to its
+          # opLoopLeave, for as long as fastLoop can run it. Entering here, once
+          # per loop, keeps the call out of opJump, which every iteration runs.
+          if fastLoopEnabled and evalBudget == nil and instructionBudget <= 0 and
+              fastLoopBody(chunk, ip, inst[].intArg, ip - 1):
+            let ran = fastLoop(chunk, scope, stack, ip, sp)
+            ip = ran.ip
+            sp = ran.sp
         of opLoopLeave:
           if inlineLoops.len == 0 or inlineLoops[^1].frameDepth != frames.len:
             raise newException(GeneError, "inline loop target is missing")
@@ -24122,6 +24853,7 @@ proc abandonReplInput(scope: Scope, chunk: Chunk, requiredTypesLen: int) =
     scope.requiredImplTypes.setLen(requiredTypesLen)
 
 proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
+  enterVm()
   defer:
     if macroContextRetirementHook != nil: macroContextRetirementHook()
   if chunk.errorsMode == ecmStrict and not chunk.errorChecksComplete:
@@ -24304,6 +25036,7 @@ proc runReplSessionForEnv*(env: Value,
 
 proc runPooled(chunk: Chunk, scope: Scope,
                validateImplRequirements = true): Value =
+  enterVm()
   withScheduler(scope):
     if chunk.localNames.len == 0:
       return run(chunk, scope, validateImplRequirements)
@@ -24689,6 +25422,7 @@ proc scheduleActor(actor: Value, scope: Scope) =
     enqueueRunnable(f)
 
 proc runFiber(f: Fiber) =
+  enterVm()
   rejectNativeCallbackWait("task execution")
   ## Run or resume `f` until it completes or parks. A spawn/await fiber settles its
   ## task and wakes its awaiters; an actor handler fiber applies its ActorStep (or
@@ -25552,6 +26286,7 @@ proc generatorFiber(stream: Value): Fiber =
   Fiber(continuation)
 
 proc closeGeneratorStream(stream: Value) {.nimcall.} =
+  enterVm()
   let fiber = stream.generatorFiber
   if fiber == nil:
     return
@@ -25578,6 +26313,7 @@ proc closeGeneratorStream(stream: Value) {.nimcall.} =
         "generator close did not finish cleanup")
 
 proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
+  enterVm()
   let code = stream.streamGeneratorCode
   if code == nil or not (code of FunctionProto):
     return StreamPullResult(has: false, item: NIL)
@@ -25626,8 +26362,8 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
   if defaultValue.defaultChunk != nil:
     run(defaultValue.defaultChunk, scope)
   else:
-    # Optional without an explicit default: `^name : T?`. Binding nil (not
-    # void) keeps the binding inside its own nil-admitting annotation.
+    # Optional without an explicit default: `^name : T?` binds nil, which its
+    # own nil-admitting annotation accepts.
     NIL
 
 proc checkedAddI64(a, b: int64, outValue: var int64): bool {.inline.} =
@@ -27186,9 +27922,23 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           return true
         if expr.body.len != 1:
           raise newException(GeneError, "(List T) expects one item type")
-        for item in value.listItems:
-          if not matchesTypeExpr(expr.body[0], item, scope):
+        # For an exact-kind scalar item type, an item of that kind matches
+        # (the same fact `bareScalarSatisfied` rests on), so the name need not
+        # be resolved once per item. A list found to hold only that kind
+        # remembers it until an item of another kind is stored.
+        var scalarKind: ValueKind
+        let scalarItems = bareScalarKind(expr.body[0], scalarKind)
+        if scalarItems and value.listItemsAllOfKind(scalarKind):
+          return true
+        var allOfKind = scalarItems
+        for i in 0 ..< value.listItems.len:
+          if scalarItems and value.listItems[i].kind == scalarKind:
+            continue
+          allOfKind = false
+          if not matchesTypeExpr(expr.body[0], value.listItems[i], scope):
             return false
+        if allOfKind:
+          value.noteListItemsKind(scalarKind)
         return true
       of "Tuple":
         if value.kind != vkList:
@@ -27852,7 +28602,7 @@ proc biRuntimeMessages(args: openArray[Value], call: ptr NativeCall): Value {.ni
   ## and the description does not retain the receiver. A message that a send
   ## would refuse, such as an ambiguous one, is listed with the reason.
   requireOne("runtime/messages", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let receiver = args[0]
   let recvType = receiver.receiverType
   var items: seq[Value]
@@ -33168,7 +33918,7 @@ proc canBindScalarArguments(proto: FunctionProto, args: openArray[Value],
       args.len != proto.params.len:
     return false
   for i, annotation in proto.paramTypes:
-    if annotation.kind != vkNil and not bareScalarSatisfied(annotation, args[i]):
+    if annotation.kind != vkNil and not boundaryWorkFree(annotation, args[i]):
       return false
   true
 
@@ -33283,7 +34033,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                          proto.typeParams)
       declaredType = typeExpr
-      if not (bareScalarSatisfied(typeExpr, value)):
+      if not (boundaryWorkFree(typeExpr, value)):
         value = adaptNamedBoundary(blkParameter, positional[i],
                               typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
@@ -33301,7 +34051,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
         let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                            proto.typeParams)
         declaredType = typeExpr
-        if not (bareScalarSatisfied(typeExpr, value)):
+        if not (boundaryWorkFree(typeExpr, value)):
           value = adaptNamedBoundary(blkParameter, p.local, typeExpr,
                                 value, callScope)
       if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
@@ -33323,7 +34073,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                          proto.typeParams)
       declaredType = typeExpr
-      if not (bareScalarSatisfied(typeExpr, value)):
+      if not (boundaryWorkFree(typeExpr, value)):
         boundValue = adaptNamedBoundary(blkParameter, positional[i],
                                    typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
@@ -33353,7 +34103,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
           let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                              proto.typeParams)
           declaredType = typeExpr
-          if not (bareScalarSatisfied(typeExpr, value)):
+          if not (boundaryWorkFree(typeExpr, value)):
             value = adaptNamedBoundary(blkParameter, p.local, typeExpr,
                                   value, callScope)
         if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
@@ -33379,7 +34129,7 @@ proc bindCallScopeUnchecked(callee: Value, proto: FunctionProto, args: openArray
       if proto.namedRestType.kind != vkNil:
         let typeExpr = instantiateTypeExpr(proto.namedRestType, typeBindings,
                                            proto.typeParams)
-        if not (bareScalarSatisfied(typeExpr, value)):
+        if not (boundaryWorkFree(typeExpr, value)):
           value = adaptNamedBoundary(blkRestParameter, proto.namedRest,
                                      typeExpr, value, callScope)
       props[key] = value
@@ -33604,12 +34354,44 @@ proc validateConstructedInstance(typ, instance: Value) =
     instance.setNodeProp(key, value)
   instance.setNodeBody(body)
 
+proc constructAtCallSite(callee: Value, chunk: Chunk, at: int,
+                         names: openArray[string],
+                         namedValues, args: openArray[Value],
+                         constructed: var Value): bool {.noinline.} =
+  ## Direct construction, `(T ^x 1 ...)`, from the call instruction at `at`:
+  ## what applyCall's type branch does when it reaches constructTypedInstance,
+  ## with the named arguments read in place. Building NamedArgs copied the
+  ## instruction's names, one string allocation each. False, with nothing
+  ## done, for every other type callee. Out of line, like runSetPath, to keep
+  ## the dispatch loop small.
+  if callee.isEnumType or callee.typeContractPending or
+      callee.typeNativeCtor.kind != vkNil:
+    return false
+  # Read in place: `getOrDefault` copied the site node, a retain and a release.
+  var immutable = false
+  chunk.callSites.withValue(at, site):
+    immutable = site[].isNodeValue and site[].nodeImmutable
+  constructed = constructTypedInstanceParts(callee, args, names, namedValues,
+                                            immutable)
+  true
+
 proc constructTypedInstance(callee: Value, args: openArray[Value],
                             named: NamedArgs, immutable: bool): Value =
+  if named.values.len == named.names.len:
+    constructTypedInstanceParts(callee, args, named.names, named.values, immutable)
+  else:
+    constructTypedInstanceParts(callee, args, named.names,
+      named.inlineValues.toOpenArray(0, named.names.len - 1), immutable)
+
+proc constructTypedInstanceParts(callee: Value, args: openArray[Value],
+                                 names: openArray[string],
+                                 values: openArray[Value],
+                                 immutable: bool): Value =
   ## Direct typed-data construction (design §7.1.1): map named arguments to
   ## props and positional arguments to body fields, validate against the full
   ## schema, stamp the head with the type. Never runs a ctor — `(T ...)` is
-  ## the canonical replay-safe data form.
+  ## the canonical replay-safe data form. `names` and `values` are the named
+  ## arguments, read in place: a call site passes its own instruction's names.
   if callee.isTypeAlias:
     raise newException(GeneError,
       "type alias '" & callee.typeName & "' is not constructible; it names " &
@@ -33629,25 +34411,29 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
   # An untyped field, or a satisfied exact-kind scalar, is stored as given:
   # the boundary would resolve the annotation by name twice to say the same.
   template plainField(typeExpr, value: Value): bool =
-    typeExpr.kind == vkNil or bareScalarSatisfied(typeExpr, value)
-  # The schema is borrowed from `callee`, which the caller keeps alive.
+    typeExpr.kind == vkNil or boundaryWorkFree(typeExpr, value)
+  # The schema is borrowed from `callee`, which the caller keeps alive, and
+  # indexed in place: `for f in fields` copies the whole list, every field name
+  # included, on each construction.
   template fields: untyped = callee.borrowedTypeFields
   template bodyFields: untyped = callee.borrowedTypeBodyFields
-  if args.len != 0 and bodyFields.len == 0:
+  let bodyCount = bodyFields.len
+  if args.len != 0 and bodyCount == 0:
     raise newException(GeneError,
       "constructing " & callee.typeName & " takes named fields only")
   var body: seq[Value]
   var restBody = -1
-  for i, f in bodyFields:
-    if f.rest:
+  for i in 0 ..< bodyCount:
+    if bodyFields[i].rest:
       restBody = i
       break
   if restBody < 0:
-    if args.len != bodyFields.len:
+    if args.len != bodyCount:
       raise newException(GeneError,
         "constructing " & callee.typeName & " expects " &
-        $bodyFields.len & " body item(s), got " & $args.len)
-    for i, f in bodyFields:
+        $bodyCount & " body item(s), got " & $args.len)
+    for i in 0 ..< bodyCount:
+      template f: untyped = bodyFields[i]
       if plainField(f.typeExpr, args[i]):
         body.add args[i]
       else:
@@ -33660,40 +34446,51 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
         "constructing " & callee.typeName & " expects at least " &
         $restBody & " body item(s), got " & $args.len)
     for i in 0 ..< restBody:
-      let f = bodyFields[i]
+      template f: untyped = bodyFields[i]
       let fieldScope = f.typeBodyFieldScope(callee.typeScope)
       body.add adaptRefBodyField(callee.typeName, i,
                              f.typeExpr, args[i], fieldScope)
-    let restType = bodyFields[restBody]
+    template restType: untyped = bodyFields[restBody]
     let fieldScope = restType.typeBodyFieldScope(callee.typeScope)
     for i in restBody ..< args.len:
       body.add adaptRefBodyField(callee.typeName, i,
                              restType.typeExpr, args[i], fieldScope)
+  let fieldCount = fields.len
   var props = initPropTable()
-  props.reserve(min(named.len, fields.len))
+  props.reserve(min(names.len, fieldCount))
   var matched = 0
-  for f in fields:
-    let argIdx = named.argIndex(f.name)
+  for fi in 0 ..< fieldCount:
+    # A call site usually names the fields in declaration order, so the
+    # argument at the field's own position is tried before the scan.
+    var argIdx = -1
+    if fi < names.len and names[fi] == fields[fi].name:
+      argIdx = fi
+    else:
+      for i in 0 ..< names.len:
+        if names[i] == fields[fi].name:
+          argIdx = i
+          break
     if argIdx >= 0:
       inc matched
-      let value = named.valueAt(argIdx)
-      if plainField(f.typeExpr, value):
-        props.putById(f.nameId, value)
+      let value = values[argIdx]
+      if plainField(fields[fi].typeExpr, value):
+        props.putById(fields[fi].nameId, value)
       else:
-        let fieldScope = f.typeFieldScope(callee.typeScope)
-        props.putById(f.nameId,
-                      adaptRefField(callee.typeName, f.name,
-                                    f.typeExpr, value, fieldScope))
-    elif not f.optional:
+        let fieldScope = fields[fi].typeFieldScope(callee.typeScope)
+        props.putById(fields[fi].nameId,
+                      adaptRefField(callee.typeName, fields[fi].name,
+                                    fields[fi].typeExpr, value, fieldScope))
+    elif not fields[fi].optional:
       raise newException(GeneError,
-        "missing required field '" & f.name & "' for " & callee.typeName)
+        "missing required field '" & fields[fi].name & "' for " &
+        callee.typeName)
   # Field names are distinct, so when every argument was matched none is
   # unknown.
-  if matched != named.len:
-    for key in named.names:
+  if matched != names.len:
+    for key in names:
       var known = false
-      for f in fields:
-        if f.name == key:
+      for fi in 0 ..< fieldCount:
+        if fields[fi].name == key:
           known = true
           break
       if not known:
@@ -34037,12 +34834,12 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if named.len != 0 and not callee.nativeAcceptsNamed:
       raise newException(GeneError,
         "native function '" & callee.nativeFnName & "' does not accept named arguments")
-    var call = NativeCall(calleeName: callee.nativeFnName,
+    var call = NativeCall(calleeNameAddr: callee.nativeFnNameAddr,
                           namedNames: named.names,
                           namedValues: named.toSeq(),
                           dispatchScope: dispatchScope,
                           site: site,
-                          loc: loc)
+                          locAddr: addr loc)
     if contextImpl != nil:
       contextImpl(callee.nativeContext, args, addr call)
     else:
@@ -35117,7 +35914,7 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   # Refused rather than defaulted. A caller with no Application cannot be handed
   # a fresh one: the mod would load against an empty module cache and register
   # into types nothing else holds, which fails later and somewhere else.
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if scope == nil or scope.application == nil:
     raise newException(GeneError,
       "runtime/load_sandboxed cannot resolve the calling application")
@@ -35540,7 +36337,7 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
   if args.len != 2:
     raise newException(GeneError,
       "SandboxTransaction/prepare expects options")
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let resolved = sandboxTransactionRecord(
     "SandboxTransaction/prepare", args[0], scope)
   let transaction = resolved.record
@@ -35682,7 +36479,7 @@ proc biSandboxTransactionPrepare(args: openArray[Value],
 proc biSandboxTransactionCommit(args: openArray[Value],
                                 call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxTransaction/commit", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let resolved = sandboxTransactionRecord(
     "SandboxTransaction/commit", args[0], scope)
   let transaction = resolved.record
@@ -35739,7 +36536,7 @@ proc biSandboxTransactionCommit(args: openArray[Value],
 proc biSandboxTransactionDiscard(args: openArray[Value],
                                  call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxTransaction/discard", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let resolved = sandboxTransactionRecord(
     "SandboxTransaction/discard", args[0], scope)
   let transaction = resolved.record
@@ -35791,7 +36588,7 @@ proc biSandboxTransactionDiscard(args: openArray[Value],
 proc biSandboxGenerationModule(args: openArray[Value],
                                call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxGeneration/module", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let generation = sandboxGenerationRecord(
     "SandboxGeneration/module", args[0], scope).record
   if generation.state notin {sgsPrepared, sgsCommitted}:
@@ -35802,7 +36599,7 @@ proc biSandboxGenerationModule(args: openArray[Value],
 proc biSandboxGenerationGraph(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxGeneration/graph", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let generation = sandboxGenerationRecord(
     "SandboxGeneration/graph", args[0], scope).record
   if generation.state notin {sgsPrepared, sgsCommitted, sgsReleased}:
@@ -35827,7 +36624,7 @@ proc implsWithoutGeneration(app: Application,
 proc biSandboxGenerationRelease(args: openArray[Value],
                                 call: ptr NativeCall): Value {.nimcall.} =
   requireOne("SandboxGeneration/release", args)
-  let scope = if call == nil: nil else: call[].dispatchScope
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   let generation = sandboxGenerationRecord(
     "SandboxGeneration/release", args[0], scope).record
   case generation.state

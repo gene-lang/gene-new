@@ -2,6 +2,7 @@
 (import [cases make_input integer_loop closure_dispatch records text_index json_roundtrip event_replay measure]
   ^from "./general/workloads")
 (import [new_variant validate_results record_sample checked_output] ^from "./run_general")
+(import [agree] ^from "./run_kernels")
 
 (fn payload []
   (let rows [])
@@ -78,7 +79,7 @@
     (changed/rows/5 .put "result" [99])
     (assert_raises (fn [] (record_sample variant changed 17 100 600 1)) AssertionError)
     (assert_equal variant/wall_ms [])
-    (for [name group] in variant/rows (assert_equal group/batch_ms [])))
+    (map_for [name group] in variant/rows (assert_equal group/batch_ms [])))
   (it "rejects missing, duplicate and unknown workloads" []
     (let missing (payload))
     (missing .put "rows" [])
@@ -107,3 +108,16 @@
       {^status 0 ^timed_out true ^truncated false ^stderr "timeout"}
       {^status 0 ^timed_out false ^truncated true ^stderr "truncated"}]
       (assert_raises (fn [] (checked_output process)) AssertionError))))
+
+(describe "Kernel runner agreement"
+  (it "accepts a variant that ran the same kernels with the same results" []
+    (agree {^a "1" ^b "[1 \"x\"]"} "python"
+      {^a {^ms 1 ^result "1"} ^b {^ms 2 ^result "[1 \"x\"]"}}))
+  (it "rejects a stable wrong answer, a missing kernel and an extra one" []
+    (assert_raises (fn [] (agree {^a "1"} "baseline" {^a {^ms 1 ^result "2"}}))
+      AssertionError)
+    (assert_raises (fn [] (agree {^a "1" ^b "2"} "baseline" {^a {^ms 1 ^result "1"}}))
+      AssertionError)
+    (assert_raises
+      (fn [] (agree {^a "1"} "baseline" {^a {^ms 1 ^result "1"} ^c {^ms 1 ^result "3"}}))
+      AssertionError)))

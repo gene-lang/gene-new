@@ -30,6 +30,40 @@ untyped/typed counter and Float-store loops at ten million iterations. Use it
 to investigate dispatch changes; the full paired runner remains the acceptance
 measurement.
 
+## Boundary costs by size
+
+```sh
+bin/gene run benchmarks/boundaries.gene
+```
+
+`boundaries.gene` times what crosses a function or container boundary at 100
+and 10,000 items: returns, accessors, stores, a push followed by a return,
+pushes to a typed node's body, and a `(List Int)` parameter. It also times
+field reads and writes, a range loop against `repeat`, and scalar-annotated
+calls against their untyped versions. A row is the kernel's name, the
+iterations of the batch kept, its milliseconds, and nanoseconds per iteration
+with the loop included. Each batch is repeated with four times the iterations
+until it runs for 100 ms, because the clock ticks in milliseconds. Compare two
+binaries by alternating runs and taking per-row medians.
+
+## Gene / Python kernels
+
+```sh
+bin/gene run benchmarks/run_kernels.gene tmp/kernels bin/gene "$(command -v python3)" [path/to/baseline-gene]
+```
+
+`kernels/kernels.gene` and `kernels/kernels.py` hold the same small kernels
+with the same iteration counts: a recursive call, loops, list and map work,
+field access, record construction, a send, a closure, string interpolation,
+and the boundary kernels (an accessor returning 10,000 records, a store of
+them, a `(List Int)` parameter, a field write, a typed call). The runner
+alternates fresh processes, drops one warmup round, checks that each kernel's
+result never changes, and writes `raw.tsv`, `provenance.tsv` and `report.md`.
+Each ratio in the report is the median of the per-round ratios. The times are
+whole milliseconds, so a Python time under about 20 ms carries a few percent
+of rounding. With a baseline binary the size-dependent kernels can take a
+minute per round on it.
+
 ## General-purpose Gene / Python comparison
 
 ```sh
@@ -66,8 +100,9 @@ Pass multiple independently built executables to alternate their execution
 order across rounds. Use separate fresh Nim cache directories for independent
 rebuilds; repeated runs of one executable do not measure build-to-build noise.
 Run benchmarks while no compiler or other assessment workload is active.
-Preserve commands and machine metadata when checking selected baselines into
-`benchmarks/baselines/`; do not infer an optimization from a single run.
+Keep commands and machine metadata with each baseline in
+`benchmarks/baselines/`, which stays local (git ignores it); do not infer an
+optimization from a single run.
 
 The core controls include an empty chunk, a constant chunk and matched
 untyped/F64 function bodies. Per-iteration costs include entering/exiting
@@ -115,7 +150,7 @@ hashes, version/build information, source diff, result checksums, service timing
 and whole-process timing distributions. Snapshot capture and startup fall in
 the whole-process time only. Keep builds and profiling out of the
 measurement window. The workspaces stay under the output directory for inspection;
-see [baselines](baselines/README.md) for what to check in.
+`benchmarks/baselines/README.md` (local) says what each baseline keeps.
 
 On macOS, `sample PID 10 1 -mayDie -file REPORT` captures native stacks.
 `bin/gene run benchmarks/summarize_sample.gene REPORT` accounts for main-thread

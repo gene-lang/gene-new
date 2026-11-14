@@ -1,0 +1,119 @@
+# Gene against Python, kernel by kernel, with an optional baseline Gene binary.
+#
+#   gene run benchmarks/run_kernels.gene OUTPUT_DIR GENE_EXE PYTHON_EXE [BASELINE_GENE_EXE]
+#
+# Each round runs kernels.gene on the Gene binary, kernels.py on Python, and
+# kernels.gene on the baseline when one is given, as fresh processes in that
+# order. GENE_BENCH_SAMPLES rounds are kept (default 5) after one warmup round.
+# A ratio is computed inside each round from that round's runs, and the report
+# gives the median of those ratios, so it is a median of ratios and not a
+# ratio of the median times shown beside it.
+(import [capture distribution] ^from "./run")
+
+(fn parse_rows [process label]
+  ($assert (&& (== process/status 0) (! process/timed_out) (! process/truncated))
+    $"${label} failed: ${process/stderr}")
+  (let rows {})
+  (for line in ($str/split ($str/trim process/stdout) "\n")
+    (let cells ($str/split line "\t"))
+    ($assert (== ($size cells) 3) $"unexpected ${label} row: ${line}")
+    (rows .put cells/0 {^ms ($parse/parse_int cells/1) ^result cells/2}))
+  rows)
+
+(fn agree [expected label rows]
+  # `rows`, kernel name -> {^ms ^result} from the variant `label`, must name
+  # exactly the kernels in `expected`, kernel name -> the Gene binary's
+  # result, and give the same result for each. A variant that repeats a wrong
+  # answer is stable, so only this comparison catches it.
+  ($assert (== ($map_size rows) ($map_size expected))
+    $"${label} ran ${($map_size rows)} kernels, gene ${($map_size expected)}")
+  (map_for [name result] in expected
+    ($assert ($has_key? rows name) $"${label} did not run ${name}")
+    (let row (rows .get name))
+    ($assert (== row/result result)
+      $"${label} disagrees with gene on ${name}: ${row/result} against ${result}")))
+
+(fn median_of [values]
+  (let summary (distribution values))
+  summary/median)
+
+(fn rounded [value places]
+  (let scale (if (== places 1) 10.0 100.0))
+  (/ (* ($to_int (+ (* value scale) 0.5)) 1.0) scale))
+
+(fn main [args] : Int
+  ($assert (|| (== ($size args/body) 3) (== ($size args/body) 4))
+    "usage: run_kernels.gene OUTPUT_DIR GENE_EXE PYTHON_EXE [BASELINE_GENE_EXE]")
+  (let output args/body/0)
+  ($assert (! ($fs/exists? output)) "output directory must be new")
+  (let samples ($parse/parse_int (?? ($os/env? "GENE_BENCH_SAMPLES") "5")))
+  ($assert (&& (>= samples 3) (<= samples 100)) "samples must be in 3..100")
+  (let directory ($path/join ($path/parent this_mod/.path) "kernels"))
+  (let gene_source ($path/join directory "kernels.gene"))
+  (let python_source ($path/join directory "kernels.py"))
+  (let variants [
+    {^label "gene" ^executable ($fs/real_path args/body/1) ^arguments ["run" gene_source]}
+    {^label "python" ^executable ($fs/real_path args/body/2) ^arguments [python_source]}])
+  (if (== ($size args/body) 4)
+    (variants .push {^label "baseline" ^executable ($fs/real_path args/body/3)
+                     ^arguments ["run" gene_source]}))
+  ($fs/make_dir output)
+  (var raw "round\tvariant\tkernel\tms\tresult\n")
+  (let names [])
+  (let times {})
+  (let results {})
+  (let expected {})
+  (repeat round in (+ samples 1)
+    (for variant in variants
+      (let rows (parse_rows (capture variant/executable variant/arguments) variant/label))
+      (if (&& (== round 0) (== variant/label "gene"))
+        (map_for [name row] in rows
+          (names .push name)
+          (expected .put name row/result)))
+      (agree expected variant/label rows)
+      (map_for [name row] in rows
+        (let key $"${variant/label}\t${name}")
+        (set raw $"${raw}${round}\t${variant/label}\t${name}\t${row/ms}\t${row/result}\n")
+        (if (! ($has_key? results key))
+          (then (results .put key row/result) (times .put key []))
+          (else ($assert (== (results .get key) row/result) $"result changed: ${key}")))
+        (if (> round 0) ((times .get key) .push row/ms)))))
+  ($fs/write_text ($path/join output "raw.tsv") raw)
+  (let with_baseline (== ($size variants) 3))
+  (var report "| Kernel | Gene ms | Python ms | Gene / Python |")
+  (if with_baseline (set report $"${report} Baseline ms | Baseline / Python | Gene / Baseline |"))
+  (set report $"${report}\n| --- | ---: | ---: | ---: |")
+  (if with_baseline (set report $"${report} ---: | ---: | ---: |"))
+  (set report $"${report}\n")
+  (for name in names
+    (let candidate (times .get $"gene\t${name}"))
+    (let reference (times .get $"python\t${name}"))
+    (let ratios [])
+    (repeat i in samples (ratios .push (/ (* candidate/%i 1.0) reference/%i)))
+    (let gene_ms (median_of candidate))
+    (let python_ms (median_of reference))
+    (let ratio (rounded (median_of ratios) 1))
+    (var line $"| ${name} | ${gene_ms} | ${python_ms} | ${ratio} |")
+    (if with_baseline
+      (then
+        (let baseline (times .get $"baseline\t${name}"))
+        (let base_ratios [])
+        (let change [])
+        (repeat i in samples
+          (base_ratios .push (/ (* baseline/%i 1.0) reference/%i))
+          (change .push (/ (* candidate/%i 1.0) baseline/%i)))
+        (let baseline_ms (median_of baseline))
+        (let base_ratio (rounded (median_of base_ratios) 1))
+        (let changed (rounded (median_of change) 2))
+        (set line $"${line} ${baseline_ms} | ${base_ratio} | ${changed} |")))
+    (set report $"${report}${line}\n"))
+  ($fs/write_text ($path/join output "report.md") report)
+  (var provenance "")
+  (for variant in variants
+    (let version (capture variant/executable ["--version"]))
+    (let digest ($crypto/sha256 ($fs/read_bytes variant/executable)))
+    (let version_text ($str/trim version/stdout))
+    (set provenance $"${provenance}${variant/label}\t${variant/executable}\t${digest}\t${version_text}\n"))
+  ($fs/write_text ($path/join output "provenance.tsv") provenance)
+  ($println report)
+  0)

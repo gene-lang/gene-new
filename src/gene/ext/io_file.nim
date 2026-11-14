@@ -393,7 +393,7 @@ static void gene_io_file_block_sigpipe(void) {
 
   proc ioFileRecord(value: Value, call: ptr NativeCall,
                     operation: string): IoFileRecord =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let app = if scope == nil: currentApplication() else: scope.application()
     let readerType = builtinBinding(scope, "IoFileReader")
     let writerType = builtinBinding(scope, "IoFileWriter")
@@ -858,7 +858,7 @@ static void gene_io_file_block_sigpipe(void) {
       args[0].strVal, ifjOpenWrite, flags, true, "open_write")
 
   proc biIoTcpConnect(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if scope == nil or args.len != 2 or args[0].kind != vkString or
         args[1].kind != vkInt:
       raise newException(GeneError,
@@ -915,7 +915,7 @@ static void gene_io_file_block_sigpipe(void) {
     operation.task
 
   proc biIoTcpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if scope == nil or args.len != 2 or args[0].kind != vkString or
         args[1].kind != vkInt:
       raise newException(GeneError,
@@ -974,7 +974,7 @@ static void gene_io_file_block_sigpipe(void) {
   proc biIoTcpAccept(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 1:
       raise newException(GeneError, "TcpListener/accept expects no arguments")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let record = ioFileRecord(args[0], call, "tcp_accept")
     if not record.listener:
       raiseTypeError("TcpListener/accept", "TcpListener", args[0], scope)
@@ -1014,7 +1014,7 @@ static void gene_io_file_block_sigpipe(void) {
                          call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 1:
       raise newException(GeneError, "TcpListener/local_port expects no arguments")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let record = ioFileRecord(args[0], call, "tcp_local_port")
     if not record.listener:
       raiseTypeError("TcpListener/local_port", "TcpListener", args[0], scope)
@@ -1022,7 +1022,7 @@ static void gene_io_file_block_sigpipe(void) {
 
   proc biIoTestingSocketBuffer(args: openArray[Value],
                                call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if args.len != 3 or args[1].kind != vkString or args[2].kind != vkInt:
       raise newException(GeneError,
         "io/testing/socket_buffer expects TcpStream, direction, and bytes")
@@ -1050,7 +1050,7 @@ static void gene_io_file_block_sigpipe(void) {
   proc biIoPipe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 0:
       raise newException(GeneError, "io/pipe expects no arguments")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     if scope == nil:
       raise newException(GeneError, "io/pipe requires a call scope")
     if currentEventLane() != schedulerForScope(scope).rootLane:
@@ -1101,7 +1101,7 @@ static void gene_io_file_block_sigpipe(void) {
   proc biIoFileRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 2 or args[1].kind != vkInt:
       raise newException(GeneError, "AsyncReader:read expects an Int max_bytes")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let record = ioFileRecord(args[0], call, "read")
     if record.writer and not record.duplex:
       raiseTypeError("AsyncReader:read", "FileReader", args[0], scope)
@@ -1151,7 +1151,7 @@ static void gene_io_file_block_sigpipe(void) {
   proc biIoFileWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 2 or args[1].kind != vkBytes:
       raise newException(GeneError, "AsyncWriter:write expects Bytes")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let record = ioFileRecord(args[0], call, "write")
     if not record.writer and not record.duplex:
       raiseTypeError("AsyncWriter:write", "FileWriter", args[0], scope)
@@ -1196,7 +1196,7 @@ static void gene_io_file_block_sigpipe(void) {
   proc biIoFileFlush(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 1:
       raise newException(GeneError, "AsyncWriter:flush expects a FileWriter")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let record = ioFileRecord(args[0], call, "flush")
     if not record.writer and not record.duplex:
       raiseTypeError("AsyncWriter:flush", "FileWriter", args[0], scope)
@@ -1234,7 +1234,7 @@ static void gene_io_file_block_sigpipe(void) {
   proc biIoFileClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 1:
       raise newException(GeneError, "IoResource:close expects a file reader")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let record = ioFileRecord(args[0], call, "close")
     if record.lifecycle.ioSnapshot().phase != iopOpen:
       return NIL
@@ -1255,7 +1255,7 @@ static void gene_io_file_block_sigpipe(void) {
   proc biIoFileWaitClosed(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 1:
       raise newException(GeneError, "IoResource:wait_closed expects a file reader")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let record = ioFileRecord(args[0], call, "wait_closed")
     if record.lifecycle.ioSnapshot().phase == iopClosed:
       if record.closeError.len == 0:
@@ -1297,7 +1297,7 @@ else:
   proc biIoOpenRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 1 or args[0].kind != vkString:
       raise newException(GeneError, "io/open_read expects one Str path")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let message = "io/open_read requires a threaded POSIX runtime"
     let error = ioTestingErrorValue(scope, "IoError", "open_read", 0, message)
     newFailedTask(message, error, hasValue = true)
@@ -1305,7 +1305,7 @@ else:
   proc biIoOpenWrite(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     if args.len != 1 or args[0].kind != vkString:
       raise newException(GeneError, "io/open_write expects one Str path")
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let message = "io/open_write requires a threaded POSIX runtime"
     let error = ioTestingErrorValue(scope, "IoError", "open_write", 0, message)
     newFailedTask(message, error, hasValue = true)
@@ -1314,13 +1314,13 @@ else:
     raise newException(GeneError, "io/pipe requires a threaded POSIX runtime")
 
   proc biIoTcpConnect(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let message = "io/tcp_connect requires a threaded POSIX runtime"
     let error = ioTestingErrorValue(scope, "IoError", "tcp_connect", 0, message)
     newFailedTask(message, error, hasValue = true)
 
   proc biIoTcpListen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-    let scope = if call == nil: nil else: call[].dispatchScope
+    let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
     let message = "io/tcp_listen requires a threaded POSIX runtime"
     let error = ioTestingErrorValue(scope, "IoError", "tcp_listen", 0, message)
     newFailedTask(message, error, hasValue = true)

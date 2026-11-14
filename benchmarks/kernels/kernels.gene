@@ -1,0 +1,149 @@
+# Small kernels with the same algorithm in kernels.py, for a Gene/Python
+# ratio per operation. Each row is a name, the batch time in ms and a result
+# that the runner checks is the same on every round.
+#
+#   gene run benchmarks/run_kernels.gene OUTPUT_DIR GENE_EXE PYTHON_EXE [BASELINE_GENE_EXE]
+#
+# Gene's `//` is the remainder, so kernels.py uses `%` where this file uses `//`.
+(fn now [] ($os/monotonic_ms))
+(fn report [name start result] ($println $"${name}\t${(- (now) start)}\t${result}"))
+
+(fn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(fn bench_fib [] (fib 30))
+
+(fn bench_while [n]
+  (var i 0) (var total 0)
+  (while (< i n)
+    (set total (+ total (// (* i 7) 13)))
+    (set i (+ i 1)))
+  total)
+
+(fn bench_for_range [n]
+  (var total 0)
+  (for i in ($range 0 n) (set total (+ total i)))
+  total)
+
+(fn bench_repeat [n]
+  (var total 0)
+  (repeat i in n (set total (+ total i)))
+  total)
+
+(fn bench_list [n]
+  (var xs [])
+  (repeat i in n (xs .push (* i 2)))
+  (var total 0)
+  (repeat i in n (set total (+ total xs/%i)))
+  total)
+
+(fn bench_list_for [n]
+  (var xs [])
+  (repeat i in n (xs .push (* i 2)))
+  (var total 0)
+  (for x in xs (set total (+ total x)))
+  total)
+
+(fn bench_map [n]
+  (var m {})
+  (repeat i in n (m .put $"k${(// i 1000)}" i))
+  (var total 0)
+  (repeat i in n (set total (+ total (m .get $"k${(// i 1000)}"))))
+  total)
+
+(type Pt ^props {^x Int ^y Int})
+(fn bench_field [n]
+  (let p (Pt ^x 1 ^y 2))
+  (var total 0)
+  (repeat i in n
+    (set p/x (+ p/x 1))
+    (set total (+ total p/x p/y)))
+  total)
+
+(fn bench_alloc [n]
+  (var total 0)
+  (repeat i in n
+    (let p (Pt ^x i ^y 2))
+    (set total (+ total p/x)))
+  total)
+
+(type Counter ^props {^n Int}
+  (message inc [d] (set self/n (+ self/n d)))
+  (message value [] self/n))
+(fn bench_send [n]
+  (let c (Counter ^n 0))
+  (repeat i in n (c .inc 1))
+  c/.value)
+
+(fn make_adder [k] (fn [x] (+ x k)))
+(fn bench_closure [n]
+  (let add (make_adder 3))
+  (var total 0)
+  (repeat i in n (set total (add total)))
+  total)
+
+(fn bench_str [n]
+  (var last "")
+  (var total 0)
+  (repeat i in n
+    (set last $"item-${i}-${(* i 2)}")
+    (set total (+ total 1)))
+  [total last])
+
+(fn bench_float [n]
+  (var x 0.0)
+  (repeat i in n (set x (+ (* x 0.999) 1.5)))
+  x)
+
+(fn bench_map_literal [n]
+  (var total 0)
+  (repeat i in n
+    (let m {^a i ^b 2})
+    (set total (+ total m/a m/b)))
+  total)
+
+(fn make_records [n] (var xs []) (repeat i in n (xs .push {^id i ^name "item" ^amount (* i 3)})) xs)
+(fn items_of [state] state/items)
+(fn bench_accessor [n state]
+  (var total 0)
+  (repeat i in n (set total (+ total ($size (items_of state)))))
+  total)
+(fn bench_store [n state]
+  (let m {})
+  (repeat i in n (m .put "last" (items_of state)))
+  ($size (m .get "last")))
+(fn len_typed [xs : (List Int)] 1)
+(fn bench_list_param [n xs]
+  (var total 0)
+  (repeat i in n (set total (+ total (len_typed xs))))
+  total)
+(fn bench_field_write [n]
+  (let p (Pt ^x 1 ^y 2))
+  (repeat i in n (set p/x i))
+  p/x)
+(fn add_t [a : Int b : Int] : Int (+ a b))
+(fn bench_typed_call [n]
+  (var total 0)
+  (repeat i in n (set total (add_t total 1)))
+  total)
+
+
+(var t (now)) (report "fib30" t (bench_fib))
+(set t (now)) (report "while_arith_3M" t (bench_while 3000000))
+(set t (now)) (report "for_range_3M" t (bench_for_range 3000000))
+(set t (now)) (report "repeat_3M" t (bench_repeat 3000000))
+(set t (now)) (report "list_push_index_1M" t (bench_list 1000000))
+(set t (now)) (report "list_push_for_1M" t (bench_list_for 1000000))
+(set t (now)) (report "map_strkey_500k" t (bench_map 500000))
+(set t (now)) (report "field_rw_2M" t (bench_field 2000000))
+(set t (now)) (report "alloc_record_1M" t (bench_alloc 1000000))
+(set t (now)) (report "send_2M" t (bench_send 2000000))
+(set t (now)) (report "closure_2M" t (bench_closure 2000000))
+(set t (now)) (report "str_interp_500k" t (bench_str 500000))
+(set t (now)) (report "float_3M" t (bench_float 3000000))
+(set t (now)) (report "map_literal_1M" t (bench_map_literal 1000000))
+(let state {^items (make_records 10000) ^name "s"})
+(set t (now)) (report "accessor_10k_records_200k" t (bench_accessor 200000 state))
+(set t (now)) (report "store_10k_records_200k" t (bench_store 200000 state))
+(var ints []) (repeat i in 1000 (ints .push i))
+(set t (now)) (report "typed_list_param_1k_500k" t (bench_list_param 500000 ints))
+(set t (now)) (report "field_write_2M" t (bench_field_write 2000000))
+(set t (now)) (report "typed_call_3M" t (bench_typed_call 3000000))
