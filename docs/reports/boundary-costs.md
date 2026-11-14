@@ -540,8 +540,10 @@ Three commits on `9c1c159a`, default builds; evidence in
   function, the out-of-line `runSetPath` now stores it in one place when the
   node is mutable and its head is a Symbol or a record Type declaring the key
   with an annotation the value's kind satisfies (or none). Anything else takes
-  the general path, which raises as before. Field writes run 25% fewer
-  instructions.
+  the general path, which raises as before. Field writes ran 25% fewer
+  instructions. The review before merging replaced that second store path
+  with a direct call of the checked prop writer (`6dd51817`), so there is
+  one writer again: 18% fewer instructions than the start.
 - **Counts the code never asked for** (`7c87bc6b`). Retaining or releasing a
   Type, Module, Protocol, Env or Cell value bound the box and its subtype as
   counted locals: two ORC increments and two decrements, each decrement a
