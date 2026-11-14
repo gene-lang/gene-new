@@ -1,7 +1,0 @@
-(fn bench_map [n]
-  (var m {})
-  (repeat i in n (m .put $"k${(// i 1000)}" i))
-  (var total 0)
-  (repeat i in n (set total (+ total (m .get $"k${(// i 1000)}"))))
-  total)
-(fn main [] ($println (bench_map 2000000)))

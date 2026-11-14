@@ -1,5 +1,0 @@
-(fn bench_for_range [n]
-  (var total 0)
-  (for i in ($range 0 n) (set total (+ total i)))
-  total)
-(fn main [] ($println (bench_for_range 30000000)))

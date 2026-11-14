@@ -1,3 +1,0 @@
-(fn add_param [x] (+ x 3))
-(fn scoped [n] (var total 0) (repeat i in n (set total (add_param total))) total)
-(fn main [] ($println (scoped 10000000)))

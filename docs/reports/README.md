@@ -5,6 +5,9 @@ measured or verified, and what was left open. Reports describe the code when
 they were written; the guides and [specification](../spec/README.md) describe
 current behavior. Open designs live in [proposals](../proposals/README.md).
 
+Evidence directories under `benchmarks/baselines/` are kept locally, not in
+git; the ones committed before 2026-11-14 are in the history.
+
 | Report | Work | Evidence |
 | --- | --- | --- |
 | [Performance implementation ledger](optimization.md) | Portable release default, checked native lowering, reproducible measurement (2026-10-04). | `benchmarks/baselines/2026-10-03-*`, `2026-10-04-publication` |

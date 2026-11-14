@@ -1,7 +1,0 @@
-(fn make_adder [k] (fn [x] (+ x k)))
-(fn bench_closure [n]
-  (let add (make_adder 3))
-  (var total 0)
-  (repeat i in n (set total (add total)))
-  total)
-(fn main [] ($println (bench_closure 5000000)))

@@ -1,8 +1,0 @@
-(fn bench_str [n]
-  (var last "")
-  (var total 0)
-  (repeat i in n
-    (set last $"item-${i}-${(* i 2)}")
-    (set total (+ total 1)))
-  [total last])
-(fn main [] ($println (bench_str 3000000)))

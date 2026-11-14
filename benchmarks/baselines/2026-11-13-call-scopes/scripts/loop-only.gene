@@ -1,2 +1,0 @@
-(fn scoped [n] (var total 0) (repeat i in n (set total (+ total 3))) total)
-(fn main [] ($println (scoped 10000000)))

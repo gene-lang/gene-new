@@ -100,8 +100,9 @@ Pass multiple independently built executables to alternate their execution
 order across rounds. Use separate fresh Nim cache directories for independent
 rebuilds; repeated runs of one executable do not measure build-to-build noise.
 Run benchmarks while no compiler or other assessment workload is active.
-Preserve commands and machine metadata when checking selected baselines into
-`benchmarks/baselines/`; do not infer an optimization from a single run.
+Keep commands and machine metadata with each baseline in
+`benchmarks/baselines/`, which stays local (git ignores it); do not infer an
+optimization from a single run.
 
 The core controls include an empty chunk, a constant chunk and matched
 untyped/F64 function bodies. Per-iteration costs include entering/exiting
@@ -149,7 +150,7 @@ hashes, version/build information, source diff, result checksums, service timing
 and whole-process timing distributions. Snapshot capture and startup fall in
 the whole-process time only. Keep builds and profiling out of the
 measurement window. The workspaces stay under the output directory for inspection;
-see [baselines](baselines/README.md) for what to check in.
+`benchmarks/baselines/README.md` (local) says what each baseline keeps.
 
 On macOS, `sample PID 10 1 -mayDie -file REPORT` captures native stacks.
 `bin/gene run benchmarks/summarize_sample.gene REPORT` accounts for main-thread

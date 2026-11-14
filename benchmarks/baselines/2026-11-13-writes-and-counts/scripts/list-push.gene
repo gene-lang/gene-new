@@ -1,7 +1,0 @@
-(fn bench_list [n]
-  (var xs [])
-  (repeat i in n (xs .push (* i 2)))
-  (var total 0)
-  (repeat i in n (set total (+ total xs/%i)))
-  total)
-(fn main [] ($println (bench_list 5000000)))

@@ -1,6 +1,0 @@
-(fn len_typed [xs : (List Int)] 1)
-(fn bench_list_param [n xs]
-  (var total 0)
-  (repeat i in n (set total (+ total (len_typed xs))))
-  total)
-(fn main [] (var ints []) (repeat i in 1000 (ints .push i)) ($println (bench_list_param 5000000 ints)))
