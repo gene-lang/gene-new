@@ -904,7 +904,9 @@ type
 
   NamespaceData = ref object of GeneObjectData
     name: string
-    scope: Scope          # the namespace's own bindings (its exports)
+    scope: Scope          # the namespace's own bindings (its exports); nil while weak
+    weakScope: pointer    # that scope, for a namespace bound in it (`$ns`)
+    valueRefs: int        # boxed Value owners; release-time self-binding audit
     moduleRoot: bool      # true only for loader-created module root namespaces
     modulePath: string    # non-empty only for file-backed module roots
     ownerLane: int        # lane that created it; namespace writes stay owner-only
@@ -1760,6 +1762,8 @@ proc boxObject(data: GeneObjectData): Value =
     TypeData(data).valueRefs = 1
   of okModule:
     ModuleData(data).valueRefs = 1
+  of okNamespace:
+    NamespaceData(data).valueRefs = 1
   of okProtocol:
     ProtocolData(data).valueRefs = 1
   of okEnv:
@@ -2377,6 +2381,7 @@ proc clearObjectEdges(data: GeneObjectData) =
   case data.objKind
   of okNamespace:
     NamespaceData(data).scope = nil
+    NamespaceData(data).weakScope = nil
   of okModule:
     let d = ModuleData(data)
     clearValueSlot(d.root)
@@ -2627,9 +2632,10 @@ const
 #   the container objects are private to this module and are only lent out.
 #   A store into a container with no current stamp needs nothing, because by
 #   the invariant no stamped container reaches it.
-# - A leaf that turns from inert to not. Only a type does: it drops its scope
-#   edge again in `weakenOwnedTypeEnvironment`. A function that can change
-#   (`weakable`) is never counted inert.
+# - A leaf that turns from inert to not. Only a type and a namespace do: they
+#   drop their scope edge again in `weakenOwnedTypeEnvironment` and
+#   `weakenOwnedNamespaceScope`. A function that can change (`weakable`) is
+#   never counted inert.
 # - A pending module reference patched in place.
 #
 # The epoch is process-wide because containers cross lanes. A container that
@@ -2851,7 +2857,9 @@ proc markObjectSharedGraph(data: GeneObjectData, seen: var StampedSet) =
     # a published object may retain a non-owning link into its defining scope.
     template pin(scope: Scope) = pinPublishedScope(scope)
     case data.objKind
-    of okNamespace: pin(NamespaceData(data).scope)
+    of okNamespace:
+      pin(NamespaceData(data).scope)
+      pin(cast[Scope](NamespaceData(data).weakScope))
     of okType:
       let d {.cursor.} = TypeData(data)
       when defined(geneAtomicGenerationRetirementProbe):
@@ -3240,6 +3248,15 @@ proc rcRetainFull(bits: uint64) =
       if not isSharedFlag(data.shared) and typ.scopeEscaped and
           typ.scope == nil and typ.weakScope != nil:
         typ.scope = cast[Scope](typ.weakScope)
+    elif data.objKind == okNamespace:
+      let ns {.cursor.} = cast[NamespaceData](data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchAdd(addr ns.valueRefs, 1, ATOMIC_RELAXED)
+        else:
+          inc ns.valueRefs
+      else:
+        inc ns.valueRefs
     GC_ref(data)
   else: discard
 
@@ -3808,6 +3825,7 @@ proc expandRetireValue(g: var RetireGraph, idx: int, counting: static bool) =
     case data.objKind
     of okNamespace:
       scopeRef(cast[NamespaceData](data).scope)
+      weakScope(cast[NamespaceData](data).weakScope)
     of okType:
       let d {.cursor.} = cast[TypeData](data)
       scopeRef(d.scope)
@@ -4559,6 +4577,30 @@ proc shallowOwnedReferences(owner: Scope, target: uint64, exact: var bool): int 
     inc varIndex
   total
 
+proc weakenOwnedNamespaceScope(ns: NamespaceData) =
+  # A namespace bound in its own scope (the binding `$ns` reads) closes a
+  # cycle through a boxed Value, which ORC cannot see. Once that binding is
+  # its only owner, its scope edge stops owning; an escape or a new outside
+  # binding (promoteNamespaceScope) makes it strong again. Only such a
+  # namespace has `weakScope` set, so the others return at once.
+  #
+  # The test is a count, not a walk: this runs on every release of a
+  # namespace bound outside its scope, `a/f` included. While the edge is
+  # strong the scope is alive and still holds its binding, so one owner is
+  # that binding. A namespace its scope also binds under another name, or
+  # holds in a container, stays strong: the same limit as an aliased
+  # function's.
+  if ns.valueRefs != 1 or ns.weakScope == nil or ns.scope == nil or
+      isSharedFlag(ns.shared):
+    return
+  let owner {.cursor.} = ns.scope
+  if owner.isLoadedModuleRoot:
+    return
+  # Escape-inert while it held its scope, and not any more.
+  retireInertStamps()
+  var retired = move ns.scope
+  retired = nil
+
 var weakeningOwnedFunctions {.threadvar.}: bool
 
 proc weakenOwnedFunctions(candidates: FunctionCandidates) =
@@ -4864,6 +4906,16 @@ proc rcReleaseFull(bits: uint64) =
       else:
         dec typ.valueRefs
       weakenOwnedTypeEnvironment(typ, bits)
+    elif data.objKind == okNamespace:
+      let ns {.cursor.} = cast[NamespaceData](data)
+      when threadedRc:
+        if isSharedFlag(data.shared):
+          discard atomicFetchSub(addr ns.valueRefs, 1, ATOMIC_ACQ_REL)
+        else:
+          dec ns.valueRefs
+      else:
+        dec ns.valueRefs
+      weakenOwnedNamespaceScope(ns)
     GC_unref(data)
   else: discard
 
@@ -5454,6 +5506,9 @@ proc leafEscapeInert(v: Value): bool =
         return true
       let typ {.cursor.} = TypeData(data)
       not (typ.scope == nil and typ.weakScope != nil)
+    of vkNamespace:
+      let ns {.cursor.} = cast[NamespaceData](data)
+      not (ns.scope == nil and ns.weakScope != nil)
     of vkSet:
       inertStampCurrent(SetData(data).inertEpoch)
     of vkHashMap:
@@ -5939,9 +5994,25 @@ proc nsOwnerLane*(v: Value): int =
 
 proc borrowedNsScope*(v: Value): lent Scope =
   ## The namespace must remain alive and unchanged for the borrow's lifetime.
+  ## A namespace that only its own scope holds keeps that scope weakly; the
+  ## weak edge is read in place as a Scope, so this stays a borrow.
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
     raise newException(FieldDefect, "value is not a Namespace")
-  NamespaceData(objData(v)).scope
+  if NamespaceData(objData(v)).scope != nil:
+    return NamespaceData(objData(v)).scope
+  cast[ptr Scope](addr NamespaceData(objData(v)).weakScope)[]
+
+proc promoteNamespaceScope*(v: Value) =
+  ## A namespace bound in its own scope gains an owner outside it (an
+  ## enclosing binding, a Module): it keeps that scope alive until that
+  ## binding is its only owner again.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okNamespace:
+    raise newException(FieldDefect, "value is not a Namespace")
+  let data {.cursor.} = cast[NamespaceData](objData(v))
+  if data.weakScope == nil or isSharedFlag(data.shared):
+    return
+  if data.scope == nil:
+    data.scope = cast[Scope](data.weakScope)
 
 proc nsScope*(v: Value): Scope =
   ## Retain the scope independently of the namespace that owns it.
@@ -8968,6 +9039,10 @@ when defined(geneInertStampVerify):
         let data = TypeData(objData(v))
         data.scope == nil and data.weakScope != nil and
           not weakScopeProtected(guard, data.weakScope)
+      of vkNamespace:
+        let data {.cursor.} = cast[NamespaceData](objData(v))
+        data.scope == nil and data.weakScope != nil and
+          not weakScopeProtected(guard, data.weakScope)
       of vkCallableView:
         mayNeedEscapeReference(v.callableViewTarget, guard, visited, false)
       of vkSet:
@@ -9119,6 +9194,12 @@ proc mayNeedEscape(v: Value, guard: WeakScopeGuard, visited: var EscapeVisited,
         inc visited.impure
         return not weakScopeProtected(guard, data.weakScope)
       false
+    of vkNamespace:
+      let data {.cursor.} = cast[NamespaceData](objData(v))
+      if data.scope == nil and data.weakScope != nil:
+        inc visited.impure
+        return not weakScopeProtected(guard, data.weakScope)
+      false
     of vkCallableView:
       inc visited.impure
       mayNeedEscape(v.callableViewTarget, guard, visited, false)
@@ -9198,6 +9279,14 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
           return v
         data.scope = cast[Scope](data.weakScope)
         data.scopeEscaped = true
+    v
+  of vkNamespace:
+    let data {.cursor.} = cast[NamespaceData](objData(v))
+    if data.scope == nil and data.weakScope != nil and
+        not isSharedFlag(data.shared):
+      if weakScopeProtected(guard, data.weakScope):
+        return v
+      data.scope = cast[Scope](data.weakScope)
     v
   of vkCallableView:
     let target = escapeNested(v.callableViewTarget)
@@ -10387,6 +10476,18 @@ proc newNamespace*(name: string, scope: Scope, modulePath = "",
                    moduleRoot = false,
                    ownerLane = currentEventLane()): Value =
   boxObject(NamespaceData(objKind: okNamespace, name: name, scope: scope,
+                          moduleRoot: moduleRoot, modulePath: modulePath,
+                          ownerLane: ownerLane))
+
+proc newScopeOwnedNamespace*(name: string, scope: Scope, modulePath = "",
+                             moduleRoot = false,
+                             ownerLane = currentEventLane()): Value =
+  ## A namespace that will be bound in `scope` itself, as the namespace `$ns`
+  ## reads there. It holds that scope weakly until it has an owner outside it
+  ## (`promoteNamespaceScope`, or an escape); a strong edge would close a cycle
+  ## through the scope's binding that nothing can collect.
+  boxObject(NamespaceData(objKind: okNamespace, name: name,
+                          weakScope: cast[pointer](scope),
                           moduleRoot: moduleRoot, modulePath: modulePath,
                           ownerLane: ownerLane))
 

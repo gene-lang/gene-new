@@ -11995,7 +11995,7 @@ proc newGlobalScope*(app: Application): Scope =
   result.moduleBase = nil
   result.moduleStatic = true
   result.define(CurrentNamespaceBindingName,
-                newNamespace("<root>", result, moduleRoot = true))
+                newScopeOwnedNamespace("<root>", result, moduleRoot = true))
 
 proc newGlobalScope*(): Scope =
   newGlobalScope(currentApplication())
@@ -12261,6 +12261,8 @@ proc bindThisModule*(scope: Scope, name: string, path = "",
   else:
     root.setNsName(name)
     root.setNsModulePath(path)
+    # The Module below owns the root namespace from outside its scope.
+    root.promoteNamespaceScope()
   scope.moduleRoot = true
   scope.moduleBase = nil
   scope.moduleStatic = true
@@ -20263,6 +20265,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if ns.isMissing or ns.kind != vkNamespace:
         raise newException(GeneError,
           "internal: namespace body lost its current namespace")
+      # The enclosing binding owns the namespace, and so its scope.
+      ns.promoteNamespaceScope()
       scope.define(nsName, ns)
       spush ns
     elif curFrameKind == fkTryBody:
@@ -21973,7 +21977,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # body can refer to it through the private `$ns` binding.
           let nsScope = newScope(scope)
           nsScope.moduleStatic = inst[].flag
-          let ns = newNamespace(inst[].name, nsScope)
+          let ns = newScopeOwnedNamespace(inst[].name, nsScope)
           nsScope.define(CurrentNamespaceBindingName, ns)
           # Hoisted: pushFrame moves the chunk register into the frame.
           let nsBody = chunk.subchunks[inst[].intArg]
