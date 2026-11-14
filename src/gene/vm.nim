@@ -5787,7 +5787,12 @@ proc biToStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   requireOne("to_stream", args)
   let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
   let resolved = resolveListFamily("to_stream", args[0], [], scope)
-  if resolved.handled: return resolved.value
+  if resolved.handled:
+    # A type's own to_stream answers here, before the generic forward below:
+    # its result keeps the same contract.
+    if resolved.value.kind != vkStream:
+      raiseTypeError("to_stream result", "Stream", resolved.value, scope)
+    return resolved.value
   let source = resolved.source
   if source.kind == vkStream:
     # A conversion into the lazy tier is the identity on something already in
