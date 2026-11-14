@@ -228,9 +228,10 @@ type RetirementStartHook* = proc() {.nimcall, raises: [].}
 var retirementStartHook: RetirementStartHook
 
 proc installRetirementStartHook*(hook: RetirementStartHook) =
-  ## Installed once by the VM. Trial deletion counts every owner of a scope,
-  ## Type and Application; the VM's pooled call scopes keep module context
-  ## that no enumerated edge accounts for, so the hook drops it first.
+  ## Installed once by the VM. Trial deletion counts every owner of a module
+  ## root and of an Application; the VM's pooled call scopes keep module
+  ## context that no enumerated edge accounts for, so the hook drops it before
+  ## a retirement that needs those counts exact.
   retirementStartHook = hook
 
 proc rcRetain(bits: uint64) {.raises: [].}
@@ -3992,7 +3993,11 @@ proc retirePendingScopes(pending: var seq[Scope], generations: bool,
   ## stored in `assumedInternal`.
   when not nimRefCountReadable:
     return 0
-  if retirementStartHook != nil:
+  # An ended activation's own retirement needs no flush: the pool holds no
+  # reference to it, only to module roots and the Application, which stay
+  # alive either way. Generations, evaluation roots and runtime contexts are
+  # where those owners must be exact.
+  if retirementStartHook != nil and (generations or complete or context != nil):
     retirementStartHook()
   let privateRetirement = context != nil and context.privateCompilerContext and
     context.compilerOwnerLane == currentEventLane()
@@ -7554,13 +7559,6 @@ proc isNativeWrapperType*(v: Value): bool {.inline.} =
   ## than walking the ancestry keeps the construction and write gates O(1).
   v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
     TypeData(objData(v)).repr == trNativeWrapper
-
-proc isRecordType*(v: Value): bool {.inline.} =
-  ## A Type whose instances keep their fields as props a checked write may
-  ## store into: not an Enum, and not a native wrapper, whose props hold
-  ## native state.
-  v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
-    TypeData(objData(v)).repr != trNativeWrapper
 
 proc typeFields*(v: Value): seq[TypeField] =
   ## Full field schema, parent fields first (inheritance is merged at newType).

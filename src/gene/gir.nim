@@ -3879,9 +3879,13 @@ const scopelessOps = {
   # (opMakeListSplice is excluded: it indexes chunk.listBuilds, which the
   # derived scopeless chunk does not copy).
   opMakeList, opMakeMap,
-  # `(set base/seg… value)`: the write reads only its stack operands and the
-  # target's own schema, never the scope register, so a message such as
-  # `(message inc [d] (set self/n (+ self/n d)))` needs no call scope.
+  # `(set base/seg… value)`: the write works from its stack operands and the
+  # target's own schema, and boundary work resolves in the type's scope, so a
+  # message such as `(message inc [d] (set self/n (+ self/n d)))` needs no
+  # call scope. An indexed write through a witness makes a call whose calling
+  # context is the scope register; the VM sites enter a scopeless body only
+  # when no budget or module policy applies, which is all that context
+  # decides.
   opSetPath,
   opExplicitReturn, opReturn, opReturnBareInt}
 
@@ -4011,7 +4015,12 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
     case inst.op
     of opDefineLocal, opSetLocal:
       # A local of the body's own, never a parameter: the classic convention
-      # adapts an assignment to a parameter's declared type.
+      # adapts an assignment to a parameter's declared type. Stored in a
+      # frame cell, it gets what an argument of a scopeless call gets: no
+      # scope-storage form of a function (there is no scope to own it) and no
+      # strict-binding check (no registration can name an activation that
+      # defines no function), and it has no declared type (opDeclareType is
+      # not a scopeless op).
       if inst.intArg < proto.params.len or inst.intArg >= proto.localNames.len:
         return
       continue

@@ -559,14 +559,34 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
     restoreChunk(fn.scopelessChunk, fn)
     if fn.scopelessChunk != nil:
       # A scopeless body addresses its frame's cells by index: arguments and
-      # locals may be read, only locals written.
-      for inst in fn.scopelessChunk.instructions:
-        if (inst.op == opLoadArg and
-            (inst.intArg < 0 or inst.intArg >= fn.localNames.len)) or
-            (inst.op == opStoreArg and
-            (inst.intArg < fn.params.len or inst.intArg >= fn.localNames.len)):
-          raise newException(ValueError,
-            "encoded GIR contains a scopeless frame index out of range")
+      # locals may be read, only locals written. The locals' cells exist
+      # because the chunk starts by pushing one nil for each, and no jump may
+      # land among those pushes and run one twice.
+      let alt = fn.scopelessChunk
+      let cells = fn.localNames.len - fn.params.len
+      var valid = cells >= 0 and alt.instructions.len >= cells
+      if valid:
+        for i in 0 ..< cells:
+          let push = alt.instructions[i]
+          if push.op != opPushConst or push.intArg < 0 or
+              push.intArg >= alt.constants.len or
+              alt.constants[push.intArg].kind != vkNil:
+            valid = false
+      if valid:
+        for inst in alt.instructions:
+          case inst.op
+          of opLoadArg:
+            if inst.intArg < 0 or inst.intArg >= fn.localNames.len: valid = false
+          of opStoreArg:
+            if inst.intArg < fn.params.len or inst.intArg >= fn.localNames.len:
+              valid = false
+          of opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
+             opJumpIfPresentOrPop, opJumpIfAbsent:
+            if inst.intArg < cells: valid = false
+          else: discard
+      if not valid:
+        raise newException(ValueError,
+          "encoded GIR contains an invalid scopeless frame layout")
     for defaultValue in fn.paramDefaults:
       restoreChunk(defaultValue.defaultChunk, nil)
     for parameter in fn.namedParams:

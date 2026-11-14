@@ -1026,6 +1026,7 @@ template ensureTypeContractReady(scope: Scope, typ: Value) =
   ## Raises unless `typ`'s contract is ready. The scope argument, often
   ## `typ.typeScope`, is evaluated only for a type whose contract is still
   ## pending: reading it returns a counted Scope, on every construction.
+  ## `typ` is evaluated twice, so pass a name or a plain element read.
   if typeContractPending(typ):
     ensureTypeContractReadyIn(scope, typ)
 proc builtinBinding(scope: Scope, name: string): Value
@@ -8236,19 +8237,21 @@ proc setCheckedNodeProp(node: Value, keyId: int32, value: Value): Value =
     rejectNativeWrapperWrite("cannot set field '" & propKeyText(keyId) &
                              "' on " & typ.typeName)
   if not typ.isEnumType:
-    template fields: untyped = typ.borrowedTypeFields
-    for i in 0 ..< fields.len:
-      if fields[i].nameId != keyId:
+    # One borrowed address for the whole scan: asking the type for its field
+    # list at each use was a call per field examined, and this is the writer
+    # of every `set` and `put` of a prop.
+    let fields = addr typ.borrowedTypeFields
+    for i in 0 ..< fields[].len:
+      template field: untyped = fields[][i]
+      if field.nameId != keyId:
         continue
-      let adapted =
-        if fields[i].typeExpr.kind == vkNil or
-            boundaryWorkFree(fields[i].typeExpr, value):
-          value
-        else:
-          adaptFieldBoundary(typ.typeName, fields[i].name, fields[i].typeExpr,
-                             value, fields[i].typeFieldScope(typ.typeScope))
-      node.setNodePropById(keyId, adapted)
-      return adapted
+      if field.typeExpr.isNil or boundaryWorkFree(field.typeExpr, value):
+        node.setNodePropById(keyId, value)
+        return value
+      result = adaptFieldBoundary(typ.typeName, field.name, field.typeExpr,
+                                  value, field.typeFieldScope(typ.typeScope))
+      node.setNodePropById(keyId, result)
+      return
 
   raise newException(GeneError,
     typ.typeName & " has no field '" & propKeyText(keyId) & "'")
@@ -8614,32 +8617,6 @@ proc setMutableChild(target, segment, value: Value): Value =
     raise newException(GeneError,
       "set cannot assign through " & declarationKind(target))
 
-proc trySetUnmanagedProp(node: Value, keyId: int32, value: Value): bool =
-  ## `setMutableChild`'s write of an unmanaged value (nil, Bool, small Int,
-  ## Char, Symbol, immediate Float) to one prop of a mutable Node, done in one
-  ## place: the head is a Symbol, or a record Type that declares the key with
-  ## no annotation or one the value's kind satisfies. Such a value holds no
-  ## caller environment and no function, so the general path would make no
-  ## other call and store it as it is. Anything else returns false having
-  ## changed nothing, and the general path stores the value or raises.
-  if node.nodeImmutable:
-    return false
-  let head {.cursor.} = node.borrowedNodeHead
-  if head.isSymbolValue:
-    node.setNodePropById(keyId, value)
-    return true
-  if not head.isRecordType:
-    return false
-  let fields = addr head.borrowedTypeFields
-  for i in 0 ..< fields[].len:
-    if fields[][i].nameId == keyId:
-      if fields[][i].typeExpr.isNil or
-          bareScalarSatisfied(fields[][i].typeExpr, value):
-        node.setNodePropById(keyId, value)
-        return true
-      return false
-  false
-
 proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
     {.noinline.} =
   ## Out of line on purpose. The dispatch switch is I-cache sensitive — the
@@ -8648,12 +8625,16 @@ proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
   ## Operands are read in place: the stack keeps owning them until the arm
   ## truncates, so an unwind has exactly one owner to release.
   if segCount == 1:
+    # An unmanaged value (nil, Bool, small Int, Char, Symbol, immediate
+    # Float) under a Symbol key of a Node. It holds no caller environment and
+    # no function, so of setMutableChild's gates only the checked prop writer
+    # applies, and nothing is strengthened or recorded afterwards: the write
+    # is that one call, with the writer's own errors.
     let value {.cursor.} = stack[baseIndex + 2]
     let base {.cursor.} = stack[baseIndex]
     let segment {.cursor.} = stack[baseIndex + 1]
-    if not value.isManaged and base.isNodeValue and segment.isSymbolValue and
-        trySetUnmanagedProp(base, segment.symbolId, value):
-      return value
+    if not value.isManaged and base.isNodeValue and segment.isSymbolValue:
+      return setCheckedNodeProp(base, segment.symbolId, value)
   var target = stack[baseIndex]
   for i in 0 ..< segCount - 1:
     target = readSetPathChild(target, stack[baseIndex + 1 + i])
@@ -13271,6 +13252,7 @@ proc resetCallScope(scope, parent: Scope, names: seq[string], mirror = false) =
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
+  scope.loadedModuleBase = false
   scope.moduleStatic = false
   if scope.requiredImplTypes.len != 0:
     scope.requiredImplTypes.setLen(0)
@@ -13624,6 +13606,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
       scope.inheritScopeContext(nil)
     scope.moduleExecutionPolicy = nil
     scope.moduleRoot = false
+    scope.loadedModuleBase = false
     scope.moduleStatic = false
     if scope.wildcardFallbacks.len != 0:
       scope.wildcardFallbacks.clear()
@@ -13672,6 +13655,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   scope.implStageRoot = false
   scope.forceOverlayImpls = false
   scope.moduleRoot = false
+  scope.loadedModuleBase = false
   scope.moduleStatic = false
   if scope.requiredImplTypes.len != 0:
     scope.requiredImplTypes.setLen(0)
@@ -13722,9 +13706,12 @@ proc flushCallScopePoolBeforeRetirement() {.nimcall, raises: [].} =
 installRetirementStartHook(flushCallScopePoolBeforeRetirement)
 
 var vmEntryDepth {.threadvar.}: int
-  ## Nesting of `run`, `runPooled` and `runFiber` on this thread. When the
-  ## outermost returns, its host may drop the scopes and Application it ran,
-  ## so the call-scope pool lets go of their context then.
+  ## Nesting of the dispatch loop's entries on this thread: `run`,
+  ## `runPooled`, `runFiber` and a generator stream's pull and close, which a
+  ## native consumer may make outside any of the others. When the outermost
+  ## returns, its host may drop the scopes and Application it ran, so the
+  ## call-scope pool lets go of their context then. Under ORC only this lane
+  ## runs Gene code, so no other thread's pool holds any.
 
 template enterVm() =
   ## First statement of an entry: its defer runs after the entry's others.
@@ -26290,6 +26277,7 @@ proc generatorFiber(stream: Value): Fiber =
   Fiber(continuation)
 
 proc closeGeneratorStream(stream: Value) {.nimcall.} =
+  enterVm()
   let fiber = stream.generatorFiber
   if fiber == nil:
     return
@@ -26316,6 +26304,7 @@ proc closeGeneratorStream(stream: Value) {.nimcall.} =
         "generator close did not finish cleanup")
 
 proc pullGeneratorStream(stream: Value): StreamPullResult {.nimcall.} =
+  enterVm()
   let code = stream.streamGeneratorCode
   if code == nil or not (code of FunctionProto):
     return StreamPullResult(has: false, item: NIL)
