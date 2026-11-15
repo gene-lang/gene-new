@@ -1,5 +1,5 @@
 (mod supervisor)
-(import ^from "../cli/options" [parse_options])
+(import ^from "../cli/options" [argument_values parse_options])
 (import ^from "../public/text" [byte_suffix])
 (import ^from "./workspace_settings" [initialize_manager_workspace])
 (import ^from "./workspace_lock" [try_lock_wait])
@@ -51,7 +51,7 @@
       (|| (== parsed/options/offline true) (== ($os/env? "GENE_HARNESS_OFFLINE") "1"))
       ($present? parsed/options/script) recovery))
     (let packaged (== child_args/1 "--package-root"))
-    (for arg in args
+    (for arg in (argument_values args)
       (if (!= ($to_str arg) "--recovery") (child_args .push ($to_str arg))))
     (if_yes hosting
       (child_args .push "--supervised")

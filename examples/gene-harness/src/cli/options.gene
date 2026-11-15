@@ -5,9 +5,16 @@
 (fn problem [message : Str, ^code code : Str = "invalid_request"]
   (fail (CliError ^code code ^message message)))
 
+# The hosted entry receives its argv as a Node; direct callers pass a List.
+(fn argument_values [args]
+  (try
+    (if (== ($head args/.body) List) args/.body args)
+    catch Any args))
+
 (fn parse_options [args]
+  (let values (argument_values args))
   (let argv [])
-  (for arg in args
+  (for arg in values
     (argv .push ($to_str arg)))
   (let options {})
   (let workspace ($os/get_env "GENE_HARNESS_WORKSPACE" ""))

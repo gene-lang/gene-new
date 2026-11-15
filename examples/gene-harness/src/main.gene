@@ -1,4 +1,4 @@
-(import ^from "./cli/options" [parse_options problem])
+(import ^from "./cli/options" [argument_values parse_options problem])
 (import ^from "./cli/main" [run_client usage])
 (import ^from "./web/server" [main : serve_web])
 (import ^from "./web/recovery" [main : serve_recovery])
@@ -8,7 +8,7 @@
   (let marker ($os/env? "GENE_HARNESS_ENTRY_MARKER"))
   (if ($absent? marker) (return nil))
   (let args [])
-  (for arg in input (args .push ($to_str arg)))
+  (for arg in (argument_values input) (args .push ($to_str arg)))
   # Ignore the inherited marker in ordinary CLI subprocesses. The supervisor
   # supplies both the marker and a startup id for its direct hosting child.
   (var supervised false) (var id "") (var index 0)
@@ -31,7 +31,7 @@
   (if_yes ($absent? application/provenance)
     (let delegated ["run" "--snapshot"
       ($path/join application/source_root "src/main.gene")])
-    (for arg in args (delegated .push ($to_str arg)))
+    (for arg in (argument_values args) (delegated .push ($to_str arg)))
     (return (await ($os/exec_stdio_async ($os/executable_path) delegated...))))
   (var parsed nil)
   (try
