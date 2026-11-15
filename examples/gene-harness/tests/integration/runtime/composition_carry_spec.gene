@@ -1,0 +1,159 @@
+# An unchanged entry is carried across reconciliation: its activation, rows,
+# services and receiver survive an unrelated composition change.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [new_harness install put_cordis_plugin status_of row shutdown_harness]
+  ^from "../../../src/kernel")
+(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+
+(type FixtureError ^props {^message Str} ^impl [Error])
+(impl Error for FixtureError)
+
+(fn plain [id, counter]
+  (Plugin ^id id ^activate (fn [host] (counter .set (+ counter/.get 1)))))
+
+(fn counting_source [id : Str, function : Str]
+  `(mod plugin
+     (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+     (fn init [descriptor]
+       (Plugin ^id %id ^activate (fn [host]
+         (let seen (host .PluginHost:record "probe" %id))
+         (host .PluginHost:put_record "probe" %id (+ (?? seen 0) 1))
+         (host .PluginHost:contribute "functions"
+           {^name %function ^doc "Probe function." ^fn (fn [] %id)}))))))
+
+(fn stored_activations [runtime, id : Str]
+  (let found (/0 ($filter (runtime/services/values/plugin_services/records "probe")
+    (fn [item] (== item/key id)))))
+  (if ($absent? found) 0 found/value))
+
+(describe "Carried composition"
+  (it "does not reactivate unchanged host plugins across unrelated registrations" []
+    (isolated this_mod/.path
+      "does not reactivate unchanged host plugins across unrelated registrations"
+      (fn [root]
+        (let h (new_harness))
+        (let a ($cell 0))
+        (let b ($cell 0))
+        (try
+          (install h (plain "a" a))
+          (install h (plain "b" b))
+          (install h (plain "c" ($cell 0)))
+          ($assert (== a/.get 1) $"a activated ${a/.get}")
+          ($assert (== b/.get 1) $"b activated ${b/.get}")
+          (install h (plain "d" ($cell 0)))
+          ($assert (== a/.get 1) "an unrelated registration reactivated a")
+          ($assert (== b/.get 1) "an unrelated registration reactivated b")
+        ensure (shutdown_harness h)))))
+
+  (it "keeps one activation per stored plugin across unrelated registrations" []
+    (isolated this_mod/.path
+      "keeps one activation per stored plugin across unrelated registrations"
+      (fn [root]
+        (let profile (Profile ^name "carry" ^plugins []))
+        (let runtime (open_runtime root "default" profile))
+        (try
+          (var n 0)
+          (while (< n 4)
+            (let id $"stored_${n}")
+            (register_plugin runtime/workspace runtime/h id (counting_source id $"fn_${n}"))
+            (set n (+ n 1)))
+          (var index 0)
+          (while (< index 4)
+            (let id $"stored_${index}")
+            ($assert (== (stored_activations runtime id) 1)
+              $"${id} activated ${(stored_activations runtime id)} times")
+            (set index (+ index 1)))
+        ensure (close_runtime runtime)))))
+
+  (it "restarts only a replaced provider's consumers" []
+    (isolated this_mod/.path
+      "restarts only a replaced provider's consumers"
+      (fn [root]
+        (let h (new_harness))
+        (let provider ($cell 0))
+        (let consumer ($cell 0))
+        (let unrelated ($cell 0))
+        (fn provider_plugin [value]
+          (Plugin ^id "provider" ^provides [["functions" "shared"]]
+            ^activate (fn [host]
+              (provider .set (+ provider/.get 1))
+              (host .PluginHost:contribute "functions"
+                {^name "shared" ^doc "Shared." ^fn (fn [] value)}))))
+        (try
+          (install h (provider_plugin 1))
+          (install h (Plugin ^id "consumer" ^requires [["functions" "shared"]]
+            ^activate (fn [host] (consumer .set (+ consumer/.get 1)))))
+          (install h (plain "unrelated" unrelated))
+          (put_cordis_plugin ^^replace h (provider_plugin 2) {^^host})
+          ($assert (== provider/.get 2) ($to_str provider/.get))
+          ($assert (== consumer/.get 2) ($to_str consumer/.get))
+          ($assert (== unrelated/.get 1) ($to_str unrelated/.get))
+          ($assert (== ((/fn (row h "functions" "shared"))) 2))
+        ensure (shutdown_harness h)))))
+
+  (it "becomes ready when another plugin first provides the requirement" []
+    (isolated this_mod/.path
+      "becomes ready when another plugin first provides the requirement"
+      (fn [root]
+        (let h (new_harness))
+        (let consumer ($cell 0))
+        (let unrelated ($cell 0))
+        (try
+          (install h (Plugin ^id "consumer" ^requires [["functions" "later"]]
+            ^activate (fn [host] (consumer .set (+ consumer/.get 1)))))
+          ($assert (== (status_of h "consumer") "pending") (status_of h "consumer"))
+          (install h (plain "unrelated" unrelated))
+          (install h (Plugin ^id "provider" ^provides [["functions" "later"]]
+            ^activate (fn [host]
+              (host .PluginHost:contribute "functions"
+                {^name "later" ^doc "Later." ^fn (fn [] 1)}))))
+          ($assert (== (status_of h "consumer") "ready") (status_of h "consumer"))
+          ($assert (== consumer/.get 1) ($to_str consumer/.get))
+          ($assert (== unrelated/.get 1) "a provider appearing reactivated an unrelated plugin")
+        ensure (shutdown_harness h)))))
+
+  (it "carries a plugin through three registrations under one lease" []
+    (isolated this_mod/.path
+      "carries a plugin through three registrations under one lease"
+      (fn [root]
+        (let h (new_harness))
+        (let count ($cell 0))
+        (let closed [])
+        (try
+          (install h (Plugin ^id "held" ^activate (fn [host]
+            (count .set (+ count/.get 1)))
+            ^deactivate (fn [host] (closed .push "held"))))
+          (let lease (acquire_snapshot h/snapshots))
+          (install h (plain "b" ($cell 0)))
+          (install h (plain "c" ($cell 0)))
+          (install h (plain "d" ($cell 0)))
+          ($assert (== closed []) "a carried plugin was retired")
+          (release_snapshot h/snapshots lease)
+          ($assert (== closed []) "releasing a lease retired a carried plugin")
+          ($assert (== count/.get 1) $"held activated ${count/.get}")
+          ($assert (== (status_of h "held") "ready"))
+        ensure (shutdown_harness h)))))
+
+  (it "does not retry a failed activation on unrelated registrations" []
+    (isolated this_mod/.path
+      "does not retry a failed activation on unrelated registrations"
+      (fn [root]
+        (let h (new_harness))
+        (let attempts ($cell 0))
+        (try
+          (install h (Plugin ^id "bad" ^activate (fn [host]
+            (attempts .set (+ attempts/.get 1))
+            (fail (FixtureError ^message "activation failed")))))
+          ($assert (== (status_of h "bad") "error"))
+          (install h (plain "one" ($cell 0)))
+          (install h (plain "two" ($cell 0)))
+          ($assert (== attempts/.get 1) "a failed plugin was retried by an unrelated registration")
+          ($assert (== (status_of h "bad") "error"))
+        ensure (shutdown_harness h))))))
+
+(fn main [args] : Int (run_spec args))
