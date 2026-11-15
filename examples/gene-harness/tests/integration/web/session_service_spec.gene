@@ -287,7 +287,7 @@
           ($assert (same? state_a/runtime state_b/runtime) "sessions replaced the workspace runtime")
           (let ra (submit service a/id "a" 1 "Alpha"))
           (let rb (submit service b/id "b" 1 "Beta"))
-          (for [session frame] in service/runtime/services/values/controller/rounds/.get frame/watcher/.join)
+          (map_for [session frame] in service/runtime/services/values/controller/rounds/.get frame/watcher/.join)
           (let done_a (receipt service a/id ra/id))
           (let done_b (receipt service b/id rb/id))
           ($assert (== done_a/reply a/id) "a used b's session context")

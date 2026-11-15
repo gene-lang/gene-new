@@ -23,7 +23,7 @@
                       ^generator generator = nil, ^generation_model model = nil,
                       ^size size = nil, ^background background = nil]
                (let input {^prompt prompt ^reference_images references ^max_attempts attempts})
-               (for [key value] in {^generator generator ^generation_model model ^size size ^background background}
+               (map_for [key value] in {^generator generator ^generation_model model ^size size ^background background}
                  (if_not ($absent? value) (input .put key value)))
                (var result (images .ImageHost:begin input))
                (if result/reused (return result))

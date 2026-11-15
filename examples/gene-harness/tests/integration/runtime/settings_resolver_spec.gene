@@ -23,13 +23,13 @@
 # Another host's write: the shared store primitive, with no message to this runtime.
 (fn share [runtime, changes]
   (write_shared_settings (shared_settings_root runtime) ""
-    (fn [values] (for [key value] in changes (values .put ($to_str key) value)))))
+    (fn [values] (map_for [key value] in changes (values .put ($to_str key) value)))))
 
 (fn config_text [runtime] : Str
   ($fs/read_text $"${runtime/state_root}/config.gene"))
 
 (fn join_rounds [controller]
-  (for [id frame] in controller/rounds/.get
+  (map_for [id frame] in controller/rounds/.get
     (if ($present? frame/watcher) frame/watcher/.join)))
 
 (fn latest_receipt [controller, session : Str]

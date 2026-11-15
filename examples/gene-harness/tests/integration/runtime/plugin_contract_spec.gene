@@ -253,7 +253,7 @@
                         {^unknown "unknown/Contract:1"}
                         {^harness_render "gene-harness/HarnessRender:99"}]
             (let bad ($thaw ($freeze good/0)))
-            (for [key value] in extra (bad/interfaces .put key value))
+            (map_for [key value] in extra (bad/interfaces .put key value))
             (let direct (try (verify_stored_entry runtime/workspace bad) ""
               catch Any $err/message))
             ($assert ($str/contains? direct "unsupported interface") direct)

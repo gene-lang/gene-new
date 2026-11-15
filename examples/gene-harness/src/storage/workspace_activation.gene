@@ -42,8 +42,18 @@
   (observation .put "accepted_revision" workspace/active_revision/.get)
   (composition_history_result workspace observation))
 
-(fn activate_descriptor [workspace : Workspace, h : Harness, descriptor, entry]
-  (put_cordis_plugin ^^replace h descriptor (descriptor_entry_options workspace entry)))
+# An explicit registration, replacement or reversion asks for a fresh
+# activation of its entry even when the module is byte-identical; every other
+# entry is carried. The token only has to differ from the previous request.
+(var ^^private activation_requests ($cell 0))
+
+(fn activate_descriptor [workspace : Workspace, h : Harness, descriptor, entry, ^fresh fresh : Bool = false]
+  (var activation nil)
+  (if_yes fresh
+    (activation_requests .set (+ activation_requests/.get 1))
+    (set activation activation_requests/.get))
+  (put_cordis_plugin ^^replace h descriptor
+    (descriptor_entry_options workspace entry ^activation activation)))
 
 (fn update_active_revision [workspace : Workspace, h : Harness]
   (if_not (== workspace/errors/.get #{}) (return nil))
@@ -201,7 +211,7 @@
   (var status "error")
   (try
     (register_descriptor_events h descriptor)
-    (set status (activate_descriptor workspace h descriptor entry))
+    (set status (activate_descriptor ^^fresh workspace h descriptor entry))
     (if (== status "error")
       (record_quarantine workspace id (plugin_error h id))
       (workspace/errors

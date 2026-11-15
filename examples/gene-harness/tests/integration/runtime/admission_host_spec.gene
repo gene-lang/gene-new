@@ -42,7 +42,7 @@
   ensure (release_snapshot runtime/h/snapshots lease)))
 
 (fn join_rounds [controller]
-  (for [id frame] in controller/rounds/.get
+  (map_for [id frame] in controller/rounds/.get
     (if ($present? frame/watcher) frame/watcher/.join)))
 
 # A second chat transport from a plugin: its transport row and its own

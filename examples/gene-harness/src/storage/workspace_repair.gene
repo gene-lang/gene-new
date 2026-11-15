@@ -246,7 +246,7 @@
         (if (entry_enabled? saved)
           (do
             (register_descriptor_events h descriptor)
-            (set status (activate_descriptor workspace h descriptor saved))
+            (set status (activate_descriptor ^^fresh workspace h descriptor saved))
             (if (== status "error")
               (record_quarantine workspace id (plugin_error h id))
               (workspace/errors/.get .delete id)))

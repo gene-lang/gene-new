@@ -55,6 +55,8 @@
     (runtime_admit_hook_key self key))
   (message install [context, plugin, config = nil]
     (runtime_install self context plugin config nil))
+  (message install_provider [context, key, value]
+    (runtime_install_provider self context key value))
   (message inject [context, requirements, callback]
     (runtime_inject self context requirements callback))
   (message loader [options]
@@ -179,8 +181,11 @@
   (message reconcile [manifest, mode = nil]
     (loader_reconcile self manifest mode))
   (message reconcile_plugins [manifest, plugins, ^strict strict : Bool = false,
-                              ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
-    (loader_reconcile_plugins ^strict strict ^pending pending ^accept accept ^commit commit self manifest plugins))
+                              ^pending pending : Bool = false, ^accept accept = nil,
+                              ^commit commit = nil, ^carry carry : Bool = false,
+                              ^changed changed = #[]]
+    (loader_reconcile_plugins ^strict strict ^pending pending ^accept accept ^commit commit
+      ^carry carry ^changed changed self manifest plugins))
   (message reload [changed_paths]
     (loader_reload self changed_paths))
   (message inspect []
@@ -271,6 +276,32 @@
 (type RetirementRecord ^^private ^props {^ticket RetirementTicket ^loader Any ^runtime Any ^instances Any ^resources Any ^contexts Any ^generations Any ^closed Any})
 
 (var ^^private retirement_records ($cell ($thaw #[])))
+
+# A carried activation stays serving through the candidate. Its providers may
+# be refreshed while the candidate settles, but the instance must not react to
+# that change in the live runtime: either it stays carried (unchanged epoch) or
+# it is staged as a fresh candidate revision and retires with its generation.
+(var ^^private held_transitions ($cell ($thaw #[])))
+
+(fn held_instance? [instance] : Bool ^^private
+  (for candidate in held_transitions/.get
+    (if (same? candidate/token instance/token) (return true)))
+  false)
+
+(fn hold_instance_transitions [instance] ^^private
+  (if_not (held_instance? instance)
+    (held_transitions/.get .push instance))
+  nil)
+
+(fn release_instance_transitions [instance] ^^private
+  (var kept (fresh_list))
+  (for candidate in held_transitions/.get
+    (if_not (same? candidate/token instance/token) (kept .push candidate)))
+  (held_transitions .set kept)
+  nil)
+
+(fn instance_transitions_held? [instance] : Bool ^^private
+  (held_instance? instance))
 
 (type LoaderRecord ^^private ^props {^token Any ^runtime RuntimeRecord ^options LoaderOptions ^entries Any ^order Any ^manifest Any ^state Any ^generations Any ^watchers Any ^host_plugins Any ^retirements Any})
 
@@ -986,6 +1017,41 @@
   (request_transition record false)
   (instance_handle record))
 
+(fn runtime_install_provider [handle : Runtime, context_handle_value, key, value] ^^private
+  (var runtime (require_runtime_open (runtime_record handle)))
+  (var parent (context_record context_handle_value))
+  (if_not (same? parent/runtime/token runtime/token)
+    (cordis_failure ContextDisposed "context belongs to another runtime"))
+  (var uid runtime/next_uid/.get)
+  (runtime/next_uid .set (+ uid 1))
+  (var plugin
+    (PluginSpec ^id $"harness/projection:${uid}" ^config_schema nil
+      ^requires [] ^provides [key] ^reload nil
+      ^activate (fn [ctx, config] (ctx .provide key value))))
+  (var record
+    (InstanceRecord ^token ($cell nil) ^runtime runtime ^uid uid ^plugin plugin
+      ^entry_id nil ^parent_context parent ^context ($cell nil) ^config ($cell nil)
+      ^state ($cell InstanceState/pending) ^error ($cell nil)
+      ^desired_epoch ($cell "") ^active_epoch ($cell "") ^transition ($cell nil)
+      ^dirty ($cell false) ^retry ($cell false) ^dispose_requested ($cell false)
+      ^root_effect ($cell nil) ^providers ($cell (fresh_list))
+      ^provided ($cell (fresh_map)) ^children ($cell (fresh_list))
+      ^invocations ($cell (fresh_map)) ^admission_gate ($sync/gate)
+      ^gate_open ($cell true) ^teardown ($cell false)))
+  (var context
+    (new_context_record runtime parent record false (copy_map parent/realms)
+      (copy_map parent/overlays) (make_allowed_keys plugin) parent/limits))
+  (record/context .set (ActivationContext ^token context/token))
+  (reserve_instance_providers record)
+  (runtime/instances/.get .push record)
+  (index_instance_requirements record)
+  (var root (new_effect_record record nil record/context/.get "activation"))
+  (record/root_effect .set root)
+  ((effect_scope_handle root) .provide key value)
+  (record/state .set InstanceState/active)
+  (set_provider_visibility record true)
+  (instance_handle record))
+
 (fn runtime_inject [handle : Runtime, context, requirements, callback] ^^private
   (var runtime (runtime_record handle))
   (var uid runtime/next_uid/.get)
@@ -993,16 +1059,21 @@
     (PluginSpec ^id $"inject:${uid}" ^config_schema nil ^requires requirements ^provides [] ^reload nil ^activate callback))
   (runtime_install handle context spec nil nil))
 
-(fn provider_for_requirement [instance, requirement] ^^private
+(fn provider_for_requirement_in [runtime, instance, requirement] ^^private
   (var context (context_record_even_if_closed instance/context/.get))
   (if (absent? context) (return nil))
   (var key requirement/key)
   (var address (service_address key (context_realm context key)))
-  (var provider (instance/runtime/providers/.get .get address))
+  (var provider (runtime/providers/.get .get address))
   (if ($absent? provider) (return nil))
-  (if_not (&& provider/active/.get provider/available/.get (== provider/owner/state/.get InstanceState/active))
+  (if_not (&& provider/active/.get provider/available/.get
+               (== provider/owner/state/.get InstanceState/active))
     (return nil))
   provider)
+
+(fn provider_for_requirement [instance, requirement] ^^private
+  (provider_for_requirement_in instance/runtime instance requirement))
+
 
 (fn compute_instance_epoch [instance] ^^private
   (var rows (fresh_list))
@@ -1043,6 +1114,7 @@
   (if (== instance/state/.get InstanceState/disposed) (return nil))
   (instance/dirty .set true)
   (if retry (instance/retry .set true))
+  (if (instance_transitions_held? instance) (return nil))
   (if_not (absent? instance/transition/.get) (return nil))
   # A provider notification may originate inside restricted plugin code. The
   # transition itself belongs to the host executor; each plugin invocation
@@ -1166,6 +1238,7 @@
   (if disposing
     (then
       (instance/state .set InstanceState/disposed)
+      (release_instance_transitions instance)
       (for context in instance/runtime/contexts/.get
         (if (&& (! (absent? context/owner))
                 (same? context/owner instance))
@@ -1179,6 +1252,9 @@
 
 (fn run_instance_transitions [instance] ^^private
   (try
+    (if (instance_transitions_held? instance)
+      (do
+        (return nil)))
     (while instance/dirty/.get
       (instance/dirty .set false)
       (if instance/dispose_requested/.get
@@ -2184,6 +2260,9 @@
     (runtime_await_settled handle)
     (return nil))
   (runtime/state .set "closing")
+  # Shutdown must dispose every instance; a hold kept for reconciliation
+  # cannot block disposition.
+  (held_transitions .set (fresh_list))
   (for loader in (copy_list runtime/loaders/.get)
     (try
       (loader_dispose (Loader ^token loader/token))
@@ -2265,7 +2344,11 @@
     (cordis_failure CompositionError "descriptor_factory must be a host callable"))
   (if (&& (! (absent? options/retirement)) (! (callable? options/retirement)))
     (cordis_failure CompositionError "retirement must be a host callable"))
-  (LoaderOptions ^plugin_root options/plugin_root ^shared ($freeze (copy_list options/shared)) ^max_namespaces ($freeze (copy_list options/max_namespaces)) ^default_limits limits ^reload_policy options/reload_policy ^publication options/publication ^allow_pending options/allow_pending ^allow_failed options/allow_failed ^retirement options/retirement ^descriptor_factory options/descriptor_factory))
+  (if (&& (! (absent? options/selection_refresh)) (! (callable? options/selection_refresh)))
+    (cordis_failure CompositionError "selection_refresh must be a host callable"))
+  (if (&& (! (absent? options/projection_installer)) (! (callable? options/projection_installer)))
+    (cordis_failure CompositionError "projection_installer must be a host callable"))
+  (LoaderOptions ^plugin_root options/plugin_root ^shared ($freeze (copy_list options/shared)) ^max_namespaces ($freeze (copy_list options/max_namespaces)) ^default_limits limits ^reload_policy options/reload_policy ^publication options/publication ^allow_pending options/allow_pending ^allow_failed options/allow_failed ^retirement options/retirement ^descriptor_factory options/descriptor_factory ^selection_refresh options/selection_refresh ^projection_installer options/projection_installer))
 
 (fn runtime_loader [handle : Runtime, options] ^^private
   (var runtime (require_runtime_open (runtime_record handle)))
@@ -2669,11 +2752,12 @@
     (set current current/parent_context/owner))
   false)
 
-(fn clone_direct_provider_layer ^^private [live, candidate, replaced_direct]
+(fn clone_direct_provider_layer ^^private [live, candidate, replaced_direct, kept = #[]]
   (var providers (fresh_map))
   (var reservations (fresh_map))
   (map_for [address provider] in live/providers/.get
-    (if (&& (! (runtime_instance_is_loader_owned? provider/owner))
+    (if (&& (|| (! (runtime_instance_is_loader_owned? provider/owner))
+                (instance_object_in_records? kept provider/owner))
             (! (instance_in_records? replaced_direct provider/owner)))
       (providers .put address provider)))
   # Reservations exist even for unavailable or failed providers, so cloning
@@ -2683,7 +2767,8 @@
     (for instance in live/instances/.get
       (if (== instance/uid uid) (set owner instance)))
     (if (&& (! (absent? owner))
-            (! (runtime_instance_is_loader_owned? owner))
+            (|| (! (runtime_instance_is_loader_owned? owner))
+                (instance_object_in_records? kept owner))
             (! (instance_in_records? replaced_direct owner)))
       (reservations .put address uid)))
   (candidate/providers .set providers)
@@ -2692,13 +2777,14 @@
   (map_for [id rows] in live/hooks/.get
     (var retained (fresh_list))
     (for record in rows
-      (if (&& (! (runtime_instance_is_loader_owned? record/owner))
+      (if (&& (|| (! (runtime_instance_is_loader_owned? record/owner))
+                  (instance_object_in_records? kept record/owner))
               (! (instance_in_records? replaced_direct record/owner)))
         (retained .push record)))
     (if (> retained/.size 0) (hooks .put id retained)))
   (candidate/hooks .set hooks))
 
-(fn new_candidate_runtime [loader, replaced_direct] ^^private
+(fn new_candidate_runtime [loader, replaced_direct, kept = #[]] ^^private
   (var live loader/runtime)
   (var handle (create_runtime live/options live/executor))
   (var candidate (runtime_record handle))
@@ -2706,7 +2792,7 @@
   (candidate/hook_keys .set (copy_map live/hook_keys/.get))
   (candidate/next_uid .set live/next_uid/.get)
   (candidate/next_context .set live/next_context/.get)
-  (clone_direct_provider_layer live candidate replaced_direct)
+  (clone_direct_provider_layer live candidate replaced_direct kept)
   candidate)
 
 (fn discard_candidate_runtime [candidate] ^^private
@@ -2802,9 +2888,11 @@
                 (&& (== instance/state/.get InstanceState/disposed)
                     (! (absent? instance/parent_context/owner))))
       (var epoch (compute_instance_epoch instance))
+      (var state_text (state_name instance/state/.get))
+      (var entry_text ($to_str (?? instance/entry_id "?")))
       (plugin_error
         CompositionError
-        $"staged candidate did not activate; missing ${epoch/missing}"
+        $"staged candidate did not activate (${state_text} ${entry_text}); missing ${epoch/missing}"
         instance
         instance/error/.get)))
   nil)
@@ -2881,7 +2969,8 @@
 (fn preserve_staged_instance_identities [old_entries, staged_entries] ^^private
   (map_for [id staged] in staged_entries
     (var old (old_entries .get id))
-    (if (&& ($present? old) (! (absent? old/instance)) (! (absent? staged/instance)))
+    (if (&& ($present? old) (! (absent? old/instance)) (! (absent? staged/instance))
+            (! (same? old/instance staged/instance)))
       (then
         (var old_record (instance_record old/instance))
         (var staged_record (instance_record staged/instance))
@@ -2923,6 +3012,47 @@
   (for candidate in records
     (if (same? candidate instance) (return true)))
   false)
+
+# Entries whose staged revision is the same instance as the live entry are
+# carried. Their whole ownership tree stays in the live runtime.
+(fn staged_kept_instances [old_entries, staged_entries] ^^private
+  (var roots (fresh_list))
+  (map_for [id entry] in staged_entries
+    (var old (old_entries .get id))
+    (if (&& ($present? old) ($present? old/instance) ($present? entry/instance)
+            (same? old/instance entry/instance))
+      (roots .push (instance_record entry/instance))))
+  (expand_owned_replacements roots))
+
+(fn instance_in_records [records, instance] : Bool ^^private
+  (for candidate in records
+    (if (same? candidate/token instance/token) (return true)))
+  false)
+
+(fn resources_for_instances [resources, instances] ^^private
+  (var out (fresh_list))
+  (for resource in resources
+    (var owner (resource_owner resource))
+    (if (&& ($present? owner) (instance_in_records instances owner))
+      (out .push resource)))
+  out)
+
+# Retirement carries only contexts whose entry revision or owning instance is
+# leaving. Kept contexts remain alive in the live runtime.
+(fn retirement_contexts [live, old_entries, staged_entries, closure] ^^private
+  (var leaving (fresh_map))
+  (map_for [id old] in old_entries
+    (var staged (staged_entries .get id))
+    (if (|| (absent? staged) (absent? staged/instance) (absent? old/instance)
+            (! (same? old/instance staged/instance)))
+      (if ($present? old/context)
+        (leaving .put ($to_str old/context/token) true))))
+  (var out (fresh_list))
+  (for context in live/contexts/.get
+    (if (|| ($present? (leaving .get ($to_str context/token)))
+            (&& ($present? context/owner) (instance_in_records closure context/owner)))
+      (out .push context)))
+  out)
 
 (fn retiring_consumer_closure [live, retiring] ^^private
   (var closure (fresh_list))
@@ -3025,8 +3155,11 @@
   (for instance in closure
     (for provider in instance/providers/.get
       (keys .put provider/key/id provider/key)))
-  (map_for [address provider] in candidate/providers/.get
-    (if (runtime_instance_is_loader_owned? provider/owner) (keys .put provider/key/id provider/key)))
+  # Carried providers already served before this publication; notifying them
+  # would ask their consumers to rebind an unchanged provider.
+  (for instance in candidate/instances/.get
+    (for provider in instance/providers/.get
+      (keys .put provider/key/id provider/key)))
   (map_for [id key] in keys
     (notify_service runtime key)))
 
@@ -3034,12 +3167,16 @@
   [loader, candidate, staged, old_entries, old_order, manifest]
   (var live loader/runtime)
   (var deferred (! (absent? loader/options/retirement)))
-  (var old_resources (copy_list live/resources/.get))
+  (var kept_instances (staged_kept_instances old_entries staged/entries))
   (var retiring (fresh_map))
   (map_for [id entry] in old_entries
     (if_not (absent? entry/instance)
-      (retiring .put id (instance_record entry/instance))))
+      (var staged_entry (staged/entries .get id))
+      (if (|| (absent? staged_entry) (absent? staged_entry/instance)
+              (! (same? entry/instance staged_entry/instance)))
+        (retiring .put id (instance_record entry/instance)))))
   (var closure (retiring_consumer_closure live retiring))
+  (var retiring_resources (resources_for_instances (copy_list live/resources/.get) closure))
   (var replaced_direct staged/direct_replaced)
   (for old in replaced_direct
     (if_not (instance_object_in_records? closure old) (closure .push old)))
@@ -3056,7 +3193,8 @@
       (for provider in old_instance/providers/.get
         (provider/active .set false))))
   (var contexts (direct_contexts live old_entries replaced_direct))
-  (var retiring_contexts (copy_list live/contexts/.get))
+  (for context in (kept_contexts live kept_instances) (contexts .push context))
+  (var retiring_contexts (retirement_contexts live old_entries staged/entries closure))
   (var old_entry_tokens (old_entry_context_tokens old_entries))
   (if_not deferred
     (for context in retiring_contexts
@@ -3064,7 +3202,7 @@
               (&& (! (absent? context/owner))
                   (instance_object_in_records? closure context/owner)))
         (context/alive .set false))))
-  (var during_contexts (copy_list retiring_contexts))
+  (var during_contexts (copy_list live/contexts/.get))
   (var candidate_root_handle candidate/root/.get)
   (for context in candidate/contexts/.get
     (if_not (same? context/token candidate_root_handle/token)
@@ -3072,8 +3210,10 @@
       (during_contexts .push context)))
   (var resources (direct_resources live replaced_direct))
   (for resource in candidate/resources/.get (resources .push resource))
+  (for resource in (kept_resources live kept_instances) (resources .push resource))
   (var instances (direct_instances live replaced_direct))
   (for instance in candidate/instances/.get (instances .push instance))
+  (for instance in kept_instances (instances .push instance))
   (live/contexts .set during_contexts)
   (live/resources .set resources)
   (live/instances .set instances)
@@ -3109,7 +3249,7 @@
         (old_generations .push entry/generation)))
     (var ticket (RetirementTicket ^token ($cell nil)))
     (var record (RetirementRecord ^ticket ticket ^loader loader ^runtime live
-      ^instances closure ^resources old_resources ^contexts retiring_contexts
+      ^instances closure ^resources retiring_resources ^contexts retiring_contexts
       ^generations old_generations ^closed ($cell false)))
     (retirement_records/.get .push record)
     (loader/retirements/.get .push record)
@@ -3170,6 +3310,393 @@
     (if ($absent? (staged_entries .get id)) (changed .push id)))
   changed)
 
+(fn staged_instance_state [entry] ^^private
+  (if (absent? entry/instance) (return InstanceState/disposed))
+  (let instance (instance_record entry/instance))
+  instance/state/.get)
+
+# Identity of an entry is its row data plus its admitted plugin and the policy
+# the host derived for it. Configuration and limits change an entry even when
+# the plugin value is the same; a changed module digest arrives in `changed`.
+(fn staged_row_changed? [old, row, admitted] ^^private
+  (if (absent? old) (return true))
+  (if (|| ($present? row/parent_id) old/group row/group old/disabled row/disabled
+          (absent? old/instance))
+    (return true))
+  (if (|| (!= old/data/config row/config)
+          (!= old/data/limits row/limits)
+          (!= old/data/namespaces row/namespaces)
+          (!= old/module_path row/module))
+    (return true))
+  (let host_plugin (admitted .get row/id))
+  (if ($present? host_plugin) (return (! (same? old/plugin host_plugin))))
+  false)
+
+(fn staged_carried_entry [old, row] ^^private
+  (LoaderEntryRecord ^id old/id ^parent_id old/parent_id ^data row ^group old/group
+    ^disabled old/disabled ^context old/context ^context_signature old/context_signature
+    ^module_path old/module_path ^plugin old/plugin ^module old/module
+    ^instance old/instance ^generation old/generation ^graph old/graph
+    ^error (?? old/error nil)))
+
+# A kept activation is the live instance and everything it installed: child
+# instances, their providers, resources and contexts. They stay members of the
+# live runtime and are never members of the candidate.
+(fn kept_instance_roots [old_entries, kept_ids] ^^private
+  (var roots (fresh_list))
+  (map_for [id ignored] in kept_ids
+    (var old (old_entries .get id))
+    (if (&& ($present? old) ($present? old/instance))
+      (roots .push (instance_record old/instance))))
+  (expand_owned_replacements roots))
+
+(fn kept_contexts [live, kept_instances] ^^private
+  (var out (fresh_list))
+  (for context in live/contexts/.get
+    (if (&& ($present? context/owner)
+            (instance_object_in_records? kept_instances context/owner))
+      (out .push context)))
+  out)
+
+(fn kept_resources [live, kept_instances] ^^private
+  (var out (fresh_list))
+  (for resource in live/resources/.get
+    (var owner (resource_owner resource))
+    (if (&& ($present? owner) (instance_object_in_records? kept_instances owner))
+      (out .push resource)))
+  out)
+
+(fn carry_copy_map [source] ^^private
+  (var out (fresh_map))
+  (map_for [key value] in source (out .put key value))
+  out)
+
+# The candidate sees kept providers, reservations and hooks so a staged
+# consumer resolves a carried provider exactly as the live runtime does. Kept
+# resources stay in the live runtime; only their index rows are shared.
+(fn sync_kept_provider_layer ^^private [live, candidate, old_entries, kept_ids]
+  (var kept (kept_instance_roots old_entries kept_ids))
+  (var candidate_instances candidate/instances/.get)
+  (var providers (carry_copy_map candidate/providers/.get))
+  (map_for [address provider] in providers
+    (if (&& (! (instance_object_in_records? candidate_instances provider/owner))
+            (! (instance_object_in_records? kept provider/owner)))
+      (then
+        (var live_provider (live/providers/.get .get address))
+        (if (|| (absent? live_provider) (! (same? live_provider provider)))
+          (providers .delete address)))))
+  (var imported (fresh_list))
+  (map_for [address provider] in live/providers/.get
+    (if (instance_object_in_records? kept provider/owner)
+      (do
+        (let existing (providers .get address))
+        (if (|| (absent? existing)
+                (! (instance_object_in_records? candidate_instances existing/owner)))
+          (then
+            (providers .put address provider)
+            (imported .push provider/key))))))
+  (candidate/providers .set providers)
+  (var reservations (carry_copy_map candidate/reservations/.get))
+  (var candidate_uids (fresh_map))
+  (for instance in candidate_instances
+    (candidate_uids .put ($to_str instance/uid) true))
+  (var kept_uids (fresh_map))
+  (for instance in kept
+    (kept_uids .put ($to_str instance/uid) true))
+  (map_for [address uid] in reservations
+    (if (&& ($absent? (candidate_uids .get ($to_str uid)))
+            ($absent? (kept_uids .get ($to_str uid))))
+      (then
+        (var live_uid (live/reservations/.get .get address))
+        (if (|| (absent? live_uid) (!= live_uid uid))
+          (reservations .delete address)))))
+  (map_for [address uid] in live/reservations/.get
+    (if ($present? (kept_uids .get ($to_str uid)))
+      (reservations .put address uid)))
+  (candidate/reservations .set reservations)
+  (var hooks (fresh_map))
+  (map_for [id rows] in candidate/hooks/.get
+    (var retained (fresh_list))
+    (for record in rows
+      (if (|| (instance_object_in_records? candidate_instances record/owner)
+              (instance_object_in_records? kept record/owner)
+              (! (runtime_instance_is_loader_owned? record/owner)))
+        (retained .push record)))
+    (if (> retained/.size 0) (hooks .put id retained)))
+  (map_for [id rows] in live/hooks/.get
+    (var retained (?? (hooks .get id) (fresh_list)))
+    (for record in rows
+      (if (instance_object_in_records? kept record/owner)
+        (if_not (instance_object_in_records? retained record)
+          (retained .push record))))
+    (if (> retained/.size 0) (hooks .put id retained)))
+  (candidate/hooks .set hooks)
+  (for key in (unique_keys imported)
+    (notify_service candidate key))
+  nil)
+
+(fn unique_keys [keys] ^^private
+  (var seen (fresh_map))
+  (var out (fresh_list))
+  (for key in keys
+    (if ($absent? (seen .get key/id))
+      (then
+        (seen .put key/id true)
+        (out .push key))))
+  out)
+
+(fn kept_instance_epoch_changed? [instance] ^^private
+  (let epoch (compute_instance_epoch instance))
+  (!= epoch/text instance/active_epoch/.get))
+
+# A carried consumer's live providers are unchanged until publication. Compare
+# its live binding with the candidate's prospective binding by owner, so a
+# changed row invalidates the consumer even though its live epoch is stable.
+(fn carried_selection_changed? [live, candidate, instance] : Bool
+  (for requirement in instance/plugin/requires
+    (let live_provider (provider_for_requirement_in live instance requirement))
+    (let candidate_provider (provider_for_requirement_in candidate instance requirement))
+    (let live_owner (if ($present? live_provider) live_provider/owner nil))
+    (let candidate_owner (if ($present? candidate_provider) candidate_provider/owner nil))
+    (if_not (same? live_owner candidate_owner) (return true)))
+  false)
+
+(fn staged_prepared_source [loader, candidate, transaction, row, admitted, old_entries]
+  (var host_plugin (admitted .get row/id))
+  (var parent_context candidate/root/.get)
+  (var parent_signature "root")
+  (var signature (entry_context_signature row parent_signature))
+  (var context (derive_loader_context loader parent_context row))
+  (var source
+    (staged_candidate_source old_entries row transaction loader #[] admitted))
+  (var instance
+    (runtime_install (Runtime ^token candidate/token) context source/plugin row/config row/id))
+  {
+    ^entry (LoaderEntryRecord
+      ^id row/id ^parent_id row/parent_id ^data row ^!group ^!disabled
+      ^context context ^context_signature signature ^module_path row/module
+      ^plugin source/plugin ^module source/module ^instance instance
+      ^generation source/generation ^graph source/graph)
+    ^prepared source/prepared
+    ^generation source/generation})
+
+# Build one staged revision for every row whose identity changed, whose
+# activation had not run, or which a requirement invalidation pulled in.
+# Carried rows reuse the live entry and instance; reruns dispose the candidate
+# revision they replace before installing its successor.
+(fn remove_runtime_instance [runtime, record] ^^private
+  (var kept (fresh_list))
+  (for instance in runtime/instances/.get
+    (if_not (same? instance/token record/token) (kept .push instance)))
+  (runtime/instances .set kept)
+  nil)
+
+(fn build_carry_entries ^^private
+  [loader, candidate, transaction, rows, install_ids, kept_ids, old_entries, admitted,
+   entries, order, prepared_generations, abandoned_generations]
+  (if (== order/.size 0)
+    (for row in rows (order .push row/id)))
+  (for row in rows
+    (var id row/id)
+    (if ($present? (kept_ids .get id))
+      (then
+        (if ($absent? (entries .get id))
+          (entries .put id (staged_carried_entry (old_entries .get id) row))))
+      (else
+        (if ($present? (install_ids .get id))
+          (then
+            (var existing (entries .get id))
+            (var previous (old_entries .get id))
+            (if_yes (&& ($present? existing) ($present? existing/instance)
+                        (|| (absent? previous) (absent? previous/instance)
+                            (! (same? existing/instance previous/instance))))
+              (do
+                (var displaced (instance_record existing/instance))
+                (instance_dispose existing/instance)
+                (runtime_await_settled (Runtime ^token candidate/token))
+                (remove_runtime_instance candidate displaced)
+                (if_not (absent? existing/generation)
+                  (abandoned_generations .push existing/generation))))
+            (var built
+              (staged_prepared_source loader candidate transaction row admitted old_entries))
+            (if_yes built/prepared (prepared_generations .push built/generation))
+            (entries .put id built/entry))))))
+  nil)
+
+(fn loader_reconcile_staged_carry ^^private
+  [loader, manifest, rows, force_ids, admitted, changed_ids,
+   ^strict strict : Bool = false, ^pending pending : Bool = false,
+   ^accept accept = nil, ^commit commit = nil]
+  (var old_entries (carry_copy_map loader/entries/.get))
+  (var old_order (copy_list loader/order/.get))
+  (var changed (fresh_map))
+  (for id in changed_ids (changed .put ($to_str id) true))
+  (for id in force_ids (changed .put ($to_str id) true))
+  (var kept_ids (fresh_map))
+  (var install_ids (fresh_map))
+  (for row in rows
+    (var id row/id)
+    (var old (old_entries .get id))
+    (if (|| (staged_row_changed? old row admitted) ($present? (changed .get id)))
+      (then (install_ids .put id true))
+      (else
+        (let state (staged_instance_state old))
+        (if (|| (== state InstanceState/active) (== state InstanceState/failed))
+          (then (kept_ids .put id true))
+          (else (install_ids .put id true))))))
+  # A changed or departed provider invalidates its live consumers first; the
+  # fixed point below finds consumers a new provider would re-bind.
+  (var retiring (fresh_map))
+  (map_for [id old] in old_entries
+    (if (&& ($present? old/instance) ($absent? (kept_ids .get id)))
+      (retiring .put id (instance_record old/instance))))
+  (var closure (retiring_consumer_closure loader/runtime retiring))
+  (map_for [id old] in old_entries
+    (if (&& ($present? old/instance)
+            (instance_in_records? closure (instance_record old/instance)))
+      (do
+        (install_ids .put id true)
+        (kept_ids .delete id))))
+  (var held (fresh_list))
+  (map_for [id old] in old_entries
+    (if ($present? old/instance)
+      (then
+        (var instance (instance_record old/instance))
+        (hold_instance_transitions instance)
+        (held .push instance))))
+  (var direct_roots (stageable_direct_closure closure))
+  (var replaced_direct (expand_owned_replacements direct_roots))
+  (var transaction ($runtime/sandbox_transaction))
+  (var candidate nil)
+  (var ticket nil)
+  (var prepared_ticket false)
+  (var modules_committed false)
+  (var entries (fresh_map))
+  (var order (fresh_list))
+  (var prepared_generations (fresh_list))
+  (var abandoned_generations (fresh_list))
+  (try
+    (if_not (absent? loader/options/publication)
+      (do
+        (set ticket loader/options/publication/.PublicationParticipant:prepare)
+        (set prepared_ticket true)))
+    (set candidate
+      (new_candidate_runtime loader replaced_direct
+        (kept_instance_roots old_entries kept_ids)))
+    # Selected-entry projections for changed rows are installed in this
+    # candidate. They own their provider through their own activation effect,
+    # so a rejected candidate disposes them with the rest of its instances.
+    (if_not (absent? loader/options/projection_installer)
+      (loader/options/projection_installer
+        (fn [key value]
+          (let providers (fresh_map))
+          (let reservations (fresh_map))
+          (let removed (fresh_map))
+          (map_for [address provider] in candidate/providers/.get
+            (if (same? provider/key key)
+              (removed .put address true)
+              (providers .put address provider)))
+          (map_for [address uid] in candidate/reservations/.get
+            (if ($absent? (removed .get address))
+              (reservations .put address uid)))
+          (candidate/providers .set providers)
+          (candidate/reservations .set reservations)
+          # A nil value withdraws the key: the candidate inherited the live
+          # projection's provider, and its consumers must see it gone.
+          (if (absent? value) (return nil))
+          (runtime_install_provider (Runtime ^token candidate/token)
+            candidate/root/.get key value))))
+    (build_carry_entries loader candidate transaction rows install_ids kept_ids old_entries
+      admitted entries order prepared_generations abandoned_generations)
+    (var rounds 0)
+    (var again true)
+    (while again
+      (set rounds (+ rounds 1))
+      (if (> rounds (+ rows/.size 2))
+        (cordis_failure RecoveryRequired "staged carry did not reach a fixed point"))
+      (runtime_await_settled (Runtime ^token candidate/token))
+      (if_not (absent? loader/options/selection_refresh)
+        (loader/options/selection_refresh))
+      (sync_kept_provider_layer loader/runtime candidate old_entries kept_ids)
+      (runtime_await_settled (Runtime ^token candidate/token))
+      (var rerun (fresh_list))
+      (map_for [id entry] in entries
+        (if (&& ($present? entry/instance) ($absent? (kept_ids .get id)))
+          (then
+            (var instance (instance_record entry/instance))
+            (let state instance/state/.get)
+            (if (== state InstanceState/active)
+              (if (kept_instance_epoch_changed? instance) (rerun .push id))
+              (if (== state InstanceState/pending)
+                (do
+                  (let epoch (compute_instance_epoch instance))
+                  (if epoch/ready (rerun .push id))))))))
+      (map_for [id ignored] in kept_ids
+        (var entry (entries .get id))
+        (if (&& ($present? entry) ($present? entry/instance))
+          (then
+            (var instance (instance_record entry/instance))
+            (if (&& (== instance/state/.get InstanceState/active)
+                    (|| (kept_instance_epoch_changed? instance)
+                        (carried_selection_changed? loader/runtime candidate instance)))
+              (rerun .push id)))))
+      (if (== rerun/.size 0)
+        (set again false)
+        (do
+          # Only this round's invalidated entries are staged again. Entries
+          # staged in an earlier round keep their candidate revision unless
+          # their own epoch changed, which puts them in `rerun` too.
+          (var round_ids (fresh_map))
+          (for id in rerun
+            (round_ids .put id true)
+            (kept_ids .delete id))
+          (build_carry_entries loader candidate transaction rows round_ids kept_ids
+            old_entries admitted entries order prepared_generations abandoned_generations))))
+    (require_candidate_active candidate (if strict pending loader/options/allow_pending)
+      (if strict false loader/options/allow_failed))
+    (if_not (absent? accept) (accept))
+    transaction/.commit
+    (set modules_committed true)
+    (if_not (absent? commit) (commit))
+  catch Any
+    (var failure $err)
+    (let cleanup_errors (discard_candidate_runtime candidate))
+    (if modules_committed
+      (for generation in prepared_generations
+        (try generation/.release catch Any (cleanup_errors .push $err/message)))
+      (try transaction/.discard catch Any (cleanup_errors .push $err/message)))
+    (if prepared_ticket (loader/options/publication .PublicationParticipant:abort ticket))
+    (for instance in held (release_instance_transitions instance))
+    (cordis_failure CompositionError
+      (if cleanup_errors/.empty? $"staged carry rejected before publication: ${(failure_text failure)}"
+        $"staged carry rejected (${(failure_text failure)}); candidate cleanup failed: ${cleanup_errors}") failure))
+  (var staged
+    {
+      ^entries entries
+      ^order order
+      ^prepared_generations prepared_generations
+      ^publication_ticket ticket
+      ^host_plugins admitted
+      ^direct_revisions (build_direct_candidate_revisions candidate direct_roots)
+      ^direct_replaced replaced_direct})
+  (try
+    (publish_staged_runtime loader candidate staged old_entries old_order manifest)
+  catch Any
+    (map_for [id ignored] in kept_ids
+      (var entry (entries .get id))
+      (if (&& ($present? entry) ($present? entry/instance))
+        (release_instance_transitions (instance_record entry/instance))))
+    (fail $err))
+  (map_for [id ignored] in kept_ids
+    (var entry (entries .get id))
+    (if (&& ($present? entry) ($present? entry/instance))
+      (release_instance_transitions (instance_record entry/instance))))
+  (for generation in abandoned_generations
+    (if_not (generation_reused? entries generation)
+      (try generation/.release catch Any nil)))
+  (loader_snapshot loader "staged-carry"
+    ($freeze (staged_changed_ids old_entries entries))))
+
 (fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[], host_plugins = nil,
   ^strict strict : Bool = false, ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
   (var admitted (if (absent? host_plugins) loader/host_plugins/.get host_plugins))
@@ -3226,7 +3753,8 @@
   (loader_snapshot loader "staged" ($freeze changed)))
 
 (fn loader_reconcile_plugins ^^private [handle : Loader, manifest, plugins,
-  ^strict strict : Bool = false, ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
+  ^strict strict : Bool = false, ^pending pending : Bool = false, ^accept accept = nil,
+  ^commit commit = nil, ^carry carry : Bool = false, ^changed changed = #[]]
   ($runtime/require_root_lane)
   (var loader (loader_record handle))
   (if_not (== loader/state/.get "open")
@@ -3252,11 +3780,19 @@
   # A publication participant swaps host state for a whole candidate, so it
   # needs staged reconciliation. Without one, entries reconcile individually:
   # unchanged plugins stay live and a failed activation affects only its entry.
+  # Carried entries reuse their live contexts; a grouped manifest derives child
+  # contexts from the candidate, so it keeps whole-candidate staging.
+  (var flat true)
+  (for row in rows
+    (if (|| ($present? row/parent_id) row/group) (set flat false)))
   (if (&& (! strict) (absent? accept) (absent? commit)
           (absent? loader/options/publication) (absent? loader/options/retirement))
     (loader_reconcile_incremental loader manifest rows admitted)
-    (loader_reconcile_staged ^strict strict ^pending pending ^accept accept ^commit commit
-      loader manifest rows #[] admitted)))
+    (if (&& carry flat)
+      (loader_reconcile_staged_carry loader manifest rows #[] admitted changed
+        ^strict strict ^pending pending ^accept accept ^commit commit)
+      (loader_reconcile_staged ^strict strict ^pending pending ^accept accept ^commit commit
+        loader manifest rows #[] admitted))))
 
 (fn loader_reconcile [handle : Loader, manifest, mode] ^^private
   (var loader (loader_record handle))

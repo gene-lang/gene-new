@@ -37,7 +37,7 @@
   (let bindings {})
   (for packet in (run_turn_phase transaction "bindings")
     (if_not ($absent? packet/value)
-      (for [name value] in packet/value (bindings .put name value))))
+      (map_for [name value] in packet/value (bindings .put name value))))
   (let result (evaluate_harness_turn runtime/h ctx/turn runtime/root source
     ^session ctx/session ^round ctx/round/id ^lease lease ^bindings bindings ^^coordinated ^turn_context ctx
     ^reviewer {^name "scripted" ^settings {^model "test" ^effort "none"} ^row {}}

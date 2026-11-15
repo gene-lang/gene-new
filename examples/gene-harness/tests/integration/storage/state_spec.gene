@@ -26,7 +26,7 @@
       (fn [workspace]
         (let root workspace)
         ($fs/make_dir root)
-        (let first (open_event_store root ^segment_events 2 ^retained_segments 1))
+        (let first (open_event_store root ^segment_events 2))
         (try
           (for stream in ["a" "b"]
             (record_core_state first "workspace" "workspace" "session/state"
@@ -38,18 +38,18 @@
           ensure (close_event_store first))
         (let events (open_event_store root))
         (try
-          ($assert (== ($size events/streams/.get) 0) "opening read session streams")
-          ($assert (== ($size (core_states events "workspace" "workspace")) 2)
+          ($assert (== ($map_size events/streams/.get) 0) "opening read session streams")
+          ($assert (== ($map_size (core_states events "workspace" "workspace")) 2)
             "session metadata was not restored")
-          ($assert (== ($size events/streams/.get) 0) "listing read event segments")
+          ($assert (== ($map_size events/streams/.get) 0) "listing read event segments")
           ($assert (== (core_state events "session" "a" "round") {^status "done"})
             "stream projection did not load")
-          ($assert (== ($size events/streams/.get) 0) "projection lookup read event segments")
+          ($assert (== ($map_size events/streams/.get) 0) "projection lookup read event segments")
           (let a (events_for events "session" "a"))
           ($assert (== a/.size 6) "transcript was truncated by cache retention")
-          ($assert (== ($size events/streams/.get) 1) "loading a read b")
+          ($assert (== ($map_size events/streams/.get) 1) "loading a read b")
           (unload_event_stream events "session" "a")
-          ($assert (== ($size events/streams/.get) 0) "unloading left the stream cached")
+          ($assert (== ($map_size events/streams/.get) 0) "unloading left the stream cached")
           ($assert (== (events_for events "session" "a") a) "reload changed the transcript")
           ($assert (== ($size (events_for events "session" "b")) 6) "second stream did not restore")
           ($assert (! ($fs/exists? $"${root}/publish.lock")) "obsolete publication lock exists")

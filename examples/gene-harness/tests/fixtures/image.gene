@@ -74,7 +74,7 @@
   (let image_settings {^generator "mock" ^generation_model "fixture-image"
     ^run_timeout_ms 10000 ^generation_timeout_ms 1000 ^review_timeout_ms 1000
     ^persistence_margin_ms 10})
-  (for [key value] in config (image_settings .put key value))
+  (map_for [key value] in config (image_settings .put key value))
   (settings .put "image" image_settings)
   (settings .put "response_budget" {^timeout_ms 20000 ^max_memory_mb 1024})
   ($fs/write_text_atomic $"${root}/config.gene" ($serde/write_data settings))
@@ -88,7 +88,7 @@
 (fn evaluate_image [fixture, prompt : Str, ^options options = {}, ^round round : Str = "image-round",
                     ^prefix prefix : Str = "", ^timeout_ms timeout_ms : Int = 20000]
   (let parts ["(image_generate " ($to_str `(quote %prompt))])
-  (for [key value] in options
+  (map_for [key value] in options
     (parts .push ($to_str " ^" key " " ($to_str `(quote %value)))))
   (parts .push ")")
   (let code ($to_str prefix " (capture " ($str/join parts "")

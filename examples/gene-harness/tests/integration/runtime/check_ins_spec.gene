@@ -23,7 +23,7 @@
 (fn configure [runtime, values]
   (let path $"${runtime/state_root}/config.gene")
   (let config (if ($fs/exists? path) ($serde/read_data ($fs/read_text path)) {}))
-  (for [key value] in values (config .put ($to_str key) value))
+  (map_for [key value] in values (config .put ($to_str key) value))
   ($fs/write_text_atomic path ($serde/write_data config)))
 
 (fn verdict [name : Str, ^now now = 0.1]

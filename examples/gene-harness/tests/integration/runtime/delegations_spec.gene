@@ -35,7 +35,7 @@
 (fn configure [runtime, changes]
   (let path $"${runtime/state_root}/config.gene")
   (let config ($serde/read_data ($fs/read_text path)))
-  (for [key value] in changes (config .put key value))
+  (map_for [key value] in changes (config .put key value))
   ($fs/write_text_atomic path ($serde/write_data config)))
 
 (fn model_provider [runtime, reply, ^models models = []]

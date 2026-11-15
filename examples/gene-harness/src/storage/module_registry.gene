@@ -211,14 +211,17 @@
       (fail (CompositionError ^message $"event type ${name} is already owned by ${existing/owner}"))))
   descriptor)
 
-(fn descriptor_entry_options [workspace : Workspace, entry]
-  {
-    ^module $"${(digest_hex entry/module_digest)}.gene"
-    ^digest entry/module_digest
-    ^closure entry/closure
-    ^init_limits (runtime_limits entry)
-    ^core_interface (entry_core_interface entry)
-    ^!host})
+(fn descriptor_entry_options [workspace : Workspace, entry, ^activation activation = nil]
+  (let options
+    {
+      ^module $"${(digest_hex entry/module_digest)}.gene"
+      ^digest entry/module_digest
+      ^closure entry/closure
+      ^init_limits (runtime_limits entry)
+      ^core_interface (entry_core_interface entry)
+      ^!host})
+  (if_not ($absent? activation) (options .put "activation" activation))
+  options)
 
 (fn source_entry_interfaces [workspace : Workspace, source]
   (let required (try (source_interfaces source)

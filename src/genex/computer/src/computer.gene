@@ -84,7 +84,7 @@
 
 (fn targets [driver : Driver, owner : Str]
   (let result [])
-  (for [id target] in driver/targets/.get
+  (map_for [id target] in driver/targets/.get
     (if (&& (! ($absent? target)) (== target/owner owner)) (result .push target)))
   result)
 
@@ -151,7 +151,7 @@
       {^click ["element_token" "x" "y" "button" "delivery_mode"] ^type ["element_token" "text" "delivery_mode"]
        ^key ["element_token" "key" "modifiers" "delivery_mode"] ^scroll ["element_token" "direction" "amount" "delivery_mode"]}))
     (let args (target_args driver owner target))
-    (for [key value] in params
+    (map_for [key value] in params
       (if_not ((allowed .get name) .contains? ($to_str key)) (refuse $"Unsupported action parameter: ${key}"))
       (args .put key value))
     (if_not ($absent? params/delivery_mode)

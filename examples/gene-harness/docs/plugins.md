@@ -250,8 +250,9 @@ reference ([source](../src/builtin/triggers.gene)).
   activation is published; a failed replacement leaves the previous producer
   running. `quiesce` runs when it stops producing (a successor took over, the
   plugin was disabled, or the host is stopping), and the task is cancelled when
-  the activation retires. Stored activations restart on composition changes, so
-  a service must resume from its records.
+  the activation retires. Replacing a plugin starts a new activation, so a
+  service must resume from its records; an unrelated composition change carries
+  an unchanged activation and leaves its service running.
 - A `feature_slots` row `{^name slot}` claims a single-producer feature; services
   with `^slot` run only while their plugin holds it. A slot is held by its one
   `^takeover true` row, otherwise by its single claimant, otherwise by the

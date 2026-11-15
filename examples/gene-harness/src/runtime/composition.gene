@@ -2,7 +2,7 @@
 
 (type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any? ^registry_owners Any?})
 (type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any ^label Str?})
-(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^publications Any ^publication_gate Any ^leases Any})
+(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^publications Any ^publication_gate Any ^leases Any ^publication_diagnostics Any ^retirement_failures Any})
 (type CompositionClosed ^props {^message Str} ^impl [Error])
 (impl Error for CompositionClosed)
 
@@ -36,7 +36,8 @@
   (let counts {})
   (counts .put "0" ($atomic_cell 0))
   (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^closing ($cell false) ^publishing ($sync/gate) ^mutating ($sync/gate)
-    ^publications ($cell []) ^publication_gate ($sync/gate) ^leases ($cell [])))
+    ^publications ($cell []) ^publication_gate ($sync/gate) ^leases ($cell [])
+    ^publication_diagnostics ($cell {}) ^retirement_failures ($cell [])))
 
 (type PublicationSubscription ^^private ^props {^rows Any ^gate Any ^token Any ^active Any}
   (message cancel [] : Nil
@@ -162,6 +163,28 @@
   (state/publishing (fn [] (publish_snapshot_serial state registries instances
     ^plugins plugins ^registry_owners registry_owners))))
 
+# Diagnostics belong to a publication, not to its caller. Publication commits
+# at the cell write below; a failing observer, metadata pass or retirement is
+# recorded against the snapshot that is already serving and never rolls back a
+# composition that went live.
+(fn record_publication_diagnostic [state : CompositionState, revision, diagnostic]
+  (let id ($to_str (if (== ($head revision) CompositionSnapshot) revision/id revision)))
+  (let existing (?? (state/publication_diagnostics/.get .get id) []))
+  (existing .push diagnostic)
+  (state/publication_diagnostics/.get .put id existing)
+  nil)
+
+(fn publication_diagnostics [state : CompositionState, revision] : Any
+  (require_open state)
+  (if (== ($head revision) CompositionSnapshot)
+    (publication_diagnostics state revision/id)
+    (let found (state/publication_diagnostics/.get .get ($to_str revision)))
+    (if ($absent? found)
+      []
+      (let copied [])
+      (for diagnostic in found (copied .push diagnostic))
+      copied)))
+
 (fn publish_snapshot_serial [state : CompositionState, registries, instances,
   ^plugins plugins = [], ^registry_owners registry_owners = {}] : CompositionSnapshot
   (let previous state/current/.get)
@@ -172,15 +195,20 @@
       ^registry_owners (immutable_view registry_owners))))
   (state/snapshots/.get .put ($to_str id) snapshot)
   (state/counts/.get .put ($to_str id) ($atomic_cell 0))
-  # Publication itself is one native Cell operation and cannot yield.
+  # Publication itself is one native Cell operation and cannot yield. Everything
+  # after it is post-commit work: failure is a diagnostic, never a rollback.
   (state/current .set snapshot)
   (let listeners (state/publication_gate (fn [] ($into state/publications/.get []))))
-  (let failures [])
   (for listener in listeners
     (if_not listener/active/.get (continue))
-    (try (listener/callback previous snapshot) catch Any (failures .push $err)))
+    (try (listener/callback previous snapshot)
+      catch Any
+        (record_publication_diagnostic state id
+          {^kind "observer" ^message $err/message})))
   (drain_retirements state)
-  (if_not failures/.empty? (fail failures/0))
+  (for failure in (take_retirement_failures state)
+    (record_publication_diagnostic state id
+      {^kind "retirement" ^ticket failure/ticket ^message failure/message}))
   snapshot)
 
 (fn instance_is_leased? [state : CompositionState, instance] : Bool
@@ -203,7 +231,13 @@
   (drain_retirements state)
   nil)
 
-(fn drain_retirements [state : CompositionState]
+(fn take_retirement_failures [state : CompositionState] : Any
+  (state/retirement_failures .swap []))
+
+# A retirement ticket is independent of every other ticket. One failing
+# cleanup is recorded and the rest still run: a single failure must not strand
+# later tickets, and a drain triggered by an unrelated turn must not fail it.
+(fn drain_retirements [state : CompositionState] : Any
   (let waiting [])
   (let ready [])
   (let pending (state/retiring .swap []))
@@ -214,7 +248,14 @@
     (if leased (waiting .push retirement) (ready .push retirement)))
   # Publish the waiting queue before cleanup, which can run application code.
   (for retirement in waiting (state/retiring/.get .push retirement))
-  (for retirement in ready (state/retire retirement/ticket))
+  (let failures [])
+  (for retirement in ready
+    (try
+      (state/retire retirement/ticket)
+    catch Any
+      (let failure {^ticket retirement/ticket ^message $err/message})
+      (failures .push failure)
+      (state/retirement_failures/.get .push failure)))
   (let expired [])
   (let current state/current/.get)
   (map_for [id counter] in state/counts/.get
@@ -222,8 +263,9 @@
       (expired .push id)))
   (for id in expired
     (state/counts/.get .delete id)
-    (state/snapshots/.get .delete id))
-  nil)
+    (state/snapshots/.get .delete id)
+    (state/publication_diagnostics/.get .delete ($to_str id)))
+  failures)
 
 (fn begin_close_composition_state [state : CompositionState]
   (if state/closed/.get (return nil))
@@ -236,6 +278,10 @@
           $"composition still has active turn leases at snapshot ${id}: ${counter/.load}; holders ${held}")))))
   (state/closing .set true)
   (drain_retirements state)
+  (let failures (take_retirement_failures state))
+  (if_not failures/.empty?
+    (fail (CompositionClosed ^message
+      $"composition retirement failed while closing: ${($map failures (fn [failure] failure/message))}")))
   nil)
 
 (fn close_composition_state [state : CompositionState]

@@ -15,7 +15,7 @@
 
 (fn prepare_layout [root : Str]
   (let state_root $"${root}/.gene-harness")
-  (for directory in ["composition" "modules" "blobs" "events" "sessions" "triggers"]
+  (for directory in ["composition" "modules" "blobs" "events" "sessions"]
     ($fs/make_dir $"${state_root}/${directory}"))
   # A new workspace stores no defaults: definitions and the model resolver supply
   # them, so every stored value is a deliberate override. Existing files are untouched.

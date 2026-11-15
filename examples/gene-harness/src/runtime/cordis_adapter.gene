@@ -15,6 +15,7 @@
     CompositionError
     RecoveryRequired
     PluginInvoker
+    PluginInstance
     invocation_limits
     default_plugin_invoker
     new_runtime])
@@ -27,6 +28,7 @@
 # a reconcile needs no registry draft and no whole-set publication.
 (protocol RegistryHost
   (message activate [thunk] : Any)
+  (message hide_owner [owner : Str] : Nil)
   (message cleanup [thunk] : Any)
   (message enter_call [] : Nil)
   (message leave_call [] : Nil)
@@ -67,6 +69,10 @@
   (message instances []
     (let record (composition_record self))
     record/loader/.instances)
+  (message prepare_owners [callback] : Nil
+    (let record (composition_record self))
+    (set record/prepare_owners callback)
+    nil)
   (message retire [ticket]
     (let record (composition_record self))
     (record/loader .retire ticket))
@@ -99,7 +105,7 @@
     (map_for [name value] in record/loader/.inspect
       (snapshot .put name value))
     (let selected ($thaw #[]))
-    (map_for [id projection] in record/projections
+    (map_for [id projection] in record/projections/.get
       (let binding (record/keys .get; .get id))
       (selected .push {^registry binding/registry ^key binding/name ^row_id projection/row_id}))
     (snapshot .put "bindings" selected)
@@ -111,7 +117,7 @@
 # `policies` holds the entry policies of the latest reconcile, read by
 # descriptor preflight and by every (re)activation. `specs` caches the Cordis
 # spec of each host plugin so an unchanged plugin keeps its live instance.
-(type CompositionRecord ^^private ^props {^token Any ^host RegistryHost ^runtime Any ^limits Any ^loader Any ^current Any ^pending Any ^busy Any ^policies Any ^specs Any ^bindings_spec Any ^keys Any ^projections Any ^base_owner Any ^updating Any ^dirty Any})
+(type CompositionRecord ^^private ^props {^token Any ^host RegistryHost ^runtime Any ^limits Any ^loader Any ^current Any ^pending Any ^busy Any ^policies Any ^specs Any ^bindings_spec Any ^keys Any ^projections Any ^base_owner Any ^updating Any ^dirty Any ^prepare_owners Any ^projection_installer Any ^defer_selection Any ^dispose_projections Any})
 
 (type EntrySelection ^^private ^props {^row_id Str ^payload Any})
 
@@ -141,7 +147,7 @@
     (keys .put id {^registry registry ^name name ^key key})
     # The bindings entry projected the keys known when it activated. A key
     # admitted later is projected now, before any plugin requiring it installs.
-    (if_not ($absent? record/base_owner/.get)
+    (if (&& (! record/defer_selection) (! ($absent? record/base_owner/.get)))
       (selection_changed record registry name)))
   (let binding (keys .get id))
   (Requirement ^key binding/key ^config nil))
@@ -169,14 +175,42 @@
   (let binding (record/keys/.get .get id))
   (if ($absent? binding) (return nil))
   (let selected (record/host .RegistryHost:selected registry key))
-  (let previous (record/projections .get id))
-  (if_yes ($present? previous)
-    (if (&& ($present? selected) (== previous/row_id selected/row_id)) (return nil))
-    previous/instance/.dispose
+  (var prior (record/projections/.get .get id))
+  (if_yes (&& ($present? prior)
+              (== prior/instance/.state InstanceState/disposed))
+    (record/projections/.get .delete id)
+    (set prior nil))
+  (if_yes (&& ($present? prior) ($present? selected)
+              (== prior/row_id selected/row_id))
+    (return nil))
+  (let installer record/projection_installer)
+  (if ($present? installer)
+    (do
+      # A carried reconciliation stages changed selections in the candidate.
+      # The old live projection keeps serving its leases until publication and
+      # is disposed only after the candidate commits.
+      (if_yes ($present? prior)
+        (do
+          (record/dispose_projections/.get .push prior/instance)
+          (record/projections/.get .delete id)))
+      (if ($absent? selected)
+        (do
+          # The candidate inherited the old projection's provider. Withdraw it
+          # so its carried consumers are invalidated and retire with a ticket.
+          (if ($present? prior) (installer binding/key nil))
+          (return nil)))
+      (let value (EntrySelection ^row_id selected/row_id ^payload selected/payload))
+      (let instance (installer binding/key value))
+      (record/projections/.get .put id {^row_id selected/row_id ^instance instance})
+      (return nil)))
+  # Without a candidate installer the selection belongs to a staged activation
+  # owned by the bindings effect, so replacement happens in place.
+  (if_yes ($present? prior)
+    prior/instance/.dispose
     # dispose queues retirement while a provider validation is admitted. Wait
     # for Cordis to release that reservation before installing its successor.
-    (while (!= previous/instance/.state InstanceState/disposed) ($sleep 1))
-    (record/projections .delete id))
+    (while (!= prior/instance/.state InstanceState/disposed) ($sleep 1))
+    (record/projections/.get .delete id))
   (if ($absent? selected) (return nil))
   (let owner (if ($absent? selected/effects) record/base_owner/.get selected/effects))
   (if ($absent? owner) (return nil))
@@ -186,7 +220,8 @@
       ^requires [] ^provides [binding/key] ^reload nil
       ^activate (fn [ctx, config] (ctx .provide binding/key value))))
   (let instance (owner .install projection))
-  (record/projections .put id {^row_id selected/row_id ^instance instance})
+  instance/.await_ready
+  (record/projections/.get .put id {^row_id selected/row_id ^instance instance})
   nil)
 
 (var ^^private compositions ($cell ($thaw #[])))
@@ -214,8 +249,10 @@
     (CompositionRecord ^token token ^host host ^runtime runtime ^limits ceiling ^loader nil
       ^current ($cell ($thaw #{})) ^pending ($cell nil) ^busy ($cell false)
       ^policies ($cell #{}) ^specs ($thaw #{}) ^bindings_spec nil
-      ^keys ($cell ($thaw #{})) ^projections ($thaw #{}) ^base_owner ($cell nil)
-      ^updating ($thaw #{}) ^dirty ($thaw #{})))
+      ^keys ($cell ($thaw #{})) ^projections ($cell ($thaw #{})) ^base_owner ($cell nil)
+      ^updating ($thaw #{}) ^dirty ($thaw #{}) ^prepare_owners nil
+      ^projection_installer nil ^defer_selection false
+      ^dispose_projections ($cell ($thaw #[]))))
   (set record/bindings_spec
     (PluginSpec ^id "harness/bindings" ^config_schema nil ^requires [] ^provides []
       ^reload nil ^activate (fn [ctx, config]
@@ -226,15 +263,19 @@
           (map_for [id binding] in record/keys/.get
             (selection_changed record binding/registry binding/name)))))))
   (compositions/.get .push record)
-  # Without a publication participant, Cordis reconciles entry by entry like
-  # upstream `Entry.update`: unchanged entries keep their instances, changed
-  # ones restart, and a failed activation stays local to its entry.
+  # The Harness always stages a whole candidate. Unchanged entries carry their
+  # live instances; changed, pending and departed entries get a fresh revision.
   (set record/loader
     (runtime .loader
       (LoaderOptions ^plugin_root configured/plugin_root ^shared configured/shared
         ^max_namespaces configured/max_namespaces
         ^default_limits configured/default_limits ^reload_policy configured/reload_policy
         ^retirement configured/retirement
+        ^selection_refresh (fn []
+          (map_for [id binding] in record/keys/.get
+            (selection_changed record binding/registry binding/name)))
+        ^projection_installer (fn [install]
+          (set record/projection_installer install))
         ^^allow_pending
         ^^allow_failed
         ^descriptor_factory (fn [module, row, graph] (describe_source record module row graph)))))
@@ -354,11 +395,49 @@
       (if_not (reported .contains? failure/id) (failures .push failure))))
   {^snapshot snapshot ^failures failures})
 
+(fn entry_policy_changed? ^^private [old, new] : Bool
+  (|| (!= old/host new/host) (!= old/digest new/digest) (!= old/closure new/closure)
+      (!= old/limits new/limits) (!= old/init_limits new/init_limits)
+      (!= old/core_interface new/core_interface) (!= old/namespaces new/namespaces)
+      (!= old/module new/module) (!= old/activation new/activation)))
+
+# An entry is directly changed when its plugin value or entry policy differs.
+# A stored plugin is described again by every descriptor preflight, so its
+# object identity is not the test; its module digest, closure and limits are.
+(fn changed_entry_ids ^^private [record, plugins, metadata] : Any
+  (var out ($thaw #[]))
+  (var previous record/policies/.get)
+  (var current record/current/.get)
+  (for plugin in plugins
+    (var id plugin/id)
+    (var old (previous .get id))
+    (var policy (metadata .get id))
+    (if ($absent? old)
+      (out .push id)
+      (do
+        (if (entry_policy_changed? old policy)
+          (out .push id)
+          (do
+            (let prior (current .get id))
+            (if (&& policy/host (|| ($absent? prior) (! (same? prior/plugin plugin))))
+              (out .push id)))))))
+  out)
+
+(fn bindings_active? ^^private [record] : Bool
+  (for entry in record/loader/.inspect/entries
+    (if (&& (== entry/id "_harness_bindings") (== entry/state "active"))
+      (return true)))
+  false)
+
 (fn reconcile_composition ^^private [handle, plugins : (List Plugin), entry_options,
   ^strict strict : Bool = false, ^allow_pending allow_pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
   (let record (composition_record handle))
   (if record/busy/.get
     (fail (EffectDisposed ^message "Harness reconciliation is already active")))
+  # Carrying an unchanged entry needs the binding projections it already holds.
+  # Strict application replaces the whole set, so it keeps staged behaviour.
+  (let carry (&& (! strict) (bindings_active? record)))
+  (set record/defer_selection carry)
   (let entries ($thaw #[]))
   (let admitted ($thaw #{}))
   (let metadata ($thaw #{}))
@@ -370,7 +449,7 @@
       (fail (CompositionError ^message $"plugin id ${plugin/id} is reserved by Harness")))
     (let supplied (?? (entry_options .get plugin/id) #{}))
     (map_for [name value] in supplied
-      (if_not (["module" "limits" "init_limits" "host" "digest" "closure" "core_interface"] .contains? ($to_str name))
+      (if_not (["module" "limits" "init_limits" "host" "digest" "closure" "core_interface" "activation"] .contains? ($to_str name))
         (fail (CompositionError ^message $"unknown Harness entry option ${name}"))))
     (let source (supplied .get "module"))
     (let requested (?? (supplied .get "limits") record/limits))
@@ -382,7 +461,8 @@
       {^host is_host ^limits limits ^init_limits (?? (supplied .get "init_limits") (default_execution_limits))
        ^core_interface (supplied .get "core_interface")
        ^module source ^namespaces ($runtime/sandbox_namespaces)
-       ^digest (supplied .get "digest") ^closure (supplied .get "closure")})
+       ^digest (supplied .get "digest") ^closure (supplied .get "closure")
+       ^activation (supplied .get "activation")})
     (metadata .put plugin/id policy)
     (entries .push {^id plugin/id ^plugin_id plugin/id
       ^module (if ($absent? source) $"host/${plugin/id}" source)
@@ -399,30 +479,53 @@
   (let desired ($thaw #[]))
   (for plugin in plugins (desired .push plugin))
   (record/pending .set desired)
+  (let changed (if carry (changed_entry_ids record plugins metadata) ($thaw #[])))
+  # The bridge hides the rows of every previous owner that is not carried. It
+  # runs after entry identities are known and before any activation contributes.
+  (var carried ($thaw #{}))
+  (if carry
+    (do
+      (let states ($thaw #{}))
+      (for entry in record/loader/.inspect/entries
+        (states .put entry/id entry/state))
+      (let changed_set ($thaw #{}))
+      (for id in changed (changed_set .put ($to_str id) true))
+      (let wanted ($thaw #{}))
+      (for plugin in plugins (wanted .put plugin/id true))
+      (map_for [id revision] in record/current/.get
+        (if (&& ($present? (wanted .get ($to_str id)))
+                ($absent? (changed_set .get ($to_str id)))
+                (== (states .get ($to_str id)) "active"))
+          (carried .put ($to_str id) true)))))
+  (if_not ($absent? record/prepare_owners) (record/prepare_owners carried))
   (record/policies .set ($freeze metadata))
   (record/busy .set true)
-  (let previous_projections record/projections)
+  (let previous_projections ($thaw ($freeze_shallow record/projections/.get)))
   (let previous_base record/base_owner/.get)
-  # Staged reconciliation creates new activation revisions. Their projections
-  # belong to the candidate; disposing the prior projection here would cascade
-  # into a revision still leased by a turn.
-  (set record/projections {})
   (var snapshot nil)
   (var retirement_failure nil)
   (try
     (set snapshot
-      (record/loader .reconcile_plugins ^strict strict ^pending allow_pending ^accept accept ^commit commit
+      (record/loader .reconcile_plugins ^strict strict ^pending allow_pending ^accept accept
+        ^commit commit ^carry carry ^changed changed
         {^format 1 ^entries entries} admitted))
   catch RecoveryRequired
     (set snapshot record/loader/.inspect)
     (set retirement_failure $err)
   catch Any
-    (set record/projections previous_projections)
+    (record/projections .set previous_projections)
     (record/base_owner .set previous_base)
+    (record/dispose_projections .set ($thaw #[]))
     (fail $err)
   ensure
+    (set record/projection_installer nil)
+    (set record/defer_selection false)
     (record/pending .set nil)
     (record/busy .set false))
+  # The candidate committed; the projections it replaced can now retire.
+  (for instance in record/dispose_projections/.get
+    (try instance/.dispose catch Any nil))
+  (record/dispose_projections .set ($thaw #[]))
   # A failed plugin keeps whatever last active revision it had.
   (let failed (failure_ids (failed_entries snapshot)))
   (let previous record/current/.get)

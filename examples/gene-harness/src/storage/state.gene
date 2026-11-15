@@ -18,8 +18,8 @@
           ^dirty_streams Any ^closed Any ^catalog Any ^quarantined Any ^writing Any
           ^observer Any? ^checkpoint Any?
           ^formats_validated Any
-          ^segment_events Int ^retained_segments Int
-          ^max_event_bytes Int ^max_state_bytes Int
+          ^segment_events Int
+          ^max_event_bytes Int
           ^gc_interval Int ^gc_countdown Any})
 
 (fn fresh_list [] ($thaw #[]))
@@ -228,9 +228,9 @@
     (fail (HarnessStateError ^message "plugin event owner is empty")))
   (append_stamped_event events scope stream event "plugin" plugin plugin))
 
-# Compatibility surface for core/tests. An explicit plugin projection selects
-# plugin origin; core code uses append_core_event so plugin/state remains a
-# core-defined record routed to a plugin projection.
+# Route an event by its explicit `plugin` field. Core code uses
+# append_core_event, so plugin/state remains a core-defined record routed to a
+# plugin projection.
 (fn append_event [events : EventStore, scope : Str, stream : Str, event]
   (if ($absent? event/plugin)
     (append_core_event events scope stream event)
@@ -244,10 +244,6 @@
   (var event ($freeze
     {^type "plugin/state" ^plugin plugin ^state_version version ^state state
      ^writer writer}))
-  (var encoded (write_data event/state))
-  (if (> (byte_size encoded) events/max_state_bytes)
-    (fail (HarnessStateError
-      ^message $"plugin state exceeds ${events/max_state_bytes} bytes")))
   (if (> (core_event_size scope stream event ^projection plugin) events/max_event_bytes)
     (fail (HarnessStateError
       ^message $"event exceeds ${events/max_event_bytes} bytes")))
@@ -421,11 +417,6 @@
     (out .push source/%i)
     (set i (+ i 1)))
   out)
-
-(fn tail_items [source, count : Int]
-  (var start (- source/.size count))
-  (if (< start 0) (set start 0))
-  (slice_events source start source/.size))
 
 (fn unique_strings [values]
   (var seen (fresh_map))
@@ -672,13 +663,10 @@
 (fn open_event_store
   [root : Str,
    ^segment_events segment_events : Int = 64,
-   ^retained_segments retained_segments : Int = 64,
    ^max_event_bytes max_event_bytes : Int = 262144,
-   ^max_state_bytes max_state_bytes : Int = 1048576,
    ^gc_interval gc_interval : Int = 16] : EventStore
-  (if (|| (<= segment_events 0) (<= retained_segments 0))
-    (fail (HarnessStateError
-      ^message "segment and retention counts must be positive")))
+  (if (<= segment_events 0)
+    (fail (HarnessStateError ^message "segment count must be positive")))
   (if (<= gc_interval 0)
     (fail (HarnessStateError ^message "event GC interval must be positive")))
   # Keep the retained root and every later Store path in the same
@@ -699,9 +687,7 @@
                 ^formats_validated ($cell false)
                 ^closed ($cell false) ^observer nil
                 ^segment_events segment_events
-                ^retained_segments retained_segments
                 ^max_event_bytes max_event_bytes
-                ^max_state_bytes max_state_bytes
                 ^gc_interval gc_interval ^gc_countdown ($cell 1)))
   (var loaded backend/.Store:load_checkpoint)
   (if_yes ($present? loaded)

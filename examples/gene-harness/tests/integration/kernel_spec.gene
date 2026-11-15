@@ -114,7 +114,7 @@
             "turn did not cancel and join its child")
           (let invalid (evaluate_harness_turn h 6 root "("))
           ($assert (== invalid/kind "error") "invalid response was not contained")
-          (for [id counter] in h/snapshots/counts/.get
+          (map_for [id counter] in h/snapshots/counts/.get
             ($assert (== counter/.load 0) "response exit leaked a snapshot lease"))
           ($println "kernel snapshots: functions, named arguments, immutable views, turn leases and deferred retirement")
         ensure

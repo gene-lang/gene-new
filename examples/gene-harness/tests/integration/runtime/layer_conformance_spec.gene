@@ -1,0 +1,71 @@
+# The contributions layer test: a built-in is removed, replaced and restored
+# like a stored plugin, and the host stays up throughout. The loop's record
+# completeness has its own direct spec in tests/integration/agents/.
+(import $test [describe it])
+(import [isolated run_spec test_service] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [profile_admissions] ^from "../../../src/profiles/profile")
+(import [uninstall put_cordis_plugin status_of] ^from "../../../src/kernel")
+(import [current_snapshot] ^from "../../../src/runtime/composition")
+(import [create_session submit close_session_service] ^from "../../../src/web/session_service")
+(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
+(import [events_for] ^from "../../../src/storage/state")
+
+(describe "Layer conformance"
+  (it "writes a complete round while a contribution is disabled" []
+    (isolated this_mod/.path
+      "writes a complete round while a contribution is disabled"
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider
+          (fn [request] "(Outcome ^^done ^reply \"done\")")))
+        (try
+          (set_plugin_enabled service/runtime/workspace service/runtime/h "sidebar" false)
+          (let session (create_session service))
+          (submit service session/id "conformance" 1 "Say done.")
+          ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
+          (let events (events_for service/runtime/events "session" session/id))
+          (let types ($map events (fn [event] event/type)))
+          (for required in ["turn/start" "model/request" "model/result" "turn/end"]
+            (let matches ($filter types (fn [type] (== type required))))
+            ($assert (== matches/.size 1)
+              $"${required} appeared ${matches/.size} times with sidebar disabled"))
+          (var start_at -1)
+          (var end_at -1)
+          (var at 0)
+          (for type in types
+            (if (== type "turn/start") (set start_at at))
+            (if (== type "turn/end") (set end_at at))
+            (set at (+ at 1)))
+          ($assert (&& (>= start_at 0) (> end_at start_at))
+            $"the round did not write a terminal record after its start: ${types}")
+        ensure
+          (close_session_service service)))))
+
+  (it "removes and restores every baseline contribution without stopping the host" []
+    (isolated this_mod/.path
+      "removes and restores every baseline contribution without stopping the host"
+      (fn [root]
+        (let profile (baseline_profile))
+        (let admissions (profile_admissions profile))
+        (let runtime (open_runtime root "default" profile))
+        (try
+          (for admission in admissions
+            (let id admission/plugin/id)
+            (uninstall runtime/h id)
+            ($assert (== (status_of runtime/h id) "absent")
+              $"removed ${id} still reports a state")
+            (let after-removal (current_snapshot runtime/h/snapshots))
+            ($assert ($present? after-removal)
+              $"publication disappeared after removing ${id}")
+            (put_cordis_plugin runtime/h admission/plugin admission/options)
+            (let state (status_of runtime/h id))
+            ($assert (["ready" "pending"] .contains? state)
+              $"${id} did not return: ${state}")
+            (let after-restore (current_snapshot runtime/h/snapshots))
+            ($assert ($present? after-restore)
+              $"publication disappeared after restoring ${id}"))
+        ensure
+          (close_runtime runtime))))))
+
+(fn main [args] : Int (run_spec args))

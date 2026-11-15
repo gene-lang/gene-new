@@ -101,9 +101,14 @@ State lives beneath `.gene-harness/`:
 | `events/`, `sessions/` | Durable workspace/session streams and listing projection |
 | `blobs/` | Content-addressed history, recall and receipt bodies |
 | `notifications/` | Producer inbox and operator opened watermark |
-| `triggers/` | Durable trigger definitions and occurrences |
 | `web_secret`, `web_sessions` | Reusable owner token and generation-bound browser credentials |
 | `connection`, `link`, `cli_cookie` | Live endpoint discovery and client connection state |
+
+Event streams are durable and unbounded: there is no log window or segment
+trimming. The workspace stream is an audit log of composition and lifecycle
+events, and session streams are the operator transcript. Projections and the
+event manifest are the compact form; a checkpoint never discards an event.
+Cold streams are validated against the event catalog before startup repair.
 
 Appearance is a browser cookie, shared across hosts on the same hostname; it
 is not workspace state. Recovery reads that cookie and uses built-in themes.
@@ -196,13 +201,22 @@ contexts. Public helpers and contracts live in the declared SDK; see
 The registry ledger owns contributions and cleanup slots. Cordis owns instance
 activation and retirement. Immutable snapshots own selection and reader leases.
 The composer's bridge state tracks reconciliation and the last published set.
-Cordis's current set can advance before a retirement error is reported, so it
-is distinct from the last published registry snapshot.
 
-Replaced instances retire after their final reader releases its lease.
-Publication observers subscribe independently and cancel only their own
-subscriptions. Retained code may outlive publication; revocable receivers and
-service handles enforce the owning activation's lifetime.
+An entry is carried when its plugin, entry policy, row data and resolved
+requirements are unchanged. A carried entry keeps its activation, rows,
+services and receiver; only changed, pending and departed entries are staged.
+A replacement therefore restarts the provider and its consumers, not every
+plugin in the workspace.
+
+Publication commits when the snapshot cell becomes current. Observers,
+metadata, the change notification and the retirement drain run after that
+commit: a failure there is recorded as a publication diagnostic and never
+rolls back the tables or changes a plugin's status. Replaced instances retire
+after their final reader releases its lease, and one failing ticket does not
+strand the tickets behind it. Publication observers subscribe independently
+and cancel only their own subscriptions. Retained code may outlive publication;
+revocable receivers and service handles enforce the owning activation's
+lifetime.
 
 A feature can live entirely in its plugin. Long-lived work is a
 `PluginHost:service`: it starts after its activation is published, quiesces

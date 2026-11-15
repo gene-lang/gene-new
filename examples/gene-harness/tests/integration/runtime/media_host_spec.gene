@@ -3,7 +3,7 @@
 (import [create_session submit receipt close_session_service] ^from "../../../src/web/session_service")
 (import [Plugin PluginHost MediaHost ServiceError] ^from "../../../src/plugin_api")
 (import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [put_cordis_plugin] ^from "../../../src/kernel")
+(import [put_cordis_plugin uninstall] ^from "../../../src/kernel")
 
 (fn replacement []
   (quote (mod plugin
@@ -50,6 +50,11 @@
           ($assert (try (stored .put "name" "changed") false catch Any true))
           (let registered (register_plugin ^^replace service/runtime/workspace service/runtime/h "media" (replacement)))
           ($assert (== registered/status "ready") ($to_str registered))
+          # Replacing `media` leaves media_probe unchanged, so its activation
+          # and handle are carried. Retiring the probe revokes the handle.
+          ($assert ($present? (original .MediaHost:store "kept.png" ($base64/decode pixel)))
+            "a carried activation lost its service handle")
+          (uninstall service/runtime/h "media_probe")
           ($assert (try original/.MediaHost:list false
             catch ServiceError (== $err/code "unavailable")) "old service handle survived its activation")
           (let pending (submit service session/id "import" 1 "Import and inspect the image."))

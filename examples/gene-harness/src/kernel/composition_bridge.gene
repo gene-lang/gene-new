@@ -12,7 +12,8 @@
 (import [RegistryHost new_composition] ^from "../runtime/cordis_adapter")
 (import [LoaderOptions] ^from "." ^pkg "cordis")
 (import [new_composition_state current_snapshot publish_snapshot run_composition_change
-  queue_retirement begin_close_composition_state close_composition_state immutable_view]
+  queue_retirement begin_close_composition_state close_composition_state immutable_view
+  record_publication_diagnostic]
   ^from "../runtime/composition")
 (import [publication_metadata] ^from "../storage/plugin_metadata")
 (import [make_plugin_receiver revoke_plugin_receiver] ^from "../runtime/plugin_receiver")
@@ -80,8 +81,19 @@
         h/snapshots
         (snapshot_registries h)
         h/composition/.instances))
-    (publication_metadata h snapshot)
-    (notify h (CompositionChanged ^revision snapshot/id)))
+    # The snapshot is current. Metadata and the change notification are
+    # post-commit work: a failure is attached to the publication as a
+    # diagnostic and cannot change a plugin's status or roll the tables back.
+    (try
+      (publication_metadata h snapshot)
+    catch Any
+      (record_publication_diagnostic h/snapshots snapshot
+        {^kind "metadata" ^message $err/message}))
+    (try
+      (notify h (CompositionChanged ^revision snapshot/id))
+    catch Any
+      (record_publication_diagnostic h/snapshots snapshot
+        {^kind "notification" ^message $err/message})))
   nil)
 
 (fn ^^private clone_registries [h : Harness]
@@ -135,6 +147,18 @@
                 {^type "console" ^turn 0 ^text text ^!late ^^ignorable}))
             ($runtime/with_context nil (fn [] ($print text))))} thunk)
       ensure (publication .set false)))
+    (message hide_owner [owner : Str] : Nil
+      # Runs inside a candidate activation, on a Cordis transition task. That
+      # task does not inherit the reconcile's dynamic context, and the reconcile
+      # holds the composition gate while it waits for this activation, so the
+      # removal must take the candidate's publication path, like the
+      # activation's own contributions, not re-enter the gate.
+      (let publication ($cell true))
+      (try
+        ($runtime/with_context {^composition self/h/snapshots ^publication publication}
+          (fn [] (hide_owner_rows self/h owner)))
+      ensure (publication .set false))
+      nil)
     (message enter_call [] : Nil (enter_plugin_execution self/h) nil)
     (message cleanup [thunk] : Any (cleanup_registry_context self/h thunk))
     (message leave_call [] : Nil (leave_plugin_execution self/h) nil)
@@ -147,6 +171,9 @@
         ^core_interface (?? core_interface (if ($absent? h/workspace) "" h/workspace/core_interface))
         ^limits bounded))
     (message context [plugin, effects, observer, policy] : PluginHost
+      # A carried entry can still be invalidated later in the same reconcile.
+      # Its previous rows leave the candidate before this revision contributes.
+      (self .RegistryHost:hide_owner plugin/id)
       (var h self/h)
       (set h/registry_observer observer)
       (let default (if ($absent? h/workspace) nil (h/workspace/profile_plugins/.get .get plugin/id)))
@@ -317,21 +344,27 @@
   (h/row_index .set (clone_row_index h))
   (h/plugin_policies .set ($thaw ($freeze_shallow h/plugin_policies/.get)))
   (set h/registry_observer nil)
-  # Cordis stages every loader-owned activation revision. Remove their
-  # discoverable rows from the candidate while old snapshot rows and effects
-  # remain usable until their retirement tickets drain.
-  (map_for [id prior] in previous
-    (hide_owner_rows h ($to_str id)))
-  (let departed_registries [])
-  (map_for [name registry] in h/registries/.get
-    (if ($present? (previous .get registry/owner))
-      (departed_registries .push ($to_str name))))
-  (for name in departed_registries
-    (let registry (registry_named h name))
-    (for record in (copy_list registry/rows/.get)
-      (remove_registry_row h record/row_id ^!cleanup))
-    (h/registries/.get .delete name))
   (if_not ($absent? prepare) (prepare))
+  # Cordis stages changed, pending and departed activations. Their previous
+  # rows leave the candidate; a carried owner keeps its rows. The composition
+  # reports exactly which owners it carries after entry identities are known.
+  (let prepare_owners
+    (fn [carried]
+      (map_for [id prior] in previous
+        (if ($absent? (carried .get ($to_str id)))
+          (hide_owner_rows h ($to_str id))))
+      (let departed_registries [])
+      (map_for [name registry] in h/registries/.get
+        (if (&& ($present? (previous .get registry/owner))
+                ($absent? (carried .get ($to_str registry/owner))))
+          (departed_registries .push ($to_str name))))
+      (for name in departed_registries
+        (let registry (registry_named h name))
+        (for record in (copy_list registry/rows/.get)
+          (remove_registry_row h record/row_id ^!cleanup))
+        (h/registries/.get .delete name))
+      nil))
+  (h/composition .prepare_owners prepare_owners)
   (var plugins (fresh_list))
   (var failed (fresh_list))
   (map_for [id plugin] in h/plugins/.get (plugins .push plugin))
@@ -339,10 +372,13 @@
   # Reconcile the candidate before publishing its immutable registry view.
   # A rejected candidate leaves the previous registry tables and leases live.
   (var result
-    (if strict
-      {^snapshot (h/composition .reconcile_strict ^pending pending
-        plugins h/composer/bridge/entries/.get accept commit) ^failures []}
-      (h/composition .reconcile_available plugins h/composer/bridge/entries/.get failed)))
+    (try
+      (if strict
+        {^snapshot (h/composition .reconcile_strict ^pending pending
+          plugins h/composer/bridge/entries/.get accept commit) ^failures []}
+        (h/composition .reconcile_available plugins h/composer/bridge/entries/.get failed))
+      ensure
+        (h/composition .prepare_owners nil)))
   (for failure in result/failures
     (h/plugin_errors/.get .put failure/id failure/message))
   (let active h/composition/.current_plugins)
@@ -460,7 +496,16 @@
 
 (fn plugin_error [h : Harness, id : Str]
   (var found (h/plugin_errors .get; .get id))
-  (if_not ($absent? found) ($to_str found)))
+  (if ($present? found) (return ($to_str found)))
+  # A preserved failed entry can report the error state without a message in
+  # `plugin_errors`; its activation error is still on the loader entry.
+  (if ($present? h/composition)
+    (for entry in h/composition/.inspect/entries
+      (if (&& (== entry/id id) ($present? entry/error))
+        (do
+          (let error entry/error)
+          (return (if (== ($head error) Str) error ($to_str error)))))))
+  nil)
 
 (fn ^^private plugin_ids [h : Harness] : Any
   # Gene maps keep insertion order, so ids come back in install order.

@@ -28,7 +28,7 @@
         (let default_sessions (list_sessions manager))
         ($assert (== default_sessions/.size 3) "default list did not select interactive and pinned sessions")
         ($assert (== ($size (list_sessions manager ^q "audit")) 1) "request search failed")
-        ($assert (== ($size events/streams/.get) 1) "listing loaded session streams")
+        ($assert (== ($map_size events/streams/.get) 1) "listing loaded session streams")
         (scope
           (let rename (spawn ^lane root (update_session manager "a" {^title "Renamed"})))
           (let state (spawn ^lane root (update_session manager "a" {^status "done" ^^attention})))
@@ -73,7 +73,7 @@
         (let restored (open_session_manager runtime restored_events root ^idle_timeout_ms 0))
         (runtime .put "sessions" restored)
         (try
-          ($assert (== ($size restored_events/streams/.get) 1) "startup retained session streams")
+          ($assert (== ($map_size restored_events/streams/.get) 1) "startup retained session streams")
           ($assert ($absent? (restored_events/streams/.get .get "session:heartbeat"))
             "recovery retained the interrupted session stream")
           (let waiting (load_session restored "a"))

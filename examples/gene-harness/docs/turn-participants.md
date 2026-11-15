@@ -1,10 +1,9 @@
 # Turn participant transaction contract
 
-This defines the transaction boundary for batch 5 of the architecture review.
-The production loop uses the transaction for delegation and card progress.
-Public registration followed qualification of those two internal consumers.
-Broader qualification is in progress. These are harness application contracts;
-Gene syntax is unchanged. The separate batch 4 commit is `14fb61b7`.
+This defines the turn transaction boundary used by the production loop. The
+loop, delegation and card progress use the same transaction, and public
+registration runs through it. These are harness application contracts; Gene
+syntax is unchanged.
 
 ## Transaction boundary
 
@@ -131,8 +130,10 @@ Require the registries used by a plugin, for example
 `^requires [{^registry "turn_participants"} {^registry "outcome_extensions"}]`.
 Contribute through the ordinary PluginHost API. Every name is `OWNER/NAME`;
 `OWNER` is the contributing plugin's id. Duplicates and namespace claims for
-another owner fail registration. Declared short spellings, record annotations and the
-round-limit boundary are reserved to native adapters.
+another owner fail registration. A public participant may declare the short
+spelling of its own Outcome extension field, its `limit` callback and its
+`request_record` annotation. Record annotations and the round-limit boundary are
+otherwise host-owned.
 
 All participant callbacks take `[context state value]`. `state` is a mutable
 map private to that participant for this turn, including partial acquisition.
@@ -219,11 +220,11 @@ doing external work keeps its own durable intent/result receipt rather than
 relying on replay of this callback after a crash.
 
 The host currently owns `voice/audio_reply`, `delegation/wait`,
-`delegation/result` and `delegation/wake_on_questions`. Each row declares its
-top-level spelling with `alias`: `audio_reply`, `wait`, `result` or
-`wake_on_questions`. These are permanent row features reserved to host-owned
-rows. Supplying both a canonical key and its declared short spelling in one
-Outcome is rejected.
+`delegation/result` and `delegation/wake_on_questions`. Each of those rows
+declares its top-level spelling with `alias`: `audio_reply`, `wait`, `result` or
+`wake_on_questions`. An alias belongs to the row that declares it; a profile
+built-in may declare the alias of its own extension field. Supplying both a
+canonical key and its declared short spelling in one Outcome is rejected.
 
 ## Initiator policies
 

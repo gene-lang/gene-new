@@ -1,0 +1,175 @@
+# Publication is a commit point: failures after it are diagnostics, not
+# rollbacks, and a retirement failure is isolated to its ticket.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [new_harness install put_cordis_plugin status_of shutdown_harness row
+         apply_plugin_set]
+  ^from "../../../src/kernel")
+(import [Profile profile_admissions] ^from "../../../src/profiles/profile")
+(import [current_snapshot acquire_snapshot release_snapshot subscribe_publications
+         publication_diagnostics]
+  ^from "../../../src/runtime/composition")
+
+(type FixtureError ^props {^message Str} ^impl [Error])
+(impl Error for FixtureError)
+
+(fn plugin_value [n, closed]
+  (Plugin ^id "value" ^provides [["functions" "value"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "functions"
+        {^name "value" ^doc "Current value." ^fn (fn [] n)}))
+    ^deactivate (fn [host] (closed .push n))))
+
+(describe "Publication commit point"
+  (it "records a failing observer on the publication and keeps the plugin ready" []
+    (isolated this_mod/.path
+      "records a failing observer on the publication and keeps the plugin ready"
+      (fn [root]
+        (let h (new_harness))
+        (try
+          (install h (Plugin ^id "steady" ^activate (fn [host] nil)))
+          (let armed ($cell true))
+          (let subscription
+            (subscribe_publications h/snapshots
+              (fn [previous snapshot]
+                (if armed/.get (fail "observer failed after commit")))))
+          (put_cordis_plugin h (Plugin ^id "late" ^activate (fn [host] nil)) {^^host})
+          ($assert (== (status_of h "late") "ready") (status_of h "late"))
+          (let snapshot (current_snapshot h/snapshots))
+          (let diagnostics (publication_diagnostics h/snapshots snapshot))
+          (let observer (/0 ($filter diagnostics (fn [item] (== item/kind "observer")))))
+          (let found (?? observer {^kind ""}))
+          ($assert (== found/kind "observer") ($to_str diagnostics))
+          (armed .set false)
+          (put_cordis_plugin h (Plugin ^id "after" ^activate (fn [host] nil)) {^^host})
+          ($assert (== (status_of h "late") "ready") "observer failure changed a plugin's status")
+          ($assert (== (status_of h "after") "ready"))
+          (subscription .cancel)
+        ensure (shutdown_harness h)))))
+
+  (it "records a failing retired cleanup without failing the replacement" []
+    (isolated this_mod/.path
+      "records a failing retired cleanup without failing the replacement"
+      (fn [root]
+        (let h (new_harness))
+        (let closed [])
+        (try
+          (install h (Plugin ^id "value" ^provides [["functions" "value"]]
+            ^activate (fn [host]
+              (host .PluginHost:contribute "functions"
+                {^name "value" ^doc "Value." ^fn (fn [] 1)}))
+            ^deactivate (fn [host]
+              (closed .push 1)
+              (fail (FixtureError ^message "deactivate fixture failed")))))
+          (put_cordis_plugin ^^replace h (plugin_value 2 closed) {^^host})
+          ($assert (== (status_of h "value") "ready") (status_of h "value"))
+          ($assert (== closed [1]) "the replaced revision was not retired")
+          (let snapshot (current_snapshot h/snapshots))
+          (let diagnostics (publication_diagnostics h/snapshots snapshot))
+          ($assert ($present?
+            (/0 ($filter diagnostics (fn [item] (== item/kind "retirement")))))
+            "retirement failure was not recorded on the publication")
+          ($assert (== ((/fn (row h "functions" "value"))) 2))
+        ensure (shutdown_harness h)))))
+
+  (it "retires every leased generation after two failing replacements" []
+    (isolated this_mod/.path
+      "retires every leased generation after two failing replacements"
+      (fn [root]
+        (let h (new_harness))
+        (let closed [])
+        (try
+          (install h (Plugin ^id "value" ^activate (fn [host]
+            (host .PluginHost:contribute "functions"
+              {^name "value" ^doc "Value." ^fn (fn [] 1)}))
+            ^deactivate (fn [host]
+              (closed .push 1)
+              (fail (FixtureError ^message "first cleanup failed")))))
+          (let lease (acquire_snapshot h/snapshots))
+          (put_cordis_plugin ^^replace h (Plugin ^id "value" ^activate (fn [host]
+            (host .PluginHost:contribute "functions"
+              {^name "value" ^doc "Value." ^fn (fn [] 2)}))
+            ^deactivate (fn [host]
+              (closed .push 2)
+              (fail (FixtureError ^message "second cleanup failed")))) {^^host})
+          (put_cordis_plugin ^^replace h (plugin_value 3 closed) {^^host})
+          ($assert (== closed [2]) ($to_str closed))
+          (release_snapshot h/snapshots lease)
+          ($assert (== closed [2 1]) ($to_str closed))
+          (let snapshot (current_snapshot h/snapshots))
+          ($assert (== ((/fn (row h "functions" "value"))) 3))
+          ($assert (== (status_of h "value") "ready"))
+          ($assert ($present? snapshot))
+        ensure (shutdown_harness h)))))
+
+  (it "keeps the serving revision after a failed same-id replacement" []
+    (isolated this_mod/.path
+      "keeps the serving revision after a failed same-id replacement"
+      (fn [root]
+        (let h (new_harness))
+        (try
+          (install h (Plugin ^id "value" ^activate (fn [host]
+            (host .PluginHost:contribute "functions"
+              {^name "value" ^doc "Value." ^fn (fn [] 1)}))))
+          (let failed (put_cordis_plugin ^^replace h
+            (Plugin ^id "value" ^activate (fn [host] (fail (FixtureError ^message "replacement failed"))))
+            {^^host}))
+          ($assert (== failed "error") failed)
+          ($assert (== (status_of h "value") "error"))
+          ($assert (== ((/fn (row h "functions" "value"))) 1)
+            "the failed replacement withdrew the serving row")
+          (let snapshot (current_snapshot h/snapshots))
+          (let published (/0 ($filter snapshot/plugins (fn [plugin] (== plugin/id "value")))))
+          ($assert ($present? published))
+          ($assert (== published/status "error") published/status)
+        ensure (shutdown_harness h)))))
+
+  (it "disposes a strict candidate when the durable commit fails" []
+    (isolated this_mod/.path
+      "disposes a strict candidate when the durable commit fails"
+      (fn [root]
+        (let h (new_harness))
+        (try
+          (install h (Plugin ^id "value" ^activate (fn [host]
+            (host .PluginHost:contribute "functions"
+              {^name "value" ^doc "Value." ^fn (fn [] 1)}))))
+          (let before (current_snapshot h/snapshots))
+          (let rejected
+            (try
+              (apply_plugin_set h
+                (profile_admissions (Profile ^name "candidate" ^plugins [(plugin_value 2 [])]))
+                (fn [] nil)
+                (fn [] (fail (FixtureError ^message "commit fixture failed"))))
+              false
+            catch Any
+              true))
+          ($assert rejected "a failing durable commit published the candidate")
+          (let after (current_snapshot h/snapshots))
+          ($assert (== after/id before/id) "a failing commit advanced the snapshot")
+          ($assert (== ((/fn (row h "functions" "value"))) 1)
+            "the rejected candidate replaced the serving row")
+          ($assert (== (status_of h "value") "ready"))
+        ensure (shutdown_harness h)))))
+
+  (it "publishes every accepted sibling while one activation fails" []
+    (isolated this_mod/.path
+      "publishes every accepted sibling while one activation fails"
+      (fn [root]
+        (let h (new_harness))
+        (try
+          (put_cordis_plugin h (Plugin ^id "bad" ^activate (fn [host]
+            (host .PluginHost:contribute "functions"
+              {^name "bad_fn" ^doc "Bad." ^fn (fn [] "bad")})
+            (fail (FixtureError ^message "activation fixture failed")))) {^^host})
+          (put_cordis_plugin h (Plugin ^id "good" ^activate (fn [host]
+            (host .PluginHost:contribute "functions"
+              {^name "good_fn" ^doc "Good." ^fn (fn [] "good")}))) {^^host})
+          ($assert (== (status_of h "bad") "error"))
+          ($assert (== (status_of h "good") "ready"))
+          ($assert (== ((/fn (row h "functions" "good_fn"))) "good"))
+          ($assert ($absent? (row h "functions" "bad_fn"))
+            "a failed activation published one of its rows")
+        ensure (shutdown_harness h))))))
+
+(fn main [args] : Int (run_spec args))

@@ -178,7 +178,7 @@
             (let result (await response))
             ($assert (== result/composition_changes/0/status "stale"))
             ($assert (== (composition_revision runtime/workspace) 2))
-            ($assert (== ($size runtime/workspace/errors/.get) 0)))
+            ($assert (== ($map_size runtime/workspace/errors/.get) 0)))
         ensure
           (close_runtime runtime))))))
 
