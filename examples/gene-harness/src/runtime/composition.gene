@@ -2,7 +2,7 @@
 
 (type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any? ^registry_owners Any?})
 (type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any ^label Str?})
-(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^publications Any ^publication_gate Any ^leases Any ^publication_diagnostics Any ^retirement_failures Any})
+(type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^publications Any ^publication_gate Any ^leases Any ^publication_diagnostics Any})
 (type CompositionClosed ^props {^message Str} ^impl [Error])
 (impl Error for CompositionClosed)
 
@@ -37,7 +37,7 @@
   (counts .put "0" ($atomic_cell 0))
   (CompositionState ^current ($cell snapshot) ^next_id ($cell 1) ^snapshots ($cell snapshots) ^counts ($cell counts) ^pending ($cell []) ^retiring ($cell []) ^retire retire ^closed ($cell false) ^closing ($cell false) ^publishing ($sync/gate) ^mutating ($sync/gate)
     ^publications ($cell []) ^publication_gate ($sync/gate) ^leases ($cell [])
-    ^publication_diagnostics ($cell {}) ^retirement_failures ($cell [])))
+    ^publication_diagnostics ($cell [])))
 
 (type PublicationSubscription ^^private ^props {^rows Any ^gate Any ^token Any ^active Any}
   (message cancel [] : Nil
@@ -165,25 +165,38 @@
 
 # Diagnostics belong to a publication, not to its caller. Publication commits
 # at the cell write below; a failing observer, metadata pass or retirement is
-# recorded against the snapshot that is already serving and never rolls back a
-# composition that went live.
+# recorded against the snapshot that is serving when it fails and never rolls
+# back a composition that went live. The most recent ones outlive their
+# snapshot so the plugin catalog can still report them.
+(var ^^private diagnostic_limit 32)
+
+(fn ^^private snapshot_key [revision] : Str
+  ($to_str (if (== ($head revision) CompositionSnapshot) revision/id revision)))
+
 (fn record_publication_diagnostic [state : CompositionState, revision, diagnostic]
-  (let id ($to_str (if (== ($head revision) CompositionSnapshot) revision/id revision)))
-  (let existing (?? (state/publication_diagnostics/.get .get id) []))
-  (existing .push diagnostic)
-  (state/publication_diagnostics/.get .put id existing)
+  (let entry {^snapshot (snapshot_key revision)})
+  (map_for [key value] in diagnostic (entry .put key value))
+  (let entries state/publication_diagnostics/.get)
+  (entries .push entry)
+  (if (> entries/.size diagnostic_limit)
+    (do
+      (let kept [])
+      (var at (- entries/.size diagnostic_limit))
+      (while (< at entries/.size)
+        (kept .push entries/%at)
+        (set at (+ at 1)))
+      (state/publication_diagnostics .set kept)))
   nil)
 
-(fn publication_diagnostics [state : CompositionState, revision] : Any
-  (require_open state)
-  (if (== ($head revision) CompositionSnapshot)
-    (publication_diagnostics state revision/id)
-    (let found (state/publication_diagnostics/.get .get ($to_str revision)))
-    (if ($absent? found)
-      []
-      (let copied [])
-      (for diagnostic in found (copied .push diagnostic))
-      copied)))
+# One publication's diagnostics, oldest first; without a revision, every
+# recent diagnostic.
+(fn publication_diagnostics [state : CompositionState, revision = nil] : Any
+  (let wanted (if ($absent? revision) nil (snapshot_key revision)))
+  (let found [])
+  (for diagnostic in state/publication_diagnostics/.get
+    (if (|| ($absent? wanted) (== diagnostic/snapshot wanted))
+      (found .push diagnostic)))
+  found)
 
 (fn publish_snapshot_serial [state : CompositionState, registries, instances,
   ^plugins plugins = [], ^registry_owners registry_owners = {}] : CompositionSnapshot
@@ -206,9 +219,6 @@
         (record_publication_diagnostic state id
           {^kind "observer" ^message $err/message})))
   (drain_retirements state)
-  (for failure in (take_retirement_failures state)
-    (record_publication_diagnostic state id
-      {^kind "retirement" ^ticket failure/ticket ^message failure/message}))
   snapshot)
 
 (fn instance_is_leased? [state : CompositionState, instance] : Bool
@@ -231,12 +241,38 @@
   (drain_retirements state)
   nil)
 
-(fn take_retirement_failures [state : CompositionState] : Any
-  (state/retirement_failures .swap []))
+# A deferred retirement fails with one error whose cause lists every cleanup
+# that failed, each with its own causes. The diagnostic keeps the innermost
+# messages and the plugin each one came from.
+(fn ^^private error_causes [error] : Any
+  (let causes (try error/cause catch Any nil))
+  (if (&& ($present? causes) (== ($head causes) List)) causes nil))
+
+(fn ^^private leaf_messages [error] : Any
+  (let causes (error_causes error))
+  (if ($absent? causes)
+    (return [($to_str (try (?? error/message error) catch Any error))]))
+  (let out [])
+  (for cause in causes
+    (for message in (leaf_messages cause) (out .push message)))
+  out)
+
+(fn ^^private failure_message [error] : Str
+  (let causes (error_causes error))
+  (if ($absent? causes) (return ($to_str error/message)))
+  (let parts [])
+  (for cause in causes
+    (let plugin (try cause/plugin catch Any nil))
+    (for message in (leaf_messages cause)
+      (parts .push (if ($absent? plugin) message $"${plugin}: ${message}"))))
+  (let detail ($str/join parts "; "))
+  $"${error/message}: ${detail}")
 
 # A retirement ticket is independent of every other ticket. One failing
 # cleanup is recorded and the rest still run: a single failure must not strand
 # later tickets, and a drain triggered by an unrelated turn must not fail it.
+# The failure is recorded when it happens, against the serving snapshot, and
+# returned to the caller.
 (fn drain_retirements [state : CompositionState] : Any
   (let waiting [])
   (let ready [])
@@ -253,9 +289,9 @@
     (try
       (state/retire retirement/ticket)
     catch Any
-      (let failure {^ticket retirement/ticket ^message $err/message})
+      (let failure {^kind "retirement" ^message (failure_message $err)})
       (failures .push failure)
-      (state/retirement_failures/.get .push failure)))
+      (record_publication_diagnostic state state/current/.get failure)))
   (let expired [])
   (let current state/current/.get)
   (map_for [id counter] in state/counts/.get
@@ -263,12 +299,13 @@
       (expired .push id)))
   (for id in expired
     (state/counts/.get .delete id)
-    (state/snapshots/.get .delete id)
-    (state/publication_diagnostics/.get .delete ($to_str id)))
+    (state/snapshots/.get .delete id))
   failures)
 
-(fn begin_close_composition_state [state : CompositionState]
-  (if state/closed/.get (return nil))
+# Returns the retirement failures of the final drain. They are reported, but a
+# failing cleanup does not stop the rest of the composition from closing.
+(fn begin_close_composition_state [state : CompositionState] : Any
+  (if state/closed/.get (return []))
   (map_for [id counter] in state/counts/.get
     (if (> counter/.load 0)
       (then
@@ -277,12 +314,7 @@
         (fail (CompositionClosed ^message
           $"composition still has active turn leases at snapshot ${id}: ${counter/.load}; holders ${held}")))))
   (state/closing .set true)
-  (drain_retirements state)
-  (let failures (take_retirement_failures state))
-  (if_not failures/.empty?
-    (fail (CompositionClosed ^message
-      $"composition retirement failed while closing: ${($map failures (fn [failure] failure/message))}")))
-  nil)
+  (drain_retirements state))
 
 (fn close_composition_state [state : CompositionState]
   (if state/closed/.get (return nil))

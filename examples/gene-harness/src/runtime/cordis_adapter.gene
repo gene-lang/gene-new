@@ -28,7 +28,7 @@
 # a reconcile needs no registry draft and no whole-set publication.
 (protocol RegistryHost
   (message activate [thunk] : Any)
-  (message hide_owner [owner : Str] : Nil)
+  (message withdraw_owner [owner : Str] : Nil)
   (message cleanup [thunk] : Any)
   (message enter_call [] : Nil)
   (message leave_call [] : Nil)
@@ -276,6 +276,10 @@
             (selection_changed record binding/registry binding/name)))
         ^projection_installer (fn [install]
           (set record/projection_installer install))
+        # A carried entry that Cordis re-stages leaves the candidate before any
+        # revision activates; it may end pending, with no activation to do it.
+        ^restage (fn [ids]
+          (for id in ids (record/host .RegistryHost:withdraw_owner ($to_str id))))
         ^^allow_pending
         ^^allow_failed
         ^descriptor_factory (fn [module, row, graph] (describe_source record module row graph)))))

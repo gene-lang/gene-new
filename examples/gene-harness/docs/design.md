@@ -204,16 +204,22 @@ The composer's bridge state tracks reconciliation and the last published set.
 
 An entry is carried when its plugin, entry policy, row data and resolved
 requirements are unchanged. A carried entry keeps its activation, rows,
-services and receiver; only changed, pending and departed entries are staged.
-A replacement therefore restarts the provider and its consumers, not every
-plugin in the workspace.
+services and receiver; only changed, pending and departed entries, and the
+consumers whose selections they change, are staged. A re-staged entry's
+previous rows and registries leave the candidate even if it ends pending. A
+replacement therefore restarts the provider and its consumers, not every
+plugin in the workspace. Reviewed live Apply is the exception: it stages and
+restarts the whole set.
 
 Publication commits when the snapshot cell becomes current. Observers,
 metadata, the change notification and the retirement drain run after that
 commit: a failure there is recorded as a publication diagnostic and never
-rolls back the tables or changes a plugin's status. Replaced instances retire
-after their final reader releases its lease, and one failing ticket does not
-strand the tickets behind it. Publication observers subscribe independently
+rolls back the tables or changes a plugin's status. The plugin catalog lists
+the most recent diagnostics. Replaced instances retire after their final
+reader releases its lease, and one failing ticket does not strand the tickets
+behind it. A cleanup that fails when a lease is released is recorded against
+the serving snapshot; one that fails while the host stops is reported by
+shutdown, which still closes the composition. Publication observers subscribe independently
 and cancel only their own subscriptions. Retained code may outlive publication;
 revocable receivers and service handles enforce the owning activation's
 lifetime.

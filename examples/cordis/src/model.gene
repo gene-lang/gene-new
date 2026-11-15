@@ -69,7 +69,8 @@
           ^allow_failed Bool?
           ^descriptor_factory Any?
           ^selection_refresh Any?
-          ^projection_installer Any?})
+          ^projection_installer Any?
+          ^restage Any?})
 
 # `token` is not authority by itself. The trusted constructors register its
 # identity in private module state, and every consuming operation resolves the

@@ -47,9 +47,8 @@
     (fn [item] (&& (== item/owner owner) (!= item/state "stopped"))))))
   (if ($absent? found) "none" found/state))
 
-# Every stored-plugin reconciliation restarts stored activations, so a
-# producer may be quiesced and restarted; the contract is that exactly one
-# selected producer runs at a time.
+# A replacement or slot change can quiesce one producer and start another;
+# the contract is that exactly one selected producer runs at a time.
 (fn running_count [runtime, owner : Str]
   ($size ($filter (service_states runtime/services/values/plugin_services/activation_services)
     (fn [item] (&& (== item/owner owner) (== item/state "running"))))))

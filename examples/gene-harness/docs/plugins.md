@@ -251,8 +251,9 @@ reference ([source](../src/builtin/triggers.gene)).
   running. `quiesce` runs when it stops producing (a successor took over, the
   plugin was disabled, or the host is stopping), and the task is cancelled when
   the activation retires. Replacing a plugin starts a new activation, so a
-  service must resume from its records; an unrelated composition change carries
-  an unchanged activation and leaves its service running.
+  service must resume from its records. Registration, removal and other
+  ordinary composition changes carry an unchanged activation and leave its
+  service running; reviewed live Apply restarts every entry.
 - A `feature_slots` row `{^name slot}` claims a single-producer feature; services
   with `^slot` run only while their plugin holds it. A slot is held by its one
   `^takeover true` row, otherwise by its single claimant, otherwise by the
@@ -701,7 +702,8 @@ rendering or external services.
 
 ### Apply and publication
 
-Reviewed live Apply stages the complete candidate set. Every enabled entry
+Reviewed live Apply stages the complete candidate set and starts a new
+activation for every entry, unchanged ones included. Every enabled entry
 must be accepted at its requested revision, and the plan's readiness policy
 must pass before the desired revision is committed and the set is published.
 Failure publishes none of the candidate set, disposes acquired candidate

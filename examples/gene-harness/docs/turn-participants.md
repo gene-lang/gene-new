@@ -130,10 +130,10 @@ Require the registries used by a plugin, for example
 `^requires [{^registry "turn_participants"} {^registry "outcome_extensions"}]`.
 Contribute through the ordinary PluginHost API. Every name is `OWNER/NAME`;
 `OWNER` is the contributing plugin's id. Duplicates and namespace claims for
-another owner fail registration. A public participant may declare the short
-spelling of its own Outcome extension field, its `limit` callback and its
-`request_record` annotation. Record annotations and the round-limit boundary are
-otherwise host-owned.
+another owner fail registration. A public participant may declare its `limit`
+callback and its `request_record` annotation; only a profile built-in may
+declare the short spelling of its own Outcome extension field. Record
+annotations and the round-limit boundary are otherwise host-owned.
 
 All participant callbacks take `[context state value]`. `state` is a mutable
 map private to that participant for this turn, including partial acquisition.

@@ -256,8 +256,7 @@
   (append_core_event events scope stream
     event ^projection plugin))
 
-# Core projections are deliberately separate from plugin state. Checkpoints
-# retain them even when the event that established them leaves the log window.
+# Core projections are deliberately separate from plugin state.
 (fn record_core_state
   [events : EventStore, scope : Str, stream : Str, kind : Str, key : Str, state]
   (if_not (["session/state" "round/state" "question/asked" "question/answered"

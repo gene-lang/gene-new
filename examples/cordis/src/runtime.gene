@@ -2348,7 +2348,9 @@
     (cordis_failure CompositionError "selection_refresh must be a host callable"))
   (if (&& (! (absent? options/projection_installer)) (! (callable? options/projection_installer)))
     (cordis_failure CompositionError "projection_installer must be a host callable"))
-  (LoaderOptions ^plugin_root options/plugin_root ^shared ($freeze (copy_list options/shared)) ^max_namespaces ($freeze (copy_list options/max_namespaces)) ^default_limits limits ^reload_policy options/reload_policy ^publication options/publication ^allow_pending options/allow_pending ^allow_failed options/allow_failed ^retirement options/retirement ^descriptor_factory options/descriptor_factory ^selection_refresh options/selection_refresh ^projection_installer options/projection_installer))
+  (if (&& (! (absent? options/restage)) (! (callable? options/restage)))
+    (cordis_failure CompositionError "restage must be a host callable"))
+  (LoaderOptions ^plugin_root options/plugin_root ^shared ($freeze (copy_list options/shared)) ^max_namespaces ($freeze (copy_list options/max_namespaces)) ^default_limits limits ^reload_policy options/reload_policy ^publication options/publication ^allow_pending options/allow_pending ^allow_failed options/allow_failed ^retirement options/retirement ^descriptor_factory options/descriptor_factory ^selection_refresh options/selection_refresh ^projection_installer options/projection_installer ^restage options/restage))
 
 (fn runtime_loader [handle : Runtime, options] ^^private
   (var runtime (require_runtime_open (runtime_record handle)))
@@ -3523,6 +3525,17 @@
             (entries .put id built/entry))))))
   nil)
 
+# Entries that leave the carried set withdraw their live contributions from the
+# host before they are staged. A re-staged entry can end pending, and then no
+# activation of it would remove what its retiring revision contributed.
+(fn notify_restaged ^^private [loader, old_entries, ids]
+  (if (absent? loader/options/restage) (return nil))
+  (var restaged (fresh_list))
+  (map_for [id ignored] in ids
+    (if ($present? (old_entries .get id)) (restaged .push id)))
+  (if (> restaged/.size 0) (loader/options/restage ($freeze restaged)))
+  nil)
+
 (fn loader_reconcile_staged_carry ^^private
   [loader, manifest, rows, force_ids, admitted, changed_ids,
    ^strict strict : Bool = false, ^pending pending : Bool = false,
@@ -3606,6 +3619,7 @@
           (if (absent? value) (return nil))
           (runtime_install_provider (Runtime ^token candidate/token)
             candidate/root/.get key value))))
+    (notify_restaged loader old_entries install_ids)
     (build_carry_entries loader candidate transaction rows install_ids kept_ids old_entries
       admitted entries order prepared_generations abandoned_generations)
     (var rounds 0)
@@ -3647,9 +3661,12 @@
           # staged in an earlier round keep their candidate revision unless
           # their own epoch changed, which puts them in `rerun` too.
           (var round_ids (fresh_map))
+          (var leaving (fresh_map))
           (for id in rerun
+            (if ($present? (kept_ids .get id)) (leaving .put id true))
             (round_ids .put id true)
             (kept_ids .delete id))
+          (notify_restaged loader old_entries leaving)
           (build_carry_entries loader candidate transaction rows round_ids kept_ids
             old_entries admitted entries order prepared_generations abandoned_generations))))
     (require_candidate_active candidate (if strict pending loader/options/allow_pending)

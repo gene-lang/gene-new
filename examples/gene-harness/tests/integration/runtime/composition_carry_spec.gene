@@ -3,7 +3,7 @@
 (import $test [describe it])
 (import [isolated run_spec] ^from "../../support")
 (import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [new_harness install put_cordis_plugin status_of row shutdown_harness]
+(import [new_harness install uninstall put_cordis_plugin status_of row shutdown_harness]
   ^from "../../../src/kernel")
 (import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
 (import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
@@ -94,6 +94,36 @@
           ($assert (== consumer/.get 2) ($to_str consumer/.get))
           ($assert (== unrelated/.get 1) ($to_str unrelated/.get))
           ($assert (== ((/fn (row h "functions" "shared"))) 2))
+        ensure (shutdown_harness h)))))
+
+  (it "withdraws a re-staged consumer's rows and registries" []
+    (isolated this_mod/.path
+      "withdraws a re-staged consumer's rows and registries"
+      (fn [root]
+        (let h (new_harness))
+        (let consumer ($cell 0))
+        (fn provider_plugin [value]
+          (Plugin ^id "provider" ^provides [["functions" "shared"]]
+            ^activate (fn [host]
+              (host .PluginHost:contribute "functions"
+                {^name "shared" ^doc "Shared." ^fn (fn [] value)}))))
+        (try
+          (install h (provider_plugin 1))
+          (install h (Plugin ^id "consumer" ^requires [["functions" "shared"]]
+            ^activate (fn [host]
+              (consumer .set (+ consumer/.get 1))
+              (host .PluginHost:create_registry {^name "consumer_items" ^^unique})
+              (host .PluginHost:contribute "functions"
+                {^name "consumer_fn" ^doc "Consumer." ^fn (fn [] "consumer")}))))
+          # Its registry leaves the candidate, so the new revision can create it.
+          (put_cordis_plugin ^^replace h (provider_plugin 2) {^^host})
+          ($assert (== (status_of h "consumer") "ready") (status_of h "consumer"))
+          ($assert (== consumer/.get 2) ($to_str consumer/.get))
+          # Without its provider it is pending, and its rows are not published.
+          (uninstall h "provider")
+          ($assert (== (status_of h "consumer") "pending") (status_of h "consumer"))
+          ($assert ($absent? (row h "functions" "consumer_fn"))
+            "a pending consumer kept its retired revision's row")
         ensure (shutdown_harness h)))))
 
   (it "becomes ready when another plugin first provides the requirement" []

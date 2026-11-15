@@ -45,6 +45,10 @@
           (put_cordis_plugin h (Plugin ^id "after" ^activate (fn [host] nil)) {^^host})
           ($assert (== (status_of h "late") "ready") "observer failure changed a plugin's status")
           ($assert (== (status_of h "after") "ready"))
+          # The diagnostic outlives its snapshot; a clean publication has none.
+          ($assert (== ($size (publication_diagnostics h/snapshots snapshot)) 1)
+            "the observer diagnostic expired with its snapshot")
+          ($assert (== (publication_diagnostics h/snapshots (current_snapshot h/snapshots)) []))
           (subscription .cancel)
         ensure (shutdown_harness h)))))
 
@@ -79,6 +83,7 @@
       (fn [root]
         (let h (new_harness))
         (let closed [])
+        (var shutdown nil)
         (try
           (install h (Plugin ^id "value" ^activate (fn [host]
             (host .PluginHost:contribute "functions"
@@ -100,8 +105,14 @@
           (let snapshot (current_snapshot h/snapshots))
           ($assert (== ((/fn (row h "functions" "value"))) 3))
           ($assert (== (status_of h "value") "ready"))
-          ($assert ($present? snapshot))
-        ensure (shutdown_harness h)))))
+          # The failure on release is recorded at once, and it does not stop
+          # the host from closing the composition later.
+          (let recorded ($filter (publication_diagnostics h/snapshots snapshot)
+            (fn [item] (== item/kind "retirement"))))
+          ($assert (== ($size recorded) 2) ($to_str recorded))
+          (set shutdown (shutdown_harness h))
+          ($assert (== shutdown/status "closed") ($to_str shutdown))
+        ensure (if ($absent? shutdown) (shutdown_harness h))))))
 
   (it "keeps the serving revision after a failed same-id replacement" []
     (isolated this_mod/.path
