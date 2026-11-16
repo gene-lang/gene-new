@@ -32,7 +32,7 @@
   changed)
 
 (fn main [args] : Int
-  (let mode (if (> args/body/.size 0) args/body/0 "check"))
+  (let mode (if (> args/.body/.size 0) args/.body/0 "check"))
   (if (== mode "write")
     (then
       (let root (package_root))

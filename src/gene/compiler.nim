@@ -86,6 +86,7 @@ type
     repeatIndexNames: HashSet[string]
     gensym: ref int   # shared with child compilers; see nextGensym
     useLocalSlots: bool
+    slotlessScope: bool     # runs in a runtime scope of its own without slots
     localSlots: Table[string, int]
     fastLocalLoads: Table[string, int]
     localTypes: Table[string, Value]
@@ -319,7 +320,7 @@ proc parseImportSpec*(node: Value): ImportSpec
 const MaxMacroExpansionDepth* = 100
 
 const CoreSpecialFormNames* = [
-  "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
+  "do", "if", "if_yes", "if_not", "if_present", "&&", "||", "??", "!",
   "let", "var", "const", "set", "new",
   "fn", "macro", "quote", "quasiquote", "Path", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
@@ -561,11 +562,15 @@ proc parentSlot(c: Compiler, name: string): tuple[depth: int, slot: int] =
 proc parentFrames(c: Compiler): seq[Table[string, int]] =
   if c.useLocalSlots:
     result.add c.localSlots
+  elif c.slotlessScope:
+    result.add initTable[string, int]()
   result.add c.parentSlots
 
 proc parentFunctionSigFrames(c: Compiler): seq[Table[string, KnownFunctionSig]] =
   if c.useLocalSlots:
     result.add c.localFunctionSigs
+  elif c.slotlessScope:
+    result.add initTable[string, KnownFunctionSig]()
   result.add c.parentFunctionSigs
 
 proc lexicalFunctionSig(c: Compiler, name: string):
@@ -1964,7 +1969,8 @@ proc signatureCompiler(c: Compiler, paramList: Value): Compiler =
 proc typeExprAdmitsNil*(expr: Value): bool =
   ## True when a type expression *explicitly* admits nil — `T?`, `(? ...)`,
   ## `Nil`, or a union with a nil-admitting alternative. Such a type marks an
-  ## optional prop-schema field or fixed parameter (omitted binds nil).
+  ## optional prop-schema field (omitted reads as nil). A parameter is
+  ## optional only when it declares `= default`.
   ## `Any` is gradual slack, not an optionality marker: an `Any` field stays
   ## required, which keeps "required but dynamic" expressible.
   if expr.isTypeAlias: return typeExprAdmitsNil(expr.typeAliasExpr)
@@ -1986,44 +1992,6 @@ proc typeExprAdmitsNil*(expr: Value): bool =
 
 proc ownInterfaceEntry(c: Compiler, name: string):
     tuple[found: bool, entry: CompileInterfaceEntry]
-
-proc parameterTypeAdmitsNil(c: Compiler, expr: Value, shadowed: openArray[string],
-                            depth = 0): bool =
-  if depth > 100: raise newException(GeneError, "recursive parameter type alias")
-  if typeExprAdmitsNil(expr): return true
-  if expr.kind == vkSymbol and expr.symVal notin shadowed:
-    if c.parameterAliases.hasKey(expr.symVal):
-      return c.parameterTypeAdmitsNil(c.parameterAliases[expr.symVal], shadowed, depth + 1)
-    let path = expr.symVal.split('/')
-    if path.len > 1:
-      if path[0] in shadowed: return false
-      var resolved = c.ownInterfaceEntry(path[0])
-      if resolved.found:
-        for segment in path[1 .. ^1]:
-          if resolved.entry.category != cbcNamespace or
-              resolved.entry.namespace == nil or
-              not resolved.entry.namespace.entries.hasKey(segment):
-            return false
-          resolved.entry = resolved.entry.namespace.entries[segment]
-        let form = resolved.entry.typeForm
-        if form.kind == vkNode and form.head.isSymbol("alias") and form.body.len == 2:
-          return c.parameterTypeAdmitsNil(form.body[1], shadowed, depth + 1)
-        return false
-    if c.importedCompileEntries.hasKey(expr.symVal):
-      let form = c.importedCompileEntries[expr.symVal].typeForm
-      if form.kind == vkNode and form.head.isSymbol("alias") and form.body.len == 2:
-        return c.parameterTypeAdmitsNil(form.body[1], shadowed, depth + 1)
-  elif expr.kind == vkNode:
-    if expr.head.isSymbol("|"):
-      for member in expr.body:
-        if c.parameterTypeAdmitsNil(member, shadowed, depth + 1): return true
-    elif expr.head.isSymbol("path"):
-      var path: seq[string]
-      for segment in expr.body:
-        if segment.kind != vkSymbol: return false
-        path.add segment.symVal
-      return c.parameterTypeAdmitsNil(newSym(path.join("/")), shadowed, depth + 1)
-  false
 
 proc expandTypeAlias(c: Compiler, expr: Value, shadowed: openArray[string],
                      depth = 0): Value =
@@ -2098,7 +2066,7 @@ proc parseParamAdornment(c: Compiler, paramList: Value,
     else:
       break
 
-proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): ParamSpecs =
+proc paramSpecs(c: Compiler, paramList: Value): ParamSpecs =
   ## Extract positional and named parameter bindings from an `[a ^name b]`
   ## vector. The reader preserves vectors as flat tokens, so `^name` appears as
   ## `^` followed by `name`, and rest params appear as symbols like `xs...`.
@@ -2136,7 +2104,7 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
         continue
       let arg = rejectOptionalSuffix(namedItem.symVal, "named parameter",
         "write `^" & namedItem.symVal[0 .. ^2] &
-        " : T?` — a nil-admitting type is optional (omitted binds nil)")
+        " : T? = nil` for an optional named parameter")
       if arg.len == 0:
         raise newException(GeneError, "named parameter requires a name")
       inc i
@@ -2149,12 +2117,9 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
           if local.len == 0:
             raise newException(GeneError, "named parameter local requires a name")
           inc i
-      var adornment = c.parseParamAdornment(paramList, defaultContext, items, i)
-      if not adornment.defaultValue.optional and
-          c.parameterTypeAdmitsNil(adornment.typeExpr, typeParams & result.positional):
-        # ^name : T? — optional named parameter; omitted binds nil (the
-        # defaultChunk stays nil, so the runtime default is NIL).
-        adornment.defaultValue.optional = true
+      # Only `= default` makes a parameter omissible; its type says which
+      # values it accepts, not whether it may be left out.
+      let adornment = c.parseParamAdornment(paramList, defaultContext, items, i)
       result.named.add NamedParam(arg: arg, local: local,
                                   typeExpr: adornment.typeExpr,
                                   defaultValue: adornment.defaultValue)
@@ -2180,15 +2145,12 @@ proc paramSpecs(c: Compiler, paramList: Value, typeParams: seq[string] = @[]): P
         result.restType = restAdornment.typeExpr
         continue
       else:
-        # Explicit nil-admitting parameter types supply an implicit nil default.
         let name = rejectOptionalSuffix(s, "parameter",
-          "write `" & s[0 .. ^2] & " : T?` for an optional positional parameter")
+          "write `" & s[0 .. ^2] & " : T? = nil` for an optional positional parameter")
         if name.len == 0:
           raise newException(GeneError, "parameter requires a name")
         inc i
-        var adornment = c.parseParamAdornment(paramList, defaultContext, items, i)
-        if c.parameterTypeAdmitsNil(adornment.typeExpr, typeParams & result.positional):
-          adornment.defaultValue.optional = true
+        let adornment = c.parseParamAdornment(paramList, defaultContext, items, i)
         if adornment.defaultValue.optional:
           sawOptionalPositional = true
         elif sawOptionalPositional:
@@ -3648,8 +3610,9 @@ proc hasOptionalPositional(specs: ParamSpecs): bool =
       return true
 
 proc hasComputedPositionalDefault(specs: ParamSpecs): bool =
+  ## A default other than `= nil`, which native code passes as NULL.
   for value in specs.positionalDefaults:
-    if value.optional and value.defaultChunk != nil: return true
+    if value.optional and not value.defaultChunk.isNilDefault: return true
 
 proc nativeScalarType(expr: Value): string =
   if expr.kind != vkSymbol:
@@ -4051,7 +4014,8 @@ proc acceptsAotArity(fn: FunctionProto, count: int): bool =
   if fn == nil or count > fn.params.len or count < fn.requiredPositional: return false
   for i in count ..< fn.params.len:
     if i >= fn.paramDefaults.len or not fn.paramDefaults[i].optional or
-        fn.paramDefaults[i].defaultChunk != nil or i >= fn.aotParamReprs.len or
+        not fn.paramDefaults[i].defaultChunk.isNilDefault or
+        i >= fn.aotParamReprs.len or
         fn.aotParamReprs[i].kind != arkNativePtr or not fn.aotParamReprs[i].nullable:
       return false
   true
@@ -4702,7 +4666,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     raise newException(GeneError,
       "generator return annotation must admit Stream, got " & returnType.print())
 
-  var specs = c.paramSpecs(paramList, typeParams)
+  var specs = c.paramSpecs(paramList)
   # Receiver admission is supplied by dispatch. Retain the annotation's origin
   # so replacement signatures cannot hide forbidden Self through this erasure.
   let receiverSelfAnnotation = immutableSelf and specs.positional.len > 0 and
@@ -9046,6 +9010,9 @@ proc inlineForForm(c: Compiler, form: Value): bool =
     of "do", "if", "then", "elif", "else", "if_yes", "if_not", "&&", "||",
        "??", "!", "while", "loop", "repeat":
       discard
+    of "if_present":
+      if form.body.len < 3 or not inlineForName(form.body[0]):
+        return false
     of "for", "map_for":
       if form.body.len < 3 or not inlineForName(form.body[0]) or
           not form.body[1].isSymbol("in"):
@@ -10374,15 +10341,13 @@ proc resultCanUseFrameSlots(c: Compiler, value: Value): bool =
   else: discard
   true
 
-proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
-  var needsScope = false
+proc compileOwnedBlock(c: var Compiler, forms: openArray[Value], tail: bool) =
+  ## Compile `forms` as a lexical block whose declarations stay inside it.
+  ## Loop, return and tail targets of the caller survive.
   var inlineSlots = c.useLocalSlots
-  for form in node.body:
-    needsScope = needsScope or ownsResultBindings(form)
+  for form in forms:
     inlineSlots = inlineSlots and c.resultCanUseFrameSlots(form)
-  if not needsScope:
-    compileBody(c, node.body, tail = tail)
-  elif inlineSlots:
+  if inlineSlots:
     # Lexical visibility changes, but ordinary local access stays in this
     # function's frame. Physical slot labels keep mirrored module scopes and
     # name-based reflection from publishing these block-local declarations.
@@ -10394,7 +10359,7 @@ proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
     inner.ownValueNames = initHashSet[string]()
     inner.staticTopLevelImpls = initHashSet[uint64]()
     let start = c.chunk.instructions.len
-    compileBody(inner, node.body, tail = tail)
+    compileBody(inner, forms, tail = tail)
     c.localNames = inner.localNames
     c.sawValueReturn = c.sawValueReturn or inner.sawValueReturn
     for i in start ..< c.chunk.instructions.len:
@@ -10403,20 +10368,126 @@ proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
         c.ordinaryFnNames.del(instruction.name)
         c.generatorFnNames.del(instruction.name)
         c.mutableBindingNames.incl instruction.name
+    return
+  var inner = c.childCompiler()
+  inner.loopDepth = c.loopDepth
+  inner.enableLocalSlots()
+  inner.parentSlots = c.parentFrames()
+  inner.parentFunctionSigs = c.parentFunctionSigFrames()
+  inner.staticTopLevelImpls = initHashSet[uint64]()
+  inner.prepareStaticImports(forms)
+  inner.reserveProtocolBindingsFor(forms)
+  compileBody(inner, forms, tail = tail)
+  discard inner.emit(opReturn)
+  inner.chunk.localNames = inner.localNames
+  c.sawValueReturn = c.sawValueReturn or inner.sawValueReturn
+  discard c.emit(opBlockScope, c.chunk.addSubchunk(inner.chunk), tail = tail)
+
+proc compileBoundBody(c: var Compiler, binder: string, forms: openArray[Value],
+                      tail: bool) =
+  ## The body of `if_present`, with the tested value on top of the stack.
+  ## `binder` is bound for the body only; everything else the body declares
+  ## keeps the enclosing scope, as in `if`.
+  var inline = c.useLocalSlots
+  for form in forms:
+    inline = inline and c.resultCanUseFrameSlots(form)
+  if inline:
+    # Nothing in the body can capture or name a slot at run time: the binder
+    # takes a block-private slot, as a `repeat` index does, and the body is
+    # compiled in place.
+    let saved = c.beginLoopIndex(binder)
+    discard c.emit(opPop)
+    compileBody(c, forms, tail = tail)
+    c.endLoopIndex(saved)
+    return
+  # The body reaches names at run time, or makes closures: it runs in a block
+  # scope that holds only the binder and forwards every other declaration to
+  # the enclosing scope. Each execution binds afresh, so a closure keeps that
+  # execution's value. A block scope starts with an empty operand stack, so
+  # the value crosses into it through a generated binding.
+  let carrier = c.nextTemp("bound")
+  c.emitRebindableBinding(carrier)
+  discard c.emit(opPop)
+  var inner = c.childCompiler()
+  inner.loopDepth = c.loopDepth
+  inner.parentSlots = c.parentFrames()
+  inner.parentFunctionSigs = c.parentFunctionSigFrames()
+  # The block scope is a runtime level with no slots of its own; scoped
+  # bodies nested in it count it when they address outer locals.
+  inner.slotlessScope = true
+  inner.staticTopLevelImpls = initHashSet[uint64]()
+  inner.prepareStaticImports(forms)
+  inner.reserveProtocolBindingsFor(forms)
+  inner.emitLoadBinding(carrier)
+  inner.emitDefineBinding(binder)
+  discard inner.emit(opPop)
+  compileBody(inner, forms, tail = tail)
+  discard inner.emit(opReturn)
+  c.sawValueReturn = c.sawValueReturn or inner.sawValueReturn
+  discard c.emit(opBlockScope, c.chunk.addSubchunk(inner.chunk), name = binder,
+                 flag = true, tail = tail)
+  if not tail:
+    # Release the carried value once the body is done with it.
+    c.emitConst NIL
+    c.emitSetBinding(carrier)
+    discard c.emit(opPop)
+
+proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
+  var needsScope = false
+  for form in node.body:
+    needsScope = needsScope or ownsResultBindings(form)
+  if not needsScope:
+    compileBody(c, node.body, tail = tail)
   else:
-    var inner = c.childCompiler()
-    inner.loopDepth = c.loopDepth
-    inner.enableLocalSlots()
-    inner.parentSlots = c.parentFrames()
-    inner.parentFunctionSigs = c.parentFunctionSigFrames()
-    inner.staticTopLevelImpls = initHashSet[uint64]()
-    inner.prepareStaticImports(node.body)
-    inner.reserveProtocolBindingsFor(node.body)
-    compileBody(inner, node.body, tail = tail)
-    discard inner.emit(opReturn)
-    inner.chunk.localNames = inner.localNames
-    c.sawValueReturn = c.sawValueReturn or inner.sawValueReturn
-    discard c.emit(opBlockScope, c.chunk.addSubchunk(inner.chunk), tail = tail)
+    c.compileOwnedBlock(node.body, tail)
+
+proc isClause(value: Value, name: string): bool =
+  value.kind == vkNode and value.head.isSymbol(name)
+
+proc compileIfPresent(c: var Compiler, node: Value, tail = false) =
+  ## (if_present name expr body... (else body...)) — evaluate `expr` once; when
+  ## its value is present (not nil), bind it to `name` and run the body,
+  ## otherwise run the optional trailing else clause. `name` is visible in the
+  ## body only; other declarations keep the enclosing scope, as in `if`.
+  if node.props.len != 0:
+    raise newException(GeneError, "if_present does not accept props")
+  let body = node.body
+  var last = body.len
+  var elseForms: seq[Value]
+  var hasElse = false
+  if body.len > 0 and body[^1].isClause("else"):
+    hasElse = true
+    elseForms = body[^1].body
+    last = body.len - 1
+  if last < 3:
+    raise newException(GeneError,
+      "if_present requires a name, an expression and a body")
+  let binder = body[0]
+  if binder.kind != vkSymbol or binder.symVal.len == 0 or
+      '/' in binder.symVal or binder.symVal[0] in {'$', '.', '~', '^', '@', ':'} or
+      binder.symVal == "_" or binder.symVal.endsWith("?") or
+      binder.symVal.endsWith("..."):
+    raise newException(GeneError,
+      "if_present binding must be a plain local name, got " & binder.print())
+  for i in 2 ..< last:
+    let form = body[i]
+    if form.isClause("else"):
+      raise newException(GeneError, "if_present: (else …) must be the last form")
+    if form.isClause("then") or form.isClause("elif"):
+      raise newException(GeneError,
+        "if_present takes body forms and an optional trailing (else …), not (" &
+        form.head.symVal & " …)")
+  compileExpr(c, body[1])
+  let absentJump = c.emitJump(opJumpIfAbsent)
+  c.compileBoundBody(binder.symVal, body.toOpenArray(2, last - 1), tail)
+  let endJump = c.emitJump(opJump)
+  c.patchJump(absentJump)
+  discard c.emit(opPop)
+  if hasElse and elseForms.len > 0:
+    compileBody(c, elseForms, tail = tail)
+  else:
+    c.emitConst NIL
+  c.patchJump(endJump)
 
 proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
                  tail = false) =
@@ -10490,6 +10561,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       return
     of "if_yes":
       compileIfThen(c, node, tail = tail)
+      return
+    of "if_present":
+      compileIfPresent(c, node, tail = tail)
       return
     of "if_not":
       compileIfNot(c, node, tail = tail)

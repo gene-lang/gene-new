@@ -118,10 +118,10 @@
   {^name name ^repetitions repetitions ^elapsed_ms elapsed ^result result})
 
 (fn main [args] : Int
-  ($assert (&& (>= ($size args/body) 1) (<= ($size args/body) 2))
+  ($assert (&& (>= ($size args/.body) 1) (<= ($size args/.body) 2))
     "usage: workloads.gene SIZE [TARGET_MS]; TARGET_MS=0 verifies without timing")
-  (let size ($parse/parse_int args/body/0))
-  (let target_ms (if (== ($size args/body) 2) ($parse/parse_int args/body/1) 100))
+  (let size ($parse/parse_int args/.body/0))
+  (let target_ms (if (== ($size args/.body) 2) ($parse/parse_int args/.body/1) 100))
   ($assert (&& (>= size 1) (<= size 1000000)) "size must be in 1..1000000")
   ($assert (&& (>= target_ms 0) (<= target_ms 10000)) "target_ms must be in 0..10000")
   (let input (make_input size))

@@ -38,9 +38,9 @@
   ($parse/parse_float ((text .split " ") .get 0)))
 
 (fn main [args] : Int
-  ($assert (>= args/body/.size 3) "usage: run_h6.gene OUT_DIR REPS GENE_EXE [GENE_EXE...]")
-  (let output args/body/0)
-  (let reps ($parse/parse_int args/body/1))
+  ($assert (>= args/.body/.size 3) "usage: run_h6.gene OUT_DIR REPS GENE_EXE [GENE_EXE...]")
+  (let output args/.body/0)
+  (let reps ($parse/parse_int args/.body/1))
   ($assert (> reps 0) "reps must be positive")
   ($assert (! ($fs/exists? output)) "output directory must be new")
   (let samples ($parse/parse_int (?? ($os/env? "GENE_BENCH_SAMPLES") "5")))
@@ -49,7 +49,7 @@
   (let package_root ($path/parent here))
   (let worker $"${here}/h6/worker.gene")
   (let executables [])
-  (for argument in ($drop args/body 2)
+  (for argument in ($drop args/.body 2)
     (let executable ($fs/real_path argument))
     (let version (capture executable ["--version"]))
     ($assert (== version/status 0) "could not read executable version")

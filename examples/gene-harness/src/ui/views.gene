@@ -48,7 +48,8 @@
   state)
 
 (fn validate_view_actions [tree, candidate, snapshot]
-  (if ($absent? tree/tag) (return nil))
+  # A text leaf is a Str; only an element map carries actions.
+  (if (|| (!= ($head tree) Map) ($absent? tree/tag)) (return nil))
   (if_not ($absent? tree/props/action)
     (let name tree/props/action)
     (if_not ((view_actions snapshot candidate) .contains? name)

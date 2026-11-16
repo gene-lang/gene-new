@@ -20,7 +20,7 @@
   {^samples values ^median median ^min ordered/0 ^max ordered/%last ^p95 ordered/%p95})
 
 (fn main [args] : Int
-  (let arguments args/body)
+  (let arguments args/.body)
   ($assert
     (>= ($size arguments) 2)
     "usage: gene run benchmarks/run.gene OUTPUT_DIR BENCHMARK_EXE [BENCHMARK_EXE...]")

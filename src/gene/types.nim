@@ -582,6 +582,8 @@ type
     slotNames*: seq[string]
     privateSlots*: seq[int] # inline lexical locals are unavailable to name lookup
     slotMirror*: bool
+    forwardDefines*: bool   # an if_present block: declarations go to the parent
+    forwardBinder*: string  # ... except this one, the block's own binder
     varsDirty*: bool  # mirrored slot writes pending materialization into vars
     simpleCallScope*: bool
     captureMirror*: bool    # a closure's copy of values from an activation scope
@@ -1525,7 +1527,7 @@ proc internedSymbolCount*(): int =
   finally:
     release(internLock)
 
-proc lookupSymbolId(v: string): int32 =
+proc lookupSymbolId*(v: string): int32 =
   ## Lookup-only probe: -1 when the text was never interned, so misses
   ## (hasKey on an absent key) do not grow the intern table.
   acquire(internLock)

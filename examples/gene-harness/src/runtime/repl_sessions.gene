@@ -12,7 +12,7 @@
       (let context ($runtime/context))
       (for record in (?? (context/snapshot/registries .get "functions") [])
         (if_yes (== record/payload/name self/name)
-          (let invoke ($runtime/bind_call ^named call/named record/payload/fn call/body))
+          (let invoke ($runtime/bind_call ^named call/named record/payload/fn call/.body))
           (return (invoke))))
       (fail $"Plugin function ${self/name} is no longer available."))))
 

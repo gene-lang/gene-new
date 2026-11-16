@@ -7160,8 +7160,13 @@ suite "types — function boundaries":
     ck "(fn f [x : Int, ^y : Int] : Int (+ x y)) " &
        "(fn use [g : (Fn [Int] Int ^named {^y Int})] (g 40 ^y 2)) (use f)",
        "42"
-    ck "(fn f [x : Int, ^w : Int?] : Int x) " &
+    ck "(fn f [x : Int, ^w : Int? = nil] : Int x) " &
        "(fn use [g : (Fn [Int] Int ^named {^w Int?})] (g 7)) (use f)", "7"
+    # A nil-admitting entry may be omitted by the caller, so a target that
+    # requires the argument does not match.
+    expect GeneError:
+      discard runStr("(fn f [x : Int, ^w : Int?] : Int x) " &
+                     "(fn use [g : (Fn [Int] Int ^named {^w Int?})] g) (use f)")
     expect GeneError:
       discard runStr("(fn f [x : Int, ^y : Int] x) " &
                      "(fn use [g : (Fn [Int] Any)] g) (use f)")
@@ -7180,7 +7185,7 @@ suite "types — function boundaries":
     # T? is sugar for (? T); mixed spellings compare equal on both sides.
     ck "(fn f [x : (? Int)] : Int 1) " &
        "(fn use [g : (Fn [Int?] Int)] (g 5)) (use f)", "1"
-    ck "(fn f [x : Int, ^w : (? Int)] : Int x) " &
+    ck "(fn f [x : Int, ^w : (? Int) = nil] : Int x) " &
        "(fn use [g : (Fn [Int] Int ^named {^w Int?})] (g 7)) (use f)", "7"
 
   test "generic functions match Fn types by consistent instantiation":
@@ -7188,7 +7193,7 @@ suite "types — function boundaries":
        "(fn use [g : (Fn [Int] Int)] (g 42)) (use identity)", "42"
     ck "(fn (head_of T) [xs : (List T)] : T xs/0) " &
        "(fn use [g : (Fn [(List Int)] Int)] (g [7 8])) (use head_of)", "7"
-    ck "(fn (maybe T) [x : T, ^fallback : T?] : T x) " &
+    ck "(fn (maybe T) [x : T, ^fallback : T? = nil] : T x) " &
        "(fn use [g : (Fn [Int] Int ^named {^fallback Int?})] (g 3)) " &
        "(use maybe)", "3"
     expect GeneError:

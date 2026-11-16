@@ -20,6 +20,8 @@
   (fail (CompositionError ^message message)))
 
 (fn failure_text [error, depth : Int = 0] : Str
+  # A cause chain may end in a plain Str.
+  (if (== ($head error) Str) (return error))
   (let message ($to_str (?? error/message error)))
   (if (|| (>= depth 6) ($absent? error/cause)) (return message))
   $"${message}: ${(failure_text error/cause (+ depth 1))}")

@@ -5,7 +5,7 @@
 (import $net/http [listen serve stop Response text])
 
 (fn main [args] : Int
-  ($assert (== ($size args/body) 3) "expected BUILD_DIR CHROMIUM REPORT_JSON")
+  ($assert (== ($size args/.body) 3) "expected BUILD_DIR CHROMIUM REPORT_JSON")
   (let build ($fs/real_path args/0))
   (let browser ($fs/real_path args/1))
   (let report_path args/2)

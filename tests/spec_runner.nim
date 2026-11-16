@@ -403,6 +403,7 @@ suite "spec — reader surface from design":
     fixture(["const"], "(const K 1)")
     fixture(["if_yes"], "(if_yes true 1 2)")
     fixture(["if_not"], "(if_not false 1 2)")
+    fixture(["if_present"], "(if_present x 1 x (else 0))")
     fixture(["&&", "||", "??", "!"],
             "[(&& true 1) (|| nil 2) (?? nil 2) (! false)]")
     discard compileSource("(fn size-of [self] (.size))")
@@ -3773,7 +3774,7 @@ int64_t freed_count(void) { return freed; }
       "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle " &
       "           ^release \"timespec_free\" ^copy \"timespec_copy\"}) " &
       "(fn round_trip ^native_entry {^t borrow ^result copy} " &
-      "  [t : Timespec?] : Timespec? t)",
+      "  [t : Timespec? = nil] : Timespec? t)",
       sourceName = "adapter.gene")
     let harness = """
 #include <stdio.h>
@@ -3944,7 +3945,7 @@ int main(void) {
     let chunk = compileSource(
       "(ffi/struct CNode ^fields [[value C/Int64]]) " &
       "(type Node ^native {^abi CNode ^lifecycle manual}) " &
-      "(fn identity [node : Node?] : Node? node) " &
+      "(fn identity [node : Node? = nil] : Node? node) " &
       "(fn omitted [] : Node? (identity))")
     let c = chunk.emitExperimentalC()
     check "= gene_native_identity(" in nativeFunction(c, "omitted")
@@ -7481,7 +7482,207 @@ suite "spec — nil is stored, not dropped":
                "     t/a)]",
                "[{^a nil ^b 1} (x ^a nil ^b 1) nil]")
 
-suite "spec — optionality lives on the type, not the key":
+const pathReadFixtures = "(type P ^props {^name Str ^age Int?}) " &
+  "(let p (P ^name \"Ada\")) (let m {^a 1}) (let q (quote (a ^k 1 b))) " &
+  "(let l [1 2]) (let n 6) "
+
+suite "spec — a path read that cannot be right raises":
+  test "an undeclared name on a typed value raises the write error":
+    for read in ["p/nmae", "(/nmae p)", "(let k \"nmae\") p/%k",
+                 "((Path \"nmae\") p)", "($map [p] /nmae)",
+                 "(([p] .to_stream) => /nmae -> $into [])",
+                 "(?? p/nmae 5)", "p/nmae/x", "((Path ^default 7 \"nmae\") p)",
+                 "(fn g [x] x/nmae) (g p)", "(p .get \"nmae\")",
+                 "(set p/nmae 1)"]:
+      check_eval_error(pathReadFixtures & read, "P has no field 'nmae'")
+    check_eval_error("(type T) (let v (T)) v/x", "T has no field 'x'")
+    check_eval_error("(type A ^props {^a Int}) (type C : A ^props {^c Int}) " &
+                     "(let v (C ^a 1 ^c 2)) v/z", "C has no field 'z'")
+    check_eval(pathReadFixtures & "(try p/nmae catch RuntimeError \"caught\")",
+               geneString("caught"))
+  test "a name or index through a value with no members raises":
+    check_eval_error(pathReadFixtures & "n/b", "Int has no fields")
+    check_eval_error(pathReadFixtures & "n/b", "(/ a b)")
+    check_eval_error(pathReadFixtures & "l/size", "List has no fields")
+    check_eval_error(pathReadFixtures & "l/size", "/.size")
+    check_eval_error("(let s \"abc\") s/x", "has no fields")
+    check_eval_error("(let f (fn [] 1)) f/x", "has no fields")
+    check_eval_error("(let d ($today)) d/year", "/.year")
+    check_eval_error(pathReadFixtures & "n/0", "cannot be indexed through a path")
+    check_eval_error("(let s \"abc\") s/0", "cannot be indexed through a path")
+  test "an Int segment on a Map raises; a missing key stays nil":
+    check_eval_error("(let m {^a 1}) m/0", "cannot be indexed through a path")
+    check_eval_error("(let m {^a 1}) (let k 0) m/%k",
+                     "cannot be indexed through a path")
+    check_eval_error("(let m {{0 : \"zero\"}}) m/0",
+                     "cannot be indexed through a path")
+    check_eval_error("(let m {^a 1}) ((Path ^default 7 0) m)",
+                     "cannot be indexed through a path")
+    check_eval("(let m {{0 : \"zero\"}}) (m .get 0)", geneString("zero"))
+    check_eval("(let m {^a 1}) [m/missing (let x nil) x/0]", "[nil nil nil]")
+  test "a path segment on a Stream raises before pulling an item":
+    let rows = "(var pulls 0) (fn ^^generator rows [] (set pulls (+ pulls 1)) " &
+      "(yield {^x 10}) (yield {^x 30})) " &
+      "(fn ^^generator pairs [] (set pulls (+ pulls 1)) " &
+      "(yield [10 20]) (yield [30 40])) "
+    for read in ["(let r (rows)) r/x", "(let r (rows)) (let k \"x\") r/%k",
+                 "(let r (rows)) ((Path \"x\") r)",
+                 "(let r (rows)) ((Path (quote x)) r)",
+                 "(let r (rows)) ((Path ^default 7 \"x\") r)",
+                 "(let s (pairs)) s/0", "(let s (pairs)) (let k 0) s/%k",
+                 "(let s (pairs)) ((Path 0) s)",
+                 "(let s (pairs)) ((Path ^default 7 0) s)"]:
+      check_eval(rows & "[(try (do " & read & ") false catch Any true) pulls]",
+                 "[true 0]")
+    check_eval(rows & "[($into ($map (rows) /x) []) ($into ($map (pairs) /0) [])]",
+               "[[10 30] [10 30]]")
+
+suite "spec — real absences still read as nil":
+  test "declared, stored and diagnostic names read their values":
+    check_eval(pathReadFixtures & "[p/name p/age (== p/age nil)]",
+               "[\"Ada\" nil true]")
+    check_eval("(type A ^props {^a Int}) (type C : A ^props {^c Int}) " &
+               "(let v (C ^a 1 ^c 2)) [v/a v/c]", "[1 2]")
+    check_eval("(type H ^props {^body Str}) (let h (H ^body \"b\")) h/body",
+               geneString("b"))
+    check_eval("(type H ^props {^body Str?}) (let h (H)) h/body", "nil")
+    check_eval("(type F ^props {^message Str ^line Int?} ^impl [Error]) " &
+               "(impl Error for F) " &
+               "(try (fail (F ^message \"m\")) catch Error $err/line)", "1")
+  test "a plain name reads a prop, never node anatomy":
+    check_eval("(let q (quote (a ^k 1 b c))) " &
+               "[q/head (q .get \"head\") q/%$head q/body q/%$body q/.body]",
+               "[nil nil a nil [b c] [b c]]")
+    check_eval("(let q (quote (a ^head \"stored\" ^body \"body prop\" b c))) " &
+               "[q/head q/%$head q/body q/%$body]",
+               "[\"stored\" a \"body prop\" [b c]]")
+    check_eval_error(pathReadFixtures & "p/head", "P has no field 'head'")
+  test "tests stay total":
+    check_eval(pathReadFixtures & "[($has_key? p \"nmae\") p/.props/nmae " &
+               "(match p (when {^nmae v} v) (else \"no\"))]",
+               "[false nil \"no\"]")
+    check_eval_error(pathReadFixtures & "p/.nmae", "no message 'nmae' on P")
+  test "open containers and nil propagate absence":
+    check_eval(pathReadFixtures & "[m/b m/b/c q/z q/9 l/5 l/-9]",
+               "[nil nil nil nil nil nil]")
+    check_eval("(let x nil) [x/a x/a/b x/0]", "[nil nil nil]")
+    check_eval("(enum Shape (Circle Int) Dot) (let c (Shape/Circle 1)) [c/x c/0]",
+               "[nil 1]")
+  test "an Error value reads an undeclared name as nil":
+    check_eval("(try (/ 1 0) catch Error " &
+               "[$err/message $err/line $err/nope $err/code])",
+               "[\"division by zero\" 1 nil nil]")
+    check_eval("(type E ^props {^message Str} ^impl [Error]) (impl Error for E) " &
+               "[(try (fail (E ^message \"m\")) catch Error [$err/code $err/cause]) " &
+               " (/code (E ^message \"unraised\"))]",
+               "[[nil nil] nil]")
+    check_eval("(fn local [] (type L ^props {^message Str}) (impl Error for L) " &
+               "  (/code (L ^message \"m\"))) (local)", "nil")
+    check_eval_error("(type E2 ^props {^message Str}) (let e (E2 ^message \"m\")) e/code",
+                     "E2 has no field 'code'")
+
+suite "spec — path read review cases":
+  test "a mapped Path that fails closes its source once and keeps the error":
+    let gen = "(var cleaned 0) (fn ^^generator rows [] (try (yield {^x 1}) " &
+      "(yield {^x 2}) (yield 5) (yield {^x 4}) ensure (set cleaned (+ cleaned 1)))) "
+    check_eval(gen & "(let src (rows)) (let mapped ($map src /x)) (let got []) " &
+               "[(try (do (got .push (mapped .next)) (got .push (mapped .next)) " &
+               "(got .push (mapped .next)) \"no\") catch Any \"raised\") got cleaned (src .has_next)]",
+               "[\"raised\" [1 2] 1 false]")
+    let raising = "(var cleaned 0) (fn ^^generator rows [] (try (yield {^x 1}) (yield 5) " &
+      "ensure (set cleaned (+ cleaned 1)) (fail \"cleanup failed\"))) "
+    check_eval(raising & "[(try ($into ($map (rows) /x) []) catch Any $err/message) cleaned]",
+               "[\"Int has no fields, so 'x' cannot be read through a path; to divide write (/ a b)\" 1]")
+  test "anatomy names are ordinary props on typed and plain nodes":
+    check_eval("(type T ^props {^head Str? ^props Str? ^meta Str?}) (let a (T)) " &
+               "(let b (T ^head \"h\" ^props \"p\" ^meta \"m\")) " &
+               "[a/head a/props a/meta b/head b/props b/meta]",
+               "[nil nil nil \"h\" \"p\" \"m\"]")
+    check_eval("(let q (quote (a ^k 1 b c))) (let k \"head\") " &
+               "[q/%k q/body/0 ($map [q] /head) ($map [q] /k)]", "[nil nil [nil] [1]]")
+  test "Int and Float segments on a Map raise; on a List they index":
+    check_eval("(let m {^a 1}) [(try m/-1 catch Any \"raised\") " &
+               "(try ((Path 99999999999999999999) m) catch Any \"raised\") " &
+               "(try ((Path 1.5) m) catch Any \"raised\") ((Path 1.0) [10 20])]",
+               "[\"raised\" \"raised\" \"raised\" 20]")
+  test "an escaped error keeps the witness its local impl gave it":
+    check_eval("(fn make [] (type L ^props {^message Str}) (impl Error for L) " &
+               "(try (fail (L ^message \"m\")) catch Error $err)) (let e (make)) [e/code e/cause]",
+               "[nil nil]")
+
+suite "spec — if_present tests a value and binds it":
+  test "the body runs for a present value, the else clause for nil":
+    let m = "(let m {^a 1}) "
+    check_eval(m & "(if_present x m/a (+ x 1))", "2")
+    check_eval(m & "(if_present x m/zz (+ x 1))", "nil")
+    check_eval(m & "(if_present x m/zz (+ x 1) (else \"none\"))", geneString("none"))
+    check_eval("(let f {^a false}) (if_present x f/a x (else \"none\"))", "false")
+    check_eval("(let z {^a 0 ^b \"\"}) [(if_present x z/a \"p\" (else \"a\")) " &
+               "(if_present x z/b \"p\" (else \"a\"))]", "[\"p\" \"p\"]")
+    check_eval("(var n 0) (fn next [] (set n (+ n 1)) n) [(if_present x (next) x) n]",
+               "[1 1]")
+  test "the name belongs to the body; other declarations keep the enclosing scope":
+    let m = "(let m {^a 1}) "
+    check_eval_error(m & "(if_present x m/a x) x", "undefined symbol: x")
+    check_eval(m & "(let x \"outer\") [(if_present x m/a x) x]", "[1 \"outer\"]")
+    check_eval_error(m & "(if_present x m/zz 1 (else x))", "undefined symbol: x")
+    check_eval(m & "(if_present x m/a (let y 5)) y", "5")
+    check_eval(m & "(if_present x m/zz 1 (else (let e 7))) e", "7")
+    # The same holds when the body reaches names at run time.
+    check_eval("(fn f [m] (if_present x m/a (let z (try (+ x 1) catch Any 0))) " &
+               "[z (try x catch Any \"gone\")]) (f {^a 1})", "[2 \"gone\"]")
+    check_eval("(fn f [m] (var t 0) (if_present x m/a " &
+               "(match x (when 1 (set t 10)) (else nil)) (let u (+ t x))) [t u]) (f {^a 1})",
+               "[10 11]")
+    check_eval("(fn f [m] (if_present x m/a (let g (fn [] (+ x 100)))) (g)) (f {^a 1})",
+               "101")
+    check_eval(m & "(if_present a m/a (if_present b m/a (+ a b)))", "2")
+    check_eval(m & "(if_present x m/a (if_present x (+ x 1) x))", "2")
+    check_eval(m & "(let x \"outer\") (if_present x m/zz 1 (else x))", geneString("outer"))
+    check_eval("(fn f [m] (if_present l m/a (let c [l]) (fn [] c))) " &
+               "(let g (f {^a [1]})) ((g) .push 2) (g)", "[[1] 2]")
+    check_eval("(fn f [m] (var x 5) [(if_present x m/a (set x 99) x) x]) (f {^a 1})",
+               "[99 5]")
+    # A body that reaches names at run time sees the binding by name, and
+    # it still does not escape.
+    check_eval("(fn f [m] (let x \"outer\") " &
+               "[(if_present x m/a (try (+ x 1) catch Any 0)) x]) (f {^a 1})",
+               "[2 \"outer\"]")
+    check_eval("(fn f [m] (if_present x m/a (eval (quote x) ^in (env)))) (f {^a 1})",
+               "1")
+  test "each execution binds afresh, so closures keep their own value":
+    check_eval("(var fs []) (var i 0) " &
+               "(while (< i 3) (if_present v i (fs .push (fn [] v))) (set i (+ i 1))) " &
+               "($map fs (fn [g] (g)))", "[0 1 2]")
+    check_eval("(let m {^a 1}) (let g (if_present v m/a (fn [] v))) (g)", "1")
+  test "loop, return, yield and tail position act as in if":
+    check_eval("(var out []) (for i in [1 2 3] " &
+               "(if_present v (if (== i 2) nil i) (out .push v) (else (continue)))) out",
+               "[1 3]")
+    check_eval("(fn f [m] (if_present v m/a (return v)) \"none\") [(f {^a 1}) (f {})]",
+               "[1 \"none\"]")
+    check_eval("(fn ^^generator g [m] (if_present x m/a (yield x) (yield (+ x 1)))) " &
+               "($into (g {^a 1}) [])", "[1 2]")
+    check_eval("(fn count_down [n acc] (if_present k (if (> n 0) n nil) " &
+               "(count_down (- k 1) (+ acc 1)) (else acc))) (count_down 100000 0)",
+               "100000")
+    check_eval("(fn count_down [n acc] (if_present k (if (> n 0) n nil) " &
+               "(match k (when 0 acc) (else (count_down (- k 1) (+ acc 1)))) (else acc))) " &
+               "(count_down 100000 0)", "100000")
+    check_eval("(scope (if_present v 3 (await (spawn (+ v 1)))))", "4")
+    check_eval("(fn f [m] (let x (?? m/a (return \"none\"))) (+ x 1)) " &
+               "[(f {^a 1}) (f {})]", "[2 \"none\"]")
+  test "malformed if_present forms are compile errors":
+    for source in ["(if_present x m/a)", "(if_present x)", "(if_present)"]:
+      check_compile_error(source, "requires a name, an expression and a body")
+    for source in ["(if_present 5 m/a 1)", "(if_present x? m/a 1)"]:
+      check_compile_error(source, "binding must be a plain local name")
+    check_compile_error("(if_present x m/a (else 1) 2)", "must be the last form")
+    check_compile_error("(if_present x m/a (then 1))", "not (then")
+    check_compile_error("(let if_present 1) (if_present x m/a x)",
+                        "a binding named if_present is in scope")
+
+suite "spec — field optionality is the type, parameter optionality is a default":
   test "a nil-admitting field type is omissible and nilable":
     check_eval("(type T ^props {^a Str?}) " &
                "(var t (T)) [(if t/a 1 0) t/a]", "[0 nil]")
@@ -7498,15 +7699,63 @@ suite "spec — optionality lives on the type, not the key":
     check_eval("(type T ^props {^a Any}) " &
                "(try (T) catch Any $err/message)",
                geneString("missing required field 'a' for T"))
-  test "an omitted nil-admitting named parameter binds nil":
-    check_eval("(fn f [^w : Int?] [(if w 1 0) w]) (f)", "[0 nil]")
-    check_eval("(fn f [^w : Int?] w) (f ^w 3)", "3")
-  test "nil-admitting positional parameters have an implicit nil default":
-    check_eval("(fn f [a : Str?] a) [(f) (f nil) (f \"x\")]", "[nil nil \"x\"]")
-    expect GeneError:
-      discard compileSource("(fn f [a : Str?, b : Int] b)")
+  test "a nil-admitting positional parameter is required without a default":
+    check_eval_error("(fn f [x : Int?] x) (f)",
+                     "expects 1..1 argument(s), got 0")
+    check_eval("(fn f [x : Int?] x) [(f nil) (f 1)]", "[nil 1]")
+    check_eval_error("(fn f [x : Present?] x) (f)",
+                     "expects 1..1 argument(s), got 0")
+    check_eval_error("(fn f [x : Any] x) (f)",
+                     "expects 1..1 argument(s), got 0")
+    check_eval_error("(alias Maybe Int?) (fn f [x : Maybe] x) (f)",
+                     "expects 1..1 argument(s), got 0")
+    check_eval_error("(fn f [x : (| Int Nil)] x) (f)",
+                     "expects 1..1 argument(s), got 0")
+    check_eval("(fn f [a : Int?, b : Int] [a b]) (f nil 2)", "[nil 2]")
+  test "= default makes a parameter omissible":
+    check_eval("(fn f [x : Int? = nil] x) [(f) (f nil) (f 1)]", "[nil nil 1]")
+    check_eval("(fn f [x : Int? = 18] x) [(f) (f nil) (f 25)]", "[18 nil 25]")
     check_eval("(fn f [x : Int? = nil, y : Str = \"d\"] (if x \"x\" y)) (f)",
                geneString("d"))
+    expect GeneError:
+      discard compileSource("(fn f [a = 1, b : Int] 1)")
+  test "a nil-admitting named parameter is required without a default":
+    check_eval_error("(fn f [^w : Int?] w) (f)", "missing named argument: w")
+    check_eval("(fn f [^w : Int?] w) (f ^w 3)", "3")
+    check_eval("(fn f [^w : Int? = nil] [(if w 1 0) w]) [(f) (f ^w 3)]",
+               "[[0 nil] [1 3]]")
+  test "messages, ctors and protocol requirements follow the default rule":
+    check_eval_error("(type T ^props {^a Int} (message m [x : Int?] x)) " &
+                     "((T ^a 1) .m)", "expects 2..2 argument(s), got 1")
+    check_eval_error("(type T ^props {^a Int} " &
+                     "(ctor [a : Int?] (set self/a (?? a 1)))) (new T)",
+                     "expects 2..2 argument(s), got 1")
+    check_eval_error("(protocol Q (message q [x : Int?] : Any)) (type T) " &
+                     "(impl Q for T (message q [x : Int?] x)) ((T) .Q:q)",
+                     "expects 2..2 argument(s), got 1")
+  test "record body fields and checked views keep their shapes":
+    check_eval("(type P ^props {^a Int?}) (P)", "((type P))")
+    check_eval_error("(type B ^body [Int? Int]) (B 1)",
+                     "expects 2 body item(s)")
+  test "a checked view forwards an omitted named argument to its target":
+    # The view's ^named schema admits omission; the target's own parameter
+    # rule then decides, so a required target reports the missing argument
+    # and a defaulted target runs its default.
+    check_eval_error("(fn f [x : Int, ^k : Int?] [x k]) " &
+                     "(let v : (Callable [Int] Any ^named {^k Int?}) f) (v 1)",
+                     "missing named argument: k")
+    check_eval("(fn f [x : Int, ^k : Int? = 5] [x k]) " &
+               "(let v : (Callable [Int] Any ^named {^k Int?}) f) " &
+               "[(v 1) (v 1 ^k nil)]", "[[1 5] [1 nil]]")
+  test "reflection reports a nil-admitting parameter without a default as required":
+    check_eval("(fn f [x : Int?] x) (let s ($runtime/signature f)) " &
+               "(let p (/0 s/positional)) " &
+               "[p/required p/has_default s/minimum_positional]",
+               "[true false 1]")
+    check_eval("(fn f [x : Int? = nil] x) (let s ($runtime/signature f)) " &
+               "(let p (/0 s/positional)) " &
+               "[p/required p/has_default s/minimum_positional]",
+               "[false true 0]")
   test "?-suffixed declaration names are loud errors with hints":
     for source in ["(type T ^props {^a? Str})",
                    "(fn f [^w? : Int] nil)",
@@ -7836,9 +8085,9 @@ suite "spec — streams from design":
                "  (when TryNext/exhausted 0))",
                "42")
 
-  test "selectors map static lookup over stream items":
+  test "selectors read stream items through an explicit $map stage":
     check_eval("(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
-               "(var names users/%$to_stream/name) " &
+               "(var names ((Path %$to_stream %($map /name)) users)) " &
                "[(names .next) " &
                " (names .next) " &
                " (names .has_next)]",
@@ -7861,8 +8110,9 @@ suite "spec — streams from design":
 
   test "list path sends expose behavior while selectors stay generic":
     check_eval("(var xs [10 20 30]) " &
-               "[xs/.size xs/.empty? xs/.first xs/.last xs/size]",
-               "[3 false 10 30 nil]")
+               "[xs/.size xs/.empty? xs/.first xs/.last]",
+               "[3 false 10 30]")
+    check_eval_error("(var xs [10 20 30]) xs/size", "List has no fields")
     check_eval("(var xs []) [xs/.empty? xs/.first xs/.last]",
                "[true nil nil]")
     check_eval("(fn size [xs] xs/.size) (size [1 2 3])", "3")
@@ -7871,7 +8121,7 @@ suite "spec — streams from design":
     check_eval("(var users [{^name \"Ada\" ^^adult} " &
                "            {^name \"Tim\" ^!adult} " &
                "            {^name \"Bob\" ^^adult}]) " &
-               "(var names ((Path %$to_stream %($filter /adult) \"name\") users)) " &
+               "(var names ((Path %$to_stream %($filter /adult) %($map /name)) users)) " &
                "[(names .next) " &
                " (names .next) " &
                " (names .has_next)]",
@@ -7891,7 +8141,7 @@ suite "spec — streams from design":
 
   test "declarations is an ordinary stream selector stage":
     check_eval("(ns m (var b 2) (var a 1)) " &
-               "(var names m/%$declarations/name) " &
+               "(var names ((Path %$declarations %($map /name)) m)) " &
                "[(names .next) " &
                " (names .next) " &
                " (names .has_next)]",
@@ -9000,7 +9250,7 @@ suite "spec — Env and eval from design":
     check run(compileSource("""
       (type Increment
         (impl Callable
-          (message apply [self call] (+ call/body/0 1))))
+          (message apply [self call] (+ call/.body/0 1))))
       (let session ($repl/open (env ^bindings {^increment (Increment)})))
       (let result ($repl/eval session "(increment 41)"))
       ($repl/close session)
@@ -13365,7 +13615,8 @@ suite "spec — nil-only absence":
   test "Present is every value except nil":
     check_eval("(fn f [x : Present] x) [(f false) (f 0) (f \"\") (f []) (try (f nil) catch TypeError \"rejected\")]",
                "[false 0 \"\" [] \"rejected\"]")
-    check_eval("(fn g [x : Present?] x) (g)", "nil")
+    check_eval("(fn g [x : Present?] x) (g nil)", "nil")
+    check_eval_error("(fn g [x : Present?] x) (g)", "expects")
     check_eval_error("(fn h [x : Any] x) (h)", "expects")
   test "an alias of Nil discards the body value; Nil? does not":
     check_eval("(alias Unit Nil) (fn f [] : Unit 42) (f)", "nil")

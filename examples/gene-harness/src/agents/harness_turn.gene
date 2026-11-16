@@ -10,7 +10,10 @@
 
 (fn plugin_change_summary [changes]
   (let lines [])
-  (for change in changes
+  (for item in changes
+    # An applied change reports a record or a bare status Str; a Str carries
+    # none of the record's fields.
+    (let change (if (== ($head item) Str) {} item))
     (let id (?? change/id change/entry/id "plugin"))
     (let state (?? change/state change/status "unknown"))
     (let digest (?? change/digest change/entry/module_digest nil))
@@ -34,7 +37,7 @@
     (message apply [self call]
       (let context ($runtime/context))
       (let named_context ((?? context {}) .assoc "function" self/name))
-      (let invoke ($runtime/bind_call ^named call/named self/callable call/body))
+      (let invoke ($runtime/bind_call ^named call/named self/callable call/.body))
       ($runtime/with_context named_context invoke))))
 
 (fn function_bindings [snapshot]

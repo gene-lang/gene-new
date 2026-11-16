@@ -42,9 +42,9 @@
   (/ (* ($to_int (+ (* value scale) 0.5)) 1.0) scale))
 
 (fn main [args] : Int
-  ($assert (|| (== ($size args/body) 3) (== ($size args/body) 4))
+  ($assert (|| (== ($size args/.body) 3) (== ($size args/.body) 4))
     "usage: run_kernels.gene OUTPUT_DIR GENE_EXE PYTHON_EXE [BASELINE_GENE_EXE]")
-  (let output args/body/0)
+  (let output args/.body/0)
   ($assert (! ($fs/exists? output)) "output directory must be new")
   (let samples ($parse/parse_int (?? ($os/env? "GENE_BENCH_SAMPLES") "5")))
   ($assert (&& (>= samples 3) (<= samples 100)) "samples must be in 3..100")
@@ -52,10 +52,10 @@
   (let gene_source ($path/join directory "kernels.gene"))
   (let python_source ($path/join directory "kernels.py"))
   (let variants [
-    {^label "gene" ^executable ($fs/real_path args/body/1) ^arguments ["run" gene_source]}
-    {^label "python" ^executable ($fs/real_path args/body/2) ^arguments [python_source]}])
-  (if (== ($size args/body) 4)
-    (variants .push {^label "baseline" ^executable ($fs/real_path args/body/3)
+    {^label "gene" ^executable ($fs/real_path args/.body/1) ^arguments ["run" gene_source]}
+    {^label "python" ^executable ($fs/real_path args/.body/2) ^arguments [python_source]}])
+  (if (== ($size args/.body) 4)
+    (variants .push {^label "baseline" ^executable ($fs/real_path args/.body/3)
                      ^arguments ["run" gene_source]}))
   ($fs/make_dir output)
   (var raw "round\tvariant\tkernel\tms\tresult\n")

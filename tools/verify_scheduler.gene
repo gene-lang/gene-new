@@ -2,7 +2,7 @@
 # reports its quantum so production binaries cannot silently "pass" this task.
 # gene run tools/verify_scheduler.gene TEST_GENE OUTPUT [--gates] [--proofs] [--applications]
 (fn main [args] : Int
-  (let words args/body)
+  (let words args/.body)
   ($assert (>= words/.size 2) "usage: verify_scheduler.gene TEST_GENE NEW_OUTPUT [--gates] [--proofs] [--applications]")
   (let binary ($fs/real_path words/0))
   (let out (if (== words/1 "auto") $"tmp/semantic-contracts/run-${($os/wall_ms)}" words/1))

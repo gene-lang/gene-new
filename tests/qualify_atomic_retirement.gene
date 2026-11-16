@@ -2,7 +2,7 @@
 # Run from the repository root: gene run tests/qualify_atomic_retirement.gene [--asan] [--tsan]
 (fn main [args] : Int
   (let modes ["disabled" "probe"])
-  (for option in args/body
+  (for option in args/.body
     ($assert (|| (== option "--asan") (== option "--tsan")) "expected --asan or --tsan")
     (modes .push (if (== option "--asan") "asan" "tsan")))
   ($fs/make_dir "tmp/atomic-retirement-qualification")

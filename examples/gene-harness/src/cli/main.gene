@@ -91,11 +91,11 @@ Use --file FILE for send/run text, --no-wait for operator commands,
 (fn print_result [result, json : Bool]
   (if ($absent? result) (return nil))
   (if json (return ($println ($json/stringify result))))
+  (if (== ($head result) Str) (return ($println result)))
   (if_not ($absent? result/messages)
     (for message in result/messages
       (present_message message false))
     (return nil))
-  (if (== ($head result) Str) (return ($println result)))
   (if_yes (&& ($present? result/plugins) ($present? result/revision))
     ($println $"Composition ${result/revision}")
     (for plugin in result/plugins

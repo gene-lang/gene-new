@@ -28,22 +28,21 @@ proc strictCallableSignature(value: Value): Value =
   if value.kind != vkFunction or not (value.fnCode of FunctionProto): return NIL
   let original = FunctionProto(value.fnCode)
   let scope = value.fnScope
-  let normalized = normalizeOptionalParameters(original, scope)
   let signature = FunctionProto(name: original.name, sourceLoc: original.sourceLoc,
-    params: normalized.params, requiredPositional: normalized.requiredPositional,
-    restParam: normalized.restParam)
+    params: original.params, requiredPositional: original.requiredPositional,
+    restParam: original.restParam)
   try:
-    for typ in normalized.paramTypes: signature.paramTypes.add closeTypeExpr(typ, scope)
-    for parameter in normalized.paramDefaults:
+    for typ in original.paramTypes: signature.paramTypes.add closeTypeExpr(typ, scope)
+    for parameter in original.paramDefaults:
       signature.paramDefaults.add ParamDefault(optional: parameter.optional)
-    for parameter in normalized.namedParams:
+    for parameter in original.namedParams:
       signature.namedParams.add NamedParam(arg: parameter.arg, local: parameter.local,
         typeExpr: closeTypeExpr(parameter.typeExpr, scope),
         defaultValue: ParamDefault(optional: parameter.defaultValue.optional))
-    signature.restType = closeTypeExpr(normalized.restType, scope)
-    signature.namedRest = normalized.namedRest
-    signature.namedRestType = closeTypeExpr(normalized.namedRestType, scope)
-    let resultType = if normalized.hasReturnType: normalized.returnType else: NIL
+    signature.restType = closeTypeExpr(original.restType, scope)
+    signature.namedRest = original.namedRest
+    signature.namedRestType = closeTypeExpr(original.namedRestType, scope)
+    let resultType = if original.hasReturnType: original.returnType else: NIL
     signature.returnType = closeTypeExpr(resultType, scope)
   except GeneError:
     return NIL

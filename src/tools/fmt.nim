@@ -247,6 +247,9 @@ proc headerBodyCount(head: string, body: openArray[Value]): int =
     1
   of "for", "map_for", "repeat":
     if body.len >= 3 and body[1].isSym("in"): 3 else: 1
+  of "if_present":
+    # The name and the tested expression stay on the opening line.
+    2
   of "impl":
     if body.len >= 3 and body[1].isSym("for"): 3 else: 1
   of "do", "else", "then", "try", "loop", "supervisor":
@@ -573,6 +576,14 @@ proc prefersMultiline(v: Value): bool =
     false
   of "if_yes", "if_not":
     bodyCount > 2
+  of "if_present":
+    if bodyCount > 3:
+      return true
+    for item in v.body:
+      if item.kind == vkNode and item.head.kind == vkSymbol and
+          item.head.symVal == "else":
+        return true
+    false
   of "then", "else", "when", "elif":
     bodyCount > 0
   of "match", "try":

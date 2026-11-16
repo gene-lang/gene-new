@@ -119,8 +119,8 @@
    ^ns_per_op (/ (* elapsed 1000000.0) n)})
 
 (fn main [args] : Int
-  ($assert (>= args/body/.size 2) "usage: ROW ITERATIONS")
-  (let report (timed_row args/body/0 ($parse/parse_int args/body/1)))
+  ($assert (>= args/.body/.size 2) "usage: ROW ITERATIONS")
+  (let report (timed_row args/.body/0 ($parse/parse_int args/.body/1)))
   (report .put "layout" "entry")
   ($println ($json/stringify report))
   0)

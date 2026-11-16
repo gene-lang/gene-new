@@ -98,7 +98,7 @@
 # an answered batch on a waiting round. The batch records the intended action.
 (fn answered_waiting_batch [manager : SessionManager, id : Str]
   (let round (restore_round manager id))
-  (if (|| ($absent? round) (!= round/state "waiting") ($absent? round/questions)) (return nil))
+  (if (|| ($absent? round) (!= round/state "waiting") (!= ($head round/questions) Map)) (return nil))
   (let batch (core_state manager/events "session" id $"questions/${round/questions/id}"))
   (if (|| ($absent? batch) (!= batch/status "answered")) nil batch))
 

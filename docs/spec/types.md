@@ -3,8 +3,8 @@
 **Status:** normative and implemented. Executable coverage:
 `tests/spec_runner.nim`, suites “nominal types”, “direct construction, new, and
 ctor”, “native wrapper types”, “typed variable boundaries”, “numeric
-boundaries”, “mutable containers”, and “optionality lives on the type, not the
-key”.
+boundaries”, “mutable containers”, and “field optionality is the type,
+parameter optionality is a default”.
 
 - `Any` is the gradual top; `Never` is the bottom. `Nil` is an ordinary singleton type and `Present` is
   every value except nil (`Any = Present | Nil`). Type expressions use the canonical constructors
@@ -14,15 +14,19 @@ key”.
   defined.
 - `(type Child : Parent ...)` declares the type's one nominal parent. A type
   without a parent omits the header: `(type Root ...)`.
-- Optionality lives on the type: a prop-schema field or fixed positional/named
-  parameter whose type explicitly admits nil (`T?`, `(? T)`, a union containing `Nil`) may be
-  omitted. An absent field reads as `nil`; an omitted fixed parameter binds
-  `nil`; explicit `^a nil` stores a present nil, distinguishable by pattern.
-  `Any` alone stays required. Explicit defaults take precedence over implicit
-  nil defaults. Optional positional parameters must follow required ones and
-  cannot precede rest parameters. Named parameters have no ordering restriction.
-  Declaration names ending in `?` are compile errors with a
-  rewrite hint. A lookup of an omissible field has the declared type.
+- Field optionality lives on the type: a prop-schema field whose type
+  explicitly admits nil (`T?`, `(? T)`, a union containing `Nil`) may be
+  omitted, and an absent field reads as `nil`. Explicit `^a nil` stores a
+  present nil, distinguishable by pattern. `Any` alone stays required.
+  A lookup of an omissible field has the declared type.
+- Parameter optionality is a default: a fixed positional or named parameter
+  may be omitted only when it declares `= default`. Its type says which values
+  it accepts, not whether it may be left out, so `[x : Int?]` must be passed
+  (it may be passed `nil`) and `[x : Int? = nil]` may be omitted. A supplied
+  `nil` does not select the default. Optional positional parameters must
+  follow required ones and cannot precede rest parameters. Named parameters
+  have no ordering restriction.
+- Declaration names ending in `?` are compile errors with a rewrite hint.
   See [absence and optional binding](nil-void.md).
 - Ctor construction pre-creates `self` with an in-progress marker. Until
   validation succeeds, it cannot be stored in

@@ -1,7 +1,7 @@
 # gene run benchmarks/check_exec.gene SUMMARY_JSON GATES_JSON
 # Thresholds are the frozen milestone budgets; M1a remains an intermediate row.
 (fn main [args] : Int
-  (let argv args/body)
+  (let argv args/.body)
   ($assert (== ($size argv) 2) "usage: check_exec.gene SUMMARY_JSON GATES_JSON")
   (let data ($json/parse ($fs/read_text argv/0)))
   (let gates [])

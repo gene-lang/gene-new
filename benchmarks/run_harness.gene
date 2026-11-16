@@ -12,7 +12,7 @@
       (variant/wall_ms .push wall))))
 
 (fn main [args] : Int
-  (let arguments args/body)
+  (let arguments args/.body)
   ($assert (>= ($size arguments) 2) "expected output directory and Gene executable(s)")
   (let output arguments/0)
   ($assert (! ($fs/exists? output)) "output directory must be new")

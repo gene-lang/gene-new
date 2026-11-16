@@ -64,8 +64,8 @@
                 "alias" "enum"])
   (var saw_init false)
   (var i 1)
-  (while (< i source/body/.size)
-    (var form source/body/%i)
+  (while (< i source/.body/.size)
+    (var form source/.body/%i)
     (var kind ($to_str ($head form)))
     (if_not (allowed .contains? kind)
       (fail (CompositionError
@@ -91,7 +91,7 @@
   (for dependency in dependencies (modules .push (parse_plugin_source dependency)))
   (let requested [])
   (for module in modules
-    (for form in module/body
+    (for form in module/.body
       (if (&& (["import" "import_impl"] .contains? ($to_str ($head form)))
               (== ($head form/from) Str))
         (requested .push form/from))))
@@ -118,8 +118,8 @@
 
 (fn validate_source_imports [source, closure]
   (var i 1)
-  (while (< i source/body/.size)
-    (var form source/body/%i)
+  (while (< i source/.body/.size)
+    (var form source/.body/%i)
     (var kind ($to_str ($head form)))
     (if_yes (["import" "import_impl"] .contains? kind)
       (var path form/from)

@@ -29,16 +29,21 @@ suite "callable reflection":
       [before a b count bound/omitted_positional bound/omitted_named]
     """, "[0 3 7 4 #[0] #[\"n\"]]"
 
-  test "nil-admitting parameters and explicit defaults remain distinct":
+  test "a nil-admitting parameter is required unless it declares a default":
     reflectionCheck """
       (alias OptionalInt Int?)
       (fn target [x : OptionalInt, ^value : Str?] [x value])
+      (fn defaulted [x : OptionalInt = nil, ^value : Str? = nil] [x value])
       (let s ($runtime/signature target))
-      (let b ($runtime/bind_shape s [] {}))
+      (let d ($runtime/signature defaulted))
+      (let b ($runtime/bind_shape d [] {}))
       [s/positional/0/required s/positional/0/has_default
        s/named/0/required s/named/0/has_default
-       (target b/positional ... b/named ...)]
-    """, "[false false false false [nil nil]]"
+       d/positional/0/required d/positional/0/has_default
+       d/named/0/required d/named/0/has_default
+       (defaulted b/positional ... b/named ...)
+       (try ($runtime/bind_shape s [] {}) false catch Any true)]
+    """, "[true false true false false true false true [nil nil] true]"
 
   test "a supplied nil stays supplied":
     reflectionCheck """
@@ -233,7 +238,7 @@ suite "language callable reflection":
     reflectionCheck """
       (alias MaybeInt Int?)
       (protocol P
-        (message copy [other : Self, ^limit count : MaybeInt] : Self ^errors [] self))
+        (message copy [other : Self, ^limit count : MaybeInt = nil] : Self ^errors [] self))
       (let s ($runtime/signature P:copy))
       (let b ($runtime/bind_shape s [nil nil] {}))
       [s/category s/origin s/resolution s/abstract_self s/execution

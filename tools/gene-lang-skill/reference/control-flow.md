@@ -62,6 +62,24 @@ Use `($present? value)` rather than `(! ($absent? value))`. These predicates
 test absence, not truthiness: only `nil` is absent. `false`, zero,
 an empty string and an empty collection are present.
 
+To test a value and use it, bind it with `if_present`. The expression runs
+once; the name is bound to its value for the body only, and the optional
+`(else …)` runs when the value is `nil`:
+
+```gene
+(if_present subject (options .get "subject")
+  (set record (subject_record subject))
+  (else (set record nil)))
+```
+
+The name is visible in the body only and shadows an outer one there; a `let`
+in the body keeps the enclosing scope, as in `if`. `break`, `continue` and `return` work as they do in `if`. To exit
+early on absence instead, bind with `??`:
+
+```gene
+(let task (?? (find_task id) (return nil)))
+```
+
 ## Match
 
 Prefer `match` when branches compare the same value against literals, rather

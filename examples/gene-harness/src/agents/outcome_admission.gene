@@ -23,7 +23,7 @@
         (fields .delete alias))
       (if (|| (fields .has_key? "extensions") (> ($map_size extensions) 0))
         (fields .put "extensions" extensions))
-      (let construct ($runtime/bind_call ^named fields Outcome call/body))
+      (let construct ($runtime/bind_call ^named fields Outcome call/.body))
       (construct))))
 
 (fn outcome_constructor [snapshot]

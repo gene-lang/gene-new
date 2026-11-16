@@ -2081,10 +2081,10 @@
   (var record (continuation_record handle))
   (if record/used/.get
     (cordis_failure ContinuationAlreadyCalled "waterfall continuation may be called only once"))
-  (if (> call/body/.size 1)
+  (if (> call/.body/.size 1)
     (cordis_failure HookDispatchError "waterfall continuation accepts at most one payload"))
   (record/used .set true)
-  (var payload (if (== call/body/.size 0) record/payload call/body/0))
+  (var payload (if (== call/.body/.size 0) record/payload call/.body/0))
   (var context (context_record record/context))
   (try
     (dispatch_waterfall_at context record/hook record/handlers record/index payload record/terminal)

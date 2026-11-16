@@ -191,10 +191,10 @@
   last)
 
 (fn main [args] : Nil
-  (let n (if (> ($size args/body) 0)
-             ($parse/parse_int args/body/0)
+  (let n (if (> ($size args/.body) 0)
+             ($parse/parse_int args/.body/0)
              1000000))
-  (let json (&& (> args/body/.size 1) (== args/body/1 "json")))
+  (let json (&& (> args/.body/.size 1) (== args/.body/1 "json")))
   ($assert (> n 0) "ops iteration count must be positive")
   (let meter (Meter ^v 1.0))
   (let point {^v 1})

@@ -26,16 +26,16 @@
 (let layouts ["module" "entry"])
 
 (fn main [args] : Int
-  ($assert (>= args/body/.size 3) "usage: run_matrix.gene OUT_DIR ITERATIONS GENE_EXE [GENE_EXE...]")
-  (let output args/body/0)
-  (let iterations ($parse/parse_int args/body/1))
+  ($assert (>= args/.body/.size 3) "usage: run_matrix.gene OUT_DIR ITERATIONS GENE_EXE [GENE_EXE...]")
+  (let output args/.body/0)
+  (let iterations ($parse/parse_int args/.body/1))
   ($assert (! ($fs/exists? output)) "output directory must be new")
   (let samples ($parse/parse_int (?? ($os/env? "GENE_BENCH_SAMPLES") "5")))
   ($assert (&& (>= samples 3) (<= samples 100)) "samples must be in 3..100")
   (let here ($path/parent this_mod/.path))
   (let package_root ($path/parent here))
   (let executables [])
-  (for argument in ($drop args/body 2)
+  (for argument in ($drop args/.body 2)
     (let executable ($fs/real_path argument))
     (let version (capture executable ["--version"]))
     (executables .push

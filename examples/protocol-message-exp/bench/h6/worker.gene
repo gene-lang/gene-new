@@ -31,9 +31,9 @@
   result)
 
 (fn main [args] : Int
-  ($assert (>= args/body/.size 2) "usage: worker.gene VARIANT REPS [json]")
-  (let variant args/body/0)
-  (let reps ($parse/parse_int args/body/1))
+  ($assert (>= args/.body/.size 2) "usage: worker.gene VARIANT REPS [json]")
+  (let variant args/.body/0)
+  (let reps ($parse/parse_int args/.body/1))
   ($assert (> reps 0) "reps must be positive")
   (let tree (build_tree))
   (let fixture (describe tree))

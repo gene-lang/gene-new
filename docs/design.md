@@ -78,12 +78,14 @@ keep the nearest applicable ancestor body.
 
 ## Absence has one value
 
-`nil` is the one absence value: a missing read, an omitted optional argument and
-a function that ends in a statement all give `nil`. Whether a key is stored is a
-separate question that `$has_key?` answers:
+`nil` is the one absence value: a missing Map key, an omitted optional field,
+an argument left to its `= nil` default and a function that ends in a statement
+all give `nil`. A mistake does not: a misspelled field or a path through a
+number raises. Whether a key is stored is a separate question that
+`$has_key?` answers:
 
 ```gene runnable
-(fn age_label [age : Int?] : Str
+(fn age_label [age : Int? = nil] : Str
   (if ($absent? age) "unknown" $"${age}"))
 
 (type Person ^props {^age Int?})

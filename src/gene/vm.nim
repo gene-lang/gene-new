@@ -2358,6 +2358,10 @@ proc addWildcardFallback(scope: Scope, name: string, value: Value,
     scope.touchNames()
 
 proc define*(scope: Scope, name: string, v: Value) =
+  if scope.forwardDefines and name != scope.forwardBinder:
+    # An if_present body keeps its bindings in the enclosing scope.
+    scope.parent.define(name, v)
+    return
   if scope.storeNamedSlot(name, v, requireExisting = false):
     return
   if scope.vars.hasKey(name):
@@ -2374,6 +2378,9 @@ proc redefine*(scope: Scope, name: string, v: Value) =
   ## compiler paths reach this, so a genuine redeclaration outside a loop still
   ## errors. The mirrored-slot case has to permit it too — a name that reached a
   ## slot is the same binding, not a second one.
+  if scope.forwardDefines and name != scope.forwardBinder:
+    scope.parent.redefine(name, v)
+    return
   if scope.storeNamedSlot(name, v, requireExisting = false,
                           permitRedefine = true):
     return
@@ -8306,6 +8313,7 @@ proc readSetPathChild(target, segment: Value): Value =
 
 proc setMutableChild(target, segment, value: Value): Value
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.}
+proc typedFieldMiss(target: Value, keyId: int, key: string): Value
 
 proc biNodeGet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -8313,7 +8321,17 @@ proc biNodeGet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   requireNode("Node/get", args[0])
   case args[1].kind
   of vkSymbol, vkString:
-    projectProps(args[0]).getOrDefault(keySegment("Node/get", args[1]), NIL)
+    # The same rule as a path's name segment: a typed value answers nil for
+    # an omitted declared field and raises for a name it does not declare.
+    let key = keySegment("Node/get", args[1])
+    let found = projectProps(args[0]).getOrDefault(key, MISSING)
+    if not found.isMissing:
+      found
+    elif args[0].head.kind == vkType and not args[0].head.isEnumType:
+      discard typedFieldMiss(args[0], int(lookupSymbolId(key)), key)
+      NIL
+    else:
+      NIL
   of vkInt, vkFloat:
     let item = readIndexedValue(args[0], args[1])
     if item.isMissing: NIL else: item
@@ -14031,85 +14049,6 @@ proc resolveDeclarationAnnotation(expr: Value, scope: Scope, selfType: Value,
 
 proc isErrorType(scope: Scope, typ: Value): bool
 
-proc parameterAdmitsNil(expr: Value, scope: Scope, depth = 0): bool =
-  ## Arity probing must not validate unrelated annotation structure early.
-  if depth > 100: raise newException(GeneError, "recursive parameter type alias")
-  if typeExprAdmitsNil(expr): return true
-  if expr.isTypeAlias:
-    return parameterAdmitsNil(expr.typeAliasExpr, scope, depth + 1)
-  if expr.kind == vkSymbol or (expr.kind == vkNode and expr.head.isSymbol("path")):
-    let alias = staticImplOperand(scope, expr)
-    if alias.isTypeAlias:
-      return parameterAdmitsNil(alias.typeAliasExpr, scope, depth + 1)
-  elif expr.kind == vkNode and expr.head.isSymbol("|"):
-    for item in expr.body:
-      if parameterAdmitsNil(item, scope, depth + 1): return true
-  false
-
-proc normalizeOptionalParameters(original: FunctionProto, scope: Scope): FunctionProto =
-  ## Resolve alias-based nil admission at declaration time, using the same
-  ## ParamDefault metadata as explicit defaults and syntactic T? parameters.
-  ## Runs on every closure creation: nothing is copied unless a type admits
-  ## nil, and an absent annotation (NIL) never does.
-  result = original
-  template admitsNil(expr: Value): bool =
-    expr.kind != vkNil and parameterAdmitsNil(expr, scope)
-  template positionalAdmitsNil(i: int): bool =
-    i < original.paramTypes.len and admitsNil(original.paramTypes[i]) and
-      not (i < original.paramDefaults.len and original.paramDefaults[i].optional)
-  var changed = false
-  var optional = false
-  var required = 0
-  for i in 0 ..< original.params.len:
-    let admits = positionalAdmitsNil(i)
-    changed = changed or admits
-    if admits or (i < original.paramDefaults.len and
-                  original.paramDefaults[i].optional):
-      optional = true
-    elif optional:
-      raise newException(GeneError, "required positional parameter cannot follow an optional positional parameter")
-    else: inc required
-  if optional and original.restParam.len > 0:
-    raise newException(GeneError, "rest parameter cannot follow an optional positional parameter")
-  for param in original.namedParams:
-    if not param.defaultValue.optional and admitsNil(param.typeExpr):
-      changed = true
-  if not changed: return
-  var defaults = original.paramDefaults
-  defaults.setLen(original.params.len)
-  for i in 0 ..< original.params.len:
-    if positionalAdmitsNil(i):
-      defaults[i].optional = true
-  var named = original.namedParams
-  for param in named.mitems:
-    if not param.defaultValue.optional and admitsNil(param.typeExpr):
-      param.defaultValue.optional = true
-  result = FunctionProto()
-  result[] = original[]
-  result.paramDefaults = defaults
-  result.namedParams = named
-  result.requiredPositional = required
-  result.simpleCall = false
-  result.fastBindUnaryInt = false
-  result.fastBindPositionalInt = false
-  result.fastBindPositionalScalars = false
-  result.fastBindRequiredNamed = false
-  result.needsCallScope = true
-  result.nativeOp = ncoNone
-  result.aotExpr = NIL
-  if original.chunk != nil:
-    result.chunk = Chunk()
-    result.chunk[] = original.chunk[]
-    result.chunk.owner = result
-    result.chunk.dispatchCache = @[]
-    result.chunk.spawnPublished = false
-  if original.scopelessChunk != nil:
-    result.scopelessChunk = Chunk()
-    result.scopelessChunk[] = original.scopelessChunk[]
-    result.scopelessChunk.owner = result
-    result.scopelessChunk.dispatchCache = @[]
-    result.scopelessChunk.spawnPublished = false
-
 proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
                             declarationScope: Scope = nil): Value =
   if fn.kind != vkFunction or not (fn.fnCode of FunctionProto):
@@ -14123,7 +14062,7 @@ proc resolveMessageContract(fn: Value, selfType: Value, rejectSelf = false,
     return fn
   let scope = if declarationScope != nil: declarationScope else: fn.fnScope
   let proto = FunctionProto()
-  proto[] = normalizeOptionalParameters(original, scope)[]
+  proto[] = original[]
   proto.annotationSelfBits = selfType.bits
   proto.contractResolved = true
   proto.signatureHadSelf = original.receiverSelfAnnotation
@@ -15144,7 +15083,6 @@ proc validateProtocolContract(pending: PendingProtocolContract) =
     if fn.kind != vkFunction or not (fn.fnCode of FunctionProto): continue
     let proto = FunctionProto(fn.fnCode)
     let scope = fn.fnScope
-    discard normalizeOptionalParameters(proto, scope)
     # Self stays abstract in the template. Resolve with a temporary identity
     # only to validate the remaining names; conformance assembly binds it.
     for expr in proto.paramTypes:
@@ -21518,7 +21456,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           strunc(argsStart)
           spush value
         of opMakeFn:
-          let proto = normalizeOptionalParameters(chunk.functions[inst[].intArg], scope)
+          let proto = chunk.functions[inst[].intArg]
           let errorTypes = stack.popCheckedErrorTypes(sp, proto.errorTypeCount, scope)
           let captured =
             if proto.capturePlan != nil:
@@ -23777,6 +23715,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opBlockScope:
           let body = chunk.subchunks[inst[].intArg]
           let blockScope = newScope(scope)
+          if inst[].flag:
+            blockScope.forwardDefines = true
+            blockScope.forwardBinder = inst[].name
           blockScope.prepareChunkScope(body)
           let kind = if inst[].tail: fkTailMatchBody else: fkNormal
           pushFrame()
@@ -26362,8 +26303,8 @@ proc defaultValue(defaultValue: ParamDefault, scope: Scope): Value =
   if defaultValue.defaultChunk != nil:
     run(defaultValue.defaultChunk, scope)
   else:
-    # Optional without an explicit default: `^name : T?` binds nil, which its
-    # own nil-admitting annotation accepts.
+    # A parameter is optional only through `= default`, which always compiles
+    # a default chunk. Other optional binders (none declared today) bind nil.
     NIL
 
 proc checkedAddI64(a, b: int64, outValue: var int64): bool {.inline.} =
@@ -28022,7 +27963,9 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
             return false
         # ^named entries must exist with invariant-equal declared types;
         # unlisted named parameters must be optional so a caller through the
-        # typed view can always omit them.
+        # typed view can always omit them. A listed entry whose type admits
+        # nil may be omitted by such a caller too, so its parameter must
+        # declare a default.
         if expr.props.hasKey("named"):
           for key, expectedNamed in expr.props["named"].mapEntries:
             var found = false
@@ -28033,6 +27976,9 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
                   if p.typeExpr.kind != vkNil: p.typeExpr
                   else: newSym("Any")
                 if not sigMatches(expectedNamed, actualNamed):
+                  return false
+                if typeExprAdmitsNil(expectedNamed) and
+                    not p.defaultValue.optional:
                   return false
                 break
             if not found:
@@ -28545,7 +28491,7 @@ proc describeMessage(message, receiver: Value, hasReceiver: bool,
         result = describeCallable(fn, reflectionTypeLookup,
           ReflectionOptions(category: "message", origin: "requirement",
             abstractSelf: true, requirement: true,
-            prototype: normalizeOptionalParameters(FunctionProto(fn.fnCode), fn.fnScope)))
+            prototype: FunctionProto(fn.fnCode)))
       else:
         result = describeCallable(message, reflectionTypeLookup)
   result = result.withReflectionProperties([
@@ -28825,25 +28771,97 @@ proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
 proc isSelectorCallStage(v: Value): bool =
   v.kind == vkNode and v.head.isSymbol("call_stage") and v.body.len > 0
 
+proc pathTypeLabel(target: Value): string =
+  let typ = receiverType(target)
+  if typ.kind == vkType: typ.typeName
+  else: ($target.kind)[2 .. ^1]
+
+proc pathReadScope(): Scope =
+  if activeVmScope != nil: activeVmScope[]
+  else: currentApplication().builtinsScope()
+
+proc raisePathNoFields(target: Value, key: string) =
+  ## A name segment on a value that has no members a path can read.
+  let label = pathTypeLabel(target)
+  var message = label & " has no fields, so '" & key &
+    "' cannot be read through a path"
+  if target.kind in {vkInt, vkFloat}:
+    message.add "; to divide write (/ a b)"
+  elif target.kind == vkStream:
+    message.add "; to read it from each item write ($map stream /" & key & ")"
+  else:
+    var hasMessage = false
+    try:
+      let typ = receiverType(target)
+      hasMessage = typ.kind == vkType and
+        readyTypeDirectMessage(typ, key).kind != vkNil
+      if not hasMessage:
+        hasMessage = builtinReceiverMessage(pathReadScope(), target, key).kind != vkNil
+    except GeneError:
+      discard
+    if hasMessage:
+      message.add "; for the message write value/." & key
+  raise newException(GeneError, message)
+
+proc raisePathNotIndexable(target, segment: Value) =
+  ## An Int segment on a value that has no positions a path can read.
+  var message = pathTypeLabel(target) & " cannot be indexed through a path"
+  if target.kind in {vkMap, vkHashMap}:
+    message.add "; a Map has no positions, so read a key with (m .get k)"
+  elif target.kind == vkStream:
+    message.add "; to index each item write ($map stream /" & segment.print() & ")"
+  raise newException(GeneError, message)
+
+proc errorReadsOpen(target: Value): bool =
+  ## An Error value reads an undeclared name as absent: a handler holding an
+  ## error of unknown type probes `code`, `cause` and the like. Conformance is
+  ## inspected without running any user code.
+  if target.hasErrorWitness: return true
+  var current = target.head
+  while current.kind == vkType:
+    for protocol in current.typeRequiredProtocols:
+      if protocol.isErrorProtocol: return true
+    current = current.typeParent
+  try:
+    isErrorValue(pathReadScope(), target)
+  except GeneError:
+    false
+
+proc typeDeclaresFieldId(typ: Value, keyId: int): bool {.inline.} =
+  if keyId < 0: return false
+  let fields = addr typ.borrowedTypeFields
+  for i in 0 ..< fields[].len:
+    if fields[][i].nameId == keyId:
+      return true
+  false
+
+proc typedFieldMiss(target: Value, keyId: int, key: string): Value =
+  ## A typed value with no stored prop and no diagnostic of this name: an
+  ## omitted declared field is absent; any other name is a mistake.
+  let typ {.cursor.} = target.borrowedNodeHead
+  if typ.typeDeclaresFieldId(keyId) or target.errorReadsOpen:
+    return MISSING
+  raise newException(GeneError, typ.typeName & " has no field '" & key & "'")
+
 proc staticLookup(target, segment: Value): Value =
-  ## One path step. A miss (no such key, an index out of range, a target that
-  ## has no such member) answers `MISSING`, and a path stops at the first
-  ## missing step; a stored nil is a hit. `staticLookupValue` is the form that
-  ## hands a result to Gene code.
+  ## One path step. A miss that is a real absence (no such key in a Map or a
+  ## plain node, an omitted declared field, an index out of range, a step
+  ## through nil) answers `MISSING`, and a path stops at the first missing
+  ## step; a stored nil is a hit. A read that cannot be right raises: an
+  ## undeclared name on a typed value (other than an Error), a name through a
+  ## value with no fields, an index into a value with no positions, and any
+  ## segment on a Stream. `staticLookupValue` is the form that hands a result
+  ## to Gene code.
   if target.isMissing:
     return MISSING
-  if target.kind == vkStream:
-    var items: seq[Value]
-    while target.streamHasNext:
-      # A stream projection publishes items to Gene code. Normalize each
-      # missing element here; the outer staticLookupValue only sees the
-      # resulting Stream, not the individual MISSING values inside it.
-      items.add staticLookupValue(
-        checkedStreamNext(target, "selector item"), segment)
-    return newStream(items)
   case segment.kind
   of vkInt, vkFloat:
-    readIndexedValue(target, segment)
+    case target.kind
+    of vkList, vkNode, vkNil:
+      readIndexedValue(target, segment)
+    else:
+      raisePathNotIndexable(target, segment)
+      MISSING
   of vkSymbol, vkString:
     # A symbol segment's payload is directly a PropTable key id — no string,
     # no intern-table probe. A string segment probes lookup-only: an
@@ -28857,6 +28875,8 @@ proc staticLookup(target, segment: Value): Value =
       if keyId < 0: MISSING
       else: target.mapEntries.getOrDefaultById(keyId, MISSING)
     of vkNode:
+      # A name segment reads a prop. Node anatomy is read with explicit
+      # operations (`value/.body`, `q/%$head`), never by a plain name.
       let prop =
         if keyId < 0: MISSING
         else: target.props.getOrDefaultById(keyId, MISSING)
@@ -28865,19 +28885,19 @@ proc staticLookup(target, segment: Value): Value =
       elif target.errorEvidence != nil and
           target.errorEvidence.diagnostics.hasKey(key):
         target.errorEvidence.diagnostics[key]
-      elif keyId < 0:
-        MISSING
       else:
-        ensureNodeProjectionKeyIds()
-        if keyId == nodeHeadKeyId: target.head
-        elif keyId == nodePropsKeyId:
-          newMap(target.errorProperties(), target.nodeImmutable)
-        elif keyId == nodeBodyKeyId:
-          newList(target.body, target.nodeImmutable)
-        elif keyId == nodeMetaKeyId:
-          newMap(target.meta, target.nodeImmutable)
-        else: MISSING
+        let head {.cursor.} = target.borrowedNodeHead
+        if head.kind != vkType or head.isEnumType:
+          MISSING
+        elif head.typeDeclaresFieldId(keyId):
+          # An omitted declared field, the common miss: no name is built.
+          MISSING
+        else:
+          typedFieldMiss(target, keyId, key)
+    of vkNil, vkHashMap, vkEnumVariant:
+      MISSING
     of vkList:
+      raisePathNoFields(target, key)
       MISSING
     of vkNamespace:
       # Qualified access reads the namespace's own exports (not its parent chain).
@@ -28935,6 +28955,7 @@ proc staticLookup(target, segment: Value): Value =
             "' is not a callable path: use the bare send (x ." & key &
             ") or the message value Self:" & key & " (design §3)")
     else:
+      raisePathNoFields(target, key)
       MISSING
   of vkNode:
     if segment.head.isSymbol("unquote"):

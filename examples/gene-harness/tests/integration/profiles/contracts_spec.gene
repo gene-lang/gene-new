@@ -17,12 +17,12 @@
         (let removed ($cell false))
         (let deactivated ($cell false))
         (let plugin (Plugin ^id "profile_probe" ^activate (fn [host]
-          ($assert ($absent? host/h))
-          ($assert ($absent? host/effects))
+          ($assert (try host/h false catch Any true))
+          ($assert (try host/effects false catch Any true))
           (let operator (host .PluginHost:resolve "operator/host"))
           (host .PluginHost:create_registry {^name "profile_rows" ^^unique ^key "name"
             ^on_remove (fn [receiver value]
-              ($assert ($absent? receiver/h))
+              ($assert (try receiver/h false catch Any true))
               ($assert ($present? receiver/.PluginHost:execution_budget))
               (removed .set true))})
           (host .PluginHost:contribute "profile_rows" {^name "owned"})
@@ -39,7 +39,7 @@
               ($assert (== ($head context/snapshot/composition_revision) Int))
               (operator .OperatorHost:command "run" context))}))
           ^deactivate (fn [host]
-            ($assert ($absent? host/h))
+            ($assert (try host/h false catch Any true))
             ($assert ($present? host/.PluginHost:execution_budget))
             (deactivated .set true))))
         (let runtime (open_runtime root "default" (Profile ^name "contract" ^plugins [plugin])))
@@ -63,7 +63,7 @@
       (fn [root]
         (let entered ($cell 0))
         (let plugin (Plugin ^id "profile_fault" ^activate (fn [host]
-          ($assert ($absent? host/h))
+          ($assert (try host/h false catch Any true))
           (host .PluginHost:contribute "turn_participants" {^name "profile_fault/check"
             ^begin (fn [context state value]
               (entered .set (+ entered/.get 1))

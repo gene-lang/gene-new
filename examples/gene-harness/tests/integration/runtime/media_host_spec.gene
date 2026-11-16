@@ -44,8 +44,8 @@
             (Plugin ^id "media_probe" ^requires ["media/host"] ^activate (fn [host]
               (handle .set (host .PluginHost:resolve "media/host")))) {})
           (let original handle/.get)
-          ($assert ($absent? original/runtime))
-          ($assert ($absent? original/manager))
+          ($assert (try original/runtime false catch Any true))
+          ($assert (try original/manager false catch Any true))
           (let stored (original .MediaHost:store "pixel.png" ($base64/decode pixel)))
           ($assert (try (stored .put "name" "changed") false catch Any true))
           (let registered (register_plugin ^^replace service/runtime/workspace service/runtime/h "media" (replacement)))

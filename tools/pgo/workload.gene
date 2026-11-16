@@ -112,7 +112,7 @@
              ^timeout_ms 600000}))
 
 (fn main [args] : Nil
-  (let scale (if (> ($size args/body) 0) ($parse/parse_int args/body/0) 4))
+  (let scale (if (> ($size args/.body) 0) ($parse/parse_int args/.body/0) 4))
   (repeat round in 3
     (let plain (workload scale))
     (let limited ((budgeted (fn [] (workload scale)))))

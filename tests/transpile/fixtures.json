@@ -2978,8 +2978,8 @@
     },
     {
       "id": "named_params.optional_omitted",
-      "source": "(fn pick [^a : Int ^b : Int?] : Int (+ a (?? b 0))) (pick ^a 3)",
-      "web_source": "(mod named_params_optional_omitted ^profile web) (fn pick [^a : Int ^b : Int?] : Int (+ a (?? b 0))) (fn run [] : Int (pick ^a 3))",
+      "source": "(fn pick [^a : Int ^b : Int? = nil] : Int (+ a (?? b 0))) (pick ^a 3)",
+      "web_source": "(mod named_params_optional_omitted ^profile web) (fn pick [^a : Int ^b : Int? = nil] : Int (+ a (?? b 0))) (fn run [] : Int (pick ^a 3))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -5013,8 +5013,8 @@
     },
     {
       "id": "nil_void.optional_positional",
-      "source": "(fn f [x : Int?] : Int? x) (fn run [] : (List Int?) [(f) (f nil) (f 4)]) (run)",
-      "web_source": "(mod nil_void_optional_positional ^profile web) (fn f [x : Int?] : Int? x) (fn run [] : (List Int?) [(f) (f nil) (f 4)])",
+      "source": "(fn f [x : Int? = nil] : Int? x) (fn run [] : (List Int?) [(f) (f nil) (f 4)]) (run)",
+      "web_source": "(mod nil_void_optional_positional ^profile web) (fn f [x : Int? = nil] : Int? x) (fn run [] : (List Int?) [(f) (f nil) (f 4)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5066,8 +5066,8 @@
     },
     {
       "id": "nil_void.optional_lambda",
-      "source": "(fn run [] : Int? (let f (fn [x : Int?] : Int? x)) (f)) (run)",
-      "web_source": "(mod nil_void_optional_lambda ^profile web) (fn run [] : Int? (let f (fn [x : Int?] : Int? x)) (f))",
+      "source": "(fn run [] : Int? (let f (fn [x : Int? = nil] : Int? x)) (f)) (run)",
+      "web_source": "(mod nil_void_optional_lambda ^profile web) (fn run [] : Int? (let f (fn [x : Int? = nil] : Int? x)) (f))",
       "web_export": "run",
       "expected_value": {
         "kind": "nil"
@@ -5080,8 +5080,8 @@
     },
     {
       "id": "nil_void.optional_callable",
-      "source": "(fn f [x : Int?] : Int? x) (fn run [] : Int? (let view : (Callable [] Int?) f) (view)) (run)",
-      "web_source": "(mod nil_void_optional_callable ^profile web) (fn f [x : Int?] : Int? x) (fn run [] : Int? (let view : (Callable [] Int?) f) (view))",
+      "source": "(fn f [x : Int? = nil] : Int? x) (fn run [] : Int? (let view : (Callable [] Int?) f) (view)) (run)",
+      "web_source": "(mod nil_void_optional_callable ^profile web) (fn f [x : Int? = nil] : Int? x) (fn run [] : Int? (let view : (Callable [] Int?) f) (view))",
       "web_export": "run",
       "expected_value": {
         "kind": "nil"
@@ -5094,8 +5094,8 @@
     },
     {
       "id": "nil_void.optional_methods",
-      "source": "(protocol P (message value [x : Int?] : Int?)) (type A ^props {} (message value [x : Int?] : Int? x)) (impl P for A (message value [x : Int?] : Int? x)) (fn run [] : (List Int?) (let a (A)) [(a .value) (a .P:value)]) (run)",
-      "web_source": "(mod nil_void_optional_methods ^profile web) (protocol P (message value [x : Int?] : Int?)) (type A ^props {} (message value [x : Int?] : Int? x)) (impl P for A (message value [x : Int?] : Int? x)) (fn run [] : (List Int?) (let a (A)) [(a .value) (a .P:value)])",
+      "source": "(protocol P (message value [x : Int? = nil] : Int?)) (type A ^props {} (message value [x : Int? = nil] : Int? x)) (impl P for A (message value [x : Int? = nil] : Int? x)) (fn run [] : (List Int?) (let a (A)) [(a .value) (a .P:value)]) (run)",
+      "web_source": "(mod nil_void_optional_methods ^profile web) (protocol P (message value [x : Int? = nil] : Int?)) (type A ^props {} (message value [x : Int? = nil] : Int? x)) (impl P for A (message value [x : Int? = nil] : Int? x)) (fn run [] : (List Int?) (let a (A)) [(a .value) (a .P:value)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5116,8 +5116,8 @@
     },
     {
       "id": "nil_void.optional_constructor",
-      "source": "(type A ^props {^age Int?} (ctor [age : Int?] (set self/age age))) (fn run [] : Int? (let a (new A)) (?? a/age nil)) (run)",
-      "web_source": "(mod nil_void_optional_constructor ^profile web) (type A ^props {^age Int?} (ctor [age : Int?] (set self/age age))) (fn run [] : Int? (let a (new A)) (?? a/age nil))",
+      "source": "(type A ^props {^age Int?} (ctor [age : Int? = nil] (set self/age age))) (fn run [] : Int? (let a (new A)) (?? a/age nil)) (run)",
+      "web_source": "(mod nil_void_optional_constructor ^profile web) (type A ^props {^age Int?} (ctor [age : Int? = nil] (set self/age age))) (fn run [] : Int? (let a (new A)) (?? a/age nil))",
       "web_export": "run",
       "expected_value": {
         "kind": "nil"
@@ -5329,8 +5329,8 @@
     },
     {
       "id": "nil_void.local_alias",
-      "source": "(fn f [x : Maybe] : Int? x) (alias Maybe Int?) (fn run [] : (List Int?) [(f) (f 7)]) (run)",
-      "web_source": "(mod nil_void_local_alias ^profile web) (fn f [x : Maybe] : Int? x) (alias Maybe Int?) (fn run [] : (List Int?) [(f) (f 7)])",
+      "source": "(fn f [x : Maybe = nil] : Int? x) (alias Maybe Int?) (fn run [] : (List Int?) [(f) (f 7)]) (run)",
+      "web_source": "(mod nil_void_local_alias ^profile web) (fn f [x : Maybe = nil] : Int? x) (alias Maybe Int?) (fn run [] : (List Int?) [(f) (f 7)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5352,8 +5352,8 @@
     },
     {
       "id": "nil_void.imported_alias",
-      "source": "(ns provider (alias Maybe Int?) (fn f [x : Maybe = 9] : Int? x)) (import provider [Maybe f]) (alias LocalMaybe Maybe) (fn local [x : LocalMaybe] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)]) (run)",
-      "web_source": "(mod nil_void_imported_alias ^profile web) (import [Maybe f] ^from \"./provider.gene\") (alias LocalMaybe Maybe) (fn local [x : LocalMaybe] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)])",
+      "source": "(ns provider (alias Maybe Int?) (fn f [x : Maybe = 9] : Int? x)) (import provider [Maybe f]) (alias LocalMaybe Maybe) (fn local [x : LocalMaybe = nil] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)]) (run)",
+      "web_source": "(mod nil_void_imported_alias ^profile web) (import [Maybe f] ^from \"./provider.gene\") (alias LocalMaybe Maybe) (fn local [x : LocalMaybe = nil] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5381,8 +5381,8 @@
     },
     {
       "id": "nil_void.alias_use_site",
-      "source": "(ns provider (type Box ^props {^label Str}) (alias MaybeBox Box?)) (import provider [MaybeBox]) (type Box ^props {^value Int}) (fn value_of [x : MaybeBox] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))]) (run)",
-      "web_source": "(mod nil_void_alias_use_site ^profile web) (import [MaybeBox] ^from \"./provider.gene\") (type Box ^props {^value Int}) (fn value_of [x : MaybeBox] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))])",
+      "source": "(ns provider (type Box ^props {^label Str}) (alias MaybeBox Box?)) (import provider [MaybeBox]) (type Box ^props {^value Int}) (fn value_of [x : MaybeBox = nil] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))]) (run)",
+      "web_source": "(mod nil_void_alias_use_site ^profile web) (import [MaybeBox] ^from \"./provider.gene\") (type Box ^props {^value Int}) (fn value_of [x : MaybeBox = nil] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5408,8 +5408,8 @@
     },
     {
       "id": "nil_void.default_message",
-      "source": "(protocol P (message value [x : Int?] : Int? x)) (type A ^props {}) (impl P for A) (fn run [] : (List Int?) [((A) .P:value) ((A) .P:value 4)]) (run)",
-      "web_source": "(mod nil_void_default_message ^profile web) (protocol P (message value [x : Int?] : Int? x)) (type A ^props {}) (impl P for A) (fn run [] : (List Int?) [((A) .P:value) ((A) .P:value 4)])",
+      "source": "(protocol P (message value [x : Int? = nil] : Int? x)) (type A ^props {}) (impl P for A) (fn run [] : (List Int?) [((A) .P:value) ((A) .P:value 4)]) (run)",
+      "web_source": "(mod nil_void_default_message ^profile web) (protocol P (message value [x : Int? = nil] : Int? x)) (type A ^props {}) (impl P for A) (fn run [] : (List Int?) [((A) .P:value) ((A) .P:value 4)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5484,8 +5484,8 @@
     },
     {
       "id": "nil_void.interleaved_named",
-      "source": "(fn f [^name : Str? count : Int] : Int count) (fn run [] : Int (f 7)) (run)",
-      "web_source": "(mod nil_void_interleaved_named ^profile web) (fn f [^name : Str? count : Int] : Int count) (fn run [] : Int (f 7))",
+      "source": "(fn f [^name : Str? = nil count : Int] : Int count) (fn run [] : Int (f 7)) (run)",
+      "web_source": "(mod nil_void_interleaved_named ^profile web) (fn f [^name : Str? = nil count : Int] : Int count) (fn run [] : Int (f 7))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -5499,8 +5499,8 @@
     },
     {
       "id": "nil_void.fn_arity",
-      "source": "(fn f [x : Int?] : Int? x) (fn run [] : Int? (let view : (Fn [] Int?) f) (view)) (run)",
-      "web_source": "(mod nil_void_fn_arity ^profile web) (fn f [x : Int?] : Int? x) (fn run [] : Int? (let view : (Fn [] Int?) f) (view))",
+      "source": "(fn f [x : Int? = nil] : Int? x) (fn run [] : Int? (let view : (Fn [] Int?) f) (view)) (run)",
+      "web_source": "(mod nil_void_fn_arity ^profile web) (fn f [x : Int? = nil] : Int? x) (fn run [] : Int? (let view : (Fn [] Int?) f) (view))",
       "web_export": "run",
       "expected_value": {
         "kind": "nil"
@@ -5539,8 +5539,8 @@
     },
     {
       "id": "nil_void.held_optional_message",
-      "source": "(protocol P (message value [x : Int?] : Int? x)) (type A ^props {}) (impl P for A) (fn run [] : Int? (let f : (Callable [A] Int?) P:value) (f (A))) (run)",
-      "web_source": "(mod nil_void_held_optional_message ^profile web) (protocol P (message value [x : Int?] : Int? x)) (type A ^props {}) (impl P for A) (fn run [] : Int? (let f : (Callable [A] Int?) P:value) (f (A)))",
+      "source": "(protocol P (message value [x : Int? = nil] : Int? x)) (type A ^props {}) (impl P for A) (fn run [] : Int? (let f : (Callable [A] Int?) P:value) (f (A))) (run)",
+      "web_source": "(mod nil_void_held_optional_message ^profile web) (protocol P (message value [x : Int? = nil] : Int? x)) (type A ^props {}) (impl P for A) (fn run [] : Int? (let f : (Callable [A] Int?) P:value) (f (A)))",
       "web_export": "run",
       "expected_value": {
         "kind": "nil"
@@ -5676,8 +5676,8 @@
     },
     {
       "id": "nil_void.void_message",
-      "source": "(type A ^props {} (message value [x : Int?] : Nil 42)) (fn run [] : Bool ($absent? ((A) .value))) (run)",
-      "web_source": "(mod nil_void_void_message ^profile web) (type A ^props {} (message value [x : Int?] : Nil 42)) (fn run [] : Bool ($absent? ((A) .value)))",
+      "source": "(type A ^props {} (message value [x : Int? = nil] : Nil 42)) (fn run [] : Bool ($absent? ((A) .value))) (run)",
+      "web_source": "(mod nil_void_void_message ^profile web) (type A ^props {} (message value [x : Int? = nil] : Nil 42)) (fn run [] : Bool ($absent? ((A) .value)))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -5691,8 +5691,8 @@
     },
     {
       "id": "nil_void.optional_namespace",
-      "source": "(ns math (fn f [x : Int?] : Int? x)) (fn run [] : Int? (math/f)) (run)",
-      "web_source": "(mod nil_void_optional_namespace ^profile web) (ns math (fn f [x : Int?] : Int? x)) (fn run [] : Int? (math/f))",
+      "source": "(ns math (fn f [x : Int? = nil] : Int? x)) (fn run [] : Int? (math/f)) (run)",
+      "web_source": "(mod nil_void_optional_namespace ^profile web) (ns math (fn f [x : Int? = nil] : Int? x)) (fn run [] : Int? (math/f))",
       "web_export": "run",
       "expected_value": {
         "kind": "nil"
@@ -5705,8 +5705,8 @@
     },
     {
       "id": "nil_void.required_after_optional",
-      "source": "(fn f [x : Int? y : Int] : Int y)",
-      "web_source": "(mod nil_void_required_after_optional ^profile web) (fn f [x : Int? y : Int] : Int y)",
+      "source": "(fn f [x : Int? = nil y : Int] : Int y)",
+      "web_source": "(mod nil_void_required_after_optional ^profile web) (fn f [x : Int? = nil y : Int] : Int y)",
       "expected_value": null,
       "expected_error": "required positional",
       "expected_stdout": "",
@@ -5714,6 +5714,491 @@
         "status": "rejected",
         "diagnostic": "required positional",
         "reason": "Violates the declaration or boundary contract."
+      }
+    },
+    {
+      "id": "nil_void.nil_admitting_then_required",
+      "source": "(fn f [x : Int? y : Int] : (List Int?) [x y]) (fn run [] : (List Int?) (f nil 2)) (run)",
+      "web_source": "(mod nil_void_nil_admitting_then_required ^profile web) (fn f [x : Int? y : Int] : (List Int?) [x y]) (fn run [] : (List Int?) (f nil 2))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "nil"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "nil_void.nil_admitting_required",
+      "source": "(fn f [x : Int?] : Int? x) (fn run [] : Int? (f)) (run)",
+      "web_source": "(mod nil_void_nil_admitting_required ^profile web) (fn f [x : Int?] : Int? x) (fn run [] : Int? (f))",
+      "expected_value": null,
+      "expected_error": "expects",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "diagnostic": "expects",
+        "reason": "Violates the declaration or boundary contract."
+      }
+    },
+    {
+      "id": "if_present.present_and_absent",
+      "source": "(fn bump [v : Int?] : Int (if_present x v (+ x 1) (else 0))) (fn run [] : (List Int) [(bump 1) (bump nil)]) (run)",
+      "web_source": "(mod if_present_present_and_absent ^profile web) (fn bump [v : Int?] : Int (if_present x v (+ x 1) (else 0))) (fn run [] : (List Int) [(bump 1) (bump nil)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "0"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "if_present.without_else",
+      "source": "(fn bump [v : Int?] : Int? (if_present x v (+ x 1))) (fn run [] : (List Int?) [(bump 1) (bump nil)]) (run)",
+      "web_source": "(mod if_present_without_else ^profile web) (fn bump [v : Int?] : Int? (if_present x v (+ x 1))) (fn run [] : (List Int?) [(bump 1) (bump nil)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "nil"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "if_present.false_is_present",
+      "source": "(fn label [v : Bool?] : Str (if_present x v \"present\" (else \"absent\"))) (fn run [] : (List Str) [(label false) (label nil)]) (run)",
+      "web_source": "(mod if_present_false_is_present ^profile web) (fn label [v : Bool?] : Str (if_present x v \"present\" (else \"absent\"))) (fn run [] : (List Str) [(label false) (label nil)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "present"
+          },
+          {
+            "kind": "str",
+            "value": "absent"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "if_present.shadows_for_body_only",
+      "source": "(fn pick [v : Int?] : (List Int) (let x 10) [(if_present x v x (else 0)) x]) (fn run [] : (List Int) (pick 1)) (run)",
+      "web_source": "(mod if_present_shadows_for_body_only ^profile web) (fn pick [v : Int?] : (List Int) (let x 10) [(if_present x v x (else 0)) x]) (fn run [] : (List Int) (pick 1))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "10"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "if_present.loop_control",
+      "source": "(fn run [] : (List Int) (var out : (List Int) []) (for i in [1 2 3] (if_present v (if (== i 2) nil i) (out .push v) (else (continue)))) out) (run)",
+      "web_source": "(mod if_present_loop_control ^profile web) (fn run [] : (List Int) (var out : (List Int) []) (for i in [1 2 3] (if_present v (if (== i 2) nil i) (out .push v) (else (continue)))) out)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "3"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "if_present.closures_keep_each_value",
+      "source": "(fn run [] : (List Int) (var fs : (List (Fn [] Int)) []) (var i 0) (while (< i 3) (if_present v (if (>= i 0) i nil) (fs .push (fn [] : Int v))) (set i (+ i 1))) ($map fs (fn [g : (Fn [] Int)] : Int (g)))) (run)",
+      "web_source": "(mod if_present_closures_keep_each_value ^profile web) (fn run [] : (List Int) (var fs : (List (Fn [] Int)) []) (var i 0) (while (< i 3) (if_present v (if (>= i 0) i nil) (fs .push (fn [] : Int v))) (set i (+ i 1))) ($map fs (fn [g : (Fn [] Int)] : Int (g))))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "0"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "if_present.evaluates_once",
+      "source": "(type Counter ^props {^n Int}) (fn next [c : Counter] : Int (set c/n (+ c/n 1)) c/n) (fn run [] : (List Int) (let c (Counter ^n 0)) [(if_present x (next c) x (else 0)) c/n]) (run)",
+      "web_source": "(mod if_present_evaluates_once ^profile web) (type Counter ^props {^n Int}) (fn next [c : Counter] : Int (set c/n (+ c/n 1)) c/n) (fn run [] : (List Int) (let c (Counter ^n 0)) [(if_present x (next c) x (else 0)) c/n])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "path_read.typed_fields",
+      "source": "(type P ^props {^name Str ^age Int?}) (fn nmae_of [value : Any] : Any (try value/nmae catch Any \"raised\")) (fn field_of [value : Any key : Str] : Any (try value/%key catch Any \"raised\")) (fn run [] : (List Any) (let p (P ^name \"Ada\")) [(field_of p \"name\") (field_of p \"age\") (field_of p \"nmae\") (nmae_of p)]) (run)",
+      "web_source": "(mod path_read_typed_fields ^profile web) (type P ^props {^name Str ^age Int?}) (fn nmae_of [value : Any] : Any (try value/nmae catch Any \"raised\")) (fn field_of [value : Any key : Str] : Any (try value/%key catch Any \"raised\")) (fn run [] : (List Any) (let p (P ^name \"Ada\")) [(field_of p \"name\") (field_of p \"age\") (field_of p \"nmae\") (nmae_of p)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "Ada"
+          },
+          {
+            "kind": "nil"
+          },
+          {
+            "kind": "str",
+            "value": "raised"
+          },
+          {
+            "kind": "str",
+            "value": "raised"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "path_read.error_reads_open",
+      "source": "(type E ^props {^message Str}) (impl Error for E) (fn code_of [value : Any] : Any value/code) (fn run [] : (List Any) [(code_of (E ^message \"m\"))]) (run)",
+      "web_source": "(mod path_read_error_reads_open ^profile web) (type E ^props {^message Str}) (impl Error for E) (fn code_of [value : Any] : Any value/code) (fn run [] : (List Any) [(code_of (E ^message \"m\"))])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "nil"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "path_read.no_member_receivers",
+      "source": "(fn name_of [value : Any] : Any (try value/b catch Any \"raised\")) (fn first_of [value : Any] : Any (try value/0 catch Any \"raised\")) (fn run [] : (List Any) [(name_of 6) (name_of \"abc\") (name_of true) (name_of [1 2]) (first_of 6) (first_of \"abc\") (first_of [10 20])]) (run)",
+      "web_source": "(mod path_read_no_member_receivers ^profile web) (fn name_of [value : Any] : Any (try value/b catch Any \"raised\")) (fn first_of [value : Any] : Any (try value/0 catch Any \"raised\")) (fn run [] : (List Any) [(name_of 6) (name_of \"abc\") (name_of true) (name_of [1 2]) (first_of 6) (first_of \"abc\") (first_of [10 20])])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "raised"
+          },
+          {
+            "kind": "str",
+            "value": "raised"
+          },
+          {
+            "kind": "str",
+            "value": "raised"
+          },
+          {
+            "kind": "str",
+            "value": "raised"
+          },
+          {
+            "kind": "str",
+            "value": "raised"
+          },
+          {
+            "kind": "str",
+            "value": "raised"
+          },
+          {
+            "kind": "int",
+            "value": "10"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "path_read.map_segments",
+      "source": "(fn first_of [value : Any] : Any (try value/0 catch Any \"raised\")) (fn missing_of [value : Any] : Any value/missing) (fn run [] : (List Any) [(first_of {^a 1}) (missing_of {^a 1})]) (run)",
+      "web_source": "(mod path_read_map_segments ^profile web) (fn first_of [value : Any] : Any (try value/0 catch Any \"raised\")) (fn missing_of [value : Any] : Any value/missing) (fn run [] : (List Any) [(first_of {^a 1}) (missing_of {^a 1})])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "raised"
+          },
+          {
+            "kind": "nil"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "path_read.node_props_not_anatomy",
+      "source": "(fn parts [q : Any] : (List Any) [q/k q/head q/body q/1]) (fn run [] : (List Any) (parts (quote (a ^k 1 b c)))) (run)",
+      "web_source": "(mod path_read_node_props_not_anatomy ^profile web) (fn parts [q : Any] : (List Any) [q/k q/head q/body q/1]) (fn run [] : (List Any) (parts (quote (a ^k 1 b c))))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "nil"
+          },
+          {
+            "kind": "nil"
+          },
+          {
+            "kind": "sym",
+            "value": "c"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "path_read.stream_rejected",
+      "source": "(fn x_of [s : Any] : Any (try s/x catch Any \"raised\")) (fn run [] : (List Any) [(x_of ($to_stream [{^x 1}]))]) (run)",
+      "web_source": "(mod path_read_stream_rejected ^profile web) (fn x_of [s : Any] : Any (try s/x catch Any \"raised\")) (fn run [] : (List Any) [(x_of ($to_stream [{^x 1}]))])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "raised"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "path_read.nil_propagates",
+      "source": "(fn steps [v : Any] : (List Any) [v/a v/a/b v/0]) (fn run [] : (List Any) (steps nil)) (run)",
+      "web_source": "(mod path_read_nil_propagates ^profile web) (fn steps [v : Any] : (List Any) [v/a v/a/b v/0]) (fn run [] : (List Any) (steps nil))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "nil"
+          },
+          {
+            "kind": "nil"
+          },
+          {
+            "kind": "nil"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "if_present.else_sees_outer_name",
+      "source": "(fn pick [v : Int?] : (List Int) (let x 10) [(if_present x v x (else x)) x]) (fn run [] : (List (List Int)) [(pick nil) (pick 3)]) (run)",
+      "web_source": "(mod if_present_else_sees_outer_name ^profile web) (fn pick [v : Int?] : (List Int) (let x 10) [(if_present x v x (else x)) x]) (fn run [] : (List (List Int)) [(pick nil) (pick 3)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "int",
+                "value": "10"
+              },
+              {
+                "kind": "int",
+                "value": "10"
+              }
+            ]
+          },
+          {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "int",
+                "value": "3"
+              },
+              {
+                "kind": "int",
+                "value": "10"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "if_present.nested_same_name_and_set",
+      "source": "(fn bump [v : Int?] : (List Int) (var x 5) [(if_present x v (if_present x (+ x 1) (set x (* x 10)) x (else 0)) (else 0)) x]) (fn run [] : (List Int) (bump 1)) (run)",
+      "web_source": "(mod if_present_nested_same_name_and_set ^profile web) (fn bump [v : Int?] : (List Int) (var x 5) [(if_present x v (if_present x (+ x 1) (set x (* x 10)) x (else 0)) (else 0)) x]) (fn run [] : (List Int) (bump 1))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "20"
+          },
+          {
+            "kind": "int",
+            "value": "5"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "path_read.stream_index_rejected",
+      "source": "(fn first_of [s : Any] : Any (try s/0 catch Any \"raised\")) (fn run [] : (List Any) [(first_of ($to_stream [[1 2]]))]) (run)",
+      "web_source": "(mod path_read_stream_index_rejected ^profile web) (fn first_of [s : Any] : Any (try s/0 catch Any \"raised\")) (fn run [] : (List Any) [(first_of ($to_stream [[1 2]]))])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "raised"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
       }
     },
     {

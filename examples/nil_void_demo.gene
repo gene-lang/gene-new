@@ -2,7 +2,9 @@
 # is a separate question, answered by $has_key?.
 (fn show [label value] ($println label ": " value))
 
-(fn age_label [age : Int?] : Str
+# A parameter may be omitted only when it declares a default. `Int?` says the
+# argument may be nil; `= nil` says it may be left out.
+(fn age_label [age : Int? = nil] : Str
   (if ($absent? age) "unknown" $"${age}"))
 (show "Omitted optional argument" (age_label))
 (show "Supplied value" (age_label 25))

@@ -2763,10 +2763,20 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
 proc nativeEntryName(fnName, fallback: string): string =
   "gene_entry_" & cIdent(fnName, fallback)
 
+proc isNilDefault*(chunk: Chunk): bool =
+  ## A `= nil` default: the chunk pushes the nil constant and returns.
+  chunk == nil or (chunk.instructions.len == 2 and
+    chunk.instructions[0].op == opPushConst and
+    chunk.constants[chunk.instructions[0].intArg].kind == vkNil and
+    chunk.instructions[1].op == opReturn)
+
 proc aotOptionalNilTail(fn: FunctionProto): int =
+  ## Trailing nullable pointer parameters declared `= nil`: a native entry
+  ## accepts them omitted and passes NULL.
   for i in countdown(fn.params.high, 0):
     if i >= fn.paramDefaults.len or not fn.paramDefaults[i].optional or
-        fn.paramDefaults[i].defaultChunk != nil or i >= fn.aotParamReprs.len or
+        not fn.paramDefaults[i].defaultChunk.isNilDefault or
+        i >= fn.aotParamReprs.len or
         fn.aotParamReprs[i].kind != arkNativePtr or not fn.aotParamReprs[i].nullable:
       break
     inc result

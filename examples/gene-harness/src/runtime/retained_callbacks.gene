@@ -25,7 +25,7 @@
   # Never hold the table gate while entering plugin code. Effect-owner admission
   # still decides whether this captured generation can accept the invocation.
   (var forwarded ($thaw #[]))
-  (for arg in call/body (forwarded .push arg))
+  (for arg in call/.body (forwarded .push arg))
   (if (&& record/inject_context (> forwarded/.size 0)) (forwarded .set 0 record/host_context))
   (let invoke ($runtime/bind_call ^named call/named record/callable forwarded))
   (invoke_effect_owner record/scope PluginCallKind/operation invoke []))

@@ -12,7 +12,7 @@
   (impl Callable
     (message apply [self, call]
       (invoke_effect_owner self/owner PluginCallKind/activate
-                           self/callable call/body))))
+                           self/callable call/.body))))
 
 (fn supervise_actor ^^private [ready, initial, handler, mailbox, message_type]
   (scope

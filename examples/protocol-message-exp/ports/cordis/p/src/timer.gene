@@ -167,7 +167,7 @@
 
 (fn scheduled_apply ^^private [self : ScheduledCallable, call]
   (if_not self/active/.get (return nil))
-  (var args (copy_args call/body))
+  (var args (copy_args call/.body))
   (if (== self/kind "debounce")
     (schedule_debounce self args)
     (schedule_throttle self args)))

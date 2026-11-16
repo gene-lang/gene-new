@@ -50,7 +50,7 @@ suite "runtime bound calls":
       "(var b ($runtime/bind_call Self:get [($cell 8)])) " &
       "[(a) (b)]").print() == "[\"Ada\" 8]"
     check evalBoundCall("(type Add ^props {^n Int} " &
-      "  (impl Callable (message apply [call] : Any (+ self/n call/body/0)))) " &
+      "  (impl Callable (message apply [call] : Any (+ self/n call/.body/0)))) " &
       "(var f ($runtime/bind_call (Add ^n 5) [2])) (f)").print() == "7"
 
   test "each invocation receives a fresh deadline after expiry":

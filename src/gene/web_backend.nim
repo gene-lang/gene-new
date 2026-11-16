@@ -72,7 +72,8 @@ type
   WebExprKind* = enum
     wekNil, wekBool, wekStr, wekSym, wekInt, wekF64,
     wekBinding, wekList, wekPropMap, wekMap, wekNode, wekRange,
-    wekIf, wekCall, wekBuiltin, wekCheck, wekNot, wekAnd, wekOr, wekCoalesce,
+    wekIf, wekIfPresent, wekCall, wekBuiltin, wekCheck, wekNot, wekAnd, wekOr,
+    wekCoalesce,
     wekBinary, wekDo,
     wekBind, wekSet, wekSetPath, wekWhile, wekLoop, wekRepeat, wekFor,
     wekBreak, wekContinue, wekReturn, wekMatch, wekTry, wekFail,
@@ -93,6 +94,7 @@ type
     mutable*: bool
     propCount*: int
     keys*: seq[string]
+    indexKeys*: seq[bool]      # wekSelector: which static keys are Int segments
     patterns*: seq[Value]
     patternScopes: seq[WebPatternScope]
     params*: seq[WebParam]     # wekLambda: the inline callback's parameters
@@ -109,7 +111,7 @@ type
     typ*: WebType
     loc*: SourceLoc
     named*: bool             ## declared `^name`; supplied by a prop at the call
-    optional*: bool          ## `^name : T?` — omitting it binds nil
+    optional*: bool          ## declares `= default`, so it may be omitted
     argName*: string         ## the call-site prop key; `^name local : T` differs
     hasDefault*: bool
     defaultSource*: Value
@@ -1406,7 +1408,8 @@ proc parseParams(analysis: WebAnalysis, value: Value,
       if j + 3 >= items.len or items[j + 3].isSym(","):
         raise webError(loc, "web parameter default requires a value")
       defaultSource = items[j + 3]
-    let optional = (declarationDefaults and typeAllowsNil(typ)) or hasDefault
+    # Only `= default` makes a parameter omissible, as in the VM.
+    let optional = hasDefault
     if not named:
       if not optional and sawOptional:
         raise webError(loc, "required positional parameter cannot follow an optional positional parameter")
@@ -2600,7 +2603,7 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
       # source for the same stated reason.
       raise webError(loc, "web call '" & sourceName &
         "' missing named argument: " & param.argName &
-        " (annotate it `: " & typeName(param.typ) & "?` to make it optional)")
+        " (declare a default with `= value` to make it optional)")
   for key in supplied:
     raise webError(loc, "web call '" & sourceName &
       "' got unexpected named argument: " & key)
@@ -4198,13 +4201,18 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           raise webError(loc,
             "portable web Path does not provide message segments")
         result.keys.add segment.strVal
-      elif segment.kind == vkInt: result.keys.add segment.intToString
+        result.indexKeys.add false
+      elif segment.kind == vkInt:
+        result.keys.add segment.intToString
+        result.indexKeys.add true
       elif segment.kind == vkSymbol:
         result.keys.add ""
+        result.indexKeys.add false
         result.children.add analysis.analyzeExpr(segment, bindings)
       elif segment.kind == vkNode and segment.head.isSym("unquote") and
           segment.body.len == 1:
         result.keys.add ""
+        result.indexKeys.add false
         result.children.add analysis.analyzeExpr(segment.body[0], bindings)
       else: raise webError(loc, "unsupported web Path segment")
     return
@@ -4454,6 +4462,75 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
                                         bindings[bindingName].typ)
     return WebExpr(kind: wekSet, typ: assigned.typ, loc: loc,
       text: emittedBinding(bindingName, bindings[bindingName]), children: @[assigned])
+  if name == "if_present":
+    # (if_present name expr body... (else ...)): `expr` once, `name` bound to
+    # its present value in the body only, with the value's type minus Nil.
+    # The body and the else clause are blocks, as in the VM.
+    if value.props.len != 0:
+      raise webError(loc, "if_present does not accept props")
+    var last = value.body.len
+    var elseForms: seq[Value]
+    var hasElse = false
+    if value.body.len > 0 and value.body[^1].kind == vkNode and
+        value.body[^1].head.isSym("else"):
+      hasElse = true
+      elseForms = value.body[^1].body
+      last = value.body.len - 1
+    if last < 3:
+      raise webError(loc, "if_present requires a name, an expression and a body")
+    let binder = value.body[0]
+    if binder.kind != vkSymbol or binder.symVal.len == 0 or
+        '/' in binder.symVal or binder.symVal[0] in {'$', '.', '~', '^', '@', ':'} or
+        binder.symVal == "_" or binder.symVal.endsWith("?") or
+        binder.symVal.endsWith("..."):
+      raise webError(loc, "if_present binding must be a plain local name, got " &
+        binder.print())
+    var bodyForms: seq[Value]
+    for i in 2 ..< last:
+      let form = value.body[i]
+      if form.kind == vkNode and form.head.isSym("else"):
+        raise webError(loc, "if_present: (else …) must be the last form")
+      if form.kind == vkNode and (form.head.isSym("then") or form.head.isSym("elif")):
+        raise webError(loc, "if_present takes body forms and an optional " &
+          "trailing (else …), not (" & form.head.symVal & " …)")
+      bodyForms.add form
+    let tested = analysis.analyzeExpr(value.body[1], bindings)
+    let previousBranchGroup = analysis.branchGroup
+    defer: analysis.branchGroup = previousBranchGroup
+    let previousBindingScope = analysis.bindingScopeId
+    defer: analysis.bindingScopeId = previousBindingScope
+    proc analyzeBlock(analysis: WebAnalysis, forms: openArray[Value],
+                      bindings: var Table[string, WebBinding], expected: WebType,
+                      binderName: string, binderType: WebType, loc: SourceLoc):
+                      tuple[expr: WebExpr, emitted: string] =
+      inc analysis.nextBranchGroup
+      let group = analysis.nextBranchGroup
+      analysis.branchGroup = group
+      var blockBindings = copyBindings(bindings)
+      inc analysis.nextBindingScopeId
+      analysis.bindingScopeId = analysis.nextBindingScopeId
+      if binderName.len > 0:
+        analysis.declareWebBinding(blockBindings, binderName, binderType, true, loc)
+        result.emitted = emittedBinding(binderName, blockBindings[binderName])
+      result.expr = analysis.analyzeSequence(forms, blockBindings, expected, loc)
+      if binderName.len > 0:
+        # The binder is the block's own: restore what the name meant outside.
+        if bindings.hasKey(binderName):
+          blockBindings[binderName] = bindings[binderName]
+        else:
+          blockBindings.del(binderName)
+      retainBranchNames(bindings, blockBindings, group)
+    let present = analysis.analyzeBlock(bodyForms, bindings, expected,
+      binder.symVal, withoutAbsent(tested.typ), loc)
+    analysis.bindingScopeId = previousBindingScope
+    let absent =
+      if hasElse:
+        analysis.analyzeBlock(elseForms, bindings, expected, "", nil, loc).expr
+      else:
+        WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
+    return WebExpr(kind: wekIfPresent, typ: unionType(present.expr.typ, absent.typ),
+      loc: loc, text: present.emitted,
+      children: @[tested, present.expr, absent])
   if name in ["if_yes", "if_not"]:
     if value.body.len < 2:
       raise webError(loc, "web " & name & " expects a condition and body")
@@ -6736,6 +6813,26 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     dec emitter.indent
     emitter.line("}")
     target
+  of wekIfPresent:
+    let tested = emitter.temp()
+    emitter.line("const " & tested & " = " & emitter.emitExpr(expr.children[0]) & ";")
+    let target = emitter.temp()
+    emitter.line("let " & target & ";")
+    emitter.line("if (" & tested & " != null) {")
+    inc emitter.indent
+    emitter.line("let " & expr.text &
+      (if emitter.typescript: ": " & tsType(withoutAbsent(expr.children[0].typ)) else: "") &
+      " = " & tested & ";")
+    let yes = emitter.emitExpr(expr.children[1])
+    emitter.line(target & " = " & yes & ";")
+    dec emitter.indent
+    emitter.line("} else {")
+    inc emitter.indent
+    let no = emitter.emitExpr(expr.children[2])
+    emitter.line(target & " = " & no & ";")
+    dec emitter.indent
+    emitter.line("}")
+    target
   of wekAnd, wekOr, wekCoalesce:
     let left = emitter.emitExpr(expr.children[0])
     let target = emitter.temp()
@@ -6891,7 +6988,9 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     var dynamicIndex = 1
     var segments: seq[string]
     for key in expr.keys:
-      if key.len > 0: segments.add jsString(key)
+      # An Int segment travels as a number, so a Map can reject it while a
+      # name segment that happens to be digits stays a key.
+      if key.len > 0: segments.add(if isNumericKey(key): key else: jsString(key))
       else:
         let captured = emitter.temp()
         emitter.line("const " & captured & " = " &
@@ -6914,9 +7013,10 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         emitter.emitExpr(expr.children[0]) & ";")
     var capturedSegments: seq[string]
     var dynamicIndex = expr.propCount
-    for key in expr.keys:
+    for at, key in expr.keys:
       if key.len > 0:
-        capturedSegments.add jsString(key)
+        capturedSegments.add(
+          if at < expr.indexKeys.len and expr.indexKeys[at]: key else: jsString(key))
       else:
         let captured = emitter.temp()
         emitter.line("const " & captured & " = " &
@@ -8126,6 +8226,17 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
         emitter.line("declare readonly [" & implMethod.message.symbolName &
           "]: (" & params.join(", ") & ") => " &
           tsType(implMethod.returnType) & ";")
+  # Path reads tell an omitted declared field (nil) from an undeclared name
+  # (an error), and let an Error value read any name as nil.
+  var fieldNames: seq[string]
+  for field in allFields(module, declaration): fieldNames.add jsString(field.sourceName)
+  let ts = emitter.typescript
+  emitter.line("static " & (if ts: "readonly $gene_name: string" else: "$gene_name") &
+    " = " & jsString(declaration.sourceName) & ";")
+  emitter.line("static " & (if ts: "readonly $gene_fields: ReadonlySet<string>" else: "$gene_fields") &
+    " = new Set([" & fieldNames.join(", ") & "]);")
+  emitter.line("static " & (if ts: "readonly $gene_error: boolean" else: "$gene_error") &
+    " = " & (if declaration.implementsError: "true" else: "false") & ";")
   let fieldsType = if emitter.typescript:
     ": Record<string, unknown> = {}, body: unknown[] = [], $in_progress: boolean = false, immutable: boolean = false"
   else: " = {}, body = [], $in_progress = false, immutable = false"
@@ -9650,10 +9761,15 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("function $gene_get_raw(value" & dynamic & ", key" & dynamic & ")" &
       dynamic & " {")
     inc emitter.indent
+    # The VM's path-step table (docs/spec/nil-void.md, Path reads): absences
+    # read as undefined; a read that cannot be right raises. Host objects keep
+    # JavaScript property semantics.
     emitter.line("if (value == null) return undefined;")
-    emitter.line("if (value[$gene_prop_order]) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); return Object.prototype.hasOwnProperty.call(value, key) ? value[key] : undefined; }")
     emitter.line("if (typeof key === \"bigint\") key = Number(key);")
-    emitter.line("if (value?.$gene_map === true) return value.get(key);")
+    emitter.line("if (value[$gene_prop_order]) { if (typeof key === \"number\") $gene_path_fault(value, key, true); key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); return Object.prototype.hasOwnProperty.call(value, key) ? value[key] : undefined; }")
+    emitter.line("if (value?.$gene_map === true) { if (typeof key === \"number\") $gene_path_fault(value, key, true); return value.get(key); }")
+    let streamTest = if needsStream: "value instanceof GeneStream || " else: ""
+    emitter.line("if (" & streamTest & "typeof value === \"string\" || typeof value === \"number\" || typeof value === \"bigint\" || typeof value === \"boolean\" || typeof value === \"symbol\" || (Array.isArray(value) && typeof key !== \"number\" && !/^-?\\d+$/.test(String(key)))) $gene_path_fault(value, key, typeof key === \"number\");")
     emitter.line("if (typeof key === \"string\" && /^-?\\d+$/.test(key) && (Array.isArray(value?.$gene_body) || $gene_is_node(value))) key = Number(key);")
     emitter.line("if ($gene_is_node(value) && typeof key === \"number\") return $gene_at(value.body, key);")
     # A static path segment is emitted as a string, so `xs/-1` arrives here as
@@ -9664,9 +9780,19 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (typeof key === \"string\" && key.charCodeAt(0) === 45 && (Array.isArray(value?.$gene_body) || Array.isArray(value) || ArrayBuffer.isView(value))) { const at = Number(key); if (Number.isInteger(at)) key = at; }")
     emitter.line("if (Array.isArray(value?.$gene_body) && typeof key === \"number\") return $gene_at(value.$gene_body, key);")
     emitter.line("if (typeof key === \"number\" && (Array.isArray(value) || ArrayBuffer.isView(value))) return $gene_at(value, key);")
-    emitter.line("if ($gene_is_node(value) && typeof key === \"string\" && Object.prototype.hasOwnProperty.call(value.props, key)) return value.props[key];")
+    # A name segment on a node reads a prop, never the node's anatomy.
+    emitter.line("if ($gene_is_node(value)) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); return Object.prototype.hasOwnProperty.call(value.props, key) ? value.props[key] : undefined; }")
+    emitter.line("if (value[Symbol.for(\"gene.record\")] === true) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); if (Object.prototype.hasOwnProperty.call(value, key)) return value[key]; const type = value.constructor; if (type.$gene_fields?.has(key) || type.$gene_error === true) return undefined; $gene_path_fault(value, key, false); }")
     emitter.line("if (typeof key === \"string\" && !(key in Object(value))) { const camel = key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase()); if (camel in Object(value)) key = camel; }")
     emitter.line("return value[key];")
+    dec emitter.indent
+    emitter.line("}")
+    emitter.line("function $gene_path_fault(value" & dynamic & ", key" & dynamic & ", index" & dynamic & ")" & (if typescript: ": never" else: "") & " {")
+    inc emitter.indent
+    emitter.line("const label = " & (if needsStream: "value instanceof GeneStream ? \"Stream\" : " else: "") & "typeof value === \"string\" ? \"Str\" : typeof value === \"boolean\" ? \"Bool\" : typeof value === \"symbol\" ? \"Sym\" : typeof value === \"bigint\" ? \"Int\" : typeof value === \"number\" ? \"F64\" : Array.isArray(value) ? \"List\" : (value[$gene_prop_order] || value?.$gene_map === true) ? \"Map\" : (value?.constructor?.$gene_name ?? \"Value\");")
+    emitter.line("const name = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key);")
+    emitter.line("const message = value?.[Symbol.for(\"gene.record\")] === true ? `${label} has no field '${name}'` : index ? `${label} cannot be indexed through a path` : `${label} has no fields, so '${name}' cannot be read through a path`;")
+    emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { message }, [], true);")
     dec emitter.indent
     emitter.line("}")
     emitter.line("function $gene_delete(value" & dynamic & ", key" & dynamic & ")" & dynamic & " {")

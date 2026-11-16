@@ -5,29 +5,32 @@ proc nilEval(source: string): string =
   run(compileSource(source), newGlobalScope()).print()
 
 suite "nil — optional parameters":
-  test "nullable fixed parameters default to nil":
+  test "a nil-admitting fixed parameter is required without a default":
     check nilEval("""
       (fn f [x : Int?] : Int? x)
-      [(f) (f nil) (f 4) (try (f "s") catch TypeError "bad")]
-    """) == "[nil nil 4 \"bad\"]"
+      [(f nil) (f 4) (try (f "s") catch TypeError "bad") (try (f) catch Any "arity")]
+    """) == "[nil 4 \"bad\" \"arity\"]"
+  test "= nil makes a nil-admitting parameter omissible":
+    check nilEval("""
+      (fn f [x : Int? = nil] : Int? x)
+      [(f) (f nil) (f 4)]
+    """) == "[nil nil 4]"
   test "explicit defaults preserve explicit nil and evaluate only when omitted":
     check nilEval("""
       (var calls 0)
       (fn f [x : Int? = (do (set calls (+ calls 1)) 9)] : Int? x)
       [(f nil) calls (f) calls (f 3) calls]
     """) == "[nil 0 9 1 3 1]"
-  test "aliases and equivalent nil-admitting forms get the same arity":
-    check nilEval("""
-      (alias MaybeInt Int?)
-      (fn a [x : MaybeInt] x)
-      (fn b [x : (? Int)] x)
-      (fn c [x : (| Str Nil)] x)
-      (fn d [^x : MaybeInt] x)
-      [(a) (b) (c) (d)]
-    """) == "[nil nil nil nil]"
-  test "required arguments cannot follow optional positionals and Any stays required":
-    for source in ["(fn f [x : Int? y : Int] y)",
-                   "(alias Maybe Int?) (fn f [x : Maybe y : Int] y)",
+  test "aliases and equivalent nil-admitting forms are all required":
+    for source in ["(alias MaybeInt Int?) (fn a [x : MaybeInt] x) (a)",
+                   "(fn b [x : (? Int)] x) (b)",
+                   "(fn c [x : (| Str Nil)] x) (c)",
+                   "(alias MaybeInt Int?) (fn d [^x : MaybeInt] x) (d)"]:
+      expect GeneError: discard nilEval(source)
+  test "a required parameter may follow a nil-admitting one, not a defaulted one":
+    check nilEval("(fn f [x : Int? y : Int] [x y]) (f nil 2)") == "[nil 2]"
+    for source in ["(fn f [x : Int? = nil y : Int] y)",
+                   "(alias Maybe Int?) (fn f [x : Maybe = nil y : Int] y)",
                    "(fn f [x : Any] x) (f)"]:
       expect GeneError: discard nilEval(source)
   test "named nil stays supplied":
@@ -42,8 +45,9 @@ suite "nil — Present":
       (fn f [x : Present] x)
       [(f false) (f 0) (f "") (f []) (try (f nil) catch TypeError "rejected")]
     """) == "[false 0 \"\" [] \"rejected\"]"
-  test "Present? is optional and Any is required":
-    check nilEval("(fn g [x : Present?] x) [(g) (g 1)]") == "[nil 1]"
+  test "Present? and Any are both required without a default":
+    check nilEval("(fn g [x : Present?] x) [(g nil) (g 1)]") == "[nil 1]"
+    expect GeneError: discard nilEval("(fn g [x : Present?] x) (g)")
     expect GeneError: discard nilEval("(fn h [x : Any] x) (h)")
   test "Present uses value semantics for Range and identity for containers":
     check nilEval("""
@@ -132,10 +136,10 @@ suite "nil — review regressions":
         "(fn f [] : Str (if true (then (return nil))) \"ok\") (try (f) catch TypeError \"type error\")"]:
       check nilEval(source) == "\"type error\""
 
-  test "stream projection misses are normalized to nil before publication":
+  test "mapped Path misses are normalized to nil before publication":
     check nilEval("""
-      (let direct ($into (/missing ($to_stream [{} {^missing nil}])) []))
-      (let nested ($into (/a/b ($to_stream [{^a {^b 1}} {}])) []))
+      (let direct ($into ($map ($to_stream [{} {^missing nil}]) /missing) []))
+      (let nested ($into ($map ($to_stream [{^a {^b 1}} {}]) /a/b) []))
       [($map direct (fn [v] [(== v nil) (same? v nil) ($absent? v)]))
        ($map nested (fn [v] [(== v nil) (same? v nil) ($absent? v)]))]
     """) == "[[[true true true] [true true true]] [[false false false] [true true true]]]"

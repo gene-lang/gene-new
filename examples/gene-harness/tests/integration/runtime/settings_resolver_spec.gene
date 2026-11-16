@@ -147,7 +147,6 @@
             (for key in startup_keys (values .put key (config .get key)))
             (values .put "idle_timeout_ms_active" runtime/sessions/idle_timeout_ms)
             (values .put "trigger_cap" config/trigger_concurrency)
-            (values .put "limits" {^timeout_ms runtime/h/limits/timeout_ms ^max_memory_mb runtime/h/limits/max_memory_mb})
             (submit_round controller "default" "r1" 1 "go")
             (join_rounds controller)
             (values .put "turns" calls/.get)
@@ -161,7 +160,7 @@
             (close_runtime runtime)))
         (let fresh observed/fresh)
         (let old observed/materialized)
-        (let compared [startup_keys... "idle_timeout_ms_active" "trigger_cap" "limits" "turns"])
+        (let compared [startup_keys... "idle_timeout_ms_active" "trigger_cap" "turns"])
         (for key in compared
           ($assert (== (fresh .get key) (old .get key)) $"${key}: ${(fresh .get key)} vs ${(old .get key)}"))
         ($assert (== fresh/turns 24))

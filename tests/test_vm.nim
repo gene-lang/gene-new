@@ -1385,10 +1385,9 @@ suite "compiler — GIR emission":
     check proto.namedParams[0].arg == "scale"
     check proto.namedParams[0].defaultValue.optional == true
     check proto.namedParams[0].defaultValue.defaultChunk != nil
-    # ^opt : Str? — nil-admitting type: optional with no default chunk;
-    # the runtime binds nil when the argument is omitted.
+    # ^opt : Str? — a nil-admitting type without a default stays required.
     check proto.namedParams[1].arg == "opt"
-    check proto.namedParams[1].defaultValue.optional == true
+    check proto.namedParams[1].defaultValue.optional == false
     check proto.namedParams[1].defaultValue.defaultChunk == nil
     check proto.requiredPositional == 1
     check not proto.simpleCall
@@ -3213,10 +3212,10 @@ suite "vm — fused local sequences":
       (var k : Int 0)
       (set k value)
       k)
-    (type Point ^props {^x Int ^y Int})
+    (type Point ^props {^x Int ^y Int ^missing Int?})
     (fn fields [p row]
       # One-key reads of an instance and a Map, and a missing key of each:
-      # the instance's takes the general path.
+      # the instance's (an omitted optional field) takes the general path.
       [(+ p/x p/y) row/amount ($absent? row/missing) ($absent? p/missing)])
     [(count_to 6) (floats 2.0) (wide 9223372036854775807)
      (try (store "text") "unreached" catch Any "store failed")
@@ -3317,7 +3316,7 @@ suite "vm — fused local sequences":
 
 suite "vm — fused sends":
   const sendProgram = """
-    (type Point ^props {^x Int ^y Int})
+    (type Point ^props {^x Int ^y Int ^missing Int?})
     (type Counter ^props {^value Int}
       (message add [amount] (+ self/value amount)))
     (fn plain_args [n]
@@ -3337,8 +3336,8 @@ suite "vm — fused sends":
       (let double (fn [v] (* v 2)))
       [xs/.size (xs .size) (m .get "a") (m .get row/key) seen ys (xs .map double)])
     (fn instance_args [p]
-      # An instance field argument, and a missing one, which is read by the
-      # general path.
+      # An instance field argument, and an omitted optional one, which is read
+      # by the general path.
       (let out [])
       (out .push p/x)
       (out .push p/missing)
@@ -3574,8 +3573,8 @@ proc callProtos(chunk: Chunk): seq[FunctionProto] =
 
 suite "vm — scopeless field reads":
   const fieldProgram = """
-    (type Point ^props {^x Int ^y Int})
-    (type Counter ^props {^value Int}
+    (type Point ^props {^x Int ^y Int ^z Int?})
+    (type Counter ^props {^value Int ^missing Int?}
       (message add [amount] (+ self/value amount))
       (message left [] self/missing))
     (fn sum [p] (+ p/x p/y))
@@ -3812,9 +3811,10 @@ suite "vm — optional and default parameters":
     ck "(var f (fn [x y = (+ x 1)] y)) (f 4)", "5"
   test "defaults see the call-time captured scope":
     ck "(var base 1) (var f (fn [x = base] x)) (set base 2) (f)", "2"
-  test "optional named parameters bind nil when omitted":
-    ck "(var f (fn [^width : Int?] width)) (f)", "nil"
+  test "a nil-admitting named parameter is optional only with a default":
+    ck "(var f (fn [^width : Int? = nil] width)) (f)", "nil"
     ck "(var f (fn [^width : Int?] width)) (f ^width 8)", "8"
+    expect GeneError: discard runStr("(var f (fn [^width : Int?] width)) (f)")
   test "named defaults are evaluated at call time":
     ck "(var f (fn [base ^width = (+ base 1)] width)) (f 4)", "5"
     ck "(var f (fn [base ^width = (+ base 1)] width)) (f ^width 10 4)", "10"
@@ -3848,7 +3848,7 @@ suite "vm — Paths":
   test "Paths read list indexes and path sends expose list behavior":
     ck "(var xs [10 20 30]) xs/1", "20"
     ck "(var xs [10 20 30]) xs/-1", "30"
-    ck "(var xs [10 20 30]) xs/size", "nil"
+    expect GeneError: discard runStr("(var xs [10 20 30]) xs/size")
     ck "(var xs [10 20 30]) [xs/.size xs/.empty? xs/.first xs/.last]",
        "[3 false 10 30]"
     ck "(var xs []) [xs/.empty? xs/.first xs/.last]", "[true nil nil]"
@@ -3856,23 +3856,29 @@ suite "vm — Paths":
   test "Paths read node props, body indexes, and projections":
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/name", "\"Ada\""
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/1", "20"
-    ck "(var n (quote (user ^name \"Ada\" 10 20))) n/head", "user"
-    ck "(var n (quote (user ^name \"Ada\" 10 20))) n/body", "[10 20]"
+    # A plain name reads a prop, never anatomy; the anatomy is explicit.
+    ck "(var n (quote (user ^name \"Ada\" 10 20))) [n/head n/body]", "[nil nil]"
+    ck "(var n (quote (user ^name \"Ada\" 10 20))) [n/%$head n/.body]",
+       "[user [10 20]]"
   test "Path calls validate their call envelope":
     expect GeneError: discard runStr("(/name)")
     expect GeneError: discard runStr("(/name ^unused 1 {^name \"Ada\"})")
 
-  test "static Path lookup maps over streams and emits nil for misses":
+  test "a Path reads a stream's items only through an explicit $map stage":
     ck "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
-       "(var names users/%$to_stream/name) " &
+       "(var names ((Path %$to_stream %($map /name)) users)) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" nil true]"
+    expect GeneError:
+      discard runStr("(var users [{^name \"Ada\"}]) users/%$to_stream/name")
 
-  test "first-class Paths map over streams":
+  test "first-class Paths map over streams with $map":
     ck "(var get-name /name) " &
-       "(var names (get-name ($to_stream [{^name \"Ada\"} {^name \"Bob\"}]))) " &
+       "(var names ($map ($to_stream [{^name \"Ada\"} {^name \"Bob\"}]) get-name)) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
+    expect GeneError:
+      discard runStr("(var get-name /name) (get-name ($to_stream [{^name \"Ada\"}]))")
 
 suite "vm — dynamic Paths":
   test "dynamic Path keys are evaluated":
@@ -3904,14 +3910,14 @@ suite "vm — dynamic Paths":
        "[4 nil]"
     ck "(var field \"name\") " &
        "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
-       "(var names ((Path %$to_stream %($key field)) users)) " &
+       "(var names ((Path %$to_stream %($map (Path %($key field)))) users)) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" nil true]"
   test "complex selector stages adapt stream helpers":
     ck "(var users [{^name \"Ada\" ^^adult} " &
        "            {^name \"Tim\" ^!adult} " &
        "            {^name \"Bob\" ^^adult}]) " &
-       "(var names ((Path %$to_stream %($filter /adult) \"name\") users)) " &
+       "(var names ((Path %$to_stream %($filter /adult) %($map /name)) users)) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
     ck "(var users [{^name \"Ada\"} {^name \"Bob\"} {^name \"Cy\"}]) " &
@@ -4120,7 +4126,7 @@ suite "vm — namespaces":
        "{^a 1 ^b 2}"
   test "declarations exposes namespace bindings as a stream":
     ck "(ns m (var b 2) (var a 1)) " &
-       "(var names m/%$declarations/name) " &
+       "(var names ((Path %$declarations %($map /name)) m)) " &
        "[(names .next) (names .next) (names .has_next)]",
        "[\"a\" \"b\" false]"
     ck "(ns m (var a 1)) (var ds (m .declarations)) (ds .next)",

@@ -167,7 +167,14 @@ is proposed; unrelated [message dispatch](../docs/spec/protocols.md) is unchange
 
 The message method provides display text; `$err` remains the original typed
 error with its other fields and cause. `(fail $err)` re-raises that value,
-without converting it to a string or rebuilding it from its message. If a
+without converting it to a string or rebuilding it from its message.
+
+An `Error` value reads a name its type does not declare as `nil`, where any
+other typed value raises `has no field`. A handler often holds an error of
+unknown type and probes it, as in `$err/code` or `$err/cause`; an error raised
+by that probe would replace the one being handled. A value counts as an
+`Error` when it was raised as one, or when its type declares `^impl [Error]`
+or has a visible `Error` impl. The check never runs user code. If a
 custom message method itself fails while the runner reports an error, reporting
 must retain the original error and fall back to an existing diagnostic or a
 basic type label rather than replace it with the formatting failure. The

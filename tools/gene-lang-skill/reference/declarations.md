@@ -29,12 +29,14 @@ opening line. Every body expression indents two spaces.
   target)
 ```
 
-Positional parameters are optional only via defaults. A named parameter is
-optional when its type admits nil (`T?`, `(? T)`, a union containing `Nil`); an
-omitted one binds `nil`. Call sites reject unknown props.
+A parameter, positional or named, is optional only when it declares a
+default. Its type says which values it accepts: `[x : Int?]` must be passed and
+may be passed `nil`; `[x : Int? = nil]` may be left out. Call sites reject
+unknown props.
 
-Declaring a name ending in `?` is a compile error — optionality lives on the
-type, not the key.
+Declaring a name ending in `?` is a compile error. A record field is optional
+when its type admits nil (`^due Date?`); a parameter is optional when it has a
+default.
 
 ## Fexprs
 

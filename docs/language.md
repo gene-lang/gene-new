@@ -103,7 +103,9 @@ To select from a call result, write `(/name (get_person))`, or bind the result
 first. A path or message glued after a closing delimiter, such as `(get_person)/name`
 or `(get_people).size`, is a read error; a send uses `((get_people) .size)`.
 
-A missing property reads as `nil`. `??` supplies a fallback for nil:
+A missing key of a Map or a plain node reads as `nil`, as does an omitted
+optional field of a typed value, an index out of range, and any step through
+`nil`. `??` supplies a fallback for nil:
 
 ```gene runnable
 (let person {^name "Ada"})
@@ -111,9 +113,25 @@ A missing property reads as `nil`. `??` supplies a fallback for nil:
 # ["anonymous" false]
 ```
 
-Calling a missing member still fails. The error names the call head, such as
+A read that cannot be right raises instead. A typed value raises for a name
+its type does not declare (`P has no field 'nmae'`, as a write does), except
+that an `Error` value reads an undeclared name as `nil`. A name segment
+through a value with no fields, such as an Int, a Str or a List, raises; so
+does an integer segment through a Map, and any segment on a Stream, which is
+read item by item with `($map stream /x)`. A plain name always reads a
+property, never node anatomy: `value/.body` reads the body.
+
+```gene runnable
+(type Person ^props {^name Str ^nickname Str?})
+(let ada (Person ^name "Ada"))
+[ada/nickname (try ada/nmae catch Any "raised") ($has_key? ada "nmae")]
+# [nil "raised" false]
+```
+
+`($has_key? v k)` and `v/.props/k` test or read without raising. Calling a
+missing member fails too. The error names the call head, such as
 `person/run`, and a missing `$` path identifies its first missing namespace
-member. Reading the missing property alone remains a normal nil result.
+member. See [path reads](spec/nil-void.md#path-reads) for the full table.
 
 Use `==` for structural equality and `same?` for identity. Metadata does not
 participate in structural equality. Mutable list/map identity remains distinct
@@ -181,8 +199,8 @@ layout; canonical printing expands it to the ordinary parenthesized form.
 
 ### Optional, named, and rest arguments
 
-A fixed parameter admitting nil gets an implicit nil default. An explicit
-default takes precedence; an explicitly supplied nil does not select a default.
+A parameter may be omitted only when it declares a default with `=`. The
+default runs at call time; an explicitly supplied nil does not select it.
 
 ```gene runnable
 (fn age [value : Int? = 18] : Int? value)
@@ -190,8 +208,10 @@ default takes precedence; an explicitly supplied nil does not select a default.
 # [18 nil 25]
 ```
 
-Write `value : Int?` without `= 18` to default to nil. Optional positionals
-must follow required positionals and cannot precede a rest parameter.
+The type says which values a parameter accepts, not whether it may be left
+out: `value : Int?` must be passed and may be passed `nil`, and
+`value : Int? = nil` may be omitted. Optional positionals must follow required
+positionals and cannot precede a rest parameter.
 
 Named arguments use `^` at both declaration and call:
 
@@ -321,6 +341,23 @@ chain of equality tests. The matched value is evaluated once:
 
 Use `if_yes` or `if_not` for a condition followed by several expressions.
 `&&` and `||` short-circuit. `??` tests absence, not general truthiness.
+
+`if_present` tests a value for presence and binds it in one form. The
+expression is evaluated once; the name is visible in the body only, and the
+optional trailing `else` runs when the value is `nil`:
+
+```gene runnable
+(fn greeting [options] : Str
+  (if_present name options/name
+    $"Hello, ${name}!"
+    (else "Hello!")))
+[(greeting {^name "Ada"}) (greeting {})]
+# ["Hello, Ada!" "Hello!"]
+```
+
+The name is visible in the body only; other bindings the body makes keep the
+enclosing scope, as in `if`. To leave early when a value is absent, bind it with `??`:
+`(let task (?? (find_task id) (return nil)))`.
 
 Loops support `break` and `continue`:
 

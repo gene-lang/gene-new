@@ -53,7 +53,7 @@
   results)
 
 (fn main [args] : Int
-  (let only (if (> args/body/.size 0) args/body/0 ""))
+  (let only (if (> args/.body/.size 0) args/.body/0 ""))
   (var failed 0)
   (for r in (check_all only)
     (if r/ok

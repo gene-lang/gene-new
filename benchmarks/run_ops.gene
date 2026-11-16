@@ -16,10 +16,10 @@
 
 (fn main [args] : Int
   ($assert
-    (>= args/body/.size 3)
+    (>= args/.body/.size 3)
     "usage: run_ops.gene OUTPUT_DIR ITERATIONS GENE_EXE [GENE_EXE...]")
-  (let output args/body/0)
-  (let iterations ($parse/parse_int args/body/1))
+  (let output args/.body/0)
+  (let iterations ($parse/parse_int args/.body/1))
   ($assert (> iterations 0) "iterations must be positive")
   ($assert (! ($fs/exists? output)) "output directory must be new")
   (let samples ($parse/parse_int (?? ($os/env? "GENE_BENCH_SAMPLES") "5")))
@@ -28,7 +28,7 @@
   (let source_text ($fs/read_text source))
   (let source_hash ($crypto/sha256 source_text))
   (let variants [])
-  (for argument in ($drop args/body 2)
+  (for argument in ($drop args/.body 2)
     (let executable ($fs/real_path argument))
     (let version (capture executable ["--version"]))
     ($assert (== version/status 0) "could not read executable version")

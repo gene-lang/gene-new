@@ -138,7 +138,9 @@ more further arguments. `^named {^key T}` is a closed named shape. Explicitly
 nil-admitting types permit omission; `Any` remains required. Omitted arguments
 stay omitted, so target defaults run per invocation. A supplied nil stays
 supplied.
-The target's own arity and parameter checks still apply after view checks.
+The target's own arity and parameter checks still apply after view checks: a
+view that admits omitting `^k` over a target whose `^k` has no `= default`
+passes its own check, and the target then reports the missing argument.
 
 Inputs and results cross ordinary typed boundaries using the signature's
 authored type/implementation scope. Adaptation may create a distinct view
@@ -188,7 +190,7 @@ The format-1 description has these fields:
 | --- | --- |
 | `category`, `origin`, `completeness`, `shape_known` | Callable category, declared/checked-view provenance, known/partial/unknown metadata, and whether shape binding is supported |
 | `positional`, `named`, `rest`, `minimum_positional` | Ordered parameter descriptions, optional rest description, and minimum positional count |
-| Parameter `name`, `local`, `required`, `has_default`, `type_known`, `type` | External name/local alias, omission rules, presence of explicit default code, and safely described type |
+| Parameter `name`, `local`, `required`, `has_default`, `type_known`, `type` | External name/local alias; `required` is false only for a parameter that declares `= default` (or, for a view or record schema, a nil-admitting entry); presence of explicit default code; and safely described type |
 | `result_known`, `result` | Declared result contract; an unannotated result is unknown, distinct from explicit `Any` |
 | `invocation_errors` | `checked`, `known`, and `types`; an unchecked row has unknown types, while a checked empty row has an empty list |
 | `deferred` | For a supported `(Stream T E)` or `(Task T E)` result, `known`, `kind`, `value_type`, and `error_type`; otherwise `known` is false |
@@ -455,7 +457,7 @@ MVP compiler-dispatched heads:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set new fn macro quote quasiquote
+do if if_yes if_not if_present && || ?? ! let var const set new fn macro quote quasiquote
 Path path msg ns env eval import import_impl mod match while loop repeat for map_for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
 protocol impl derive web_module
@@ -501,8 +503,8 @@ form that invokes the nearest constructor in a type's ancestry.
 
 The last expression of a function or message body is a tail position. The
 position propagates to selected `if` branches, `if_yes`/`if_not` bodies,
-`match` arms, `do`, the last `&&`/`||`/`??` operand, and an explicit `return`
-value. It does not propagate into arguments, conditions, initializers, loops,
+the last form of an `if_present` body or `else` clause, `match` arms, `do`,
+the last `&&`/`||`/`??` operand, and an explicit `return` value. It does not propagate into arguments, conditions, initializers, loops,
 structured cleanup bodies, constructors, namespaces/modules, `new`,
 or fexpr calls.
 

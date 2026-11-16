@@ -7,7 +7,7 @@
 (type HostedVoice ^^private ^props {^token Any}
   (impl VoiceHost
     (message output [session : Str] : Bool
-      (voice_output? (/voice (/runtime (require_service self))) session))
+      (voice_output? (/services/values/voice (/runtime (require_service self))) session))
     (message reset_if_unused [] : Any
       (let runtime (/runtime (require_service self)))
       (if ($absent? (row runtime/h "browser_clients" "voice")) (reset_voice runtime/services/values/voice))
