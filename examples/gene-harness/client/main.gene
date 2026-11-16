@@ -307,7 +307,6 @@
 (fn browser_bridge [client : Client] : Any
   {^toolbar ($dom/element "browser_client_toolbar")
    ^composer_actions ($dom/element "browser_client_composer_actions")
-   ^trigger_model_actions ($dom/element "trigger_model_actions")
    ^state (fn [] : Any
      (var ui : UiClient client/ui)
      (var commands : CommandClient client/command_client)

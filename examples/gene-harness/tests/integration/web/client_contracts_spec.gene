@@ -3,6 +3,18 @@
 (import [page] ^from "../../../src/web/page")
 (import [plugin_page] ^from "../../../src/web/plugin_page")
 
+# The harness client looks elements up by literal id; a missing id throws and
+# aborts the UI, so the page template must render every lookup.
+(fn element_ids [source : Str] : (List Str)
+  (var ids : (List Str) [])
+  (for line in ($str/split source "\n")
+    (let parts ($str/split line "($dom/element \""))
+    (for part in ($drop parts 1)
+      (let id (($str/split part "\"") .first))
+      (if_not (== id "")
+        (if_not (ids .contains? id) (ids .push id)))))
+  ids)
+
 (describe "Compiled feature client contracts"
   (it "checks compiled browser behavior and workspace storage boundaries" []
     (isolated this_mod/.path
@@ -27,7 +39,11 @@
           $"${output}/spotlight.mjs" $"${output}/command_client.mjs" $"${output}/browser_clients.mjs"
           $"${output}/broken_browser_client.mjs")))
         ($assert (== spotlight/status 0) $"spotlight: ${spotlight/stdout}${spotlight/stderr}")
-        ($fs/write_text ($path/join output "a.html") (page ^workspace "/workspace/a"))
+        (let harness_page (page ^workspace "/workspace/a"))
+        (for id in (element_ids ($fs/read_text (package_path "client/main.gene")))
+          ($assert ($str/contains? harness_page $"id=\"${id}\"")
+            $"client/main.gene looks up element id ${id}, which src/web/page.gene does not render"))
+        ($fs/write_text ($path/join output "a.html") harness_page)
         ($fs/write_text ($path/join output "b.html") (page ^workspace "/workspace/b"))
         ($fs/write_text ($path/join output "plugins.html") (plugin_page ^workspace "/workspace/a"))
         (let storage (await ($os/exec_async ^timeout_ms 15000 ^max_bytes 1048576
