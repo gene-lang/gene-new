@@ -39,7 +39,7 @@
                  (removed/.get .push [version candidate/version]))}))
             ($assert ($absent? descriptor/rows))
             ($assert ($absent? descriptor/effects))
-            ($assert (try (descriptor .put "name" "changed") false catch Error true))
+            ($assert (try (descriptor .put "name" "changed") false catch Fault true))
             (host .PluginHost:defer (fn [] (disposed/.get .push ["a" version]))))))
         (fn contributor [version]
           (Plugin ^id "b" ^requires [{^registry "extensions"}]
@@ -77,8 +77,8 @@
           ($assert (== callback_owner/.get/owner "b"))
           ($assert (== callback_owner/.get/budget/callback_limits/max_memory_mb 128))
           (let rows (invoke h "extension_rows"))
-          ($assert (try (rows .push {}) false catch Error true))
-          ($assert (try (rows/0/nested .put "original" false) false catch Error true))
+          ($assert (try (rows .push {}) false catch Fault true))
+          ($assert (try (rows/0/nested .put "original" false) false catch Fault true))
           ($assert (try (invoke h "extension_value" "slow") false catch Error true)
             "B's callback escaped its shorter budget through C")
           ($assert (== callback_owner/.get/owner "b"))
@@ -169,7 +169,7 @@
                   {^name ($to_str value) ^point "example/collect"
                    ^run (fn [context]
                      (observed/.get .push (execution_owner))
-                     ($assert (try (context .put "value" 0) false catch Error true))
+                     ($assert (try (context .put "value" 0) false catch Fault true))
                      (+ version value context/value))})))))
         (let point (Plugin ^id "hook_owner" ^activate (fn [host]
           (host .PluginHost:contribute "hook_points" {^name "example/collect"}))))
@@ -188,7 +188,7 @@
           (let results (invoke h "collect_hooks"))
           ($assert (== results [111 112]))
           ($assert (== observed/.get ["hook_contributor" "hook_contributor"]))
-          ($assert (try (results .push 0) false catch Error true))
+          ($assert (try (results .push 0) false catch Fault true))
           ($assert (try (invoke h "wrong_coordinator") false
             catch Error ($str/contains? $err/.message "requires its host coordinator")))
           (let lease (acquire_snapshot h/snapshots))

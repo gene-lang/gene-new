@@ -30,7 +30,7 @@
             ^render (fn [context session]
               ($assert ($absent? context/h))
               ($assert ($absent? context/runtime))
-              ($assert (try (context .put "workspace_root" "forged") false catch Error true))
+              ($assert (try (context .put "workspace_root" "forged") false catch Fault true))
               "Public profile prompt.")})
           (host .PluginHost:contribute "commands" {^name "profile_probe" ^doc "Check public command context."
             ^run (fn [context]

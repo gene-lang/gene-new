@@ -27,9 +27,9 @@
                ($assert ($absent? context/legacy))
                ($assert ($absent? context/extension_inputs))
                ($assert (== ($head context/round_id) Str))
-               ($assert (try (context .put "forged" true) false catch Error true))
+               ($assert (try (context .put "forged" true) false catch Fault true))
                (if (!= ($head value) List) (return {^error "facts must be a list of strings"}))
-               ($assert (try (value .push "forged") false catch Error true))
+               ($assert (try (value .push "forged") false catch Fault true))
                (for fact in value
                  (if (!= ($head fact) Str) (return {^error "facts must be strings"})))
                {^value ($map value (fn [fact] ($to_str %version ":" ($str/trim fact))))})})
@@ -39,13 +39,13 @@
                 ($assert ($absent? context/runtime))
                 ($assert ($absent? context/round))
                 ($assert (== ($head context/turn) Int))
-                ($assert (try (context .put "forged" true) false catch Error true))
+                ($assert (try (context .put "forged" true) false catch Fault true))
                 (state .put "turn" context/turn))
               ^bindings (fn [context state value] {^generation %version ^twice (fn [n] (* n 2))})
               ^commit (fn [context state value]
                 ($assert (== state/turn context/turn))
                 ($assert ($absent? value/turn))
-                ($assert (try (value .put "forged" true) false catch Error true))
+                ($assert (try (value .put "forged" true) false catch Fault true))
                 (let facts (value/outcome/extensions .get "notes/facts"))
                 (if (&& (== value/kind "done") ($present? facts))
                   (host .PluginHost:update_state {^generation %version ^facts facts
