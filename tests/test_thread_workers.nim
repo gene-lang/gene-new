@@ -391,10 +391,10 @@ suite "threaded scheduler workers":
           (var i 0)
           (while (< i 800000) (set i (+ i 1)))
           (try (await pending)
-            catch TypeError $err/where
-            catch ErrorContractViolation $err/_cause/.message
+            catch TypeFault $err/where
+            catch ContractViolation $err/_cause/.message
             catch Error $err/.message)
-        """.replace("PAYLOAD", if kind == "data": "RuntimeError" else: "message")), scope)
+        """.replace("PAYLOAD", if kind == "data": "RuntimeFault" else: "message")), scope)
         check result.strVal == (if kind == "data": "actor worker error payload does not satisfy Send"
                                 else: "Error admission")
 

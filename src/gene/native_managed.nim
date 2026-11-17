@@ -1224,7 +1224,7 @@ proc geneManagedTaskFail*(task: GeneManagedTask,
                           error: GeneManagedRoot = nil,
                           typedFallback = false): GeneManagedAck =
   ## With `typedFallback`, a typed error that fails Error admission fails the
-  ## Task with that generated TypeError instead of a message-only error.
+  ## Task with that generated TypeFault instead of a message-only error.
   if task == nil or task.domain == nil:
     raise newException(GeneError, "managed Task is nil")
   let domain = task.domain
@@ -2959,7 +2959,7 @@ proc settleCopiedResult(domain: GeneManagedDomain,
 
 proc errorFactoryFailure(scope: Scope, raised: Value,
                          message: string): ref GeneError =
-  ## A factory that raises yields a generated TypeError, which passes deferred
+  ## A factory that raises yields a generated TypeFault, which passes deferred
   ## error contracts unchanged.
   try:
     vm.raiseTypeError("native error factory", "a returned Error value",

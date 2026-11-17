@@ -60,7 +60,7 @@ suite "explicit generator declarations":
       (let a (allowed))
       (let b (denied))
       [(a .next) (try (a .close) catch CloseError $err/.message)
-       (b .next) (try (b .close) catch ErrorContractViolation $err/_cause/.message)
+       (b .next) (try (b .close) catch ContractViolation $err/_cause/.message)
        (a .has_next) (b .has_next) (a .close) (b .close)]
     """), newGlobalScope())
     check value.print == "[1 \"close\" 2 \"denied\" false false nil nil]"
@@ -243,7 +243,7 @@ suite "explicit generator declarations":
       (fn factory [Target] (fn ^^generator [] : Target (yield 1)))
       (let good (factory Stream))
       (let bad (factory Int))
-      [((good) -> $into []) (try (bad) false catch TypeError true)]
+      [((good) -> $into []) (try (bad) false catch TypeFault true)]
     """), newGlobalScope())
     check value.print == "[[1] true]"
 
@@ -273,7 +273,7 @@ suite "explicit generator declarations":
       (fn factory [] : (Stream Int Never) (raw))
       (let stream (factory))
       (stream .next)
-      (try (stream .close) false catch ErrorContractViolation true)
+      (try (stream .close) false catch ContractViolation true)
     """), newGlobalScope())
     check value.boolVal
 

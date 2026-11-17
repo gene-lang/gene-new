@@ -1077,13 +1077,13 @@ proc closeHttpPool(pool: HttpActorPool) =
 
 proc httpErrorFallbackNode(task: Value, scope: Scope): Value =
   ## Error value for the ^on_error mapper: the task's error value when the
-  ## handler failed with one, else a RuntimeError — the same value a catch
+  ## handler failed with one, else a RuntimeFault — the same value a catch
   ## clause sees for a message-only failure.
   if task.taskHasErrorValue:
     return task.taskErrorValue
   var props = initPropTable()
   props["_msg"] = newStr(task.taskErrorMsg)
-  newNode(builtInTypeHead(scope, "RuntimeError"), props = props, immutable = true)
+  newNode(builtInTypeHead(scope, "RuntimeFault"), props = props, immutable = true)
 
 # --- the event loop ----------------------------------------------------------
 

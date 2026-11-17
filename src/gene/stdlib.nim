@@ -10512,7 +10512,7 @@ proc biIoWriteAll(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     raise newException(GeneError, "io/write_all expects a writer and Bytes")
   let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if currentEventLane() != schedulerForScope(scope).rootLane:
-    raiseValueSemanticError("RuntimeLaneError", "io/write_all requires the root lane")
+    raiseValueSemanticError("RuntimeLaneFault", "io/write_all requires the root lane")
   let app = if scope == nil: currentApplication() else: scope.application()
   result = applyCall(app.ioWriteAllHelper, args, NamedArgs(), scope)
   if result.kind != vkTask:
@@ -10525,7 +10525,7 @@ proc biIoRetainCleanup(args: openArray[Value],
     raise newException(GeneError, "io/_retain_cleanup expects one Task")
   let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if scope == nil or currentEventLane() != schedulerForScope(scope).rootLane:
-    raiseValueSemanticError("RuntimeLaneError",
+    raiseValueSemanticError("RuntimeLaneFault",
       "io/_retain_cleanup requires the root lane")
   scope.registerIoCleanupTask(args[0])
   args[0]
@@ -10535,7 +10535,7 @@ proc biIoCopy(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     raise newException(GeneError, "io/copy expects a reader and writer")
   let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
   if currentEventLane() != schedulerForScope(scope).rootLane:
-    raiseValueSemanticError("RuntimeLaneError", "io/copy requires the root lane")
+    raiseValueSemanticError("RuntimeLaneFault", "io/copy requires the root lane")
   let app = if scope == nil: currentApplication() else: scope.application()
   let named = if call == nil: NamedArgs()
               else: NamedArgs(names: call[].namedNames,

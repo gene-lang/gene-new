@@ -344,13 +344,13 @@ proc raiseMainReturnTypeError(scope: Scope, value: Value) =
   props["where"] = newStr("main return")
   props["expected"] = newStr("Nil or Int")
   props["actual"] = newStr($value.kind)
-  var head = newSym("TypeError")
+  var head = newSym("TypeFault")
   var typeError: Value
-  if scope.lookupOptional("TypeError", typeError) and typeError.kind == vkType:
+  if scope.lookupOptional("TypeFault", typeError) and typeError.kind == vkType:
     head = typeError
   var e: ref GeneError
   new(e)
-  e.msg = "TypeError: " & message
+  e.msg = "TypeFault: " & message
   e.errVal = newNode(head, props = props)
   e.hasErrVal = true
   raise e
@@ -362,13 +362,13 @@ proc raiseMainReturnRangeError(scope: Scope) =
   props["where"] = newStr("main return")
   props["expected"] = newStr("int64-range Int")
   props["actual"] = newStr("Int")
-  var head = newSym("TypeError")
+  var head = newSym("TypeFault")
   var typeError: Value
-  if scope.lookupOptional("TypeError", typeError) and typeError.kind == vkType:
+  if scope.lookupOptional("TypeFault", typeError) and typeError.kind == vkType:
     head = typeError
   var e: ref GeneError
   new(e)
-  e.msg = "TypeError: " & message
+  e.msg = "TypeFault: " & message
   e.errVal = newNode(head, props = props)
   e.hasErrVal = true
   raise e

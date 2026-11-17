@@ -136,7 +136,7 @@ type
     opNativeFast2
     opNativeFastConst
     opMatch           # pop target, run the first matching branch in a child scope
-    opMatchBind       # pop target, destructure against a pattern (or MatchError)
+    opMatchBind       # pop target, destructure against a pattern (or MatchFault)
     opMatchBindReplace # pop target, destructure and replace existing loop binds
     opForEach         # pop a collection, run a for-loop body per item
     opForInlineBegin  # pop a collection; push its snapshot and index for an inlined for

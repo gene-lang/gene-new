@@ -1055,7 +1055,7 @@ proc moduleIdentityFor*(app: Application, absPath: string): string
 
 proc builtinTypeBinding(scope: Scope, name: string, value: var Value): bool =
   ## Resolve a standard-library type the VM raises or checks against (`Error`,
-  ## `TypeError`, `Send`, ...). These come from the `gene` scope rather than the
+  ## `TypeFault`, `Send`, ...). These come from the `gene` scope rather than the
   ## lexical chain: nothing is pre-bound bare (design §2.1), and a local binding
   ## of the same name must not change which type an internal raise constructs.
   value = builtinBinding(scope, name)
@@ -2507,7 +2507,7 @@ proc rejectSyntaxSend(callee: Value, scope: Scope) {.noreturn.} =
 
 proc rejectMessageCall(callee: Value, scope: Scope) {.noreturn.} =
   ## A dot send is the only way to invoke a message (design §3): a message identity is
-  ## not callable in head position, so `(P:m x)` is a CallKindError. Qualified
+  ## not callable in head position, so `(P:m x)` is a CallKindFault. Qualified
   ## sends resolve the impl through `opResolveQualifiedMessage`, so an ordinary
   ## call never legitimately holds a message value here. The diagnostic names
   ## the fix, because the head-position spelling is the habit being redirected.
@@ -2930,7 +2930,7 @@ proc endKeyOperation() =
 
 proc invokeValueEqual(witness, left, right: Value): bool =
   if currentEventLane() != currentScheduler().rootLane:
-    raiseValueSemanticError("RuntimeLaneError",
+    raiseValueSemanticError("RuntimeLaneFault",
       "value equality witness requires the root lane")
   let key: SemanticPair =
     if left.bits <= right.bits: (left.bits, right.bits)
@@ -2951,7 +2951,7 @@ proc invokeValueEqual(witness, left, right: Value): bool =
 
 proc invokeValueHash(witness, value: Value): Hash =
   if currentEventLane() != currentScheduler().rootLane:
-    raiseValueSemanticError("RuntimeLaneError",
+    raiseValueSemanticError("RuntimeLaneFault",
       "value hash witness requires the root lane")
   for active in activeSemanticHashes:
     if active == value.bits:
@@ -3184,14 +3184,14 @@ proc checkedOrderResult(answer: Value): int =
   if answer.kind != vkInt or
       intCompare(answer, newInt(-1)) < 0 or
       intCompare(answer, newInt(1)) > 0:
-    raiseValueSemanticError("OrderError",
+    raiseValueSemanticError("OrderFault",
       "comparator must return exactly -1, 0, or 1")
   int(answer.intVal)
 
 proc invokeOrderCallback(callback: Value, args: openArray[Value],
                          name: string, scope: Scope = nil): Value =
   if currentEventLane() != currentScheduler().rootLane:
-    raiseValueSemanticError("RuntimeLaneError", name & " requires the root lane")
+    raiseValueSemanticError("RuntimeLaneFault", name & " requires the root lane")
   inc semanticWitnessDepth
   defer: dec semanticWitnessDepth
   applyCall(callback, args, NamedArgs(), scope)
@@ -3219,12 +3219,12 @@ proc orderCompare(left, right: Value, strictNumeric: bool): int =
     return intCompare(left, right)
   if left.isNumber and right.isNumber:
     if strictNumeric and left.kind != right.kind:
-      raiseValueSemanticError("OrderError",
+      raiseValueSemanticError("OrderFault",
         "default ordering requires one numeric type")
     let a = left.toFloat
     let b = right.toFloat
     if a != a or b != b:
-      raiseValueSemanticError("OrderError", "NaN has no default ordering")
+      raiseValueSemanticError("OrderFault", "NaN has no default ordering")
     return cmp(a, b)
   if left.kind == vkString and right.kind == vkString:
     # Valid UTF-8 byte order preserves Unicode scalar order.
@@ -3241,7 +3241,7 @@ proc orderCompare(left, right: Value, strictNumeric: bool): int =
     let witness = left.head.readyCoreWitness(cvCompare)
     if witness.kind != vkNil:
       return invokeValueOrder(witness, left, right)
-  raiseValueSemanticError("OrderError",
+  raiseValueSemanticError("OrderFault",
     "values have no common default ordering: " & $left.kind & " and " &
     $right.kind)
 
@@ -5931,7 +5931,7 @@ proc biStreamTryNext(args: openArray[Value], call: ptr NativeCall): Value {.nimc
       else:
         var props = initPropTable()
         props["_msg"] = newStr(e.msg)
-        newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
+        newNode(builtInTypeHead(scope, "RuntimeFault"), props = props)
     return tryNextError(scope, errVal)
   try:
     let item = checkedStreamNext(args[0], "Stream/try_next item")
@@ -5942,7 +5942,7 @@ proc biStreamTryNext(args: openArray[Value], call: ptr NativeCall): Value {.nimc
       else:
         var props = initPropTable()
         props["_msg"] = newStr(e.msg)
-        newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
+        newNode(builtInTypeHead(scope, "RuntimeFault"), props = props)
     tryNextError(scope, errVal)
 
 proc copyItems(items: openArray[Value]): seq[Value] =
@@ -6617,7 +6617,7 @@ proc dispatchGenericForward(name: string, receiver: Value,
   ## forward to its own implementation with the send convention — the
   ## resolved impl is called with the receiver as its first argument, exactly
   ## as the send opcode does after `resolveQualifiedSend`. A receiver whose
-  ## type declares no such message raises the same recoverable MessageError
+  ## type declares no such message raises the same recoverable MessageFault
   ## the send path raises (§3), so `$map x f` and `(x .map f)` can never
   ## disagree about a missing method.
   let recvType = receiver.receiverType
@@ -7094,7 +7094,7 @@ proc readIndex(items: openArray[Value], rawIndex: int64): Value =
 
 proc invokeIndexedWitness(witness: Value, args: openArray[Value], name: string): Value =
   if currentEventLane() != currentScheduler().rootLane:
-    raiseValueSemanticError("RuntimeLaneError", name & " requires the root lane")
+    raiseValueSemanticError("RuntimeLaneFault", name & " requires the root lane")
   let key: ActiveIndexOperation = (
     receiver: args[0].bits,
     index: if args.len > 1: args[1].bits else: 0'u64,
@@ -9974,9 +9974,9 @@ proc biRuntimeRequireRootLane(args: openArray[Value],
     let message = "operation requires the scheduler root lane"
     var props = initPropTable()
     props["_msg"] = newStr(message)
-    var head = newSym("RuntimeLaneError")
+    var head = newSym("RuntimeLaneFault")
     var runtimeLaneError: Value
-    if builtinTypeBinding(scope, "RuntimeLaneError", runtimeLaneError) and
+    if builtinTypeBinding(scope, "RuntimeLaneFault", runtimeLaneError) and
         runtimeLaneError.kind == vkType:
       head = runtimeLaneError
     var e: ref GeneError
@@ -10455,7 +10455,7 @@ proc markImplValuesShared(impl: ProtocolImpl) =
 
 proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
-  ## singleton marker protocols/types (`Error`, `Send`, `TypeError`, ...). One of
+  ## singleton marker protocols/types (`Error`, `Send`, `TypeFault`, ...). One of
   ## these is shared per application (see `builtinsScope`) so built-in identity is
   ## stable across modules.
   result = newScope(application = app)
@@ -10583,45 +10583,45 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
       "(fn put_at [self index : Int value : Any] : Any nil)",
       @["self", "index", "value"])], scope = result)
   result.define("IndexWrite", indexWrite)
-  let runtimeError = newType("RuntimeError", faultRoot,
+  let runtimeError = newType("RuntimeFault", faultRoot,
     @[],
     @[], result)
-  result.define("RuntimeError", runtimeError)
-  let runtimeLaneError = newType("RuntimeLaneError", runtimeError,
+  result.define("RuntimeFault", runtimeError)
+  let runtimeLaneError = newType("RuntimeLaneFault", runtimeError,
                                  @[], @[], result)
-  result.define("RuntimeLaneError", runtimeLaneError)
+  result.define("RuntimeLaneFault", runtimeLaneError)
   for name in ["ValueProtocolPending", "ValueNotHashable",
-               "ValueOperationReentry", "OrderError"]:
+               "ValueOperationReentry", "OrderFault"]:
     result.define(name, newType(name, runtimeError, @[], @[], result))
   var typeErrorFields: seq[TypeField]
   for name in ["where", "expected", "actual"]:
     typeErrorFields.add TypeField(name: name, optional: false,
                                   typeExpr: newSym("Str"), scope: result)
-  let typeError = newType("TypeError", faultRoot, typeErrorFields,
+  let typeError = newType("TypeFault", faultRoot, typeErrorFields,
                           @[], result)
-  result.define("TypeError", typeError)
-  let contractViolation = newType("ErrorContractViolation", faultRoot,
+  result.define("TypeFault", typeError)
+  let contractViolation = newType("ContractViolation", faultRoot,
     @[TypeField(name: "where", typeExpr: newSym("Str"), scope: result),
       TypeField(name: "expected", typeExpr: newSym("List"), scope: result),
       TypeField(name: "actual", typeExpr: newSym("Any"), scope: result)],
     @[], result)
-  result.define("ErrorContractViolation", contractViolation)
+  result.define("ContractViolation", contractViolation)
   # A send that resolves to an Fexpr is a distinct dynamic call-kind
-  # mismatch. It inherits TypeError's diagnostic fields and Error impl so
+  # mismatch. It inherits TypeFault's diagnostic fields and Error impl so
   # callers can catch it specifically without losing ordinary type matching.
-  let callKindError = newType("CallKindError", typeError, @[], @[], result)
-  result.define("CallKindError", callKindError)
+  let callKindError = newType("CallKindFault", typeError, @[], @[], result)
+  result.define("CallKindFault", callKindError)
   # A `~` send whose message resolves to no type-direct message or visible
-  # protocol impl on the receiver is a recoverable MessageError (design §3/§9,
-  # design §3/§9). It inherits TypeError so `catch TypeError` still
+  # protocol impl on the receiver is a recoverable MessageFault (design §3/§9,
+  # design §3/§9). It inherits TypeFault so `catch TypeFault` still
   # matches, and carries where/receiver_type/message diagnostics.
-  let messageError = newType("MessageError", typeError, @[], @[], result)
-  result.define("MessageError", messageError)
-  let refError = newType("RefError", faultRoot,
+  let messageError = newType("MessageFault", typeError, @[], @[], result)
+  result.define("MessageFault", messageError)
+  let refError = newType("RefFault", faultRoot,
                          @[TypeField(name: "name", optional: false,
                                      typeExpr: newSym("Str"), scope: result)],
                          @[], result)
-  result.define("RefError", refError)
+  result.define("RefFault", refError)
   for name in ["UnknownRef", "RefNotResolved", "RefAlreadyResolved",
                "CircularRefResolution", "InvalidRefDefinition"]:
     result.define(name, newType(name, refError, @[], @[], result))
@@ -10633,10 +10633,10 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     assert spec[0] in LeafValueKinds
     result.defineBuiltinType(spec[0], spec[1], newSeq[(string, Value)]())
   result.defineBuiltinType(vkString, "Str", strReceiverNatives())
-  let matchError = newType("MatchError", faultRoot,
+  let matchError = newType("MatchFault", faultRoot,
                            @[],
                            @[], result)
-  result.define("MatchError", matchError)
+  result.define("MatchFault", matchError)
   let selectorMissing = newType("PathMissing", matchError,
                                 @[
                                   TypeField(name: "segment", optional: false,
@@ -10889,7 +10889,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                         acceptsNamed = false))
   # The generic collection operations (design §6.2) are call-fns so the
   # dispatcher can reach the send's scope: a receiver whose type declares no
-  # such method raises the send path's recoverable MessageError, never a kind
+  # such method raises the send path's recoverable MessageFault, never a kind
   # error, and a user type declaring the message is forwarded to. One
   # process-wide instance per op serves the root binding, the List/Map/Stream
   # message tables, and the stream namespace at once.
@@ -14262,22 +14262,22 @@ proc namespaceIsOwnedByScope(target: Value, scope: Scope): bool =
 proc defineNamespaceMember(target, nameValue, fnValue: Value,
                            scope: Scope): Value =
   if target.kind != vkNamespace:
-    raiseValueSemanticError("TypeError",
+    raiseValueSemanticError("TypeFault",
       "namespace extension target must be a Namespace")
   if nameValue.kind notin {vkString, vkSymbol}:
-    raiseValueSemanticError("TypeError",
+    raiseValueSemanticError("TypeFault",
       "namespace extension name must be a Str or Sym")
   let name = keySegment("namespace extension", nameValue)
   validateBindingName(name)
   if fnValue.kind != vkFunction:
-    raiseValueSemanticError("TypeError",
+    raiseValueSemanticError("TypeFault",
       "namespace extension value must be a Function")
   if not namespaceIsOwnedByScope(target, scope):
-    raiseValueSemanticError("RuntimeError",
+    raiseValueSemanticError("RuntimeFault",
       "namespace extension is not authorized for namespace '" &
       target.nsName & "'")
   if currentEventLane() != target.nsOwnerLane:
-    raiseValueSemanticError("RuntimeLaneError",
+    raiseValueSemanticError("RuntimeLaneFault",
       "namespace extension must run on the namespace owner lane")
   fnValue.setFnName(name)
   target.nsScope.define(name, fnValue)
@@ -17206,7 +17206,7 @@ proc taskOutcomeValue(scope: Scope, name: string, value = NIL): Value =
 proc runtimeErrorValue(scope: Scope, message: string): Value =
   var props = initPropTable()
   props["_msg"] = newStr(message)
-  newNode(builtInTypeHead(scope, "RuntimeError"), props = props,
+  newNode(builtInTypeHead(scope, "RuntimeFault"), props = props,
           immutable = true)
 
 proc taskJoinOutcome(task: Value, scope: Scope): Value =
@@ -17222,7 +17222,7 @@ proc taskJoinOutcome(task: Value, scope: Scope): Value =
       else: runtimeErrorValue(scope, payload.errorMessage)
     try:
       errorValue = admitErrorValue(errorValue, taskBoundaryScopeOr(task, scope))
-      # A message-only native failure has now become an ordinary RuntimeError;
+      # A message-only native failure has now become an ordinary RuntimeFault;
       # it is subject to the same deferred row as an originally typed payload.
       checkTaskError(task, true, errorValue)
     except GeneError as boundaryError:
@@ -17268,12 +17268,12 @@ proc biTaskDone(args: openArray[Value]): Value {.nimcall.} =
 proc raiseMatchError(scope: Scope, message: string) =
   var props = initPropTable()
   props["_msg"] = newStr(message)
-  var head = newSym("MatchError")
+  var head = newSym("MatchFault")
   var matchError: Value
-  if builtinTypeBinding(scope, "MatchError", matchError) and
+  if builtinTypeBinding(scope, "MatchFault", matchError) and
       matchError.kind == vkType:
     head = matchError
-  var e: ref MatchError
+  var e: ref MatchFault
   new(e)
   e.msg = message
   e.errVal = newNode(head, props = props)
@@ -17832,7 +17832,7 @@ proc resolveProtocolMessageRaw(scope: Scope, message, receiver: Value): Value =
   let recvType = receiver.receiverType
   if recvType.kind != vkType:
     # A receiver with no nominal type carries no impl, but the send still failed
-    # for the ordinary reason, so it stays a recoverable MessageError (§9).
+    # for the ordinary reason, so it stays a recoverable MessageFault (§9).
     raiseMessageError(message.protocolMessageName, declarationKind(receiver),
                       scope, protocol = protocol.protocolName, missingImpl = true)
   result = scope.tryResolveProtocolMessage(recvType, message)
@@ -17842,7 +17842,7 @@ proc resolveProtocolMessageRaw(scope: Scope, message, receiver: Value): Value =
         sandboxGenerationPrepared(home.sandboxGenerationId):
       result = home.tryResolveProtocolMessage(recvType, message)
   if result.kind == vkNil:
-    # A qualified send with no visible impl is a recoverable MessageError (§9).
+    # A qualified send with no visible impl is a recoverable MessageFault (§9).
     raiseMessageError(message.protocolMessageName, recvType.typeName, scope,
                       protocol = protocol.protocolName, missingImpl = true,
                       protocolValue = protocol, receiverValue = recvType)
@@ -22624,7 +22624,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               callee = builtinReceiverMessage(scope, receiver, inst[].name)
             if callee.kind == vkNil:
               # `~` dispatches only (design §3). There is no lexical fallback — a
-              # name that resolves to no type-direct message is a MessageError,
+              # name that resolves to no type-direct message is a MessageFault,
               # with a hint when it names a lexical callable (likely a call, not a
               # send) or a same-named protocol message (needs qualification).
               var lexical: Value
@@ -24485,7 +24485,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             else:
               var props = initPropTable()
               props["_msg"] = newStr(err.msg)
-              newNode(builtInTypeHead(h.scope, "RuntimeError"), props = props)
+              newNode(builtInTypeHead(h.scope, "RuntimeFault"), props = props)
           var caught = false
           for cl in h.tp.catches:
             var binds: Table[string, Value]
@@ -26938,9 +26938,9 @@ proc raiseTypeError*(where, expected: string, value: Value, scope: Scope,
   props["expected"] = newStr(expected)
   props["actual"] = newStr(actual)
   props["actual_value"] = value
-  var head = newSym("TypeError")
+  var head = newSym("TypeFault")
   var typeError: Value
-  if builtinTypeBinding(scope, "TypeError", typeError) and
+  if builtinTypeBinding(scope, "TypeFault", typeError) and
       typeError.kind == vkType:
     head = typeError
   var e: ref GeneError
@@ -26973,9 +26973,9 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
   props["expected"] = newStr(expected)
   props["actual"] = newStr(actual)
   props["actual_value"] = value
-  var head = newSym("CallKindError")
+  var head = newSym("CallKindFault")
   var callKindError: Value
-  if builtinTypeBinding(scope, "CallKindError", callKindError) and
+  if builtinTypeBinding(scope, "CallKindFault", callKindError) and
       callKindError.kind == vkType:
     head = callKindError
   var e: ref GeneError
@@ -27083,7 +27083,7 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
                        nodeViewHint = false,
                        familyHint = "") {.noreturn.} =
   ## Design §3/§9: a `~` send that resolves to no message on the
-  ## receiver's type. Recoverable MessageError (a TypeError subtype).
+  ## receiver's type. Recoverable MessageFault (a TypeFault subtype).
   ## `lexicalHint` marks the case where the message name also names a lexical
   ## callable — a signpost that a function call, not a send, was likely meant.
   ## `missingImpl` distinguishes a known protocol message with no visible impl
@@ -27120,9 +27120,9 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
   props["receiver_type"] = newStr(receiverType)
   if protocol.len > 0:
     props["protocol"] = newStr(protocol)
-  var head = newSym("MessageError")
+  var head = newSym("MessageFault")
   var messageError: Value
-  if builtinTypeBinding(scope, "MessageError", messageError) and
+  if builtinTypeBinding(scope, "MessageFault", messageError) and
       messageError.kind == vkType:
     head = messageError
   var e: ref GeneError

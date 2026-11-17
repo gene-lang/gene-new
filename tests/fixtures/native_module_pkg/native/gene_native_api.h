@@ -90,9 +90,9 @@ typedef void (*GeneTaskCancelCallback)(void *user_context);
  * task_fail_copy queues a failure like task_submit_copy queues a result. The
  * root lane calls error_factory (an owning ID retained on the root lane) with
  * the message and the copied detail (NULL means nil) and fails the Task with
- * the Error it returns; factory 0 fails it with a RuntimeError.
+ * the Error it returns; factory 0 fails it with a RuntimeFault.
  * Error factories cannot suspend or drive the scheduler; attempting to do
- * so fails their Task with a generated TypeError.
+ * so fails their Task with a generated TypeFault.
  * task_retire_queued queues retirement outside the queue budgets; call it only
  * after the job has physically ended. With the unattached-submit bit, both
  * entries and task_submit_copy are also admitted from threads that never

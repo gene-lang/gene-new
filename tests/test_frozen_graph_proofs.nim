@@ -13,7 +13,7 @@ suite "frozen graph proof eligibility":
     check value("($thaw ($freeze [1 2]))").frozenGraphProofs == 0
   test "frozen types and typed errors retain full checks":
     check value("(type T) ($freeze [T])").frozenGraphProofs == 0
-    check value("($freeze [(RuntimeError ^_msg \"x\")])").frozenGraphProofs == 0
+    check value("($freeze [(RuntimeFault ^_msg \"x\")])").frozenGraphProofs == 0
   test "nodes and their hidden runtime evidence are not certified":
     let node = value("($freeze (quote (data ^x [1 2])))")
     check node.frozenGraphProofs == 0

@@ -14,7 +14,7 @@ suite "match — scalars and selection":
     ck "(match 5 (when 1 \"one\") (else \"other\"))", "\"other\""
   test "non-exhaustive match needs an explicit opt-out":
     expect GeneError: discard compileSource("(match 9 (when 1 \"one\"))")
-    expect MatchError:
+    expect MatchFault:
       discard runStr("(match 9 ^!exhaustive (when 1 \"one\"))")
     ck "(match 1 ^!exhaustive (when 1 \"one\"))", "\"one\""
     ck "(match ^!exhaustive 1 (when 1 \"one\"))", "\"one\""
@@ -66,11 +66,11 @@ suite "match — typed patterns":
   test "typed patterns adapt streams lazily":
     ck "(try (match ($to_stream [\"bad\"]) ^!exhaustive " &
        "       (when (s : (Stream Int Never)) (s .next))) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"Stream/next item\""
   test "catch clauses match error types":
     ck "(try (fn f [x : Int] x) (f \"bad\") " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"parameter 'x'\""
   test "typed patterns require exactly one type":
     expect GeneError: discard runStr("(match 1 (when (x :) x))")
@@ -109,8 +109,8 @@ suite "destructuring — var":
     ck "(var [first rest...] [1 2 3 4]) rest", "[2 3 4]"
   test "map destructuring":
     ck "(var {^name n ^age a} {^name \"Ada\" ^age 36}) (+ a 0)", "36"
-  test "destructuring failure raises MatchError":
-    expect MatchError: discard runStr("(var [a b c] [1 2])")
+  test "destructuring failure raises MatchFault":
+    expect MatchFault: discard runStr("(var [a b c] [1 2])")
 
 suite "loops — while":
   test "while accumulates until the condition is false":
@@ -192,7 +192,7 @@ suite "loops — for":
     ck "(var hits ($cell 0)) " &
        "(var source ($map ($to_stream [1 2 3]) " &
        "  (fn [x] (hits .update (fn [n] (+ n 1))) x))) " &
-       "(try (for [a b] in source nil) catch MatchError nil) " &
+       "(try (for [a b] in source nil) catch MatchFault nil) " &
        "[(hits .get) (source .has_next)]",
        "[1 false]"
   test "for closes stream on body error":

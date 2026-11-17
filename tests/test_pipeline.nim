@@ -190,7 +190,7 @@ suite "pipeline — prepared lazy invocation":
     """, "[[1 2] [1 2] [2 3]]"
     pipelineCheck """
       (type Bad ^props {} (message to_stream [] [1]))
-      (try ((Bad) => + 1) catch TypeError "bad conversion")
+      (try ((Bad) => + 1) catch TypeFault "bad conversion")
     """, "\"bad conversion\""
     pipelineCheck """
       (try ({^a 1} => + 1) catch Error "pairs required")
@@ -231,10 +231,10 @@ suite "pipeline — prepared lazy invocation":
       (fn ^^generator rows []
         (try (yield 1) (yield 2)
          ensure (log .push "close")
-                (fail (RuntimeError ^_msg "cleanup"))))
-      (fn stop [x] (fail (RuntimeError ^_msg "callback")))
+                (fail (RuntimeFault ^_msg "cleanup"))))
+      (fn stop [x] (fail (RuntimeFault ^_msg "callback")))
       (let message (try ((rows) -> $each stop)
-        catch RuntimeError $err/.message))
+        catch RuntimeFault $err/.message))
       [message log]
     """, "[\"callback\" [\"close\"]]"
 
@@ -300,7 +300,7 @@ suite "pipeline — prepared lazy invocation":
     pipelineCheck """
       (fn integer [x : Int] : Int x)
       (let pending (["bad"] => integer))
-      [(try (pending .next) catch TypeError "wrong item")
+      [(try (pending .next) catch TypeFault "wrong item")
        (pending .has_next)]
     """, "[\"wrong item\" false]"
 
@@ -377,13 +377,13 @@ suite "pipeline — prepared lazy invocation":
   test "take detaches before a downstream failure on the limiting item":
     pipelineCheck """
       (let source ($to_stream [1 2 3]))
-      (fn stop [x] (if (== x 2) (fail (RuntimeError ^_msg "stop")) x))
+      (fn stop [x] (if (== x 2) (fail (RuntimeFault ^_msg "stop")) x))
       (try (source -> $take 2 => stop -> $into []) catch Error nil)
       (source .next)
     """, "3"
     pipelineCheck """
       (let source ($to_stream [1 2 3]))
-      (fn stop [x] (fail (RuntimeError ^_msg "stop")))
+      (fn stop [x] (fail (RuntimeFault ^_msg "stop")))
       (try (source -> $take 2 => stop -> $into []) catch Error nil)
       (source .has_next)
     """, "false"
@@ -416,7 +416,7 @@ suite "pipeline — prepared lazy invocation":
     try:
       discard run(compileSource("""
         (fn broken [x]
-          (fail (RuntimeError ^_msg "broken")))
+          (fail (RuntimeFault ^_msg "broken")))
         ([1] => broken -> $into [])
       """, "pipeline-location.gene"), newGlobalScope())
       check false

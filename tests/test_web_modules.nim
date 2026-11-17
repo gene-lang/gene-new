@@ -509,7 +509,7 @@ suite "web namespace values":
         [(typed a b)
          (any_equal a b)
          (any_equal a a)
-         (try (take_ns (array_as_any)) catch TypeError false)])
+         (try (take_ns (array_as_any)) catch TypeFault false)])
     """)
     discard buildWebModule(root / "namespace_identity.gene", root / "out")
     writeFile(root / "out" / "check.mjs", """

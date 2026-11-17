@@ -42,11 +42,11 @@ suite "packed numeric buffers":
 
   test "invalid writes preserve the old value and remain recoverable":
     check evalBuffer("(var b ($buffer U8 [7])) " &
-      "(try (b .set 0 256) catch TypeError nil) (b .to_list)").print() == "[7]"
+      "(try (b .set 0 256) catch TypeFault nil) (b .to_list)").print() == "[7]"
     check evalBuffer("(var b ($buffer F32 [7.0])) " &
-      "(try (b .set 0 1e39) catch TypeError nil) (b .to_list)").print() == "[7.0]"
+      "(try (b .set 0 1e39) catch TypeFault nil) (b .to_list)").print() == "[7.0]"
     check evalBuffer("(var b ($buffer U16 [7])) " &
-      "(try (b .set 0 -1) catch TypeError nil) (b .to_list)").print() == "[7]"
+      "(try (b .set 0 -1) catch TypeFault nil) (b .to_list)").print() == "[7]"
 
   test "alias identity, negative indices, and missing reads are unchanged":
     check evalBuffer("(var b ($buffer I16 [1 2 3])) (let shared b) " &

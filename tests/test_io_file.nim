@@ -530,8 +530,8 @@ when compileOption("threads") and defined(posix):
           (scope
             ($os/exec_stream_async "sh"
               "-c" "sleep 2; printf x" ^stdout_pipe writer)
-            (fail (RuntimeError ^_msg "stop")))
-          catch RuntimeError true))
+            (fail (RuntimeFault ^_msg "stop")))
+          catch RuntimeFault true))
         (let eof (await (reader .AsyncReader:read 16)))
         (reader .IoResource:close)
         (await (reader .IoResource:wait_closed))
@@ -640,7 +640,7 @@ when compileOption("threads") and defined(posix):
         (let rejected (try
           ($os/exec_stream_async "true"
             ^stdout_pipe writer ^stderr_pipe 1)
-          false catch TypeError true))
+          false catch TypeFault true))
         (await (writer .IoResource:wait_closed))
         (let eof (await (reader .AsyncReader:read 1)))
         (reader .IoResource:close)

@@ -24,7 +24,7 @@ proc raiseAssertion(message: string, call: ptr NativeCall,
     props["actual"] = actual
     props["expected"] = expected
   let error = newException(GeneError, message)
-  error.errVal = newNode(builtInTypeHead(scope, "AssertionError"), props = props)
+  error.errVal = newNode(builtInTypeHead(scope, "AssertionFault"), props = props)
   error.hasErrVal = true
   error.attachSourceLoc(call.loc)
   raise error
@@ -92,11 +92,11 @@ proc testDiagnostic(error: ref GeneError, phase: string,
   let value = if error.hasErrVal: error.errVal
               else: runtimeErrorValue(scope, error.msg)
   props["error_type"] = if value.kind == vkNode: value.head
-                        else: builtInTypeHead(scope, "RuntimeError")
+                        else: builtInTypeHead(scope, "RuntimeFault")
   props["message"] = newStr(errorDisplayMessage(error, scope))
   props["phase"] = newStr(phase)
   props["assertion"] = newBool(matchesTypeExpr(
-    builtInTypeHead(scope, "AssertionError"), value, scope))
+    builtInTypeHead(scope, "AssertionFault"), value, scope))
   props["location"] = testLocationValue(
     if error.loc.hasSourceLoc: error.loc else: fallback)
   if value.kind == vkNode:
@@ -421,12 +421,12 @@ proc biTestRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 
 proc registerTestingNamespace(root: Scope) =
   let errorRoot = root.vars["Error"]
-  let assertionType = newType("AssertionError", root.application().faultType,
+  let assertionType = newType("AssertionFault", root.application().faultType,
     @[TypeField(name: "has_comparison", typeExpr: newSym("Bool"), optional: true, scope: root),
       TypeField(name: "actual", typeExpr: newSym("Any"), optional: true, scope: root),
       TypeField(name: "expected", typeExpr: newSym("Any"), optional: true, scope: root)],
     @[], root)
-  root.define("AssertionError", assertionType)
+  root.define("AssertionFault", assertionType)
   var fields: seq[TypeField]
   for name in ["passed", "failed", "errors", "skipped", "exit_code"]:
     fields.add TypeField(name: name, typeExpr: newSym("Int"), scope: root)
@@ -436,7 +436,7 @@ proc registerTestingNamespace(root: Scope) =
   root.define("TestResult", resultType)
   root.define("assert", builtinNativeCallFn("assert", biAssert, acceptsNamed = false))
   let ns = newScope(root)
-  ns.define("AssertionError", assertionType)
+  ns.define("AssertionFault", assertionType)
   ns.define("TestResult", resultType)
   ns.define("assert_equal", builtinNativeCallFn("test/assert_equal", biAssertEqual,
                                            acceptsNamed = false))

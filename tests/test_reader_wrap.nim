@@ -96,7 +96,7 @@ suite "execution — #@ is an ordinary call":
       (fn identity [x] x)
       (fn defaulted [x : Int = #@twice 3] x)
       [(+ 1 #@twice 20) (defaulted)
-       (try #@twice "bad" catch TypeError "rejected")
+       (try #@twice "bad" catch TypeFault "rejected")
        #@identity nil #@identity nil
        #@quote (unbound syntax)]
     """) == "[41 6 \"rejected\" nil nil (unbound syntax)]"

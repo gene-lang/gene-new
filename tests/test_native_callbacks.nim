@@ -69,7 +69,7 @@ suite "native synchronous callback boundary":
     expect GeneError:
       discard callbackEval("(visit 7)")
     check callbackEval("""
-      (try (visit (fn [value] "wrong")) false catch TypeError true)
+      (try (visit (fn [value] "wrong")) false catch TypeFault true)
     """) == "true"
     check callbacksReturned == 1
 
@@ -86,7 +86,7 @@ suite "native synchronous callback boundary":
     check callbackEval("""
       (fn outer [] ^errors []
         (visit (fn [value] (let wrong : Int "bad") true)))
-      (try (outer) false catch TypeError true)
+      (try (outer) false catch TypeFault true)
     """) == "true"
 
   test "callback execution retains the enclosing deadline":
@@ -241,8 +241,8 @@ suite "SQLite synchronous native callbacks":
         (let count (visit_text_rows db "select 1 union all select 2"
           (fn [names values] false)))
         (let failed (try (visit_text_rows db "select 1"
-          (fn [names values] (fail (AssertionError ^_msg "original"))))
-          catch AssertionError $err/.message))
+          (fn [names values] (fail (AssertionFault ^_msg "original"))))
+          catch AssertionFault $err/.message))
         [count failed]
       ensure (db .Db:close))
     """) == "[1 \"original\"]"

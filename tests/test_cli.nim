@@ -1108,19 +1108,19 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
       check "CURSES-WRAP:" in output
       check "\e[?1049l" in output
 
-  test "invalid main return is a boundary TypeError":
+  test "invalid main return is a boundary TypeFault":
     let badMain = writeCliProgram("bad_main.gene", "(fn main [] \"bad\")")
     let ran = runGene(["run", badMain])
     check ran.exitCode == 1
-    check "TypeError" in ran.output
+    check "TypeFault" in ran.output
     check "main return expected Nil or Int" in ran.output
 
-  test "oversized main return is a boundary TypeError":
+  test "oversized main return is a boundary TypeFault":
     let bigMain = writeCliProgram("big_main.gene",
       "(fn main [] 9223372036854775808)")
     let ran = runGene(["run", bigMain])
     check ran.exitCode == 1
-    check "TypeError" in ran.output
+    check "TypeFault" in ran.output
     check "main return Int must fit in int64" in ran.output
 
 suite "cli — gene eval":
@@ -1823,7 +1823,7 @@ suite "cli — gene parse/fmt/compile":
       checkpoint executed.output
       check executed.exitCode == 0
       check executed.output.strip.splitLines ==
-        @["<ADA", "TypeError", "TypeError"]
+        @["<ADA", "TypeFault", "TypeFault"]
 
   test "file runtime errors include source location and snippet":
     let path = writeCliProgram("located_runtime_error.gene",

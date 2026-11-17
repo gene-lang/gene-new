@@ -69,11 +69,11 @@ proc geneFfiNativeError(ctx: ptr AotContext, status: cint, where, expected: cstr
       except GeneError as error:
         ctx.error = error
     elif status == 3:
-      ctx.error = nativeRuntimeError(ctx.scope, "RuntimeError",
+      ctx.error = nativeRuntimeError(ctx.scope, "RuntimeFault",
         "null " & $where & " has no field '" & $expected & "'")
     else:
       ctx.error = nativeRuntimeError(ctx.scope,
-        if status == 6: "OrderError" else: "RuntimeError", $where)
+        if status == 6: "OrderFault" else: "RuntimeFault", $where)
     var trace: seq[Value]
     if frames != nil:
       for i in 0 ..< int(frameCount):

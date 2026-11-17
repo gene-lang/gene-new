@@ -18,7 +18,7 @@ suite "typed node push checks only the new item when that is exact":
     fastCk """
       (type B ^props {^xs (List Int)} ^body [Int...])
       (let xs [1]) (let b (B ^xs xs)) (b .push 1) (xs .push "bad")
-      [(try (b .push 2) catch TypeError $err/where) b]""",
+      [(try (b .push 2) catch TypeFault $err/where) b]""",
       """["field 'xs' for B" ((type B) ^xs [1 "bad"] 1)]"""
 
   test "an alias that broke a pushed container item is still reported":
@@ -29,14 +29,14 @@ suite "typed node push checks only the new item when that is exact":
       (alias IntList (List Int))
       (type L ^props {^n Int} ^body [IntList...])
       (let n (L ^n 1)) (let a [1]) (n .push a) (a .push "bad")
-      [(try (n .push [2]) catch TypeError $err/where) n]""",
+      [(try (n .push [2]) catch TypeFault $err/where) n]""",
       """["body field 0 for L" ((type L) ^n 1 [1 "bad"])]"""
 
   test "a rejected item leaves the node as it was and later pushes work":
     fastCk """
       (type Bag ^props {^x Int} ^body [Int...])
       (let bag (Bag ^x 1)) (bag .push 1) (bag .push 2)
-      (let rejected (try (bag .push "no") catch TypeError $err/where))
+      (let rejected (try (bag .push "no") catch TypeFault $err/where))
       (let pushed (bag .push 3))
       [rejected pushed bag]""",
       """["body field 2 for Bag" 3 ((type Bag) ^x 1 1 2 3)]"""
@@ -45,7 +45,7 @@ suite "typed node push checks only the new item when that is exact":
     fastCk """
       (type Bag ^props {^x Int} ^body [Int...])
       (let bag (Bag ^x 1)) (bag .push 1) (set bag/x 5) (bag .push 2)
-      (let rejected (try (set bag/x "s") catch TypeError $err/where))
+      (let rejected (try (set bag/x "s") catch TypeFault $err/where))
       (bag .push 3)
       [rejected bag]""",
       """["field 'x' for Bag" ((type Bag) ^x 5 1 2 3)]"""
@@ -55,7 +55,7 @@ suite "typed node push checks only the new item when that is exact":
       (type F ^props {^n Any} ^body [Str Float...])
       (let anyv [1 2])
       (let f (F ^n anyv "head"))
-      (let rejected (try (f .push 1) catch TypeError $err/where))
+      (let rejected (try (f .push 1) catch TypeFault $err/where))
       (f .push 1.5) (anyv .push "x") (f .push 2.5)
       [rejected f]""",
       """["body field 1 for F" ((type F) ^n [1 2 "x"] "head" 1.5 2.5)]"""
@@ -69,7 +69,7 @@ suite "typed node push checks only the new item when that is exact":
       (let fx (Fixed ^x 1 2 3))
       (let o (Opt ^x 1)) (o .push 1) (o .push 2)
       [(try (frozen .push 8) catch Error $err/.message)
-       (try (frozen .push "s") catch TypeError $err/where)
+       (try (frozen .push "s") catch TypeFault $err/where)
        (try (fx .push 4) catch Error $err/.message)
        o]""",
       """["cannot mutate immutable Node" "body field 1 for Bag" """ &
@@ -155,15 +155,15 @@ suite "scalar annotations on the scopeless calling convention":
 
   test "mismatches raise the same errors as before":
     fastCk calls & """
-      [(try (id_int "s") catch TypeError $err/.message)
-       (try (add_p 2 "x") catch TypeError $err/.message)
-       (try (add_p 2 1.5) catch TypeError $err/.message)
-       (try (addf 1 2) catch TypeError $err/.message)
-       (try (addf 1.5 2) catch TypeError $err/.message)
-       (try (mixed "s" [1] 1) catch TypeError $err/.message)
-       (try (mixed nil 1 true) catch TypeError $err/.message)
-       (try (ret_const 1) catch TypeError $err/.message)
-       (try (ret_checked "s") catch TypeError $err/.message)
+      [(try (id_int "s") catch TypeFault $err/.message)
+       (try (add_p 2 "x") catch TypeFault $err/.message)
+       (try (add_p 2 1.5) catch TypeFault $err/.message)
+       (try (addf 1 2) catch TypeFault $err/.message)
+       (try (addf 1.5 2) catch TypeFault $err/.message)
+       (try (mixed "s" [1] 1) catch TypeFault $err/.message)
+       (try (mixed nil 1 true) catch TypeFault $err/.message)
+       (try (ret_const 1) catch TypeFault $err/.message)
+       (try (ret_checked "s") catch TypeFault $err/.message)
        (try (id_int 1 2) catch Error $err/.message)
        (try (id_int) catch Error $err/.message)]""",
       """["parameter 'a' expected Int, got Str" """ &
@@ -181,7 +181,7 @@ suite "scalar annotations on the scopeless calling convention":
   test "calls through a value and through a native":
     fastCk calls & """
       (var f id_int)
-      [(f 6) (try (f (quote sym)) catch TypeError $err/.message) ([1 2 3] .map id_int)]""",
+      [(f 6) (try (f (quote sym)) catch TypeFault $err/.message) ([1 2 3] .map id_int)]""",
       """[6 "parameter 'a' expected Int, got Sym" [1 2 3]]"""
 
 suite "field writes by key id":
@@ -199,11 +199,11 @@ suite "field writes by key id":
 
   test "a value the field rejects, and a field that does not exist":
     fastCk fieldPrelude & """
-      [(try (set p/x "s") catch TypeError $err/.message)
-       (try (set p/y 1) catch TypeError $err/.message)
-       (try (set p/tags [1]) catch TypeError $err/.message)
-       (try (set p/x nil) catch TypeError $err/.message)
-       (try (p .put "x" 1.5) catch TypeError $err/.message)
+      [(try (set p/x "s") catch TypeFault $err/.message)
+       (try (set p/y 1) catch TypeFault $err/.message)
+       (try (set p/tags [1]) catch TypeFault $err/.message)
+       (try (set p/x nil) catch TypeFault $err/.message)
+       (try (p .put "x" 1.5) catch TypeFault $err/.message)
        (try (set p/zzz 1) catch Error $err/.message)
        (try (p .put "nope" 1) catch Error $err/.message)
        p]""",
@@ -239,9 +239,9 @@ suite "field writes by key id":
       (set r/n 7) (set r/m 8)
       (let h (quote ("head" ^a 1))) (set h/a 2)
       [q r h
-       (try (set q/b 1) catch TypeError $err/.message)
-       (try (set q/c true) catch TypeError $err/.message)
-       (try (set r/m 1.5) catch TypeError $err/.message)]""",
+       (try (set q/b 1) catch TypeFault $err/.message)
+       (try (set q/c true) catch TypeFault $err/.message)
+       (try (set r/m 1.5) catch TypeFault $err/.message)]""",
       """[((type Q) ^!b ^c 'z' ^f 2.5 ^s y ^a 'c' ^n -3) """ &
       """((type R) ^^b ^c 'a' ^f 1.0 ^s x ^a 1 ^n 7 ^m 8) ("head" ^a 2) """ &
       """"field 'b' for Q expected Bool, got Int" """ &
@@ -306,10 +306,10 @@ suite "a List boundary with a scalar item type":
       (let ys [1 2]) (total ys) (set ys/0 "a")
       (let es []) (let empty (total es)) (es .push "s")
       [first
-       (try (total xs) catch TypeError $err/.message)
-       (try (total ys) catch TypeError $err/.message)
+       (try (total xs) catch TypeFault $err/.message)
+       (try (total ys) catch TypeFault $err/.message)
        empty
-       (try (total es) catch TypeError $err/.message)]""",
+       (try (total es) catch TypeFault $err/.message)]""",
       """[[3 3] "parameter 'xs' expected (List Int), got (List Any)" """ &
       """"parameter 'xs' expected (List Int), got (List Any)" 0 """ &
       """"parameter 'xs' expected (List Int), got (List Str)"]"""
@@ -325,10 +325,10 @@ suite "a List boundary with a scalar item type":
     fastCk listPrelude & """
       (let ws [1 2]) (total ws)
       (let fs [1.5 2.5]) (let ok [(floats fs) (floats fs)]) (fs .push 3)
-      [(try (names ws) catch TypeError $err/.message)
-       (try (floats ws) catch TypeError $err/.message)
+      [(try (names ws) catch TypeFault $err/.message)
+       (try (floats ws) catch TypeFault $err/.message)
        (anys ws) ok
-       (try (floats fs) catch TypeError $err/.message)]""",
+       (try (floats fs) catch TypeFault $err/.message)]""",
       """["parameter 'xs' expected (List Str), got (List Int)" """ &
       """"parameter 'xs' expected (List Float), got (List Int)" 2 [2 2] """ &
       """"parameter 'xs' expected (List Float), got (List Any)"]"""
@@ -337,13 +337,13 @@ suite "a List boundary with a scalar item type":
     fastCk listPrelude & """
       (let ns [[1] [2]]) (let ok [(nested ns) (nested ns)])
       (ns/0 .push "x")
-      [ok (try (nested ns) catch TypeError $err/.message)]""",
+      [ok (try (nested ns) catch TypeFault $err/.message)]""",
       """[[2 2] "parameter 'xs' expected (List (List Int)), got (List Any)"]"""
 
   test "a function pushed into a checked list":
     fastCk listPrelude & """
       (fn outer [] (var q 2) (fn local [] q) (let hs [1]) (total hs) (hs .push local) hs)
-      (try (total (outer)) catch TypeError $err/.message)""",
+      (try (total (outer)) catch TypeFault $err/.message)""",
       """"parameter 'xs' expected (List Int), got (List Any)""""
 
 suite "a (List T) parameter of a scalar T binds like a scalar one":
@@ -372,12 +372,12 @@ suite "a (List T) parameter of a scalar T binds like a scalar one":
       (ys .push "s")
       (let zs [1])
       [first
-       (try (len_typed ys) catch TypeError $err/.message)
-       (try (reassign zs) catch TypeError $err/.message)
-       (try (reassign zs) catch TypeError $err/.message)
+       (try (len_typed ys) catch TypeFault $err/.message)
+       (try (reassign zs) catch TypeFault $err/.message)
+       (try (reassign zs) catch TypeFault $err/.message)
        (two 1 ["a" "b"]) (two 1 ["a" "b"])
-       (try (two 1 [1]) catch TypeError $err/.message)
-       (try (len_typed {^a 1}) catch TypeError $err/.message)
+       (try (two 1 [1]) catch TypeFault $err/.message)
+       (try (len_typed {^a 1}) catch TypeFault $err/.message)
        (try (len_typed) catch Error $err/.message)]""",
       """[[1 1 1] "parameter 'xs' expected (List Int), got (List Any)" """ &
       """"set 'xs' expected (List Int), got (List Str)" """ &
@@ -396,10 +396,10 @@ suite "indexed writes into a typed node's body":
       (let b (Bag ^x 1 0 1 2))
       (let last (set b/-1 99))
       [p last b
-       (try (set p/0 "bad") catch TypeError $err/.message)
-       (try (set p/1 5) catch TypeError $err/.message)
+       (try (set p/0 "bad") catch TypeFault $err/.message)
+       (try (set p/1 5) catch TypeFault $err/.message)
        (try (set p/2 5) catch Error $err/.message)
-       (try (set b/1 "bad") catch TypeError $err/.message)
+       (try (set b/1 "bad") catch TypeFault $err/.message)
        b]""",
       """[((type Pair) ^x 1 5 "t") 99 ((type Bag) ^x 1 0 1 99) """ &
       """"body field 0 for Pair expected Int, got Str" """ &
@@ -412,7 +412,7 @@ suite "indexed writes into a typed node's body":
     fastCk """
       (type L ^props {^xs (List Int)} ^body [Int...])
       (let xs [1]) (let l (L ^xs xs 1 2)) (xs .push "bad")
-      (try (set l/0 5) catch TypeError $err/.message)""",
+      (try (set l/0 5) catch TypeFault $err/.message)""",
       """"field 'xs' for L expected (List Int), got (List Any)""""
 
   test "an untyped body keeps the full route, which strengthens its items":
@@ -453,9 +453,9 @@ suite "direct construction reads its named arguments in place":
       (type B ^props {^n Int} ^body [Int Str...])
       [(try (Pt ^x 1) catch Error $err/.message)
        (try (Pt ^x 1 ^y 2 ^z 3) catch Error $err/.message)
-       (try (Pt ^x 1 ^y "s") catch TypeError $err/.message)
+       (try (Pt ^x 1 ^y "s") catch TypeFault $err/.message)
        (try (B ^n 1) catch Error $err/.message)
-       (try (B ^n 1 2 3) catch TypeError $err/.message)
+       (try (B ^n 1 2 3) catch TypeFault $err/.message)
        (try (Pt 1 2) catch Error $err/.message)
        (try (do (let p #(Pt ^x 1 ^y 2)) (set p/x 3)) catch Error $err/.message)
        (try (do (enum Color red green) (Color)) catch Error $err/.message)]""",

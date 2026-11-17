@@ -45,7 +45,7 @@ proc ioTestingRecord(value: Value, call: ptr NativeCall,
     raiseIoTestingError(scope, "IoClosed", operation, id,
                         "I/O resource is unavailable")
   if result.ownerLane != currentEventLane():
-    raiseValueSemanticError("RuntimeLaneError",
+    raiseValueSemanticError("RuntimeLaneFault",
       "I/O resource belongs to another lane")
 
 proc ioTestingReadLifecycle*(value: Value): IoLifecycle =
@@ -103,7 +103,7 @@ proc biIoTestingNew(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   if scope == nil:
     raise newException(GeneError, "io/testing/new needs a call scope")
   if currentEventLane() != schedulerForScope(scope).rootLane:
-    raiseValueSemanticError("RuntimeLaneError", "io/testing/new requires the root lane")
+    raiseValueSemanticError("RuntimeLaneFault", "io/testing/new requires the root lane")
   var maxBytes = DefaultIoResourceBytes
   var sawMaxBytes = false
   for i, name in call[].namedNames:

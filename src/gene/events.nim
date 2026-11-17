@@ -67,8 +67,8 @@ proc eventErrorValue(scope: Scope, e: ref GeneError): Value =
   else:
     var props = initPropTable()
     props["_msg"] = newStr(e.msg)
-    var head = newSym("RuntimeError")
-    let declared = builtinBinding(scope, "RuntimeError")
+    var head = newSym("RuntimeFault")
+    let declared = builtinBinding(scope, "RuntimeFault")
     if declared.kind == vkType:
       head = declared
     newNode(head, props = props)

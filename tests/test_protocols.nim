@@ -102,7 +102,7 @@ suite "protocols — declarations and dispatch":
        "[text events]", "[\"ab\" [\"arg1\" \"arg2\" \"a\" \"b\"]]"
     ck "(type Bad ^props {}) " &
        "(impl ToStr for Bad (message to_str [self] 1)) " &
-       "(try ($to_str (Bad)) catch TypeError $err/where)",
+       "(try ($to_str (Bad)) catch TypeFault $err/where)",
        "\"ToStr/to_str\""
 
   test "namespace protocol messages find receiver-scope impls":
@@ -355,7 +355,7 @@ suite "protocols — declarations and dispatch":
        "(type User ^props {^name Str}) " &
        "(impl ToName for User (message to_name [self] : Str 1)) " &
        "((User ^name \"Ada\") .ToName:to_name) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"return from 'to_name'\""
 
   test "missing impl is a recoverable runtime error":
@@ -617,7 +617,7 @@ suite "types — type-direct messages and sends":
        "[7 \"lexical\"]"
 
   test "sends do not fall back to lexical bindings (D6)":
-    # `(xs .second)` has no `second` message on List, so it is a MessageError
+    # `(xs .second)` has no `second` message on List, so it is a MessageFault
     # — there is no lexical send fallback. Call the function: `(second xs)`.
     var message = ""
     try:
@@ -635,7 +635,7 @@ suite "types — type-direct messages and sends":
       "(type M ^props {}) " &
       "(impl P for M (message label [] : Str \"p\")) " &
       "(impl Q for M (message label [] : Str \"q\")) " &
-      "(try ((M) .label) catch MessageError $err/.message)").strVal
+      "(try ((M) .label) catch MessageFault $err/.message)").strVal
     check message.contains("no message 'label' on M")
     check message.contains("P:label, Q:label")
     check message.contains("use a qualified send")
@@ -643,7 +643,7 @@ suite "types — type-direct messages and sends":
   test "pending protocol impls do not become visible to a bare-send hint":
     let message = runStr("(protocol P (message label [] : Str)) " &
       "(type M ^props {}) " &
-      "(let observed (try ((M) .label) catch MessageError $err/.message)) " &
+      "(let observed (try ((M) .label) catch MessageFault $err/.message)) " &
       "(impl P for M (message label [] : Str \"p\")) observed").strVal
     check message.contains("no message 'label' on M")
     check not message.contains("P:label")
@@ -653,9 +653,9 @@ suite "types — type-direct messages and sends":
       "(type M ^props {}) " &
       "(fn inside [] " &
       "  (impl P for M (message label [] : Str \"p\")) " &
-      "  (try ((M) .label) catch MessageError " &
+      "  (try ((M) .label) catch MessageFault " &
       "    ($str/contains? $err/.message \"P:label\"))) " &
-      "[(inside) (try ((M) .label) catch MessageError " &
+      "[(inside) (try ((M) .label) catch MessageFault " &
       "  ($str/contains? $err/.message \"P:label\"))]",
       "[true false]"
 
@@ -663,7 +663,7 @@ suite "types — type-direct messages and sends":
     let message = runStr("(protocol Greeting ^^universal " &
       "  (message hello [] : Str \"hi\")) " &
       "(type T ^props {}) " &
-      "(try ((T) .hello) catch MessageError $err/.message)").strVal
+      "(try ((T) .hello) catch MessageFault $err/.message)").strVal
     check message.contains("Greeting:hello")
 
   test "bare-send hints use a reachable protocol qualifier":
@@ -671,7 +671,7 @@ suite "types — type-direct messages and sends":
       "  (message label [] : Str))) " &
       "(type M ^props {}) " &
       "(impl api/Labelled for M (message label [] : Str \"ok\")) " &
-      "(try ((M) .label) catch MessageError $err/.message)").strVal
+      "(try ((M) .label) catch MessageFault $err/.message)").strVal
     check message.contains("api/Labelled:label")
 
   test "implicit-self sends resolve in the receiver's context":

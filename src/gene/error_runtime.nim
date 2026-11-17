@@ -254,7 +254,7 @@ proc strictCandidateFits(registration: StrictErrorRegistration, value: Value): b
     let ctor = value.typeConstructor
     if ctor.kind == vkNil:
       return errorRowCovers(registration.allowed,
-        @[builtInTypeHead(value.typeScope, "RuntimeError")])
+        @[builtInTypeHead(value.typeScope, "RuntimeFault")])
     return registration.strictCandidateFits(ctor)
   if value.kind == vkNativeFn:
     return registration.baselineNative.kind == vkNativeFn and
@@ -633,7 +633,7 @@ proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError =
   try:
     error.errVal = admitErrorValue(error.errVal, context)
   except GeneError as admission:
-    # An admission failure is itself a generated TypeError.
+    # An admission failure is itself a generated TypeFault.
     result = admission
 
 proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
@@ -647,7 +647,7 @@ proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
   props["expected"] = newList(allowed, immutable = true)
   props["actual"] = error.errVal.head
   props["_cause"] = error.errVal
-  let value = newNode(builtInTypeHead(scope, "ErrorContractViolation"), props = props)
+  let value = newNode(builtInTypeHead(scope, "ContractViolation"), props = props)
   result = newException(GeneError, message)
   result.errVal = value
   result.hasErrVal = true
@@ -700,12 +700,12 @@ proc errorDisplayMessage*(error: ref GeneError, scope: Scope): string =
 proc errorDiagnosticMessage*(error: ref GeneError, scope: Scope): string =
   ## Terminal diagnostics retain the nominal label while obtaining display
   ## text from the error's `message`. Untyped/compiler diagnostics keep their
-  ## existing text; the generic RuntimeError and CompileError labels would add
+  ## existing text; the generic RuntimeFault and CompileError labels would add
   ## no information to a message that already reads as one.
   let label =
     if error.hasErrVal and error.errVal.kind == vkNode and
         error.errVal.head.kind == vkType and
-        error.errVal.head.typeName notin ["RuntimeError", "CompileError"]:
+        error.errVal.head.typeName notin ["RuntimeFault", "CompileError"]:
       error.errVal.head.typeName
     else: ""
   let message = errorDisplayMessage(error, scope)

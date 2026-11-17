@@ -19,7 +19,7 @@
     (let gate ($sync/gate))
     (let message (try (gate (fn [] (gate (fn [] nil)))) "not rejected" catch Error $err/.message))
     ($assert ($str/contains? message "non-reentrant"))
-    (try (gate (fn [] (fail (RuntimeError ^_msg "body failed")))) catch Error nil)
+    (try (gate (fn [] (fail (RuntimeFault ^_msg "body failed")))) catch Error nil)
     (assert_equal (gate (fn [] "free")) "free"))
 
   (it "cancels a blocked waiter without losing the next acquisition" []
@@ -28,7 +28,7 @@
     (let release ($channel ^capacity 1))
     (let owner (spawn ^lane root (gate (fn [] (entered .send true) release/.recv))))
     entered/.recv
-    (let cancelled (spawn ^lane root (gate (fn [] (fail (RuntimeError ^_msg "cancelled waiter entered"))))))
+    (let cancelled (spawn ^lane root (gate (fn [] (fail (RuntimeFault ^_msg "cancelled waiter entered"))))))
     ($sleep 1)
     cancelled/.cancel
     (let next (spawn ^lane root (gate (fn [] 99))))
@@ -187,7 +187,7 @@
     ($assert (== ($head task/.join) TaskOutcome/panic))
     (assert_equal ($size entries) 0)
     ($sync/track entries "outer" (fn []
-      (try (gate (fn [] (fail (RuntimeError ^_msg "inner")))) catch Error nil)
+      (try (gate (fn [] (fail (RuntimeFault ^_msg "inner")))) catch Error nil)
       (assert_equal entries/outer true)
       (assert_equal (gate (fn [] 42)) 42)))
     (assert_equal ($size entries) 0)))

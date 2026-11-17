@@ -109,20 +109,20 @@ const cases = [
   ['(type Box ^props {^n Int} (message value [] self/n)) ' +
    '(let f : (Callable [Box] Int) Self:value) (f (Box ^n 7))', 0, "7", ""],
   ['(let f : (Callable [Int] Int) (fn [x] "bad")) ' +
-   '(try (f 1) false catch TypeError true)', 0, "true", ""],
+   '(try (f 1) false catch TypeFault true)', 0, "true", ""],
   ['(fn local_error [] (type Local : Error ^props {^code Int} (message message [] : Str ^errors [] ^^override $"code ${self/code}")) ' +
    '' +
    '(fail (Local ^code 7))) ' +
    '(let later (try (local_error) catch Error (fn [] $err/.message))) (later)',
    0, '"code 7"', ""],
   ['(let checked : (Callable [] Any ^errors []) ' +
-   '(fn [] (fail (AssertionError ^_msg "original")))) ' +
+   '(fn [] (fail (AssertionFault ^_msg "original")))) ' +
    '(fn outer [] ^errors [] (checked)) ' +
-   '(try (outer) catch ErrorContractViolation $err/_cause/.message)',
+   '(try (outer) catch ContractViolation $err/_cause/.message)',
    0, '"original"', ""],
   ['(fn checked [] ^errors [] ' +
-   '(try (let n : Int "bad") catch TypeError (let saved $err) (fail saved))) ' +
-   '(try (checked) catch TypeError true)', 0, "true", ""],
+   '(try (let n : Int "bad") catch TypeFault (let saved $err) (fail saved))) ' +
+   '(try (checked) catch TypeFault true)', 0, "true", ""],
   ['(mod checked ^errors_mode strict) ' +
    '(fn add_one [n : Int] : Int ^errors [] (+ n 1)) (add_one 6)', 0, "7", ""],
   ['(let source ($to_stream [1 2])) (let bounded ($take source 0)) ' +
@@ -142,8 +142,8 @@ const cases = [
    '(type Child : Parent ^props {}) (((Child ^n 7) .values) -> $into [])',
    0, "[7]", ""],
   ['(fn ^^generator bad [] : (Stream Int Never) ' +
-   '(try (yield 1) ensure (fail (AssertionError ^_msg "cleanup")))) ' +
-   '(let s (bad)) (s .next) (try (s .close) false catch ErrorContractViolation true)',
+   '(try (yield 1) ensure (fail (AssertionFault ^_msg "cleanup")))) ' +
+   '(let s (bad)) (s .next) (try (s .close) false catch ContractViolation true)',
    0, "true", ""],
   ['(import $log [new_logger log_debug]) ' +
    '(var logger (new_logger "app/wasm")) ' +

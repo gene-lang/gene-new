@@ -14,9 +14,9 @@ suite "a typed parameter assigned from a nested function":
       (fn two [a : Int b : Int] : Int (fn g [] (set a "x")) (g) 1)
       (fn str [a : Str] : Int (fn g [] (set a 5)) (g) 1)
       (fn fine [a : Int] : Int (fn g [] (set a 7)) (g) a)
-      [(try (one 1) catch TypeError $err/.message)
-       (try (two 1 2) catch TypeError $err/.message)
-       (try (str "s") catch TypeError $err/.message)
+      [(try (one 1) catch TypeFault $err/.message)
+       (try (two 1 2) catch TypeFault $err/.message)
+       (try (str "s") catch TypeFault $err/.message)
        (fine 1)]""",
       """["set 'a' expected Int, got Str" "set 'a' expected Int, got Str" """ &
       """"set 'a' expected Str, got Int" 7]"""

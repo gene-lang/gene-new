@@ -90,7 +90,7 @@ suite "callable reflection":
       (let b ($runtime/bind_shape ($runtime/signature target) ["wrong"] {}))
       (let args b/positional)
       [b/positional
-       (try (target args ...) false catch TypeError true)]
+       (try (target args ...) false catch TypeFault true)]
     """, "[#[\"wrong\"] true]"
 
   test "named rest parameters describe and bind extra names":
@@ -160,7 +160,7 @@ suite "callable reflection":
   test "generator invocation and producer contracts stay separate":
     reflectionCheck """
       (var entered 0)
-      (fn ^^generator items [] : (Stream Int RuntimeError) ^errors []
+      (fn ^^generator items [] : (Stream Int RuntimeFault) ^errors []
         (set entered (+ entered 1)) (yield 1))
       (let s ($runtime/signature items))
       [entered s/execution s/invocation_errors/types
@@ -222,7 +222,7 @@ suite "callable reflection":
       (let loose ($runtime/signature (fn [x] x)))
       (let b ($runtime/bind_shape loose ["bad"] {}))
       (let args b/positional)
-      (try (target args ...) false catch TypeError true)
+      (try (target args ...) false catch TypeFault true)
     """, "true"
 
   test "web compilation explicitly rejects the unsupported runtime surface":
@@ -295,9 +295,9 @@ suite "language callable reflection":
       (type Missing ^props {})
       (type Parent ^props {})
       (type Child : Parent ^props {})
-      (let missing (try ($runtime/signature P:value (Missing)) false catch MessageError true))
+      (let missing (try ($runtime/signature P:value (Missing)) false catch MessageFault true))
       (impl P for Child ^^override)
-      (let pending (try ($runtime/signature P:value (Child)) false catch RuntimeError true))
+      (let pending (try ($runtime/signature P:value (Child)) false catch RuntimeFault true))
       (impl P for Parent (message value [] : Int 7))
       (let ready ($runtime/signature P:value (Child)))
       [missing pending ready/shape_known ready/result]
@@ -316,7 +316,7 @@ suite "language callable reflection":
 
   test "explicit receiver nil is not mistaken for an omitted receiver":
     reflectionCheck """
-      [(try ($runtime/signature Self:no_such_message nil) false catch MessageError true)
+      [(try ($runtime/signature Self:no_such_message nil) false catch MessageFault true)
        (try ($runtime/signature + nil) false catch Error true)
        (try ($runtime/signature + ^^unexpected) false catch Error true)]
     """, "[true true true]"
@@ -373,7 +373,7 @@ suite "language callable reflection":
       (let b ($runtime/bind_shape s [] {}))
       [defaults s/positional/0/has_default s/constructor_errors/checked
        s/constructor_errors/types s/invocation_errors/known
-       (try (new Bad) false catch RuntimeError true) defaults]
+       (try (new Bad) false catch RuntimeFault true) defaults]
     """, "[0 true true #[] false true 1]"
 
   test "aliases, enums, native wrappers and absent ctors have honest availability":

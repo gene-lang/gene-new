@@ -568,7 +568,7 @@ suite "native api threaded attachment":
   test "concurrent awaits consume once while joins retain a consistent outcome":
     let app = newApplication()
     let producer = newGlobalScope(app)
-    let generated = run(compileSource("(try (let n : Int \"bad\") catch TypeError $err)"), producer)
+    let generated = run(compileSource("(try (let n : Int \"bad\") catch TypeFault $err)"), producer)
     var tasks: seq[Value]
     for i in 0 ..< sharedErrorCount:
       let task = nativeNewAsyncTask()
@@ -585,13 +585,13 @@ suite "native api threaded attachment":
         (if peek
           (match (pending .join)
             (when (TaskOutcome/ok value) value)
-            (when (TaskOutcome/error (_ : TypeError)) 8)
+            (when (TaskOutcome/error (_ : TypeFault)) 8)
             (when (TaskOutcome/error error)
               (if (== error/.message "original") 9 -999))
             (else -999))
           (await pending))
-        catch TypeError 8
-        catch RuntimeError
+        catch TypeFault 8
+        catch RuntimeFault
           (if (== $err/.message "task result has already been awaited") -1
             (if (== $err/.message "task result has already been consumed by await") -1
               (if (== $err/.message "original") 9 -999))))
@@ -634,7 +634,7 @@ suite "native api threaded attachment":
         var props = initPropTable()
         props["_msg"] = newStr("native")
         props["local"] = newCell(newInt(1))
-        payload = newNode(run(compileSource("RuntimeError"), scope), props = props)
+        payload = newNode(run(compileSource("RuntimeFault"), scope), props = props)
       elif kind == "formatter":
         payload = run(compileSource("""
           (let local ($cell "native"))
@@ -643,12 +643,12 @@ suite "native api threaded attachment":
         """), scope)
       elif kind == "admitted":
         payload = run(compileSource("""
-          (try (fail ($freeze (AssertionError ^_msg "native"))) catch Error $err)
+          (try (fail ($freeze (AssertionFault ^_msg "native"))) catch Error $err)
         """), scope)
       else:
         # A foreign native thread may admit a built-in error before this
         # Application has ever spawned a Gene task.
-        payload = run(compileSource("($freeze (AssertionError ^_msg \"native\"))"), scope)
+        payload = run(compileSource("($freeze (AssertionFault ^_msg \"native\"))"), scope)
       let task = nativeNewAsyncTask()
       markSharedValue(payload)
       markSharedValue(task)
@@ -813,7 +813,7 @@ suite "native api threaded attachment":
       scope: scope,
       chunk: compileSource(
         "(try (do ($runtime/require_root_lane) `root) " &
-        " catch RuntimeLaneError `other)"))
+        " catch RuntimeLaneFault `other)"))
 
     var worker: Thread[EventLaneArgs]
     createThread(worker, publishOnWorker, args)
@@ -829,7 +829,7 @@ suite "native api threaded attachment":
       let scope = newGlobalScope()
       discard run(compileSource("(let gate ($sync/gate)) (let entries {})"), scope)
       let args = EventLaneArgs(scope: scope, chunk: compileSource(
-        "(try (do " & expression & " `accepted) catch RuntimeLaneError `other)"))
+        "(try (do " & expression & " `accepted) catch RuntimeLaneFault `other)"))
       var worker: Thread[EventLaneArgs]
       createThread(worker, publishOnWorker, args)
       joinThread(worker)

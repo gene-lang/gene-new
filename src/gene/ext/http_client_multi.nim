@@ -1441,7 +1441,7 @@ when compileOption("threads") and not defined(geneWasm) and
     if result == nil or result.application != scope.application():
       raiseHttpClientError("HTTP Client is unavailable", scope)
     if result.ownerLane != currentEventLane():
-      raiseValueSemanticError("RuntimeLaneError",
+      raiseValueSemanticError("RuntimeLaneFault",
         "HTTP Client belongs to another lane")
 
   proc ownedBodyRecord(value: Value, scope: Scope,
@@ -1456,7 +1456,7 @@ when compileOption("threads") and not defined(geneWasm) and
     if result == nil or result.application != scope.application():
       raiseHttpClientError("HTTP body reader is unavailable", scope)
     if result.ownerLane != currentEventLane():
-      raiseValueSemanticError("RuntimeLaneError",
+      raiseValueSemanticError("RuntimeLaneFault",
         "HTTP body reader belongs to another lane")
 
   proc uploadBodyRecord(value: Value, scope: Scope): OwnedHttpBodyRecord =
@@ -1533,7 +1533,7 @@ when compileOption("threads") and not defined(geneWasm) and
       raiseHttpClientError("net/http_client/open expects named options only",
                            scope)
     if currentEventLane() != schedulerForScope(scope).rootLane:
-      raiseValueSemanticError("RuntimeLaneError",
+      raiseValueSemanticError("RuntimeLaneFault",
         "HTTP Client open requires the root lane")
     var record = OwnedHttpClientRecord(application: scope.application(),
       ownerLane: currentEventLane(), id: nextRuntimeResourceId(),

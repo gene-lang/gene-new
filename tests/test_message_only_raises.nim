@@ -1,7 +1,7 @@
 ## The runtime's message-only failures are a reviewed list.
 ##
 ## A `raise newException(GeneError, "...")` in the runtime reaches a Gene
-## handler as a RuntimeError value carrying only its message. Every such site
+## handler as a RuntimeFault value carrying only its message. Every such site
 ## has been reviewed: it reports a defect (a mistake in the calling program or
 ## in the runtime), not a failure a correct program can meet. Failures a correct
 ## program can meet use a built-in Error type instead (`raiseBuiltinError`,

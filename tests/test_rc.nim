@@ -814,7 +814,7 @@ when defined(geneRcStats):
         "(fn use [f : (Callable [Int] Int)] (try (f 1) catch Error nil)) " &
         "(repeat 100 (use bad))") == 0
       check leakedManaged("(let f : (Callable [] Any ^errors []) " &
-        "(fn [] ($assert false))) (try (f) catch ErrorContractViolation nil)") == 0
+        "(fn [] ($assert false))) (try (f) catch ContractViolation nil)") == 0
 
     test "prepared pipeline captures are released on close and exhaustion":
       check leakedManaged("(let s ([1 2] => + 3)) (s .close)") == 0
@@ -1409,7 +1409,7 @@ when defined(geneRcStats):
                           "  (await t))") == 0
       check leakedManaged("(scope " &
                           "  (fn use [t : (Task Int Never)] " &
-                          "    (try (await t) catch TypeError nil)) " &
+                          "    (try (await t) catch TypeFault nil)) " &
                           "  (use (spawn \"bad\")))") == 0
       check leakedManaged("(var ch ($channel)) " &
                           "(ch .send 1) " &

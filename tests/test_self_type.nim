@@ -32,7 +32,7 @@ suite "Self — forward declaration readiness":
       (protocol P (message value [] : Int 99))
       (type Dog ^props {}) (type Pup : Dog ^props {})
       (impl P for Pup ^^override)
-      (let early (try ((Pup) .P:value) catch RuntimeError $err/.message))
+      (let early (try ((Pup) .P:value) catch RuntimeFault $err/.message))
       (impl P for Dog (message value [] : Int 7))
       [($str/starts_with? early "declaration not ready: P for Pup is held until")
        ($str/contains? early "impl P for Dog")
@@ -43,7 +43,7 @@ suite "Self — forward declaration readiness":
     let source = "(protocol P (message m [] : Str))\n" &
       "(type A ^props {})\n" &
       "(impl P for A (message m [] : Str \"a\"))\n" &
-      "(let observed (try ((A) .P:m) catch RuntimeError $err/.message))\n" &
+      "(let observed (try ((A) .P:m) catch RuntimeFault $err/.message))\n" &
       "(type B ^props {})\n" &
       "(impl P for B (message m [] : Str \"b\"))\n" &
       "observed"
@@ -121,11 +121,11 @@ suite "Self — declaration contracts":
         (message accepts [x : Dog] : Bool ^^override
           (let mine : Self self)
           (let check_child (fn [value : Self] : Bool true))
-          (try (check_child x) catch TypeError false))
+          (try (check_child x) catch TypeFault false))
         (message checker [] (fn [value : Self] : Bool true)))
       (let pup (Pup)) (let check_child (pup .checker))
       [(pup .accepts (Dog)) (pup .accepts pup)
-       (try (check_child (Dog)) catch TypeError false)]
+       (try (check_child (Dog)) catch TypeFault false)]
     """) == "[false true false]"
 
   test "inherited results and nested boundaries retain Dog":
@@ -231,7 +231,7 @@ suite "Self — inherited impl bodies":
     check selfTypeEval(declarations & """
       (impl Q for Pup ^^override
         (message P:copy [] : Dog (Dog)))
-      (try ((Pup) .Q:special_copy) catch TypeError "checked")
+      (try ((Pup) .Q:special_copy) catch TypeFault "checked")
     """) == "\"checked\""
 
   test "shared defaults keep independent conformance environments":
@@ -240,7 +240,7 @@ suite "Self — inherited impl bodies":
       (type A ^props {}) (type B ^props {})
       (impl P for A) (impl P for B)
       [((A) .P:accepts (A)) ((B) .P:accepts (B))
-       (try ((A) .P:accepts (B)) catch TypeError false)]
+       (try ((A) .P:accepts (B)) catch TypeFault false)]
     """) == "[true true false]"
 
 suite "Self — declaration metadata":
@@ -287,7 +287,7 @@ suite "Self — live overlay dependencies":
       (let reader (make_reader))
       (let before (reader))
       (if true (impl P for Base (message value [] : Int 2)))
-      [before (try (reader) catch RuntimeError "conflict") entered]
+      [before (try (reader) catch RuntimeFault "conflict") entered]
     """) == "[7 \"conflict\" 1]"
 
 suite "Self — checked error contracts":
@@ -315,16 +315,16 @@ suite "Self — checked error contracts":
   test "universal defaults retain concrete checked error rows":
     check selfTypeEval("""
       (protocol P ^^universal
-        (message raise [] : Int ^errors [RuntimeError]
-          (fail (RuntimeError ^_msg "declared"))))
-      (try (1 .P:raise) catch RuntimeError $err/.message)
+        (message raise [] : Int ^errors [RuntimeFault]
+          (fail (RuntimeFault ^_msg "declared"))))
+      (try (1 .P:raise) catch RuntimeFault $err/.message)
     """) == "\"declared\""
 
 suite "Self — forward annotation dependencies":
   test "forward aliases are resolved before direct bodies become callable":
     check selfTypeEval("""
       (type Dog ^props {} (message accepts [x : Later] : Bool true))
-      (let early (try (Dog) false catch RuntimeError true))
+      (let early (try (Dog) false catch RuntimeFault true))
       (alias Later Self)
       [early ((Dog) .accepts (Dog))]
     """) == "[true true]"
@@ -341,7 +341,7 @@ suite "Self — forward annotation dependencies":
       (protocol P (message accepts [x : Later] : Bool))
       (type Dog ^props {})
       (impl P for Dog (message accepts [x : Later] : Bool true))
-      (let early (try ((Dog) .P:accepts (Dog)) false catch RuntimeError true))
+      (let early (try ((Dog) .P:accepts (Dog)) false catch RuntimeFault true))
       (alias Later Self)
       [early ((Dog) .P:accepts (Dog))]
     """) == "[true true]"
@@ -419,7 +419,7 @@ suite "Self — conformance boundary coherence":
       (let checker (make_checker))
       (checker)
       (if true (impl P for Base (message accepts [x : Self] : Bool true)))
-      [(try (checker) catch RuntimeError false) entered]
+      [(try (checker) catch RuntimeFault false) entered]
     """) == "[false 1]"
 
 suite "Self — nested error annotations":
@@ -485,7 +485,7 @@ suite "Self — proposal integration cases":
         (protocol P (message value [] : Int))
         (type Base ^props {}) (type Child : Base ^props {})
         (impl P for Child ^^override)
-        (let early (try ((Child) .P:value) false catch RuntimeError true))
+        (let early (try ((Child) .P:value) false catch RuntimeFault true))
         (impl P for Base (message value [] : Int 7))
         [early ((Child) .P:value)])) ^in (env))
     """) == "[true 7]"

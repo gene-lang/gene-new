@@ -8,7 +8,7 @@ suite "nil — optional parameters":
   test "a nil-admitting fixed parameter is required without a default":
     check nilEval("""
       (fn f [x : Int?] : Int? x)
-      [(f nil) (f 4) (try (f "s") catch TypeError "bad") (try (f) catch Error "arity")]
+      [(f nil) (f 4) (try (f "s") catch TypeFault "bad") (try (f) catch Error "arity")]
     """) == "[nil 4 \"bad\" \"arity\"]"
   test "= nil makes a nil-admitting parameter omissible":
     check nilEval("""
@@ -43,7 +43,7 @@ suite "nil — Present":
   test "Present rejects nil and accepts every other value":
     check nilEval("""
       (fn f [x : Present] x)
-      [(f false) (f 0) (f "") (f []) (try (f nil) catch TypeError "rejected")]
+      [(f false) (f 0) (f "") (f []) (try (f nil) catch TypeFault "rejected")]
     """) == "[false 0 \"\" [] \"rejected\"]"
   test "Present? and Any are both required without a default":
     check nilEval("(fn g [x : Present?] x) [(g nil) (g 1)]") == "[nil 1]"
@@ -126,14 +126,14 @@ suite "nil — statement returns":
     check nilEval("""
       (fn f [] : Nil? 42)
       (fn g [] : (| Int Nil) 42)
-      [(try (f) catch TypeError "TypeError") (g)]
-    """) == "[\"TypeError\" 42]"
+      [(try (f) catch TypeFault "TypeFault") (g)]
+    """) == "[\"TypeFault\" 42]"
 
 suite "nil — review regressions":
   test "explicit return nil cannot bypass the declared result boundary":
     for source in [
-        "(fn f [] : Int (if true (then (return nil))) 42) (try (f) catch TypeError \"type error\")",
-        "(fn f [] : Str (if true (then (return nil))) \"ok\") (try (f) catch TypeError \"type error\")"]:
+        "(fn f [] : Int (if true (then (return nil))) 42) (try (f) catch TypeFault \"type error\")",
+        "(fn f [] : Str (if true (then (return nil))) \"ok\") (try (f) catch TypeFault \"type error\")"]:
       check nilEval(source) == "\"type error\""
 
   test "mapped Path misses are normalized to nil before publication":

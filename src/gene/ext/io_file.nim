@@ -418,7 +418,7 @@ static void gene_io_file_block_sigpipe(void) {
       raiseIoTestingError(scope, "IoClosed", operation, id,
         "file reader is unavailable")
     if result.ownerLane != currentEventLane():
-      raiseValueSemanticError("RuntimeLaneError",
+      raiseValueSemanticError("RuntimeLaneFault",
         "file reader belongs to another lane")
 
   proc settleFileClose(record: IoFileRecord, code: cint) =
@@ -796,7 +796,7 @@ static void gene_io_file_block_sigpipe(void) {
     if scope == nil:
       raise newException(GeneError, "io/" & operationName & " requires a call scope")
     if currentEventLane() != schedulerForScope(scope).rootLane:
-      raiseValueSemanticError("RuntimeLaneError",
+      raiseValueSemanticError("RuntimeLaneFault",
         "io/" & operationName & " requires the root lane")
     for ch in rawPath:
       if ch == '\0':
@@ -864,7 +864,7 @@ static void gene_io_file_block_sigpipe(void) {
       raise newException(GeneError,
         "io/tcp_connect expects host Str and port Int")
     if currentEventLane() != schedulerForScope(scope).rootLane:
-      raiseValueSemanticError("RuntimeLaneError",
+      raiseValueSemanticError("RuntimeLaneFault",
         "io/tcp_connect requires the root lane")
     let host = args[0].strVal
     if host.len == 0 or host.len > 253 or '\0' in host:
@@ -921,7 +921,7 @@ static void gene_io_file_block_sigpipe(void) {
       raise newException(GeneError,
         "io/tcp_listen expects host Str and port Int")
     if currentEventLane() != schedulerForScope(scope).rootLane:
-      raiseValueSemanticError("RuntimeLaneError",
+      raiseValueSemanticError("RuntimeLaneFault",
         "io/tcp_listen requires the root lane")
     let host = args[0].strVal
     if host.len == 0 or host.len > 253 or '\0' in host:
@@ -1054,7 +1054,7 @@ static void gene_io_file_block_sigpipe(void) {
     if scope == nil:
       raise newException(GeneError, "io/pipe requires a call scope")
     if currentEventLane() != schedulerForScope(scope).rootLane:
-      raiseValueSemanticError("RuntimeLaneError", "io/pipe requires the root lane")
+      raiseValueSemanticError("RuntimeLaneFault", "io/pipe requires the root lane")
     var fds: array[2, cint]
     if posix.pipe(fds) != 0:
       raiseIoTestingError(scope, "IoError", "pipe", 0,

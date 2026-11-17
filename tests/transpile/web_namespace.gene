@@ -22,7 +22,7 @@
   [(same_ns_typed empty_a empty_b)
    (same_ns_any empty_a empty_b)
    (same_ns_any empty_a empty_a)
-   (try (takes_ns (array_as_any)) catch TypeError false)])
+   (try (takes_ns (array_as_any)) catch TypeFault false)])
 
 (fn run [] : (List Int)
   [(math/twice 3) (math/constants/one) (math/square 4) (math/cube 2)

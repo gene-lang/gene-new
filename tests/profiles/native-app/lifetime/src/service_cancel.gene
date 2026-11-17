@@ -26,7 +26,7 @@
         # A catch body declaring inside a repeating loop (the ledger's loop
         # catch scope case), run by every handler the server later cancels.
         (for attempt in [1 2]
-          (try (fail (AssertionError ^_msg "retry"))
+          (try (fail (AssertionFault ^_msg "retry"))
            catch Error
              (var noted attempt)
              nil))

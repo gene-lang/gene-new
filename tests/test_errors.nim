@@ -25,22 +25,22 @@ proc markChildCancellationEnsure(args: openArray[Value]): Value {.nimcall.} =
 
 suite "errors — fail and catch":
   test "non-callable diagnostics name authored heads and missing namespace segments":
-    ck "(try ($nope 1) catch RuntimeError $err/.message)",
+    ck "(try ($nope 1) catch RuntimeFault $err/.message)",
        "\"cannot call $nope: gene/nope is not defined here\""
-    ck "(try ($str/nope \"a\") catch RuntimeError $err/.message)",
+    ck "(try ($str/nope \"a\") catch RuntimeFault $err/.message)",
        "\"cannot call $str/nope: gene/str/nope is not defined here\""
-    ck "(let o {^a 1}) (try (o/b 1) catch RuntimeError $err/.message)",
+    ck "(let o {^a 1}) (try (o/b 1) catch RuntimeFault $err/.message)",
        "\"cannot call o/b: the value is nil\""
-    ck "(let n 1) (try (n 2) catch RuntimeError $err/.message)",
+    ck "(let n 1) (try (n 2) catch RuntimeFault $err/.message)",
        "\"cannot call n: value is Int, which is not callable\""
-    ck "(let datum (quote (entry))) (try (datum) catch RuntimeError $err/.message)",
+    ck "(let datum (quote (entry))) (try (datum) catch RuntimeFault $err/.message)",
        "\"cannot call datum: value is Node, which is not callable\""
     ck "(let o {^a 1}) ($absent? o/b)", "true"
 
   test "call diagnostic does not repeat the callee or argument effects":
     ck "(var hits 0) " &
        "(fn absent [] (set hits (+ hits 1)) nil) " &
-       "(try ((absent) (set hits (+ hits 1))) catch RuntimeError nil) hits", "2"
+       "(try ((absent) (set hits (+ hits 1))) catch RuntimeFault nil) hits", "2"
 
   test "native calls without an authored site keep the fallback diagnostic":
     var raised = false
@@ -81,21 +81,21 @@ suite "errors — fail and catch":
        "catch ParseError \"parse\" catch Error \"other\")", "\"other\""
   test "internal errors are catchable by message shape":
     ck "(try (/ 1 0) catch Error $err/.message)", "\"division by zero\""
-  test "runtime diagnostics carry RuntimeError and satisfy Error":
-    ck "(try undefined_name catch RuntimeError $err/.message)",
+  test "runtime diagnostics carry RuntimeFault and satisfy Error":
+    ck "(try undefined_name catch RuntimeFault $err/.message)",
        "\"undefined symbol: undefined_name\""
     ck "(try (/ 1 0) catch Error $err/.message)", "\"division by zero\""
   test "$err is captured by a function created in the catch body":
-    ck "(try (/ 1 0) catch RuntimeError " &
+    ck "(try (/ 1 0) catch RuntimeFault " &
        "  (var message (fn [] $err/.message)) (message))",
        "\"division by zero\""
   test "catch headers reject patterns and wildcard spelling":
     expect GeneError:
       discard compileSource("(try (/ 1 0) catch _ 0)")
     expect GeneError:
-      discard compileSource("(try (/ 1 0) catch (RuntimeError ^_msg m) m)")
-  test "a MatchError from the body is catchable by type":
-    ck "(try (var [a b] [1]) catch MatchError $err/.message)",
+      discard compileSource("(try (/ 1 0) catch (RuntimeFault ^_msg m) m)")
+  test "a MatchFault from the body is catchable by type":
+    ck "(try (var [a b] [1]) catch MatchFault $err/.message)",
        "\"destructuring pattern did not match\""
   test "an unmatched catch re-raises":
     expect GeneError:
@@ -108,9 +108,9 @@ suite "errors — fail and catch":
     ck "(type Boom : Error) " &
        " " &
        "(try (fail (Boom ^_msg \"x\")) catch Error 7)", "7"
-  test "built-in TypeError implements Error":
-    ck "(try (fail (TypeError ^_msg \"m\" ^where \"w\" ^expected \"Int\" ^actual \"Str\")) " &
-       "catch TypeError $err/.message)", "\"m\""
+  test "built-in TypeFault implements Error":
+    ck "(try (fail (TypeFault ^_msg \"m\" ^where \"w\" ^expected \"Int\" ^actual \"Str\")) " &
+       "catch TypeFault $err/.message)", "\"m\""
   test "built-in CompileError implements Error":
     ck "(try (fail (CompileError ^_msg \"bad syntax\")) " &
        "catch CompileError $err/.message)", "\"bad syntax\""
@@ -134,9 +134,9 @@ suite "errors — fail and catch":
                      "recovered")
 
 suite "errors — checked rows":
-  test "RuntimeError can be declared in a checked row":
-    ck "(fn missing ^errors [RuntimeError] [] undefined_name) " &
-       "(try (missing) catch RuntimeError $err/.message)",
+  test "RuntimeFault can be declared in a checked row":
+    ck "(fn missing ^errors [RuntimeFault] [] undefined_name) " &
+       "(try (missing) catch RuntimeFault $err/.message)",
        "\"undefined symbol: undefined_name\""
 
   test "functions may raise declared errors":
@@ -194,9 +194,9 @@ suite "errors — checked rows":
        "  (message run ^errors [Boom] [self] (fail (Boom ^_msg \"x\")))) " &
        "(try ((Job) .Run:run) catch Boom $err/.message)", "\"x\""
 
-  test "checked rows can declare built-in MatchError":
-    ck "(fn first-two ^errors [MatchError] [xs] (var [a b] xs) a) " &
-       "(try (first-two [1]) catch MatchError $err/.message)",
+  test "checked rows can declare built-in MatchFault":
+    ck "(fn first-two ^errors [MatchFault] [xs] (var [a b] xs) a) " &
+       "(try (first-two [1]) catch MatchFault $err/.message)",
        "\"destructuring pattern did not match\""
 
   test "checked rows can declare built-in CompileError":

@@ -246,19 +246,19 @@ proc copyValue(value: AbstractValue): AbstractValue =
 proc builtinError(name: string): ErrorTypeSummary =
   result = ErrorTypeSummary(identity: "builtin:" & name, name: name, expr: newSym(name))
   case name
-  of "MessageError", "CallKindError": result.ancestors = @["builtin:TypeError"]
-  of "PathMissing": result.ancestors = @["builtin:MatchError"]
-  of "RuntimeLaneError", "ValueProtocolPending", "ValueNotHashable",
-     "ValueOperationReentry", "OrderError":
-    result.ancestors = @["builtin:RuntimeError"]
+  of "MessageFault", "CallKindFault": result.ancestors = @["builtin:TypeFault"]
+  of "PathMissing": result.ancestors = @["builtin:MatchFault"]
+  of "RuntimeLaneFault", "ValueProtocolPending", "ValueNotHashable",
+     "ValueOperationReentry", "OrderFault":
+    result.ancestors = @["builtin:RuntimeFault"]
   of "IoBusy", "IoClosed", "IoBackpressure":
     result.ancestors = @["builtin:IoError"]
   else: discard
 
-const BuiltinFaultNames = ["Fault", "Panic", "RuntimeError", "RuntimeLaneError",
-  "ValueProtocolPending", "ValueNotHashable", "ValueOperationReentry", "OrderError",
-  "TypeError", "CallKindError", "MessageError", "ErrorContractViolation",
-  "MatchError", "PathMissing", "AssertionError", "RefError", "UnknownRef",
+const BuiltinFaultNames = ["Fault", "Panic", "RuntimeFault", "RuntimeLaneFault",
+  "ValueProtocolPending", "ValueNotHashable", "ValueOperationReentry", "OrderFault",
+  "TypeFault", "CallKindFault", "MessageFault", "ContractViolation",
+  "MatchFault", "PathMissing", "AssertionFault", "RefFault", "UnknownRef",
   "RefNotResolved", "RefAlreadyResolved", "CircularRefResolution",
   "InvalidRefDefinition", "ReplyAlreadySent"]
   ## The Fault branch: defects are never part of an error row, so an operation
@@ -444,7 +444,7 @@ proc effectiveRow(value: AbstractValue): ErrorEffectSummary =
   if value.boundMessage:
     # A held message resolves its receiver in the scope captured at binding.
     # Its protocol row describes the selected implementation, not failed lookup.
-    result.mergeErrors(oneError("MessageError"))
+    result.mergeErrors(oneError("MessageFault"))
 
 proc deferredRow(value: AbstractValue): ErrorEffectSummary =
   if value != nil and value.deferredKnown: value.deferred
@@ -782,7 +782,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
   if callee.kind in {avFunction, avMessage}:
     result.errors = callee.effectiveRow()
     if callee.boundMessage and args.len == 0:
-      result.errors.mergeErrors(oneError("RuntimeError"))
+      result.errors.mergeErrors(oneError("RuntimeFault"))
       return
     if callee.fn != nil:
       let target = callee.fn
@@ -861,7 +861,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
             fn: owner.constructor), args, environment, function, loc)
           result.errors = constructed.errors
         elif owner.constructorKnown:
-          result.errors = oneError("RuntimeError") # new T without a ctor
+          result.errors = oneError("RuntimeFault") # new T without a ctor
         else:
           result.errors.open = true
       result.value = AbstractValue(kind: avNode, nominal: callee.nominal,
@@ -878,19 +878,19 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
   let native = builtinNativeErrorMetadata(callee.name)
   if native.identity.len > 0: result.mayConsumeTasks = false
   if native.identity.len > 0 and not native.nativeErrorAcceptsCall(args.len, namedCount):
-    result.errors = oneError("RuntimeError")
+    result.errors = oneError("RuntimeFault")
     return
   let name = if native.identity.len > 0: native.identity[5..^1]
              elif callee.name.startsWith("gene/"): callee.name[5..^1]
              else: callee.name
   case name
   of "assert", "test/assert_equal":
-    result.errors = oneError("AssertionError")
+    result.errors = oneError("AssertionFault")
     result.value = scalarValue("Nil")
     if name == "assert" and args[0].hasLiteral and not args[0].literal.isTruthy:
       result.neverReturns = true
   of "test/assert_raises":
-    result.errors = oneError("AssertionError")
+    result.errors = oneError("AssertionFault")
     if args.len > 1:
       var caught = ErrorEffectSummary(open: args[1].name == "Error")
       if args[1].nominal != nil: caught.named.add args[1].nominal.info
@@ -916,7 +916,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     result.value = if name in ["<", ">", "<=", ">="]: scalarValue("Bool")
                    else: scalarValue("Int")
   of "/", "//":
-    result.errors = oneError("RuntimeError")
+    result.errors = oneError("RuntimeFault")
     result.value = scalarValue("Int")
   of "to_str":
     for arg in args:
@@ -938,7 +938,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
       valid = valid and integer
     if args.len == 4:
       valid = valid and args[3].typ.kind == vkSymbol and args[3].typ.symVal == "Bool"
-    if not valid: result.errors = oneError("RuntimeError")
+    if not valid: result.errors = oneError("RuntimeFault")
     result.value = AbstractValue(kind: avRange, typ: newSym("Range"),
                                   resultType: newSym("Int"))
   of "map_size":
@@ -950,7 +950,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
       result.errors.open = true
     result.value = AbstractValue(kind: avScalar, typ: newSym("Bool"))
   of "to_stream":
-    if args.len != 1: result.errors = oneError("RuntimeError")
+    if args.len != 1: result.errors = oneError("RuntimeFault")
     if args.len > 0 and args[0].kind == avStream:
       result.value = copyValue(args[0])
     elif args.len > 0 and args[0].kind in {avList, avRange}:
@@ -1005,7 +1005,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     let target = args[^1]
     if args.len == 1:
       result.value = AbstractValue(kind: avSelector)
-      if target.kind notin {avList, avMap}: result.errors = oneError("RuntimeError")
+      if target.kind notin {avList, avMap}: result.errors = oneError("RuntimeFault")
       return
     if args[0].kind == avStream:
       analysis.retainReturnedErrors(args[0], "stream", function, loc)
@@ -1020,14 +1020,14 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     of avMap:
       # Every item must be a [key value] pair with a valid property key.
       # Generic collection annotations do not prove that tuple shape.
-      result.errors.mergeErrors(oneError("RuntimeError"))
+      result.errors.mergeErrors(oneError("RuntimeFault"))
       result.value = AbstractValue(kind: avMap, typ: newSym("PropMap"))
     else:
-      result.errors.mergeErrors(oneError("RuntimeError"))
+      result.errors.mergeErrors(oneError("RuntimeFault"))
   of "take", "stream/take":
     var count: int64
     if not args[^1].literalInt64(count) or count < 0:
-      result.errors = oneError("RuntimeError")
+      result.errors = oneError("RuntimeFault")
     if args.len == 1:
       result.value = AbstractValue(kind: avSelector)
     elif args[0].kind in {avList, avStream}:
@@ -1037,12 +1037,12 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
       result.errors.open = true
   of "read_one":
     # In addition to reader errors, non-strings and multiple forms fail with
-    # ordinary RuntimeError. read_one does not execute the syntax it returns.
-    result.errors = joinedErrors(oneError("ParseError"), oneError("RuntimeError"))
+    # ordinary RuntimeFault. read_one does not execute the syntax it returns.
+    result.errors = joinedErrors(oneError("ParseError"), oneError("RuntimeFault"))
   of "read_all":
     result.errors = oneError("ParseError")
     if namedCount > 0 or args[0].typ.kind != vkSymbol or args[0].typ.symVal != "Str":
-      result.errors.mergeErrors(oneError("RuntimeError"))
+      result.errors.mergeErrors(oneError("RuntimeFault"))
     result.value = AbstractValue(kind: avStream, deferredKnown: true,
                                   resultType: newSym("Any"), streamTaskSafe: true)
   of "parse_int":
@@ -1052,7 +1052,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     if args[0].kind notin {avList, avMap}: result.errors.open = true
     result.value = scalarValue(if name == "size": "Int" else: "Bool")
   of "List/push":
-    result.errors = oneError("RuntimeError") # immutable/shared storage or escaping CallerEnv
+    result.errors = oneError("RuntimeFault") # immutable/shared storage or escaping CallerEnv
     result.value = copyValue(args[1])
   of "Stream/next", "Stream/peek", "Stream/has_next", "Stream/close":
     result.mayConsumeTasks = not args[0].streamTaskSafe
@@ -1066,7 +1066,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     else:
       result.value = scalarValue("Nil")
     if name != "Stream/close":
-      result.errors.mergeErrors(oneError("RuntimeError")) # reentrant pulls
+      result.errors.mergeErrors(oneError("RuntimeFault")) # reentrant pulls
   of "Stream/try_next":
     # Producer failures are returned in TryNext/error, including a reentrant
     # pull; they do not escape the invocation as ordinary errors.
@@ -1074,7 +1074,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
   of "Task/join":
     # TaskOutcome contains producer failures, but an already-awaited task is
     # an invalid invocation. Joining itself does not consume the await result.
-    result.errors = oneError("RuntimeError")
+    result.errors = oneError("RuntimeFault")
     result.mayConsumeTasks = true
     if not args[0].taskPrior: result.preservedTask = args[0].taskId
   else:
@@ -1578,7 +1578,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     template load(name: string): AbstractValue =
       block:
         if name in declarations and name notin state.initialized:
-          errors.mergeErrors(oneError("RuntimeError"))
+          errors.mergeErrors(oneError("RuntimeFault"))
         let binding = state.at(environment, name)
         var value = copyValue(binding.value)
         value.target = newSym(name)
@@ -1607,7 +1607,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       NativeFastKind(kind) in {nfkDiv, nfkRem, nfkEq, nfkNe}
     template modelFastOperatorCall(args: seq[AbstractValue]) =
       if state.at(environment, inst.name).value == nil:
-        errors.mergeErrors(oneError("RuntimeError"))
+        errors.mergeErrors(oneError("RuntimeFault"))
       let callee = load(inst.name)
       let call = analysis.callValue(callee, args, environment, function, loc,
                                      constructorCall = false, namedCount = 0)
@@ -1627,7 +1627,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       push literalValue(chunk.constants[inst.intArg])
     of opLoadStdlibPath:
       if state.at(environment, "gene").value == nil:
-        errors.mergeErrors(oneError("RuntimeError"))
+        errors.mergeErrors(oneError("RuntimeFault"))
       let selected = analysis.selectValue(load("gene"),
         chunk.constants[inst.intArg], environment)
       absorb(selected)
@@ -1640,7 +1640,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       if name.len == 0 and inst.intArg >= 0 and inst.intArg < chunk.localNames.len:
         name = chunk.localNames[inst.intArg]
       if state.at(environment, name).value == nil and name notin ["this_mod", "this_pkg", "self"]:
-        errors.mergeErrors(oneError("RuntimeError"))
+        errors.mergeErrors(oneError("RuntimeFault"))
       push load(name)
     of opDefineName, opDefineLocal, opRedefineName, opRedefineLocal:
       let value = if state.stack.len > 0: state.stack[^1] else: unknownValue()
@@ -1803,7 +1803,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
             if implementation.protocolIdentity == protocolType.info.identity and
                 implementation.receiverIdentity == receiver.nominal.info.identity:
               supplied = true
-        if not supplied: errors.mergeErrors(oneError("RuntimeError"))
+        if not supplied: errors.mergeErrors(oneError("RuntimeFault"))
       push scalarValue("Nil")
     of opCall0, opCall1, opCall2, opCall, opNew:
       let count = case inst.op
@@ -1818,7 +1818,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       for _ in inst.names: discard state.pop()
       let callee = state.pop()
       if function == nil and requiresFutureDeclaration(callee.fn, state.initialized):
-        errors.mergeErrors(oneError("RuntimeError"))
+        errors.mergeErrors(oneError("RuntimeFault"))
       let call = analysis.callValue(callee, args, environment, function, loc,
                                      constructorCall = inst.op == opNew,
                                      namedCount = inst.names.len)
@@ -1835,7 +1835,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       for i in countdown(count - 1, 0): args[i] = state.pop()
       let callee = load(inst.name)
       if function == nil and requiresFutureDeclaration(callee.fn, state.initialized):
-        errors.mergeErrors(oneError("RuntimeError"))
+        errors.mergeErrors(oneError("RuntimeFault"))
       let call = analysis.callValue(callee, args, environment, function, loc)
       absorb(call)
       result.taskCode = true
@@ -2034,7 +2034,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       # failures (for example, deadlock) belong to the wait operation; a
       # child's deferred row belongs to await, not to this implicit wait.
       if inst.op != opBlockScope:
-        errors.mergeErrors(oneError("RuntimeError"))
+        errors.mergeErrors(oneError("RuntimeFault"))
       result.taskCode = result.taskCode or body.taskCode
       if body.normalState != nil:
         state.adoptScopedFlow(body.normalState[], bodyChunk)
@@ -2071,7 +2071,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
             proof.taskIsolated = true
       analysis.retainReturnedErrors(proof, "task", function, loc)
       errors.mergeErrors(task.deferredRow())
-      if not task.taskFresh: errors.mergeErrors(oneError("RuntimeError"))
+      if not task.taskFresh: errors.mergeErrors(oneError("RuntimeFault"))
       if not task.taskIsolated:
         for other in state.knownTasks:
           if other != task.taskId: state.mayConsumed.incl other
@@ -2200,7 +2200,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         let branchValue = analyzeBranch(matched.elseBody)
         value = if value == nil: branchValue else: mergeValue(value, branchValue)
       if not exhaustive:
-        errors.mergeErrors(oneError("MatchError"))
+        errors.mergeErrors(oneError("MatchFault"))
         observeException(state)
       result.taskCode = result.taskCode or branchTaskCode
       if exitState != nil: state.adoptFlow(exitState[])
@@ -2674,7 +2674,7 @@ proc attachErrorInterfaces*(analysis: ErrorAnalysis, iface: CompileNamespaceInte
             entry.constructorErrors = CallableErrorSummary(
               identity: nominal.info.identity & "/missing-constructor",
               version: analysis.root.errorSummaryVersion,
-              inferredRow: oneError("RuntimeError"),
+              inferredRow: oneError("RuntimeFault"),
               resultType: nominal.info.expr)
   attach(analysis.rootEnvironment, iface)
 

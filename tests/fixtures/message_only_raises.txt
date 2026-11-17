@@ -6,7 +6,7 @@
 # 1	src/gene/aot_checked.nim
 # 1	src/gene/callable_reflection.nim
 # 426	src/gene/compiler.nim
-# 10	src/gene/error_runtime.nim
+# 11	src/gene/error_runtime.nim
 # 22	src/gene/events.nim
 # 1	src/gene/execution_limits.nim
 # 1	src/gene/ext/csv.nim
@@ -458,6 +458,7 @@ src/gene/compiler.nim	wildcard, alias, and re-export imports must be uncondition
 src/gene/compiler.nim	yield expects one value
 src/gene/compiler.nim	yield is only valid inside fn
 src/gene/compiler.nim	yield requires an explicit ^^generator declaration
+src/gene/error_runtime.nim	Fault types are unchecked; remove 
 src/gene/error_runtime.nim	^errors entries must be Error types
 src/gene/error_runtime.nim	impl replacement/removal invalidates strict dependent 
 src/gene/error_runtime.nim	module replacement broadens a retained strict error assumption in 

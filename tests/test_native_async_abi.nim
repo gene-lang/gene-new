@@ -105,9 +105,9 @@ const prelude = """
 (fn outcome [t]
   (try ["ok" (await t)]
     catch GpuError ["gpu" $err/.message $err/detail]
-    catch TypeError ["type" $err/.message]
-    catch ErrorContractViolation ["violation"]
-    catch RuntimeError ["runtime" $err/.message]))
+    catch TypeFault ["type" $err/.message]
+    catch ContractViolation ["violation"]
+    catch RuntimeFault ["runtime" $err/.message]))
 """
 
 type Harness = object
@@ -831,7 +831,7 @@ const patternSource = """
         (GpuError ^_msg "device" ^detail (native/record_value bytes)))
       (native/settle_ok index (native/record_value bytes)))
     catch Error
-      (native/settle_err index (RuntimeError ^_msg "malformed record"))))
+      (native/settle_err index (RuntimeFault ^_msg "malformed record"))))
 (fn open_subscription []
   ($native/ingress/open pattern_library ingress_handler
     ^register "gene_pattern_register" ^unregister "gene_pattern_unregister"
@@ -909,7 +909,7 @@ suite "ingress completion pattern":
       let malformed = start(3)
       complete(3, 2, 0)
       drive([malformed])
-      # The handler's own catch settled it: the error is its RuntimeError,
+      # The handler's own catch settled it: the error is its RuntimeFault,
       # and the subscription that delivered it is still active.
       let malformedProbe = newScope(scope)
       malformedProbe.define("subject", malformed)

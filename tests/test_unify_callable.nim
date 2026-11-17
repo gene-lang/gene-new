@@ -33,9 +33,9 @@ suite "unified callable — direct message syntax":
       (protocol Paint (message paint [color] : Str))
       (let log [])
       (fn note [x] (log .push x) x)
-      (try (Paint:paint (note 1) (note 2)) catch MessageError nil)
+      (try (Paint:paint (note 1) (note 2)) catch MessageFault nil)
       (let held Paint:paint)
-      (try (held (note 3) (note 4)) catch MessageError nil)
+      (try (held (note 3) (note 4)) catch MessageFault nil)
       log
     """, "[1 3 4]"
 
@@ -72,7 +72,7 @@ suite "unified callable — direct message syntax":
       (type Child : Base
         (message value [] ^^override (+ 1 (Self:value super))))
       [(Self:value (Child))
-       (try (Base:value (Child)) false catch CallKindError true)]
+       (try (Base:value (Child)) false catch CallKindFault true)]
     """, "[2 true]"
 
   test "held messages retain authored scope while held sends use their site":
@@ -97,7 +97,7 @@ suite "unified callable — checked signatures":
       (let add : (Callable [Int Int] Int) +)
       (fn function_only [f : Fn] true)
       [(checked 2) (add 3 4) (function_only original)
-       (try (function_only checked) false catch TypeError true)]
+       (try (function_only checked) false catch TypeFault true)]
     """, "[3 7 true true]"
 
   test "arguments and results are checked around the target invocation":
@@ -105,8 +105,8 @@ suite "unified callable — checked signatures":
       (let effects [])
       (let checked : (Callable [Int] Int)
         (fn [x] (effects .push x) "bad"))
-      [(try (checked "bad") catch TypeError $err/where)
-       (try (checked 1) catch TypeError $err/where)
+      [(try (checked "bad") catch TypeFault $err/where)
+       (try (checked 1) catch TypeFault $err/where)
        effects]
     """, "[\"Callable argument 0\" \"Callable result\" [1]]"
 
@@ -116,7 +116,7 @@ suite "unified callable — checked signatures":
       (type Good ^props {} (impl Show (message show [] : Any "ok")))
       (type Bad ^props {} (impl Show (message show [] : Any 7)))
       (let show : (Callable [Any] Str) Show:show)
-      [(show (Good)) (try (show (Bad)) false catch TypeError true)]
+      [(show (Good)) (try (show (Bad)) false catch TypeFault true)]
     """, "[\"ok\" true]"
 
   test "selectors, constructors, and user Callable values participate":
@@ -135,9 +135,9 @@ suite "unified callable — checked signatures":
       (fn collect [^tag, xs...] [tag xs])
       (let checked : (Callable [Int Int...] List ^named {^tag Str}) collect)
       [(checked 1 [2 3]... ^tag "t")
-       (try (checked 1) false catch TypeError true)
-       (try (checked 1 ^tag "t" ^extra 2) false catch TypeError true)
-       (try (checked 1 "bad" ^tag "t") false catch TypeError true)]
+       (try (checked 1) false catch TypeFault true)
+       (try (checked 1 ^tag "t" ^extra 2) false catch TypeFault true)
+       (try (checked 1 "bad" ^tag "t") false catch TypeFault true)]
     """, "[[\"t\" [1 2 3]] true true true]"
 
   test "omitted defaults run per call and Any named parameters remain required":
@@ -148,7 +148,7 @@ suite "unified callable — checked signatures":
       (let checked : (Callable [Int] Int ^named {^n Int?}) target)
       (let required : (Callable [Int] Int ^named {^n Any}) target)
       [(count .get) (checked 10) (checked 10)
-       (try (required 10) false catch TypeError true)]
+       (try (required 10) false catch TypeFault true)]
     """, "[0 11 12 true]"
 
   test "explicit Nil named values are preserved":
@@ -166,14 +166,14 @@ suite "unified callable — checked signatures":
       (let denied : (Callable [Int] Int ^errors []) fail_it)
       [(try (allowed 7) catch Boom $err/n)
        (try (denied 1) false catch Error true)
-       (try (denied "bad") false catch TypeError true)]
+       (try (denied "bad") false catch TypeFault true)]
     """, "[7 true true]"
 
   test "Fexpr values are excluded without changing nominal Fn matching":
     unifyCallableCheck """
       (fn syntax! [x] x)
       (try (let checked : (Callable [Int] Int) syntax!) false
-       catch TypeError true)
+       catch TypeFault true)
     """, "true"
 
   test "a checked message view is invocation-only":
@@ -181,13 +181,13 @@ suite "unified callable — checked signatures":
       (type Box ^props {} (message value [] 7))
       (let checked : (Callable [Box] Int) Self:value)
       [(checked (Box))
-       (try ((Box) .%checked) false catch CallKindError true)]
+       (try ((Box) .%checked) false catch CallKindFault true)]
     """, "[7 true]"
 
   test "admission does not bypass the target's own arity":
     unifyCallableCheck """
       (let checked : (Callable [Int] Int) (fn [x y] (+ x y)))
-      (try (checked 1) false catch RuntimeError true)
+      (try (checked 1) false catch RuntimeFault true)
     """, "true"
 
   test "signature types keep their authored implementation scope":
@@ -215,7 +215,7 @@ suite "unified callable — checked signatures":
       (fn make [n] : (Callable [Int] Int) (fn [x] (+ x n)))
       (let checked (make 3))
       (let callbacks : (List (Callable [Int] Int)) [(fn [x] "bad")])
-      [(checked 4) (try (callbacks/0 1) false catch TypeError true)]
+      [(checked 4) (try (callbacks/0 1) false catch TypeFault true)]
     """, "[7 true]"
 
   test "view calls preserve the original observable Call site":

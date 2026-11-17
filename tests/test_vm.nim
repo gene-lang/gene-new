@@ -1491,8 +1491,8 @@ suite "module references":
     ck "(var caught (try ($ref circular ($deref circular)) " &
        " catch CircularRefResolution $err/name)) " &
        "($ref circular 1) caught", "\"circular\""
-    ck "(try ($ref retry (fail (MatchError ^_msg \"no\"))) " &
-       " catch MatchError nil) ($ref retry 9) ($deref retry)", "9"
+    ck "(try ($ref retry (fail (MatchFault ^_msg \"no\"))) " &
+       " catch MatchFault nil) ($ref retry 9) ($deref retry)", "9"
 
   test "invalid definitions and unresolved completed units fail":
     expect GeneError:
@@ -2268,7 +2268,7 @@ suite "vm — macros":
       check function.scopelessChunk != nil
     ck "(macro wrong [] `(do (let x \"wrong\") x)) " &
        "(fn f [x : Int] : Int (wrong)) " &
-       "(try (f 1) catch TypeError \"checked\")", "\"checked\""
+       "(try (f 1) catch TypeFault \"checked\")", "\"checked\""
 
   test "expansion scopes preserve function-body bindings and escaped closures":
     ck "(macro make_square [] `(fn [x] (let y (* x x)) y)) " &
@@ -2692,7 +2692,7 @@ suite "vm — special forms":
   test "typed var checks gradual boundaries":
     ck "(var x : Int 5) (+ x 1)", "6"
     ck "(var maybe : (? Int)) maybe", "nil"
-    ck "(try (var x : Int \"no\") x catch TypeError $err/where)",
+    ck "(try (var x : Int \"no\") x catch TypeFault $err/where)",
        "\"var 'x'\""
     ck "(type Request ^props {^path Str}) " &
        "(fn app [raw] (var req : Request raw) req/path) " &
@@ -2700,27 +2700,27 @@ suite "vm — special forms":
        "\"/\""
     ck "(try (var s : (Stream Int Never) ($to_stream [\"bad\"])) " &
        "     (s .next) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"Stream/next item\""
   test "set reassigns an existing binding":
     ck "(var x 1) (set x 99) x", "99"
   test "set checks typed binding boundaries":
     ck "(var x : Int 1) (set x 2) x", "2"
     ck "(try (var x : Int 1) (set x \"bad\") x " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"set 'x'\""
     ck "(try (fn f [x : Int] (set x \"bad\") x) (f 1) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"set 'x'\""
     ck "(try (fn f [^x : Int] (set x \"bad\") x) (f ^x 1) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"set 'x'\""
     ck "(try (fn (f item) [x : item] (set x \"bad\") x) (f 1) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"set 'x'\""
     ck "(try (fn outer [] (var x : Int 1) (fn [] (set x \"bad\"))) " &
        "     ((outer)) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"set 'x'\""
   test "slotted conditional locals remain undefined when not executed":
     ck "((fn [flag] (if flag (var x 1) nil) x) true)", "1"
@@ -2875,7 +2875,7 @@ suite "vm — functions and closures":
   test "recoverable errors expose bytecode frame traces":
     ck "(fn outer [] (inner)) " &
        "(fn inner [] (var x : Int \"bad\") x) " &
-       "(try (outer) catch TypeError " &
+       "(try (outer) catch TypeFault " &
        "  [$err/trace/0/name $err/trace/0/kind " &
        "   $err/trace/1/name $err/trace/1/kind])",
        "[\"inner\" \"bytecode\" \"outer\" \"bytecode\"]"
@@ -2886,20 +2886,20 @@ suite "vm — functions and closures":
     ck "(fn add64 [x : I64 y : I64] : I64 (+ x y)) (add64 20 22)", "42"
     ck "(fn mul64 [x : F64 y : F64] : F64 (* x y)) (mul64 3.5 2.0)", "7.0"
     ck "(fn add [x : Int y : Int] : Int (+ x y)) " &
-       "(try (add \"bad\" 1) catch TypeError $err/where)",
+       "(try (add \"bad\" 1) catch TypeFault $err/where)",
        "\"parameter 'x'\""
     ck "(fn pick [a : Int b : Int c : Int] : Int b) " &
-       "(try (pick 1 2 \"bad\") catch TypeError $err/where)",
+       "(try (pick 1 2 \"bad\") catch TypeFault $err/where)",
        "\"parameter 'c'\""
     ck "(fn outer [] (add \"bad\" 1)) " &
        "(fn add [x : Int y : Int] : Int (+ x y)) " &
-       "(try (outer) catch TypeError " &
+       "(try (outer) catch TypeFault " &
        "  [$err/trace/0/name $err/trace/0/kind " &
        "   $err/trace/1/name $err/trace/1/kind])",
        "[\"add\" \"typed_native\" \"outer\" \"bytecode\"]"
     ck "(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
        "(try (add64 9223372036854775807 1) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"return from 'add64'\""
   test "calling a non-callable raises":
     expect GeneError: discard runStr("(1 2 3)")
@@ -2920,9 +2920,9 @@ suite "vm — optimized typed boundaries":
       let declaration = "(var x : " & annotation & " " & initial & ") "
       check runStr(declaration & "(set x " & next & ") x").print() == expected
       check runStr(declaration & "(try (set x " & wrong &
-        ") catch TypeError $err/where)").print() == "\"set 'x'\""
+        ") catch TypeFault $err/where)").print() == "\"set 'x'\""
       check runStr("(try (var x : " & annotation & " " & wrong &
-        ") catch TypeError $err/where)").print() == "\"var 'x'\""
+        ") catch TypeFault $err/where)").print() == "\"var 'x'\""
 
   test "Any keeps object identity and authored function annotations":
     let chunk = compileSource("(fn keep [x : Any] : Any x)")
@@ -2942,16 +2942,16 @@ suite "vm — optimized typed boundaries":
 
   test "refinements aliases optional types and Cell adaptation stay checked":
     ck """
-      (try (var x : I8 128) catch TypeError $err/where)
+      (try (var x : I8 128) catch TypeFault $err/where)
     """, "\"var 'x'\""
     ck """
       (alias Narrow I8)
       (var x : Narrow 1)
-      (try (set x 128) catch TypeError $err/where)
+      (try (set x 128) catch TypeFault $err/where)
     """, "\"set 'x'\""
     ck """
       (var x : F64? nil)
-      (try (set x "bad") catch TypeError $err/where)
+      (try (set x "bad") catch TypeFault $err/where)
     """, "\"set 'x'\""
     try:
       discard runStr("""
@@ -2965,47 +2965,47 @@ suite "vm — optimized typed boundaries":
   test "parameter and assignment failures keep their complete diagnostics":
     ck """
       (fn text [x : Str] (if (== x "") "empty" x))
-      (try (text 7) catch TypeError
+      (try (text 7) catch TypeFault
         [$err/where $err/expected $err/actual $err/.message])
     """, "[\"parameter 'x'\" \"Str\" \"Int\" \"parameter 'x' expected Str, got Int\"]"
     ck """
-      (try (var text : Str "ok") (set text 7) catch TypeError
+      (try (var text : Str "ok") (set text 7) catch TypeFault
         [$err/where $err/expected $err/actual $err/.message])
     """, "[\"set 'text'\" \"Str\" \"Int\" \"set 'text' expected Str, got Int\"]"
 
   test "return labels survive bytecode calls and native callbacks":
     ck """
       (fn text [x] : Str (if x 7 "ok"))
-      (try (text true) catch TypeError [$err/where $err/.message])
+      (try (text true) catch TypeFault [$err/where $err/.message])
     """, "[\"return from 'text'\" \"return from 'text' expected Str, got Int\"]"
     ck """
       (fn text [x] : Str (if x 7 "ok"))
-      (try ($map [true] text) catch TypeError [$err/where $err/.message])
+      (try ($map [true] text) catch TypeFault [$err/where $err/.message])
     """, "[\"return from 'text'\" \"return from 'text' expected Str, got Int\"]"
     ck """
       (try ((fn [x] : Str (if x 7 "ok")) true)
-        catch TypeError $err/where)
+        catch TypeFault $err/where)
     """, "\"return from ''\""
 
   test "lazy parameter labels preserve stream guidance":
     ck """
       (fn number [x : Int] (if (> x 0) x 0))
-      (try (number ($to_stream [1])) catch TypeError $err/.message)
+      (try (number ($to_stream [1])) catch TypeFault $err/.message)
     """, "\"parameter 'x' expected Int, got Stream; if this function should receive individual items, use '=>' in the pipeline\""
 
   test "field labels keep their declaring type and index":
     ck """
       (type Record ^props {^name Str})
-      (try (Record ^name 7) catch TypeError $err/where)
+      (try (Record ^name 7) catch TypeFault $err/where)
     """, "\"field 'name' for Record\""
     ck """
       (type Record ^props {^name Str})
       (let record (Record ^name "ok"))
-      (try (set record/name 7) catch TypeError $err/where)
+      (try (set record/name 7) catch TypeFault $err/where)
     """, "\"field 'name' for Record\""
     ck """
       (type Pair ^body [Int Str])
-      (try (Pair 1 7) catch TypeError $err/where)
+      (try (Pair 1 7) catch TypeFault $err/where)
     """, "\"body field 1 for Pair\""
 
 suite "vm — fused stdlib paths":
@@ -3361,7 +3361,7 @@ suite "vm — fused sends":
       # argument whose slot was never defined.
       (let xs [1])
       (if flag (var y 1))
-      (try (xs .bogus y) catch MessageError "message" catch Error "argument"))
+      (try (xs .bogus y) catch MessageFault "message" catch Error "argument"))
     (fn native_error [xs]
       # A native that fails reports the call's location.
       (xs .set 7 0))
@@ -3557,7 +3557,7 @@ suite "vm — fused sends":
     let closure = compileSource("""
       (fn make [] (let c ($cell 0)) (fn [] (c .get)))
       (let channel ($channel))
-      (try (channel .try_send (make)) catch TypeError "not Send")
+      (try (channel .try_send (make)) catch TypeFault "not Send")
     """)
     check closure.markOuterReceivers() == 1
     check run(closure, newGlobalScope()).print() == "\"not Send\""
@@ -3663,7 +3663,7 @@ suite "vm — scalar call binding":
       (fn setter [x : Str] : Any (fn [value] (set x value) x))
       (let write (setter "first"))
       (let valid (write "second"))
-      (let failure (try (write 7) catch TypeError $err/where))
+      (let failure (try (write 7) catch TypeFault $err/where))
       [valid failure (write "third")]
     """, "[\"second\" \"set 'x'\" \"third\"]"
 
@@ -3675,7 +3675,7 @@ suite "vm — scalar call binding":
       (fn update [x : Str] : Str (parameter_x "changed"))
       (fn reject [x : Str] : Str (parameter_x 7))
       [(read "initial") (update "initial")
-       (try (reject "initial") catch TypeError $err/where)
+       (try (reject "initial") catch TypeFault $err/where)
        (read "last")]
     """), scope).print() ==
       "[\"initial\" \"changed\" \"set 'x'\" \"last\"]"
@@ -3686,7 +3686,7 @@ suite "vm — scalar call binding":
       (fn outer [] : F64 (number 2.0))
       [(number 1.0) (outer) ((if true number nil) 3.0)
        (number [4.0]...) ($map [5.0 6.0] number)
-       (try (number 1) catch TypeError $err/where)]
+       (try (number 1) catch TypeFault $err/where)]
     """, "[2.0 3.0 4.0 5.0 [6.0 7.0] \"parameter 'x'\"]"
 
   test "pooled scalar and Any calls do not retain another call's contract":
@@ -3699,7 +3699,7 @@ suite "vm — scalar call binding":
         (text "ok")
         (integer 1)
         (set last (dynamic "value")))
-      [last (try (text 1) catch TypeError $err/where) (integer 2)]
+      [last (try (text 1) catch TypeFault $err/where) (integer 2)]
     """, "[[\"value\"] \"parameter 'x'\" 2]"
 
 suite "vm — plain native dispatch":
@@ -4164,8 +4164,8 @@ suite "vm — namespaces":
        "(fn uses_root [] ($ns .lookup \"payload\")) " &
        "(let first ($channel ^capacity 1)) " &
        "(let second ($channel ^capacity 1)) " &
-       "[(try (first .try_send $ns) \"sent\" catch TypeError \"rejected\") " &
-       " (try (second .try_send uses_root) \"sent\" catch TypeError \"rejected\")]",
+       "[(try (first .try_send $ns) \"sent\" catch TypeFault \"rejected\") " &
+       " (try (second .try_send uses_root) \"sent\" catch TypeFault \"rejected\")]",
        "[\"rejected\" \"rejected\"]"
   test "namespace context exists during macro phase initialization":
     ck "(ns n (fn a [] 7) (fn b [] ($ns/a))) " &
@@ -4175,8 +4175,8 @@ suite "vm — namespaces":
        "(fn n/uses [] ($ns .lookup \"uses\")) " &
        "(fn n/plain [] 1) " &
        "(let ch ($channel ^capacity 1)) " &
-       "[(try (ch .try_send n/uses) \"sent\" catch TypeError \"rejected\") " &
-       " (try (ch .try_send n/plain) \"sent\" catch TypeError \"rejected\")]",
+       "[(try (ch .try_send n/uses) \"sent\" catch TypeFault \"rejected\") " &
+       " (try (ch .try_send n/plain) \"sent\" catch TypeFault \"rejected\")]",
        "[\"rejected\" \"sent\"]"
   test "namespace extension rejects duplicates and invalid names":
     expect GeneError: discard runStr("(ns n (fn a [] 1)) (fn n/a [] 2)")
@@ -4208,7 +4208,7 @@ suite "vm — named rest and property spread":
   test "named rest annotations and defaults are enforced":
     ck "(fn f [^opts... : Int] opts) (f ^a 1 ^b 2)", "{^a 1 ^b 2}"
     ck "(fn f [^opts... : Int] opts) " &
-       "(try (f ^a \"bad\") catch TypeError \"type-error\")",
+       "(try (f ^a \"bad\") catch TypeFault \"type-error\")",
        "\"type-error\""
     expect GeneError: discard runStr("(fn f [^opts... = 1] opts)")
     expect GeneError: discard runStr("(fn f [^a... ^b...] 1)")
@@ -4541,7 +4541,7 @@ suite "vm — channels":
 
   test "typed channels check items on send":
     ck "(var ch : (Channel Int) ($channel)) " &
-       "(try (ch .send \"bad\") catch TypeError $err/where)",
+       "(try (ch .send \"bad\") catch TypeFault $err/where)",
        "\"Channel/send item\""
     ck "(var ch : (Channel Int) ($channel)) " &
        "(ch .send 7) " &
@@ -4550,7 +4550,7 @@ suite "vm — channels":
     ck "(var raw ($channel)) " &
        "(raw .send \"bad\") " &
        "(var ch : (Channel Int) raw) " &
-       "(try (ch .recv) catch TypeError $err/where)",
+       "(try (ch .recv) catch TypeFault $err/where)",
        "\"Channel/recv item\""
 
   test "channel sends require Send values":
@@ -4588,20 +4588,20 @@ suite "vm — channels":
        "((ch .recv) .load)",
        "7"
     ck "(var ch ($channel)) " &
-       "(try (ch .send [1]) catch TypeError $err/expected)",
+       "(try (ch .send [1]) catch TypeFault $err/expected)",
        "\"Send\""
     ck "(var ch ($channel)) " &
-       "(try (ch .send #[($cell 1)]) catch TypeError $err/where)",
+       "(try (ch .send #[($cell 1)]) catch TypeFault $err/where)",
        "\"Channel/send item\""
     ck "(var ch ($channel)) " &
        "(var captured ($cell 1)) " &
        "(var f (fn [] (captured .get))) " &
-       "(try (ch .send f) catch TypeError $err/expected)",
+       "(try (ch .send f) catch TypeFault $err/expected)",
        "\"Send\""
     ck "(var ch ($channel)) " &
        "(var captured 1) " &
        "(var f (fn [] (set captured (+ captured 1)))) " &
-       "(try (ch .send f) catch TypeError $err/expected)",
+       "(try (ch .send f) catch TypeFault $err/expected)",
        "\"Send\""
     ck "(type Msg ^props {^x Int} ^impl [Send]) " &
        "(impl Send for Msg) " &
@@ -5274,11 +5274,11 @@ suite "vm — actors":
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-       "(try (a .send \"bad\") catch TypeError $err/where)",
+       "(try (a .send \"bad\") catch TypeFault $err/where)",
        "\"actor/send message\""
     ck "(var a ($actor/spawn ^init (fn [] 0) " &
        "  ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-       "(try (a .send [1]) catch TypeError $err/expected)",
+       "(try (a .send [1]) catch TypeFault $err/expected)",
        "\"Send\""
 
   test "actor message type is explicit inferred or Any":
@@ -5334,7 +5334,7 @@ suite "vm — actors":
        "  (fn (choose result err) [t : (Task result err) fallback : result] " &
        "    fallback) " &
        "  (try (choose (a .ask (fn [reply] (Get ^reply reply))) \"bad\") " &
-       "       catch TypeError $err/expected))",
+       "       catch TypeFault $err/expected))",
        "\"Int\""
 
   test "actor ask enforces ReplyTo result type and reports missing replies":
@@ -5348,7 +5348,7 @@ suite "vm — actors":
        "          (reply .send \"bad\") " &
        "          ($actor/continue state)))))) " &
        "(try (await (a .ask (fn [reply] (Get ^reply reply)))) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"ReplyTo/send value\""
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
        "(impl Send for Get) " &
@@ -5657,7 +5657,7 @@ suite "vm — actors":
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] 99))) " &
-       "(try (a .send 1) catch TypeError $err/where)",
+       "(try (a .send 1) catch TypeFault $err/where)",
        "\"actor handler return\""
 
   test "actor operations require actors":
@@ -5923,12 +5923,12 @@ suite "vm — streams":
        "(accept ($to_stream [\"bad\"]))", "7"
     ck "(try (fn first [s : (Stream Int Never)] (s .next)) " &
        "     (first ($to_stream [\"bad\"])) " &
-       "catch TypeError $err/where)",
+       "catch TypeFault $err/where)",
        "\"Stream/next item\""
     ck "(try (fn typed [s] : (Stream Int Never) s) " &
        "     (var s (typed ($to_stream [\"bad\"]))) " &
        "     (s .next) " &
-       "catch TypeError $err/expected)",
+       "catch TypeFault $err/expected)",
        "\"Int\""
     expect GeneError:
       discard runStr("(fn first [s : Stream] s) (first [1])")
@@ -5941,7 +5941,7 @@ suite "vm — streams":
     expect GeneError: discard runStr("($into ($to_stream [1]) {})")
     # The generic collection operations dispatch on the receiver (design §6.2):
     # eager kinds answer in their own kind, and a receiver whose type declares
-    # no such method raises the send path's MessageError (§9) from both the
+    # no such method raises the send path's MessageFault (§9) from both the
     # send and the function spelling.
     expect GeneError: discard runStr("($map 42 (fn [x] x))")
     expect GeneError: discard runStr("(42 .filter (fn [x] true))")

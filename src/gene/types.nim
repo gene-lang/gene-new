@@ -70,7 +70,7 @@ type
     loc*: SourceLoc
     errorKind*: GeneErrorKind
     errorDetail*: string
-  MatchError* = object of GeneError    ## pattern match / destructuring failure
+  MatchFault* = object of GeneError    ## pattern match / destructuring failure
   GenePanic* = object of CatchableError
     ## Unrecoverable failure (`panic`). Not caught by `try/catch`.
     errVal*: Value

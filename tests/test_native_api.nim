@@ -297,7 +297,7 @@ suite "native api — roots and trampoline":
 
     let failedTask = geneNewAsyncTask()
     scope.define("failed-task", failedTask)
-    let errorRoot = geneRoot(run(compileSource("(RuntimeError ^_msg \"detail\")"), scope))
+    let errorRoot = geneRoot(run(compileSource("(RuntimeFault ^_msg \"detail\")"), scope))
     let failed = geneTaskFail(failedTask, "native async failed", errorRoot,
                               true, scope)
     check failed.status == gsOk
@@ -308,7 +308,7 @@ suite "native api — roots and trampoline":
     except GeneError as e:
       check e.msg == "native async failed"
       check e.hasErrVal
-      check e.errVal.head.typeName == "RuntimeError"
+      check e.errVal.head.typeName == "RuntimeFault"
       check e.errVal.props["_msg"].strVal == "detail"
     geneRootRelease(errorRoot)
 
@@ -517,7 +517,7 @@ suite "native api — roots and trampoline":
     # A borrowed pointer fails the declared field type, and the ctor's own
     # owned handle count is untouched because it never installed one.
     check "field 'handle' for Blob" in run(compileSource(
-      "(try (new Blob ^^borrowed) catch TypeError $err/where)"),
+      "(try (new Blob ^^borrowed) catch TypeFault $err/where)"),
       scope).print()
     check releasedPointers == releasedAfterOwned
 

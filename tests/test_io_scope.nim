@@ -146,8 +146,8 @@ suite "I/O cleanup leases — structured scope":
       (try
         (scope
           (begin_cleanup_lease)
-          (fail (RuntimeError ^_msg "stop")))
-        catch RuntimeError (cleanup_retired?))
+          (fail (RuntimeFault ^_msg "stop")))
+        catch RuntimeFault (cleanup_retired?))
     """), scope)
     check value.boolVal
     check pendingCleanupLease.kind == vkNil
@@ -167,12 +167,12 @@ suite "I/O cleanup leases — structured scope":
         (scope
           (let operation (begin_sim_io ($binary/from_str "abc")))
           (try
-            (fail (RuntimeError ^_msg "stop"))
+            (fail (RuntimeFault ^_msg "stop"))
             ensure (do
               (close_sim_io)
               (let stats ($runtime/gc_stats))
               (peak .set stats/io_cleanup_leases))))
-        catch RuntimeError nil)
+        catch RuntimeFault nil)
       (let after ($runtime/gc_stats))
       [(peak .get) after/io_retained_bytes after/io_cleanup_leases
        after/io_root_cleanup_tasks
