@@ -1,8 +1,12 @@
 import gene/[compiler, error_analysis, gir, gir_codec, printer, reader, types, vm]
 import std/[json, os, strutils, tables, unittest]
 
+const probePrelude = "(type Probe : Error) "
+  ## An ordinary Error for snippets that need one. Assertions and type
+  ## failures are Faults, which rows and `catch Error` do not see.
+
 proc gradualErrorEval(source: string): Value =
-  run(compileSource(source, sourceName = "error_handling_spec.gene"),
+  run(compileSource(probePrelude & source, sourceName = "error_handling_spec.gene"),
       newGlobalScope(newApplication()))
 
 template errorContractCheck(source, expected: string) =
@@ -40,7 +44,7 @@ suite "errors — gradual runtime contract":
 
   test "a raised error is the original value and answers message":
     errorContractCheck """
-      (let original (AssertionFault ^_msg "same"))
+      (let original (Probe ^_msg "same"))
       (try (fail original)
         catch Error [(same? original $err) (== original $err)
           $err/.message $err/_msg])
@@ -109,15 +113,15 @@ suite "errors — gradual runtime contract":
     for source in [
         "(type Old ^props {^message Str}) (impl Error for Old)",
         "(type Old ^props {^message Str} ^impl [Error])",
-        "(try (fail (AssertionFault ^_msg \"x\")) catch Error $err_msg)",
-        "(try (fail (AssertionFault ^_msg \"x\")) catch Error $err/.Error:message)"]:
+        "(try (fail (Probe ^_msg \"x\")) catch Error $err_msg)",
+        "(try (fail (Probe ^_msg \"x\")) catch Error $err/.Error:message)"]:
       expect GeneError: discard gradualErrorEval(source)
 
   test "the catch binding is lexical and respects nesting":
     errorContractCheck """
-      (let later (try (fail (AssertionFault ^_msg "outer"))
+      (let later (try (fail (Probe ^_msg "outer"))
         catch Error
-          (let inner (try (fail (AssertionFault ^_msg "inner"))
+          (let inner (try (fail (Probe ^_msg "inner"))
             catch Error $err/.message))
           (fn [] [inner $err/.message])))
       (later)
@@ -127,7 +131,7 @@ suite "errors — gradual runtime contract":
 
   test "open error rows admit unknown ordinary errors without changing them":
     errorContractCheck """
-      (fn open [callback] ^errors [AssertionFault Error] (callback))
+      (fn open [callback] ^errors [Probe Error] (callback))
       (try (open (fn [] (/ 1 0))) catch RuntimeFault $err/.message)
     """, "\"division by zero\""
 
@@ -141,9 +145,9 @@ suite "errors — gradual runtime contract":
       (fn closed [] ^errors [Empty Both ParentError]
         (fail (ChildError ^_msg "child")))
       (fn opened [] ^errors [ParentError Open Empty]
-        ($assert false "other"))
+        (fail (Probe ^_msg "other")))
       [(try (closed) catch ParentError $err/.message)
-       (try (opened) catch AssertionFault $err/.message)]
+       (try (opened) catch Probe $err/.message)]
     """, "[\"child\" \"other\"]"
 
   test "error rows name Error types only":
@@ -167,11 +171,11 @@ suite "errors — gradual runtime contract":
 
   test "a checked row creates one violation and retains the original cause":
     errorContractCheck """
-      (fn closed [] ^errors [] ($assert false "cause"))
+      (fn closed [] ^errors [] (fail (Probe ^_msg "cause")))
       (fn middle [] ^errors [] (closed))
       (fn outer [] ^errors [] (middle))
       (try (outer)
-        catch AssertionFault "wrong"
+        catch Probe "wrong"
         catch ContractViolation [$err/where $err/_cause/_msg
           $err/_cause/.message])
     """, "[\"closed\" \"cause\" \"cause\"]"
@@ -179,7 +183,7 @@ suite "errors — gradual runtime contract":
   test "checked callable views create the same single violation":
     errorContractCheck """
       (let guarded : (Callable [] Any ^errors [])
-        (fn [] ($assert false "view cause")))
+        (fn [] (fail (Probe ^_msg "view cause"))))
       (fn outer [] ^errors [] (guarded))
       (try (outer) catch ContractViolation
         [$err/where $err/_cause/.message])
@@ -219,7 +223,7 @@ suite "errors — gradual runtime contract":
   test "a cause is a Throwable":
     errorContractCheck """
       (type Outer : Error)
-      (let inner (AssertionFault ^_msg "inner"))
+      (let inner (Probe ^_msg "inner"))
       (let outer (Outer ^_msg "outer" ^_cause inner))
       [outer/_cause/.message
        (try (Outer ^_cause 3) catch TypeFault "rejected")]
@@ -227,7 +231,7 @@ suite "errors — gradual runtime contract":
 
   test "default-expression failures belong to the callee's row":
     errorContractCheck """
-      (fn with_default [x = ($assert false "default")] ^errors [] x)
+      (fn with_default [x = (fail (Probe ^_msg "default"))] ^errors [] x)
       [(with_default 7)
        (try (with_default) catch ContractViolation
          [$err/where $err/_cause/.message])]
@@ -325,7 +329,7 @@ suite "errors — gradual runtime contract":
         (try (break) unwind (looped .push "unwind") ensure (looped .push "ensure")))
       [(run (fn [log] (log .push "body")))
        (run (fn [log] (fail (E ^_msg "caught"))))
-       (run (fn [log] (fail (AssertionFault ^_msg "escaped"))))
+       (run (fn [log] (fail (Probe ^_msg "escaped"))))
        (do (var log []) (returning log) log)
        looped]
     """, "[[\"body\" \"ensure\"] [\"catch\" \"ensure\"] " &
@@ -379,7 +383,7 @@ suite "errors — gradual runtime contract":
   test "propagation restores the host exception context":
     for source in [
       "(try (let n : Int \"bad\") catch Error nil)",
-      "(let f : (Callable [] Any ^errors []) (fn [] ($assert false))) " &
+      "(let f : (Callable [] Any ^errors []) (fn [] (fail (Probe)))) " &
         "(try (f) catch ContractViolation nil)",
       "(let stream ([1] => (fn [x] (fail \"invalid\")))) " &
         "(try (stream .next) catch Error nil)"
@@ -453,7 +457,7 @@ suite "errors — gradual runtime contract":
     check error.props["_cause"].props["_msg"].strVal == "native failure"
 
 proc strictErrorCompile(source: string): Chunk =
-  compileSource("(mod checked ^errors_mode strict)\n" & source,
+  compileSource("(mod checked ^errors_mode strict)\n" & probePrelude & source,
                  sourceName = "strict_error_spec.gene")
 
 suite "errors — static catch or declare":
@@ -543,9 +547,9 @@ suite "errors — static catch or declare":
       "(try (callback) catch Known \"handled\"))")
 
   test "recovery and cleanup introduce their own errors":
-    let helper = "(fn failure ^^private [] ($assert false)) "
-    for expression in ["(try (failure) catch Error ($assert false))",
-                       "(try (failure) catch Error nil ensure ($assert false))"]:
+    let helper = "(fn failure ^^private [] (fail (Probe))) "
+    for expression in ["(try (failure) catch Error (fail (Probe)))",
+                       "(try (failure) catch Error nil ensure (fail (Probe)))"]:
       expect GeneError:
         discard strictErrorCompile(helper & "(fn main [] ^errors [] " & expression & ")")
 
@@ -607,9 +611,9 @@ suite "errors — static catch or declare":
 
   test "outcome-returning methods contain producer errors but retain state errors":
     let outcome = run(strictErrorCompile("""
-      (fn inspect [source : (Stream Any AssertionFault)] ^errors [] (source .try_next))
+      (fn inspect [source : (Stream Any Probe)] ^errors [] (source .try_next))
       (let source ($map ($to_stream [1])
-        (fn [x] ^errors [AssertionFault] ($assert false))))
+        (fn [x] ^errors [Probe] (fail (Probe)))))
       (inspect source)
     """), newGlobalScope(newApplication()))
     check outcome.head.enumVariantName == "error"
@@ -658,17 +662,17 @@ suite "errors — static catch or declare":
   test "recursive inference converges without hiding an error":
     let source = """
       (fn left ^^private [n : Int]
-        (if (== n 0) ($assert false) (right (- n 1))))
+        (if (== n 0) (fail (Probe)) (right (- n 1))))
       (fn right ^^private [n : Int] (left n))
     """
     expect GeneError:
       discard strictErrorCompile(source & "(fn start [] ^errors [] (left 3))")
-    discard strictErrorCompile(source & "(fn start [] ^errors [AssertionFault] (left 3))")
+    discard strictErrorCompile(source & "(fn start [] ^errors [Probe] (left 3))")
 
   test "defaults contribute to the callee's invocation row":
     expect GeneError:
-      discard strictErrorCompile("(fn load [value = ($assert false)] ^errors [] value)")
-    discard strictErrorCompile("(fn load [value = ($assert false)] ^errors [AssertionFault] value)")
+      discard strictErrorCompile("(fn load [value = (fail (Probe))] ^errors [] value)")
+    discard strictErrorCompile("(fn load [value = (fail (Probe))] ^errors [Probe] value)")
 
   test "generated-only rethrows have no ordinary error obligation":
     discard strictErrorCompile("(fn checked [] ^errors [] " &
@@ -684,16 +688,16 @@ suite "errors — static catch or declare":
       "^errors [] (callback))")
 
   test "warning mode reports the same violation without rejecting code":
-    let source = "(fn checked [] ^errors [] ($assert false))"
+    let source = "(fn checked [] ^errors [] (fail (Probe)))"
     let warned = compileSource("(mod checked ^errors_mode warn) " & source)
     check warned.compilerDiagnostics.len > 0
-    check "AssertionFault" in warned.compilerDiagnostics[0].message
+    check "Probe" in warned.compilerDiagnostics[0].message
     let dynamic = compileSource("(mod checked ^errors_mode dynamic) " & source)
     check dynamic.compilerDiagnostics.len == 0
 
   test "module initialization has an empty escaping row":
-    expect GeneError: discard strictErrorCompile("($assert false)")
-    discard strictErrorCompile("(try ($assert false) catch Error nil)")
+    expect GeneError: discard strictErrorCompile("(fail (Probe))")
+    discard strictErrorCompile("(try (fail (Probe)) catch Error nil)")
 
   test "initialization cannot assume a forward declaration is already usable":
     expect GeneError:
@@ -718,7 +722,7 @@ suite "errors — static catch or declare":
   test "constructor calls and inherited defaults contribute invocation errors":
     let declarations = """
       (type Parent ^props {}
-        (ctor [value = ($assert false "default")] ^errors [AssertionFault] nil))
+        (ctor [value = (fail (Probe ^_msg "default"))] ^errors [Probe] nil))
       (type Child : Parent ^props {})
     """
     for typ in ["Parent", "Child"]:
@@ -726,9 +730,9 @@ suite "errors — static catch or declare":
         discard strictErrorCompile(declarations &
           "(fn make [] ^errors [] (new " & typ & "))")
       discard strictErrorCompile(declarations &
-        "(fn make [] ^errors [AssertionFault] (new " & typ & "))")
+        "(fn make [] ^errors [Probe] (new " & typ & "))")
       discard strictErrorCompile(declarations &
-        "(fn make [] ^errors [] (try (new " & typ & ") catch AssertionFault nil))")
+        "(fn make [] ^errors [] (try (new " & typ & ") catch Probe nil))")
       # Direct data construction never invokes the custom ctor or its defaults.
       discard strictErrorCompile(declarations & "(fn direct [] ^errors [] (" & typ & "))")
 
@@ -736,7 +740,7 @@ suite "errors — static catch or declare":
     let body = """
       (protocol P (message value [] : Int 1))
       (type Receiver ^props {})
-      (impl P for Receiver (message value [] : Int ($assert false) 1))
+      (impl P for Receiver (message value [] : Int (fail (Probe)) 1))
       ((Receiver) .P:value)
     """
     expect GeneError:
@@ -747,7 +751,7 @@ suite "errors — static catch or declare":
     let body = """
       (type Parent ^props {} (message value [] : Int 1))
       (type Child : Parent ^props {}
-        (message value [] : Int ^^override ($assert false) 1))
+        (message value [] : Int ^^override (fail (Probe)) 1))
       (let receiver : Parent (Child))
       (receiver .value)
     """
@@ -771,12 +775,12 @@ suite "errors — static catch or declare":
 
   test "task creation is separate from awaiting its failure":
     discard strictErrorCompile("(fn create [] ^errors [] " &
-      "(spawn ($assert false)))")
+      "(spawn (fail (Probe))))")
     expect GeneError:
-      discard strictErrorCompile("(fn consume [task : (Task Any AssertionFault)] " &
+      discard strictErrorCompile("(fn consume [task : (Task Any Probe)] " &
         "^errors [] (await task))")
-    discard strictErrorCompile("(fn consume [task : (Task Any AssertionFault)] " &
-      "^errors [RuntimeFault] (try (await task) catch AssertionFault nil))")
+    discard strictErrorCompile("(fn consume [task : (Task Any Probe)] " &
+      "^errors [RuntimeFault] (try (await task) catch Probe nil))")
     expect GeneError:
       discard strictErrorCompile("(fn consume [task : (Task Any Never)] " &
         "^errors [] (await task))")
@@ -840,7 +844,7 @@ suite "errors — static catch or declare":
     for body in [
         "(try (await first) catch Error nil)",
         "(try 1 ensure (try (await first) catch Error nil))",
-        "(try ($assert false) catch AssertionFault (try (await first) catch Error nil))",
+        "(try (fail (Probe)) catch Probe (try (await first) catch Error nil))",
         "(match true (when true (try (await first) catch Error nil)) (else nil))",
         "(spawn (try (await first) catch Error nil))"]:
       checkpoint body
@@ -856,26 +860,26 @@ suite "errors — static catch or declare":
   test "catch and ensure paths preserve actual task consumption obligations":
     check run(strictErrorCompile("""
       (fn valid [] ^errors []
-        (let task (spawn ($assert false)))
-        (try ($assert false) (await task) catch AssertionFault nil)
-        (try (await task) catch AssertionFault 7))
+        (let task (spawn (fail (Probe))))
+        (try (fail (Probe)) (await task) catch Probe nil)
+        (try (await task) catch Probe 7))
       (valid)
     """), newGlobalScope(newApplication())).intVal == 7
     for body in [
-        "(try (await task) catch AssertionFault nil)",
-        "(try ($assert false) catch AssertionFault (try (await task) catch Error nil))",
+        "(try (await task) catch Probe nil)",
+        "(try (fail (Probe)) catch Probe (try (await task) catch Error nil))",
         "(try 1 ensure (try (await task) catch Error nil))"]:
       checkpoint body
       check run(strictErrorCompile("""
         (fn valid [] ^errors []
-          (let task (spawn ($assert false))) BODY 7)
+          (let task (spawn (fail (Probe)))) BODY 7)
         (valid)
       """.replace("BODY", body)), newGlobalScope(newApplication())).intVal == 7
       expect GeneError:
         discard strictErrorCompile("""
           (fn invalid [] ^errors []
-            (let task (spawn ($assert false))) BODY
-            (try (await task) catch AssertionFault nil))
+            (let task (spawn (fail (Probe)))) BODY
+            (try (await task) catch Probe nil))
         """.replace("BODY", body))
 
   test "match branches preserve task identity and possible consumption":
@@ -898,16 +902,16 @@ suite "errors — static catch or declare":
 
   test "scope waiting does not consume or propagate child outcomes":
     expect GeneError:
-      discard strictErrorCompile("(fn work [] ^errors [] (scope (spawn ($assert false)) nil))")
+      discard strictErrorCompile("(fn work [] ^errors [] (scope (spawn (fail (Probe))) nil))")
     check run(strictErrorCompile("""
       (fn work [] ^errors [RuntimeFault]
-        (scope (spawn ($assert false)) 7))
+        (scope (spawn (fail (Probe))) 7))
       (try (work) catch RuntimeFault 0)
     """), newGlobalScope(newApplication())).intVal == 7
     check run(strictErrorCompile("""
       (fn work [] ^errors [RuntimeFault]
-        (let task (scope (spawn ($assert false))))
-        (try (await task) catch AssertionFault 7))
+        (let task (scope (spawn (fail (Probe)))))
+        (try (await task) catch Probe 7))
       (try (work) catch RuntimeFault 0)
     """), newGlobalScope(newApplication())).intVal == 7
 
@@ -942,7 +946,7 @@ suite "errors — module summaries":
   test "initialization summaries do not depend on a warm runtime module cache":
     let root = errorModuleRoot()
     writeFile(root / "fallible.gene", """
-      (if ($runtime/callable? 1) ($assert false) nil)
+      (if ($runtime/callable? 1) (fail (Probe)) nil)
       (fn value [] 1)
     """)
     writeFile(root / "initialization.gene", """
@@ -959,14 +963,14 @@ suite "errors — module summaries":
     let root = errorModuleRoot()
     writeFile(root / "constructors.gene", """
       (type Resource ^props {}
-        (ctor [ready = ($assert false "not ready")]
-          ^errors [AssertionFault] nil))
+        (ctor [ready = (fail (Probe ^_msg "not ready"))]
+          ^errors [Probe] nil))
       (type Plain ^props {})
     """)
     writeFile(root / "constructors_good.gene", """
       (mod good ^errors_mode strict)
       (import [Resource Plain] ^from "./constructors.gene")
-      (fn make [] ^errors [AssertionFault] (new Resource))
+      (fn make [] ^errors [Probe] (new Resource))
       (fn plain [] ^errors [] (Plain))
     """)
     writeFile(root / "constructors_bad.gene", """
@@ -1208,7 +1212,7 @@ suite "errors — retained strict assumptions":
     discard run(strictErrorCompile("""
       (fn factory ^^private [] $assert)
       (fn client [] ^errors []
-        (try ((factory) true) catch AssertionFault nil))
+        (try ((factory) true) catch Probe nil))
     """), scope)
     check run(compileSource("(client)"), scope).kind == vkNil
     let changed = run(strictErrorCompile("(fn [] $parse/parse_int)"), newGlobalScope(app))
@@ -1293,12 +1297,12 @@ suite "errors — retained strict assumptions":
       (fn client [] ^errors [] ((factory)))
     """), scope)
     let broader = run(compileSource("""
-      (fn [] ^errors [] (fn [] ^errors [AssertionFault] ($assert false)))
+      (fn [] ^errors [] (fn [] ^errors [Probe] (fail (Probe))))
     """), newGlobalScope(app))
     expect GeneError: scope.assign("factory", broader)
     check run(compileSource("(client)"), scope).intVal == 1
     let checkedBroader = run(strictErrorCompile("""
-      (fn [] ^errors [] (fn [] ^errors [AssertionFault] ($assert false)))
+      (fn [] ^errors [] (fn [] ^errors [Probe] (fail (Probe))))
     """), newGlobalScope(app))
     expect GeneError: scope.assign("factory", checkedBroader)
     let compatible = run(strictErrorCompile("(fn [] (fn [] ^errors [] 2))"),
@@ -1318,9 +1322,9 @@ suite "errors — retained strict assumptions":
         (fn client [] ^errors [] ((factory)))
       """.replace("BODY", body)), scope)
       let widerHelper = run(strictErrorCompile("""
-        (fn [] (fn [] ^errors [AssertionFault] ($assert false)))
+        (fn [] (fn [] ^errors [Probe] (fail (Probe))))
       """), newGlobalScope(app))
-      let widerCallback = run(compileSource("(fn [] ^errors [AssertionFault] ($assert false))"),
+      let widerCallback = run(compileSource("(fn [] ^errors [Probe] (fail (Probe)))"),
                               newGlobalScope(app))
       if body == "(helper)":
         expect GeneError: scope.assign("helper", widerHelper)
@@ -1338,8 +1342,8 @@ suite "errors — retained strict assumptions":
         (fn factory ^^private [] INITIAL)
         (fn client [] ^errors [] CONSUME)
       """.replace("INITIAL", initial).replace("CONSUME", consume)), scope)
-      let changed = if kind == "task": "(spawn ($assert false))"
-                    else: "($map ($to_stream [1]) (fn [x] ^errors [AssertionFault] ($assert false)))"
+      let changed = if kind == "task": "(spawn (fail (Probe)))"
+                    else: "($map ($to_stream [1]) (fn [x] ^errors [Probe] (fail (Probe))))"
       let replacement = run(strictErrorCompile("(fn [] " & changed & ")"), newGlobalScope(app))
       expect GeneError: scope.assign("factory", replacement)
       check run(compileSource("(client)"), scope).print() == (if kind == "task": "1" else: "[1]")
@@ -1382,12 +1386,12 @@ suite "errors — retained strict assumptions":
         (fn forward ^^private [] ($map (factory) callback))
         (fn client [] ^errors [] ($into SOURCE []))
       """.replace("SOURCE", wrap)), scope)
-      let broader = run(compileSource("(fn [value] ^errors [AssertionFault] ($assert false))"),
+      let broader = run(compileSource("(fn [value] ^errors [Probe] (fail (Probe)))"),
                         newGlobalScope(app))
       expect GeneError: scope.assign("callback", broader)
       let widerStream = run(strictErrorCompile("""
         (fn [] ($map ($to_stream [1])
-          (fn [x] ^errors [AssertionFault] ($assert false))))
+          (fn [x] ^errors [Probe] (fail (Probe)))))
       """), newGlobalScope(app))
       expect GeneError: scope.assign("factory", widerStream)
       check run(compileSource("(client)"), scope).print() == "[1]"
@@ -1397,12 +1401,12 @@ suite "errors — retained strict assumptions":
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
       (fn factory ^^private [] ($to_stream [1]))
-      (fn callback [value] ^errors [AssertionFault] ($assert false))
+      (fn callback [value] ^errors [Probe] (fail (Probe)))
       (fn ignore [] ^errors [] ($map ($map (factory) callback) callback) nil)
     """), scope)
     let stream = run(strictErrorCompile("""
       (fn [] ($map ($to_stream [1])
-        (fn [x] ^errors [AssertionFault] ($assert false))))
+        (fn [x] ^errors [Probe] (fail (Probe)))))
     """), newGlobalScope(app))
     scope.assign("factory", stream)
     check run(compileSource("(ignore)"), scope).kind == vkNil
@@ -1422,7 +1426,7 @@ suite "errors — retained strict assumptions":
       (fn [] callback)
     """), replacementScope)
     scope.assign("factory", replacement)
-    let wider = run(compileSource("(fn [] ^errors [AssertionFault] ($assert false))"),
+    let wider = run(compileSource("(fn [] ^errors [Probe] (fail (Probe)))"),
                     newGlobalScope(app))
     expect GeneError: replacementScope.assign("callback", wider)
     check run(compileSource("(client)"), scope).intVal == 2
@@ -1440,7 +1444,7 @@ suite "errors — retained strict assumptions":
       (fn client [] ^errors [] (factory) 7)
     """), scope)
     let replacement = run(compileSource("""
-      (fn [] ^errors [] (fn [] ^errors [AssertionFault] ($assert false)))
+      (fn [] ^errors [] (fn [] ^errors [Probe] (fail (Probe))))
     """), newGlobalScope(app))
     scope.assign("factory", replacement)
     check run(compileSource("(client)"), scope).intVal == 7
@@ -1453,7 +1457,7 @@ suite "errors — retained strict assumptions":
       (fn client [] ^errors [] (((factory))))
     """), scope)
     let replacement = run(strictErrorCompile("""
-      (fn [] (fn [] ^errors [] (fn [] ^errors [AssertionFault] ($assert false))))
+      (fn [] (fn [] ^errors [] (fn [] ^errors [Probe] (fail (Probe)))))
     """), newGlobalScope(app))
     expect GeneError: scope.assign("factory", replacement)
     check run(compileSource("(client)"), scope).intVal == 1
@@ -1468,8 +1472,8 @@ suite "errors — retained strict assumptions":
       (fn client [] ^errors [] (((factory))))
     """), scope)
     let replacement = run(strictErrorCompile("""
-      (fn [] (fn [] : (Callable [] Any ^errors [AssertionFault]) ^errors []
-        (fn [] ^errors [AssertionFault] ($assert false))))
+      (fn [] (fn [] : (Callable [] Any ^errors [Probe]) ^errors []
+        (fn [] ^errors [Probe] (fail (Probe)))))
     """), newGlobalScope(app))
     expect GeneError: scope.assign("factory", replacement)
     check run(compileSource("(client)"), scope).intVal == 1
@@ -1483,7 +1487,7 @@ suite "errors — retained strict assumptions":
       (fn factory ^^private [flag : Bool] (if flag first second))
       (fn client [flag : Bool] ^errors [] ((factory flag)))
     """), scope)
-    let replacement = run(compileSource("(fn [] ^errors [AssertionFault] ($assert false))"),
+    let replacement = run(compileSource("(fn [] ^errors [Probe] (fail (Probe)))"),
                           newGlobalScope(app))
     expect GeneError: scope.assign("second", replacement)
     check run(compileSource("[(client true) (client false)]"), scope).print() == "[1 2]"
@@ -1499,7 +1503,7 @@ suite "errors — retained strict assumptions":
     let replacement = run(strictErrorCompile("""
       (fn [flag : Bool]
         (if flag (fn [] ^errors [] 1)
-          (fn [] ^errors [AssertionFault] ($assert false))))
+          (fn [] ^errors [Probe] (fail (Probe)))))
     """), newGlobalScope(app))
     expect GeneError: scope.assign("factory", replacement)
     check run(compileSource("[(client true) (client false)]"), scope).print() == "[1 2]"
@@ -1511,7 +1515,7 @@ suite "errors — retained strict assumptions":
       (fn callback ^^private [value] value)
       (fn mapped [] ^errors [] ($map [1] callback))
     """), scope)
-    let broader = run(compileSource("(fn [value] ^errors [AssertionFault] ($assert false))"),
+    let broader = run(compileSource("(fn [value] ^errors [Probe] (fail (Probe)))"),
                        newGlobalScope(app))
     expect GeneError: scope.assign("callback", broader)
     check run(compileSource("(mapped)"), scope).print() == "[1]"
@@ -1832,8 +1836,8 @@ suite "errors — retained strict assumptions":
       (fn client [] : Int ^errors [] ((factory)))
     """), scope)
     let broader = gradualErrorEval("""
-      (fn [] : (Callable [] Int ^errors [AssertionFault]) ^errors []
-        (fn [] : Int ^errors [AssertionFault] ($assert false) 0))
+      (fn [] : (Callable [] Int ^errors [Probe]) ^errors []
+        (fn [] : Int ^errors [Probe] (fail (Probe)) 0))
     """)
     expect GeneError: scope.assign("factory", broader)
     let compatible = gradualErrorEval("""
@@ -1851,7 +1855,7 @@ suite "errors — retained strict assumptions":
     """), scope)
     let replacement = gradualErrorEval("""
       (type Replacement ^props {}
-        (ctor [] ^errors [AssertionFault] ($assert false)))
+        (ctor [] ^errors [Probe] (fail (Probe))))
       Replacement
     """)
     expect GeneError: scope.assign("Resource", replacement)
@@ -1878,7 +1882,7 @@ suite "errors — retained strict assumptions":
       (fn provider ^^private [] ^errors [] 1)
       (fn client [] ^errors [] (provider))
     """), scope)
-    let replacement = gradualErrorEval("(fn [] ^errors [AssertionFault] ($assert false))")
+    let replacement = gradualErrorEval("(fn [] ^errors [Probe] (fail (Probe)))")
     expect GeneError: scope.assign("provider", replacement)
     check run(compileSource("(client)", useLocalSlots = false), scope).intVal == 1
     let compatible = gradualErrorEval("(fn [] ^errors [] 2)")
@@ -1906,9 +1910,9 @@ suite "errors — retained strict assumptions":
   test "strict recursion executes with forward dependency declarations":
     errorContractCheck """
       (mod recursive ^errors_mode strict)
-      (fn left ^^private [n : Int] ^errors [AssertionFault]
-        (if (== n 0) ($assert false) (right (- n 1))))
-      (fn right ^^private [n : Int] ^errors [AssertionFault] (left n))
-      (fn main [] ^errors [] (try (left 3) catch AssertionFault 7))
+      (fn left ^^private [n : Int] ^errors [Probe]
+        (if (== n 0) (fail (Probe)) (right (- n 1))))
+      (fn right ^^private [n : Int] ^errors [Probe] (left n))
+      (fn main [] ^errors [] (try (left 3) catch Probe 7))
       (main)
     """, "7"
