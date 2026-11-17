@@ -238,6 +238,9 @@ The `exec_async`, `exec_stream`, `exec_stream_async`, `exec_stdio` and
 and return types remain: async variants return Tasks; captured variants return
 result maps; inherited-stdio variants return exit statuses (through a Task for
 `exec_stdio_async`).
+A program that cannot be started, or an OS failure while it runs, is an
+`OsError`, raised by the synchronous variants and failing the Task of the async
+ones.
 
 Run [the exec example](../examples/exec.gene) for literal arguments, child
 directory and environment settings, shell pipelines, async commands, and live

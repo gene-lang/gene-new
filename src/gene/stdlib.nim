@@ -3193,7 +3193,7 @@ when compileOption("threads"):
             if ctx.resultFailed:
               let failure = consumeSharedExecText(ctx.resultFailure)
               var value = NIL
-              if ctx.fileOperation != nfoNone:
+              if pending.fileErrorScope != nil:
                 var props = initPropTable()
                 props["_msg"] = newStr(failure)
                 value = newNode(builtInTypeHead(pending.fileErrorScope, "OsError"),
@@ -4115,7 +4115,10 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     # A sink into the ctx without the explicit retain would leave two logical
     # owners sharing one ref and completion cleanup would free the caller's
     # live handle.
-    let pending = OsExecPending(ctx: ctx)
+    # A start, wait or pipe failure is an environment failure: an OsError, as
+    # the synchronous os/exec raises.
+    let pending = OsExecPending(ctx: ctx,
+                               fileErrorScope: scope.application().builtinsScope())
     pending.schedulerOwner = schedulerForScope(scope)
     when nativeProcessBackend:
       try:
