@@ -23,7 +23,7 @@
       (when (TaskOutcome/error error)
         {^status "failed" ^display (byte_prefix ($to_str error/.message) 16384)
          ^error_code (?? error/code "action_failed")})
-      (when (TaskOutcome/panic message)
+      (when (TaskOutcome/fault fault) (let message fault/.message)
         {^status "failed" ^display (byte_prefix message 16384) ^error_code "panic"})
       (else {^status "cancelled" ^display "Action stopped. Effects may have occurred."})))
   # Domain events are buffered independently of the receipt log. A durable

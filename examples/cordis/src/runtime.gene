@@ -552,7 +552,7 @@
   (match outcome ^!exhaustive
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail error))
-    (when (TaskOutcome/panic message)
+    (when (TaskOutcome/fault fault) (let message fault/.message)
       (cordis_failure CordisError
         $"plugin panic: ${message}" message
         nil call/instance_uid call/entry_id))
@@ -675,7 +675,7 @@
               (if (|| request/cancelled/.get (! (host_request_accepting? request))) task/.cancel)
               task/.detach)
             (finish_host_request request)
-          catch Error
+          catch Throwable
             (request/error .set $err)
             (finish_host_request request))))
       (set pending (fresh_list)))
@@ -982,7 +982,7 @@
         PluginCallKind/validate_schema
         instance/plugin/config_schema
         [frozen]))
-  catch Error
+  catch Throwable
     (plugin_error
       ConfigValidationError
       $"config validation failed for ${instance/plugin/id}"
@@ -1181,7 +1181,7 @@
     (instance/state .set InstanceState/active)
     (instance/active_epoch .set epoch/text)
     (set_provider_visibility instance true)
-  catch Error
+  catch Throwable
     (root/accepting .set false)
     (set_provider_visibility instance false)
     (var cleanup_error (dispose_effect_record root false))
@@ -1332,7 +1332,7 @@
         config_update
         checked
         {^terminal config_update_terminal}))
-  catch Error
+  catch Throwable
     (plugin_error ConfigValidationError "config_update hook rejected the candidate" instance $err))
   (set checked (validate_instance_config instance checked))
   (instance/config .set checked)
@@ -1459,7 +1459,7 @@
   (match outcome
     (when (TaskOutcome/error error)
       error)
-    (when (TaskOutcome/panic message)
+    (when (TaskOutcome/fault fault) (let message fault/.message)
       (PluginCleanupError ^_msg $"effect task panicked: ${message}" ^cause message ^plugin nil ^instance_uid nil ^entry_id nil))
     (else
       nil)))
@@ -1503,7 +1503,7 @@
           (dispose_owned_instance_record entry/record))
         (else
           nil))
-    catch Error
+    catch Throwable
       (errors .push $err)))
   (scope/entries .set (fresh_list))
   (scope/value .set nil)
@@ -1545,7 +1545,7 @@
         child/context))
     (child/value .set value)
     (EffectLease ^token child/token)
-  catch Error
+  catch Throwable
     (dispose_effect_record child false)
     (remove_effect_entry parent "effect" child/token)
     (plugin_error PluginActivationError $"effect ${label} acquisition failed" parent/owner $err)))
@@ -1668,7 +1668,7 @@
       nil
       false
       context)
-  catch Error
+  catch Throwable
     (plugin_error
       ServiceContractError
       $"service ${key/id} failed its conformance gate"
@@ -1694,7 +1694,7 @@
         $"availability for ${provider/key/id} must return Bool"
         provider/owner))
     answer
-  catch Error
+  catch Throwable
     (record_diagnostic provider/runtime "availability_failed" provider/owner $err)
     false))
 
@@ -1794,7 +1794,7 @@
       (try
         (set merged
           (invoke_context_call context PluginCallKind/merge_config key/merge_config [merged config]))
-      catch Error
+      catch Throwable
         (cordis_failure
           ConfigValidationError
           $"service ${key/id} config merge failed"
@@ -1814,7 +1814,7 @@
       (set merged
         ($freeze
           (invoke_context_call context PluginCallKind/validate_schema key/config_schema [merged])))
-    catch Error
+    catch Throwable
       (cordis_failure
         ConfigValidationError
         $"service ${key/id} config validation failed"
@@ -1833,7 +1833,7 @@
 (fn check_bound_service [context, key, value] ^^private
   (try
     (invoke_context_call context PluginCallKind/validate_service key/check [value])
-  catch Error
+  catch Throwable
     (cordis_failure
       ServiceContractError
       $"bound service ${key/id} failed its conformance gate"
@@ -1891,7 +1891,7 @@
           PluginCallKind/bind_service
           key/bind
           [provider/value provider/definition_context handle config]))
-    catch Error
+    catch Throwable
       (cordis_failure
         ServiceContractError
         $"service ${key/id} binding failed"
@@ -2003,7 +2003,7 @@
       nil
       false
       record/context)
-  catch Error
+  catch Throwable
     (plugin_error HookDispatchError $"hook ${record/hook/id} handler failed" record/owner $err)))
 
 (fn bailed? [value] : Bool ^^private
@@ -2025,13 +2025,13 @@
   (for record in handlers
     (if record/once (record/consumed .set true))
     (tasks .push
-      (spawn ^lane root (try (invoke_call record/runtime record/owner PluginCallKind/hook record/handler [payload] nil false record/context) catch Error (plugin_error HookDispatchError $"hook ${record/hook/id} handler failed" record/owner $err)))))
+      (spawn ^lane root (try (invoke_call record/runtime record/owner PluginCallKind/hook record/handler [payload] nil false record/context) catch Throwable (plugin_error HookDispatchError $"hook ${record/hook/id} handler failed" record/owner $err)))))
   (var errors (fresh_list))
   (for task in tasks
     (match task/.join
       (when (TaskOutcome/error error)
         (errors .push error))
-      (when (TaskOutcome/panic message)
+      (when (TaskOutcome/fault fault) (let message fault/.message)
         (errors .push message))
       (when TaskOutcome/cancelled
         (errors .push "hook task cancelled"))
@@ -2074,7 +2074,7 @@
       nil
       false
       record/context)
-  catch Error
+  catch Throwable
     (plugin_error HookDispatchError $"waterfall hook ${hook/id} handler failed" record/owner $err)))
 
 (fn waterfall_continue [handle : WaterfallContinuation, call] ^^private
@@ -2120,7 +2120,7 @@
       (set checked
         ($freeze
           (invoke_context_call context PluginCallKind/validate_schema hook/payload_schema [checked])))
-    catch Error
+    catch Throwable
       (cordis_failure HookDispatchError $"hook ${hook/id} payload validation failed" $err)))
   (var handlers (hook_snapshot context hook subject))
   (match hook/mode ^!exhaustive
@@ -2266,7 +2266,7 @@
   (for loader in (copy_list runtime/loaders/.get)
     (try
       (loader_dispose (Loader ^token loader/token))
-    catch Error
+    catch Throwable
       (runtime/diagnostics/.get .push {^kind "loader_close_failed" ^message $err/.message})))
   (var remaining true)
   (while remaining
@@ -2533,7 +2533,7 @@
     (if (absent? loader/options/descriptor_factory)
       (try
         module/plugin
-      catch Error
+      catch Throwable
         (cordis_failure
           CompositionError
           $"entry ${row/id} module must export one plugin binding"
@@ -2560,7 +2560,7 @@
   (var prepared nil)
   (try
     (set prepared (prepare_loader_entry loader row transaction))
-  catch Error
+  catch Throwable
     transaction/.discard
     (cordis_failure CompositionError $"entry ${row/id} preparation failed" $err))
   transaction/.commit
@@ -2573,7 +2573,7 @@
         prepared/plugin
         row/config
         row/id))
-  catch Error
+  catch Throwable
     prepared/generation/.release
     (cordis_failure CompositionError $"entry ${row/id} installation failed" $err))
   (loader/generations/.get .push prepared/generation)
@@ -2594,8 +2594,8 @@
 (fn failure_text ^^private [error]
   # A wrapped failure names its cause, which carries the plugin's own error.
   (if (absent? error) (return nil))
-  (var text (try ($to_str error/.message) catch Error ($to_str error)))
-  (var cause (try error/cause catch Error nil))
+  (var text (try ($to_str error/.message) catch Throwable ($to_str error)))
+  (var cause (try error/cause catch Throwable nil))
   (if_not (absent? cause) (set text $"${text}: $(failure_text cause)"))
   text)
 
@@ -2637,7 +2637,7 @@
   (var instance
     (try
       (runtime_install (Runtime ^token loader/runtime/token) context host_plugin row/config row/id)
-    catch Error
+    catch Throwable
       (cordis_failure CompositionError $"entry ${row/id} installation failed" $err)))
   (loader_entry_from_source
     loader
@@ -2720,7 +2720,7 @@
                   (if ($absent? host_plugin)
                     (install_loader_entry loader row context)
                     (install_host_loader_entry loader row context host_plugin))
-                catch Error
+                catch Throwable
                   (LoaderEntryRecord
                     ^id row/id ^parent_id row/parent_id ^data row ^!group
                     ^!disabled ^context context
@@ -2802,7 +2802,7 @@
   (if_not (absent? candidate)
     (try
       (runtime_close (Runtime ^token candidate/token))
-    catch Error
+    catch Throwable
       (errors .push $err/.message))
     (for diagnostic in candidate/diagnostics/.get
       (if (== diagnostic/kind "cleanup_failed")
@@ -3283,7 +3283,7 @@
   (map_for [id entry] in old_entries
     (if (&& (! (absent? entry/generation))
             (! (generation_reused? staged/entries entry/generation)))
-      (try entry/generation/.release catch Error
+      (try entry/generation/.release catch Throwable
         (retirement_errors .push $err))))
   (live/contexts .set contexts)
   # Old unload removes reservations sharing preserved uids; reconstruct the
@@ -3675,13 +3675,13 @@
     transaction/.commit
     (set modules_committed true)
     (if_not (absent? commit) (commit))
-  catch Error
+  catch Throwable
     (var failure $err)
     (let cleanup_errors (discard_candidate_runtime candidate))
     (if modules_committed
       (for generation in prepared_generations
-        (try generation/.release catch Error (cleanup_errors .push $err/.message)))
-      (try transaction/.discard catch Error (cleanup_errors .push $err/.message)))
+        (try generation/.release catch Throwable (cleanup_errors .push $err/.message)))
+      (try transaction/.discard catch Throwable (cleanup_errors .push $err/.message)))
     (if prepared_ticket (loader/options/publication .PublicationParticipant:abort ticket))
     (for instance in held (release_instance_transitions instance))
     (cordis_failure CompositionError
@@ -3698,7 +3698,7 @@
       ^direct_replaced replaced_direct})
   (try
     (publish_staged_runtime loader candidate staged old_entries old_order manifest)
-  catch Error
+  catch Throwable
     (map_for [id ignored] in kept_ids
       (var entry (entries .get id))
       (if (&& ($present? entry) ($present? entry/instance))
@@ -3710,7 +3710,7 @@
       (release_instance_transitions (instance_record entry/instance))))
   (for generation in abandoned_generations
     (if_not (generation_reused? entries generation)
-      (try generation/.release catch Error nil)))
+      (try generation/.release catch Throwable nil)))
   (loader_snapshot loader "staged-carry"
     ($freeze (staged_changed_ids old_entries entries))))
 
@@ -3752,13 +3752,13 @@
     # The host's durable commit follows module acceptance and precedes public
     # runtime indexes. A failed host commit disposes only the candidate.
     (if_not (absent? commit) (commit))
-  catch Error
+  catch Throwable
     (var failure $err)
     (let cleanup_errors (discard_candidate_runtime candidate))
     (if modules_committed
       (for generation in staged/prepared_generations
-        (try generation/.release catch Error (cleanup_errors .push $err/.message)))
-      (try transaction/.discard catch Error (cleanup_errors .push $err/.message)))
+        (try generation/.release catch Throwable (cleanup_errors .push $err/.message)))
+      (try transaction/.discard catch Throwable (cleanup_errors .push $err/.message)))
     (if prepared (loader/options/publication .PublicationParticipant:abort ticket))
     (cordis_failure CompositionError
       (if cleanup_errors/.empty? "staged composition rejected before publication"
@@ -3854,7 +3854,7 @@
   (try
     (set sources
       (prepare_stop_start_sources loader rows affected transaction))
-  catch Error
+  catch Throwable
     transaction/.discard
     (cordis_failure ReloadRejected
       "stop_start reload preparation failed; old composition remains live"
@@ -3934,7 +3934,7 @@
         (plugin_error RecoveryRequired
           "stop_start replacement failed after teardown" instance
           instance/error/.get)))
-  catch Error
+  catch Throwable
     (loader/entries .set next_entries)
     (loader/order .set next_order)
     (loader/manifest .set ($freeze manifest))
@@ -3974,7 +3974,7 @@
       hmr_reloaded
       {^affected affected ^old old_digests ^new new_digests}
       nil)
-  catch Error
+  catch Throwable
     (cordis_failure RecoveryRequired "reload published but hmr_reloaded hook failed" $err)))
 
 (fn loader_reload [handle : Loader, changed_paths] ^^private
@@ -4011,7 +4011,7 @@
     (set snapshot (loader_reconcile_staged loader manifest rows affected))
   catch RecoveryRequired
     (fail $err)
-  catch Error
+  catch Throwable
     (cordis_failure
       ReloadRejected
       "hot reload candidate was rejected; old composition remains live"
@@ -4063,12 +4063,12 @@
     (try
       (var error (unload_instance instance true))
       (if_not (absent? error) (errors .push error))
-    catch Error
+    catch Throwable
       (errors .push $err)))
   (for generation in record/generations
     (try
       generation/.release
-    catch Error
+    catch Throwable
       (errors .push $err)))
   (for context in record/contexts
     (var live false)
@@ -4104,7 +4104,7 @@
   (for watcher in loader/watchers/.get
     (try
       watcher/.close
-    catch Error
+    catch Throwable
       nil))
   (var order loader/order/.get)
   (var index (- order/.size 1))

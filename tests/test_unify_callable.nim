@@ -249,7 +249,7 @@ suite "unified callable — checked signatures":
         (let waiting (spawn ^lane root (wait)))
         (let cancel (spawn ^lane root (do ($sleep 1) (waiting .cancel))))
         (cancel .join)
-        [(match (panicked .join) (when (TaskOutcome/panic message) true) (else false))
+        [(match (panicked .join) (when (TaskOutcome/fault fault) (let message fault/.message) true) (else false))
          (match (waiting .join) (when TaskOutcome/cancelled true) (else false))
          events])
     """, "[true true [\"start\" \"cleanup\"]]"

@@ -102,7 +102,7 @@
           (outer_cleaned .set true))))))
     (let outcome task/.join)
     ($assert outer_cleaned/.get)
-    ($assert (== ($head outcome) TaskOutcome/panic)))
+    ($assert (== ($head outcome) TaskOutcome/fault)))
 
   (it "releases crossed owners before an outer cancellation cleanup reacquires them" []
     (let gate ($sync/gate))
@@ -134,7 +134,7 @@
         ($sync/track entries "call" (fn [] (gate (fn [] (cleaned .set true))))))))
     (let outcome task/.join)
     ($assert cleaned/.get)
-    ($assert (== ($head outcome) TaskOutcome/panic))
+    ($assert (== ($head outcome) TaskOutcome/fault))
     (assert_equal ($size entries) 0))
 
   (it "cannot strand ownership when a deadline expires before or inside a gate" []
@@ -184,7 +184,7 @@
     (let entries {})
     (let task (spawn ^lane root ($sync/track entries "panic" (fn []
       (gate (fn [] ($panic "stop")))))))
-    ($assert (== ($head task/.join) TaskOutcome/panic))
+    ($assert (== ($head task/.join) TaskOutcome/fault))
     (assert_equal ($size entries) 0)
     ($sync/track entries "outer" (fn []
       (try (gate (fn [] (fail (RuntimeFault ^_msg "inner")))) catch Error nil)

@@ -163,7 +163,7 @@
       (match cleanup/.join ^!exhaustive
         (when (TaskOutcome/ok _) nil)
         (when (TaskOutcome/error error) (fail error))
-        (when (TaskOutcome/panic message) (panic message))
+        (when (TaskOutcome/fault fault) (fail fault))
         (when TaskOutcome/cancelled
           (fail (new ArchiveError "gzip reader cleanup was cancelled")))))))
 
@@ -304,7 +304,7 @@
       (match cleanup/.join ^!exhaustive
         (when (TaskOutcome/ok _) nil)
         (when (TaskOutcome/error error) (fail error))
-        (when (TaskOutcome/panic message) (panic message))
+        (when (TaskOutcome/fault fault) (fail fault))
         (when TaskOutcome/cancelled
           (fail (new ArchiveError "gzip writer cleanup was cancelled")))))))
 

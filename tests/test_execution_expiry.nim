@@ -250,7 +250,7 @@ suite "execution expiry":
         (try (spin) ensure (panic "cleanup panic"))) [] ^policy {^timeout_ms 20}))
       (scope
         (let task (spawn ^lane root (invoke)))
-        (match task/.join (when (TaskOutcome/panic _) true) (else false)))
+        (match task/.join (when (TaskOutcome/fault fault) (let _ fault/.message) true) (else false)))
     """) == "true"
 
   test "observed task cancellation cannot be suppressed by cleanup exits":

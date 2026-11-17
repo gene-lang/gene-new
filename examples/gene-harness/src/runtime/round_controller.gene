@@ -332,7 +332,7 @@
     (when (TaskOutcome/error error)
       (saved .put "state" "failed")
       (saved .put "message" error/.message))
-    (when (TaskOutcome/panic message)
+    (when (TaskOutcome/fault fault) (let message fault/.message)
       (saved .put "state" "failed")
       (saved .put "message" message))
     (when TaskOutcome/cancelled

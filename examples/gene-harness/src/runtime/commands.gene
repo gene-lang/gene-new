@@ -348,7 +348,7 @@
         (let location (?? error/line "?"))
         (record .put "display" (if (== record/ui_action true)
           error/.message $"line ${location}: ${error/.message}")))
-      (when (TaskOutcome/panic message)
+      (when (TaskOutcome/fault fault) (let message fault/.message)
         (record .put "status" "failed")
         (record .put "display" message))
       (when TaskOutcome/cancelled

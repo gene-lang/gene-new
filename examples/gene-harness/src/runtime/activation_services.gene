@@ -100,7 +100,7 @@
   (if_yes ($present? record/quiesce)
     (match (supervised_call record/quiesce [] (default_execution_limits)) ^!exhaustive
       (when (TaskOutcome/error error) (record/error .set ($to_str error)))
-      (when (TaskOutcome/panic message) (record/error .set ($to_str message)))
+      (when (TaskOutcome/fault fault) (let message fault/.message) (record/error .set ($to_str message)))
       (when TaskOutcome/cancelled (record/error .set "quiesce exceeded its budget"))
       (else nil)))
   (let task record/task/.get)

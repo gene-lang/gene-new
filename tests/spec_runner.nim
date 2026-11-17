@@ -8455,7 +8455,7 @@ suite "spec — structured tasks from design":
                "[(match (failed .join) ^!exhaustive " &
                "   (when (TaskOutcome/error e) e/.message)) " &
                " (match (panicked .join) ^!exhaustive " &
-               "   (when (TaskOutcome/panic message) message))]",
+               "   (when (TaskOutcome/fault fault) (let message fault/.message) message))]",
                "[\"boom\" \"\\\"crash\\\"\"]")
 
   test "Task/join repeats failed, panicked, and cancelled outcomes":
@@ -8475,7 +8475,7 @@ suite "spec — structured tasks from design":
     check_eval("(import $str [byte_size ends_with?]) " &
                "(var task (spawn (panic \"" & payload & "\"))) " &
                "(match (task .join) ^!exhaustive " &
-               "  (when (TaskOutcome/panic message) " &
+               "  (when (TaskOutcome/fault fault) (let message fault/.message) " &
                "    [(byte_size message) (ends_with? message \"[truncated]\")]))",
                "[4096 true]")
 
@@ -9271,7 +9271,7 @@ suite "spec — Env and eval from design":
       (try ($repl/eval s "(type Broken : Error)") catch Error nil)
       (scope
         (let panicked (spawn ^lane root ($repl/eval s "($panic \"probe\")")))
-        ($assert (== ($head panicked/.join) TaskOutcome/panic)))
+        ($assert (== ($head panicked/.join) TaskOutcome/fault)))
       (let third ($repl/eval s "kept"))
       ($repl/close s)
       ($repl/close s)

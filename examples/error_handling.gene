@@ -34,7 +34,7 @@
     (fn [] (fail (ConfigError ^_msg "Unexpected plugin failure"))))
   (try
     (checked)
-    catch ErrorContractViolation
+    catch ContractViolation
       ($println $err/.message)
       ($println $err/_cause/.message))
 
@@ -61,5 +61,5 @@
     catch ConfigError ($println $err/.message))
   (try
     (await attempt)
-    catch RuntimeError ($println "Task result already consumed"))
+    catch RuntimeFault ($println "Task result already consumed"))
   0)

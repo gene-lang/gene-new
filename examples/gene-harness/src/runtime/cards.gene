@@ -200,7 +200,7 @@
   (match outcome
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (card_fail "card_failed" ($to_str error/.message)))
-    (when (TaskOutcome/panic message) (card_fail "card_failed" $"card code panicked: ${message}"))
+    (when (TaskOutcome/fault fault) (let message fault/.message) (card_fail "card_failed" $"card code panicked: ${message}"))
     (else (card_fail "card_failed" "card code exceeded its time budget or was cancelled"))))
 
 (fn render_live [runtime, lease, session : Str, source, state]

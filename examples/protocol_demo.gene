@@ -187,12 +187,12 @@
 (let check_name puppy/.checker)
 (show "Escaping checker still accepts Dog" (check_name rex)) # true
 (show "Protocol values still enforce concrete inputs"
-  (try (compare_eq_values rex point) catch TypeError "rejected Dog/Point pair"))
+  (try (compare_eq_values rex point) catch TypeFault "rejected Dog/Point pair"))
 
 (show "Inherited copy returns the actual Pup" (same? ($head puppy/.Copyable:copy) Pup)) # true
 (show "Mixed-binding default accepts an actual Pup" (same? ($head puppy/.Duplicable:duplicate) Pup)) # true
 (show "Mixed-binding default rejects a Dog result"
-  (try faulty_puppy/.Duplicable:duplicate catch TypeError "rejected Dog result"))
+  (try faulty_puppy/.Duplicable:duplicate catch TypeFault "rejected Dog result"))
 (show "Universal default dispatches the receiver's direct override" puppy/.Greeting:greeting)
 
 # Declaration mistakes to try separately (each would stop module initialization):

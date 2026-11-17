@@ -129,7 +129,7 @@ suite "runtime bound calls":
     check evalBoundCall("(fn fail_it [] (panic \"bound panic\")) " &
       "(var f ($runtime/bind_call fail_it [])) " &
       "(scope (var task (spawn ^lane root (f))) " &
-      "  (match (task .join) (when (TaskOutcome/panic message) true) " &
+      "  (match (task .join) (when (TaskOutcome/fault fault) (let message fault/.message) true) " &
       "    (else false)))").print() == "true"
 
   test "fexprs and borrowed caller environments cannot become durable bindings":

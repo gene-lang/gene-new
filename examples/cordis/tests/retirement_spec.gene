@@ -75,7 +75,7 @@
     (let pending tickets/.get)
     (loader .retire pending/0)
     ($assert
-      (try old/.LoadedValue:value false catch Error ($str/contains? $err/.message "closed"))
+      (try old/.LoadedValue:value false catch AssertionFault ($str/contains? $err/.message "closed"))
       "the plugin's resource must close when its generation retires")
     (assert_equal ((runtime/.root .require loaded_key) .LoadedValue:value) 2
       "retiring the old module must not withdraw the new provider")

@@ -36,13 +36,13 @@
     (adapter/reloads .set (+ adapter/reloads/.get 1))
   catch WatcherClosed
     (return false)
-  catch Error
+  catch Throwable
     (let failure $err)
     # A rejected candidate leaves the old composition live. The adapter
     # continues observing so a later save can repair it.
     (adapter/last_error .set
       (try failure/.message
-       catch Error "watcher failure (message unavailable)"))
+       catch Throwable "watcher failure (message unavailable)"))
     (adapter/failures .set (+ adapter/failures/.get 1)))
   true)
 

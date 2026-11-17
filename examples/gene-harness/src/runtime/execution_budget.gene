@@ -76,7 +76,7 @@
     (match outcome ^!exhaustive
       (when (TaskOutcome/ok value) value)
       (when (TaskOutcome/error error) (fail error))
-      (when (TaskOutcome/panic message)
+      (when (TaskOutcome/fault fault) (let message fault/.message)
         (fail (CallbackCancelled ^deadline false ^_msg $"Plugin callback panic: ${message}")))
       (when TaskOutcome/cancelled
         (let expired (>= ($os/monotonic_ms) scope/deadline_ms))

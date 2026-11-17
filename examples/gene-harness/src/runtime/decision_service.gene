@@ -357,7 +357,7 @@
         (then {^status "timeout" ^reason "The decision deadline passed."})
         (elif (engine_statuses .contains? failure/code) {^status failure/code ^reason (safe_reason failure/.message)})
         (else {^status "error" ^reason (safe_reason failure/.message)})))
-    (when (TaskOutcome/panic message) {^status "error" ^reason "The engine failed."})
+    (when (TaskOutcome/fault fault) (let message fault/.message) {^status "error" ^reason "The engine failed."})
     (when TaskOutcome/cancelled {^status "timeout" ^reason "The decision deadline passed."})))
 
 (fn fence_current? [fence] : Bool ^^private

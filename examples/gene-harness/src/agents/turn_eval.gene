@@ -137,7 +137,7 @@
               (when (TaskOutcome/error failure)
                 (set error ($to_str failure/.message))
                 (set error_line (response_error_line failure)))
-              (when (TaskOutcome/panic message) (set error $"panic: ${message}"))
+              (when (TaskOutcome/fault fault) (let message fault/.message) (set error $"panic: ${message}"))
               (when TaskOutcome/cancelled
                 (if expired/.get (set error "response budget timed out") (set cancelled true)))))
           (else

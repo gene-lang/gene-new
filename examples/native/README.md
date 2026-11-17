@@ -166,7 +166,7 @@ Generated native functions use ABI version 2: a `GeneNativeError *`, the
 unboxed parameters, and an out-result pointer, returning `GeneNativeStatus`.
 Initialize the error record to zero and clear it after use. The out-result is
 unchanged on failure. Calls through `aot/load` translate failures into Gene
-errors, preserving TypeError's actual value and native stack frames.
+errors, preserving TypeFault's actual value and native stack frames.
 
 An installed compiler can export the self-contained support header:
 
@@ -203,13 +203,13 @@ values borrow their original storage and must be inspected before it is released
 
 Integer parameters and results keep their declared machine representation.
 Intermediate integer arithmetic promotes when necessary and remains exact;
-an out-of-range typed binding or result is a checked TypeError. The compiler
+an out-of-range typed binding or result is a checked TypeFault. The compiler
 sequences operands and calls, so errors do not require replaying effects.
 Rebuild old AOT libraries: the loader rejects the previous manifest version.
 
 Native recursion is bounded to **256 active generated calls per thread per C
 module**. Crossing the limit returns `GENE_NATIVE_RUNTIME_ERROR`, translated to
-a Gene `RuntimeError` through `aot/load`; the result remains untouched and later
+a Gene `RuntimeFault` through `aot/load`; the result remains untouched and later
 calls still work. This differs from the VM's explicit call stack. A C build may
 set `-DGENE_AOT_MAX_CALL_DEPTH=N` for a platform with a qualified stack budget.
 Foreign C recursion and arbitrarily large function-local storage are outside
