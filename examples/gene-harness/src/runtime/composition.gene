@@ -304,8 +304,19 @@
 
 # Returns the retirement failures of the final drain. They are reported, but a
 # failing cleanup does not stop the rest of the composition from closing.
+(fn ^^private leases_held? [state : CompositionState] : Bool
+  (map_for [id counter] in state/counts/.get
+    (if (> counter/.load 0) (return true)))
+  false)
+
 (fn begin_close_composition_state [state : CompositionState] : Any
   (if state/closed/.get (return []))
+  # A turn that is finishing as shutdown begins still holds its lease for a
+  # moment; give in-flight turns a bounded chance to release before refusing.
+  (var waited 0)
+  (while (&& (leases_held? state) (< waited 2000))
+    ($sleep 10)
+    (set waited (+ waited 10)))
   (map_for [id counter] in state/counts/.get
     (if (> counter/.load 0)
       (then

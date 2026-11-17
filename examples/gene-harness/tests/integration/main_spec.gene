@@ -515,7 +515,7 @@
           (try
             (for change in [{^protocol 999} {^epoch "stale-instance"}]
               (let descriptor ($serde/read_data saved))
-              (for [key value] in change
+              (map_for [key value] in change
                 (descriptor .put key value))
               ($fs/write_text descriptor_path ($serde/write_data descriptor))
               ($assert

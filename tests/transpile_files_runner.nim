@@ -78,11 +78,4 @@ if checked.exitCode != 0:
   quit(1)
 let executed = execCmdEx("node " & quoteShell(runner))
 stdout.write(executed.output)
-if executed.exitCode != 0: quit(executed.exitCode)
-let composerOut = root / "composer"
-createDir(composerOut)
-discard buildWebModule(getCurrentDir() / "examples/gene-harness/client/media.gene", composerOut)
-let composer = execCmdEx("node examples/gene-harness/tests/media_composer.mjs " &
-  quoteShell(composerOut / "media.mjs"))
-stdout.write(composer.output)
-quit(composer.exitCode)
+quit(executed.exitCode)

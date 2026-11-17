@@ -120,7 +120,7 @@
               (let stored (snapshot reopened))
               (let queue (stored/queues .get f/session))
               ($assert (== (/last_message (stored/bindings .get queue/binding)) "2.000002"))
-              ($assert (== ($size stored/outbox) 0))
+              ($assert (== ($map_size stored/outbox) 0))
             ensure (close_channel_store reopened))
           ensure (close_api api)))))))
 

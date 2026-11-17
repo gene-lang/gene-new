@@ -77,7 +77,7 @@
             ($assert (try (call) false catch Any true)))
           (for invalid in [{^tags "not-a-list"} {^docs [1]} {^summary 42}]
             (let candidate {^name "bad" ^text "body"})
-            (for [key value] in invalid
+            (map_for [key value] in invalid
               (candidate .put key value))
             ($assert (try (contribute h "probe" "docs" candidate) false catch Any true)))
           (for name in ["discover" "doc"]

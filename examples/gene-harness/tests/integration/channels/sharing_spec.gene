@@ -113,7 +113,7 @@
             ($assert (== accepted/session f/session/id))
             ($assert (== (/kind (drain_session f/channels f/session/id)) "admitted"))
             (wait_round f/harness f/session/id)
-            ($assert (== ($size f/harness/runtime/sessions/index/.get) 1))
+            ($assert (== ($map_size f/harness/runtime/sessions/index/.get) 1))
             (close_session_service f/harness)
             (let restored (test_service ^workspace workspace ^channel_options {^start false}
               ^provider (fn [request] "(Outcome ^^done)")))

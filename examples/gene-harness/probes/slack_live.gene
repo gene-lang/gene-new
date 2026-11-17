@@ -47,7 +47,7 @@
   (if ($absent? thread) (return nil))
   (let root service/runtime/root)
   (let queues (snapshot service/runtime/services/values/channel_queues))
-  (for [id binding] in queues/bindings
+  (map_for [id binding] in queues/bindings
     (if (!= binding/thread thread) (continue))
     (let rounds (round_state service/runtime/services/values/controller binding/session))
     (if rounds/receipts/.empty? (continue))
@@ -58,7 +58,7 @@
     (for output in outgoing
       (if (== output/result/status "failed") (fail "Slack rejected an outgoing test message; inspect its delivery record")))
     (var delivered false)
-    (for [id output] in queues/outbox
+    (map_for [id output] in queues/outbox
       (if (&& (== output/intent/session binding/session) (== output/status "delivered")
                (== output/result/status "delivered")
                (output/intent/parts/0/text .contains? "Gene Harness live test succeeded."))
@@ -78,7 +78,7 @@
     (mutate service/runtime/services/values/channels/owner (fn [state]
       (let account (state/accounts .get "qualification"))
       (if_not ($absent? account) (account .put "enabled" false))
-      (for [id route] in state/routes
+      (map_for [id route] in state/routes
         (if (== route/account "qualification") (route .put "enabled" false)))
       (state .put "policy_revision" (+ state/policy_revision 1)) nil))
   ensure

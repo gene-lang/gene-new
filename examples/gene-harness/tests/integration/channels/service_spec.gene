@@ -171,7 +171,7 @@
           ($assert (== ($size ($filter all (fn [out]
             (&& (== out/intent/round browser_round/id)
                 (== out/intent/parts/0/text "Agent:\nTask completed."))))) 1))
-          ($assert (== ($size f/harness/runtime/sessions/index/.get) 1))
+          ($assert (== ($map_size f/harness/runtime/sessions/index/.get) 1))
           (handoff_outputs f/channels)
           (let posted ($cell []))
           (let api (open_api "test-token" ^requester (fn [request]
@@ -187,7 +187,7 @@
           ensure (close_api api))
           (let separate (receive f "separate-root" "7.000001" "<@UBOT> Another task."))
           ($assert (!= separate/session session))
-          ($assert (== ($size f/harness/runtime/sessions/index/.get) 2))
+          ($assert (== ($map_size f/harness/runtime/sessions/index/.get) 2))
           (drain_session f/channels separate/session)
           (wait_round f/harness separate/session)
           (let first_request ($to_str f/calls/.get/3/messages))
@@ -202,17 +202,17 @@
           ($assert (== (/status (receive_handoff f/channels ordinary)) "ignored"))
           (let unknown (receive_slack f/channels/owner "dobi" (event "Ev2" "2.000001" "Follow up." ^thread "1.000001")))
           ($assert (== (/status (receive_handoff f/channels unknown)) "ignored"))
-          ($assert (== ($size f/harness/runtime/sessions/index/.get) 0))
+          ($assert (== ($map_size f/harness/runtime/sessions/index/.get) 0))
           (let root (receive_slack f/channels/owner "dobi" (event "Ev3" "3.000001" "<@UBOT> First task.")))
           (let received (receive_handoff f/channels root))
-          ($assert (== ($size f/harness/runtime/sessions/index/.get) 1))
+          ($assert (== ($map_size f/harness/runtime/sessions/index/.get) 1))
           (delete_session f/harness/runtime/sessions received/session ^^explicit)
           (let later (receive_slack f/channels/owner "dobi" (event "Ev4" "4.000001" "Next task." ^thread "3.000001")))
           ($assert (== (/status (receive_handoff f/channels later)) "deleted"))
           (let replies (pending_output f/harness/runtime/services/values/channel_queues))
           ($assert (> ($size ($filter replies (fn [out]
             (out/intent/parts/0/text .contains? "conversation was deleted")))) 0))
-          ($assert (== ($size f/harness/runtime/sessions/index/.get) 0)))))))
+          ($assert (== ($map_size f/harness/runtime/sessions/index/.get) 0)))))))
 
   (it "separates idempotent Stop and revisioned queue resume from prompts and rejects stale controls" []
     (isolated this_mod/.path "separates idempotent Stop and revisioned queue resume from prompts and rejects stale controls"

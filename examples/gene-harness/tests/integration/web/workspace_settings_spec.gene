@@ -171,7 +171,7 @@
           (fake_tab service (fn [data] nil))
           (let silent (try (shown .client_request "tab" "view/state" {} ^timeout_ms 50) "answered" catch Any $err/code))
           ($assert (== silent "unavailable") silent)
-          ($assert (== ($size service/client_requests/.get) 0) "a timed-out request is forgotten")
+          ($assert (== ($map_size service/client_requests/.get) 0) "a timed-out request is forgotten")
           (fake_tab service (fn [data] (client_reply service {^id data/id ^!ok ^error "no"})))
           (let refused (try (shown .client_view "tab") "answered" catch Any $err/code))
           ($assert (== refused "client_error") refused)

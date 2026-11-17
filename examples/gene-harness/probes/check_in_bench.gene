@@ -203,7 +203,7 @@
   (let template_path (option args "--label-template" nil))
   (try
     (let manifest events/last_manifest/.get)
-    (for [key descriptor] in (?? manifest/streams {})
+    (map_for [key descriptor] in (?? manifest/streams {})
       (let name ($to_str key))
       (if_not ($str/starts_with? name "session:") (continue))
       (let session ($str/slice_bytes name 8 (- ($str/byte_size name) 8)))

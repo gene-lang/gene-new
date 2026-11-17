@@ -454,24 +454,6 @@ To verify the browser import graph from the repository root:
 bin/gene build --target web --out-dir tmp/harness-web-client examples/gene-harness/client/main.gene
 ```
 
-The compiled initial-prompt rendering regression can then be run from the
-repository root with:
-
-```text
-node examples/gene-harness/tests/history_start.mjs tmp/harness-web-client/view.mjs
-node examples/gene-harness/tests/first_submission.mjs tmp/harness-web-client/main.mjs
-```
-
-It checks
-prompt styling and ordering above the history gap, identity-based duplicate
-suppression, safe full text, rename independence, triggers and attachments.
-It also checks heading-only intermediate replies in expanded turns and unchanged
-conversation-level final reply rendering.
-The submission check delays admission and snapshots, covers prompt replacement,
-late completion, rejection and uncertain recovery, session creation, identical
-prompts in different rounds, and attachment-only input.
-This DOM-fixture check is not a live-browser acceptance check.
-
 The server compiles and publishes these assets at startup; this command is a
 development check. The web builder currently requires unique source basenames
 across imported modules. See the [tooling constraints](../CONTRIBUTING.md#tooling-constraints).

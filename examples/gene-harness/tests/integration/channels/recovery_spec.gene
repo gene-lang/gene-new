@@ -50,7 +50,7 @@
             ($assert (== (read_count root) 0))
             (handoff_inputs service/runtime/services/values/channels)
             (let session (session_id service))
-            ($assert (== ($size service/runtime/sessions/index/.get) 1))
+            ($assert (== ($map_size service/runtime/sessions/index/.get) 1))
             (let first (drain_session service/runtime/services/values/channels session))
             ($assert (== first/kind "admitted"))
             (wait_round service session)
@@ -205,7 +205,7 @@
             (if_yes (== point "stop_hold")
               (handoff_inputs service/runtime/services/values/channels)
               (let saved (snapshot service/runtime/services/values/channel_queues))
-              (for [id control] in saved/controls
+              (map_for [id control] in saved/controls
                 (if (== control/command/name "stop")
                   ($assert (== control/result/code "ok") "A recorded Stop replayed against later browser work")))
               ($assert (/held (queue_status service/runtime/services/values/channel_queues session))))

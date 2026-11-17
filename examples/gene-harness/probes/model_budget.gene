@@ -60,7 +60,7 @@
         (let failed {^provider args/2 ^model args/3 ^requested_effort requested
           ^effective_effort settings/effort ^ok false ^elapsed_ms (- ($os/monotonic_ms) began)
           ^reason "Provider attempt failed; no output was executed. Resolve the failure before repeating billed probes."})
-        (for [key value] in (failure_fields $err) (failed .put key value))
+        (map_for [key value] in (failure_fields $err) (failed .put key value))
         ($println ($json/stringify failed))
         (return 1)))
     ($println ($json/stringify {^provider args/2 ^adapter entry/adapter ^model args/3

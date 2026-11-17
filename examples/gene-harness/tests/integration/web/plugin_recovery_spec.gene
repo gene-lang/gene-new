@@ -29,7 +29,7 @@
           ($assert ($absent? runtime/events))
           ($assert ($absent? runtime/sessions))
           ($assert ($absent? runtime/services/values/commands))
-          ($assert (== ($size runtime/h/plugins/.get) 0))
+          ($assert (== ($map_size runtime/h/plugins/.get) 0))
           ($assert (== ($fs/read_text $"${root}/.gene-harness/events/CURRENT") "not-a-checkpoint"))
         ensure (close_runtime runtime)))))
   (it "falls back after a startup crash, refuses normal work, and retries a repaired composition" []

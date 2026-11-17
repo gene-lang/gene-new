@@ -37,7 +37,7 @@
             (project .set (start_peer project_root "workspace" (if (== scenario/0 "workspace") scenario/1 "none") owner_root))
             (let authority (api (connect owner_root) "GET" "/channels/owner/policy"))
             (let route ($cell nil))
-            (for [id binding] in authority/routes (route .set binding))
+            (map_for [id binding] in authority/routes (route .set binding))
             (api (connect project_root) "POST" "/channels/bind" {^owner_root owner_root ^route route/.get/id})
             ($fs/write_text ($path/join owner_root "inject") "go")
             (let dying (if (== scenario/0 "owner") owner/.get project/.get))

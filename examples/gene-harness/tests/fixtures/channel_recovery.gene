@@ -66,7 +66,7 @@
 
 (fn session_id [service]
   (let state (snapshot service/runtime/services/values/channel_queues))
-  (for [id binding] in state/bindings (return binding/session))
+  (map_for [id binding] in state/bindings (return binding/session))
   (fail "No channel binding survived the crash"))
 
 (fn wait_round [service, session : Str]
@@ -115,41 +115,41 @@
 (fn install_channel_crash [service, point : Str, ^reply_only reply_only : Bool = false]
   (let root service/runtime/root)
   (set service/runtime/services/values/channels/owner/checkpoint (fn [side state result]
-    (for [id record] in state/ingress
+    (map_for [id record] in state/ingress
       (if (|| (&& (== point "ingress") (== side "after") (== record/status "pending"))
               (&& (== point "handoff") (== side "before") (== record/status "handed_off")))
         (crash root point)))
-    (for [id record] in state/deliveries
+    (map_for [id record] in state/deliveries
       (if (&& reply_only (!= record/intent/parts/0/text "Agent:\nComplete.")) (continue))
       (if (|| (&& (== point "owner_accept") (== side "after") (== record/status "accepted"))
               (&& (== point "owner_result") (== side "after") (== record/status "delivered")))
         (crash root point)))))
   (set service/runtime/services/values/channel_queues/checkpoint (fn [side state result]
-    (for [id binding] in state/bindings
+    (map_for [id binding] in state/bindings
       (if (|| (&& (== point "queued") (== side "after") (== binding/status "pending"))
               (&& (== point "binding") (== side "after") (== binding/status "active")))
         (crash root point)))
-    (for [id batch] in state/batches
+    (map_for [id batch] in state/batches
       (if (|| (&& (== point "batch") (== side "after") (== batch/status "prepared"))
               (&& (== point "receipt") (== side "before") (== batch/status "admitted"))
               (&& (== point "consumed") (== side "after") (== batch/status "admitted")))
         (crash root point)))
-    (for [id queue] in state/queues
-      (for [hold_id hold] in queue/holds
+    (map_for [id queue] in state/queues
+      (map_for [hold_id hold] in queue/holds
         (if (&& (== side "after") (== hold/kind "operator")
           (|| (&& (== point "stop_hold") (== hold/reason "stop"))
               (&& (== point "manual_hold") (== hold/reason "manual_pause"))
               (&& (== point "failed_hold") (== hold/reason "failed"))
               (&& (== point "oversized_hold") (== hold/reason "oversized"))))
           (crash root point))))
-    (for [id record] in state/outbox
+    (map_for [id record] in state/outbox
       (if (&& reply_only (!= record/intent/parts/0/text "Agent:\nComplete.")) (continue))
       (if (|| (&& (== point "intent") (== side "after") (== record/status "pending"))
               (&& (== point "workspace_result") (== side "after") (== record/status "delivered")))
         (crash root point)))))
   (set service/runtime/events/checkpoint (fn [generation]
-    (for [stream states] in service/runtime/events/core_projections/.get
-      (for [name record] in states
+    (map_for [stream states] in service/runtime/events/core_projections/.get
+      (map_for [name record] in states
         (if (&& (== point "question_answered") (== record/status "answered")
                  (== record/answer_source/author "UOTHER"))
           (crash root point)))

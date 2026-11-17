@@ -26,15 +26,11 @@ channel-suite runner or manual workspace-storage gate: both are discovered by
 - `fixtures/` contains child-process entries, captured external data, and
   browser demonstration hosts. Some browser fixtures are for manual inspection;
   a fixture does not run merely because it is present.
-- The top-level `.mjs` files exercise emitted browser modules with DOM and
-  transport doubles. Some are also used by the repository's compiler tests.
-  Gene owns their build and test orchestration; Node provides the external
-  JavaScript runtime.
 
-The compiled-client spec builds each browser entry once, runs every browser
-fixture in a separate Node process, and checks rendered page identities against
-workspace-scoped session storage. These checks do not replace live-browser
-acceptance for layout or native browser behavior.
+The compiled-client spec builds each browser entry, checks that the page
+renders every element id the client looks up, and checks rendered page
+identities against workspace-scoped session storage. Browser layout and
+interaction are checked in a live browser, not in the suite.
 
 ## Isolation and prerequisites
 

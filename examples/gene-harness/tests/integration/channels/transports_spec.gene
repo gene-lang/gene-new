@@ -63,7 +63,7 @@
           ($assert (== reply/channel "general"))
           ($assert (== reply/thread "1"))
           (let sessions [])
-          (for [id record] in service/runtime/sessions/index/.get
+          (map_for [id record] in service/runtime/sessions/index/.get
             (if ($present? record/channel) (sessions .push ($to_str id))))
           ($assert (== sessions/.size 1))
           (let session (require_record service/runtime/sessions sessions/0))
@@ -71,8 +71,8 @@
           (let receipt (/0 (/receipts (round_state service/runtime/services/values/controller session/id))))
           ($assert (== receipt/initiator "channel:toy_chat/toy") ($to_str receipt))
           (let delivered (/deliveries (snapshot channels/owner)))
-          ($assert (> ($size delivered) 0))
-          (for [id record] in delivered ($assert (== record/status "delivered") ($to_str record)))
+          ($assert (> ($map_size delivered) 0))
+          (map_for [id record] in delivered ($assert (== record/status "delivered") ($to_str record)))
         ensure (close_session_service service))))))
 
 (fn main [args] : Int (run_spec args))

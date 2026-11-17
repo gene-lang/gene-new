@@ -55,7 +55,7 @@
               (let row {}) (var field 0)
               (while (< field 30) (row .put ($to_str field) "data") (set field (+ field 1)))
               (state/items .put ($to_str index) row) (set index (+ index 1))) nil))
-          ($assert (== ($size (/items (snapshot store))) 4000))
+          ($assert (== ($map_size (/items (snapshot store))) 4000))
           (let revision (/revision (snapshot store)))
           ($assert (try
             (mutate store (fn [state]
@@ -67,7 +67,7 @@
         ensure (close_channel_store store))
         (let reopened (open_channel_store directory "review" {^items {}}))
         (try
-          ($assert (== ($size (/items (snapshot reopened))) 4000))
+          ($assert (== ($map_size (/items (snapshot reopened))) 4000))
           (mutate reopened (fn [state] (state/items .put "last" {^ok true}) nil) ^changes {^items ["last"]})
         ensure (close_channel_store reopened)))))
 
@@ -97,7 +97,7 @@
         (try
           ($assert (== (/items (snapshot migrated)) {^nil nil ^old "kept" ^new "added"}))
           (let corrupt ($cell nil))
-          (for [id entries] in migrated/buckets/.get/items
+          (map_for [id entries] in migrated/buckets/.get/items
             (if ($has_key? entries "new") (corrupt .set (entries .get "new"))))
           (migrated/backend .Store:put ($to_str "channel/record/" corrupt/.get) {^value "corrupt"})
         ensure (close_channel_store migrated))
@@ -114,7 +114,7 @@
           (handoff_inputs f/channels)
           ($assert (== ($size (pending_ingress f/channels/owner)) 0))
           (let queues (snapshot f/harness/runtime/services/values/channel_queues))
-          (for [id queue] in queues/queues
+          (map_for [id queue] in queues/queues
             (let parts (pending_parts f/harness/runtime/services/values/channel_queues ($to_str id)))
             ($assert (== parts/.size 2))
             ($assert (== parts/0/message/text "Start with https://example.com."))
@@ -295,7 +295,7 @@
           (let revision (/revision (snapshot f/channels/owner)))
           (repeat 20 (handoff_inputs f/channels))
           ($assert (== (/revision (snapshot f/channels/owner)) revision))
-          ($assert (== ($size f/harness/runtime/sessions/index/.get) 0)))))))
+          ($assert (== ($map_size f/harness/runtime/sessions/index/.get) 0)))))))
 
   (it "persists missing-root backoff and wakes the waiting reply when its root arrives" []
     (isolated this_mod/.path "persists missing-root backoff and wakes the waiting reply when its root arrives"
@@ -320,7 +320,7 @@
             (handoff_inputs restored/channels)
             ($assert (== ($size (pending_ingress restored/channels/owner)) 0))
             (let state (snapshot restored/harness/runtime/services/values/channel_queues))
-            (for [id queue] in state/queues
+            (map_for [id queue] in state/queues
               ($assert (== (/pending (queue_status restored/harness/runtime/services/values/channel_queues ($to_str id))) 2))))))))))
 
   (it "keeps later amendments behind a deferred handoff in the same thread" []
@@ -362,7 +362,7 @@
           ($assert (== ($size (pending_ingress f/channels/owner)) 0))
           (let result (read f/channels/owner (fn [state] (/result (state/ingress .get waiting/id)))))
           ($assert (== result/status "ignored"))
-          ($assert (== ($size f/harness/runtime/sessions/index/.get) 1)))))))
+          ($assert (== ($map_size f/harness/runtime/sessions/index/.get) 1)))))))
 
   (it "detects a blackholed Socket Mode connection after hello and retires its socket" []
     (isolated this_mod/.path "detects a blackholed Socket Mode connection after hello and retires its socket"

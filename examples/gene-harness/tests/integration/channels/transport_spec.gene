@@ -41,11 +41,11 @@
             ^receive (fn [native socket] (let at position/.get) (position .set (+ at 1)) frames/%at)
             ^ack (fn [native socket id]
               (let state (snapshot harness/runtime/services/values/channels/owner))
-              ($assert (== ($size state/ingress) 1))
+              ($assert (== ($map_size state/ingress) 1))
               (let durable (state/ingress .get (key ["dobi" "T123" "Ev1"])))
               ($assert (== durable/status "pending"))
               ($assert (== durable/payload/event/text "<@UBOT> Build it"))
-              ($assert (== ($size harness/runtime/sessions/index/.get) 0))
+              ($assert (== ($map_size harness/runtime/sessions/index/.get) 0))
               (acknowledgments/.get .push id))
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})
           (let transport (open_transport (local_channel_host harness/runtime/services/values/channels) ^driver driver ^start false
@@ -103,10 +103,10 @@
             (while (< opened/.get 2)
               ($assert (< ($os/monotonic_ms) due) "socket owner did not reconnect")
               ($sleep 10))
-            ($assert (== ($size transport/jobs/.get) 1))
+            ($assert (== ($map_size transport/jobs/.get) 1))
             (close_transport transport)
             ($assert (== opened/.get closed/.get))
-            ($assert (== ($size transport/jobs/.get) 0))
+            ($assert (== ($map_size transport/jobs/.get) 0))
           ensure (close_transport transport)))))))
 
   (it "paces ordered parts per channel and applies Retry-After to other threads too" []
