@@ -14,7 +14,7 @@
     (fn init [descriptor]
       ($assert (== descriptor/core_interface "gene-harness/PluginHost:3"))
       (Plugin ^id "default_root_fixture" ^activate (fn [host]
-        ($assert (try host/h false catch Error true))
+        ($assert (try host/h false catch Fault true))
         (host .PluginHost:contribute "functions"
           {^name "default_root_value" ^doc "Loaded from the default generated root."
            ^fn (fn [] "default root")}))))))))
