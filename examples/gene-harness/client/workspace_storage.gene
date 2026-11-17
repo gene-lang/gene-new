@@ -15,7 +15,9 @@
     (if_yes ($absent? document/dataset/workspaceId) (return ""))
     (var identity : Str document/dataset/workspaceId)
     identity
-    catch Error ""))
+    # Outside the Harness page (no document, or no such element) the key is
+    # unscoped.
+    catch Throwable ""))
   (workspace_storage_key workspace key))
 
 (fn storage_get [key : Str] : Str

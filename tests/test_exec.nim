@@ -179,7 +179,7 @@ suite "os/exec child settings":
       let scope = execScope(getTempDir())
       scope.define("nul", newStr("bad\0value"))
       check run(compileSource("(try " & source &
-        " false catch Error true)"), scope).print() == "true"
+        " false catch Throwable true)"), scope).print() == "true"
 
   test "captured synchronous execution supplies EOF on stdin":
     let scope = execScope(getTempDir())

@@ -299,7 +299,7 @@
                 (mod plugin
                   (import ^from "src/plugin_api.gene" [Plugin])
                   (fn init [descriptor]
-                    (let mode (try ($fs/exists? ".") "full" catch Error "restricted"))
+                    (let mode (try ($fs/exists? ".") "full" catch Fault "restricted"))
                     (Plugin ^id "shape" ^provides [["functions" mode]] ^activate (fn [host] ($fs/write_text "must-not-activate" "bad"))))))))
           (let plan
             (validate_plan
