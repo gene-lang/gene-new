@@ -202,7 +202,7 @@ when defined(geneRcStats):
 
   suite "rc — closures and scopes (geneRcStats)":
     test "reused for activations release their values on normal and abrupt exits":
-      for ending in ["nil", "(continue)", "(break)", "(return nil)", "(fail \"stop\")"]:
+      for ending in ["nil", "(continue)", "(break)", "(return nil)", "(fail (Error ^_msg \"stop\"))"]:
         let source = "(fn work [] (for item in [1 2 3 4] " &
           "(var local {^value [item ($to_str item)]}) " &
           "(var typed : Str ($to_str item)) " &
@@ -713,9 +713,8 @@ when defined(geneRcStats):
       """) == 0
       check leakedManaged("""
         (scope
-          (type Local ^props {^message Str}
-            (impl Error (message message [] : Str ^errors [] self/_msg)))
-          (var original (Local ^message "named"))
+          (type Local : Error (message message [] : Str ^errors [] ^^override self/_msg))
+          (var original (Local ^_msg "named"))
           (try (fail original) catch Error $err/.message))
       """, useLocalSlots = false) == 0
       check leakedManaged("""
@@ -799,7 +798,7 @@ when defined(geneRcStats):
       # Model an invocation adapter that owns a durable binding only until the
       # call settles. Ordinary factory closures also need their local cycle
       # broken; GC of arbitrary mixed scope/Value cycles is not implemented.
-      check leakedManaged("(fn target [] (fail \"expected\")) " &
+      check leakedManaged("(fn target [] (fail (Error ^_msg \"expected\"))) " &
         "(fn invoke [] (var bound ($runtime/bind_call target [])) " &
         " (try (bound) catch Error nil ensure (set bound nil))) " &
         "(repeat 100 (invoke))") == 0
@@ -810,11 +809,11 @@ when defined(geneRcStats):
         "(repeat 100 ((make 3) 2))") == 0
       check leakedManaged("(fn use [f : (Callable [Int] Int)] (f 1)) " &
         "(repeat 100 (use (fn [x] x)))") == 0
-      check leakedManaged("(fn bad [x] (fail \"expected\")) " &
+      check leakedManaged("(fn bad [x] (fail (Error ^_msg \"expected\"))) " &
         "(fn use [f : (Callable [Int] Int)] (try (f 1) catch Error nil)) " &
         "(repeat 100 (use bad))") == 0
       check leakedManaged("(let f : (Callable [] Any ^errors []) " &
-        "(fn [] ($assert false))) (try (f) catch ContractViolation nil)") == 0
+        "(fn [] ($assert false))) (try (f) catch AssertionFault nil)") == 0
 
     test "prepared pipeline captures are released on close and exhaustion":
       check leakedManaged("(let s ([1 2] => + 3)) (s .close)") == 0
@@ -824,7 +823,7 @@ when defined(geneRcStats):
       check leakedManaged("(let args [2 3]) " &
         "(fn collect [items...] items) " &
         "(let s ([1] => collect args...)) (s .close)") == 0
-      check leakedManaged("(fn broken [x] (fail \"expected\")) " &
+      check leakedManaged("(fn broken [x] (fail (Error ^_msg \"expected\"))) " &
         "(let s ([1] => broken)) (try (s .next) catch Error nil)") == 0
 
     test "filesystem walk releases retained frames after early close":
@@ -1107,7 +1106,7 @@ when defined(geneRcStats):
           "(import * : p ^from \"./prov\") " &
           "(let item (Item)) (var i 0) " &
           "(fn body [] " & pair &
-          "  (let f (fn [] (try item/.Render:render catch Error \"hidden\"))) (f)) " &
+          "  (let f (fn [] (try item/.Render:render catch MessageFault \"hidden\"))) (f)) " &
           "(body) ($runtime/test_collect) nil")
         GC_fullCollect()
         let before = liveManaged
@@ -1206,7 +1205,7 @@ when defined(geneRcStats):
         check repeatedBodyLeak("(fn body [] (var f nil) " &
           "(for x in [2] (set f (fn [] x)) (return 1)) nil)") == 0
         check repeatedBodyLeak("(fn inner [] (var f nil) " &
-          "(for x in [2] (set f (fn [] x))) (fail \"boom\")) " &
+          "(for x in [2] (set f (fn [] x))) (fail (Error ^_msg \"boom\"))) " &
           "(fn body [] (try (inner) catch Error nil) nil)") == 0
         # A function a native calls back, and a spawned task body.
         check repeatedBodyLeak("(fn body [] ([1] .map (fn [e] (var f nil) " &
@@ -1297,7 +1296,7 @@ when defined(geneRcStats):
           "(tx .discard) " &
           "(var failed ($runtime/sandbox_transaction)) " &
           "($assert (try (failed .prepare " & sandboxOptions("failing.gene") &
-          ") false catch Error true)) " &
+          ") false catch Fault true)) " &
           "(failed .discard)"
         discard leakedManaged(source)
         check leakedManaged(source) == 0
@@ -1377,7 +1376,7 @@ when defined(geneRcStats):
       check leakedManaged(
         "(fn inspect! [] (eval (quote 1) ^in caller_env)) (inspect!)") == 0
       check leakedManaged(
-        "(fn reject! [] (try [caller_env] catch Error nil)) (reject!)") == 0
+        "(fn reject! [] (try [caller_env] catch Fault nil)) (reject!)") == 0
       check leakedManaged(
         "(var x 1) " &
         "(fn snapshot! [] (caller_env .snapshot [\"x\"])) " &

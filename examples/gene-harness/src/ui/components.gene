@@ -365,7 +365,7 @@
   (let css
     (try
       (render_css (?? scoped_style candidate/style))
-    catch Error
+    catch Throwable
       (component_error $"web component style could not be rendered: ${$err/.message}")))
   (if (> ($str/byte_size css) 65536) (component_error "web component style exceeds 64 KiB"))
   (checked .put "style_css" css)

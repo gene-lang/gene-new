@@ -553,8 +553,10 @@
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail error))
     (when (TaskOutcome/fault fault) (let message fault/.message)
+      # A plugin's defect becomes a CordisError that keeps the defect as its
+      # cause; only a Panic is reported as one.
       (cordis_failure CordisError
-        $"plugin panic: ${message}" message
+        (if (== ($head fault) Panic) $"plugin panic: ${message}" message) fault
         nil call/instance_uid call/entry_id))
     (when TaskOutcome/cancelled
       (cordis_failure CordisError "plugin invocation was cancelled"

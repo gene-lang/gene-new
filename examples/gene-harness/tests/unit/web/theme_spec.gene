@@ -282,7 +282,7 @@
     ($assert (! ($str/contains? css "font-family: Example Extra;"))))
 
   (it "publishes font bytes with a content address and generates inherited faces" []
-    (let invalid (try ($web/font "missing-font.txt") "" catch Error $err/.message))
+    (let invalid (try ($web/font "missing-font.txt") "" catch Fault $err/.message))
     ($assert ($str/contains? invalid "web/font expects"))
     (let path ($path/join this_pkg/root "tmp" $"theme-font-${($crypto/random_hex 8)}.woff2"))
     (let exported ($to_str path ".export"))

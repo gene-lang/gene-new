@@ -44,7 +44,7 @@
             (Plugin ^id "media_probe" ^requires ["media/host"] ^activate (fn [host]
               (handle .set (host .PluginHost:resolve "media/host")))) {})
           (let original handle/.get)
-          ($assert (try original/runtime false catch Error true))
+          ($assert (try original/runtime false catch Fault true))
           ($assert (try original/manager false catch Error true))
           (let stored (original .MediaHost:store "pixel.png" ($base64/decode pixel)))
           ($assert (try (stored .put "name" "changed") false catch Error true))

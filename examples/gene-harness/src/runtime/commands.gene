@@ -351,8 +351,9 @@
       (when (TaskOutcome/fault fault) (let message fault/.message)
         (record .put "status" "failed")
         (if_not (|| (== ($head fault) Panic) ($absent? fault/code)) (record .put "error_code" fault/code))
+        (let location (?? fault/line "?"))
         (record .put "display" (if (|| (== ($head fault) Panic) (== record/ui_action true))
-          message $"line ${(?? fault/line "?")}: ${message}")))
+          message $"line ${location}: ${message}")))
       (when TaskOutcome/cancelled
         (record .put "status" "cancelled")
         (record .put

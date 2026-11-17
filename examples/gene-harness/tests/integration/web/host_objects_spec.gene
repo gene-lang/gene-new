@@ -50,7 +50,7 @@
           ($assert ($str/contains? printed "(cycle)") "the real objects are cyclic")
           ($assert (== (run_output service session/id "($println (== workspace workspace))") "true\n"))
           (let frozen (run_output service session/id
-            "($println (try ($freeze workspace) \"frozen\" catch Error \"refused\"))"))
+            "($println (try ($freeze workspace) \"frozen\" catch Fault \"refused\"))"))
           ($assert (== frozen "refused\n")))))))
 
   (it "exposes the real internals by property path" []

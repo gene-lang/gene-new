@@ -76,7 +76,7 @@
             ($assert (try (detail .put "title" "mutated") false catch Fault true)
               "facade returned mutable public data"))
           (let listed_snapshot (call h "notification_list"))
-          ($assert (try (listed_snapshot/messages .push {}) false catch Error true))
+          ($assert (try (listed_snapshot/messages .push {}) false catch Fault true))
           (let denied (call h "notification_update" foreign/id {^title "Stolen"}))
           ($assert (&& (! denied/ok) (== denied/code "forbidden")))
           (let plugin_denied (publisher/.get .PluginHost:notification_update keyed/id {^title "Stolen"}))

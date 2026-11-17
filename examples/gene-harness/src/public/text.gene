@@ -7,7 +7,7 @@
 (fn byte_prefix [text : Str, maximum : Int] : Str
   (var count ($math/min maximum ($str/byte_size text)))
   (while (>= count 0)
-    (let prefix (try ($str/slice_bytes text 0 count) catch Error nil))
+    (let prefix (try ($str/slice_bytes text 0 count) catch Fault nil))
     (if_not ($absent? prefix) (return prefix))
     (set count (- count 1)))
   "")
@@ -16,7 +16,7 @@
   (let size ($str/byte_size text))
   (var count ($math/min maximum size))
   (while (>= count 0)
-    (let suffix (try ($str/slice_bytes text (- size count) count) catch Error nil))
+    (let suffix (try ($str/slice_bytes text (- size count) count) catch Fault nil))
     (if_not ($absent? suffix) (return suffix))
     (set count (- count 1)))
   "")
