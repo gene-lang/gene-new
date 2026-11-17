@@ -96,7 +96,7 @@ suite "read-only execution budget":
   test "snapshots cannot mutate the actual budget or their fields":
     check evaluate("""
       (let budget ($runtime/execution_budget))
-      (try (budget .put "deadline_ms" 0) false catch Error true)
+      (try (budget .put "deadline_ms" 0) false catch Fault true)
     """).print() == "true"
 
   test "an observed deadline still expires normally":

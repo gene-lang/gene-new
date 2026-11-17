@@ -37,11 +37,11 @@ proc fail(ctx: ptr AotContext, message: string): cint =
   AotError
 
 proc fail(ctx: ptr AotContext, error: ref CatchableError): cint =
-  if ctx != nil:
-    if error of GeneError: ctx.error = cast[ref GeneError](error)
-    if error of GenePanic: ctx.panicked = true
+  ## The error value itself travels, a Panic included; `panicked` and status 2
+  ## remain only for a native panic that has no Gene value.
+  if ctx != nil and error of GeneError: ctx.error = cast[ref GeneError](error)
   discard ctx.fail(error.msg)
-  if error of GenePanic: cint(2) else: AotError
+  AotError
 
 proc geneFfiNativeError(ctx: ptr AotContext, status: cint, where, expected: cstring,
                        actualKind: cint, integer: cstring, real: cdouble,

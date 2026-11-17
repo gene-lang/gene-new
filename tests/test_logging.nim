@@ -464,5 +464,5 @@ suite "structured logging":
     let result = runLoggingSource(
       "(import $log [new_logger]) " &
       "(try (new_logger \"app/reserved\" ^payload {^level \"fake\"}) " &
-      "  false catch Error true)")
+      "  false catch Fault true)")
     check result == TRUE

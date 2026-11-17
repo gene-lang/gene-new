@@ -23,7 +23,7 @@ proc provenanceFixture(base, name: string): string =
 (var info ($pkg/application))
 (var digests [($pkg/canonical_digest {^x 1 ^y 2})
               ($pkg/canonical_digest {^y 2 ^x 1})])
-(var immutable (try (info .put "root" "changed") false catch Error true))
+(var immutable (try (info .put "root" "changed") false catch Fault true))
 """)
 
 proc provenanceGraph(root: string): MaterializedGraph =

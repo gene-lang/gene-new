@@ -1116,7 +1116,7 @@ when not defined(geneWasm):
       fsReadBytes(path)
     let asset = try:
       compileWebFileAsset(args[0].strVal, readSource)
-    except GeneError, GenePanic, GeneCancel:
+    except GeneError, GeneCancel:
       raise
     except CatchableError as error:
       # Source IO and web-profile validation failures must cross the native
@@ -5600,14 +5600,12 @@ proc biReplEval(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     replEvalResult("error", formatDiagnostic("Read error", error.msg,
       SourceLoc(sourceName: error.sourceName, line: error.line,
                 col: error.col)))
-  except GenePanic as error:
-    session.pendingSource.setLen(0)
-    session.pendingError.setLen(0)
-    replEvalResult("panic", "Panic: " & error.msg)
   except GeneError as error:
     session.pendingSource.setLen(0)
     session.pendingError.setLen(0)
-    if error.msg == "interrupted":
+    if error.isPanicError:
+      replEvalResult("panic", "Panic: " & error.msg)
+    elif error.msg == "interrupted":
       replEvalResult("cancelled", "[cancelled]")
     else:
       replEvalResult("error", formatDiagnostic("Error", error.msg, error.loc))
@@ -9178,7 +9176,7 @@ proc dbRunTransaction(conn, callable: Value, scope: Scope,
   try:
     var callArgs = [conn]
     result = applyCall(callable, callArgs, NamedArgs(), scope)
-  except GeneError, GenePanic:
+  except GeneError:
     try:
       execFn(conn, "ROLLBACK", scope)
     except GeneError:
@@ -10069,7 +10067,7 @@ proc storeSqliteCheckpoint(scope: Scope, store: Value, generation: int64,
       "Store/checkpoint", scope)
     discard sqliteExecScript(db, "COMMIT", "Store/checkpoint", scope)
     storeSqlitePersist(store, db, true, call, scope)
-  except GeneError, GenePanic:
+  except GeneError:
     try: discard sqliteExecScript(db, "ROLLBACK", "Store/checkpoint", scope)
     except GeneError: discard
     raise
@@ -10341,10 +10339,10 @@ proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
   var value = NIL
   let status = entry(addr ctx, addr aotCall, addr value)
   if status != 0:
-    if ctx.panicked or status == 2:
-      raise newException(GenePanic, ctx.message)
     if ctx.error != nil:
       raise ctx.error
+    if ctx.panicked or status == 2:
+      raise panicError(ctx.message)
     raise newException(GeneError,
       if ctx.message.len > 0: ctx.message
       else: "AOT entry '" & name & "' failed with status " & $status)

@@ -549,14 +549,8 @@ proc geneLogEmit*(logger: RuntimeLogger, level: LogLevel,
     result.message = "native log payload JSON: " & e.msg
 
 proc errorResult(e: ref GeneError): GeneResult =
-  result.status = gsError
-  result.message = e.msg
-  result.hasErrorValue = e.hasErrVal
-  if e.hasErrVal:
-    result.errorValue = e.errVal
-
-proc panicResult(e: ref GenePanic): GeneResult =
-  result.status = gsPanic
+  ## A Panic value keeps the panic status at the C boundary.
+  result.status = if e.isPanicError: gsPanic else: gsError
   result.message = e.msg
   result.hasErrorValue = e.hasErrVal
   if e.hasErrVal:
@@ -954,8 +948,6 @@ proc geneCall*(callee: Value, call: GeneCall): GeneResult =
                            call.dispatchScope, call.site)
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
   except GeneCancel as e:
     result = cancelResult(e)
 
@@ -1009,8 +1001,9 @@ proc geneIngressPollSubscription*(subscription: GeneIngressSubscription,
     var called: GeneIngressManagedResult
     try:
       called = ingressManagedHooks.dispatch(subscription.managedOwner, payload)
-    except GenePanic as error:
-      called = GeneIngressManagedResult(status: gsPanic, message: error.msg)
+    except GeneError as error:
+      called = GeneIngressManagedResult(
+        status: if error.isPanicError: gsPanic else: gsError, message: error.msg)
     except GeneCancel as error:
       called = GeneIngressManagedResult(status: gsCancelled, message: error.msg)
     except CatchableError as error:
@@ -1123,8 +1116,6 @@ proc geneModuleDefine*(module: GeneModule, name: string,
       result.value = value
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneModuleDefineNative*(module: GeneModule, name: string,
                              impl: NativeProc): GeneResult =
@@ -1173,8 +1164,6 @@ proc geneDefineWrapperType*(module: GeneModule, name: string,
       result.value = typ
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneNewWrapper*(wrapperType: Value,
                      props: openArray[(string, Value)]): GeneResult =
@@ -1187,8 +1176,6 @@ proc geneNewWrapper*(wrapperType: Value,
     result.value = vm.newNativeWrapper(wrapperType, props)
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneWrapperField*(instance, wrapperType: Value,
                        name: string): GeneResult =
@@ -1213,8 +1200,6 @@ proc geneWrapperField*(instance, wrapperType: Value,
     result.value = instance.props.getOrDefault(name, NIL)
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneNewCPtr*(address: pointer, targetType: Value): Value =
   newCPtr(address, targetType)
@@ -1233,8 +1218,6 @@ proc geneCloseCPtr*(value: Value): GeneResult =
     result.value = NIL
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneNewCSlice*(address: pointer, length: int, targetType: Value): Value =
   newCSlice(address, length, targetType)
@@ -1246,8 +1229,6 @@ proc geneNewBuffer*(elemType: Value, items: seq[Value],
     result.value = newCheckedBuffer(elemType, items, scope)
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneBufferLen*(buffer: Value): GeneResult =
   try:
@@ -1257,8 +1238,6 @@ proc geneBufferLen*(buffer: Value): GeneResult =
     result.value = newInt(buffer.bufferLen)
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneBufferGet*(buffer: Value, index: int): GeneResult =
   try:
@@ -1266,8 +1245,6 @@ proc geneBufferGet*(buffer: Value, index: int): GeneResult =
     result.value = getCheckedBufferItem(buffer, index)
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneBufferSet*(buffer: Value, index: int, item: Value,
                     scope: Scope): GeneResult =
@@ -1276,8 +1253,6 @@ proc geneBufferSet*(buffer: Value, index: int, item: Value,
     result.value = setCheckedBufferItem(buffer, index, item, scope)
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneChannelTrySend*(channel: Value, item: GeneRoot,
                          scope: Scope): GeneResult =
@@ -1288,8 +1263,6 @@ proc geneChannelTrySend*(channel: Value, item: GeneRoot,
       else: FALSE
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneChannelTryRecv*(channel: Value, scope: Scope): GeneResult =
   try:
@@ -1297,8 +1270,6 @@ proc geneChannelTryRecv*(channel: Value, scope: Scope): GeneResult =
     result.value = vm.nativeChannelTryRecv(channel, scope)
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneActorTrySend*(actor: Value, message: GeneRoot,
                        scope: Scope): GeneResult =
@@ -1309,8 +1280,6 @@ proc geneActorTrySend*(actor: Value, message: GeneRoot,
       else: FALSE
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneNewAsyncTask*(): Value =
   vm.nativeNewAsyncTask()
@@ -1324,8 +1293,6 @@ proc geneTaskComplete*(task: Value, value: GeneRoot,
       else: FALSE
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneTaskFail*(task: Value, message: string, value: GeneRoot,
                    hasValue: bool, scope: Scope): GeneResult =
@@ -1339,8 +1306,6 @@ proc geneTaskFail*(task: Value, message: string, value: GeneRoot,
       else: FALSE
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneTaskCancel*(task: Value, scope: Scope): GeneResult =
   try:
@@ -1350,8 +1315,6 @@ proc geneTaskCancel*(task: Value, scope: Scope): GeneResult =
       else: FALSE
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
 
 proc geneNewCallback*(callee: Value): GeneCallbackHandle =
   GeneCallbackHandle(callee: geneRoot(callee), ownerThreadId: getThreadId())
@@ -1396,8 +1359,6 @@ proc geneCallCallback*(callback: GeneCallbackHandle,
       callback.active = false
   except GeneError as e:
     result = errorResult(e)
-  except GenePanic as e:
-    result = panicResult(e)
   except GeneCancel as e:
     result = cancelResult(e)
 

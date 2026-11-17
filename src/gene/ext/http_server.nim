@@ -1818,6 +1818,9 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         elif entry.task.taskHasPanic:
           HttpRuntimeLogger.emit(llError,
             "ws " & entry.label & " panic: " & entry.task.taskPanicMsg)
+        elif entry.task.taskHasErrorValue and entry.task.taskErrorValue.isPanicValue:
+          HttpRuntimeLogger.emit(llError,
+            "ws " & entry.label & " panic: " & entry.task.taskErrorMsg)
         elif entry.task.taskHasError:
           HttpRuntimeLogger.emit(llError,
             "ws " & entry.label & " error: " & entry.task.taskErrorMsg)
@@ -1926,8 +1929,6 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
                                                [conn.wsValue], scope))
           except GeneError as e:
             HttpRuntimeLogger.emit(llError, "ws on_close error: " & e.msg)
-          except GenePanic as e:
-            HttpRuntimeLogger.emit(llError, "ws on_close panic: " & e.msg)
       unregisterConn(conn)
       conns.del(conn.fd)
       if conn.tlsConnection != nil:
@@ -1965,8 +1966,6 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
                                                [conn.wsValue], scope))
         except GeneError as e:
           HttpRuntimeLogger.emit(llError, "ws on_open error: " & e.msg)
-        except GenePanic as e:
-          HttpRuntimeLogger.emit(llError, "ws on_open panic: " & e.msg)
 
     proc completeWrite(conn: HttpConn) =
       ## A fully flushed response either finishes the request or, for an
@@ -2001,8 +2000,6 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         discard applyCall(accessLog, [record], NamedArgs(), scope)
       except GeneError as e:
         HttpRuntimeLogger.emit(llError, "access_log error: " & e.msg)
-      except GenePanic as e:
-        HttpRuntimeLogger.emit(llError, "access_log panic: " & e.msg)
 
     proc logError(conn: HttpConn, message: string, panic: bool) =
       ## §17 error log: handler errors/panics as ErrorLog records; same
@@ -2019,8 +2016,6 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         discard applyCall(errorLog, [record], NamedArgs(), scope)
       except GeneError as e:
         HttpRuntimeLogger.emit(llError, "error_log error: " & e.msg)
-      except GenePanic as e:
-        HttpRuntimeLogger.emit(llError, "error_log panic: " & e.msg)
 
     proc recvConn(conn: HttpConn, buffer: pointer, size: int): int =
       if conn.tlsConnection == nil:
@@ -2125,9 +2120,14 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       ## ^on_error mapper when one is configured; panics and cancellation stay
       ## generic 500s (stderr diagnostics preserved from the old server).
       let task = conn.task
-      if task.taskHasPanic:
-        HttpRuntimeLogger.emit(llError, "handler panic: " & task.taskPanicMsg)
-        logError(conn, task.taskPanicMsg, panic = true)
+      # A Panic value is the panic of a Gene handler; a native panic has none.
+      let panicMessage =
+        if task.taskHasPanic: task.taskPanicMsg
+        elif task.taskHasErrorValue and task.taskErrorValue.isPanicValue: task.taskErrorMsg
+        else: ""
+      if task.taskHasPanic or panicMessage.len > 0:
+        HttpRuntimeLogger.emit(llError, "handler panic: " & panicMessage)
+        logError(conn, panicMessage, panic = true)
         inc rt.failedRequests
         return (simpleHttpWirePayload(500, "Internal Server Error"), 500)
       if task.taskCancelled:
@@ -2147,8 +2147,6 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
                     wire.status)
           except GeneError as e:
             HttpRuntimeLogger.emit(llError, "on_error mapper error: " & e.msg)
-          except GenePanic as e:
-            HttpRuntimeLogger.emit(llError, "on_error mapper panic: " & e.msg)
         HttpRuntimeLogger.emit(llError, "handler error: " & task.taskErrorMsg)
         inc rt.failedRequests
         return (simpleHttpWirePayload(500, "Internal Server Error"), 500)
@@ -2466,9 +2464,6 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       except GeneError as e:
         HttpRuntimeLogger.emit(llError, "handler error: " & e.msg)
         respondCounted(conn, 500, "Internal Server Error")
-      except GenePanic as e:
-        HttpRuntimeLogger.emit(llError, "handler panic: " & e.msg)
-        respondCounted(conn, 500, "Internal Server Error")
 
     proc handleStreamingReadable(conn: HttpConn) =
       if not conn.streamingBody or conn.bodyWriteTask.kind == vkTask or
@@ -2658,8 +2653,6 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
                                         [conn.wsValue, payload], scope))
             except GeneError as e:
               HttpRuntimeLogger.emit(llError, "ws on_message error: " & e.msg)
-            except GenePanic as e:
-              HttpRuntimeLogger.emit(llError, "ws on_message panic: " & e.msg)
         of 0x8:
           if not conn.wsCloseAfterFlush:
             wsAppendFrame(conn, wsEncodeFrame(0x8, frame.payload))

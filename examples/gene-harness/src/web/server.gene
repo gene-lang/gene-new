@@ -416,7 +416,7 @@
         catch CompositionConflict (response 409 {^code $err/code ^message $err/.message})
         catch CompositionError (response 400 {^code "composition_error" ^message $err/.message})
         catch PluginHistoryError (response 400 {^code "history_error" ^message $err/.message})
-        catch Error
+        catch Throwable
           ($println $"Harness ${request/method} ${request/path} failed: ${$err/.message}")
           (response 500 {^code "internal_error" ^message "The Harness could not complete this request. See the server output."}))))
 

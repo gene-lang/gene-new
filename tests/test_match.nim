@@ -199,7 +199,7 @@ suite "loops — for":
     ck "(var hits ($cell 0)) " &
        "(var source ($map ($to_stream [1 2 3]) " &
        "  (fn [x] (hits .update (fn [n] (+ n 1))) x))) " &
-       "(try (for x in source (/ 1 0)) catch Error nil) " &
+       "(try (for x in source (/ 1 0)) catch Fault nil) " &
        "[(hits .get) (source .has_next)]",
        "[1 false]"
   test "for supports break and continue":

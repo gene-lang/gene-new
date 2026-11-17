@@ -724,10 +724,7 @@ proc geneManagedDefine*(environment: GeneManagedEnvironment,
       result.status = gsOk
       result.value = geneManagedRootFromVm(domain, scope, stored)
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedLookup*(environment: GeneManagedEnvironment,
@@ -742,10 +739,7 @@ proc geneManagedLookup*(environment: GeneManagedEnvironment,
       result.value = geneManagedRootFromVm(domain, scope, scope.lookup(name))
       result.status = gsOk
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 type GeneManagedWrapperField* = object
@@ -778,10 +772,7 @@ proc geneManagedDefineWrapperType*(environment: GeneManagedEnvironment,
       result.status = gsOk
       result.value = geneManagedRootFromVm(domain, scope, typ)
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedNewWrapper*(wrapperType: GeneManagedRoot,
@@ -802,10 +793,7 @@ proc geneManagedNewWrapper*(wrapperType: GeneManagedRoot,
       result.status = gsOk
       result.value = geneManagedRootFromVm(domain, scope, instance)
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedWrapperField*(instance, wrapperType: GeneManagedRoot,
@@ -873,10 +861,7 @@ proc geneManagedCloseCPtr*(borrow: GeneNativeBorrow): GeneManagedResult =
       value.closeCPtr()
       result.status = gsOk
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc requireManagedBuffer(borrow: GeneNativeBorrow): Value =
@@ -906,10 +891,7 @@ proc geneManagedNewBuffer*(environment: GeneManagedEnvironment,
       result.status = gsOk
       result.value = geneManagedRootFromVm(domain, scope, buffer)
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedBufferLength*(borrow: GeneNativeBorrow): int =
@@ -928,10 +910,7 @@ proc geneManagedBufferGet*(borrow: GeneNativeBorrow, index: int,
       result.status = gsOk
       result.value = geneManagedRootFromVm(domain, scope, item)
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedBufferSet*(borrow: GeneNativeBorrow, index: int,
@@ -949,10 +928,7 @@ proc geneManagedBufferSet*(borrow: GeneNativeBorrow, index: int,
       result.status = gsOk
       result.value = geneManagedRootFromVm(domain, scope, stored)
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedNewChannel*(environment: GeneManagedEnvironment,
@@ -972,10 +948,7 @@ proc geneManagedNewChannel*(environment: GeneManagedEnvironment,
       result.status = gsOk
       result.value = geneManagedRootFromVm(domain, scope, channel)
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedChannelTrySend*(channel, item: GeneManagedRoot,
@@ -993,10 +966,7 @@ proc geneManagedChannelTrySend*(channel, item: GeneManagedRoot,
         itemEntry.value, itemEntry.knownScopes(), scope)
       result.status = gsOk
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedChannelTryRecv*(channel: GeneManagedRoot,
@@ -1019,10 +989,7 @@ proc geneManagedChannelTryRecv*(channel: GeneManagedRoot,
         reset(pins)
         result.hasValue = true
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedNewActor*(environment: GeneManagedEnvironment,
@@ -1058,10 +1025,7 @@ proc geneManagedNewActor*(environment: GeneManagedEnvironment,
       result.status = gsOk
       result.value = geneManagedRootFromVm(domain, scope, actor)
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedActorTrySend*(actor, message: GeneManagedRoot,
@@ -1079,10 +1043,7 @@ proc geneManagedActorTrySend*(actor, message: GeneManagedRoot,
         messageEntry.value, messageEntry.knownScopes(), scope)
       result.status = gsOk
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedActorState*(actor: GeneManagedRoot,
@@ -1101,10 +1062,7 @@ proc geneManagedActorState*(actor: GeneManagedRoot,
       result.value = geneManagedRootFromVm(domain, scope, snapshot.state)
       result.status = gsOk
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedActorStatus*(actor: GeneManagedRoot,
@@ -1138,10 +1096,7 @@ proc geneManagedActorClose*(actor: GeneManagedRoot,
       result.status = gsOk
       result.accepted = true
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
 
 proc geneManagedNewTask*(environment: GeneManagedEnvironment): GeneManagedTask =
@@ -1363,12 +1318,7 @@ proc geneManagedCall*(borrow: GeneNativeBorrow,
       result.status = gsOk
       result.value = geneManagedRootFromVm(domain, dispatchScope, returned)
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-      if e.hasErrVal:
-        result.error = geneManagedRootFromVm(domain, dispatchScope, e.errVal)
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
       if e.hasErrVal:
         result.error = geneManagedRootFromVm(domain, dispatchScope, e.errVal)
@@ -1504,10 +1454,7 @@ proc apiAttachThread(context: pointer, output: ptr uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1545,10 +1492,7 @@ proc apiDetachThread(context: pointer, token: uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1569,10 +1513,7 @@ proc apiRetain(context: pointer, id: uint64, output: ptr uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1589,10 +1530,7 @@ proc apiRelease(context: pointer, id: uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1626,10 +1564,7 @@ proc apiKind(context: pointer, id: uint64, output: ptr uint32,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1648,10 +1583,7 @@ proc apiNewI64(context: pointer, value: int64, output: ptr uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1670,10 +1602,7 @@ proc apiNewF64(context: pointer, value: float64, output: ptr uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1708,10 +1637,7 @@ proc apiCopyText(context: pointer, id: uint64, output: ptr GeneOutBytes,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1735,10 +1661,7 @@ proc apiCopyBytes(context: pointer, id: uint64, output: ptr GeneOutBytes,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1758,10 +1681,7 @@ proc apiCopyBool(context: pointer, id: uint64, output: ptr uint8,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1781,10 +1701,7 @@ proc apiCopyI64(context: pointer, id: uint64, output: ptr int64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1804,10 +1721,7 @@ proc apiCopyF64(context: pointer, id: uint64, output: ptr float64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1826,10 +1740,7 @@ proc apiNewBool(context: pointer, value: uint8, output: ptr uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1852,10 +1763,7 @@ proc apiNewText(context: pointer, data: ptr uint8, length: csize_t,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1875,10 +1783,7 @@ proc apiNewBytes(context: pointer, data: ptr uint8, length: csize_t,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1935,10 +1840,7 @@ proc apiLength(context: pointer, id: uint64, selector: uint32,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -1965,10 +1867,7 @@ proc apiCopyKey(context: pointer, id: uint64, selector: uint32,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2003,10 +1902,7 @@ proc apiTraverse(context: pointer, id: uint64, selector: uint32,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2041,10 +1937,7 @@ proc apiLookup(context: pointer, environment: uint64,
       apiCopiedName(name, nameLength)), output, nil, diagnostic)
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2066,10 +1959,7 @@ proc apiDefine(context: pointer, environment: uint64,
       apiCopiedName(name, nameLength), input), output, nil, diagnostic)
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2101,10 +1991,7 @@ proc apiCall(context: pointer, callable: uint64,
     result = apiResult(called, output, error, diagnostic)
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2264,11 +2151,12 @@ proc invokeRegisteredCallback(context: RootRef, arguments: openArray[Value],
           failure.hasErrVal = true
         raise failure
       of 2'u32:
-        let failure = newException(GenePanic, message)
-        if errorId != 0:
+        if errorId != 0 and errorValue.isPanicValue:
+          let failure = newException(GeneError, message)
           failure.errVal = errorValue
           failure.hasErrVal = true
-        raise failure
+          raise failure
+        raise panicError(message, errorValue, errorId != 0)
       of 3'u32:
         raise newException(GeneCancel, message)
       else:
@@ -2358,10 +2246,7 @@ proc apiRegisterCallback(context: pointer, environment: uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2570,10 +2455,7 @@ proc apiNewTask(context: pointer, environment: uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2619,10 +2501,7 @@ proc apiTaskComplete(context: pointer, token, value: uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2662,10 +2541,7 @@ proc apiTaskFail(context: pointer, token: uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2704,10 +2580,7 @@ proc apiTaskCancel(context: pointer, token: uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -2732,10 +2605,7 @@ proc apiTaskRetire(context: pointer, token: uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -3003,9 +2873,6 @@ proc settleCopiedFailure(domain: GeneManagedDomain,
         except GeneError as e:
           failure = errorFactoryFailure(scope,
             if e.hasErrVal: e.errVal else: NIL, e.msg)
-        except GenePanic as e:
-          failure = errorFactoryFailure(scope,
-            if e.hasErrVal: e.errVal else: NIL, e.msg)
         except GeneCancel as e:
           failure = errorFactoryFailure(scope, NIL, e.msg)
         let scopes = domain.liveRootEntry(producer.environment.root).knownScopes()
@@ -3217,10 +3084,7 @@ proc apiTaskOnCancel(context: pointer, token: uint64,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -3240,10 +3104,7 @@ proc apiEnableTwoPhaseClose(context: pointer,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -3290,10 +3151,7 @@ proc apiPinModuleImage(context: pointer, symbol: pointer,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -3310,10 +3168,7 @@ proc apiReserveForeignRoots(context: pointer, capacity: csize_t,
     result = 0
   except GeneError as e:
     apiDiagnostic(diagnostic, e.msg)
-    result = 1
-  except GenePanic as e:
-    apiDiagnostic(diagnostic, e.msg)
-    result = 2
+    result = if e.isPanicError: 2 else: 1
   except CatchableError as e:
     apiDiagnostic(diagnostic, e.msg)
     result = 1
@@ -3491,10 +3346,7 @@ proc geneManagedLoadModule*(domain: GeneManagedDomain,
       result.status = gsOk
       succeeded = true
     except GeneError as e:
-      result.status = gsError
-      result.message = e.msg
-    except GenePanic as e:
-      result.status = gsPanic
+      result.status = if e.isPanicError: gsPanic else: gsError
       result.message = e.msg
     finally:
       if frameOnStack:
@@ -3876,7 +3728,7 @@ proc managedPackageModuleOpen(lease: Value, path, name: string,
                                        record.environment, name)
     if loaded.status != gsOk:
       case loaded.status
-      of gsPanic: raise newException(GenePanic, loaded.message)
+      of gsPanic: raise panicError(loaded.message)
       of gsCancelled: raise newException(GeneCancel, loaded.message)
       else: raise newException(GeneError, loaded.message)
     record.moduleRoot = loaded.value

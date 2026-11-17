@@ -552,7 +552,7 @@ when compileOption("threads") and defined(posix):
           ^stdout_pipe writer))
         (reader .IoResource:close)
         (await (reader .IoResource:wait_closed))
-        (let failed (try (await task) false catch Error true))
+        (let failed (try (await task) false catch Fault true))
         (await (writer .IoResource:wait_closed))
         (let stats ($runtime/gc_stats))
         [failed stats/io_cleanup_leases]

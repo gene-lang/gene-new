@@ -7270,15 +7270,15 @@ suite "StrBuilder":
 
   test "constructor and append reject non-Str values":
     ck """
-      [(try (StrBuilder 1) catch Error "constructor")
-       (try ((StrBuilder) .append 1) catch Error "append")]
+      [(try (StrBuilder 1) catch Fault "constructor")
+       (try ((StrBuilder) .append 1) catch Fault "append")]
     """, "[\"constructor\" \"append\"]"
 
   test "StrBuilder prints its snapshot and refuses deep freeze":
     ck """
       (let b (StrBuilder "a"))
       [($to_str b)
-       (try ($freeze b) catch Error "freeze")]
+       (try ($freeze b) catch Fault "freeze")]
     """, "[\"(StrBuilder \\\"a\\\")\" \"freeze\"]"
 
   test "module macros cannot insert a compile-time builder":

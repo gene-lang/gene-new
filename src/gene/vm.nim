@@ -159,7 +159,6 @@ type
     fkCatchBody
     fkEnsureValueBody
     fkEnsureErrorBody
-    fkEnsurePanicBody
     fkEnsureCancelBody
     fkEnsureReturnBody
     fkForBody
@@ -173,7 +172,6 @@ type
     ensureBody: Chunk
     ensureScope: Scope
     pendingError: ref GeneError
-    pendingPanic: ref GenePanic
     pendingCancel: ref GeneCancel
     pendingReturn: ref GeneReturn
     forItems: seq[Value]
@@ -295,7 +293,6 @@ type
     ensureBody: Chunk
     ensureScope: Scope
     pendingError: ref GeneError
-    pendingPanic: ref GenePanic
     pendingCancel: ref GeneCancel
     pendingReturn: ref GeneReturn
     forItems: seq[Value]
@@ -491,8 +488,6 @@ type
     returnDepth: int
     returnKind: string
     returnKindOnly: bool
-    returnTaskFresh: bool
-    returnTaskIsolated: bool
     returnNativeMetadata: NativeErrorMetadata
     returnTypeIdentity: string
     returnTypeContract: string
@@ -538,6 +533,7 @@ type
     throwableType: Value  # root of every value `fail` can raise
     errorType: Value      # its handleable branch; what `catch Error` names
     faultType: Value      # the defect branch; never checked by error rows
+    panicType: Value      # the Fault `(panic v)` raises
     tests: TestRegistry
     strictErrorRegistrations: seq[StrictErrorRegistration]
     errorModeOverride: string
@@ -1042,7 +1038,6 @@ proc isSendableValue(value: Value, scope: Scope,
 proc isSendableValue(value: Value, scope: Scope): bool
 proc publishManagedRootForRetirement*(value: Value): seq[Scope]
 proc completedTaskFromError(e: ref GeneError): Value
-proc completedTaskFromPanic(e: ref GenePanic): Value
 proc schedulerForScope(scope: Scope): SchedulerState
 proc application*(scope: Scope): Application
 proc builtinsScope*(app: Application): Scope
@@ -1334,7 +1329,7 @@ proc generatorFiberEdges(continuation: RootRef, scopes: var seq[pointer],
   let fiber {.cursor.} = cast[Fiber](continuation)
   if fiber.ownershipLeases.len != 0 or
       fiber.initializationLease != nil or fiber.callError != nil or
-      fiber.pendingError != nil or fiber.pendingPanic != nil or
+      fiber.pendingError != nil or
       fiber.pendingCancel != nil or fiber.pendingReturn != nil or
       fiber.ensureBody != nil or fiber.ensureScope != nil or
       fiber.ensureValue.bits != 0 or fiber.forItems.len > 0 or
@@ -2581,6 +2576,17 @@ proc isFaultValue(v: Value): bool =
   let app = if activeVmScope != nil: activeVmScope[].application()
             else: currentApplication()
   app != nil and app.isFaultBranchType(v.head)
+
+proc isPanicValue*(v: Value): bool =
+  ## A value raised by `(panic v)`, or by a native panic.
+  if v.kind != vkNode or v.head.kind != vkType: return false
+  let app = if activeVmScope != nil: activeVmScope[].application()
+            else: currentApplication()
+  app != nil and app.panicType.kind == vkType and
+    descendsFromType(v.head, app.panicType)
+
+proc isPanicError*(e: ref GeneError): bool =
+  e != nil and e.hasErrVal and e.errVal.isPanicValue
 
 proc admitErrorValue(value: Value, scope: Scope): Value
 proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError
@@ -4405,12 +4411,6 @@ proc failReplyTask(reply: Value, e: ref GeneError): bool =
   else:
     failReplyTask(reply, e.msg)
 
-proc panicReplyTask(reply: Value, e: ref GenePanic): bool =
-  if e.hasErrVal:
-    panicReplyTask(reply, e.msg, e.errVal, hasValue = true)
-  else:
-    panicReplyTask(reply, e.msg)
-
 proc failMissingReply(reply: Value, scope: Scope): bool =
   const message = "actor/ask did not receive a reply"
   failReplyTask(reply, message, actorErrorValue(scope, message), hasValue = true)
@@ -4734,8 +4734,6 @@ proc biActorAsk(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     actorAskTaskView(task, reply, scope)
   except GeneError as e:
     completedTaskFromError(e)
-  except GenePanic as e:
-    completedTaskFromPanic(e)
 
 proc biActorContinue(args: openArray[Value]): Value {.nimcall.} =
   requireOne("actor/continue", args)
@@ -9311,7 +9309,7 @@ proc biGraphemes(args: openArray[Value]): Value {.nimcall.} =
     i += width
   newList(items)
 
-proc panicError(text: string, value: Value, hasValue: bool): ref GeneError =
+proc panicError*(text: string, value: Value = NIL, hasValue = false): ref GeneError =
   ## `(panic v)` raises `(Panic ^_msg <text> ^value v)`, a Fault: `catch
   ## Panic`, `catch Fault` and `catch Throwable` catch it, `catch Error` never
   ## does, and error rows pass it through.
@@ -9320,9 +9318,11 @@ proc panicError(text: string, value: Value, hasValue: bool): ref GeneError =
   if hasValue: props["value"] = value
   new(result)
   result.msg = text
-  let scope = if activeVmScope != nil: activeVmScope[] else: nil
-  result.errVal = newNode(builtInTypeHead(scope, "Panic"), props = props,
-                          immutable = true)
+  let app = if activeVmScope != nil: activeVmScope[].application()
+            else: currentApplication()
+  let head = if app != nil and app.panicType.kind == vkType: app.panicType
+             else: newSym("Panic")
+  result.errVal = newNode(head, props = props, immutable = true)
   result.hasErrVal = true
 
 proc biPanic(args: openArray[Value]): Value {.nimcall.} =
@@ -10503,9 +10503,10 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   let errorRoot = app.errorType
   let faultRoot = app.faultType
   # `(panic v)` raises a Panic: a Fault that carries the panicked value.
-  result.define("Panic", newType("Panic", faultRoot,
+  app.panicType = newType("Panic", faultRoot,
     @[TypeField(name: "value", optional: true, typeExpr: newSym("Any"), scope: result)],
-    @[], result))
+    @[], result)
+  result.define("Panic", app.panicType)
   let sendProtocol = newProtocol("Send", [])
   result.define("Send", sendProtocol)
   # Marker protocol (empty): a module-level instance whose type implements it
@@ -12181,9 +12182,13 @@ proc biRuntimeGuardCall(args: openArray[Value],
     entries["ok"] = TRUE
     entries["value"] = value
     newMap(entries)
-  except GenePanic as error:
-    let message = runtimePanicSummary(error.msg, error.hasErrVal,
-                                      error.errVal)
+  except GeneError as error:
+    # `(panic v)` raises a Panic value; every other failure propagates.
+    if not error.isPanicError: raise
+    let panicProps = error.errVal.props
+    let hasValue = panicProps.hasKey("value")
+    let message = runtimePanicSummary(error.msg, hasValue,
+                                      if hasValue: panicProps["value"] else: NIL)
     var entries = initPropTable()
     entries["ok"] = FALSE
     entries["kind"] = newSym("panic")
@@ -17029,12 +17034,6 @@ proc completedTaskFromError(e: ref GeneError): Value =
   else:
     newFailedTask(e.msg)
 
-proc completedTaskFromPanic(e: ref GenePanic): Value =
-  if e.hasErrVal:
-    newPanickedTask(e.msg, e.errVal, hasValue = true)
-  else:
-    newPanickedTask(e.msg)
-
 proc nativeNewAsyncTask*(): Value =
   newExternalTask()
 
@@ -19471,7 +19470,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curEnsureBody: Chunk = nil
   var curEnsureScope: Scope = nil
   var curPendingError: ref GeneError = nil
-  var curPendingPanic: ref GenePanic = nil
   var curPendingCancel: ref GeneCancel = nil
   var curPendingReturn: ref GeneReturn = nil
   var curForItems: seq[Value] = @[]
@@ -19585,7 +19583,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curEnsureBody = fiber.ensureBody
     curEnsureScope = fiber.ensureScope
     curPendingError = fiber.pendingError
-    curPendingPanic = fiber.pendingPanic
     curPendingCancel = fiber.pendingCancel
     curPendingReturn = fiber.pendingReturn
     curForItems = move fiber.forItems
@@ -19635,7 +19632,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if curEnsureBody != nil: curEnsureBody = nil
       if curEnsureScope != nil: curEnsureScope = nil
       if curPendingError != nil: curPendingError = nil
-      if curPendingPanic != nil: curPendingPanic = nil
       if curPendingCancel != nil: curPendingCancel = nil
       if curPendingReturn != nil: curPendingReturn = nil
       if curForItems.len != 0: curForItems = @[]
@@ -19651,7 +19647,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curEnsureBody = f.extra.ensureBody
       curEnsureScope = f.extra.ensureScope
       curPendingError = f.extra.pendingError
-      curPendingPanic = f.extra.pendingPanic
       curPendingCancel = f.extra.pendingCancel
       curPendingReturn = f.extra.pendingReturn
       curForItems = move f.extra.forItems
@@ -19669,7 +19664,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           curInitializationLease == nil and
           curForItems.len == 0 and curForStream.kind != vkStream and
           curOwnedScope == nil and
-          curPendingError == nil and curPendingPanic == nil and
+          curPendingError == nil and
           curPendingCancel == nil and curPendingReturn == nil:
         nil
       else:
@@ -19677,7 +19672,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                    ensureBody: curEnsureBody,
                    ensureScope: curEnsureScope,
                    pendingError: curPendingError,
-                   pendingPanic: curPendingPanic,
                    pendingCancel: curPendingCancel,
                    pendingReturn: curPendingReturn,
                    forItems: move curForItems, forIndex: curForIndex,
@@ -19725,7 +19719,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         curInitializationLease == nil and
         curForItems.len == 0 and curForStream.kind != vkStream and
         curOwnedScope == nil and
-        curPendingError == nil and curPendingPanic == nil and
+        curPendingError == nil and
         curPendingCancel == nil and curPendingReturn == nil:
       pushFrameFastNormal()
     else:
@@ -19752,7 +19746,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curEnsureBody = nil
     curEnsureScope = nil
     curPendingError = nil
-    curPendingPanic = nil
     curPendingCancel = nil
     curPendingReturn = nil
     curForItems = @[]
@@ -19787,7 +19780,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.ensureBody = curEnsureBody
     fiber.ensureScope = curEnsureScope
     fiber.pendingError = curPendingError
-    fiber.pendingPanic = curPendingPanic
     fiber.pendingCancel = curPendingCancel
     fiber.pendingReturn = curPendingReturn
     fiber.forItems = move curForItems
@@ -20163,8 +20155,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         spush retValue
     elif curFrameKind == fkEnsureErrorBody:
       raise curPendingError
-    elif curFrameKind == fkEnsurePanicBody:
-      raise curPendingPanic
     elif curFrameKind == fkEnsureCancelBody:
       raise curPendingCancel
     elif curFrameKind == fkEnsureReturnBody:
@@ -20398,7 +20388,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       raiseTypeError("parameter '" & proto.params[0] & "'", "Int", arg, scope)
     if curFrameKind != fkNormal or curEnsureBody != nil or curForItems.len != 0 or
         curForStream.kind == vkStream or curOwnedScope != nil or
-        curPendingError != nil or curPendingPanic != nil or
+        curPendingError != nil or
         curPendingCancel != nil or curPendingReturn != nil:
       enterRecur1Frame(arg, argKnownBareInt)
     let slot = proto.positionalSlots[0]
@@ -20454,7 +20444,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       not curChecksErrors and
       curEnsureBody == nil and curForItems.len == 0 and
       curForStream.kind != vkStream and curOwnedScope == nil and
-      curPendingError == nil and curPendingPanic == nil and
+      curPendingError == nil and
       curPendingCancel == nil and curPendingReturn == nil and
       (not boundValuesMayCapture or
        not currentScopeCapturedBy(calleeScope)) and
@@ -20608,7 +20598,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
      elif scope.strictErrorLease != nil or curInitializationLease != nil: tfrCapturedScope
      elif curEnsureBody != nil or curForItems.len != 0 or
           curForStream.kind == vkStream or curOwnedScope != nil or
-          curPendingError != nil or curPendingPanic != nil or
+          curPendingError != nil or
           curPendingCancel != nil or curPendingReturn != nil:
        tfrStructuredFrame
      elif (boundValuesMayCapture and
@@ -22426,7 +22416,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 returnType.kind == vkNil and not curChecksErrors and
                 curEnsureBody == nil and curForItems.len == 0 and
                 curForStream.kind != vkStream and curOwnedScope == nil and
-                curPendingError == nil and curPendingPanic == nil and
+                curPendingError == nil and
                 curPendingCancel == nil and curPendingReturn == nil and
                 ip < chunk.instructions.len and
                 chunk.instructions[ip].op in {opReturn, opReturnBareInt}:
@@ -24124,7 +24114,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opInFailureCleanup:
           # The `unwind` clause: a cleanup frame entered by a failure, panic,
           # cancellation or policy expiry, not by completion or a return.
-          spush(if curFrameKind in {fkEnsureErrorBody, fkEnsurePanicBody,
+          spush(if curFrameKind in {fkEnsureErrorBody,
                                     fkEnsureCancelBody}: TRUE else: FALSE)
         of opYield:
           if not stopOnYield:
@@ -24538,51 +24528,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           releaseCurrentCallScope()
       # Reached only via `break` (a catch fired): fall through to the outer
       # `while true`, re-entering dispatch with the catch result on the stack.
-    except GenePanic as p:
-      # Panics are not catchable, but ensure blocks still run as the panic unwinds
-      # out of every active `try` (innermost first), matching the old `finally`.
-      if curFrameKind == fkForBody and
-          not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
-        closeCurrentForStream()
-      retireUnwoundScope()
-      releaseCurrentCallScope()
-      if curFrameKind == fkTaskScopeBody:
-        let owned = curOwnedScope
-        curFrameKind = fkNormal
-        try:
-          owned.cancelOwnedTasks()
-        finally:
-          owned.closeOwnedActors()
-      elif curFrameKind == fkSupervisorBody:
-        let owned = curOwnedScope
-        curFrameKind = fkNormal
-        owned.closeOwnedActors()
-      if curFrameKind == fkCatchBody and curEnsureBody != nil:
-        let body = curEnsureBody
-        let cleanupScope = curEnsureScope
-        strunc(curStackBase)
-        enterFrame(body, cleanupScope, false, fkEnsurePanicBody)
-        curPendingPanic = p
-        continue
-      var cleanupStarted = false
-      while handlers.len > 0:
-        let h = handlers.pop()
-        if h.tp.ensureBody != nil:
-          # Panic skips catch frames without physically popping them yet.
-          # Crossed native owners must retire before the outer ensure runs.
-          unwindNativeOwnershipTo(h.framesLen)
-          strunc(curStackBase)
-          enterFrame(h.tp.ensureBody, h.scope, false, fkEnsurePanicBody)
-          curPendingPanic = p
-          cleanupStarted = true
-          break
-      if cleanupStarted:
-        continue
-      for i in countdown(frames.high, 0):
-        settleUnwoundOwnership(frames[i], true)
-        releaseUnwoundFrameScope(frames[i], owned = i > 0, depth = i)
-      releaseFrameStack(gVmPools, frames)
-      raise
     except GeneCancel as initial:
       var signal = initial
       if signal of GeneBudgetExpiry:
@@ -24960,9 +24905,6 @@ proc runReplSession*(scope: Scope,
         pendingError = ""
         writeErr(formatDiagnostic("Read error", e.msg,
           SourceLoc(sourceName: e.sourceName, line: e.line, col: e.col)) & "\n")
-      except GenePanic as e:
-        writeErr("Panic: " & e.msg & "\n")
-        return 1
       except GeneError as e:
         pendingSource = ""
         pendingError = ""
@@ -25500,6 +25442,19 @@ proc runFiber(f: Fiber) =
   except GeneError as e:
     if f.privateCall:
       f.callError = e
+    if isActorFiber and e.isPanicError:
+      # A Panic stops the actor and propagates; supervision does not restart it.
+      closeActorAndCancelMailbox(actor)
+      discard panicReplyTask(f.actorAskReply, e.msg, e.errVal, hasValue = true)
+      var errorValue = e.errVal
+      if f.workerSafe and activeWorkerThread:
+        let published = workerPublicationValue(errorValue, f.actorScope)
+        errorValue =
+          if published.ok: published.value
+          else: newStr("actor worker panic payload does not satisfy Send")
+      emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
+                            errorValue, panic = true)
+      raise
     if isActorFiber:
       if f.workerSafe and activeWorkerThread and e.hasErrVal:
         let published = workerPublicationValue(e.errVal, f.actorScope)
@@ -25564,36 +25519,6 @@ proc runFiber(f: Fiber) =
         failTask(f.task, "worker task error payload does not satisfy Send")
       else:
         failTask(f.task, e.msg)
-      wakeTaskWaiters(f.task)
-  except GenePanic as e:
-    if f.privateCall:
-      f.callError = e
-    if isActorFiber:
-      closeActorAndCancelMailbox(actor)
-      discard panicReplyTask(f.actorAskReply, e)
-      var errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
-      if f.workerSafe and activeWorkerThread and e.hasErrVal:
-        let published = workerPublicationValue(errorValue, f.actorScope)
-        if published.ok:
-          errorValue = published.value
-        else:
-          errorValue = newStr("actor worker panic payload does not satisfy Send")
-      emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
-                            errorValue, panic = true)
-      raise
-    else:
-      var publishPanicValue = e.hasErrVal
-      if f.workerSafe and activeWorkerThread and publishPanicValue:
-        let published = workerPublicationValue(e.errVal, f.scope)
-        publishPanicValue = published.ok
-        if published.ok:
-          e.errVal = published.value
-      if publishPanicValue:
-        panicTask(f.task, e.msg, e.errVal, hasValue = true)
-      elif f.workerSafe and activeWorkerThread and e.hasErrVal:
-        panicTask(f.task, "worker task panic payload does not satisfy Send")
-      else:
-        panicTask(f.task, e.msg)
       wakeTaskWaiters(f.task)
   except CatchableError as e:
     if not (e of GeneCancel):
@@ -34978,10 +34903,14 @@ proc beginNativeCallbackCall*(callback: NativeSyncCallback) =
 proc captureNativeCallbackFailure*(callback: NativeSyncCallback,
                                    failure: ref Exception) {.raises: [].} =
   if callback.failure == nil:
-    if failure of GeneError or failure of GenePanic or failure of GeneCancel:
+    if failure of GeneError or failure of GeneCancel:
       callback.failure = failure
     elif failure of Defect:
-      callback.failure = newException(GenePanic, "native callback defect: " & failure.msg)
+      try:
+        callback.failure = panicError("native callback defect: " & failure.msg)
+      except Exception:
+        callback.failure = newException(GeneError,
+          "native callback defect: " & failure.msg)
     else:
       callback.failure = newException(GeneError, "native callback: " & failure.msg)
 

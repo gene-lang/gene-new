@@ -129,9 +129,8 @@
       (channel_error "unavailable" "Unsupported durable channel state."))
     (ChannelStore ^backend backend ^state ($cell state) ^gate ($sync/gate) ^closed ($cell false)
       ^manifest ($cell manifest) ^buckets ($cell (?? restored/buckets {})) ^changed ($cell {}))
-  catch Error
-    backend/.Store:close
-    (fail $err)))
+  unwind
+    backend/.Store:close))
 
 (fn require_open [store : ChannelStore]
   (if store/closed/.get (channel_error "unavailable" "The channel store is closed.")))

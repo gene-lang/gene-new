@@ -5318,6 +5318,9 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     frontEnd = expandSourceUnitMacros(unit, importedMacros,
       gensymModule = "web::" & splitFile(sourcePath).name)
   except GeneError as error:
+    # A macro's panic stays a Panic; every other expansion failure is a
+    # profile diagnostic.
+    if panicErrorCheck != nil and panicErrorCheck(error): raise
     raise newException(WebProfileError, error.msg)
   macroExports = frontEnd.macroExports
   var analysis = WebAnalysis(

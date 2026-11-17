@@ -1121,32 +1121,23 @@ suite "errors — retained strict assumptions":
       expect GeneError: scope.assign("factory", replacement)
       check run(compileSource("(client)"), scope).print() == (if kind == "task": "1" else: "[1]")
 
-  test "a factory cannot replace a fresh task result with an already-awaited task":
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    discard run(strictErrorCompile("""
-      (fn factory ^^private [] (spawn 1))
-      (fn client [] ^errors [] (await (factory)))
-    """), scope)
-    let replacement = run(strictErrorCompile("""
-      (fn [] (let task (spawn 1)) (await task) task)
-    """), newGlobalScope(app))
-    expect GeneError: scope.assign("factory", replacement)
-    check run(compileSource("(client)"), scope).intVal == 1
-
-  test "task freshness is retained through forwarding factories":
-    let app = newApplication()
-    let scope = newGlobalScope(app)
-    discard run(strictErrorCompile("""
-      (fn helper ^^private [] (spawn 1))
-      (fn factory ^^private [] (helper))
-      (fn client [] ^errors [] (await (factory)))
-    """), scope)
-    let replacement = run(strictErrorCompile("""
-      (fn [] (let task (spawn 1)) (await task) task)
-    """), newGlobalScope(app))
-    expect GeneError: scope.assign("helper", replacement)
-    check run(compileSource("(client)"), scope).intVal == 1
+  test "an already-awaited task result adds no obligation, directly or forwarded":
+    # A second await is a RuntimeFault: unchecked, so no freshness is retained.
+    for (target, source) in [("factory", ""),
+                             ("helper", "(fn helper ^^private [] (spawn 1)) ")]:
+      let app = newApplication()
+      let scope = newGlobalScope(app)
+      let factory = if source.len > 0: "(fn factory ^^private [] (helper))"
+                    else: "(fn factory ^^private [] (spawn 1))"
+      discard run(strictErrorCompile(source & factory &
+        "(fn client [] ^errors [] (await (factory)))"), scope)
+      check run(compileSource("(client)"), scope).intVal == 1
+      let replacement = run(strictErrorCompile("""
+        (fn [] (let task (spawn 1)) (await task) task)
+      """), newGlobalScope(app))
+      scope.assign(target, replacement)
+      check run(compileSource("(try (client) catch Error false catch RuntimeFault true)"),
+                scope).boolVal
 
   test "lazy adapters retain source and callback assumptions until consumption":
     for wrap in ["($map (factory) callback)", "(forward)",

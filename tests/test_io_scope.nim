@@ -186,7 +186,7 @@ suite "I/O cleanup leases — structured scope":
     pendingCleanupLease = NIL
     pendingUserTask = NIL
     let scope = newCleanupTestScope()
-    expect GenePanic:
+    expect GeneError:
       discard run(compileSource("""
         (spawn ^lane root (do ($sleep 1) (complete_cleanup_lease)))
         (scope

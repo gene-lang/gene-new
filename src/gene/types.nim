@@ -71,10 +71,6 @@ type
     errorKind*: GeneErrorKind
     errorDetail*: string
   MatchFault* = object of GeneError    ## pattern match / destructuring failure
-  GenePanic* = object of CatchableError
-    ## Unrecoverable failure (`panic`). Not caught by `try/catch`.
-    errVal*: Value
-    hasErrVal*: bool
   GeneCancel* = object of CatchableError
     ## Cooperative task cancellation. Not caught by ordinary Gene `try/catch`.
 

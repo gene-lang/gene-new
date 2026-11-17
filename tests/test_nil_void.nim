@@ -8,7 +8,7 @@ suite "nil — optional parameters":
   test "a nil-admitting fixed parameter is required without a default":
     check nilEval("""
       (fn f [x : Int?] : Int? x)
-      [(f nil) (f 4) (try (f "s") catch TypeFault "bad") (try (f) catch Error "arity")]
+      [(f nil) (f 4) (try (f "s") catch TypeFault "bad") (try (f) catch Fault "arity")]
     """) == "[nil 4 \"bad\" \"arity\"]"
   test "= nil makes a nil-admitting parameter omissible":
     check nilEval("""
@@ -110,7 +110,7 @@ suite "nil — stored versus missing":
     check nilEval("""
       (type P ^props {^name Str ^age Int?})
       (let p (P ^name "A" ^age 3))
-      [(p .delete "age") p/age (try (p .delete "name") catch Error $err/.message)]
+      [(p .delete "age") p/age (try (p .delete "name") catch Fault $err/.message)]
     """) == "[3 nil \"cannot remove required field 'name' from P\"]"
 
 suite "nil — statement returns":
@@ -159,5 +159,5 @@ suite "nil — review regressions":
         (ctor [h : Str]
           (set escaped ($dissoc_in self /missing/child))
           (set self/handle h)))
-      [(try (new Conn "H") catch Error "failed") escaped]
+      [(try (new Conn "H") catch Fault "failed") escaped]
     """) == "[\"failed\" nil]"

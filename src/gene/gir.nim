@@ -153,7 +153,7 @@ type
     opSpawn           # run a child task body and push a Task handle
     opAwait           # pop a Task and push/rethrow its completed result
     opFail            # pop an Error value and raise it through GeneError
-    opPanic           # pop a value and raise it through GenePanic
+    opPanic           # pop a value and raise it as a Panic fault
     opInFailureCleanup # push whether this cleanup body was entered by an unwind
     opYield           # suspend a generator and expose the stack top as item
     opExplicitReturn  # leave the nearest function, unwinding structured cleanup
@@ -325,8 +325,6 @@ type
     returnDepth*: int # zero: invocation; positive: result after this many calls
     returnKind*: string # callable, task, or stream when consuming an inferred result
     returnKindOnly*: bool # classification is needed, but deferred errors are not consumed
-    returnTaskFresh*: bool
-    returnTaskIsolated*: bool
     returnNativeMetadata*: NativeErrorMetadata
     returnTypeIdentity*: string
     returnTypeContract*: string
@@ -348,8 +346,6 @@ type
     typeIdentity*: string
     typeContract*: string
     messageIdentity*: string
-    taskFresh*: bool
-    taskIsolated*: bool
 
   CallableErrorSummary* = ref object
     name*: string

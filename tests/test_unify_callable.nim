@@ -158,14 +158,14 @@ suite "unified callable — checked signatures":
       (checked ^value (do nil))
     """, "true"
 
-  test "declared errors are bounded while boundary errors remain TypeErrors":
+  test "declared errors are bounded; rejections and boundary failures are faults":
     unifyCallableCheck """
       (type Boom : Error ^props {^n Int} (message message [] : Str ^errors [] ^^override ($to_str (quote Boom))))
       (fn fail_it [x] (fail (Boom ^n x)))
       (let allowed : (Callable [Int] Int ^errors [Boom]) fail_it)
       (let denied : (Callable [Int] Int ^errors []) fail_it)
       [(try (allowed 7) catch Boom $err/n)
-       (try (denied 1) false catch Error true)
+       (try (try (denied 1) false catch Error "error") catch ContractViolation true)
        (try (denied "bad") false catch TypeFault true)]
     """, "[7 true true]"
 

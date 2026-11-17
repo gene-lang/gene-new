@@ -110,7 +110,7 @@
     (manager/watchers/.get .put id watcher)
     (set transferred true)
     admitted/record
-  catch Error
+  catch Throwable
     (if (&& (!= admitted_id "") (! transferred) ($absent? (manager/active/.get .get admitted_id)))
       (return (update_action manager/log admitted_id
         {^status "failed" ^display (byte_prefix ($to_str $err/.message) 16384) ^error_code "admission_setup"})))

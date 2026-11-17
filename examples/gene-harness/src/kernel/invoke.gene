@@ -24,7 +24,7 @@
     (when (TaskOutcome/error error)
       (fail error))
     (when (TaskOutcome/fault fault) (let message fault/.message)
-      (fail (HarnessError ^_msg $"plugin panic: ${message}")))
+      (fail (HarnessError ^_msg $"plugin panic: ${message}" ^_cause fault)))
     (when TaskOutcome/cancelled
       (fail (HarnessError ^_msg "plugin invocation was cancelled or exceeded its deadline")))))
 

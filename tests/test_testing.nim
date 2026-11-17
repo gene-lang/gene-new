@@ -40,15 +40,13 @@ suite "testing — standalone assertions":
     testingCheck "(try ($assert false nil) catch AssertionFault $err/.message)",
       "\"assertion failed\""
 
-  test "assertion failures implement Error and obey checked rows":
+  test "assertion failures are Faults that checked rows pass through":
     testingCheck """
-      (fn checked [] ^errors [AssertionFault] ($assert false "detail"))
-      (try (checked) catch Error $err/.message)
+      (fn checked [] ^errors [] ($assert false "detail"))
+      (try (try (checked) catch Error "error") catch AssertionFault $err/.message)
     """, "\"detail\""
-    testingCheck """
-      (fn checked [] ^errors [] ($assert false))
-      (try (checked) catch AssertionFault false catch ContractViolation true)
-    """, "true"
+    expect GeneError:
+      discard testingEval("(fn checked [] ^errors [AssertionFault] ($assert false))")
 
   test "assertion location and stack refer to authored calls":
     let value = testingEval("(fn check []\n  ($assert false))\n" &
@@ -72,7 +70,7 @@ suite "testing — assertion helpers":
       (import $test [assert_raises])
       (var calls 0)
       (let error (assert_raises (fn []
-        (set calls (+ calls 1)) ($assert false "detail")) Error))
+        (set calls (+ calls 1)) ($assert false "detail")) Fault))
       [calls error/.message]
     """, "[1 \"detail\"]"
 
@@ -94,7 +92,7 @@ suite "testing — assertion helpers":
         catch AssertionFault $err/.message)
     """, "\"missing\""
 
-  test "thunk validation happens before invocation and panic is not caught":
+  test "thunk validation happens before invocation and a panic matches only Panic":
     testingCheck """
       (import $test [assert_raises])
       (var calls 0)
@@ -102,8 +100,10 @@ suite "testing — assertion helpers":
         catch TypeFault nil)
       calls
     """, "0"
-    expect GenePanic:
+    expect GeneError:
       discard testingEval("($test/assert_raises (fn [] (panic \"stop\")) Error)")
+    testingCheck "(($test/assert_raises (fn [] (panic \"stop\")) Panic) .message)",
+      "\"stop\""
 
 suite "testing — example lifecycle":
   test "declarations defer bodies, capture lexical values, and rerun with fresh fixtures":
@@ -199,7 +199,7 @@ suite "testing — example lifecycle":
       (import $test [describe it run])
       (var called false)
       (describe "ready" (it "must not run" [] (set called true)))
-      (try (it "outside" [] nil) catch Error nil)
+      (try (it "outside" [] nil) catch RuntimeFault nil)
       (let result (run ^!report))
       [called result/exit_code (result/diagnostics .size)]
     """, "[false 1 1]"
@@ -250,18 +250,24 @@ suite "testing — example lifecycle":
       repeat('x', 5000) & "\" nil))) (run ^!report)")
     check formatTestReport(huge).len < 1800
 
-  test "panic aborts after cleanup and registry run state is restored":
+  test "a panic is an example error; cleanup runs and the run continues":
     let scope = newGlobalScope(newApplication())
     discard run(compileSource("""
       (import $test [describe it after_each])
       (var cleaned false)
       (describe "panic"
         (after_each [] (set cleaned true))
-        (it "aborts" [] (panic "stop")))
+        (it "panics" [] (panic "stop"))
+        (it "passes" [] nil))
     """), scope)
-    expect GenePanic: discard runTests(scope, report = false)
+    let result = runTests(scope, report = false)
+    check result.props["errors"].intVal == 1
+    check result.props["passed"].intVal == 1
+    let diagnostic = result.props["examples"].listItems[0].mapEntries["diagnostics"].
+      listItems[0].mapEntries
+    check diagnostic["error_type"].typeName == "Panic"
     check run(compileSource("cleaned"), scope).boolVal
-    expect GenePanic: discard runTests(scope, report = false)
+    check runTests(scope, report = false).props["errors"].intVal == 1
 
   test "registries belong to their application":
     let left = newGlobalScope(newApplication())

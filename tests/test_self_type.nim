@@ -314,10 +314,11 @@ suite "Self — checked error contracts":
 
   test "universal defaults retain concrete checked error rows":
     check selfTypeEval("""
+      (type Declared : Error)
       (protocol P ^^universal
-        (message raise [] : Int ^errors [RuntimeFault]
-          (fail (RuntimeFault ^_msg "declared"))))
-      (try (1 .P:raise) catch RuntimeFault $err/.message)
+        (message raise [] : Int ^errors [Declared]
+          (fail (Declared ^_msg "declared"))))
+      (try (1 .P:raise) catch Declared $err/.message)
     """) == "\"declared\""
 
 suite "Self — forward annotation dependencies":

@@ -58,7 +58,7 @@
       (if (== parsed/options/managed true) (arguments .push "--managed"))
       (return (serve_web arguments)))
     (run_client parsed)
-  catch Error
+  catch Throwable
     (let error {^code (?? $err/code "error") ^message $err/.message})
     (let properties ($props $err))
     (for key in ["request_id" "submission_seq" "execution_id" "kind" "session"]

@@ -135,7 +135,7 @@ does not match, and `v/.props/k` reads the open props Map, so it is `nil`.
 (type P ^props {^name Str ^age Int?})
 (let p (P ^name "Ada"))
 [p/name p/age ($has_key? p "nmae") p/.props/nmae
- (try p/nmae catch Error "raised") (try (let n 6) n/b catch Error "raised")]
+ (try p/nmae catch Fault "raised") (try (let n 6) n/b catch Fault "raised")]
 # ["Ada" nil false nil "raised" "raised"]
 ```
 

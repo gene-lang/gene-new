@@ -631,9 +631,8 @@
     # A retried request returns its earlier receipt and starts nothing.
     (if_not started/.get (release))
     record
-  catch Error
-    (if_not started/.get (release))
-    (fail $err)))
+  unwind
+    (if_not started/.get (release))))
 
 (fn session_card_action [service, session : Str, card : Str, request]
   (require_record service/runtime/sessions session)

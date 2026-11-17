@@ -16,7 +16,7 @@
         (try (engine/close resource)
         ensure
           (owned .set ($filter owned/.get (fn [item] (! (same? item/resource resource))))))))
-      catch Error (engine/close resource) (fail $err)))
+      unwind (engine/close resource)))
     (owned/.get .push {^resource resource ^lease lease})
     resource))
   (result .put "close" (fn [resource]

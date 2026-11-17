@@ -49,9 +49,8 @@
         (state/readers .put mode remaining)
         (if (== remaining 0) (close_kind state mode))))))
       (record/values/.get .put mode true)
-    catch Error
-      (state/readers .put mode (- (state/readers .get mode) 1))
-      (fail $err))))
+    unwind
+      (state/readers .put mode (- (state/readers .get mode) 1)))))
   nil)
 
 (fn operator_command [handle, name : Str, supplied]

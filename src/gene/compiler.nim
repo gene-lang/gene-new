@@ -253,6 +253,9 @@ var macroEvaluator*: MacroEvaluator
 ## Set by the VM: a runtime-kind value that both compilation phases share, such
 ## as a native function of the `gene` root or a built-in type.
 var intrinsicValueCheck*: proc(value: Value): bool {.nimcall, gcsafe.}
+## Set by the VM: whether a failure carries a Panic, which macro expansion
+## re-raises as itself instead of folding it into a compile diagnostic.
+var panicErrorCheck*: proc(error: ref GeneError): bool {.nimcall.}
 var activeMacroSession* {.threadvar.}: MacroExecutionSession
 var activeMacroHostContext* {.threadvar.}: RootRef
 
@@ -2396,6 +2399,11 @@ proc evaluateMacroValue(c: var Compiler, def: MacroDef,
       context.add " expanded at " & c.currentLoc.sourceName & ":" & $c.currentLoc.line
     if def.sourceLoc.hasSourceLoc:
       context.add " (defined at " & def.sourceLoc.sourceName & ":" & $def.sourceLoc.line & ")"
+    if panicErrorCheck != nil and panicErrorCheck(error):
+      # A panic stays a Panic: only the diagnostic text gains the context.
+      error.msg = context & ": " & error.msg
+      if not error.loc.hasSourceLoc: error.loc = c.currentLoc
+      raise
     # A phase-local error value belongs to the phase Application's Error
     # protocol. Carry the diagnostic, not a foreign runtime value, back into
     # the host compiler (including sandbox/eval compilation).

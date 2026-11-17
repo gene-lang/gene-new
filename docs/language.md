@@ -113,9 +113,10 @@ optional field of a typed value, an index out of range, and any step through
 # ["anonymous" false]
 ```
 
-A read that cannot be right raises instead. A typed value raises for a name
-its type does not declare (`P has no field 'nmae'`, as a write does), except
-that an `Error` value reads an undeclared name as `nil`. A name segment
+A read that cannot be right raises a Fault instead, a defect that
+`catch Error` does not see. A typed value raises for a name its type does not
+declare (`P has no field 'nmae'`, as a write does), except that a Throwable
+reads an undeclared name as `nil`. A name segment
 through a value with no fields, such as an Int, a Str or a List, raises; so
 does an integer segment through a Map, and any segment on a Stream, which is
 read item by item with `($map stream /x)`. A plain name always reads a
@@ -124,7 +125,7 @@ property, never node anatomy: `value/.body` reads the body.
 ```gene runnable
 (type Person ^props {^name Str ^nickname Str?})
 (let ada (Person ^name "Ada"))
-[ada/nickname (try ada/nmae catch Error "raised") ($has_key? ada "nmae")]
+[ada/nickname (try ada/nmae catch Fault "raised") ($has_key? ada "nmae")]
 # [nil "raised" false]
 ```
 

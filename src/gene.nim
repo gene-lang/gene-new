@@ -142,9 +142,6 @@ proc cmdEval(src: string, errorsMode = "") =
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     maybeReplOnError(scope, app)
     quit(1)
-  except GenePanic as e:
-    stderr.writeLine "Panic: " & e.msg
-    quit(1)
   except GeneError as e:
     stderr.writeLine formatDiagnostic("Error", errorDiagnosticMessage(e, scope), e.loc)
     maybeReplOnError(scope, app)
@@ -451,13 +448,6 @@ proc cmdRun(path: string, args: openArray[string] = [],
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     maybeReplOnError(replScope, app)
     quit(1)
-  except GenePanic as e:
-    if app != nil:
-      try: app.waitApplicationIoCleanup()
-      except CatchableError as cleanup:
-        stderr.writeLine "Cleanup error: " & cleanup.msg
-    stderr.writeLine "Panic: " & e.msg
-    quit(1)
   except GeneError as e:
     if app != nil:
       try: app.waitApplicationIoCleanup()
@@ -495,9 +485,6 @@ proc cmdRunUrl(url: string, args: openArray[string] = [],
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     maybeReplOnError(replScope, app)
     quit(1)
-  except GenePanic as e:
-    stderr.writeLine "Panic: " & e.msg
-    quit(1)
   except GeneError as e:
     stderr.writeLine formatDiagnostic("Error",
       errorDiagnosticMessage(e, replFallbackScope(replScope, app)), e.loc)
@@ -521,9 +508,6 @@ proc cmdCompile(path: string) =
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
-  except GenePanic as e:
-    stderr.writeLine "Panic: " & e.msg
-    quit(1)
   except GeneError as e:
     stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
     quit(1)
@@ -535,9 +519,6 @@ proc cmdCompileC(path: string) =
     echo app.compileFileModule(absPath).emitExperimentalC()
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
-    quit(1)
-  except GenePanic as e:
-    stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
     stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
@@ -936,9 +917,6 @@ proc cmdProjectRun(options: RunCli) =
     stderr.writeLine formatDiagnostic("Read error", error.msg,
                                       error.readErrorLoc)
     quit(1)
-  except GenePanic as error:
-    stderr.writeLine "Panic: " & error.msg
-    quit(1)
   except GeneError as error:
     stderr.writeLine formatDiagnostic("Error",
       errorDiagnosticMessage(error, replFallbackScope(reportingScope)), error.loc)
@@ -1080,9 +1058,6 @@ proc cmdProjectTest(options: ProjectBuildCli) =
     stderr.writeLine formatDiagnostic("Read error", error.msg,
                                       error.readErrorLoc)
     quit(1)
-  except GenePanic as error:
-    stderr.writeLine "Panic: " & error.msg
-    quit(1)
   except GeneError as error:
     stderr.writeLine formatDiagnostic("Error",
       errorDiagnosticMessage(error, replFallbackScope(reportingScope)), error.loc)
@@ -1190,9 +1165,6 @@ proc cmdSpecTest(options: SpecTestCli) =
   except ValueError as error:
     stderr.writeLine "Error: " & error.msg
     quit(2)
-  except GenePanic as error:
-    stderr.writeLine "Panic: " & error.msg
-    quit(1)
   except GeneCancel as error:
     stderr.writeLine "Cancelled: " & error.msg
     quit(1)
@@ -1337,9 +1309,6 @@ proc cmdDoc(path: string) =
         writeDocDeclarations(item.ns.nsScope)
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
-    quit(1)
-  except GenePanic as e:
-    stderr.writeLine "Panic: " & e.msg
     quit(1)
   except GeneError as e:
     stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)

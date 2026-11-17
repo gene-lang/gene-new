@@ -887,7 +887,7 @@ suite "protocols — dispatch inline cache soundness (item D1)":
        "  (if add_overlay (impl P for T (message m [self] : Int 2))) " &
        "  (fn inner [] (t .P:m))) " &
        "(var a (outer true)) (var b (outer false)) " &
-       "[(a) (try (b) catch Error -1) (a)]",
+       "[(a) (try (b) catch Fault -1) (a)]",
        "[2 -1 2]"
 
   test "a bare send is cached while its module is still assembling declarations":

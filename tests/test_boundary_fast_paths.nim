@@ -68,9 +68,9 @@ suite "typed node push checks only the new item when that is exact":
       (let frozen ($freeze (Bag ^x 1 7)))
       (let fx (Fixed ^x 1 2 3))
       (let o (Opt ^x 1)) (o .push 1) (o .push 2)
-      [(try (frozen .push 8) catch Error $err/.message)
+      [(try (frozen .push 8) catch Fault $err/.message)
        (try (frozen .push "s") catch TypeFault $err/where)
-       (try (fx .push 4) catch Error $err/.message)
+       (try (fx .push 4) catch Fault $err/.message)
        o]""",
       """["cannot mutate immutable Node" "body field 1 for Bag" """ &
       """"Fixed expects 2 body item(s), got 3" ((type Opt) ^x 1 1 2)]"""
@@ -115,9 +115,9 @@ suite "locals on the scopeless calling convention":
     # Expected values are the classic convention's.
     fastCk locals & """
       [(chain 3) (reassign 4) (cond 5) (cond -1) (pair 3)
-       (try (bad 1) catch Error $err/.message) (outer 2) ([1 2] .map chain)
+       (try (bad 1) catch Fault $err/.message) (outer 2) ([1 2] .map chain)
        (typed 1) (set_param 9) (looped 4) ((mk 7))
-       (branchvar true) (try (branchvar false) catch Error 0) (both true) (both false)]""",
+       (branchvar true) (try (branchvar false) catch Fault 0) (both true) (both false)]""",
       """[13 5 6 -1 [3 3] "+ expects numbers, got vkString" 9 [5 9] 4 1 6 7 1 0 1 2]"""
 
 suite "scalar annotations on the scopeless calling convention":
@@ -164,8 +164,8 @@ suite "scalar annotations on the scopeless calling convention":
        (try (mixed nil 1 true) catch TypeFault $err/.message)
        (try (ret_const 1) catch TypeFault $err/.message)
        (try (ret_checked "s") catch TypeFault $err/.message)
-       (try (id_int 1 2) catch Error $err/.message)
-       (try (id_int) catch Error $err/.message)]""",
+       (try (id_int 1 2) catch Fault $err/.message)
+       (try (id_int) catch Fault $err/.message)]""",
       """["parameter 'a' expected Int, got Str" """ &
       """"parameter 'b' expected Int, got Str" """ &
       """"parameter 'b' expected Int, got Float" """ &
@@ -204,8 +204,8 @@ suite "field writes by key id":
        (try (set p/tags [1]) catch TypeFault $err/.message)
        (try (set p/x nil) catch TypeFault $err/.message)
        (try (p .put "x" 1.5) catch TypeFault $err/.message)
-       (try (set p/zzz 1) catch Error $err/.message)
-       (try (p .put "nope" 1) catch Error $err/.message)
+       (try (set p/zzz 1) catch Fault $err/.message)
+       (try (p .put "nope" 1) catch Fault $err/.message)
        p]""",
       """["field 'x' for P expected Int, got Str" """ &
       """"field 'y' for P expected Float, got Int" """ &
@@ -225,7 +225,7 @@ suite "field writes by key id":
       (let frozen ($freeze p))
       (let plain (quote (data ^a 1)))
       (set plain/a 2) (set plain/b "new")
-      [(try (set frozen/x 2) catch Error $err/.message) plain]""",
+      [(try (set frozen/x 2) catch Fault $err/.message) plain]""",
       """["cannot mutate immutable Node" (data ^a 2 ^b "new")]"""
 
   test "unmanaged values of each kind, an inherited field and other heads":
@@ -378,7 +378,7 @@ suite "a (List T) parameter of a scalar T binds like a scalar one":
        (two 1 ["a" "b"]) (two 1 ["a" "b"])
        (try (two 1 [1]) catch TypeFault $err/.message)
        (try (len_typed {^a 1}) catch TypeFault $err/.message)
-       (try (len_typed) catch Error $err/.message)]""",
+       (try (len_typed) catch Fault $err/.message)]""",
       """[[1 1 1] "parameter 'xs' expected (List Int), got (List Any)" """ &
       """"set 'xs' expected (List Int), got (List Str)" """ &
       """"set 'xs' expected (List Int), got (List Str)" [1 2] [1 2] """ &
@@ -398,7 +398,7 @@ suite "indexed writes into a typed node's body":
       [p last b
        (try (set p/0 "bad") catch TypeFault $err/.message)
        (try (set p/1 5) catch TypeFault $err/.message)
-       (try (set p/2 5) catch Error $err/.message)
+       (try (set p/2 5) catch Fault $err/.message)
        (try (set b/1 "bad") catch TypeFault $err/.message)
        b]""",
       """[((type Pair) ^x 1 5 "t") 99 ((type Bag) ^x 1 0 1 99) """ &
@@ -431,7 +431,7 @@ suite "indexed writes into a typed node's body":
       (repeat i in 3000 (set b/%i (* i 2)))
       (var total 0)
       (repeat i in 3000 (set total (+ total b/%i)))
-      [(try (set frozen/0 1) catch Error $err/.message) total b/2999]""",
+      [(try (set frozen/0 1) catch Fault $err/.message) total b/2999]""",
       """["cannot mutate immutable Node" 8997000 5998]"""
 
 suite "direct construction reads its named arguments in place":
@@ -451,14 +451,14 @@ suite "direct construction reads its named arguments in place":
     fastCk """
       (type Pt ^props {^x Int ^y Int})
       (type B ^props {^n Int} ^body [Int Str...])
-      [(try (Pt ^x 1) catch Error $err/.message)
-       (try (Pt ^x 1 ^y 2 ^z 3) catch Error $err/.message)
+      [(try (Pt ^x 1) catch Fault $err/.message)
+       (try (Pt ^x 1 ^y 2 ^z 3) catch Fault $err/.message)
        (try (Pt ^x 1 ^y "s") catch TypeFault $err/.message)
-       (try (B ^n 1) catch Error $err/.message)
+       (try (B ^n 1) catch Fault $err/.message)
        (try (B ^n 1 2 3) catch TypeFault $err/.message)
-       (try (Pt 1 2) catch Error $err/.message)
-       (try (do (let p #(Pt ^x 1 ^y 2)) (set p/x 3)) catch Error $err/.message)
-       (try (do (enum Color red green) (Color)) catch Error $err/.message)]""",
+       (try (Pt 1 2) catch Fault $err/.message)
+       (try (do (let p #(Pt ^x 1 ^y 2)) (set p/x 3)) catch Fault $err/.message)
+       (try (do (enum Color red green) (Color)) catch Fault $err/.message)]""",
       """["missing required field 'y' for Pt" "Pt has no field 'z'" """ &
       """"field 'y' for Pt expected Int, got Str" """ &
       """"constructing B expects at least 1 body item(s), got 0" """ &
@@ -474,10 +474,10 @@ suite "size and empty? of a List skip the override lookup":
       (var xs []) (repeat i in 5 (xs .push i))
       [($size xs) ($empty? xs) ($size []) ($empty? []) (xs .size) (xs .empty?)
        ($size (Bag ^n 1)) ($empty? (Bag ^n 1))
-       (try ($size {^a 1}) catch Error $err/.message)
-       (try ($empty? 3) catch Error $err/.message)
-       (try ($size) catch Error $err/.message)
-       (try ($size (quote (a 1 2))) catch Error $err/.message)]""",
+       (try ($size {^a 1}) catch Fault $err/.message)
+       (try ($empty? 3) catch Fault $err/.message)
+       (try ($size) catch Fault $err/.message)
+       (try ($size (quote (a 1 2))) catch Fault $err/.message)]""",
       """[5 false 0 true 5 false 42 true """ &
       """"no message 'size' on Map; use $map_size for a Map's entries" """ &
       """"empty? expects a list-like value, got Int" """ &

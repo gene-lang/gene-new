@@ -450,7 +450,7 @@
         (let result (apply_plan_once runtime id))
         (runtime/workspace/store .Store:put key result)
         result
-      catch Error
+      catch Throwable
         (runtime/workspace/store .Store:put
           key
           {

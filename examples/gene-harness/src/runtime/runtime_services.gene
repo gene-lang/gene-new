@@ -87,7 +87,7 @@
        ^builtins builtins ^limits {^max_memory_mb ctx/limits/max_memory_mb ^timeout_ms ctx/limits/timeout_ms}})
     (set ctx/workspace workspace)
     workspace
-  catch Error (close_workspace workspace) (fail $err)))
+  unwind (close_workspace workspace)))
 
 (fn kernel_service [ctx]
   (let h (new_harness ^plugin_services ctx/services/values/plugin_services ^event_store ctx/events ^event_scope ctx/event_scope ^event_stream ctx/session
@@ -102,7 +102,7 @@
     (contribute ctx/h "core" "recall_sources"
       {^prefix "image." ^recall (fn [session, id] (recall_image_run ctx/runtime session id))})
     images
-  catch Error (close_image_host images) (fail $err)))
+  unwind (close_image_host images)))
 
 (fn activate_services [ctx]
   (if_yes (&& ctx/activate (! ctx/recovery))
@@ -165,7 +165,7 @@
      ^open (fn [ctx]
        (let handle (open_notification_host ctx/runtime))
        (try (provide ctx/h "core" "notifications/host" handle) handle
-         catch Error (close_notification_host ctx/runtime) (fail $err)))
+         unwind (close_notification_host ctx/runtime)))
      ^recover nil ^close (fn [ctx, handle] (close_notification_host ctx/runtime))}
     {^name "voice" ^layer "feature_host" ^requires ["runtime" "repair"]
      ^open (fn [ctx]
@@ -173,7 +173,7 @@
        (try
          (provide ctx/h "core" "voice/host" (voice_host_binding ctx/runtime))
          voice
-         catch Error (close_voice_state voice) (fail $err)))
+         unwind (close_voice_state voice)))
      ^recover nil ^close (fn [ctx, voice] (close_voice_state voice))}
     {^name "plugin_api" ^layer "feature_host" ^requires ["runtime" "repair"]
      ^open (fn [ctx] (provide ctx/h "core" "plugins/host" (composition_host_binding ctx/runtime)) nil)
@@ -189,7 +189,7 @@
        (try
          (provide ctx/h "core" "sessions/host" (session_host_binding ctx/runtime))
          sessions
-       catch Error (close_session_manager sessions) (fail $err)))
+       unwind (close_session_manager sessions)))
      ^recover nil ^close (fn [ctx, sessions] (close_session_manager sessions))}
     {^name "repair" ^layer "kernel" ^requires ["sessions"]
      ^open (fn [ctx] (recover_runtime_state ctx/runtime)) ^recover nil}
@@ -217,7 +217,7 @@
          (provide ctx/h "core" "delegations/runtime" service/handle)
          (contribute_native_handler ctx/runtime (delegation_lifecycle_handler service))
          service
-         catch Error (close_delegation_host service) (fail $err)))
+         unwind (close_delegation_host service)))
      ^recover nil ^close (fn [ctx, service] (close_delegation_host service))}
     {^name "images" ^layer "feature_host" ^requires ["cards"] ^open image_service ^recover nil
      ^close (fn [ctx, service] (close_image_host service))}
@@ -245,7 +245,7 @@
          (provide ctx/h "core" "ui/context" (fn [session, state] (ui_context_data ctx/runtime session state)))
          (provide ctx/h "core" "ui/host" (ui_host_binding ctx/runtime))
          actions
-       catch Error (close_ui_actions actions) (fail $err)))
+       unwind (close_ui_actions actions)))
      ^recover nil ^quiesce (fn [ctx, actions] (quiesce_ui_actions actions))
      ^close (fn [ctx, actions] (close_ui_actions actions))}
     {^name "operator" ^layer "feature_host" ^requires ["commands"]
@@ -254,7 +254,7 @@
        (try
          (provide ctx/h "core" "operator/host" (operator_host_binding operator))
          operator
-       catch Error (close_operator_host operator) (fail $err)))
+       unwind (close_operator_host operator)))
      ^recover nil ^close (fn [ctx, operator] (close_operator_host operator))}
     {^name "computer" ^layer "feature_host" ^requires ["commands" "media"]
      ^open (fn [ctx]
@@ -262,7 +262,7 @@
        (try
          (provide ctx/h "core" "computer/host" (computer_host_binding computer))
          computer
-       catch Error (close_computer_host computer) (fail $err)))
+       unwind (close_computer_host computer)))
      ^recover nil ^close (fn [ctx, computer] (close_computer_host computer))}
     {^name "manager" ^layer "feature_host" ^requires ["actions"]
      ^open (fn [ctx]
@@ -271,7 +271,7 @@
        (try
          (provide ctx/h "core" "workspaces/host" (workspace_host_binding ctx/runtime))
          manager
-       catch Error (close_workspace_manager manager) (fail $err)))
+       unwind (close_workspace_manager manager)))
      ^recover nil ^close (fn [ctx, manager] (close_workspace_manager manager))}
     {^name "models_host" ^layer "feature_host" ^requires ["runtime"]
      ^open (fn [ctx]
@@ -287,7 +287,7 @@
      ^open (fn [ctx]
        (let service (open_decision_service ctx/runtime))
        (try (provide ctx/h "core" "decisions/host" service/handle) service
-         catch Error (close_decision_service service) (fail $err)))
+         unwind (close_decision_service service)))
      ^recover nil ^close (fn [ctx, service] (close_decision_service service))}
     # Plugin code can reach the global objects from activation onward.
     {^name "host_objects" ^layer "feature_host" ^requires ["actions" "manager" "sessions"]

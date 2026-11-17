@@ -35,9 +35,8 @@
         (set changed true)))
     (if changed (checkpoint log recovered))
     log
-  catch Error
-    backend/.Store:close
-    (fail $err)))
+  unwind
+    backend/.Store:close))
 
 (fn close_action_log [log : ActionLog] log/backend/.Store:close)
 

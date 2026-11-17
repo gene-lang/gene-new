@@ -202,8 +202,8 @@
       (close_file_watch watch)
       (state/watches .delete revision)))
     {^^available}
-  catch Error
-    (close_file_watch watch) (state/watches .delete revision) (fail $err)))
+  unwind
+    (close_file_watch watch) (state/watches .delete revision)))
 
 (fn active_model_catalog [runtime]
   (let policy (runtime/h/plugin_policies/.get .get "models"))
@@ -372,10 +372,9 @@
       (close_model_catalog catalog)
       (if (same? (state/catalogs .get revision) catalog) (state/catalogs .delete revision))))
     {^^available}
-  catch Error
+  unwind
     (close_model_catalog catalog)
-    (state/catalogs .delete revision)
-    (fail $err)))
+    (state/catalogs .delete revision)))
 
 (fn begin_model_login [handle, provider : Str, account] ^^private
   (let service (require_service handle))

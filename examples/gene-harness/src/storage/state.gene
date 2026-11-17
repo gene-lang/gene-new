@@ -379,7 +379,7 @@
         (if_not ($absent? version_schema) (set schema version_schema)))
       (var guarded ($runtime/guard_call schema schema_payload))
       (if_not guarded/ok (set schema_error guarded/message))
-    catch Error
+    catch Throwable
       (set schema_error ($to_str $err/.message))))
   (if_not (== schema_error nil)
     (if (== envelope/origin "core")

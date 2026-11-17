@@ -131,6 +131,8 @@ proc macroRuntimeState(session: MacroExecutionSession): MacroRuntimeState =
   phaseApp.stdlib = host.stdlib
   phaseApp.throwableType = host.throwableType
   phaseApp.errorType = host.errorType
+  phaseApp.faultType = host.faultType
+  phaseApp.panicType = host.panicType
   phaseApp.boundCallTemplate = host.boundCallTemplate
   phaseApp.streamCallbackTemplate = host.streamCallbackTemplate
   phaseApp.collectionCallbackTemplate = host.collectionCallbackTemplate
@@ -352,6 +354,9 @@ proc initializeMacroInstance(state: MacroRuntimeState,
     instance.status = misFailed
     instance.failure = "initializing macro definition environment '" &
       sourceName & "': " & error.msg
+    if error.isPanicError:
+      error.msg = instance.failure
+      raise
     raise newException(GeneError, instance.failure)
   finally:
     if registeredLoading: app.moduleLoading.excl instance.context.moduleIdentity
@@ -463,6 +468,7 @@ proc evaluateMacroBody(definition: MacroDef, bindings: Table[string, Value],
       state.activeBudget = previousBudget
 
 macroEvaluator = evaluateMacroBody
+panicErrorCheck = isPanicError
 
 proc isIntrinsicValue(value: Value): bool {.nimcall, gcsafe.} =
   ## Runtime-kind values that every compilation phase shares: the native

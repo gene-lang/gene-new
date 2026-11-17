@@ -188,7 +188,7 @@ suite "execution expiry":
         (try
           (try (spin)
             ensure
-              (try (/ 1 0) catch Error (trace .push "handled"))
+              (try (/ 1 0) catch RuntimeFault (trace .push "handled"))
               (/ 1 0))
           ensure (trace .push "outer"))) [] ^policy {^timeout_ms 100}))
       [(try (invoke) false catch Error ($str/contains? $err/.message "timeout")) trace]
@@ -244,14 +244,17 @@ suite "execution expiry":
       (recover)
     """) == "7"
 
-  test "a real panic in expiry cleanup retains its panic outcome":
+  test "a panic in expiry cleanup is dropped like any cleanup fault":
+    # A Panic is a Fault on the one unwind path: the expiry stays terminal.
     check watched(spin & """
       (let invoke ($runtime/bind_call (fn []
         (try (spin) ensure (panic "cleanup panic"))) [] ^policy {^timeout_ms 20}))
       (scope
         (let task (spawn ^lane root (invoke)))
-        (match task/.join (when (TaskOutcome/fault fault) (let _ fault/.message) true) (else false)))
-    """) == "true"
+        (match task/.join
+          (when (TaskOutcome/error error) [($head error) error/reason])
+          (else false)))
+    """) == "[(type LimitExceeded) \"timeout\"]"
 
   test "observed task cancellation cannot be suppressed by cleanup exits":
     for exit in ["(return 1)", "(break)", "(continue)"]:

@@ -79,12 +79,13 @@ suite "errors — fail and catch":
        "" &
        "(try (fail (IoError ^m \"x\")) " &
        "catch ParseError \"parse\" catch Error \"other\")", "\"other\""
-  test "internal errors are catchable by message shape":
-    ck "(try (/ 1 0) catch Error $err/.message)", "\"division by zero\""
-  test "runtime diagnostics carry RuntimeFault and satisfy Error":
+  test "a message-only internal failure is a RuntimeFault":
+    ck "(try (/ 1 0) catch RuntimeFault $err/.message)", "\"division by zero\""
+  test "runtime diagnostics carry RuntimeFault, which catch Error does not see":
     ck "(try undefined_name catch RuntimeFault $err/.message)",
        "\"undefined symbol: undefined_name\""
-    ck "(try (/ 1 0) catch Error $err/.message)", "\"division by zero\""
+    ck "(try (try (/ 1 0) catch Error \"error\") catch Fault $err/.message)",
+       "\"division by zero\""
   test "$err is captured by a function created in the catch body":
     ck "(try (/ 1 0) catch RuntimeFault " &
        "  (var message (fn [] $err/.message)) (message))",
@@ -134,10 +135,12 @@ suite "errors — fail and catch":
                      "recovered")
 
 suite "errors — checked rows":
-  test "RuntimeFault can be declared in a checked row":
-    ck "(fn missing ^errors [RuntimeFault] [] undefined_name) " &
+  test "a checked row passes a RuntimeFault through and cannot name one":
+    ck "(fn missing ^errors [] [] undefined_name) " &
        "(try (missing) catch RuntimeFault $err/.message)",
        "\"undefined symbol: undefined_name\""
+    expect GeneError:
+      discard runStr("(fn missing ^errors [RuntimeFault] [] undefined_name) (missing)")
 
   test "functions may raise declared errors":
     ck "(type Boom : Error) " &
@@ -194,10 +197,16 @@ suite "errors — checked rows":
        "  (message run ^errors [Boom] [self] (fail (Boom ^_msg \"x\")))) " &
        "(try ((Job) .Run:run) catch Boom $err/.message)", "\"x\""
 
-  test "checked rows can declare built-in MatchFault":
-    ck "(fn first-two ^errors [MatchFault] [xs] (var [a b] xs) a) " &
+  test "a checked row passes a MatchFault through and cannot name one":
+    ck "(fn first-two ^errors [] [xs] (var [a b] xs) a) " &
        "(try (first-two [1]) catch MatchFault $err/.message)",
        "\"destructuring pattern did not match\""
+    var message = ""
+    try:
+      discard runStr("(fn first-two ^errors [MatchFault] [xs] (var [a b] xs) a)")
+    except GeneError as error:
+      message = error.msg
+    check "Fault types are unchecked" in message
 
   test "checked rows can declare built-in CompileError":
     ck "(fn bad ^errors [CompileError] [] (fail (CompileError ^_msg \"compile\"))) " &
@@ -321,19 +330,39 @@ suite "errors — try on the frame stack":
     ck "(type A : Error) " &
        "(try (try 5 ensure (fail (A ^_msg \"e\"))) catch A $err/.message)", "\"e\""
 
+proc panicked(src: string): Value =
+  ## The Panic value `(panic v)` raised, which no `catch Error` saw.
+  try:
+    discard runStr(src)
+  except GeneError as error:
+    if error.hasErrVal and error.errVal.kind == vkNode and
+        error.errVal.head.kind == vkType:
+      return error.errVal
+  NIL
+
 suite "errors — panic":
-  test "panic is not caught by try":
-    expect GenePanic: discard runStr("(try (panic \"halt\") catch Error \"caught\")")
+  test "panic is a Panic fault that catch Error does not catch":
+    let value = panicked("(try (panic \"halt\") catch Error \"caught\")")
+    check value.kind == vkNode and value.head.typeName == "Panic"
+    check value.props["_msg"].strVal == "halt"
+    check value.props["value"].strVal == "halt"
+  test "catch Panic, catch Fault and catch Throwable catch a panic":
+    ck "[(try (panic 3) catch Panic $err/value) " &
+       " (try (panic \"x\") catch Fault $err/.message) " &
+       " (try (panic [1]) catch Throwable ($head $err))]", "[3 \"x\" (type Panic)]"
   test "panic propagates through ensure":
-    expect GenePanic: discard runStr("(try (panic \"halt\") ensure 1)")
+    let value = panicked("(var log []) (try (try (panic \"halt\") ensure (log .push 1)) " &
+                         "catch Error nil)")
+    check value.kind == vkNode and value.head.typeName == "Panic"
+    ck "(var log []) (try (try (panic \"halt\") ensure (log .push 1)) " &
+       "catch Panic nil) log", "[1]"
   test "panic head is a special form":
-    expect GenePanic:
-      discard runStr("(panic \"halt\")")
+    check panicked("(panic \"halt\")").head.typeName == "Panic"
     expect GeneError:
       discard runStr("(var panic (fn [x] nil)) (panic \"halt\")")
     expect GeneError:
       discard compileSource("(panic \"x\" \"y\")")
-  test "await propagates task panic outside try":
-    expect GenePanic:
-      discard runStr("(scope (var t (spawn (panic \"halt\"))) " &
-                     "(try (await t) catch Error \"caught\"))")
+  test "await propagates task panic outside catch Error":
+    let value = panicked("(scope (var t (spawn (panic \"halt\"))) " &
+                         "(try (await t) catch Error \"caught\"))")
+    check value.kind == vkNode and value.head.typeName == "Panic"

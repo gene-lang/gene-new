@@ -42,7 +42,7 @@ suite "callable reflection":
        d/positional/0/required d/positional/0/has_default
        d/named/0/required d/named/0/has_default
        (defaulted b/positional ... b/named ...)
-       (try ($runtime/bind_shape s [] {}) false catch Error true)]
+       (try ($runtime/bind_shape s [] {}) false catch Fault true)]
     """, "[true false true false false true false true [nil nil] true]"
 
   test "a supplied nil stays supplied":
@@ -53,8 +53,8 @@ suite "callable reflection":
       (let named n/named)
       [(target named ...)
        n/omitted_named
-       (try ($runtime/bind_shape s [] {^value (do nil)}) false catch Error true)
-       (try ($runtime/bind_shape s [] {}) false catch Error true)]
+       (try ($runtime/bind_shape s [] {^value (do nil)}) false catch Fault true)
+       (try ($runtime/bind_shape s [] {}) false catch Fault true)]
     """, "[nil #[] false true]"
 
   test "bound envelopes snapshot shape and preserve nested identity":
@@ -69,19 +69,19 @@ suite "callable reflection":
       (nested .set 2)
       [(same? b/positional/0 nested) (same? b/named/y nested)
        (b/positional/0 .get) b/positional/.size ($absent? b/named/extra)
-       (try (b/positional .push 1) false catch Error true)]
+       (try (b/positional .push 1) false catch Fault true)]
     """, "[true true 2 1 true true]"
 
   test "shape validation rejects missing, extra and malformed inputs":
     reflectionCheck """
       (fn target [x, ^label] x)
       (let s ($runtime/signature target))
-      [(try ($runtime/bind_shape s [] {^label "a"}) false catch Error true)
-       (try ($runtime/bind_shape s [1 2] {^label "a"}) false catch Error true)
-       (try ($runtime/bind_shape s [1] {}) false catch Error true)
-       (try ($runtime/bind_shape s [1] {^label "a" ^extra 0}) false catch Error true)
-       (try ($runtime/bind_shape {} [] {}) false catch Error true)
-       (try ($runtime/bind_shape s nil {}) false catch Error true)]
+      [(try ($runtime/bind_shape s [] {^label "a"}) false catch Fault true)
+       (try ($runtime/bind_shape s [1 2] {^label "a"}) false catch Fault true)
+       (try ($runtime/bind_shape s [1] {}) false catch Fault true)
+       (try ($runtime/bind_shape s [1] {^label "a" ^extra 0}) false catch Fault true)
+       (try ($runtime/bind_shape {} [] {}) false catch Fault true)
+       (try ($runtime/bind_shape s nil {}) false catch Fault true)]
     """, "[true true true true true true]"
 
   test "shape checking is separate from runtime type admission":
@@ -109,7 +109,7 @@ suite "callable reflection":
       (let args b/positional)
       [s/category s/origin s/positional/0/name s/rest/type s/named/0/required
        s/invocation_errors/checked (checked args ...)
-       (try ($runtime/bind_shape s [] {}) false catch Error true)]
+       (try ($runtime/bind_shape s [] {}) false catch Fault true)]
     """, "[checked_view checked_view nil Int false true 6 true]"
 
   test "a checked optional named parameter preserves target default timing":
@@ -145,7 +145,7 @@ suite "callable reflection":
       (let native_sig ($runtime/signature +))
       [calls s/positional/0/type_known s/positional/0/type
        syntax_sig/shape_known native_sig/shape_known
-       (try ($runtime/bind_shape ($runtime/signature +) [] {}) false catch Error true)]
+       (try ($runtime/bind_shape ($runtime/signature +) [] {}) false catch Fault true)]
     """, "[0 false nil false false true]"
 
   test "descriptions are immutable and ignore forged signature metadata":
@@ -153,8 +153,8 @@ suite "callable reflection":
       (fn target [x : Str] : Str @signature "fake" x)
       (let s ($runtime/signature target))
       [s/positional/0/type s/signature s/target s/environment
-       (try (s/positional/0 .put "name" "changed") false catch Error true)
-       (try (s/positional .push nil) false catch Error true)]
+       (try (s/positional/0 .put "name" "changed") false catch Fault true)
+       (try (s/positional .push nil) false catch Fault true)]
     """, "[Str nil nil nil true true]"
 
   test "generator invocation and producer contracts stay separate":
@@ -311,14 +311,14 @@ suite "language callable reflection":
       (protocol One ^inherit [A])
       (let a ($runtime/signature One:value))
       [a/positional/1/type (same? a/protocol One) (same? a/declaring_protocol A)
-       (try ($runtime/signature Both:value) false catch Error true)]
+       (try ($runtime/signature Both:value) false catch Fault true)]
     """, "[Int true true true]"
 
   test "explicit receiver nil is not mistaken for an omitted receiver":
     reflectionCheck """
       [(try ($runtime/signature Self:no_such_message nil) false catch MessageFault true)
-       (try ($runtime/signature + nil) false catch Error true)
-       (try ($runtime/signature + ^^unexpected) false catch Error true)]
+       (try ($runtime/signature + nil) false catch Fault true)
+       (try ($runtime/signature + ^^unexpected) false catch Fault true)]
     """, "[true true true]"
 
   test "direct type signatures describe inherited closed props and body schemas":
@@ -341,8 +341,8 @@ suite "language callable reflection":
       (type Item ^body [Int?])
       (let s ($runtime/signature Item))
       [s/minimum_positional
-       (try ($runtime/bind_shape s [] {}) false catch Error true)
-       (try (Item) false catch Error true)]
+       (try ($runtime/bind_shape s [] {}) false catch Fault true)
+       (try (Item) false catch Fault true)]
     """, "[1 true true]"
 
   test "new signatures omit implicit self and keep inherited ctor parameter contracts":
@@ -397,7 +397,7 @@ suite "language callable reflection":
       (let b ($runtime/bind_shape s [{^name "Ada"}] {}))
       (let args b/positional)
       [s/category s/minimum_positional s/result_known (/name args ...)
-       (try ($runtime/bind_shape s args {^extra 1}) false catch Error true)]
+       (try ($runtime/bind_shape s args {^extra 1}) false catch Fault true)]
     """, "[path 1 false \"Ada\" true]"
 
   test "enum variants expose exact payload slots without constructing values":
@@ -407,7 +407,7 @@ suite "language callable reflection":
       (let none ($runtime/signature Choice/None))
       [s/category s/minimum_positional s/positional/0/type none/minimum_positional
        (same? s/result Choice)
-       (try ($runtime/bind_shape s [1] {}) false catch Error true)]
+       (try ($runtime/bind_shape s [1] {}) false catch Fault true)]
     """, "[enum_variant 2 Int 0 true true]"
 
   test "custom Callable describes apply separately without inventing outer parameters":
@@ -419,7 +419,7 @@ suite "language callable reflection":
       (let s ($runtime/signature (Custom)))
       [called s/category s/shape_known s/apply_contract/positional/1/name
        s/apply_contract/result
-       (try ($runtime/bind_shape s [] {}) false catch Error true)]
+       (try ($runtime/bind_shape s [] {}) false catch Fault true)]
     """, "[0 custom false \"call\" Str true]"
 
   test "existing FFI metadata is readable without entering native code or exposing pointers":
@@ -552,5 +552,5 @@ suite "runtime/messages":
     messagesCheck """
       (type Plain ^props {^id Str})
       (let listed ($runtime/messages (Plain ^id "p")))
-      [listed/.size (try (listed .push 1) "pushed" catch Error "refused")]
+      [listed/.size (try (listed .push 1) "pushed" catch Fault "refused")]
     """, "[0 \"refused\"]"

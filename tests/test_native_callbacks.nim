@@ -100,7 +100,7 @@ suite "native synchronous callback boundary":
     """) == "true"
 
   test "panics and cancellation return from C before resuming control propagation":
-    expect GenePanic:
+    expect GeneError:
       discard callbackEval("(visit (fn [value] ($panic \"stop\")))")
     check callbacksReturned == 1
     let scope = callbackScope()
@@ -118,14 +118,14 @@ suite "native synchronous callback boundary":
         (let seen [])
         (let task (spawn (do (seen .push "ran") (channel .send 1))))
         (let refused (try
-          (visit (fn [value] (await task) true)) false catch Error true))
+          (visit (fn [value] (await task) true)) false catch Fault true))
         (let before (seen .size))
         (await task)
         [refused before seen])
     """) == "[true 0 [\"ran\"]]"
     check callbackEval("""
       (let channel ($channel))
-      (try (visit (fn [value] (channel .recv) true)) false catch Error true)
+      (try (visit (fn [value] (channel .recv) true)) false catch Fault true)
     """) == "true"
 
   test "callbacks from scheduled root-lane tasks use the same boundary":
@@ -139,12 +139,12 @@ suite "native synchronous callback boundary":
         (let channel ($channel))
         (let result (spawn ^lane root
           (visit (fn [value] (channel .recv) true))))
-        (try (await result) false catch Error
+        (try (await result) false catch Fault
           ($str/contains? $err/.message "synchronous native callback")))
     """) == "true"
     check callbackEval("""
       (let channel ($channel ^capacity 1)) (channel .send 1)
-      (try (visit (fn [value] (channel .send 2) true)) false catch Error true)
+      (try (visit (fn [value] (channel .send 2) true)) false catch Fault true)
     """) == "true"
 
   test "join, sleep and spawning are rejected inside a callback":
@@ -152,11 +152,11 @@ suite "native synchronous callback boundary":
     scope.define("pending", nativeNewAsyncTask())
     check run(compileSource("""
       [(try (visit (fn [value] (pending .join) true)) false
-         catch Error ($str/contains? $err/.message "synchronous native callback"))
+         catch Fault ($str/contains? $err/.message "synchronous native callback"))
        (try (visit (fn [value] ($sleep 0) true)) false
-         catch Error ($str/contains? $err/.message "synchronous native callback"))
+         catch Fault ($str/contains? $err/.message "synchronous native callback"))
        (try (visit (fn [value] (spawn true) true)) false
-         catch Error ($str/contains? $err/.message "synchronous native callback"))]
+         catch Fault ($str/contains? $err/.message "synchronous native callback"))]
     """), scope).print() == "[true true true]"
 
   test "re-entry and closing an executing callback fail safely":
@@ -253,11 +253,11 @@ suite "SQLite synchronous native callbacks":
       (let db (open ":memory:"))
       (try
         (let close_failed (try (visit_text_rows db "select 1"
-          (fn [names values] (db .Db:close) true)) false catch Error true))
+          (fn [names values] (db .Db:close) true)) false catch DbError true))
         (let raw_failed (try (visit_text_rows db "select 1"
-          (fn [names values] (db/handle .close) true)) false catch Error true))
+          (fn [names values] (db/handle .close) true)) false catch Fault true))
         (let query_failed (try (visit_text_rows db "select 1"
-          (fn [names values] (db .Db:query "select 2") true)) false catch Error true))
+          (fn [names values] (db .Db:query "select 2") true)) false catch DbError true))
         [close_failed raw_failed query_failed (db .Db:closed?)]
       ensure (db .Db:close))
     """) == "[true true true false]"

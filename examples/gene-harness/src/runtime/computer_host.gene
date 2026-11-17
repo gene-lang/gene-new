@@ -52,9 +52,8 @@
         (state/readers .set (- state/readers/.get 1))
         (if (== state/readers/.get 0) (close_grants state))))))
       (record/values/.get .put "started" true)
-    catch Error
-      (state/readers .set (- state/readers/.get 1))
-      (fail $err))))
+    unwind
+      (state/readers .set (- state/readers/.get 1)))))
   nil)
 
 (fn computer_state [handle]

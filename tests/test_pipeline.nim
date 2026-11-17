@@ -97,7 +97,7 @@ suite "pipeline — prepared lazy invocation":
     pipelineCheck """
       (fn gather [xs...] xs)
       (let bad 3)
-      (try ([] => gather bad...) catch Error $err/.message)
+      (try ([] => gather bad...) catch Fault $err/.message)
     """, "\"call splice expects a list, map, or node\""
 
   test "guarded sends prepare once and validate descriptors only on demand":
@@ -193,7 +193,7 @@ suite "pipeline — prepared lazy invocation":
       (try ((Bad) => + 1) catch TypeFault "bad conversion")
     """, "\"bad conversion\""
     pipelineCheck """
-      (try ({^a 1} => + 1) catch Error "pairs required")
+      (try ({^a 1} => + 1) catch Fault "pairs required")
     """, "\"pairs required\""
 
   test "lookahead does not repeat calls or lose the final take item":
@@ -371,20 +371,20 @@ suite "pipeline — prepared lazy invocation":
     pipelineCheck """
       (var pending nil)
       (set pending ([1] => (fn [x] (pending .next))))
-      [(try (pending .next) catch Error $err/.message) (pending .has_next)]
+      [(try (pending .next) catch Fault $err/.message) (pending .has_next)]
     """, "[\"a Stream cannot be pulled reentrantly\" false]"
 
   test "take detaches before a downstream failure on the limiting item":
     pipelineCheck """
       (let source ($to_stream [1 2 3]))
       (fn stop [x] (if (== x 2) (fail (RuntimeFault ^_msg "stop")) x))
-      (try (source -> $take 2 => stop -> $into []) catch Error nil)
+      (try (source -> $take 2 => stop -> $into []) catch Fault nil)
       (source .next)
     """, "3"
     pipelineCheck """
       (let source ($to_stream [1 2 3]))
       (fn stop [x] (fail (RuntimeFault ^_msg "stop")))
-      (try (source -> $take 2 => stop -> $into []) catch Error nil)
+      (try (source -> $take 2 => stop -> $into []) catch Fault nil)
       (source .has_next)
     """, "false"
 

@@ -41,7 +41,7 @@ proc failingIngress(args: openArray[Value]): Value {.nimcall.} =
   raise newException(GeneError, "native ingress handler failed")
 
 proc panickingIngress(args: openArray[Value]): Value {.nimcall.} =
-  raise newException(GenePanic, "native ingress handler panicked")
+  raise panicError("native ingress handler panicked")
 
 proc cancellingIngress(args: openArray[Value]): Value {.nimcall.} =
   raise newException(GeneCancel, "native ingress handler cancelled")
@@ -413,12 +413,12 @@ suite "native api — roots and trampoline":
     check run(compileSource("conn/backend"), scope).print() == "\"demo\""
     check run(compileSource("($head conn)"), scope).print() == "(type Conn)"
     check run(compileSource(
-      "(try (conn .put `handle \"junk\") catch Error $err/.message)"),
+      "(try (conn .put `handle \"junk\") catch Fault $err/.message)"),
       scope).print() ==
       "\"cannot set field 'handle' on Conn: native wrapper fields are " &
       "initializer-only\""
     check run(compileSource(
-      "(try (Conn ^handle \"junk\" ^backend \"x\") catch Error $err/.message)"),
+      "(try (Conn ^handle \"junk\" ^backend \"x\") catch Fault $err/.message)"),
       scope).print() ==
       "\"direct construction cannot construct Conn: it is a native wrapper; " &
       "construct it with (new Conn ...)\""
@@ -541,13 +541,13 @@ suite "native api — roots and trampoline":
       "(type Bag ^repr native_wrapper ^body [Any] ^props {^label Str} " &
       "  (ctor [] (self .push (open_handle))))"), scope)
     let failed = run(compileSource(
-      "(try (new Conn) catch Error $err/.message)"), scope)
+      "(try (new Conn) catch Fault $err/.message)"), scope)
     check "left required field 'label' unset" in failed.print()
     check releasedPointers == 1
 
     releasedPointers = 0
     let failedBody = run(compileSource(
-      "(try (new Bag) catch Error $err/.message)"), scope)
+      "(try (new Bag) catch Fault $err/.message)"), scope)
     check "left required field 'label' unset" in failedBody.print()
     check releasedPointers == 1
 

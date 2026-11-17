@@ -850,7 +850,7 @@ suite "threaded scheduler workers":
 
   test "worker-candidate task panics wake root awaiters":
     withGeneWorkerSetting "8":
-      expect GenePanic:
+      expect GeneError:
         discard run(compileSource(
           "(scope " &
           "  (var t (spawn (panic \"worker\"))) " &

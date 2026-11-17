@@ -24,9 +24,8 @@
     (if (!= state/format 1)
       (notification_error "unavailable" "Unsupported notification inbox format."))
     (Inbox ^backend backend ^state ($cell state) ^gate ($sync/gate) ^observer ($cell nil) ^progress ($cell {}))
-  catch Error
-    backend/.Store:close
-    (fail $err)))
+  unwind
+    backend/.Store:close))
 
 (fn close_inbox [inbox : Inbox]
   inbox/backend/.Store:close)

@@ -134,14 +134,14 @@ suite "runtime bound calls":
 
   test "fexprs and borrowed caller environments cannot become durable bindings":
     check evalBoundCall("(fn syntax! [] nil) " &
-      "(try ($runtime/bind_call syntax! []) false catch Error true)").print() == "true"
+      "(try ($runtime/bind_call syntax! []) false catch Fault true)").print() == "true"
     check evalBoundCall("(fn target [] 1) " &
       "(fn capture! [] ($runtime/bind_call target [])) " &
-      "(try (capture!) false catch Error true)").print() == "true"
+      "(try (capture!) false catch Fault true)").print() == "true"
 
   test "invalid policy fields fail at binding time":
     check evalBoundCall("(fn target [] 1) " &
       "[(try ($runtime/bind_call target [] ^policy {^timeout_ms -1}) " &
-      " false catch Error true) " &
+      " false catch Fault true) " &
       " (try ($runtime/bind_call target [] ^policy {^!allow_ffi}) " &
-      " false catch Error true)]").print() == "[true true]"
+      " false catch Fault true)]").print() == "[true true]"

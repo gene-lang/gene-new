@@ -223,7 +223,7 @@ union_sub/.cancel
   ^props {^payment_id Str})
 
 (fn flaky_ledger [event]
-  (fail (Error ^message "ledger unavailable")))
+  (fail (Error ^_msg "ledger unavailable")))
 
 (fn always_works [event]
   ($println $"   recorded ${event/payment_id}"))

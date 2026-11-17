@@ -340,7 +340,7 @@
   (let baseline_observer h/registry_observer)
   (try
     (reconcile_registry_candidate ^strict strict ^pending pending ^accept accept ^commit commit ^prepare prepare h)
-  catch Error
+  catch Throwable
     (if_yes (&& ($present? committed) committed/.get)
       (h/composer/bridge/published .set h/composition/.current_plugins)
       (publish_registry_snapshot h)
@@ -414,7 +414,7 @@
       (reconcile_cordis_harness ^strict true ^pending pending ^accept accept
         ^commit (fn [] (commit) (committed .set true)) ^committed committed ^prepare prepare h)
       {^published true ^state "applied"}
-    catch Error
+    catch Throwable
       (if committed/.get
         {^published true ^state "recovery_required" ^message $err/.message}
         (do

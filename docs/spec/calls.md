@@ -151,10 +151,9 @@ view; adaptation does not promise identity preservation or function variance.
 evaluation; `^errors []` admits none. `Error` opens the row, so `[E Error]`
 permits every ordinary error while retaining E as diagnostic information.
 An omitted row leaves errors unchecked at runtime. A rejecting row generates
-one `ContractViolation` retaining the original typed error as `cause`.
-Generated type failures and contract violations pass through outer rows;
-freshly constructed failures are ordinary regardless of their type name.
-Panic and cancellation retain their normal behavior. Returned
+one `ContractViolation` retaining the original typed error as `_cause`.
+Faults, `Panic` and `ContractViolation` among them, pass through every row
+whoever constructed them; cancellation stays a control transfer. Returned
 Streams and Tasks remain values with their own deferred contracts. The callable
 error row does not apply to later consumption or execution of those values.
 

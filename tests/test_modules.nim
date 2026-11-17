@@ -623,7 +623,7 @@ suite "modules — file imports":
     check runProgram("(let e (env ^imports [\"./env_macro_mid\"])) " &
       "(eval (quote (twice 3)) ^in e)").print() == "6"
     check runProgram("(let e (env ^imports [\"./env_macros\"])) " &
-      "(try (eval (quote (secret)) ^in e) catch Error \"private\")").print() == "\"private\""
+      "(try (eval (quote (secret)) ^in e) catch Fault \"private\")").print() == "\"private\""
     writeModule("env_macro_alias_mid.gene",
       "(import * : tools ^from \"./env_macros\" ^^export)")
     check runProgram("(let e (env ^imports [\"./env_macro_alias_mid\"])) " &
@@ -872,7 +872,7 @@ suite "modules — file imports":
       ("supervisor body", true, "(let inside (supervisor ^strategy stop {I} {U}))"),
       ("ns body", true, "(ns box {I} (fn get [] {U})) (let inside (box/get))"),
       ("top-level conditional", false, "(let inside (if true (then {I} {U})))"),
-      ("top-level try", false, "(let inside (try {I} {U} catch Error nil))"),
+      ("top-level try", false, "(let inside (try {I} {U} catch Fault nil))"),
       ("top-level do", false, "(do {I}) (let inside {U})"),
       ("after code", false, "(let x 1) {I} (let inside {U})")
     ]
@@ -885,7 +885,7 @@ suite "modules — file imports":
       ]:
         let program = header &
           code.replace("{I}", importForm).replace("{U}", use) &
-          " [inside (try " & use & " catch Error \"hidden\")]"
+          " [inside (try " & use & " catch Fault \"hidden\")]"
         results.add runProgram(program).print()
       check results[0] == results[1]
       check results[1] ==
@@ -913,7 +913,7 @@ suite "modules — file imports":
       "(import [Label] ^from \"./act_label\") " &
       "(import [Item] ^from \"./act_item\") " &
       "(fn label_one [i] (import_impl Label for Item ^from \"./act_one\") i/.Label:label) " &
-      "(fn sibling [i] (try i/.Label:label catch Error \"hidden\"))")
+      "(fn sibling [i] (try i/.Label:label catch Fault \"hidden\"))")
     let header = "(import [Label] ^from \"./act_label\") " &
       "(import [Item] ^from \"./act_item\") " &
       "(let item (Item)) "
@@ -931,7 +931,7 @@ suite "modules — file imports":
       "(let kept (escaping)) " &
       "[(one_fn) (two_fn) (one_fn) (two_fn) (kept) (with_two item/.Label:label) " &
       " (label_one item) (sibling item) " &
-      " (try item/.Label:label catch Error \"hidden\")]").print() ==
+      " (try item/.Label:label catch Fault \"hidden\")]").print() ==
       "[\"one\" \"two\" \"one\" \"two\" \"one\" \"two\" \"one\" \"hidden\" \"hidden\"]"
     # Impls never shadow: an identical pair already visible is a no-op, a
     # different provider of a visible pair is a conflict, and the conflict
@@ -939,7 +939,7 @@ suite "modules — file imports":
     check runProgram(header & one &
       " (fn same [] " & one & " item/.Label:label) " &
       "(fn other [] " & two & " item/.Label:label) " &
-      "[(same) (try (other) catch Error \"conflict\") item/.Label:label]").print() ==
+      "[(same) (try (other) catch Fault \"conflict\") item/.Label:label]").print() ==
       "[\"one\" \"conflict\" \"one\"]"
     var diagnostic = ""
     try:
@@ -1035,9 +1035,9 @@ suite "modules — file imports":
       "(var u (User ^name \"Ada\")) " &
       "(var local_box (LocalBox ^item u)) " &
       "[(local_accept u) local_box/item/name " &
-      " (try (accept u) catch Error false) " &
-      " (try (count [u]) catch Error false) " &
-      " (try (Box ^item u) catch Error false)]").print() ==
+      " (try (accept u) catch Fault false) " &
+      " (try (count [u]) catch Fault false) " &
+      " (try (Box ^item u) catch Fault false)]").print() ==
       "[true \"Ada\" false false false]"
 
   test "conflicting explicitly imported scoped impls are rejected":
@@ -1126,7 +1126,7 @@ suite "modules — file imports":
     proc observe(): string =
       run(compileSource(
         "[(warmed item) (later item) (op item) (checked item) (cl item) (pv item) " &
-        " (try item/.Render:render catch Error \"hidden\")]"), scope).print()
+        " (try item/.Render:render catch Fault \"hidden\")]"), scope).print()
     check observe() ==
       "[\"one\" \"one\" \"one\" \"one\" \"one\" \"one\" \"hidden\"]"
     let before = app.implActivationEpoch
@@ -1307,7 +1307,7 @@ suite "modules — file imports":
     var message = ""
     try:
       discard runProgram("(import [T] ^from \"./candidate_type\") " &
-        "(try (import [Render] ^from \"./missing_protocol\") catch Error nil) " &
+        "(try (import [Render] ^from \"./missing_protocol\") catch Fault nil) " &
         "((T) .render)")
     except GeneError as error:
       message = error.msg
@@ -2012,9 +2012,9 @@ suite "modules — the sandbox loader (design §D5)":
     check app.moduleCompileArtifactCount() == beforeArtifacts
     check app.canonicalImplCount() == beforeImpls
     check run(compileSource(
-      "(try (generation .module) false catch Error true)"), scope).boolVal
+      "(try (generation .module) false catch Fault true)"), scope).boolVal
     check run(compileSource(
-      "(try (tx .commit) false catch Error true)"), scope).boolVal
+      "(try (tx .commit) false catch Fault true)"), scope).boolVal
 
   test "one sandbox transaction commits several generations atomically":
     let root = modDir / "generation_batch"
@@ -2062,7 +2062,7 @@ suite "modules — the sandbox loader (design §D5)":
       scope)
     discard app.loadFileModule(root / "live.gene")
     check run(compileSource(
-      "(try (tx .commit) false catch Error true)"), scope).boolVal
+      "(try (tx .commit) false catch Fault true)"), scope).boolVal
     discard run(compileSource("(tx .discard)"), scope)
 
   test "sandbox generation policy bounds initialization and escaped calls":
@@ -2199,7 +2199,7 @@ suite "modules — the sandbox loader (design §D5)":
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"native.gene\" ^grants [\"ffi\"] ^shared [] " &
       "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}}) " &
-      "  \"missing\" catch Error $err/.message)) " &
+      "  \"missing\" catch Fault $err/.message)) " &
       "(tx .discard) message"), scope).strVal
     check "disables FFI" in message
 

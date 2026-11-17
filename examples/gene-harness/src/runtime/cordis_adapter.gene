@@ -61,7 +61,7 @@
       (reconcile_composition ^strict true ^allow_pending pending ^accept accept ^commit commit
         self plugins entries)
     catch RecoveryRequired (fail $err)
-    catch Error
+    catch Throwable
       (record/base_owner .set previous_base)
       (record/policies .set previous_policies)
       (set record/specs previous_specs)
@@ -516,7 +516,7 @@
   catch RecoveryRequired
     (set snapshot record/loader/.inspect)
     (set retirement_failure $err)
-  catch Error
+  catch Throwable
     (record/projections .set previous_projections)
     (record/base_owner .set previous_base)
     (record/dispose_projections .set ($thaw #[]))

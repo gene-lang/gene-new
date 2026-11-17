@@ -64,12 +64,13 @@ proc geneEvalSource(src: string): GeneResult =
     let value = run(chunk, scope)
     result.status = 0
     result.text = value.print()
-  except GenePanic as e:
-    result.status = 2
-    result.text = e.msg
   except GeneError as e:
-    result.status = 1
-    result.text = errorDiagnosticMessage(e, scope)
+    if e.isPanicError:
+      result.status = 2
+      result.text = e.msg
+    else:
+      result.status = 1
+      result.text = errorDiagnosticMessage(e, scope)
   except CatchableError as e:
     result.status = 1
     result.text = e.msg

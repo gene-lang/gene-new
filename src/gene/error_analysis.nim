@@ -83,11 +83,6 @@ type
     dispatchContract: bool
     dispatchTypeDepth: int
     boundMessage: bool
-    taskId: string
-    taskPrior: bool
-    taskFresh: bool
-    taskIsolated: bool
-    streamTaskSafe: bool
     returnOrigins: seq[ErrorProofDependency]
 
   ErrorBinding = object
@@ -128,8 +123,6 @@ type
   AbstractState = object
     stack: seq[AbstractValue]
     bindings: Table[string, ErrorBinding]
-    mayConsumed: HashSet[string]
-    knownTasks: HashSet[string]
     initialized: HashSet[string]
     outerWrites: Table[string, ErrorBinding]
 
@@ -146,9 +139,6 @@ type
     normalValue: AbstractValue
     normalExit: bool
     neverReturns: bool
-    mayConsumeTasks: bool
-    taskCode: bool
-    preservedTask: string
 
   ErrorAnalysisData = object
     root*: Chunk
@@ -542,11 +532,9 @@ proc valueKey(value: AbstractValue): string =
   result = $value.kind & ":" & value.name & ":" & value.typ.print() &
     ":" & $value.contractKnown & ":" & describeErrors(value.contract) &
     ":" & $value.deferredKnown & ":" & describeErrors(value.deferred) &
-    ":" & $value.caught & ":" & describeErrors(value.caughtErrors) & ":" & value.taskId
+    ":" & $value.caught & ":" & describeErrors(value.caughtErrors)
   result.add ":target=" & value.target.print()
   result.add ":bound-message=" & $value.boundMessage
-  result.add ":task-state=" & $value.taskPrior & ":" & $value.taskFresh
-  result.add ":task-code=" & $value.taskIsolated & ":" & $value.streamTaskSafe
   if value.fn != nil: result.add ":fn=" & value.fn.summary.identity
   if value.nominal != nil: result.add ":type=" & value.nominal.info.identity
   if value.hasLiteral: result.add ":literal=" & value.literal.print()
@@ -557,10 +545,6 @@ proc mergeValue(a, b: AbstractValue): AbstractValue =
   if valueKey(a) == valueKey(b): return a
   if a == nil or b == nil or a.kind != b.kind: return unknownValue()
   result = copyValue(a)
-  result.taskPrior = a.taskPrior or b.taskPrior
-  result.taskFresh = a.taskFresh and b.taskFresh
-  result.taskIsolated = a.taskIsolated and b.taskIsolated
-  result.streamTaskSafe = a.streamTaskSafe and b.streamTaskSafe
   result.boundMessage = a.boundMessage or b.boundMessage
   proc addOrigin(origins: var seq[ErrorProofDependency], origin: ErrorProofDependency) =
     for existing in origins:
@@ -592,7 +576,6 @@ proc mergeValue(a, b: AbstractValue): AbstractValue =
   result.deferred.mergeErrors(b.deferred)
   result.caught = a.caught and b.caught
   result.caughtErrors.mergeErrors(b.caughtErrors)
-  if a.taskId != b.taskId: result.taskId = ""
   if a.target.bits != b.target.bits: result.target = NIL
 
 proc mergeState(target: var AbstractState, source: AbstractState): bool =
@@ -635,14 +618,6 @@ proc mergeState(target: var AbstractState, source: AbstractState): bool =
     if not target.outerWrites.hasKey(name) or valueKey(binding.value) != valueKey(before.value):
       target.outerWrites[name] = binding
       result = true
-  let mayConsumed = target.mayConsumed + source.mayConsumed
-  if mayConsumed != target.mayConsumed:
-    target.mayConsumed = mayConsumed
-    result = true
-  let knownTasks = target.knownTasks + source.knownTasks
-  if knownTasks != target.knownTasks:
-    target.knownTasks = knownTasks
-    result = true
   var initialized = initHashSet[string]()
   for name in target.initialized:
     if name in source.initialized: initialized.incl name
@@ -663,8 +638,7 @@ proc literalInt64(value: AbstractValue, integer: var int64): bool =
 
 proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnvironment,
                   function: AnalyzedFunction = nil, depth = 0,
-                  permitted = ErrorEffectSummary(open: true),
-                  initialState: ptr AbstractState = nil): BodyErrors
+                  permitted = ErrorEffectSummary(open: true)): BodyErrors
 
 proc addErrorDependency(analysis: ErrorAnalysis, dependency: ErrorProofDependency,
                          function: AnalyzedFunction) =
@@ -674,8 +648,6 @@ proc addErrorDependency(analysis: ErrorAnalysis, dependency: ErrorProofDependenc
       if existing.loc == dependency.loc and equal(existing.target, dependency.target) and
           existing.returnDepth == dependency.returnDepth and existing.returnKind == dependency.returnKind and
           existing.returnKindOnly == dependency.returnKindOnly and
-          existing.returnTaskFresh == dependency.returnTaskFresh and
-          existing.returnTaskIsolated == dependency.returnTaskIsolated and
           existing.returnNativeMetadata == dependency.returnNativeMetadata and
           existing.returnTypeIdentity == dependency.returnTypeIdentity and
           existing.returnTypeContract == dependency.returnTypeContract and
@@ -750,8 +722,6 @@ proc retainReturnedErrors(analysis: ErrorAnalysis, value: AbstractValue,
         break
     if dependency.returnDepth == 0: dependency.returnKind = ""
     dependency.returnKindOnly = kindOnly
-    dependency.returnTaskFresh = kind == "task" and value.taskFresh
-    dependency.returnTaskIsolated = kind == "task" and value.taskIsolated
     dependency.permitted = analysis.permitted
     dependency.loc = loc
     analysis.addErrorDependency(dependency, function)
@@ -761,7 +731,6 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
                 function: AnalyzedFunction, loc: SourceLoc,
                 constructorCall = false, namedCount = 0): BodyErrors =
   result.value = unknownValue()
-  result.mayConsumeTasks = true
   if callee == nil:
     result.errors.open = true
     return
@@ -804,9 +773,6 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
         of avFunction, avMessage, avNative, avType: discard
         of avTask, avStream: result.value.resultType = NIL
         else: result.value = unknownValue()
-        # Inert-stream facts are local analysis facts, not part of a factory's
-        # replaceable return contract. Consuming an inferred stream may run code.
-        result.value.streamTaskSafe = false
         # A name inside the producer's activation is not a name in its caller.
         # Retain the producer/result path instead of reusing that local target.
         result.value.target = NIL
@@ -822,20 +788,12 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
           elif result.value.kind in {avTask, avStream}:
             result.value.deferredKnown = contract.errorsKnown
             result.value.deferred = contract.errors
-            if result.value.kind == avTask: result.value.taskFresh = contract.taskFresh
-            if result.value.kind == avTask: result.value.taskIsolated = contract.taskIsolated
       else:
         result.value = analysis.valueFromType(target.summary.resultType, target.environment)
       if function != nil and function.summary.origins.len < 128:
         let origin = ErrorOrigin(declaration: function.summary.identity,
                                   callee: target.summary.identity, loc: loc)
         if origin notin function.summary.origins: function.summary.origins.add origin
-      let freshTask = result.value.kind == avTask and result.value.taskFresh
-      let site = loc.sourceName & ":" & $loc.line & ":" & $loc.col
-      if freshTask:
-        result.value.taskId = "call-task:" & site
-      elif result.value.kind == avTask:
-        result.value.taskId = ""
     elif callee.resultType.kind != vkNil:
       result.value = analysis.valueFromType(callee.resultType, environment)
     # A returned callable's explicit result annotation can also change when
@@ -850,7 +808,6 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
       result.value.returnOrigins.add next
     return
   if callee.kind == avType:
-    result.mayConsumeTasks = constructorCall
     if callee.nominal != nil:
       if constructorCall:
         var owner = callee.nominal
@@ -876,7 +833,6 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     result.errors.open = true
     return
   let native = builtinNativeErrorMetadata(callee.name)
-  if native.identity.len > 0: result.mayConsumeTasks = false
   if native.identity.len > 0 and not native.nativeErrorAcceptsCall(args.len, namedCount):
     result.errors = oneError("RuntimeFault")
     return
@@ -955,7 +911,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
       result.value = copyValue(args[0])
     elif args.len > 0 and args[0].kind in {avList, avRange}:
       result.value = AbstractValue(kind: avStream, deferredKnown: true,
-                                    resultType: args[0].resultType, streamTaskSafe: true)
+                                    resultType: args[0].resultType)
     else:
       result.errors.open = true
       result.value = AbstractValue(kind: avStream)
@@ -994,8 +950,6 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
           returnKind: "callable")
     else:
       result.errors = effects
-      result.mayConsumeTasks = callback.mayConsumeTasks or
-        (args[0].kind == avStream and not args[0].streamTaskSafe)
       result.value = if name in ["each", "stream/each"]: scalarValue("Nil")
                      else: AbstractValue(kind: args[0].kind,
                        typ: newSym(if args[0].kind == avMap: "PropMap" else: "List"),
@@ -1010,7 +964,6 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     if args[0].kind == avStream:
       analysis.retainReturnedErrors(args[0], "stream", function, loc)
       result.errors = args[0].deferredRow()
-      result.mayConsumeTasks = not args[0].streamTaskSafe
     elif args[0].kind notin {avList, avRange}:
       result.errors.open = true
       return
@@ -1044,7 +997,7 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     if namedCount > 0 or args[0].typ.kind != vkSymbol or args[0].typ.symVal != "Str":
       result.errors.mergeErrors(oneError("RuntimeFault"))
     result.value = AbstractValue(kind: avStream, deferredKnown: true,
-                                  resultType: newSym("Any"), streamTaskSafe: true)
+                                  resultType: newSym("Any"))
   of "parse_int":
     result.errors = oneError("ParseError")
     result.value = scalarValue("Int")
@@ -1055,7 +1008,6 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     result.errors = oneError("RuntimeFault") # immutable/shared storage or escaping CallerEnv
     result.value = copyValue(args[1])
   of "Stream/next", "Stream/peek", "Stream/has_next", "Stream/close":
-    result.mayConsumeTasks = not args[0].streamTaskSafe
     analysis.retainReturnedErrors(args[0], "stream", function, loc)
     result.errors = args[0].deferredRow()
     if name in ["Stream/next", "Stream/peek"]:
@@ -1070,13 +1022,11 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
   of "Stream/try_next":
     # Producer failures are returned in TryNext/error, including a reentrant
     # pull; they do not escape the invocation as ordinary errors.
-    result.mayConsumeTasks = not args[0].streamTaskSafe
+    discard
   of "Task/join":
     # TaskOutcome contains producer failures, but an already-awaited task is
     # an invalid invocation. Joining itself does not consume the await result.
     result.errors = oneError("RuntimeFault")
-    result.mayConsumeTasks = true
-    if not args[0].taskPrior: result.preservedTask = args[0].taskId
   else:
     result.errors.open = true
 
@@ -1086,16 +1036,12 @@ proc selectValue(analysis: ErrorAnalysis, target: AbstractValue, selector: Value
   if target == nil: return
   if selector.kind != vkNode or selector.head.kind != vkSymbol or selector.head.symVal != "Path":
     result.errors.open = true
-    result.mayConsumeTasks = true
-    result.taskCode = true
     return
   var current = target
   for segment in selector.body:
     if segment.kind == vkString and
         (segment.strVal.startsWith(".") or segment.strVal.startsWith("?.")):
       result.errors.open = true
-      result.mayConsumeTasks = true
-      result.taskCode = true
       current = unknownValue()
       continue
     if segment.kind notin {vkSymbol, vkString, vkInt}:
@@ -1117,15 +1063,11 @@ proc selectValue(analysis: ErrorAnalysis, target: AbstractValue, selector: Value
           current.kind = avNative
         elif key == "Error": current = AbstractValue(kind: avProtocol, name: "Error")
     elif current.kind == avStream:
-      result.mayConsumeTasks = result.mayConsumeTasks or not current.streamTaskSafe
-      result.taskCode = result.taskCode or not current.streamTaskSafe
       result.errors.mergeErrors(current.deferredRow())
       current = AbstractValue(kind: avStream, deferredKnown: true)
     elif current.kind == avUnknown:
       # Dynamic selectors may execute a selector stage or consume a Stream.
       result.errors.open = true
-      result.mayConsumeTasks = true
-      result.taskCode = true
       current = unknownValue()
     elif current.nominal != nil and current.nominal.fields.hasKey(key):
       current = analysis.valueFromType(current.nominal.fields[key], environment)
@@ -1391,8 +1333,7 @@ proc predeclare(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviron
 
 proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnvironment,
                   function: AnalyzedFunction = nil, depth = 0,
-                  permitted = ErrorEffectSummary(open: true),
-                  initialState: ptr AbstractState = nil): BodyErrors =
+                  permitted = ErrorEffectSummary(open: true)): BodyErrors =
   result.value = unknownValue()
   if chunk == nil: return
   if function == nil: chunk.errorsMode = analysis.root.errorsMode
@@ -1427,9 +1368,6 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       discard openInlineLoops.pop()
   var work = @[0]
   states[0] = AbstractState(bindings: environment.values)
-  if initialState != nil:
-    states[0].mayConsumed = initialState[].mayConsumed
-    states[0].knownTasks = initialState[].knownTasks
   var errors: ErrorEffectSummary
   var returns: AbstractValue
   var returnedState: AbstractState
@@ -1454,28 +1392,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       exceptional[] = snapshot
     else:
       discard exceptional[].mergeState(snapshot)
-  proc freshTask(state: AbstractState, value: AbstractValue): bool =
-    value != nil and value.taskId.len > 0 and not value.taskPrior and
-      value.taskId in state.knownTasks and value.taskId notin state.mayConsumed
-  proc allocateTask(state: var AbstractState, value: AbstractValue) =
-    let id = value.taskId
-    if id.len == 0: return
-    if id in state.knownTasks:
-      # One source site can allocate repeatedly. Old aliases refer to earlier
-      # instances; a fresh allocation must not make those aliases fresh again.
-      for item in state.stack.mitems:
-        if item != nil and item.taskId == id:
-          item = copyValue(item)
-          item.taskPrior = true
-      for _, binding in state.bindings.mpairs:
-        if binding.value != nil and binding.value.taskId == id:
-          binding.value = copyValue(binding.value)
-          binding.value.taskPrior = true
-    state.knownTasks.incl id
-    state.mayConsumed.excl id
   proc adoptFlow(state: var AbstractState, source: AbstractState) =
-    state.mayConsumed = source.mayConsumed
-    state.knownTasks = source.knownTasks
     for name, binding in state.bindings.mpairs:
       if source.bindings.hasKey(name): binding = source.bindings[name]
     for name, binding in source.outerWrites:
@@ -1528,10 +1445,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     elif states[ip].mergeState(state):
       work.add ip
   proc finish(value: AbstractValue, state: AbstractState, explicit = false) =
-    var returned = value
-    if value != nil and value.kind == avTask:
-      returned = copyValue(value)
-      returned.taskFresh = state.freshTask(value)
+    let returned = value
     if not hasReturn:
       returns = returned
       returnedState = state
@@ -1588,15 +1502,8 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         value
     template absorb(body: BodyErrors) =
       errors.mergeErrors(body.errors)
-      result.taskCode = result.taskCode or body.taskCode
       if body.finalState != nil:
         state.adoptFlow(body.finalState[])
-      else:
-        if body.mayConsumeTasks:
-          for task in state.knownTasks:
-            if task != body.preservedTask: state.mayConsumed.incl task
-        if body.value != nil and body.value.kind == avTask and body.value.taskFresh:
-          state.allocateTask(body.value)
       if body.exceptionState != nil: observeException(body.exceptionState[])
     # `/`, `//`, `==` and `!=` compile to the fast-operator opcodes, but unlike
     # `+ - * <` they are not "numeric operands or an open error": equality
@@ -1612,7 +1519,6 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       let call = analysis.callValue(callee, args, environment, function, loc,
                                      constructorCall = false, namedCount = 0)
       absorb(call)
-      result.taskCode = true
       observeException(state) # invocation can also produce a generated failure
       if call.neverReturns: next = false
       else: push call.value
@@ -1669,15 +1575,11 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     of opRuntimePipelineStage:
       discard state.pop()
       errors.open = true
-      result.taskCode = true
-      for task in state.knownTasks: state.mayConsumed.incl task
       observeException(state)
       push unknownValue()
     of opInvokeRuntimeMacro, opExecuteRuntimeMacro:
       if inst.op == opExecuteRuntimeMacro: discard state.pop()
       errors.open = true
-      result.taskCode = true
-      for task in state.knownTasks: state.mayConsumed.incl task
       let context = chunk.runtimeMacroCalls[inst.intArg].context.macros
       if context != nil:
         for name in context.hiddenNames:
@@ -1823,7 +1725,6 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
                                      constructorCall = inst.op == opNew,
                                      namedCount = inst.names.len)
       absorb(call)
-      result.taskCode = true
       observeException(state) # invocation can also produce a generated failure
       if call.neverReturns: next = false
       else: push call.value
@@ -1838,7 +1739,6 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         errors.mergeErrors(oneError("RuntimeFault"))
       let call = analysis.callValue(callee, args, environment, function, loc)
       absorb(call)
-      result.taskCode = true
       observeException(state)
       if call.neverReturns: next = false
       else: push call.value
@@ -1898,11 +1798,6 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       let value = analysis.valueFromType(chunk.constants[inst.intArg], environment)
       value.caught = original.caught
       value.caughtErrors = original.caughtErrors
-      value.taskId = original.taskId
-      value.taskPrior = original.taskPrior
-      value.taskFresh = original.taskFresh
-      value.taskIsolated = original.taskIsolated
-      value.streamTaskSafe = original.streamTaskSafe
       value.returnOrigins = original.returnOrigins
       if original.caught: value.kind = avNode
       push value
@@ -1934,9 +1829,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       for clause in trial.catches:
         analysis.retainTypeReferences(clause.errorType, environment, function, loc, permitted)
         protectedBy.mergeErrors(analysis.rowFromTypes([clause.errorType], environment))
-      let body = analysis.analyzeBody(trial.body, bodyEnvironment, function, depth + 1, protectedBy,
-                                      initialState = addr state)
-      result.taskCode = result.taskCode or body.taskCode
+      let body = analysis.analyzeBody(trial.body, bodyEnvironment, function, depth + 1, protectedBy)
       var escaping = body.errors
       var recoveries: ErrorEffectSummary
       var value = body.normalValue
@@ -1971,9 +1864,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         let recoveryEnv = newErrorEnvironment(environment, environment.source, environment.prefix)
         recoveryEnv.values = recoveryState.bindings
         recoveryEnv.bindValue("$err", AbstractValue(kind: avNode, caught: true, caughtErrors: caught))
-        let recovery = analysis.analyzeBody(clause.body, recoveryEnv, function, depth + 1, permitted,
-                                            initialState = addr recoveryState)
-        result.taskCode = result.taskCode or recovery.taskCode
+        let recovery = analysis.analyzeBody(clause.body, recoveryEnv, function, depth + 1, permitted)
         recoveries.mergeErrors(recovery.errors)
         if recovery.normalExit: addExit(recovery.normalState)
         mergeExit(breakState, recovery.breakState)
@@ -1999,8 +1890,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
           discard cleanupState.mergeState(body.exceptionState[])
         let cleanupEnv = newErrorEnvironment(environment, environment.source, environment.prefix)
         cleanupEnv.values = cleanupState.bindings
-        let cleanup = analysis.analyzeBody(trial.ensureBody, cleanupEnv, function, depth + 1, permitted,
-                                           initialState = addr cleanupState)
+        let cleanup = analysis.analyzeBody(trial.ensureBody, cleanupEnv, function, depth + 1, permitted)
         var normalCleanup = cleanup
         normalCleanup.finalState = cleanup.normalState
         absorb(normalCleanup)
@@ -2027,15 +1917,13 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       bodyEnvironment.values = state.bindings
       var nestedState = state
       let bodyChunk = chunk.subchunks[inst.intArg]
-      let body = analysis.analyzeBody(bodyChunk, bodyEnvironment, function, depth + 1, permitted,
-                                      initialState = addr nestedState)
+      let body = analysis.analyzeBody(bodyChunk, bodyEnvironment, function, depth + 1, permitted)
       errors.mergeErrors(body.errors)
       # Scope exit waits without consuming child outcomes. Scheduler state
       # failures (for example, deadlock) belong to the wait operation; a
       # child's deferred row belongs to await, not to this implicit wait.
       if inst.op != opBlockScope:
         errors.mergeErrors(oneError("RuntimeFault"))
-      result.taskCode = result.taskCode or body.taskCode
       if body.normalState != nil:
         state.adoptScopedFlow(body.normalState[], bodyChunk)
       if body.exceptionState != nil: observeException(body.exceptionState[])
@@ -2049,36 +1937,12 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       let bodyEnvironment = newErrorEnvironment(environment, environment.source, environment.prefix)
       bodyEnvironment.values = state.bindings
       let body = analysis.analyzeBody(chunk.subchunks[inst.intArg], bodyEnvironment, function, depth + 1)
-      result.taskCode = result.taskCode or body.taskCode
-      if body.taskCode:
-        for task in state.knownTasks: state.mayConsumed.incl task
-      let id = "spawn:" & environment.prefix & ":" & chunk.sourceName & ":" &
-        $loc.line & ":" & $loc.col & ":" & $ip
-      let task = AbstractValue(kind: avTask, deferredKnown: true, deferred: body.errors,
-                                resultType: body.value.typ, taskId: id, taskFresh: true,
-                                taskIsolated: not body.taskCode)
-      state.allocateTask(task)
-      push task
+      push AbstractValue(kind: avTask, deferredKnown: true, deferred: body.errors,
+                         resultType: body.value.typ)
     of opAwait:
-      let task = copyValue(state.pop())
-      result.taskCode = true
-      task.taskFresh = state.freshTask(task)
-      let proof = copyValue(task)
-      proof.taskIsolated = false
-      if task.taskIsolated:
-        for other in state.knownTasks:
-          if other != task.taskId and other notin state.mayConsumed:
-            proof.taskIsolated = true
-      analysis.retainReturnedErrors(proof, "task", function, loc)
+      let task = state.pop()
+      analysis.retainReturnedErrors(task, "task", function, loc)
       errors.mergeErrors(task.deferredRow())
-      if not task.taskFresh: errors.mergeErrors(oneError("RuntimeFault"))
-      if not task.taskIsolated:
-        for other in state.knownTasks:
-          if other != task.taskId: state.mayConsumed.incl other
-      if task.taskId.len > 0:
-        state.mayConsumed.incl task.taskId
-      # Await consumes an error payload before propagating it. A matching catch
-      # therefore inherits consumption, unlike failures preceding this await.
       observeException(state)
       push analysis.valueFromType(task.resultType, environment)
     of opMakeIterator:
@@ -2088,24 +1952,18 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         push value
       elif value.kind in {avList, avRange}:
         push AbstractValue(kind: avStream, deferredKnown: true, resultType: value.resultType,
-                            streamTaskSafe: true)
+                            )
       else:
         errors.open = true
         push AbstractValue(kind: avStream)
     of opIteratorHasNext, opIteratorNext, opIteratorClose:
       let value = state.pop()
-      if not value.streamTaskSafe:
-        result.taskCode = true
-        for task in state.knownTasks: state.mayConsumed.incl task
       errors.mergeErrors(value.deferredRow())
       push (if inst.op == opIteratorNext: analysis.valueFromType(value.resultType, environment)
             elif inst.op == opIteratorHasNext: scalarValue("Bool") else: scalarValue("Nil"))
     of opForEach:
       let iterable = state.pop()
       if iterable.kind == avStream:
-        if not iterable.streamTaskSafe:
-          result.taskCode = true
-          for task in state.knownTasks: state.mayConsumed.incl task
         analysis.retainReturnedErrors(iterable, "stream", function, loc)
         errors.mergeErrors(iterable.deferredRow())
       elif iterable.kind notin {avList, avRange}: errors.open = true
@@ -2115,9 +1973,8 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         let loopEnv = newErrorEnvironment(environment, environment.source, environment.prefix)
         loopEnv.values = loopState.bindings
         let body = analysis.analyzeBody(chunk.forLoops[inst.intArg].body, loopEnv,
-          function, depth + 1, permitted, initialState = addr loopState)
+          function, depth + 1, permitted)
         errors.mergeErrors(body.errors)
-        result.taskCode = result.taskCode or body.taskCode
         if body.exceptionState != nil: observeException(body.exceptionState[])
         if body.returnState != nil:
           finish(body.returnValue, scopedExit(body.returnState,
@@ -2172,12 +2029,10 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       var value: AbstractValue
       var exhaustive = matched.elseBody != nil
       var exitState: ref AbstractState
-      var branchTaskCode = false
       proc analyzeBranch(branch: Chunk): AbstractValue =
         let branchEnv = newErrorEnvironment(environment, environment.source, environment.prefix)
         branchEnv.values = state.bindings
-        let body = analysis.analyzeBody(branch, branchEnv, function, depth + 1, permitted,
-                                        initialState = addr state)
+        let body = analysis.analyzeBody(branch, branchEnv, function, depth + 1, permitted)
         errors.mergeErrors(body.errors)
         result = body.normalValue
         if body.exceptionState != nil: observeException(body.exceptionState[])
@@ -2191,7 +2046,6 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
             exitState[] = scopedExit(body.normalState, branch, state)[]
           else:
             discard exitState[].mergeState(scopedExit(body.normalState, branch, state)[])
-        branchTaskCode = branchTaskCode or body.taskCode
       for clause in matched.clauses:
         if clause.pattern.kind == vkSymbol: exhaustive = true
         let branchValue = analyzeBranch(clause.body)
@@ -2202,7 +2056,6 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       if not exhaustive:
         errors.mergeErrors(oneError("MatchFault"))
         observeException(state)
-      result.taskCode = result.taskCode or branchTaskCode
       if exitState != nil: state.adoptFlow(exitState[])
       else: next = false
       push (if value == nil: unknownValue() else: value)
@@ -2263,8 +2116,6 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       # An unsupported operation is an ordinary-error possibility, never a
       # successful empty proof. Warning and strict modes share this fallback.
       errors.open = true
-      result.taskCode = true
-      for task in state.knownTasks: state.mayConsumed.incl task
       observeException(state)
       state.stack = @[unknownValue()]
     if state.stack.len > 256:
@@ -2331,8 +2182,6 @@ proc inferredReturnContracts(analysis: ErrorAnalysis, value: AbstractValue,
       contract.kind = if current.kind == avTask: "task" else: "stream"
       contract.errorsKnown = current.deferredKnown
       contract.errors = current.deferredRow()
-      if current.kind == avTask: contract.taskFresh = current.taskFresh
-      if current.kind == avTask: contract.taskIsolated = current.taskIsolated
     else:
       break
     result.add contract
@@ -2356,8 +2205,6 @@ proc sameReturnContracts(a, b: seq[ErrorReturnContract]): bool =
         not equal(a[i].valueType, b[i].valueType) or
         a[i].nativeMetadata != b[i].nativeMetadata or a[i].typeIdentity != b[i].typeIdentity or
         a[i].typeContract != b[i].typeContract or a[i].messageIdentity != b[i].messageIdentity: return false
-    if a[i].taskFresh != b[i].taskFresh: return false
-    if a[i].taskIsolated != b[i].taskIsolated: return false
   true
 
 proc retainInferredReturnSources(analysis: ErrorAnalysis, owner: AnalyzedFunction,
@@ -2400,9 +2247,6 @@ proc retainInferredReturnSources(analysis: ErrorAnalysis, owner: AnalyzedFunctio
           dependency.returnTypeContract = contracts[0].typeContract
       elif kind == "message" and value.fn != nil:
         dependency.returnMessageIdentity = value.fn.summary.identity & "@" & value.fn.summary.version
-      elif kind == "task":
-        dependency.returnTaskFresh = value.taskFresh
-        dependency.returnTaskIsolated = value.taskIsolated
       add(dependency)
     return # the producer's metadata retains its own deeper dependencies
   if value.target.kind != vkNil:
@@ -2721,8 +2565,6 @@ proc errorInterfaceKey*(iface: CompileNamespaceInterface): string =
       result.part(contract.typeIdentity)
       result.part(contract.typeContract)
       result.part(contract.messageIdentity)
-      result.part($contract.taskFresh)
-      result.part($contract.taskIsolated)
   result.part($iface.initializationErrorsKnown)
   result.part(rowKey(iface.initializationErrors))
   result.part($iface.exportedImplsKnown)

@@ -185,10 +185,9 @@ rejects `warn` and `strict` explicitly instead of claiming an unchecked proof.
 
 ## Open error rows with Error
 
-`Error` is the top of the ordinary error contract: it permits every admitted
-ordinary error value with Error conformance. A row containing `Error` is open;
-a row without it is closed. Generated failures are catchable Error values too,
-but their provenance exempts them from these ordinary-error row checks.
+`Error` is the top of the ordinary error contract: it permits every value of
+the Error branch. A row containing `Error` is open; a row without it is closed.
+Faults are never checked by rows: they pass through every row unchanged.
 
 | Row | Meaning |
 | --- | --- |
@@ -217,8 +216,9 @@ never run.
 
 An open row does not force callers to catch every named error separately.
 A caller can catch `SomeError` and declare `[Error]` for the rest, catch all
-errors, or simply propagate the full row. Panic and cancellation remain
-separate control paths; `Error` does not make them ordinarily catchable.
+errors, or simply propagate the full row. Faults, `Panic` among them, and
+cancellation are outside `Error`: an open row does not cover them, and
+`catch Error` does not catch them.
 
 ## Compare coverage separately from diagnostic information
 
@@ -468,9 +468,9 @@ from every possible failure; it enforces the chosen error contract.
 Bare `Callable` contributes `Error`. `catch Error` handles every ordinary
 error from invocation, and the replacement `fail` contributes only
 `IntegrationError`. The caller of `call_plugin` must catch or declare that
-type. This broad catch deliberately includes diagnostics delivered through
-Gene's ordinary error channel; panic and cancellation retain their separate
-control behavior.
+type. This broad catch covers every Error the plugin raises. A plugin's Fault
+passes it by; a boundary that must also contain defects writes
+`catch Throwable` and keeps the defect as `_cause`.
 
 **Admit the callable through an explicit runtime contract.** The existing
 checked view syntax can express that assertion:
@@ -585,30 +585,22 @@ Requiring consumers to inspect those values, or to observe every child failure,
 is a separate policy and is not guaranteed by catch-or-declare checking.
 
 The VM consumes a task's result on its first `await`, even when that await
-raises its producer error. A later await through any alias raises `RuntimeFault`.
-Concurrent awaits claim that result atomically; exactly one receives its value
-or failure, and the others receive the already-consumed state error.
-`(Task T E)` describes result and producer errors; it does not promise an
-unconsumed handle. Awaiting a parameter or other task of unknown state therefore
-also requires handling or declaring `RuntimeFault`:
+raises its producer error. A later await through any alias raises a
+`RuntimeFault`. Concurrent awaits claim that result atomically; exactly one
+receives its value or failure, and the others receive the already-consumed
+`RuntimeFault`. A second await is a defect, so it adds no obligation: awaiting a
+parameter or another task of unknown state requires handling only the task's own
+row, and the checker tracks no consumption state.
 
 ```gene
-(fn recover [task : (Task Int ConfigError)] : Int ^errors [RuntimeFault]
+(fn recover [task : (Task Int ConfigError)] : Int ^errors []
   (try (await task) catch ConfigError 0))
 ```
 
-The checker can prove the first await of a fresh local task safe from repeated
-consumption. That proof follows aliases, branches, catches, cleanup, and loops;
-a call that might consume an alias invalidates it. Fresh allocations in a loop
-are distinct from handles retained from previous iterations. When inferred
-factory results supply freshness or producer-isolation facts, live replacement
-checks preserve those facts along with the deferred row.
-
-Those outcomes do not remove an operation's own state requirements. Joining an
-already-awaited task raises RuntimeFault; joining does not itself consume the
-await result. `Stream/next` and `Stream/peek` can raise EndOfStream, and pulls
-can fail when reentered. Include these invocation errors separately from the
-producer's deferred row.
+Joining an already-awaited task also raises a `RuntimeFault`; joining does not
+itself consume the await result. `Stream/next` and `Stream/peek` can raise
+`EndOfStream`, an Error that callers include separately from the producer's
+deferred row. A reentered pull is a defect and adds nothing.
 
 ## Keeping strict executable code valid during replacement
 
@@ -691,22 +683,20 @@ chooses propagation; it is fully valid strict code. Static inference and
 explicit runtime contracts are distinct sources of contract information.
 
 This does not prove successful recovery, termination, or freedom from runtime
-bugs. Generated type failures and contract violations remain catchable but
-exempt from ordinary error rows; panic and cancellation preserve their separate
-control paths. A fresh user-created failure is ordinary regardless of its type
-name, and a rethrow preserves its existing classification. Changing checking
+bugs. Faults are exempt from rows whoever constructs them, because the branch is
+the type's parent chain; cancellation is a control transfer. Changing checking
 mode must not change which catch executes or whether cleanup runs.
 
 ## Acceptance coverage
 
 The runtime, compiler, lifetime, concurrency, CLI, and backend tests cover:
 
-1. Failure provenance, one-time contract violations, original causes, and
+1. The branch split, one-time contract violations, original causes, and
    rethrows across immediate and deferred execution.
-2. Retained Error conformance and formatter environments, preserving nominal
-   identity and the existing rules for transporting values between threads.
-3. Lexical `$err`, lazy `$err/.message`, default-backed and custom formatters,
-   return checks, and reporting fallback.
+2. Nominal identity of error types across scopes, sandbox generations and
+   threads, under the existing rules for transporting values.
+3. Lexical `$err`, `$err/.message`, `message` overrides, return checks, and
+   reporting fallback.
 4. Semantic row comparison, catch subtraction, and diagnostic names.
 5. Invocation, default, deferred, and initialization summaries in compiler
    interfaces and versioned native metadata.
@@ -724,10 +714,8 @@ Key conformance cases:
 | A catch handles an error | Bind the original typed value as branch-local `$err`. |
 | Catches are nested | The inner `$err` shadows the outer binding only within its recovery branch. |
 | A closure captures `$err` | Retain the error bound by the closure's own recovery branch. |
-| A recovery branch reads `$err/.message` | Evaluate `$err/.message` and return the same string. |
-| A recovery branch never reads `$err/.message` | Do not invoke the message method for the shortcut. |
-| A recovery branch reads `$err/.message` twice | Invoke the message method twice, as with two explicit sends. |
-| A nested catch or closure uses `$err/.message` | Use its lexically associated `$err`; evaluate at the point of use. |
+| A recovery branch reads `$err/.message` | An ordinary send: the error's `message`, a `Str`. |
+| A nested catch or closure uses `$err/.message` | Use its lexically associated `$err`. |
 | A generic recovery branch returns `$err/.message` | Message access adds no ordinary error obligation. |
 | A message override can raise an ordinary error | Reject it against the inherited empty row; otherwise a runtime row violation is generated if it escapes. |
 | A message method returns a non-string value | Apply ordinary return-type checking. |
@@ -752,7 +740,7 @@ Key conformance cases:
 | Callable rows `[SomeError Error]` and `[Error]` are compared | Equal coverage gives no signature mismatch due to the retained name. |
 | Error rows differ only by order, duplicates, Never, or redundant subtypes | Compare normalized coverage; retain useful diagnostic names separately. |
 | An omitted declaration has inferred empty coverage | Do not confuse it with an explicit checked empty contract. |
-| An open row sees panic or cancellation | Preserve their separate runtime control behavior. |
+| An open row sees a Fault or cancellation | Pass the Fault through unchecked; cancellation stays a control transfer. |
 | An entrypoint declares `[Error]` and an ordinary error escapes | Report it and exit unsuccessfully. |
 | A catch-all normalizes unknown errors | Require only the adapter's escaping errors. |
 | An opaque callable is admitted through a checked view | Accept its asserted row; verify violation behavior at runtime. |
@@ -763,8 +751,8 @@ Key conformance cases:
 | An import may initialize a fallible dependency | Account for initialization regardless of the compiler/test process's warm cache. |
 | A strict unconditional import has no legal surrounding handler | Require empty ordinary initialization/load coverage or refactor fallible startup into a callable. |
 | A created task, stream, or closure fails later | Require handling at execution/consumption, not merely creation. |
-| An await raises and its error is caught | Its task result is still consumed; a later await adds RuntimeFault. |
-| A task parameter has an empty deferred row | Its unknown consumption state still adds RuntimeFault at await. |
+| An await raises and its error is caught | Its task result is still consumed; a later await raises a RuntimeFault, which adds no obligation. |
+| A task parameter has an empty deferred row | Awaiting it adds no obligation, whatever its consumption state. |
 | A scope exits with a failed child | Wait without raising or consuming its stored failure; account separately for waiting and cleanup errors. |
 | A dependency or impl update broadens an installed strict proof assumption | Reject publication until affected dependents are revalidated. |
 | A replacement changes only named hints alongside Error | Do not treat it as broader semantic error coverage. |

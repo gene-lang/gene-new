@@ -194,8 +194,13 @@ suite "web navigation host bindings":
       "(var caught (try ($web/load \"" & root / "panic.gene" &
       "\") false catch Error true))")
     let panicApp = newApplication(root)
-    expect GenePanic:
+    # A macro's panic stays a Panic, which `catch Error` does not see.
+    var panicked = false
+    try:
       discard panicApp.loadFileModule(root / "panic_host.gene")
+    except GeneError as error:
+      panicked = error.hasErrVal and error.errVal.head.typeName == "Panic"
+    check panicked
 
   test "modal focus helpers and asynchronous module loading use browser primitives":
     let root = createTempDir("gene-web-modal-", "")

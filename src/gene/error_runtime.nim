@@ -226,8 +226,6 @@ proc strictCandidateFits(registration: StrictErrorRegistration, value: Value): b
     if summary.dependencies.len > 0 and proto.errorsMode != ecmStrict: return false
     let contract = summary.returnContracts[registration.returnDepth - 1]
     if contract.kind != registration.returnKind: return false
-    if registration.returnTaskFresh and not contract.taskFresh: return false
-    if registration.returnTaskIsolated and not contract.taskIsolated: return false
     if contract.kind == "native":
       return contract.nativeMetadata.identity.len > 0 and
         contract.nativeMetadata == registration.returnNativeMetadata
@@ -311,8 +309,6 @@ proc addStrictDependencies(lease: StrictErrorLease, dependencies: seq[ErrorProof
       ":" & $dependency.typeDepth & ":" & dependency.nativeMetadata.identity &
       ":" & dependency.nativeMetadata.version & ":" & $dependency.returnDepth & ":" & dependency.returnKind
     key.add ":kind-only=" & $dependency.returnKindOnly
-    key.add ":fresh-task=" & $dependency.returnTaskFresh
-    key.add ":isolated-task=" & $dependency.returnTaskIsolated
     key.add ":native-result=" & dependency.returnNativeMetadata.identity & ":" & dependency.returnNativeMetadata.version &
       ":type-result=" & dependency.returnTypeIdentity & ":" & dependency.returnTypeContract &
       ":type-binding=" & $dependency.typeIdentityOnly & ":message-result=" & dependency.returnMessageIdentity
@@ -322,8 +318,6 @@ proc addStrictDependencies(lease: StrictErrorLease, dependencies: seq[ErrorProof
       nativeMetadata: dependency.nativeMetadata,
       returnDepth: dependency.returnDepth, returnKind: dependency.returnKind,
       returnKindOnly: dependency.returnKindOnly,
-      returnTaskFresh: dependency.returnTaskFresh,
-      returnTaskIsolated: dependency.returnTaskIsolated,
       returnNativeMetadata: dependency.returnNativeMetadata,
       returnTypeIdentity: dependency.returnTypeIdentity, returnTypeContract: dependency.returnTypeContract,
       returnMessageIdentity: dependency.returnMessageIdentity,

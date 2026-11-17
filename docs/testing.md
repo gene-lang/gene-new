@@ -139,11 +139,13 @@ into its child/body if it has no setup hooks. If setup raises a recoverable erro
 skip the remaining setup and body, then clean up every entered group, including
 the failing group. Cleanup must tolerate partially initialized fixtures.
 
-An assertion or other recoverable error stops its current hook/body. A failing
-cleanup hook does not prevent the remaining cleanup hooks from running; record
-all failures with their phase and source locations. Continue with later examples.
-Panic and cancellation retain Gene's unwinding and `ensure` behavior and abort
-the run; ordinary error catching must not turn them into a passing example.
+An assertion or any other Throwable, a Fault or a `Panic` included, stops its
+current hook/body. A failing cleanup hook does not prevent the remaining cleanup
+hooks from running; record all failures with their phase and source locations.
+Continue with later examples. An assertion failure (`AssertionFault`) makes the
+example `failed`; any other Throwable makes it an `error`. Cancellation is not a
+Throwable: it keeps Gene's unwinding and `ensure` behavior and aborts the run.
+`assert_raises` accepts any Throwable type, Fault types included.
 
 Run examples serially in declaration order, traversing nested groups where they
 appear. An example passes when setup, body, and cleanup finish without an error.

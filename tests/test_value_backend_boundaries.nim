@@ -16,8 +16,8 @@ suite "value operations — backend boundaries":
         actual = error.msg
       if status == 0:
         try: actual = run(chunk, scope).print()
-        except GenePanic as error:
-          status = 2
+        except GeneError as error:
+          status = if error.isPanicError: 2 else: 1
           actual = error.msg
         except CatchableError as error:
           status = 1

@@ -3698,12 +3698,11 @@
       ^direct_replaced replaced_direct})
   (try
     (publish_staged_runtime loader candidate staged old_entries old_order manifest)
-  catch Throwable
+  unwind
     (map_for [id ignored] in kept_ids
       (var entry (entries .get id))
       (if (&& ($present? entry) ($present? entry/instance))
-        (release_instance_transitions (instance_record entry/instance))))
-    (fail $err))
+        (release_instance_transitions (instance_record entry/instance)))))
   (map_for [id ignored] in kept_ids
     (var entry (entries .get id))
     (if (&& ($present? entry) ($present? entry/instance))
