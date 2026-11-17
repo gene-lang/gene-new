@@ -77,37 +77,37 @@
     (record_sample variant (payload) 17 100 500 0)
     (let changed (payload))
     (changed/rows/5 .put "result" [99])
-    (assert_raises (fn [] (record_sample variant changed 17 100 600 1)) AssertionError)
+    (assert_raises (fn [] (record_sample variant changed 17 100 600 1)) AssertionFault)
     (assert_equal variant/wall_ms [])
     (map_for [name group] in variant/rows (assert_equal group/batch_ms [])))
   (it "rejects missing, duplicate and unknown workloads" []
     (let missing (payload))
     (missing .put "rows" [])
-    (assert_raises (fn [] (validate_results missing "gene" 17 100)) AssertionError)
+    (assert_raises (fn [] (validate_results missing "gene" 17 100)) AssertionFault)
     (let duplicate (payload))
     (duplicate/rows/5 .put "name" "integer_loop")
-    (assert_raises (fn [] (validate_results duplicate "gene" 17 100)) AssertionError)
+    (assert_raises (fn [] (validate_results duplicate "gene" 17 100)) AssertionFault)
     (let unknown (payload))
     (unknown/rows/5 .put "name" "unknown")
-    (assert_raises (fn [] (validate_results unknown "gene" 17 100)) AssertionError))
+    (assert_raises (fn [] (validate_results unknown "gene" 17 100)) AssertionFault))
   (it "rejects invalid metadata and timing" []
-    (assert_raises (fn [] (validate_results (payload) "python" 17 100)) AssertionError)
-    (assert_raises (fn [] (validate_results (payload) "gene" 18 100)) AssertionError)
+    (assert_raises (fn [] (validate_results (payload) "python" 17 100)) AssertionFault)
+    (assert_raises (fn [] (validate_results (payload) "gene" 18 100)) AssertionFault)
     (let zero (payload))
     (zero/rows/0 .put "elapsed_ms" 0)
-    (assert_raises (fn [] (validate_results zero "gene" 17 100)) AssertionError)
+    (assert_raises (fn [] (validate_results zero "gene" 17 100)) AssertionFault)
     (let negative (payload))
     (negative/rows/0 .put "repetitions" -1)
-    (assert_raises (fn [] (validate_results negative "gene" 17 100)) AssertionError)
+    (assert_raises (fn [] (validate_results negative "gene" 17 100)) AssertionFault)
     (let fractional (payload))
     (fractional/rows/0 .put "repetitions" 1.5)
-    (assert_raises (fn [] (validate_results fractional "gene" 17 100)) AssertionError))
+    (assert_raises (fn [] (validate_results fractional "gene" 17 100)) AssertionFault))
   (it "rejects process failure, timeout and truncated output before parsing" []
     (for process in [
       {^status 1 ^timed_out false ^truncated false ^stderr "failed"}
       {^status 0 ^timed_out true ^truncated false ^stderr "timeout"}
       {^status 0 ^timed_out false ^truncated true ^stderr "truncated"}]
-      (assert_raises (fn [] (checked_output process)) AssertionError))))
+      (assert_raises (fn [] (checked_output process)) AssertionFault))))
 
 (describe "Kernel runner agreement"
   (it "accepts a variant that ran the same kernels with the same results" []
@@ -115,9 +115,9 @@
       {^a {^ms 1 ^result "1"} ^b {^ms 2 ^result "[1 \"x\"]"}}))
   (it "rejects a stable wrong answer, a missing kernel and an extra one" []
     (assert_raises (fn [] (agree {^a "1"} "baseline" {^a {^ms 1 ^result "2"}}))
-      AssertionError)
+      AssertionFault)
     (assert_raises (fn [] (agree {^a "1" ^b "2"} "baseline" {^a {^ms 1 ^result "1"}}))
-      AssertionError)
+      AssertionFault)
     (assert_raises
       (fn [] (agree {^a "1"} "baseline" {^a {^ms 1 ^result "1"} ^c {^ms 1 ^result "3"}}))
-      AssertionError)))
+      AssertionFault)))

@@ -5,6 +5,9 @@ const probePrelude = "(type Probe : Error) "
   ## An ordinary Error for snippets that need one. Assertions and type
   ## failures are Faults, which rows and `catch Error` do not see.
 
+proc probeCompile(source: string): Chunk =
+  compileSource(probePrelude & source)
+
 proc gradualErrorEval(source: string): Value =
   run(compileSource(probePrelude & source, sourceName = "error_handling_spec.gene"),
       newGlobalScope(newApplication()))
@@ -579,7 +582,7 @@ suite "errors — static catch or declare":
       "^errors [] (callback))")
 
   test "warning mode reports the same violation without rejecting code":
-    let source = "(fn checked [] ^errors [] (fail (Probe)))"
+    let source = probePrelude & "(fn checked [] ^errors [] (fail (Probe)))"
     let warned = compileSource("(mod checked ^errors_mode warn) " & source)
     check warned.compilerDiagnostics.len > 0
     check "Probe" in warned.compilerDiagnostics[0].message
@@ -590,15 +593,18 @@ suite "errors — static catch or declare":
     expect GeneError: discard strictErrorCompile("(fail (Probe))")
     discard strictErrorCompile("(try (fail (Probe)) catch Error nil)")
 
-  test "initialization cannot assume a forward declaration is already usable":
-    expect GeneError:
-      discard strictErrorCompile("(later) (fn later [] ^errors [] 1)")
-    expect GeneError:
-      discard strictErrorCompile("(fn first ^^private [] (later)) " &
-        "(first) (fn later ^^private [] 1)")
-    expect GeneError:
-      discard strictErrorCompile("(fn first ^^private [] (later/helper)) " &
-        "(first) (ns later (fn helper [] ^errors [] 1))")
+  test "a forward call during initialization adds only a fault":
+    # The name is unbound when initialization reaches the call, which raises
+    # a RuntimeFault: a defect, so no row has to declare it.
+    discard strictErrorCompile("(later) (fn later [] ^errors [] 1)")
+    discard strictErrorCompile("(fn first ^^private [] (later)) " &
+      "(first) (fn later ^^private [] 1)")
+    discard strictErrorCompile("(fn first ^^private [] (later/helper)) " &
+      "(first) (ns later (fn helper [] ^errors [] 1))")
+    let unbound = run(strictErrorCompile("(var seen nil) " &
+      "(try (later) catch RuntimeFault (set seen $err/.message)) " &
+      "(fn later [] ^errors [] 1) seen"), newGlobalScope(newApplication()))
+    check unbound.kind == vkString and "later" in unbound.strVal
     discard strictErrorCompile("(fn first ^^private [] 1) (first)")
     discard strictErrorCompile("(fn first ^^private [] 1) (let result (first))")
 
@@ -725,6 +731,7 @@ suite "errors — module summaries":
   test "imported types publish constructor invocation contracts":
     let root = errorModuleRoot()
     writeFile(root / "constructors.gene", """
+      (type Probe : Error)
       (type Resource ^props {}
         (ctor [ready = (fail (Probe ^_msg "not ready"))]
           ^errors [Probe] nil))
@@ -732,7 +739,7 @@ suite "errors — module summaries":
     """)
     writeFile(root / "constructors_good.gene", """
       (mod good ^errors_mode strict)
-      (import [Resource Plain] ^from "./constructors.gene")
+      (import [Probe Resource Plain] ^from "./constructors.gene")
       (fn make [] ^errors [Probe] (new Resource))
       (fn plain [] ^errors [] (Plain))
     """)
@@ -1028,16 +1035,18 @@ suite "errors — retained strict assumptions":
       (type Item ^props {})
       (impl P for Item (message value [] : Int ^errors [] 7))
       (fn factory ^^private [] P:value)
-      (fn client [] ^errors [MessageFault] ((factory) (Item)))
-      (fn saved [] ^errors [MessageFault] (let held (factory)) (held (Item)))
-      (fn sent [] ^errors [MessageFault] (let held (factory)) ((Item) .%held))
-      (fn absent [] ^errors [MessageFault RuntimeFault] ((factory)))
-      (fn mismatch [] ^errors [MessageFault] ((factory) 1))
+      (fn client [] ^errors [] ((factory) (Item)))
+      (fn saved [] ^errors [] (let held (factory)) (held (Item)))
+      (fn sent [] ^errors [] (let held (factory)) ((Item) .%held))
+      (fn absent [] ^errors [] ((factory)))
+      (fn mismatch [] ^errors [] ((factory) 1))
     """), scope)
     check run(compileSource("(client)"), scope).intVal == 7
     check run(compileSource("[(saved) (sent)]"), scope).print() == "[7 7]"
-    check run(compileSource("(try (absent) catch RuntimeFault true)"), scope).boolVal
-    check run(compileSource("(try (mismatch) catch MessageFault true)"), scope).boolVal
+    check run(compileSource("(try (absent) catch Error false catch RuntimeFault true)"),
+              scope).boolVal
+    check run(compileSource("(try (mismatch) catch Error false catch MessageFault true)"),
+              scope).boolVal
     let replacement = run(strictErrorCompile("""
       (protocol Q (message value [] : Int ^errors []))
       (fn [] Q:value)
@@ -1045,12 +1054,13 @@ suite "errors — retained strict assumptions":
     expect GeneError: scope.assign("factory", replacement)
     check run(compileSource("(client)"), scope).intVal == 7
 
-  test "bound message dispatch errors are distinct from implementation rows":
-    expect GeneError:
-      discard strictErrorCompile("""
-        (protocol P (message value [] : Int ^errors []))
-        (fn invalid [] ^errors [] (let held P:value) (held 1))
-      """)
+  test "bound message dispatch failures are faults outside implementation rows":
+    let held = run(strictErrorCompile("""
+      (protocol P (message value [] : Int ^errors []))
+      (fn invalid [] ^errors [] (let held P:value) (held 1))
+      (try (invalid) catch Error "error" catch MessageFault "fault")
+    """), newGlobalScope(newApplication()))
+    check held.strVal == "fault"
 
   test "inferred returned callable contracts reject broadening before publication":
     let app = newApplication()
@@ -1087,7 +1097,7 @@ suite "errors — retained strict assumptions":
       let widerHelper = run(strictErrorCompile("""
         (fn [] (fn [] ^errors [Probe] (fail (Probe))))
       """), newGlobalScope(app))
-      let widerCallback = run(compileSource("(fn [] ^errors [Probe] (fail (Probe)))"),
+      let widerCallback = run(probeCompile("(fn [] ^errors [Probe] (fail (Probe)))"),
                               newGlobalScope(app))
       if body == "(helper)":
         expect GeneError: scope.assign("helper", widerHelper)
@@ -1149,7 +1159,7 @@ suite "errors — retained strict assumptions":
         (fn forward ^^private [] ($map (factory) callback))
         (fn client [] ^errors [] ($into SOURCE []))
       """.replace("SOURCE", wrap)), scope)
-      let broader = run(compileSource("(fn [value] ^errors [Probe] (fail (Probe)))"),
+      let broader = run(probeCompile("(fn [value] ^errors [Probe] (fail (Probe)))"),
                         newGlobalScope(app))
       expect GeneError: scope.assign("callback", broader)
       let widerStream = run(strictErrorCompile("""
@@ -1189,7 +1199,7 @@ suite "errors — retained strict assumptions":
       (fn [] callback)
     """), replacementScope)
     scope.assign("factory", replacement)
-    let wider = run(compileSource("(fn [] ^errors [Probe] (fail (Probe)))"),
+    let wider = run(probeCompile("(fn [] ^errors [Probe] (fail (Probe)))"),
                     newGlobalScope(app))
     expect GeneError: replacementScope.assign("callback", wider)
     check run(compileSource("(client)"), scope).intVal == 2
@@ -1206,7 +1216,7 @@ suite "errors — retained strict assumptions":
       (fn factory ^^private [] (fn [] ^errors [] 1))
       (fn client [] ^errors [] (factory) 7)
     """), scope)
-    let replacement = run(compileSource("""
+    let replacement = run(probeCompile("""
       (fn [] ^errors [] (fn [] ^errors [Probe] (fail (Probe))))
     """), newGlobalScope(app))
     scope.assign("factory", replacement)
@@ -1250,7 +1260,7 @@ suite "errors — retained strict assumptions":
       (fn factory ^^private [flag : Bool] (if flag first second))
       (fn client [flag : Bool] ^errors [] ((factory flag)))
     """), scope)
-    let replacement = run(compileSource("(fn [] ^errors [Probe] (fail (Probe)))"),
+    let replacement = run(probeCompile("(fn [] ^errors [Probe] (fail (Probe)))"),
                           newGlobalScope(app))
     expect GeneError: scope.assign("second", replacement)
     check run(compileSource("[(client true) (client false)]"), scope).print() == "[1 2]"
@@ -1278,7 +1288,7 @@ suite "errors — retained strict assumptions":
       (fn callback ^^private [value] value)
       (fn mapped [] ^errors [] ($map [1] callback))
     """), scope)
-    let broader = run(compileSource("(fn [value] ^errors [Probe] (fail (Probe)))"),
+    let broader = run(probeCompile("(fn [value] ^errors [Probe] (fail (Probe)))"),
                        newGlobalScope(app))
     expect GeneError: scope.assign("callback", broader)
     check run(compileSource("(mapped)"), scope).print() == "[1]"
@@ -1298,8 +1308,9 @@ suite "errors — retained strict assumptions":
       check false
     except GeneError as error:
       require error.hasErrVal
-      check error.errVal.head.typeName == "ContractViolation"
-      check "requires revalidation" in error.errVal.props["_cause"].props["_msg"].strVal
+      # A stale assumption is a defect: it passes through the empty row.
+      check error.errVal.head.typeName == "RuntimeFault"
+      check "requires revalidation" in error.errVal.props["_msg"].strVal
     check spoofedNativeCalls == 0
     # The trusted implementation remains usable through a lexical alias.
     let valid = newGlobalScope(app)
@@ -1378,7 +1389,7 @@ suite "errors — retained strict assumptions":
       let source = """
         (mod initial ^errors_mode strict)
         (fn helper [] ^errors [] 1)
-        (try (trigger) catch Error nil)
+        (try (trigger) catch Throwable nil)
         (helper)
       """
       check run(compileSource(source, useLocalSlots = localSlots), scope).intVal == 1
@@ -1389,7 +1400,7 @@ suite "errors — retained strict assumptions":
     let namespace = run(strictErrorCompile("""
       (ns inner
         (fn helper [] ^errors [] 1)
-        (try (trigger) catch Error nil)
+        (try (trigger) catch Throwable nil)
         (helper))
     """), scope)
     check run(compileSource("(helper)", useLocalSlots = false), namespace.nsScope).intVal == 1

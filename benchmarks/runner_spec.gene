@@ -16,7 +16,7 @@
     (assert_equal result/median 10.5)
     (assert_equal result/p95 19))
   (it "refuses to summarize an empty capture" []
-    (assert_raises (fn [] (distribution [])) AssertionError)))
+    (assert_raises (fn [] (distribution [])) AssertionFault)))
 
 (describe "Harness benchmark samples"
   (it "excludes warmup and records subsequent service and process times" []
@@ -32,6 +32,6 @@
     (let variant {^checksum 15100 ^elapsed_ms [] ^wall_ms []})
     (assert_raises
       (fn [] (record_harness_sample variant {^record_checksum 99 ^elapsed_ms 10} 20 1))
-      AssertionError)
+      AssertionFault)
     (assert_equal variant/elapsed_ms [])
     (assert_equal variant/wall_ms [])))
