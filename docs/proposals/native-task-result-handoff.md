@@ -148,7 +148,7 @@ detail, and the Task fails with the Error it returns. The factory must finish
 synchronously without driving the scheduler: waiting for a pending Task,
 sleeping, blocking on a channel, or spawning work would prevent the current
 completion drain from progressing. Reading an already completed Task is
-allowed. These cases fail the Task with a generated `TypeError`, which passes
+allowed. These cases fail the Task with a generated `TypeFault`, which passes
 deferred error contracts:
 
 - the factory raises;
@@ -156,7 +156,7 @@ deferred error contracts:
 - it attempts to suspend or run the scheduler;
 - it returns a non-Error.
 
-A released factory ID fails the Task with a `RuntimeError` naming the native
+A released factory ID fails the Task with a `RuntimeFault` naming the native
 message. Factory 0 is the queued form of a message-only failure.
 
 `task_retire_queued` links the preallocated producer node without a payload

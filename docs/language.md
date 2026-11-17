@@ -403,7 +403,7 @@ collects remaining list elements.
 `(when _ ...)` or `(when value ...)`. The compiler cannot prove coverage from
 literal, typed, structural, or enum-variant arms alone. To deliberately leave
 a match partial, write `^!exhaustive` on `match`; an unmatched value then
-raises `MatchError` at runtime:
+raises `MatchFault` at runtime:
 
 ```gene
 (match value ^!exhaustive
@@ -420,7 +420,7 @@ A requested property must exist; a missing optional field does not bind nil.
 ### Errors and cleanup
 
 Use `$assert` to check an assumption. It returns nil on success and raises
-`AssertionError` on failure:
+`AssertionFault` on failure:
 
 ```gene runnable
 ($assert (== (+ 1 1) 2) "addition should work") # nil
@@ -451,9 +451,12 @@ stored field.
 
 `^errors [InputError]` permits that error and its subtypes to escape;
 `^errors []` permits no ordinary errors, and `^errors [Error]` permits any.
-Violating a declared row raises `ErrorContractViolation`, with the original
-error in `$err/_cause`. Generated type failures and contract violations remain
-catchable without being wrapped again. Panic and cancellation bypass catches.
+Violating a declared row raises `ContractViolation`, with the original
+error in `$err/_cause`. Defects are the other branch, `Fault`: `TypeFault`,
+`MatchFault`, `AssertionFault`, `RuntimeFault`, `Panic` and the rest. Rows never
+check them and `catch Error` does not catch them; `catch Fault`,
+`catch Throwable` or a specific fault type does. Cancellation bypasses every
+catch.
 
 Scripts default to dynamic checking. The gradual checker adds `warn` and
 `strict` module policies; see the [error-handling contract](error-handling.md)

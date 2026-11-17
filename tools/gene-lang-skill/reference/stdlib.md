@@ -59,12 +59,12 @@ SandboxGeneration SandboxTransaction
 they are not bound values, so `($println Any)` is an undefined symbol. Sets are
 built by the `Set` function (`(Set 1 2)`) and read with `$set_size` / `$set_has?`.
 
-Error types: `Error` (protocol) plus `TypeError` `MessageError` `CallKindError`
-`MatchError` `ParseError` `LexError` `CompileError` `PathMissing`
+Error types: `Error` (protocol) plus `TypeFault` `MessageFault` `CallKindFault`
+`MatchFault` `ParseError` `LexError` `CompileError` `PathMissing`
 `ChannelClosed` `ActorError` `ActorClosed` `ActorFailure` `ReplyAlreadySent`
 `OsError` `HttpError` `HttpClientError` `JsonError` `SerdeError` `DbError`
-`StoreError` `UrlError` `TerminalError` `CursesError` `RefError`
-`RuntimeLaneError` `WatcherClosed`.
+`StoreError` `UrlError` `TerminalError` `CursesError` `RefFault`
+`RuntimeLaneFault` `WatcherClosed`.
 
 Root protocols: `Callable` `Error` `Send` `SerdeRef` `ToStr`.
 
@@ -102,7 +102,7 @@ Root protocols: `Callable` `Error` `Send` `SerdeRef` `ToStr`.
 | `$ffi` | `bind` `open` | `Callable` `Library` `Load` |
 | `$aot` | `load` | — |
 | `$device` | `buffer` | `Buffer` `Compute` |
-| `$runtime` | `bind_call` `callable?` `configure_module` `gc_stats` `guard_call` `load_sandboxed` `require_root_lane` `sandbox_transaction` | `RuntimeLaneError` `SandboxGeneration` `SandboxTransaction` |
+| `$runtime` | `bind_call` `callable?` `configure_module` `gc_stats` `guard_call` `load_sandboxed` `require_root_lane` `sandbox_transaction` | `RuntimeLaneFault` `SandboxGeneration` `SandboxTransaction` |
 | `$C` | — | C ABI type constructors for FFI (`Int`, `Ptr`, `CStr`, `Slice`, …) |
 
 ## Common calls and argument order

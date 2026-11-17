@@ -20,34 +20,49 @@ An unknown error is represented by `Error`. A declaration such as
 while permitting other ordinary errors. Callers can recover from `SomeError`
 and allow the remaining errors to propagate or terminate the program.
 
-## Throwable and Error
+## Throwable, Error and Fault
 
-Every value `fail` raises is a `Throwable`; today every built-in and user error
-type descends from its `Error` branch:
+Every value `fail` raises is a `Throwable`. It belongs to one of two branches,
+decided by its type's parent chain when the type is declared:
 
 ```text
 Throwable                ^props {^_msg Str? ^_cause Throwable?}, message [] : Str ^errors []
-└── Error                what `catch Error` and ^errors rows name
-    ├── IoError, FsError, JsonError, HttpError, DbError, CompileError, ...
-    ├── DecodeError, TimeError, NativeLibraryError, LimitExceeded
-    ├── TypeError, MessageError, MatchError, AssertionError, RuntimeError, ...
-    └── user types: (type InputError : Error ^props {^field Str})
+├── Error                failures a correct program can meet; checked by ^errors rows
+│   ├── IoError, FsError, JsonError, HttpError, DbError, CompileError, ...
+│   ├── DecodeError, TimeError, NativeLibraryError, LimitExceeded
+│   └── user types: (type InputError : Error ^props {^field Str})
+└── Fault                defects; never in ^errors rows
+    ├── Panic            raised by (panic v); carries ^value
+    ├── TypeFault, CallKindFault, MessageFault
+    ├── MatchFault, PathMissing
+    ├── ContractViolation, AssertionFault, RefFault, ReplyAlreadySent
+    ├── RuntimeFault     a message-only runtime failure
+    └── user types: (type Invariant : Fault)
 ```
 
-A type is an error because of its parent chain, fixed when the type is
-declared; there is no Error protocol, `impl Error` or conformance witness.
-Panic and cancellation are not values `catch` sees: no clause runs for them,
-and `ensure` and `unwind` still run.
+Cancellation and policy expiry inside its own policy are not Throwables. They
+are control transfers: no `catch` sees them, and `ensure` and `unwind` run.
+Every type named `*Error` is an Error and every `*Fault` is a Fault; a name
+with neither suffix can be on either side.
+
+| | Error value | Fault value | Cancellation |
+| --- | --- | --- | --- |
+| `catch Error` | caught | not caught | not caught |
+| `catch Fault` | not caught | caught | not caught |
+| `catch T` | caught if `T` covers it | caught if `T` covers it | not caught |
+| `catch Throwable` | caught | caught | not caught |
+| `^errors` rows | checked | passed through | n/a |
+| `Task/join` | `TaskOutcome/error` | `TaskOutcome/fault` | `TaskOutcome/cancelled` |
 
 `catch Any`, or a clause naming a value type such as `Str`, is a compile error.
-`(fail v)` rejects a value that is not of an Error type, including a bare
-`Throwable`. Building `(Error ^_msg "...")` directly is allowed.
+`(fail v)` rejects a value that is not an Error or a Fault, including a bare
+`Throwable`. Building `(Error ^_msg "...")` or `(Fault ^_msg "...")` directly
+is allowed.
 
-Generated type failures (a `TypeError` the runtime raises at a typed
-boundary) and contract violations bypass error rows; the runtime tracks that
-provenance privately. When a row rejects an ordinary error, the runtime raises
-an `ErrorContractViolation` once, at the first rejecting row, with the original
-error in `_cause`.
+An error row names Error types only; `^errors [TypeFault]` is rejected with
+"Fault types are unchecked". When a row rejects an Error, the runtime raises a
+`ContractViolation` once, at the first rejecting row, with the original error in
+`_cause`.
 
 ### Messages and causes
 
@@ -88,6 +103,13 @@ message is `""`, or whose `message` override fails, it shows the type name.
 closure created in a catch body keeps its own `$err`, and a nested catch gets
 its own. `(fail $err)` re-raises that value unchanged.
 
+### Panic
+
+`(panic v)` raises `(Panic ^_msg <text> ^value v)`. `catch Panic`,
+`catch Fault` and `catch Throwable` catch it; `catch Error` never does.
+`ensure` and `unwind` run as it unwinds. A task that panics joins as
+`TaskOutcome/fault` carrying the Panic.
+
 ### Cleanup that runs only on failure
 
 ```gene
@@ -107,7 +129,7 @@ expiry the terminal reason stays terminal.
 ### Message-only runtime failures
 
 A runtime failure with no more specific type reaches a handler as a
-`RuntimeError` carrying only its message. Each such raise in the runtime is on a
+`RuntimeFault` carrying only its message. Each such raise in the runtime is on a
 reviewed list, `tests/fixtures/message_only_raises.txt`, as a defect; a test
 fails when an unlisted one appears. Failures a correct program can meet use
 Error types instead: bad base64 or UTF-8 is a `DecodeError`, bad RFC3339 or
@@ -326,8 +348,8 @@ unresolved call for diagnostics, but both have the same error-coverage rules.
 For each expression:
 
 - `fail` of an Error value contributes its type. An unresolved value
-  contributes `Error`. A rethrow follows retained provenance; it does not turn a
-  generated failure into an ordinary one.
+  contributes `Error`. A Fault contributes nothing: faults are never part of a
+  row. A rethrow of `$err` contributes what the catch could have caught.
 - A call contributes the callee's invocation errors, plus errors from
   evaluating its callee expression and arguments. Its invocation contract
   already includes its own possible default evaluation errors.
@@ -461,7 +483,7 @@ Strict callers then account for `ConfigError` when invoking `checked`.
 This is a runtime-checked assertion about opaque code, not a static proof of
 its implementation. A different escaping error is a contract violation; the
 view neither converts it to `ConfigError` nor silently ignores it. Such a
-violation is an ErrorContractViolation with the original error as its
+violation is a ContractViolation, a Fault, with the original error as its
 `_cause`; outer rows pass it through. Tooling should
 distinguish inferred proofs from contracts asserted at a dynamic seam.
 
@@ -513,8 +535,8 @@ are not attributed to the callee. Generated parameter/result type failures
 retain their separate classification.
 
 Native summaries also include ordinary argument-validation and state failures.
-Native operations that report wrong arity or invalid arguments as
-`RuntimeError` retain that ordinary error obligation.
+Native operations that can only fail with a defect, such as wrong arity or an
+invalid argument, add no obligation: those failures are Faults.
 
 Each source module has an initialization summary, separate from its exported
 callables. A runtime import contributes the dependency's possible initialization
@@ -555,7 +577,7 @@ The checker must separate invocation errors from deferred errors:
 
 Normal `scope` exit waits for its children without consuming their results or
 raising their stored failures. An escaped task can still be awaited afterward.
-The checker conservatively includes `RuntimeError` for structured waiting
+The checker conservatively includes `RuntimeFault` for structured waiting
 (for example, scheduler deadlock), separately from errors in the scope body and
 cleanup. It does not add each child's deferred error row at scope exit.
 `Task/join` and `Stream/try_next` return producer failures in outcome variants.
@@ -563,15 +585,15 @@ Requiring consumers to inspect those values, or to observe every child failure,
 is a separate policy and is not guaranteed by catch-or-declare checking.
 
 The VM consumes a task's result on its first `await`, even when that await
-raises its producer error. A later await through any alias raises `RuntimeError`.
+raises its producer error. A later await through any alias raises `RuntimeFault`.
 Concurrent awaits claim that result atomically; exactly one receives its value
 or failure, and the others receive the already-consumed state error.
 `(Task T E)` describes result and producer errors; it does not promise an
 unconsumed handle. Awaiting a parameter or other task of unknown state therefore
-also requires handling or declaring `RuntimeError`:
+also requires handling or declaring `RuntimeFault`:
 
 ```gene
-(fn recover [task : (Task Int ConfigError)] : Int ^errors [RuntimeError]
+(fn recover [task : (Task Int ConfigError)] : Int ^errors [RuntimeFault]
   (try (await task) catch ConfigError 0))
 ```
 
@@ -583,7 +605,7 @@ factory results supply freshness or producer-isolation facts, live replacement
 checks preserve those facts along with the deferred row.
 
 Those outcomes do not remove an operation's own state requirements. Joining an
-already-awaited task raises RuntimeError; joining does not itself consume the
+already-awaited task raises RuntimeFault; joining does not itself consume the
 await result. `Stream/next` and `Stream/peek` can raise EndOfStream, and pulls
 can fail when reentered. Include these invocation errors separately from the
 producer's deferred row.
@@ -625,7 +647,7 @@ Returned native callables retain their native model identity. Constructor
 results retain their nominal declaration identity and source type bindings;
 types declared inside a factory also belong to its compiled generation. A held
 protocol message retains its declaration and binding scope. Calling that held
-value can raise MessageError during dispatch, separately from the selected
+value can raise MessageFault during dispatch, separately from the selected
 implementation's declared row.
 
 A replacement needs enough validated metadata to preserve these inferred
@@ -697,8 +719,8 @@ Key conformance cases:
 
 | Case | Expected strict result |
 | --- | --- |
-| An undeclared NetworkError crosses a closed checked view and several checked callers | Create one ErrorContractViolation with the original cause; outer row validators pass it through. |
-| A handler catches that violation | ErrorContractViolation and Error catches match; ConfigError does not. |
+| An undeclared NetworkError crosses a closed checked view and several checked callers | Create one ContractViolation with the original cause; outer row validators pass it through. |
+| A handler catches that violation | ContractViolation and Error catches match; ConfigError does not. |
 | A catch handles an error | Bind the original typed value as branch-local `$err`. |
 | Catches are nested | The inner `$err` shadows the outer binding only within its recovery branch. |
 | A closure captures `$err` | Retain the error bound by the closure's own recovery branch. |
@@ -741,8 +763,8 @@ Key conformance cases:
 | An import may initialize a fallible dependency | Account for initialization regardless of the compiler/test process's warm cache. |
 | A strict unconditional import has no legal surrounding handler | Require empty ordinary initialization/load coverage or refactor fallible startup into a callable. |
 | A created task, stream, or closure fails later | Require handling at execution/consumption, not merely creation. |
-| An await raises and its error is caught | Its task result is still consumed; a later await adds RuntimeError. |
-| A task parameter has an empty deferred row | Its unknown consumption state still adds RuntimeError at await. |
+| An await raises and its error is caught | Its task result is still consumed; a later await adds RuntimeFault. |
+| A task parameter has an empty deferred row | Its unknown consumption state still adds RuntimeFault at await. |
 | A scope exits with a failed child | Wait without raising or consuming its stored failure; account separately for waiting and cleanup errors. |
 | A dependency or impl update broadens an installed strict proof assumption | Reject publication until affected dependents are revalidated. |
 | A replacement changes only named hints alongside Error | Do not treat it as broader semantic error coverage. |

@@ -87,5 +87,5 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   resolution. See [value operations](../proposals/value-operations.md).
 - Only protocols qualify messages. Type-direct messages are sent bare and use
   the reserved `Self:msg` spelling when a message value is required; `T:msg`
-  is a `CallKindError` naming type `T` and explaining the bare or `Self:msg`
+  is a `CallKindFault` naming type `T` and explaining the bare or `Self:msg`
   alternatives.

@@ -53,21 +53,21 @@ gene test examples/testing_demo.gene
 ```gene
 # Signature; implementation omitted.
 (fn assert [condition : Any message : Str?] : Nil
-  ^errors [AssertionError]
+  ^errors [AssertionFault]
   ...)
 ```
 
 - Assertions use ordinary Gene truthiness: `false` and `nil` fail; other
   values, including zero and empty collections, pass. Use an explicit comparison
   when testing for exactly `true`.
-- An assertion returns `nil` on success. On failure, it raises `AssertionError`, a built-in nominal
+- An assertion returns `nil` on success. On failure, it raises `AssertionFault`, a built-in nominal
   type implementing `Error`. An omitted or nil message means `"assertion failed"`.
 - This is an ordinary eager function. Arguments run once, in normal call
   order; the optional message expression also runs on success. Errors raised
   while evaluating either argument propagate unchanged.
 - Assertions remain enabled in every build mode and work without `$test`.
   They follow ordinary checked-error rules: a function with an explicit error
-  row must admit `AssertionError` if it can escape.
+  row must admit `AssertionFault` if it can escape.
 - Failures carry the assertion call's source location and normal stack information
   when available. The function receives values, not the original condition's
   syntax. Calling through an alias behaves normally.
@@ -160,22 +160,22 @@ Two helpers in `$test` also work outside a running suite:
 
 (assert_equal (+ 1 1) 2)
 (assert_equal [1 2] [1 2] "items should match")
-(let error (assert_raises (fn [] ($assert false)) AssertionError))
+(let error (assert_raises (fn [] ($assert false)) AssertionFault))
 error/message # "assertion failed"
 ```
 
 | Helper | Contract |
 | --- | --- |
-| `assert_equal actual expected message?` | Compare with the existing `==` semantics. Return nil on success; otherwise raise AssertionError carrying labeled actual and expected values. |
+| `assert_equal actual expected message?` | Compare with the existing `==` semantics. Return nil on success; otherwise raise AssertionFault carrying labeled actual and expected values. |
 | `assert_raises thunk error_type message?` | Invoke an ordinary zero-argument callable once. Match an escaping error with the same type rules as `catch`; return the matching error for further checks. |
 
 Both evaluate their arguments eagerly, once. `assert_raises` runs the thunk only
 after its arguments have been evaluated and checked. Normal return, including
-returning an error value without raising it, fails with `AssertionError`. An
+returning an error value without raising it, fails with `AssertionFault`. An
 unexpected recoverable error propagates unchanged so the runner reports its
 actual cause. Panic and cancellation are not matched or suppressed.
 
-These APIs use the same `AssertionError` type. `assert_equal` errors carry
+These APIs use the same `AssertionFault` type. `assert_equal` errors carry
 `has_comparison`, `actual`, and `expected` properties. A captured `nil` is
 stored like any value, so it stays distinct from unavailable details.
 Reports render values without re-evaluating expressions, bound large output,

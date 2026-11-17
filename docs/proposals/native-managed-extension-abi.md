@@ -128,7 +128,7 @@ order. Every build advertises bits 11 to 15; bit 16 needs a POSIX loader.
 - Bit 11 (`GENE_API_TASK_FAIL_COPY_FEATURE = 2048`): `task_fail_copy` queues a
   failure with a copied message and an optional copied detail. The root lane
   calls the module's retained error factory and fails the Task with the Error
-  it returns. Factory 0 fails it with a `RuntimeError`.
+  it returns. Factory 0 fails it with a `RuntimeFault`.
 - Bit 12 (`GENE_API_UNATTACHED_SUBMIT_FEATURE = 4096`): `task_retire_queued`
   queues retirement outside the queue budgets. It also admits
   `task_submit_copy`, `task_fail_copy` and `task_retire_queued` from threads

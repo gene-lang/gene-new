@@ -127,7 +127,7 @@ once an impl exists. Universal conformance is never implicit.
 ```
 
 A protocol send is always qualified `P:msg`. `T:msg` on a *type* is a
-`CallKindError` — type-direct messages go bare, and use the reserved `Self:msg`
+`CallKindFault` — type-direct messages go bare, and use the reserved `Self:msg`
 spelling only where a message value is required.
 
 An impl covers the full inherited message closure. Zero applicable visible impls

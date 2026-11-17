@@ -138,10 +138,11 @@ ensure
 ```
 
 What follows `catch` is a type. The catch body reads the whole error through
-`$err`; `$err/.message` reads its message; `unwind` runs cleanup only when the
-try is left by a failure. Use
-`catch Error` for any ordinary error; `catch Any` is a compile error. `fail` raises a value of an Error type;
-`panic` does not. Clause heads align
+`$err`; `$err/.message` reads its message. Use `catch Error` for any ordinary
+error; it does not catch defects (`TypeFault`, `RuntimeFault`, `Panic`, ...),
+which `catch Fault` or `catch Throwable` does. `catch Any` is a compile error.
+`fail` raises a value of an Error or Fault type; `(panic v)` raises a `Panic`.
+`unwind` runs cleanup only when the try is left by a failure. Clause heads align
 under `try` and their bodies indent once. See `reference/declarations.md` for
 declaring an error type and a function's `^errors` row.
 
@@ -210,7 +211,7 @@ returns repeatable data without consuming `await`:
 (match (task .join)
   (when (TaskOutcome/ok value) value)
   (when (TaskOutcome/error error) (handle error))
-  (when (TaskOutcome/panic summary) (report summary))
+  (when (TaskOutcome/fault fault) (report fault/.message))
   (when TaskOutcome/cancelled nil))
 ```
 

@@ -151,7 +151,7 @@ view; adaptation does not promise identity preservation or function variance.
 evaluation; `^errors []` admits none. `Error` opens the row, so `[E Error]`
 permits every ordinary error while retaining E as diagnostic information.
 An omitted row leaves errors unchecked at runtime. A rejecting row generates
-one `ErrorContractViolation` retaining the original typed error as `cause`.
+one `ContractViolation` retaining the original typed error as `cause`.
 Generated type failures and contract violations pass through outer rows;
 freshly constructed failures are ordinary regardless of their type name.
 Panic and cancellation retain their normal behavior. Returned
@@ -284,7 +284,7 @@ metadata.
 `$runtime/bind_shape(description, positional, named)` takes a positional List
 and named PropMap. It checks counts, required names, and unexpected names
 without evaluating defaults, adapting values, or invoking a target. Unknown
-shapes and invalid envelopes raise an ordinary RuntimeError. The result is an
+shapes and invalid envelopes raise a RuntimeFault. The result is an
 immutable `BoundShape` with shallow snapshots in `positional` and `named`, plus
 `omitted_positional` indices and `omitted_named` names. Nested mutable payloads
 retain identity; borrowed CallerEnv and construction values cannot escape
@@ -480,7 +480,7 @@ rule, applied to the receiver only:
   the send yields that receiver unchanged and no message is resolved, no
   argument or named-argument form is evaluated, and no impl runs;
 - a present receiver takes the ordinary dot-send path in full, so an unresolvable
-  message is still a `MessageError` — guarding never suppresses a misspelled
+  message is still a `MessageFault` — guarding never suppresses a misspelled
   name;
 - guarding is decided before message resolution, so `(nil ?.anything)` is
   `nil` regardless of the name;

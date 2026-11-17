@@ -73,7 +73,7 @@ declaration-bound `Self` rules continue to apply.
 
 `(Stream T E)` checks emitted items against T and ordinary producer-owned errors
 against E, including cleanup errors raised during explicit close. An undeclared
-ordinary failure produces one `ErrorContractViolation`; generated failures,
+ordinary failure produces one `ContractViolation`; generated failures,
 panic, and cancellation keep their existing classifications. A callable's
 invocation `^errors` row covers creation/default evaluation, separately from E.
 `peek` and `has_next` may run production and encounter its errors.

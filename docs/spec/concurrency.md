@@ -8,10 +8,13 @@ suites in `tests/test_vm.nim`.
   and waits for cleanup. Normal waiting does not consume task results or raise
   their stored failures. Detached tasks are explicit exceptions.
 - The VM's first `await` consumes the task result, including a failed result.
-  Repeating it through the same handle or an alias raises `RuntimeError`.
+  Repeating it through the same handle or an alias raises `RuntimeFault`, a
+  defect that no `catch Error` sees and no error row records.
 - `Task/join` waits without propagating the joined task's outcome. It returns
-  `TaskOutcome/ok`, `error`, `panic`, or `cancelled`, does not consume the
-  ordinary `await` result, and may be repeated. Cancellation of the joining
+  `TaskOutcome/ok`, `error`, `fault`, or `cancelled`, does not consume the
+  ordinary `await` result, and may be repeated. `error` carries an Error the
+  task's row describes; `fault` carries the Fault value, including the `Panic`
+  of a task that panicked. Cancellation of the joining
   task still propagates normally.
 - `Task/done?` is a non-consuming readiness check. It stays true after the
   task's result has been consumed by `await`; it does not wait or inspect the
@@ -38,7 +41,7 @@ suites in `tests/test_vm.nim`.
   contract covers the direct child, not arbitrary descendant process trees.
 - `spawn ^lane root` enqueues and returns its `Task` before the child body can
   begin. `$runtime/require_root_lane` returns `nil` on that lane and raises the
-  typed `RuntimeLaneError` everywhere else.
+  typed `RuntimeLaneFault` everywhere else.
 - Fibers of one lane are time-sliced. A fiber stops running at a suspension
   point (a wait on a task, channel, timer or I/O) or, once its instruction
   slice is spent, at the next function entry, `for` iteration, backward loop

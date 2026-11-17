@@ -56,7 +56,7 @@ With F64 operands, `//` computes `fmod`, exact for finite represented operands
 and a nonzero divisor: `(// 1e20 3.0)` is `1.0`. An exact negative multiple
 retains negative zero: `(// -6.0 3.0)` is `-0.0`. The expression
 `a - b * floor(a / b)` can round differently and is not a general replacement.
-Either sign of a zero divisor raises `RuntimeError: division by zero`.
+Either sign of a zero divisor raises `RuntimeFault: division by zero`.
 The VM accepts mixed Int/F64 operands and converts to F64; the web profile
 rejects mixed types. A large Int may lose precision in that conversion.
 

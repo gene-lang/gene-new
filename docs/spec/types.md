@@ -90,7 +90,7 @@ Stream `drop` follows the [Stream lifecycle](streams.md).
 regardless of its value. PropMap Sym/Str key resolution and HashMap semantic
 equality/hash stability are identical to `Map/get`. HashMap lookup holds the
 same reentry guard, so key callbacks cannot mutate the active collection.
-Non-Map receivers raise TypeError. `contains?` remains List/Set membership.
+Non-Map receivers raise TypeFault. `contains?` remains List/Set membership.
 The web profile explicitly rejects these three helpers for now.
 
 ## Division and remainder
@@ -104,7 +104,7 @@ When either operand is F64, the VM converts Int operands to F64 and computes
 the floating-point remainder (`fmod`), preserving negative zero. For finite
 F64 operands and a nonzero divisor, the remainder is exact for those represented
 operands; conversion from a large Int can already have rounded the input.
-Both zero signs raise `RuntimeError` with message `division by zero`.
+Both zero signs raise `RuntimeFault` with message `division by zero`.
 The web profile requires identical numeric operand types and uses the same
 truncated semantics. Experimental C/AOT lowering does not yet accept `//`.
 

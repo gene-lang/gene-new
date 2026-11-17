@@ -13,13 +13,13 @@ non-reentrant gate for work on one application's scheduler root lane:
 
 A gate invokes a zero-argument callable and returns its result. It provides
 mutual exclusion across tasks and actor handler fibers on that root lane.
-Creation and invocation on another lane raise `RuntimeLaneError`; this is
+Creation and invocation on another lane raise `RuntimeLaneFault`; this is
 not a cross-thread mutex. A gate captures mutable local state and is not Send.
 It is neither a durable lock nor a serializable application record.
 
 The owning execution may suspend while inside the body. Another caller parks
 using the existing channel wait mechanism; it does not repeatedly sleep and
-retry. Recursive acquisition by the same execution raises `RuntimeError`
+retry. Recursive acquisition by the same execution raises `RuntimeFault`
 with a non-reentrant diagnostic. Code needing intentional reentry should
 use a separate explicitly unlocked helper under the owning operation, rather
 than treating recursive acquisition as a second lock.
