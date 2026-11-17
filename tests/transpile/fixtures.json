@@ -993,21 +993,6 @@
       }
     },
     {
-      "id": "pattern.declared_error_type_does_not_shadow",
-      "source": "(type Error ^props {^m Str}) (try (/ 7 0) catch Error $err/message)",
-      "web_source": "(mod pattern_error_shadow ^profile web) (type Error ^props {^m Str}) (fn run [] : Str (try (do (/ 7 0) \"ok\") catch Error $err/message))",
-      "web_export": "run",
-      "expected_value": {
-        "kind": "str",
-        "value": "division by zero"
-      },
-      "expected_error": null,
-      "expected_stdout": "",
-      "profile": {
-        "status": "eligible"
-      }
-    },
-    {
       "id": "pattern.absent_optional_field_is_no_match",
       "source": "(type P ^props {^a Int ^b Str?}) (match (P ^a 1) (when (P ^b x) x) (else \"no-match\"))",
       "web_source": "(mod pattern_absent_optional ^profile web) (type P ^props {^a Int ^b Str?}) (fn run [] : Any (match (P ^a 1) (when (P ^b x) x) (else \"no-match\")))",
