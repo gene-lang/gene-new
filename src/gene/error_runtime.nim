@@ -569,9 +569,15 @@ proc buildThrowableTypes(root: Scope) =
   let error = newType("Error", throwable, @[], @[], root)
   markErrorRootType(error)
   root.define("Error", error)
+  # `Fault` is the other branch: defects. `catch Error` excludes it, error
+  # rows never check it, and only `catch Fault`, `catch Throwable` or a
+  # specific fault type catches one.
+  let fault = newType("Fault", throwable, @[], @[], root)
+  root.define("Fault", fault)
   let app = root.application()
   app.throwableType = throwable
   app.errorType = error
+  app.faultType = fault
 
 proc normalizeErrorTypes(scope: Scope, expressions: openArray[Value]): seq[Value] =
   var collected: seq[Value]
@@ -586,6 +592,9 @@ proc normalizeErrorTypes(scope: Scope, expressions: openArray[Value]): seq[Value
     if typ.kind == vkNode and typ.head.isSymbol("|"):
       for member in typ.body: add(member, depth + 1)
       return
+    if typ.kind == vkType and scope.application().isFaultBranchType(typ):
+      raise newException(GeneError,
+        "Fault types are unchecked; remove " & typ.typeName & " from ^errors")
     if not scope.isErrorType(typ):
       raise newException(GeneError, "^errors entries must be Error types")
     let stored = if expression.isBorrowedTypeAnnotation: expression else: typ
@@ -610,8 +619,8 @@ proc admitErrorValue(value: Value, scope: Scope): Value =
     return admitErrorValue(value, context)
   let app = scope.application()
   if value.kind != vkNode or value.head.kind != vkType or
-      not app.isErrorBranchType(value.head):
-    raiseTypeError("Error admission", "value of an Error type", value, scope)
+      not (app.isErrorBranchType(value.head) or app.isFaultBranchType(value.head)):
+    raiseTypeError("Error admission", "value of an Error or Fault type", value, scope)
   value
 
 proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError =
@@ -629,7 +638,7 @@ proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError =
 
 proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
                                 name: string, scope: Scope): ref GeneError =
-  if error.hasErrVal and error.errVal.generatedFailure:
+  if error.hasErrVal and error.errVal.isFaultValue:
     return error
   let message = "function '" & name & "' raised an undeclared error"
   var props = initPropTable()
@@ -639,14 +648,13 @@ proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
   props["actual"] = error.errVal.head
   props["_cause"] = error.errVal
   let value = newNode(builtInTypeHead(scope, "ErrorContractViolation"), props = props)
-  value.setFailureClassification(fcGeneratedContractViolation)
   result = newException(GeneError, message)
   result.errVal = value
   result.hasErrVal = true
   result.loc = error.loc
 
 proc enforceDeferredErrors(value, errorType: Value, where: string, scope: Scope) =
-  if errorType.kind == vkNil or value.generatedFailure:
+  if errorType.kind == vkNil or value.isFaultValue:
     return
   let context = if scope != nil: scope
                 elif activeVmScope != nil: activeVmScope[] else: builtinsScope()

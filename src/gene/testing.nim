@@ -421,7 +421,7 @@ proc biTestRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 
 proc registerTestingNamespace(root: Scope) =
   let errorRoot = root.vars["Error"]
-  let assertionType = newType("AssertionError", errorRoot,
+  let assertionType = newType("AssertionError", root.application().faultType,
     @[TypeField(name: "has_comparison", typeExpr: newSym("Bool"), optional: true, scope: root),
       TypeField(name: "actual", typeExpr: newSym("Any"), optional: true, scope: root),
       TypeField(name: "expected", typeExpr: newSym("Any"), optional: true, scope: root)],

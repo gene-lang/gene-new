@@ -537,6 +537,7 @@ type
     callableViewTemplate: FunctionProto
     throwableType: Value  # root of every value `fail` can raise
     errorType: Value      # its handleable branch; what `catch Error` names
+    faultType: Value      # the defect branch; never checked by error rows
     tests: TestRegistry
     strictErrorRegistrations: seq[StrictErrorRegistration]
     errorModeOverride: string
@@ -2569,6 +2570,17 @@ proc isThrowableType(app: Application, typ: Value): bool {.inline.} =
 proc isErrorBranchType(app: Application, typ: Value): bool {.inline.} =
   ## Whether `typ` descends from the built-in `Error`, the handleable branch.
   descendsFromType(typ, app.errorType)
+
+proc isFaultBranchType(app: Application, typ: Value): bool {.inline.} =
+  ## Whether `typ` descends from the built-in `Fault`, the defect branch.
+  descendsFromType(typ, app.faultType)
+
+proc isFaultValue(v: Value): bool =
+  ## A raised value of the defect branch: error rows pass it through.
+  if v.kind != vkNode or v.head.kind != vkType: return false
+  let app = if activeVmScope != nil: activeVmScope[].application()
+            else: currentApplication()
+  app != nil and app.isFaultBranchType(v.head)
 
 proc admitErrorValue(value: Value, scope: Scope): Value
 proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError
@@ -9299,14 +9311,23 @@ proc biGraphemes(args: openArray[Value]): Value {.nimcall.} =
     i += width
   newList(items)
 
+proc panicError(text: string, value: Value, hasValue: bool): ref GeneError =
+  ## `(panic v)` raises `(Panic ^_msg <text> ^value v)`, a Fault: `catch
+  ## Panic`, `catch Fault` and `catch Throwable` catch it, `catch Error` never
+  ## does, and error rows pass it through.
+  var props = initPropTable()
+  props["_msg"] = newStr(text)
+  if hasValue: props["value"] = value
+  new(result)
+  result.msg = text
+  let scope = if activeVmScope != nil: activeVmScope[] else: nil
+  result.errVal = newNode(builtInTypeHead(scope, "Panic"), props = props,
+                          immutable = true)
+  result.hasErrVal = true
+
 proc biPanic(args: openArray[Value]): Value {.nimcall.} =
   let v = if args.len >= 1: args[0] else: newStr("panic")
-  var e: ref GenePanic
-  new(e)
-  e.msg = "panic: " & print(v)
-  e.errVal = v
-  e.hasErrVal = true
-  raise e
+  raise panicError(displayStr(v), v, true)
 
 when defined(geneWasm):
   # Under the wasm profile there is no useful process stdout; `print`/`println`
@@ -10480,6 +10501,11 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   discard checkedChunk.emit(Instruction(op: opReturn))
   buildThrowableTypes(result)
   let errorRoot = app.errorType
+  let faultRoot = app.faultType
+  # `(panic v)` raises a Panic: a Fault that carries the panicked value.
+  result.define("Panic", newType("Panic", faultRoot,
+    @[TypeField(name: "value", optional: true, typeExpr: newSym("Any"), scope: result)],
+    @[], result))
   let sendProtocol = newProtocol("Send", [])
   result.define("Send", sendProtocol)
   # Marker protocol (empty): a module-level instance whose type implements it
@@ -10557,7 +10583,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
       "(fn put_at [self index : Int value : Any] : Any nil)",
       @["self", "index", "value"])], scope = result)
   result.define("IndexWrite", indexWrite)
-  let runtimeError = newType("RuntimeError", errorRoot,
+  let runtimeError = newType("RuntimeError", faultRoot,
     @[],
     @[], result)
   result.define("RuntimeError", runtimeError)
@@ -10571,10 +10597,10 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   for name in ["where", "expected", "actual"]:
     typeErrorFields.add TypeField(name: name, optional: false,
                                   typeExpr: newSym("Str"), scope: result)
-  let typeError = newType("TypeError", errorRoot, typeErrorFields,
+  let typeError = newType("TypeError", faultRoot, typeErrorFields,
                           @[], result)
   result.define("TypeError", typeError)
-  let contractViolation = newType("ErrorContractViolation", errorRoot,
+  let contractViolation = newType("ErrorContractViolation", faultRoot,
     @[TypeField(name: "where", typeExpr: newSym("Str"), scope: result),
       TypeField(name: "expected", typeExpr: newSym("List"), scope: result),
       TypeField(name: "actual", typeExpr: newSym("Any"), scope: result)],
@@ -10591,7 +10617,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # matches, and carries where/receiver_type/message diagnostics.
   let messageError = newType("MessageError", typeError, @[], @[], result)
   result.define("MessageError", messageError)
-  let refError = newType("RefError", errorRoot,
+  let refError = newType("RefError", faultRoot,
                          @[TypeField(name: "name", optional: false,
                                      typeExpr: newSym("Str"), scope: result)],
                          @[], result)
@@ -10607,7 +10633,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     assert spec[0] in LeafValueKinds
     result.defineBuiltinType(spec[0], spec[1], newSeq[(string, Value)]())
   result.defineBuiltinType(vkString, "Str", strReceiverNatives())
-  let matchError = newType("MatchError", errorRoot,
+  let matchError = newType("MatchError", faultRoot,
                            @[],
                            @[], result)
   result.define("MatchError", matchError)
@@ -10691,7 +10717,9 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.define("ActorError", actorError)
   let actorClosed = newType("ActorClosed", actorError, @[], @[], result)
   result.define("ActorClosed", actorClosed)
-  let replyAlreadySent = newType("ReplyAlreadySent", actorError, @[], @[],
+  # Replying twice is a bug in the replying actor, so this sits in the Fault
+  # branch even though it is about actors.
+  let replyAlreadySent = newType("ReplyAlreadySent", faultRoot, @[], @[],
                                  result)
   result.define("ReplyAlreadySent", replyAlreadySent)
   let actorFailure = newType("ActorFailure", NIL,
@@ -11233,7 +11261,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
       hasBacking: false, backing: NIL),
      (name: "error", payloadTypes: @[newSym("E")],
       hasBacking: false, backing: NIL),
-     (name: "panic", payloadTypes: @[newSym("Str")],
+     (name: "fault", payloadTypes: @[newSym("Fault")],
       hasBacking: false, backing: NIL),
      (name: "cancelled", payloadTypes: newSeq[Value](),
       hasBacking: false, backing: NIL)],
@@ -16993,12 +17021,7 @@ proc raiseFailedValue(value: Value) =
   raise e
 
 proc raisePanicValue(value: Value) =
-  var e: ref GenePanic
-  new(e)
-  e.msg = displayStr(value)
-  e.errVal = value
-  e.hasErrVal = true
-  raise e
+  raise panicError(displayStr(value), value, true)
 
 proc completedTaskFromError(e: ref GeneError): Value =
   if e.hasErrVal:
@@ -17099,7 +17122,7 @@ proc checkedTaskResult(task, value: Value): Value =
 
 proc isBoundaryTypeError(value: Value, scope: Scope): bool =
   discard scope
-  value.generatedFailure
+  value.isFaultValue
 
 proc checkTaskError(task: Value, hasValue: bool, value: Value) =
   let errorType = task.taskErrorType
@@ -17126,13 +17149,9 @@ proc awaitTaskValue(task: Value): Value =
   # an explicit scheduler-owned reclamation path.
   let payload = task.consumeTaskPayload()
   if payload.hasPanic:
-    var e: ref GenePanic
-    new(e)
-    e.msg = payload.panicMessage
-    if payload.hasPanicValue:
-      e.errVal = payload.panicValue
-      e.hasErrVal = true
-    raise e
+    # A task that panicked through the native panic path re-raises as the
+    # same Panic value a Gene `(panic v)` produces.
+    raise panicError(payload.panicMessage, payload.panicValue, payload.hasPanicValue)
   if payload.hasError:
     var e: ref GeneError
     new(e)
@@ -17193,10 +17212,10 @@ proc runtimeErrorValue(scope: Scope, message: string): Value =
 proc taskJoinOutcome(task: Value, scope: Scope): Value =
   let payload = task.peekTaskPayload()
   if payload.hasPanic:
-    return taskOutcomeValue(scope, "panic",
-      newStr(runtimePanicSummary(payload.panicMessage,
-                                 payload.hasPanicValue,
-                                 payload.panicValue)))
+    # The outcome carries the Panic value itself; reporters bound its text.
+    return taskOutcomeValue(scope, "fault",
+      panicError(payload.panicMessage, payload.panicValue,
+                 payload.hasPanicValue).errVal)
   if payload.hasError:
     var errorValue =
       if payload.hasErrorValue: payload.errorValue
@@ -17210,6 +17229,10 @@ proc taskJoinOutcome(task: Value, scope: Scope): Value =
       errorValue =
         if boundaryError.hasErrVal: boundaryError.errVal
         else: runtimeErrorValue(scope, boundaryError.msg)
+    # A Fault ends the task as `fault`, never `error`: `error` carries only
+    # what the task's Error row describes.
+    if errorValue.isFaultValue:
+      return taskOutcomeValue(scope, "fault", errorValue)
     return taskOutcomeValue(scope, "error", errorValue)
   if payload.cancelled:
     return taskOutcomeValue(scope, "cancelled")
@@ -18748,7 +18771,7 @@ proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value
 proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string,
                             scope: Scope, e: ref GeneError): ref GeneError =
   let failure = normalizeFailure(e, scope)
-  if not checks or failure.errVal.generatedFailure or
+  if not checks or failure.errVal.isFaultValue or
       errorAllowed(errorTypes, failure.errVal):
     return failure
   makeErrorContractViolation(failure, errorTypes, fnName, scope)
@@ -26924,7 +26947,6 @@ proc raiseTypeError*(where, expected: string, value: Value, scope: Scope,
   new(e)
   e.msg = message
   e.errVal = newNode(head, props = props)
-  e.errVal.setFailureClassification(fcGeneratedTypeFailure)
   e.hasErrVal = true
   raise e
 

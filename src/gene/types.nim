@@ -392,16 +392,10 @@ type
     key*: Value
     val*: Value
 
-  FailureClassification* = enum
-    fcOrdinaryError
-    fcGeneratedTypeFailure
-    fcGeneratedContractViolation
-
   ErrorEvidence* = ref object
     ## Runtime-owned evidence, never supplied by Gene properties or serde.
     ## It belongs to the original node: adding evidence does not wrap, copy,
     ## change equality, or change the identity of an error payload.
-    classification*: FailureClassification
     diagnostics*: PropTable
 
   GeneNode = object
@@ -5353,7 +5347,6 @@ proc errorEvidence*(v: Value): ErrorEvidence {.inline.} =
 proc cloneErrorEvidence(source: ErrorEvidence): ErrorEvidence =
   result = ErrorEvidence(diagnostics: initPropTable())
   if source != nil:
-    result.classification = source.classification
     for key, value in source.diagnostics: result.diagnostics[key] = value
 
 proc updateErrorEvidence*(v: Value, update: proc (evidence: ErrorEvidence) {.closure.}) =
@@ -5380,13 +5373,8 @@ proc updateErrorEvidence*(v: Value, update: proc (evidence: ErrorEvidence) {.clo
     reset(retired) # releasing old diagnostics must happen outside the lock
     if published: return
 
-proc setFailureClassification*(v: Value, classification: FailureClassification) =
-  v.updateErrorEvidence(proc (evidence: ErrorEvidence) =
-    evidence.classification = classification)
-
 proc copyErrorEvidence*(copy, original: Value): Value =
-  ## Container copies keep the failure's classification, but get their own
-  ## diagnostic table. Mutating/rethrowing a copy must not
+  ## Container copies get their own diagnostic table. Mutating/rethrowing a copy must not
   ## update the original's trace. Fresh constructors and serde do not call this.
   let source = original.errorEvidence
   if copy.tagOf == NODE_TAG and source != nil:
@@ -5403,13 +5391,9 @@ proc inheritErrorEvidence*(copy, original: Value): Value =
   ## A transported node carries its own copy of the evidence.
   copy.copyErrorEvidence(original)
 
-proc generatedFailure*(v: Value): bool {.inline.} =
-  let evidence = v.errorEvidence
-  evidence != nil and evidence.classification != fcOrdinaryError
-
 proc hasErrorEvidence*(v: Value): bool {.inline.} =
-  ## Runtime-owned state attached to a raised error: its failure
-  ## classification and its diagnostics. Never part of serialized code.
+  ## Runtime-owned state attached to a raised error: its diagnostics. Never
+  ## part of serialized code.
   v.errorEvidence != nil
 
 proc errorProperties*(v: Value): PropTable =

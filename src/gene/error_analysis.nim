@@ -114,6 +114,7 @@ type
     constructorKnown: bool
     protocol: bool
     throwable: bool # descends from the built-in Error type
+    fault: bool     # descends from the built-in Fault type: never checked
 
   AnalyzedFunction = ref object
     proto: FunctionProto
@@ -254,7 +255,17 @@ proc builtinError(name: string): ErrorTypeSummary =
     result.ancestors = @["builtin:IoError"]
   else: discard
 
+const BuiltinFaultNames = ["Fault", "Panic", "RuntimeError", "RuntimeLaneError",
+  "ValueProtocolPending", "ValueNotHashable", "ValueOperationReentry", "OrderError",
+  "TypeError", "CallKindError", "MessageError", "ErrorContractViolation",
+  "MatchError", "PathMissing", "AssertionError", "RefError", "UnknownRef",
+  "RefNotResolved", "RefAlreadyResolved", "CircularRefResolution",
+  "InvalidRefDefinition", "ReplyAlreadySent"]
+  ## The Fault branch: defects are never part of an error row, so an operation
+  ## that can only fail with one adds nothing to the caller's obligations.
+
 proc oneError(name: string): ErrorEffectSummary =
+  if name in BuiltinFaultNames: return ErrorEffectSummary()
   ErrorEffectSummary(named: @[builtinError(name)])
 
 proc lookup(environment: ErrorEnvironment, name: string): ErrorBinding =
@@ -333,9 +344,10 @@ proc rowFromTypes(analysis: ErrorAnalysis, expressions: openArray[Value],
           return
         if binding.value.nominal == nil and binding.value.name == "Never": return
         if binding.value.kind == avProtocol and binding.value.nominal == nil and
-            binding.value.name == "Error":
+            binding.value.name in ["Error", "Throwable"]:
           collected.open = true
           return
+        if binding.value.nominal != nil and binding.value.nominal.fault: return
     if expr.kind == vkNode and expr.head.kind == vkSymbol and expr.head.symVal == "|":
       for item in expr.body: add(item, depth + 1)
       return
@@ -478,13 +490,8 @@ proc newErrorAnalysis*(root: Chunk,
     byChunk: initTable[pointer, ErrorEnvironment](),
     types: initTable[string, AnalyzedType]())
   let builtins = newErrorEnvironment(nil, "builtin", "")
-  for name in ["RuntimeError", "RuntimeLaneError", "TypeError",
-               "ErrorContractViolation", "AssertionError",
-               "MatchError", "PathMissing", "CompileError", "CallKindError",
-               "MessageError", "ParseError", "ValueProtocolPending",
-               "ValueNotHashable", "ValueOperationReentry", "OrderError",
-               "IoError", "IoBusy", "IoClosed", "IoBackpressure",
-               "JsonError", "OsError", "DbError", "EndOfStream",
+  for name in ["CompileError", "ParseError", "IoError", "IoBusy", "IoClosed",
+               "IoBackpressure", "JsonError", "OsError", "DbError", "EndOfStream",
                "DecodeError", "TimeError", "NativeLibraryError", "LimitExceeded"]:
     let typ = AnalyzedType(info: builtinError(name), constructorKnown: true, methodsKnown: true,
       throwable: true,
@@ -499,6 +506,15 @@ proc newErrorAnalysis*(root: Chunk,
       value: AbstractValue(kind: avType, name: name, typ: newSym(name)))
   builtins.values["Error"] = ErrorBinding(immutable: true,
     value: AbstractValue(kind: avProtocol, name: "Error"))
+  for name in BuiltinFaultNames:
+    let typ = AnalyzedType(info: builtinError(name), fault: true, methodsKnown: true,
+      constructorKnown: true, fields: initTable[string, Value](),
+      methods: initTable[string, AnalyzedFunction]())
+    result.types[typ.info.identity] = typ
+    builtins.values[name] = ErrorBinding(immutable: true,
+      value: AbstractValue(kind: avType, nominal: typ, name: name))
+  builtins.values["Throwable"] = ErrorBinding(immutable: true,
+    value: AbstractValue(kind: avProtocol, name: "Throwable"))
   # `Error` names the built-in root of every recoverable error. A row or a
   # catch that names it is open, so it is kept as a distinguished value
   # instead of one more named entry.
@@ -1731,6 +1747,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         let parent = state.stack[0].nominal
         value.nominal.parent = parent
         value.nominal.throwable = parent.throwable
+        value.nominal.fault = parent.fault
         value.nominal.info.ancestors = @[parent.info.identity] & parent.info.ancestors
       elif value.nominal != nil and state.stack.len > 0 and
           state.stack[0].kind == avProtocol and state.stack[0].nominal == nil and
@@ -1892,6 +1909,8 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     of opFail:
       let value = state.pop()
       if value.caught: errors.mergeErrors(value.caughtErrors)
+      elif value.nominal != nil and value.nominal.fault:
+        discard # a Fault is never part of an error row
       elif value.nominal != nil:
         errors.mergeErrors(ErrorEffectSummary(named: @[value.nominal.info]))
         let binding = analysis.dispatchProofTarget(value.nominal, environment)
