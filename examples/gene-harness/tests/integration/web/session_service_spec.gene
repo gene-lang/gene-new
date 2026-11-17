@@ -55,7 +55,7 @@
             (blocked .set false)
             (let old (match pending/.join
               (when (TaskOutcome/ok value) value)
-              (else (fail "status render did not complete"))))
+              (else (fail (Error ^_msg "status render did not complete")))))
             (let fresh (host_status ^session a/id service))
             ($assert (== old/status_revision before/status_revision))
             ($assert (!= old/status_revision fresh/status_revision))

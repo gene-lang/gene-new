@@ -3,7 +3,7 @@
 (import [byte_prefix] ^from "../public/text")
 
 (fn search_sessions [manager, query : Str, ^limit limit : Int = 50]
-  (if (> ($str/byte_size query) 256) (fail "Search query exceeds 256 bytes."))
+  (if (> ($str/byte_size query) 256) (fail (Error ^_msg "Search query exceeds 256 bytes.")))
   (let maximum ($math/max 1 ($math/min 50 limit)))
   (let revision (?? manager/metadata_revision 0))
   (let deadline (+ ($os/monotonic_ms) 150))

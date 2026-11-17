@@ -26,7 +26,7 @@
           (fn []
             (host .PluginHost:put_record "probe" %($to_str label "/started") true)
             (while true ($sleep 20))))
-        %(if fails `(fail "candidate failed") nil))))))
+        %(if fails `(fail (Error ^_msg "candidate failed")) nil))))))
 
 (fn record_of [runtime, key : Str]
   (let found (/0 ($filter (runtime/services/values/plugin_services/records "probe")
@@ -94,7 +94,7 @@
           ($assert (! (call runtime "drop_record" "a")) "deleting an absent record reports false")
           ($assert ($absent? (call runtime "read_note" "a")))
           (let listed (call runtime "read_notes"))
-          ($assert (try (listed .push {}) false catch Error true) "record views are immutable")
+          ($assert (try (listed .push {}) false catch Fault true) "record views are immutable")
         ensure (close_runtime runtime))
         (let restarted (open_runtime root "default" profile))
         (try

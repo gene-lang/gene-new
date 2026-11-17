@@ -31,14 +31,14 @@
          ^send (fn [prepared]
            (generated/.get .push prepared)
            (entered .set true)
-           (if (== mode/.get "generation_failed") (fail "generation failed"))
+           (if (== mode/.get "generation_failed") (fail (Error ^_msg "generation failed")))
            (if (== mode/.get "generation_diagnostic")
              (fail (ImageError ^code "provider_rejected" ^status 422
                ^_msg "private provider body" ^diagnostic "Unsupported image aspect ratio.")))
            (if (== mode/.get "generation_usage_error")
              (fail (ImageError ^code "image_too_large" ^_msg "Fixture output exceeds the limit."
                ^usage {^cost 0.02})))
-           (if (&& (== mode/.get "generation_failed2") (== prepared/attempt 2)) (fail "generation failed"))
+           (if (&& (== mode/.get "generation_failed2") (== prepared/attempt 2)) (fail (Error ^_msg "generation failed")))
            (if (== mode/.get "generation_wait") ($sleep 10000))
            (if (&& (== mode/.get "generation_wait2") (== prepared/attempt 2)) ($sleep 10000))
            (for id in prepared/reference_images (images .ImageHost:image_input prepared/run id))
@@ -61,8 +61,8 @@
            (if (&& (== prepared/purpose "turn") ($present? main_reply))
              (return {^text (main_reply prepared)}))
            (reviewed/.get .push prepared)
-           (if (== mode/.get "review_failed") (fail "review failed"))
-           (if (&& (== mode/.get "review_failed2") (== reviewed/.get/.size 2)) (fail "review failed"))
+           (if (== mode/.get "review_failed") (fail (Error ^_msg "review failed")))
+           (if (&& (== mode/.get "review_failed2") (== reviewed/.get/.size 2)) (fail (Error ^_msg "review failed")))
            (if (== mode/.get "review_wait") ($sleep 10000))
            (if (&& (== mode/.get "review_wait2") (== reviewed/.get/.size 2)) ($sleep 10000))
            (if (== mode/.get "review_timeout") (return {^^timeout ^usage {^cost 0.005}}))

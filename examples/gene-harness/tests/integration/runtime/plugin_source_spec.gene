@@ -25,9 +25,9 @@
      (import ^from "src/plugin_api.gene" [Plugin])
      (fn version [] %version)
      (fn init [descriptor]
-       (if %bad_init (fail "preflight failure"))
+       (if %bad_init (fail (Error ^_msg "preflight failure")))
        (Plugin ^id %id ^activate (fn [host]
-         (if %bad_activation (fail "activation failure")))))))
+         (if %bad_activation (fail (Error ^_msg "activation failure"))))))))
 
 (fn statement [id : Str, version : Int, ^replace replace : Bool = false]
   ($to_str "(register_plugin \"" id "\" (quote " (source id version) ")"
@@ -41,7 +41,7 @@
 (fn catalog_entry [runtime, id : Str = "probe"]
   (for entry in (/plugins (plugin_catalog runtime))
     (if (== entry/id id) (return entry)))
-  (fail $"missing catalog plugin ${id}"))
+  (fail (Error ^_msg $"missing catalog plugin ${id}")))
 
 (fn run_command [runtime, session : Str, text : Str]
   (let admitted (submit_command runtime/services/values/commands session text))

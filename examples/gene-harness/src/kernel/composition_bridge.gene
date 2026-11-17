@@ -86,12 +86,12 @@
     # diagnostic and cannot change a plugin's status or roll the tables back.
     (try
       (publication_metadata h snapshot)
-    catch Error
+    catch Throwable
       (record_publication_diagnostic h/snapshots snapshot
         {^kind "metadata" ^message $err/.message}))
     (try
       (notify h (CompositionChanged ^revision snapshot/id))
-    catch Error
+    catch Throwable
       (record_publication_diagnostic h/snapshots snapshot
         {^kind "notification" ^message $err/.message})))
   nil)
@@ -440,7 +440,7 @@
     ; .delete plugin/id)
   (try
     (reconcile_cordis_harness h)
-  catch Error
+  catch Throwable
     (h/plugin_errors
       .get
       ; .put plugin/id ($to_str $err)))
@@ -466,7 +466,7 @@
     (h/plugin_errors/.get .delete plugin/id))
   (try
     (reconcile_cordis_harness h)
-  catch Error
+  catch Throwable
     (var failure ($to_str $err))
     (for admission in admissions
       (h/plugin_errors/.get .put admission/plugin/id failure)))
@@ -567,7 +567,7 @@
   (var retirement_failures [])
   (try
     (set retirement_failures (begin_close_composition_state h/snapshots))
-  catch Error
+  catch Throwable
     (errors .push ($to_str $err)))
   # Only held leases stop the close. A failed retirement is reported and the
   # rest of the composition still closes.
@@ -579,10 +579,10 @@
   (set h/registry_observer nil)
   (try
     h/composition/.close
-  catch Error
+  catch Throwable
     (errors .push ($to_str $err)))
   (try (close_composition_state h/snapshots)
-    catch Error (errors .push ($to_str $err)))
+    catch Throwable (errors .push ($to_str $err)))
   (h/plugins .set (fresh_map))
   (h/composer/bridge/entries .set (fresh_map))
   (h/plugin_errors .set (fresh_map))

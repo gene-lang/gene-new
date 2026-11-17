@@ -153,7 +153,7 @@
             (save ^id $"extra-${n}" ^title $"Additional task ${n}"))
           (assert_board_outline service/runtime 12)
           ($assert ($absent? (/ui (host_status ^safe true service))))
-          (contribute h "test" "web_components" {^name "broken" ^slot "sidebar" ^render (fn [ctx] (fail "should not run"))})
+          (contribute h "test" "web_components" {^name "broken" ^slot "sidebar" ^render (fn [ctx] (fail (Error ^_msg "should not run")))})
           ($assert (== (/web_components (host_status ^safe true service)) []))
           ($assert ($absent? (/ui (/status (snapshot ^safe true service session/id)))))
         ensure (close_session_service service)))))

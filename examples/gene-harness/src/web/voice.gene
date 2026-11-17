@@ -120,7 +120,7 @@
       (warm_engine hub/speech kind peer/settings)
       (if (&& (! job/cancelled) (owns_voice? hub peer))
         (control peer {^type "engine/ready" ^kind kind}))
-    catch Error
+    catch Throwable
       (if (&& (! job/cancelled) (owns_voice? hub peer))
         (control peer {^type "engine/error" ^kind kind ^message ($to_str $err/.message)}))
     ensure (peer/warming .delete kind))))
@@ -187,7 +187,7 @@
       (capture .put "timing" timing)
       (control peer {^type "transcript/final" ^id capture/id ^text capture/text
         ^recognizer opened/row/name ^audio_ms (/ (* capture/bytes 1000) 32000) ^timing timing}))
-  catch Error
+  catch Throwable
     (set outcome "failed")
     (if (&& (! capture/cancelled) (! peer/closed))
       (control peer {^type "capture/error" ^id capture/id ^text capture/text ^message ($to_str $err/.message)}))
@@ -290,7 +290,7 @@
     (if_yes (&& (! speak/cancelled) (owns_voice? hub peer))
       (set outcome "done")
       (control peer {^type "speak/end" ^id speak/id ^bytes credit/sent}))
-  catch Error
+  catch Throwable
     (set outcome "failed")
     (if (&& (! speak/cancelled) (! peer/closed))
       (control peer {^type "speak/error" ^id speak/id ^message ($to_str $err/.message)}))
@@ -406,7 +406,7 @@
                  ^finished_ms data/finished_ms ^points (client_capture_points data)})))
           (else (voice_error "invalid_request" "Unknown voice control frame."))))
       (else (voice_error "invalid_request" "Voice frames must be text or bytes.")))
-  catch Error
+  catch Throwable
     (let code (?? $err/code "voice_error"))
     (if (&& (== ($head $err) VoiceError) peer/hello (owns_voice? hub peer)
             (["speak" "capture/start"] .contains? request/type)

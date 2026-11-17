@@ -61,7 +61,7 @@
           (calls/.get .push {^name name ^args args})
           (if (== name "get_window_state")
             (return {^structuredContent {^snapshot_id "s00000001" ^capture_id "capture-1"} ^content []}))
-          (if fail_next/.get (fail "connection lost after dispatch"))
+          (if fail_next/.get (fail (Error ^_msg "connection lost after dispatch")))
           {^content [{^type "text" ^text "dispatched"}]}))
         (let driver (open_driver ($path/join workspace "driver") ^transport transport))
         (let target (grant_window driver "alice" 123 456))

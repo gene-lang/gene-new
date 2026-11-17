@@ -5,7 +5,7 @@
 (import [manager_workspace?] ^from "../runtime/workspace_settings")
 (fn profile_names [] ["web" "manager"])
 (fn profile_named [name : Str]
-  (if_not ((profile_names) .contains? name) (fail $"unknown profile ${name}"))
+  (if_not ((profile_names) .contains? name) (fail (Error ^_msg $"unknown profile ${name}")))
   (if (== name "manager") (manager_profile (baseline_profile)) (baseline_profile)))
 
 (fn workspace_profile [root : Str, ^base supplied = nil, ^offline offline : Bool = false, ^models_root models_root = nil]

@@ -76,14 +76,14 @@
   (let store (open_media_store runtime/state_root))
   (let record (media_record store reference/id))
   (if (|| (!= record/digest reference/digest) (!= record/mime reference/mime))
-    (fail "Recorded image identity no longer matches media storage."))
+    (fail (Error ^_msg "Recorded image identity no longer matches media storage.")))
   (let encoded ($base64/encode (media_bytes store reference/id)))
   (let url $"data:${record/mime};base64,${encoded}")
   (if (== reference/encoding "base64") (return encoded))
   (if (== reference/encoding "data_url") (return url))
   (if (== reference/encoding "json_base64") (return (escaped_slashes encoded)))
   (if (== reference/encoding "json_data_url") (return (escaped_slashes url)))
-  (fail "Recorded image encoding is unsupported."))
+  (fail (Error ^_msg "Recorded image encoding is unsupported.")))
 
 (fn load_part [runtime, value]
   (if_yes (== ($head value) Map)
@@ -97,7 +97,7 @@
           (if (== value/harness_blob/kind "image_text")
             (return ($str/join ($map value/harness_blob/parts
               (fn [part] (load_part runtime part))) "")))
-          (fail "Unsupported recorded payload marker."))
+          (fail (Error ^_msg "Unsupported recorded payload marker.")))
         (if_not ($absent? value/harness_literal)
           (let result {})
           (map_for [key item] in value/harness_literal (result .put key (load_part runtime item)))

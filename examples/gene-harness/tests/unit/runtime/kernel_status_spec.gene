@@ -19,7 +19,7 @@
       (install h (Plugin ^id "version" ^activate (fn [host]
         (host .PluginHost:contribute "functions" {^name "version" ^doc "Version." ^fn (fn [] 1)}))))
       (let replacement (Plugin ^id "version" ^activate (fn [host]
-        (if_not healthy/.get (fail "replacement failed"))
+        (if_not healthy/.get (fail (Error ^_msg "replacement failed")))
         (host .PluginHost:contribute "functions" {^name "version" ^doc "Version." ^fn (fn [] 2)}))))
       (put_cordis_plugin ^^replace h replacement {^^host})
       ($assert (== (status_of h "version") "error"))

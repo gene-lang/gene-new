@@ -42,7 +42,7 @@
 
 (fn set_test_provider [runtime, callback]
   (let cell (callback_cells/.get .get runtime/root))
-  (if ($absent? cell) (fail "test provider was not installed"))
+  (if ($absent? cell) (fail (Error ^_msg "test provider was not installed")))
   (cell .set callback)
   nil)
 

@@ -4,7 +4,7 @@
 (fn main [args] : Int
   (let client (connect args/0))
   (let existing (api client "GET" "/search/sessions?q=Spotlight%20fixture&limit=50"))
-  (if existing/partial (fail "The fixture search is incomplete; inspect the host before seeding."))
+  (if existing/partial (fail (Error ^_msg "The fixture search is incomplete; inspect the host before seeding.")))
   (var index 0)
   (var created 0)
   (while (< index 12)

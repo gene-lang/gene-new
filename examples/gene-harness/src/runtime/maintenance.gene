@@ -25,9 +25,9 @@
       (return {^findings (doctor runtime/workspace)}))
     (if (== action "history")
       (return (plugin_history_page ^limit limit ^before before runtime/workspace id)))
-    (if (== id "") (fail "A plugin id is required."))
+    (if (== id "") (fail (Error ^_msg "A plugin id is required.")))
     (if_yes (== action "revert")
-      (if (!= ($head revision) Int) (fail "revert requires a historical composition revision"))
+      (if (!= ($head revision) Int) (fail (Error ^_msg "revert requires a historical composition revision")))
       (return (revert_entry ^expected expected runtime/workspace id revision)))
     (let base (composition_revision runtime/workspace))
     (let committed_revision
@@ -39,7 +39,7 @@
         (when "restore"
           (restore_entry ^h runtime/h runtime/workspace id))
         (else
-          (fail "Unknown maintenance operation."))))
+          (fail (Error ^_msg "Unknown maintenance operation.")))))
     {^action action ^id id ^revision committed_revision ^changed (!= base committed_revision)}
   ensure
     (close_runtime runtime)))

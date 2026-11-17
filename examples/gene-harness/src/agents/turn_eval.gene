@@ -137,13 +137,15 @@
               (when (TaskOutcome/error failure)
                 (set error ($to_str failure/.message))
                 (set error_line (response_error_line failure)))
-              (when (TaskOutcome/fault fault) (let message fault/.message) (set error $"panic: ${message}"))
+              (when (TaskOutcome/fault fault) (let message fault/.message)
+                (if (== ($head fault) Panic) (set error $"panic: ${message}")
+                  (do (set error ($to_str message)) (set error_line (response_error_line fault)))))
               (when TaskOutcome/cancelled
                 (if expired/.get (set error "response budget timed out") (set cancelled true)))))
           (else
             (set validated (validate_value (if ($absent? patch_result) nil patch_result/text)))))))
     catch ParticipantFailure (fail $err)
-    catch Error
+    catch Throwable
       (set error ($to_str $err/.message))
       (set error_line (response_error_line $err))
     ensure (turn/state .set (if cancelled "cancelled" "closed")))

@@ -121,7 +121,7 @@
           ^connection (fn [] {^state "ready" ^billing "plan" ^account account/.get ^access_token "SECRET_SENTINEL"})
           ^models (fn []
             (calls .set (+ calls/.get 1))
-            (if failed/.get (fail "SECRET_SENTINEL should not be cached"))
+            (if failed/.get (fail (Error ^_msg "SECRET_SENTINEL should not be cached")))
             [{^id "model" ^window 500000 ^input ["text" "image"] ^efforts ["low"] ^default_effort "low"}])})
         (let catalog (open_model_catalog ^start false workspace (fn [] [provider])))
         (try

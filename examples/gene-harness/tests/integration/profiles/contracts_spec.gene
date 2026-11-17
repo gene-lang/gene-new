@@ -67,7 +67,7 @@
           (host .PluginHost:contribute "turn_participants" {^name "profile_fault/check"
             ^begin (fn [context state value]
               (entered .set (+ entered/.get 1))
-              (fail "Mandatory profile participant failed."))}))))
+              (fail (Error ^_msg "Mandatory profile participant failed.")))}))))
         (let runtime (open_runtime root "default" (Profile ^name "mandatory" ^plugins [plugin])))
         (let definition (row runtime/h "turn_participants" "profile_fault/check"))
         (let quarantine {^digest definition/_source_digest ^message "Stored fault."})

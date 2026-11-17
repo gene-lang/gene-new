@@ -266,7 +266,8 @@
          (else "Provider operation failed."))
        ^status (if (&& (== ($head error/status) Int) (>= error/status 100) (<= error/status 599))
          error/status nil)})
-    (when (TaskOutcome/fault fault) (let message fault/.message) {^ok false ^code "provider_panic"})
+    (when (TaskOutcome/fault fault) (let message fault/.message)
+      {^ok false ^code (if (== ($head fault) Panic) "provider_panic" "provider_failed")})
     (when TaskOutcome/cancelled {^ok false ^code "timeout"})))
 
 (fn phase_failure [service, live, outcome, default_reason : Str] ^^private

@@ -9,7 +9,7 @@
   ($fs/write_text ($path/join root $"ready-${name}") "ready")
   (let deadline (+ ($os/monotonic_ms) 5000))
   (while (! ($fs/exists? ($path/join root "start")))
-    (if (>= ($os/monotonic_ms) deadline) (fail "save barrier timed out"))
+    (if (>= ($os/monotonic_ms) deadline) (fail (Error ^_msg "save barrier timed out")))
     ($sleep 1))
   (try
     (write_models_file root state/config expected)

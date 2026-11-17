@@ -111,7 +111,10 @@
   (match (supervised_call policy/normalize [context input] limits) ^!exhaustive
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail error))
-    (when (TaskOutcome/fault fault) (let message fault/.message) (initiator_error $"Initiator ${policy/name} panicked: ${message}" ^code "unavailable"))
+    (when (TaskOutcome/fault fault) (let message fault/.message)
+      (if (== ($head fault) Panic)
+        (initiator_error $"Initiator ${policy/name} panicked: ${message}" ^code "unavailable")
+        (fail fault)))
     (when TaskOutcome/cancelled (initiator_error $"Initiator ${policy/name} exceeded its budget." ^code "unavailable"))))
 
 (fn resolve_initiator [runtime, session : Str, initiator : Str, text : Str, input, continuation]

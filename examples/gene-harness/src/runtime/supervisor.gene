@@ -34,7 +34,7 @@
   (if_yes hosting
     ($fs/make_dir $"${workspace}/.gene-harness")
     (set launch_lock (try_lock_wait $"${workspace}/.gene-harness/launcher_lock" 250))
-    (if ($absent? launch_lock) (fail "A launcher is already running for this workspace."))
+    (if ($absent? launch_lock) (fail (Error ^_msg "A launcher is already running for this workspace.")))
     (if (== parsed/options/managed true) (set logger (open_host_log workspace))))
   (fn emit [line : Str]
     (if ($absent? logger)
@@ -87,7 +87,7 @@
       (set source_only false)
       (if (== notice/normal true) (set recovery false))
       (if (|| (!= ($head restart_port) Int) (< restart_port 1024) (> restart_port 65535))
-        (fail "Restart handoff did not retain a valid listening port."))
+        (fail (Error ^_msg "Restart handoff did not retain a valid listening port.")))
       (continue))
     (if (|| recovery ready ([130 143 -2 -15] .contains? status)) (return status))
     (if (&& packaged (! entered))

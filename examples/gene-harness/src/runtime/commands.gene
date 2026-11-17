@@ -127,7 +127,7 @@
 # A receipt stores frozen data, which a live object such as `workspace` cannot be.
 (fn displayable_result [value]
   (if ($absent? value) (return "nil"))
-  (try ($freeze value) catch Error ($to_str value)))
+  (try ($freeze value) catch Throwable ($to_str value)))
 
 (fn run_command [ctx]
   (let forms ($into ($parse/read_all ^source ctx/id ^^locs ctx/raw) []))
@@ -350,7 +350,9 @@
           error/.message $"line ${location}: ${error/.message}")))
       (when (TaskOutcome/fault fault) (let message fault/.message)
         (record .put "status" "failed")
-        (record .put "display" message))
+        (if_not (|| (== ($head fault) Panic) ($absent? fault/code)) (record .put "error_code" fault/code))
+        (record .put "display" (if (|| (== ($head fault) Panic) (== record/ui_action true))
+          message $"line ${(?? fault/line "?")}: ${message}")))
       (when TaskOutcome/cancelled
         (record .put "status" "cancelled")
         (record .put

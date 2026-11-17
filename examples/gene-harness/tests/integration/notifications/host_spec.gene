@@ -73,7 +73,7 @@
             ($assert (listed h receipt/id))
             (let detail (call h "notification_detail" receipt/id))
             ($assert (== detail/source (if (== receipt/id foreign/id) "other_producer" "operator")))
-            ($assert (try (detail .put "title" "mutated") false catch Error true)
+            ($assert (try (detail .put "title" "mutated") false catch Fault true)
               "facade returned mutable public data"))
           (let listed_snapshot (call h "notification_list"))
           ($assert (try (listed_snapshot/messages .push {}) false catch Error true))

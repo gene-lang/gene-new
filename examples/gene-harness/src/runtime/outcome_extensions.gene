@@ -105,7 +105,10 @@
       (when (TaskOutcome/error failure)
         (fail (ParticipantFailure ^participant definition/name ^phase "outcome/schema"
           ^code "callback_error" ^cause failure ^_msg $"Outcome schema ${definition/name} failed: ${failure/.message}")))
-      (when (TaskOutcome/fault fault) (let message fault/.message) (schema_failure definition/name message))
+      (when (TaskOutcome/fault fault) (let message fault/.message)
+        (if (== ($head fault) Panic) (schema_failure definition/name message)
+          (fail (ParticipantFailure ^participant definition/name ^phase "outcome/schema"
+            ^code "callback_error" ^cause fault ^_msg $"Outcome schema ${definition/name} failed: ${message}"))))
       (when TaskOutcome/cancelled (schema_failure definition/name "Outcome schema cancelled or exceeded its budget."))))
     (if (verdict .has_key? "error")
       (return {^error $"Outcome extension ${definition/name}: ${verdict/error}"}))

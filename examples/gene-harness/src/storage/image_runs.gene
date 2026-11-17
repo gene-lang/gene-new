@@ -11,7 +11,7 @@
   (if ($absent? stored/image_run_blob) (return stored))
   (let value ($serde/read_data (read_body runtime stored/image_run_blob)))
   (if (|| (!= value/id stored/id) (!= value/session session) (!= value/round round))
-    (fail "Saved image-run identity is damaged."))
+    (fail (Error ^_msg "Saved image-run identity is damaged.")))
   value)
 
 (fn save_image_run [runtime, state]
@@ -38,7 +38,7 @@
 
 (fn recall_image_run [runtime, session : Str, id : Str]
   (let state (image_run_by_id runtime session id))
-  (if ($absent? state) (fail "Unknown image run in this conversation."))
+  (if ($absent? state) (fail (Error ^_msg "Unknown image run in this conversation.")))
   ($serde/write_data state))
 
 (fn image_catalog [runtime, session : Str]

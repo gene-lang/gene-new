@@ -290,7 +290,7 @@
                 (DescriptorContext ^module_id id ^core_interface (entry_core_interface entry))
                 limits))
             (if (|| (!= ($head plugin) Plugin) (!= plugin/id id) (! ($runtime/callable? plugin/activate)))
-              (fail "init must return the matching Plugin with a callable activate"))
+              (fail (Error ^_msg "init must return the matching Plugin with a callable activate")))
             (let data ($thaw ($freeze (descriptor_data plugin))))
             (remember_descriptor ^mode "restricted"
               workspace/store

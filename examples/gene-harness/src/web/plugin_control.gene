@@ -8,7 +8,7 @@
   (PluginControl ^runtime runtime ^jobs ($cell {}) ^tasks ($cell {}) ^closed ($cell false)))
 
 (fn start_plugin_job [control : PluginControl, kind : Str, request]
-  (if control/closed/.get (fail "plugin manager is stopping"))
+  (if control/closed/.get (fail (Error ^_msg "plugin manager is stopping")))
   (if (== kind "apply")
     (map_for [id job] in control/jobs/.get
       (if (&& (== job/kind "apply") (== job/plan request/id) (== job/state "running"))

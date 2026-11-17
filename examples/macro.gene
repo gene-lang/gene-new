@@ -83,7 +83,7 @@
   (if enabled when_enabled when_disabled))
 
 (show "syntax chosen during expansion"
-  (choose true (+ 20 22) (fail "unselected")) 42)
+  (choose true (+ 20 22) (fail (Error ^_msg "unselected"))) 42)
 
 # --- 5. Local macros call helpers and read live captured bindings --------
 

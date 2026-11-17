@@ -4247,15 +4247,34 @@ proc capturesScopeChain(v: Value, owner: Scope, budget: var int,
         return true
     false
   of CYCLE_OBJECT_TAG:
-    # A Cell's value is walked; trial deletion counts its edges. Envs,
-    # streams, Tasks, and other objects are not: their closures are left to
-    # the object-cycle path or stay retained.
+    # A Cell's value and a settled Task's payload are walked; trial deletion
+    # counts their edges (expandRetireTaskState). A task keeps its result until
+    # it is awaited, so a closure result that reaches the task's own handle
+    # closes Task -> result -> scope -> Task. Envs, streams, and other objects
+    # are not walked: their closures are left to the object-cycle path or stay
+    # retained.
     if seen.containsOrIncl(bits):
       return false
     let data {.cursor.} = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
-    data.objKind == okCell and
+    case data.objKind
+    of okCell:
       capturesScopeChain(CellData(data).value, owner, budget, seen,
                          nested = true)
+    of okTask:
+      let state {.cursor.} = cast[TaskData](data).state
+      if state == nil:
+        return false
+      # The walk only reads; `seen` keeps it from re-entering this lock.
+      acquire(state.lock)
+      try:
+        state.done and
+          (capturesScopeChain(state.result, owner, budget, seen, nested = true) or
+           capturesScopeChain(state.errorValue, owner, budget, seen, nested = true) or
+           capturesScopeChain(state.panicValue, owner, budget, seen, nested = true))
+      finally:
+        release(state.lock)
+    else:
+      false
   else:
     false
 

@@ -63,7 +63,7 @@
           ($assert (try
             (compact_history ^policy {^trigger_bytes 50 ^target_bytes 40
               ^retain_rounds ["pinned"]} runtime "default" "" 1000
-              (fn [request] (fail "unfittable policy called the model")))
+              (fn [request] (fail (Error ^_msg "unfittable policy called the model"))))
             false
           catch Error ($str/contains? $err/.message "cannot fit")))
           ($assert (== ($serde/write_data (history_state runtime "default")) before)

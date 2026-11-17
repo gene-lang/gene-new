@@ -30,12 +30,12 @@
              {^model "probe" ^effort "none" ^timeout_ms 30})
            ^prepare (fn [call]
              (if (== mode/.get "prepare")
-               (fail "prepare failed"))
+               (fail (Error ^_msg "prepare failed")))
              {^messages call/messages})
            ^send (fn [prepared]
              (attempts .set (+ attempts/.get 1))
              (if (== mode/.get "send_error")
-               (fail "provider failed"))
+               (fail (Error ^_msg "provider failed")))
              (if (== mode/.get "large_error")
                (then
                  (let pieces [])

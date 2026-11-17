@@ -32,7 +32,7 @@
           (let subscription
             (subscribe_publications h/snapshots
               (fn [previous snapshot]
-                (if armed/.get (fail "observer failed after commit")))))
+                (if armed/.get (fail (Error ^_msg "observer failed after commit"))))))
           (put_cordis_plugin h (Plugin ^id "late" ^activate (fn [host] nil)) {^^host})
           ($assert (== (status_of h "late") "ready") (status_of h "late"))
           (let snapshot (current_snapshot h/snapshots))

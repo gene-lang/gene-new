@@ -25,4 +25,4 @@
   (if_yes (== action "question")
     ($fs/write_text ($path/join root "ask-question") "go")
     ($println "The next model call will ask a question.") (return 0))
-  (fail "Use batch or question."))
+  (fail (Error ^_msg "Use batch or question.")))

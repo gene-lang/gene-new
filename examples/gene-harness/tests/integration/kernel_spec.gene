@@ -49,7 +49,7 @@
             (try
               (payload .put "doc" "changed")
               false
-            catch Error
+            catch Fault
               true)
             "published registry payload is mutable")
           (let response ($cell nil))

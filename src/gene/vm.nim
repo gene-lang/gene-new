@@ -2595,6 +2595,7 @@ proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
 proc buildThrowableTypes(root: Scope)
 proc errorDisplayMessage*(error: ref GeneError, scope: Scope): string
 proc errorDiagnosticMessage*(error: ref GeneError, scope: Scope): string
+proc errorCauseChain*(error: ref GeneError, scope: Scope): string
 proc enforceDeferredErrors(value, errorType: Value, where: string, scope: Scope)
 proc typeExprLabel(expr: Value): string
 proc moduleRootScope(scope: Scope): Scope

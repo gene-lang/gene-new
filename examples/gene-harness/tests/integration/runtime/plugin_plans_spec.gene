@@ -40,7 +40,7 @@
           (let before (current_snapshot runtime/h/snapshots))
           (let old ((Path "fn") (row runtime/h "functions" "version")))
           (let candidate (version 2 closed))
-          (let broken (Plugin ^id "broken" ^activate (fn [host] (fail "candidate failed"))))
+          (let broken (Plugin ^id "broken" ^activate (fn [host] (fail (Error ^_msg "candidate failed")))))
           ($assert
             (try
               (apply_plugin_set
@@ -102,7 +102,7 @@
                 (fn []
                   nil)
                 (fn []
-                  (fail "commit must not run")))
+                  (fail (Error ^_msg "commit must not run"))))
               "unexpected success"
             catch Error
               $err/.message))

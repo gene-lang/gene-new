@@ -93,7 +93,8 @@ proc testDiagnostic(error: ref GeneError, phase: string,
               else: runtimeErrorValue(scope, error.msg)
   props["error_type"] = if value.kind == vkNode: value.head
                         else: builtInTypeHead(scope, "RuntimeFault")
-  props["message"] = newStr(errorDisplayMessage(error, scope))
+  props["message"] = newStr(errorDisplayMessage(error, scope) &
+    errorCauseChain(error, scope))
   props["phase"] = newStr(phase)
   props["assertion"] = newBool(matchesTypeExpr(
     builtInTypeHead(scope, "AssertionFault"), value, scope))

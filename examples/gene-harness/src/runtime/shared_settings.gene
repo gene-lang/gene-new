@@ -27,7 +27,7 @@
     (return {^values {} ^digest (shared_settings_digest {}) ^errors [] ^root root}))
   (try
     (let values ($serde/read_data ($fs/read_text path)))
-    (if (!= ($head values) Map) (fail "settings.gene must be an inert map"))
+    (if (!= ($head values) Map) (fail (Error ^_msg "settings.gene must be an inert map")))
     {^values values ^digest (shared_settings_digest values) ^errors [] ^root root}
   catch Error
     (let reason ($to_str "settings.gene cannot be read: " (?? $err/.message $err)))

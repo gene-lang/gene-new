@@ -15,7 +15,7 @@
 (fn named [catalog, id]
   (for item in catalog/plugins
     (if (== item/id id) (return item)))
-  (fail $"missing catalog entry ${id}"))
+  (fail (Error ^_msg $"missing catalog entry ${id}")))
 
 (fn producer []
   (Plugin ^id "producer" ^provides [["functions" "answer"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "answer" ^doc "The answer." ^fn (fn [] 42)}) (host .PluginHost:contribute "functions" {^name "extra" ^doc "An undeclared contribution." ^fn (fn [] 7)}))))
@@ -194,7 +194,7 @@
             ($assert (== retired/state "pending"))
             ($assert (! retired/requires/0/satisfied))
             ($assert (/satisfied (requirement_status lease/snapshot ["$registries" "extensions"])))
-            ($assert (try (lease/snapshot/registry_owners .put "extensions" {}) false catch Error true))
+            ($assert (try (lease/snapshot/registry_owners .put "extensions" {}) false catch Fault true))
           ensure (release_snapshot runtime/h/snapshots lease))
           (set_plugin_enabled runtime/workspace runtime/h "extension_owner" true)
           ($assert (== (/state (named (plugin_catalog runtime) "extension_consumer")) "ready"))

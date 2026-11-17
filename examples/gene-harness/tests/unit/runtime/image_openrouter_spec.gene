@@ -179,7 +179,7 @@
 
   (it "bounds responses and rejects invalid counts and encodings without exposing content" []
     (let prepared {^body {} ^reference_images [] ^run "run" ^timeout_ms 100})
-    (let source (fn [run id] (fail "No images expected")))
+    (let source (fn [run id] (fail (Error ^_msg "No images expected"))))
     (for payload in [{^data []} {^data [{} {}]} {^data [{^b64_json "!secret!"}]}]
       (rejected (if (== payload/data/.size 1) "invalid_image" "invalid_image_count")
         (fn [] (send_openrouter_image prepared source ^key_source (fn [] "fixture")

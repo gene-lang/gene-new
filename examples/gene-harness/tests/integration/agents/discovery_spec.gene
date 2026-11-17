@@ -44,7 +44,7 @@
               ^tags ["bicycle" "intake"]
               ^docs ["probe/guide"]
               ^fn (fn [^title title : Str]
-                    (fail "discovery executed a function"))})
+                    (fail (Error ^_msg "discovery executed a function")))})
           (contribute
             h
             "probe"
@@ -55,7 +55,7 @@
               ^tags ["bicycle"]
               ^slot "sidebar"
               ^render (fn [context]
-                        (fail "discovery executed a renderer"))})
+                        (fail (Error ^_msg "discovery executed a renderer")))})
           (let first (discover ^limit 1 h "BICYCLE"))
           ($assert (== first/total 3))
           ($assert (== first/next_offset 1))

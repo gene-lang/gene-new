@@ -114,7 +114,7 @@
                 (mod plugin
                   (import ^from "src/plugin_api.gene" [Plugin])
                   (fn init [descriptor]
-                    (Plugin ^id "example" ^activate (fn [host] (fail "broken replacement"))))))))
+                    (Plugin ^id "example" ^activate (fn [host] (fail (Error ^_msg "broken replacement")))))))))
           ($assert (== broken/status "error"))
         ensure
           (close_runtime runtime))

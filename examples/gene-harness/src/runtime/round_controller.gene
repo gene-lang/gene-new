@@ -221,7 +221,7 @@
           ^input batch/input
           ^on_admit (fn [receipt] (finish_channel_admission queues batch/id receipt))))
         {^kind "admitted" ^batch batch/id ^receipt admitted}
-      catch Error
+      catch Throwable
         (let failure $err)
         (let recorded (round_for_request controller session batch/request_id))
         (if_yes ($present? recorded)
@@ -320,7 +320,7 @@
   (if_yes (&& (== saved/state "paused") (== saved/continuation_mode "automatic")
               (! controller/runtime/stopping/.get))
       (try (continue_round ^operator false controller session saved/id "automatic")
-      catch Error (stop_continuation controller session saved/id $err)))
+      catch Throwable (stop_continuation controller session saved/id $err)))
   saved)
 
 (fn finish_round_unlocked [controller : RoundController, session : Str, receipt, outcome]
@@ -668,7 +668,7 @@
       ^expected_transport (if operator (then nil) (else old/selection/transport))
       ^limits old/effective_limits ^continuation descriptor
       ^input (?? descriptor/input nil))
-  catch Error
+  catch Throwable
     (let failure $err)
     (let admitted (round_receipt controller session successor_id))
     (if (&& ($present? admitted) (== admitted/request_id request_id)) (return admitted))
@@ -684,7 +684,7 @@
     (if_not ($absent? receipt/continuation_stop) (continue))
     (if (|| (== receipt/continuation_mode "automatic") ($present? receipt/continuation_intent))
       (try (continue_round ^operator false controller session receipt/id (?? receipt/continuation_mode "manual"))
-        catch Error (stop_continuation controller session receipt/id $err))))
+        catch Throwable (stop_continuation controller session receipt/id $err))))
   nil)
 
 (fn answer_round [controller : RoundController, session : Str, batch_id : Str, values,
@@ -835,7 +835,7 @@
             (let batch (core_state controller/runtime/events "session" session $"questions/${receipt/questions/id}"))
             (if (&& ($present? batch) (== batch/status "answered") (== batch/intent "continue"))
               (continue_answered_round controller session receipt batch)))))))
-    catch Error
+    catch Throwable
       (append_core_event controller/runtime/events "session" session
         {^type "trace" ^text $"answered round did not resume: ${$err/.message}" ^^ignorable})))
   pending/.size)

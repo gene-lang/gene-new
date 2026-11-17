@@ -50,7 +50,7 @@
             delegated/.get
             ($runtime/with_context caller_context
               (fn [] (run_at (+ index 1) value))))))
-    catch Error
+    catch Throwable
       ($runtime/with_context caller_context
         (fn []
           (hook_failure runtime context/session "request/prepare"
@@ -71,7 +71,7 @@
           (fn [] (listener/run input))))
       (if_not ($absent? decision)
         (return (normalize_history_policy decision)))
-    catch Error
+    catch Throwable
       ($runtime/with_context caller_context
         (fn []
           (hook_failure runtime context/session "history/compact"

@@ -8,8 +8,8 @@
 (fn candidate [url]
   {^name "example" ^doc "Model snapshot fixture." ^auto 0
    ^transport {^adapter "openai_chat" ^base_url url ^credential {^env "EXAMPLE_KEY"}}
-   ^connection (fn [] (fail "connection probed in selection"))
-   ^models (fn [] (fail "models probed in selection"))
+   ^connection (fn [] (fail (Error ^_msg "connection probed in selection")))
+   ^models (fn [] (fail (Error ^_msg "models probed in selection")))
    ^configure (fn [model effort timeout]
      {^model (?? model "large") ^effort effort ^timeout_ms timeout})
    ^prepare (fn [call] call) ^send (fn [request] {^text "done"})})

@@ -380,7 +380,7 @@
                 (import ^from "src/plugin_api.gene" [Plugin])
                 (fn init [descriptor]
                   (Plugin ^id "example" ^activate (fn [host]
-                    (fail "replacement failed"))))))))
+                    (fail (Error ^_msg "replacement failed")))))))))
           (let replacement (register_plugin ^^replace
             runtime/workspace runtime/h "example" broken))
           ($assert (== replacement/state "quarantined")

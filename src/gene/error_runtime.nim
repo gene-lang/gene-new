@@ -691,6 +691,39 @@ proc errorDisplayMessage*(error: ref GeneError, scope: Scope): string =
   if typed: return value.head.typeName
   "ordinary error"
 
+proc errorCauseChain*(error: ref GeneError, scope: Scope): string =
+  ## The `_cause` chain under a reported Throwable, one
+  ## `caused by: Type: message` line per link (§4.9). Depth is capped at 8 and
+  ## each link's text is bounded: a chain carries untrusted messages.
+  const maxDepth = 8
+  if not error.hasErrVal: return ""
+  let context = if scope != nil: scope
+                elif activeVmScope != nil: activeVmScope[] else: builtinsScope()
+  var current = error.errVal
+  var depth = 0
+  while current.kind == vkNode and current.head.kind == vkType:
+    let cause = current.props.getOrDefault("_cause", NIL)
+    if cause.kind != vkNode or cause.head.kind != vkType: break
+    if depth == maxDepth:
+      result.add "\n  ... further causes omitted"
+      break
+    let name = cause.head.typeName
+    var text = ""
+    try:
+      let formatted = throwableMessage(cause, context)
+      if formatted.ok: text = formatted.text
+    except CatchableError:
+      discard
+    var line = boundedRuntimeSummary(if text.len > 0: name & ": " & text else: name)
+    let evidence = cause.errorEvidence
+    if evidence != nil and evidence.diagnostics.hasKey("line"):
+      let file = evidence.diagnostics.getOrDefault("file", NIL)
+      line.add " (at " & (if file.kind == vkString: file.strVal else: "?") & ":" &
+        $evidence.diagnostics["line"].intVal & ")"
+    result.add "\n  caused by: " & line
+    current = cause
+    inc depth
+
 proc errorDiagnosticMessage*(error: ref GeneError, scope: Scope): string =
   ## Terminal diagnostics retain the nominal label while obtaining display
   ## text from the error's `message`. Untyped/compiler diagnostics keep their
@@ -703,7 +736,8 @@ proc errorDiagnosticMessage*(error: ref GeneError, scope: Scope): string =
       error.errVal.head.typeName
     else: ""
   let message = errorDisplayMessage(error, scope)
+  let chain = errorCauseChain(error, scope)
   if label.len > 0 and message != label and not message.startsWith(label & ":"):
-    label & ": " & message
+    label & ": " & message & chain
   else:
-    message
+    message & chain

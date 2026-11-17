@@ -5,19 +5,19 @@
 (fn stylesheet_url [value]
   (if ($absent? value) (return ""))
   (if (!= ($head value) (quote link))
-    (fail "A browser stylesheet must be prepared with web/stylesheet before activation."))
+    (fail (Error ^_msg "A browser stylesheet must be prepared with web/stylesheet before activation.")))
   (let props ($props value))
   (let base ($web/asset_base))
   (for route in ($web/published_routes)
     (let url (if (== base "/") $"/${route/file}" $"${base}/${route/file}"))
     (if (&& (== props/rel "stylesheet") (== props/href url)
             ($str/starts_with? route/content_type "text/css")) (return url)))
-  (fail "The browser stylesheet is not a published asset."))
+  (fail (Error ^_msg "The browser stylesheet is not a published asset.")))
 
 (fn validate_browser_client [payload]
   (if (|| (!= ($head payload) Map) (!= ($head payload/name) Str)
           ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match payload/name)))
-    (fail "A browser client needs a stable contribution name."))
+    (fail (Error ^_msg "A browser client needs a stable contribution name.")))
   (let url ($web/module_url payload/asset))
   (let style (stylesheet_url payload/style))
   {^name payload/name ^title (?? payload/title payload/name) ^url url ^stylesheet style})

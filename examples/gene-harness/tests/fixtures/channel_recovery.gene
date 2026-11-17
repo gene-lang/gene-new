@@ -38,7 +38,7 @@
       (return "(Outcome ^questions [{^id \"color\" ^prompt \"Choose a color\"}] ^reply \"Choose a color.\")"))
     (if (&& (== count 1) (["continuation_claim" "replacement_saved" "manual_hold" "superseded_boundary"] .contains? point))
       (return "(Outcome ^prompt \"Finish the old task.\" ^reply \"Inspected.\")"))
-    (if (== point "failed_hold") (fail "Injected provider failure"))
+    (if (== point "failed_hold") (fail (Error ^_msg "Injected provider failure")))
     (if (== point "normal")
       ($assert (! ($str/contains? ($to_str request/messages) "REVOKED_BEFORE_ADMISSION"))))
     "(Outcome ^^done ^reply \"Complete.\")"))
@@ -67,7 +67,7 @@
 (fn session_id [service]
   (let state (snapshot service/runtime/services/values/channel_queues))
   (map_for [id binding] in state/bindings (return binding/session))
-  (fail "No channel binding survived the crash"))
+  (fail (Error ^_msg "No channel binding survived the crash")))
 
 (fn wait_round [service, session : Str]
   (loop

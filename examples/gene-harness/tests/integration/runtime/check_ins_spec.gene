@@ -280,7 +280,7 @@
         (configure runtime {^turn_limit 10 ^check_in_turns 3})
         (let checks ($cell 0))
         (install_engine runtime (fn [request] (checks .set (+ checks/.get 1)) (verdict "advancing")))
-        (let controller (test_controller runtime (fn [call] "(fail \"test_quoted_keys still fails\")")))
+        (let controller (test_controller runtime (fn [call] "(fail (Error ^_msg \"test_quoted_keys still fails\"))")))
         (try
           (let round (submit_round controller "default" "loop" 1 "Fix the quoted keys test."))
           (wait_for (fn [] (settled? controller round/id)) "The loop was not paused.")

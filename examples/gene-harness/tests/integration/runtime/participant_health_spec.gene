@@ -147,7 +147,7 @@
       (fn [root]
         (let first (open_runtime root "default" (profile)))
         (register_plugin ^^replace first/workspace first/h "faulty" (fault_source "error"))
-        (let first_controller (test_controller first (fn [request] (fail "The faulty begin must precede the model."))))
+        (let first_controller (test_controller first (fn [request] (fail (Error ^_msg "The faulty begin must precede the model.")))))
         (try
           ($assert (== (/state (wait_round first_controller (submit_round first_controller "default" "fail" 1 "Start."))) "failed"))
         ensure (close_round_controller first_controller) (close_runtime first))

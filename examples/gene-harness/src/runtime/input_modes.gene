@@ -72,7 +72,8 @@
     (match cleanup/.join
       (when (TaskOutcome/ok value) nil)
       (when (TaskOutcome/error error) ($println $"Input mode cleanup: ${error/.message}"))
-      (when (TaskOutcome/fault fault) (let message fault/.message) ($println $"Input mode cleanup panic: ${message}"))
+      (when (TaskOutcome/fault fault) (let message fault/.message)
+        ($println (if (== ($head fault) Panic) $"Input mode cleanup panic: ${message}" $"Input mode cleanup: ${message}")))
       (else ($println "Input mode cleanup was cancelled."))))
   nil)
 

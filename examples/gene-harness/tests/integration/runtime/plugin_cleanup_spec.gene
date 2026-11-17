@@ -40,7 +40,7 @@
           ($assert (== closed/.get [1 2]))
           (install h (Plugin ^id "broken" ^activate (fn [host]
             (host .PluginHost:defer (fn [] (closed/.get .push "failed")))
-            (fail "activation failed"))))
+            (fail (Error ^_msg "activation failed")))))
           ($assert (== (status_of h "broken") "error"))
           ($assert (== closed/.get [1 2 "failed"]))
           (uninstall h "broken")

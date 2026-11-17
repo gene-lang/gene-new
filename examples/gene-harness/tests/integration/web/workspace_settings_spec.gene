@@ -80,7 +80,7 @@
               (host .PluginHost:contribute "settings"
                 {^key "setting_probe/level" ^label "Level" ^group "Probe" ^doc "A probe setting."
                  ^type "int" ^default 3 ^applies "next_round"
-                 ^validate (fn [value] (if (> value 9) (fail "too high")))})))
+                 ^validate (fn [value] (if (> value 9) (fail (Error ^_msg "too high"))))})))
             {})
           ($assert (== (/value (shown .setting "setting_probe/level")) 3))
           ($assert (== (/value (shown .set_setting "setting_probe/level" 5)) 5))

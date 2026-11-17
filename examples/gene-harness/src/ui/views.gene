@@ -22,7 +22,9 @@
   (match outcome
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail (WebComponentError ^_msg error/.message)))
-    (when (TaskOutcome/fault fault) (let message fault/.message) (fail (WebComponentError ^_msg $"component render panicked: ${message}")))
+    (when (TaskOutcome/fault fault) (let message fault/.message)
+      (fail (WebComponentError ^_cause fault
+        ^_msg (if (== ($head fault) Panic) $"component render panicked: ${message}" message))))
     (else (fail (WebComponentError ^_msg "component render exceeded its budget or was cancelled")))))
 
 (fn render_component [h, callback, context, ^interactive interactive : Bool = false, ^sidebar sidebar : Bool = false]

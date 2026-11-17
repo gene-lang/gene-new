@@ -7,8 +7,11 @@
 (fn invoke_bounded [callable, argument, limits : ExecutionLimits]
   (var program (quote ($runtime/guard_call callable argument)))
   (var guarded
-    (eval ^in (env ^bindings {^callable callable ^argument argument} ^imports [$runtime] ^policy {^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
-      program))
+    (try
+      (eval ^in (env ^bindings {^callable callable ^argument argument} ^imports [$runtime] ^policy {^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
+        program)
+    catch Fault
+      (fail (HarnessError ^_msg $err/.message ^_cause $err))))
   (if guarded/ok
     guarded/value
     (fail (HarnessError ^_msg $"plugin panic: ${guarded/message}"))))
@@ -24,7 +27,10 @@
     (when (TaskOutcome/error error)
       (fail error))
     (when (TaskOutcome/fault fault) (let message fault/.message)
-      (fail (HarnessError ^_msg $"plugin panic: ${message}" ^_cause fault)))
+      # The plugin boundary turns a plugin's defect into a HarnessError and keeps
+      # the defect as the cause.
+      (fail (HarnessError ^_cause fault
+        ^_msg (if (== ($head fault) Panic) $"plugin panic: ${message}" message))))
     (when TaskOutcome/cancelled
       (fail (HarnessError ^_msg "plugin invocation was cancelled or exceeded its deadline")))))
 
