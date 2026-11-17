@@ -194,6 +194,7 @@
   (match task/.join
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail error))
+    (when (TaskOutcome/fault fault) (fail fault))
     (else (auth_error "ChatGPT refresh was interrupted; retry after the host recovers"))))
 
 (fn id_token_expired? [token, now : Int]
@@ -202,7 +203,9 @@
     (let parts ($str/split token "."))
     (let claims ($json/parse ($binary/decode_utf8 (decode_url parts/1))))
     (&& (== ($head claims/exp) Int) (<= claims/exp (- now 5)))
-  catch Error false))
+  # The token is untrusted data: a malformed one is simply not known to be
+  # expired, whatever shape of failure reading it produces.
+  catch Throwable false))
 
 (fn finish_chatgpt_refresh [current, verifier]
   (let tokens current/pending_refresh)

@@ -21,6 +21,7 @@
   (match task/.join
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail error))
+    (when (TaskOutcome/fault fault) (fail fault))
     (else ($assert false "authentication fixture was cancelled"))))
 
 (fn get [url : Str]
