@@ -1333,12 +1333,12 @@ suite "modules — built-in identity and scope hygiene":
     # `Boom` implements module A's `Error`; the importer checks `^errors [Boom]`
     # against its own built-in `Error`. These must be the same protocol value.
     writeModule("erra.gene",
-      "(type Boom ^props {^message Str} ^impl [Error]) " &
-      "(impl Error for Boom) " &
-      "(fn boom ^errors [Boom] [] (fail (Boom ^message \"x\")))")
+      "(type Boom : Error) " &
+      " " &
+      "(fn boom ^errors [Boom] [] (fail (Boom ^_msg \"x\")))")
     check runProgram("(import [Boom, boom] ^from \"./erra\") " &
       "(fn f ^errors [Boom] [] (boom)) " &
-      "(try (f) catch Boom $err/message)").print() == "\"x\""
+      "(try (f) catch Boom $err/.message)").print() == "\"x\""
 
   test "gene exposes builtins and stdlib namespaces without shadowing":
     check runProgram("[(== gene/Error Error) " &
@@ -2079,7 +2079,7 @@ suite "modules — the sandbox loader (design §D5)":
       "  (top_tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"bad_top.gene\" ^grants [] ^shared [] " &
       "    ^policy {^max_memory_mb 16 ^timeout_ms 100}}) " &
-      "  \"missing\" catch Error $err/message)) " &
+      "  \"missing\" catch Error $err/.message)) " &
       "(top_tx .discard) top_error"), scope).strVal
     check "timeout" in topMessage
     let callMessage = run(compileSource(
@@ -2090,7 +2090,7 @@ suite "modules — the sandbox loader (design §D5)":
       "    ^policy {^max_memory_mb 16 ^timeout_ms 100}})) " &
       "(var call_module (call_generation .module)) " &
       "(var call_error (try (call_module/spin) \"missing\" " &
-      "  catch Error $err/message)) " &
+      "  catch Error $err/.message)) " &
       "(call_tx .discard) call_error",
       useLocalSlots = false), scope).strVal
     check "timeout" in callMessage
@@ -2113,7 +2113,7 @@ suite "modules — the sandbox loader (design §D5)":
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"large_macro.gene\" ^grants [] ^shared [] " &
       "    ^policy {^max_memory_mb 16 ^timeout_ms 100}}) " &
-      "  \"missing\" catch Error $err/message)) " &
+      "  \"missing\" catch Error $err/.message)) " &
       "(tx .discard) compile_error"), scope).strVal
     check "timeout" in message
     check app.moduleCacheEntryCount() == beforeModules
@@ -2176,7 +2176,7 @@ suite "modules — the sandbox loader (design §D5)":
         "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
         "    ^entry \"" & entry & "\" ^grants [] ^shared [] " &
         "    ^policy " & policy & "}) " &
-        "  \"missing\" catch Error $err/message)) " &
+        "  \"missing\" catch Error $err/.message)) " &
         "(tx .discard) message"), scope).strVal
 
     check "compile timeout" in prepareError(
@@ -2199,7 +2199,7 @@ suite "modules — the sandbox loader (design §D5)":
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
       "    ^entry \"native.gene\" ^grants [\"ffi\"] ^shared [] " &
       "    ^policy {^max_memory_mb 16 ^timeout_ms 1000}}) " &
-      "  \"missing\" catch Error $err/message)) " &
+      "  \"missing\" catch Error $err/.message)) " &
       "(tx .discard) message"), scope).strVal
     check "disables FFI" in message
 

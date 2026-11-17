@@ -48,7 +48,7 @@
   (try
     (response 200 {^theme name ^revision (themes_revision themes) ^stylesheet (theme_preview_asset name themes)})
   catch Error
-    (response 400 {^code "invalid_request" ^message ($to_str $err/message)})))
+    (response 400 {^code "invalid_request" ^message ($to_str $err/.message)})))
 
 (fn request_appearance [request, runtime = nil, safe : Bool = false]
   (appearance_answer (read_saved (?? request/headers/cookie "")) (installed_themes runtime safe)))

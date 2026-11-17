@@ -20,13 +20,13 @@
 
 (fn ^^private validate_record_name [kind, key]
   (if (|| (!= ($head kind) Str) (== kind "") (> ($str/byte_size kind) 128) ($str/contains? kind "|"))
-    (fail (HarnessError ^message "A record kind must be a nonempty name of at most 128 bytes without '|'.")))
+    (fail (HarnessError ^_msg "A record kind must be a nonempty name of at most 128 bytes without '|'.")))
   (if (|| (!= ($head key) Str) (== key "") (> ($str/byte_size key) 256))
-    (fail (HarnessError ^message "A record key must be a nonempty string of at most 256 bytes."))))
+    (fail (HarnessError ^_msg "A record key must be a nonempty string of at most 256 bytes."))))
 
 (fn require_events [events]
   (if ($absent? events)
-    (fail (HarnessError ^message "plugin persistence requires a durable event store"))))
+    (fail (HarnessError ^_msg "plugin persistence requires a durable event store"))))
 
 (fn new_plugin_services [events, inbox = nil]
   (let services (new_activation_services))
@@ -53,7 +53,7 @@
       (require_events events)
       (validate_record_name kind key)
       (if ($absent? value)
-        (fail (HarnessError ^message "A record value cannot be nil; use delete_record.")))
+        (fail (HarnessError ^_msg "A record value cannot be nil; use delete_record.")))
       (record_core_state events "workspace" "workspace" "feature/record"
         (record_storage_key kind key) {^kind kind ^key key ^value value ^writer owner})
       (flush_event_store events)

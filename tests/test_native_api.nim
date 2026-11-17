@@ -133,16 +133,16 @@ suite "native api — roots and trampoline":
 
   test "geneCall reports recoverable errors and panics without exposing exceptions":
     let scope = newGlobalScope()
-    discard run(compileSource("(type Boom ^props {^message Str} ^impl [Error]) " &
-                              "(impl Error for Boom)"),
+    discard run(compileSource("(type Boom : Error) " &
+                              ""),
                 scope)
-    let failer = run(compileSource("(fn [] (fail (Boom ^message \"bad\")))"),
+    let failer = run(compileSource("(fn [] (fail (Boom ^_msg \"bad\")))"),
                      scope)
     let failed = geneCall(failer, GeneCall(dispatchScope: scope))
     check failed.status == gsError
     check failed.hasErrorValue
     check failed.errorValue.kind == vkNode
-    check failed.errorValue.props["message"].strVal == "bad"
+    check failed.errorValue.props["_msg"].strVal == "bad"
 
     let panicker = run(compileSource("(fn [] (panic \"halt\"))"), scope)
     let panicked = geneCall(panicker, GeneCall(dispatchScope: scope))
@@ -297,7 +297,7 @@ suite "native api — roots and trampoline":
 
     let failedTask = geneNewAsyncTask()
     scope.define("failed-task", failedTask)
-    let errorRoot = geneRoot(run(compileSource("(RuntimeError ^message \"detail\")"), scope))
+    let errorRoot = geneRoot(run(compileSource("(RuntimeError ^_msg \"detail\")"), scope))
     let failed = geneTaskFail(failedTask, "native async failed", errorRoot,
                               true, scope)
     check failed.status == gsOk
@@ -309,7 +309,7 @@ suite "native api — roots and trampoline":
       check e.msg == "native async failed"
       check e.hasErrVal
       check e.errVal.head.typeName == "RuntimeError"
-      check e.errVal.props["message"].strVal == "detail"
+      check e.errVal.props["_msg"].strVal == "detail"
     geneRootRelease(errorRoot)
 
     let cancelledTask = geneNewAsyncTask()
@@ -346,17 +346,17 @@ suite "native api — roots and trampoline":
     check called.status == gsOk
     check called.value.print() == "42"
 
-    discard run(compileSource("(type Bad ^props {^message Str} ^impl [Error]) " &
-                              "(impl Error for Bad)"),
+    discard run(compileSource("(type Bad : Error) " &
+                              ""),
                 scope)
-    let failer = run(compileSource("(fn [] (fail (Bad ^message \"callback\")))"),
+    let failer = run(compileSource("(fn [] (fail (Bad ^_msg \"callback\")))"),
                      scope)
     let failingCallback = geneNewCallback(failer)
     let failed = geneCallCallback(failingCallback,
                                   GeneCall(dispatchScope: scope))
     check failed.status == gsError
     check failed.hasErrorValue
-    check failed.errorValue.props["message"].strVal == "callback"
+    check failed.errorValue.props["_msg"].strVal == "callback"
     geneReleaseCallback(failingCallback)
 
     geneReleaseCallback(callback)
@@ -413,12 +413,12 @@ suite "native api — roots and trampoline":
     check run(compileSource("conn/backend"), scope).print() == "\"demo\""
     check run(compileSource("($head conn)"), scope).print() == "(type Conn)"
     check run(compileSource(
-      "(try (conn .put `handle \"junk\") catch Error $err/message)"),
+      "(try (conn .put `handle \"junk\") catch Error $err/.message)"),
       scope).print() ==
       "\"cannot set field 'handle' on Conn: native wrapper fields are " &
       "initializer-only\""
     check run(compileSource(
-      "(try (Conn ^handle \"junk\" ^backend \"x\") catch Error $err/message)"),
+      "(try (Conn ^handle \"junk\" ^backend \"x\") catch Error $err/.message)"),
       scope).print() ==
       "\"direct construction cannot construct Conn: it is a native wrapper; " &
       "construct it with (new Conn ...)\""
@@ -541,13 +541,13 @@ suite "native api — roots and trampoline":
       "(type Bag ^repr native_wrapper ^body [Any] ^props {^label Str} " &
       "  (ctor [] (self .push (open_handle))))"), scope)
     let failed = run(compileSource(
-      "(try (new Conn) catch Error $err/message)"), scope)
+      "(try (new Conn) catch Error $err/.message)"), scope)
     check "left required field 'label' unset" in failed.print()
     check releasedPointers == 1
 
     releasedPointers = 0
     let failedBody = run(compileSource(
-      "(try (new Bag) catch Error $err/message)"), scope)
+      "(try (new Bag) catch Error $err/.message)"), scope)
     check "left required field 'label' unset" in failedBody.print()
     check releasedPointers == 1
 

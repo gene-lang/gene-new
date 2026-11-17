@@ -50,7 +50,7 @@ let host = newGlobalScope()
 discard run(compileSource("nil"), host)
 host.define("abi_plus_one", run(compileSource("(fn [x] (+ x 1))"), host))
 host.define("abi_fail", run(compileSource(
-  "(fn [] (fail (AssertionError ^message \"abi\")))"), host))
+  "(fn [] (fail (AssertionError ^_msg \"abi\")))"), host))
 host.define("abi_frozen_list", newList(@[newInt(3), newStr("item")],
   immutable = true, deepFrozen = true))
 var frozenMapEntries = initPropTable()

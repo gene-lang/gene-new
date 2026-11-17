@@ -2,21 +2,20 @@
 (import [core_state record_core_state flush_event_store] ^from "../storage/state")
 (import [bounded_card_view WebComponentError] ^from "../ui/components")
 
-(type QuestionError ^props {^message Str} ^impl [Error])
-(impl Error for QuestionError)
+(type QuestionError : Error)
 (var answer_gate ^^private ($sync/gate))
 
 (fn validate_questions [questions, ^validators validators = {}, ^renderers renderers = {}]
   (if (|| (!= ($head questions) List) (== ($size questions) 0) (> ($size questions) 8))
-    (fail (QuestionError ^message "questions must be a batch of 1–8 items")))
+    (fail (QuestionError ^_msg "questions must be a batch of 1–8 items")))
   (let ids {})
   (let normalized [])
   (for question in questions
     (if (|| (!= ($head question) Map) (!= ($head question/id) Str) (== question/id "")
             (!= ($head question/prompt) Str) (== ($str/trim question/prompt) ""))
-      (fail (QuestionError ^message "a question requires a non-empty id and prompt")))
+      (fail (QuestionError ^_msg "a question requires a non-empty id and prompt")))
     (if_not ($absent? (ids .get question/id))
-      (fail (QuestionError ^message $"duplicate question ${question/id}")))
+      (fail (QuestionError ^_msg $"duplicate question ${question/id}")))
     (ids .put question/id true)
     (let copy ($thaw ($freeze question)))
     (let choices (?? question/choices nil))
@@ -25,16 +24,16 @@
     (if (== kind "confirm") (copy .put "choices" [true false]))
     (if_not ($absent? (?? copy/choices nil))
       (if (|| (!= ($head copy/choices) List) (== ($size copy/choices) 0))
-        (fail (QuestionError ^message $"question ${question/id} requires choices"))))
+        (fail (QuestionError ^_msg $"question ${question/id} requires choices"))))
     (if_not ($absent? question/recommended)
       (if (|| ($absent? (?? copy/choices nil)) (! (copy/choices .contains? question/recommended)))
-        (fail (QuestionError ^message $"question ${question/id} recommended value is not a choice"))))
+        (fail (QuestionError ^_msg $"question ${question/id} recommended value is not a choice"))))
     (if_not ($absent? question/multi)
       (if (!= ($head question/multi) Bool)
-        (fail (QuestionError ^message $"question ${question/id} multi must be Bool"))))
+        (fail (QuestionError ^_msg $"question ${question/id} multi must be Bool"))))
     (let validator (validators .get kind))
     (if (&& (! (["text" "select" "confirm"] .contains? kind)) ($absent? validator))
-      (fail (QuestionError ^message $"unknown question kind ${kind}")))
+      (fail (QuestionError ^_msg $"unknown question kind ${kind}")))
     (if_not ($absent? validator) (validator copy))
     (if_not ($absent? (?? question/view nil))
       (copy .put "view" (question_view question/id question/view (?? copy/choices nil) kind)))
@@ -42,15 +41,15 @@
     (let renderer (renderers .get kind))
     (if_yes (&& ($absent? (?? question/view nil)) ($present? renderer))
       (let drawn (try (renderer ($freeze copy))
-        catch Error (fail (QuestionError ^message $"question ${question/id} ${kind} render: ${$err/message}"))))
+        catch Error (fail (QuestionError ^_msg $"question ${question/id} ${kind} render: ${$err/.message}"))))
       (copy .put "view" (question_view question/id drawn (?? copy/choices nil) kind)))
     # Opt-in single-click answering; the default is select, then Answer.
     (if_not ($absent? question/submit_on_answer)
       (if (!= ($head question/submit_on_answer) Bool)
-        (fail (QuestionError ^message $"question ${question/id} submit_on_answer must be Bool")))
+        (fail (QuestionError ^_msg $"question ${question/id} submit_on_answer must be Bool")))
       (if (&& (== question/submit_on_answer true)
               (|| (> ($size questions) 1) (== question/multi true) ($absent? (?? copy/view nil))))
-        (fail (QuestionError ^message $"question ${question/id} submit_on_answer needs a single single-choice question with a view"))))
+        (fail (QuestionError ^_msg $"question ${question/id} submit_on_answer needs a single single-choice question with a view"))))
     (normalized .push ($freeze copy)))
   ($freeze normalized))
 
@@ -67,13 +66,13 @@
   (let tree
     (try (bounded_card_view view "question")
       catch WebComponentError
-        (fail (QuestionError ^message $"question ${id} view: ${$err/message}"))))
+        (fail (QuestionError ^_msg $"question ${id} view: ${$err/.message}"))))
   (for value in (view_answers tree [])
     (if_not ($absent? choices)
       (if_not (choices .contains? value)
-        (fail (QuestionError ^message $"question ${id} view answers ${($to_str value)}, which is not a choice"))))
+        (fail (QuestionError ^_msg $"question ${id} view answers ${($to_str value)}, which is not a choice"))))
     (if (&& ($absent? choices) (== kind "text") (!= ($head value) Str))
-      (fail (QuestionError ^message $"question ${id} view answers must be text"))))
+      (fail (QuestionError ^_msg $"question ${id} view answers must be text"))))
   tree)
 
 # The digest of a reply as submitted, before validators run. A retry is
@@ -88,12 +87,12 @@
 
 (fn normalize_answers [questions, values, ^dismiss dismiss : Bool = false, ^validators validators = {}]
   (if (!= ($head values) Map)
-    (fail (QuestionError ^message "answers must be a map")))
+    (fail (QuestionError ^_msg "answers must be a map")))
   (let ids {})
   (for question in questions (ids .put question/id true))
   (map_for [id value] in values
     (if ($absent? (ids .get id))
-      (fail (QuestionError ^message $"unknown question ${id}"))))
+      (fail (QuestionError ^_msg $"unknown question ${id}"))))
   (let answers {})
   (for question in questions
     (let value (if dismiss (quote unanswered) (?? (values .get question/id) (quote unanswered))))
@@ -102,16 +101,16 @@
         (if (== question/multi true)
           (then
             (if (!= ($head value) List)
-              (fail (QuestionError ^message $"question ${question/id} expects multiple choices")))
+              (fail (QuestionError ^_msg $"question ${question/id} expects multiple choices")))
             (for choice in value
               (if_not (question/choices .contains? choice)
-                (fail (QuestionError ^message $"invalid choice for ${question/id}")))))
+                (fail (QuestionError ^_msg $"invalid choice for ${question/id}")))))
           (else
             (if_not ($absent? (?? question/choices nil))
               (if_not (question/choices .contains? value)
-                (fail (QuestionError ^message $"invalid choice for ${question/id}"))))))
+                (fail (QuestionError ^_msg $"invalid choice for ${question/id}"))))))
         (if (&& (== question/kind "text") (!= ($head value) Str))
-          (fail (QuestionError ^message $"question ${question/id} expects text")))
+          (fail (QuestionError ^_msg $"question ${question/id} expects text")))
         (let validator (validators .get question/kind))
         (if_not ($absent? validator) (validator value))))
     (answers .put question/id value))
@@ -136,19 +135,19 @@
 # exactly that recorded action after a crash.
 (fn answer_questions_serial [events, session : Str, id : Str, values, ^dismiss dismiss : Bool = false, ^validators validators = {}, ^intent intent : Str = "continue", ^source source = nil]
   (let batch (core_state events "session" session $"questions/${id}"))
-  (if ($absent? batch) (fail (QuestionError ^message $"unknown question batch ${id}")))
+  (if ($absent? batch) (fail (QuestionError ^_msg $"unknown question batch ${id}")))
   (let submitted (submitted_digest values dismiss))
   (if (&& (== batch/status "answered") ($present? batch/submitted_digest))
     (then
       (if (&& (== batch/submitted_digest submitted) (== (?? batch/intent "continue") intent))
         (return batch))
-      (fail (QuestionError ^message $"question batch ${id} already has different answers"))))
+      (fail (QuestionError ^_msg $"question batch ${id} already has different answers"))))
   (let answers (normalize_answers batch/questions values ^dismiss dismiss ^validators validators))
   (let digest ($crypto/sha256 ($serde/write_data answers)))
   (if (== batch/status "answered")
     (then
       (if (!= digest batch/digest)
-        (fail (QuestionError ^message $"question batch ${id} already has different answers")))
+        (fail (QuestionError ^_msg $"question batch ${id} already has different answers")))
       (return batch)))
   (batch .put "status" "answered")
   (batch .put "answers" answers)

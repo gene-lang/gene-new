@@ -8,8 +8,7 @@
 (import $str [byte_size starts_with? slice_bytes])
 (import $fs [real_path])
 
-(type HarnessStateError ^props {^message Str} ^impl [Error])
-(impl Error for HarnessStateError)
+(type HarnessStateError : Error)
 
 (type EventStore
   ^props {^root Str ^backend Any ^streams Any ^next_sequences Any ^projections Any
@@ -30,13 +29,13 @@
 
 (fn require_open [events : EventStore]
   (if events/closed/.get
-    (fail (HarnessStateError ^message "event store is closed")))
+    (fail (HarnessStateError ^_msg "event store is closed")))
   events)
 
 (fn validate_scope [scope : Str]
   (if_not (["workspace" "session"] .contains? scope)
     (fail (HarnessStateError
-      ^message $"event scope must be workspace or session, got ${scope}")))
+      ^_msg $"event scope must be workspace or session, got ${scope}")))
   scope)
 
 (fn event_version [event]
@@ -63,7 +62,7 @@
       (for digest in descriptor/segments
         (var segment (events/backend .Store:get $"segment/${digest}"))
         (if ($absent? segment)
-          (fail (HarnessStateError ^message $"missing event segment ${digest} for ${key}")))
+          (fail (HarnessStateError ^_msg $"missing event segment ${digest} for ${key}")))
         (for envelope in segment
           (validate_loaded_envelope events envelope)
           (values .push envelope)))))
@@ -81,7 +80,7 @@
     (if_not ($absent? descriptor)
       (var saved (events/backend .Store:get $"projection/${descriptor/projection}"))
       (if ($absent? saved)
-        (fail (HarnessStateError ^message $"missing stream projection for ${key}")))
+        (fail (HarnessStateError ^_msg $"missing stream projection for ${key}")))
       (set plugin (copy_data saved/plugin))
       (set core (copy_data saved/core))))
   (projections .put key plugin)
@@ -90,7 +89,7 @@
 
 (fn validate_loaded_envelope [events : EventStore, envelope]
   (if_not (== envelope/format 2)
-    (fail (HarnessStateError ^message "unsupported event envelope; start a fresh workspace")))
+    (fail (HarnessStateError ^_msg "unsupported event envelope; start a fresh workspace")))
   (var catalog events/catalog/.get)
   (if_not ($absent? catalog)
     (var known (catalog .get envelope/type))
@@ -169,7 +168,7 @@
   (require_open events)
   (let context ($runtime/context))
   (if (== context/ui_render true)
-    (fail (HarnessStateError ^message "UI render callbacks cannot write durable Harness state.")))
+    (fail (HarnessStateError ^_msg "UI render callbacks cannot write durable Harness state.")))
   (let envelope
     (with_event_writer events (fn []
       (append_stamped_event_unlocked events scope stream event origin owner projection))))
@@ -184,11 +183,11 @@
   (require_open events)
   (validate_scope scope)
   (if ($absent? event/type)
-    (fail (HarnessStateError ^message "event requires ^type")))
+    (fail (HarnessStateError ^_msg "event requires ^type")))
   (if_not (["core" "plugin"] .contains? origin)
-    (fail (HarnessStateError ^message $"invalid event origin ${origin}")))
+    (fail (HarnessStateError ^_msg $"invalid event origin ${origin}")))
   (if (== owner "")
-    (fail (HarnessStateError ^message "event owner is empty")))
+    (fail (HarnessStateError ^_msg "event owner is empty")))
   (var key (stream_key scope stream))
   (var seq (next_sequence events key))
   # A frozen deep copy: the caller keeps no reference into history or into a
@@ -197,7 +196,7 @@
   (var encoded (write_data envelope))
   (if (> (byte_size encoded) events/max_event_bytes)
     (fail (HarnessStateError
-      ^message $"event exceeds ${events/max_event_bytes} bytes")))
+      ^_msg $"event exceeds ${events/max_event_bytes} bytes")))
   (var values (current_events events key))
   (mark_stream_dirty events key)
   (values .push envelope)
@@ -225,7 +224,7 @@
 (fn append_plugin_event
   [events : EventStore, scope : Str, stream : Str, plugin : Str, event]
   (if (== plugin "")
-    (fail (HarnessStateError ^message "plugin event owner is empty")))
+    (fail (HarnessStateError ^_msg "plugin event owner is empty")))
   (append_stamped_event events scope stream event "plugin" plugin plugin))
 
 # Route an event by its explicit `plugin` field. Core code uses
@@ -246,7 +245,7 @@
      ^writer writer}))
   (if (> (core_event_size scope stream event ^projection plugin) events/max_event_bytes)
     (fail (HarnessStateError
-      ^message $"event exceeds ${events/max_event_bytes} bytes")))
+      ^_msg $"event exceeds ${events/max_event_bytes} bytes")))
   event)
 
 (fn record_plugin_state
@@ -262,7 +261,7 @@
   (if_not (["session/state" "round/state" "question/asked" "question/answered"
             "command" "history/summary"
             "card/state" "card/action" "delegation/state" "feature/record"] .contains? kind)
-    (fail (HarnessStateError ^message "unknown core state kind")))
+    (fail (HarnessStateError ^_msg "unknown core state kind")))
   (append_core_event events scope stream
     {^type kind ^key key ^state (copy_data state)}))
 
@@ -334,7 +333,7 @@
   (var plugin ($to_str envelope/projection))
   (if (== plugin "")
     (fail (HarnessStateError
-      ^message $"plugin event ${envelope/type} has no projection owner")))
+      ^_msg $"plugin event ${envelope/type} has no projection owner")))
   (if_yes ($absent? (seen .get plugin))
     (seen .put plugin true)
     (quarantined .push plugin)))
@@ -344,18 +343,18 @@
   (if (== envelope/origin "core")
     (then
       (fail (HarnessStateError
-        ^message $"unknown required core event type ${envelope/type}")))
+        ^_msg $"unknown required core event type ${envelope/type}")))
     (elif (== envelope/origin "plugin")
       (quarantine_projection quarantined seen envelope))
     (else
       (fail (HarnessStateError
-        ^message $"event ${envelope/type} has invalid origin")))))
+        ^_msg $"event ${envelope/type} has invalid origin")))))
 
 (fn validate_known_event [quarantined, seen, envelope, known]
   (if (|| (!= envelope/origin known/origin)
           (!= envelope/owner known/owner))
     (fail (HarnessStateError
-      ^message $"event ${envelope/type} origin does not match its catalog row")))
+      ^_msg $"event ${envelope/type} origin does not match its catalog row")))
   (var accepted_version (== envelope/version known/version))
   (if_yes (&& (! accepted_version) ($present? known/versions))
     (set accepted_version ($present? (known/versions .get $"v${envelope/version}"))))
@@ -363,7 +362,7 @@
     (if_yes (== envelope/ignorable true) (return))
     (if (== envelope/origin "core")
       (fail (HarnessStateError
-        ^message $"unsupported core event version ${envelope/type}/${envelope/version}"))
+        ^_msg $"unsupported core event version ${envelope/type}/${envelope/version}"))
       (then
         (quarantine_projection quarantined seen envelope)
         (return))))
@@ -381,11 +380,11 @@
       (var guarded ($runtime/guard_call schema schema_payload))
       (if_not guarded/ok (set schema_error guarded/message))
     catch Error
-      (set schema_error ($to_str $err/message))))
+      (set schema_error ($to_str $err/.message))))
   (if_not (== schema_error nil)
     (if (== envelope/origin "core")
       (fail (HarnessStateError
-        ^message $"invalid core event ${envelope/type}: ${schema_error}"))
+        ^_msg $"invalid core event ${envelope/type}: ${schema_error}"))
       (quarantine_projection quarantined seen envelope))))
 
 (fn validate_event_catalog [events : EventStore, known_types, ^all_streams all_streams : Bool = false]
@@ -487,7 +486,7 @@
       (then (descriptors .delete key) (continue)))
     (var values (streams .get key))
     (if ($absent? values)
-      (fail (HarnessStateError ^message $"Dirty event stream ${key} is not cached")))
+      (fail (HarnessStateError ^_msg $"Dirty event stream ${key} is not cached")))
     (var prior (if ($absent? previous) nil (previous/streams .get key)))
     (var segmented (segment_stream events values prior))
 
@@ -539,7 +538,7 @@
 
 (fn manifest_data [events : EventStore, manifest]
   (if_not (== manifest/format 3)
-    (fail (HarnessStateError ^message "event store predates this Harness; start a fresh workspace")))
+    (fail (HarnessStateError ^_msg "event store predates this Harness; start a fresh workspace")))
   (var sequences (fresh_map))
   (let writers {})
   (map_for [key descriptor] in manifest/streams
@@ -665,9 +664,9 @@
    ^max_event_bytes max_event_bytes : Int = 262144,
    ^gc_interval gc_interval : Int = 16] : EventStore
   (if (<= segment_events 0)
-    (fail (HarnessStateError ^message "segment count must be positive")))
+    (fail (HarnessStateError ^_msg "segment count must be positive")))
   (if (<= gc_interval 0)
-    (fail (HarnessStateError ^message "event GC interval must be positive")))
+    (fail (HarnessStateError ^_msg "event GC interval must be positive")))
   # Keep the retained root and every later Store path in the same
   # canonical vocabulary. Passing a relative root to Store/open and then
   # joining it again would resolve the root beneath itself.

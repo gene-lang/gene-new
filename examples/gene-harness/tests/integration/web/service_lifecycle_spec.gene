@@ -24,9 +24,9 @@
                 ($assert (== (lock_held? ($path/join workspace ".gene-harness" "lock")) (!= name "runtime"))
                   $"Runtime ownership was released before ${name}."))
               (if (&& (== phase "after") (== name target))
-                (fail (HostServiceError ^message $"injected session failure after ${target}")))))
+                (fail (HostServiceError ^_msg $"injected session failure after ${target}")))))
             false
-          catch HostServiceError ($str/contains? $err/message "injected session failure")))
+          catch HostServiceError ($str/contains? $err/.message "injected session failure")))
           ($assert (== ($last closed) "runtime"))
           ($assert (! (lock_held? ($path/join workspace ".gene-harness" "lock")))))))))
 

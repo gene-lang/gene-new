@@ -18,7 +18,7 @@
   (if ($absent? (cache/resolved .get name))
     (cache/resolved .put name
       (try {^theme (resolve_theme name themes)}
-       catch Error {^error ($to_str $err/message)})))
+       catch Error {^error ($to_str $err/.message)})))
   (cache/resolved .get name))
 
 (fn body_preloads [theme, mode : Str]

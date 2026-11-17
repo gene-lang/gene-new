@@ -48,7 +48,7 @@
      (let credentials (try (access ^root resolved)
        catch ProviderError (return {^state (if (== $err/status 401) (then "sign_in_required") (else "unavailable"))
          ^stale (retryable_access_error? $err)
-         ^label "ChatGPT" ^billing "plan" ^reason $err/message})
+         ^label "ChatGPT" ^billing "plan" ^reason $err/.message})
        catch Error (return {^state "unavailable" ^label "ChatGPT" ^billing "plan"
          ^reason "ChatGPT connection state could not be read; inspect its account in Models."})))
      (let remaining (- deadline ($os/monotonic_ms)))
@@ -64,11 +64,11 @@
      (let deadline (+ ($os/monotonic_ms) 5000))
      (let credentials (access ^root resolved))
      (let remaining (- deadline ($os/monotonic_ms)))
-     (if (<= remaining 0) (fail (ProviderError ^message "ChatGPT model discovery timed out")))
+     (if (<= remaining 0) (fail (ProviderError ^_msg "ChatGPT model discovery timed out")))
      (let found (probe_json ^timeout_ms remaining ^headers {^authorization $"Bearer ${credentials/access_token}"}
        (endpoint_url base_url "models")))
      (if (|| (!= found/status 200) ($present? found/error))
-       (fail (ProviderError ^status found/status ^message "ChatGPT model discovery could not complete")))
+       (fail (ProviderError ^status found/status ^_msg "ChatGPT model discovery could not complete")))
      (chatgpt_metadata found/data))
    ^prepare (fn [call]
      (let prepared (prepare_responses ^omit_budget true call))
@@ -81,7 +81,7 @@
      (let actual (transport_identity {^name "chatgpt" ^transport descriptor}
        {^billing "plan" ^account credentials/account}))
      (if (&& ($present? prepared/account) ($present? prepared/transport) (!= prepared/transport actual))
-       (fail (ProviderError ^code "connection_changed" ^message "The selected ChatGPT account changed; submit a new round to use it.")))
+       (fail (ProviderError ^code "connection_changed" ^_msg "The selected ChatGPT account changed; submit a new round to use it.")))
      (let remaining (- deadline ($os/monotonic_ms)))
      (if (<= remaining 0) (return {^^timeout}))
      (http_json_attempt ^max_bytes 8388608 (endpoint_url base_url "responses")

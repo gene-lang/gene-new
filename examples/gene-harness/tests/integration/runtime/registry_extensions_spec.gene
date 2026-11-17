@@ -190,7 +190,7 @@
           ($assert (== observed/.get ["hook_contributor" "hook_contributor"]))
           ($assert (try (results .push 0) false catch Error true))
           ($assert (try (invoke h "wrong_coordinator") false
-            catch Error ($str/contains? $err/message "requires its host coordinator")))
+            catch Error ($str/contains? $err/.message "requires its host coordinator")))
           (let lease (acquire_snapshot h/snapshots))
           (try
             (put_cordis_plugin ^^replace h (hooks 200) {})

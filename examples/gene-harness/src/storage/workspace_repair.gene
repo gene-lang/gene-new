@@ -55,7 +55,7 @@
       (else (next_entries .push entry))))
   (if_not found
     (if ($absent? (workspace/profile_plugins/.get .get id))
-      (then (fail (CompositionError ^message $"composition entry ${id} does not exist")))
+      (then (fail (CompositionError ^_msg $"composition entry ${id} does not exist")))
       (elif disabled (next_entries .push {^id id ^^builtin ^^disabled}))
       (else
         (reset_participant_quarantine workspace id)
@@ -86,7 +86,7 @@
 
 (fn restore_entry [workspace : Workspace, id : Str, ^h h = nil, ^origin origin = nil]
   (if ($absent? (workspace/profile_plugins/.get .get id))
-    (fail (CompositionError ^message $"plugin ${id} has no profile default to restore")))
+    (fail (CompositionError ^_msg $"plugin ${id} has no profile default to restore")))
   (reset_participant_quarantine workspace id)
   (let entries (composition_entries workspace))
   (let kept (fresh_list))
@@ -151,7 +151,7 @@
       (if_yes (workspace/store .Store:has? key)
         (let plan (workspace/store .Store:get key))
         (if (!= ($pkg/canonical_digest plan) record/origin/plan)
-          (fail (CompositionError ^message "archived validation plan digest mismatch")))
+          (fail (CompositionError ^_msg "archived validation plan digest mismatch")))
         (record .put "validation" {^plan record/origin/plan ^warnings plan/warnings ^errors plan/errors}))))
   (if (== id "") (return records))
   (let selected [])
@@ -179,21 +179,21 @@
   (require_open workspace)
   (validate_entry saved (fresh_map))
   (if (|| (== saved/builtin true) ($absent? saved/module_digest))
-    (fail (CompositionError ^message "revert requires a stored plugin version; use restore for a built-in default")))
+    (fail (CompositionError ^_msg "revert requires a stored plugin version; use restore for a built-in default")))
   (let mismatch (interface_diagnostic saved/interfaces workspace/interfaces))
-  (if (!= mismatch "") (fail (CompositionError ^message mismatch)))
+  (if (!= mismatch "") (fail (CompositionError ^_msg mismatch)))
   # Verify inert source bytes without loading or invoking the historical code.
   (for digest in saved/closure
     (digest_hex digest)
     (let key $"blob/${digest}")
     (if_not (workspace/blob_store .Store:has? key)
-      (fail (CompositionError ^message $"historical plugin blob is missing: ${digest}")))
+      (fail (CompositionError ^_msg $"historical plugin blob is missing: ${digest}")))
     (let source (workspace/blob_store .Store:get key))
     (if (|| (!= ($head source) Str) (!= $"sha256:${(sha256 source)}" digest))
-      (fail (CompositionError ^message $"historical plugin blob digest mismatch: ${digest}")))
+      (fail (CompositionError ^_msg $"historical plugin blob digest mismatch: ${digest}")))
     (let path (ensure_module_blob workspace digest))
     (if (!= $"sha256:${(sha256 (read_text path))}" digest)
-      (fail (CompositionError ^message $"historical plugin blob digest mismatch: ${digest}"))))
+      (fail (CompositionError ^_msg $"historical plugin blob digest mismatch: ${digest}"))))
   saved)
 
 (fn prepare_reversion [workspace : Workspace, id : Str, revision : Int]
@@ -211,7 +211,7 @@
   (let actual (composition_revision workspace))
   (if (!= expected actual)
     (fail (CompositionConflict ^code "stale_composition" ^expected expected ^actual actual
-      ^message $"composition changed: expected revision ${expected}, current ${actual}; inspect history again"))))
+      ^_msg $"composition changed: expected revision ${expected}, current ${actual}; inspect history again"))))
 
 (fn revert_entry [workspace : Workspace, id : Str, revision : Int, ^expected expected = nil]
   (let base (?? expected (composition_revision workspace)))
@@ -255,7 +255,7 @@
             (workspace/errors/.get .delete id)))
       catch Error
         (set status "error")
-        (record_quarantine workspace id $err/message))
+        (record_quarantine workspace id $err/.message))
       (if (== status "ready") (reset_participant_quarantine workspace id))
       (record_composition_change h id previous saved/module_digest committed
         (?? origin/turn 0) "reverted")

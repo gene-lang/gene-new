@@ -2,8 +2,7 @@
 (import ^from "../storage/state" [append_core_event])
 (import ^from "../public/history_policy" [normalize_history_policy])
 
-(type HookDispatchError ^props {^message Str} ^impl [Error])
-(impl Error for HookDispatchError)
+(type HookDispatchError : Error)
 
 (fn hook_rows [snapshot, point : Str]
   (let selected [])
@@ -29,7 +28,7 @@
     (let called ($cell false))
     (let next (fn [updated]
       (if called/.get
-        (fail (HookDispatchError ^message
+        (fail (HookDispatchError ^_msg
           $"hook ${listener/name} called next more than once")))
       (called .set true)
       (let result
@@ -55,7 +54,7 @@
       ($runtime/with_context caller_context
         (fn []
           (hook_failure runtime context/session "request/prepare"
-            listener/name ($to_str $err/message))))
+            listener/name ($to_str $err/.message))))
       (if (&& called/.get ($present? delegated/.get))
         delegated/.get
         ($runtime/with_context caller_context
@@ -76,5 +75,5 @@
       ($runtime/with_context caller_context
         (fn []
           (hook_failure runtime context/session "history/compact"
-            listener/name ($to_str $err/message))))))
+            listener/name ($to_str $err/.message))))))
   nil)

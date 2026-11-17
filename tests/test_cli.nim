@@ -1887,7 +1887,7 @@ suite "cli — gene parse/fmt/compile":
 (check "ref-shape" (&& (contains? t "serde_type_ref") (contains? t "Point")))
 (check "no-exec"
   (try (do (read "(serde_v1 (serde_type_ref ^module \"serde-sidefx\" ^path \"Widget\"))") false)
-       catch SerdeError (contains? $err/message "not loaded")))
+       catch SerdeError (contains? $err/.message "not loaded")))
 # stage 4: typed instances via direct construction
 (var p (Point ^x 3 ^y 4))
 (check "inst" (== p (read (write p))))
@@ -1896,10 +1896,10 @@ suite "cli — gene parse/fmt/compile":
      (read (write (Line ^a (Point ^x 1 ^y 2) ^b (Point ^x 5 ^y 6))))))
 (check "inst-variant-payload" (== (Result/ok 42) (read (write (Result/ok 42)))))
 (check "inst-wd-reject"
-  (try (do (write_data p) false) catch SerdeError (contains? $err/message "not data")))
+  (try (do (write_data p) false) catch SerdeError (contains? $err/.message "not data")))
 (check "inst-unknown-field"
   (try (do (read "(serde_v1 (serde_inst (serde_type_ref ^module \"serde_geometry\" ^path \"Point\") (serde_map false [\"x\" 1 \"y\" 2 \"z\" 9]) []))") false)
-       catch SerdeError (contains? $err/message "no field")))
+       catch SerdeError (contains? $err/.message "no field")))
 # ctor must NOT run on read-back (`new` runs it once, printing the marker)
 (var c (new Counter 7))
 (var c2 (read (write c)))
@@ -1909,7 +1909,7 @@ suite "cli — gene parse/fmt/compile":
 (var ht (write conn))
 (check "hooked-form" (&& (contains? ht "serde_hooked") (! (contains? ht "live"))))
 (check "hooked-no-allow"
-  (try (do (read ht) false) catch SerdeError (contains? $err/message "allow_restore")))
+  (try (do (read ht) false) catch SerdeError (contains? $err/.message "allow_restore")))
 (var conn2 (read ht ^policy (SerdePolicy ^^allow_restore)))
 (check "hooked-restore" (&& (== "db" conn2/host) (== true conn2/live)))
 # native wrappers (design §16.6): reopened by their own restore hook, never
@@ -1921,10 +1921,10 @@ suite "cli — gene parse/fmt/compile":
 (check "wrapper-hooked-restore" (== "db" handle2/host))
 (check "wrapper-no-hook-reject"
   (try (do (write (new Opaque "db")) false)
-       catch SerdeError (contains? $err/message "native wrapper")))
+       catch SerdeError (contains? $err/.message "native wrapper")))
 (check "wrapper-inst-blob-reject"
   (try (do (read "(serde_v1 (serde_inst (serde_type_ref ^module \"serde_geometry\" ^path \"Opaque\") (serde_map false [\"host\" \"forged\"]) []))") false)
-       catch SerdeError (contains? $err/message "native wrapper")))
+       catch SerdeError (contains? $err/.message "native wrapper")))
 # stage 6: SerdeRef module singleton -> identity value_ref
 (check "value-ref-form" (contains? (write REGISTRY) "serde_value_ref"))
 (var reg2 (read (write REGISTRY)))

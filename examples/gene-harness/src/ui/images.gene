@@ -4,10 +4,9 @@
 (import $io [AsyncReader IoResource])
 (import ^from "." ^pkg "documents" [inspect_bytes])
 
-(type WorkspaceImageError ^props {^message Str} ^impl [Error])
-(impl Error for WorkspaceImageError)
+(type WorkspaceImageError : Error)
 (fn image_error []
-  (fail (WorkspaceImageError ^message "Workspace image is unavailable or invalid.")))
+  (fail (WorkspaceImageError ^_msg "Workspace image is unavailable or invalid.")))
 
 (fn image_path [path]
   # Reject traversal, hidden paths, external URLs and URL metacharacters.

@@ -19,8 +19,7 @@
 (fn version [n, closed]
   (Plugin ^id "version" ^provides [["functions" "version"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "version" ^doc "Version." ^fn (fn [] n)})) ^deactivate (fn [host] (closed/.get .push n))))
 
-(type CleanupFixtureError ^props {^message Str} ^impl [Error])
-(impl Error for CleanupFixtureError)
+(type CleanupFixtureError : Error)
 
 (describe
   "Strict plugin application"
@@ -92,9 +91,9 @@
         (try
           (let before (current_snapshot runtime/h/snapshots))
           (let acquired
-            (Plugin ^id "acquired" ^activate (fn [host] nil) ^deactivate (fn [host] (fail (CleanupFixtureError ^message "cleanup fixture failed")))))
+            (Plugin ^id "acquired" ^activate (fn [host] nil) ^deactivate (fn [host] (fail (CleanupFixtureError ^_msg "cleanup fixture failed")))))
           (let broken
-            (Plugin ^id "broken" ^activate (fn [host] (fail (CleanupFixtureError ^message "activation fixture failed")))))
+            (Plugin ^id "broken" ^activate (fn [host] (fail (CleanupFixtureError ^_msg "activation fixture failed")))))
           (let message
             (try
               (apply_plugin_set
@@ -106,7 +105,7 @@
                   (fail "commit must not run")))
               "unexpected success"
             catch Error
-              $err/message))
+              $err/.message))
           ($assert ($str/contains? message "cleanup fixture failed") message)
           (let after (current_snapshot runtime/h/snapshots))
           ($assert (== before/id after/id))
@@ -117,10 +116,9 @@
   ($to_str
     `(mod plugin
        (import ^from "src/plugin_api.gene" [Plugin PluginHost])
-       (type FixtureError ^props {^message Str} ^impl [Error])
-       (impl Error for FixtureError)
+       (type FixtureError : Error)
        (fn init [descriptor]
-         (Plugin ^id %id ^provides [["functions" %id]] ^activate (fn [host] (if %bad (fail (FixtureError ^message "bad candidate")) (host .PluginHost:contribute "functions" {^name %id ^doc "Plan fixture." ^fn (fn [] %n)}))))))))
+         (Plugin ^id %id ^provides [["functions" %id]] ^activate (fn [host] (if %bad (fail (FixtureError ^_msg "bad candidate")) (host .PluginHost:contribute "functions" {^name %id ^doc "Plan fixture." ^fn (fn [] %n)}))))))))
 
 (describe
   "Validated plugin plans"

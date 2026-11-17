@@ -3,13 +3,12 @@
 (import [api_root] ^from "../web/contract.gene")
 (import ^from "." ^pkg "documents" [inspect_bytes DocumentError])
 
-(type MediaError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for MediaError)
+(type MediaError : Error ^props {^code Str})
 (type MediaStore ^props {^root Str ^max_file_bytes Int ^max_total_bytes Int ^max_records Int})
 (var ^^private media_gate ($sync/gate))
 
 (fn media_error [code : Str, message : Str]
-  (fail (MediaError ^code code ^message message)))
+  (fail (MediaError ^code code ^_msg message)))
 
 (fn open_media_store [state_root : Str, ^max_file_bytes max_file_bytes : Int = 10485760, ^max_total_bytes max_total_bytes : Int = 268435456, ^max_records max_records : Int = 2048] : MediaStore
   (if (|| (< max_file_bytes 1) (< max_total_bytes max_file_bytes) (< max_records 1))
@@ -199,7 +198,7 @@
   (if (&& ($present? transparent) (!= ($head transparent) Bool))
     (media_error "invalid_request" "Transparent-pixel verification must be boolean or unknown."))
   (let metadata (try (inspect_bytes name data)
-    catch DocumentError (media_error "invalid_request" $err/message)))
+    catch DocumentError (media_error "invalid_request" $err/.message)))
   (let digest ($crypto/sha256 data))
   (media_gate (fn []
     (let index (read_index store))

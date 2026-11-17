@@ -154,6 +154,7 @@ type
     opAwait           # pop a Task and push/rethrow its completed result
     opFail            # pop an Error value and raise it through GeneError
     opPanic           # pop a value and raise it through GenePanic
+    opInFailureCleanup # push whether this cleanup body was entered by an unwind
     opYield           # suspend a generator and expose the stack top as item
     opExplicitReturn  # leave the nearest function, unwinding structured cleanup
     opJumpIfFalse
@@ -440,7 +441,6 @@ type
     aotFrameCanSuspend*: bool
     taskFrameKind*: TaskFrameKind
     checksErrors*: bool
-    builtinErrorMessage*: bool # private origin of Error's default backing-field accessor
     errorsMode*: ErrorCheckMode
     errorSummary*: CallableErrorSummary
     publicErrorInterface*: bool
@@ -1791,7 +1791,7 @@ proc formatInstruction(inst: Instruction): string =
     result.add " macro=" & $inst.intArg
   of opResolveQualifiedMessage, opQualifiedSend, opBindMessage:
     result.add " name=" & inst.name
-  of opNoop, opPop, opNot, opMakeIterator, opIteratorHasNext, opIteratorNext,
+  of opNoop, opPop, opNot, opInFailureCleanup, opMakeIterator, opIteratorHasNext, opIteratorNext,
      opIteratorClose, opLoopBreak, opLoopContinue, opLoopLeave, opAwait, opYield,
      opExplicitReturn, opReturn, opReturnBareInt:
     discard

@@ -103,7 +103,7 @@
 
 (fn wait_expired [session : Str, id : Str, kind : Str]
   (fail (CliError ^code "wait_timeout" ^execution_id id ^kind kind ^session session
-    ^message $"Stopped waiting for ${id}. Work remains on the host; use receipt or wait to observe it.")))
+    ^_msg $"Stopped waiting for ${id}. Work remains on the host; use receipt or wait to observe it.")))
 
 (fn poll_wait_receipt [fetch, current : Str, parent : Str, kind : Str, due : Int,
                        session : Str, requested : Str]

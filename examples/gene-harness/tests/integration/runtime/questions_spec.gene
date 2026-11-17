@@ -53,7 +53,7 @@
         ($assert (== batch/0/view/children/0/props/answer "a") "the view was not normalized")
         ($assert (try (validate_questions [{^id "pick" ^prompt "Which?" ^choices ["a"]
             ^view (quote (button ^key "z" ^answer "z" "Z"))}]) false
-          catch QuestionError ($str/contains? $err/message "not a choice")) "a view answer outside the choices was accepted")
+          catch QuestionError ($str/contains? $err/.message "not a choice")) "a view answer outside the choices was accepted")
         ($assert (try (validate_questions [{^id "pick" ^prompt "Which?" ^choices ["a"]
             ^view (quote (button ^key "c" ^command "/run 1" "Run"))}]) false
           catch QuestionError true) "a question view with a command was accepted")
@@ -68,7 +68,7 @@
           ($assert (== answered/round "round-1"))
           ($assert ($present? answered/answered_ms))
           # A validator that now refuses everything cannot refuse an identical retry.
-          (let refusing {^select (fn [value] (fail (QuestionError ^message "changed validator")))})
+          (let refusing {^select (fn [value] (fail (QuestionError ^_msg "changed validator")))})
           ($assert (== (answer_questions ^validators refusing events "s" "q" {^pick "b"}) answered)
             "an identical retry ran the current validators")
           ($assert (try (answer_questions events "s" "q" {^pick "a"}) false catch QuestionError true)

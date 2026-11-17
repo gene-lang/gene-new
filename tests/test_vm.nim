@@ -280,7 +280,7 @@ suite "VM — scope ownership and reuse":
       check pooledCallScopesHoldingContext() == 0
       # A message's Self type is never seen by the next, unrelated call.
       check run(compileSource(
-          "[(item .direct) (try ((fn [] (let s : Self 1) s)) catch Error $err_msg)]"),
+          "[(item .direct) (try ((fn [] (let s : Self 1) s)) catch Error $err/.message)]"),
         scope).print() ==
         "[7 \"Self requires a declaring receiver type \u2014 inside a message or ctor body\"]"
 
@@ -1228,7 +1228,7 @@ suite "compiler — GIR emission":
     let loopBody = loopChunk.forLoops[0].body
     check loopBody.localNames == @["a", "b"]
 
-    let tryChunk = compileSource("(try 1 catch Error $err/message)")
+    let tryChunk = compileSource("(try 1 catch Error $err/_msg)")
     let catchBody = tryChunk.tries[0].catches[0].body
     check catchBody.localNames == @["$err"]
     check catchBody.instructions[0].op in {opLoadLocal, opLoadLocalField}
@@ -1491,7 +1491,7 @@ suite "module references":
     ck "(var caught (try ($ref circular ($deref circular)) " &
        " catch CircularRefResolution $err/name)) " &
        "($ref circular 1) caught", "\"circular\""
-    ck "(try ($ref retry (fail (MatchError ^message \"no\"))) " &
+    ck "(try ($ref retry (fail (MatchError ^_msg \"no\"))) " &
        " catch MatchError nil) ($ref retry 9) ($deref retry)", "9"
 
   test "invalid definitions and unresolved completed units fail":
@@ -1662,10 +1662,10 @@ suite "gir — disassembly":
        "    (set i (+ i 1)))) t) " &
        "(fn s [] (var t 0) " &
        "  (for x in [1 2] (if (== x 1) (var y 0)) (set y 5) (set t (+ t y))) t) " &
-       "[(try (f) catch Error $err_msg) (try (g) catch Error $err_msg) " &
-       " (try (h) catch Error $err_msg) (try (k) catch Error $err_msg) " &
-       " (try (m) catch Error $err_msg) (try (n) catch Error $err_msg) " &
-       " (try (s) catch Error $err_msg)]",
+       "[(try (f) catch Error $err/.message) (try (g) catch Error $err/.message) " &
+       " (try (h) catch Error $err/.message) (try (k) catch Error $err/.message) " &
+       " (try (m) catch Error $err/.message) (try (n) catch Error $err/.message) " &
+       " (try (s) catch Error $err/.message)]",
        "[\"undefined symbol: y\" \"undefined symbol: y\" " &
        "\"undefined symbol: y\" \"undefined symbol: y\" " &
        "\"undefined symbol: p\" \"undefined symbol: w\" " &
@@ -1840,15 +1840,15 @@ suite "vm — strings and interpolation":
 
   test "strings iterate explicitly by chars and bytes":
     ck "[($chars \"Aé\") ($bytes \"Aé\")]", "[['A' 'é'] [65 195 169]]"
-    ck "(try ($chars 1) catch Error $err/message)", "\"chars expects a Str\""
-    ck "(try ($bytes) catch Error $err/message)",
+    ck "(try ($chars 1) catch Error $err/.message)", "\"chars expects a Str\""
+    ck "(try ($bytes) catch Error $err/.message)",
        "\"bytes expects 1 argument, got 0\""
 
   test "graphemes group combining scalars":
     let s = "e\u0301x"
     ck "(var s \"" & s & "\") [($chars s) ($graphemes s) ($bytes s)]",
        "[['e' '\u0301' 'x'] [\"e\u0301\" \"x\"] [101 204 129 120]]"
-    ck "(try ($graphemes 1) catch Error $err/message)",
+    ck "(try ($graphemes 1) catch Error $err/.message)",
        "\"graphemes expects a Str\""
 
   test "to_str is an ordinary variadic callable":
@@ -2000,7 +2000,7 @@ suite "vm — macros":
 
   test "runtime macro recursion is bounded within an expansion":
     ck "(fn f [] (macro again [] `(again)) " &
-       "(try (again) catch Error ($str/contains? $err/message \"expansion depth\"))) (f)", "true"
+       "(try (again) catch Error ($str/contains? $err/.message \"expansion depth\"))) (f)", "true"
 
   test "runtime macro mutation invalidates caller value and capture assumptions":
     ck "(fn f [] (var n 1) (let read_n (fn [] n)) " &
@@ -2343,13 +2343,13 @@ suite "vm — macros":
   test "eval policies bound executable macro bodies":
     ck "(macro spin [] (while true nil)) " &
        "(try (eval (quote (spin)) ^in (env ^policy {^timeout_ms 20})) " &
-       "catch Error ($str/contains? $err/message \"timeout\"))", "true"
+       "catch Error ($str/contains? $err/.message \"timeout\"))", "true"
     ck "(fn f [] (macro spin [] (while true nil)) " &
        "(try (eval (quote (spin)) ^in (env ^policy {^timeout_ms 20})) " &
-       "catch Error ($str/contains? $err/message \"timeout\"))) (f)", "true"
+       "catch Error ($str/contains? $err/.message \"timeout\"))) (f)", "true"
     ck "(fn f [] (macro spin [] (while true nil)) " &
        "(try (eval (quote (1 -> + (spin))) ^in (env ^policy {^timeout_ms 20})) " &
-       "catch Error ($str/contains? $err/message \"timeout\"))) (f)", "true"
+       "catch Error ($str/contains? $err/.message \"timeout\"))) (f)", "true"
 
   test "macro body helpers use the definition environment":
     ck "(fn helper [x] (* x 100)) " &
@@ -2619,9 +2619,9 @@ suite "vm — comparison and logic":
     ck "(== ($hash #[1 2]) ($hash ($freeze [1 2])))", "true"
     ck "(== ($hash (quote #(x @line 1 ^a 2))) " &
        "   ($hash (quote #(x @line 99 ^a 2))))", "true"
-    ck "(try ($hash [1 2]) catch Error $err/message)",
+    ck "(try ($hash [1 2]) catch Error $err/.message)",
        "\"hash expects a hash-stable value\""
-    ck "(try ($hash #[($cell 1)]) catch Error $err/message)",
+    ck "(try ($hash #[($cell 1)]) catch Error $err/.message)",
        "\"hash expects a hash-stable value\""
     expect GeneError: discard runStr("($hash)")
   test "same compares scalar values and heap identity":
@@ -2634,7 +2634,7 @@ suite "vm — comparison and logic":
     ck "($freeze_shallow [1 [2]])", "#[1 [2]]"
     ck "($freeze [1 {^a [2]}])", "#[1 #{^a #[2]}]"
     ck "($thaw ($freeze [1 {^a [2]}]))", "[1 {^a [2]}]"
-    ck "(try ($freeze [($cell 1)]) catch Error $err/message)",
+    ck "(try ($freeze [($cell 1)]) catch Error $err/.message)",
        "\"freeze cannot freeze Cell\""
     expect GeneError: discard runStr("($freeze)")
   test "not":
@@ -2666,10 +2666,10 @@ suite "vm — special forms":
     ck "(var supervisor 4) supervisor", "4"
 
   test "await propagates recoverable task errors":
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
-       "(scope (var t (spawn (fail (Boom ^message \"x\")))) " &
-       "  (try (await t) catch Boom $err/message))",
+    ck "(type Boom : Error) " &
+       " " &
+       "(scope (var t (spawn (fail (Boom ^_msg \"x\")))) " &
+       "  (try (await t) catch Boom $err/.message))",
        "\"x\""
 
   test "do returns last":
@@ -2966,21 +2966,21 @@ suite "vm — optimized typed boundaries":
     ck """
       (fn text [x : Str] (if (== x "") "empty" x))
       (try (text 7) catch TypeError
-        [$err/where $err/expected $err/actual $err/message])
+        [$err/where $err/expected $err/actual $err/.message])
     """, "[\"parameter 'x'\" \"Str\" \"Int\" \"parameter 'x' expected Str, got Int\"]"
     ck """
       (try (var text : Str "ok") (set text 7) catch TypeError
-        [$err/where $err/expected $err/actual $err/message])
+        [$err/where $err/expected $err/actual $err/.message])
     """, "[\"set 'text'\" \"Str\" \"Int\" \"set 'text' expected Str, got Int\"]"
 
   test "return labels survive bytecode calls and native callbacks":
     ck """
       (fn text [x] : Str (if x 7 "ok"))
-      (try (text true) catch TypeError [$err/where $err/message])
+      (try (text true) catch TypeError [$err/where $err/.message])
     """, "[\"return from 'text'\" \"return from 'text' expected Str, got Int\"]"
     ck """
       (fn text [x] : Str (if x 7 "ok"))
-      (try ($map [true] text) catch TypeError [$err/where $err/message])
+      (try ($map [true] text) catch TypeError [$err/where $err/.message])
     """, "[\"return from 'text'\" \"return from 'text' expected Str, got Int\"]"
     ck """
       (try ((fn [x] : Str (if x 7 "ok")) true)
@@ -2990,7 +2990,7 @@ suite "vm — optimized typed boundaries":
   test "lazy parameter labels preserve stream guidance":
     ck """
       (fn number [x : Int] (if (> x 0) x 0))
-      (try (number ($to_stream [1])) catch TypeError $err/message)
+      (try (number ($to_stream [1])) catch TypeError $err/.message)
     """, "\"parameter 'x' expected Int, got Stream; if this function should receive individual items, use '=>' in the pipeline\""
 
   test "field labels keep their declaring type and index":
@@ -3372,7 +3372,7 @@ suite "vm — fused sends":
       [(none ?.push 1) (xs ?.push 2) xs])
     [(plain_args 3) (instance_args (Point ^x 3 ^y 4)) (method_send 4)
      (callback 5) (undefined_arg false) (undefined_arg true)
-     (try (native_error [1 2]) catch Error $err/message) (optional_send [1])]
+     (try (native_error [1 2]) catch Error $err/.message) (optional_send [1])]
   """
   const sendResult =
     "[[3 3 2 2 [3 3 3] [9 3 9 9] [0 2 4]] [3 nil] 46 [15 -1] \"message\" " &
@@ -3590,7 +3590,7 @@ suite "vm — scopeless field reads":
       total)
     [(loop_calls 5) (get_key {^key "k"}) (get_key {}) (missing (Point ^x 1 ^y 2))
      ((Counter ^value 1) .left) (member box)
-     (try (sum {^x 1 ^y "a"}) catch Error $err/message)]
+     (try (sum {^x 1 ^y "a"}) catch Error $err/.message)]
   """
   const fieldResult =
     "[95 \"k\" nil nil nil 5 \"+ expects numbers, got vkString\"]"
@@ -3838,10 +3838,10 @@ suite "vm — Paths":
        "((Path ^default fallback \"name\") {^age 37})",
        "\"unknown\""
     ck "((Path ^default \"unknown\" \"name\") {^name nil})", "nil"
-    ck "(try ((Path ^^strict \"name\") {^age 37}) catch Error $err/message)",
+    ck "(try ((Path ^^strict \"name\") {^age 37}) catch Error $err/.message)",
        "\"Path lookup failed at segment: \\\"name\\\"\""
     ck "(try ((Path ^^strict ^default \"unknown\" \"name\") {^age 37}) " &
-       "catch Error $err/message)",
+       "catch Error $err/.message)",
        "\"Path lookup failed at segment: \\\"name\\\"\""
     expect GeneError:
       discard runStr("((Path ^strict 1 \"name\") {^age 37})")
@@ -4347,28 +4347,28 @@ suite "vm — env and eval":
        "3"
     ck "(try (eval (quote (while true nil)) " &
        "           ^in (env ^policy {^timeout_ms 20})) " &
-       "catch Error $err/message)",
+       "catch Error $err/.message)",
        "\"eval timeout exceeded\""
     ck "(try (eval (quote (eval (quote (while true nil)) ^in (env))) " &
        "           ^in (env ^policy {^timeout_ms 40})) " &
-       "catch Error $err/message)",
+       "catch Error $err/.message)",
        "\"eval timeout exceeded\""
     # A deadline is transitive across an ordinary call. The callee's bound
     # scope descends from its own lexical scope, so without this the first call
     # out of the evaluated form silently left the limit behind.
     ck "(fn spin [n : Int] (while true (set n (+ n 1))) n) " &
        "(try (eval (quote (spin 1)) ^in (env ^policy {^timeout_ms 200})) " &
-       "catch Error $err/message)",
+       "catch Error $err/.message)",
        "\"eval timeout exceeded\""
     # Time and allocator state are sampled during policy-controlled execution.
     ck "(try (eval (quote (while true nil)) " &
        "           ^in (env ^policy {^timeout_ms 50})) " &
-       "catch Error $err/message)",
+       "catch Error $err/.message)",
        "\"eval timeout exceeded\""
     ck "(try (eval (quote (do (var xs ($thaw #[])) " &
        "                      (while true (xs .push ($str/join [\"x\"] \"\"))))) " &
        "           ^in (env ^policy {^max_memory_mb 1})) " &
-       "catch Error $err/message)",
+       "catch Error $err/.message)",
        "\"eval memory limit exceeded\""
     ck "(eval (quote (+ 1 2)) " &
        "      ^in (env ^policy {^timeout_ms 5000 " &
@@ -4395,7 +4395,7 @@ suite "vm — env and eval":
 
   test "eval compile failures are typed CompileError values":
     ck "(try (eval (quote (var)) ^in (env)) " &
-       "catch CompileError $err/message)",
+       "catch CompileError $err/.message)",
        "\"var requires a name or pattern\""
 
   test "Env annotations accept env values":
@@ -4532,11 +4532,11 @@ suite "vm — channels":
        "(ch .send 9) " &
        "(ch .close) " &
        "[(ch .recv) " &
-       " (try (ch .recv) catch ChannelClosed $err/message)]",
+       " (try (ch .recv) catch ChannelClosed $err/.message)]",
        "[9 \"channel is closed\"]"
     ck "(var ch ($channel)) " &
        "(ch .close) " &
-       "(try (ch .send 1) catch ChannelClosed $err/message)",
+       "(try (ch .send 1) catch ChannelClosed $err/.message)",
        "\"channel is closed\""
 
   test "typed channels check items on send":
@@ -4859,31 +4859,31 @@ suite "vm — cooperative scheduler":
   test "closing a channel wakes parked receivers and senders":
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var t (spawn (try (ch .recv) " &
-       "                  catch ChannelClosed $err/message))) " &
+       "                  catch ChannelClosed $err/.message))) " &
        "  (spawn (ch .close)) " &
        "  (await t))",
        "\"channel is closed\""
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (ch .send 1) " &
        "  (var t (spawn (try (ch .send 2) " &
-       "                  catch ChannelClosed $err/message))) " &
+       "                  catch ChannelClosed $err/.message))) " &
        "  (spawn (ch .close)) " &
        "  (await t))",
        "\"channel is closed\""
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var a (spawn (try (ch .recv) " &
-       "                  catch ChannelClosed $err/message))) " &
+       "                  catch ChannelClosed $err/.message))) " &
        "  (var b (spawn (try (ch .recv) " &
-       "                  catch ChannelClosed $err/message))) " &
+       "                  catch ChannelClosed $err/.message))) " &
        "  (spawn (ch .close)) " &
        "  [(await a) (await b)])",
        "[\"channel is closed\" \"channel is closed\"]"
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (ch .send 1) " &
        "  (var a (spawn (try (ch .send 2) " &
-       "                  catch ChannelClosed $err/message))) " &
+       "                  catch ChannelClosed $err/.message))) " &
        "  (var b (spawn (try (ch .send 3) " &
-       "                  catch ChannelClosed $err/message))) " &
+       "                  catch ChannelClosed $err/.message))) " &
        "  (spawn (ch .close)) " &
        "  [(await a) (await b)])",
        "[\"channel is closed\" \"channel is closed\"]"
@@ -4936,26 +4936,26 @@ suite "vm — cooperative scheduler":
        "(try (scope " &
        "       (spawn (do (ch .recv) (out .set 1))) " &
        "       nil) " &
-       "  catch Error $err/message) " &
+       "  catch Error $err/.message) " &
        "(ch .send 1) " &
        "($sleep 1) " &
        "(out .get)", "0"
   test "task scope error exit cancels pending child tasks":
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var ch ($channel ^capacity 1)) " &
        "(var out ($cell 0)) " &
        "(try " &
        "  (scope " &
        "    (spawn (do (ch .recv) (out .set 1))) " &
-       "    (fail (Boom ^message \"stop\"))) " &
+       "    (fail (Boom ^_msg \"stop\"))) " &
        "  catch Boom nil) " &
        "(ch .send 1) " &
        "(scope nil) " &
        "(out .get)", "0"
   test "task scope error exit waits for child cancellation cleanup":
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var ch ($channel ^capacity 1)) " &
        "(var out ($cell 0)) " &
        "(try " &
@@ -4963,7 +4963,7 @@ suite "vm — cooperative scheduler":
        "    (spawn (try (ch .recv) " &
        "                ensure (out .set 9))) " &
        "    ($sleep 1) " &
-       "    (fail (Boom ^message \"stop\"))) " &
+       "    (fail (Boom ^_msg \"stop\"))) " &
        "  catch Boom nil) " &
        "(out .get)", "9"
 
@@ -4993,14 +4993,14 @@ suite "vm — cooperative scheduler":
        "[0 nil 1]"
 
   test "detached tasks are not cancelled on scope error exit":
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var out ($cell 0)) " &
        "(try " &
        "  (scope " &
        "    (var t (spawn (do ($sleep 5) (out .set 9)))) " &
        "    (t .detach) " &
-       "    (fail (Boom ^message \"stop\"))) " &
+       "    (fail (Boom ^_msg \"stop\"))) " &
        "  catch Boom nil) " &
        "[(out .get) ($sleep 10) (out .get)]",
        "[0 nil 9]"
@@ -5088,7 +5088,7 @@ suite "vm — cooperative scheduler":
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
        "(var pending (a .ask ^timeout_ms 5 (fn [reply] (Get ^reply reply)))) " &
-       "(var err (try (await pending) catch ActorError $err/message)) " &
+       "(var err (try (await pending) catch ActorError $err/.message)) " &
        "(ch .send 7) " &
        "[err ($sleep 1) (out .get)]",
        "[\"actor/ask timed out\" nil 7]"
@@ -5100,16 +5100,16 @@ suite "vm — cooperative scheduler":
        "(fn handle [ctx state msg] " &
        "  (var (Get ^reply reply) msg) " &
        "  (var got (ch .recv)) " &
-       "  (try (reply .send got) catch Error $err/message) " &
+       "  (try (reply .send got) catch Error $err/.message) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
        "(var pending (a .ask ^timeout_ms 5 " &
        "  (fn [reply] (saved .set reply) (Get ^reply reply)))) " &
-       "(var err (try (await pending) catch ActorError $err/message)) " &
+       "(var err (try (await pending) catch ActorError $err/.message)) " &
        "(var first-late (try ((saved .get) .send 9) " &
-       "                  catch Error $err/message)) " &
+       "                  catch Error $err/.message)) " &
        "(var second-late (try ((saved .get) .send 10) " &
-       "                   catch Error $err/message)) " &
+       "                   catch Error $err/.message)) " &
        "[err first-late second-late])",
        "[\"actor/ask timed out\" nil \"reply has already been sent\"]"
 
@@ -5141,16 +5141,16 @@ suite "vm — cooperative scheduler":
        "(fn handle [ctx state msg] " &
        "  (var (Get ^reply reply) msg) " &
        "  (var got (ch .recv)) " &
-       "  (try (reply .send got) catch Error $err/message) " &
+       "  (try (reply .send got) catch Error $err/.message) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
        "(var pending (a .ask " &
        "  (fn [reply] (saved .set reply) (Get ^reply reply)))) " &
        "(pending .cancel) " &
        "(var first-late (try ((saved .get) .send 9) " &
-       "                  catch Error $err/message)) " &
+       "                  catch Error $err/.message)) " &
        "(var second-late (try ((saved .get) .send 10) " &
-       "                   catch Error $err/message)) " &
+       "                   catch Error $err/.message)) " &
        "[first-late second-late])",
        "[nil \"reply has already been sent\"]"
 
@@ -5261,7 +5261,7 @@ suite "vm — actors":
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/stop)))) " &
        "(a .send 1) " &
-       "(try (a .send 2) catch ActorClosed $err/message)",
+       "(try (a .send 2) catch ActorClosed $err/.message)",
        "\"actor is closed\""
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
@@ -5356,7 +5356,7 @@ suite "vm — actors":
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/continue state)))) " &
        "(try (await (a .ask (fn [reply] (Get ^reply reply)))) " &
-       "catch ActorError $err/message)",
+       "catch ActorError $err/.message)",
        "\"actor/ask did not receive a reply\""
 
   test "task scopes close owned actors on exit":
@@ -5365,15 +5365,15 @@ suite "vm — actors":
        "    ^handle (fn [ctx state msg] ($actor/continue state))))) " &
        "(a .try_send 1)",
        "false"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var a nil) " &
        "(try " &
        "  (scope " &
        "    (set a ($actor/spawn ^init (fn [] 0) " &
        "      ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-       "    (fail (Boom ^message \"x\"))) " &
-       "catch Boom $err/message) " &
+       "    (fail (Boom ^_msg \"x\"))) " &
+       "catch Boom $err/.message) " &
        "(a .try_send 1)",
        "false"
 
@@ -5383,14 +5383,14 @@ suite "vm — actors":
        "    ^handle (fn [ctx state msg] ($actor/continue state))))) " &
        "(a .try_send 1)",
        "false"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var seen ($cell 0)) " &
        "(supervisor ^strategy restart " &
        "  (var a ($actor/spawn ^init (fn [] 10) " &
        "    ^handle (fn [ctx state msg] " &
        "      (if (== msg 1) " &
-       "        (fail (Boom ^message \"bad\")) " &
+       "        (fail (Boom ^_msg \"bad\")) " &
        "        (do " &
        "          (seen .set state) " &
        "          ($actor/continue (+ state msg))))))) " &
@@ -5400,15 +5400,15 @@ suite "vm — actors":
        "10"
 
   test "supervisor failure retries are bounded FIFO with observable drops":
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var events ($channel ^capacity 1)) " &
        "(supervisor ^strategy restart ^events events " &
        "  (var i 0) (var a nil) " &
        "  (while (< i 66) " &
        "    (set a ($actor/spawn ^init (fn [] 0) " &
        "      ^handle (fn [ctx state msg] " &
-       "        (fail (Boom ^message \"bad\"))))) " &
+       "        (fail (Boom ^_msg \"bad\"))))) " &
        "    (spawn (a .send i)) " &
        "    (set i (+ i 1))) " &
        "  (var attempts 0) " &
@@ -5432,15 +5432,15 @@ suite "vm — actors":
        "[64 64 64 1 0 1]"
 
   test "supervisor failure delivery uses event and dead_letter channels":
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var events ($channel ^capacity 4)) " &
        "(var seen ($cell 0)) " &
        "(supervisor ^strategy restart ^events events " &
        "  (var a ($actor/spawn ^mailbox 4 ^init (fn [] 10) " &
        "    ^handle (fn [ctx state msg] " &
        "      (if (== msg 1) " &
-       "        (fail (Boom ^message \"bad\")) " &
+       "        (fail (Boom ^_msg \"bad\")) " &
        "        (do " &
        "          (seen .set state) " &
        "          ($actor/continue (+ state msg))))))) " &
@@ -5456,19 +5456,19 @@ suite "vm — actors":
        "  [(seen .get) " &
        "   (match event ^!exhaustive " &
        "     (when (ActorFailure ^failed_message failed " &
-       "                         ^error (Boom ^message m) " &
+       "                         ^error (Boom ^_msg m) " &
        "                         ^panic p ^strategy s) " &
        "       [failed m p s]))])",
        "[10 [1 \"bad\" false restart]]"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var events ($channel ^capacity 1)) " &
        "(var dead ($channel ^capacity 2)) " &
        "(events .send \"busy\") " &
        "(supervisor ^strategy restart ^events events ^dead_letter dead " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (fail (Boom ^message \"bad\"))))) " &
+       "      (fail (Boom ^_msg \"bad\"))))) " &
        "  (a .send 1) " &
        "  ($sleep 1) " &
        "  (var event (dead .recv)) " &
@@ -5476,12 +5476,12 @@ suite "vm — actors":
        "  [busy " &
        "   (match event ^!exhaustive " &
        "     (when (ActorFailure ^failed_message failed " &
-       "                         ^error (Boom ^message m) " &
+       "                         ^error (Boom ^_msg m) " &
        "                         ^strategy s) " &
        "       [failed m s]))])",
        "[\"busy\" [1 \"bad\" restart]]"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var events ($channel ^capacity 1)) " &
        "(var dead ($channel ^capacity 1)) " &
        "(events .send \"busy\") " &
@@ -5489,7 +5489,7 @@ suite "vm — actors":
        "(supervisor ^strategy restart ^events events ^dead_letter dead " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (fail (Boom ^message \"bad\"))))) " &
+       "      (fail (Boom ^_msg \"bad\"))))) " &
        "  (a .send 4) " &
        "  ($sleep 1) " &
        "  (var dead-busy (dead .recv)) " &
@@ -5498,65 +5498,65 @@ suite "vm — actors":
        "  [busy dead-busy " &
        "   (match event ^!exhaustive " &
        "     (when (ActorFailure ^failed_message failed " &
-       "                         ^error (Boom ^message m) " &
+       "                         ^error (Boom ^_msg m) " &
        "                         ^strategy s) " &
        "       [failed m s]))])",
        "[\"busy\" \"dead-busy\" [4 \"bad\" restart]]"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var events ($channel ^capacity 1)) " &
        "(events .send \"busy\") " &
        "(supervisor ^strategy restart ^events events " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (fail (Boom ^message \"bad\"))))) " &
+       "      (fail (Boom ^_msg \"bad\"))))) " &
        "  (a .send 3) " &
        "  (var busy (events .recv)) " &
        "  (var event (events .recv)) " &
        "  [busy " &
        "   (match event ^!exhaustive " &
        "     (when (ActorFailure ^failed_message failed " &
-       "                         ^error (Boom ^message m) " &
+       "                         ^error (Boom ^_msg m) " &
        "                         ^strategy s) " &
        "       [failed m s]))])",
        "[\"busy\" [3 \"bad\" restart]]"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var events ($channel ^capacity 1)) " &
        "(var dead ($channel ^capacity 1)) " &
        "(events .close) " &
        "(supervisor ^strategy restart ^events events ^dead_letter dead " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (fail (Boom ^message \"bad\"))))) " &
+       "      (fail (Boom ^_msg \"bad\"))))) " &
        "  (a .send 2) " &
        "  ($sleep 1) " &
        "  (var event (dead .recv)) " &
        "  (match event ^!exhaustive " &
        "    (when (ActorFailure ^failed_message failed " &
-       "                        ^error (Boom ^message m) " &
+       "                        ^error (Boom ^_msg m) " &
        "                        ^strategy s) " &
        "      [failed m s])))",
        "[2 \"bad\" restart]"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var events : (Channel Int) ($channel ^capacity 1)) " &
        "(var dead ($channel ^capacity 1)) " &
        "(supervisor ^strategy restart ^events events ^dead_letter dead " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (fail (Boom ^message \"bad\"))))) " &
+       "      (fail (Boom ^_msg \"bad\"))))) " &
        "  (a .send 6) " &
        "  ($sleep 1) " &
        "  (var event (dead .recv)) " &
        "  (match event ^!exhaustive " &
        "    (when (ActorFailure ^failed_message failed " &
-       "                        ^error (Boom ^message m) " &
+       "                        ^error (Boom ^_msg m) " &
        "                        ^strategy s) " &
        "      [failed m s])))",
        "[6 \"bad\" restart]"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var events ($channel ^capacity 1)) " &
        "(var dead ($channel ^capacity 1)) " &
        "(events .close) " &
@@ -5566,7 +5566,7 @@ suite "vm — actors":
        "  (var a ($actor/spawn ^mailbox 4 ^init (fn [] 10) " &
        "    ^handle (fn [ctx state msg] " &
        "      (if (== msg 1) " &
-       "        (fail (Boom ^message \"bad\")) " &
+       "        (fail (Boom ^_msg \"bad\")) " &
        "        (do " &
        "          (seen .set state) " &
        "          ($actor/continue (+ state msg))))))) " &
@@ -5575,34 +5575,34 @@ suite "vm — actors":
        "  ($sleep 1) " &
        "  (seen .get))",
        "10"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var a nil) " &
        "[(try " &
        "   (supervisor ^strategy escalate " &
        "     (set a ($actor/spawn ^init (fn [] 0) " &
        "       ^handle (fn [ctx state msg] " &
-       "         (fail (Boom ^message \"bad\"))))) " &
+       "         (fail (Boom ^_msg \"bad\"))))) " &
        "     (a .send 1)) " &
-       "   catch Boom $err/message) " &
+       "   catch Boom $err/.message) " &
        " (a .try_send 2)]",
        "[\"bad\" false]"
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(type Get ^props {^reply (ReplyTo Int)}) " &
        "(impl Send for Get) " &
        "(try " &
        "  (supervisor ^strategy escalate " &
        "    (var a ($actor/spawn ^init (fn [] 0) " &
        "      ^handle (fn [ctx state msg] " &
-       "        (fail (Boom ^message \"bad\"))))) " &
+       "        (fail (Boom ^_msg \"bad\"))))) " &
        "    (var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
        "    ($sleep 1) " &
        "    \"after\") " &
-       "  catch Boom $err/message)",
+       "  catch Boom $err/.message)",
        "\"bad\""
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var parent-events ($channel ^capacity 2)) " &
        "(var outcome " &
        "  (try " &
@@ -5610,14 +5610,14 @@ suite "vm — actors":
        "      (supervisor ^strategy escalate " &
        "        (var a ($actor/spawn ^init (fn [] 0) " &
        "          ^handle (fn [ctx state msg] " &
-       "            (fail (Boom ^message \"bad\"))))) " &
+       "            (fail (Boom ^_msg \"bad\"))))) " &
        "        (a .send 7))) " &
-       "    catch Boom $err/message)) " &
+       "    catch Boom $err/.message)) " &
        "(var event (parent-events .recv)) " &
        "[outcome " &
        " (match event ^!exhaustive " &
        "   (when (ActorFailure ^failed_message failed " &
-       "                       ^error (Boom ^message m) " &
+       "                       ^error (Boom ^_msg m) " &
        "                       ^strategy s) " &
        "     [failed m s]))]",
        "[\"bad\" [7 \"bad\" escalate]]"
@@ -5632,14 +5632,14 @@ suite "vm — actors":
                      "  ($sleep 1) " &
                      "  \"after\")")
     expect GeneCancel:
-      discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
-                     "(impl Error for Boom) " &
+      discard runStr("(type Boom : Error) " &
+                     " " &
                      "(type Get ^props {^reply (ReplyTo Int)}) " &
                      "(impl Send for Get) " &
                      "(supervisor ^strategy stop " &
                      "  (var a ($actor/spawn ^mailbox 4 ^init (fn [] 0) " &
                      "    ^handle (fn [ctx state msg] " &
-                     "      (fail (Boom ^message \"bad\"))))) " &
+                     "      (fail (Boom ^_msg \"bad\"))))) " &
                      "  (var first (a .ask (fn [reply] (Get ^reply reply)))) " &
                      "  (var second (a .ask (fn [reply] (Get ^reply reply)))) " &
                      "  ($sleep 1) " &
@@ -5674,9 +5674,9 @@ suite "vm — streams":
     ck "(var s ($read_all \"(a) #_ (ignored) (b 2)\")) " &
        "[(s .next) (s .next) (s .has_next)]",
        "[(a) (b 2) false]"
-    ck "(try ($read_one \"(a\") catch Error $err/message)",
+    ck "(try ($read_one \"(a\") catch Error $err/.message)",
        "\"read_one: unexpected EOF: unclosed '('\\n  while reading '(' opened at 1:1; expected ')'\""
-    ck "(try ($read_one \"(a\") catch ParseError $err/message)",
+    ck "(try ($read_one \"(a\") catch ParseError $err/.message)",
        "\"read_one: unexpected EOF: unclosed '('\\n  while reading '(' opened at 1:1; expected ')'\""
     expect GeneError: discard runStr("($read_one 1)")
     expect GeneError: discard runStr("($read_all 1)")
@@ -5692,7 +5692,7 @@ suite "vm — streams":
        "(var t (first-token ($lex_all \"name\"))) " &
        "(var k t/kind) (var x t/lexeme) [k x]",
        "[symbol \"name\"]"
-    ck "(try ($lex_all \"\\\"\") catch LexError $err/message)",
+    ck "(try ($lex_all \"\\\"\") catch LexError $err/.message)",
        "\"lex_all: unterminated string literal\""
     expect GeneError: discard runStr("($lex_all 1)")
 
@@ -5781,8 +5781,8 @@ suite "vm — streams":
        "[true 3]"
 
   test "producer errors are terminal and close owned upstream once":
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
+    ck "(type Boom : Error) " &
+       " " &
        "(var calls ($cell 0)) " &
        "(var closes ($cell 0)) " &
        "(fn ^^generator source [] : (Stream Int Never) " &
@@ -5790,22 +5790,22 @@ suite "vm — streams":
        "   ensure (closes .update (fn [n] (+ n 1))))) " &
        "(var s ($map (source) " &
        "  (fn [x] (calls .update (fn [n] (+ n 1))) " &
-       "          (fail (Boom ^message \"boom\"))))) " &
+       "          (fail (Boom ^_msg \"boom\"))))) " &
        "(var first (try (s .has_next) " &
-       "  catch Boom $err/message)) " &
+       "  catch Boom $err/.message)) " &
        "(var after (s .has_next)) " &
        "(var terminal (try (s .next) " &
-       "  catch EndOfStream $err/message)) " &
+       "  catch EndOfStream $err/.message)) " &
        "[first after terminal (calls .get) (closes .get)]",
        "[\"boom\" false \"end of stream\" 1 1]"
-    ck "(type PredBoom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for PredBoom) " &
+    ck "(type PredBoom : Error) " &
+       " " &
        "(var calls ($cell 0)) " &
        "(var s ($filter ($to_stream [1 2]) " &
        "  (fn [x] (calls .update (fn [n] (+ n 1))) " &
-       "          (fail (PredBoom ^message \"predicate\"))))) " &
+       "          (fail (PredBoom ^_msg \"predicate\"))))) " &
        "(var first (try (s .next) " &
-       "  catch PredBoom $err/message)) " &
+       "  catch PredBoom $err/.message)) " &
        "[first (s .has_next) (calls .get)]",
        "[\"predicate\" false 1]"
 
@@ -5824,20 +5824,20 @@ suite "vm — streams":
        "[[inner outer] false]"
 
   test "generator close preserves the first cleanup error and finishes ensures":
-    ck "(type Cleanup ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Cleanup) " &
+    ck "(type Cleanup : Error) " &
+       " " &
        "(var outer-ran ($cell false)) " &
        "(fn ^^generator gen ^errors [Cleanup] [] : (Stream Int Cleanup) " &
        "  (try " &
        "    (try (yield 1) " &
-       "     ensure (fail (Cleanup ^message \"first\"))) " &
+       "     ensure (fail (Cleanup ^_msg \"first\"))) " &
        "   ensure " &
        "     (outer-ran .set true) " &
-       "     (fail (Cleanup ^message \"second\")))) " &
+       "     (fail (Cleanup ^_msg \"second\")))) " &
        "(var s (gen)) " &
        "(s .next) " &
        "(var message (try (s .close) " &
-       "  catch Cleanup $err/message)) " &
+       "  catch Cleanup $err/.message)) " &
        "[message (outer-ran .get) (s .has_next)]",
        "[\"first\" true false]"
 
@@ -5896,7 +5896,7 @@ suite "vm — streams":
        "  (yield 1) (return) (yield 2)) " &
        "(var s (gen)) " &
        "[(s .next) (s .has_next) " &
-       " (try (s .peek) catch EndOfStream $err/message)]",
+       " (try (s .peek) catch EndOfStream $err/.message)]",
        "[1 false \"end of stream\"]"
     expect GeneError:
       discard compileSource("(fn ^^generator bad [] : (Stream Int Never) " &
@@ -5909,10 +5909,10 @@ suite "vm — streams":
 
   test "stream next and peek raise EndOfStream shape":
     ck "(try (var s ($to_stream [])) (s .next) " &
-       "catch EndOfStream $err/message)",
+       "catch EndOfStream $err/.message)",
        "\"end of stream\""
     ck "(try (var s ($to_stream [])) (s .peek) " &
-       "catch EndOfStream $err/message)",
+       "catch EndOfStream $err/.message)",
        "\"end of stream\""
 
   test "Stream annotations accept streams only":

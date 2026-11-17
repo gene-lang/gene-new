@@ -49,7 +49,7 @@ const cases = [
   ["(fn f [n] (macro m [] (+ n 1)) (m)) [(f 2) (f 9)]", 0, "[3 10]", ""],
   ["(fn f [] (macro spin [] (while true nil)) " +
    "(try (eval (quote (spin)) ^in (env ^policy {^timeout_ms 20})) " +
-   "catch Error ($str/contains? $err/message \"timeout\"))) (f)", 0, "true", ""],
+   "catch Error ($str/contains? $err/.message \"timeout\"))) (f)", 0, "true", ""],
   ["(macro computed [x] (let n (+ x 1)) `(+ %n %(* n 2))) (computed 2)",
    0, "9", ""],
   ["(macro add_one [value] `(do (let tmp 1) (+ tmp %value))) " +
@@ -110,15 +110,15 @@ const cases = [
    '(let f : (Callable [Box] Int) Self:value) (f (Box ^n 7))', 0, "7", ""],
   ['(let f : (Callable [Int] Int) (fn [x] "bad")) ' +
    '(try (f 1) false catch TypeError true)', 0, "true", ""],
-  ['(fn local_error [] (type Local ^props {^code Int}) ' +
-   '(impl Error for Local (message message [] : Str ^errors [] $"code ${self/code}")) ' +
+  ['(fn local_error [] (type Local : Error ^props {^code Int} (message message [] : Str ^errors [] ^^override $"code ${self/code}")) ' +
+   '' +
    '(fail (Local ^code 7))) ' +
-   '(let later (try (local_error) catch Error (fn [] $err_msg))) (later)',
+   '(let later (try (local_error) catch Error (fn [] $err/.message))) (later)',
    0, '"code 7"', ""],
   ['(let checked : (Callable [] Any ^errors []) ' +
-   '(fn [] (fail (AssertionError ^message "original")))) ' +
+   '(fn [] (fail (AssertionError ^_msg "original")))) ' +
    '(fn outer [] ^errors [] (checked)) ' +
-   '(try (outer) catch ErrorContractViolation $err/cause/.Error:message)',
+   '(try (outer) catch ErrorContractViolation $err/_cause/.message)',
    0, '"original"', ""],
   ['(fn checked [] ^errors [] ' +
    '(try (let n : Int "bad") catch TypeError (let saved $err) (fail saved))) ' +
@@ -142,7 +142,7 @@ const cases = [
    '(type Child : Parent ^props {}) (((Child ^n 7) .values) -> $into [])',
    0, "[7]", ""],
   ['(fn ^^generator bad [] : (Stream Int Never) ' +
-   '(try (yield 1) ensure (fail (AssertionError ^message "cleanup")))) ' +
+   '(try (yield 1) ensure (fail (AssertionError ^_msg "cleanup")))) ' +
    '(let s (bad)) (s .next) (try (s .close) false catch ErrorContractViolation true)',
    0, "true", ""],
   ['(import $log [new_logger log_debug]) ' +

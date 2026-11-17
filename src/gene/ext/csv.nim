@@ -92,7 +92,7 @@ proc releaseCsvReaderRecord(id: uint64) {.raises: [].} =
 
 proc raiseCsvError(state: CsvParserState, message: string) {.noreturn.} =
   var props = initPropTable()
-  props["message"] = newStr("csv: " & message)
+  props["_msg"] = newStr("csv: " & message)
   props["offset"] = newInt(state.offset)
   props["record"] = newInt(if state.rowReady: state.recordIndex
                            else: state.recordIndex + 1)
@@ -542,7 +542,7 @@ proc biCsvReaderClose(args: openArray[Value], call: ptr NativeCall): Value {.nim
         raise newException(GeneError, "upstream wait_closed did not return Task")
     except CatchableError as failure:
       var props = initPropTable()
-      props["message"] = newStr("csv upstream close failed: " & failure.msg)
+      props["_msg"] = newStr("csv upstream close failed: " & failure.msg)
       let error = newNode(scope.application().stdlib.vars["csv"].nsScope.vars["CsvError"],
                           props = props)
       record.sourceClosedTask = newFailedTask(failure.msg, error,

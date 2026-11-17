@@ -65,7 +65,7 @@
          ^messages messages ^settings selected/settings ^selection selected/selection ^max_tokens request/max_tokens})
     catch Error
       (if inventory/.empty? (fail $err))
-      (fail (HarnessError ^message $"${selected/name} could not prepare image inputs."))))
+      (fail (HarnessError ^_msg $"${selected/name} could not prepare image inputs."))))
   (let prepared ($freeze input))
   (let call_id (?? supplied_call_id ($crypto/random_hex 16)))
   (let recorded_request (record_request runtime request call_id selected prepared ^inventory inventory))
@@ -92,12 +92,12 @@
           (if ($present? catalog) (catalog/value/failed selected/name 401 selected/selection/transport))
         catch Error nil))
       (let message (if inventory/.empty?
-        (then ($to_str failure/message))
+        (then ($to_str failure/.message))
         (elif (|| ($absent? recorded_request) ($present? recorded_request/harness_prepared_omitted)) $"${selected/name} image-input request failed; opaque provider detail was omitted.")
-        (else (safe_error ($to_str failure/message) inventory))))
+        (else (safe_error ($to_str failure/.message) inventory))))
       (record_result runtime request call_id number "error" true
         (- ($os/monotonic_ms) started) ^error message ^inventory inventory)
-      (if_not inventory/.empty? (fail (HarnessError ^message message)))
+      (if_not inventory/.empty? (fail (HarnessError ^_msg message)))
       (fail failure)
     ensure
       (if_not returned/.get
@@ -109,16 +109,16 @@
         (record_result runtime request call_id number "timeout" (== number attempts)
           elapsed ^usage result/usage ^inventory inventory)
         (if (== number attempts)
-          (fail (HarnessError ^message
+          (fail (HarnessError ^_msg
             $"${selected/name} model provider request exceeded ${(/ selected/settings/timeout_ms 1000.0)} s (${attempts} attempts). Send a continuation message or increase provider_timeout_ms."))))
       (else
         (if_not (== ($head result/text) Str)
           (record_result runtime request call_id number "error" true elapsed
             ^error "provider returned invalid text content" ^inventory inventory)
-          (fail (HarnessError ^message
+          (fail (HarnessError ^_msg
             $"${selected/name} provider returned invalid text content")))
         (record_result runtime request call_id number "ok" true elapsed
           ^output result/text ^usage result/usage ^inventory inventory)
         (return {^text result/text ^safe_text (redact_image_text result/text inventory) ^usage result/usage
           ^call_id call_id ^provider selected/name}))))
-  (fail (HarnessError ^message "provider returned no result")))
+  (fail (HarnessError ^_msg "provider returned no result")))

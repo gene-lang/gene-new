@@ -11,7 +11,7 @@
       program))
   (if guarded/ok
     guarded/value
-    (fail (HarnessError ^message $"plugin panic: ${guarded/message}"))))
+    (fail (HarnessError ^_msg $"plugin panic: ${guarded/message}"))))
 
 (fn apply_argument_list [bundle]
   (bundle/callable bundle/args...))
@@ -24,9 +24,9 @@
     (when (TaskOutcome/error error)
       (fail error))
     (when (TaskOutcome/panic message)
-      (fail (HarnessError ^message $"plugin panic: ${message}")))
+      (fail (HarnessError ^_msg $"plugin panic: ${message}")))
     (when TaskOutcome/cancelled
-      (fail (HarnessError ^message "plugin invocation was cancelled or exceeded its deadline")))))
+      (fail (HarnessError ^_msg "plugin invocation was cancelled or exceeded its deadline")))))
 
 (fn configure_plugin_module [module, limits : ExecutionLimits]
   (var policy

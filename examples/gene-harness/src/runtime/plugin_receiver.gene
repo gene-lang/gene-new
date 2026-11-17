@@ -9,7 +9,7 @@
 (fn host_record [token, ^required required : Bool = true]
   (let found (lookup_handle records token))
   (if (&& required ($absent? found))
-    (fail (ServiceError ^code "unavailable" ^message "This plugin activation has retired.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "This plugin activation has retired.")))
   found)
 
 (fn delegate [receiver] (/host (host_record receiver/token)))
@@ -72,7 +72,7 @@
     (message subscribe [selector, handler] : Any
       (if (!= selector DurableRecord)
         (fail (ServiceError ^code "unsupported_interface"
-          ^message "PluginHost:3 subscriptions use DurableRecord; ephemeral host event objects are private.")))
+          ^_msg "PluginHost:3 subscriptions use DurableRecord; ephemeral host event objects are private.")))
       (let record (host_record self/token))
       (let subscription (record/host .PluginHost:subscribe selector (fn [event]
         (handler ($freeze_shallow (DurableRecord ^scope event/scope ^stream event/stream

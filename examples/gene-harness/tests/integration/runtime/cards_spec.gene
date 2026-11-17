@@ -200,10 +200,10 @@
           (scripted [($to_str renames_card "\n(Outcome ^^done ^reply \"made\")")
                      """(let local 5)
 (let failure (try (card "renames" ^title "Broken" ^state {} ^view (fn [state] `(p %local))) nil
-  catch Error $err/message))
+  catch Error $err/.message))
 (Outcome ^^done ^reply (?? failure "no error"))"""
                      """(let failure (try (card "other" ^title "Too long a title for a card that has to stay concise and short" `(p "x")) nil
-  catch Error $err/message))
+  catch Error $err/.message))
 (Outcome ^^done ^reply (?? failure "no error"))"""])))
         (try
           (let first (submit_round controller "default" "r1" 1 "make"))

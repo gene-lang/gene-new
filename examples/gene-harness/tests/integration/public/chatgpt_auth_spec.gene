@@ -136,8 +136,8 @@
           ($assert refresh)
           (verified .set (+ verified/.get 1))
           (if (&& (["verification" "delayed" "delayed_without_identity" "expired_identity"] .contains? phase/.get) (== verified/.get 1))
-            (fail (ProviderError ^code "signing_keys_unavailable" ^message "Signing keys temporarily unavailable")))
-          (if (== phase/.get "signature") (fail (CryptoError ^message "Invalid fixture signature")))
+            (fail (ProviderError ^code "signing_keys_unavailable" ^_msg "Signing keys temporarily unavailable")))
+          (if (== phase/.get "signature") (fail (CryptoError ^_msg "Invalid fixture signature")))
           {^sub (if (== phase/.get "identity") (then "other") (else "subject"))}))
         (let runner (spawn ^lane root (try
           (let url $"http://127.0.0.1:${server/port}/token")
@@ -229,7 +229,7 @@
           ($assert (== client "oaiapp_fixture")) ($assert (== nonce pending/.get/nonce))
           ($assert (== tokens/id_token "SECRET_ID_TOKEN")) ($assert (! refresh))
           (validated .set (+ validated/.get 1))
-          (if (== mode/.get "invalid_signature") (fail (ProviderError ^message "SECRET_BAD_SIGNATURE")))
+          (if (== mode/.get "invalid_signature") (fail (ProviderError ^_msg "SECRET_BAD_SIGNATURE")))
           {^sub (if (== mode/.get "different_account") "different" "subject") ^email "user@example.invalid"
            ^exp (+ (/ ($os/wall_ms) 1000) 3600)}))
         (let runner (spawn ^lane root (try

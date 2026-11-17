@@ -58,7 +58,7 @@
      ^schema (fn [candidate]
        (validate_hook_row candidate)
        (if ($absent? (lookup "hook_points" candidate/point))
-         (fail (HarnessError ^message $"hook point ${candidate/point} is not available")))
+         (fail (HarnessError ^_msg $"hook point ${candidate/point} is not available")))
        candidate)}
     # Not unique: several plugins may claim a slot. The holder is resolved from
     # the published rows (runtime/activation_services.gene), never by order.

@@ -183,9 +183,6 @@ suite "protocols — declarations and dispatch":
     expect GeneError:
       discard runStr("(protocol ToName (message to_name [self] : Str)) " &
                      "(type User ^props {^name Str} ^impl [ToName])")
-    # A message with a default still needs the explicit (empty) impl.
-    expect GeneError:
-      discard runStr("(type Boom ^props {^message Str} ^impl [Error])")
 
   test "^impl of a message-free protocol is the conformance":
     # Send: the channel admits the value only through the declaration.
@@ -638,7 +635,7 @@ suite "types — type-direct messages and sends":
       "(type M ^props {}) " &
       "(impl P for M (message label [] : Str \"p\")) " &
       "(impl Q for M (message label [] : Str \"q\")) " &
-      "(try ((M) .label) catch MessageError $err/message)").strVal
+      "(try ((M) .label) catch MessageError $err/.message)").strVal
     check message.contains("no message 'label' on M")
     check message.contains("P:label, Q:label")
     check message.contains("use a qualified send")
@@ -646,7 +643,7 @@ suite "types — type-direct messages and sends":
   test "pending protocol impls do not become visible to a bare-send hint":
     let message = runStr("(protocol P (message label [] : Str)) " &
       "(type M ^props {}) " &
-      "(let observed (try ((M) .label) catch MessageError $err/message)) " &
+      "(let observed (try ((M) .label) catch MessageError $err/.message)) " &
       "(impl P for M (message label [] : Str \"p\")) observed").strVal
     check message.contains("no message 'label' on M")
     check not message.contains("P:label")
@@ -657,16 +654,16 @@ suite "types — type-direct messages and sends":
       "(fn inside [] " &
       "  (impl P for M (message label [] : Str \"p\")) " &
       "  (try ((M) .label) catch MessageError " &
-      "    ($str/contains? $err/message \"P:label\"))) " &
+      "    ($str/contains? $err/.message \"P:label\"))) " &
       "[(inside) (try ((M) .label) catch MessageError " &
-      "  ($str/contains? $err/message \"P:label\"))]",
+      "  ($str/contains? $err/.message \"P:label\"))]",
       "[true false]"
 
   test "bare-send hints include visible universal defaults":
     let message = runStr("(protocol Greeting ^^universal " &
       "  (message hello [] : Str \"hi\")) " &
       "(type T ^props {}) " &
-      "(try ((T) .hello) catch MessageError $err/message)").strVal
+      "(try ((T) .hello) catch MessageError $err/.message)").strVal
     check message.contains("Greeting:hello")
 
   test "bare-send hints use a reachable protocol qualifier":
@@ -674,7 +671,7 @@ suite "types — type-direct messages and sends":
       "  (message label [] : Str))) " &
       "(type M ^props {}) " &
       "(impl api/Labelled for M (message label [] : Str \"ok\")) " &
-      "(try ((M) .label) catch MessageError $err/message)").strVal
+      "(try ((M) .label) catch MessageError $err/.message)").strVal
     check message.contains("api/Labelled:label")
 
   test "implicit-self sends resolve in the receiver's context":

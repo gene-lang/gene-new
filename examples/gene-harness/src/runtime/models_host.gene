@@ -46,7 +46,7 @@
   (state/refresh_worker .set (spawn ^lane root (run_refresh_jobs state)))
   (state .put "refresh_registration" (register_chatgpt_refresh (fn [callback args]
     (if (! state/accepting/.get)
-      (fail (ServiceError ^code "unavailable" ^message "The authentication host is closing.")))
+      (fail (ServiceError ^code "unavailable" ^_msg "The authentication host is closing.")))
     # Enqueue without awaiting. Once accepted, even cancellation while waiting
     # for the host to start the task cannot discard a rotated-token response.
     (let job {^callback callback ^args args ^task ($cell nil)})
@@ -130,7 +130,7 @@
         (let status (put_cordis_plugin ^^replace runtime/h (endpoint_plugin file/config/providers)
           {^^host ^limits runtime/profile/limits ^digest "builtin"}))
         (if (|| (!= status "ready") (! (endpoints_match? runtime file/config/providers)))
-          (fail (ServiceError ^code "unavailable" ^message "Endpoint configuration is not ready; inspect the model_endpoints plugin.")))
+          (fail (ServiceError ^code "unavailable" ^_msg "Endpoint configuration is not ready; inspect the model_endpoints plugin.")))
         (set changed true)))
     (let catalog (active_model_catalog runtime))
     (if (&& ($present? catalog) (! catalog/closed/.get) (== catalog/root root)
@@ -158,13 +158,13 @@
   (if_not (endpoint_source_enabled? state/runtime) (return nil))
   (if (endpoints_match? state/runtime file/config/providers) (return nil))
   (let job {^root root ^done ($cell false)
-    ^error ($cell (ServiceError ^code "unavailable" ^message "The model settings host is closing."))})
+    ^error ($cell (ServiceError ^code "unavailable" ^_msg "The model settings host is closing."))})
   (state/publications/.get .push job)
   (while (! job/done/.get)
     (if (! state/accepting/.get)
-      (fail (ServiceError ^code "unavailable" ^message "The model settings host is closing.")))
+      (fail (ServiceError ^code "unavailable" ^_msg "The model settings host is closing.")))
     (if state/publisher/.get/.done?
-      (fail (ServiceError ^code "unavailable" ^message "Endpoint publication stopped; restart the host before saving again.")))
+      (fail (ServiceError ^code "unavailable" ^_msg "Endpoint publication stopped; restart the host before saving again.")))
     ($sleep 1))
   (if ($present? job/error/.get) (fail job/error/.get))
   nil)
@@ -183,7 +183,7 @@
 (fn endpoint_entries [handle, supplied_root] ^^private
   (let service (require_service handle))
   (if (!= service/host/owner "model_endpoints")
-    (fail (ServiceError ^code "forbidden" ^message "Endpoint activation belongs to the model_endpoints plugin.")))
+    (fail (ServiceError ^code "forbidden" ^_msg "Endpoint activation belongs to the model_endpoints plugin.")))
   (let state service/config/state)
   (if ($absent? state/root/.get) (state/root .set (manager_root_path ^explicit supplied_root)))
   (read_endpoint_file service/runtime state/root/.get))
@@ -191,7 +191,7 @@
 (fn start_file_watch [handle, supplied_root] ^^private
   (let service (require_service handle))
   (let state service/config/state)
-  (if (! state/accepting/.get) (fail (ServiceError ^code "unavailable" ^message "The models host is closing.")))
+  (if (! state/accepting/.get) (fail (ServiceError ^code "unavailable" ^_msg "The models host is closing.")))
   (if ($absent? state/root/.get) (state/root .set (manager_root_path ^explicit supplied_root)))
   (let revision service/host/notification_revision)
   (let watch {^closed ($cell false) ^worker ($cell nil)})
@@ -222,7 +222,7 @@
   (let state service/config/state)
   (let catalog (state/catalogs .get service/host/notification_revision))
   (if (|| ($absent? catalog) catalog/closed/.get)
-    (fail (ServiceError ^code "unavailable" ^message "The model catalog contribution is unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The model catalog contribution is unavailable.")))
   catalog)
 
 (fn model_configuration [handle] ^^private
@@ -241,7 +241,7 @@
   (let catalog (require_catalog handle))
   (let context ($runtime/context))
   (if (&& ($present? context/publication) context/publication/.get)
-    (fail (ServiceError ^code "invalid_request" ^message "Save shared model settings outside plugin activation.")))
+    (fail (ServiceError ^code "invalid_request" ^_msg "Save shared model settings outside plugin activation.")))
   (let root catalog/root)
   (let saved (write_models_file ^reserved (endpoint_reserved_names service/runtime) root value expected))
   (sync_endpoint_file service/config/state root saved)
@@ -258,11 +258,11 @@
 (fn save_model_default [handle, selection, expected : Str] ^^private
   (let catalog (require_catalog handle))
   (try (validate_model_settings selection)
-    catch Error (fail (ModelsFileError ^code "invalid_models" ^message $err/message)))
+    catch Error (fail (ModelsFileError ^code "invalid_models" ^_msg $err/.message)))
   (if (|| ($absent? selection/provider) ($absent? selection/model))
-    (fail (ModelsFileError ^code "invalid_models" ^message "A shared default requires provider and model")))
+    (fail (ModelsFileError ^code "invalid_models" ^_msg "A shared default requires provider and model")))
   (if (!= expected catalog/file/.get/digest)
-    (fail (ModelsFileError ^code "revision_conflict" ^message "Models settings changed; refresh before saving a default.")))
+    (fail (ModelsFileError ^code "revision_conflict" ^_msg "Models settings changed; refresh before saving a default.")))
   (let config ($thaw ($freeze catalog/file/.get/config)))
   (config .put "default" selection)
   (save_model_settings handle config expected))
@@ -286,7 +286,7 @@
   (let service (require_service handle))
   (if (!= session "") (require_record service/runtime/sessions session))
   (let choice (try (validate_model_settings selection)
-    catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+    catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message))))
   (let base (effective_config service/runtime))
   (let metadata {^model_settings choice})
   (let settings (session_settings metadata base))
@@ -299,17 +299,17 @@
   (with_session_gate service/runtime/sessions $"round/${session}" (fn []
     (require_record service/runtime/sessions session)
     (let choice (try (validate_model_settings selection)
-      catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+      catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message))))
     (let pins (selection_pins service/runtime))
     (for key in ["provider" "model" "effort"]
       (if (&& ($present? (choice .get key)) ($present? (pins .get key))
               (!= (choice .get key) (pins .get key)))
-        (fail (ServiceError ^code "invalid_request" ^message $"${key} is fixed by this host's launch or profile settings"))))
+        (fail (ServiceError ^code "invalid_request" ^_msg $"${key} is fixed by this host's launch or profile settings"))))
     (if (> ($map_size choice) 0)
       (then
         (let base (effective_config service/runtime))
         (try (select_provider ^allow_unready true service/runtime (session_settings {^model_settings choice} base))
-          catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message)))))
+          catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message)))))
     (update_session service/runtime/sessions session {^model_settings (if (== ($map_size choice) 0)
       (then nil) (else choice))})
     (choice_preview handle session choice))))
@@ -333,7 +333,7 @@
   (if (== argument "") (return (CommandResult ^display (choice_text info))))
   (let choice (if (== name "model")
     (then (try (named_model_choice ^current_provider info/provider (catalog_snapshot catalog) argument info/requested_effort)
-      catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+      catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message))))
     (else
       (let next ($thaw ($freeze (?? metadata/model_settings {}))))
       (next .put "effort" ($str/lower argument))
@@ -345,7 +345,7 @@
   (let service (require_service handle))
   (let state service/config/state)
   (if (! state/accepting/.get)
-    (fail (ServiceError ^code "unavailable" ^message "The models host is closing.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The models host is closing.")))
   (let revision service/host/notification_revision)
   (let previous (state/catalogs .get revision))
   (if (&& ($present? previous) (! previous/closed/.get)) (return {^^available}))
@@ -380,30 +380,30 @@
 (fn begin_model_login [handle, provider : Str, account] ^^private
   (let service (require_service handle))
   (if (! (["openrouter" "chatgpt"] .contains? provider))
-    (fail (ServiceError ^code "invalid_request" ^message "This connection does not offer browser sign-in.")))
+    (fail (ServiceError ^code "invalid_request" ^_msg "This connection does not offer browser sign-in.")))
   (let state service/config/state)
   (var available false)
   (for record in (registry_row_records service/runtime/h "providers")
     (if (&& (== record/key provider) (== record/owner ($to_str "provider_" provider))) (set available true)))
-  (if (! available) (fail (ServiceError ^code "unavailable" ^message "This provider is disabled or replaced.")))
+  (if (! available) (fail (ServiceError ^code "unavailable" ^_msg "This provider is disabled or replaced.")))
   (let expired [])
   (var registration nil)
   (map_for [id attempt] in state/logins
     (if (["pending" "exchanging"] .contains? attempt/status/.get)
-      (fail (ServiceError ^code "busy" ^message "Finish or cancel the pending sign-in first.")))
+      (fail (ServiceError ^code "busy" ^_msg "Finish or cancel the pending sign-in first.")))
     (if (&& (== provider "chatgpt") ($absent? account) (== attempt/provider "chatgpt")
       (== attempt/status/.get "failed") ($present? attempt/issued_client_id) ($absent? attempt/expected_subject))
       (set registration attempt))
     (expired .push id))
   (let port service/runtime/listen_port)
   (if (|| ($absent? port) (<= port 0))
-    (fail (ServiceError ^code "unavailable" ^message "Browser sign-in requires a running local web host.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "Browser sign-in requires a running local web host.")))
   (let callback $"http://127.0.0.1:${port}/auth/callback")
   (let attempt (try
     (if (== provider "chatgpt")
       (then (new_chatgpt_login ^account account ^registration registration callback))
       (else (openrouter_login callback)))
-    catch Error (fail (ServiceError ^code "unavailable" ^message $err/message))))
+    catch Error (fail (ServiceError ^code "unavailable" ^_msg $err/.message))))
   (try
     (for id in expired (state/logins .delete id))
     (state/logins .put attempt/id attempt)
@@ -412,7 +412,7 @@
     {^id attempt/id ^provider provider ^state "pending" ^url attempt/url}
   catch Error
     (close_login attempt)
-    (fail (ServiceError ^code "unavailable" ^message "The sign-in attempt could not start."))))
+    (fail (ServiceError ^code "unavailable" ^_msg "The sign-in attempt could not start."))))
 
 (fn publish_chatgpt_account [service] ^^private
   (let accounts (list_chatgpt_accounts))
@@ -441,8 +441,8 @@
       (when "select" {^^ok ^account (select_chatgpt_account nil id)})
       (when "sign_out" (sign_out_chatgpt ^account id))
       (when "acknowledge" (acknowledge_chatgpt_plan nil id))
-      (else (fail (ServiceError ^code "invalid_request" ^message "Use select, sign_out or acknowledge for a ChatGPT account."))))
-    catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+      (else (fail (ServiceError ^code "invalid_request" ^_msg "Use select, sign_out or acknowledge for a ChatGPT account."))))
+    catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message))))
   (if (|| (== action "select") (&& (== action "sign_out") (== id selected))) (publish_chatgpt_account service))
   result)
 
@@ -450,7 +450,7 @@
   (let service (require_service handle))
   (let state service/config/state)
   (let attempt (state/logins .get id))
-  (if ($absent? attempt) (fail (ServiceError ^code "not_found" ^message "Sign-in attempt not found.")))
+  (if ($absent? attempt) (fail (ServiceError ^code "not_found" ^_msg "Sign-in attempt not found.")))
   (if cancel (close_login attempt))
   (if (== attempt/status/.get "complete")
     (then

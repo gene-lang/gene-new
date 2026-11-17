@@ -18,7 +18,7 @@
   (?? (/voice (effective_config service/runtime)) {}))
 
 (fn speech_reason [candidate]
-  (let result (try (candidate/available) catch Error $err/.Error:message))
+  (let result (try (candidate/available) catch Error $err/.message))
   (if (|| ($absent? result) (== result true)) (return nil))
   (if (== result false) (return "This speech engine is unavailable."))
   (if (== ($head result) Str) result "The engine returned an invalid availability result."))

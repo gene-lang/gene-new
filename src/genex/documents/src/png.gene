@@ -1,10 +1,9 @@
 (mod png)
 
-(type PngError ^props {^message Str} ^impl [Error])
-(impl Error for PngError)
+(type PngError : Error)
 
 (fn invalid [message : Str]
-  (fail (PngError ^message message)))
+  (fail (PngError ^_msg message)))
 
 (fn u32 [bytes : Bytes, offset : Int]
   (+ (* ($binary/get bytes offset) 16777216)

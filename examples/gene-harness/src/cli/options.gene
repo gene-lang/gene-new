@@ -1,9 +1,8 @@
 (mod cli_options)
-(type CliError ^props {^code Str ^message Str ^request_id Str? ^submission_seq Str? ^execution_id Str? ^kind Str? ^session Str?} ^impl [Error])
-(impl Error for CliError)
+(type CliError : Error ^props {^code Str ^request_id Str? ^submission_seq Str? ^execution_id Str? ^kind Str? ^session Str?})
 
 (fn problem [message : Str, ^code code : Str = "invalid_request"]
-  (fail (CliError ^code code ^message message)))
+  (fail (CliError ^code code ^_msg message)))
 
 # The hosted entry receives its argv as a Node; direct callers pass a List.
 (fn argument_values [args]

@@ -11,7 +11,7 @@
 
 (fn schema_failure [name, message : Str]
   (fail (ParticipantFailure ^participant ($to_str (?? name "unknown")) ^phase "outcome/schema"
-    ^code "invalid_result" ^message message)))
+    ^code "invalid_result" ^_msg message)))
 
 (fn schema_verdict [name : Str, value]
   (if (!= ($head value) Map) (schema_failure name "An Outcome schema must return {^value DATA} or {^error TEXT}."))
@@ -61,7 +61,7 @@
     (if native (return (schema_verdict name (schema context value))))
     (var input nil)
     (try (set input (freeze_turn_data value))
-      catch TurnDataError (return {^error $err/message}))
+      catch TurnDataError (return {^error $err/.message}))
     (let flags context/outcome)
     (let projection ((public_turn_context context) .assoc "extension" name
       ; .assoc "outcome" (freeze_turn_data {^done flags/done ^reply flags/reply
@@ -104,7 +104,7 @@
       (when (TaskOutcome/ok result) result)
       (when (TaskOutcome/error failure)
         (fail (ParticipantFailure ^participant definition/name ^phase "outcome/schema"
-          ^code "callback_error" ^cause failure ^message $"Outcome schema ${definition/name} failed: ${failure/message}")))
+          ^code "callback_error" ^cause failure ^_msg $"Outcome schema ${definition/name} failed: ${failure/.message}")))
       (when (TaskOutcome/panic message) (schema_failure definition/name message))
       (when TaskOutcome/cancelled (schema_failure definition/name "Outcome schema cancelled or exceeded its budget."))))
     (if (verdict .has_key? "error")

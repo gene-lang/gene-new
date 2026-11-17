@@ -1,11 +1,10 @@
 (mod documents)
 (import [inspect_png PngError] ^from "./png")
 
-(type DocumentError ^props {^message Str} ^impl [Error])
-(impl Error for DocumentError)
+(type DocumentError : Error)
 
 (fn invalid [message : Str]
-  (fail (DocumentError ^message message)))
+  (fail (DocumentError ^_msg message)))
 
 (fn display_name [name : Str] : Str
   # Names are display metadata only, never paths supplied to a converter.
@@ -63,6 +62,6 @@
       (set kind "text")))
   (let metadata {^name leaf ^mime mime ^kind kind ^size size})
   (if_yes (== mime "image/png")
-    (let image (try (inspect_png data) catch PngError (invalid $err/message)))
+    (let image (try (inspect_png data) catch PngError (invalid $err/.message)))
     (map_for [key value] in image (metadata .put key value)))
   metadata)

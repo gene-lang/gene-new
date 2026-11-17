@@ -9,7 +9,7 @@
 (let tree (Section ^title "S" ^children [(Figure ^caption "a") (Chart ^caption "c") (Figure ^caption "b")]))
 
 # The root composes and starts; failure appears only when traversal reaches Chart.
-($println $"result: ${(try (op tree op) catch Error $err/message)}")
+($println $"result: ${(try (op tree op) catch Error $err/.message)}")
 ($println $"partial effects: ${events}")
 
 # Existing reflection: a held message resolves in its authored scope, so a

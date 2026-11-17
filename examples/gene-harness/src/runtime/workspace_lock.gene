@@ -1,8 +1,7 @@
 (mod workspace_lock)
 (import [try_lock_wait] ^from "../public/file_lock" ^^export)
 
-(type WorkspaceInUse ^props {^message Str ^root Str ^owner Any?} ^impl [Error])
-(impl Error for WorkspaceInUse)
+(type WorkspaceInUse : Error ^props {^root Str ^owner Any?})
 
 (type WorkspaceLock ^props {^root Str ^state_root Str ^handle Any ^closed Any})
 
@@ -25,7 +24,7 @@
     (let source (if ($absent? owner) "unknown entry" (?? owner/entry "unknown entry")))
     (let started (if ($absent? owner) "unknown" (?? owner/started "unknown")))
     (fail (WorkspaceInUse ^root canonical ^owner owner
-      ^message $"workspace ${canonical} is in use by PID ${pid} (${source}, since ${started})")))
+      ^_msg $"workspace ${canonical} is in use by PID ${pid} (${source}, since ${started})")))
   (var ready false)
   (try
     ($fs/write_text_atomic $"${state_root}/owner"

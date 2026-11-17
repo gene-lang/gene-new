@@ -230,7 +230,7 @@
           ($assert (== secret/status 400))
           ($assert (! ($str/contains? secret/body/message "SECRET_SENTINEL")))
         catch Error
-          (let message $err/message)
+          (let message $err/.message)
           (let stopped (stop_host host))
           ($assert false ($to_str message "\n" stopped/stdout stopped/stderr))
         ensure

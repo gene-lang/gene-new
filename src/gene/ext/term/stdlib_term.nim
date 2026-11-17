@@ -16,7 +16,7 @@
 
 proc raiseTerminalError(message: string, scope: Scope) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var error: ref GeneError
   new(error)
   error.msg = message
@@ -1720,7 +1720,7 @@ proc biOsCloseInput(args: openArray[Value]): Value {.nimcall.} =
 
 proc raiseCursesError(message: string, scope: Scope) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var error: ref GeneError
   new(error)
   error.msg = message

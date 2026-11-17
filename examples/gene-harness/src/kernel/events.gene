@@ -78,7 +78,7 @@
                 h/event_store/max_event_bytes))
       (return record))
     (if (== limit 0)
-      (fail (HarnessError ^message "log metadata exceeds the event byte limit")))
+      (fail (HarnessError ^_msg "log metadata exceeds the event byte limit")))
     (set limit (/ ($math/min limit size) 2))))
 
 (fn ^^private log_record [h : Harness, kind : Str, text : Str]
@@ -153,5 +153,5 @@
   (var r (publish h event))
   (if_yes (> r/failed 0)
     (for err in r/errors
-      (log_append h "lifecycle" $"observer failed: ${err/message}")))
+      (log_append h "lifecycle" $"observer failed: ${err/.message}")))
   nil)

@@ -24,9 +24,9 @@
   (if_not ($absent? state/client/.get)
     (map_for [session present] in owners
       (try (close_session state/client/.get ($to_str session))
-        catch Error (errors .push $err/message))))
+        catch Error (errors .push $err/.message))))
   (if_not errors/.empty?
-    (fail (ServiceError ^code "cleanup_failed" ^message $"Computer session cleanup needs attention: ${errors}")))
+    (fail (ServiceError ^code "cleanup_failed" ^_msg $"Computer session cleanup needs attention: ${errors}")))
   nil)
 
 (fn close_computer_host [state]
@@ -34,7 +34,7 @@
   (close_grants state))
 
 (fn driver [state]
-  (if state/closed/.get (fail (ServiceError ^code "unavailable" ^message "Computer host is closed.")))
+  (if state/closed/.get (fail (ServiceError ^code "unavailable" ^_msg "Computer host is closed.")))
   (if_yes ($absent? state/client/.get)
     (let options (?? (note_active_setting state/runtime "computer" (effective_setting state/runtime "computer")) {}))
     (state/client .set (open_driver $"${state/runtime/state_root}/computer"
@@ -60,21 +60,21 @@
 (fn computer_state [handle]
   (let record (require_service handle))
   (if (!= (record/values/.get .get "started") true)
-    (fail (ServiceError ^code "unavailable" ^message "Computer activation has not started.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "Computer activation has not started.")))
   record/config)
 
 (fn calling_session [state]
   (let context ($runtime/context))
   (if (|| (! (same? context/composition state/runtime/h/snapshots))
           (!= ($head context/session) Str) (== context/session ""))
-    (fail (ServiceError ^code "session_required" ^message "Computer operations require a calling conversation.")))
+    (fail (ServiceError ^code "session_required" ^_msg "Computer operations require a calling conversation.")))
   (state/owners/.get .put context/session true)
   context/session)
 
 (fn calling_turn [state]
   (let origin (execution_origin))
   (if (|| ($absent? origin) (! (same? origin/composition state/runtime/h/snapshots)))
-    (fail (ServiceError ^code "turn_required" ^message "Computer model operations require an open turn.")))
+    (fail (ServiceError ^code "turn_required" ^_msg "Computer model operations require an open turn.")))
   (require_turn origin/turn)
   (state/owners/.get .put origin/session true)
   origin/session)

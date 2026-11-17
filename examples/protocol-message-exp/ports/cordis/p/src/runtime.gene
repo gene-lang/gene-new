@@ -319,7 +319,7 @@
 
 (fn cordis_failure [kind, message : Str, cause = nil, plugin = nil, instance_uid = nil, entry_id = nil] ^^private
   (fail
-    (kind ^message message ^cause cause ^plugin plugin ^instance_uid instance_uid ^entry_id entry_id)))
+    (kind ^_msg message ^cause cause ^plugin plugin ^instance_uid instance_uid ^entry_id entry_id)))
 
 (fn require_positive_limits [limits] ^^private
   (if_not (== ($head limits) InvocationLimits)
@@ -613,7 +613,7 @@
 
 (fn reject_host_request [request] ^^private
   (if (&& (absent? request/result/.get) (absent? request/error/.get))
-    (request/error .set (EffectDisposed ^message "effect no longer accepts background work")))
+    (request/error .set (EffectDisposed ^_msg "effect no longer accepts background work")))
   (finish_host_request request))
 
 (fn take_host_requests [executor] ^^private
@@ -1022,7 +1022,7 @@
 (fn record_diagnostic [runtime, kind : Str, instance, error] ^^private
   (var rows runtime/diagnostics/.get)
   (if (>= rows/.size 256) (rows .delete 0))
-  (var message (if (absent? error) "" error/message))
+  (var message (if (absent? error) "" error/.message))
   (rows .push
     {
       ^kind kind
@@ -1236,7 +1236,7 @@
       (var error instance/error/.get)
       (plugin_error
         PluginActivationError
-        $"plugin activation failed: ${error/message}"
+        $"plugin activation failed: ${error/.message}"
         instance
         error))
     (when InstanceState/disposed
@@ -1384,7 +1384,7 @@
     (when (TaskOutcome/error error)
       error)
     (when (TaskOutcome/panic message)
-      (PluginCleanupError ^message $"effect task panicked: ${message}" ^cause message ^plugin nil ^instance_uid nil ^entry_id nil))
+      (PluginCleanupError ^_msg $"effect task panicked: ${message}" ^cause message ^plugin nil ^instance_uid nil ^entry_id nil))
     (else
       nil)))
 
@@ -1432,7 +1432,7 @@
   (scope/entries .set (fresh_list))
   (scope/value .set nil)
   (if (== errors/.size 0) (return nil))
-  (PluginCleanupError ^message $"${errors/.size} effect cleanup operation(s) failed: ${errors}" ^cause errors ^plugin scope/owner/plugin/id ^instance_uid scope/owner/uid ^entry_id scope/owner/entry_id))
+  (PluginCleanupError ^_msg $"${errors/.size} effect cleanup operation(s) failed: ${errors}" ^cause errors ^plugin scope/owner/plugin/id ^instance_uid scope/owner/uid ^entry_id scope/owner/entry_id))
 
 (fn owner_defer [owner, cleanup] ^^private
   (var scope (require_accepting_scope owner))
@@ -2113,7 +2113,7 @@
     ^effects effects
     ^error (if (absent? error)
              nil
-             error/message)})
+             error/.message)})
 
 (fn runtime_inspect [handle : Runtime] ^^private
   (var runtime (runtime_record handle))
@@ -2188,7 +2188,7 @@
     (try
       (loader_dispose (Loader ^token loader/token))
     catch Error
-      (runtime/diagnostics/.get .push {^kind "loader_close_failed" ^message $err/message})))
+      (runtime/diagnostics/.get .push {^kind "loader_close_failed" ^message $err/.message})))
   (var remaining true)
   (while remaining
     (set remaining false)
@@ -2509,7 +2509,7 @@
 (fn failure_text ^^private [error]
   # A wrapped failure names its cause, which carries the plugin's own error.
   (if (absent? error) (return nil))
-  (var text (try ($to_str error/message) catch Error ($to_str error)))
+  (var text (try ($to_str error/.message) catch Error ($to_str error)))
   (var cause (try error/cause catch Error nil))
   (if_not (absent? cause) (set text $"${text}: $(failure_text cause)"))
   text)
@@ -2715,7 +2715,7 @@
     (try
       (runtime_close (Runtime ^token candidate/token))
     catch Error
-      (errors .push $err/message))
+      (errors .push $err/.message))
     (for diagnostic in candidate/diagnostics/.get
       (if (== diagnostic/kind "cleanup_failed")
         (errors .push $"${diagnostic/plugin}: ${diagnostic/message}")))
@@ -3213,8 +3213,8 @@
     (let cleanup_errors (discard_candidate_runtime candidate))
     (if modules_committed
       (for generation in staged/prepared_generations
-        (try generation/.release catch Error (cleanup_errors .push $err/message)))
-      (try transaction/.discard catch Error (cleanup_errors .push $err/message)))
+        (try generation/.release catch Error (cleanup_errors .push $err/.message)))
+      (try transaction/.discard catch Error (cleanup_errors .push $err/.message)))
     (if prepared (loader/options/publication .PublicationParticipant:abort ticket))
     (cordis_failure CompositionError
       (if cleanup_errors/.empty? "staged composition rejected before publication"

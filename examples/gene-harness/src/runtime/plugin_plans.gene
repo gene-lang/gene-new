@@ -17,14 +17,17 @@
 (import ^from "../kernel" [apply_plugin_set hide_owner_rows])
 
 (fn plan_error [message : Str]
-  (fail (CompositionError ^message message)))
+  (fail (CompositionError ^_msg message)))
 
 (fn failure_text [error, depth : Int = 0] : Str
   # A cause chain may end in a plain Str.
   (if (== ($head error) Str) (return error))
-  (let message ($to_str (?? error/message error)))
-  (if (|| (>= depth 6) ($absent? error/cause)) (return message))
-  $"${message}: ${(failure_text error/cause (+ depth 1))}")
+  (let message ($to_str (?? error/.message error)))
+  # Harness errors name their cause `cause`; a ContractViolation or any other
+  # Throwable carries it in the inherited `_cause`.
+  (let cause (?? error/cause error/_cause))
+  (if (|| (>= depth 6) ($absent? cause)) (return message))
+  $"${message}: ${(failure_text cause (+ depth 1))}")
 
 (fn fingerprint [runtime]
   (let config ($fs/read_text $"${runtime/state_root}/config.gene"))
@@ -204,8 +207,8 @@
             (else (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}")))
         catch Error
           (if repair
-            (warnings .push $"${id}: unavailable during repair: ${$err/message}")
-            (errors .push $"${id}: ${$err/message}"))))
+            (warnings .push $"${id}: unavailable during repair: ${$err/.message}")
+            (errors .push $"${id}: ${$err/.message}"))))
       (if_yes ($absent? data)
         (let saved (saved_metadata workspace/store id (?? entry/module_digest "builtin") stamp/host_build_id))
         (set data saved/declared))
@@ -305,7 +308,7 @@
         (try
           (record_validation_failure runtime request message)
         catch Error
-          (plan_error $"${message} (Validation history could not be saved: ${$err/message})"))
+          (plan_error $"${message} (Validation history could not be saved: ${$err/.message})"))
         (fail original))
       (if_not plan/valid
         (record_validation_failure ^plan plan/id runtime request ($str/join plan/errors "; ")))
@@ -330,7 +333,7 @@
       (check_reversion_base workspace plan/base_revision)
       (if (!= plan/stamp (fingerprint runtime))
         (fail
-          (CompositionConflict ^code "stale_plan" ^expected plan/base_revision ^actual (composition_revision workspace) ^message "Host, profile, or configuration changed; validate this draft again.")))
+          (CompositionConflict ^code "stale_plan" ^expected plan/base_revision ^actual (composition_revision workspace) ^_msg "Host, profile, or configuration changed; validate this draft again.")))
       (if_not plan/errors/.empty? (plan_error "plan has validation errors"))
       (if_yes (&& plan/diff/.empty? (!= plan/retry true))
         (reset_plan_participants workspace plan)
@@ -410,7 +413,7 @@
         (try
           (append_history_result ^kind "attempt" workspace/store before_head result)
         catch Error
-          (set audit_error $err/message))
+          (set audit_error $err/.message))
         (if (|| (!= before (composition_revision workspace)) (== error_code "commit_uncertain"))
           (return
             {

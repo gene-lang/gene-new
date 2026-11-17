@@ -45,7 +45,7 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   message closure is empty, because an impl would carry no bodies. Nominal
   subtypes and P's protocol ancestors follow, as they do for impls. A redundant
   explicit empty impl remains legal. A defaulted message still requires an
-  explicit impl, so `^impl [Error]` alone is rejected.
+  explicit impl, so `` alone is rejected.
 - Zero applicable visible impls is missing behavior; multiple applicable impls
   is ambiguity. Import order does not choose a winner.
 - `(import_impl Protocol for Receiver ^from "path.gene")` imports an exported

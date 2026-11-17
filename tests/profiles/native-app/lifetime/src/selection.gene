@@ -44,7 +44,7 @@
       (type Between ^props {^text Str})
       (impl ValueEq for Between
         (message equal [other : Between] : Bool (== self/text other/text)))
-      (fail (AssertionError ^message "between impls"))
+      (fail (AssertionError ^_msg "between impls"))
       (impl Hash for Between (message hash [] : Int 1))
       Between)
   """))

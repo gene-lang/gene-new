@@ -59,7 +59,7 @@
   holders)
 
 (fn ^^private service_error [message : Str]
-  (fail (HarnessError ^message message)))
+  (fail (HarnessError ^_msg message)))
 
 (fn ^^private validate_registration [name, thunk, slot, quiesce]
   (if (|| (!= ($head name) Str) (== name "") ($str/contains? name "/")
@@ -88,7 +88,7 @@
     (record/task .set (spawn_effect_call record/effects $"service ${record/name}" record/thunk []))
   catch Error
     (record/state .set "failed")
-    (record/error .set $err/message))
+    (record/error .set $err/.message))
   nil)
 
 (fn ^^private quiesce_record [record]

@@ -103,7 +103,7 @@
     (try box/.recv
       catch ChannelClosed
         (done .set true)
-        ($println "     receiver saw:" $err/message))))
+        ($println "     receiver saw:" $err/.message))))
 
   ($sleep 1)                           # let receiver settle into recv
   box/.close
@@ -160,13 +160,12 @@
 
 ($println "   - error exit cancels pending siblings but their `ensure` runs")
 (var cleanup2 ($cell 0))
-(type Boom ^props {^message Str} ^impl [Error])
-(impl Error for Boom)
+(type Boom : Error)
 (scope
   (spawn (try ($sleep 60)
           ensure (cleanup2 .set (+ cleanup2/.get 1))))
   ($sleep 1)
-  (try (fail (Boom ^message "abandon"))
+  (try (fail (Boom ^_msg "abandon"))
     catch Boom nil))
 ($sleep 1)
 ($println "     sibling ensure ran:" cleanup2/.get)
@@ -233,7 +232,7 @@
     ($actor/spawn ^init (fn [] 10)
       ^handle (fn [ctx state msg]
         (if (== msg 0)
-          (fail (Boom ^message "bad"))
+          (fail (Boom ^_msg "bad"))
           ($actor/continue (+ state msg))))))
   ($println "   - feed 1 + 5 + 0 (failure → restart)")
   (spawn (counter .send 1))
@@ -260,19 +259,19 @@
     ($actor/spawn ^init (fn [] 0)
       ^handle (fn [ctx state msg]
         (if (== msg 0)
-          (fail (Boom ^message "bad"))
+          (fail (Boom ^_msg "bad"))
           ($actor/continue (+ state msg))))))
   (var first_send
     (try
       (stoptest .send 0)
       "first_send"
-      catch Boom $err/message))
+      catch Boom $err/.message))
   ($sleep 1)                                           # let failure propagate
   (var post_failure
     (try
       (stoptest .send 99)
       "second-send"
-      catch ActorClosed $err/message))
+      catch ActorClosed $err/.message))
   ($println "   - first send (failure trapped):" first_send)
   ($println "   - post_failure send:" post_failure))
 

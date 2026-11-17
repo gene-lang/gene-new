@@ -108,7 +108,7 @@
   (let decoder (try
     (prepare_image_inspection $"${runtime/state_root}/media/inspection" request/background
       ^worker (?? configuration/decoder_worker nil))
-    catch ImageInspectionError (image_error $err/code $err/message)))
+    catch ImageInspectionError (image_error $err/code $err/.message)))
   {^request request ^limits limits ^generator generator
    ^generator_settings ($freeze settings) ^generator_caps generator_caps
    ^reviewer reviewer ^reviewer_caps reviewer_caps

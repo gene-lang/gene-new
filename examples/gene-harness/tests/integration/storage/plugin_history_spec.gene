@@ -150,7 +150,7 @@
               (revert_plugin restarted/workspace restarted/h "example" 1)
               false
             catch Error
-              ($str/contains? $err/message "blob is missing")))
+              ($str/contains? $err/.message "blob is missing")))
           ($assert (== (composition_revision restarted/workspace) disabled_revert/revision))
           (restarted/workspace/blob_store .Store:put blob_key bytes)
         ensure
@@ -220,8 +220,7 @@
         ensure
           (close_runtime runtime))))))
 
-(type CheckpointFixtureError ^props {^message Str} ^impl [Error])
-(impl Error for CheckpointFixtureError)
+(type CheckpointFixtureError : Error)
 (type CheckpointStore ^props {^inner Any ^mode Str}
   (impl Store
     (message put [key value]
@@ -238,10 +237,10 @@
       self/inner/.Store:clear)
     (message checkpoint [generation records]
       (if (!= self/mode "before") (self/inner .Store:checkpoint generation records))
-      (fail (CheckpointFixtureError ^message "checkpoint acknowledgement failed")))
+      (fail (CheckpointFixtureError ^_msg "checkpoint acknowledgement failed")))
     (message load_checkpoint []
       (if (== self/mode "unreadable")
-        (fail (CheckpointFixtureError ^message "authority unavailable")))
+        (fail (CheckpointFixtureError ^_msg "authority unavailable")))
       self/inner/.Store:load_checkpoint)
     (message close []
       self/inner/.Store:close)))

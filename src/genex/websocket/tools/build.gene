@@ -1,14 +1,13 @@
 # Run with: gene run src/genex/websocket/tools/build.gene [output-directory]
 # Gene drives the C bootstrap directly; compiler/SDK/package paths are explicit
 # environment overrides and no command is interpreted by a shell.
-(type BuildError ^props {^message Str} ^impl [Error])
-(impl Error for BuildError)
+(type BuildError : Error)
 
 (fn checked [command : Str, args, ^environment environment = {}]
   (let result (await ($os/exec_async command args... ^env environment
     ^timeout_ms 120000 ^max_bytes 4194304)))
   (if (|| result/timed_out result/truncated (!= result/status 0))
-    (fail (BuildError ^message $"WebSocket build failed: ${result/stderr}")))
+    (fail (BuildError ^_msg $"WebSocket build failed: ${result/stderr}")))
   result/stdout)
 
 (fn words [text : Str]
@@ -32,7 +31,7 @@
         (if_yes (&& ($str/starts_with? name "MacOSX") ($str/ends_with? name ".sdk"))
           (environment .put "SDKROOT" ($path/join directory name))
           (if (probe) (return nil)))))
-    (fail (BuildError ^message "No compatible macOS SDK linked. Set CC and SDKROOT explicitly."))
+    (fail (BuildError ^_msg "No compatible macOS SDK linked. Set CC and SDKROOT explicitly."))
   ensure
     (if ($fs/exists? source) ($fs/remove source))
     (if ($fs/exists? binary) ($fs/remove binary))))

@@ -38,6 +38,7 @@ include test_web_modules
 include test_match
 include test_errors
 include test_error_handling
+include test_message_only_raises
 include test_generators
 include test_testing
 include test_types

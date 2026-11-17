@@ -1,13 +1,12 @@
 (mod web_auth)
 (type BrowserAuth ^props {^root Str ^secret Str ^sessions Any ^gate Any})
-(type AuthError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for AuthError)
+(type AuthError : Error ^props {^code Str})
 (fn open_auth [root : Str]
   (let path $"${root}/web_secret")
   (if_not ($fs/exists? path) ($fs/write_text_atomic ^^owner_only path ($crypto/random_hex 32)))
   (let secret ($fs/read_text path))
   (if (!= ($str/byte_size secret) 64)
-    (fail (AuthError ^code "invalid_secret" ^message "invalid persisted browser secret")))
+    (fail (AuthError ^code "invalid_secret" ^_msg "invalid persisted browser secret")))
   ($fs/write_text_atomic ^^owner_only path secret)
   (let sessions
     (if ($fs/exists? $"${root}/web_sessions")
@@ -38,11 +37,11 @@
 
 (fn exchange [auth : BrowserAuth, token : Str, ^cookie cookie : Str = ""]
   (if_not (accepts_token auth token)
-    (fail (AuthError ^code "unauthorized" ^message "Use gene-harness link to retrieve the current owner connection link.")))
+    (fail (AuthError ^code "unauthorized" ^_msg "Use gene-harness link to retrieve the current owner connection link.")))
   # Admission may wait behind reset; recheck under the gate.
   (auth/gate (fn []
     (if_not (accepts_token auth token)
-      (fail (AuthError ^code "unauthorized" ^message "Owner credential was reset. Retrieve a new connection link.")))
+      (fail (AuthError ^code "unauthorized" ^_msg "Owner credential was reset. Retrieve a new connection link.")))
     # Tabs share a cookie jar but keep their own cached CSRF value.
     # Reopening the owner link must preserve that pair for existing tabs.
     (let existing (try (authenticate auth cookie) catch AuthError nil))
@@ -70,5 +69,5 @@
   (let record (auth/sessions .get; .get cookie))
   (if (|| ($absent? record) (!= record/generation ($crypto/sha256 auth/secret)))
     (fail
-      (AuthError ^code "unauthorized" ^message "Client credential is unknown or was reset. Use gene-harness link to reconnect.")))
+      (AuthError ^code "unauthorized" ^_msg "Client credential is unknown or was reset. Use gene-harness link to reconnect.")))
   record)

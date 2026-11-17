@@ -20,7 +20,7 @@
 
 (fn invalid_definition [name, message : Str]
   (fail (ParticipantFailure ^participant ($to_str (?? name "unknown"))
-    ^phase "register" ^code "invalid_definition" ^message message)))
+    ^phase "register" ^code "invalid_definition" ^_msg message)))
 
 (fn validate_participant [candidate]
   (if (|| (!= ($head candidate) Map) (!= ($head candidate/name) Str) (== candidate/name ""))
@@ -96,7 +96,7 @@
   (if (|| ($absent? lease/closed) lease/closed/.get
           (! (same? lease/counter (runtime/h/snapshots/counts/.get .get ($to_str lease/snapshot/id)))))
     (fail (ParticipantFailure ^participant "coordinator" ^phase "select" ^code "lease_required"
-      ^message "Turn participants require a live lease from this workspace.")))
+      ^_msg "Turn participants require a live lease from this workspace.")))
   (let snapshot lease/snapshot)
   (let selected [])
   (let boundary (== context/boundary "limit"))

@@ -23,9 +23,8 @@
 (fn fault_source [mode : Str, ^entered entered : Str = "", ^release release : Str = ""]
   `(mod plugin
     (import [Plugin PluginHost ServiceError] ^from "src/plugin_api.gene")
-    (type UnnamedError ^props {^details Str})
-    (impl Error for UnnamedError
-      (message message [] : Str ^errors [] self/details))
+    (type UnnamedError : Error ^props {^details Str}
+      (message message [] : Str ^errors [] ^^override self/details))
     (fn init [descriptor]
       (Plugin ^id "faulty" ^requires [{^registry "turn_participants"}]
         ^activate (fn [host]
@@ -40,12 +39,12 @@
               (if (== %mode "panic") ($panic "Participant panic."))
               (if (== %mode "unnamed_error") (fail (UnnamedError ^details "No message property.")))
               (if (["error" "blocked"] .contains? %mode)
-                (fail (ServiceError ^code "fixture" ^message "Participant begin failed.")))
+                (fail (ServiceError ^code "fixture" ^_msg "Participant begin failed.")))
               (host .PluginHost:update_state {^began true})
               nil)
             ^request_items (fn [context state value]
               (if (== %mode "request_error")
-                (fail (ServiceError ^code "fixture" ^message "Participant request preparation failed.")))
+                (fail (ServiceError ^code "fixture" ^_msg "Participant request preparation failed.")))
               nil)}))))))
 
 (fn wait_round [controller, receipt]

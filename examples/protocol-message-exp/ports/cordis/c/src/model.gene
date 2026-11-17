@@ -97,14 +97,12 @@
 
 # One base error shape keeps structured causes and lifecycle identity intact.
 # The nominal children remain distinct so callers can catch by remedy.
-(type CordisError
-  ^props {^message Str
-          ^cause Any?
+(type CordisError : Error
+  ^props {^cause Any?
           ^plugin Str?
           ^instance_uid Int?
           ^entry_id Str?}
-  ^impl [Error])
-(impl Error for CordisError)
+ )
 
 (type UndeclaredRequirement : CordisError)
 (type ServiceUnavailable : CordisError)

@@ -1,10 +1,9 @@
 (mod computer)
-(type ComputerError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for ComputerError)
+(type ComputerError : Error ^props {^code Str})
 (type Driver ^props {^command Str ^socket Str ^root Str ^targets Any ^observations Any ^leases Any ^gate Any ^transport Any ^epoch Str})
 
 (fn refuse [message : Str]
-  (fail (ComputerError ^code "invalid_request" ^message message)))
+  (fail (ComputerError ^code "invalid_request" ^_msg message)))
 
 (fn normalize_result [value, ^image image = nil]
   (if_not (== ($head value) Map) (refuse "Cua Driver returned an invalid result."))
@@ -37,14 +36,14 @@
   (try
   (let result (await ($os/exec_async driver/command argv... ^timeout_ms 30000 ^max_bytes 16777216)))
   (if (|| result/timed_out result/truncated (!= result/status 0))
-    (fail (ComputerError ^code "transport" ^message $"Cua Driver did not return a complete result (status ${result/status}). ${result/stderr}")))
+    (fail (ComputerError ^code "transport" ^_msg $"Cua Driver did not return a complete result (status ${result/status}). ${result/stderr}")))
   (let parsed (try ($json/parse result/stdout) catch Error
-    (fail (ComputerError ^code "transport" ^message "Cua Driver returned invalid JSON."))))
+    (fail (ComputerError ^code "transport" ^_msg "Cua Driver returned invalid JSON."))))
   (var image nil)
   (if capture
     (then
       (if_not ($fs/exists? image_path)
-        (fail (ComputerError ^code "capture" ^message "Cua Driver did not produce the requested screenshot.")))
+        (fail (ComputerError ^code "capture" ^_msg "Cua Driver did not produce the requested screenshot.")))
       (let info ($fs/info image_path))
       (if (> info/size 10485760) (refuse "Driver screenshot exceeds 10 MiB."))
       (set image ($fs/read_bytes image_path))))
@@ -68,7 +67,7 @@
     {^session (session_label driver owner) ^pid pid ^window_id window}))
   (let state bound/structuredContent)
   (if (|| bound/isError (!= state/binding_quality "exact") ($absent? state/target_id))
-    (fail (ComputerError ^code "binding" ^message $"Browser requires an exact authorized endpoint: ${state}")))
+    (fail (ComputerError ^code "binding" ^_msg $"Browser requires an exact authorized endpoint: ${state}")))
   (let active ($filter state/tabs (fn [tab] (== tab/active true))))
   (if (!= active/.size 1) (refuse "Browser binding did not identify exactly one active tab."))
   (let id ($crypto/random_hex 16))
@@ -118,7 +117,7 @@
 (fn action_receipt [driver : Driver, owner : Str, request : Str]
   (let path (receipt_path driver owner request))
   (if_not ($fs/exists? path)
-    (fail (ComputerError ^code "not_found" ^message "Computer action receipt not found.")))
+    (fail (ComputerError ^code "not_found" ^_msg "Computer action receipt not found.")))
   ($serde/read_data ($fs/read_text path)))
 
 (fn action [driver : Driver, owner : Str, id : Str, observation : Str,
@@ -208,7 +207,7 @@
       ($fs/write_text_atomic ^^owner_only path ($serde/write_data receipt))
     catch Error
       (receipt .put "state" "unknown")
-      (receipt .put "message" $"Action outcome is unknown. ${$err/message}")
+      (receipt .put "message" $"Action outcome is unknown. ${$err/.message}")
       ($fs/write_text_atomic ^^owner_only path ($serde/write_data receipt)))
     receipt
   ensure (driver/gate .set false)))
@@ -223,7 +222,7 @@
   (if ($absent? (driver/leases/.get .get label)) (return {^content []}))
   (let result (driver_call driver "end_session" {^session label}))
   (if (== result/isError true)
-    (fail (ComputerError ^code "cleanup" ^message "Cua Driver could not release the session.")))
+    (fail (ComputerError ^code "cleanup" ^_msg "Cua Driver could not release the session.")))
   (driver/leases/.get .delete label)
   result
   ensure (driver/gate .set false)))

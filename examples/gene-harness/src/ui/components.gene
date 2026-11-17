@@ -2,8 +2,7 @@
 (import ^from "./images" [image_source])
 (import $css [scoped class_name render : render_css])
 
-(type WebComponentError ^props {^message Str} ^impl [Error])
-(impl Error for WebComponentError)
+(type WebComponentError : Error)
 
 (const component_slots ["sidebar" "conversation_sidebar" "toolbar" "composer" "composer_actions" "status" "welcome" "status_summary" "panel" "view" "settings_section"])
 (const sidebar_widgets ["brand" "new_conversation" "filters" "attention" "extensions" "conversations" "workspace_tools"])
@@ -87,11 +86,11 @@
     "chord"])
 
 (fn component_error [message : Str]
-  (fail (WebComponentError ^message ($to_str message
+  (fail (WebComponentError ^_msg ($to_str message
     "; read (doc \"harness/ui/forms\") for keyed controls or (doc \"harness/web_components\") for the full contract"))))
 
 (fn card_error [message : Str]
-  (fail (WebComponentError ^message ($to_str message "; read (doc \"harness/cards\") for the card contract"))))
+  (fail (WebComponentError ^_msg ($to_str message "; read (doc \"harness/cards\") for the card contract"))))
 
 # Card modes: "static" (prompt and command buttons), "live" (update forms and
 # buttons, send, prompt, command) and "question" (answer and prompt buttons).
@@ -367,7 +366,7 @@
     (try
       (render_css (?? scoped_style candidate/style))
     catch Error
-      (component_error $"web component style could not be rendered: ${$err/message}")))
+      (component_error $"web component style could not be rendered: ${$err/.message}")))
   (if (> ($str/byte_size css) 65536) (component_error "web component style exceeds 64 KiB"))
   (checked .put "style_css" css)
   (checked .put "style_class" (if ($absent? scoped_style) "" (class_name scoped_style)))

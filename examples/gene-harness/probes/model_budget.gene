@@ -16,11 +16,11 @@
     (fields .put "http_status" error/status))
   (if (&& (== ($head error/code) Str) ($present? (#"^[a-z][a-z0-9_]{0,95}$" .match error/code)))
     (fields .put "error_code" error/code))
-  (if (== ($head error/message) Str)
+  (if (== ($head error/.message) Str)
     (then
-      (if ($str/contains? error/message "API credits are insufficient")
+      (if ($str/contains? error/.message "API credits are insufficient")
         (fields .put "failure_category" "api_credits_insufficient"))
-      (let request (#"Request: ([A-Za-z0-9_-]{1,128})[.]" .match error/message))
+      (let request (#"Request: ([A-Za-z0-9_-]{1,128})[.]" .match error/.message))
       (if ($present? request) (fields .put "request_id" request/groups/0))))
   fields)
 

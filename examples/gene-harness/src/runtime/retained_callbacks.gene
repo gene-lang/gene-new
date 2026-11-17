@@ -21,7 +21,7 @@
   (let record (callback_gate (fn []
     (for current in callbacks/.get (if (same? current/token token) (return current)))
     nil)))
-  (if ($absent? record) (fail (EffectDisposed ^message "callback activation revision has retired")))
+  (if ($absent? record) (fail (EffectDisposed ^_msg "callback activation revision has retired")))
   # Never hold the table gate while entering plugin code. Effect-owner admission
   # still decides whether this captured generation can accept the invocation.
   (var forwarded ($thaw #[]))

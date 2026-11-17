@@ -67,7 +67,7 @@
           (quote (textarea ^key "bad" (strong "Not plain text"))))
         false
       catch Error
-        ($str/contains? $err/message "must be text"))))
+        ($str/contains? $err/.message "must be text"))))
   (it
     "admits keyed forms and structured arguments only for interactive views"
     []
@@ -162,7 +162,7 @@
     ($assert (try
       (bounded_component_view (quote (host_widget ^name "conversations")))
       false
-    catch Error ($str/contains? $err/message "only available"))))
+    catch Error ($str/contains? $err/.message "only available"))))
 
   (it "rejects duplicate, unknown and decorated host controls" []
     (for invalid in [
@@ -176,7 +176,7 @@
       (validate_web_component {^name "another_sidebar" ^slot "conversation_sidebar"
         ^view (quote (p "wrong key"))})
       false
-    catch Error ($str/contains? $err/message "name must equal")))))
+    catch Error ($str/contains? $err/.message "name must equal")))))
 
 (import $css [css rule decl])
 
@@ -204,18 +204,18 @@
     ($assert ($absent? component/style_class)))
 
   (it "reports malformed and oversized contributions" []
-    ($assert (try (board 42) false catch Error ($str/contains? $err/message "style could not be rendered")))
+    ($assert (try (board 42) false catch Error ($str/contains? $err/.message "style could not be rendered")))
     (let pieces [])
     (while (< pieces/.size 7000) (pieces .push "0123456789"))
     (let big ($str/join pieces ""))
     ($assert (try (board (css (rule ".board_grid" (decl content big)))) false
-      catch Error ($str/contains? $err/message "exceeds 64 KiB")))))
+      catch Error ($str/contains? $err/.message "exceeds 64 KiB")))))
 
 (describe "Harness card views"
   (it "validates card actions per mode and keeps answer values typed" []
     (let refused (fn [tree mode needle]
       (try (bounded_card_view tree mode) false
-        catch Error ($str/contains? $err/message needle))))
+        catch Error ($str/contains? $err/.message needle))))
     (let live (bounded_card_view
       (quote (section
         (form ^key "f" ^update "save" (input ^key "n" ^field "name") (button ^type "submit" "Save"))

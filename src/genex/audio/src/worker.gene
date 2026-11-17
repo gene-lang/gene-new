@@ -9,7 +9,7 @@
   (while (> remaining 0)
     (let bytes (await (reader .AsyncReader:read remaining)))
     (if (|| ($absent? bytes) (== ($binary/size bytes) 0))
-      (fail (AudioError ^message "Audio helper closed inside a frame.")))
+      (fail (AudioError ^_msg "Audio helper closed inside a frame.")))
     (parts .push bytes)
     (set remaining (- remaining ($binary/size bytes))))
   ($binary/concat parts))
@@ -19,13 +19,13 @@
   (let count ($binary/size bytes))
   (while (< cursor count)
     (let written (await (writer .AsyncWriter:write ($binary/slice bytes cursor (- count cursor)))))
-    (if (<= written 0) (fail (AudioError ^message "Audio helper stopped reading.")))
+    (if (<= written 0) (fail (AudioError ^_msg "Audio helper stopped reading.")))
     (set cursor (+ cursor written)))
   nil)
 
 (fn read_packet [reader, ^max_bytes max_bytes : Int = 65536] : Bytes
   (let count ($binary/get_u32 (read_exact reader 4) 0))
-  (if (> count max_bytes) (fail (AudioError ^message "Audio helper frame exceeds its byte limit.")))
+  (if (> count max_bytes) (fail (AudioError ^_msg "Audio helper frame exceeds its byte limit.")))
   (read_exact reader count))
 
 (fn write_packet [writer, bytes : Bytes]
@@ -56,7 +56,7 @@
   nil)
 
 (fn dispatch_json [worker, message, error]
-  (if_not ($absent? worker/dispatch_task) (fail (AudioError ^message "Audio helper already has a reader.")))
+  (if_not ($absent? worker/dispatch_task) (fail (AudioError ^_msg "Audio helper already has a reader.")))
   (let task (spawn ^lane root ($runtime/with_context nil (fn []
     (try
       (while (! worker/closed/.get) (message (read_json worker/reader)))

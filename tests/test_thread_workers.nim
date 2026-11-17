@@ -51,7 +51,7 @@ proc biRaiseWorkerError(args: openArray[Value]): Value {.nimcall.} =
   var payload = args[0]
   if payload.kind == vkType:
     var props = initPropTable()
-    props["message"] = newStr("native worker failure")
+    props["_msg"] = newStr("native worker failure")
     props["local"] = newCell(newInt(1))
     payload = newNode(payload, props = props)
   let failure = newException(GeneError, "native worker failure")
@@ -382,10 +382,8 @@ suite "threaded scheduler workers":
       withGeneWorkers:
         let result = run(compileSource("""
           (let secret ($cell "root only"))
-          (type Request ^props {^reply (ReplyTo Int)})
+          (type Request : Error ^props {^reply (ReplyTo Int)} (message message [] : Str ^errors [] ^^override (secret .get)))
           (impl Send for Request)
-          (impl Error for Request
-            (message message [] : Str ^errors [] (secret .get)))
           (let actor ($actor/spawn ^init (fn [] 0)
             ^handle (fn [ctx state message]
               (raise-worker-error PAYLOAD root-lane))))
@@ -394,8 +392,8 @@ suite "threaded scheduler workers":
           (while (< i 800000) (set i (+ i 1)))
           (try (await pending)
             catch TypeError $err/where
-            catch ErrorContractViolation $err/cause/.Error:message
-            catch Error $err_msg)
+            catch ErrorContractViolation $err/_cause/.message
+            catch Error $err/.message)
         """.replace("PAYLOAD", if kind == "data": "RuntimeError" else: "message")), scope)
         check result.strVal == (if kind == "data": "actor worker error payload does not satisfy Send"
                                 else: "Error admission")
@@ -699,7 +697,7 @@ suite "threaded scheduler workers":
       withGeneAsyncIoQueueSetting "0":
         check run(compileSource(
           "(try (await ($fs/read_text_async path)) " &
-          " catch Error $err/message)"), scope).print() ==
+          " catch Error $err/.message)"), scope).print() ==
           "\"fs/read_text_async failed: async I/O queue full\""
 
   test "root await drives worker-backed async file write":
@@ -816,7 +814,7 @@ suite "threaded scheduler workers":
           "  (var cancelled ($fs/write_text_async cancelledPath \"cancelled\")) " &
           "  (cancelled .cancel) " &
           "  (var next ($fs/write_text_async nextPath \"next\")) " &
-          "  [(await blocker) (try (await next) catch Error $err/message)])"),
+          "  [(await blocker) (try (await next) catch Error $err/.message)])"),
           scope).print() == "[\"worker release\" nil]"
     joinThread(serverThread)
     check not fileExists(cancelledPath)
@@ -825,15 +823,15 @@ suite "threaded scheduler workers":
   test "worker-candidate task errors wake root awaiters":
     withGeneWorkerSetting "8":
       ck "(scope " &
-         # `(scope ...)` is an overlay (non-static) form, so Boom's ^impl [Error]
+         # `(scope ...)` is an overlay (non-static) form, so Boom's
          # requirement is checked before the type yields a value; a later
-         # standalone `(impl Error for Boom)` cannot retroactively satisfy it
+         # standalone `` cannot retroactively satisfy it
          # (scoped-impls proposal §5). Satisfy it inline instead.
-         "  (type Boom ^props {^message Str} ^impl [Error] (impl Error)) " &
-         "  (var t (spawn (fail (Boom ^message \"worker\")))) " &
+         "  (type Boom : Error (impl Error)) " &
+         "  (var t (spawn (fail (Boom ^_msg \"worker\")))) " &
          "  (var i 0) " &
          "  (while (< i 200000) (set i (+ i 1))) " &
-         "  (try (await t) catch Boom $err/message))",
+         "  (try (await t) catch Boom $err/.message))",
          "\"worker\""
 
   test "worker-candidate non-Send results are rejected before publication":
@@ -995,5 +993,5 @@ suite "threaded scheduler workers":
          "      ($actor/continue state)))) " &
          "  (var pending (a .ask ^timeout_ms 5 " &
          "    (fn [reply] (Get ^reply reply)))) " &
-         "  (try (await pending) catch ActorError $err/message))",
+         "  (try (await pending) catch ActorError $err/.message))",
          "\"actor/ask timed out\""

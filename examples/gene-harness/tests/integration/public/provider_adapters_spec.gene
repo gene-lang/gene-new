@@ -119,7 +119,7 @@
               ^base_url $"http://127.0.0.1:${server/port}/rejected" ^models [{^id "model"}]}))
             (let prepared (rejected/prepare {^settings (rejected/configure "model" nil 10000)
               ^messages [{^role "user" ^content "work"}]}))
-            (let error (try (rejected/send prepared) nil catch ProviderError {^status $err/status ^message $err/message}))
+            (let error (try (rejected/send prepared) nil catch ProviderError {^status $err/status ^message $err/.message}))
             ($assert (== error/status 401))
             ($assert (! ($str/contains? error/message "SECRET_SENTINEL")))
           ensure (stop server))))

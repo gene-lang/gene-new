@@ -158,7 +158,7 @@
     catch Error
       (columns .push `(section ^class_name "web_stack"
         (h2 %name)
-        (p ^class_name "web_notice web_notice_error" %$"${name}: ${$err/message}")))))
+        (p ^class_name "web_notice web_notice_error" %$"${name}: ${$err/.message}")))))
   `(div ^class_name "web_stack"
      (h2 "Theme specimen")
      (div ^class_name "web_row" %pickers...

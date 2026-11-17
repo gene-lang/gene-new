@@ -2,12 +2,11 @@
 (import $io [IoResource])
 (import [load open send_text receive_text flush] ^from "." ^pkg "websocket")
 
-(type SlackError ^props {^code Str ^message Str ^retry_after_ms Int?} ^impl [Error])
-(impl Error for SlackError)
+(type SlackError : Error ^props {^code Str ^retry_after_ms Int?})
 (type SlackApi ^props {^client Any ^bot Str ^requester Any? ^closed Cell})
 
 (fn slack_error [code : Str, message : Str]
-  (fail (SlackError ^code code ^message message)))
+  (fail (SlackError ^code code ^_msg message)))
 
 (fn secret_path [filename : Str] : Str
   (if (filename .starts_with? "~/")
@@ -93,7 +92,7 @@
     catch Error (slack_error "transport_unknown" "The Slack request outcome is unknown; reconcile delivery before retrying.")))
   (if (== response/status 429)
     (fail (SlackError ^code "rate_limited" ^retry_after_ms (retry_delay response/headers)
-      ^message "Slack rate limited this request.")))
+      ^_msg "Slack rate limited this request.")))
   (if (>= response/status 500)
     (slack_error "server_unknown" "Slack returned a server error; reconcile delivery before retrying."))
   (let result (try ($json/parse ^^strict ($binary/decode_utf8 response/body))

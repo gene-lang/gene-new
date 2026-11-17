@@ -103,7 +103,7 @@
               (restore_plugin enabled/workspace enabled/h "missing")
               false
             catch Error
-              ($str/contains? $err/message "no profile default"))
+              ($str/contains? $err/.message "no profile default"))
             "restore silently removed an id without a profile default")
         ensure
           (close_runtime enabled))
@@ -155,7 +155,7 @@
               (register_plugin first/workspace first/h "web" replacement)
               false
             catch Error
-              ($str/contains? $err/message "use ^^replace"))
+              ($str/contains? $err/.message "use ^^replace"))
             "profile id was claimed without explicit replacement")
           (let replaced (register_plugin ^^replace first/workspace first/h "web" replacement))
           ($assert (== replaced/status "ready") $"explicit replacement failed: ${replaced}")

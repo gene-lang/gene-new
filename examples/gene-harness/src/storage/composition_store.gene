@@ -11,17 +11,11 @@
 (import ^from "./plugin_history" [archive_host_build archive_baseline archive_candidate archived_record history_list append_history_result])
 (import ^from "./plugin_metadata" [remember_descriptor remember_failure])
 
-(type CompositionError ^props {^message Str} ^impl [Error])
+(type CompositionError : Error)
 
-(impl Error for CompositionError)
+(type CompositionConflict : Error ^props {^code Str ^expected Int ^actual Int})
 
-(type CompositionConflict ^props {^message Str ^code Str ^expected Int ^actual Int} ^impl [Error])
-
-(impl Error for CompositionConflict)
-
-(type CompositionCommitUncertain ^props {^message Str ^code Str} ^impl [Error])
-
-(impl Error for CompositionCommitUncertain)
+(type CompositionCommitUncertain : Error ^props {^code Str})
 
 (type Workspace ^props {^root Str ^state_root Str ^workspace_root Str ^store Any ^blob_store Any ^revision Any ^entries Any ^busy Any ^closed Any ^generated_dir Str ^shared Any ^interfaces Any ^core_interface Str ^errors Any ^active_revision Any ^profile_plugins Any ^history_head Any ^history_build Any ^history_profile Any ^metadata_errors Any})
 
@@ -36,29 +30,29 @@
 
 (fn require_open [workspace : Workspace]
   (if workspace/closed/.get
-    (fail (CompositionError ^message "workspace composition store is closed")))
+    (fail (CompositionError ^_msg "workspace composition store is closed")))
   workspace)
 
 (fn validate_entry [entry, ids]
   (if ($absent? entry/id)
-    (fail (CompositionError ^message "composition entry requires id")))
+    (fail (CompositionError ^_msg "composition entry requires id")))
   (var id ($to_str entry/id))
-  (if (== id "") (fail (CompositionError ^message "composition entry id is empty")))
+  (if (== id "") (fail (CompositionError ^_msg "composition entry id is empty")))
   (if_not ($absent? (ids .get id))
-    (fail (CompositionError ^message $"duplicate composition entry ${id}")))
+    (fail (CompositionError ^_msg $"duplicate composition entry ${id}")))
   (ids .put id true)
   (if (== entry/builtin true)
     (then
       (if_not (== entry/disabled true)
-        (fail (CompositionError ^message $"built-in record ${id} must be disabled")))
+        (fail (CompositionError ^_msg $"built-in record ${id} must be disabled")))
       (if (|| ($present? entry/module_digest) ($present? entry/closure))
-        (fail (CompositionError ^message $"built-in record ${id} cannot name a stored module"))))
+        (fail (CompositionError ^_msg $"built-in record ${id} cannot name a stored module"))))
     (else
       (if (|| ($absent? entry/module_digest) ($absent? entry/closure) ($absent? entry/interfaces))
         (fail
-          (CompositionError ^message "composition entry requires module_digest closure interfaces")))
+          (CompositionError ^_msg "composition entry requires module_digest closure interfaces")))
       (if_not (entry/closure .contains? entry/module_digest)
-        (fail (CompositionError ^message $"composition entry ${id} closure omits its root digest")))))
+        (fail (CompositionError ^_msg $"composition entry ${id} closure omits its root digest")))))
   entry)
 
 (fn validate_entries [entries]
@@ -77,12 +71,12 @@
     (else
       (var manifest (loaded/records .get "composition"))
       (if ($absent? manifest)
-        (fail (CompositionError ^message "composition generation has no composition record")))
+        (fail (CompositionError ^_msg "composition generation has no composition record")))
       (if_not (== manifest/format 2)
         (fail
-          (CompositionError ^message $"unsupported composition format ${manifest/format}; expected 2")))
+          (CompositionError ^_msg $"unsupported composition format ${manifest/format}; expected 2")))
       (if (!= ($head manifest/history_head) Str)
-        (fail (CompositionError ^message "composition format 2 requires an archive head")))
+        (fail (CompositionError ^_msg "composition format 2 requires an archive head")))
       (var checked (validate_entries manifest/entries))
       (workspace/revision .set manifest/revision)
       (workspace/history_head .set (?? manifest/history_head nil))
@@ -127,7 +121,7 @@
     (then
       (let recorded (read_data (read_text marker)))
       (if (|| (!= ($head recorded) Int) (< recorded 0))
-        (fail (CompositionError ^message
+        (fail (CompositionError ^_msg
           "composition ACTIVE marker must hold a non-negative revision")))
       (workspace/active_revision .set recorded)))
   workspace)
@@ -137,7 +131,7 @@
   (for item in admissions
     (let id item/plugin/id)
     (if_not ($absent? (defaults .get id))
-      (fail (CompositionError ^message $"duplicate profile plugin ${id}")))
+      (fail (CompositionError ^_msg $"duplicate profile plugin ${id}")))
     (defaults .put id item))
   (workspace/profile_plugins .set defaults)
   nil)
@@ -157,7 +151,7 @@
   (workspace/history_profile .set (data_copy profile))
   (for builtin in (?? profile/builtins [])
     (try (remember_descriptor ^mode "host" workspace/store identity "builtin" builtin)
-      catch Error (workspace/metadata_errors/.get .push {^id builtin/id ^message $err/message})))
+      catch Error (workspace/metadata_errors/.get .push {^id builtin/id ^message $err/.message})))
   (if ($absent? workspace/history_head/.get)
     (workspace/history_head .set
       (archive_baseline workspace/store
@@ -166,7 +160,7 @@
     (do
       (let saved (archived_record workspace/store workspace/history_head/.get))
       (if (|| (!= saved/revision workspace/revision/.get) (!= saved/entries workspace/entries/.get))
-        (fail (CompositionError ^message "composition checkpoint disagrees with its history record")))))
+        (fail (CompositionError ^_msg "composition checkpoint disagrees with its history record")))))
   identity)
 
 (fn composition_history [workspace : Workspace, ^limit limit : Int = 100, ^before before = nil]
@@ -180,9 +174,9 @@
 (fn commit_composition [workspace : Workspace, entries, ^origin origin = nil]
   (require_open workspace)
   (if ($absent? workspace/history_build/.get)
-    (fail (CompositionError ^message "attach the executing host identity before changing archived composition")))
+    (fail (CompositionError ^_msg "attach the executing host identity before changing archived composition")))
   (if workspace/busy/.get
-    (fail (CompositionError ^message "composition mutation is already active")))
+    (fail (CompositionError ^_msg "composition mutation is already active")))
   (var actual workspace/revision/.get)
   (var checked (validate_entries (data_copy entries)))
   (if (== checked workspace/entries/.get) (return actual))
@@ -205,7 +199,7 @@
       # rejection. Unreadable authority is explicitly uncertain, never retried.
       (let recovered (try workspace/store/.Store:load_checkpoint
         catch Error (fail (CompositionCommitUncertain ^code "commit_uncertain"
-          ^message "Composition commit outcome is unreadable. Restart and inspect the authoritative checkpoint before another change."))))
+          ^_msg "Composition commit outcome is unreadable. Restart and inspect the authoritative checkpoint before another change."))))
       (if (|| ($absent? recovered) (!= recovered/records/composition/history_head history))
         (fail original)))
     (workspace/revision .set next)
@@ -236,7 +230,7 @@
         (set found true)
         (if replace
           (out .push replacement)
-          (fail (CompositionError ^message $"composition entry ${replacement/id} already exists"))))
+          (fail (CompositionError ^_msg $"composition entry ${replacement/id} already exists"))))
       (else
         (out .push entry))))
   (if_not found (out .push replacement))
@@ -267,7 +261,7 @@
       (remember_failure workspace/store workspace/history_build/.get
         (?? (previous_module_digest (composition_entries workspace) id) "builtin") id message)
     catch Error
-      (workspace/metadata_errors/.get .push {^id id ^message $err/message}))))
+      (workspace/metadata_errors/.get .push {^id id ^message $err/.message}))))
 
 (fn close_workspace [workspace : Workspace]
   (if workspace/closed/.get (return))

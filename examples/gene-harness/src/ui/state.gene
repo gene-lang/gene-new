@@ -5,10 +5,9 @@
 (import [public_tokens theme_modes css_name] ^from "../web/theme")
 (import [theme_revision] ^from "../web/theme_registry")
 
-(type UiError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for UiError)
+(type UiError : Error ^props {^code Str})
 
-(fn ui_error [code : Str, message : Str] (fail (UiError ^code code ^message message)))
+(fn ui_error [code : Str, message : Str] (fail (UiError ^code code ^_msg message)))
 
 (fn ui_settings [runtime]
   (let h runtime/h)

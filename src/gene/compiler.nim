@@ -1032,6 +1032,10 @@ proc compileContinue(c: var Compiler, node: Value) =
 proc isSymbol(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
+
+proc isTryCleanupMarker(v: Value): bool =
+  v.isSymbol("unwind") or v.isSymbol("ensure")
+
 proc isPath(v: Value, segments: openArray[string]): bool =
   if v.kind != vkNode or not v.head.isSymbol("path") or v.body.len != segments.len:
     return false
@@ -3375,7 +3379,7 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
       # The try and ensure bodies share their enclosing lexical scope. Each
       # catch owns its bindings. Error type syntax is not an invocation.
       while i < value.body.len and not value.body[i].isSymbol("catch") and
-          not value.body[i].isSymbol("ensure"):
+          not value.body[i].isTryCleanupMarker:
         body.add c.expandMacroTree(unit, value.body[i], loc, locs, provenance)
         inc i
       while i < value.body.len and value.body[i].isSymbol("catch"):
@@ -3387,14 +3391,13 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
         var inner = c.childCompiler()
         discard inner.reserveLocal(CatchErrorBindingName)
         while i < value.body.len and not value.body[i].isSymbol("catch") and
-            not value.body[i].isSymbol("ensure"):
+            not value.body[i].isTryCleanupMarker:
           body.add inner.expandMacroTree(unit, value.body[i], loc, locs, provenance)
           inc i
-      if i < value.body.len:
-        body.add value.body[i]
-        inc i
+      # `unwind` and `ensure` bodies share the enclosing lexical scope.
       while i < value.body.len:
-        body.add c.expandMacroTree(unit, value.body[i], loc, locs, provenance)
+        if value.body[i].isTryCleanupMarker: body.add value.body[i]
+        else: body.add c.expandMacroTree(unit, value.body[i], loc, locs, provenance)
         inc i
       return newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
     if value.head.isSymbol("fn") or value.head.isSymbol("message") or
@@ -6782,19 +6785,17 @@ proc reserveProtocolBinding(c: var Compiler, value: Value) =
     var i = 0
     var attempt: seq[Value]
     while i < value.body.len and not
-        (value.body[i].isSymbol("catch") or value.body[i].isSymbol("ensure")):
+        (value.body[i].isSymbol("catch") or value.body[i].isTryCleanupMarker):
       attempt.add value.body[i]
       inc i
     c.reserveProtocolBindings(attempt)
-    while i < value.body.len and not value.body[i].isSymbol("ensure"):
+    while i < value.body.len and not value.body[i].isTryCleanupMarker:
       inc i
-    if i < value.body.len:
+    var cleanup: seq[Value]
+    while i < value.body.len:
+      if not value.body[i].isTryCleanupMarker: cleanup.add value.body[i]
       inc i
-      var cleanup: seq[Value]
-      while i < value.body.len:
-        cleanup.add value.body[i]
-        inc i
-      c.reserveProtocolBindings(cleanup)
+    c.reserveProtocolBindings(cleanup)
   else:
     # Other compound heads (notably `match` arms) are not descended for slot
     # reservation. A protocol declared inside a `match` arm still receives a
@@ -7998,18 +7999,8 @@ proc compilePath(c: var Compiler, node: Value) =
     raise newException(GeneError, "$ex was renamed to $err")
   if parts.len >= 2 and parts[0].isSymbol("gene") and
       parts[1].isSymbol("err_msg"):
-    if c.localSlot(CatchErrorBindingName) < 0 and
-        c.parentSlot(CatchErrorBindingName).slot < 0:
-      raise newException(GeneError,
-        "$err_msg is only available inside a catch body")
-    # The built-in shorthand has a proven Error:message contract. Keep its
-    # direct send so strict error analysis sees that proof. User suffixes, if
-    # present, traverse the resulting Str after this base is evaluated.
-    c.emitLoadBinding(CatchErrorBindingName)
-    c.compilePathSend(newSym("~Error:message"), node)
-    if parts.len > 2:
-      c.compilePathSuffix(parts, 2, node)
-    return
+    raise newException(GeneError,
+      "$err_msg was removed; read the message with $err/.message")
   if parts.len >= 2 and parts[0].isSymbol("gene") and
       parts[1].isSymbol("err"):
     if c.localSlot(CatchErrorBindingName) < 0 and
@@ -8042,7 +8033,7 @@ proc compilePath(c: var Compiler, node: Value) =
       let segment = pathSegmentValue(parts[i])
       if segment.kind != vkString or segment.strVal.startsWith(".") or
           segment.strVal.startsWith("?.") or
-          segment.strVal in ["this_mod", "this_pkg", "err", "err_msg"]:
+          segment.strVal in ["this_mod", "this_pkg", "err"]:
         plain = false
         break
       segments.add segment
@@ -8072,8 +8063,6 @@ proc compileSetPath(c: var Compiler, node: Value) =
     raise newException(GeneError,
       "set path assignment requires a path")
   let parts = target.body
-  if parts[0].isSymbol("gene") and parts[1].isSymbol("err_msg"):
-    raise newException(GeneError, "$err_msg is a read-only expression")
   compileExpr(c, parts[0])
   for i in 1 ..< parts.len:
     let seg = parts[i]
@@ -9257,13 +9246,18 @@ proc nonErrorCatchTypeMessage*(errorType: Value): string =
   if name in NonErrorCatchTypes:
     return name & " is not an error type; `catch` requires an error type"
 
+const FailureCleanupHead = "\x00failure_cleanup?"
+  ## An internal form, unreachable from source text: the reader never puts a
+  ## NUL in a symbol. It reads whether the running cleanup body was entered by
+  ## an unwind rather than by normal completion or a return/break/continue.
+
 proc compileTry(c: var Compiler, node: Value) =
   ## (try body... catch ErrorType recovery... [catch ...] [ensure cleanup...]) — the
   ## `catch`/`ensure` markers are bare symbols in the flat body.
   let body = node.body
   var i = 0
   var tryForms: seq[Value]
-  while i < body.len and not (body[i].isSymbol("catch") or body[i].isSymbol("ensure")):
+  while i < body.len and not (body[i].isSymbol("catch") or body[i].isTryCleanupMarker):
     tryForms.add body[i]
     inc i
   let tp = TryProto(body: c.compileSubBody(tryForms,
@@ -9286,18 +9280,51 @@ proc compileTry(c: var Compiler, node: Value) =
       body = @[newSym(":"), errorType])
     inc i
     var recovery: seq[Value]
-    while i < body.len and not (body[i].isSymbol("catch") or body[i].isSymbol("ensure")):
+    while i < body.len and not (body[i].isSymbol("catch") or body[i].isTryCleanupMarker):
       recovery.add body[i]
       inc i
     tp.catches.add CatchClause(errorType: errorType, pattern: pattern,
                                body: c.compileSubBody(recovery, pattern,
                                                       scoped = true))
-  if i < body.len and body[i].isSymbol("ensure"):
+  var hasUnwind = false
+  var unwindForms: seq[Value]
+  if i < body.len and body[i].isSymbol("unwind"):
+    hasUnwind = true
     inc i
-    var ensureForms: seq[Value]
-    while i < body.len:
+    while i < body.len and not (body[i].isTryCleanupMarker or body[i].isSymbol("catch")):
+      unwindForms.add body[i]
+      inc i
+  var hasEnsure = false
+  var ensureForms: seq[Value]
+  if i < body.len and body[i].isSymbol("ensure"):
+    hasEnsure = true
+    inc i
+    while i < body.len and not (body[i].isTryCleanupMarker or body[i].isSymbol("catch")):
       ensureForms.add body[i]
       inc i
+  if i < body.len:
+    raise newException(GeneError,
+      "try clauses are ordered catch..., then unwind, then ensure; unexpected " &
+      body[i].print())
+  if hasUnwind:
+    # `unwind` runs only when the try is left by unwinding: an uncaught
+    # failure, a failing catch body, cancellation or policy expiry. It shares
+    # the cleanup frame `ensure` runs in, and that frame records why it was
+    # entered. The cleanup is therefore
+    #   (if <entered by an unwind> (try unwind... ensure ensure...) (do ensure...))
+    # so a failing unwind body still lets `ensure` run, and its failure then
+    # follows ensure's rule: the original unwind continues.
+    let cleanupHead = newSym(FailureCleanupHead)
+    let onFailure =
+      if hasEnsure:
+        newNode(newSym("try"), body = @[newNode(newSym("do"), body = unwindForms),
+                                        newSym("ensure")] & ensureForms)
+      else: newNode(newSym("do"), body = unwindForms & @[NIL])
+    let onExit = newNode(newSym("do"), body = ensureForms & @[NIL])
+    tp.ensureBody = c.compileSubBody(@[newNode(newSym("if"),
+      body = @[newNode(cleanupHead), onFailure, onExit])],
+      repeatBindings = c.loopDepth > 0 or c.repeatBindings)
+  elif hasEnsure:
     tp.ensureBody = c.compileSubBody(ensureForms,
       repeatBindings = c.loopDepth > 0 or c.repeatBindings)
   discard c.emit(opTry, c.chunk.addTry(tp))
@@ -10295,7 +10322,7 @@ proc ownsResultBindings(value: Value): bool =
         var recovery = false
         for item in value.body:
           if item.isSymbol("catch"): recovery = true
-          elif item.isSymbol("ensure"): recovery = false
+          elif item.isTryCleanupMarker: recovery = false
           elif not recovery and ownsResultBindings(item): return true
         return false
       of "repeat":
@@ -10731,6 +10758,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       return
     of "panic":
       compilePanic(c, node)
+      return
+    of FailureCleanupHead:
+      discard c.emit(opInFailureCleanup)
       return
     of "type":
       compileType(c, node)

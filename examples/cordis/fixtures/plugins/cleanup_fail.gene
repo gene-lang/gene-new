@@ -3,8 +3,7 @@
 (import [PluginSpec] ^from "../../src/plugin_api")
 (import [LoadedValue loaded_key] ^from "../contract")
 
-(type CleanupFailure ^props {^message Str} ^impl [Error])
-(impl Error for CleanupFailure)
+(type CleanupFailure : Error)
 
 (type CleanupValue ^props {^n Int})
 (impl LoadedValue for CleanupValue
@@ -12,7 +11,7 @@
 
 (fn activate [ctx, config]
   (ctx .defer
-    (fn [] (fail (CleanupFailure ^message "retirement failed"))))
+    (fn [] (fail (CleanupFailure ^_msg "retirement failed"))))
   (ctx .provide loaded_key (CleanupValue ^n config)))
 
 (var plugin

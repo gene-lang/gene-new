@@ -11,8 +11,7 @@
          publication_diagnostics]
   ^from "../../../src/runtime/composition")
 
-(type FixtureError ^props {^message Str} ^impl [Error])
-(impl Error for FixtureError)
+(type FixtureError : Error)
 
 (fn plugin_value [n, closed]
   (Plugin ^id "value" ^provides [["functions" "value"]]
@@ -65,7 +64,7 @@
                 {^name "value" ^doc "Value." ^fn (fn [] 1)}))
             ^deactivate (fn [host]
               (closed .push 1)
-              (fail (FixtureError ^message "deactivate fixture failed")))))
+              (fail (FixtureError ^_msg "deactivate fixture failed")))))
           (put_cordis_plugin ^^replace h (plugin_value 2 closed) {^^host})
           ($assert (== (status_of h "value") "ready") (status_of h "value"))
           ($assert (== closed [1]) "the replaced revision was not retired")
@@ -90,14 +89,14 @@
               {^name "value" ^doc "Value." ^fn (fn [] 1)}))
             ^deactivate (fn [host]
               (closed .push 1)
-              (fail (FixtureError ^message "first cleanup failed")))))
+              (fail (FixtureError ^_msg "first cleanup failed")))))
           (let lease (acquire_snapshot h/snapshots))
           (put_cordis_plugin ^^replace h (Plugin ^id "value" ^activate (fn [host]
             (host .PluginHost:contribute "functions"
               {^name "value" ^doc "Value." ^fn (fn [] 2)}))
             ^deactivate (fn [host]
               (closed .push 2)
-              (fail (FixtureError ^message "second cleanup failed")))) {^^host})
+              (fail (FixtureError ^_msg "second cleanup failed")))) {^^host})
           (put_cordis_plugin ^^replace h (plugin_value 3 closed) {^^host})
           ($assert (== closed [2]) ($to_str closed))
           (release_snapshot h/snapshots lease)
@@ -124,7 +123,7 @@
             (host .PluginHost:contribute "functions"
               {^name "value" ^doc "Value." ^fn (fn [] 1)}))))
           (let failed (put_cordis_plugin ^^replace h
-            (Plugin ^id "value" ^activate (fn [host] (fail (FixtureError ^message "replacement failed"))))
+            (Plugin ^id "value" ^activate (fn [host] (fail (FixtureError ^_msg "replacement failed"))))
             {^^host}))
           ($assert (== failed "error") failed)
           ($assert (== (status_of h "value") "error"))
@@ -151,7 +150,7 @@
               (apply_plugin_set h
                 (profile_admissions (Profile ^name "candidate" ^plugins [(plugin_value 2 [])]))
                 (fn [] nil)
-                (fn [] (fail (FixtureError ^message "commit fixture failed"))))
+                (fn [] (fail (FixtureError ^_msg "commit fixture failed"))))
               false
             catch Error
               true))
@@ -172,7 +171,7 @@
           (put_cordis_plugin h (Plugin ^id "bad" ^activate (fn [host]
             (host .PluginHost:contribute "functions"
               {^name "bad_fn" ^doc "Bad." ^fn (fn [] "bad")})
-            (fail (FixtureError ^message "activation fixture failed")))) {^^host})
+            (fail (FixtureError ^_msg "activation fixture failed")))) {^^host})
           (put_cordis_plugin h (Plugin ^id "good" ^activate (fn [host]
             (host .PluginHost:contribute "functions"
               {^name "good_fn" ^doc "Good." ^fn (fn [] "good")}))) {^^host})

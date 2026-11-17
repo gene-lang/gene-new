@@ -47,7 +47,7 @@
     ($assert (== (last_summary runtime) expected) "A failed scan replaced the saved summary.")
     (let inspect (/fn (row runtime/h "functions" "project_audit_scan")))
     (let diagnostic (try (inspect ^paths ["src/missing.gene"] ^report_path "missing-report.md") nil
-      catch Error {^code $err/code ^message $err/message ^data $err/data}))
+      catch Error {^code $err/code ^message $err/.message ^data $err/data}))
     ($assert (== diagnostic failure) ($to_str diagnostic))
   ensure (close_runtime runtime))
   (let restored (open_runtime scratch "website_check" (offline_profile)))

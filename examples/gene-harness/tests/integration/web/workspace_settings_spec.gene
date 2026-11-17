@@ -240,7 +240,7 @@
           ($assert (== workspace_only "invalid_request") workspace_only)
           (let keys (try (manager .set_setting "keyboard_bindings" {}) "saved" catch Error $err/code))
           ($assert (== keys "invalid_request") "keyboard bindings stay workspace-only")
-          (let mixed (try (manager .set_settings {^turn_limit 5 ^model "other"}) "saved" catch Error $err/message))
+          (let mixed (try (manager .set_settings {^turn_limit 5 ^model "other"}) "saved" catch Error $err/.message))
           ($assert ($str/contains? mixed "set_default_model") mixed)
           ($assert (== (/value (manager .setting "turn_limit")) 9) "a mixed-store request changed nothing")
           # A second host under the same manager root sees the value on its next read
@@ -487,7 +487,7 @@
         {^name "test" ^doc "Cataloged test provider."
          ^configure (fn [model, effort, timeout] {^model (?? model "plain") ^timeout_ms timeout})
          ^prepare (fn [call] call)
-         ^send (fn [call] (fail (ServiceError ^code "unexpected" ^message "No inference in settings specs.")))}))))
+         ^send (fn [call] (fail (ServiceError ^code "unexpected" ^_msg "No inference in settings specs.")))}))))
 
 (fn use_effort_catalog [service]
   (put_cordis_plugin ^^replace service/runtime/h (catalog_provider_plugin) {})
@@ -512,7 +512,7 @@
        ^render (fn [context] (quote (script "invalid component")))})
     (host .PluginHost:contribute "web_components"
       {^name "section_probe_throwing" ^slot "settings_section"
-       ^render (fn [context] (fail (ServiceError ^code "broken" ^message "section exploded")))})
+       ^render (fn [context] (fail (ServiceError ^code "broken" ^_msg "section exploded")))})
     (host .PluginHost:contribute "web_components"
       {^name "section_probe_undeclared" ^slot "settings_section"
        ^render (fn [context] (quote (button ^key "go" ^action "no_such_action" "Go")))}))))

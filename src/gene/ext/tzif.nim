@@ -19,7 +19,12 @@ type
     footer: GeneTzifFooter
 
 proc tzifInvalid(message: string): ref GeneError =
-  newException(GeneError, "invalid TZif data: " & message)
+  ## Malformed time-zone data is input the caller supplied: a TimeError.
+  result = newException(GeneError, "invalid TZif data: " & message)
+  try:
+    raiseBuiltinError("TimeError", result.msg)
+  except GeneError as typed:
+    result = typed
 
 proc tzifByte(data: string, pos: int): int =
   if pos < 0 or pos >= data.len:
@@ -258,7 +263,7 @@ proc geneTzifOffsetSeconds*(zone: GeneTzifZone,
   if whenSeconds >= zone.transitions[^1]:
     if zone.footer.present:
       return tzifFooterOffset(zone.footer, whenSeconds)
-    raise newException(GeneError,
+    raiseBuiltinError("TimeError",
       "TZif local time is unspecified after the last transition")
   var lo = 0
   var hi = zone.transitions.len
@@ -268,7 +273,7 @@ proc geneTzifOffsetSeconds*(zone: GeneTzifZone,
     else: hi = mid
   let index = zone.indices[lo - 1]
   if zone.kinds[index].designation == "-00":
-    raise newException(GeneError, "TZif local time is unspecified")
+    raiseBuiltinError("TimeError", "TZif local time is unspecified")
   zone.kinds[index].offsetSeconds
 
 proc tzifLocalDateTime(instant: int64, offsetSeconds: int,
@@ -349,11 +354,11 @@ proc biTemporalTzifResolveLocal(args: openArray[Value]): Value {.nimcall.} =
     if actual == offset:
       candidates.add (candidate, offset)
   if candidates.len == 0:
-    raise newException(GeneError, "nonexistent local time in zone")
+    raiseBuiltinError("TimeError", "nonexistent local time in zone")
   candidates.sort(proc (a, b: tuple[instant: int64, offset: int]): int =
     cmp(a.instant, b.instant))
   if candidates.len > 1 and fold == "reject":
-    raise newException(GeneError, "ambiguous local time in zone")
+    raiseBuiltinError("TimeError", "ambiguous local time in zone")
   let chosen = if fold == "later": candidates[^1] else: candidates[0]
   tzifResult(chosen.instant, chosen.offset,
     args[2].strVal, args[3].strVal)

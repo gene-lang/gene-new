@@ -445,8 +445,7 @@ suite "language callable reflection":
 
   test "protocol error requirements retain their declared row before conformance":
     reflectionCheck """
-      (type Failure ^props {^message Str} ^impl [Error])
-      (impl Error for Failure)
+      (type Failure : Error)
       (protocol P (message work [] : Int ^errors [Failure]))
       (let s ($runtime/signature P:work))
       [s/invocation_errors/checked s/invocation_errors/known
@@ -470,13 +469,11 @@ suite "language callable reflection":
   test "retained Error formatter reflection preserves its originating contract without formatting":
     reflectionCheck """
       (var formatted 0)
-      (type Failure ^props {})
+      (type Failure : Error ^props {} (message message [] : Str ^errors [] ^^override (set formatted 1) "failed"))
       (fn raise_local []
-        (impl Error for Failure
-          (message message [] : Str ^errors [] (set formatted 1) "failed"))
         (fail (Failure)))
       (let err (try (raise_local) catch Error $err))
-      (let s ($runtime/signature Error:message err))
+      (let s ($runtime/signature Self:message err))
       [formatted s/result s/resolution]
     """, "[0 Str implementation]"
 

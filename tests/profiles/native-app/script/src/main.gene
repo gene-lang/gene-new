@@ -1,7 +1,6 @@
 (import $str [trim])
 
-(type ScriptError ^props {^message Str})
-(impl Error for ScriptError)
+(type ScriptError : Error)
 
 (fn main [args] : Int
   (let root "tests/profiles/native-app/script/fixtures")
@@ -18,18 +17,18 @@
   (let child ($os/exec ($os/executable_path)
                          "eval" child_source ^timeout_ms 5000))
   (if_not (== child/status 0)
-    (fail (ScriptError ^message "subprocess failed")))
+    (fail (ScriptError ^_msg "subprocess failed")))
   (let response (await ($net/http_client/request
                         ^url args/0 ^timeout_ms 5000 ^max_bytes 65536)))
   (if_not (== response/status 200)
-    (fail (ScriptError ^message "API returned an unsuccessful status")))
+    (fail (ScriptError ^_msg "API returned an unsuccessful status")))
   (let api ($json/parse response/body))
   (let ok (&& (== record/name "Ada")
               (== record/visits 3)
               (== total 8)
               (== api/result "ok")
               (== (trim child/stdout) "5")))
-  (if_not ok (fail (ScriptError ^message "unexpected input or response")))
+  (if_not ok (fail (ScriptError ^_msg "unexpected input or response")))
   (let output {^name record/name ^total total ^files files
                ^api api/result ^process_result (trim child/stdout)})
   ($fs/write_text_atomic args/1 ($json/stringify output))

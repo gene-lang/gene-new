@@ -8,13 +8,13 @@ proc ioTestingErrorValue(scope: Scope, kind, operation: string, id: uint64,
                          message: string, transferred = -1,
                          cause: Value = NIL): Value =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   props["operation"] = newStr(operation)
   props["resource_id"] = newIntFromDecimal($id)
   if transferred >= 0:
     props["bytes_transferred"] = newInt(transferred)
   if cause.kind != vkNil:
-    props["cause"] = cause
+    props["_cause"] = cause
   let typ = builtinBinding(scope, kind)
   newNode(if typ.kind == vkType: typ else: newSym(kind),
           props = props, immutable = true)

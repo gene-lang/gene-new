@@ -68,7 +68,7 @@
 .models-menu, .voice-panel { border-radius: var(--radius-surface); border-color: var(--edge); }
 """)))
     nil
-    catch Error $err/.Error:message))
+    catch Error $err/.message))
   (Plugin ^id "voice" ^requires ["voice/host" "sessions/host"]
     ^provides [["browser_clients" "voice"] ["hooks" "request/prepare/voice"]
       ["speech_recognizers" "whisper_local"] ["speech_recognizers" "macos"] ["speech_synthesizers" "piper"]

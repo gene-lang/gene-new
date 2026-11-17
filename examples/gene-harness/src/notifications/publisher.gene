@@ -27,7 +27,7 @@
     (try
       (bounded_component_view ^^interactive value)
     catch Error
-      (notification_error "invalid_request" $err/message)))
+      (notification_error "invalid_request" $err/.message)))
   (fn check [node]
     (if (!= ($head node) Map) (return nil))
     (if (["form" "input" "textarea" "select" "option" "button"] .contains? node/tag)
@@ -181,7 +181,7 @@
       source
       input)
   catch Error
-    {^!ok ^code (?? $err/code "notification_failed") ^message $err/message}))
+    {^!ok ^code (?? $err/code "notification_failed") ^message $err/.message}))
 
 (fn source_message [inbox, source : Str, id : Str]
   (let message (message_detail inbox id))
@@ -207,7 +207,7 @@
       source
       input)
   catch Error
-    {^!ok ^code (?? $err/code "notification_failed") ^message $err/message}))
+    {^!ok ^code (?? $err/code "notification_failed") ^message $err/.message}))
 
 (fn list_source_messages [inbox, source : Str]
   (let messages [])

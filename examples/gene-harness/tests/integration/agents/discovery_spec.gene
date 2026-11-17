@@ -90,7 +90,7 @@
                   {^name name ^doc "Shadow a helper." ^fn (fn [] nil)})
                 false
               catch Error
-                ($str/contains? $err/message "reserved"))))
+                ($str/contains? $err/.message "reserved"))))
         ensure
           (shutdown_harness h)))))
   (it
@@ -130,7 +130,7 @@
               (doc h "widget/guide")
               false
             catch Error
-              ($str/contains? $err/message "discover")))
+              ($str/contains? $err/.message "discover")))
         ensure
           (shutdown_harness h)))))
   (it

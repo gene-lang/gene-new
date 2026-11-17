@@ -68,9 +68,8 @@
 
 # Domain error: raised by GET /job/:id for unknown ids, mapped to a 404 by the
 # ^on_error mapper below instead of the generic 500.
-(type JobNotFound ^props {^id Str} ^impl [Error])
-(impl Error for JobNotFound
-  (message message [] : Str ^errors []
+(type JobNotFound : Error ^props {^id Str}
+  (message message [] : Str ^errors [] ^^override
     $"no such job: ${self/id}"))
 
 # Bind the listener eagerly (explicitly owned): the returned Server

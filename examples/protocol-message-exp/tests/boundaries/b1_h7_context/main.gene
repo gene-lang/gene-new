@@ -7,7 +7,7 @@
 # Control: threading Render alone does not carry the root's Mark selection into a
 # body-authored send, even though the root imported both exact pairs.
 (let body (body_op))
-($println $"body-authored Mark: ${(try (body tree body) catch Error $err/message)}")
+($println $"body-authored Mark: ${(try (body tree body) catch Error $err/.message)}")
 
 # Variant 1: separate protocol parameters
 (let sep_b (sep_ops))
@@ -27,8 +27,8 @@
 
 # Missing secondary operation: raw fails late (at traversal), typed fails at construction.
 (let missing (raw_ops_missing_mark))
-($println $"missing mark, raw record: ${(try (missing/render tree missing) catch Error $err/message)}")
-($println $"missing mark, checked record: ${(try (Ops ^render raw_b/render) catch Error $err/message)}")
+($println $"missing mark, raw record: ${(try (missing/render tree missing) catch Error $err/.message)}")
+($println $"missing mark, checked record: ${(try (Ops ^render raw_b/render) catch Error $err/.message)}")
 
 # Mixed-root contexts are possible by construction (values, not scopes): the
 # result silently mixes a bracket traversal with a star marker.

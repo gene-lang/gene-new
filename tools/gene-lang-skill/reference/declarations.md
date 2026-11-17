@@ -135,14 +135,13 @@ is missing behavior; two is ambiguity — import order never picks a winner.
 
 ## Errors
 
-An error type implements `Error`, and a function declares what it may raise:
+An error type extends `Error`, and a function declares what it may raise:
 
 ```gene
-(type ExampleError ^props {^message Str} ^impl [Error])
-(impl Error for ExampleError)
+(type ExampleError : Error)
 
 (fn checked [value] ^errors [ExampleError]
-  (if_not value (fail (ExampleError ^message "value is required")))
+  (if_not value (fail (ExampleError ^_msg "value is required")))
   value)
 ```
 

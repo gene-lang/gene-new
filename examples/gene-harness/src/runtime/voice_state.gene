@@ -2,13 +2,12 @@
 (mod voice_state)
 (import [HarnessEvent publish] ^from "../kernel")
 
-(type VoiceError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for VoiceError)
+(type VoiceError : Error ^props {^code Str})
 (type VoiceChanged : HarnessEvent ^props {^state Any})
 (type VoiceState ^props {^runtime Any ^claim Any ^connections Any ^gate Any ^closed Any ^timings Any})
 
 (fn voice_error [code : Str, message : Str]
-  (fail (VoiceError ^code code ^message message)))
+  (fail (VoiceError ^code code ^_msg message)))
 
 (fn normalize_voice_input [value]
   (if ($absent? value) (return nil))

@@ -3,11 +3,10 @@
 # (a `channel_transports` row); team, channel, thread, message and author are
 # that transport's opaque identifiers. The transport validates its own formats
 # at ingress; the host bounds them and orders message IDs.
-(type ChannelError ^props {^code Str ^message Str ^retry_after_ms Int?} ^impl [Error])
-(impl Error for ChannelError)
+(type ChannelError : Error ^props {^code Str ^retry_after_ms Int?})
 
 (fn channel_error [code : Str, message : Str]
-  (fail (ChannelError ^code code ^message message)))
+  (fail (ChannelError ^code code ^_msg message)))
 
 (fn copy [value] ($thaw ($freeze value)))
 (fn key [parts] ($crypto/sha256 ($serde/write_data parts)))

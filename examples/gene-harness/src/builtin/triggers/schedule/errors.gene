@@ -1,4 +1,3 @@
 (mod errors)
-(type ScheduleError ^props {^message Str} ^impl [Error])
-(impl Error for ScheduleError)
-(fn problem [message : Str] (fail (ScheduleError ^message message)))
+(type ScheduleError : Error)
+(fn problem [message : Str] (fail (ScheduleError ^_msg message)))

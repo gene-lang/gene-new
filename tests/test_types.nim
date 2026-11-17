@@ -1967,14 +1967,14 @@ suite "types — function boundaries":
        "    (try (await t) catch TypeError $err/where)) " &
        "  (use (spawn \"bad\")))",
        "\"await task result\""
-    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Boom) " &
-       "(type Other ^props {^message Str} ^impl [Error]) " &
-       "(impl Error for Other) " &
+    ck "(type Boom : Error) " &
+       " " &
+       "(type Other : Error) " &
+       " " &
        "(scope " &
        "  (fn use [t : (Task Int Boom)] " &
        "    (try (await t) catch ErrorContractViolation $err/where)) " &
-       "  (use (spawn (fail (Other ^message \"bad\")))))",
+       "  (use (spawn (fail (Other ^_msg \"bad\")))))",
        "\"Task error\""
 
   test "generic functions infer checked task result types":

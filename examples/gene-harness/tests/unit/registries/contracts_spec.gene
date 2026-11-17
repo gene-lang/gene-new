@@ -10,7 +10,7 @@
     (validate_provider_row (provider))
     (validate_provider_row ((provider) .assoc "connection" (fn [] {^state "ready"})))
     (let legacy ((provider) .assoc "available" (fn [] nil)))
-    (let failure (try (validate_provider_row legacy) "accepted" catch Error $err/message))
+    (let failure (try (validate_provider_row legacy) "accepted" catch Error $err/.message))
     ($assert ($str/contains? failure "replaced by connection"))
     (let invalid ((provider) .assoc "models" false))
     ($assert (try (validate_provider_row invalid) false catch Error true)))

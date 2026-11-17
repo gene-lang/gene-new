@@ -75,11 +75,10 @@ suite "native synchronous callback boundary":
 
   test "typed failures and retained Error witnesses survive the C boundary":
     check callbackEval("""
-      (type Failure ^props {^code Int})
+      (type Failure : Error ^props {^code Int} (message message [] : Str ^errors [] ^^override "original"))
       (fn make []
-        (impl Error for Failure (message message [] : Str ^errors [] "original"))
         (fn [value] (fail (Failure ^code value))))
-      (try (visit (make)) catch Error [$err/code $err_msg])
+      (try (visit (make)) catch Error [$err/code $err/.message])
     """) == "[0 \"original\"]"
     check callbacksReturned == 1
 
@@ -141,7 +140,7 @@ suite "native synchronous callback boundary":
         (let result (spawn ^lane root
           (visit (fn [value] (channel .recv) true))))
         (try (await result) false catch Error
-          ($str/contains? $err_msg "synchronous native callback")))
+          ($str/contains? $err/.message "synchronous native callback")))
     """) == "true"
     check callbackEval("""
       (let channel ($channel ^capacity 1)) (channel .send 1)
@@ -153,11 +152,11 @@ suite "native synchronous callback boundary":
     scope.define("pending", nativeNewAsyncTask())
     check run(compileSource("""
       [(try (visit (fn [value] (pending .join) true)) false
-         catch Error ($str/contains? $err_msg "synchronous native callback"))
+         catch Error ($str/contains? $err/.message "synchronous native callback"))
        (try (visit (fn [value] ($sleep 0) true)) false
-         catch Error ($str/contains? $err_msg "synchronous native callback"))
+         catch Error ($str/contains? $err/.message "synchronous native callback"))
        (try (visit (fn [value] (spawn true) true)) false
-         catch Error ($str/contains? $err_msg "synchronous native callback"))]
+         catch Error ($str/contains? $err/.message "synchronous native callback"))]
     """), scope).print() == "[true true true]"
 
   test "re-entry and closing an executing callback fail safely":
@@ -242,8 +241,8 @@ suite "SQLite synchronous native callbacks":
         (let count (visit_text_rows db "select 1 union all select 2"
           (fn [names values] false)))
         (let failed (try (visit_text_rows db "select 1"
-          (fn [names values] (fail (AssertionError ^message "original"))))
-          catch AssertionError $err/message))
+          (fn [names values] (fail (AssertionError ^_msg "original"))))
+          catch AssertionError $err/.message))
         [count failed]
       ensure (db .Db:close))
     """) == "[1 \"original\"]"

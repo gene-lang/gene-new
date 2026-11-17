@@ -40,7 +40,7 @@
     {
       "id": "failed_association_unpublished",
       "category": "errors",
-      "source": "(type Key ^props {^n Int}) (impl ValueEq for Key (message equal [other : Key] : Bool (fail (RuntimeError ^message \"boom\")))) (impl ValueHash for Key (message hash [] : Int 1)) (let a #(Key ^n 1)) (let b #(Key ^n 2)) (let values {{a : 1}}) [(try (values .assoc b 2) catch RuntimeError \"failed\") ($map_size values)]",
+      "source": "(type Key ^props {^n Int}) (impl ValueEq for Key (message equal [other : Key] : Bool (fail (RuntimeError ^_msg \"boom\")))) (impl ValueHash for Key (message hash [] : Int 1)) (let a #(Key ^n 1)) (let b #(Key ^n 2)) (let values {{a : 1}}) [(try (values .assoc b 2) catch RuntimeError \"failed\") ($map_size values)]",
       "text": "[\"failed\" 1]"
     },
     {

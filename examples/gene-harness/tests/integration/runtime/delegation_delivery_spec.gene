@@ -6,8 +6,7 @@
 (import [require_record list_sessions load_session] ^from "../../../src/runtime/sessions")
 (import [delegation_blocks] ^from "../../../src/runtime/delegations")
 
-(type DeliveryProbeError ^props {^message Str} ^impl [Error])
-(impl Error for DeliveryProbeError)
+(type DeliveryProbeError : Error)
 
 (fn finish [controller, round]
   (let due (+ ($os/monotonic_ms) 15000))
@@ -107,7 +106,7 @@
               (let n (parent_calls .swap (+ parent_calls/.get 1)))
               (match n
                 (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")")
-                (when 1 (fail (DeliveryProbeError ^message "Provider failed before producing a response.")))
+                (when 1 (fail (DeliveryProbeError ^_msg "Provider failed before producing a response.")))
                 (else
                   ($assert ($str/contains? ($to_str call/messages) "DURABLE_CHILD_CONCLUSION"))
                   "(Outcome ^^done ^reply \"Recovered conclusion collected\")")))))))

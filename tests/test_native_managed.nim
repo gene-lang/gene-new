@@ -191,7 +191,7 @@ suite "managed native handles":
     let callable = geneManagedRootFromVm(domain, host,
       run(compileSource("(fn [x] (+ x 1))"), host))
     let failing = geneManagedRootFromVm(domain, host,
-      run(compileSource("(fn [] (fail (AssertionError ^message \"managed\")))"), host))
+      run(compileSource("(fn [] (fail (AssertionError ^_msg \"managed\")))"), host))
     let argument = geneManagedRootFromVm(domain, host, newInt(41))
     let environment = geneNewManagedEnvironment(domain, host)
     let success = geneWithNativeBorrow(callable,

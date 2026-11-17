@@ -186,7 +186,7 @@
         (let found (round_for_request controller session stored/request_id))
         (if_yes ($present? found)
           (if (!= found/digest (round_digest stored/text [] nil stored/input))
-            (fail (RoundError ^code "submission_conflict" ^message "Stored channel batch differs from its round receipt.")))
+            (fail (RoundError ^code "submission_conflict" ^_msg "Stored channel batch differs from its round receipt.")))
           (finish_channel_admission queues stored/id found)
           (observe_channel_round queues session found)
           (return {^kind "admitted" ^batch stored/id ^receipt found ^^recovered}))
@@ -331,7 +331,7 @@
         (saved .put name value)))
     (when (TaskOutcome/error error)
       (saved .put "state" "failed")
-      (saved .put "message" error/message))
+      (saved .put "message" error/.message))
     (when (TaskOutcome/panic message)
       (saved .put "state" "failed")
       (saved .put "message" message))
@@ -407,25 +407,25 @@
 (fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^limits limits = nil, ^delegation delegation = nil, ^input input = nil, ^continuation continuation = nil, ^model_settings model_settings = nil, ^expected_transport expected_transport = nil, ^persist_model_settings persist_model_settings : Bool = false]
   (if ($present? model_settings)
     (try (validate_model_settings model_settings)
-      catch Error (fail (RoundError ^code "invalid_request" ^message $err/message))))
+      catch Error (fail (RoundError ^code "invalid_request" ^_msg $err/.message))))
   (let source (resolve_initiator controller/runtime session initiator text input continuation))
   (let user_source (== source/kind "user"))
   (let channel_source source/channel)
   (let checked_input source/input)
   (require_chat controller/runtime/services/values/commands/modes session)
   (if (> ($str/byte_size text) prompt_limit)
-    (fail (RoundError ^code "too_large" ^message "Message text exceeds 64 KiB; attach the document instead.")))
+    (fail (RoundError ^code "too_large" ^_msg "Message text exceeds 64 KiB; attach the document instead.")))
   (if controller/runtime/stopping/.get
-    (fail (RoundError ^code "stopped" ^message "workspace is stopping")))
+    (fail (RoundError ^code "stopped" ^_msg "workspace is stopping")))
   (let state (round_state controller session))
   (if_not (== ($head media) List)
-    (fail (RoundError ^code "invalid_request" ^message "Attachments must be a list of media IDs.")))
+    (fail (RoundError ^code "invalid_request" ^_msg "Attachments must be a list of media IDs.")))
   # A card send's identity covers the card revisions the user saw, so a retry
   # resolves to the payload admitted the first time.
   (let card_ref (if ($absent? card) nil
     {^id card/id ^definition_revision card/definition_revision ^revision card/revision}))
   (if (&& ($present? checked_input) (|| (! media/.empty?) ($present? card_ref)))
-    (fail (RoundError ^code "invalid_request" ^message
+    (fail (RoundError ^code "invalid_request" ^_msg
       (if (== checked_input/kind "voice") "Voice input does not attach composer media or cards."
         "Channel input does not attach browser composer media or cards."))))
   (let digest (round_digest ^model_settings model_settings text media card_ref checked_input))
@@ -440,23 +440,23 @@
         (if_yes (&& user_source (!= old/request_id request_id))
           (let competing (load_session controller/runtime/sessions session))
           (if (&& (== competing/round/.get/input/kind "channel") (session_busy? competing))
-            (fail (RoundError ^code "busy" ^message "this session already has a channel round"))))
+            (fail (RoundError ^code "busy" ^_msg "this session already has a channel round"))))
         (fail
-          (RoundError ^code "submission_conflict" ^message "submission identity has different content")))))
+          (RoundError ^code "submission_conflict" ^_msg "submission identity has different content")))))
   (let loaded (load_session controller/runtime/sessions session))
   (if (&& channel_source (== loaded/round/.get/state "paused")
           ($absent? loaded/round/.get/continuation_stop))
-    (fail (RoundError ^code "paused" ^message "Choose continuation or explicit supersession before admitting a queued request.")))
+    (fail (RoundError ^code "paused" ^_msg "Choose continuation or explicit supersession before admitting a queued request.")))
   (let attachments (if media/.empty? []
     (validate_media_refs (open_media_store controller/runtime/state_root) media)))
   (if (|| (session_busy? loaded) ($present? controller/rounds/.get/%session/task))
-    (fail (RoundError ^code "busy" ^message "this session already has a round")))
+    (fail (RoundError ^code "busy" ^_msg "this session already has a round")))
   (if (!= sequence state/next_seq)
-    (fail (RoundError ^code "submission_conflict" ^message "unexpected submission sequence")))
+    (fail (RoundError ^code "submission_conflict" ^_msg "unexpected submission sequence")))
   (let card_item (if ($absent? card_ref) nil
     (do
       (if_not user_source
-        (fail (RoundError ^code "invalid_request" ^message "Only the user sends cards.")))
+        (fail (RoundError ^code "invalid_request" ^_msg "Only the user sends cards.")))
       (card_send_item controller/runtime session card_ref text))))
   (let admission_lease (acquire_snapshot controller/runtime/h/snapshots))
   (let admission
@@ -476,7 +476,7 @@
           (if ($present? reason) (return {^reason reason}))
           (let selection (try (resolve_selection controller/runtime settings)
             catch ProviderError
-              (return {^reason $err/message ^code (if (&& user_source ($present? model_settings) (> ($map_size model_settings) 0))
+              (return {^reason $err/.message ^code (if (&& user_source ($present? model_settings) (> ($map_size model_settings) 0))
                 (then "invalid_request") (else "not_ready"))})))
           (if (&& ($present? expected_transport) (!= expected_transport selection/transport))
             (return {^reason "Provider connection changed since the source round; start a new round deliberately."}))
@@ -484,7 +484,7 @@
     ensure
       (release_snapshot controller/runtime/h/snapshots admission_lease)))
   (if ($present? admission/reason)
-    (fail (RoundError ^code (?? admission/code "not_ready") ^message admission/reason)))
+    (fail (RoundError ^code (?? admission/code "not_ready") ^_msg admission/reason)))
   (let metadata (require_record controller/runtime/sessions session))
   (let changes {})
   (if (&& (|| user_source persist_model_settings) ($present? model_settings))
@@ -579,7 +579,7 @@
   (let stopped (copy_data original))
   (stopped .put "continuation_stop"
     (if (["stale" "busy" "not_found"] .contains? failure/code) "superseded" "failed"))
-  (stopped .put "continuation_error" ($to_str failure/message))
+  (stopped .put "continuation_error" ($to_str failure/.message))
   (let loaded (load_session controller/runtime/sessions session))
   (let current (== (/id loaded/round/.get) source))
   (save_round ^current current controller session stopped)
@@ -589,7 +589,7 @@
 (fn continue_round [controller : RoundController, session : Str, source : Str, mode : Str,
   ^operator operator : Bool = true, ^model_settings model_settings = nil]
   (if_not (continuation_modes .contains? mode)
-    (fail (RoundError ^code "invalid_request" ^message "Unknown continuation mode.")))
+    (fail (RoundError ^code "invalid_request" ^_msg "Unknown continuation mode.")))
   (with_body_use controller/runtime (fn []
     (with_session_gate controller/runtime/sessions $"round/${session}"
       (fn [] (continue_round_locked ^operator operator ^model_settings model_settings controller session source mode))))))
@@ -601,11 +601,11 @@
   (let receipt loaded/round/.get)
   (if (|| (!= receipt/id source) (!= receipt/state "paused")
           (! (["manual" "checked"] .contains? (?? receipt/continuation_mode "manual"))))
-    (fail (RoundError ^code "stale" ^message "The named operator pause is no longer current.")))
+    (fail (RoundError ^code "stale" ^_msg "The named operator pause is no longer current.")))
   (if (&& (== receipt/continuation_stop "superseded") (== receipt/queue_replacement claim))
     (return receipt))
   (if (|| ($present? receipt/continuation_stop) ($present? receipt/continued_by))
-    (fail (RoundError ^code "stale" ^message "This paused task already has a continuation decision.")))
+    (fail (RoundError ^code "stale" ^_msg "This paused task already has a continuation decision.")))
   (receipt .put "continuation_stop" "superseded")
   (receipt .put "queue_replacement" claim)
   (save_round controller session receipt)
@@ -614,14 +614,14 @@
 (fn continue_round_locked [controller, session : Str, source : Str, mode : Str,
   ^operator operator : Bool = true, ^model_settings model_settings = nil]
   (let old (copy_data (round_receipt controller session source)))
-  (if ($absent? old) (fail (RoundError ^code "not_found" ^message "Paused round not found.")))
+  (if ($absent? old) (fail (RoundError ^code "not_found" ^_msg "Paused round not found.")))
   (if_not ($absent? old/continued_by)
     (let successor (round_receipt controller session old/continued_by))
     (if_not ($absent? successor)
       (if (&& (== successor/request_id $"continue/${source}")
               (== successor/continued_from source))
         (return successor)
-        (fail (RoundError ^code "stale" ^message "Continuation admission was superseded.")))))
+        (fail (RoundError ^code "stale" ^_msg "Continuation admission was superseded.")))))
   (let loaded (load_session controller/runtime/sessions session))
   (if (&& operator (== (/id loaded/round/.get) source)
       (continuable_round? old) (== old/continuation_stop "failed"))
@@ -630,13 +630,13 @@
       (old .put "continuation_error" nil)
       (old .put "continuation_intent" nil)))
   (if (|| (!= (/id loaded/round/.get) source) ($present? old/continuation_stop))
-    (fail (RoundError ^code "stale" ^message "Continuation was superseded.")))
+    (fail (RoundError ^code "stale" ^_msg "Continuation was superseded.")))
   (if_not (continuable_round? old)
-    (fail (RoundError ^code "invalid_request" ^message "This round has no pending continuation.")))
+    (fail (RoundError ^code "invalid_request" ^_msg "This round has no pending continuation.")))
   (let state (round_state controller session))
   (let intent old/continuation_intent)
   (let sequence (?? intent/sequence state/next_seq))
-  (if (!= sequence state/next_seq) (fail (RoundError ^code "stale" ^message "Continuation sequence was superseded.")))
+  (if (!= sequence state/next_seq) (fail (RoundError ^code "stale" ^_msg "Continuation sequence was superseded.")))
   (let chosen (continuation_choice controller old (?? intent/mode mode)))
   (let descriptor (copy_data (?? old/continuation
     {^items_ref old/request_items_ref ^history (pending_request controller/runtime session)
@@ -644,7 +644,7 @@
      ^task_root (?? old/task_root old/id) ^task_turns (?? old/task_turns old/turn_count)})))
   (if_not ($absent? old/input) (descriptor .put "input" (copy_data old/input)))
   (if (|| ($absent? descriptor/items_ref) ($absent? descriptor/history))
-    (fail (RoundError ^code "unavailable" ^message "Pending input cannot be safely restored.")))
+    (fail (RoundError ^code "unavailable" ^_msg "Pending input cannot be safely restored.")))
   (descriptor .put "mode" chosen)
   (descriptor .put "source_round" source)
   (descriptor .put "source_turn" old/last_turn)
@@ -709,14 +709,14 @@
   (let loaded (load_session controller/runtime/sessions session))
   (let receipt loaded/round/.get)
   (if (&& operator_input ($present? channel_input))
-    (fail (RoundError ^code "invalid_request" ^message "A question answer has one input origin.")))
+    (fail (RoundError ^code "invalid_request" ^_msg "A question answer has one input origin.")))
   (let source (if ($absent? channel_input)
     (if operator_input {^kind "harness" ^transport "harness"} nil) (normalize_message channel_input)))
   (if_yes (&& ($present? source) (!= source/transport "harness"))
     (let bound (/channel (require_record controller/runtime/sessions session)))
     (if (|| ($absent? bound) (!= source/account bound/account) (!= source/team bound/team)
             (!= source/channel bound/channel) (!= source/thread bound/thread))
-      (fail (RoundError ^code "forbidden" ^message "The channel answer belongs to a different conversation."))))
+      (fail (RoundError ^code "forbidden" ^_msg "The channel answer belongs to a different conversation."))))
   # A finalized batch answers retries before round admission: an identical
   # reply returns its stored result without resuming anything, even after the
   # session moved on; any other reply is refused.
@@ -724,13 +724,13 @@
   (if_yes (&& ($present? stored) (== stored/status "answered") ($present? stored/submitted_digest))
     (if (|| (!= stored/submitted_digest (submitted_digest values dismiss))
             (!= (?? stored/intent "continue") "continue"))
-      (fail (QuestionError ^message $"question batch ${batch_id} already has different answers")))
+      (fail (QuestionError ^_msg $"question batch ${batch_id} already has different answers")))
     (let owner (round_receipt controller session (batch_round_id stored batch_id)))
     (if_not ($absent? owner) (return (copy_data owner)))
     (if_not ($absent? receipt) (return (copy_data receipt)))
-    (fail (RoundError ^code "not_found" ^message "The round for this answered batch is not retained.")))
+    (fail (RoundError ^code "not_found" ^_msg "The round for this answered batch is not retained.")))
   (if (|| ($absent? receipt) (!= receipt/questions/id batch_id))
-    (fail (RoundError ^code "invalid_request" ^message "session is not waiting on this batch")))
+    (fail (RoundError ^code "invalid_request" ^_msg "session is not waiting on this batch")))
   (let lease (acquire_snapshot controller/runtime/h/snapshots))
   (let batch
     (try
@@ -837,7 +837,7 @@
               (continue_answered_round controller session receipt batch)))))))
     catch Error
       (append_core_event controller/runtime/events "session" session
-        {^type "trace" ^text $"answered round did not resume: ${$err/message}" ^^ignorable})))
+        {^type "trace" ^text $"answered round did not resume: ${$err/.message}" ^^ignorable})))
   pending/.size)
 
 (fn cancel_round [controller : RoundController, session : Str, id : Str, ^from_delegation from_delegation : Bool = false]
@@ -852,12 +852,12 @@
   (let loaded (load_session controller/runtime/sessions session))
   (let receipt loaded/round/.get)
   (if ($absent? receipt)
-    (fail (RoundError ^code "not_found" ^message "round not found")))
+    (fail (RoundError ^code "not_found" ^_msg "round not found")))
   (if_yes (!= receipt/id id)
     (let source (round_receipt controller session id))
     (if_not (&& (== source/continuation_mode "automatic")
       (== (?? source/task_root source/id) (?? receipt/task_root receipt/id)))
-      (fail (RoundError ^code "not_found" ^message "round not found"))))
+      (fail (RoundError ^code "not_found" ^_msg "round not found"))))
   (let task controller/rounds/.get/%session/task)
   (if_not ($absent? task) task/.cancel)
   (if (["waiting" "paused"] .contains? receipt/state)
@@ -895,7 +895,7 @@
   (let names ($str/join others ", "))
   (if (&& (! others/.empty?) (! confirmed))
     (fail
-      (RoundError ^code "confirmation_required" ^message $"Other sessions are running: ${names}. Confirm /stop or /restart.")))
+      (RoundError ^code "confirmation_required" ^_msg $"Other sessions are running: ${names}. Confirm /stop or /restart.")))
   (runtime/stopping .set true)
   (dispatch_round_event runtime "host/stopping" {})
   (runtime/services/values/commands/accepting .set false)

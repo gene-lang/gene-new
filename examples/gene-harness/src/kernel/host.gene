@@ -16,32 +16,32 @@
 
 (fn ^^private require_plugin_services [h]
   (if ($absent? h/plugin_services)
-    (fail (HarnessError ^message "plugin services are unavailable on this kernel")))
+    (fail (HarnessError ^_msg "plugin services are unavailable on this kernel")))
   h/plugin_services)
 
 (fn validate_plugin_descriptor [h : Harness, expected_id : Str, p : Plugin]
   (if_not (== p/id expected_id)
     (fail (HarnessError
-      ^message $"plugin descriptor id ${p/id} does not match ${expected_id}")))
+      ^_msg $"plugin descriptor id ${p/id} does not match ${expected_id}")))
   (if_not ($runtime/callable? p/activate)
-    (fail (HarnessError ^message "plugin activate must be callable")))
+    (fail (HarnessError ^_msg "plugin activate must be callable")))
   (for requirement in (?? p/requires (fresh_list))
     # A registry can be supplied later by another plugin. Its absence, like a
     # missing selected row or seam, is a dependency wait rather than bad syntax.
     (if (== ($head requirement) List)
       (then
         (if_not (== requirement/.size 2)
-          (fail (HarnessError ^message "plugin requirement pair needs registry and key")))
+          (fail (HarnessError ^_msg "plugin requirement pair needs registry and key")))
         (for value in requirement
           (if (|| (!= ($head value) Str) (== value ""))
-            (fail (HarnessError ^message "plugin requirement names must be nonempty strings")))))
+            (fail (HarnessError ^_msg "plugin requirement names must be nonempty strings")))))
       (elif (== ($head requirement) Map)
         (if_not (&& (== ($map_size requirement) 1) (== ($head requirement/registry) Str)
                     (!= requirement/registry ""))
-          (fail (HarnessError ^message "registry requirement must be {^registry NAME}"))))
+          (fail (HarnessError ^_msg "registry requirement must be {^registry NAME}"))))
       (else
         (if (|| (!= ($head requirement) Str) (== requirement ""))
-          (fail (HarnessError ^message "seam requirement must be a nonempty string"))))))
+          (fail (HarnessError ^_msg "seam requirement must be a nonempty string"))))))
   p)
 
 (fn describe_plugin_module [h : Harness, module, expected_id : Str, ^core_interface core_interface : Str = "", ^limits limits = nil] : Plugin
@@ -54,7 +54,7 @@
   (message execution_budget [] : Any (execution_budget))
   (message defer [cleanup] : Any
     (if_not ($runtime/callable? cleanup)
-      (fail (HarnessError ^message "defer requires a cleanup callback")))
+      (fail (HarnessError ^_msg "defer requires a cleanup callback")))
     (let h self/h)
     (self/effects .defer (fn [] (cleanup_registry_context h cleanup)))
     nil)
@@ -110,10 +110,10 @@
     (let services (require_plugin_services record/h))
     (var event_record (row_record record/h "event_types" name))
     (if ($absent? event_record)
-      (fail (HarnessError ^message $"plugin event type ${name} is not registered")))
+      (fail (HarnessError ^_msg $"plugin event type ${name} is not registered")))
     (var event_type event_record/payload)
     (if (|| (!= event_type/origin "plugin") (!= event_type/owner record/owner))
-      (fail (HarnessError ^message $"plugin ${record/owner} does not own event type ${name}")))
+      (fail (HarnessError ^_msg $"plugin ${record/owner} does not own event type ${name}")))
     (var checked
       (if ($absent? event_type/schema)
         payload

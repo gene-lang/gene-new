@@ -10,8 +10,7 @@
 (import [Profile] ^from "../../../src/profiles/profile")
 (import [register_plugin] ^from "../../../src/storage/workspace_activation")
 
-(type FixtureError ^props {^message Str} ^impl [Error])
-(impl Error for FixtureError)
+(type FixtureError : Error)
 
 (fn plain [id, counter]
   (Plugin ^id id ^activate (fn [host] (counter .set (+ counter/.get 1)))))
@@ -178,7 +177,7 @@
         (try
           (install h (Plugin ^id "bad" ^activate (fn [host]
             (attempts .set (+ attempts/.get 1))
-            (fail (FixtureError ^message "activation failed")))))
+            (fail (FixtureError ^_msg "activation failed")))))
           ($assert (== (status_of h "bad") "error"))
           (install h (plain "one" ($cell 0)))
           (install h (plain "two" ($cell 0)))

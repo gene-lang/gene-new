@@ -9,7 +9,7 @@
       ["invalid_client" nil false] ["invalid_id_token" nil false]
       ["signature_backend_unavailable" nil false] ["invalid_grant" 401 false]]
       (let provider (chatgpt_row ^root "/tmp/fixture-auth" ^access (fn [^root root = nil]
-        (fail (ProviderError ^code code ^status status ^message "Fixture failure")))))
+        (fail (ProviderError ^code code ^status status ^_msg "Fixture failure")))))
       (let connection (provider/connection))
       ($assert (== connection/stale stale) code)
       ($assert (== connection/state (if (== status 401) (then "sign_in_required") (else "unavailable"))))))
@@ -17,16 +17,16 @@
     (let plain (try (chatgpt_result {^status 403 ^headers {^x-request-id "req_fixture"}
       ^body "{\"detail\":\"SECRET_ACCOUNT_CONTEXT\"}"}) nil catch ProviderError $err))
     ($assert (== plain/status 403))
-    ($assert ($str/contains? plain/message "Response shape: detail"))
-    ($assert ($str/contains? plain/message "req_fixture"))
-    ($assert (! ($str/contains? plain/message "SECRET")))
+    ($assert ($str/contains? plain/.message "Response shape: detail"))
+    ($assert ($str/contains? plain/.message "req_fixture"))
+    ($assert (! ($str/contains? plain/.message "SECRET")))
     (let structured (try (chatgpt_result {^status 400 ^body ($json/stringify {^error
       {^code "subscription_sharing_unsupported_capability" ^param "temperature" ^message "SECRET_DETAIL"}})})
       nil catch ProviderError $err))
     ($assert (== structured/status 400))
     ($assert (== structured/code "subscription_sharing_unsupported_capability"))
-    ($assert ($str/contains? structured/message "Parameter: temperature"))
-    ($assert (! ($str/contains? structured/message "SECRET"))))
+    ($assert ($str/contains? structured/.message "Parameter: temperature"))
+    ($assert (! ($str/contains? structured/.message "SECRET"))))
 
   (it "distinguishes usage-service failure from a usage limit after streaming starts" []
     (let event {^type "response.failed" ^response {^error
@@ -35,9 +35,9 @@
       ^body ($to_str "data: " ($json/stringify event) "\n\n")}) nil catch ProviderError $err))
     ($assert (== error/status 503))
     ($assert (== error/code "subscription_sharing_usage_unavailable"))
-    ($assert ($str/contains? error/message "could not be checked"))
-    ($assert (! ($str/contains? error/message "limit reached")))
-    ($assert (! ($str/contains? error/message "SECRET")))))
+    ($assert ($str/contains? error/.message "could not be checked"))
+    ($assert (! ($str/contains? error/.message "limit reached")))
+    ($assert (! ($str/contains? error/.message "SECRET")))))
 
 (describe "ChatGPT streamed error envelopes"
   (it "recognizes a nested plan limit before the following response.failed event" []
@@ -52,8 +52,8 @@
       nil catch ProviderError $err))
     ($assert (== failed/code "subscription_sharing_usage_limit_exceeded"))
     ($assert (== failed/status 429))
-    ($assert ($str/contains? failed/message "Plan usage limit reached"))
-    ($assert (! ($str/contains? failed/message "SECRET"))))
+    ($assert ($str/contains? failed/.message "Plan usage limit reached"))
+    ($assert (! ($str/contains? failed/.message "SECRET"))))
 
   (it "preserves the flat stream error code and safe diagnostic metadata too" []
     (let failed (try (chatgpt_result {^status 200
@@ -62,8 +62,8 @@
       nil catch ProviderError $err))
     ($assert (== failed/code "subscription_sharing_unsupported_capability"))
     ($assert (== failed/status 400))
-    ($assert ($str/contains? failed/message "Parameter: temperature"))
-    ($assert ($str/contains? failed/message "Request: req_event"))
-    ($assert (! ($str/contains? failed/message "SECRET")))))
+    ($assert ($str/contains? failed/.message "Parameter: temperature"))
+    ($assert ($str/contains? failed/.message "Request: req_event"))
+    ($assert (! ($str/contains? failed/.message "SECRET")))))
 
 (fn main [args] : Int (/exit_code (run ^name (?? args/0 ""))))

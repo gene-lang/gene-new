@@ -2,11 +2,10 @@
 # request.txt preserves the original request; check.gene verifies this version.
 (mod plugin
   (import [Plugin PluginHost] ^from "src/plugin_api.gene")
-  (type AuditError ^props {^code Str ^message Str ^data Any?} ^impl [Error])
-  (impl Error for AuditError)
+  (type AuditError : Error ^props {^code Str ^data Any?})
 
   (fn audit_error [code : Str, message : Str, stage : Str, path : Str]
-    (fail (AuditError ^code code ^message message ^data {^stage stage ^path path})))
+    (fail (AuditError ^code code ^_msg message ^data {^stage stage ^path path})))
 
   (fn check_path [path : Str, stage : Str]
     (if (|| (== path "") ($str/starts_with? path "/")

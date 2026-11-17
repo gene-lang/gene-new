@@ -95,7 +95,7 @@
       (decide engine/service {^use "round/check_in" ^state fitted/state ^questions questions
         ^timeout_ms 60000 ^session "default"})
       (engine/row/decide engine/resource {^settings {} ^state fitted/state ^questions questions ^timeout_ms 10000}))
-    catch Error {^status "error" ^reason ($to_str $err/message)}))
+    catch Error {^status "error" ^reason ($to_str $err/.message)}))
   (let latency (- ($os/monotonic_ms) started))
   (let result (if ($present? raw/status) raw
     (do

@@ -2,11 +2,10 @@
 (import [inspect_png PngError] ^from "./png" ^pkg "documents")
 (import [worker_profile decode_png RasterError] ^from "." ^pkg "raster")
 
-(type ImageInspectionError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for ImageInspectionError)
+(type ImageInspectionError : Error ^props {^code Str})
 
 (fn reject [code : Str, message : Str]
-  (fail (ImageInspectionError ^code code ^message message)))
+  (fail (ImageInspectionError ^code code ^_msg message)))
 
 (fn with_image_scratch [root : Str, operation]
   ($fs/make_dir root)
@@ -52,7 +51,7 @@
 (fn inspect_generated_png [data : Bytes, root : Str, ^background background : Str = "auto",
                            ^decoder decoder = nil, ^timeout_ms timeout_ms : Int = 30000]
   (let metadata (try (inspect_png data)
-    catch PngError (reject "invalid_image" $err/message)))
+    catch PngError (reject "invalid_image" $err/.message)))
   (if (== background "transparent")
     (then
       (if ($absent? decoder) (reject "missing_dependency" "Transparent PNG inspection was not prepared."))

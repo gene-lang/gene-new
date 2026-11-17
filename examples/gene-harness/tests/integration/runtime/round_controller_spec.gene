@@ -295,7 +295,7 @@
               false
             catch RoundError
               (&& (== $err/code "not_ready")
-                  ($str/contains? $err/message "prompt/gene_reference")))
+                  ($str/contains? $err/.message "prompt/gene_reference")))
             "missing reference prompt did not refuse admission")
           (set_plugin_enabled runtime/workspace runtime/h "gene_reference" true)
           (set_plugin_enabled runtime/workspace runtime/h "history_basic" false)
@@ -305,7 +305,7 @@
               false
             catch RoundError
               (&& (== $err/code "not_ready")
-                  ($str/contains? $err/message "hooks/history/compact/history_basic")))
+                  ($str/contains? $err/.message "hooks/history/compact/history_basic")))
             "missing compaction policy did not refuse admission")
           (set_plugin_enabled runtime/workspace runtime/h "history_basic" true)
           (set_plugin_enabled runtime/workspace runtime/h "provider_scripted" false)
@@ -315,7 +315,7 @@
               false
             catch RoundError
               (&& (== $err/code "not_ready")
-                  ($str/contains? $err/message "providers/scripted")))
+                  ($str/contains? $err/.message "providers/scripted")))
             "missing selected provider did not refuse admission")
           (set_plugin_enabled runtime/workspace runtime/h "provider_scripted" true)
           (let accepted (submit_round controller "default" "first" 1 "go"))

@@ -52,7 +52,7 @@
               (doc runtime/h "missing")
               false
             catch Error
-              ($str/contains? $err/message "gene/stdlib"))
+              ($str/contains? $err/.message "gene/stdlib"))
             "unknown doc did not list registered chapters")
           (let lease (acquire_snapshot runtime/h/snapshots))
           (try

@@ -15,7 +15,7 @@ suite "testing — standalone assertions":
        #@$assert (== 2 (+ 1 1))]
     """, "[nil nil nil nil nil nil]"
     for condition in ["false", "nil"]:
-      testingCheck "(try ($assert " & condition & ") catch AssertionError $err/message)",
+      testingCheck "(try ($assert " & condition & ") catch AssertionError $err/.message)",
         "\"assertion failed\""
 
   test "arguments run once in order including successful messages":
@@ -25,25 +25,25 @@ suite "testing — standalone assertions":
       (check (do (events .push 1) true) (do (events .push 2) "ok"))
       (try
         (check (do (events .push 3) false) (do (events .push 4) "bad"))
-        catch AssertionError (events .push $err/message))
+        catch AssertionError (events .push $err/.message))
       events
     """, "[1 2 3 4 \"bad\"]"
 
   test "argument errors propagate and validation still runs on success":
     testingCheck """
-      (try ($assert (/ 1 0) "unreached") catch RuntimeError $err/message)
+      (try ($assert (/ 1 0) "unreached") catch RuntimeError $err/.message)
     """, "\"division by zero\""
     for source in ["($assert)", "($assert true nil nil)",
                     "($assert true ^message \"bad\")"]:
       expect GeneError: discard testingEval(source)
     testingCheck "(try ($assert true 1) catch TypeError true)", "true"
-    testingCheck "(try ($assert false nil) catch AssertionError $err/message)",
+    testingCheck "(try ($assert false nil) catch AssertionError $err/.message)",
       "\"assertion failed\""
 
   test "assertion failures implement Error and obey checked rows":
     testingCheck """
       (fn checked [] ^errors [AssertionError] ($assert false "detail"))
-      (try (checked) catch Error $err/message)
+      (try (checked) catch Error $err/.message)
     """, "\"detail\""
     testingCheck """
       (fn checked [] ^errors [] ($assert false))
@@ -73,26 +73,25 @@ suite "testing — assertion helpers":
       (var calls 0)
       (let error (assert_raises (fn []
         (set calls (+ calls 1)) ($assert false "detail")) Error))
-      [calls error/message]
+      [calls error/.message]
     """, "[1 \"detail\"]"
 
   test "assert_raises matches ancestry and preserves unexpected errors":
     testingCheck """
       (import $test [assert_raises])
-      (type Base ^props {^message Str})
-      (impl Error for Base)
+      (type Base : Error)
       (type Child : Base ^props {})
-      (let caught (assert_raises (fn [] (fail (Child ^message "child"))) Base))
-      [caught/message
+      (let caught (assert_raises (fn [] (fail (Child ^_msg "child"))) Base))
+      [caught/.message
        (try (assert_raises (fn [] (/ 1 0)) AssertionError)
-         catch RuntimeError $err/message)]
+         catch RuntimeError $err/.message)]
     """, "[\"child\" \"division by zero\"]"
 
   test "normal return fails even when the value is an error":
     testingCheck """
       (import $test [assert_raises])
-      (try (assert_raises (fn [] (AssertionError ^message "returned")) Error "missing")
-        catch AssertionError $err/message)
+      (try (assert_raises (fn [] (AssertionError ^_msg "returned")) Error "missing")
+        catch AssertionError $err/.message)
     """, "\"missing\""
 
   test "thunk validation happens before invocation and panic is not caught":
@@ -300,7 +299,7 @@ suite "testing — example lifecycle":
       (import $test [describe it run assert_equal])
       (describe "details"
         (it "absent" []
-          (fail (AssertionError ^message "custom" ^^has_comparison)))
+          (fail (AssertionError ^_msg "custom" ^^has_comparison)))
         (it "present" [] (assert_equal nil false)))
       (let result (run ^!report))
       [result/failed result/examples/0/diagnostics/0/actual

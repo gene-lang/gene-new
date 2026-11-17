@@ -1,3 +1,2 @@
 (mod appearance_error)
-(type AppearanceError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for AppearanceError)
+(type AppearanceError : Error ^props {^code Str})

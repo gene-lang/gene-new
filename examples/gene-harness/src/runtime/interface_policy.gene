@@ -1,7 +1,6 @@
 # Exact source requirements and host-supported versions are different data.
 (mod interface_policy)
-(type InterfacePolicyError ^props {^message Str} ^impl [Error])
-(impl Error for InterfacePolicyError)
+(type InterfacePolicyError : Error)
 
 (const public_core "gene-harness/PluginHost:3")
 (const plugin_interface "gene-harness/Plugin:3")
@@ -37,11 +36,11 @@
   (let meta ($meta source))
   (let declared (?? (meta .get "interfaces") {}))
   (if (!= ($head declared) Map)
-    (fail (InterfacePolicyError ^message "@interfaces must declare a map of exact required versions.")))
+    (fail (InterfacePolicyError ^_msg "@interfaces must declare a map of exact required versions.")))
   (let required (latest_interfaces))
   (map_for [key version] in declared (required .put key version))
   (let invalid (requirements_diagnostic required))
-  (if (!= invalid "") (fail (InterfacePolicyError ^message invalid)))
+  (if (!= invalid "") (fail (InterfacePolicyError ^_msg invalid)))
   required)
 
 (fn entry_core_interface [entry] entry/interfaces/core)

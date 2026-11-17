@@ -9,14 +9,14 @@
 (fn require_login_key [value] : Str
   (if (|| (!= ($head value) Str) (== value "") (> ($str/byte_size value) 16384)
     ($str/contains? value "\r") ($str/contains? value "\n"))
-    (fail (ProviderError ^message "Sign-in returned an invalid key")))
+    (fail (ProviderError ^_msg "Sign-in returned an invalid key")))
   value)
 
 (fn login_root [supplied = nil] : Str
   (let configured (?? supplied (nonempty ($os/env? "GENE_HARNESS_AUTH_HOME"))))
   (if ($present? configured) (return configured))
   (let home (nonempty ($os/env? "HOME")))
-  (if ($absent? home) (fail (ProviderError ^message "HOME is required to locate Harness sign-in records")))
+  (if ($absent? home) (fail (ProviderError ^_msg "HOME is required to locate Harness sign-in records")))
   ($path/join home ".config" "gene-harness"))
 
 (fn openrouter_record_path [root = nil] : Str
@@ -28,10 +28,10 @@
   (try
     (let record ($json/parse ($fs/read_text path)))
     (if (!= record/version 1)
-      (fail (ProviderError ^message "Invalid sign-in record")))
+      (fail (ProviderError ^_msg "Invalid sign-in record")))
     (require_login_key record/key)
     {^key record/key ^account ($str/slice_bytes ($crypto/sha256 record/key) 0 12)}
-  catch Error (fail (ProviderError ^message "OpenRouter sign-in record is unreadable; connect again"))))
+  catch Error (fail (ProviderError ^_msg "OpenRouter sign-in record is unreadable; connect again"))))
 
 (fn write_openrouter_record [root, key : Str]
   (require_login_key key)
@@ -65,7 +65,7 @@
   ^authorization_url authorization_url : Str = "https://openrouter.ai/auth",
   ^exchange_url exchange_url : Str = "https://openrouter.ai/api/v1/auth/keys"]
   (if ($absent? (#"^http://127[.]0[.]0[.]1:[0-9]+/auth/callback$" .match callback))
-    (fail (ProviderError ^message "Sign-in requires the running host's 127.0.0.1 callback")))
+    (fail (ProviderError ^_msg "Sign-in requires the running host's 127.0.0.1 callback")))
   (let resolved_root (login_root root))
   (let state ($crypto/random_hex 32)) (let verifier ($crypto/random_hex 32))
   # OpenRouter omits OAuth state on denial. Bind the callback URL itself too,
@@ -94,7 +94,7 @@
     ^body ($json/stringify {^code code ^code_verifier attempt/verifier ^code_challenge_method "S256"})
     ^timeout_ms 15000 ^max_bytes 65536))
   (let response (try (await task) ensure task/.cancel))
-  (if (!= response/status 200) (fail (ProviderError ^message "OpenRouter sign-in exchange failed")))
+  (if (!= response/status 200) (fail (ProviderError ^_msg "OpenRouter sign-in exchange failed")))
   (let data ($json/parse response/body))
   (let key (require_login_key data/key))
   (attempt/mutate (fn []

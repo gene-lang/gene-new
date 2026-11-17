@@ -7,10 +7,10 @@
 
 (fn catalog_items [payload, field]
   (if (!= ($head payload) Map)
-    (fail (ProviderError ^message "Provider returned an invalid model list")))
+    (fail (ProviderError ^_msg "Provider returned an invalid model list")))
   (let items (payload .get field))
   (if (!= ($head items) List)
-    (fail (ProviderError ^message "Provider returned an invalid model list")))
+    (fail (ProviderError ^_msg "Provider returned an invalid model list")))
   items)
 
 (fn copy_positive [target, field, value]

@@ -3,8 +3,7 @@
 (mod theme_contrast ^profile web)
 (import ^from "./css_values.gene" [css_number])
 
-(type ContrastError ^props {^message Str})
-(impl Error for ContrastError)
+(type ContrastError : Error)
 
 (fn decimal [text : Str] : F64
   (css_number text))
@@ -12,7 +11,7 @@
 (fn computed_color [probe : EventTarget, color : Str] : (List F64)
   ($dom/set_style probe "color" $"color-mix(in srgb, ${color} 100%, transparent)")
   (var value ($dom/style_value probe "color"))
-  (if_not ($str/starts_with? value "color(srgb ") (fail (ContrastError ^message "Color could not be converted to sRGB.")))
+  (if_not ($str/starts_with? value "color(srgb ") (fail (ContrastError ^_msg "Color could not be converted to sRGB.")))
   (var body ($str/slice_bytes value 11 (- ($str/byte_size value) 12)))
   (var parts ($str/split body " "))
   (var channels : (List F64) [])

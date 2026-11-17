@@ -6,8 +6,7 @@
 (fn source [version]
   ($to_str `(mod plugin
     (import [Plugin PluginHost] ^from "src/plugin_api.gene")
-    (type ProbeError ^props {^message Str} ^impl [Error])
-    (impl Error for ProbeError)
+    (type ProbeError : Error)
     (fn init [descriptor]
       (Plugin ^id "preview_probe"
         ^provides [["functions" "probe_save"] ["web_components" "probe_view"]]
@@ -15,12 +14,12 @@
           (host .PluginHost:contribute "functions"
             {^name "probe_save" ^doc "Save a test value."
              ^fn (fn [title : Str]
-               (if (< %version 3) (fail (ProbeError ^message "save-broken")))
+               (if (< %version 3) (fail (ProbeError ^_msg "save-broken")))
                ($to_str "saved " title))})
           (host .PluginHost:contribute "web_components"
             {^name "probe_view" ^slot "panel" ^view_state {} ^actions ["probe_save"]
              ^render (fn [context]
-               (if (== %version 1) (fail (ProbeError ^message "render-broken")))
+               (if (== %version 1) (fail (ProbeError ^_msg "render-broken")))
                (quote (section (h3 "Preview ready"))))})))))))
 
 (fn publish_source [version]

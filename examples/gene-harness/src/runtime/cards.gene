@@ -14,8 +14,7 @@
 (import ^from "../ui/outline" [view_outline])
 (import ^from "./sessions" [load_session require_record with_session_gate])
 
-(type CardError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for CardError)
+(type CardError : Error ^props {^code Str})
 (type CardService ^props {^runtime Any ^inflight Any ^transient Any ^resolved Any})
 
 (const card_limit 32)
@@ -27,7 +26,7 @@
 (const generation_admissions 128)
 
 (fn card_fail [code : Str, message : Str]
-  (fail (CardError ^code code ^message message)))
+  (fail (CardError ^code code ^_msg message)))
 
 (fn open_card_service [runtime] : CardService
   (CardService ^runtime runtime ^inflight ($cell {}) ^transient ($cell {}) ^resolved ($cell {})))
@@ -200,7 +199,7 @@
           deadline/.join)))
   (match outcome
     (when (TaskOutcome/ok value) value)
-    (when (TaskOutcome/error error) (card_fail "card_failed" ($to_str error/message)))
+    (when (TaskOutcome/error error) (card_fail "card_failed" ($to_str error/.message)))
     (when (TaskOutcome/panic message) (card_fail "card_failed" $"card code panicked: ${message}"))
     (else (card_fail "card_failed" "card code exceeded its time budget or was cancelled"))))
 
@@ -209,7 +208,7 @@
   (let view (card_function runtime lease/snapshot session source/view context))
   (let tree (bounded_call runtime lease session (view_policy) true view [($freeze state)]))
   (try (bounded_card_view tree "live")
-    catch WebComponentError (card_fail "card_failed" $"view: ${$err/message}")))
+    catch WebComponentError (card_fail "card_failed" $"view: ${$err/.message}")))
 
 (fn public_card [card, ^transient transient : Bool = false]
   {^id card/id ^title card/title ^kind card/kind
@@ -261,7 +260,7 @@
           (render_live runtime lease session source state)
           ensure (release_snapshot runtime/h/snapshots lease)))
       (try (bounded_card_view spec/tree "static")
-        catch WebComponentError (card_fail "invalid_request" $err/message))))
+        catch WebComponentError (card_fail "invalid_request" $err/.message))))
   (with_card_gate runtime session id (fn []
     (let previous (card_record runtime session id))
     (if (&& ($absent? previous) (>= ($size (card_records runtime session)) card_limit))
@@ -567,7 +566,7 @@
       {^status "done" ^revision card/revision ^card (shown_card runtime session card)})
   catch CardError
     (finish_receipt runtime session receipt
-      {^status "failed" ^code $err/code ^message $err/message ^card (shown_card runtime session card)})
+      {^status "failed" ^code $err/code ^message $err/.message ^card (shown_card runtime session card)})
   ensure
     (release_snapshot runtime/h/snapshots lease)))
 
@@ -634,9 +633,9 @@
         (define_card runtime session round turn id
           {^title title ^tree tree ^state state ^view view ^update update})
         catch CardError
-          (fail (OutcomeError ^response_line line ^message $"card ${id}: ${$err/message}"))))
+          (fail (OutcomeError ^response_line line ^_msg $"card ${id}: ${$err/.message}"))))
    ^card (fn [args...]
-      (fail (OutcomeError ^message "call card directly as (card \"id\" ^title \"...\" ...) so its functions are kept as source")))
+      (fail (OutcomeError ^_msg "call card directly as (card \"id\" ^title \"...\" ...) so its functions are kept as source")))
    # Plugin functions reach this through plugin_api show_card and the turn
    # context; their ^view and ^update arrive already quoted.
    ^card_from_plugin (fn [id, tree = nil, ^title title = nil, ^state state = nil, ^view view = nil, ^update update = nil]

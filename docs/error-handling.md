@@ -20,260 +20,101 @@ An unknown error is represented by `Error`. A declaration such as
 while permitting other ordinary errors. Callers can recover from `SomeError`
 and allow the remaining errors to propagate or terminate the program.
 
-## Runtime failure classification
+## Throwable and Error
 
-Use three classifications for failures delivered through ordinary `catch`:
-ordinary error, generated type failure, and generated error-contract violation.
-Panic and cancellation retain their existing separate control paths. A failure's
-classification comes from runtime-controlled provenance, not its nominal type
-name or user-writable fields.
-
-| Origin | Static error obligation | Runtime payload and catch behavior | Error-row validation |
-| --- | --- | --- | --- |
-| Ordinary domain/native error or an otherwise unclassified runtime error | Catch or declare its type; use `Error` when unknown. | Original error value; matching typed catches and `catch Error` apply. | Check each escaping invocation's row. |
-| Explicit `fail` of a newly constructed `TypeError` | Catch or declare `TypeError`. | That ordinary TypeError value; typed and Error catches apply. | Check rows normally. |
-| Generated argument/result type failure | No ordinary error obligation. | A TypeError value tagged as generated; `catch TypeError` and `catch Error` apply. | Pass through without row validation or relabeling. |
-| A declared row or checked callable view rejects an ordinary error | No additional ordinary error obligation for the generated violation. | A generated `ErrorContractViolation` implementing Error; matching typed and Error catches apply. | Outer validators pass the same violation through. |
-| Panic | No ordinary error obligation. | Ordinary catches do not run. | Bypass error rows; preserve established cleanup. |
-| Cancellation | No ordinary error obligation. | Ordinary catches do not run. | Bypass error rows; preserve established cleanup. |
-
-`ErrorContractViolation` carries a string message, the rejecting function or
-view and source location, expected error coverage, actual error type, and the
-original typed error as `cause`. It is created once, at the first rejecting
-row. Additional callers may contribute trace information but do not wrap or
-reclassify an existing generated failure, even if their rows are empty.
-
-For a view declaring `[ConfigError]` whose target raises `NetworkError`:
+Every value `fail` raises is a `Throwable`; today every built-in and user error
+type descends from its `Error` branch:
 
 ```text
-NetworkError
-  -> ErrorContractViolation(cause = original NetworkError)
-  -> unchanged through enclosing ^errors [] invocations
+Throwable                ^props {^_msg Str? ^_cause Throwable?}, message [] : Str ^errors []
+└── Error                what `catch Error` and ^errors rows name
+    ├── IoError, FsError, JsonError, HttpError, DbError, CompileError, ...
+    ├── DecodeError, TimeError, NativeLibraryError, LimitExceeded
+    ├── TypeError, MessageError, MatchError, AssertionError, RuntimeError, ...
+    └── user types: (type InputError : Error ^props {^field Str})
 ```
 
-`catch ConfigError` does not match that violation. `catch ErrorContractViolation`
-or `catch Error` does; `$err` holds the violation value and `$err/cause` is the
-NetworkError. This preserves catchability of runtime diagnostics while keeping
-them outside the ordinary errors promised by a closed contract.
+A type is an error because of its parent chain, fixed when the type is
+declared; there is no Error protocol, `impl Error` or conformance witness.
+Panic and cancellation are not values `catch` sees: no clause runs for them,
+and `ensure` and `unwind` still run.
 
-Caught error values retain private failure provenance along with their typed
-payload. `(fail $err)`, including through an alias or a captured catch binding,
-preserves classification, original cause, and diagnostic origin. Source code
-cannot fabricate an exemption by constructing a TypeError or
-ErrorContractViolation with matching fields. Constructing and failing a new
-value creates an ordinary error, even if it uses one of those nominal types or
-stores a generated failure as its cause.
+`catch Any`, or a clause naming a value type such as `Str`, is a compile error.
+`(fail v)` rejects a value that is not of an Error type, including a bare
+`Throwable`. Building `(Error ^_msg "...")` directly is allowed.
 
-The compiler tracks the ordinary possibilities represented by a caught value
-when checking a rethrow. Generated-only provenance contributes no ordinary
-error; mixed or imprecise provenance conservatively retains the possible
-ordinary types or `Error`. A rethrow does not become an ordinary failure merely
-because the source uses `fail`.
+Generated type failures (a `TypeError` the runtime raises at a typed
+boundary) and contract violations bypass error rows; the runtime tracks that
+provenance privately. When a row rejects an ordinary error, the runtime raises
+an `ErrorContractViolation` once, at the first rejecting row, with the original
+error in `_cause`.
 
-Every runtime route, including default evaluation, checked callable views,
-tasks, streams, and native error transport, must preserve the classification.
-Do not exempt all RuntimeError values or classify TypeError solely by name.
-Other runtime/native errors stay ordinary until their origin has an explicit
-rule. The same classification and catch behavior apply in every checking mode.
-
-## The catch binding is $err
-
-`catch` binds the original typed error value as `$err`, matching the language's
-`Error` terminology. Use `$err_msg` or `$err/.Error:message` for its display
-message and `(fail $err)` to re-raise it. Other fields remain accessible on
-the same value.
-
-The binding remains local to its recovery branch. A nested catch gets its own
-`$err`; the outer binding is available again after the nested branch ends.
-Closures created in a recovery branch can capture that branch's binding.
-
-This is a spelling change to the existing catch binding. Compiler-generated
-bindings, backend implementations, diagnostics, editor tooling, documentation,
-examples, and tests must use the new name.
-
-## Error messages through the protocol
-
-Give the built-in `Error` protocol a `message` method with this default
-implementation and an explicit empty ordinary-error row:
+### Messages and causes
 
 ```gene
-(protocol Error
-  (message message [] : Str ^errors []
-    self/message))
+(type InputError : Error ^props {^field Str})
+(fail (InputError ^field "age" ^_msg "age must be positive"))
+
+(type StatusError : Error ^props {^status Int}
+  (message message [] : Str ^errors [] ^^override
+    $"Operation failed with status ${self/status}"))
+
+(type NotFound : Error)      # no message; .message returns ""
 ```
 
-The default reads the receiver's `message` property. `self/message` is a data
-lookup, so it does not recursively invoke the method. An ordinary error type
-with a `^message Str` property needs only an empty impl to use the default:
+`message` is a type-direct message on `Throwable`. It returns the stored
+`_msg`, or `""` when none is stored. A subtype overrides it with `^^override`
+and must keep the contract `[] : Str ^errors []` exactly. Overrides are
+expected to be side-effect-free and to always return. A handler reads the
+message with `$err/.message`; `$err/_msg` reads the stored field and may be
+`nil`. There is no `$err_msg` shortcut.
+
+`_cause` holds the Throwable this one wraps. A boundary that turns a defect
+into a domain Error keeps the defect as the cause:
 
 ```gene
-(type InputError ^props {^message Str})
-(impl Error for InputError)
-
-(try
-  (fail (InputError ^message "Invalid input"))
-  catch Error $err/.Error:message)
-# "Invalid input"
+(try (call_plugin plugin request)
+  catch Throwable
+    (fail (PluginError ^_msg "plugin failed" ^_cause $err)))
 ```
 
-`$err/.Error:message` invokes the Error protocol's message method and returns a
-`Str`. Generic recovery, logging, and error reporting use this accessor.
-`$err/message` remains a direct property lookup for code that intentionally
-depends on a particular error's representation.
+A Throwable reads an undeclared name as `nil`, so a handler holding an error of
+unknown type can probe `$err/code`. When the runner reports an error whose
+message is `""`, or whose `message` override fails, it shows the type name.
 
-An error can compute its message instead of storing a `message` property by
-overriding the protocol method:
+### The catch binding is $err
+
+`catch` binds the original error value as `$err`. The binding is lexical: a
+closure created in a catch body keeps its own `$err`, and a nested catch gets
+its own. `(fail $err)` re-raises that value unchanged.
+
+### Cleanup that runs only on failure
 
 ```gene
-(type StatusError ^props {^code Int})
-(impl Error for StatusError
-  (message message [] : Str ^errors []
-    $"Operation failed with status ${self/code}"))
-
-(try
-  (fail (StatusError ^code 503))
-  catch Error $err/.Error:message)
-# "Operation failed with status 503"
+(try (open_session) handle
+  unwind (close_partial_session)
+  ensure (release_lock))
 ```
 
-`Error:message` promises to introduce no ordinary recoverable error. Every
-custom implementation must satisfy `^errors []`; an omitted implementation
-uses the checked default. This makes a generic handler that returns `$err_msg`
-compatible with an empty ordinary-error row. The promise does not imply purity
-or termination. Returning the wrong type or violating the row produces a
-generated failure under the classification above.
+Clauses are ordered `catch...`, then `unwind`, then `ensure`. `unwind` runs only
+when the try is left by unwinding: a Throwable no catch handled, a failing
+catch body, cancellation or policy expiry. It does not run on normal completion
+or when `return`, `break` or `continue` leaves the try. Its order is catch,
+then `unwind`, then `ensure`. A failing `unwind` or `ensure` body during an
+unwind is dropped, and the original failure continues; under cancellation or
+expiry the terminal reason stays terminal.
 
-An explicit `impl Error` still establishes conformance. The presence of a
-`message` property alone does not make a value an Error. When an impl selects
-the default and its type schema is known, reject conformance if the schema
-does not guarantee a present string `message` property. This includes a missing,
-optional, or non-string property. Types with another representation supply a
-custom method instead. Apply this check after choosing inherited/custom bodies,
-so overriding the default does not require the property.
+### Message-only runtime failures
 
-For a dynamic or native schema that cannot be proved statically, check the
-raw backing property when admitting a value as an Error using the default.
-Do not invoke the message method eagerly. If the backing property cannot be
-inspected, require a native/custom implementation instead. Invalid backing
-data produces a generated TypeError. Keep the normal Str return check on every
-method invocation, including after mutation of an admitted value. Migrate
-built-in/native errors and propertyless marker-only test types accordingly.
-
-`$err/.Error:message` is a protocol-qualified send. On a raised error it uses
-the retained Error conformance described below. An independent type-direct
-`message` method may coexist and return different text: qualified Error access
-and `$err_msg` use only `Error:message`. No bare accessor or forwarding alias
-is proposed; unrelated [message dispatch](../docs/spec/protocols.md) is unchanged.
-
-The message method provides display text; `$err` remains the original typed
-error with its other fields and cause. `(fail $err)` re-raises that value,
-without converting it to a string or rebuilding it from its message.
-
-An `Error` value reads a name its type does not declare as `nil`, where any
-other typed value raises `has no field`. A handler often holds an error of
-unknown type and probes it, as in `$err/code` or `$err/cause`; an error raised
-by that probe would replace the one being handled. A value counts as an
-`Error` when it was raised as one, or when its type declares `^impl [Error]`
-or has a visible `Error` impl. The check never runs user code. If a
-custom message method itself fails while the runner reports an error, reporting
-must retain the original error and fall back to an existing diagnostic or a
-basic type label rather than replace it with the formatting failure. The
-fallback does not invoke either failure's message method again.
-
-## Error conformance survives scope changes
-
-Retain conformance evidence with a raised error. Scoped Error implementations
-remain supported; canonical-only Error conformance is not an MVP restriction.
-This preserves local and plugin-defined errors without depending on the
-catcher's implementation imports.
-
-At `fail`, or the first admission of a native failure, resolve the built-in
-Error protocol in the raising scope and retain the selected implementation,
-its bound Self/default or custom message body, and its declaration environment.
-This is an Error conformance witness. Missing or ambiguous conformance produces
-a generated admission TypeError; an invalid value is not admitted as an
-ordinary error. Runtime-generated failures have built-in witnesses.
-
-A native task producer must pass its producing scope when it supplies a typed
-payload that has not yet been admitted. An already-admitted error can be
-transferred without selecting another scope. Message-only failures become
-ordinary RuntimeError values and still undergo deferred-row checking, including
-when exposed through `Task/join`.
-
-The witness and failure classification travel with the logical caught error
-value. `$err` still exposes its original nominal payload, properties, equality,
-and identity behavior; it is not converted to a generic wrapper type solely
-to retain this evidence. The runtime representation of the private metadata
-must preserve these observable properties.
-
-Publish witness and diagnostic updates atomically. Concurrent first admissions
-select one complete witness; later raises retain it. Readers see consistent
-diagnostic snapshots, and concurrent trace contributions must not overwrite
-one another.
-
-- `catch Error`, open-row admission, and Error protocol type checks recognize
-  the retained witness without rechecking conformance in the catcher's scope.
-- Specific error rows and typed catches still use nominal error-type coverage.
-- A qualified `Error:message` send on a witnessed error invokes its retained
-  implementation, even if the catcher cannot otherwise see that impl or has
-  a different scoped impl for the same type. Other protocol sends follow
-  their usual rules. An error value that has not been admitted as a failure
-  uses normal scoped Error lookup until it acquires a witness.
-- Aliases, rethrow, captured catch bindings, and ordinary task/stream/native
-  error transfers retain the witness. Explicitly constructing a new error
-  value establishes a new failure and selects its own conformance at admission.
-- Retain the selected method and module generation while a witnessed error
-  remains reachable. Reload or removal cannot silently replace its formatter
-  or invalidate its conformance.
-
-Existing Send/publication rules still govern worker transfers; a backend must
-preserve the required evidence or explicitly reject an unsupported transfer
-before publishing it. It must not silently drop it.
-
-On a worker or foreign native lane, admission and retained formatter access
-require a formatter whose captures satisfy the worker's Send rules. Reject an
-unsafe formatter with a generated admission TypeError before installing it.
-Native task failures also validate the complete payload before settling a task;
-a rejected publication leaves the task unsettled so the native producer can
-report or handle that rejection. Accepted native payloads retain their identity;
-the producer makes them Send-safe before calling the publication API.
-Actor replies and supervisor delivery apply
-the payload check before publishing the failure. A Send-safe live handle in a
-diagnostic need not support deep freezing; an immutable outer container is
-sufficient when all of its contents satisfy Send.
-
-This is an Error-specific witness rule for qualified dispatch. Bare-name
-resolution keeps its normal rules.
-
-## The message shortcut is $err_msg
-
-`$err_msg` is a read-only expression shortcut for `$err/.Error:message`,
-available wherever the catch-bound `$err` is lexically in scope. It makes
-common recovery code shorter while using the same protocol method:
-
-```gene
-(type InputError ^props {^message Str})
-(impl Error for InputError)
-
-(try
-  (fail (InputError ^message "Invalid input"))
-  catch Error $err_msg)
-# "Invalid input"
-```
-
-Evaluate the message method on each evaluated use of `$err_msg`. Entering a
-catch does not compute a message, and the shortcut does not cache the string.
-Repeated reads behave like repeated explicit protocol sends, including custom
-overrides and return-type checks. Each read has the protocol's empty ordinary
-error row, but a generated failure, panic, or cancellation still propagates
-as it would from the explicit send. There is no additional recovery or fallback
-in the shortcut itself.
-
-Nested catches use their own `$err` and therefore their own `$err_msg`.
-A closure referencing `$err_msg` captures the corresponding `$err` and invokes
-its message method when that expression executes in the closure. The shortcut
-does not create a global error binding or permit assignment to the message.
-Use an ordinary local binding when a computed message should be saved once.
+A runtime failure with no more specific type reaches a handler as a
+`RuntimeError` carrying only its message. Each such raise in the runtime is on a
+reviewed list, `tests/fixtures/message_only_raises.txt`, as a defect; a test
+fails when an unlisted one appears. Failures a correct program can meet use
+Error types instead: bad base64 or UTF-8 is a `DecodeError`, bad RFC3339 or
+TZif data and an ambiguous local time are `TimeError`s, a library that cannot be
+loaded is a `NativeLibraryError`, and a compile failure reached through `eval`
+or a module import is a `CompileError`. Policy expiry seen from the caller that
+set the policy is `(LimitExceeded ^reason "timeout")` or `^reason "memory"`.
 
 ## Choosing how much checking to require
 
@@ -428,12 +269,11 @@ For example, both helpers below omit `^errors`:
 ```gene
 (mod config ^errors_mode strict)
 
-(type ConfigError ^props {^message Str})
-(impl Error for ConfigError)
+(type ConfigError : Error)
 
 (fn decode ^^private [bad : Bool] : Str
   (if bad
-    (fail (ConfigError ^message "Invalid configuration"))
+    (fail (ConfigError ^_msg "Invalid configuration"))
     "ready"))
 
 (fn load_config ^^private [bad : Bool] : Str
@@ -485,9 +325,9 @@ unresolved call for diagnostics, but both have the same error-coverage rules.
 
 For each expression:
 
-- `fail` of a fresh error contributes its possible ordinary types. An unresolved
-  value contributes `Error`. A rethrow follows retained provenance and propagates
-  its ordinary possibilities; it does not change generated failures to ordinary.
+- `fail` of an Error value contributes its type. An unresolved value
+  contributes `Error`. A rethrow follows retained provenance; it does not turn a
+  generated failure into an ordinary one.
 - A call contributes the callee's invocation errors, plus errors from
   evaluating its callee expression and arguments. Its invocation contract
   already includes its own possible default evaluation errors.
@@ -566,8 +406,7 @@ adapter that converts or bounds errors.
 contract requires no wrapper around the unknown call:
 
 ```gene
-(type SomeError ^props {^message Str})
-(impl Error for SomeError)
+(type SomeError : Error)
 
 (fn call_plugin [callback : Callable] : Any ^errors [SomeError Error]
   (callback))
@@ -594,14 +433,13 @@ from every possible failure; it enforces the chosen error contract.
 **Handle all ordinary errors and optionally normalize them.** For example:
 
 ```gene
-(type IntegrationError ^props {^message Str ^cause Any})
-(impl Error for IntegrationError)
+(type IntegrationError : Error ^props {^cause Any})
 
 (fn call_plugin [callback : Callable] : Any ^errors [IntegrationError]
   (try (callback)
     catch Error
       (fail (IntegrationError
-        ^message "Plugin operation failed"
+        ^_msg "Plugin operation failed"
         ^cause $err))))
 ```
 
@@ -623,8 +461,8 @@ Strict callers then account for `ConfigError` when invoking `checked`.
 This is a runtime-checked assertion about opaque code, not a static proof of
 its implementation. A different escaping error is a contract violation; the
 view neither converts it to `ConfigError` nor silently ignores it. Such a
-violation is a generated ErrorContractViolation with the original error as its
-cause, catchable by Error and exempt from further row wrapping. Tooling should
+violation is an ErrorContractViolation with the original error as its
+`_cause`; outer rows pass it through. Tooling should
 distinguish inferred proofs from contracts asserted at a dynamic seam.
 
 Use this narrowing assertion only when the caller wants a closed contract.
@@ -675,9 +513,8 @@ are not attributed to the callee. Generated parameter/result type failures
 retain their separate classification.
 
 Native summaries also include ordinary argument-validation and state failures.
-For example, native operations that report wrong arity or invalid collection
-arguments as `RuntimeError` retain that ordinary error obligation. An annotated
-parameter boundary's generated TypeError remains a separate classification.
+Native operations that report wrong arity or invalid arguments as
+`RuntimeError` retain that ordinary error obligation.
 
 Each source module has an initialization summary, separate from its exported
 callables. A runtime import contributes the dependency's possible initialization
@@ -810,16 +647,14 @@ a proof dependency does not itself add callable variance to the language.
 
 Calls through genuinely mutable or unresolved targets are analyzed as Error
 unless an enforced checked callable contract protects the slot. Treat guarded
-calls as runtime assertions, and report a single generated contract violation
+calls as runtime assertions, and report a single contract violation
 if the target violates the retained contract. Do not promote an unguarded
 mutable binding into a fixed-target proof. Any runtime replacement mechanism
 unable to enforce these rules must reject the update while strict dependents
 are live.
 
-Retained Error witnesses also keep their selected formatter generation alive.
-Unloading cannot remove behavior still referenced by a caught error. The
-replacement checks and witness lifetime rules must be included in module and
-impl transactions, not only in editor caches.
+A caught error formats through its own type's `message`, so it keeps that
+type, and the module generation that declared it, alive while it is held.
 
 Module interface digests include invocation, returned-callable, deferred, and
 initialization error contracts. Source versions and diagnostic call graphs
@@ -848,7 +683,7 @@ The runtime, compiler, lifetime, concurrency, CLI, and backend tests cover:
    rethrows across immediate and deferred execution.
 2. Retained Error conformance and formatter environments, preserving nominal
    identity and the existing rules for transporting values between threads.
-3. Lexical `$err`, lazy `$err_msg`, default-backed and custom formatters,
+3. Lexical `$err`, lazy `$err/.message`, default-backed and custom formatters,
    return checks, and reporting fallback.
 4. Semantic row comparison, catch subtraction, and diagnostic names.
 5. Invocation, default, deferred, and initialization summaries in compiler
@@ -862,29 +697,17 @@ Key conformance cases:
 
 | Case | Expected strict result |
 | --- | --- |
-| An undeclared NetworkError crosses a closed checked view and several checked callers | Create one generated ErrorContractViolation with the original cause; outer row validators pass it through. |
+| An undeclared NetworkError crosses a closed checked view and several checked callers | Create one ErrorContractViolation with the original cause; outer row validators pass it through. |
 | A handler catches that violation | ErrorContractViolation and Error catches match; ConfigError does not. |
-| A generated TypeError and a newly constructed TypeError are failed | Generated provenance bypasses row checks; the fresh explicit failure is an ordinary TypeError obligation. |
-| A handler rethrows a generated failure through an alias | Preserve classification, cause, and Error witness without repeated wrapping. |
-| A handler constructs a new error using a generated failure as its cause | Track the new value as an ordinary error. |
 | A catch handles an error | Bind the original typed value as branch-local `$err`. |
 | Catches are nested | The inner `$err` shadows the outer binding only within its recovery branch. |
 | A closure captures `$err` | Retain the error bound by the closure's own recovery branch. |
-| A recovery branch reads `$err_msg` | Evaluate `$err/.Error:message` and return the same string. |
-| A recovery branch never reads `$err_msg` | Do not invoke the message method for the shortcut. |
-| A recovery branch reads `$err_msg` twice | Invoke the message method twice, as with two explicit sends. |
-| A nested catch or closure uses `$err_msg` | Use its lexically associated `$err`; evaluate at the point of use. |
-| A message method fails through `$err_msg` | No ordinary error is declared; propagate any generated failure or separate control event exactly as the explicit send does. |
-| A generic recovery branch returns `$err_msg` | Message access adds no ordinary error obligation. |
-| A custom message method can raise an ordinary error | Reject it against the protocol's empty row in strict mode; otherwise a runtime row violation is generated if it escapes. |
-| An error has `^message Str` and an empty Error impl | `$err/.Error:message` returns the stored string through the protocol default. |
-| An error overrides `Error:message` without a message property | `$err/.Error:message` returns the computed string. |
-| A known type selects the default without a required Str message property | Reject the default-backed conformance. |
-| An opaque value selects the default with invalid backing data | Reject Error admission with a generated TypeError without invoking the formatter. |
-| An error escapes its scoped Error implementation | Catch Error and open rows recognize its retained witness; formatting invokes the retained provider. |
-| The catcher has a different scoped Error implementation | It does not replace the incoming failure's retained provider. |
-| A type has both a direct message and Error:message | Both are legal; qualified Error access and `$err_msg` use only the protocol method. |
-| A value has a message property but no Error impl | It does not gain Error conformance automatically. |
+| A recovery branch reads `$err/.message` | Evaluate `$err/.message` and return the same string. |
+| A recovery branch never reads `$err/.message` | Do not invoke the message method for the shortcut. |
+| A recovery branch reads `$err/.message` twice | Invoke the message method twice, as with two explicit sends. |
+| A nested catch or closure uses `$err/.message` | Use its lexically associated `$err`; evaluate at the point of use. |
+| A generic recovery branch returns `$err/.message` | Message access adds no ordinary error obligation. |
+| A message override can raise an ordinary error | Reject it against the inherited empty row; otherwise a runtime row violation is generated if it escapes. |
 | A message method returns a non-string value | Apply ordinary return-type checking. |
 | Message formatting fails during terminal reporting | Preserve the original error and use fallback display text. |
 | A caught error is re-raised after reading its message | Preserve its original type, fields, and cause. |
@@ -923,8 +746,7 @@ Key conformance cases:
 | A scope exits with a failed child | Wait without raising or consuming its stored failure; account separately for waiting and cleanup errors. |
 | A dependency or impl update broadens an installed strict proof assumption | Reject publication until affected dependents are revalidated. |
 | A replacement changes only named hints alongside Error | Do not treat it as broader semantic error coverage. |
-| A runtime-mutable target violates its retained checked view | Report the single generated contract violation; do not continue as if the proof were updated. |
-| A generation's formatter is retained by a caught error | Keep the method/environment alive until the witness is released. |
+| A runtime-mutable target violates its retained checked view | Report the single contract violation; do not continue as if the proof were updated. |
 | A quick script omits all error declarations | Preserve dynamic behavior. |
 
 Nim's [exception tracking and inference](https://nim-lang.org/docs/manual.html#effect-system-exception-tracking)

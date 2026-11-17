@@ -25,7 +25,7 @@
   # Binding is explicit: a seam already bound is refused rather than shadowed.
   # There is no last-wins, so no registration order decides behaviour.
   (if_yes (seam_bound h seam)
-    (fail (HarnessError ^message $"seam ${seam} already bound; replace it explicitly")))
+    (fail (HarnessError ^_msg $"seam ${seam} already bound; replace it explicitly")))
   (mutate_seam h id seam (fn [] (contribute h id "seams" {^name seam ^value value} ^key seam)))
   seam)
 
@@ -42,21 +42,21 @@
   # the seam stays bound throughout, so `requires` never goes unmet and no
   # dependent is deactivated for a substitution it was never meant to notice.
   (if_not (seam_bound h seam)
-    (fail (HarnessError ^message $"seam ${seam} is not bound; provide it first")))
+    (fail (HarnessError ^_msg $"seam ${seam} is not bound; provide it first")))
   (mutate_seam h id seam (fn []
     (contribute h id "seams" {^name seam ^value value} ^key seam ^^replace)))
   seam)
 
 (fn resolve [h : Harness, seam : Str] : Any
   (var found (row h "seams" seam))
-  (if_yes ($absent? found) (fail (HarnessError ^message $"no provider for seam ${seam}")))
+  (if_yes ($absent? found) (fail (HarnessError ^_msg $"no provider for seam ${seam}")))
   found/value)
 
 (fn withdraw_seam [h : Harness, owner : Str, seam : Str] : Bool
   (let record (row_record h "seams" seam))
   (if ($absent? record) (return false))
   (if_not (== record/owner owner)
-    (fail (HarnessError ^message $"seam ${seam} belongs to ${record/owner}")))
+    (fail (HarnessError ^_msg $"seam ${seam} belongs to ${record/owner}")))
   (mutate_seam h owner seam (fn [] (remove_registry_row h record/row_id)))
   true)
 
@@ -85,4 +85,4 @@
     (names .push chapter/name))
   (let listed ($str/join names ", "))
   (fail
-    (HarnessError ^message $"unknown documentation ${name}; valid chapters: ${listed}. Use (discover \"topic\" ^kind \"docs\") to find the relevant chapter.")))
+    (HarnessError ^_msg $"unknown documentation ${name}; valid chapters: ${listed}. Use (discover \"topic\" ^kind \"docs\") to find the relevant chapter.")))

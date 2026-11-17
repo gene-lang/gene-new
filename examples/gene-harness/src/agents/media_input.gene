@@ -5,7 +5,7 @@
 
 (fn image_part [store, id : Str, detail : Str, inventory]
   (if_not (["auto" "low" "high"] .contains? detail)
-    (fail (MediaError ^code "invalid_request" ^message "Image detail must be auto, low or high.")))
+    (fail (MediaError ^code "invalid_request" ^_msg "Image detail must be auto, low or high.")))
   (let record (media_record store id))
   (let encoded ($base64/encode (media_bytes store id)))
   (if_not ($absent? inventory)

@@ -428,30 +428,31 @@ Use `$assert` to check an assumption. It returns nil on success and raises
 
 The [testing guide](testing.md) shows example groups, fixtures, and error checks.
 
-Use typed errors for recoverable failures. `catch` binds the original error as
-`$err`; `$err_msg` invokes its `Error:message` method. `ensure` runs cleanup on
-success or failure.
+Use typed errors for recoverable failures: a type whose parent is `Error`.
+`catch` binds the original error as `$err`, and `$err/.message` reads its
+message. `ensure` runs cleanup on success or failure; `unwind` runs only when
+the `try` is left by a failure.
 
 ```gene runnable
-(type InputError ^props {^message Str})
-(impl Error for InputError)
+(type InputError : Error)
 
 (fn positive [n : Int] : Int ^errors [InputError]
-  (if (< n 1) (fail (InputError ^message "expected positive")) n))
+  (if (< n 1) (fail (InputError ^_msg "expected positive")) n))
 
 (try (positive 0)
-  catch InputError $err_msg)
+  catch InputError $err/.message)
 # "expected positive"
 ```
 
-An empty `impl Error` uses the required string `message` property. Types with
-another representation provide `message [] : Str ^errors []` in their impl.
-`$err/message` is a direct property lookup when you need the stored data.
+Every error inherits `^_msg Str?` and `^_cause Throwable?` from `Throwable`.
+`message` returns `_msg`, or `""` without one; a type computes its own with
+`(message message [] : Str ^errors [] ^^override ...)`. `$err/_msg` reads the
+stored field.
 
 `^errors [InputError]` permits that error and its subtypes to escape;
 `^errors []` permits no ordinary errors, and `^errors [Error]` permits any.
 Violating a declared row raises `ErrorContractViolation`, with the original
-error in `$err/cause`. Generated type failures and contract violations remain
+error in `$err/_cause`. Generated type failures and contract violations remain
 catchable without being wrapped again. Panic and cancellation bypass catches.
 
 Scripts default to dynamic checking. The gradual checker adds `warn` and

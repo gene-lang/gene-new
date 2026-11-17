@@ -1,15 +1,14 @@
 (mod host_identity)
 (import ^from "./interface_policy" [current_interfaces])
 
-(type HostIdentityError ^props {^message Str} ^impl [Error])
-(impl Error for HostIdentityError)
+(type HostIdentityError : Error)
 
 (fn host_build []
   (let app ($pkg/application))
   (let captured app/provenance)
   (if ($absent? captured)
     (fail
-      (HostIdentityError ^message "Harness history requires captured host inputs; run Gene with --snapshot or use the Harness launcher")))
+      (HostIdentityError ^_msg "Harness history requires captured host inputs; run Gene with --snapshot or use the Harness launcher")))
   {
     ^format 1
     ^runtime_digest captured/runtime_digest

@@ -8,7 +8,7 @@ const
 
 proc raiseFsWalkError(scope: Scope, kind, message: string) {.noreturn.} =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var error: ref GeneError
   new(error)
   error.msg = message

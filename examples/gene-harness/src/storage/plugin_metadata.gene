@@ -3,18 +3,17 @@
 (import $store/fs [Store])
 (import ^from "../public/text" [byte_prefix])
 
-(type PluginMetadataError ^props {^message Str} ^impl [Error])
-(impl Error for PluginMetadataError)
+(type PluginMetadataError : Error)
 
 (fn capabilities [items, ^registry_requirements registry_requirements : Bool = false]
   (let values (?? items []))
   (if (!= ($head values) List)
-    (fail (PluginMetadataError ^message "plugin capabilities must be a list")))
+    (fail (PluginMetadataError ^_msg "plugin capabilities must be a list")))
   (let result [])
   (for item in values
     (if_yes (&& registry_requirements (== ($head item) Map))
       (if_not (&& (== ($map_size item) 1) (== ($head item/registry) Str) (!= item/registry ""))
-        (fail (PluginMetadataError ^message "registry requirement must be {^registry NAME}")))
+        (fail (PluginMetadataError ^_msg "registry requirement must be {^registry NAME}")))
       (result .push ["$registries" item/registry])
       (continue))
     (if (== ($head item) Str)
@@ -22,7 +21,7 @@
       (do
         (if (|| (!= ($head item) List) (!= item/.size 2) (!= ($head item/0) Str) (!= ($head item/1) Str))
           (fail
-            (PluginMetadataError ^message "plugin capability must be a seam name or [registry key]")))
+            (PluginMetadataError ^_msg "plugin capability must be a seam name or [registry key]")))
         (result .push [item/0 item/1]))))
   result)
 
@@ -71,7 +70,7 @@
       (if (store .Store:has? key) (set record (store .Store:get key)))))
   (if ($absent? record) (return nil))
   (if (|| (!= ($head record) Map) (!= record/format 1) (!= record/id id) (!= record/digest digest))
-    (fail (PluginMetadataError ^message "stored plugin metadata identity is invalid")))
+    (fail (PluginMetadataError ^_msg "stored plugin metadata identity is invalid")))
   ($pkg/canonical_digest record)
   (let observed (observation_key id digest))
   (if_yes (&& ($absent? record/contributions) (store .Store:has? observed))
@@ -158,6 +157,6 @@
         active/plugin
         contributions)
     catch Error
-      (diagnostics .push {^id owner ^message $err/message})))
+      (diagnostics .push {^id owner ^message $err/.message})))
   (workspace/metadata_errors .set diagnostics)
   nil)

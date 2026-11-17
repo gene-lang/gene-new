@@ -21,7 +21,7 @@
              {^name "notes/facts" ^schema (fn [context value]
                (schemas .set (+ schemas/.get 1))
                (if (> %delay 0) ($sleep %delay))
-               (if %broken (fail (ServiceError ^code "broken_schema" ^message "Schema implementation failed.")))
+               (if %broken (fail (ServiceError ^code "broken_schema" ^_msg "Schema implementation failed.")))
                ($assert ($absent? context/runtime))
                ($assert ($absent? context/snapshot))
                ($assert ($absent? context/legacy))

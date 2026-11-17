@@ -162,7 +162,7 @@ proc errorRowMembers*(row: openArray[Value]): seq[Value] =
 
 proc errorRowIsOpen*(row: openArray[Value]): bool =
   for member in errorRowMembers(row):
-    if member.isErrorProtocol:
+    if member.isErrorRootType:
       return true
     if member.isSymbol("Error"):
       return true
@@ -193,7 +193,7 @@ proc errorRowsEquivalent*(a, b: openArray[Value]): bool =
 proc canonicalErrorCoverage(row: openArray[Value]): seq[Value] =
   let members = errorRowMembers(row)
   for member in members:
-    if member.isErrorProtocol or member.isSymbol("Error"):
+    if member.isErrorRootType or member.isSymbol("Error"):
       return @[member]
   for member in members:
     var redundant = false

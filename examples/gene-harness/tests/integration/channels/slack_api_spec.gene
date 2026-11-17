@@ -3,8 +3,7 @@
 (import [read_slack_credentials secret_path open_api close_api api_call identify SlackError]
   ^from "../../../src/builtin/slack/api")
 
-(type ProbeError ^props {^message Str} ^impl [Error])
-(impl Error for ProbeError)
+(type ProbeError : Error)
 
 (fn response [body, ^status status = 200, ^headers headers = []]
   {^status status ^headers headers ^body ($binary/from_str ($json/stringify body))})
@@ -22,7 +21,7 @@
         ($fs/write_text path "Bot user oauth token: secret-must-not-appear\nApp token: xapp-test-app\nchannel id: C12345678\n")
         (let error (try (read_slack_credentials path) nil catch SlackError $err))
         ($assert (== error/code "invalid_credentials"))
-        ($assert (! ($str/contains? error/message "secret-must-not-appear")))
+        ($assert (! ($str/contains? error/.message "secret-must-not-appear")))
         (let missing (try (read_slack_credentials ($to_str path ".missing")) nil catch SlackError $err))
         ($assert (== missing/code "credentials_unavailable")))))
 
@@ -61,7 +60,7 @@
     (let api (open_api "xoxb-test-bot" ^requester (fn [request]
       (let at index/.get)
       (index .set (+ at 1))
-      (if (>= at responses/.size) (fail (ProbeError ^message "secret-must-not-appear")))
+      (if (>= at responses/.size) (fail (ProbeError ^_msg "secret-must-not-appear")))
       responses/%at)))
     (try
       (let limited (try (api_call api "chat.postMessage") nil catch SlackError $err))
@@ -70,10 +69,10 @@
       ($assert (try (api_call api "chat.postMessage") false catch SlackError (== $err/code "missing_scope")))
       (let invalid (try (api_call api "chat.postMessage") nil catch SlackError $err))
       ($assert (== invalid/code "api_error"))
-      ($assert (! ($str/contains? invalid/message "secret-must-not-appear")))
+      ($assert (! ($str/contains? invalid/.message "secret-must-not-appear")))
       (let unknown (try (api_call api "chat.postMessage") nil catch SlackError $err))
       ($assert (== unknown/code "transport_unknown"))
-      ($assert (! ($str/contains? unknown/message "secret-must-not-appear")))
+      ($assert (! ($str/contains? unknown/.message "secret-must-not-appear")))
     ensure (close_api api)))
 )
 

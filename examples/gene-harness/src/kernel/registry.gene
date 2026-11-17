@@ -39,7 +39,7 @@
   (var registries h/registries/.get)
   (var found (registries .get name))
   (if ($absent? found)
-    (fail (HarnessError ^message $"registry ${name} is not defined"))
+    (fail (HarnessError ^_msg $"registry ${name} is not defined"))
     found))
 
 (fn registry_exists? [h : Harness, name : Str] : Bool
@@ -74,10 +74,10 @@
   (var registries_cell h/registries)
   (var registries registries_cell/.get)
   (if_not ($absent? (registries .get name))
-    (fail (HarnessError ^message $"registry ${name} already defined")))
+    (fail (HarnessError ^_msg $"registry ${name} already defined")))
   (let declared (validate_registry_spec
     (?? spec {^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove})))
-  (if (!= declared/name name) (fail (HarnessError ^message "registry spec name does not match its identity")))
+  (if (!= declared/name name) (fail (HarnessError ^_msg "registry spec name does not match its identity")))
   (let policy (policy_for_owner h owner))
   (var created
     (Registry ^name name ^unique (?? declared/unique false) ^ordered (?? declared/ordered false)
@@ -97,32 +97,32 @@
 (fn validate_registry_spec [spec]
   (if (|| (!= ($head spec) Map) (!= ($head spec/name) Str) (== spec/name "")
           ($str/starts_with? spec/name "$"))
-    (fail (HarnessError ^message "registry spec requires a nonempty name")))
+    (fail (HarnessError ^_msg "registry spec requires a nonempty name")))
   (map_for [field value] in spec
     (if_not (["name" "unique" "ordered" "schema" "key" "callbacks" "reserved"
               "on_remove" "prepare" "signature" "same_owner"] .contains? ($to_str field))
-      (fail (HarnessError ^message $"unknown registry spec field ${field}"))))
+      (fail (HarnessError ^_msg $"unknown registry spec field ${field}"))))
   (for field in ["unique" "ordered" "same_owner"]
     (if (&& ($present? (spec .get field)) (!= ($head (spec .get field)) Bool))
-      (fail (HarnessError ^message $"registry ${field} must be Bool"))))
+      (fail (HarnessError ^_msg $"registry ${field} must be Bool"))))
   (for field in ["schema" "on_remove" "prepare"]
     (if (&& ($present? (spec .get field)) (! ($runtime/callable? (spec .get field))))
-      (fail (HarnessError ^message $"registry ${field} must be callable"))))
+      (fail (HarnessError ^_msg $"registry ${field} must be callable"))))
   (if (&& ($present? spec/key) (!= ($head spec/key) Str) (! ($runtime/callable? spec/key)))
-    (fail (HarnessError ^message "registry key must be a field name or callable")))
+    (fail (HarnessError ^_msg "registry key must be a field name or callable")))
   (let fields (?? spec/callbacks []))
-  (if (!= ($head fields) List) (fail (HarnessError ^message "registry callbacks must be a list")))
+  (if (!= ($head fields) List) (fail (HarnessError ^_msg "registry callbacks must be a list")))
   (let seen {})
   (for field in fields
     (if (|| (!= ($head field) Str) (== field "") (== (seen .get field) true))
-      (fail (HarnessError ^message "registry callback fields must be unique nonempty strings")))
+      (fail (HarnessError ^_msg "registry callback fields must be unique nonempty strings")))
     (seen .put field true))
   (if (&& ($present? spec/signature) (! (fields .contains? spec/signature)))
-    (fail (HarnessError ^message "registry signature must name a declared callback field")))
+    (fail (HarnessError ^_msg "registry signature must name a declared callback field")))
   (if (!= ($head (?? spec/reserved {})) Map)
-    (fail (HarnessError ^message "registry reserved names must map to their owners")))
+    (fail (HarnessError ^_msg "registry reserved names must map to their owners")))
   (map_for [key owner] in (?? spec/reserved {})
-    (if (!= ($head owner) Str) (fail (HarnessError ^message "reserved owner must be a string"))))
+    (if (!= ($head owner) Str) (fail (HarnessError ^_msg "reserved owner must be a string"))))
   spec)
 
 # Definition callbacks retain the registry owner's budget and receiver, even
@@ -235,7 +235,7 @@
   (if_not ($absent? view)
     (let records (view .get registry_name))
     (if ($absent? records)
-      (fail (HarnessError ^message $"registry ${registry_name} is not defined")))
+      (fail (HarnessError ^_msg $"registry ${registry_name} is not defined")))
     (return records))
   (var r (registry_named h registry_name))
   r/rows/.get)
@@ -252,9 +252,9 @@
 
 (fn run_hooks [h : Harness, point : Str, context]
   (let definition (row h "hook_points" point))
-  (if ($absent? definition) (fail (HarnessError ^message $"hook point ${point} is not available")))
+  (if ($absent? definition) (fail (HarnessError ^_msg $"hook point ${point} is not available")))
   (if (== definition/dispatch "coordinator")
-    (fail (HarnessError ^message $"hook point ${point} requires its host coordinator")))
+    (fail (HarnessError ^_msg $"hook point ${point} requires its host coordinator")))
   (let results [])
   (let input (immutable_view context))
   (for hook in (rows h "hooks")
@@ -353,7 +353,7 @@
   (let reserved_owner ((?? r/spec/reserved {}) .get logical_key))
   (let reserved_label (if (== reserved_owner "") "the host" reserved_owner))
   (if (&& ($present? reserved_owner) (!= owner reserved_owner))
-    (fail (HarnessError ^message
+    (fail (HarnessError ^_msg
       $"registry ${registry_name} key ${logical_key} is reserved by ${reserved_label}")))
   (let guarded (fresh_map))
   (map_for [field value] in checked (guarded .put field value))
@@ -365,7 +365,7 @@
       (guarded .put field (guard_callback h owner callback false))))
   (set checked guarded)
   (if (&& r/unique (== logical_key ""))
-    (fail (HarnessError ^message $"registry ${registry_name} requires a logical key")))
+    (fail (HarnessError ^_msg $"registry ${registry_name} requires a logical key")))
 
   (var existing nil)
   (for candidate in r/rows/.get
@@ -374,10 +374,10 @@
   (if_yes (&& (== r/spec/same_owner true) ($present? existing)
               (!= existing/owner owner))
     (fail (HarnessError
-      ^message $"registry ${registry_name} key ${logical_key} is owned by ${existing/owner}")))
+      ^_msg $"registry ${registry_name} key ${logical_key} is owned by ${existing/owner}")))
   (if_yes (&& r/unique ($present? existing) (! replace))
     (fail (HarnessError
-      ^message $"registry ${registry_name} key ${logical_key} already exists")))
+      ^_msg $"registry ${registry_name} key ${logical_key} already exists")))
   (if_yes (&& r/unique ($present? existing))
     (remove_registry_row h existing/row_id))
   (var row_id (next_registry_row_id h owner registry_name))
@@ -433,7 +433,7 @@
     (try
       (let errors (remove_registry h definition/name))
       (if_not errors/.empty?
-        (fail (HarnessError ^message $"Registry ${definition/name} cleanup failed: ${errors}")))
+        (fail (HarnessError ^_msg $"Registry ${definition/name} cleanup failed: ${errors}")))
       catch Error (if ($absent? failure) (set failure $err))))
   (if_not ($absent? failure) (fail failure))
   nil)
@@ -485,7 +485,7 @@
     (try
       (remove_registry_row h owned/%i)
     catch Error
-      (errors .push ($to_str $err/message)))
+      (errors .push ($to_str $err/.message)))
     (set i (- i 1)))
   (var owned_registries (fresh_list))
   (map_for [name r] in h/registries/.get
@@ -499,7 +499,7 @@
 
 (fn ^^private remove_registry [h : Harness, name : Str]
   (var r (registry_named h name))
-  (if (== r/owner "core") (fail (HarnessError ^message $"core registry ${name} cannot be removed")))
+  (if (== r/owner "core") (fail (HarnessError ^_msg $"core registry ${name} cannot be removed")))
   (if (queue_registry_change? h)
     (then
       (queue_composition_change
@@ -514,7 +514,7 @@
     (try
       (remove_registry_row h records/%i/row_id)
     catch Error
-      (errors .push ($to_str $err/message)))
+      (errors .push ($to_str $err/.message)))
     (set i (- i 1)))
   (var registries_cell h/registries)
   (var registries registries_cell/.get)
@@ -548,7 +548,7 @@
   (if ($absent? policy/effects)
     (then h)
     (elif ($absent? policy/context)
-      (fail (HarnessError ^message $"plugin ${owner} callback context is unavailable")))
+      (fail (HarnessError ^_msg $"plugin ${owner} callback context is unavailable")))
     (else policy/context)))
 
 (fn enter_plugin_execution [h : Harness]

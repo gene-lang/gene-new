@@ -248,7 +248,7 @@
     (fail (ImageError ^code "provider_rejected" ^status response/status
       ^diagnostic (if ($absent? diagnostic) nil
         $"OpenRouter image request failed (HTTP ${response/status}): ${diagnostic}")
-      ^message "OpenRouter rejected the image request.")))
+      ^_msg "OpenRouter rejected the image request.")))
   (if (> ($str/byte_size response/body) 16777216)
     (image_error "response_too_large" "OpenRouter image response exceeds 16 MiB."))
   (let parsed (try ($json/parse response/body)
@@ -257,18 +257,18 @@
   # Preserve billed usage even when the adapter cannot return valid bytes.
   (if (|| (!= ($head parsed/data) List) (!= parsed/data/.size 1))
     (fail (ImageError ^code "invalid_image_count" ^usage usage
-      ^message "OpenRouter must return exactly one image.")))
+      ^_msg "OpenRouter must return exactly one image.")))
   (let image parsed/data/0)
   (if (!= ($head image/b64_json) Str)
-    (fail (ImageError ^code "invalid_image" ^usage usage ^message "OpenRouter returned no image bytes.")))
+    (fail (ImageError ^code "invalid_image" ^usage usage ^_msg "OpenRouter returned no image bytes.")))
   (if (> ($str/byte_size image/b64_json) 13981016)
-    (fail (ImageError ^code "image_too_large" ^usage usage ^message "Generated image exceeds 10 MiB.")))
+    (fail (ImageError ^code "image_too_large" ^usage usage ^_msg "Generated image exceeds 10 MiB.")))
   (let bytes (try ($base64/decode image/b64_json)
     catch Error nil))
   (if ($absent? bytes)
-    (fail (ImageError ^code "invalid_image" ^usage usage ^message "OpenRouter returned invalid image encoding.")))
+    (fail (ImageError ^code "invalid_image" ^usage usage ^_msg "OpenRouter returned invalid image encoding.")))
   (if (> ($binary/size bytes) 10485760)
-    (fail (ImageError ^code "image_too_large" ^usage usage ^message "Generated image exceeds 10 MiB.")))
+    (fail (ImageError ^code "image_too_large" ^usage usage ^_msg "Generated image exceeds 10 MiB.")))
   {^images [{^mime (?? image/media_type "image/png") ^bytes bytes}] ^usage usage})
 
 (fn image_openrouter [] : Plugin

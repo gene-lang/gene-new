@@ -15,9 +15,7 @@
     new_runtime
     spawn_host_call])
 
-(type CleanupBoom ^props {^message Str} ^impl [Error])
-
-(impl Error for CleanupBoom)
+(type CleanupBoom : Error)
 
 (describe
   "Cordis effects"
@@ -64,7 +62,7 @@
           (fn [fx]
             ($assert (accept_owner fx) "nested EffectScope must implement EffectOwner")
             (fx .defer (fn [] (push_order "partial")))
-            (fail (CleanupBoom ^message "acquisition failed"))))
+            (fail (CleanupBoom ^_msg "acquisition failed"))))
       catch PluginActivationError
         nil)
       (child_lease .set
@@ -79,7 +77,7 @@
           "failing"
           (fn [fx]
             (fx .defer (fn [] (push_order "after-error")))
-            (fx .defer (fn [] (push_order "error") (fail (CleanupBoom ^message "cleanup failed"))))
+            (fx .defer (fn [] (push_order "error") (fail (CleanupBoom ^_msg "cleanup failed"))))
             "value")))
       (async_lease .set
         (ctx .effect

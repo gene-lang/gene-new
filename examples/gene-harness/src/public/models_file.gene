@@ -3,11 +3,10 @@
 (import [validate_model_settings] ^from "./models")
 (import [try_lock_wait] ^from "./file_lock")
 
-(type ModelsFileError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for ModelsFileError)
+(type ModelsFileError : Error ^props {^code Str})
 
 (fn config_error [message]
-  (fail (ModelsFileError ^code "invalid_models" ^message message)))
+  (fail (ModelsFileError ^code "invalid_models" ^_msg message)))
 
 (fn fields [value, allowed, label]
   (if (!= ($head value) Map) (config_error $"${label} must be an inert map"))
@@ -106,7 +105,7 @@
   (fields value ["version" "default" "providers" "models" "presets"] "models.gene")
   (if (!= value/version 1) (config_error "Unsupported models.gene version"))
   (let default (?? value/default {}))
-  (try (validate_model_settings default) catch Error (config_error $err/message))
+  (try (validate_model_settings default) catch Error (config_error $err/.message))
   (let config {^version 1 ^default default ^providers [] ^models [] ^presets []})
   (let errors [])
   (let names ($thaw ($freeze reserved)))
@@ -136,7 +135,7 @@
             (config/presets .push checked))
           (else nil))
       catch Error
-        (let issue {^section key ^index index ^reason $err/message})
+        (let issue {^section key ^index index ^reason $err/.message})
         (if (&& (== key "providers") (== ($head entry/name) Str)) (issue .put "provider" entry/name))
         (errors .push issue))
       (set index (+ index 1))))
@@ -159,7 +158,7 @@
     result
   catch Error
     {^config {^version 1 ^default {} ^providers [] ^models [] ^presets []}
-     ^errors [{^section "file" ^reason $err/message}] ^digest digest}))
+     ^errors [{^section "file" ^reason $err/.message}] ^digest digest}))
 
 (fn write_models_file [root : Str, value, expected : Str, ^wait_ms wait_ms : Int = 1000,
   ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "offline" "scripted"]]
@@ -168,11 +167,11 @@
   ($fs/make_dir ($path/join root ".gene-harness"))
   (let lock (try_lock_wait ($path/join root ".gene-harness" "models.lock") wait_ms))
   (if ($absent? lock)
-    (fail (ModelsFileError ^code "busy" ^message "Models settings are being saved by another host; retry.")))
+    (fail (ModelsFileError ^code "busy" ^_msg "Models settings are being saved by another host; retry.")))
   (try
     (let current (read_models_file ^reserved reserved root))
     (if (!= current/digest expected)
-      (fail (ModelsFileError ^code "revision_conflict" ^message "Models settings changed; refresh and review before saving.")))
+      (fail (ModelsFileError ^code "revision_conflict" ^_msg "Models settings changed; refresh and review before saving.")))
     (if (! current/errors/.empty?)
       (config_error "Fix the reported models.gene errors before saving settings."))
     (let encoded ($serde/write_data checked/config))

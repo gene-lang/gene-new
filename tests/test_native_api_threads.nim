@@ -587,14 +587,14 @@ suite "native api threaded attachment":
             (when (TaskOutcome/ok value) value)
             (when (TaskOutcome/error (_ : TypeError)) 8)
             (when (TaskOutcome/error error)
-              (if (== error/.Error:message "original") 9 -999))
+              (if (== error/.message "original") 9 -999))
             (else -999))
           (await pending))
         catch TypeError 8
         catch RuntimeError
-          (if (== $err_msg "task result has already been awaited") -1
-            (if (== $err_msg "task result has already been consumed by await") -1
-              (if (== $err_msg "original") 9 -999))))
+          (if (== $err/.message "task result has already been awaited") -1
+            (if (== $err/.message "task result has already been consumed by await") -1
+              (if (== $err/.message "original") 9 -999))))
     """
     var arguments: array[sharedErrorWorkers, SharedAwaitArgs]
     var workers: array[sharedErrorWorkers, Thread[SharedAwaitArgs]]
@@ -625,32 +625,30 @@ suite "native api threaded attachment":
         else:
           check successes == 1
 
-  test "native failure publication checks payload and formatter Send requirements":
+  test "native failure publication checks the payload's Send requirements":
     for kind in ["data", "formatter", "admitted", "builtin"]:
       let scope = newGlobalScope(newApplication())
       scope.implOverlayRoot = true
       var payload: Value
       if kind == "data":
         var props = initPropTable()
-        props["message"] = newStr("native")
+        props["_msg"] = newStr("native")
         props["local"] = newCell(newInt(1))
         payload = newNode(run(compileSource("RuntimeError"), scope), props = props)
       elif kind == "formatter":
         payload = run(compileSource("""
           (let local ($cell "native"))
-          (type NativeFailure ^props {^code Int})
-          (impl Error for NativeFailure
-            (message message [] : Str ^errors [] (local .get)))
+          (type NativeFailure : Error ^props {^code Int} (message message [] : Str ^errors [] ^^override (local .get)))
           (NativeFailure ^code 1)
         """), scope)
       elif kind == "admitted":
         payload = run(compileSource("""
-          (try (fail ($freeze (AssertionError ^message "native"))) catch Error $err)
+          (try (fail ($freeze (AssertionError ^_msg "native"))) catch Error $err)
         """), scope)
       else:
         # A foreign native thread may admit a built-in error before this
         # Application has ever spawned a Gene task.
-        payload = run(compileSource("($freeze (AssertionError ^message \"native\"))"), scope)
+        payload = run(compileSource("($freeze (AssertionError ^_msg \"native\"))"), scope)
       let task = nativeNewAsyncTask()
       markSharedValue(payload)
       markSharedValue(task)
@@ -660,24 +658,28 @@ suite "native api threaded attachment":
       joinThread(worker)
       scope.define("pending", task)
       let caught = run(compileSource("(try (await pending) catch Error $err)"), scope)
-      if kind in ["admitted", "builtin"]:
+      # A message override is part of the error's type, not a hidden edge on
+      # the value, so a payload whose type formats through captured state is
+      # published like any other value of that type.
+      if kind in ["admitted", "builtin", "formatter"]:
         check args.accepted
         check not args.rejected
         check caught.bits == payload.bits
       else:
         check args.rejected
         check args.unsettledOnRejection
-        check caught.props["message"].strVal == "rejected before publication"
-        if kind == "formatter": check not payload.hasErrorWitness
+        check caught.props["_msg"].strVal == "rejected before publication"
 
-  test "concurrent failures retain one complete witness and every trace contribution":
+  test "concurrent failures format through their type and keep every trace contribution":
     let app = newApplication()
     let parent = newGlobalScope(app)
-    let errorType = run(compileSource("(type SharedFailure ^props {^message Str}) SharedFailure"), parent)
+    let errorType = run(compileSource("(type SharedFailure : Error " &
+      "(message message [] : Str ^errors [] ^^override $\"producer ${self/_msg}\")) " &
+      "SharedFailure"), parent)
     var errors: seq[Value]
     for i in 0 ..< sharedErrorCount:
       var props = initPropTable()
-      props["message"] = newStr("shared " & $i)
+      props["_msg"] = newStr("shared " & $i)
       errors.add newNode(errorType, props = props, immutable = true)
     let shared = newList(errors, immutable = true)
     markSharedValue(shared)
@@ -686,16 +688,13 @@ suite "native api threaded attachment":
     var arguments: array[sharedErrorWorkers, SharedErrorArgs]
     for i in 0 ..< sharedErrorWorkers:
       let scope = newScope(parent)
-      scope.implOverlayRoot = true
       scope.define("incoming", NIL)
       discard run(compileSource("""
-        (impl Error for SharedFailure
-          (message message [] : Str ^errors [] "producer PRODUCER"))
         (fn bounce [] (fail incoming))
-      """.replace("PRODUCER", $i), sourceName = "shared_error_producer.gene",
+      """, sourceName = "shared_error_producer.gene",
         useLocalSlots = false), scope)
       arguments[i] = SharedErrorArgs(scope: scope,
-        chunk: prepareConcurrentProbe(scope, "(try (bounce) catch Error [$err $err_msg])"),
+        chunk: prepareConcurrentProbe(scope, "(try (bounce) catch Error [$err $err/.message])"),
         errors: shared, gate: gate)
     for i in 0 ..< sharedErrorWorkers:
       createThread(workers[i], raiseSharedErrors, arguments[i])
@@ -705,10 +704,7 @@ suite "native api threaded attachment":
       check argument.messages.len == sharedErrorCount
     if not gate.failed.load(moAcquire):
       for i, error in errors:
-        let selected = arguments[0].messages[i]
-        check selected.startsWith("producer ")
-        for argument in arguments: check argument.messages[i] == selected
-        check error.hasErrorWitness
+        for argument in arguments: check argument.messages[i] == "producer shared " & $i
         var bounces = 0
         for frame in error.errorProperties["trace"].listItems:
           if frame.props["name"].strVal == "bounce": inc bounces
@@ -850,7 +846,7 @@ suite "native api threaded attachment":
     let args = EventLaneArgs(
       scope: scope,
       chunk: compileSource(
-        "(try (tx .discard) \"missing\" catch Error $err/message)"))
+        "(try (tx .discard) \"missing\" catch Error $err/.message)"))
 
     var worker: Thread[EventLaneArgs]
     createThread(worker, publishOnWorker, args)

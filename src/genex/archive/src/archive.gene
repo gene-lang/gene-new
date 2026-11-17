@@ -1,9 +1,8 @@
 (mod archive)
 (import $io [AsyncReader AsyncWriter IoResource IoBusy IoClosed IoError])
 
-(type ArchiveError ^props {^message Str}
-  (ctor [message : Str] (set self/message message)))
-(impl Error for ArchiveError)
+(type ArchiveError : Error
+  (ctor [message : Str] (set self/_msg message)))
 
 (type Codec ^props {^state Any ^library Any ^lease Any
                     ^feed_fn Any ^pull_fn Any ^action_fn Any ^error_fn Any
@@ -82,7 +81,7 @@
       (if (!= state nil) ($C/close state))
       ($ffi/Library/close library)
       lease/.close
-      (fail (new ArchiveError $err_msg))))
+      (fail (new ArchiveError $err/.message))))
 
 (type GzipReader ^props {^source Any ^own_source Bool ^codec Any
                          ^closed Cell ^eof Cell ^busy Cell
@@ -103,14 +102,14 @@
 (impl AsyncReader for GzipReader
   (message read [max_bytes : Int] : (Task Bytes? Error)
     (if self/closed/.get
-      (fail (IoClosed ^message "gzip reader is closed" ^operation "read")))
+      (fail (IoClosed ^_msg "gzip reader is closed" ^operation "read")))
     (if (&& self/busy/.get (!= self/pending/.get nil)
             self/pending/.get/.done?)
       (self/busy .set false))
     (if self/busy/.get
-      (fail (IoBusy ^message "gzip read is already pending" ^operation "read")))
+      (fail (IoBusy ^_msg "gzip read is already pending" ^operation "read")))
     (if (|| (< max_bytes 1) (> max_bytes 1048576))
-      (fail (IoError ^message "read size must be in 1..1048576"
+      (fail (IoError ^_msg "read size must be in 1..1048576"
                      ^operation "read")))
     (self/busy .set true)
     (let operation (fn []
@@ -189,15 +188,15 @@
      ^finished self/finished/.get ^busy self/busy/.get})
   (message finish [] : (Task Nil Error)
     (if self/closed/.get
-      (fail (IoClosed ^message "gzip writer is closed" ^operation "finish")))
+      (fail (IoClosed ^_msg "gzip writer is closed" ^operation "finish")))
     (if (&& self/busy/.get (!= self/pending/.get nil)
             self/pending/.get/.done?)
       (self/busy .set false))
     (if self/busy/.get
-      (fail (IoBusy ^message "gzip write is pending" ^operation "finish")))
+      (fail (IoBusy ^_msg "gzip write is pending" ^operation "finish")))
     (if self/finished/.get (return (spawn ^lane root nil)))
     (if self/finishing/.get
-      (fail (IoBusy ^message "gzip finish is pending" ^operation "finish")))
+      (fail (IoBusy ^_msg "gzip finish is pending" ^operation "finish")))
     (self/finishing .set true)
     (self/busy .set true)
     (let operation (fn []
@@ -220,17 +219,17 @@
 (impl AsyncWriter for GzipWriter
   (message write [data : Bytes] : (Task Int Error)
     (if (|| self/closed/.get self/finishing/.get)
-      (fail (IoClosed ^message "gzip writer cannot accept data"
+      (fail (IoClosed ^_msg "gzip writer cannot accept data"
                       ^operation "write")))
     (if (&& self/busy/.get (!= self/pending/.get nil)
             self/pending/.get/.done?)
       (self/busy .set false))
     (if self/busy/.get
-      (fail (IoBusy ^message "gzip write is already pending"
+      (fail (IoBusy ^_msg "gzip write is already pending"
                     ^operation "write")))
     (let length ($binary/size data))
     (if (> length 1048576)
-      (fail (IoError ^message "gzip write exceeds 1 MiB admission"
+      (fail (IoError ^_msg "gzip write exceeds 1 MiB admission"
                      ^operation "write")))
     (self/busy .set true)
     (let operation (fn []
@@ -254,13 +253,13 @@
     task)
   (message flush [] : (Task Nil Error)
     (if (|| self/closed/.get self/finishing/.get)
-      (fail (IoClosed ^message "gzip writer cannot flush"
+      (fail (IoClosed ^_msg "gzip writer cannot flush"
                       ^operation "flush")))
     (if (&& self/busy/.get (!= self/pending/.get nil)
             self/pending/.get/.done?)
       (self/busy .set false))
     (if self/busy/.get
-      (fail (IoBusy ^message "gzip write is pending" ^operation "flush")))
+      (fail (IoBusy ^_msg "gzip write is pending" ^operation "flush")))
     (self/busy .set true)
     (let operation (fn []
       (try

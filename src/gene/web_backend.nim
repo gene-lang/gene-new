@@ -202,6 +202,7 @@ type
     protocolBindings*: Table[string, WebType]
     protocolMethods*: seq[WebImplMethod]
     implementsError*: bool
+    errorRoot*: bool # declared `: Error`; the built-in root is not a JS parent
     loc*: SourceLoc
 
   WebEnumVariant* = object
@@ -1524,6 +1525,16 @@ proc validateCallableProps(analysis: WebAnalysis, form: Value,
       raise webError(loc, label & " ^errors type " & typ.name &
         " does not implement Error")
 
+proc isWebErrorType(analysis: WebAnalysis, typ: WebType): bool =
+  case typ.kind
+  of wtkNominal: typ.name == "Error" or typ.name in analysis.errorTypes
+  of wtkUnion:
+    if typ.members.len == 0: return false
+    for member in typ.members:
+      if not analysis.isWebErrorType(member): return false
+    true
+  else: false
+
 proc webErrorRow(analysis: WebAnalysis, form: Value, loc: SourceLoc): seq[WebType] =
   if not form.props.hasKey("errors"): return
   for item in form.props["errors"].listItems:
@@ -1634,13 +1645,28 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
       raise webError(loc, "web type ':' requires a parent type")
     if form.body[2].kind != vkSymbol:
       raise webError(loc, "web type parent must be a declared type name")
-    result.parentName = form.body[2].symVal
+    if form.body[2].symVal == "Throwable":
+      raise webError(loc, "a web type extends Error, not Throwable")
+    if form.body[2].symVal == "Error" and not analysis.typeDecls.hasKey("Error"):
+      # `Error` is the built-in root, not an emitted class. Its two fields are
+      # inherited by every error type.
+      result.implementsError = true
+      result.errorRoot = true
+      result.fields.add WebField(sourceName: "_msg", emittedName: "_msg",
+        typ: analysis.parseAnnotation(newSym("Str?"), loc), optional: true)
+      result.fields.add WebField(sourceName: "_cause", emittedName: "_cause",
+        typ: analysis.parseAnnotation(newSym("Error?"), loc), optional: true)
+    else:
+      result.parentName = form.body[2].symVal
     memberStart = 3
   if form.props.hasKey("props"):
     let fields = form.props["props"]
     if fields.kind != vkMap:
       raise webError(loc, "web type ^props must be a property map")
     for name, annotation in fields.mapEntries:
+      if result.errorRoot and name in ["_msg", "_cause"]:
+        raise webError(loc, "type " & result.sourceName &
+          " redeclares inherited field: " & name)
       let typ = analysis.parseAnnotation(annotation, loc)
       result.fields.add WebField(sourceName: name,
         emittedName: mangleWebName(name), typ: typ,
@@ -2729,14 +2755,21 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           raise webError(loc, "unknown web protocol in qualified send")
         protocolMessage = findProtocolMessage(
           analysis.protocolDecls[protocolName], messageName)
-        if protocolName == "Error" and messageName == "message":
-          if value.body.len != 2:
-            raise webError(loc, "Error:message expects no arguments")
-          return WebExpr(kind: wekBuiltin, text: "error_message", typ: webType(wtkStr),
-                          loc: loc, children: @[receiver])
+        if protocolName == "Error":
+          raise webError(loc,
+            "Error is a type, not a protocol; send the message bare: (receiver .message)")
     else:
       raise webError(loc, "web send requires a statically known message")
     validateWebMessageName(messageName, loc)
+    if protocolMessage == nil and messageName == "message" and not isSuper and
+        (receiver.typ.kind == wtkAny or analysis.isWebErrorType(receiver.typ)):
+      # Every Throwable answers `message`. The receiver may be a Gene error, a
+      # RuntimeError node or a host exception, so the send goes through the
+      # runtime rather than a static method.
+      if value.body.len != 2:
+        raise webError(loc, "message expects no arguments")
+      return WebExpr(kind: wekBuiltin, text: "error_message", typ: webType(wtkStr),
+                      loc: loc, children: @[receiver])
     if protocolMessage == nil and receiver.typ.kind in {wtkPropMap, wtkMap} and
         messageName in ["size", "empty?", "map", "filter_map", "filter", "each"]:
       let replacement = case messageName
@@ -4078,10 +4111,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           raise webError(loc, "web $ns path segment must be static or `%` dynamic")
       return
     if value.body[0].isSym("gene") and value.body[1].isSym("err_msg"):
-      if not bindings.hasKey(WebCatchErrorBindingName):
-        raise webError(loc, "$err_msg is only available inside a catch body")
-      return WebExpr(kind: wekBuiltin, text: "error_message", typ: webType(wtkStr), loc: loc,
-        children: @[analysis.analyzeExpr(newSym(WebCatchErrorBindingName), bindings)])
+      raise webError(loc, "$err_msg was removed; read the message with $err/.message")
     if value.body[0].isSym("gene") and value.body[1].isSym("err"):
       if not bindings.hasKey(WebCatchErrorBindingName):
         raise webError(loc, "$err is only available inside a catch body")
@@ -4248,6 +4278,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     var i = 0
     var tryForms: seq[Value]
     while i < value.body.len and not (value.body[i].isSym("catch") or
+                                      value.body[i].isSym("unwind") or
                                       value.body[i].isSym("ensure")):
       tryForms.add value.body[i]
       inc i
@@ -4276,6 +4307,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       inc i
       var catchForms: seq[Value]
       while i < value.body.len and not (value.body[i].isSym("catch") or
+                                        value.body[i].isSym("unwind") or
                                         value.body[i].isSym("ensure")):
         catchForms.add value.body[i]
         inc i
@@ -4288,12 +4320,33 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       result.keys.add "catch"
       result.children.add catchBody
       result.typ = unionType(result.typ, catchBody.typ)
+    if i < value.body.len and value.body[i].isSym("unwind"):
+      inc i
+      var unwindForms: seq[Value]
+      while i < value.body.len and not (value.body[i].isSym("unwind") or
+                                        value.body[i].isSym("ensure") or
+                                        value.body[i].isSym("catch")):
+        unwindForms.add value.body[i]
+        inc i
+      var unwindBindings = copyBindings(bindings)
+      result.children.add analysis.analyzeSequence(unwindForms,
+        unwindBindings, nil, loc)
+      inc analysis.nextBranchGroup
+      retainBranchNames(bindings, unwindBindings, analysis.nextBranchGroup)
+      result.keys.add "unwind"
     if i < value.body.len:
       if not value.body[i].isSym("ensure"):
-        raise webError(loc, "unexpected form after web try catches")
+        raise webError(loc,
+          "try clauses are ordered catch..., then unwind, then ensure; unexpected " &
+          value.body[i].print())
       inc i
       var ensureForms: seq[Value]
       while i < value.body.len:
+        if value.body[i].isSym("unwind") or value.body[i].isSym("ensure") or
+            value.body[i].isSym("catch"):
+          raise webError(loc,
+            "try clauses are ordered catch..., then unwind, then ensure; unexpected " &
+            value.body[i].print())
         ensureForms.add value.body[i]
         inc i
       var ensureBindings = copyBindings(bindings)
@@ -5282,7 +5335,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     for protocolName in declaration.implementedProtocols:
       analysis.protocolImplTargets.incl(protocolName & "\x1f" & name)
   let errorDeclaration = parseWebProtocolDecl(analysis,
-    read("(protocol Error (message message [] : Str ^errors [] self/message))"),
+    read("(protocol Error (message message [] : Str ^errors [] (?? self/_msg \"\")))"),
     SourceLoc(sourceName: "<builtin Error>", line: 1, col: 1))
   errorDeclaration.identity = "gene.Error"
   for message in errorDeclaration.messages:
@@ -5297,13 +5350,14 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     let declaration = WebTypeDecl(sourceName: name,
       emittedName: if name == "TypeError": "$gene_user_type_error" else: "$gene_contract_type",
       originId: "builtin:" & name, implementsError: true)
-    for field in ["message", "where"]:
-      declaration.fields.add WebField(sourceName: field, emittedName: field, typ: webType(wtkStr))
+    declaration.fields.add WebField(sourceName: "_msg", emittedName: "_msg",
+      typ: parseWebType(newSym("Str?"), SourceLoc()), optional: true)
+    declaration.fields.add WebField(sourceName: "where", emittedName: "where", typ: webType(wtkStr))
     for field in ["expected", "actual"]:
       declaration.fields.add WebField(sourceName: field, emittedName: field,
         typ: if name == "TypeError": webType(wtkStr) else: webType(wtkAny))
-    if name == "ErrorContractViolation":
-      declaration.fields.add WebField(sourceName: "cause", emittedName: "cause", typ: webType(wtkAny))
+    declaration.fields.add WebField(sourceName: "_cause", emittedName: "_cause",
+      typ: webType(wtkAny), optional: true)
     analysis.typeDecls[name] = declaration
   analysis.protocolDecls["Callable"] = WebProtocolDecl(
     sourceName: "Callable", emittedName: "Callable",
@@ -5379,6 +5433,51 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     if declaration.sourceName != "Error":
       result.visibleProtocols.add declaration
   analysis.resolveWebProtocols()
+  # An error type is one whose parent chain reaches the built-in `Error`.
+  var inheritedErrors = true
+  while inheritedErrors:
+    inheritedErrors = false
+    for name, declaration in analysis.typeDecls:
+      if (declaration.errorRoot or declaration.parentName in analysis.errorTypes) and
+          name notin analysis.errorTypes:
+        analysis.errorTypes.incl name
+        declaration.implementsError = true
+        inheritedErrors = true
+  # The backend keeps `message` on an internal symbol-keyed slot, so that a
+  # Gene error, a RuntimeError node and a host exception all answer one runtime
+  # call. A type's own `message` override fills that slot; an error root with
+  # no override gets the inherited body.
+  for declaration in result.types:
+    if declaration.sourceName notin analysis.errorTypes: continue
+    var overrideForm = NIL
+    var kept: seq[WebMethod]
+    for methodDecl in declaration.methods:
+      if methodDecl.sourceName == "message":
+        if not methodDecl.declaresOverride:
+          raise webError(methodDecl.loc, "message 'message' on " &
+            declaration.sourceName & " replaces the inherited one; mark it ^^override")
+        if methodDecl.params.len != 0 or methodDecl.returnType.kind != wtkStr:
+          raise webError(methodDecl.loc, "message 'message' on " &
+            declaration.sourceName & " has incompatible signature; expected [] : Str")
+        if not methodDecl.sourceForm.props.hasKey("errors") or
+            methodDecl.sourceForm.props["errors"].kind != vkList or
+            methodDecl.sourceForm.props["errors"].listItems.len != 0:
+          raise webError(methodDecl.loc, "message 'message' on " &
+            declaration.sourceName & " has incompatible checked error row; expected ^errors []")
+        var props = initPropTable()
+        for key, item in methodDecl.sourceForm.props:
+          if key != "override": props[key] = item
+        overrideForm = newNode(methodDecl.sourceForm.head, props = props,
+                               body = methodDecl.sourceForm.body)
+      else: kept.add methodDecl
+    if overrideForm.kind == vkNil and not declaration.errorRoot: continue
+    declaration.methods = kept
+    var body = @[newSym("Error"), newSym("for"), newSym(declaration.sourceName)]
+    if overrideForm.kind != vkNil: body.add overrideForm
+    let implementation = parseWebImplDecl(analysis, newNode(newSym("impl"), body = body),
+                                          declaration.loc)
+    result.impls.add implementation
+    analysis.protocolImplTargets.incl("Error\x1f" & declaration.sourceName)
   analysis.validateDirectWebMethods(result.types)
   for _, declaration in analysis.typeDecls:
     result.visibleTypes.add declaration
@@ -5396,37 +5495,14 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.protocolImplTargets.incl(
         implementation.protocolName & "\x1f" & implementation.targetName)
       if implementation.protocolName == "Error":
-        analysis.errorTypes.incl implementation.targetName
-        if analysis.typeDecls.hasKey(implementation.targetName):
-          analysis.typeDecls[implementation.targetName].implementsError = true
+        raise webError(loc,
+          "Error is a type, not a protocol; declare (type " &
+          implementation.targetName & " : Error ...)")
       elif analysis.typeDecls.hasKey(implementation.targetName):
         analysis.typeDecls[implementation.targetName].implementedProtocols.add(
           implementation.protocolName)
   analysis.implementations = result.impls
   analysis.resolveWebImplementations()
-  var inheritedErrors = true
-  while inheritedErrors:
-    inheritedErrors = false
-    for name, declaration in analysis.typeDecls:
-      if declaration.parentName in analysis.errorTypes and name notin analysis.errorTypes:
-        analysis.errorTypes.incl name
-        declaration.implementsError = true
-        inheritedErrors = true
-  for implementation in result.impls:
-    if implementation.protocolName != "Error": continue
-    for methodDecl in implementation.methods:
-      if not methodDecl.defaultBody: continue
-      var declaration = analysis.typeDecls.getOrDefault(implementation.targetName)
-      var valid = false
-      while declaration != nil:
-        for field in declaration.fields:
-          if field.sourceName == "message":
-            valid = not field.optional and field.typ.kind == wtkStr
-        if declaration.parentName.len == 0: break
-        declaration = analysis.typeDecls.getOrDefault(declaration.parentName)
-      if not valid:
-        raise webError(implementation.loc,
-          "default Error:message requires a required Str message property; provide a custom implementation")
   var headers: seq[tuple[form: Value, fn: WebFunction]]
   let moduleResult = result
   proc registerConstant(form: Value, loc: SourceLoc): WebConstant =
@@ -7107,7 +7183,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
                    else: "." & expr.text
       emitter.line("const " & resolvedMethod & " = " & target & member &
         (if expr.defaultFactory.len > 0: " ?? " & expr.defaultFactory & "()" else: "") & ";")
-      emitter.line("if (typeof " & resolvedMethod & " !== \"function\") throw new GeneNode(Symbol.for(\"MessageError\"), { message: \"no applicable message implementation\" });")
+      emitter.line("if (typeof " & resolvedMethod & " !== \"function\") throw new GeneNode(Symbol.for(\"MessageError\"), { _msg: \"no applicable message implementation\" });")
     var arguments: seq[string]
     for i in 1 ..< expr.children.len:
       let argument = emitter.emitExpr(expr.children[i])
@@ -7315,9 +7391,12 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   of wekTry:
     let target = emitter.temp()
     let hasEnsure = expr.keys.len > 0 and expr.keys[^1] == "ensure"
-    let failed = if hasEnsure: emitter.temp() else: ""
+    let hasUnwind = "unwind" in expr.keys
+    let unwindIndex = expr.patterns.len + 1
+    let hasCleanup = hasEnsure or hasUnwind
+    let failed = if hasCleanup: emitter.temp() else: ""
     emitter.line("let " & target & ";")
-    if hasEnsure:
+    if hasCleanup:
       emitter.line("let " & failed & " = false;")
       emitter.line("try {")
       inc emitter.indent
@@ -7347,18 +7426,33 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       emitter.line("else { throw " & caught & "; }")
       dec emitter.indent
       emitter.line("}")
-    if hasEnsure:
+    if hasCleanup:
       dec emitter.indent
       let primary = emitter.temp()
       emitter.line("} catch (" & primary & ") { " & failed & " = true; throw " & primary & "; } finally {")
       inc emitter.indent
-      emitter.line("try {")
-      inc emitter.indent
-      let cleanup = emitter.emitExpr(expr.children[^1])
-      emitter.line("void " & cleanup & ";")
-      dec emitter.indent
-      let cleanupError = emitter.temp()
-      emitter.line("} catch (" & cleanupError & ") { if (!" & failed & ") throw " & cleanupError & "; }")
+      if hasUnwind:
+        # `unwind` runs only when the try is left by a throw: an uncaught
+        # failure, a failing catch body, a panic or a cancellation. Its own
+        # failure is dropped so the original continues, as with `ensure`.
+        emitter.line("if (" & failed & ") {")
+        inc emitter.indent
+        emitter.line("try {")
+        inc emitter.indent
+        let unwound = emitter.emitExpr(expr.children[unwindIndex])
+        emitter.line("void " & unwound & ";")
+        dec emitter.indent
+        emitter.line("} catch (" & emitter.temp() & ") { }")
+        dec emitter.indent
+        emitter.line("}")
+      if hasEnsure:
+        emitter.line("try {")
+        inc emitter.indent
+        let cleanup = emitter.emitExpr(expr.children[^1])
+        emitter.line("void " & cleanup & ";")
+        dec emitter.indent
+        let cleanupError = emitter.temp()
+        emitter.line("} catch (" & cleanupError & ") { if (!" & failed & ") throw " & cleanupError & "; }")
       dec emitter.indent
       emitter.line("}")
     target
@@ -7504,7 +7598,7 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
     elif param.optional:
       emitter.line(param.emittedName & " = null;")
     else:
-      emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: " &
+      emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: " &
         jsString("function '" & fn.sourceName & "' missing named argument: " &
           param.argName) & " }, [], true);")
     emitter.line(param.emittedName & " = " & validatorName(param.typ) & "(" &
@@ -8521,7 +8615,7 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   emitter.line("const shape = target[$gene_callable_shape];")
   emitter.line("if (shape) {")
   inc emitter.indent
-  emitter.line("if (args.length < (shape.required ?? shape.positionals) || args.length > shape.positionals) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + shape.positionals + \" positional arguments\" }, [], true);")
+  emitter.line("if (args.length < (shape.required ?? shape.positionals) || args.length > shape.positionals) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"function expects \" + shape.positionals + \" positional arguments\" }, [], true);")
   emitter.line("const ordered" & arr & " = shape.order.map((entry" & a & ") => typeof entry === \"number\" ? (entry < args.length ? args[entry] : $gene_missing) : Object.prototype.hasOwnProperty.call(named, entry) ? named[entry] : $gene_missing);")
   emitter.line("if (shape.namedRest) {")
   inc emitter.indent
@@ -8531,14 +8625,14 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   dec emitter.indent
   emitter.line("} else {")
   inc emitter.indent
-  emitter.line("for (const key of Object.keys(named)) if (!shape.names.includes(key)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument: \" + key }, [], true);")
+  emitter.line("for (const key of Object.keys(named)) if (!shape.names.includes(key)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"unexpected named argument: \" + key }, [], true);")
   dec emitter.indent
   emitter.line("}")
   emitter.line("return target(...ordered);")
   dec emitter.indent
   emitter.line("}")
-  emitter.line("if (Object.keys(named).length !== 0) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument\" });")
-  emitter.line("if (args.length !== target.length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + target.length + \" positional arguments\" });")
+  emitter.line("if (Object.keys(named).length !== 0) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"unexpected named argument\" });")
+  emitter.line("if (args.length !== target.length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"function expects \" + target.length + \" positional arguments\" });")
   emitter.line("return target(...args);")
   dec emitter.indent
   emitter.line("}")
@@ -8867,7 +8961,7 @@ proc emitModule(module: WebModule, typescript: bool,
     # (`vm.nim` `biDiv`/`biRem`), so raise the VM's own value rather than
     # letting JS return Infinity or throw a RangeError.
     let divisionByZero = "throw new GeneNode(Symbol.for(\"RuntimeError\"), " &
-      "{ message: \"division by zero\" }, [], true);"
+      "{ _msg: \"division by zero\" }, [], true);"
     if needsIntDivisor:
       let intType = if typescript: ": bigint" else: ""
       emitter.line("function $gene_int_divisor(divisor" & intType & ")" &
@@ -8893,13 +8987,13 @@ proc emitModule(module: WebModule, typescript: bool,
     let strType = if typescript: ": string" else: ""
     emitter.line("function $gene_index_value(index" & anyType & ")" & numType & " {")
     inc emitter.indent
-    emitter.line("if (typeof index === \"bigint\") { if (index < -9223372036854775808n || index > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"index is out of range\" }, [], true); return Number(index); }")
-    emitter.line("if (!Number.isInteger(index)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"index must be a whole number\" }, [], true);")
-    emitter.line("if (index >= 9223372036854775808 || index < -9223372036854775808) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"index is out of range\" }, [], true);")
+    emitter.line("if (typeof index === \"bigint\") { if (index < -9223372036854775808n || index > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"index is out of range\" }, [], true); return Number(index); }")
+    emitter.line("if (!Number.isInteger(index)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"index must be a whole number\" }, [], true);")
+    emitter.line("if (index >= 9223372036854775808 || index < -9223372036854775808) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"index is out of range\" }, [], true);")
     emitter.line("return index;")
     dec emitter.indent
     emitter.line("}")
-    emitter.line("function $gene_buffer_length(length" & anyType & ")" & numType & " { const n = $gene_index_value(length); if (n < 0) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"buffer length must be non-negative\" }, [], true); return n; }")
+    emitter.line("function $gene_buffer_length(length" & anyType & ")" & numType & " { const n = $gene_index_value(length); if (n < 0) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"buffer length must be non-negative\" }, [], true); return n; }")
     emitter.line("function $gene_at(seq" & anyType & ", index" & anyType &
       ")" & anyType &
       " { index = $gene_index_value(index); const found = index < 0 ? seq[seq.length + index] : seq[index]; return found === undefined ? null : found; }")
@@ -8909,7 +9003,7 @@ proc emitModule(module: WebModule, typescript: bool,
       ", index" & anyType & ")" & numType &
       " { index = $gene_index_value(index); const at = index < 0 ? length + index : index;" &
       " if (at < 0 || at >= length) throw new GeneNode(Symbol.for(\"RuntimeError\")," &
-      " { message: name + \" index out of range: \" + index }, [], true);" &
+      " { _msg: name + \" index out of range: \" + index }, [], true);" &
       " return at; }")
     # The receiver-is-not-a-simple-name fallback: `$gene_index` needs the length,
     # and re-emitting a non-trivial receiver to read `.length` would evaluate it
@@ -8925,19 +9019,19 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("const bounds = $gene_buffer_limits[kind]; if (typeof value !== \"bigint\" || value < bounds[0] || value > bounds[1]) $gene_type_error(where, kind, value); return Number(value);")
     dec emitter.indent
     emitter.line("}")
-    emitter.line("function $gene_buffer_bound(value" & anyType & ", length" & numType & ", where" & strType & ")" & numType & " { const n = $gene_index_value(value); if (n < 0 || n > length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: where + \" range endpoint is out of range\" }, [], true); return n; }")
+    emitter.line("function $gene_buffer_bound(value" & anyType & ", length" & numType & ", where" & strType & ")" & numType & " { const n = $gene_index_value(value); if (n < 0 || n > length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: where + \" range endpoint is out of range\" }, [], true); return n; }")
     emitter.line("function $gene_buffer_set(target" & anyType & ", index" & anyType & ", value" & anyType & ", kind" & strType & ")" & anyType & " { const at = $gene_index(\"Buffer/set\", target.length, index); const stored = $gene_buffer_value(value, kind, \"Buffer/set item\"); target[at] = stored; return value; }")
     emitter.line("function $gene_buffer_fill(target" & anyType & ", value" & anyType & ", kind" & strType & ", first" & anyType & " = 0, last" & anyType & " = target.length)" & anyType & " {")
     inc emitter.indent
     emitter.line("const stored = $gene_buffer_value(value, kind, \"Buffer/fill item\"); first = $gene_buffer_bound(first, target.length, \"Buffer/fill\"); last = $gene_buffer_bound(last, target.length, \"Buffer/fill\");")
-    emitter.line("if (last < first) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"Buffer/fill: end is before start\" }, [], true); target.fill(stored, first, last); return null;")
+    emitter.line("if (last < first) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"Buffer/fill: end is before start\" }, [], true); target.fill(stored, first, last); return null;")
     dec emitter.indent
     emitter.line("}")
     emitter.line("function $gene_buffer_copy(target" & anyType & ", source" & anyType & ", first" & anyType & " = undefined, last" & anyType & " = undefined, offset" & anyType & " = 0)" & anyType & " {")
     inc emitter.indent
-    emitter.line("if (first === undefined) { if (target.length !== source.length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"Buffer/copy_from: whole-buffer copy needs equal lengths\" }, [], true); first = 0; last = source.length; }")
+    emitter.line("if (first === undefined) { if (target.length !== source.length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"Buffer/copy_from: whole-buffer copy needs equal lengths\" }, [], true); first = 0; last = source.length; }")
     emitter.line("first = $gene_buffer_bound(first, source.length, \"Buffer/copy_from\"); last = $gene_buffer_bound(last, source.length, \"Buffer/copy_from\"); offset = $gene_buffer_bound(offset, target.length, \"Buffer/copy_from\");")
-    emitter.line("if (last < first || last - first > target.length - offset) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"Buffer/copy_from: invalid range or destination capacity\" }, [], true); target.set(source.subarray(first, last), offset); return null;")
+    emitter.line("if (last < first || last - first > target.length - offset) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"Buffer/copy_from: invalid range or destination capacity\" }, [], true); target.set(source.subarray(first, last), offset); return null;")
     dec emitter.indent
     emitter.line("}")
     emitter.line()
@@ -9388,13 +9482,13 @@ proc emitModule(module: WebModule, typescript: bool,
   if moduleUsesBuiltin(module, ["str/slice_bytes"]):
     let params = if typescript: "s: string, start: bigint, maxBytes: bigint" else: "s, start, maxBytes"
     emitter.line("function $gene_str_slice_bytes(" & params & ")" & (if typescript: ": string" else: "") & " {")
-    emitter.line("  if (start < -9223372036854775808n || start > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes start expects an Int in int64 range\" }, [], true);")
-    emitter.line("  if (maxBytes < -9223372036854775808n || maxBytes > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes max_bytes expects an Int in int64 range\" }, [], true);")
-    emitter.line("  if (start < 0n || maxBytes < 0n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes start and max_bytes must be non-negative\" }, [], true);")
+    emitter.line("  if (start < -9223372036854775808n || start > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"str/slice_bytes start expects an Int in int64 range\" }, [], true);")
+    emitter.line("  if (maxBytes < -9223372036854775808n || maxBytes > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"str/slice_bytes max_bytes expects an Int in int64 range\" }, [], true);")
+    emitter.line("  if (start < 0n || maxBytes < 0n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"str/slice_bytes start and max_bytes must be non-negative\" }, [], true);")
     emitter.line("  const bytes = $gene_str_to_utf8(s);")
-    emitter.line("  if (start > BigInt(bytes.length)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes start exceeds string byte size\" }, [], true);")
+    emitter.line("  if (start > BigInt(bytes.length)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"str/slice_bytes start exceeds string byte size\" }, [], true);")
     emitter.line("  const first = Number(start);")
-    emitter.line("  if (first < bytes.length && (bytes[first] & 0xc0) === 0x80) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"str/slice_bytes start must be a UTF-8 boundary\" }, [], true);")
+    emitter.line("  if (first < bytes.length && (bytes[first] & 0xc0) === 0x80) throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: \"str/slice_bytes start must be a UTF-8 boundary\" }, [], true);")
     emitter.line("  let last = first + Number(maxBytes > BigInt(bytes.length - first) ? BigInt(bytes.length - first) : maxBytes);")
     emitter.line("  while (last > first && last < bytes.length && (bytes[last] & 0xc0) === 0x80) last--;")
     emitter.line("  return $gene_str_from_utf8(bytes.subarray(first, last));")
@@ -9793,7 +9887,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("const label = " & (if needsStream: "value instanceof GeneStream ? \"Stream\" : " else: "") & "typeof value === \"string\" ? \"Str\" : typeof value === \"boolean\" ? \"Bool\" : typeof value === \"symbol\" ? \"Sym\" : typeof value === \"bigint\" ? \"Int\" : typeof value === \"number\" ? \"F64\" : Array.isArray(value) ? \"List\" : (value[$gene_prop_order] || value?.$gene_map === true) ? \"Map\" : (value?.constructor?.$gene_name ?? \"Value\");")
     emitter.line("const name = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key);")
     emitter.line("const message = value?.[Symbol.for(\"gene.record\")] === true ? `${label} has no field '${name}'` : index ? `${label} cannot be indexed through a path` : `${label} has no fields, so '${name}' cannot be read through a path`;")
-    emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { message }, [], true);")
+    emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { _msg: message }, [], true);")
     dec emitter.indent
     emitter.line("}")
     emitter.line("function $gene_delete(value" & dynamic & ", key" & dynamic & ")" & dynamic & " {")

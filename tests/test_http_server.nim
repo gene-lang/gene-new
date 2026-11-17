@@ -965,14 +965,13 @@ suite "net/http server e2e":
   test "actor_pool ^supervision restarts workers and emits failure events":
     let p = startHttpServer("pool.gene", """
 (import $net/http [Server serve text actor_pool supervisor_policy RequestMsg])
-(type Boom ^props {^message Str} ^impl [Error])
-(impl Error for Boom)
+(type Boom : Error)
 (var failures ($channel ^capacity 8))
 (fn worker-init [] 0)
 (fn worker-handle [ctx state msg]
   (var (RequestMsg ^req req ^reply reply) msg)
   (if (== req/path "/boom")
-    (fail (Boom ^message "worker boom"))
+    (fail (Boom ^_msg "worker boom"))
     (do
       (var ev (failures .try_recv))
       (match ev ^!exhaustive

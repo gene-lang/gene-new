@@ -14,11 +14,11 @@
   (fn [context, value]
     (let input (normalize_channel_input value))
     (if (!= input/transport transport)
-      (fail (RoundError ^code "invalid_request" ^message "Channel input belongs to another transport.")))
+      (fail (RoundError ^code "invalid_request" ^_msg "Channel input belongs to another transport.")))
     (if_not context/continued
       (if (|| (!= context/initiator ($to_str "channel:" transport "/" input/account))
               (!= context/text (render_parts input/messages)))
-        (fail (RoundError ^code "invalid_request" ^message "Channel request and origin metadata do not match."))))
+        (fail (RoundError ^code "invalid_request" ^_msg "Channel request and origin metadata do not match."))))
     input))
 
 (fn channel_initiator [transport : Str]

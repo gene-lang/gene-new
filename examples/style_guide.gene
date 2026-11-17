@@ -201,19 +201,17 @@ line two"""
 
 # Errors, cleanup, tasks, and structured concurrency.
 
-(type ExampleError ^props {^message Str} ^impl [Error])
-
-(impl Error for ExampleError)
+(type ExampleError : Error)
 
 (fn checked_value [value] ^errors [ExampleError]
-  (if_not value (fail (ExampleError ^message "value is required")))
+  (if_not value (fail (ExampleError ^_msg "value is required")))
   value)
 
 (fn recover_value [load, close]
   (try
     (checked_value (load))
   catch ExampleError
-    $"error: ${$err/message}"
+    $"error: ${$err/.message}"
   catch Error
     "unknown error"
   ensure

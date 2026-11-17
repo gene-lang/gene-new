@@ -7,8 +7,7 @@
 
 (import $fs [read_text])
 
-(type WebsiteError ^props {^message Str} ^impl [Error])
-(impl Error for WebsiteError)
+(type WebsiteError : Error)
 
 (fn parent_dir [path : Str] : Str
   (var parts ($str/split path "/"))
@@ -56,7 +55,7 @@
     (if_yes ($str/starts_with? ($str/trim lines/%i) opening) (set start i))
     (set i (+ i 1)))
   (if_yes (== start -1)
-    (fail (WebsiteError ^message $"No excerpt begins with ${opening}")))
+    (fail (WebsiteError ^_msg $"No excerpt begins with ${opening}")))
   (var first_line lines/%start)
   (var depth (indent_of first_line))
   (var picked [])
@@ -82,7 +81,7 @@
 (fn source_line [text : Str, prefix : Str] : Str
   (for line in ($str/split text "\n")
     (if_yes ($str/starts_with? ($str/trim line) prefix) (return ($str/trim line))))
-  (fail (WebsiteError ^message $"No source line begins with ${prefix}")))
+  (fail (WebsiteError ^_msg $"No source line begins with ${prefix}")))
 
 # --- Links -----------------------------------------------------------------------
 

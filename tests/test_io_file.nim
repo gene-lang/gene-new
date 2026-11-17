@@ -34,7 +34,7 @@ when compileOption("threads") and defined(posix):
       let value = run(compileSource("""
         (let IoError $io/IoError)
         (try (await ($io/open_read missing)) nil
-          catch IoError [$err/operation ($present? $err/cause)])
+          catch IoError [$err/operation ($present? $err/_cause)])
       """), scope)
       check value.print() == "[\"open_read\" true]"
 
@@ -530,7 +530,7 @@ when compileOption("threads") and defined(posix):
           (scope
             ($os/exec_stream_async "sh"
               "-c" "sleep 2; printf x" ^stdout_pipe writer)
-            (fail (RuntimeError ^message "stop")))
+            (fail (RuntimeError ^_msg "stop")))
           catch RuntimeError true))
         (let eof (await (reader .AsyncReader:read 16)))
         (reader .IoResource:close)

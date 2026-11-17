@@ -1,8 +1,7 @@
 (mod audio)
-(type AudioError ^props {^message Str} ^impl [Error])
-(impl Error for AudioError)
+(type AudioError : Error)
 
-(fn audio_error [message : Str] (fail (AudioError ^message message)))
+(fn audio_error [message : Str] (fail (AudioError ^_msg message)))
 
 (fn pcm_format [rate : Int, channels : Int = 1]
   (if (|| (< rate 8000) (> rate 192000) (< channels 1) (> channels 2))

@@ -15,9 +15,7 @@
 # A Gene error type may declare its own `^kind Str`, so the emitted cancellation
 # rethrow guard brands with a registry symbol rather than testing that field.
 # This is also the typecheck gate's only module carrying a Gene catch.
-(type RelayError ^props {^kind Str})
-(impl Error for RelayError
-  (message message [] : Str ^errors [] self/kind))
+(type RelayError : Error ^props {^kind Str} (message message [] : Str ^errors [] ^^override self/kind))
 
 (fn guarded [] : Int
   (try

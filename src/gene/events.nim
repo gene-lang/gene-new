@@ -47,7 +47,7 @@ proc raiseEventError(scope: Scope, typeName, message: string,
   ## reachable, and falls back to the bare symbol only if it is not — the same
   ## shape `raiseTypeError` uses.
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   for entry in extra:
     props[entry[0]] = entry[1]
   var head = newSym(typeName)
@@ -66,7 +66,7 @@ proc eventErrorValue(scope: Scope, e: ref GeneError): Value =
     e.errVal
   else:
     var props = initPropTable()
-    props["message"] = newStr(e.msg)
+    props["_msg"] = newStr(e.msg)
     var head = newSym("RuntimeError")
     let declared = builtinBinding(scope, "RuntimeError")
     if declared.kind == vkType:
@@ -793,19 +793,11 @@ proc registerEventNamespace(root: Scope) =
   ## other lowercase stdlib namespace (§7). Case is the rule the compiler
   ## already enforces: `$event/Bus` and `(import gene/event [Bus])` both work,
   ## and bare `event/Bus` does not.
-  let errorProtocol = root.vars["Error"]
+  let errorRoot = root.vars["Error"]
   proc defineEventError(name: string, parent: Value): Value =
-    result =
-      if parent.kind == vkType:
-        newType(name, parent, @[], @[], root)
-      else:
-        newType(name, NIL,
-                @[TypeField(name: "message", optional: false,
-                            typeExpr: newSym("Str"), scope: root)],
-                @[errorProtocol], root)
+    result = newType(name, (if parent.kind == vkType: parent else: errorRoot),
+                     @[], @[], root)
     root.define(name, result)
-    if parent.kind != vkType:
-      root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: result)
 
   let eventTypeError = defineEventError("EventTypeError", NIL)
   let eventFrozenError = defineEventError("EventFrozenError", NIL)

@@ -63,9 +63,8 @@
   (for value in (squares n) (set total (+ total value)))
   total)
 
-(type Overdrawn ^props {^amount Int} ^impl [Error])
-(impl Error for Overdrawn
-  (message message [] : Str ^errors [] "overdrawn"))
+(type Overdrawn : Error ^props {^amount Int}
+  (message message [] : Str ^errors [] ^^override "overdrawn"))
 
 (fn withdraw [balance amount]
   (if (> amount balance) (fail (Overdrawn ^amount amount)) (- balance amount)))

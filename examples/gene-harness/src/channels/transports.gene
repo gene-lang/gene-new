@@ -31,7 +31,7 @@
 (fn ^^private as_channel_error [failure]
   (if (== ($head failure) ChannelError) (return failure))
   (ChannelError ^code (if (== ($head failure/code) Str) failure/code "transport_error")
-    ^message (if (== ($head failure/message) Str) failure/message "The channel transport failed.")
+    ^_msg (if (== ($head failure/.message) Str) failure/.message "The channel transport failed.")
     ^retry_after_ms (if (== ($head failure/retry_after_ms) Int) failure/retry_after_ms nil)))
 
 (fn transport_call [row, field : Str, request]

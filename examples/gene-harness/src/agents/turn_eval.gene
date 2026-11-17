@@ -84,7 +84,7 @@
         (try
           (set plan (prepare_patch workspace_root response/patch))
           catch Error
-            (set patch_result {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^!attention})))
+            (set patch_result {^status "failed" ^text $"failed: ${$err/.message}" ^files [] ^!attention})))
       # Durability precedes staging, while the workspace patch gate prevents
       # another response from preparing against this plan's original files.
       (if_not ($absent? record)
@@ -135,7 +135,7 @@
             (match outcome ^!exhaustive
               (when (TaskOutcome/ok value) (set validated (validate_value value)))
               (when (TaskOutcome/error failure)
-                (set error ($to_str failure/message))
+                (set error ($to_str failure/.message))
                 (set error_line (response_error_line failure)))
               (when (TaskOutcome/panic message) (set error $"panic: ${message}"))
               (when TaskOutcome/cancelled
@@ -144,7 +144,7 @@
             (set validated (validate_value (if ($absent? patch_result) nil patch_result/text)))))))
     catch ParticipantFailure (fail $err)
     catch Error
-      (set error ($to_str $err/message))
+      (set error ($to_str $err/.message))
       (set error_line (response_error_line $err))
     ensure (turn/state .set (if cancelled "cancelled" "closed")))
   (if_yes (&& ($present? response) (> response/forms/.size 0)

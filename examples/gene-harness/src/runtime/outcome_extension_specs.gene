@@ -23,13 +23,13 @@
   (try
     (normalize_delegation_wait value ^wake_on_questions (== wake true))
     {^value value ^^suspend}
-  catch DelegationError {^error $err/message}))
+  catch DelegationError {^error $err/.message}))
 
 (fn result_schema [context, value]
   (if ($absent? value) (return {^value nil}))
   (if_not context/outcome/done (return {^error "result requires a done Outcome."}))
   (try {^value (delegation_result_data value)}
-    catch DelegationError {^error $err/message}))
+    catch DelegationError {^error $err/.message}))
 
 (fn wake_schema [context, value]
   (if ($absent? value) (return {^value nil}))

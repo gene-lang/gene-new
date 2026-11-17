@@ -23,7 +23,7 @@
     (let socket (open native url ^ca_file ca_file ^timeout_ms timeout_ms))
     ($C/close socket)
     nil
-  catch WebSocketError $err/message))
+  catch WebSocketError $err/.message))
   ($assert (! ($absent? error)) $"Expected refusal for ${url}")
   ($assert (== (native/open_count) 0) "failed handshake leaked a socket"))
 

@@ -547,18 +547,31 @@ proc checkStrictImplChanges(app: Application, canonical: seq[ProtocolImpl],
           " at " & protocol.protocolName & ":" & registration.messageName &
           " for " & existing.receiver.typeName & "; revalidate it before publication")
 
-proc buildErrorProtocol(root: Scope): Value =
+proc buildThrowableTypes(root: Scope) =
+  ## `Throwable` is the root of every value `fail` can raise, and `Error` is
+  ## its handleable branch. Both are nominal types: a type is an error because
+  ## of its parent chain, which is fixed at declaration. The declaration is
+  ## compiled from source so the root's `message` has exactly the contract a
+  ## subtype's `^^override` is checked against.
   let compiled = compileSource(
-    "(fn message [self] : Str ^errors [] self/message)",
-    sourceName = "<builtin Error:message>")
-  let proto = compiled.functions[0]
-  proto.builtinErrorMessage = true
-  let formatter = newFunction("Error:message", @["self"], proto, root,
-                               checksErrors = true)
-  let stored = functionForScopeStorage(formatter, root)
-  root.application().errorDefaultMessage = stored
-  newProtocol("Error", ["message"], signatures = [stored],
-    hasDefaults = [true], scope = root, errorRoot = true)
+    "(type Throwable ^props {^_msg Str? ^_cause Throwable?} " &
+    "(message message [] : Str ^errors [] (?? self/_msg \"\")))",
+    sourceName = "<builtin Throwable>")
+  let proto = compiled.typeProtos[0]
+  var messages = initTable[string, Value]()
+  for message in proto.messages:
+    let fn = newFunction(message.fn.name, message.fn.params, message.fn, root,
+                         message.fn.checksErrors)
+    messages[message.name] = functionForScopeStorage(fn, root)
+  let throwable = newType("Throwable", NIL, proto.fields, @[], root,
+                          messages = messages)
+  root.define("Throwable", throwable)
+  let error = newType("Error", throwable, @[], @[], root)
+  markErrorRootType(error)
+  root.define("Error", error)
+  let app = root.application()
+  app.throwableType = throwable
+  app.errorType = error
 
 proc normalizeErrorTypes(scope: Scope, expressions: openArray[Value]): seq[Value] =
   var collected: seq[Value]
@@ -582,104 +595,23 @@ proc normalizeErrorTypes(scope: Scope, expressions: openArray[Value]): seq[Value
   for expression in expressions: add(expression, 0)
   collected
 
-proc usesDefaultErrorMessage(formatter: Value, app: Application): bool =
-  discard app
-  formatter.kind == vkFunction and formatter.fnCode of FunctionProto and
-    FunctionProto(formatter.fnCode).builtinErrorMessage
-
-proc validateDefaultErrorBacking(receiver, formatter: Value, scope: Scope) =
-  if not formatter.usesDefaultErrorMessage(scope.application()): return
-  # Opaque native representations are checked without invoking the formatter
-  # at admission. An ordinary source schema must prove a required Str field.
-  if receiver.isNativeWrapperType: return
-  var current = receiver
-  while current.kind == vkType:
-    for field in current.typeFields:
-      if field.name != "message": continue
-      let declaring = if field.scope != nil: field.scope
-                      elif field.weakScope != nil: cast[Scope](field.weakScope)
-                      else: scope
-      let typ = closeTypeExpr(field.typeExpr, declaring)
-      if not field.optional and
-          (signatureTypeEqual(typ, newSym("Str")) or
-           same(typ, builtinBinding(scope, "Str"))):
-        return
-      raise newException(GeneError,
-        "default Error:message requires a required Str message property on " &
-        receiver.typeName & "; provide a custom Error:message implementation")
-    current = current.typeParent
-  raise newException(GeneError,
-    "default Error:message requires a required Str message property on " &
-    receiver.typeName & "; provide a custom Error:message implementation")
-
-proc checkErrorFormatterLane(value, formatter: Value, scope: Scope) =
-  if currentEventLane() != currentScheduler().rootLane:
-    var seen = initHashSet[uint64]()
-    if not isSendableValue(formatter, scope, seen, csmWorker):
-      # Do not install a new hidden edge to non-Send state on a shared node.
-      # Keep the rejected original value in the generated admission diagnostic.
-      raiseTypeError("Error admission", "Error with a Send-safe formatter", value, scope)
-
-proc retainedErrorFormatter(value: Value, scope: Scope): Value =
-  result = value.errorEvidence.formatter
-  checkErrorFormatterLane(value, result, scope)
-
 proc admitErrorValue(value: Value, scope: Scope): Value =
-  if value.hasErrorWitness:
-    discard retainedErrorFormatter(value, scope)
-    return value
+  ## `fail` raises a value whose type descends from `Error`. The parent chain
+  ## decides, so admission needs no scope-dependent conformance and installs
+  ## nothing on the value.
   if scope == nil:
-    let context = if activeVmScope != nil: activeVmScope[] else: builtinsScope()
+    # A native producer may hold only the value. Its type knows the
+    # application whose `Error` it has to descend from.
+    let declaring = if value.kind == vkNode and value.head.kind == vkType:
+                      value.head.typeScope
+                    else: nil
+    let context = if declaring != nil: declaring
+                  elif activeVmScope != nil: activeVmScope[] else: builtinsScope()
     return admitErrorValue(value, context)
   let app = scope.application()
-  let protocol = builtinBinding(scope, "Error")
-  let sourceScope = if value.generatedFailure: app.builtinsScope() else: scope
-  if value.generatedFailure:
-    # Generated diagnostics have known built-in conformance. Resolving a
-    # pending/failed user impl assembly here could recursively fail admission.
-    value.installErrorWitness(protocol, app.errorDefaultMessage, app.builtinsScope())
-    return value
-  var intrinsicType: Value
-  let builtin = value.kind == vkNode and value.head.kind == vkType and
-    app.builtinsScope().lookupOptional(value.head.typeName, intrinsicType) and
-    intrinsicType.bits == value.head.bits
   if value.kind != vkNode or value.head.kind != vkType or
-      (not builtin and not sourceScope.typeImplementsProtocol(value.head, protocol)):
-    raiseTypeError("Error admission", "value implementing Error", value, scope)
-  var formatter: Value
-  try:
-    if builtin:
-      # Built-in diagnostics must remain admissible in restricted roots and
-      # after an execution budget expires. No user code or assembly is needed.
-      var matches: seq[Value]
-      var bestDepth = -1
-      var current = sourceScope
-      while current != nil:
-        current.collectProtocolMatches(value.head, protocol.protocolMessages["message"],
-                                         bestDepth, matches)
-        current = current.parent
-      if matches.len == 0:
-        app.builtinsScope().collectProtocolMatches(value.head,
-          protocol.protocolMessages["message"], bestDepth, matches)
-      matches.dedupeProtocolMatches()
-      if matches.len == 1: formatter = matches[0]
-      else: raise newException(GeneError, "ambiguous built-in Error conformance")
-    else:
-      formatter = resolveProtocolMessage(sourceScope,
-        protocol.protocolMessages["message"], value)
-  except GeneError as resolution:
-    raiseTypeError("Error admission", "unambiguous Error conformance", value, scope,
-                   hint = resolution.msg)
-  if formatter.usesDefaultErrorMessage(app):
-    let backing = value.props.getOrDefault("message", NIL)
-    if backing.kind != vkString:
-      raiseTypeError("Error admission message", "present Str property", backing, scope)
-  checkErrorFormatterLane(value, formatter, scope)
-  if formatter.kind == vkFunction:
-    let environment = formatter.fnScope
-    value.installErrorWitness(protocol, functionForScopeStorage(formatter, environment), environment)
-  else:
-    value.installErrorWitness(protocol, formatter, sourceScope)
+      not app.isErrorBranchType(value.head):
+    raiseTypeError("Error admission", "value of an Error type", value, scope)
   value
 
 proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError =
@@ -692,11 +624,8 @@ proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError =
   try:
     error.errVal = admitErrorValue(error.errVal, context)
   except GeneError as admission:
-    # Admission failures are generated TypeErrors. Admit their known built-in
-    # formatter in the built-ins scope, never through the rejected local impl.
+    # An admission failure is itself a generated TypeError.
     result = admission
-    if admission.hasErrVal:
-      discard admitErrorValue(admission.errVal, context.application().builtinsScope())
 
 proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
                                 name: string, scope: Scope): ref GeneError =
@@ -704,14 +633,13 @@ proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
     return error
   let message = "function '" & name & "' raised an undeclared error"
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   props["where"] = newStr(name)
   props["expected"] = newList(allowed, immutable = true)
   props["actual"] = error.errVal.head
-  props["cause"] = error.errVal
+  props["_cause"] = error.errVal
   let value = newNode(builtInTypeHead(scope, "ErrorContractViolation"), props = props)
   value.setFailureClassification(fcGeneratedContractViolation)
-  discard admitErrorValue(value, scope)
   result = newException(GeneError, message)
   result.errVal = value
   result.hasErrVal = true
@@ -730,34 +658,50 @@ proc enforceDeferredErrors(value, errorType: Value, where: string, scope: Scope)
   raise makeErrorContractViolation(error, @[closeTypeExpr(errorType, context)],
                                     where, context)
 
+proc throwableMessage(value: Value, scope: Scope): tuple[ok: bool, text: string] =
+  ## The error's own `message`, found on its type. It is ordinary code: an
+  ## override may fail, and the caller decides what a failure means.
+  if value.kind != vkNode or value.head.kind != vkType: return (false, "")
+  let formatter = readyTypeDirectMessage(value.head, "message")
+  if formatter.kind == vkNil: return (false, "")
+  let text = applyCall(formatter, [value], NamedArgs(), scope)
+  if text.kind == vkString: (true, text.strVal) else: (false, "")
+
 proc errorDisplayMessage*(error: ref GeneError, scope: Scope): string =
-  ## Formatting is terminal observation, not error admission. A broken custom
-  ## formatter never replaces the original failure or recursively formats its
-  ## own failure. `$err_msg` itself has no such fallback.
+  ## Formatting is terminal observation, not error admission. A broken
+  ## `message` override never replaces the original failure or recursively
+  ## formats its own failure. A handler's `$err/.message` has no such fallback.
   let failure = normalizeFailure(error, scope)
   let value = failure.errVal
-  if value.hasErrorWitness:
-    try:
-      let text = applyCall(retainedErrorFormatter(value, scope), [value], NamedArgs(), scope)
-      if text.kind == vkString: return text.strVal
-    except CatchableError:
-      discard
+  let typed = value.kind == vkNode and value.head.kind == vkType
+  var formatted = (ok: false, text: "")
+  try:
+    let context = if scope != nil: scope
+                  elif activeVmScope != nil: activeVmScope[] else: builtinsScope()
+    formatted = throwableMessage(value, context)
+  except CatchableError:
+    # The override failed. Report the original error by its type name.
+    if typed: return value.head.typeName
+  if formatted.ok:
+    # An error with no message is reported by its type name alone.
+    return if formatted.text.len > 0: formatted.text else: value.head.typeName
   if error.msg.len > 0: return error.msg
-  if value.kind == vkNode and value.head.kind == vkType:
-    return "failure of " & value.head.typeName
+  if typed: return value.head.typeName
   "ordinary error"
 
 proc errorDiagnosticMessage*(error: ref GeneError, scope: Scope): string =
   ## Terminal diagnostics retain the nominal label while obtaining display
-  ## text from the Error protocol. Untyped/compiler diagnostics keep their
-  ## existing text; the generic RuntimeError label would add no information.
+  ## text from the error's `message`. Untyped/compiler diagnostics keep their
+  ## existing text; the generic RuntimeError and CompileError labels would add
+  ## no information to a message that already reads as one.
   let label =
     if error.hasErrVal and error.errVal.kind == vkNode and
         error.errVal.head.kind == vkType and
-        error.errVal.head.typeName != "RuntimeError": error.errVal.head.typeName
+        error.errVal.head.typeName notin ["RuntimeError", "CompileError"]:
+      error.errVal.head.typeName
     else: ""
   let message = errorDisplayMessage(error, scope)
-  if label.len > 0 and not message.startsWith(label & ":"):
+  if label.len > 0 and message != label and not message.startsWith(label & ":"):
     label & ": " & message
   else:
     message

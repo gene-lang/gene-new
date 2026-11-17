@@ -17,7 +17,7 @@
 (fn list_catalog_models [snapshot, ^provider provider = nil, ^q query : Str = "",
   ^offset offset : Int = 0, ^limit limit : Int = 50]
   (if (|| (< offset 0) (< limit 1) (> limit 200))
-    (fail (ProviderError ^message "Model list offset must be nonnegative and limit must be 1–200")))
+    (fail (ProviderError ^_msg "Model list offset must be nonnegative and limit must be 1–200")))
   (let words ($str/split ($str/lower ($str/trim query)) " "))
   (let matches [])
   (map_for [key entry] in (?? snapshot/providers {})
@@ -46,7 +46,7 @@
     (then index) (else nil))})
 
 (fn canonical_models [models]
-  (if (!= ($head models) List) (fail (ProviderError ^message "Invalid provider model list")))
+  (if (!= ($head models) List) (fail (ProviderError ^_msg "Invalid provider model list")))
   (let result [])
   (let ids [])
   (for source in models
@@ -63,22 +63,22 @@
       (result .push checked)
     catch Error nil))
   (if (&& (> models/.size 0) (== result/.size 0))
-    (fail (ProviderError ^message "Provider model list contains no valid models")))
+    (fail (ProviderError ^_msg "Provider model list contains no valid models")))
   result)
 
 (fn canonical_connection [value, name]
-  (if (!= ($head value) Map) (fail (ProviderError ^message "Invalid provider connection")))
+  (if (!= ($head value) Map) (fail (ProviderError ^_msg "Invalid provider connection")))
   (if_not (["ready" "sign_in_required" "expired" "unavailable"] .contains? value/state)
-    (fail (ProviderError ^message "Invalid provider connection state")))
+    (fail (ProviderError ^_msg "Invalid provider connection state")))
   (let result {^state value/state ^label (?? value/label name)
     ^billing (?? value/billing "unknown") ^reason (?? value/reason nil)})
   (if_not (["plan" "metered" "local" "unknown"] .contains? result/billing)
-    (fail (ProviderError ^message "Invalid provider billing class")))
+    (fail (ProviderError ^_msg "Invalid provider billing class")))
   (for key in ["label" "reason" "account" "transport"]
     (let field (value .get key))
     (if ($present? field)
       (then
-        (if (!= ($head field) Str) (fail (ProviderError ^message "Invalid provider connection metadata")))
+        (if (!= ($head field) Str) (fail (ProviderError ^_msg "Invalid provider connection metadata")))
         (result .put key field))))
   (if (|| (== ($head value/limit_remaining) Int) (== ($head value/limit_remaining) Float))
     (result .put "limit_remaining" value/limit_remaining))
@@ -361,11 +361,11 @@
 
 (fn set_catalog_default [catalog, selection, expected : Str]
   (try (validate_model_settings selection)
-    catch Error (fail (ModelsFileError ^code "invalid_models" ^message $err/message)))
+    catch Error (fail (ModelsFileError ^code "invalid_models" ^_msg $err/.message)))
   (if (|| ($absent? selection/provider) ($absent? selection/model))
-    (fail (ModelsFileError ^code "invalid_models" ^message "A shared default requires provider and model")))
+    (fail (ModelsFileError ^code "invalid_models" ^_msg "A shared default requires provider and model")))
   (if (!= expected catalog/file/.get/digest)
-    (fail (ModelsFileError ^code "revision_conflict" ^message "Models settings changed; refresh before saving a default.")))
+    (fail (ModelsFileError ^code "revision_conflict" ^_msg "Models settings changed; refresh before saving a default.")))
   (let config ($thaw ($freeze catalog/file/.get/config)))
   (config .put "default" selection)
   (save_catalog_settings catalog config expected))

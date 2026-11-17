@@ -83,7 +83,7 @@ suite "runtime bound calls":
       "  (var inner ($runtime/bind_call spin [] ^policy {^timeout_ms 5000})) " &
       "  (inner)) " &
       "(var outer ($runtime/bind_call nested [] ^policy {^timeout_ms 20})) " &
-      "(try (outer) false catch Error ($str/contains? $err/message \"timeout\"))").print() == "true"
+      "(try (outer) false catch Error ($str/contains? $err/.message \"timeout\"))").print() == "true"
 
   test "deadline starts when the binding is invoked":
     check evalBoundCall("(fn value [] 7) " &
@@ -119,8 +119,8 @@ suite "runtime bound calls":
       "   (hits .get)])").print() == "[true 1]"
 
   test "recoverable errors preserve their nominal type and fields":
-    check evalBoundCall("(type Boom ^props {^code Int} ^impl [Error]) " &
-      "(impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom)))) (var boom (Boom ^code 7)) " &
+    check evalBoundCall("(type Boom : Error ^props {^code Int} (message message [] : Str ^errors [] ^^override ($to_str (quote Boom)))) " &
+      "(var boom (Boom ^code 7)) " &
       "(fn fail_it [] (fail boom)) " &
       "(var f ($runtime/bind_call fail_it [])) " &
       "(try (f) 0 catch Boom $err/code)").print() == "7"

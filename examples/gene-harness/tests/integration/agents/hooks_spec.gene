@@ -16,8 +16,7 @@
   {^session "default" ^round "r" ^turn 1 ^round_turn 1
    ^limit 3 ^items []})
 
-(type HookFailure ^props {^message Str} ^impl [Error])
-(impl Error for HookFailure)
+(type HookFailure : Error)
 
 (fn count_events [runtime, name : Str]
   (var count 0)
@@ -38,7 +37,7 @@
           (contribute ^priority -10 runtime/h "core" "hooks"
             {^point "request/prepare" ^name "fail"
              ^run (fn [context, next]
-               (fail (HookFailure ^message "hook exploded")))})
+               (fail (HookFailure ^_msg "hook exploded")))})
           (let old_result (request_prepare runtime old_lease/snapshot
             (prepare_context)))
           ($assert (== old_result/items/.size 1)

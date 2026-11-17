@@ -43,7 +43,7 @@
       (let error (try
         (verify_id_token ^access_token fixture/access_token invalid/token fixture/jwks
           "https://issuer.example" "client" "nonce" 2000)
-        nil catch CryptoError $err/message))
+        nil catch CryptoError $err/.message))
       ($assert ($present? error) invalid/name)
       ($assert (! ($str/contains? error "SECRET"))))
     ($assert (try (verify_id_token fixture/bound fixture/jwks "https://issuer.example" "client" "nonce" 2000)

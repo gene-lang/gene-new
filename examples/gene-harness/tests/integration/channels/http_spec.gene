@@ -39,7 +39,7 @@
           (try
             (api remote "POST" "/channels/bind" {^owner_root owner_root ^route routing/.get/id})
           catch Error
-            ($println ($to_str "Channel HTTP peer: bind failed: " (?? $err/code "error") " " $err/message))
+            ($println ($to_str "Channel HTTP peer: bind failed: " (?? $err/code "error") " " $err/.message))
             ($io/flush_stdout)
             (fail $err))
           ($println "Channel HTTP peer: workspace bound.") ($io/flush_stdout)

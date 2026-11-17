@@ -28,10 +28,10 @@
     ($assert (== extensions {^notes/facts ["known"]}))
     ($assert (== value/extensions {^notes/facts ["known"] ^delegation/wait "all"}))
     ($assert (try (make ^wait "all" ^extensions {^delegation/wait "any"}) false
-      catch OutcomeError ($str/contains? $err/message "both")))
+      catch OutcomeError ($str/contains? $err/.message "both")))
     (let inactive (outcome_constructor {^registries {}}))
     ($assert (try (inactive ^wait "all") false
-      catch Error ($str/contains? $err/message "wait")))))
+      catch Error ($str/contains? $err/.message "wait")))))
 
 (describe "Checked Outcome suspension"
   (it "admits an owned suspension before the core continuation check" []

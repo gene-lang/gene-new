@@ -2,12 +2,11 @@
 (mod notification_inbox)
 (import $store/fs [open : store_open Store])
 
-(type NotificationError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for NotificationError)
+(type NotificationError : Error ^props {^code Str})
 (type Inbox ^props {^backend Any ^state Any ^gate Any ^observer Any ^progress Any})
 
 (fn notification_error [code : Str, message : Str]
-  (fail (NotificationError ^code code ^message message)))
+  (fail (NotificationError ^code code ^_msg message)))
 (fn copy [value]
   ($serde/read_data ($serde/write_data value)))
 (fn now_ms []

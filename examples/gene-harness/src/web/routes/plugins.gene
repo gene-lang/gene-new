@@ -35,7 +35,7 @@
       (return (response 200 (revert_plugin ^readiness host/runtime/services/values/readiness ^expected data/expected
         host/runtime/workspace host/runtime/h (field data "id") data/revision)))
     catch CompositionConflict
-      (return (response 409 {^code $err/code ^message $err/message}))))
+      (return (response 409 {^code $err/code ^message $err/.message}))))
   (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/inspect"))
     (let data (request_data request))
     (if (&& ($present? data/revision) (!= ($head data/revision) Int))

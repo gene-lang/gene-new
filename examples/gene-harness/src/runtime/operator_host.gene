@@ -18,14 +18,14 @@
   (if (state/closed .swap true) (return nil))
   (let errors [])
   (for mode in ["sh" "repl"]
-    (try (close_kind state mode) catch Error (errors .push $err/message)))
+    (try (close_kind state mode) catch Error (errors .push $err/.message)))
   (if_not errors/.empty?
-    (fail (ServiceError ^code "cleanup_failed" ^message $"Operator session cleanup failed: ${errors}")))
+    (fail (ServiceError ^code "cleanup_failed" ^_msg $"Operator session cleanup failed: ${errors}")))
   nil)
 
 (fn operator_service [handle]
   (let record (require_service handle))
-  (if record/config/closed/.get (fail (ServiceError ^code "unavailable" ^message "Operator host is closed.")))
+  (if record/config/closed/.get (fail (ServiceError ^code "unavailable" ^_msg "Operator host is closed.")))
   record)
 
 (fn require_mode [record, mode : Str]
@@ -34,7 +34,7 @@
     (when "repl" "repl")
     (else "")))
   (if (|| (== expected "") (!= record/host/owner expected))
-    (fail (ServiceError ^code "forbidden" ^message "This input mode belongs to its shell or REPL plugin."))))
+    (fail (ServiceError ^code "forbidden" ^_msg "This input mode belongs to its shell or REPL plugin."))))
 
 (fn retain_mode [handle, mode : Str]
   (let record (operator_service handle))
@@ -67,9 +67,9 @@
   (if (== name "repl")
     (then
       (if (!= ($str/trim ctx/raw) "")
-        (fail (ServiceError ^code "invalid_request" ^message "/repl takes no arguments.")))
+        (fail (ServiceError ^code "invalid_request" ^_msg "/repl takes no arguments.")))
       (return ($freeze (CommandResult ^display "REPL open. Enter exit or quit to leave." ^!attached ^mode "repl")))))
-  (fail (ServiceError ^code "invalid_request" ^message "Unknown operator command operation.")))
+  (fail (ServiceError ^code "invalid_request" ^_msg "Unknown operator command operation.")))
 
 (type HostedOperator ^^private ^props {^token Any}
   (impl OperatorHost
@@ -83,7 +83,7 @@
       (let record (operator_service self))
       (require_mode record mode)
       (if (!= (record/values/.get .get mode) true)
-        (fail (ServiceError ^code "unavailable" ^message "Input mode activation has not retained its sessions.")))
+        (fail (ServiceError ^code "unavailable" ^_msg "Input mode activation has not retained its sessions.")))
       (let ctx (require_command_scope record/runtime context))
       ($freeze (if (== mode "sh") (evaluate_shell record/config/shells ctx) (evaluate_repl record/config/repls ctx))))
     (message close [mode : Str, session : Str] : Any

@@ -5,18 +5,17 @@
 (import ^from "../runtime/workspace_settings" [read_workspace_settings])
 (import $net/http [listen])
 
-(type ConnectionError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for ConnectionError)
+(type ConnectionError : Error ^props {^code Str})
 
 (fn unavailable [root : Str]
   (fail
-    (ConnectionError ^code "unavailable" ^message $"No running Harness host for ${root}. Start gene-harness web --workspace ${root}.")))
+    (ConnectionError ^code "unavailable" ^_msg $"No running Harness host for ${root}. Start gene-harness web --workspace ${root}.")))
 
 (fn valid_port [port, ^zero zero : Bool = false]
   (if (|| (!= ($head port) Int) (> port 65535)
           (&& (< port 1024) (! (&& zero (== port 0)))))
     (fail
-      (ConnectionError ^code "invalid_request" ^message "Port must be 1024–65535 (or 0 for automatic selection).")))
+      (ConnectionError ^code "invalid_request" ^_msg "Port must be 1024–65535 (or 0 for automatic selection).")))
   port)
 
 (fn read_connection [root : Str]
@@ -25,11 +24,11 @@
   (let record (try ($serde/read_data ($fs/read_text path)) catch Error (unavailable root)))
   (if (|| (!= ($head record) Map) (!= record/workspace root) (!= record/protocol protocol_version) (!= ($head record/epoch) Str) (== record/epoch ""))
     (fail
-      (ConnectionError ^code "connection_mismatch" ^message "The Harness connection descriptor is stale or incompatible.")))
+      (ConnectionError ^code "connection_mismatch" ^_msg "The Harness connection descriptor is stale or incompatible.")))
   (valid_port record/port)
   (if (!= record/origin $"http://127.0.0.1:${record/port}")
     (fail
-      (ConnectionError ^code "connection_mismatch" ^message "The Harness endpoint must use its canonical loopback address.")))
+      (ConnectionError ^code "connection_mismatch" ^_msg "The Harness endpoint must use its canonical loopback address.")))
   record)
 
 (fn bind_workspace [state_root : Str, ^port explicit = nil, ^restart_port restart_port = nil]

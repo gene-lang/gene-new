@@ -122,7 +122,7 @@ next"""))
     (let computed ($into ($parse/read_all ^source "response" ^^locs
       "(let v (fn [state] state))\n(card \"c\" ^title \"T\" ^view v)") []))
     ($assert (try (rewrite_prompt_calls computed) false
-      catch OutcomeError (&& ($str/contains? $err/message "literal (fn ...)") (== $err/response_line 2)))
+      catch OutcomeError (&& ($str/contains? $err/.message "literal (fn ...)") (== $err/response_line 2)))
       "a computed view function was accepted")))
 
 (describe "Outcome extension admission"

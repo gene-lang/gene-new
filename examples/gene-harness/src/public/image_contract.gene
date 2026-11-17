@@ -2,7 +2,7 @@
 (import [ImageError] ^from "../plugin_api")
 
 (fn image_error [code : Str, message : Str]
-  (fail (ImageError ^code code ^message message)))
+  (fail (ImageError ^code code ^_msg message)))
 
 (fn nonempty [value]
   (&& (== ($head value) Str) (!= ($str/trim value) "")))

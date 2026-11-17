@@ -59,9 +59,9 @@
                       ($assert (== available (== name "ownership"))
                         $"Ownership was released before ${name} finished.")))
                   (if (&& (== phase "after") (== name target))
-                    (fail (HostServiceError ^message $"injected after ${target}")))))
+                    (fail (HostServiceError ^_msg $"injected after ${target}")))))
               false
-            catch HostServiceError ($str/contains? $err/message $"injected after ${target}")))
+            catch HostServiceError ($str/contains? $err/.message $"injected after ${target}")))
             ($assert (== ($last closed) "ownership"))
             (let reacquired (acquire_workspace_lock workspace "after-unwind"))
             (close_workspace_lock reacquired))
@@ -79,7 +79,7 @@
             (open_runtime root "default" (Profile ^name "borrowed" ^plugins []) ^events events
               ^service_event (fn [phase, name]
                 (if (&& (== phase "after") (== name "kernel"))
-                  (fail (HostServiceError ^message "injected borrowed-store failure")))))
+                  (fail (HostServiceError ^_msg "injected borrowed-store failure")))))
             false
           catch HostServiceError true))
           (append_core_event events "workspace" "workspace" {^type "trace" ^text "still owned by caller" ^^ignorable})

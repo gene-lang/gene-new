@@ -18,7 +18,7 @@ proc raiseAssertion(message: string, call: ptr NativeCall,
                     comparison = false, actual = NIL, expected = NIL) =
   let scope = testCallScope(call)
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   if comparison:
     props["has_comparison"] = TRUE
     props["actual"] = actual
@@ -420,15 +420,13 @@ proc biTestRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   runTests(scope, name, report)
 
 proc registerTestingNamespace(root: Scope) =
-  let errorProtocol = root.vars["Error"]
-  let assertionType = newType("AssertionError", NIL,
-    @[TypeField(name: "message", typeExpr: newSym("Str"), scope: root),
-      TypeField(name: "has_comparison", typeExpr: newSym("Bool"), optional: true, scope: root),
+  let errorRoot = root.vars["Error"]
+  let assertionType = newType("AssertionError", errorRoot,
+    @[TypeField(name: "has_comparison", typeExpr: newSym("Bool"), optional: true, scope: root),
       TypeField(name: "actual", typeExpr: newSym("Any"), optional: true, scope: root),
       TypeField(name: "expected", typeExpr: newSym("Any"), optional: true, scope: root)],
-    @[errorProtocol], root)
+    @[], root)
   root.define("AssertionError", assertionType)
-  root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: assertionType)
   var fields: seq[TypeField]
   for name in ["passed", "failed", "errors", "skipped", "exit_code"]:
     fields.add TypeField(name: name, typeExpr: newSym("Int"), scope: root)

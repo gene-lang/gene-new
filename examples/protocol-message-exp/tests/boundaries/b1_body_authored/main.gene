@@ -6,4 +6,4 @@
 (let leaf (Figure ^caption "c"))
 ($println $"direct figure: ${(op leaf op)}")
 (let tree (Section ^title "A" ^children [leaf]))
-($println $"body-authored recursion: ${(try (op tree op) catch Error $err/message)}")
+($println $"body-authored recursion: ${(try (op tree op) catch Error $err/.message)}")

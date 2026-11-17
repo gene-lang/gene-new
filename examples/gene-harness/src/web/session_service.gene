@@ -99,7 +99,7 @@
 (fn ^^private feature_function [runtime, name : Str]
   (let found (row runtime/h "functions" name))
   (if (|| ($absent? found) ($absent? found))
-    (fail (ServiceError ^code "unavailable" ^message $"${name} is unavailable: its plugin is disabled or not ready.")))
+    (fail (ServiceError ^code "unavailable" ^_msg $"${name} is unavailable: its plugin is disabled or not ready.")))
   found/fn)
 
 (type WorkspaceService ^props {^runtime Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^offline Bool ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any? ^clients Any? ^client_requests Any?})
@@ -113,42 +113,42 @@
 (fn model_catalog [service]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
-    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (contribution/value/snapshot))
 
 (fn refresh_models [service]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
-    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (contribution/value/refresh))
 
 (fn model_configuration [service]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
-    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (contribution/value/configuration))
 
 (fn save_model_configuration [service, config, expected : Str]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
-    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (contribution/value/save config expected)
   (model_configuration service))
 
 (fn model_login [service, action : Str, value : Str, ^account account = nil]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
-    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (match action
     (when "connect" (contribution/value/connect value account))
     (when "status" (contribution/value/login_status value))
     (when "cancel" (contribution/value/cancel_login value))
-    (else (fail (ServiceError ^code "invalid_request" ^message "Unknown sign-in action.")))))
+    (else (fail (ServiceError ^code "invalid_request" ^_msg "Unknown sign-in action.")))))
 
 (fn model_accounts [service, ^action action = nil, ^id id = nil]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
-    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (if ($absent? action)
     (then (contribution/value/accounts))
     (else (contribution/value/account_action id action))))
@@ -166,20 +166,20 @@
       (fn []
         (let contribution (row service/runtime/h "seams" "models/page"))
         (if ($absent? contribution)
-          (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+          (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
         (contribution/value appearance service/runtime/root styles)))
   ensure (release_snapshot service/runtime/h/snapshots lease)))
 
 (fn preview_model_settings [service, session : Str, selection]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
-    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (contribution/value/preview session selection))
 
 (fn set_model_default [service, selection, expected : Str]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
-    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (let state (contribution/value/set_default selection expected))
   {^^ok ^revision state/id ^digest state/digest ^default state/default})
 
@@ -206,17 +206,17 @@
 (fn session_slack_thread [service, id : Str] : Str
   (let record (require_record service/runtime/sessions id))
   (if ($absent? service/runtime/services/values/channels)
-    (fail (RoundError ^code "unavailable" ^message "Slack is unavailable in recovery mode.")))
+    (fail (RoundError ^code "unavailable" ^_msg "Slack is unavailable in recovery mode.")))
   (if (|| ($absent? record/channel) (!= record/channel/transport "slack"))
-    (fail (RoundError ^code "not_found" ^message "This session is not linked to Slack.")))
+    (fail (RoundError ^code "not_found" ^_msg "This session is not linked to Slack.")))
   (let result (thread_link service/runtime/services/values/channels record/channel))
   (if (== result/url "")
-    (fail (RoundError ^code "unavailable" ^message "The Slack thread link is temporarily unavailable.")))
+    (fail (RoundError ^code "unavailable" ^_msg "The Slack thread link is temporarily unavailable.")))
   result/url)
 
 (fn session_add_to_slack [service, id : Str, revision : Int]
   (if ($absent? service/runtime/services/values/channels)
-    (fail (RoundError ^code "unavailable" ^message "Slack is unavailable in recovery mode.")))
+    (fail (RoundError ^code "unavailable" ^_msg "Slack is unavailable in recovery mode.")))
   (public_session service (share_session service/runtime/services/values/channels id revision)))
 
 (fn publish_message [service, kind : Str, session : Str, data, ^reason reason = nil]
@@ -386,7 +386,7 @@
               (publish_message service "snapshot" session data)))))
       catch Error
         (if (snapshot_job_current? service session version)
-          (publish_message service "error" session {^message ($to_str $err/message)}))
+          (publish_message service "error" session {^message ($to_str $err/.message)}))
       ensure (service/snapshot_jobs/.get .delete id))))
   (slot .set job)
   nil)
@@ -522,16 +522,16 @@
 (fn session_voice_claim [service, session : Str, request]
   (require_record service/runtime/sessions session)
   (if (!= ($head request/client_id) Str)
-    (fail (RoundError ^code "invalid_request" ^message "Voice needs a browser client identity.")))
+    (fail (RoundError ^code "invalid_request" ^_msg "Voice needs a browser client identity.")))
   (if (|| (&& ($present? request/token)
               (|| (!= ($head request/token) Str) (> ($str/byte_size request/token) 128)))
           (&& ($present? request/output) (!= ($head request/output) Bool))
           (&& ($present? request/enabled) (!= ($head request/enabled) Bool)))
-    (fail (RoundError ^code "invalid_request" ^message "Voice expects a text token and boolean enabled/output values.")))
+    (fail (RoundError ^code "invalid_request" ^_msg "Voice expects a text token and boolean enabled/output values.")))
   (if (== request/enabled false)
     (return (public_voice_state (release_voice service/runtime/services/values/voice request/client_id (?? request/token "")))))
   (if ($absent? (row_voice service))
-    (fail (RoundError ^code "unavailable" ^message "The voice plugin is disabled or unavailable.")))
+    (fail (RoundError ^code "unavailable" ^_msg "The voice plugin is disabled or unavailable.")))
   (let claim (claim_voice ^token (?? request/token "") service/runtime/services/values/voice session
     request/client_id (!= request/output false)))
   (if (&& (== claim/owner request/client_id) (== claim/session session))
@@ -574,15 +574,15 @@
   (let record (require_record service/runtime/sessions id))
   (if (!= (?? record/revision 0) revision)
     (fail
-      (RoundError ^code "revision_conflict" ^message "Session changed; refresh before editing it.")))
+      (RoundError ^code "revision_conflict" ^_msg "Session changed; refresh before editing it.")))
   (let update {^revision (+ revision 1)})
   (if_not ($absent? changes/title)
     (if (|| (!= ($head changes/title) Str) (== ($str/trim changes/title) "") (> ($str/byte_size changes/title) 256))
-      (fail (RoundError ^code "invalid_request" ^message "Session title must have 1–256 bytes")))
+      (fail (RoundError ^code "invalid_request" ^_msg "Session title must have 1–256 bytes")))
     (update .put "title" ($str/trim changes/title)))
   (if_not ($absent? changes/pinned)
     (if (!= ($head changes/pinned) Bool)
-      (fail (RoundError ^code "invalid_request" ^message "Pinned must be boolean")))
+      (fail (RoundError ^code "invalid_request" ^_msg "Pinned must be boolean")))
     (update .put "pinned" changes/pinned))
   (let next (update_session service/runtime/sessions id update))
   (public_session service next))
@@ -598,18 +598,18 @@
   (map_for [key record] in service/runtime/sessions/index/.get
     (if (== record/parent/session id) (ids .push ($to_str key))))
   (if_not (delete_session ^^explicit ^revision revision service/runtime/sessions id)
-    (fail (RoundError ^code "busy" ^message "Stop running work and answer or dismiss pending questions before deleting this conversation.")))
+    (fail (RoundError ^code "busy" ^_msg "Stop running work and answer or dismiss pending questions before deleting this conversation.")))
   {^deleted ids})
 
 (fn submit [service, session : Str, request_id : Str, sequence : Int, text : Str, ^media media = [], ^card card = nil, ^model_settings model_settings = nil]
   (if_not (== ($head media) List)
-    (fail (RoundError ^code "invalid_request" ^message "Attachments must be a list of media IDs.")))
+    (fail (RoundError ^code "invalid_request" ^_msg "Attachments must be a list of media IDs.")))
   # A card send is always a chat message, never a slash command.
   (if_not ($absent? card)
     (return (submit_round ^model_settings model_settings ^media media ^card card service/runtime/services/values/controller session request_id sequence text)))
   (let parsed (parse_submission service/runtime/h text))
   (if (&& (== parsed/kind "command") (! media/.empty?))
-    (fail (RoundError ^code "invalid_request" ^message "Attachments accompany chat messages, not slash commands.")))
+    (fail (RoundError ^code "invalid_request" ^_msg "Attachments accompany chat messages, not slash commands.")))
   (if (== parsed/kind "command")
     (submit_command service/runtime/services/values/commands session text)
     (submit_round ^model_settings model_settings ^media media service/runtime/services/values/controller session request_id sequence parsed/text)))
@@ -659,7 +659,7 @@
   (require_record service/runtime/sessions session)
   (let result (command_receipt service/runtime/services/values/commands session id))
   (if ($absent? result)
-    (fail (RoundError ^code "not_found" ^message "Command receipt is not retained.")))
+    (fail (RoundError ^code "not_found" ^_msg "Command receipt is not retained.")))
   result)
 
 (fn command_sequence [service, session : Str]
@@ -675,7 +675,7 @@
     (for record in ((Path "receipts") (round_state service/runtime/services/values/controller session))
       (if (== record/request_id request_id) (return (public_round service session record)))))
   (fail
-    (RoundError ^code "not_found" ^message "Request receipt is not retained; do not replay an uncertain operation.")))
+    (RoundError ^code "not_found" ^_msg "Request receipt is not retained; do not replay an uncertain operation.")))
 (fn cancel_operator_command [service, session : Str, id : Str]
   (cancel_command service/runtime/services/values/commands session id))
 (fn public_round [service, session : Str, source]
@@ -703,7 +703,7 @@
   (require_record service/runtime/sessions session)
   (let result (round_receipt service/runtime/services/values/controller session id))
   (if ($absent? result)
-    (fail (RoundError ^code "not_found" ^message "Round receipt is not retained.")))
+    (fail (RoundError ^code "not_found" ^_msg "Round receipt is not retained.")))
   (public_round service session result))
 (fn answer [service, session : Str, batch_id : Str, values, ^dismiss dismiss : Bool = false]
   (answer_round ^dismiss dismiss ^^operator_input service/runtime/services/values/controller session batch_id values))
@@ -712,7 +712,7 @@
 
 (fn cancel_child [service, session : Str, id : Str, admission : Int]
   (if (<= admission 0)
-    (fail (RoundError ^code "invalid_request" ^message "Admission must be positive.")))
+    (fail (RoundError ^code "invalid_request" ^_msg "Admission must be positive.")))
   (require_record service/runtime/sessions session)
   (cancel_delegation_admission service/runtime/services/values/delegations session id admission))
 
@@ -883,7 +883,7 @@
             service/runtime/h candidate/render context)))
       (item .put "view" view)
     catch Error
-      (item .put "error" $err/message))
+      (item .put "error" $err/.message))
     (components .push item))
   components)
 
@@ -1343,7 +1343,7 @@
 (fn client_request [service, client : Str, operation : Str, args, ^timeout_ms timeout_ms : Int = 5000]
   (let present ($filter (connected_clients service) (fn [peer] (== peer/client_id client))))
   (if present/.empty?
-    (fail (ServiceError ^code "unavailable" ^message $"Browser client ${client} is not connected.")))
+    (fail (ServiceError ^code "unavailable" ^_msg $"Browser client ${client} is not connected.")))
   (let id ($crypto/random_hex 16))
   (let slot ($cell nil))
   (service/client_requests/.get .put id slot)
@@ -1354,9 +1354,9 @@
       ($sleep 5))
     (let reply slot/.get)
     (if ($absent? reply)
-      (fail (ServiceError ^code "unavailable" ^message $"Browser client ${client} did not answer in time.")))
+      (fail (ServiceError ^code "unavailable" ^_msg $"Browser client ${client} did not answer in time.")))
     (if (!= reply/ok true)
-      (fail (ServiceError ^code "client_error" ^message ($to_str (?? reply/error "The browser refused the request.")))))
+      (fail (ServiceError ^code "client_error" ^_msg ($to_str (?? reply/error "The browser refused the request.")))))
     reply/result
   ensure
     (service/client_requests/.get .delete id)))
@@ -1379,13 +1379,13 @@
 (fn require_live_manager [manager : HarnessManager]
   (if ($absent? manager/service)
     (fail (ServiceError ^code "unavailable"
-      ^message "Workspace control needs the manager host. Run this from a manager conversation.")))
+      ^_msg "Workspace control needs the manager host. Run this from a manager conversation.")))
   manager/service)
 
 (fn select_model_settings [service, session : Str, selection]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
-    (fail (ServiceError ^code "unavailable" ^message "The Models contribution is disabled or unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (contribution/value/select session selection))
 
 (fn install_host_objects [runtime, launch]

@@ -31,7 +31,7 @@
   (if (&& ($absent? reason) (> ($map_size workspace/errors/.get) 0))
     (set reason "The desired composition contains quarantined entries"))
   (if_yes (&& ($absent? reason) ($present? readiness))
-    (set reason (try (readiness) catch Error $err/message)))
+    (set reason (try (readiness) catch Error $err/.message)))
   (let observation (data_copy result))
   (observation .put "readiness" (if ($absent? readiness)
     (then "unverified")
@@ -85,8 +85,8 @@
 
 (fn stage_plugin_entry [workspace : Workspace, id : Str, source, ^dependencies dependencies = []]
   (require_open workspace)
-  (if_not (safe_module_id? id) (fail (CompositionError ^message "unsafe plugin id")))
-  (if (!= ($head dependencies) List) (fail (CompositionError ^message "dependencies must be a list of modules")))
+  (if_not (safe_module_id? id) (fail (CompositionError ^_msg "unsafe plugin id")))
+  (if (!= ($head dependencies) List) (fail (CompositionError ^_msg "dependencies must be a list of modules")))
   (let parsed (parse_plugin_source source))
   (let required (source_entry_interfaces workspace parsed))
   (let text (canonical_module_source parsed))
@@ -121,7 +121,7 @@
    ^replace replace : Bool = false]
   (require_open workspace)
   (if_not (safe_module_id? id)
-    (fail (CompositionError ^message $"unsafe module id ${id}")))
+    (fail (CompositionError ^_msg $"unsafe module id ${id}")))
   # Refuse a claimed id before anything is written. `entries_with` below also
   # refuses, but only after every dependency blob and the module itself have
   # been materialized and the descriptor loaded — so a refused rebuild left an
@@ -132,11 +132,11 @@
   (if_not replace
     (if_not ($absent? (workspace/profile_plugins/.get .get id))
       (fail (CompositionError
-        ^message $"profile plugin ${id} already exists; use ^^replace")))
+        ^_msg $"profile plugin ${id} already exists; use ^^replace")))
     (var claimed (composition_entries workspace))
     (if_not (== (find_entry_index claimed id) -1)
       (fail (CompositionError
-        ^message $"composition entry ${id} already exists"))))
+        ^_msg $"composition entry ${id} already exists"))))
   (set source (parse_plugin_source source))
   (let required (source_entry_interfaces workspace source))
   (var bounded
@@ -252,11 +252,11 @@
           (results .push (change/apply))
         catch CompositionConflict
           (results .push {^status "stale" ^state "unchanged"
-            ^id change/id ^message $err/message ^code $err/code})
+            ^id change/id ^message $err/.message ^code $err/code})
         catch Error
-          (record_quarantine workspace change/id ($to_str $err/message))
+          (record_quarantine workspace change/id ($to_str $err/.message))
           (results .push {^status "error" ^state "quarantined"
-            ^id change/id ^message $err/message})))))
+            ^id change/id ^message $err/.message})))))
   results)
 
 (fn prepare_workspace
@@ -288,7 +288,7 @@
                 (descriptors .put entry/id descriptor)
                 (register_descriptor_events h descriptor)
               catch Error
-                (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))))))
+                (record_quarantine workspace ($to_str entry/id) ($to_str $err/.message)))))))))
 
   # Phase 2: validate the already-decoded generic envelopes against the core +
   # descriptor catalog. Missing plugin vocabulary quarantines that projection;
@@ -335,14 +335,14 @@
                 (admissions .push
                   {^plugin descriptor ^options (descriptor_entry_options workspace entry)})
               catch Error
-                (record_quarantine workspace ($to_str entry/id) ($to_str $err/message)))))))))
+                (record_quarantine workspace ($to_str entry/id) ($to_str $err/.message)))))))))
   (if (> admissions/.size 0)
     (try
       (put_cordis_plugins h admissions)
     catch Error
       (for entry in plan/entries
         (if ($absent? (workspace/errors/.get .get entry/id))
-          (record_quarantine workspace ($to_str entry/id) ($to_str $err/message))))))
+          (record_quarantine workspace ($to_str entry/id) ($to_str $err/.message))))))
   (for item in admissions
     (var id ($to_str item/plugin/id))
     (var status (status_of h id))

@@ -60,7 +60,7 @@
   (set ctx/harness_closed true)
   (let result (shutdown_harness h))
   (if (== result/status "recovery_required")
-    (fail (HostServiceError ^message $"Composition cleanup requires recovery: ${result/errors}")))
+    (fail (HostServiceError ^_msg $"Composition cleanup requires recovery: ${result/errors}")))
   nil)
 
 (fn configuration [ctx]

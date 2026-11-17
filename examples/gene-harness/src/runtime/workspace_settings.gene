@@ -3,12 +3,11 @@
 (import [manager_root_path : shared_manager_root_path] ^from "../public/workspace_paths")
 (import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock])
 
-(type WorkspaceSettingsError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for WorkspaceSettingsError)
+(type WorkspaceSettingsError : Error ^props {^code Str})
 (let edit_gate ($sync/gate))
 
 (fn settings_error [message : Str]
-  (fail (WorkspaceSettingsError ^code "invalid_workspace_settings" ^message message)))
+  (fail (WorkspaceSettingsError ^code "invalid_workspace_settings" ^_msg message)))
 
 (fn validate_settings [value]
   (if (!= ($head value) Map) (settings_error "Workspace settings must be an inert map."))
@@ -41,7 +40,7 @@
       (let next (read_workspace_settings root))
       (if (&& (!= expected "") (!= expected ($pkg/canonical_digest next)))
         (fail
-          (WorkspaceSettingsError ^code "revision_conflict" ^message "Workspace settings changed. Refresh and review before saving.")))
+          (WorkspaceSettingsError ^code "revision_conflict" ^_msg "Workspace settings changed. Refresh and review before saving.")))
       (map_for [key value] in changes
         (if (!= ($to_str key) "port")
           (settings_error "Only the port can be edited."))
@@ -53,7 +52,7 @@
 # directory, like --workspace.
 (fn manager_root_path [^explicit explicit = nil, ^environment environment = nil] : Str
   (try (shared_manager_root_path ^explicit explicit ^environment environment)
-    catch Error (settings_error $err/message)))
+    catch Error (settings_error $err/.message)))
 
 (fn initialize_manager_workspace [^root explicit = nil]
   (let selected (manager_root_path ^explicit explicit))

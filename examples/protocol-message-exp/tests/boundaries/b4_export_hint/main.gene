@@ -3,5 +3,5 @@
 (import [Render] ^from "./contracts")
 (import ^from "./importer" [])
 (let article (Article ^title "A"))
-(fn full_message [thunk] (try (thunk) catch Error $err/message))
+(fn full_message [thunk] (try (thunk) catch Error $err/.message))
 ($println $"missing import: ${(full_message (fn [] article/.Render:render))}")

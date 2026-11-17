@@ -97,7 +97,7 @@ suite "pipeline — prepared lazy invocation":
     pipelineCheck """
       (fn gather [xs...] xs)
       (let bad 3)
-      (try ([] => gather bad...) catch Error $err/message)
+      (try ([] => gather bad...) catch Error $err/.message)
     """, "\"call splice expects a list, map, or node\""
 
   test "guarded sends prepare once and validate descriptors only on demand":
@@ -231,10 +231,10 @@ suite "pipeline — prepared lazy invocation":
       (fn ^^generator rows []
         (try (yield 1) (yield 2)
          ensure (log .push "close")
-                (fail (RuntimeError ^message "cleanup"))))
-      (fn stop [x] (fail (RuntimeError ^message "callback")))
+                (fail (RuntimeError ^_msg "cleanup"))))
+      (fn stop [x] (fail (RuntimeError ^_msg "callback")))
       (let message (try ((rows) -> $each stop)
-        catch RuntimeError $err/message))
+        catch RuntimeError $err/.message))
       [message log]
     """, "[\"callback\" [\"close\"]]"
 
@@ -371,19 +371,19 @@ suite "pipeline — prepared lazy invocation":
     pipelineCheck """
       (var pending nil)
       (set pending ([1] => (fn [x] (pending .next))))
-      [(try (pending .next) catch Error $err/message) (pending .has_next)]
+      [(try (pending .next) catch Error $err/.message) (pending .has_next)]
     """, "[\"a Stream cannot be pulled reentrantly\" false]"
 
   test "take detaches before a downstream failure on the limiting item":
     pipelineCheck """
       (let source ($to_stream [1 2 3]))
-      (fn stop [x] (if (== x 2) (fail (RuntimeError ^message "stop")) x))
+      (fn stop [x] (if (== x 2) (fail (RuntimeError ^_msg "stop")) x))
       (try (source -> $take 2 => stop -> $into []) catch Error nil)
       (source .next)
     """, "3"
     pipelineCheck """
       (let source ($to_stream [1 2 3]))
-      (fn stop [x] (fail (RuntimeError ^message "stop")))
+      (fn stop [x] (fail (RuntimeError ^_msg "stop")))
       (try (source -> $take 2 => stop -> $into []) catch Error nil)
       (source .has_next)
     """, "false"
@@ -416,7 +416,7 @@ suite "pipeline — prepared lazy invocation":
     try:
       discard run(compileSource("""
         (fn broken [x]
-          (fail (RuntimeError ^message "broken")))
+          (fail (RuntimeError ^_msg "broken")))
         ([1] => broken -> $into [])
       """, "pipeline-location.gene"), newGlobalScope())
       check false

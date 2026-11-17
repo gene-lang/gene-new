@@ -2,7 +2,7 @@
 (import [DelegationError] ^from "../plugin_api")
 
 (fn delegation_error [code : Str, message : Str]
-  (fail (DelegationError ^code code ^message message)))
+  (fail (DelegationError ^code code ^_msg message)))
 
 (fn terminal_delegation? [state]
   (["done" "failed" "cancelled" "interrupted"] .contains? state))

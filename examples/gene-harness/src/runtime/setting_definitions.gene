@@ -17,24 +17,24 @@
     (return value))
   (let levels ($str/join portable_efforts ", "))
   (fail (ServiceError ^code "invalid_request"
-    ^message $"Effort must be one of ${levels}, or a level the model advertises.")))
+    ^_msg $"Effort must be one of ${levels}, or a level the model advertises.")))
 
 # {^engine "jev" ^model "jev-1.14.0" ^uses {^"round/check_in" {^engine "model" ^preset "fast"}}}
 (fn check_decisions [value]
   (if ($absent? value) (return value))
   (fn require_entry [entry, label : Str]
     (if (!= ($head entry) Map)
-      (fail (ServiceError ^code "invalid_request" ^message $"${label} must be a map.")))
+      (fail (ServiceError ^code "invalid_request" ^_msg $"${label} must be a map.")))
     (if (&& ($present? entry/engine) (|| (!= ($head entry/engine) Str) (== ($str/trim entry/engine) "")))
-      (fail (ServiceError ^code "invalid_request" ^message $"${label} names its ^engine as a non-empty string."))))
+      (fail (ServiceError ^code "invalid_request" ^_msg $"${label} names its ^engine as a non-empty string."))))
   (require_entry value "The decisions setting")
   (if_not ($absent? value/uses)
     (if (!= ($head value/uses) Map)
-      (fail (ServiceError ^code "invalid_request" ^message "Decision ^uses is a map from use id to an engine entry.")))
+      (fail (ServiceError ^code "invalid_request" ^_msg "Decision ^uses is a map from use id to an engine entry.")))
     (map_for [use entry] in value/uses
       (require_entry entry $"The ${use} entry")
       (if ($absent? entry/engine)
-        (fail (ServiceError ^code "invalid_request" ^message $"The ${use} entry needs an ^engine.")))))
+        (fail (ServiceError ^code "invalid_request" ^_msg $"The ${use} entry needs an ^engine.")))))
   value)
 
 (fn core_setting_definitions []

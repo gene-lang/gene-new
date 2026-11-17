@@ -16,7 +16,7 @@
   (let service (if ($present? view/service) view/service
     (do (let record (require_service view)) record/runtime/services/values/channels)))
   (if (|| ($absent? service) service/closed/.get)
-    (fail (ServiceError ^code "unavailable" ^message "The channel service is unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The channel service is unavailable.")))
   service)
 
 (fn channel_options [view]

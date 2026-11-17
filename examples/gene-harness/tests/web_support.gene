@@ -40,7 +40,7 @@
     (host .put "connection" (ready_host ^timeout_ms ready_timeout_ms host))
     host
   catch Error
-    (let message $err/message)
+    (let message $err/.message)
     host/process/.cancel
     (let stopped (try (await host/process) catch Error nil))
     ($assert false ($to_str message "\n" (?? stopped/stdout "") (?? stopped/stderr "")))))

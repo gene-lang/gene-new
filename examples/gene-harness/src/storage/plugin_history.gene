@@ -3,11 +3,10 @@
 (mod plugin_history)
 (import $store/fs [Store])
 
-(type PluginHistoryError ^props {^message Str} ^impl [Error])
-(impl Error for PluginHistoryError)
+(type PluginHistoryError : Error)
 
 (fn history_error [message : Str]
-  (fail (PluginHistoryError ^message message)))
+  (fail (PluginHistoryError ^_msg message)))
 
 (fn copy_data [value]
   ($serde/read_data ($serde/write_data value)))

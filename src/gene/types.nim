@@ -402,10 +402,6 @@ type
     ## It belongs to the original node: adding evidence does not wrap, copy,
     ## change equality, or change the identity of an error payload.
     classification*: FailureClassification
-    protocol*: Value
-    formatter*: Value
-    environment*: Scope
-    weakEnvironment: pointer # scope-owned error back-edge; promoted on retain
     diagnostics*: PropTable
 
   GeneNode = object
@@ -1320,6 +1316,7 @@ type
     annotationContractName: string # canonical builtin spelling for signature equality
     opaqueAbiAnnotation: bool
     parent: Value         # parent Type value, or NIL
+    errorRoot: bool       # the runtime's own `Error` type
     repr: TypeRepr        # representation marker (`^repr native_wrapper`);
                           # inherited through the nominal parent at newType
     nativeIdentity: string # module-qualified `^native` identity, or "".
@@ -1405,7 +1402,6 @@ type
     messages: OrderedTable[string, Value] # own messages, keyed by local name
     deriveFn: Value
     universal: bool         # explicit ^universal conformance, never inferred
-    errorRoot: bool         # the runtime's Error protocol, not a same-named declaration
     parents: seq[Value]      # direct ^inherit parents (docs/spec/protocols.md)
     closure: seq[Value]      # full transitive message closure, ancestors
                              # first, deduped by message identity; same-name
@@ -3013,16 +3009,10 @@ proc markSharedBits(bits: uint64, seen: var StampedSet) =
     let p = cast[ptr GeneNode](bits and PAYLOAD_MASK)
     var evidence: ErrorEvidence
     withErrorEvidenceLock(p):
-      if p.errorEvidence != nil and p.errorEvidence.weakEnvironment != nil:
-        p.errorEvidence.environment = cast[Scope](p.errorEvidence.weakEnvironment)
-        p.errorEvidence.weakEnvironment = nil
       markManualShared(p)
       evidence = p.errorEvidence
     markSharedBits(p.head.bits, seen)
     if evidence != nil:
-      pinPublishedScope(evidence.environment)
-      markSharedBits(evidence.protocol.bits, seen)
-      markSharedBits(evidence.formatter.bits, seen)
       for _, item in evidence.diagnostics:
         markSharedBits(item.bits, seen)
     for i in 0 ..< p.props.data.len:
@@ -3185,13 +3175,6 @@ proc rcRetainFull(bits: uint64) =
   of NODE_TAG:
     let node = cast[ptr GeneNode](bits and PAYLOAD_MASK)
     retainManual(node)
-    # Reading an error out of its owning scope makes its formatter environment
-    # independently reachable again, just as escaping a scope-owned function
-    # strengthens its captured scope. The nominal node itself never changes.
-    if not isSharedFlag(node.shared) and node.errorEvidence != nil and
-        node.errorEvidence.weakEnvironment != nil:
-      node.errorEvidence.environment = cast[Scope](node.errorEvidence.weakEnvironment)
-      node.errorEvidence.weakEnvironment = nil
   of FUNCTION_TAG:  retainManual(cast[ptr GeneFunction](bits and PAYLOAD_MASK))
   of NATIVE_FN_TAG: retainManual(cast[ptr GeneNativeFn](bits and PAYLOAD_MASK))
   of CYCLE_OBJECT_TAG:
@@ -3261,26 +3244,6 @@ proc rcRetainFull(bits: uint64) =
         inc ns.valueRefs
     GC_ref(data)
   else: discard
-
-proc weakenOwnedErrorEnvironment(node: ptr GeneNode, bits: uint64) =
-  # Only direct scope bindings count: a container holding the error might also
-  # be reachable outside the scope. Shared nodes keep their strong pin because
-  # inspecting another lane's bindings is not a permitted publication action.
-  if isSharedFlag(node.shared) or node.errorEvidence == nil or
-      node.errorEvidence.environment == nil:
-    return
-  let evidence = node.errorEvidence
-  let owner = evidence.environment
-  let references = node.refCount
-  var owned = 0
-  for i in 0 ..< owner.slots.len:
-    if owner.slots[i].bits == bits: inc owned
-  for binding in owner.vars.values:
-    if binding.bits == bits: inc owned
-  if owned == references and owned > 0:
-    evidence.weakEnvironment = cast[pointer](owner)
-    evidence.environment = nil
-  # Releasing `owner` may free `node`; callers must not touch it afterwards.
 
 proc isLoadedModuleRoot(owner: Scope): bool =
   # A loaded module already owns its root namespace through this_mod. Its
@@ -4809,7 +4772,6 @@ proc rcReleaseFull(bits: uint64) =
         weakenOwnedFunctions(candidates)
         return
       p.holdsEscapedFn = false
-    weakenOwnedErrorEnvironment(p, bits)
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](payload)
     releaseManual(p):
@@ -5392,10 +5354,6 @@ proc cloneErrorEvidence(source: ErrorEvidence): ErrorEvidence =
   result = ErrorEvidence(diagnostics: initPropTable())
   if source != nil:
     result.classification = source.classification
-    result.protocol = source.protocol
-    result.formatter = source.formatter
-    result.environment = if source.environment != nil: source.environment
-                         else: cast[Scope](source.weakEnvironment)
     for key, value in source.diagnostics: result.diagnostics[key] = value
 
 proc updateErrorEvidence*(v: Value, update: proc (evidence: ErrorEvidence) {.closure.}) =
@@ -5411,8 +5369,6 @@ proc updateErrorEvidence*(v: Value, update: proc (evidence: ErrorEvidence) {.clo
     update(candidate)
     # Published evidence can be read by another lane immediately. Prepare its
     # value graph before publication, without holding a node lock recursively.
-    markSharedValue(candidate.protocol)
-    markSharedValue(candidate.formatter)
     for _, item in candidate.diagnostics: markSharedValue(item)
     var published = false
     var retired: ErrorEvidence
@@ -5421,24 +5377,16 @@ proc updateErrorEvidence*(v: Value, update: proc (evidence: ErrorEvidence) {.clo
         retired = move node.errorEvidence
         node.errorEvidence = candidate
         published = true
-    reset(retired) # releasing an old environment must happen outside the lock
+    reset(retired) # releasing old diagnostics must happen outside the lock
     if published: return
-
-proc installErrorWitness*(v, protocol, formatter: Value, environment: Scope) =
-  v.updateErrorEvidence(proc (evidence: ErrorEvidence) =
-    # Concurrent first admissions agree on whichever complete witness wins.
-    if evidence.protocol.kind == vkProtocol: return
-    evidence.protocol = protocol
-    evidence.formatter = formatter
-    evidence.environment = environment)
 
 proc setFailureClassification*(v: Value, classification: FailureClassification) =
   v.updateErrorEvidence(proc (evidence: ErrorEvidence) =
     evidence.classification = classification)
 
 proc copyErrorEvidence*(copy, original: Value): Value =
-  ## Container copies keep the failure's origin and selected implementation,
-  ## but get their own diagnostic table. Mutating/rethrowing a copy must not
+  ## Container copies keep the failure's classification, but get their own
+  ## diagnostic table. Mutating/rethrowing a copy must not
   ## update the original's trace. Fresh constructors and serde do not call this.
   let source = original.errorEvidence
   if copy.tagOf == NODE_TAG and source != nil:
@@ -5452,17 +5400,17 @@ proc copyErrorEvidence*(copy, original: Value): Value =
   copy
 
 proc inheritErrorEvidence*(copy, original: Value): Value =
-  ## A transported node needs its own scope pin: weakening the original's
-  ## scope-owned back-edge must not weaken a separately reachable copy.
+  ## A transported node carries its own copy of the evidence.
   copy.copyErrorEvidence(original)
 
 proc generatedFailure*(v: Value): bool {.inline.} =
   let evidence = v.errorEvidence
   evidence != nil and evidence.classification != fcOrdinaryError
 
-proc hasErrorWitness*(v: Value): bool {.inline.} =
-  let evidence = v.errorEvidence
-  evidence != nil and evidence.protocol.kind == vkProtocol
+proc hasErrorEvidence*(v: Value): bool {.inline.} =
+  ## Runtime-owned state attached to a raised error: its failure
+  ## classification and its diagnostics. Never part of serialized code.
+  v.errorEvidence != nil
 
 proc errorProperties*(v: Value): PropTable =
   ## A diagnostic view for reporters. Ordinary node props/equality remain the
@@ -7824,9 +7772,14 @@ proc protocolName*(v: Value): lent string =
     raise newException(FieldDefect, "value is not a Protocol")
   ProtocolData(objData(v)).name
 
-proc isErrorProtocol*(v: Value): bool {.inline.} =
-  v.tagOf == OBJECT_TAG and objData(v).objKind == okProtocol and
-    ProtocolData(objData(v)).errorRoot
+proc isErrorRootType*(v: Value): bool {.inline.} =
+  ## The runtime's own `Error` type, not a same-named declaration. An error
+  ## row that names it is open: every recoverable error descends from it.
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
+    TypeData(objData(v)).errorRoot
+
+proc markErrorRootType*(v: Value) =
+  TypeData(objData(v)).errorRoot = true
 
 proc protocolScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocol:
@@ -11023,8 +10976,7 @@ proc newProtocol*(name: string, messageNames: openArray[string],
                   deriveFn: Value = NIL, parents: sink seq[Value] = @[],
                   signatures: openArray[Value] = [],
                   hasDefaults: openArray[bool] = [],
-                  universal = false, scope: Scope = nil,
-                  errorRoot = false): Value =
+                  universal = false, scope: Scope = nil): Value =
   ## `parents` are already-constructed ^inherit ancestors (docs/spec/protocols.md).
   ## The message closure is flattened eagerly, ancestors first, deduped by
   ## message identity. A protocol message is identified by its defining
@@ -11048,7 +11000,7 @@ proc newProtocol*(name: string, messageNames: openArray[string],
   let data = ProtocolData(objKind: okProtocol, name: name,
                           weakScope: cast[pointer](scope),
                           messages: initOrderedTable[string, Value](),
-                          deriveFn: deriveFn, universal: universal, errorRoot: errorRoot,
+                          deriveFn: deriveFn, universal: universal,
                           parents: parents,
                           closure: closure)
   let protocol = boxObject(data)

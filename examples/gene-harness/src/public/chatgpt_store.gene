@@ -13,7 +13,7 @@
 
 (fn require_account_id [id]
   (if (|| (!= ($head id) Str) ($absent? (#"^[0-9a-f]{64}$" .match id)))
-    (fail (ProviderError ^message "Invalid ChatGPT account selection")))
+    (fail (ProviderError ^_msg "Invalid ChatGPT account selection")))
   id)
 
 (fn account_path [root, id : Str] : Str
@@ -31,7 +31,7 @@
   (let directory (ensure_store root))
   (let lock (try_lock_wait ($path/join directory name) wait_ms))
   (if ($absent? lock)
-    (fail (ProviderError ^message "ChatGPT credentials are being updated by another host; retry shortly")))
+    (fail (ProviderError ^_msg "ChatGPT credentials are being updated by another host; retry shortly")))
   (try (operation) ensure lock/.close))
 
 (fn require_record [record, id : Str]
@@ -41,20 +41,20 @@
     (!= ($head record/subject) Str) (== record/subject "")
     (!= (account_id record) id) (!= ($head record/scopes) List)
     (!= ($head record/expires_at) Int))
-    (fail (ProviderError ^message "ChatGPT account record is invalid; sign in again")))
+    (fail (ProviderError ^_msg "ChatGPT account record is invalid; sign in again")))
   (for scope in record/scopes
-    (if (!= ($head scope) Str) (fail (ProviderError ^message "ChatGPT account record is invalid; sign in again"))))
+    (if (!= ($head scope) Str) (fail (ProviderError ^_msg "ChatGPT account record is invalid; sign in again"))))
   (for key in ["access_token" "refresh_token" "id_token" "email" "name" "nonce"]
     (let value (record .get key))
     (if (&& ($present? value) (!= ($head value) Str))
-      (fail (ProviderError ^message "ChatGPT account record is invalid; sign in again"))))
+      (fail (ProviderError ^_msg "ChatGPT account record is invalid; sign in again"))))
   record)
 
 (fn read_chatgpt_record [root, id : Str]
   (let path (account_path root id))
   (if (! ($fs/exists? path)) (return nil))
   (try (require_record ($json/parse ($fs/read_text path)) id)
-    catch Error (fail (ProviderError ^message "ChatGPT account record is unreadable; sign in again"))))
+    catch Error (fail (ProviderError ^_msg "ChatGPT account record is unreadable; sign in again"))))
 
 (fn active_chatgpt_id [root = nil]
   (let path ($path/join (chatgpt_root root) "active.json"))
@@ -62,7 +62,7 @@
   (try
     (let value ($json/parse ($fs/read_text path)))
     (require_account_id value/id)
-  catch Error (fail (ProviderError ^message "ChatGPT account selection is unreadable; choose an account in Models"))))
+  catch Error (fail (ProviderError ^_msg "ChatGPT account selection is unreadable; choose an account in Models"))))
 
 (fn plan_enabled? [record] : Bool
   (&& ($present? record) (== ($head record/scopes) List)
@@ -115,7 +115,7 @@
   (require_account_id id)
   (with_store_lock root "accounts.lock" (fn []
     (let record (read_chatgpt_record root id))
-    (if ($absent? record) (fail (ProviderError ^message "ChatGPT account not found")))
+    (if ($absent? record) (fail (ProviderError ^_msg "ChatGPT account not found")))
     ($fs/write_text_atomic ^^owner_only ($path/join (chatgpt_root root) "active.json") ($json/stringify {^id id}))
     (public_account record))))
 
@@ -149,7 +149,7 @@
 (fn acknowledge_chatgpt_plan [root, id : Str]
   (with_chatgpt_account root id (fn [record]
     (if (|| ($absent? record) (! (plan_enabled? record)))
-      (fail (ProviderError ^message "ChatGPT plan usage is not enabled for this account")))
+      (fail (ProviderError ^_msg "ChatGPT plan usage is not enabled for this account")))
     (record .put "plan_welcome_ack" true)
     {^record record ^result {^^ok}})))
 
@@ -169,7 +169,7 @@
         (let stored (try ($json/parse ($fs/read_text path)) catch Error nil))
         (if (|| (!= ($head stored/id) Str)
           ($absent? (#"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" .match stored/id)))
-          (fail (ProviderError ^message "ChatGPT host identity is unreadable; repair the local host record before signing in")))
+          (fail (ProviderError ^_msg "ChatGPT host identity is unreadable; repair the local host record before signing in")))
         (return stored/id)))
     (let id (uuid_host_id))
     ($fs/write_text_atomic ^^owner_only path ($json/stringify {^id id}))

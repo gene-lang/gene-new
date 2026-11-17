@@ -83,7 +83,7 @@
       (fn [workspace]
         (let calls ($cell 0))
         (let service
-          (test_service ^workspace workspace ^provider (fn [request] (calls .set (+ calls/.get 1)) (if (== calls/.get 1) (return "(Outcome ^prompt \"next\")")) (fail (HttpClientError ^message "provider timeout")))))
+          (test_service ^workspace workspace ^provider (fn [request] (calls .set (+ calls/.get 1)) (if (== calls/.get 1) (return "(Outcome ^prompt \"next\")")) (fail (HttpClientError ^_msg "provider timeout")))))
         (let published ($cell []))
         (service/publisher .set (fn [message] (published/.get .push message)))
         (try
@@ -570,7 +570,7 @@
 (stage "before console")
 ($println "late output")
 (stage "after console")
-(try (append_prompt "late" "no") catch Error ($println $err/message)))))
+(try (append_prompt "late" "no") catch Error ($println $err/.message)))))
 child/.detach
 (save_child child)
 (Outcome ^^done ^reply "done")""")))

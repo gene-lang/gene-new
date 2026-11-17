@@ -34,8 +34,7 @@
 (import [decision_available?] ^from "../runtime/decision_service")
 (import [dispatch_round_event claimed?] ^from "../runtime/round_lifecycle")
 
-(type TurnReadinessFailure ^props {^message Str ^code Str?} ^impl [Error])
-(impl Error for TurnReadinessFailure)
+(type TurnReadinessFailure : Error ^props {^code Str?})
 
 (fn recall_model_context [runtime, session : Str, id : Str]
   (var source nil)
@@ -255,7 +254,7 @@
           ^reply (&& (! failed) ($absent? failure) body_completed)))
       (let reason (if failed "error" terminal/kind))
       (let ended {^type "turn/end" ^turn number ^round round/id ^reason reason
-        ^text (if failed ($str/join ($map errors /message) "; ") (?? terminal/error nil)) ^!synthetic})
+        ^text (if failed ($str/join ($map errors /.message) "; ") (?? terminal/error nil)) ^!synthetic})
       # A short result line per turn, for check-ins and their repetition rule.
       (let evidence (try (turn_evidence (if failed (terminal .assoc "error" ended/text) terminal)) catch Error nil))
       (if_yes ($present? evidence)
@@ -315,7 +314,7 @@
           (fn []
             (readiness_info ^selection selection runtime config))))
       (if ($present? ready/reason)
-        (fail (TurnReadinessFailure ^code ready/code ^message ready/reason)))
+        (fail (TurnReadinessFailure ^code ready/code ^_msg ready/reason)))
       (set stage "provider/select")
       (let selected
         ($runtime/with_context
@@ -447,7 +446,7 @@
       (if (== ($head $err) ParticipantFailure) (set stage $"participants/${$err/phase}"))
       (let kind (if (|| (== ($head $err) TurnReadinessFailure) (== $err/code "connection_changed"))
         (then "not_ready") (else "error")))
-      (set result ((?? result {}) .assoc "kind" kind ; .assoc "error" $err/message))
+      (set result ((?? result {}) .assoc "kind" kind ; .assoc "error" $err/.message))
     ensure
       (let terminal
         (if (&& ($absent? failure) (! body_completed))
@@ -467,14 +466,14 @@
         # End-once is idempotent; no participant or seal callback is replayed.
         (start_record)
         (finish_turn runtime session {^type "turn/end" ^turn number ^round round/id
-          ^reason "error" ^stage "participants/finish" ^text $err/message ^!synthetic})
+          ^reason "error" ^stage "participants/finish" ^text $err/.message ^!synthetic})
         (transcript runtime session {^type "trace" ^^ignorable
-          ^text $"Turn finalization failed: ${$err/message}"})
+          ^text $"Turn finalization failed: ${$err/.message}"})
         (flush_event_store runtime/events)
       ensure (release_snapshot runtime/h/snapshots lease)))
     (if ($present? failure)
       (then
-        (let failed {^state "failed" ^message failure/message ^stage stage
+        (let failed {^state "failed" ^message failure/.message ^stage stage
           ^turn_count count ^last_turn number})
         # A transport refusal happened before a model call. Preserve its
         # pending input for deliberate resumption; never replay uncertain work.

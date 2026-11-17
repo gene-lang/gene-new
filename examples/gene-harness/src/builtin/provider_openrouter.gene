@@ -34,28 +34,28 @@
 
 (fn openrouter_text [response] : Str
   (if_not (== response/status 200)
-    (fail (ProviderError ^status response/status ^message
+    (fail (ProviderError ^status response/status ^_msg
       $"openrouter ${response/status}: provider request failed")))
   (let parsed (try ($json/parse response/body)
-    catch Error (fail (ProviderError ^message "openrouter returned invalid JSON"))))
+    catch Error (fail (ProviderError ^_msg "openrouter returned invalid JSON"))))
   (if (!= ($head parsed) Map)
-    (fail (ProviderError ^message "openrouter returned an invalid assistant message")))
+    (fail (ProviderError ^_msg "openrouter returned an invalid assistant message")))
   (if ($present? parsed/error)
-    (fail (ProviderError ^message "openrouter returned a provider error; output was not executed")))
+    (fail (ProviderError ^_msg "openrouter returned a provider error; output was not executed")))
   (if (!= ($head parsed/choices) List)
-    (fail (ProviderError ^message "openrouter returned invalid choices")))
+    (fail (ProviderError ^_msg "openrouter returned invalid choices")))
   (let choice parsed/choices/0)
   (if ($present? choice/error)
-    (fail (ProviderError ^message "openrouter returned a provider error; output was not executed")))
+    (fail (ProviderError ^_msg "openrouter returned a provider error; output was not executed")))
   (if (!= choice/finish_reason "stop")
-    (fail (ProviderError ^message
+    (fail (ProviderError ^_msg
       "openrouter response did not finish its turn; incomplete output was not executed")))
   (let content choice/message/content)
   (if_not (== ($head content) Str)
-    (fail (ProviderError ^message
+    (fail (ProviderError ^_msg
       "provider returned invalid text content")))
   (if (== ($str/trim content) "")
-    (fail (ProviderError ^message "openrouter returned no output text")))
+    (fail (ProviderError ^_msg "openrouter returned no output text")))
   content)
 
 (fn provider_openrouter [] : Plugin
@@ -80,7 +80,7 @@
          ^send (fn [prepared]
            (let key (api_key))
            (if ($absent? key)
-             (fail (ProviderError ^message
+             (fail (ProviderError ^_msg
                "no OpenRouter API key; connect in Models or set OPENROUTER_API_KEY")))
            (http_json_attempt "https://openrouter.ai/api/v1/chat/completions"
              {^content-type "application/json"

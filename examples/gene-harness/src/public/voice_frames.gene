@@ -3,7 +3,7 @@
 (mod voice_protocol)
 (import [AudioError] ^from "./audio" ^pkg "audio")
 
-(fn protocol_error [message : Str] (fail (AudioError ^message message)))
+(fn protocol_error [message : Str] (fail (AudioError ^_msg message)))
 
 (fn encode_audio_frame [kind : Int, stream : Int, sequence : Int, pcm : Bytes] : Bytes
   (if (|| (&& (!= kind 1) (!= kind 2)) (< stream 1) (> stream 4294967295)

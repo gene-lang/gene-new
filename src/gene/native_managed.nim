@@ -3278,10 +3278,10 @@ proc apiPinModuleImage(context: pointer, symbol: pointer,
       case nativePinImage(symbol, refuse)
       of 0: discard
       of 1:
-        raise newException(GeneError,
+        raiseBuiltinError("NativeLibraryError",
           "no loaded native image contains the pinned symbol")
       else:
-        raise newException(GeneError,
+        raiseBuiltinError("NativeLibraryError",
           "the native loader refused to pin the image")
     else:
       raise newException(GeneError,
@@ -3443,7 +3443,7 @@ proc geneManagedLoadModule*(domain: GeneManagedDomain,
       let symbol = symAddr(cast[LibHandle](lib.ffiLibraryHandle),
                            GeneModuleInitSymbol)
       if symbol == nil:
-        raise newException(GeneError,
+        raiseBuiltinError("NativeLibraryError",
           "native ABI initializer not found: " & GeneModuleInitSymbol)
       let moduleScope = newScope(parentScope)
       moduleScope.moduleRoot = true
@@ -3865,7 +3865,7 @@ proc managedPackageModuleOpen(lease: Value, path, name: string,
       release(managedPackageModuleLock)
     let handle = loadLib(path)
     if handle == nil:
-      raise newException(GeneError,
+      raiseBuiltinError("NativeLibraryError",
         "managed native module failed to open library: " & path)
     record.library = newFfiLibrary(cast[pointer](handle), path,
                                    unloadManagedPackageLibrary)

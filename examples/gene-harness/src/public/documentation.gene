@@ -12,7 +12,7 @@
       (return ($path/join root
         ($str/slice_bytes relative_path ($str/byte_size prefix)
           (- ($str/byte_size relative_path) ($str/byte_size prefix)))))))
-  (fail (ServiceError ^code "invalid_request" ^message $"Unknown bundled documentation path: ${relative_path}")))
+  (fail (ServiceError ^code "invalid_request" ^_msg $"Unknown bundled documentation path: ${relative_path}")))
 
 
 

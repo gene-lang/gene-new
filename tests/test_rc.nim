@@ -366,9 +366,7 @@ when defined(geneRcStats):
       """) == 0
       check leakedManaged("""
         (fn test []
-          (type Boom ^props {} (message raise [] : Int ^errors [Self] (fail self)))
-          (impl Error for Boom
-            (message message [] : Str ^errors [] "boom"))
+          (type Boom : Error ^props {} (message raise [] : Int ^errors [Self] (fail self)) (message message [] : Str ^errors [] ^^override "boom"))
           (try ((Boom) .raise) catch Boom nil))
         (test)
       """) == 0
@@ -708,26 +706,23 @@ when defined(geneRcStats):
     test "released error witnesses reclaim their formatter environments":
       check leakedManaged("""
         (fn raise_local []
-          (type Local ^props {^message Str})
-          (impl Error for Local
-            (message message [] : Str ^errors [] self/message))
-          (let original (Local ^message "local"))
+          (type Local : Error (message message [] : Str ^errors [] ^^override self/_msg))
+          (let original (Local ^_msg "local"))
           (fail original))
-        (repeat 10 (try (raise_local) catch Error $err_msg))
+        (repeat 10 (try (raise_local) catch Error $err/.message))
       """) == 0
       check leakedManaged("""
         (scope
           (type Local ^props {^message Str}
-            (impl Error (message message [] : Str ^errors [] self/message)))
+            (impl Error (message message [] : Str ^errors [] self/_msg)))
           (var original (Local ^message "named"))
-          (try (fail original) catch Error $err_msg))
+          (try (fail original) catch Error $err/.message))
       """, useLocalSlots = false) == 0
       check leakedManaged("""
         (fn error_factory []
-          (type Local ^props {^message Str})
-          (impl Error for Local)
-          (try (fail (Local ^message "saved")) catch Error
-            (fn [] $err_msg)))
+          (type Local : Error)
+          (try (fail (Local ^_msg "saved")) catch Error
+            (fn [] $err/.message)))
         (var display (error_factory))
         (display)
         (set display nil)

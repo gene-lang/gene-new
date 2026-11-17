@@ -18,8 +18,7 @@
 (import [new_harness shutdown_harness contribute provide] ^from "../../../src/kernel")
 (import $net/http_client [request])
 
-(type ProviderError ^props {^message Str} ^impl [Error])
-(impl Error for ProviderError)
+(type ProviderError : Error)
 
 (fn probe_profile [mode, attempts, entered]
   (Profile ^name "test" ^provider "probe"
@@ -41,7 +40,7 @@
                (then
                  (let pieces [])
                  (repeat 400 (pieces .push "x"))
-                 (fail (ProviderError ^message ($str/join pieces "")))))
+                 (fail (ProviderError ^_msg ($str/join pieces "")))))
              (if (== mode/.get "timeout")
                (return {^^timeout}))
              (if (== mode/.get "cancel")
@@ -496,7 +495,7 @@
          ^send (fn [prepared]
            (calls .set (+ calls/.get 1))
            (if (== mode/.get "error")
-             (fail (HttpClientError ^message "certificate rejected")))
+             (fail (HttpClientError ^_msg "certificate rejected")))
            (if (|| (== mode/.get "timeout") (== calls/.get 1))
              {^^timeout}
              {^text "complete response"}))})
@@ -511,14 +510,14 @@
       (calls .set 0)
       (mode .set "timeout")
       (let exhausted (try (call_model runtime request) "accepted"
-        catch Error $err/message))
+        catch Error $err/.message))
       (assert_equal calls/.get 2)
       ($assert ($str/contains? exhausted
         "retry model provider request exceeded 1.5 s (2 attempts)"))
       (calls .set 0)
       (mode .set "error")
       (let other (try (call_model runtime request) "accepted"
-        catch HttpClientError $err/message))
+        catch HttpClientError $err/.message))
       (assert_equal calls/.get 1)
       (assert_equal other "certificate rejected")
       (let configured (configure_model nil nil 900000 "model"))

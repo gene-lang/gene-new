@@ -50,7 +50,7 @@ proc validateInertValue(value: Value, seen: var HashSet[uint64]) =
   if seen.containsOrIncl(value.bits): return
   case value.kind
   of vkNode:
-    if value.nodeResourceId != 0 or value.hasErrorWitness:
+    if value.nodeResourceId != 0 or value.hasErrorEvidence:
       raise newException(ValueError, "executable GIR contains a retained runtime resource")
     validateInertValue(value.head, seen)
     for item in value.body: validateInertValue(item, seen)
@@ -493,7 +493,7 @@ proc validateUnlinkedFunction(fn: FunctionProto) =
   if fn.fastBindPositionalScalars and not fn.supportsScalarBinding():
     raise newException(ValueError, "executable GIR contains an invalid scalar binding proof")
   if fn.annotationSelfBits != 0 or fn.contractResolved or fn.signatureHadSelf or
-      fn.builtinErrorMessage or fn.boundExecutionPolicy != nil:
+      fn.boundExecutionPolicy != nil:
     raise newException(ValueError, "executable GIR contains runtime-only invocation metadata")
   if fn.namedRest.len > 0:
     if fn.namedRestSlot < 0 or fn.namedRestSlot >= fn.localNames.len or
@@ -646,7 +646,7 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
         for segment in selector.body:
           if segment.kind != vkString or segment.strVal.startsWith(".") or
               segment.strVal.startsWith("?.") or
-              segment.strVal in ["this_mod", "this_pkg", "err", "err_msg"]:
+              segment.strVal in ["this_mod", "this_pkg", "err"]:
             raise newException(ValueError, "encoded GIR contains a non-static stdlib path")
         stdlibSlots += selector.body.len + 1
       of opDefineRuntimeMacro:

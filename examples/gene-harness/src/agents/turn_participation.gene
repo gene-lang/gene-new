@@ -113,7 +113,7 @@
 (fn finish_participant_outcome [result]
   (if (== result/kind "suspend")
     (fail (ParticipantFailure ^participant result/validated/suspension ^phase "commit"
-      ^code "unhandled_suspension" ^message "No participant handled the checked Outcome suspension.")))
+      ^code "unhandled_suspension" ^_msg "No participant handled the checked Outcome suspension.")))
   (if_yes (== result/kind "done")
     (discard_done_items result/turn)
     (result .put "request_items" [])

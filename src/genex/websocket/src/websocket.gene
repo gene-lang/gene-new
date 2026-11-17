@@ -1,8 +1,7 @@
 (mod websocket)
 
-(type WebSocketError ^props {^message Str}
-  (ctor [message : Str] (set self/message message)))
-(impl Error for WebSocketError)
+(type WebSocketError : Error
+  (ctor [message : Str] (set self/_msg message)))
 
 (fn load [path : Str] ($aot/load path))
 

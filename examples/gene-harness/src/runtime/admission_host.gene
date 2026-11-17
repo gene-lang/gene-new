@@ -19,15 +19,15 @@
 # unusable choice, otherwise warnings (unready provider, effort resolution,
 # uncatalogued model). Selection stays host-owned.
 (fn ^^private check_model_settings [runtime, input]
-  (let choice (try (validate_model_settings (?? input {})) catch Error (return {^error $err/message})))
+  (let choice (try (validate_model_settings (?? input {})) catch Error (return {^error $err/.message})))
   (if (&& ($present? choice/provider) ($absent? (row runtime/h "providers" choice/provider)))
     (return {^error $"Unknown provider ${choice/provider}"}))
   (let base (effective_config runtime))
   (let selected (try (select_provider ^allow_unready true runtime
     (session_settings {^model_settings choice} base))
     catch Error
-      (if (&& (!= $err/code "not_ready") (> ($map_size choice) 0)) (return {^error $err/message}))
-      {^reason $err/message}))
+      (if (&& (!= $err/code "not_ready") (> ($map_size choice) 0)) (return {^error $err/.message}))
+      {^reason $err/.message}))
   (let warnings [])
   (if ($present? selected/reason) (warnings .push selected/reason))
   (if (&& ($present? choice/effort) (!= choice/effort "auto")
@@ -49,7 +49,7 @@
   (let record (require_service handle))
   (let controller record/runtime/services/values/controller)
   (if (|| ($absent? controller) controller/closed/.get)
-    (fail (ServiceError ^code "unavailable" ^message "Round admission is unavailable.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "Round admission is unavailable.")))
   {^runtime record/runtime ^controller controller})
 
 (fn ^^private receipt_view [receipt]
@@ -117,7 +117,7 @@
           ^initiator initiator ^input input ^model_settings model_settings
           ^on_admit (fn [receipt] (admitted .set (copy_data receipt))))
       catch RoundError
-        (fail (ServiceError ^code $err/code ^message $err/message)))
+        (fail (ServiceError ^code $err/code ^_msg $err/.message)))
       (receipt_view admitted/.get))))
 
 (fn admission_host_binding [runtime]

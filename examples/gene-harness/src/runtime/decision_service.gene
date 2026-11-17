@@ -36,7 +36,7 @@
 (fn decision_service_record [handle] ^^private
   (for service in services/.get
     (if (same? service/token handle/token) (return service)))
-  (fail (ServiceError ^code "unavailable" ^message "The decision service is closed.")))
+  (fail (ServiceError ^code "unavailable" ^_msg "The decision service is closed.")))
 
 (fn open_decision_service [runtime]
   (let token ($cell nil))
@@ -55,7 +55,7 @@
   nil)
 
 (fn question_error [message : Str] ^^private
-  (fail (ServiceError ^code "invalid_request" ^message message)))
+  (fail (ServiceError ^code "invalid_request" ^_msg message)))
 
 (fn snake_id? [value] : Bool ^^private
   (&& (== ($head value) Str) ($present? (#"^[a-z][a-z0-9_]{0,63}$" .match value))))
@@ -182,7 +182,7 @@
   nil)
 
 (fn engine_reason [candidate, settings] ^^private
-  (let result (try (candidate/available settings) catch Error ($to_str "The availability check failed: " $err/message)))
+  (let result (try (candidate/available settings) catch Error ($to_str "The availability check failed: " $err/.message)))
   (if (|| ($absent? result) (== result true)) (return nil))
   (if (== result false) (return "This decision engine is unavailable."))
   (if (== ($head result) Str) result "The engine returned an invalid availability result."))
@@ -259,7 +259,7 @@
 (fn engine_resource [service, choice] ^^private
   (let key ($crypto/sha256 ($serde/write_data [choice/row_id choice/settings])))
   (service/gate (fn []
-    (if service/closed/.get (fail (ServiceError ^code "unavailable" ^message "The decision service is closed.")))
+    (if service/closed/.get (fail (ServiceError ^code "unavailable" ^_msg "The decision service is closed.")))
     (let cached (service/resources/.get .get choice/name))
     (if (&& ($present? cached) (== cached/key key) (! (resource_closed? cached/resource)))
       (return cached/resource))
@@ -290,25 +290,25 @@
   (let runtime service/runtime)
   (let session (decision_session request))
   (if ($absent? session)
-    (fail (ServiceError ^code "unavailable" ^message "The model engine records its call in a session; call decide from a session.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The model engine records its call in a session; call decide from a session.")))
   (var chosen choice/settings)
   (if_yes (nonempty_text? chosen/preset)
     (var found nil)
     (for preset in (?? (/presets (catalog_snapshot runtime)) [])
       (if (== preset/name chosen/preset) (set found preset)))
     (if ($absent? found)
-      (fail (ServiceError ^code "unavailable" ^message $"Model preset ${chosen/preset} is not defined in models.gene.")))
+      (fail (ServiceError ^code "unavailable" ^_msg $"Model preset ${chosen/preset} is not defined in models.gene.")))
     (set chosen found))
   (let provider (nonempty chosen/provider))
   (if ($absent? provider)
-    (fail (ServiceError ^code "unavailable" ^message "The model engine needs ^provider or ^preset.")))
+    (fail (ServiceError ^code "unavailable" ^_msg "The model engine needs ^provider or ^preset.")))
   (let candidate (row runtime/h "providers" provider))
   (if ($absent? candidate)
-    (fail (ServiceError ^code "unavailable" ^message $"Provider ${provider} is not installed.")))
+    (fail (ServiceError ^code "unavailable" ^_msg $"Provider ${provider} is not installed.")))
   (let model (?? (nonempty chosen/model) (catalog_default_model runtime provider)))
   (let requested (?? (nonempty chosen/effort) "low"))
   (let remaining (- deadline ($os/monotonic_ms)))
-  (if (<= remaining 0) (fail (ServiceError ^code "timeout" ^message "The decision deadline passed.")))
+  (if (<= remaining 0) (fail (ServiceError ^code "timeout" ^_msg "The decision deadline passed.")))
   (let selection {^provider provider ^model model ^requested_effort requested
     ^effective_effort (resolve_effort requested (selection_metadata runtime candidate model))
     ^timeout_ms remaining})
@@ -355,8 +355,8 @@
     (when (TaskOutcome/error failure)
       (if (>= ($os/monotonic_ms) deadline)
         (then {^status "timeout" ^reason "The decision deadline passed."})
-        (elif (engine_statuses .contains? failure/code) {^status failure/code ^reason (safe_reason failure/message)})
-        (else {^status "error" ^reason (safe_reason failure/message)})))
+        (elif (engine_statuses .contains? failure/code) {^status failure/code ^reason (safe_reason failure/.message)})
+        (else {^status "error" ^reason (safe_reason failure/.message)})))
     (when (TaskOutcome/panic message) {^status "error" ^reason "The engine failed."})
     (when TaskOutcome/cancelled {^status "timeout" ^reason "The decision deadline passed."})))
 

@@ -55,7 +55,7 @@
         (try
           (let h original/h)
           ($assert (try (resolve h "loop") false catch Error
-            ($str/contains? $err/message "no provider for seam loop"))
+            ($str/contains? $err/.message "no provider for seam loop"))
             "fixture unexpectedly supplied raw runtime access")
           (let plain (call h "notification_post" {^title "Before replacement"}))
           (let keyed (call h "notification_post" {^key "job" ^title "Job"

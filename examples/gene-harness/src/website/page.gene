@@ -394,7 +394,7 @@
 
 (fn website_page [^mode mode : Str = "embedded", ^app_url app_url : Str = "", ^appearance appearance = nil] : Str
   (if_not (["embedded" "standalone"] .contains? mode)
-    (fail (WebsiteError ^message $"Unknown website mode ${mode}")))
+    (fail (WebsiteError ^_msg $"Unknown website mode ${mode}")))
   # Embedded, the app is this server's root. Standalone, a visitor may have no
   # local Harness at all, so the link appears only when one is configured.
   (var open_app (if (== mode "embedded") "/" app_url))

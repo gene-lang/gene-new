@@ -8,9 +8,7 @@
          new_runtime]
   ^from "../src/cordis")
 
-(type ActivationBoom ^props {^message Str} ^impl [Error])
-
-(impl Error for ActivationBoom)
+(type ActivationBoom : Error)
 
 (type RecordingInvoker
   ^props {^calls Any}
@@ -36,7 +34,7 @@
     (var cleanup_count ($cell 0))
     (fn activate [ctx, config]
       (if (== config 13)
-        (fail (ActivationBoom ^message "unlucky")))
+        (fail (ActivationBoom ^_msg "unlucky")))
       (active_config .set config)
       (ctx .on config_update transform_config)
       (ctx .defer

@@ -363,8 +363,9 @@ boundary for feature-admission flags such as `allow_ffi`.
 
 Timeout and memory expiry unwind past the execution controlled by that policy.
 Its own `catch` clauses cannot intercept expiry. Outside the expired policy,
-the failure is an ordinary `RuntimeError` with the existing `eval timeout
-exceeded` or `eval memory limit exceeded` message. A still-valid enclosing
+the failure is an ordinary Error, `(LimitExceeded ^reason "timeout")` or
+`^reason "memory"`, with the `eval timeout exceeded` or `eval memory limit
+exceeded` message. A still-valid enclosing
 execution may catch an inner expiry; an expired enclosing policy must unwind
 too. These rules also apply to policy-limited eval and module invocations.
 

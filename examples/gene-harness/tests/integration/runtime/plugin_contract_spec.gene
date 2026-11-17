@@ -47,7 +47,7 @@
         ($assert (! ((host .PluginHost:registry_names) .contains? "views")))
         (for seam in ["loop" "voice/runtime"]
           ($assert (try (host .PluginHost:resolve seam) false
-            catch Error ($str/contains? $err/message "no provider for seam")))
+            catch Error ($str/contains? $err/.message "no provider for seam")))
           ($assert ($absent? (host .PluginHost:row "seams" seam)))
           ($assert (! ((host .PluginHost:row_keys "seams") .contains? seam)))
           ($assert (($filter (host .PluginHost:rows "seams")
@@ -145,7 +145,7 @@
           ($assert (! plan/valid) ($to_str plan))
           ($assert ($str/contains? ($str/join plan/errors "\n") "gene-harness/PluginHost:2"))
           ($assert (try (revert_plugin runtime/workspace runtime/h "retired" old_revision/.get) false
-            catch Error ($str/contains? $err/message "gene-harness/PluginHost:2")))
+            catch Error ($str/contains? $err/.message "gene-harness/PluginHost:2")))
           ($assert (== (composition_revision runtime/workspace) before))
         ensure (close_runtime runtime)))))
 
@@ -217,7 +217,7 @@
           ($assert (== ($fs/read_text marker) "3"))
           ($assert (== ($fs/read_text $"${marker}.removed") "3"))
           (let retired_error (try old_host/.PluginHost:execution_budget {^message "unexpected success"}
-            catch Error {^code $err/code ^message $err/message}))
+            catch Error {^code $err/code ^message $err/.message}))
           ($assert (== retired_error/code "unavailable") ($to_str retired_error))
           ($assert (try (old_callback) false catch Error true))
         ensure (close_runtime runtime))
@@ -255,10 +255,10 @@
             (let bad ($thaw ($freeze good/0)))
             (map_for [key value] in extra (bad/interfaces .put key value))
             (let direct (try (verify_stored_entry runtime/workspace bad) ""
-              catch Error $err/message))
+              catch Error $err/.message))
             ($assert ($str/contains? direct "unsupported interface") direct)
             (let loaded (try (load_entry_descriptor runtime/workspace runtime/h bad) ""
-              catch Error $err/message))
+              catch Error $err/.message))
             ($assert (== direct loaded))
             (let revision (commit_composition runtime/workspace [bad]))
             (let plan (validate_plan runtime {^base_revision revision ^changes []}))
@@ -266,7 +266,7 @@
             ($assert ((plan/errors .join "\n") .contains? direct))
             (commit_composition runtime/workspace good)
             (let reverted (try (revert_plugin runtime/workspace runtime/h "compat" revision) ""
-              catch Error $err/message))
+              catch Error $err/.message))
             ($assert (== direct reverted)))
         ensure (close_runtime runtime))))))
 
@@ -291,7 +291,7 @@
                     receiver/.PluginHost:execution_budget
                     ($fs/write_text ($to_str %marker ".removed") "removed"))})
                 (host .PluginHost:contribute "partial_rows" {^name "entry"})
-                (fail (ServiceError ^code "fixture" ^message "planned activation failure")))))))
+                (fail (ServiceError ^code "fixture" ^_msg "planned activation failure")))))))
           (let result (register_plugin runtime/workspace runtime/h "partial" source))
           ($assert (== result/status "error") ($to_str result))
           ($assert ($str/contains? result/message "planned activation failure") ($to_str result))

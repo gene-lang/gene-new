@@ -22,7 +22,7 @@
   (let cycle_form ($read_one
     "(do (let c ($cell nil)) (c .set c) nil)"))
   (let failure_form ($read_one
-    "(do (type Broken ^props {^text Str}) (impl ValueEq for Broken (message equal [other : Broken] : Bool (== self/text other/text))) (fail (AssertionError ^message \"expected\")))"))
+    "(do (type Broken ^props {^text Str}) (impl ValueEq for Broken (message equal [other : Broken] : Bool (== self/text other/text))) (fail (AssertionError ^_msg \"expected\")))"))
   (let compile_failure_form ($read_one
     "(do (type Broken ^props {}) (var))"))
   (let control (eval closure_form ^in (env)))

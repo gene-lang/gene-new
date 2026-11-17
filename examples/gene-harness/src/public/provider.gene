@@ -18,35 +18,35 @@
 (fn resolve_credential [spec, ^timeout_ms timeout_ms : Int = 5000, ^environment environment = nil]
   (if ($absent? spec) (return nil))
   (if (!= ($head spec) Map)
-    (fail (ProviderError ^message "Invalid credential source")))
+    (fail (ProviderError ^_msg "Invalid credential source")))
   (map_for [key value] in spec
     (if_not (["env" "command"] .contains? ($to_str key))
-      (fail (ProviderError ^message "Invalid credential source"))))
+      (fail (ProviderError ^_msg "Invalid credential source"))))
   (if (== ($present? spec/env) ($present? spec/command))
-    (fail (ProviderError ^message "Credential source must name one environment variable or command")))
+    (fail (ProviderError ^_msg "Credential source must name one environment variable or command")))
   (if ($present? spec/env)
     (then
       (if (|| (!= ($head spec/env) Str) (== spec/env ""))
-        (fail (ProviderError ^message "Invalid credential environment variable")))
+        (fail (ProviderError ^_msg "Invalid credential environment variable")))
       (let value (nonempty (if ($absent? environment)
         (then ($os/env? spec/env)) (else (environment .get spec/env)))))
-      (if ($absent? value) (fail (ProviderError ^message "Credential environment variable is unavailable")))
+      (if ($absent? value) (fail (ProviderError ^_msg "Credential environment variable is unavailable")))
       (return value)))
   (let command spec/command)
   (if (|| (!= ($head command) List) (== command/.size 0))
-    (fail (ProviderError ^message "Credential command must be a nonempty argument list")))
+    (fail (ProviderError ^_msg "Credential command must be a nonempty argument list")))
   (for part in command
-    (if (!= ($head part) Str) (fail (ProviderError ^message "Invalid credential command argument"))))
+    (if (!= ($head part) Str) (fail (ProviderError ^_msg "Invalid credential command argument"))))
   (let args [])
   (var index 1)
   (while (< index command/.size) (args .push command/%index) (set index (+ index 1)))
   (let result (try
     (await (exec_async command/0 args... ^timeout_ms timeout_ms ^max_bytes 65536))
-    catch Error (fail (ProviderError ^message "Credential command could not run"))))
+    catch Error (fail (ProviderError ^_msg "Credential command could not run"))))
   (if (|| result/timed_out (!= result/status 0) result/stdout_truncated result/stderr_truncated)
-    (fail (ProviderError ^message "Credential command failed or exceeded its limit")))
+    (fail (ProviderError ^_msg "Credential command failed or exceeded its limit")))
   (let value (nonempty result/stdout))
-  (if ($absent? value) (fail (ProviderError ^message "Credential command returned no credential")))
+  (if ($absent? value) (fail (ProviderError ^_msg "Credential command returned no credential")))
   value)
 
 (fn probe_json [url : Str, ^credential credential = nil, ^headers supplied_headers = {},
@@ -73,7 +73,7 @@
 (fn configure_model [model, effort, timeout, default_model : Str,
                      ^catalog catalog = []]
   (if (|| (!= ($head timeout) Int) (<= timeout 0) (> timeout 86400000))
-    (fail (ProviderError ^message
+    (fail (ProviderError ^_msg
       "provider_timeout_ms must be an integer between 1 and 86400000")))
   (let selected_model (?? (nonempty model) default_model))
   (let requested (?? (nonempty effort) "auto"))
@@ -90,7 +90,7 @@
     (let response (try (await pending) ensure pending/.cancel))
     (parse_response response)
   catch HttpClientError
-    (if ($str/contains? ($str/lower $err/message) "timeout")
+    (if ($str/contains? ($str/lower $err/.message) "timeout")
       {^^timeout}
       (fail $err))))
 
@@ -150,15 +150,15 @@
   (let deadline (+ ($os/monotonic_ms) 5000))
   (let headers (endpoint_headers entry))
   (let remaining (- deadline ($os/monotonic_ms)))
-  (if (<= remaining 0) (fail (ProviderError ^message "Model discovery timed out")))
+  (if (<= remaining 0) (fail (ProviderError ^_msg "Model discovery timed out")))
   (let response (probe_json ^headers headers ^timeout_ms remaining (endpoint_url entry/base_url "models")))
   (if (|| (!= response/status 200) ($present? response/error))
-    (fail (ProviderError ^status response/status ^message "Model discovery could not complete")))
+    (fail (ProviderError ^status response/status ^_msg "Model discovery could not complete")))
   (normalize_compatible_models response/data))
 
 (fn endpoint_provider [input]
   (let entry (try (validate_provider input [])
-    catch Error (fail (ProviderError ^message $err/message))))
+    catch Error (fail (ProviderError ^_msg $err/.message))))
   (let adapter entry/adapter)
   (let models (?? entry/models []))
   (for model in models
@@ -172,7 +172,7 @@
    ^connection (fn [] (endpoint_connection entry)) ^models (fn [] (endpoint_models entry))
    ^configure (fn [model effort timeout]
      (let chosen (?? (nonempty model) default_model))
-     (if ($absent? chosen) (fail (ProviderError ^message "This endpoint needs a model id; choose one in the picker.")))
+     (if ($absent? chosen) (fail (ProviderError ^_msg "This endpoint needs a model id; choose one in the picker.")))
      (configure_model ^catalog models chosen effort timeout chosen))
    ^prepare (fn [call]
      (match adapter
@@ -180,7 +180,7 @@
        (when "openrouter_chat" (prepare_chat call adapter))
        (when "openai_responses" (prepare_responses call))
        (when "anthropic_messages" (prepare_messages call))
-       (else (fail (ProviderError ^message "Unknown endpoint adapter")))))
+       (else (fail (ProviderError ^_msg "Unknown endpoint adapter")))))
    ^send (fn [prepared]
      (let deadline (+ ($os/monotonic_ms) prepared/timeout_ms))
      (let headers (endpoint_headers ^timeout_ms ($math/min 5000 prepared/timeout_ms) entry))

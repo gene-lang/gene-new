@@ -6,16 +6,16 @@
 (fn message_images [message]
   (let images (?? message/images []))
   (if_not (== ($head images) List)
-    (fail (ProviderError ^message "Model image input must be a list.")))
+    (fail (ProviderError ^_msg "Model image input must be a list.")))
   (if (&& (! images/.empty?) (!= message/role "user"))
-    (fail (ProviderError ^message "Image observations must be supplied in user messages.")))
+    (fail (ProviderError ^_msg "Image observations must be supplied in user messages.")))
   (for image in images
     (if_not (&& (== ($head image) Map)
                 (["image/png" "image/jpeg" "image/webp"] .contains? image/mime)
                 (== ($head image/data) Str) (!= image/data ""))
-      (fail (ProviderError ^message "Invalid model image content.")))
+      (fail (ProviderError ^_msg "Invalid model image content.")))
     (if_not (["auto" "low" "high"] .contains? (?? image/detail "auto"))
-      (fail (ProviderError ^message "Image detail must be auto, low or high."))))
+      (fail (ProviderError ^_msg "Image detail must be auto, low or high."))))
   images)
 
 (fn image_url [image] : Str
@@ -60,6 +60,6 @@
   (for message in messages
     (let images (message_images message))
     (if_not images/.empty?
-      (fail (ProviderError ^message
+      (fail (ProviderError ^_msg
         $"${provider} does not support image observations in this transport; choose chatgpt, anthropic or an image-capable OpenRouter model."))))
   nil)

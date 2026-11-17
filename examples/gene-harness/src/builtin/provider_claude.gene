@@ -10,7 +10,7 @@
 
 (fn claude_request [config, system : Str, user : Str]
   (if (>= (+ ($str/byte_size system) ($str/byte_size user)) 131072)
-    (fail (ProviderError ^message
+    (fail (ProviderError ^_msg
       "Claude CLI prompt exceeds 128 KiB; use the anthropic provider for larger contexts")))
   (let settings {^^disableAllHooks})
   (if (== config/effort "none")
@@ -28,31 +28,31 @@
 
 (fn claude_text [response] : Str
   (if response/timed_out
-    (fail (ProviderError ^message
+    (fail (ProviderError ^_msg
       "Claude CLI timed out; incomplete output was not executed")))
   (if (|| response/stdout_truncated response/stderr_truncated)
-    (fail (ProviderError ^message
+    (fail (ProviderError ^_msg
       "Claude CLI output exceeded its byte limit; incomplete output was not executed")))
   (let parsed (try ($json/parse response/stdout) catch Error nil))
   (if_not (== ($head parsed) Map)
-    (fail (ProviderError ^message
+    (fail (ProviderError ^_msg
       "Claude CLI returned no valid JSON result; check claude auth status and update Claude Code if a flag is unsupported")))
   (if (|| (!= response/status 0) (== parsed/is_error true))
-    (fail (ProviderError ^message
+    (fail (ProviderError ^_msg
       "Claude CLI request failed; check claude auth status, model access, and subscription/API usage limits")))
   (if (|| (!= parsed/type "result") (!= parsed/subtype "success")
           (!= parsed/is_error false))
-    (fail (ProviderError ^message
+    (fail (ProviderError ^_msg
       "Claude CLI did not complete successfully; incomplete output was not executed")))
   (if_not ($absent? parsed/stop_reason)
     (if_not (== parsed/stop_reason "end_turn")
-      (fail (ProviderError ^message
+      (fail (ProviderError ^_msg
         "Claude CLI response did not finish its turn; incomplete output was not executed"))))
   (if_not (== ($head parsed/result) Str)
-    (fail (ProviderError ^message "Claude CLI returned no text result")))
+    (fail (ProviderError ^_msg "Claude CLI returned no text result")))
   (let text parsed/result)
   (if (== ($str/trim text) "")
-    (fail (ProviderError ^message "Claude CLI returned empty output")))
+    (fail (ProviderError ^_msg "Claude CLI returned empty output")))
   text)
 
 (fn provider_claude [] : Plugin
@@ -88,12 +88,12 @@
                (exec_async prepared/cmd prepared/args...
                  ^timeout_ms prepared/timeout_ms ^max_bytes 2000000)
              catch Error
-               (fail (ProviderError ^message
+               (fail (ProviderError ^_msg
                  "Cannot start Claude Code; install or update claude"))))
            (let response
              (try (await task)
                catch Error
-                 (fail (ProviderError ^message
+                 (fail (ProviderError ^_msg
                    "Claude Code could not run; check GENE_HARNESS_CLAUDE_COMMAND"))
                ensure task/.cancel))
            (let text (claude_text response))

@@ -417,7 +417,7 @@ proc biBytesDecodeUtf8(args: openArray[Value]): Value {.nimcall.} =
       else:
         inc i
   if invalid >= 0:
-    raise newException(GeneError,
+    raiseBuiltinError("DecodeError",
       "binary/decode_utf8: invalid UTF-8 at byte " & $invalid)
   newStr(raw)
 
@@ -443,11 +443,11 @@ proc biBase64Decode(args: openArray[Value]): Value {.nimcall.} =
   try:
     decoded = base64.decode(encoded)
   except ValueError:
-    raise newException(GeneError, "base64/decode expects canonical base64 text")
+    raiseBuiltinError("DecodeError", "base64/decode expects canonical base64 text")
   # std/base64 skips characters it does not know. Requiring the round trip
   # rejects that input, missing padding, and a non-zero trailing bit pattern.
   if base64.encode(decoded) != encoded:
-    raise newException(GeneError, "base64/decode expects canonical base64 text")
+    raiseBuiltinError("DecodeError", "base64/decode expects canonical base64 text")
   newBytes(decoded)
 
 # --- binary number codecs ----------------------------------------------------
@@ -1121,7 +1121,7 @@ when not defined(geneWasm):
     except CatchableError as error:
       # Source IO and web-profile validation failures must cross the native
       # boundary as catchable Gene errors, like other filesystem operations.
-      raise newException(GeneError, "web/load: " & error.msg)
+      raiseBuiltinError("CompileError", "web/load: " & error.msg)
     let app = scope.application()
     app.webAssets[webAssetIdentity(asset)] = asset
     for route in webAssetRoutes(asset):
@@ -1679,7 +1679,7 @@ proc urlEncodeComponent(s: string): string =
 
 proc raiseUrlError(message: string, scope: Scope) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var e: ref GeneError
   new(e)
   e.msg = message
@@ -1815,7 +1815,7 @@ proc packageValue*(pkg: Package): Value
 
 proc raisePackageResourceError(scope: Scope, message: string) {.noreturn.} =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var error: ref GeneError
   new(error)
   error.msg = message
@@ -2107,7 +2107,7 @@ proc biPkgNativeModule(args: openArray[Value],
 
 proc raisePathError(message: string, scope: Scope) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var e: ref GeneError
   new(e)
   e.msg = message
@@ -2257,7 +2257,7 @@ proc biPathRelative(args: openArray[Value], call: ptr NativeCall): Value {.nimca
 
 proc raiseOsError(message: string, scope: Scope) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var e: ref GeneError
   new(e)
   e.msg = message
@@ -3195,7 +3195,7 @@ when compileOption("threads"):
               var value = NIL
               if ctx.fileOperation != nfoNone:
                 var props = initPropTable()
-                props["message"] = newStr(failure)
+                props["_msg"] = newStr(failure)
                 value = newNode(builtInTypeHead(pending.fileErrorScope, "OsError"),
                                 props = props)
               if tryFailTask(task, failure, value, hasValue = value.kind != vkNil):
@@ -4395,7 +4395,7 @@ proc raiseHttpClientError(message: string, scope: Scope,
   ## (`"usage"`: authority, argument, and option mistakes) must surface so a
   ## typo cannot silently reroute every request to the subprocess transport.
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   props["kind"] = newStr(kind)
   var e: ref GeneError
   new(e)
@@ -5914,7 +5914,7 @@ proc refreshFsWatcher(record: FsWatcherRecord) =
 proc raiseWatcherClosed(scope: Scope) {.noreturn.} =
   let message = "filesystem watcher is closed"
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var head = newSym("WatcherClosed")
   let typ = builtinBinding(scope, "WatcherClosed")
   if typ.kind == vkType:
@@ -6386,7 +6386,7 @@ type
 
 proc raiseJsonError(p: var JsonParser, message: string) =
   var props = initPropTable()
-  props["message"] = newStr("json/parse: " & message & " at offset " & $p.pos)
+  props["_msg"] = newStr("json/parse: " & message & " at offset " & $p.pos)
   var e: ref GeneError
   new(e)
   e.msg = "json/parse: " & message
@@ -6396,7 +6396,7 @@ proc raiseJsonError(p: var JsonParser, message: string) =
 
 proc raiseJsonValueError(scope: Scope, message: string) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var e: ref GeneError
   new(e)
   e.msg = message
@@ -7094,7 +7094,7 @@ proc biLogNewFileLogger(args: openArray[Value],
         path, file, format, flush)
       newLogger(name, newDirectLogRoute(sink, level), payload)
     except CatchableError as e:
-      raise newException(GeneError, "log/new_file_logger: " & e.msg)
+      raiseBuiltinError("OsError", "log/new_file_logger: " & e.msg)
 
 proc biLoggerChild(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -7209,7 +7209,7 @@ proc raiseSerdeError(scope: Scope, message: string, path: seq[string] = @[]) =
   if path.len > 0:
     full = "at " & serdePathText(path) & ": " & message
   var props = initPropTable()
-  props["message"] = newStr(full)
+  props["_msg"] = newStr(full)
   props["path"] = newStr(serdePathText(path))
   var e: ref GeneError
   new(e)
@@ -8534,7 +8534,7 @@ proc biSerdeRead(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
 
 proc raiseDbError(message: string, scope: Scope) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var e: ref GeneError
   new(e)
   e.msg = message
@@ -9517,7 +9517,7 @@ proc biCryptoRandomHex(args: openArray[Value], call: ptr NativeCall): Value {.ni
         encoded.add toHex(value, 2).toLowerAscii()
       newStr(encoded)
     except OSError as error:
-      raise newException(GeneError,
+      raiseBuiltinError("OsError",
         "crypto/random_hex could not read the operating-system random source: " &
         error.msg)
   else:
@@ -9548,7 +9548,7 @@ proc storeCheckpointKey(generation: int64, name: string): string =
 proc raiseStoreError(scope: Scope, kind, message: string, key = "") =
   var props = initPropTable()
   props["kind"] = newSym(kind)
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   if key.len > 0:
     props["key"] = newStr(key)
   var e: ref GeneError
@@ -10361,7 +10361,7 @@ proc biAotLoad(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   let path = args[0].strVal
   let handle = loadLib(path)
   if handle == nil:
-    raise newException(GeneError, "could not load AOT library: " & path)
+    raiseBuiltinError("NativeLibraryError", "could not load AOT library: " & path)
   let manifest = cast[ptr UncheckedArray[AotModuleFunctionC]](
     symAddr(handle, "gene_aot_module"))
   let countAddr = cast[ptr csize_t](symAddr(handle, "gene_aot_module_count"))
@@ -10601,28 +10601,18 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   ## db, db/sqlite, db/postgres) and their error types on the built-ins root
   ## scope. Every namespace is also reachable under the `gene` root registered
   ## at the end of this proc.
-  let errorProtocol = root.vars["Error"]
-  let urlError = newType("UrlError", NIL,
-                         @[TypeField(name: "message", optional: false,
-                                     typeExpr: newSym("Str"), scope: root)],
-                         @[errorProtocol], root)
+  let errorRoot = root.vars["Error"]
+  let urlError = newType("UrlError", errorRoot,
+                         @[],
+                         @[], root)
   root.define("UrlError", urlError)
-  root.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: urlError)
-  let httpError = newType("HttpError", NIL,
-                          @[TypeField(name: "message", optional: false,
-                                      typeExpr: newSym("Str"), scope: root)],
-                          @[errorProtocol], root)
+  let httpError = newType("HttpError", errorRoot,
+                          @[],
+                          @[], root)
   root.define("HttpError", httpError)
-  root.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: httpError)
   proc defineErrorType(name: string): Value =
-    result = newType(name, NIL,
-                     @[TypeField(name: "message", optional: false,
-                                 typeExpr: newSym("Str"), scope: root)],
-                     @[errorProtocol], root)
+    result = newType(name, errorRoot, @[], @[], root)
     root.define(name, result)
-    root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: result)
   let osError = defineErrorType("OsError")
   let pathError = defineErrorType("PathError")
   let packageResourceError = defineErrorType("PackageResourceError")
@@ -10637,14 +10627,12 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   let fsError = defineErrorType("FsError")
   let fsLimitError = newType("FsLimitError", fsError, @[], @[], root)
   root.define("FsLimitError", fsLimitError)
-  let csvError = newType("CsvError", NIL,
-    @[TypeField(name: "message", optional: false, typeExpr: newSym("Str"), scope: root),
-      TypeField(name: "offset", optional: false, typeExpr: newSym("Int"), scope: root),
+  let csvError = newType("CsvError", errorRoot,
+    @[TypeField(name: "offset", optional: false, typeExpr: newSym("Int"), scope: root),
       TypeField(name: "record", optional: false, typeExpr: newSym("Int"), scope: root),
       TypeField(name: "field", optional: false, typeExpr: newSym("Int"), scope: root)],
-    @[errorProtocol], root)
+    @[], root)
   root.define("CsvError", csvError)
-  root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: csvError)
   let terminalError = defineErrorType("TerminalError")
   let cursesError = defineErrorType("CursesError")
   let httpClientError = defineErrorType("HttpClientError")
@@ -10987,18 +10975,14 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   temporalScope.define("_tzif_resolve_local", builtinNativeFn(
     "temporal/_tzif_resolve_local", biTemporalTzifResolveLocal))
   root.define("temporal", newNamespace("temporal", temporalScope))
-  let ioError = newType("IoError", NIL,
-    @[TypeField(name: "message", typeExpr: newSym("Str"), scope: root),
-      TypeField(name: "operation", typeExpr: newSym("Str"), scope: root),
+  let ioError = newType("IoError", errorRoot,
+    @[TypeField(name: "operation", typeExpr: newSym("Str"), scope: root),
       TypeField(name: "resource_id", optional: true,
                 typeExpr: newSym("Int"), scope: root),
-      TypeField(name: "cause", optional: true,
-                typeExpr: newSym("Any"), scope: root),
       TypeField(name: "bytes_transferred", optional: true,
                 typeExpr: newSym("Int"), scope: root)],
-    @[errorProtocol], root)
+    @[], root)
   root.define("IoError", ioError)
-  root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: ioError)
   let ioBusy = newType("IoBusy", ioError, @[], @[], root)
   let ioClosed = newType("IoClosed", ioError, @[], @[], root)
   let ioBackpressure = newType("IoBackpressure", ioError, @[], @[], root)
@@ -11060,11 +11044,11 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
             (let part ($binary/slice data offset want))
             (let accepted (await (writer .AsyncWriter:write part)))
             (if (<= accepted 0)
-              (fail (IoError ^message "writer made no progress"
+              (fail (IoError ^_msg "writer made no progress"
                                ^operation "write_all"
                                ^bytes_transferred offset)))
             (if (> accepted want)
-              (fail (IoError ^message "writer accepted more than offered"
+              (fail (IoError ^_msg "writer accepted more than offered"
                                ^operation "write_all"
                                ^bytes_transferred offset)))
             (set offset (+ offset accepted)))
@@ -11073,13 +11057,13 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   app.ioCopyHelper = ioFunction("copy", """
     (fn copy [reader writer, ^limit : Int, ^chunk_bytes : Int = 65536]
       (if (< limit 0)
-        (fail (IoError ^message "copy limit must be nonnegative"
+        (fail (IoError ^_msg "copy limit must be nonnegative"
                          ^operation "copy")))
       (if (< chunk_bytes 1)
-        (fail (IoError ^message "copy chunk_bytes must be positive"
+        (fail (IoError ^_msg "copy chunk_bytes must be positive"
                          ^operation "copy")))
       (if (> chunk_bytes 1048576)
-        (fail (IoError ^message "copy chunk_bytes exceeds 1 MiB"
+        (fail (IoError ^_msg "copy chunk_bytes exceeds 1 MiB"
                          ^operation "copy")))
       (spawn ^lane root
         (do
@@ -11091,11 +11075,11 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
             (if ($absent? part) (break))
             (let got ($binary/size part))
             (if (== got 0)
-              (fail (IoError ^message "reader returned empty Bytes"
+              (fail (IoError ^_msg "reader returned empty Bytes"
                                ^operation "copy"
                                ^bytes_transferred transferred)))
             (if (> got want)
-              (fail (IoError ^message "reader exceeded requested chunk"
+              (fail (IoError ^_msg "reader exceeded requested chunk"
                                ^operation "copy"
                                ^bytes_transferred transferred)))
             (let written (await (write_all writer part)))
@@ -11309,8 +11293,8 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
               (when (TaskOutcome/ok _) nil)
               (when (TaskOutcome/error error) (fail error))
               (when (TaskOutcome/cancelled)
-                (fail (CsvError ^message "upstream close was cancelled")))
-              (else (fail (CsvError ^message "upstream close did not complete")))))
+                (fail (CsvError ^_msg "upstream close was cancelled")))
+              (else (fail (CsvError ^_msg "upstream close did not complete")))))
           nil)))
   """)
   let urlScope = newScope(root)
@@ -11532,12 +11516,10 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   # DbError lives at the root so native raise sites resolve the type head and
   # `catch DbError` matches and `$err/message` reads the detail; backend impls live on their
   # namespace scopes so only importing programs pay protocol-dispatch cost.
-  let dbError = newType("DbError", NIL,
-                        @[TypeField(name: "message", optional: false,
-                                    typeExpr: newSym("Str"), scope: root)],
-                        @[errorProtocol], root)
+  let dbError = newType("DbError", errorRoot,
+                        @[],
+                        @[], root)
   root.define("DbError", dbError)
-  root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: dbError)
   let dbProtocol = newProtocol("Db", ["exec", "query", "query_one", "execute",
                                       "transaction", "close", "closed?"])
   let dbMessages = dbProtocol.protocolMessages
@@ -11644,16 +11626,13 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
 
   # store: durable key -> serde text over interchangeable backends
   # (docs/stdlib.md). Backend namespaces mirror db/sqlite.
-  let storeError = newType("StoreError", NIL,
+  let storeError = newType("StoreError", errorRoot,
                            @[TypeField(name: "kind", optional: false,
                                        typeExpr: newSym("Sym"), scope: root),
-                             TypeField(name: "message", optional: false,
-                                       typeExpr: newSym("Str"), scope: root),
                              TypeField(name: "key", optional: true,
                                        typeExpr: newSym("Str"), scope: root)],
-                           @[errorProtocol], root)
+                           @[], root)
   root.define("StoreError", storeError)
-  root.impls.add ProtocolImpl(protocol: errorProtocol, receiver: storeError)
   let storeProtocol = newProtocol("Store", ["put", "get", "has?", "delete",
                                             "keys", "clear", "checkpoint",
                                             "load_checkpoint", "close"])

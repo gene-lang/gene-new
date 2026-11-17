@@ -136,7 +136,7 @@
 (fn admit_requirement ^^private [record, requirement]
   (let pair (requirement_pair requirement))
   (if_not (== pair/.size 2)
-    (fail (EffectDisposed ^message "a registry requirement needs registry and key")))
+    (fail (EffectDisposed ^_msg "a registry requirement needs registry and key")))
   (let registry ($to_str pair/0))
   (let name ($to_str pair/1))
   (let id (binding_id registry name))
@@ -229,7 +229,7 @@
 (fn composition_record [handle] ^^private
   (for record in compositions/.get
     (if_yes (== record/token handle/token) (return record)))
-  (fail (EffectDisposed ^message "Harness composition is closed or foreign")))
+  (fail (EffectDisposed ^_msg "Harness composition is closed or foreign")))
 
 (fn new_composition [host : RegistryHost, ^options options = nil, ^limits limits = nil]
   (let ceiling (if ($absent? limits) (invocation_limits) limits))
@@ -288,20 +288,20 @@
 (fn describe_source [record, module, row, graph] ^^private
   (let policy (record/policies .get; .get row/id))
   (if (|| ($absent? policy/digest) ($absent? policy/closure))
-    (fail (CompositionError ^message $"source ${row/id} requires a verified digest and closure")))
+    (fail (CompositionError ^_msg $"source ${row/id} requires a verified digest and closure")))
   (for node in graph/nodes
     (if_yes node/owned
       (if_not (policy/closure .contains? node/source_digest)
         (fail
-          (CompositionError ^message $"source ${row/id} escaped its verified dependency closure")))
+          (CompositionError ^_msg $"source ${row/id} escaped its verified dependency closure")))
       (if (&& (== node/identity graph/root) (!= node/source_digest policy/digest))
-        (fail (CompositionError ^message $"source ${row/id} changed after preflight")))))
+        (fail (CompositionError ^_msg $"source ${row/id} changed after preflight")))))
   (let plugin (record/host .RegistryHost:describe module row/id policy/init_limits policy/limits policy/core_interface))
   (var expected nil)
   (for descriptor in record/pending/.get
     (if (== descriptor/id row/id) (set expected descriptor)))
   (if (|| ($absent? expected) (!= (?? expected/requires #[]) (?? plugin/requires #[])) (!= expected/provides plugin/provides))
-    (fail (CompositionError ^message $"source ${row/id} descriptor changed after preflight")))
+    (fail (CompositionError ^_msg $"source ${row/id} descriptor changed after preflight")))
   (adapt_plugin record plugin))
 
 (fn adapt_plugin [record, plugin] ^^private
@@ -310,7 +310,7 @@
     (let pair (requirement_pair requirement))
     (let binding (record/keys .get; .get (binding_id ($to_str pair/0) ($to_str pair/1))))
     (if ($absent? binding)
-      (fail (CompositionError ^message "descriptor introduced an unadmitted entry dependency")))
+      (fail (CompositionError ^_msg "descriptor introduced an unadmitted entry dependency")))
     (requirements .push (Requirement ^key binding/key ^config nil)))
   (PluginSpec ^id plugin/id ^config_schema nil ^requires requirements ^provides [] ^reload nil ^activate (fn [ctx, config] (activate_descriptor record plugin ctx))))
 
@@ -437,7 +437,7 @@
   ^strict strict : Bool = false, ^allow_pending allow_pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
   (let record (composition_record handle))
   (if record/busy/.get
-    (fail (EffectDisposed ^message "Harness reconciliation is already active")))
+    (fail (EffectDisposed ^_msg "Harness reconciliation is already active")))
   # Carrying an unchanged entry needs the binding projections it already holds.
   # Strict application replaces the whole set, so it keeps staged behaviour.
   (let carry (&& (! strict) (bindings_active? record)))
@@ -450,11 +450,11 @@
   (for plugin in plugins
     (if (|| (== plugin/id "core") (== plugin/id "_harness_bindings")
             ($str/starts_with? plugin/id "descriptor:"))
-      (fail (CompositionError ^message $"plugin id ${plugin/id} is reserved by Harness")))
+      (fail (CompositionError ^_msg $"plugin id ${plugin/id} is reserved by Harness")))
     (let supplied (?? (entry_options .get plugin/id) #{}))
     (map_for [name value] in supplied
       (if_not (["module" "limits" "init_limits" "host" "digest" "closure" "core_interface" "activation"] .contains? ($to_str name))
-        (fail (CompositionError ^message $"unknown Harness entry option ${name}"))))
+        (fail (CompositionError ^_msg $"unknown Harness entry option ${name}"))))
     (let source (supplied .get "module"))
     (let requested (?? (supplied .get "limits") record/limits))
     (let limits (ExecutionLimits
@@ -551,7 +551,7 @@
   (let before ($size (/diagnostics record/runtime/.inspect)))
   (let errors [])
   (try record/runtime/.close
-    catch Error (errors .push $err/message))
+    catch Error (errors .push $err/.message))
   (var at 0)
   (for diagnostic in (/diagnostics record/runtime/.inspect)
     (if (&& (>= at before) (["cleanup_failed" "loader_close_failed"] .contains? diagnostic/kind))
@@ -562,7 +562,7 @@
     (if_not (== current/token handle/token) (kept .push current)))
   (compositions .set kept)
   (if_not errors/.empty?
-    (fail (RecoveryRequired ^message $"Host plugin cleanup failed: ${errors}" ^cause errors)))
+    (fail (RecoveryRequired ^_msg $"Host plugin cleanup failed: ${errors}" ^cause errors)))
   nil)
 
 (fn invoke_host_callback [callback, args, policy, context] ^^private

@@ -13,13 +13,12 @@
 (import ^from "../plugin_api" [HarnessEvent])
 (import ^from "../kernel" [publish])
 
-(type ManagerError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for ManagerError)
+(type ManagerError : Error ^props {^code Str})
 (type WorkspaceManagerChanged : HarnessEvent)
 (type WorkspaceManager ^props {^runtime Any ^root Str ^workspaces Str ^archive Str ^gate Any ^statuses Any ^busy Any ^revision Any ^confirmations Any ^poller Any ^closed Any ^entry Str ^installation Str})
 
 (fn manager_error [code : Str, message : Str]
-  (fail (ManagerError ^code code ^message message)))
+  (fail (ManagerError ^code code ^_msg message)))
 (fn data_copy [data]
   ($serde/read_data ($serde/write_data data)))
 
@@ -146,7 +145,7 @@
     (result .put "metadata_revision" ($pkg/canonical_digest settings))
   catch Error
     (result .put "status" "error")
-    (result .put "message" ($to_str $err/message))
+    (result .put "message" ($to_str $err/.message))
     (return result))
   # During launch, readiness comes from the authenticated endpoint. Repeated
   # exclusive-lock probes could otherwise contend with the child acquiring it.
@@ -515,7 +514,7 @@
                 (manager/statuses/.get .get entry/id)
                 {^id entry/id ^name entry/name ^dir entry/dir ^port 0})))
           (status .put "status" (if (== error/code "startup_failed") "error" "unavailable"))
-          (status .put "message" error/message)
+          (status .put "message" error/.message)
           (manager/statuses/.get .put entry/id status))
         (fail error)
       ensure

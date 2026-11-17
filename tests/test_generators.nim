@@ -52,16 +52,15 @@ suite "explicit generator declarations":
 
   test "explicit close checks cleanup errors against the Stream row":
     let value = run(compileSource("""
-      (type CloseError ^props {^message Str})
-      (impl Error for CloseError)
+      (type CloseError : Error)
       (fn ^^generator allowed [] : (Stream Int CloseError)
-        (try (yield 1) ensure (fail (CloseError ^message "close"))))
+        (try (yield 1) ensure (fail (CloseError ^_msg "close"))))
       (fn ^^generator denied [] : (Stream Int Never)
-        (try (yield 2) ensure (fail (CloseError ^message "denied"))))
+        (try (yield 2) ensure (fail (CloseError ^_msg "denied"))))
       (let a (allowed))
       (let b (denied))
-      [(a .next) (try (a .close) catch CloseError $err_msg)
-       (b .next) (try (b .close) catch ErrorContractViolation $err/cause/message)
+      [(a .next) (try (a .close) catch CloseError $err/.message)
+       (b .next) (try (b .close) catch ErrorContractViolation $err/_cause/.message)
        (a .has_next) (b .has_next) (a .close) (b .close)]
     """), newGlobalScope())
     check value.print == "[1 \"close\" 2 \"denied\" false false nil nil]"
@@ -251,11 +250,11 @@ suite "explicit generator declarations":
   test "strict checking separates creation defaults from producer cleanup":
     const declarations = """
       (mod staged ^errors_mode strict)
-      (type SetupError ^props {^message Str}) (impl Error for SetupError)
-      (type ReadError ^props {^message Str}) (impl Error for ReadError)
-      (fn ^^generator values [n : Int = (fail (SetupError ^message "setup"))]
+      (type SetupError : Error)
+      (type ReadError : Error)
+      (fn ^^generator values [n : Int = (fail (SetupError ^_msg "setup"))]
         : (Stream Int ReadError) ^errors [SetupError]
-        (try (yield n) ensure (fail (ReadError ^message "cleanup"))))
+        (try (yield n) ensure (fail (ReadError ^_msg "cleanup"))))
     """
     discard compileSource(declarations & """
       (fn create [] : (Stream Int ReadError) ^errors [SetupError] (values))
@@ -268,9 +267,9 @@ suite "explicit generator declarations":
 
   test "ordinary factory return contracts keep their annotation environment until close":
     let value = run(compileSource("""
-      (type Cleanup ^props {^message Str}) (impl Error for Cleanup)
+      (type Cleanup : Error)
       (fn ^^generator raw [] : (Stream Int Any)
-        (try (yield 1) ensure (fail (Cleanup ^message "cleanup"))))
+        (try (yield 1) ensure (fail (Cleanup ^_msg "cleanup"))))
       (fn factory [] : (Stream Int Never) (raw))
       (let stream (factory))
       (stream .next)

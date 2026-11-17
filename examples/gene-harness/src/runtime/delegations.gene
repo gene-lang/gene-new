@@ -648,7 +648,7 @@
             (checkpoint_delegations service parent ^changed [admission/id]))
           (else
             (settle_delegation service parent admission
-              {^state "failed" ^message ($to_str $err/message) ^turn_count 0})))))))
+              {^state "failed" ^message ($to_str $err/.message) ^turn_count 0})))))))
   nil)
 
 (fn process_delegations [service, ^recovering recovering : Bool = false]
@@ -746,7 +746,7 @@
         (if (service/dirty .swap false)
           (try (process_delegations service)
             catch Error
-              (service .put "last_error" ($to_str $err/message " at " $err/file ":" $err/line))
+              (service .put "last_error" ($to_str $err/.message " at " $err/file ":" $err/line))
               (service/dirty .set true)))
         ($sleep 25))))))
   (service .put "worker" worker)

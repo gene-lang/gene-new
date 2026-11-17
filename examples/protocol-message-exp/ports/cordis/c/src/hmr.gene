@@ -41,7 +41,7 @@
     # A rejected candidate leaves the old composition live. The adapter
     # continues observing so a later save can repair it.
     (adapter/last_error .set
-      (try failure/.Error:message
+      (try failure/.message
        catch Error "watcher failure (message unavailable)"))
     (adapter/failures .set (+ adapter/failures/.get 1)))
   true)

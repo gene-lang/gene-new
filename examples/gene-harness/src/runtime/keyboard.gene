@@ -17,10 +17,10 @@
   (for part in parts
     (if (!= part key)
       (if_not (modifier_order .contains? part)
-        (fail (ServiceError ^code "invalid_request" ^message $"Unknown modifier ${part}."))))
+        (fail (ServiceError ^code "invalid_request" ^_msg $"Unknown modifier ${part}."))))
     (if (&& (!= part key) (! (modifiers .contains? part))) (modifiers .push part)))
   (if (|| (== key "") (modifier_order .contains? key))
-    (fail (ServiceError ^code "invalid_request" ^message "A key binding needs a key.")))
+    (fail (ServiceError ^code "invalid_request" ^_msg "A key binding needs a key.")))
   (let ordered ($filter modifier_order (fn [name] (modifiers .contains? name))))
   (ordered .push key)
   ($str/join ordered "+"))
@@ -73,7 +73,7 @@
 (fn require_action [runtime, id : Str]
   (let definition (row runtime/h "keyboard_actions" id))
   (if ($absent? definition)
-    (fail (ServiceError ^code "not_found" ^message $"Unknown keyboard action ${id}.")))
+    (fail (ServiceError ^code "not_found" ^_msg $"Unknown keyboard action ${id}.")))
   definition)
 
 # Changes one action id inside the map read under the configuration gate, so two

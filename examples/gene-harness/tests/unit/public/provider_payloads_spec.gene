@@ -16,7 +16,7 @@
 (describe "Provider adapter payloads"
   (it "refuses unverified Anthropic thinking-off modes before a request is sent" []
     ($assert (try (prepare_messages (call "none")) false
-      catch ProviderError ($str/contains? $err/message "Thinking off is not verified")))
+      catch ProviderError ($str/contains? $err/.message "Thinking off is not verified")))
     (let known (call "none"))
     (known/settings .put "model" "claude-sonnet-5-5")
     ($assert (== (/type (/thinking (/body (prepare_messages known)))) "between_tools")))
@@ -27,19 +27,19 @@
       catch ProviderError $err))
     ($assert (== error/status 400))
     ($assert (== error/code "invalid_request_error"))
-    ($assert ($str/contains? error/message "API credits are insufficient"))
-    ($assert ($str/contains? error/message "req_fixture"))
-    ($assert (! ($str/contains? error/message "SECRET")))
+    ($assert ($str/contains? error/.message "API credits are insufficient"))
+    ($assert ($str/contains? error/.message "req_fixture"))
+    ($assert (! ($str/contains? error/.message "SECRET")))
     (let unrelated (try (messages_stream_result {^status 400 ^body ($json/stringify
       {^error {^type "invalid_request_error" ^message "The credit balance parameter is unsupported."}})} "anthropic") nil
       catch ProviderError $err))
-    ($assert (! ($str/contains? unrelated/message "credits are insufficient")))
+    ($assert (! ($str/contains? unrelated/.message "credits are insufficient")))
     (let auth (try (messages_stream_result {^status 401 ^body ($json/stringify
       {^error {^type "authentication_error" ^message "SECRET_CREDENTIAL_DETAIL"}})} "anthropic") nil
       catch ProviderError $err))
     ($assert (== auth/status 401))
     ($assert (== auth/code "authentication_error"))
-    ($assert (! ($str/contains? auth/message "SECRET"))))
+    ($assert (! ($str/contains? auth/.message "SECRET"))))
 
   (it "fits recorded summaries at the minimum default while retaining explicit and model caps" []
     (let observations ($json/parse ($fs/read_text ($path/join this_pkg/root "tests" "fixtures"
@@ -132,8 +132,8 @@
     (let error (try (responses_stream_result response "chatgpt") nil catch ProviderError $err))
     ($assert (== error/code "subscription_sharing_usage_limit_exceeded"))
     ($assert (== error/status 429))
-    ($assert ($str/contains? error/message "Settings → Usage"))
-    ($assert (! ($str/contains? error/message "SECRET"))))
+    ($assert ($str/contains? error/.message "Settings → Usage"))
+    ($assert (! ($str/contains? error/.message "SECRET"))))
 
   (it "requires message_stop, end_turn and complete text blocks from Messages streams" []
     (let events [{^type "message_start" ^message {^type "message" ^role "assistant" ^content [] ^usage {^input_tokens 5}}}

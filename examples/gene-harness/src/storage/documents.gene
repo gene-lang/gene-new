@@ -28,7 +28,7 @@
 (fn media_pdf_page [store, id : Str, page : Int]
   (let record (media_record store id))
   (if (|| (< page 1) (> page 10000))
-    (fail (MediaError ^code "invalid_request" ^message "PDF page must be in 1..10000.")))
+    (fail (MediaError ^code "invalid_request" ^_msg "PDF page must be in 1..10000.")))
   (cached_extraction store $"v1-${id}-page-${page}" (fn [root]
     (let result (extract_pdf_page root record/name (media_bytes store id) page))
     (let descriptor (put_media ^source "document_page" store $"${id}-page-${page}.png" result/data))

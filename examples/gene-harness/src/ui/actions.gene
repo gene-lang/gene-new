@@ -21,7 +21,7 @@
       (when (TaskOutcome/ok value)
         {^status "done" ^display (byte_prefix (if (== ($head value) Str) value ($to_str value)) 16384)})
       (when (TaskOutcome/error error)
-        {^status "failed" ^display (byte_prefix ($to_str error/message) 16384)
+        {^status "failed" ^display (byte_prefix ($to_str error/.message) 16384)
          ^error_code (?? error/code "action_failed")})
       (when (TaskOutcome/panic message)
         {^status "failed" ^display (byte_prefix message 16384) ^error_code "panic"})
@@ -33,7 +33,7 @@
       (changes .put "status" "interrupted")
       (changes .put "error_code" "persistence_unknown")
       (changes .put "display" (byte_prefix
-        ($to_str "Action effects could not be confirmed durable: " $err/message) 16384)))
+        ($to_str "Action effects could not be confirmed durable: " $err/.message) 16384)))
   (update_action manager/log id changes))
 
 (fn ui_action [manager : UiActionManager, request]
@@ -113,7 +113,7 @@
   catch Error
     (if (&& (!= admitted_id "") (! transferred) ($absent? (manager/active/.get .get admitted_id)))
       (return (update_action manager/log admitted_id
-        {^status "failed" ^display (byte_prefix ($to_str $err/message) 16384) ^error_code "admission_setup"})))
+        {^status "failed" ^display (byte_prefix ($to_str $err/.message) 16384) ^error_code "admission_setup"})))
     (fail $err)
   ensure
     (if_not transferred

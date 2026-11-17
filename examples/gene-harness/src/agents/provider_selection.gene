@@ -149,7 +149,7 @@
   ^allow_unready allow_unready : Bool = false, ^model_only model_only : Bool = false]
   (let choice (provider_choice ^environment supplied ^selection selection runtime settings))
   (if (&& ($present? choice/reason) (|| (! allow_unready) ($absent? choice/row)))
-    (fail (HarnessError ^code (?? choice/code "not_ready") ^message choice/reason)))
+    (fail (HarnessError ^code (?? choice/code "not_ready") ^_msg choice/reason)))
   (let timeout (?? selection/timeout_ms settings/provider_timeout_ms 600000))
   (var snapshot selection)
   (var configured nil)
@@ -223,7 +223,7 @@
         (let choice (provider_choice runtime effective))
         (set selected {^provider choice/name ^model (?? (nonempty effective/model) "Unavailable")
           ^requested_effort (?? (nonempty effective/effort) "auto") ^source "unavailable" ^billing "unknown"})
-        (set reason $err/message))))
+        (set reason $err/.message))))
   {^provider selected/provider ^model selected/model ^label (?? selected/label selected/model)
    ^effort (?? selected/effective_effort "auto")
    ^requested_effort (?? selected/requested_effort "auto")

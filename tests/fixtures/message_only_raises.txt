@@ -1,0 +1,2000 @@
+# Reviewed message-only runtime failures: tests/test_message_only_raises.nim.
+# Each line is file<TAB>message. Every entry is a defect, not a failure a
+# correct program can meet; compiler entries surface as CompileError.
+#
+# 1	src/gene.nim
+# 1	src/gene/aot_checked.nim
+# 1	src/gene/callable_reflection.nim
+# 426	src/gene/compiler.nim
+# 10	src/gene/error_runtime.nim
+# 22	src/gene/events.nim
+# 1	src/gene/execution_limits.nim
+# 1	src/gene/ext/csv.nim
+# 7	src/gene/ext/http_client_multi.nim
+# 29	src/gene/ext/http_server.nim
+# 31	src/gene/ext/io_file.nim
+# 21	src/gene/ext/io_testing.nim
+# 7	src/gene/ext/temporal.nim
+# 18	src/gene/ext/term/stdlib_term.nim
+# 5	src/gene/ext/tzif.nim
+# 1	src/gene/gir.nim
+# 2	src/gene/io_read_guard.nim
+# 5	src/gene/macro_runtime.nim
+# 47	src/gene/native_api.nim
+# 187	src/gene/native_managed.nim
+# 3	src/gene/reader.nim
+# 243	src/gene/stdlib.nim
+# 19	src/gene/testing.nim
+# 2	src/gene/type_contracts.nim
+# 62	src/gene/types.nim
+# 817	src/gene/vm.nim
+#
+src/gene.nim	--package-root is not a directory: 
+src/gene/aot_checked.nim	typed_native function 
+src/gene/callable_reflection.nim	runtime/bind_shape: 
+src/gene/compiler.nim	! expects exactly one argument
+src/gene/compiler.nim	$err is only available inside a catch body
+src/gene/compiler.nim	$err_msg was removed; read the message with $err/.message
+src/gene/compiler.nim	$ex was renamed to $err
+src/gene/compiler.nim	'
+src/gene/compiler.nim	'self' is the receiver and cannot be reassigned in a message body 
+src/gene/compiler.nim	'self' is the receiver and cannot be rebound in a message body 
+src/gene/compiler.nim	(? T ...) expects at least one macro type
+src/gene/compiler.nim	(? T) expects one macro type
+src/gene/compiler.nim	(List T) expects one macro item type
+src/gene/compiler.nim	(Map K V) expects macro key and value types
+src/gene/compiler.nim	<expr (if readerForm: "#Ref" else: "$ref") &>
+src/gene/compiler.nim	<expr context & " ^" & key & " must be a Bool")>
+src/gene/compiler.nim	<expr context & " ^" & key & " must be a C identifier, got: " & sy>
+src/gene/compiler.nim	<expr context & " ^" & key & " must be an Int")>
+src/gene/compiler.nim	<expr context & " ^abi must be C")>
+src/gene/compiler.nim	<expr context & " ^calling must be C, cdecl, or stdcall")>
+src/gene/compiler.nim	<expr context & " ^fields must be a [list]")>
+src/gene/compiler.nim	<expr context & " ^layout must be C")>
+src/gene/compiler.nim	<expr context & " ^release is only valid for C/OwnedPtr results")>
+src/gene/compiler.nim	<expr context & " field '" & fieldName & "' type must be a scalar,>
+src/gene/compiler.nim	<expr context & " field must be [name Type]")>
+src/gene/compiler.nim	<expr context & " field must be a [field Type] list")>
+src/gene/compiler.nim	<expr context & " field offset must be written as ^offset Int")>
+src/gene/compiler.nim	<expr context & " has unexpected body forms")>
+src/gene/compiler.nim	<expr context & " must be a string, symbol, or symbol path")>
+src/gene/compiler.nim	<expr context & " must be a string, symbol, or symbol path")>
+src/gene/compiler.nim	<expr context & " must be a string, symbol, or symbol path")>
+src/gene/compiler.nim	<expr context & " must be borrow, transfer, or copy")>
+src/gene/compiler.nim	<expr context & " must be borrow, transfer, or copy")>
+src/gene/compiler.nim	<expr context & " parameter '" & name & "' is missing a type")>
+src/gene/compiler.nim	<expr context & " parameter '" & name & "' requires a type")>
+src/gene/compiler.nim	<expr context & " parameter '" & paramName & "' has unsupported C>
+src/gene/compiler.nim	<expr context & " parameter must start with a name")>
+src/gene/compiler.nim	<expr context & " parameters must be a [list]")>
+src/gene/compiler.nim	<expr context & " requires a name and parameter list")>
+src/gene/compiler.nim	<expr context & " requires a parameter list")>
+src/gene/compiler.nim	<expr context & " return type " & label & " requires ^release")>
+src/gene/compiler.nim	<expr context & " return type has unsupported C wrapper type " & l>
+src/gene/compiler.nim	<expr context & " return type is missing")>
+src/gene/compiler.nim	<expr context & " return type must follow `:`")>
+src/gene/compiler.nim	<expr form & " requires a name or pattern")>
+src/gene/compiler.nim	<expr if allowOffsets:>
+src/gene/compiler.nim	<expr kind & " '" & name & "' must start uppercase; lowercase name>
+src/gene/compiler.nim	<expr kind & " body requires member declarations; " &>
+src/gene/compiler.nim	<expr label & " requires 'in' after the pattern")>
+src/gene/compiler.nim	<expr label & " requires a pattern, in, and an iterable")>
+src/gene/compiler.nim	<expr message)>
+src/gene/compiler.nim	<expr name & " is a special form, but a binding named " & name &>
+src/gene/compiler.nim	<expr node.head.symVal & " does not accept ^" & key)>
+src/gene/compiler.nim	<expr rejected)>
+src/gene/compiler.nim	<expr what & " '" & s & "' may not end in '?'; optionality moved t>
+src/gene/compiler.nim	Path unquote requires one expression
+src/gene/compiler.nim	Path unquote requires one expression
+src/gene/compiler.nim	^effects is reserved for a future static effect system
+src/gene/compiler.nim	^errors must be a list
+src/gene/compiler.nim	^errors_mode must be dynamic, warn, or strict
+src/gene/compiler.nim	^generator requires a literal Bool
+src/gene/compiler.nim	^native_entry requires a named typed_native function
+src/gene/compiler.nim	^override belongs on the impl, not on a protocol message
+src/gene/compiler.nim	^override requires a literal Bool
+src/gene/compiler.nim	^private declaration requires a name
+src/gene/compiler.nim	^private declarations must be unconditional module/namespace forms
+src/gene/compiler.nim	^private is only valid on a named declaration 
+src/gene/compiler.nim	^private must be Bool
+src/gene/compiler.nim	`
+src/gene/compiler.nim	a constructor cannot be a generator
+src/gene/compiler.nim	a dot message descriptor requires a receiver; write (x 
+src/gene/compiler.nim	a dot message descriptor requires a receiver; write (x .Proto:message)
+src/gene/compiler.nim	a fexpr cannot be a generator
+src/gene/compiler.nim	a message name must be a symbol
+src/gene/compiler.nim	alias got unexpected named argument: ^
+src/gene/compiler.nim	alias requires a name and one type expression: (alias Name TypeExpr)
+src/gene/compiler.nim	alternation pattern alternatives must bind the same names
+src/gene/compiler.nim	ambiguous typed_native Type metadata: 
+src/gene/compiler.nim	an optional dot descriptor guards a message send; Paths are 
+src/gene/compiler.nim	an optional dot descriptor guards a message send; Paths are 
+src/gene/compiler.nim	an optional dot send short-circuits an absent receiver, but super 
+src/gene/compiler.nim	an optional dot send short-circuits an absent receiver, but super 
+src/gene/compiler.nim	await expects one Task
+src/gene/compiler.nim	backed enum variant '
+src/gene/compiler.nim	bare wildcard import requires module-loader compilation: 
+src/gene/compiler.nim	bare wildcards do not re-export; use an alias or explicit selections
+src/gene/compiler.nim	binding '
+src/gene/compiler.nim	binding name must not be empty
+src/gene/compiler.nim	break expects no arguments
+src/gene/compiler.nim	break is only valid inside a loop
+src/gene/compiler.nim	call ^types must be a list
+src/gene/compiler.nim	call ^types must be a list
+src/gene/compiler.nim	cannot set '
+src/gene/compiler.nim	catch requires an error type
+src/gene/compiler.nim	catch requires an error type; use Error to catch every recoverable error
+src/gene/compiler.nim	compile memory limit is too large
+src/gene/compiler.nim	const '
+src/gene/compiler.nim	const '
+src/gene/compiler.nim	const is a module-level declaration and cannot appear inside a 
+src/gene/compiler.nim	const is a module-level declaration and cannot appear inside a loop 
+src/gene/compiler.nim	const must be declared unconditionally at module or namespace level 
+src/gene/compiler.nim	const requires a name and a constant value
+src/gene/compiler.nim	const requires a plain name: a destructuring pattern takes its value 
+src/gene/compiler.nim	const type annotation requires a type
+src/gene/compiler.nim	continue expects no arguments
+src/gene/compiler.nim	continue is only valid inside a loop
+src/gene/compiler.nim	ctor requires a parameter vector
+src/gene/compiler.nim	derive is only valid inside a protocol declaration
+src/gene/compiler.nim	derive requires a parameter vector
+src/gene/compiler.nim	direct protocol call metadata requires ^protocol and ^receiver
+src/gene/compiler.nim	direct protocol call metadata requires a message name
+src/gene/compiler.nim	direct protocol call metadata requires a receiver argument
+src/gene/compiler.nim	direct protocol call metadata requires a receiver argument
+src/gene/compiler.nim	duplicate enum message: 
+src/gene/compiler.nim	duplicate enum variant: 
+src/gene/compiler.nim	duplicate ffi/library: 
+src/gene/compiler.nim	duplicate generic type parameter: 
+src/gene/compiler.nim	duplicate impl message: 
+src/gene/compiler.nim	duplicate impl message: 
+src/gene/compiler.nim	duplicate impl message: 
+src/gene/compiler.nim	duplicate macro parameter: 
+src/gene/compiler.nim	duplicate macro parameter: 
+src/gene/compiler.nim	duplicate macro parameter: 
+src/gene/compiler.nim	duplicate macro: 
+src/gene/compiler.nim	duplicate macro: 
+src/gene/compiler.nim	duplicate module declaration
+src/gene/compiler.nim	duplicate named rest parameter
+src/gene/compiler.nim	duplicate parameter binding: 
+src/gene/compiler.nim	duplicate parameter binding: 
+src/gene/compiler.nim	duplicate parameter binding: 
+src/gene/compiler.nim	duplicate parameter binding: 
+src/gene/compiler.nim	duplicate protocol message: 
+src/gene/compiler.nim	duplicate type message: 
+src/gene/compiler.nim	enum message name is reserved for reflection: 
+src/gene/compiler.nim	enum requires a name
+src/gene/compiler.nim	enum requires at least one variant
+src/gene/compiler.nim	enum type parameters must be symbols
+src/gene/compiler.nim	enum type-direct message names must be simple: 
+src/gene/compiler.nim	enum variant '
+src/gene/compiler.nim	enum variant declarations do not accept props or meta
+src/gene/compiler.nim	enum variant name must be a symbol
+src/gene/compiler.nim	enum variants must be symbols or tuple forms
+src/gene/compiler.nim	env does not take positional arguments
+src/gene/compiler.nim	env unknown option: ^
+src/gene/compiler.nim	eval cannot use import; add imports to Env
+src/gene/compiler.nim	eval cannot use import_impl; add policy impls to the surrounding scope
+src/gene/compiler.nim	eval expects one node
+src/gene/compiler.nim	eval requires ^in Env
+src/gene/compiler.nim	eval unknown option: ^
+src/gene/compiler.nim	expected import form
+src/gene/compiler.nim	fail expects one Error value
+src/gene/compiler.nim	fexpr requires a parameter vector
+src/gene/compiler.nim	fexprs must be named by a trailing-! binding: (fn name! [syntax...] body...)
+src/gene/compiler.nim	ffi/callback ^^escaping is not supported yet
+src/gene/compiler.nim	ffi/fn ^library must not be empty
+src/gene/compiler.nim	ffi/fn ^out entries must be parameter names
+src/gene/compiler.nim	ffi/fn ^out must be a parameter name or a [list] of them
+src/gene/compiler.nim	ffi/fn ^out names a parameter that does not exist: 
+src/gene/compiler.nim	ffi/fn ^out repeats parameter: 
+src/gene/compiler.nim	ffi/fn ^release must not be empty
+src/gene/compiler.nim	ffi/fn has unexpected body forms
+src/gene/compiler.nim	ffi/fn requires a name and parameter list
+src/gene/compiler.nim	ffi/fn requires a parameter list
+src/gene/compiler.nim	ffi/fn return type is missing
+src/gene/compiler.nim	ffi/fn return type must follow `:`
+src/gene/compiler.nim	ffi/library has unsupported property ^
+src/gene/compiler.nim	ffi/library requires a name
+src/gene/compiler.nim	ffi/library requires at least one target library name
+src/gene/compiler.nim	ffi/struct requires ^fields
+src/gene/compiler.nim	ffi/struct requires a name
+src/gene/compiler.nim	ffi/union requires ^fields
+src/gene/compiler.nim	ffi/union requires a name
+src/gene/compiler.nim	fn requires a parameter vector
+src/gene/compiler.nim	fn! was removed; define a named fexpr with fn: (fn name! [syntax...] body...)
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function 
+src/gene/compiler.nim	function name must be a symbol, a qualified path, or (name type...)
+src/gene/compiler.nim	function name unquote requires one expression
+src/gene/compiler.nim	function name unquote requires one expression
+src/gene/compiler.nim	function return annotation requires a type
+src/gene/compiler.nim	generator return annotation must admit Stream, got 
+src/gene/compiler.nim	generator return takes no value
+src/gene/compiler.nim	generator return takes no value
+src/gene/compiler.nim	generic function requires a name
+src/gene/compiler.nim	generic function type parameter requires a name
+src/gene/compiler.nim	generic function type parameters must be names
+src/gene/compiler.nim	if requires elif/else clauses; macro calls are only expanded in expression positions
+src/gene/compiler.nim	if_present binding must be a plain local name, got 
+src/gene/compiler.nim	if_present does not accept props
+src/gene/compiler.nim	if_present requires a name, an expression and a body
+src/gene/compiler.nim	if_present takes body forms and an optional trailing (else …), not (
+src/gene/compiler.nim	if_present: (else …) must be the last form
+src/gene/compiler.nim	impl ^export must be Bool
+src/gene/compiler.nim	impl body requires message declarations; 
+src/gene/compiler.nim	impl got unexpected named argument: 
+src/gene/compiler.nim	impl requires a protocol and receiver type: 
+src/gene/compiler.nim	import ^as was removed; use `source : alias`
+src/gene/compiler.nim	import ^export must be Bool
+src/gene/compiler.nim	import ^from must be a path string
+src/gene/compiler.nim	import ^from requires a selection, wildcard, or `source : alias`
+src/gene/compiler.nim	import ^pkg must be a non-empty package name string
+src/gene/compiler.nim	import ^pkg requires `^from \"path\"`; a namespace-path import never 
+src/gene/compiler.nim	import alias requires a name
+src/gene/compiler.nim	import from a module requires a selection or wildcard
+src/gene/compiler.nim	import got unexpected option: ^
+src/gene/compiler.nim	import namespace path must be symbols
+src/gene/compiler.nim	import requires a source
+src/gene/compiler.nim	import selection '
+src/gene/compiler.nim	import selection must be a name or [list]
+src/gene/compiler.nim	import source must be a namespace path or `^from \"path\"`
+src/gene/compiler.nim	import: `from` was removed; use `^from \"path\"`
+src/gene/compiler.nim	import_impl ^from must be a path string
+src/gene/compiler.nim	import_impl got unexpected option: ^
+src/gene/compiler.nim	import_impl requires: (import_impl Protocol for Receiver ^from \"path\")
+src/gene/compiler.nim	import_impl: `from` was removed; use `^from \"path\"`
+src/gene/compiler.nim	inline impl body items must be message declarations — no `for`, 
+src/gene/compiler.nim	inline impl body items must be message declarations — no `for`, 
+src/gene/compiler.nim	inline impl requires a protocol
+src/gene/compiler.nim	inline impl requires a protocol
+src/gene/compiler.nim	leading '
+src/gene/compiler.nim	leading `
+src/gene/compiler.nim	loop does not accept props
+src/gene/compiler.nim	loop requires a body
+src/gene/compiler.nim	macro 
+src/gene/compiler.nim	macro '
+src/gene/compiler.nim	macro '
+src/gene/compiler.nim	macro '
+src/gene/compiler.nim	macro '
+src/gene/compiler.nim	macro '
+src/gene/compiler.nim	macro execution requires a Gene VM evaluator
+src/gene/compiler.nim	macro expansion depth exceeded
+src/gene/compiler.nim	macro expansion depth exceeded
+src/gene/compiler.nim	macro expansion depth exceeded
+src/gene/compiler.nim	macro expansion depth exceeded
+src/gene/compiler.nim	macro expansion produced more than one direct '_' pipeline slot
+src/gene/compiler.nim	macro expansion produced more than one direct '_' pipeline slot
+src/gene/compiler.nim	macro expects at least 
+src/gene/compiler.nim	macro expects at most 
+src/gene/compiler.nim	macro got unexpected named argument: 
+src/gene/compiler.nim	macro missing named argument: 
+src/gene/compiler.nim	macro name is reserved syntax: 
+src/gene/compiler.nim	macro name must be a symbol
+src/gene/compiler.nim	macro parameter already has a type annotation
+src/gene/compiler.nim	macro parameter annotation requires a parameter
+src/gene/compiler.nim	macro parameter annotation requires a type
+src/gene/compiler.nim	macro parameter default requires a parameter
+src/gene/compiler.nim	macro parameter default requires a value
+src/gene/compiler.nim	macro parameter type annotation requires a binding name
+src/gene/compiler.nim	macro pattern comparison requires an earlier binding: 
+src/gene/compiler.nim	macro requires a name and parameter vector
+src/gene/compiler.nim	macro requires a parameter vector
+src/gene/compiler.nim	match ^exhaustive requires a literal Bool
+src/gene/compiler.nim	match clauses must be (when ...) or (else ...)
+src/gene/compiler.nim	match else must be the final arm
+src/gene/compiler.nim	match is not exhaustive; add (else ...), a binding arm, or ^!exhaustive
+src/gene/compiler.nim	match only accepts ^exhaustive
+src/gene/compiler.nim	match requires a value and at least one arm
+src/gene/compiler.nim	match requires when/else clauses; 
+src/gene/compiler.nim	match requires when/else clauses; 
+src/gene/compiler.nim	message names may not contain '/'; qualify a protocol as .ns/Proto:message 
+src/gene/compiler.nim	message names may not end in !; trailing ! is reserved for fexpr calls: 
+src/gene/compiler.nim	message requires a name and parameter vector
+src/gene/compiler.nim	message requires a name and parameter vector
+src/gene/compiler.nim	message requires a name and parameter vector
+src/gene/compiler.nim	message requires a name and parameter vector
+src/gene/compiler.nim	missing compile-time macro artifact for 
+src/gene/compiler.nim	mod must be a top-level form
+src/gene/compiler.nim	mod requires a name
+src/gene/compiler.nim	module compile interface has no namespace: 
+src/gene/compiler.nim	module compile interface marked a missing macro: 
+src/gene/compiler.nim	module reference form requires a literal name
+src/gene/compiler.nim	module reference name must be a simple snake_case symbol
+src/gene/compiler.nim	named parameter cannot follow a rest parameter
+src/gene/compiler.nim	named parameter cannot follow a rest parameter
+src/gene/compiler.nim	named parameter local requires a name
+src/gene/compiler.nim	named parameter local requires a name
+src/gene/compiler.nim	named parameter requires a name
+src/gene/compiler.nim	named parameter requires a name
+src/gene/compiler.nim	named parameter requires a name
+src/gene/compiler.nim	named parameter requires a name
+src/gene/compiler.nim	named rest parameter cannot have a default
+src/gene/compiler.nim	named rest parameter requires a name
+src/gene/compiler.nim	named rest parameters are not supported in macro/fexpr parameters
+src/gene/compiler.nim	namespace '
+src/gene/compiler.nim	namespace import requires selections or `source : alias`
+src/gene/compiler.nim	new expects a Type argument
+src/gene/compiler.nim	ns requires a name
+src/gene/compiler.nim	only a named fexpr may bind a name ending in !: 
+src/gene/compiler.nim	panic expects zero or one value
+src/gene/compiler.nim	parameter annotation requires a parameter
+src/gene/compiler.nim	parameter annotation requires a type
+src/gene/compiler.nim	parameter cannot follow a rest parameter
+src/gene/compiler.nim	parameter cannot follow a rest parameter
+src/gene/compiler.nim	parameter cannot follow a rest parameter
+src/gene/compiler.nim	parameter default requires a value
+src/gene/compiler.nim	parameter requires a name
+src/gene/compiler.nim	parameter requires a name
+src/gene/compiler.nim	path message segment requires a name
+src/gene/compiler.nim	pattern %name expects a name
+src/gene/compiler.nim	pattern (@ meta value) expects two patterns
+src/gene/compiler.nim	pattern (not p) expects one pattern
+src/gene/compiler.nim	pattern (not p) must not introduce bindings
+src/gene/compiler.nim	pipeline stages must be eager calls or dot sends; syntax head '
+src/gene/compiler.nim	protocol ^inherit must be a list
+src/gene/compiler.nim	protocol ^universal must be Bool
+src/gene/compiler.nim	protocol got unexpected named argument: 
+src/gene/compiler.nim	protocol has duplicate derive form
+src/gene/compiler.nim	protocol requires a name
+src/gene/compiler.nim	protocol/impl body must contain message declarations
+src/gene/compiler.nim	qualified function name must end in a symbol, string, or %expression
+src/gene/compiler.nim	qualified function name must end in a symbol, string, or %expression
+src/gene/compiler.nim	qualified function name requires a target namespace and member name
+src/gene/compiler.nim	qualified function name requires a target namespace and member name
+src/gene/compiler.nim	qualified message names are only valid in impl bodies: 
+src/gene/compiler.nim	quasiquote expects one template
+src/gene/compiler.nim	quasiquote expects one template
+src/gene/compiler.nim	quasiquoted pipeline stages do not support body splices
+src/gene/compiler.nim	re-export requires a module-path import
+src/gene/compiler.nim	recursive type alias
+src/gene/compiler.nim	repeat does not accept props
+src/gene/compiler.nim	repeat index 
+src/gene/compiler.nim	repeat index must be a local name
+src/gene/compiler.nim	repeat requires a count
+src/gene/compiler.nim	repeat requires an index, in, and a count
+src/gene/compiler.nim	required positional parameter cannot follow an optional positional parameter
+src/gene/compiler.nim	required positional parameter cannot follow an optional positional parameter
+src/gene/compiler.nim	required positional parameter cannot follow an optional positional parameter
+src/gene/compiler.nim	reserved standard-library root cannot be bound: 
+src/gene/compiler.nim	rest parameter cannot follow an optional positional parameter
+src/gene/compiler.nim	rest parameter cannot follow an optional positional parameter
+src/gene/compiler.nim	rest parameter cannot have a default
+src/gene/compiler.nim	rest parameter cannot have an annotation or default
+src/gene/compiler.nim	rest parameter requires a name
+src/gene/compiler.nim	rest parameter requires a name
+src/gene/compiler.nim	return expects zero or one value
+src/gene/compiler.nim	return in a Nil function takes no value; use (return) or (return nil)
+src/gene/compiler.nim	return is only valid inside fn
+src/gene/compiler.nim	scope does not accept named arguments
+src/gene/compiler.nim	select was removed; use Path with quoted property names, 
+src/gene/compiler.nim	set cannot assign through a message segment
+src/gene/compiler.nim	set path assignment requires a path
+src/gene/compiler.nim	set path assignment requires a path
+src/gene/compiler.nim	set path assignment requires one glued path and a value
+src/gene/compiler.nim	set path segment must be a Sym, Str, or Int
+src/gene/compiler.nim	set path segment must be a Sym, Str, or Int
+src/gene/compiler.nim	set requires a name or path and a value
+src/gene/compiler.nim	set requires exactly a target and a value
+src/gene/compiler.nim	set requires exactly a target and a value
+src/gene/compiler.nim	set! was removed; use set for both lexical and path assignment
+src/gene/compiler.nim	single-name import alias requires one source name
+src/gene/compiler.nim	spawn ^lane currently accepts only root
+src/gene/compiler.nim	spawn expects one expression and optional ^lane root
+src/gene/compiler.nim	spawn got unexpected property ^
+src/gene/compiler.nim	splice requires one expression
+src/gene/compiler.nim	spread marker requires a preceding value
+src/gene/compiler.nim	spread requires one expression
+src/gene/compiler.nim	super delegates to a statically named message
+src/gene/compiler.nim	super delegates to a statically named message: '
+src/gene/compiler.nim	super is only valid in a type message body with a parent
+src/gene/compiler.nim	super is only valid in a type message body with a parent
+src/gene/compiler.nim	supervisor ^strategy must be a name
+src/gene/compiler.nim	supervisor got unexpected named argument: 
+src/gene/compiler.nim	supervisor requires ^strategy
+src/gene/compiler.nim	try clauses are ordered catch..., then unwind, then ensure; unexpected 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type 
+src/gene/compiler.nim	type ':' requires a parent type
+src/gene/compiler.nim	type ^body must be a list
+src/gene/compiler.nim	type ^body rest field must be the final body field
+src/gene/compiler.nim	type ^body rest field requires a type
+src/gene/compiler.nim	type ^derive entries must name protocols
+src/gene/compiler.nim	type ^derive must be a list
+src/gene/compiler.nim	type ^impl must be a list
+src/gene/compiler.nim	type ^props must be a map
+src/gene/compiler.nim	type ^sealed is reserved for future native layout optimization
+src/gene/compiler.nim	type body items must be ctor, message, or impl declarations
+src/gene/compiler.nim	type got unexpected named argument: 
+src/gene/compiler.nim	type requires a name
+src/gene/compiler.nim	type-direct message names must be simple: 
+src/gene/compiler.nim	typed pattern requires a name and one type
+src/gene/compiler.nim	typed_native code cannot assume runtime macro caller bindings
+src/gene/compiler.nim	typed_native function 
+src/gene/compiler.nim	unknown enum prop: ^
+src/gene/compiler.nim	unknown macro type annotation: 
+src/gene/compiler.nim	unquote requires one expression
+src/gene/compiler.nim	unquote requires one expression
+src/gene/compiler.nim	unsupported macro type annotation
+src/gene/compiler.nim	unsupported macro type annotation
+src/gene/compiler.nim	unsupported supervisor strategy: 
+src/gene/compiler.nim	var type annotation requires a type
+src/gene/compiler.nim	web_module 
+src/gene/compiler.nim	web_module '
+src/gene/compiler.nim	web_module got unexpected named argument: 
+src/gene/compiler.nim	web_module must be an unconditional top-level declaration
+src/gene/compiler.nim	web_module requires a name
+src/gene/compiler.nim	when requires a pattern
+src/gene/compiler.nim	while requires a condition
+src/gene/compiler.nim	wildcard imports require `^from \"path\"`; a namespace-path import 
+src/gene/compiler.nim	wildcard, alias, and re-export imports must be unconditional 
+src/gene/compiler.nim	yield expects one value
+src/gene/compiler.nim	yield is only valid inside fn
+src/gene/compiler.nim	yield requires an explicit ^^generator declaration
+src/gene/error_runtime.nim	^errors entries must be Error types
+src/gene/error_runtime.nim	impl replacement/removal invalidates strict dependent 
+src/gene/error_runtime.nim	module replacement broadens a retained strict error assumption in 
+src/gene/error_runtime.nim	module replacement/removal affects strict dependent 
+src/gene/error_runtime.nim	recursive alias in error row
+src/gene/error_runtime.nim	replacement of '
+src/gene/error_runtime.nim	replacement of namespace '
+src/gene/error_runtime.nim	strict error assumption requires revalidation: 
+src/gene/error_runtime.nim	strict error dependency is not ready: 
+src/gene/error_runtime.nim	strict initializer dependency requires revalidation: 
+src/gene/events.nim	Bus/close takes no arguments
+src/gene/events.nim	Bus/closed? takes no arguments
+src/gene/events.nim	Bus/publish expects 1 event, got 
+src/gene/events.nim	Bus/subscribe expects a selector and a handler, got 
+src/gene/events.nim	Bus/subscription_count takes no arguments
+src/gene/events.nim	CompositeSink/sinks expects an event/CompositeSink
+src/gene/events.nim	CompositeSink/sinks takes no arguments
+src/gene/events.nim	EventSink/emit expects 1 event, got 
+src/gene/events.nim	RecordingSink/clear expects an event/RecordingSink
+src/gene/events.nim	RecordingSink/clear takes no arguments
+src/gene/events.nim	RecordingSink/events expects an event/RecordingSink
+src/gene/events.nim	RecordingSink/events takes no arguments
+src/gene/events.nim	Subscription/active? expects an event/Subscription
+src/gene/events.nim	Subscription/active? takes no arguments
+src/gene/events.nim	Subscription/cancel expects an event/Subscription
+src/gene/events.nim	Subscription/cancel takes no arguments
+src/gene/events.nim	event/Bus takes named properties only, got 
+src/gene/events.nim	event/CompositeSink expects a List of sinks
+src/gene/events.nim	event/CompositeSink expects one List of sinks
+src/gene/events.nim	event/NullSink takes no arguments
+src/gene/events.nim	event/RecordingSink takes no arguments
+src/gene/events.nim	event/exact expects 1 argument, got 
+src/gene/execution_limits.nim	execution memory limit is too large
+src/gene/ext/csv.nim	upstream wait_closed did not return Task
+src/gene/ext/http_client_multi.nim	HTTP Client is unavailable
+src/gene/ext/http_client_multi.nim	HTTP Client is unavailable
+src/gene/ext/http_client_multi.nim	HTTP Client is unavailable
+src/gene/ext/http_client_multi.nim	HTTP Client is unavailable
+src/gene/ext/http_client_multi.nim	HTTP body reader is unavailable
+src/gene/ext/http_client_multi.nim	HTTP body reader is unavailable
+src/gene/ext/http_client_multi.nim	HTTP body reader is unavailable
+src/gene/ext/http_server.nim	<expr name & " expects (body) or (status, body), got " & $args.len>
+src/gene/ext/http_server.nim	http/actor_pool expects named arguments only
+src/gene/ext/http_server.nim	http/actor_pool got unexpected named argument: 
+src/gene/ext/http_server.nim	http/actor_pool mailbox must be >= 1
+src/gene/ext/http_server.nim	http/actor_pool requires ^init and ^handle
+src/gene/ext/http_server.nim	http/actor_pool workers must be >= 1
+src/gene/ext/http_server.nim	http/bytes expects (status, bytes), got 
+src/gene/ext/http_server.nim	http/bytes expects a Bytes or Str body
+src/gene/ext/http_server.nim	http/listen expects at most one Server argument
+src/gene/ext/http_server.nim	http/listen got unexpected named argument: 
+src/gene/ext/http_server.nim	http/redirect expects (location) or (status, location), got 
+src/gene/ext/http_server.nim	http/route expects named arguments only (^method ^path ^handler)
+src/gene/ext/http_server.nim	http/route got unexpected named argument: 
+src/gene/ext/http_server.nim	http/route requires ^path and ^handler
+src/gene/ext/http_server.nim	http/serve expects (Server, handler), got 
+src/gene/ext/http_server.nim	http/serve got unexpected named argument: 
+src/gene/ext/http_server.nim	http/supervisor_policy ^strategy must be a name
+src/gene/ext/http_server.nim	http/supervisor_policy ^strategy must be restart or stop
+src/gene/ext/http_server.nim	http/supervisor_policy expects named arguments only
+src/gene/ext/http_server.nim	http/supervisor_policy got unexpected named argument: 
+src/gene/ext/http_server.nim	stream response read did not return a Task
+src/gene/ext/http_server.nim	stream response wait_closed did not return a Task
+src/gene/ext/http_server.nim	ws_accept got unexpected named argument: 
+src/gene/ext/http_server.nim	ws_send expects (conn, text or bytes)
+src/gene/ext/http_server.nim	ws_send payload must be Str or Bytes, got 
+src/gene/ext/http_server.nim	ws_try_send ^max_bytes must be from 1 to 16777216
+src/gene/ext/http_server.nim	ws_try_send expects (conn, text or bytes)
+src/gene/ext/http_server.nim	ws_try_send frame exceeds ^max_bytes and cannot fit
+src/gene/ext/http_server.nim	ws_try_send got unexpected named argument: 
+src/gene/ext/io_file.nim	AsyncReader:read expects an Int max_bytes
+src/gene/ext/io_file.nim	AsyncWriter:flush expects a FileWriter
+src/gene/ext/io_file.nim	AsyncWriter:write expects Bytes
+src/gene/ext/io_file.nim	IoResource:close expects a file reader
+src/gene/ext/io_file.nim	IoResource:wait_closed expects a file reader
+src/gene/ext/io_file.nim	TCP listeners require a threaded POSIX runtime
+src/gene/ext/io_file.nim	TCP listeners require a threaded POSIX runtime
+src/gene/ext/io_file.nim	TCP testing requires a threaded POSIX runtime
+src/gene/ext/io_file.nim	TcpListener/accept expects no arguments
+src/gene/ext/io_file.nim	TcpListener/local_port expects no arguments
+src/gene/ext/io_file.nim	file readers require a threaded POSIX runtime
+src/gene/ext/io_file.nim	file readers require a threaded POSIX runtime
+src/gene/ext/io_file.nim	file readers require a threaded POSIX runtime
+src/gene/ext/io_file.nim	file writers require a threaded POSIX runtime
+src/gene/ext/io_file.nim	file writers require a threaded POSIX runtime
+src/gene/ext/io_file.nim	io/
+src/gene/ext/io_file.nim	io/
+src/gene/ext/io_file.nim	io/open_read expects one Str path
+src/gene/ext/io_file.nim	io/open_read expects one Str path
+src/gene/ext/io_file.nim	io/open_write ^mode must be create_new, truncate, or append
+src/gene/ext/io_file.nim	io/open_write accepts one Str ^mode option
+src/gene/ext/io_file.nim	io/open_write expects one Str path
+src/gene/ext/io_file.nim	io/open_write expects one Str path
+src/gene/ext/io_file.nim	io/pipe expects no arguments
+src/gene/ext/io_file.nim	io/pipe requires a call scope
+src/gene/ext/io_file.nim	io/pipe requires a threaded POSIX runtime
+src/gene/ext/io_file.nim	io/tcp_connect expects host Str and port Int
+src/gene/ext/io_file.nim	io/tcp_listen expects host Str and port Int
+src/gene/ext/io_file.nim	io/testing/socket_buffer expects TcpStream, direction, and bytes
+src/gene/ext/io_file.nim	stdin pipe streaming requires a threaded POSIX runtime
+src/gene/ext/io_file.nim	stdout pipe streaming requires a threaded POSIX runtime
+src/gene/ext/io_testing.nim	AsyncReader:read expects max_bytes
+src/gene/ext/io_testing.nim	AsyncWriter:flush expects a receiver
+src/gene/ext/io_testing.nim	AsyncWriter:write expects Bytes
+src/gene/ext/io_testing.nim	IoResource:close expects a receiver
+src/gene/ext/io_testing.nim	IoResource:wait_closed expects a receiver
+src/gene/ext/io_testing.nim	close result is already retained
+src/gene/ext/io_testing.nim	io/testing/complete_read expects Bytes or nil
+src/gene/ext/io_testing.nim	io/testing/complete_write expects an Int
+src/gene/ext/io_testing.nim	io/testing/fail_close expects a Str
+src/gene/ext/io_testing.nim	io/testing/new expects no positional arguments
+src/gene/ext/io_testing.nim	io/testing/new got unexpected or duplicate named argument: 
+src/gene/ext/io_testing.nim	io/testing/new max_bytes must be within 0..1048576
+src/gene/ext/io_testing.nim	io/testing/new needs a call scope
+src/gene/ext/io_testing.nim	io/testing/state expects a resource
+src/gene/ext/io_testing.nim	io/testing/written expects a resource
+src/gene/ext/io_testing.nim	read completion exceeds its admitted bounds
+src/gene/ext/io_testing.nim	stale read completion
+src/gene/ext/io_testing.nim	stale write completion
+src/gene/ext/io_testing.nim	there is no pending read
+src/gene/ext/io_testing.nim	there is no pending write or flush
+src/gene/ext/io_testing.nim	write completion exceeds its admitted bounds
+src/gene/ext/temporal.nim	temporal arithmetic overflows Int64
+src/gene/ext/temporal.nim	temporal instant requires an explicit UTC offset
+src/gene/ext/temporal.nim	temporal result is outside DateTime range
+src/gene/ext/temporal.nim	temporal/add expects DateTime and Duration
+src/gene/ext/temporal.nim	temporal/add_days expects Date and Int
+src/gene/ext/temporal.nim	temporal/add_days is outside Date range
+src/gene/ext/temporal.nim	temporal/difference expects two offset DateTimes
+src/gene/ext/term/stdlib_term.nim	<expr name & " ^multiline must be Bool")>
+src/gene/ext/term/stdlib_term.nim	<expr name & " ^panes item ^focused must be Bool")>
+src/gene/ext/term/stdlib_term.nim	<expr name & " ^panes item ^maximized must be Bool")>
+src/gene/ext/term/stdlib_term.nim	<expr name & " ^panes item ^scroll must be non-negative")>
+src/gene/ext/term/stdlib_term.nim	<expr name & " ^panes item ^terminal_id must be non-negative")>
+src/gene/ext/term/stdlib_term.nim	<expr name & " ^persistent must be Bool")>
+src/gene/ext/term/stdlib_term.nim	<expr name & " got unexpected named argument: " & argName)>
+src/gene/ext/term/stdlib_term.nim	<expr name & " got unexpected named argument: " & argName)>
+src/gene/ext/term/stdlib_term.nim	<expr name & " owns its Screen and does not accept ^persistent")>
+src/gene/ext/term/stdlib_term.nim	curses/open takes no arguments
+src/gene/ext/term/stdlib_term.nim	os/close_input cannot close an owned curses/Screen
+src/gene/ext/term/stdlib_term.nim	os/close_input takes no arguments
+src/gene/ext/term/stdlib_term.nim	os/read_input cannot borrow an owned curses/Screen
+src/gene/ext/term/stdlib_term.nim	os/read_input could not initialize ncurses
+src/gene/ext/term/stdlib_term.nim	os/read_input expects named arguments only
+src/gene/ext/term/stdlib_term.nim	os/refresh_input cannot borrow an owned curses/Screen
+src/gene/ext/term/stdlib_term.nim	os/refresh_input expects named arguments only
+src/gene/ext/term/stdlib_term.nim	terminal/open expects only named arguments
+src/gene/ext/tzif.nim	<expr label & " expects TZif Bytes, DateTime, zone Str, release St>
+src/gene/ext/tzif.nim	resolve_local expects a DateTime without a UTC offset
+src/gene/ext/tzif.nim	resolve_local fold must be reject, earlier, or later
+src/gene/ext/tzif.nim	temporal/_tzif_resolve_local expects 5 arguments
+src/gene/ext/tzif.nim	temporal/_tzif_to_local expects 4 arguments
+src/gene/gir.nim	typed_native backend has no lowering for 
+src/gene/io_read_guard.nim	AsyncReader/read expects a receiver and max_bytes
+src/gene/io_read_guard.nim	read borrow requires an owner
+src/gene/macro_runtime.nim	<expr instance.failure)>
+src/gene/macro_runtime.nim	<expr instance.failure)>
+src/gene/macro_runtime.nim	macro definition module is not in the selected package graph: 
+src/gene/macro_runtime.nim	macro definition namespace is not available: 
+src/gene/macro_runtime.nim	macro module initialization cycle at 
+src/gene/native_api.nim	Buffer/len expects a Buffer
+src/gene/native_api.nim	NativeIngressSubscription.close expects one receiver
+src/gene/native_api.nim	NativeIngressSubscription.status expects one receiver
+src/gene/native_api.nim	NativeIngressSubscription.wait_closed expects one receiver
+src/gene/native_api.nim	cannot release an executing native callback
+src/gene/native_api.nim	duplicate native/ingress/open option: 
+src/gene/native_api.nim	expected a 
+src/gene/native_api.nim	geneWrapperField expects a Type
+src/gene/native_api.nim	native access cannot enter generation analysis
+src/gene/native_api.nim	native callback belongs to another lane
+src/gene/native_api.nim	native ingress 
+src/gene/native_api.nim	native ingress 
+src/gene/native_api.nim	native ingress allocation failed
+src/gene/native_api.nim	native ingress cannot retire before callback quiescence
+src/gene/native_api.nim	native ingress context requires its owning lane
+src/gene/native_api.nim	native ingress handle is unavailable on this lane
+src/gene/native_api.nim	native ingress handle requires its live owning Application
+src/gene/native_api.nim	native ingress limits are invalid
+src/gene/native_api.nim	native ingress limits must be bounded positive Ints
+src/gene/native_api.nim	native ingress managed hooks are incomplete
+src/gene/native_api.nim	native ingress max_payload must not exceed max_bytes
+src/gene/native_api.nim	native ingress must close before unregistration is confirmed
+src/gene/native_api.nim	native ingress operation requires a subscription handle
+src/gene/native_api.nim	native ingress poll requires a live owning-lane subscription
+src/gene/native_api.nim	native ingress registration symbols are missing
+src/gene/native_api.nim	native ingress requires the managed owner adapter
+src/gene/native_api.nim	native log logger is nil
+src/gene/native_api.nim	native log payload JSON must encode an object
+src/gene/native_api.nim	native module is nil
+src/gene/native_api.nim	native module is nil
+src/gene/native_api.nim	native registration returned 
+src/gene/native_api.nim	native registration returned no unregister context
+src/gene/native_api.nim	native root has been released
+src/gene/native_api.nim	native subscription cannot release before physical retirement
+src/gene/native_api.nim	native subscription close requires the owning lane
+src/gene/native_api.nim	native subscription handler is still active
+src/gene/native_api.nim	native subscription release requires the owning lane
+src/gene/native_api.nim	native subscription status requires a live owning-lane subscription
+src/gene/native_api.nim	native unregister worker allocation failed
+src/gene/native_api.nim	native wait_closed requires an owning-lane subscription and scope
+src/gene/native_api.nim	native wake owner is unavailable
+src/gene/native_api.nim	native/ingress/open expects an open ffi/Library and handler
+src/gene/native_api.nim	native/ingress/open requires ^register and ^unregister
+src/gene/native_api.nim	unexpected native/ingress/open option: 
+src/gene/native_api.nim	wrapper field requires a name
+src/gene/native_api.nim	wrapper type requires a module scope
+src/gene/native_api.nim	wrapper type requires a name
+src/gene/native_managed.nim	<expr ack.message)>
+src/gene/native_managed.nim	<expr ack.message)>
+src/gene/native_managed.nim	<expr ack.message)>
+src/gene/native_managed.nim	<expr ack.message)>
+src/gene/native_managed.nim	<expr ack.message)>
+src/gene/native_managed.nim	<expr defined.message)>
+src/gene/native_managed.nim	<expr loaded.message)>
+src/gene/native_managed.nim	NativeModule.close expects one receiver
+src/gene/native_managed.nim	NativeModule.module expects one receiver
+src/gene/native_managed.nim	NativeModule.status expects one receiver
+src/gene/native_managed.nim	NativeModule.wait_closed expects one receiver
+src/gene/native_managed.nim	foreign Task payload must be deep-frozen
+src/gene/native_managed.nim	foreign managed borrow requires AtomicArc
+src/gene/native_managed.nim	foreign managed root capacity exhausted; reserve on the root lane
+src/gene/native_managed.nim	foreign managed root capacity is invalid
+src/gene/native_managed.nim	foreign managed root capacity is invalid
+src/gene/native_managed.nim	foreign managed root requires rooted provenance
+src/gene/native_managed.nim	foreign native ABI access requires AtomicArc
+src/gene/native_managed.nim	foreign native ABI lane must attach first
+src/gene/native_managed.nim	legacy export requires the runtime root lane
+src/gene/native_managed.nim	managed 
+src/gene/native_managed.nim	managed Actor capacity must be positive
+src/gene/native_managed.nim	managed Actor is nil
+src/gene/native_managed.nim	managed Actor is nil
+src/gene/native_managed.nim	managed Actor is nil
+src/gene/native_managed.nim	managed Actor is nil
+src/gene/native_managed.nim	managed Actor requires an environment
+src/gene/native_managed.nim	managed Actor state requires an ActorRef
+src/gene/native_managed.nim	managed Channel capacity must be positive
+src/gene/native_managed.nim	managed Channel is nil
+src/gene/native_managed.nim	managed Channel is nil
+src/gene/native_managed.nim	managed Channel requires an environment
+src/gene/native_managed.nim	managed Gene calls require the runtime root lane
+src/gene/native_managed.nim	managed List index is out of bounds
+src/gene/native_managed.nim	managed Node body index is out of bounds
+src/gene/native_managed.nim	managed Task has not settled
+src/gene/native_managed.nim	managed Task is nil
+src/gene/native_managed.nim	managed Task is nil
+src/gene/native_managed.nim	managed Task is nil
+src/gene/native_managed.nim	managed Task is nil
+src/gene/native_managed.nim	managed Task is nil
+src/gene/native_managed.nim	managed Task is nil
+src/gene/native_managed.nim	managed Task producer has retired
+src/gene/native_managed.nim	managed Task producer has retired
+src/gene/native_managed.nim	managed Task requires an environment
+src/gene/native_managed.nim	managed argument belongs to another runtime
+src/gene/native_managed.nim	managed argument has been released
+src/gene/native_managed.nim	managed borrow cannot enter generation analysis
+src/gene/native_managed.nim	managed buffer operation requires a Buffer
+src/gene/native_managed.nim	managed buffer requires an environment
+src/gene/native_managed.nim	managed call requires its runtime environment
+src/gene/native_managed.nim	managed environment has been released
+src/gene/native_managed.nim	managed ingress handler Task has not settled
+src/gene/native_managed.nim	managed ingress handler is unavailable
+src/gene/native_managed.nim	managed ingress owner has outstanding handles
+src/gene/native_managed.nim	managed ingress owner is unavailable
+src/gene/native_managed.nim	managed ingress owner is unavailable
+src/gene/native_managed.nim	managed module load requires an open ffi/Library
+src/gene/native_managed.nim	managed module name is empty
+src/gene/native_managed.nim	managed native Int does not fit in int64
+src/gene/native_managed.nim	managed native Str is not valid UTF-8
+src/gene/native_managed.nim	managed native borrow belongs to another lane
+src/gene/native_managed.nim	managed native borrow has ended
+src/gene/native_managed.nim	managed native close requires the root lane
+src/gene/native_managed.nim	managed native domain is closed
+src/gene/native_managed.nim	managed native domain is closed
+src/gene/native_managed.nim	managed native domain is closed
+src/gene/native_managed.nim	managed native domain is closed
+src/gene/native_managed.nim	managed native domain is closed
+src/gene/native_managed.nim	managed native domain is closed
+src/gene/native_managed.nim	managed native domain is closed
+src/gene/native_managed.nim	managed native domain is closed
+src/gene/native_managed.nim	managed native domain is nil
+src/gene/native_managed.nim	managed native environment is nil
+src/gene/native_managed.nim	managed native environment is nil
+src/gene/native_managed.nim	managed native environment is nil
+src/gene/native_managed.nim	managed native environment is nil
+src/gene/native_managed.nim	managed native environment is nil
+src/gene/native_managed.nim	managed native environment is unavailable
+src/gene/native_managed.nim	managed native operation requires the runtime root lane
+src/gene/native_managed.nim	managed native root IDs are exhausted
+src/gene/native_managed.nim	managed native root IDs are exhausted
+src/gene/native_managed.nim	managed native root belongs to another runtime
+src/gene/native_managed.nim	managed native root has been released
+src/gene/native_managed.nim	managed native root has been released
+src/gene/native_managed.nim	managed native root has been released
+src/gene/native_managed.nim	managed native root is nil
+src/gene/native_managed.nim	managed native value is not Bytes
+src/gene/native_managed.nim	managed native value is not a Bool
+src/gene/native_managed.nim	managed native value is not a Float
+src/gene/native_managed.nim	managed native value is not a Str
+src/gene/native_managed.nim	managed operation cannot enter generation analysis
+src/gene/native_managed.nim	managed outcome requires a Task
+src/gene/native_managed.nim	managed owned pointer requires environment and release
+src/gene/native_managed.nim	managed pointer borrow requires a CPtr
+src/gene/native_managed.nim	managed release cannot enter generation analysis
+src/gene/native_managed.nim	managed root belongs to another runtime
+src/gene/native_managed.nim	managed root belongs to another runtime
+src/gene/native_managed.nim	managed root cannot enter generation analysis
+src/gene/native_managed.nim	managed status requires a managed Actor
+src/gene/native_managed.nim	managed wrapper Type is nil
+src/gene/native_managed.nim	managed wrapper is nil
+src/gene/native_managed.nim	native ABI Bool input or output is invalid
+src/gene/native_managed.nim	native ABI Bool output is nil
+src/gene/native_managed.nim	native ABI Bytes output is nil
+src/gene/native_managed.nim	native ABI Bytes output is nil
+src/gene/native_managed.nim	native ABI Float output is nil
+src/gene/native_managed.nim	native ABI Float output is nil
+src/gene/native_managed.nim	native ABI Int output is nil
+src/gene/native_managed.nim	native ABI Int output is nil
+src/gene/native_managed.nim	native ABI Map entry is out of bounds
+src/gene/native_managed.nim	native ABI Node head index is out of bounds
+src/gene/native_managed.nim	native ABI Node property is out of bounds
+src/gene/native_managed.nim	native ABI attachment IDs are exhausted
+src/gene/native_managed.nim	native ABI attachment belongs to another lane
+src/gene/native_managed.nim	native ABI attachment input is nil
+src/gene/native_managed.nim	native ABI attachment is unavailable
+src/gene/native_managed.nim	native ABI attachment limit reached
+src/gene/native_managed.nim	native ABI byte input exceeds limit
+src/gene/native_managed.nim	native ABI byte input is nil
+src/gene/native_managed.nim	native ABI call arguments are invalid
+src/gene/native_managed.nim	native ABI call outputs are nil
+src/gene/native_managed.nim	native ABI define output is nil
+src/gene/native_managed.nim	native ABI detach input is invalid
+src/gene/native_managed.nim	native ABI foreign attachment requires threaded AtomicArc
+src/gene/native_managed.nim	native ABI key is not valid UTF-8
+src/gene/native_managed.nim	native ABI key output is nil
+src/gene/native_managed.nim	native ABI key selector requires Map entry or Node property
+src/gene/native_managed.nim	native ABI kind output is nil
+src/gene/native_managed.nim	native ABI length output is nil
+src/gene/native_managed.nim	native ABI length selector is invalid
+src/gene/native_managed.nim	native ABI lookup output is nil
+src/gene/native_managed.nim	native ABI name must be nonempty UTF-8
+src/gene/native_managed.nim	native ABI required feature bits are unavailable
+src/gene/native_managed.nim	native ABI retain output is nil
+src/gene/native_managed.nim	native ABI runtime context is nil
+src/gene/native_managed.nim	native ABI text is not valid UTF-8
+src/gene/native_managed.nim	native ABI text output is nil
+src/gene/native_managed.nim	native ABI text output is nil
+src/gene/native_managed.nim	native ABI traversal index is too large
+src/gene/native_managed.nim	native ABI traversal output is nil
+src/gene/native_managed.nim	native ABI traversal selector is invalid
+src/gene/native_managed.nim	native Task acceptance output is nil
+src/gene/native_managed.nim	native Task acceptance output is nil
+src/gene/native_managed.nim	native Task acceptance output is nil
+src/gene/native_managed.nim	native Task acceptance output is nil
+src/gene/native_managed.nim	native Task already has a cancel callback
+src/gene/native_managed.nim	native Task already has a cancel callback
+src/gene/native_managed.nim	native Task cancel registration needs a callback and a retirement
+src/gene/native_managed.nim	native Task creation requires an active registered callback
+src/gene/native_managed.nim	native Task creation requires completed module initialization
+src/gene/native_managed.nim	native Task environment belongs to another callback
+src/gene/native_managed.nim	native Task outputs are nil
+src/gene/native_managed.nim	native Task producer IDs are exhausted
+src/gene/native_managed.nim	native Task producer token is unavailable
+src/gene/native_managed.nim	native Task producer token is unavailable
+src/gene/native_managed.nim	native Task producer token is unavailable
+src/gene/native_managed.nim	native Task producer token is unavailable
+src/gene/native_managed.nim	native callback arguments exceed limit
+src/gene/native_managed.nim	native callback is closed
+src/gene/native_managed.nim	native callback name is too long
+src/gene/native_managed.nim	native callback registration arguments are invalid
+src/gene/native_managed.nim	native callback registration requires an active module initializer
+src/gene/native_managed.nim	native callback returned a borrowed argument handle
+src/gene/native_managed.nim	native callback returned a value handle on failure
+src/gene/native_managed.nim	native callback returned an error handle on success
+src/gene/native_managed.nim	native callback returned the same handle twice
+src/gene/native_managed.nim	native callback returned unsupported status 
+src/gene/native_managed.nim	native close waiter output is nil
+src/gene/native_managed.nim	native copied Task 
+src/gene/native_managed.nim	native copied Task failure message is not valid UTF-8
+src/gene/native_managed.nim	native copied Task kind is invalid
+src/gene/native_managed.nim	native image pinning is unavailable on this platform
+src/gene/native_managed.nim	native lane must attach before a managed borrow
+src/gene/native_managed.nim	native module handle is unavailable on this lane
+src/gene/native_managed.nim	native module is closing and admits no new Tasks
+src/gene/native_managed.nim	native module is closing or closed
+src/gene/native_managed.nim	native module requires a live handle
+src/gene/native_managed.nim	native registration IDs are exhausted
+src/gene/native_managed.nim	native registration must request close before waiting
+src/gene/native_managed.nim	native registration token is unavailable
+src/gene/native_managed.nim	published Buffer requires a shared mutation policy
+src/gene/native_managed.nim	two-phase close is enabled during gene_module_init
+src/gene/native_managed.nim	typed foreign Task failure needs a root-lane adapter
+src/gene/native_managed.nim	typed foreign Task failure needs a root-lane adapter
+src/gene/native_managed.nim	wrapper field requires a name
+src/gene/native_managed.nim	wrapper type requires a name
+src/gene/reader.nim	a direct message call requires a named message
+src/gene/reader.nim	a direct message call requires a receiver
+src/gene/reader.nim	a direct message call requires an explicit receiver before spreads; 
+src/gene/stdlib.nim	<expr if ctx.message.len > 0: ctx.message>
+src/gene/stdlib.nim	<expr label & " expects a web_module or web/load asset")>
+src/gene/stdlib.nim	<expr message & ": " & path)>
+src/gene/stdlib.nim	<expr name & " cannot emit LogLevel/off")>
+src/gene/stdlib.nim	<expr name & " expects (bytes, offset)")>
+src/gene/stdlib.nim	<expr name & " expects 2 arguments, got " & $args.len)>
+src/gene/stdlib.nim	<expr name & " expects 2 arguments, got " & $args.len)>
+src/gene/stdlib.nim	<expr name & " expects Bytes, got " & $v.kind)>
+src/gene/stdlib.nim	<expr name & " expects a Float, got " & $args[0].kind)>
+src/gene/stdlib.nim	<expr name & " expects a LogLevel")>
+src/gene/stdlib.nim	<expr name & " expects a Logger")>
+src/gene/stdlib.nim	<expr name & " expects a number, got " & $v.kind)>
+src/gene/stdlib.nim	<expr name & " expects a repl/Session")>
+src/gene/stdlib.nim	<expr name & " expects an FsWatcher")>
+src/gene/stdlib.nim	<expr name & " expects an Int, got " & $args[0].kind)>
+src/gene/stdlib.nim	<expr name & " expects an Int, got " & $v.kind)>
+src/gene/stdlib.nim	<expr name & " expects one value")>
+src/gene/stdlib.nim	<expr name & " expects one value")>
+src/gene/stdlib.nim	<expr name & " got an unknown LogLevel")>
+src/gene/stdlib.nim	<expr name & " got unexpected named argument: " & actual)>
+src/gene/stdlib.nim	<expr name & " offset must be an Int")>
+src/gene/stdlib.nim	<expr name & " reads " & $width & " bytes at offset " & $off &>
+src/gene/stdlib.nim	<expr name & " received an invalid FsWatcher")>
+src/gene/stdlib.nim	<expr name & " received an invalid repl/Session")>
+src/gene/stdlib.nim	<expr name & " requires a scheduler scope")>
+src/gene/stdlib.nim	<expr name & " shift count must be in 0..63")>
+src/gene/stdlib.nim	<expr name & " value out of range " & $lo & ".." & $hi & ": " & $v>
+src/gene/stdlib.nim	<expr name & " watcher belongs to another application")>
+src/gene/stdlib.nim	<expr name & " watcher is owned by another lane")>
+src/gene/stdlib.nim	<expr name & ": Session is closed")>
+src/gene/stdlib.nim	<expr operation & " expects (conn, sql, callback)")>
+src/gene/stdlib.nim	<expr publicName & " expects (Logger, message)")>
+src/gene/stdlib.nim	AOT library exports no manifest; was it built from 
+src/gene/stdlib.nim	AOT library is no longer compatible with the loaded native types: 
+src/gene/stdlib.nim	Db/exec expects (conn, sql), got 
+src/gene/stdlib.nim	Db/exec expects (conn, sql), got 
+src/gene/stdlib.nim	Db/execute expects (conn, sql, params...)
+src/gene/stdlib.nim	Db/execute expects (conn, sql, params...)
+src/gene/stdlib.nim	Db/query expects (conn, sql, params...)
+src/gene/stdlib.nim	Db/query expects (conn, sql, params...)
+src/gene/stdlib.nim	Db/query_one expects (conn, sql, params...)
+src/gene/stdlib.nim	Db/query_one expects (conn, sql, params...)
+src/gene/stdlib.nim	Db/transaction expects (conn, fn)
+src/gene/stdlib.nim	Db/transaction expects (conn, fn)
+src/gene/stdlib.nim	FsChange type is unavailable
+src/gene/stdlib.nim	FsFileLock/close expects an FsFileLock
+src/gene/stdlib.nim	Logger/child expects (Logger, name)
+src/gene/stdlib.nim	Logger/child invalid name: 
+src/gene/stdlib.nim	Logger/emit expects (Logger, LogLevel, message)
+src/gene/stdlib.nim	Logger/enabled? expects (Logger, LogLevel)
+src/gene/stdlib.nim	Logger/with expects (Logger, payload)
+src/gene/stdlib.nim	SQLite callback supplied an invalid row
+src/gene/stdlib.nim	SQLite callback supplied an unnamed column
+src/gene/stdlib.nim	Store/checkpoint expects (store, generation, records)
+src/gene/stdlib.nim	Store/delete expects (store, key)
+src/gene/stdlib.nim	Store/get expects (store, key)
+src/gene/stdlib.nim	Store/has? expects (store, key)
+src/gene/stdlib.nim	Store/put expects (store, key, value)
+src/gene/stdlib.nim	aot/load expects one Str path
+src/gene/stdlib.nim	base64/encode expects Bytes or a Str
+src/gene/stdlib.nim	bit/shl expects 2 arguments
+src/gene/stdlib.nim	bit/shr expects 2 arguments
+src/gene/stdlib.nim	bytes/concat expects a List of Bytes
+src/gene/stdlib.nim	bytes/from_list element acc of range 0..255: 
+src/gene/stdlib.nim	bytes/from_list expects Int elements, got 
+src/gene/stdlib.nim	bytes/from_list expects a List
+src/gene/stdlib.nim	bytes/get expects (bytes, index)
+src/gene/stdlib.nim	bytes/get index must be an Int
+src/gene/stdlib.nim	bytes/get index out of range: 
+src/gene/stdlib.nim	bytes/slice expects (bytes, start, len)
+src/gene/stdlib.nim	bytes/slice range out of bounds
+src/gene/stdlib.nim	bytes/slice start and len must be Int
+src/gene/stdlib.nim	crypto/random_hex byte count must be between 1 and 1024
+src/gene/stdlib.nim	crypto/random_hex is unavailable on this target
+src/gene/stdlib.nim	crypto/secure_equal? expects 2 arguments, got 
+src/gene/stdlib.nim	crypto/sha256 expects a Str or Bytes
+src/gene/stdlib.nim	css/container expects a Str query followed by CSS nodes
+src/gene/stdlib.nim	css/decl expects a Symbol or Str property name and one value
+src/gene/stdlib.nim	css/frame expects a Str selector followed by declarations
+src/gene/stdlib.nim	css/keyframes expects a Str name followed by frame nodes
+src/gene/stdlib.nim	css/media expects a Str query followed by CSS nodes
+src/gene/stdlib.nim	css/render declaration must be inside a rule
+src/gene/stdlib.nim	css/render declaration must contain a name and value
+src/gene/stdlib.nim	css/render declaration name is empty
+src/gene/stdlib.nim	css/render declaration name must be a Symbol or Str
+src/gene/stdlib.nim	css/render expected a media query
+src/gene/stdlib.nim	css/render expected a rule node
+src/gene/stdlib.nim	css/render expected keyframes data
+src/gene/stdlib.nim	css/render expects CSS node data
+src/gene/stdlib.nim	css/render font_face may contain only declarations
+src/gene/stdlib.nim	css/render frame may contain only declarations
+src/gene/stdlib.nim	css/render invalid declaration name: 
+src/gene/stdlib.nim	css/render keyframes may contain only frame nodes
+src/gene/stdlib.nim	css/render scoped class hash collision: 
+src/gene/stdlib.nim	css/render unknown CSS node: 
+src/gene/stdlib.nim	css/rule expects a Str selector followed by CSS nodes
+src/gene/stdlib.nim	css/scoped canonical serialization rejects 
+src/gene/stdlib.nim	css/scoped expects a Str label followed by CSS node data
+src/gene/stdlib.nim	css/scoped expects a scoped CSS node
+src/gene/stdlib.nim	curl_easy_init failed
+src/gene/stdlib.nim	duplicate log payload key: 
+src/gene/stdlib.nim	each expects 2 arguments, got 
+src/gene/stdlib.nim	fetching 
+src/gene/stdlib.nim	fetching 
+src/gene/stdlib.nim	filesystem claim belongs to another application or lane
+src/gene/stdlib.nim	fs/create_symlink expects (target, path)
+src/gene/stdlib.nim	fs/exists? expects (path)
+src/gene/stdlib.nim	fs/info expects (path)
+src/gene/stdlib.nim	fs/list_dir expects (path)
+src/gene/stdlib.nim	fs/make_dir expects (path)
+src/gene/stdlib.nim	fs/read_bytes expects (path)
+src/gene/stdlib.nim	fs/read_text expects (path)
+src/gene/stdlib.nim	fs/real_path expects (path)
+src/gene/stdlib.nim	fs/remove expects (path)
+src/gene/stdlib.nim	fs/remove_dir expects (path)
+src/gene/stdlib.nim	fs/rename expects source and destination paths
+src/gene/stdlib.nim	fs/set_mode expects (path, mode)
+src/gene/stdlib.nim	fs/watch ^capacity must be an Int from 1 through 65536
+src/gene/stdlib.nim	fs/watch ^recursive must be Bool
+src/gene/stdlib.nim	fs/watch expects one path
+src/gene/stdlib.nim	fs/watch got unexpected named argument: 
+src/gene/stdlib.nim	fs/write_bytes expects (path, bytes)
+src/gene/stdlib.nim	fs/write_bytes expects Bytes, got 
+src/gene/stdlib.nim	fs/write_bytes_atomic expects (path, bytes)
+src/gene/stdlib.nim	fs/write_bytes_atomic expects Bytes, got 
+src/gene/stdlib.nim	fs/write_text expects (path, text)
+src/gene/stdlib.nim	fs/write_text_atomic ^owner_only expects a Bool
+src/gene/stdlib.nim	fs/write_text_atomic expects (path, text)
+src/gene/stdlib.nim	fs/write_text_atomic got unexpected named argument: 
+src/gene/stdlib.nim	html/render expects a Symbol or Str node head
+src/gene/stdlib.nim	html/render invalid attribute name: 
+src/gene/stdlib.nim	html/render invalid tag name: 
+src/gene/stdlib.nim	html/render raw-text element '
+src/gene/stdlib.nim	html/render void element '
+src/gene/stdlib.nim	invalid filesystem claim
+src/gene/stdlib.nim	io/_retain_cleanup expects one Task
+src/gene/stdlib.nim	io/copy expects a reader and writer
+src/gene/stdlib.nim	io/copy helper did not return a Task
+src/gene/stdlib.nim	io/flush_stdout takes no arguments
+src/gene/stdlib.nim	io/write_all expects a writer and Bytes
+src/gene/stdlib.nim	io/write_all helper did not return a Task
+src/gene/stdlib.nim	json/parse ^max_depth must be between 1 and 
+src/gene/stdlib.nim	json/parse ^strict expects a Bool
+src/gene/stdlib.nim	json/parse got unexpected named argument: 
+src/gene/stdlib.nim	json/stringify got unexpected named argument: 
+src/gene/stdlib.nim	log payload cannot contain 
+src/gene/stdlib.nim	log payload contains a cycle
+src/gene/stdlib.nim	log payload item count exceeds limit
+src/gene/stdlib.nim	log payload keys must be strings or symbols
+src/gene/stdlib.nim	log payload must be a PropMap or HashMap
+src/gene/stdlib.nim	log payload nesting exceeds limit
+src/gene/stdlib.nim	log payload string exceeds limit
+src/gene/stdlib.nim	log payload symbol exceeds limit
+src/gene/stdlib.nim	log/new_file_logger ^flush must be always, error, or close
+src/gene/stdlib.nim	log/new_file_logger ^format must be gene, text, json, or jsonl
+src/gene/stdlib.nim	log/new_file_logger expects (name, path)
+src/gene/stdlib.nim	log/new_file_logger invalid name: 
+src/gene/stdlib.nim	log/new_file_logger is unavailable in wasm
+src/gene/stdlib.nim	log/new_file_logger names must be in the app/* namespace
+src/gene/stdlib.nim	log/new_logger invalid name: 
+src/gene/stdlib.nim	log/new_logger names must be in the app/* namespace
+src/gene/stdlib.nim	managed native module adapter is unavailable
+src/gene/stdlib.nim	managed native module adapter is unavailable
+src/gene/stdlib.nim	managed native module adapter is unavailable
+src/gene/stdlib.nim	managed native module adapter is unavailable
+src/gene/stdlib.nim	math/acos expects a number in -1..1
+src/gene/stdlib.nim	math/asin expects a number in -1..1
+src/gene/stdlib.nim	math/clamp expects 3 arguments, got 
+src/gene/stdlib.nim	math/clamp lower bound exceeds upper bound
+src/gene/stdlib.nim	math/log expects a positive number
+src/gene/stdlib.nim	math/log10 expects a positive number
+src/gene/stdlib.nim	math/log2 expects a positive number
+src/gene/stdlib.nim	math/sqrt expects a non-negative number
+src/gene/stdlib.nim	native ingress adapter is unavailable
+src/gene/stdlib.nim	native ingress adapter is unavailable
+src/gene/stdlib.nim	native ingress adapter is unavailable
+src/gene/stdlib.nim	native ingress adapter is unavailable
+src/gene/stdlib.nim	no AOT entry registered for '
+src/gene/stdlib.nim	os/begin_interrupt takes no arguments
+src/gene/stdlib.nim	os/end_interrupt takes no arguments
+src/gene/stdlib.nim	os/env? expects (name)
+src/gene/stdlib.nim	os/executable_path expects no arguments, got 
+src/gene/stdlib.nim	os/get_env expects (name) or (name, default), got 
+src/gene/stdlib.nim	os/launch_dir expects no arguments, got 
+src/gene/stdlib.nim	os/launch_dir requires an application runtime
+src/gene/stdlib.nim	os/monotonic_ms takes no arguments
+src/gene/stdlib.nim	os/process_id takes no arguments
+src/gene/stdlib.nim	os/read_line takes no arguments
+src/gene/stdlib.nim	os/read_line_async requires a POSIX host
+src/gene/stdlib.nim	os/read_line_async takes no arguments
+src/gene/stdlib.nim	os/stdin_tty? takes no arguments
+src/gene/stdlib.nim	os/stdout_tty? takes no arguments
+src/gene/stdlib.nim	os/take_interrupt takes no arguments
+src/gene/stdlib.nim	os/wall_ms takes no arguments
+src/gene/stdlib.nim	parse/read_all ^locs expects Bool
+src/gene/stdlib.nim	parse/read_all ^locs is not available with ^max_depth or 
+src/gene/stdlib.nim	parse/read_all ^max_depth must be between 0 and 100000
+src/gene/stdlib.nim	parse/read_all ^reject_duplicate_props expects Bool
+src/gene/stdlib.nim	parse/read_all got unexpected named argument: 
+src/gene/stdlib.nim	pkg/application expects no arguments
+src/gene/stdlib.nim	pkg/application requires an Application
+src/gene/stdlib.nim	repl/bind expects (repl/Session, Str, Any)
+src/gene/stdlib.nim	repl/bind requires a native host
+src/gene/stdlib.nim	repl/bind: Session is busy
+src/gene/stdlib.nim	repl/close: Session is busy
+src/gene/stdlib.nim	repl/eval expects (repl/Session, Str)
+src/gene/stdlib.nim	repl/eval requires a native host
+src/gene/stdlib.nim	repl/eval: Session is busy
+src/gene/stdlib.nim	repl/eval: Session is busy
+src/gene/stdlib.nim	repl/eval: Session is closed
+src/gene/stdlib.nim	repl/eval_source expects (repl/Session, Str)
+src/gene/stdlib.nim	repl/eval_source: Session is busy
+src/gene/stdlib.nim	repl/open expects an Env
+src/gene/stdlib.nim	repl/run ^interactive must be Bool
+src/gene/stdlib.nim	repl/run expects an Env
+src/gene/stdlib.nim	repl/run expects one Env argument
+src/gene/stdlib.nim	repl/run got unexpected named argument: 
+src/gene/stdlib.nim	reserved log payload key: 
+src/gene/stdlib.nim	serde/read expects a Str plus optional ^policy
+src/gene/stdlib.nim	serde/read_data expects a Str plus optional ^policy
+src/gene/stdlib.nim	stdin already has a pending line read
+src/gene/stdlib.nim	store/fs/open expects no positional arguments
+src/gene/stdlib.nim	str/contains? expects 2 arguments, got 
+src/gene/stdlib.nim	str/ends_with? expects 2 arguments, got 
+src/gene/stdlib.nim	str/from_utf8 element 
+src/gene/stdlib.nim	str/from_utf8 element 
+src/gene/stdlib.nim	str/from_utf8 expects a (Buffer U8), got 
+src/gene/stdlib.nim	str/join expects 1..2 arguments, got 
+src/gene/stdlib.nim	str/join expects a list-like value, got 
+src/gene/stdlib.nim	str/slice_bytes expects 3 arguments, got 
+src/gene/stdlib.nim	str/slice_bytes start and max_bytes must be non-negative
+src/gene/stdlib.nim	str/slice_bytes start exceeds string byte size
+src/gene/stdlib.nim	str/slice_bytes start must be a UTF-8 boundary
+src/gene/stdlib.nim	str/split expects 2 arguments, got 
+src/gene/stdlib.nim	str/split separator must not be empty
+src/gene/stdlib.nim	str/starts_with? expects 2 arguments, got 
+src/gene/stdlib.nim	url/format_query expects a Map
+src/gene/stdlib.nim	web/asset_base takes no arguments
+src/gene/stdlib.nim	web/published_routes takes no arguments
+src/gene/stdlib.nim	web/script got unexpected named argument: 
+src/gene/stdlib.nim	web/script requires a non-empty ^mount element id
+src/gene/stdlib.nim	web/set_source_maps expects a Bool
+src/gene/stdlib.nim	web/stylesheet expects (name, css), got 
+src/gene/testing.nim	a test run is already in progress
+src/gene/testing.nim	assert expects a condition and optional message
+src/gene/testing.nim	cannot register tests during a test run
+src/gene/testing.nim	cannot run tests during registration
+src/gene/testing.nim	invalid test hook registration
+src/gene/testing.nim	it ^skip requires a nonempty literal string
+src/gene/testing.nim	it requires an active describe/context group
+src/gene/testing.nim	test body parameters must be [] or [name]
+src/gene/testing.nim	test body requires an ordinary function
+src/gene/testing.nim	test collection is already active
+src/gene/testing.nim	test group body requires an ordinary function
+src/gene/testing.nim	test hooks require an active describe/context group
+src/gene/testing.nim	test/assert_equal expects actual, expected, and an optional message
+src/gene/testing.nim	test/assert_raises expects a callable, error type, and optional message
+src/gene/testing.nim	test/register_example expects four arguments
+src/gene/testing.nim	test/register_group expects a description and body
+src/gene/testing.nim	test/run expects no positional arguments
+src/gene/testing.nim	test/run got unexpected named argument: 
+src/gene/testing.nim	testing operation requires a caller scope
+src/gene/type_contracts.nim	<expr label & " has incompatible " & mismatch & locations)>
+src/gene/type_contracts.nim	recursive alias in callable signature
+src/gene/types.nim	C pointer has no active borrow
+src/gene/types.nim	C slice length must be non-negative
+src/gene/types.nim	CallerEnv is no longer valid outside its syntax call
+src/gene/types.nim	Device/Buffer backend must not be empty
+src/gene/types.nim	Device/Buffer length must be non-negative
+src/gene/types.nim	FFI callable address must not be nil
+src/gene/types.nim	FFI library handle must not be nil
+src/gene/types.nim	Logger name must not be empty
+src/gene/types.nim	ValueProtocolPending: 
+src/gene/types.nim	a Stream cannot be pulled reentrantly
+src/gene/types.nim	cannot borrow a closed C pointer
+src/gene/types.nim	cannot close a C pointer while a native call borrows it
+src/gene/types.nim	cannot close a borrowed C pointer
+src/gene/types.nim	cannot mutate immutable List
+src/gene/types.nim	cannot mutate immutable List
+src/gene/types.nim	cannot mutate immutable Map
+src/gene/types.nim	cannot mutate immutable Map
+src/gene/types.nim	cannot mutate immutable Map
+src/gene/types.nim	cannot mutate immutable Node
+src/gene/types.nim	cannot mutate immutable Node
+src/gene/types.nim	cannot mutate immutable Node
+src/gene/types.nim	cannot mutate immutable Node
+src/gene/types.nim	cannot mutate immutable Node
+src/gene/types.nim	cannot mutate immutable Node
+src/gene/types.nim	cannot mutate immutable Node
+src/gene/types.nim	cannot mutate immutable Node
+src/gene/types.nim	cannot replace a C pointer while a native call borrows it
+src/gene/types.nim	cannot transfer a C pointer while a native call borrows it
+src/gene/types.nim	core witnesses are already sealed
+src/gene/types.nim	date day is out of range for month
+src/gene/types.nim	date month must be in 1..12
+src/gene/types.nim	date year must be in 1..9999
+src/gene/types.nim	duplicate Regex flag: 
+src/gene/types.nim	ffi/Library has active native borrows
+src/gene/types.nim	ffi/Library has no native borrow
+src/gene/types.nim	ffi/Library is closed
+src/gene/types.nim	invalid Regex flag: 
+src/gene/types.nim	invalid Regex: 
+src/gene/types.nim	invalid packed buffer storage or length
+src/gene/types.nim	managed Actor contract needs an ownership ticket
+src/gene/types.nim	managed Actor handler needs an ownership ticket
+src/gene/types.nim	managed Actor state needs an ownership ticket
+src/gene/types.nim	managed contract requires a managed Actor
+src/gene/types.nim	managed send requires a managed Actor
+src/gene/types.nim	managed state requires a managed Actor
+src/gene/types.nim	managed upgrade requires a managed Actor
+src/gene/types.nim	node body index out of range: 
+src/gene/types.nim	node body index out of range: 
+src/gene/types.nim	protocol ^inherit entries must be protocols
+src/gene/types.nim	range step must not be zero
+src/gene/types.nim	task result has already been awaited
+src/gene/types.nim	task result has already been consumed by await
+src/gene/types.nim	task result is not ready
+src/gene/types.nim	time hour must be in 0..23
+src/gene/types.nim	time microsecond must be in 0..999999
+src/gene/types.nim	time minute must be in 0..59
+src/gene/types.nim	time second must be in 0..59
+src/gene/types.nim	timezone offset must be within +/-23:59
+src/gene/types.nim	type 
+src/gene/types.nim	type 
+src/gene/types.nim	type annotation identity must be a type or protocol
+src/gene/types.nim	universal protocol 
+src/gene/vm.nim	$gensym can only be called while a macro body is running
+src/gene/vm.nim	'
+src/gene/vm.nim	'
+src/gene/vm.nim	(
+src/gene/vm.nim	(
+src/gene/vm.nim	(& ...) operands must be resolved protocols; 
+src/gene/vm.nim	(& ...) operands must be resolved protocols; 
+src/gene/vm.nim	(& ...) requires at least two protocols; write the protocol 
+src/gene/vm.nim	(& ...) requires at least two protocols; write the protocol 
+src/gene/vm.nim	(& ...) requires protocol operands; 
+src/gene/vm.nim	(? T ...) expects at least one type
+src/gene/vm.nim	(? T) expects one type
+src/gene/vm.nim	(ActorContext M) expects one message type
+src/gene/vm.nim	(ActorRef M) expects one message type
+src/gene/vm.nim	(ActorRef M) expects one message type
+src/gene/vm.nim	(ActorStep S) expects one state type
+src/gene/vm.nim	(Buffer T) expects one item type
+src/gene/vm.nim	(Buffer T) expects one item type
+src/gene/vm.nim	(Callable [A ...] R ^named {...} ^errors [...]) expects parameters and a result type
+src/gene/vm.nim	(Cell T) expects one value type
+src/gene/vm.nim	(Cell T) expects one value type
+src/gene/vm.nim	(Channel T) expects one item type
+src/gene/vm.nim	(Channel T) expects one item type
+src/gene/vm.nim	(Fn [A ...] R ^errors [E ...]) expects parameters and a return type
+src/gene/vm.nim	(HashMap K V) expects key and value types
+src/gene/vm.nim	(List T) expects one item type
+src/gene/vm.nim	(List T) expects one item type
+src/gene/vm.nim	(Map K V) expects key and value types
+src/gene/vm.nim	(Map K V) expects key and value types
+src/gene/vm.nim	(PropMap K V) expects key and value types
+src/gene/vm.nim	(ReplyTo R) expects one result type
+src/gene/vm.nim	(ReplyTo R) expects one result type
+src/gene/vm.nim	(Set T) expects one item type
+src/gene/vm.nim	(Stream item err) expects item and error types
+src/gene/vm.nim	(Stream item err) expects item and error types
+src/gene/vm.nim	(Task result err) expects result and error types
+src/gene/vm.nim	(Task result err) expects result and error types
+src/gene/vm.nim	(device/Buffer T) expects one item type
+src/gene/vm.nim	(device/Buffer T) expects one item type
+src/gene/vm.nim	/ expects at least 2 arguments
+src/gene/vm.nim	// expects exactly 2 arguments
+src/gene/vm.nim	<expr (if continuing: "continue" else: "break") & " is only valid>
+src/gene/vm.nim	<expr arityHead() & "at least " & $max(0, positional.len - implici>
+src/gene/vm.nim	<expr arityHead() & $max(0, requiredPositional - implicit) &>
+src/gene/vm.nim	<expr callee.typeName & " has no field '" & key & "'")>
+src/gene/vm.nim	<expr coreName & " cannot be added after Type activation")>
+src/gene/vm.nim	<expr coreName & " requires a canonical impl in the Type's definin>
+src/gene/vm.nim	<expr expr.head.typeName & " expects " &>
+src/gene/vm.nim	<expr expr.head.typeName & " is not a generic type")>
+src/gene/vm.nim	<expr if removed.len > 0: removed else: "unknown type annotation:>
+src/gene/vm.nim	<expr label & " impls cannot be exported")>
+src/gene/vm.nim	<expr message)>
+src/gene/vm.nim	<expr message)>
+src/gene/vm.nim	<expr name & " /body expects a list value")>
+src/gene/vm.nim	<expr name & " /meta expects a map value")>
+src/gene/vm.nim	<expr name & " /props expects a map value")>
+src/gene/vm.nim	<expr name & " cannot copy an in-progress " & target.head.typeName>
+src/gene/vm.nim	<expr name & " cannot remove a List element")>
+src/gene/vm.nim	<expr name & " cannot remove a List element")>
+src/gene/vm.nim	<expr name & " cannot remove a node body element")>
+src/gene/vm.nim	<expr name & " cannot remove a node head")>
+src/gene/vm.nim	<expr name & " cannot resolve the calling application")>
+src/gene/vm.nim	<expr name & " cannot update through " & $target.kind)>
+src/gene/vm.nim	<expr name & " cannot update through " & $target.kind)>
+src/gene/vm.nim	<expr name & " cannot update through " & $target.kind)>
+src/gene/vm.nim	<expr name & " cannot update through Path stage: " & $segment.kind>
+src/gene/vm.nim	<expr name & " cannot update through Path stage: " & $segment.kind>
+src/gene/vm.nim	<expr name & " cannot update through a Path message segment")>
+src/gene/vm.nim	<expr name & " expects 1 argument, got " & $args.len)>
+src/gene/vm.nim	<expr name & " expects 1 or 2 arguments, got " & $args.len)>
+src/gene/vm.nim	<expr name & " expects 1 or 2 arguments, got " & $args.len)>
+src/gene/vm.nim	<expr name & " expects 2 arguments, got " & $args.len)>
+src/gene/vm.nim	<expr name & " expects 2..4 arguments, got " & $args.len)>
+src/gene/vm.nim	<expr name & " expects UTC, Z, or +/-HH:MM")>
+src/gene/vm.nim	<expr name & " expects UTC, Z, or +/-HH:MM")>
+src/gene/vm.nim	<expr name & " expects a Buffer")>
+src/gene/vm.nim	<expr name & " expects a C pointer")>
+src/gene/vm.nim	<expr name & " expects a Cell")>
+src/gene/vm.nim	<expr name & " expects a Channel")>
+src/gene/vm.nim	<expr name & " expects a Date")>
+src/gene/vm.nim	<expr name & " expects a DateTime")>
+src/gene/vm.nim	<expr name & " expects a Duration")>
+src/gene/vm.nim	<expr name & " expects a List")>
+src/gene/vm.nim	<expr name & " expects a Map or a node, got " & receiverDisplayTyp>
+src/gene/vm.nim	<expr name & " expects a Map or a node, got " &>
+src/gene/vm.nim	<expr name & " expects a Map or a node, got " &>
+src/gene/vm.nim	<expr name & " expects a Map")>
+src/gene/vm.nim	<expr name & " expects a Module")>
+src/gene/vm.nim	<expr name & " expects a Namespace")>
+src/gene/vm.nim	<expr name & " expects a Node")>
+src/gene/vm.nim	<expr name & " expects a Path")>
+src/gene/vm.nim	<expr name & " expects a PropMap")>
+src/gene/vm.nim	<expr name & " expects a Range")>
+src/gene/vm.nim	<expr name & " expects a Regex")>
+src/gene/vm.nim	<expr name & " expects a ReplyTo")>
+src/gene/vm.nim	<expr name & " expects a SandboxGeneration")>
+src/gene/vm.nim	<expr name & " expects a SandboxTransaction")>
+src/gene/vm.nim	<expr name & " expects a Str")>
+src/gene/vm.nim	<expr name & " expects a Str")>
+src/gene/vm.nim	<expr name & " expects a Str")>
+src/gene/vm.nim	<expr name & " expects a StrBuilder")>
+src/gene/vm.nim	<expr name & " expects a Stream")>
+src/gene/vm.nim	<expr name & " expects a TCP port in 1..65535")>
+src/gene/vm.nim	<expr name & " expects a Task")>
+src/gene/vm.nim	<expr name & " expects a Time")>
+src/gene/vm.nim	<expr name & " expects a Timezone")>
+src/gene/vm.nim	<expr name & " expects a device/Buffer")>
+src/gene/vm.nim	<expr name & " expects a non-empty Path")>
+src/gene/vm.nim	<expr name & " expects a positive Int")>
+src/gene/vm.nim	<expr name & " expects a symbol/string path segment, got " & $segm>
+src/gene/vm.nim	<expr name & " expects a symbol/string path segment, got " & $segm>
+src/gene/vm.nim	<expr name & " expects a symbol/string path segment, got " & $segm>
+src/gene/vm.nim	<expr name & " expects a type expression or C ABI descriptor")>
+src/gene/vm.nim	<expr name & " expects an ActorRef")>
+src/gene/vm.nim	<expr name & " expects an AtomicCell")>
+src/gene/vm.nim	<expr name & " expects an Env")>
+src/gene/vm.nim	<expr name & " expects an Int in int64 range")>
+src/gene/vm.nim	<expr name & " expects an Int in native int range")>
+src/gene/vm.nim	<expr name & " expects an Int")>
+src/gene/vm.nim	<expr name & " expects an Int")>
+src/gene/vm.nim	<expr name & " expects an ffi/Library")>
+src/gene/vm.nim	<expr name & " expects an integer list path segment")>
+src/gene/vm.nim	<expr name & " expects an integer list path segment")>
+src/gene/vm.nim	<expr name & " expects numbers, got " & $a.kind)>
+src/gene/vm.nim	<expr name & " generation belongs to another application")>
+src/gene/vm.nim	<expr name & " generation is owned by another lane")>
+src/gene/vm.nim	<expr name & " index out of range: " & $rawIndex)>
+src/gene/vm.nim	<expr name & " invalid timezone offset")>
+src/gene/vm.nim	<expr name & " is out of " & label & " range")>
+src/gene/vm.nim	<expr name & " is out of " & label & " range")>
+src/gene/vm.nim	<expr name & " is out of C/Char range")>
+src/gene/vm.nim	<expr name & " is out of C/Char range")>
+src/gene/vm.nim	<expr name & " is out of C/Float range")>
+src/gene/vm.nim	<expr name & " is out of C/Int range")>
+src/gene/vm.nim	<expr name & " is out of C/Int16 range")>
+src/gene/vm.nim	<expr name & " is out of C/Int32 range")>
+src/gene/vm.nim	<expr name & " is out of C/Int8 range")>
+src/gene/vm.nim	<expr name & " is out of C/Long range")>
+src/gene/vm.nim	<expr name & " is out of C/PtrDiff range")>
+src/gene/vm.nim	<expr name & " is out of C/Short range")>
+src/gene/vm.nim	<expr name & " is out of C/UChar range")>
+src/gene/vm.nim	<expr name & " is out of C/UChar range")>
+src/gene/vm.nim	<expr name & " is out of C/UInt range")>
+src/gene/vm.nim	<expr name & " is out of C/UInt16 range")>
+src/gene/vm.nim	<expr name & " is out of C/UInt32 range")>
+src/gene/vm.nim	<expr name & " is out of C/UInt8 range")>
+src/gene/vm.nim	<expr name & " is out of C/UShort range")>
+src/gene/vm.nim	<expr name & " missing intermediate path segment")>
+src/gene/vm.nim	<expr name & " missing intermediate path segment")>
+src/gene/vm.nim	<expr name & " must be a map")>
+src/gene/vm.nim	<expr name & " only supports dynamic FFI buffers of byte-compatibl>
+src/gene/vm.nim	<expr name & " received an invalid SandboxGeneration")>
+src/gene/vm.nim	<expr name & " received an invalid SandboxTransaction")>
+src/gene/vm.nim	<expr name & " receiver must be an enum variant")>
+src/gene/vm.nim	<expr name & " receiver must be an enum")>
+src/gene/vm.nim	<expr name & " rejects strings with interior NUL")>
+src/gene/vm.nim	<expr name & " replacement has trailing backslash")>
+src/gene/vm.nim	<expr name & " replacement has unsupported escape: \\" & tmpl[i])>
+src/gene/vm.nim	<expr name & " replacement named backref is missing '>'")>
+src/gene/vm.nim	<expr name & " replacement named backref must use \\k<name>")>
+src/gene/vm.nim	<expr name & " replacement references missing capture: \\" & $inde>
+src/gene/vm.nim	<expr name & " replacement references unknown capture: " & capture>
+src/gene/vm.nim	<expr name & " returned null C/CStr")>
+src/gene/vm.nim	<expr name & " transaction belongs to another application")>
+src/gene/vm.nim	<expr name & " transaction is owned by another lane")>
+src/gene/vm.nim	<expr notCallableMessage(callee, site, dispatchScope))>
+src/gene/vm.nim	<expr notCallableMessage(callee, site, dispatchScope))>
+src/gene/vm.nim	<expr operation & " cannot suspend or run the scheduler inside a n>
+src/gene/vm.nim	<expr operation & " cannot suspend or run the scheduler inside a s>
+src/gene/vm.nim	<expr operation & " cannot suspend or run the scheduler inside a v>
+src/gene/vm.nim	<expr pending.diagnostic & " in type " & pending.typ.typeName)>
+src/gene/vm.nim	<expr pending.diagnostic)>
+src/gene/vm.nim	<expr pendingImplDiagnostic(declaration, protocolName, receiverNam>
+src/gene/vm.nim	<expr prefix & $bodyFields.len & " body item(s), got " & $bodyLen)>
+src/gene/vm.nim	<expr prefix & $restBody & " body item(s), got " & $bodyLen)>
+src/gene/vm.nim	<expr typ.typeName & " has no field '" & key & "'")>
+src/gene/vm.nim	<expr typ.typeName & " has no field '" & key & "'")>
+src/gene/vm.nim	<expr typ.typeName & " has no field '" & propKeyText(keyId) & "'")>
+src/gene/vm.nim	<expr typeName & " has no field '" & propKeyText(id) & "'")>
+src/gene/vm.nim	<expr typeName & " type is unavailable")>
+src/gene/vm.nim	<expr variant.enumVariantEnum.typeName & "/" & variant.enumVariant>
+src/gene/vm.nim	<expr variant.enumVariantEnum.typeName & "/" & variant.enumVariant>
+src/gene/vm.nim	<expr what & " cannot construct " & head.typeName &>
+src/gene/vm.nim	<expr what & ": native wrapper fields are initializer-only")>
+src/gene/vm.nim	<expr where & " cannot publish an in-progress constructed instance>
+src/gene/vm.nim	<expr where & " cannot retain borrowed CallerEnv authority; use ">
+src/gene/vm.nim	<expr where & " index is out of range: " & $f)>
+src/gene/vm.nim	<expr where & " index must be a whole number, got " & $f)>
+src/gene/vm.nim	<expr where & " only supports dynamic FFI buffers of byte-compatib>
+src/gene/vm.nim	<expr where & " range endpoint is out of range: " & $raw &>
+src/gene/vm.nim	Application I/O cleanup requires the root lane
+src/gene/vm.nim	AtomicCell/compare_exchange expects 3 arguments, got 
+src/gene/vm.nim	AtomicCell/store expects 2 arguments, got 
+src/gene/vm.nim	AtomicCell/swap expects 2 arguments, got 
+src/gene/vm.nim	Buffer/copy_from expects 2 or 5 arguments, got 
+src/gene/vm.nim	Buffer/copy_from: 
+src/gene/vm.nim	Buffer/copy_from: end (
+src/gene/vm.nim	Buffer/copy_from: whole-buffer copy needs equal lengths, but the 
+src/gene/vm.nim	Buffer/fill expects 2 or 4 arguments, got 
+src/gene/vm.nim	Buffer/fill: end (
+src/gene/vm.nim	Buffer/get expects 2 arguments, got 
+src/gene/vm.nim	Buffer/get expects a Buffer
+src/gene/vm.nim	Buffer/set expects 3 arguments, got 
+src/gene/vm.nim	Buffer/set expects a Buffer
+src/gene/vm.nim	Buffer/to_bytes element 
+src/gene/vm.nim	Buffer/to_bytes element 
+src/gene/vm.nim	Buffer/to_bytes requires a (Buffer U8), got 
+src/gene/vm.nim	Callable repeated parameter must be last
+src/gene/vm.nim	Callable signature ^errors must be a list
+src/gene/vm.nim	Callable signature ^named must be a map
+src/gene/vm.nim	Callable signature got unexpected argument: 
+src/gene/vm.nim	Callable signature requires type expressions
+src/gene/vm.nim	Cell/set expects 2 arguments, got 
+src/gene/vm.nim	Cell/swap expects 2 arguments, got 
+src/gene/vm.nim	Cell/update expects 2 arguments, got 
+src/gene/vm.nim	Channel/recv would suspend on an empty channel
+src/gene/vm.nim	Channel/send expects 2 arguments, got 
+src/gene/vm.nim	Channel/send would suspend on a full channel
+src/gene/vm.nim	Channel/try_recv requires a runtime scope
+src/gene/vm.nim	Channel/try_send expects 2 arguments, got 
+src/gene/vm.nim	Enum/from_backing expects 2 arguments, got 
+src/gene/vm.nim	Enum/from_backing receiver must be an enum
+src/gene/vm.nim	Enum/from_name expects 2 arguments, got 
+src/gene/vm.nim	Enum/from_name receiver must be an enum
+src/gene/vm.nim	Enum/from_ordinal expects 2 arguments, got 
+src/gene/vm.nim	Enum/from_ordinal receiver must be an enum
+src/gene/vm.nim	Env/extend expects 2 arguments, got 
+src/gene/vm.nim	Env/snapshot binding names must be a list
+src/gene/vm.nim	Env/snapshot binding names must be symbols or strings
+src/gene/vm.nim	Env/snapshot duplicate binding name: 
+src/gene/vm.nim	Env/snapshot expects a CallerEnv
+src/gene/vm.nim	Env/snapshot expects a CallerEnv and a binding-name list
+src/gene/vm.nim	Env/snapshot undefined binding: 
+src/gene/vm.nim	FFI OwnedPtr result requires a release function
+src/gene/vm.nim	FFI callable '
+src/gene/vm.nim	FFI callable '
+src/gene/vm.nim	FFI callable '
+src/gene/vm.nim	FFI returned null for non-null pointer result
+src/gene/vm.nim	IndexRead requires at for 
+src/gene/vm.nim	IndexRead:size must return a nonnegative Int
+src/gene/vm.nim	IndexRead:size result is too large to snapshot for 
+src/gene/vm.nim	IndexWrite is required to set an indexed 
+src/gene/vm.nim	IndexWrite requires IndexRead for 
+src/gene/vm.nim	List/assoc expects 3 arguments, got 
+src/gene/vm.nim	List/get expects 2 arguments, got 
+src/gene/vm.nim	List/push expects 2 arguments, got 
+src/gene/vm.nim	List/set expects 3 arguments, got 
+src/gene/vm.nim	Map/assoc expects 3 arguments, got 
+src/gene/vm.nim	Map/assoc expects a Map
+src/gene/vm.nim	Map/delete expects 2 arguments, got 
+src/gene/vm.nim	Map/dissoc expects 2 arguments, got 
+src/gene/vm.nim	Map/get expects 2 arguments, got 
+src/gene/vm.nim	Map/put expects 3 arguments, got 
+src/gene/vm.nim	Namespace/lookup expects 2 arguments, got 
+src/gene/vm.nim	Node/assoc expects 3 arguments, got 
+src/gene/vm.nim	Node/assoc expects a Sym, Str, or Int key, got 
+src/gene/vm.nim	Node/delete expects 2 arguments, got 
+src/gene/vm.nim	Node/dissoc cannot remove a node body element
+src/gene/vm.nim	Node/dissoc expects 2 arguments, got 
+src/gene/vm.nim	Node/dissoc expects a Sym, Str, or Int key, got 
+src/gene/vm.nim	Node/get expects 2 arguments, got 
+src/gene/vm.nim	Node/get expects a Sym, Str, or Int key, got 
+src/gene/vm.nim	Node/push expects 2 arguments, got 
+src/gene/vm.nim	Node/push expects 2 arguments, got 
+src/gene/vm.nim	Node/put expects 3 arguments, got 
+src/gene/vm.nim	Node/set expects 3 arguments, got 
+src/gene/vm.nim	Node/set_body expects 2 arguments, got 
+src/gene/vm.nim	Node/set_body expects a List
+src/gene/vm.nim	Node/set_prop expects 3 arguments, got 
+src/gene/vm.nim	Path ^strict must be Bool
+src/gene/vm.nim	Path call stage requires a callee
+src/gene/vm.nim	Path calls do not accept named arguments
+src/gene/vm.nim	Path contains an unresolved dynamic segment
+src/gene/vm.nim	Path message segment requires a name
+src/gene/vm.nim	Regex ^flags expects a Str
+src/gene/vm.nim	Regex expects 1 pattern argument, got 
+src/gene/vm.nim	Regex got unexpected named argument: 
+src/gene/vm.nim	Regex operations are unavailable in wasm builds
+src/gene/vm.nim	Regex operations are unavailable in wasm builds
+src/gene/vm.nim	ReplyTo/send expects 2 arguments, got 
+src/gene/vm.nim	SandboxGeneration/graph requires a prepared generation
+src/gene/vm.nim	SandboxGeneration/module requires a live generation
+src/gene/vm.nim	SandboxTransaction/prepare ^
+src/gene/vm.nim	SandboxTransaction/prepare ^
+src/gene/vm.nim	SandboxTransaction/prepare ^
+src/gene/vm.nim	SandboxTransaction/prepare expects options
+src/gene/vm.nim	SandboxTransaction/prepare options must be a map or node
+src/gene/vm.nim	SandboxTransaction/prepare requires ^policy
+src/gene/vm.nim	SandboxTransaction/prepare requires an open transaction
+src/gene/vm.nim	Self is forbidden in a replacement signature
+src/gene/vm.nim	Self is forbidden in a replacement signature, including [self : Self]
+src/gene/vm.nim	Self requires a declaring receiver type
+src/gene/vm.nim	Self requires a declaring receiver type — inside a message or ctor body
+src/gene/vm.nim	Set/has expects 2 arguments, got 
+src/gene/vm.nim	Set/has expects a Set
+src/gene/vm.nim	Set/size expects a Set
+src/gene/vm.nim	StrBuilder/append expects at least one Str
+src/gene/vm.nim	StrBuilder/append_char expects a Char
+src/gene/vm.nim	StrBuilder/append_char expects one Char
+src/gene/vm.nim	Stream/try_next requires a runtime scope
+src/gene/vm.nim	TaskOutcome result type is unavailable
+src/gene/vm.nim	TaskOutcome result variant is unavailable: 
+src/gene/vm.nim	TryNext result type is unavailable
+src/gene/vm.nim	TryNext result variant is unavailable: 
+src/gene/vm.nim	TryRecv result type is unavailable
+src/gene/vm.nim	TryRecv result variant is unavailable: 
+src/gene/vm.nim	Type/fields expects a Type receiver
+src/gene/vm.nim	Type/name expects a Type receiver
+src/gene/vm.nim	URL module imports require a 'gene runurl' entry: 
+src/gene/vm.nim	URL module imports require a 'gene runurl' entry: 
+src/gene/vm.nim	VM fallback protocol cannot be inherited: 
+src/gene/vm.nim	VM fallback protocol cannot be inherited: 
+src/gene/vm.nim	VM local slot out of range for int return guard: 
+src/gene/vm.nim	VM local slot out of range for recur: 
+src/gene/vm.nim	VM stack underflow
+src/gene/vm.nim	VM stack underflow binding message
+src/gene/vm.nim	VM stack underflow checking message callable
+src/gene/vm.nim	VM stack underflow constructing pipeline stream
+src/gene/vm.nim	VM stack underflow in call
+src/gene/vm.nim	VM stack underflow in call
+src/gene/vm.nim	VM stack underflow in conditional jump
+src/gene/vm.nim	VM stack underflow in conditional jump
+src/gene/vm.nim	VM stack underflow in conditional jump
+src/gene/vm.nim	VM stack underflow in conditional jump
+src/gene/vm.nim	VM stack underflow in conditional jump
+src/gene/vm.nim	VM stack underflow in direct call
+src/gene/vm.nim	VM stack underflow in int add
+src/gene/vm.nim	VM stack underflow in int add const
+src/gene/vm.nim	VM stack underflow in int add return
+src/gene/vm.nim	VM stack underflow in int fast call
+src/gene/vm.nim	VM stack underflow in int fast const call
+src/gene/vm.nim	VM stack underflow in int ge
+src/gene/vm.nim	VM stack underflow in int ge const
+src/gene/vm.nim	VM stack underflow in int gt
+src/gene/vm.nim	VM stack underflow in int gt const
+src/gene/vm.nim	VM stack underflow in int le
+src/gene/vm.nim	VM stack underflow in int le const
+src/gene/vm.nim	VM stack underflow in int lt
+src/gene/vm.nim	VM stack underflow in int lt const
+src/gene/vm.nim	VM stack underflow in int mul
+src/gene/vm.nim	VM stack underflow in int mul const
+src/gene/vm.nim	VM stack underflow in int sub
+src/gene/vm.nim	VM stack underflow in int sub const
+src/gene/vm.nim	VM stack underflow in namespace extension
+src/gene/vm.nim	VM stack underflow in native fast call
+src/gene/vm.nim	VM stack underflow in native fast const call
+src/gene/vm.nim	VM stack underflow in new
+src/gene/vm.nim	VM stack underflow in not
+src/gene/vm.nim	VM stack underflow in prepared call
+src/gene/vm.nim	VM stack underflow in recur call
+src/gene/vm.nim	VM stack underflow in selector apply
+src/gene/vm.nim	VM stack underflow in selector apply
+src/gene/vm.nim	VM stack underflow in set
+src/gene/vm.nim	VM stack underflow in set
+src/gene/vm.nim	VM stack underflow in set
+src/gene/vm.nim	VM stack underflow in set
+src/gene/vm.nim	VM stack underflow in set path assignment
+src/gene/vm.nim	VM stack underflow in syntax call
+src/gene/vm.nim	VM stack underflow in type check
+src/gene/vm.nim	VM stack underflow in var
+src/gene/vm.nim	VM stack underflow in var
+src/gene/vm.nim	VM stack underflow in var
+src/gene/vm.nim	VM stack underflow in var
+src/gene/vm.nim	VM stack underflow in var
+src/gene/vm.nim	VM stack underflow in yield
+src/gene/vm.nim	VM stack underflow placing message receiver
+src/gene/vm.nim	VM stack underflow preparing pipeline call
+src/gene/vm.nim	VM stack underflow resolving module reference
+src/gene/vm.nim	VM stack underflow resolving qualified message
+src/gene/vm.nim	VM stack underflow resolving qualified send
+src/gene/vm.nim	ValueEq/equal must return Bool
+src/gene/vm.nim	ValueHash requires ValueEq for 
+src/gene/vm.nim	ValueHash/hash must return Int
+src/gene/vm.nim	a sandboxed module cannot load another sandboxed module
+src/gene/vm.nim	a sandboxed module cannot load another sandboxed module
+src/gene/vm.nim	a sandboxed module cannot manage sandbox transactions
+src/gene/vm.nim	actor handler cannot yield
+src/gene/vm.nim	actor/ask expects 2 arguments, got 
+src/gene/vm.nim	actor/ask got unexpected named argument: 
+src/gene/vm.nim	actor/ask timeout_ms must be non-negative
+src/gene/vm.nim	actor/ask would suspend on a full mailbox
+src/gene/vm.nim	actor/send expects 2 arguments, got 
+src/gene/vm.nim	actor/send would suspend on a full mailbox
+src/gene/vm.nim	actor/snapshot requires an idle actor
+src/gene/vm.nim	actor/spawn expects no positional arguments
+src/gene/vm.nim	actor/spawn got unexpected named argument: 
+src/gene/vm.nim	actor/spawn mailbox is too large
+src/gene/vm.nim	actor/spawn mailbox must be positive
+src/gene/vm.nim	actor/spawn missing named argument: 
+src/gene/vm.nim	actor/stop expects no arguments
+src/gene/vm.nim	actor/try_send expects 2 arguments, got 
+src/gene/vm.nim	actor/upgrade expects 2 arguments, got 
+src/gene/vm.nim	actor/upgrade got unexpected named argument: 
+src/gene/vm.nim	actor/upgrade requires an idle actor
+src/gene/vm.nim	actor/upgrade requires an idle actor
+src/gene/vm.nim	actor/upgrade requires an idle actor
+src/gene/vm.nim	alternation pattern alternatives must bind the same names
+src/gene/vm.nim	ambiguous ancestor impl for 
+src/gene/vm.nim	ambiguous impl 
+src/gene/vm.nim	ambiguous imported name '
+src/gene/vm.nim	ambiguous imported name '
+src/gene/vm.nim	ambiguous message '
+src/gene/vm.nim	ambiguous message '
+src/gene/vm.nim	ambiguous message '
+src/gene/vm.nim	ambiguous message '
+src/gene/vm.nim	ambiguous message name '
+src/gene/vm.nim	applying message '
+src/gene/vm.nim	assoc cannot update index 
+src/gene/vm.nim	assoc_in expects 3 arguments, got 
+src/gene/vm.nim	await cannot suspend inside a native callback; 
+src/gene/vm.nim	await cannot suspend inside a native callback; 
+src/gene/vm.nim	await expects a Task
+src/gene/vm.nim	backed enum variant requires a backing value: 
+src/gene/vm.nim	buffer expects 1 or 2 arguments, got 
+src/gene/vm.nim	buffer length is too large for this host
+src/gene/vm.nim	buffer length must be non-negative, got 
+src/gene/vm.nim	buffer with a length needs a numeric element type (I8..U64, F32, F64), 
+src/gene/vm.nim	call splice expects a list, map, or node
+src/gene/vm.nim	cannot assign wildcard import '
+src/gene/vm.nim	cannot begin a sandbox transaction during module loading
+src/gene/vm.nim	cannot commit a discarded SandboxTransaction
+src/gene/vm.nim	cannot discard a committed SandboxTransaction
+src/gene/vm.nim	cannot dispatch '
+src/gene/vm.nim	cannot mutate immutable List
+src/gene/vm.nim	cannot mutate immutable Node
+src/gene/vm.nim	cannot mutate immutable Node
+src/gene/vm.nim	cannot mutate immutable Node
+src/gene/vm.nim	cannot mutate immutable Node
+src/gene/vm.nim	cannot re-export missing compile interface name: 
+src/gene/vm.nim	cannot rebind a resolved declaration's Self
+src/gene/vm.nim	cannot rebind established Self for 
+src/gene/vm.nim	cannot release a discarded SandboxGeneration
+src/gene/vm.nim	cannot release an executing native callback
+src/gene/vm.nim	cannot release an uncommitted SandboxGeneration; discard its transaction
+src/gene/vm.nim	cannot reload a module during initialization: 
+src/gene/vm.nim	cannot remove required field '
+src/gene/vm.nim	cannot remove required field '
+src/gene/vm.nim	cannot run a second slot-compiled chunk in this scope: it declares 
+src/gene/vm.nim	capture execution provenance before loading modules
+src/gene/vm.nim	channel capacity is too large
+src/gene/vm.nim	channel capacity must be positive
+src/gene/vm.nim	channel expects no positional arguments
+src/gene/vm.nim	channel got unexpected named argument: 
+src/gene/vm.nim	compile-time macro dependency cycle at 
+src/gene/vm.nim	compiled entry chunk is missing
+src/gene/vm.nim	compiled module bundle contains an invalid entry
+src/gene/vm.nim	conflicting impls for message 
+src/gene/vm.nim	conflicting prospective impls for message 
+src/gene/vm.nim	conflicting selected package resource: 
+src/gene/vm.nim	construct_type does not construct enum types; use a variant
+src/gene/vm.nim	construct_type expects (Type, Map)
+src/gene/vm.nim	construct_type expects a Map as its second argument
+src/gene/vm.nim	construct_type expects a Type as its first argument
+src/gene/vm.nim	constructing 
+src/gene/vm.nim	constructing 
+src/gene/vm.nim	constructing 
+src/gene/vm.nim	contains? expects (collection, item), got 
+src/gene/vm.nim	contains? expects a List or Set, got 
+src/gene/vm.nim	ctor for 
+src/gene/vm.nim	cyclic type alias
+src/gene/vm.nim	date expects 3 arguments, got 
+src/gene/vm.nim	datetime expects 5..9 arguments, got 
+src/gene/vm.nim	deadlock: awaited task is blocked with no runnable task to unblock it
+src/gene/vm.nim	declaration not ready at unit completion
+src/gene/vm.nim	declaration not ready: ancestor of 
+src/gene/vm.nim	declarations expects a Module or Namespace
+src/gene/vm.nim	dependency artifact has no compile interface: 
+src/gene/vm.nim	derive for 
+src/gene/vm.nim	derive for 
+src/gene/vm.nim	derive generated declarations must be nodes
+src/gene/vm.nim	derive generated impl must name its protocol directly
+src/gene/vm.nim	derive generated impl must name its protocol directly
+src/gene/vm.nim	derive generated impl must name its protocol directly
+src/gene/vm.nim	derive generated impl protocol is undefined: 
+src/gene/vm.nim	derive generated impl protocol is undefined: 
+src/gene/vm.nim	derive generated impl target must be a protocol
+src/gene/vm.nim	derive generated impl target must be a protocol
+src/gene/vm.nim	derive may only generate impl declarations
+src/gene/vm.nim	derive must return a declaration node or list
+src/gene/vm.nim	device/buffer expects 3 arguments, got 
+src/gene/vm.nim	device/buffer length must be non-negative
+src/gene/vm.nim	dissoc_in expects 2 arguments, got 
+src/gene/vm.nim	division by zero
+src/gene/vm.nim	division by zero
+src/gene/vm.nim	division by zero
+src/gene/vm.nim	division by zero
+src/gene/vm.nim	drop count must be non-negative
+src/gene/vm.nim	drop expects 1 or 2 arguments, got 
+src/gene/vm.nim	duplicate backing value for enum 
+src/gene/vm.nim	duplicate binding: 
+src/gene/vm.nim	duplicate binding: 
+src/gene/vm.nim	duplicate binding: 
+src/gene/vm.nim	duplicate impl message: 
+src/gene/vm.nim	duplicate prospective impl 
+src/gene/vm.nim	duplicate visible impl 
+src/gene/vm.nim	empty? expects a list-like value, got 
+src/gene/vm.nim	enum 
+src/gene/vm.nim	enum 
+src/gene/vm.nim	enum ^backing is rejected when variants carry payload
+src/gene/vm.nim	enum message 
+src/gene/vm.nim	env ^bindings must be a map
+src/gene/vm.nim	env ^imports entries must be modules, namespaces, or module path strings
+src/gene/vm.nim	env ^imports must be a list
+src/gene/vm.nim	env ^module must be a Module or Namespace
+src/gene/vm.nim	env ^parent must be an Env
+src/gene/vm.nim	env ^policy ^
+src/gene/vm.nim	env ^policy ^
+src/gene/vm.nim	env ^policy ^
+src/gene/vm.nim	env ^policy ^max_memory_mb is too large
+src/gene/vm.nim	env ^policy got unexpected field: 
+src/gene/vm.nim	env ^policy must be a map or node
+src/gene/vm.nim	env import source is not a namespace
+src/gene/vm.nim	error summaries did not converge for module graph 
+src/gene/vm.nim	eval ^in must be an Env or live CallerEnv
+src/gene/vm.nim	expected Env
+src/gene/vm.nim	fexpr has no VM code
+src/gene/vm.nim	ffi/bind OwnedPtr result requires a release symbol
+src/gene/vm.nim	ffi/bind expects 4..5 arguments, got 
+src/gene/vm.nim	ffi/bind library is closed
+src/gene/vm.nim	ffi/bind parameter types must be a list
+src/gene/vm.nim	ffi/bind release symbol is only valid for C/OwnedPtr results
+src/gene/vm.nim	ffi/bind release symbol must not be empty
+src/gene/vm.nim	ffi/bind symbol must not be empty
+src/gene/vm.nim	ffi/open expects 1 argument, got 
+src/gene/vm.nim	filter expects 1 or 2 arguments, got 
+src/gene/vm.nim	for cannot iterate a Map; use (map_for [key value] in …)
+src/gene/vm.nim	for cannot iterate a Map; use (map_for [key value] in …)
+src/gene/vm.nim	for requires a list-like value, got 
+src/gene/vm.nim	for requires a list-like value, got 
+src/gene/vm.nim	for requires a list-like value, got 
+src/gene/vm.nim	for requires a list-like value, got 
+src/gene/vm.nim	freeze cannot freeze 
+src/gene/vm.nim	freeze cannot freeze 
+src/gene/vm.nim	freeze cannot freeze a cyclic value
+src/gene/vm.nim	freeze cannot freeze a retained runtime resource
+src/gene/vm.nim	freeze cannot freeze pipeline syntax; quote it for syntax or eval it 
+src/gene/vm.nim	fs/read_text_async expects 1 argument, got 
+src/gene/vm.nim	fs/write_text_async expects 2 arguments, got 
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function '
+src/gene/vm.nim	function has no VM code
+src/gene/vm.nim	function type ^errors must be a list
+src/gene/vm.nim	function type ^named must be a map
+src/gene/vm.nim	function type got unexpected named argument: 
+src/gene/vm.nim	generation retirement requires the scheduler root lane
+src/gene/vm.nim	generator cannot suspend on a channel
+src/gene/vm.nim	generator close did not finish cleanup
+src/gene/vm.nim	gensym base must be a Str of ASCII letters, digits and _ that starts 
+src/gene/vm.nim	gensym expects a Str base, got 
+src/gene/vm.nim	has_key? expects 2 arguments, got 
+src/gene/vm.nim	hash expects 1 argument, got 
+src/gene/vm.nim	hash expects a hash-stable value
+src/gene/vm.nim	impl 
+src/gene/vm.nim	impl message qualifier is not a protocol: 
+src/gene/vm.nim	impl message qualifier is not a protocol: 
+src/gene/vm.nim	impl receiver must be a type
+src/gene/vm.nim	impl target must be a protocol
+src/gene/vm.nim	impl target must be a protocol
+src/gene/vm.nim	impl target must be a protocol
+src/gene/vm.nim	impl target must be a protocol
+src/gene/vm.nim	import namespace has no export: 
+src/gene/vm.nim	import source is not a namespace
+src/gene/vm.nim	import: '
+src/gene/vm.nim	import_impl receiver must be a type
+src/gene/vm.nim	import_impl requires a module scope
+src/gene/vm.nim	import_impl target must be a protocol
+src/gene/vm.nim	incompatible established Self bindings for 
+src/gene/vm.nim	incompatible inherited Self bindings for 
+src/gene/vm.nim	inline loop target is missing
+src/gene/vm.nim	internal: fused comparison without a comparison
+src/gene/vm.nim	internal: fused comparison without a comparison
+src/gene/vm.nim	internal: generator paused by scheduler
+src/gene/vm.nim	internal: namespace body lost its current namespace
+src/gene/vm.nim	internal: scheduler pause outside a fiber
+src/gene/vm.nim	internal: scheduler pause outside a fiber
+src/gene/vm.nim	internal: scheduler pause outside a fiber
+src/gene/vm.nim	internal: suspended outside a fiber
+src/gene/vm.nim	internal: suspended outside a fiber
+src/gene/vm.nim	internal: suspended outside a fiber
+src/gene/vm.nim	internal: suspended outside a fiber
+src/gene/vm.nim	internal: suspended outside a fiber
+src/gene/vm.nim	internal: suspended outside a fiber
+src/gene/vm.nim	internal: suspended outside a fiber
+src/gene/vm.nim	internal: unsupported int fast const op
+src/gene/vm.nim	internal: unsupported int fast op
+src/gene/vm.nim	interrupted
+src/gene/vm.nim	into Map expects [key value] stream items
+src/gene/vm.nim	into expects 1 or 2 arguments, got 
+src/gene/vm.nim	into expects a List or Map target
+src/gene/vm.nim	into expects a List or Map target
+src/gene/vm.nim	invalid captured macro environment
+src/gene/vm.nim	invalid local slot for symbol: 
+src/gene/vm.nim	lex_all expects a Str
+src/gene/vm.nim	local macro '
+src/gene/vm.nim	managed Actor snapshot requires the root lane
+src/gene/vm.nim	managed Actor type adaptation requires the root lane
+src/gene/vm.nim	managed Actor upgrade requires the root lane
+src/gene/vm.nim	managed close requires a managed Actor
+src/gene/vm.nim	map_empty? expects a Map or a node, got 
+src/gene/vm.nim	map_filter expects 1 or 2 arguments, got 
+src/gene/vm.nim	map_filter expects a Map or a node, got 
+src/gene/vm.nim	map_for expects a Map or a node, got 
+src/gene/vm.nim	map_for expects a Map or a node, got 
+src/gene/vm.nim	map_for expects a Map or a node, got Stream; use for for list-like values
+src/gene/vm.nim	map_size expects a Map or a node, got 
+src/gene/vm.nim	message 
+src/gene/vm.nim	missing named argument: 
+src/gene/vm.nim	missing required field '
+src/gene/vm.nim	module URL must not carry a query or fragment: 
+src/gene/vm.nim	module URL redirected to a disallowed target: 
+src/gene/vm.nim	module URLs require https (plain http is allowed for localhost only): 
+src/gene/vm.nim	module compile interface export is unavailable at runtime: 
+src/gene/vm.nim	module does not export impl 
+src/gene/vm.nim	module exports duplicate impl 
+src/gene/vm.nim	module mutation requires the scheduler root lane
+src/gene/vm.nim	module reference fixup creates duplicate Set items
+src/gene/vm.nim	module reference fixup creates duplicate general-map keys
+src/gene/vm.nim	module/namespace has no export: 
+src/gene/vm.nim	native C callbacks are not supported by the wasm target
+src/gene/vm.nim	native I/O lifecycle requires an owning scope
+src/gene/vm.nim	native binary alias is selected more than once: 
+src/gene/vm.nim	native binary is not a verified selected package resource
+src/gene/vm.nim	native binary target is incompatible with this runtime: 
+src/gene/vm.nim	native call named argument mismatch
+src/gene/vm.nim	native callback attempted entry from another lane
+src/gene/vm.nim	native callback attempted entry from another lane
+src/gene/vm.nim	native callback belongs to another lane
+src/gene/vm.nim	native callback context is already used or closed
+src/gene/vm.nim	native callback context is nil
+src/gene/vm.nim	native callback invocation is outside its entry boundary
+src/gene/vm.nim	native callback named argument mismatch
+src/gene/vm.nim	native function '
+src/gene/vm.nim	native function '
+src/gene/vm.nim	native function '
+src/gene/vm.nim	native function '
+src/gene/vm.nim	native root cannot retain an in-progress constructed instance
+src/gene/vm.nim	native subscription creation requires the root lane
+src/gene/vm.nim	native task cancel expects a Task
+src/gene/vm.nim	native task complete expects a Task
+src/gene/vm.nim	native task error payload does not satisfy Send
+src/gene/vm.nim	native task fail expects a Task
+src/gene/vm.nim	native task panic expects a Task
+src/gene/vm.nim	net/tcp_read_text_async expects 4 arguments, got 
+src/gene/vm.nim	net/tcp_write_text_async expects 4 arguments, got 
+src/gene/vm.nim	new expects a Type as its first argument, got 
+src/gene/vm.nim	newWrapper expects a Type
+src/gene/vm.nim	newWrapper for 
+src/gene/vm.nim	newWrapper requires a native wrapper type; 
+src/gene/vm.nim	node splice expects a list, map, or node
+src/gene/vm.nim	node/rebuild ^
+src/gene/vm.nim	node/rebuild ^body expects a List
+src/gene/vm.nim	node/rebuild cannot construct a native wrapper
+src/gene/vm.nim	node/rebuild cannot reconstruct a native wrapper
+src/gene/vm.nim	node/rebuild got unexpected argument: 
+src/gene/vm.nim	not expects 1 argument
+src/gene/vm.nim	now expects 0 arguments, got 
+src/gene/vm.nim	order sort got unexpected or duplicate named argument: 
+src/gene/vm.nim	order/compare expects 2 values
+src/gene/vm.nim	order/sort expects a finite List
+src/gene/vm.nim	order/sort expects one List
+src/gene/vm.nim	order/sort_by expects a List and key_fn
+src/gene/vm.nim	pattern %name expects a name
+src/gene/vm.nim	pattern (@ meta value) expects two patterns
+src/gene/vm.nim	pattern (not p) expects one pattern
+src/gene/vm.nim	pattern (not p) must not introduce bindings
+src/gene/vm.nim	pattern (not p) must not introduce bindings
+src/gene/vm.nim	portable package compilation must begin before source headers load
+src/gene/vm.nim	protocol 
+src/gene/vm.nim	protocol 
+src/gene/vm.nim	protocol 
+src/gene/vm.nim	protocol ^inherit entries must be protocols
+src/gene/vm.nim	protocol message '
+src/gene/vm.nim	put takes a name, not an index
+src/gene/vm.nim	qualified Path message construction requires a lexical scope
+src/gene/vm.nim	quasiquote produced more than one direct '_' pipeline slot
+src/gene/vm.nim	range inclusive expects a Bool
+src/gene/vm.nim	read_all ^locs expects Bool
+src/gene/vm.nim	read_all got unexpected named argument: 
+src/gene/vm.nim	read_one expects one form, got 
+src/gene/vm.nim	recursive type alias in declaration signature
+src/gene/vm.nim	regex/find_all expects 2 arguments, got 
+src/gene/vm.nim	regex/match expects 2 arguments, got 
+src/gene/vm.nim	regex/replace expects 3 arguments, got 
+src/gene/vm.nim	regex/replace_all expects 3 arguments, got 
+src/gene/vm.nim	regex/split expects 2 arguments, got 
+src/gene/vm.nim	reload changed the module compile interface: 
+src/gene/vm.nim	reload does not support URL modules: 
+src/gene/vm.nim	reload removed exported impl 
+src/gene/vm.nim	repl/open expects an Env
+src/gene/vm.nim	repl/run expects an Env
+src/gene/vm.nim	resource owner is not in this Application
+src/gene/vm.nim	respond_to? expects a Sym or Str message name, got 
+src/gene/vm.nim	respond_to? expects a value and a message name, got 
+src/gene/vm.nim	reverse needs a List; collect the stream with $into first
+src/gene/vm.nim	runtime macro expansion depth exceeded
+src/gene/vm.nim	runtime module initialization cycle at 
+src/gene/vm.nim	runtime resource identity space is exhausted
+src/gene/vm.nim	runtime/bind_call ^named must be a PropMap
+src/gene/vm.nim	runtime/bind_call expects a callable and a positional argument List
+src/gene/vm.nim	runtime/bind_call got unexpected argument: 
+src/gene/vm.nim	runtime/bind_call policy supports execution budgets; use sandbox 
+src/gene/vm.nim	runtime/bind_call requires a calling scope
+src/gene/vm.nim	runtime/bind_shape expects a signature, positional List, and named PropMap
+src/gene/vm.nim	runtime/configure_module expects a Module and an eval policy
+src/gene/vm.nim	runtime/constructor_signature expects a Type
+src/gene/vm.nim	runtime/context expects no arguments
+src/gene/vm.nim	runtime/execution_budget expects no arguments
+src/gene/vm.nim	runtime/gc_stats expects no arguments
+src/gene/vm.nim	runtime/guard_call expects a callable and one argument
+src/gene/vm.nim	runtime/load_sandboxed cannot resolve the calling application
+src/gene/vm.nim	runtime/load_sandboxed directory must be a Str
+src/gene/vm.nim	runtime/load_sandboxed entry must be a Str
+src/gene/vm.nim	runtime/load_sandboxed expects a directory, an entry, a list of 
+src/gene/vm.nim	runtime/load_sandboxed grant must be a Str, got 
+src/gene/vm.nim	runtime/load_sandboxed grants must be a list of namespace names
+src/gene/vm.nim	runtime/load_sandboxed isolation key must be a Str
+src/gene/vm.nim	runtime/load_sandboxed shared module must be a Str, got 
+src/gene/vm.nim	runtime/load_sandboxed shared must be a list of module paths
+src/gene/vm.nim	runtime/require_root_lane expects no arguments
+src/gene/vm.nim	runtime/sandbox_namespaces expects no arguments
+src/gene/vm.nim	runtime/sandbox_transaction expects no arguments
+src/gene/vm.nim	runtime/sandbox_transaction requires the scheduler root lane
+src/gene/vm.nim	runtime/signature expects a target and optional message receiver
+src/gene/vm.nim	runtime/signature's second argument requires a Message target
+src/gene/vm.nim	runtime/test_collect expects no arguments
+src/gene/vm.nim	runtime/test_collect requires the scheduler root lane
+src/gene/vm.nim	runtime/test_graph_scans expects start or stop
+src/gene/vm.nim	runtime/test_scheduler_quantum expects no arguments
+src/gene/vm.nim	same? expects 2 arguments, got 
+src/gene/vm.nim	sandbox module execution policy is immutable
+src/gene/vm.nim	sandbox policy disables FFI and native declarations
+src/gene/vm.nim	sandbox policy disables embedded web module declarations
+src/gene/vm.nim	sandbox policy disables native type declarations
+src/gene/vm.nim	sandbox transaction base changed before commit
+src/gene/vm.nim	sandbox transaction contains an invalid generation
+src/gene/vm.nim	scoped impl requires a module scope
+src/gene/vm.nim	selector expects 1 argument, got 
+src/gene/vm.nim	set cannot assign through 
+src/gene/vm.nim	set cannot assign through a Node projection; props, body, and meta 
+src/gene/vm.nim	set index must be a finite whole-number index
+src/gene/vm.nim	set index must be an Int or Float
+src/gene/vm.nim	set index out of range: 
+src/gene/vm.nim	set of undefined symbol: 
+src/gene/vm.nim	set of undefined symbol: 
+src/gene/vm.nim	set path segment '
+src/gene/vm.nim	set path segment must be a Sym, Str, or Int (or integral Float)
+src/gene/vm.nim	set takes an index, not a name
+src/gene/vm.nim	set the error checking mode before compiling modules
+src/gene/vm.nim	size expects a list-like value, got 
+src/gene/vm.nim	sleep duration must be non-negative
+src/gene/vm.nim	spawn cannot capture an in-progress constructed instance
+src/gene/vm.nim	spawn cannot capture borrowed CallerEnv authority
+src/gene/vm.nim	splice expects a list or node
+src/gene/vm.nim	strict executable has no completed error analysis
+src/gene/vm.nim	super is only valid in a type message body with a parent
+src/gene/vm.nim	sync/gate is non-reentrant: this execution already owns the gate
+src/gene/vm.nim	sync/track key is already registered
+src/gene/vm.nim	synchronous native callback re-entry is not supported
+src/gene/vm.nim	synchronous native callback requires an owning scope
+src/gene/vm.nim	synchronous native callbacks require the application's root lane
+src/gene/vm.nim	syntax call site expects an fexpr value, got 
+src/gene/vm.nim	take count must be non-negative
+src/gene/vm.nim	take count must be non-negative
+src/gene/vm.nim	take count must be non-negative
+src/gene/vm.nim	take expects 1 or 2 arguments, got 
+src/gene/vm.nim	thaw cannot copy a cyclic value
+src/gene/vm.nim	time expects 2..6 arguments, got 
+src/gene/vm.nim	timezone expects 1..2 arguments, got 
+src/gene/vm.nim	timezone name-only form expects 1 argument
+src/gene/vm.nim	to_int got NaN
+src/gene/vm.nim	to_int is out of Int range: 
+src/gene/vm.nim	to_pairs_stream expects a Map or a node, got 
+src/gene/vm.nim	to_sym expects a Str or Sym, got 
+src/gene/vm.nim	today expects 0 arguments, got 
+src/gene/vm.nim	type 
+src/gene/vm.nim	type 
+src/gene/vm.nim	type 
+src/gene/vm.nim	type ^derive entries must be protocols
+src/gene/vm.nim	type ^impl entries must be protocols
+src/gene/vm.nim	type alias '
+src/gene/vm.nim	type alias '
+src/gene/vm.nim	type message 
+src/gene/vm.nim	type parent must be a type
+src/gene/vm.nim	typed pattern requires a name and one type
+src/gene/vm.nim	universal protocol requirements and defaults cannot depend on abstract Self
+src/gene/vm.nim	unknown SandboxTransaction/prepare option: ^
+src/gene/vm.nim	unknown SandboxTransaction/prepare option: ^
+src/gene/vm.nim	unknown namespace in grants: 
+src/gene/vm.nim	unknown pattern path: 
+src/gene/vm.nim	unknown type annotation: 
+src/gene/vm.nim	unsupported dynamic FFI signature for '
+src/gene/vm.nim	unsupported dynamic FFI signature for '
+src/gene/vm.nim	unsupported pattern: 
+src/gene/vm.nim	unsupported supervisor strategy: 
+src/gene/vm.nim	unsupported type annotation: 
+src/gene/vm.nim	unsupported type annotation: 
+src/gene/vm.nim	update_in expects 3 arguments, got 
+src/gene/vm.nim	web/font expects a WOFF2, WOFF, TTF or OTF file
+src/gene/vm.nim	web_module requires the host runtime: generated assets exist 
+src/gene/vm.nim	wrapper prop requires a name
+src/gene/vm.nim	yield is only valid in a generator
+src/gene/vm.nim	yield is only valid in a generator
+src/gene/vm.nim	yield is only valid in a generator
+src/gene/vm.nim	| expects at least two alternatives, got 
+src/gene/vm.nim	| expects types or protocols as alternatives, got 

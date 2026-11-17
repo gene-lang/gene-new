@@ -1,7 +1,6 @@
 (mod response)
 
-(type ResponseReadError ^props {^message Str ^line Int ^response_line Int} ^impl [Error])
-(impl Error for ResponseReadError)
+(type ResponseReadError : Error ^props {^line Int ^response_line Int})
 
 (fn read_response_code [code : Str, ^source source : Str = "response"]
   ($into ($parse/read_all ^source source ^^locs code) []))
@@ -17,7 +16,7 @@
   (|| ($str/starts_with? line "<<<") ($str/starts_with? line "*** Begin Patch")))
 
 (fn read_error [line : Int, message : Str]
-  (fail (ResponseReadError ^line line ^response_line line ^message $"response:${line}: ${message}")))
+  (fail (ResponseReadError ^line line ^response_line line ^_msg $"response:${line}: ${message}")))
 
 (fn line_text [lines, index : Int] : Str
   (if (< index (- lines/.size 1))

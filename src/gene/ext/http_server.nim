@@ -45,7 +45,7 @@ proc httpNamespaceBinding(scope: Scope, name: string): Value =
 
 proc raiseHttpError(message: string, scope: Scope, code = "") =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   if code.len > 0:
     props["code"] = newStr(code)
   var e: ref GeneError
@@ -1075,15 +1075,15 @@ proc closeHttpPool(pool: HttpActorPool) =
   for worker in pool.workers:
     closeActorAndCancelMailbox(worker)
 
-proc httpErrorFallbackNode(task: Value): Value =
+proc httpErrorFallbackNode(task: Value, scope: Scope): Value =
   ## Error value for the ^on_error mapper: the task's error value when the
-  ## handler failed with one, else an (Error ^message ...) node — the same
-  ## shape catch clauses see for message-only errors.
+  ## handler failed with one, else a RuntimeError — the same value a catch
+  ## clause sees for a message-only failure.
   if task.taskHasErrorValue:
     return task.taskErrorValue
   var props = initPropTable()
-  props["message"] = newStr(task.taskErrorMsg)
-  newNode(newSym("Error"), props = props)
+  props["_msg"] = newStr(task.taskErrorMsg)
+  newNode(builtInTypeHead(scope, "RuntimeError"), props = props, immutable = true)
 
 # --- the event loop ----------------------------------------------------------
 
@@ -2139,7 +2139,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         logError(conn, task.taskErrorMsg, panic = false)
         if onError.kind != vkNil:
           try:
-            let mapped = applyCall(onError, [httpErrorFallbackNode(task)],
+            let mapped = applyCall(onError, [httpErrorFallbackNode(task, scope)],
                                    NamedArgs(), scope)
             let wire = responseWireParts(mapped, scope)
             inc rt.completedRequests

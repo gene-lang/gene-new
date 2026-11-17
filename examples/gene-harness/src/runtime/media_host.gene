@@ -15,11 +15,11 @@
 (fn attach_media [runtime, id : Str]
   (let origin (execution_origin))
   (if (|| ($absent? origin) (! (same? origin/composition runtime/h/snapshots)))
-    (fail (MediaError ^code "invalid_request" ^message "Showing media requires an open turn in this workspace.")))
+    (fail (MediaError ^code "invalid_request" ^_msg "Showing media requires an open turn in this workspace.")))
   (let turn (require_turn origin/turn))
   (let descriptor (media_descriptor (open_media_store runtime/state_root) id))
   (if (>= turn/media/.get/.size 16)
-    (fail (MediaError ^code "too_large" ^message "At most 16 media items can be shown per turn.")))
+    (fail (MediaError ^code "too_large" ^_msg "At most 16 media items can be shown per turn.")))
   (for previous in turn/media/.get
     (if (== previous/id id) (return (immutable_view descriptor))))
   (turn/media/.get .push descriptor)
@@ -39,10 +39,10 @@
 (fn import_media_file [runtime, path : Str]
   (let resolved ($fs/real_path ($path/join runtime/root path)))
   (if_not ($str/starts_with? resolved $"${runtime/root}/")
-    (fail (MediaError ^code "invalid_request" ^message "Media imports must be inside this workspace.")))
+    (fail (MediaError ^code "invalid_request" ^_msg "Media imports must be inside this workspace.")))
   (let info ($fs/info resolved))
   (if (> info/size 10485760)
-    (fail (MediaError ^code "too_large" ^message "Media import exceeds 10 MiB.")))
+    (fail (MediaError ^code "too_large" ^_msg "Media import exceeds 10 MiB.")))
   (let item (put_media (open_media_store runtime/state_root) path ($fs/read_bytes resolved)))
   (attach_media runtime item/id))
 

@@ -4,4 +4,4 @@
 (fn first_line [text]
   (let head ((text .split " (existing:") .get 0))
   ((head .split "; ") .get 0))
-(fn attempt [thunk] (try (thunk) catch Error (first_line $err/message)))
+(fn attempt [thunk] (try (thunk) catch Error (first_line $err/.message)))

@@ -19,8 +19,8 @@
   (set ctx/bindings_closed true)
   (let errors [])
   (for name in ["channels/host" "admission/host"]
-    (try (withdraw_seam ctx/runtime/h "core" name) catch Error (errors .push $err/message)))
-  (if_not errors/.empty? (fail (HostServiceError ^message $"Loop binding cleanup failed: ${errors}")))
+    (try (withdraw_seam ctx/runtime/h "core" name) catch Error (errors .push $err/.message)))
+  (if_not errors/.empty? (fail (HostServiceError ^_msg $"Loop binding cleanup failed: ${errors}")))
   nil)
 
 (fn drain_controller [ctx, controller] ^^private

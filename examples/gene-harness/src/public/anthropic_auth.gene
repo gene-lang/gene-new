@@ -22,7 +22,7 @@
 (fn anthropic_headers [source, ^timeout_ms timeout_ms : Int = 5000, ^environment environment = nil]
   (let secret (resolve_credential ^timeout_ms timeout_ms ^environment environment source/credential))
   (if (&& (== source/kind "api_key") ($str/starts_with? secret "sk-ant-oat"))
-    (fail (ProviderError ^message "ANTHROPIC_API_KEY must be an API key, not a Claude subscription token")))
+    (fail (ProviderError ^_msg "ANTHROPIC_API_KEY must be an API key, not a Claude subscription token")))
   (let headers {^anthropic-version "2023-06-01"})
   (if (== source/kind "api_key")
     (then (headers .put "x-api-key" secret))
@@ -70,12 +70,12 @@
       (if (!= metadata/state "ready") (return metadata))
       (set account metadata/account) (set label metadata/label)))
   (let remaining (- deadline ($os/monotonic_ms)))
-  (if (<= remaining 0) (fail (ProviderError ^message "Anthropic connection check timed out")))
+  (if (<= remaining 0) (fail (ProviderError ^_msg "Anthropic connection check timed out")))
   (let headers (try (anthropic_headers ^timeout_ms remaining source)
     catch Error (return {^state "sign_in_required" ^label label ^billing "metered"
       ^reason "Anthropic credential is unavailable; use ANTHROPIC_API_KEY or run ant auth login. Claude subscription tokens cannot be used here."})))
   (let left (- deadline ($os/monotonic_ms)))
-  (if (<= left 0) (fail (ProviderError ^message "Anthropic connection check timed out")))
+  (if (<= left 0) (fail (ProviderError ^_msg "Anthropic connection check timed out")))
   (let connection (api_connection ^timeout_ms left ^headers headers label
     "https://api.anthropic.com/v1/models?limit=1" nil))
   (if ($present? account) (connection .put "account" account))

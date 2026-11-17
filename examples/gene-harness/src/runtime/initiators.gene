@@ -10,7 +10,7 @@
 (import [default_execution_limits response_execution_limits] ^from "../plugin_api")
 
 (fn initiator_error [message : Str, ^code code : Str = "invalid_request"]
-  (fail (RoundError ^code code ^message message)))
+  (fail (RoundError ^code code ^_msg message)))
 
 (fn validate_initiator [candidate]
   (if (|| (!= ($head candidate) Map) (!= ($head candidate/name) Str) (== candidate/name "")

@@ -22,10 +22,10 @@
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
           (!= ($head candidate/events) List) candidate/events/.empty?
           (! ($runtime/callable? candidate/handle)))
-    (fail (HarnessError ^message "a round lifecycle handler needs name, events and a callable handle")))
+    (fail (HarnessError ^_msg "a round lifecycle handler needs name, events and a callable handle")))
   (for event in candidate/events
     (if_not (lifecycle_events .contains? event)
-      (fail (HarnessError ^message $"Unknown round lifecycle event ${event}"))))
+      (fail (HarnessError ^_msg $"Unknown round lifecycle event ${event}"))))
   candidate)
 
 (fn install_round_lifecycle [runtime]

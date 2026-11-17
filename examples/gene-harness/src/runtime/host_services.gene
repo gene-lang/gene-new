@@ -2,8 +2,7 @@
 # recorded before observers run; unwind attempts every acquired resource.
 (mod host_services)
 
-(type HostServiceError ^props {^message Str ^errors Any?} ^impl [Error])
-(impl Error for HostServiceError)
+(type HostServiceError : Error ^props {^errors Any?})
 (type HostServices ^props {^context Any ^specs Any ^opened Any ^values Any ^closed Any ^quiesced Any ^started Any ^observer Any})
 
 (fn service_dependencies [spec, mode : Str]
@@ -22,14 +21,14 @@
   (let names {})
   (for spec in specs
     (if (&& ($present? spec/layer) (! (["kernel" "loop" "feature_host"] .contains? spec/layer)))
-      (fail (HostServiceError ^message $"Unknown host service layer ${spec/layer}.")))
+      (fail (HostServiceError ^_msg $"Unknown host service layer ${spec/layer}.")))
     (if (|| (!= ($head spec/name) Str) (== spec/name "") (names .has_key? spec/name))
-      (fail (HostServiceError ^message "Host service names must be nonempty and unique.")))
+      (fail (HostServiceError ^_msg "Host service names must be nonempty and unique.")))
     (names .put spec/name spec))
   (for spec in specs
     (for dependency in (service_dependencies spec mode)
       (if_not (names .has_key? dependency)
-        (fail (HostServiceError ^message $"Host service ${spec/name} requires unknown ${dependency}.")))))
+        (fail (HostServiceError ^_msg $"Host service ${spec/name} requires unknown ${dependency}.")))))
   (let ordered [])
   (let complete {})
   (while (< ordered/.size specs/.size)
@@ -43,7 +42,7 @@
         (ordered .push spec)
         (complete .put spec/name true)
         (set changed true)))
-    (if_not changed (fail (HostServiceError ^message "Host service dependencies contain a cycle."))))
+    (if_not changed (fail (HostServiceError ^_msg "Host service dependencies contain a cycle."))))
   ordered)
 
 (fn new_host_services [context, specs, ^observe observe = nil, ^values values = nil]
@@ -68,11 +67,11 @@
     (let item acquired/%draining)
     (if (|| ($absent? item/value) ($absent? item/spec/quiesce)) (continue))
     (try (item/spec/quiesce owner/context item/value)
-      catch Error (errors .push {^service item/spec/name ^phase "quiesce" ^message $err/message}))
+      catch Error (errors .push {^service item/spec/name ^phase "quiesce" ^message $err/.message}))
     (try (service_event owner "quiesce" item/spec/name)
-      catch Error (errors .push {^service item/spec/name ^phase "quiesce" ^message $err/message})))
+      catch Error (errors .push {^service item/spec/name ^phase "quiesce" ^message $err/.message})))
   (if_not errors/.empty?
-    (fail (HostServiceError ^message $"Host service quiescence failed: ${errors}" ^errors errors)))
+    (fail (HostServiceError ^_msg $"Host service quiescence failed: ${errors}" ^errors errors)))
   nil)
 
 (fn close_host_services [owner]
@@ -88,22 +87,22 @@
     # A skipped mode or an initializer that acquired no resource has no close.
     (if (|| ($absent? item/value) ($absent? item/spec/close)) (continue))
     (try (item/spec/close owner/context item/value)
-      catch Error (errors .push {^service item/spec/name ^phase "close" ^message $err/message}))
+      catch Error (errors .push {^service item/spec/name ^phase "close" ^message $err/.message}))
     (try (service_event owner "close" item/spec/name)
-      catch Error (errors .push {^service item/spec/name ^message $err/message})))
+      catch Error (errors .push {^service item/spec/name ^message $err/.message})))
   (for item in acquired
     (if (== item/spec/borrowed true) (continue))
     (if (same? (owner/values .get item/spec/name) item/value)
       (owner/values .delete item/spec/name)))
   (if_not errors/.empty?
-    (fail (HostServiceError ^message $"Host service cleanup failed: ${errors}" ^errors errors)))
+    (fail (HostServiceError ^_msg $"Host service cleanup failed: ${errors}" ^errors errors)))
   nil)
 
 (fn start_host_services [owner, mode : Str]
   (if (|| owner/closed/.get (owner/started .swap true))
-    (fail (HostServiceError ^message "Host service scope has already started or closed.")))
+    (fail (HostServiceError ^_msg "Host service scope has already started or closed.")))
   (if_not (["normal" "recovery" "doctor"] .contains? mode)
-    (fail (HostServiceError ^message "Unknown host startup mode.")))
+    (fail (HostServiceError ^_msg "Unknown host startup mode.")))
   (try
     (let available {})
     (for spec in (service_order owner/specs mode)
@@ -112,15 +111,15 @@
       (if ($absent? operation) (continue))
       (for dependency in (service_dependencies spec mode)
         (if_not (available .has_key? dependency)
-          (fail (HostServiceError ^message $"Host service ${spec/name} requires unavailable ${dependency} in ${mode}."))))
+          (fail (HostServiceError ^_msg $"Host service ${spec/name} requires unavailable ${dependency} in ${mode}."))))
       (if (&& (!= spec/borrowed true) (owner/values .has_key? spec/name))
-        (fail (HostServiceError ^message $"Host service ${spec/name} already has an owner.")))
+        (fail (HostServiceError ^_msg $"Host service ${spec/name} already has an owner.")))
       (service_event owner "before" spec/name)
       (let value (operation owner/context))
       (owner/opened/.get .push {^spec spec ^value value})
       (if (== spec/borrowed true)
         (if_not (same? (owner/values .get spec/name) value)
-          (fail (HostServiceError ^message $"Host service ${spec/name} does not match its supplied dependency.")))
+          (fail (HostServiceError ^_msg $"Host service ${spec/name} does not match its supplied dependency.")))
         (owner/values .put spec/name value))
       (available .put spec/name true)
       (service_event owner "after" spec/name))
@@ -130,6 +129,6 @@
     (try (close_host_services owner)
       catch Error
         (fail (HostServiceError
-          ^message $"Startup failed: ${original/message}; ${$err/message}"
+          ^_msg $"Startup failed: ${original/message}; ${$err/.message}"
           ^errors $err/errors)))
     (fail original)))

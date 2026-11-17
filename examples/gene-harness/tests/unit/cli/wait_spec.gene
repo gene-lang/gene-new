@@ -8,7 +8,7 @@
     (let parent {^id "parent" ^state "paused" ^continuation_mode "automatic" ^continuation_stop "failed"})
     (let result (resolve_wait_receipt (fn [id]
       (calls .push id)
-      (if (== id "future") (fail (CliError ^code "not_found" ^message "Not admitted.")) parent)) "future" "parent"))
+      (if (== id "future") (fail (CliError ^code "not_found" ^_msg "Not admitted.")) parent)) "future" "parent"))
     ($assert (== calls ["future" "parent"]))
     ($assert (== result/continuation_stop "failed")))
   (it "never follows a newer user round occupying the reserved successor id" []
@@ -41,14 +41,14 @@
       ($assert (try
         (poll_wait_receipt (fn [id]
           (while (< ($os/monotonic_ms) due) ($sleep 1))
-          (fail (CliError ^code code ^message "poll failed")))
+          (fail (CliError ^code code ^_msg "poll failed")))
           "current" "current" "command" due "session" "requested")
         false
       catch CliError (== $err/code (if (== code "not_found") "not_found" "wait_timeout"))))))
 
   (it "preserves a connection error before the deadline instead of hiding it as a timeout" []
     ($assert (try
-      (poll_wait_receipt (fn [id] (fail (CliError ^code "connection_lost" ^message "closed")))
+      (poll_wait_receipt (fn [id] (fail (CliError ^code "connection_lost" ^_msg "closed")))
         "current" "current" "command" (+ ($os/monotonic_ms) 10000) "session" "requested")
       false
-    catch CliError (&& (== $err/code "connection_lost") (== $err/message "closed"))))))
+    catch CliError (&& (== $err/code "connection_lost") (== $err/.message "closed"))))))

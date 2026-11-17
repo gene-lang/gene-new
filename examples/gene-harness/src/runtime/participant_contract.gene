@@ -18,7 +18,7 @@
 (type ParticipantValidation ^props {^error Str? ^items Any ^defer_done Bool})
 
 (fn contract_error [name : Str, phase : Str, message : Str]
-  (fail (ParticipantFailure ^participant name ^phase phase ^code "invalid_result" ^message message)))
+  (fail (ParticipantFailure ^participant name ^phase phase ^code "invalid_result" ^_msg message)))
 
 (fn public_turn_context [context]
   (let round (if (== ($head context/round) Str) context/round (?? context/round/id context/round_id)))
@@ -52,7 +52,7 @@
       (let errors [])
       (for failure in (?? value/finalization_errors [])
         (errors .push {^participant failure/participant ^phase failure/phase
-          ^code failure/code ^message failure/message}))
+          ^code failure/code ^message failure/.message}))
       (return (freeze_turn_data {^result (public_turn_result value/result)
         ^turn_end_durable (== value/turn_end_durable true) ^errors errors}))))
   (if (== phase "response_recorded")

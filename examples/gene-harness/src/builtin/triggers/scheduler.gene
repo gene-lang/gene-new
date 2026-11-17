@@ -10,8 +10,7 @@
 (import * : timezone ^from "./schedule/timezone")
 (import * : calendar ^from "./schedule/calendar")
 
-(type TriggerError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for TriggerError)
+(type TriggerError : Error ^props {^code Str})
 
 (type TriggerScheduler ^props {^host Any ^admission Any ^gate Any ^last_retention Any ^hook Any})
 
@@ -24,7 +23,7 @@
   (TriggerScheduler ^host host ^admission admission ^gate ($sync/gate) ^last_retention ($cell 0) ^hook hook))
 
 (fn invalid [message : Str]
-  (fail (TriggerError ^code "invalid_request" ^message message)))
+  (fail (TriggerError ^code "invalid_request" ^_msg message)))
 
 (fn ^^private thawed [value] ($thaw ($serde/read_data ($serde/write_data value))))
 
@@ -145,7 +144,7 @@
   (let definition (validate_definition input (?? now ($os/wall_ms))))
   (s/gate (fn []
     (if_not ($absent? (s/host .PluginHost:record definition_kind definition/id))
-      (fail (TriggerError ^code "conflict" ^message "Trigger already exists")))
+      (fail (TriggerError ^code "conflict" ^_msg "Trigger already exists")))
     (let warnings (check_model s definition))
     (let result (save_definition s definition))
     (if (! warnings/.empty?) (result .put "warnings" warnings))
@@ -158,7 +157,7 @@
   (s/gate (fn []
     (let stored (s/host .PluginHost:record definition_kind id))
     (if (|| ($absent? stored) (== stored/deleted true))
-      (fail (TriggerError ^code "not_found" ^message "Trigger does not exist")))
+      (fail (TriggerError ^code "not_found" ^_msg "Trigger does not exist")))
     (let next (thawed stored))
     (next .put "model_settings" (if ($absent? changes/model_settings) nil changes/model_settings))
     (let warnings (if ($absent? next/model_settings) [] (check_model s next)))
@@ -177,7 +176,7 @@
   (s/gate (fn []
     (let stored (s/host .PluginHost:record definition_kind id))
     (if (|| ($absent? stored) (== stored/deleted true))
-      (fail (TriggerError ^code "not_found" ^message "Trigger does not exist")))
+      (fail (TriggerError ^code "not_found" ^_msg "Trigger does not exist")))
     (let removed (thawed stored))
     (removed .put "enabled" false)
     (removed .put "deleted" true)
@@ -308,7 +307,7 @@
       (set running (+ running 1))
     catch ServiceError
       (if (!= $err/code "not_ready") (fail $err))
-      (let reason $err/message)
+      (let reason $err/.message)
       (if_yes (!= occurrence/waiting_reason reason)
         (occurrence .put "waiting_reason" reason)
         (save_occurrence s occurrence)
@@ -375,7 +374,7 @@
     (live .put data/id true)
     (let previous (stored .get data/id))
     (if (&& ($present? previous) ($absent? previous/plugin_fingerprint))
-      (fail (TriggerError ^code "conflict" ^message $"Plugin trigger conflicts with operator trigger ${data/id}")))
+      (fail (TriggerError ^code "conflict" ^_msg $"Plugin trigger conflicts with operator trigger ${data/id}")))
     (if_yes (|| ($absent? previous) (!= previous/plugin_fingerprint fingerprint))
       (let definition (validate_definition data now))
       (check_model s definition)
@@ -404,7 +403,7 @@
 (fn run_scheduler [s, ^poll_ms poll_ms : Int = 100]
   # The first tick after start reconciles what a previous producer admitted
   # and applies the missed-occurrence policy to downtime.
-  (try (tick_triggers s ^^boot) catch Error ($println $"Trigger scheduler: ${$err/message}"))
+  (try (tick_triggers s ^^boot) catch Error ($println $"Trigger scheduler: ${$err/.message}"))
   (loop
     ($sleep poll_ms)
-    (try (tick_triggers s) catch Error ($println $"Trigger scheduler: ${$err/message}"))))
+    (try (tick_triggers s) catch Error ($println $"Trigger scheduler: ${$err/.message}"))))

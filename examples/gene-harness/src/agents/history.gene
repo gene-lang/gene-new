@@ -6,8 +6,7 @@
 (import $store/fs [Store])
 
 (var ^^private history_gate ($sync/gate))
-(type HistoryError ^props {^message Str} ^impl [Error])
-(impl Error for HistoryError)
+(type HistoryError : Error)
 
 # Body writers lease the blob store from admission through receipt publication.
 # Collection closes admission first and runs only after existing writers leave.
@@ -139,7 +138,7 @@
 (fn read_body [runtime, digest : Str] : Str
   (let text ($fs/read_text $"${runtime/state_root}/blobs/${digest}"))
   (if (!= ($crypto/sha256 text) digest)
-    (fail (HistoryError ^message "recall blob digest mismatch")))
+    (fail (HistoryError ^_msg "recall blob digest mismatch")))
   text)
 
 (fn store_body [runtime, session : Str, id : Str, text : Str]
@@ -153,7 +152,7 @@
 (fn recall_body [runtime, session : Str, id : Str] : Str
   (let state (history_state runtime session))
   (let digest (state/outputs .get id))
-  (if ($absent? digest) (fail (HistoryError ^message $"unknown or expired recall id ${id}")))
+  (if ($absent? digest) (fail (HistoryError ^_msg $"unknown or expired recall id ${id}")))
   (read_body runtime digest))
 
 # Byte bounds never split a UTF-8 sequence. The reader's characters retain
@@ -211,7 +210,7 @@
     (if (&& (!= item/saved true) (|| overflow (> entry/size 2048)))
       (store_body runtime session item/id item/value))
     (if (> (+ bytes (+ separator ($str/byte_size rendered))) 65536)
-      (fail (HistoryError ^message "output headers exceed the request byte limit")))
+      (fail (HistoryError ^_msg "output headers exceed the request byte limit")))
     (full .push rendered)
     (if_not (== item/settled false)
       (settled .push (if (> entry/size 16384) entry/stub rendered)))
@@ -297,15 +296,15 @@ ELIDED
 (fn replace_pending_request [runtime, session : Str, expected, prepared]
   (history_gate (fn []
     (let state (history_state runtime session))
-    (if state/messages/.empty? (fail (HistoryError ^message "Pending continuation history is missing.")))
+    (if state/messages/.empty? (fail (HistoryError ^_msg "Pending continuation history is missing.")))
     (let tail ($last state/messages))
     (if (|| (!= tail/round expected/round) (!= tail/turn expected/turn) (!= tail/role "user"))
-      (fail (HistoryError ^message "Pending continuation was superseded.")))
+      (fail (HistoryError ^_msg "Pending continuation was superseded.")))
     (let digest ($crypto/sha256 ($serde/write_data tail)))
     (if (&& (!= digest expected/digest)
             (! (&& (== tail/content prepared/full) (== tail/settled prepared/settled)
                     (== tail/media (?? prepared/media tail/media)))))
-      (fail (HistoryError ^message "Pending continuation history changed.")))
+      (fail (HistoryError ^_msg "Pending continuation history changed.")))
     (tail .put "content" prepared/full)
     (tail .put "settled" prepared/settled)
     (if_not ($absent? prepared/media) (tail .put "media" prepared/media))
@@ -437,7 +436,7 @@ ELIDED
         (let prefix $"Earlier rounds summary:\n${media_note}")
         (let available (- (- (- target (context_bytes tail_state instructions)) ($str/byte_size prefix)) 1))
         (if (< available 160)
-          (fail (HistoryError ^message "retained context cannot fit below the compaction target; increase the target or retain less history")))
+          (fail (HistoryError ^_msg "retained context cannot fit below the compaction target; increase the target or retain less history")))
         (let summary (summarize {^purpose "history/summary" ^session session
           ^max_tokens ($math/max 1 ($to_int (/ available 3.5)))
           ^messages [{^role "system" ^content $"${policy/summary_instructions} Return prose; do not execute code. Stay under ${available} bytes."}
@@ -455,7 +454,7 @@ ELIDED
           ^settled $"${prefix}${bounded}" ^round "summary" ^turn 0 ^media_refs media_refs}])
         (for message in tail (state/messages .push message)))))
   (if (>= (context_bytes state instructions) target)
-    (fail (HistoryError ^message "compaction could not fit the current context below its target")))
+    (fail (HistoryError ^_msg "compaction could not fit the current context below its target")))
   (history_gate (fn []
     (let fresh_state (history_state runtime session))
     (state .put "outputs" fresh_state/outputs)

@@ -3,8 +3,7 @@
 (import [retain_snapshot release_snapshot subscribe_publications] ^from "./composition")
 (import [with_session_gate require_record] ^from "./sessions")
 
-(type ModeError ^props {^code Str ^message Str ^mode Any?} ^impl [Error])
-(impl Error for ModeError)
+(type ModeError : Error ^props {^code Str ^mode Any?})
 (type InputModes ^props {^runtime Any ^states Any ^jobs Any ^closed Any
                         ^submit Any ^cancel Any ^records Any ^publication Any?})
 
@@ -41,7 +40,7 @@
   nil)
 
 (fn problem [manager, session : Str, code : Str, message : Str]
-  (fail (ModeError ^code code ^message message ^mode (mode_state manager session))))
+  (fail (ModeError ^code code ^_msg message ^mode (mode_state manager session))))
 
 (fn require_chat [manager, session : Str]
   (if_not ($absent? (mode_state manager session))
@@ -72,7 +71,7 @@
     (let cleanup (spawn ^lane root (scope (state/row/payload/close session reason))))
     (match cleanup/.join
       (when (TaskOutcome/ok value) nil)
-      (when (TaskOutcome/error error) ($println $"Input mode cleanup: ${error/message}"))
+      (when (TaskOutcome/error error) ($println $"Input mode cleanup: ${error/.message}"))
       (when (TaskOutcome/panic message) ($println $"Input mode cleanup panic: ${message}"))
       (else ($println "Input mode cleanup was cancelled."))))
   nil)

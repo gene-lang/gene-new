@@ -243,7 +243,7 @@
           ($assert (== ($fs/read_text $"${workspace}/business-save") "committed"))
           ($assert (== count ($size ((Path "messages") (inbox_snapshot service/runtime/services/values/inbox)))))
         catch Error
-          ($println $"Notification test failed before cleanup: ${$err/message}")
+          ($println $"Notification test failed before cleanup: ${$err/.message}")
           (fail $err)
         ensure
           (close_session_service service))))))

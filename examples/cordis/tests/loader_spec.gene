@@ -9,9 +9,7 @@
 
 (import [LoadedValue loaded_key] ^from "../fixtures/contract")
 
-(type LoaderBoom ^props {^message Str} ^impl [Error])
-
-(impl Error for LoaderBoom)
+(type LoaderBoom : Error)
 
 (describe "Cordis loader"
   (after_each [t]
@@ -170,7 +168,7 @@
     (fn activate_counted [ctx, config]
       (activations .set (+ activations/.get 1)))
     (fn activate_failing [ctx, config]
-      (fail (LoaderBoom ^message "unlucky")))
+      (fail (LoaderBoom ^_msg "unlucky")))
     (var counted
       (PluginSpec ^id "host/counted" ^config_schema nil ^requires []
                   ^provides [] ^reload nil ^activate activate_counted))
@@ -248,7 +246,7 @@
       (PluginSpec ^id "host/broken" ^config_schema nil ^requires []
         ^provides [] ^reload nil
         ^activate (fn [ctx, config]
-          (fail (LoaderBoom ^message "activation failed")))))
+          (fail (LoaderBoom ^_msg "activation failed")))))
     (let snapshot
       (loader .reconcile_plugins
         {^format 1 ^entries [{^id "healthy" ^module "host/healthy"}

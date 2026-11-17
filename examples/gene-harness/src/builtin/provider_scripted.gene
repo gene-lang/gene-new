@@ -2,8 +2,7 @@
 (import ^from "../plugin_api" [Plugin PluginHost])
 (import ^from "../public/documentation" [contribute_text_doc])
 
-(type ScriptedProviderError ^props {^message Str} ^impl [Error])
-(impl Error for ScriptedProviderError)
+(type ScriptedProviderError : Error)
 
 (fn provider_scripted [responses] : Plugin
   (let index ($cell 0))
@@ -19,7 +18,7 @@
          ^send (fn [prepared]
            (let next (index .swap (+ index/.get 1)))
            (if (>= next responses/.size)
-             (fail (ScriptedProviderError ^message "scripted provider exhausted")))
+             (fail (ScriptedProviderError ^_msg "scripted provider exhausted")))
            {^text responses/%next})})
       (contribute_text_doc host "harness/providers/scripted"
         "Replay supplied responses for deterministic Harness tests."

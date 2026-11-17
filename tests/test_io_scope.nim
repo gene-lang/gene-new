@@ -146,7 +146,7 @@ suite "I/O cleanup leases — structured scope":
       (try
         (scope
           (begin_cleanup_lease)
-          (fail (RuntimeError ^message "stop")))
+          (fail (RuntimeError ^_msg "stop")))
         catch RuntimeError (cleanup_retired?))
     """), scope)
     check value.boolVal
@@ -167,7 +167,7 @@ suite "I/O cleanup leases — structured scope":
         (scope
           (let operation (begin_sim_io ($binary/from_str "abc")))
           (try
-            (fail (RuntimeError ^message "stop"))
+            (fail (RuntimeError ^_msg "stop"))
             ensure (do
               (close_sim_io)
               (let stats ($runtime/gc_stats))

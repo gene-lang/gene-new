@@ -88,12 +88,12 @@
       (publication_metadata h snapshot)
     catch Error
       (record_publication_diagnostic h/snapshots snapshot
-        {^kind "metadata" ^message $err/message}))
+        {^kind "metadata" ^message $err/.message}))
     (try
       (notify h (CompositionChanged ^revision snapshot/id))
     catch Error
       (record_publication_diagnostic h/snapshots snapshot
-        {^kind "notification" ^message $err/message})))
+        {^kind "notification" ^message $err/.message})))
   nil)
 
 (fn ^^private clone_registries [h : Harness]
@@ -387,7 +387,7 @@
       ensure
         (h/composition .prepare_owners nil)))
   (for failure in result/failures
-    (h/plugin_errors/.get .put failure/id failure/message))
+    (h/plugin_errors/.get .put failure/id (?? failure/message failure/.message)))
   (let active h/composition/.current_plugins)
   (h/composer/bridge/published .set active)
   (publish_registry_snapshot h)
@@ -403,7 +403,7 @@
     (for admission in admissions
       (validate_plugin_descriptor h admission/plugin/id admission/plugin)
       (if_not ($absent? (plugins .get admission/plugin/id))
-        (fail (HarnessError ^message "duplicate plugin in candidate composition")))
+        (fail (HarnessError ^_msg "duplicate plugin in candidate composition")))
       (plugins .put admission/plugin/id admission/plugin)
       (options .put admission/plugin/id admission/options))
     (let committed ($cell false))
@@ -416,7 +416,7 @@
       {^published true ^state "applied"}
     catch Error
       (if committed/.get
-        {^published true ^state "recovery_required" ^message $err/message}
+        {^published true ^state "recovery_required" ^message $err/.message}
         (do
           (h/plugins .set previous_plugins)
           (h/composer/bridge/entries .set previous_options)
@@ -425,9 +425,9 @@
 
 (fn put_cordis_plugin [h : Harness, plugin : Plugin, entry_options, ^replace replace : Bool = false]
   (run_composition_change h/snapshots (fn []
-  (if ($absent? h/composition) (fail (HarnessError ^message "Harness has no Cordis composition")))
+  (if ($absent? h/composition) (fail (HarnessError ^_msg "Harness has no Cordis composition")))
   (if_yes (&& (! replace) ($present? (h/plugins .get; .get plugin/id)))
-    (fail (HarnessError ^message $"plugin ${plugin/id} already installed")))
+    (fail (HarnessError ^_msg $"plugin ${plugin/id} already installed")))
   (validate_plugin_descriptor h plugin/id plugin)
   (h/plugins
     .get
@@ -452,12 +452,12 @@
   # activation fails is recorded by the reconcile itself; only a failure of the
   # reconcile as a whole marks every admission.
   (if ($absent? h/composition)
-    (fail (HarnessError ^message "Harness has no Cordis composition")))
+    (fail (HarnessError ^_msg "Harness has no Cordis composition")))
 
   (for admission in admissions
     (var plugin admission/plugin)
     (if_yes ($present? (h/plugins/.get .get plugin/id))
-      (fail (HarnessError ^message $"plugin ${plugin/id} already installed")))
+      (fail (HarnessError ^_msg $"plugin ${plugin/id} already installed")))
     (validate_plugin_descriptor h plugin/id plugin))
   (for admission in admissions
     (var plugin admission/plugin)
@@ -538,7 +538,7 @@
 (fn uninstall [h : Harness, id : Str] : Str
   (run_composition_change h/snapshots (fn []
   (if ($absent? (h/plugins .get; .get id))
-    (fail (HarnessError ^message $"plugin ${id} not installed")))
+    (fail (HarnessError ^_msg $"plugin ${id} not installed")))
   (h/plugins
     .get
     ; .delete id)
@@ -556,7 +556,7 @@
   # A failed plugin is not retried automatically: an activation that raised
   # raises again until something outside it changes.
   (if_not (== (status_of h id) "error")
-    (fail (HarnessError ^message $"plugin ${id} is not in error")))
+    (fail (HarnessError ^_msg $"plugin ${id} is not in error")))
   (var p (h/plugins/.get .get id))
   (var options (h/composer/bridge/entries/.get .get id))
   (var state (put_cordis_plugin h p options ^^replace))
@@ -573,7 +573,7 @@
   # rest of the composition still closes.
   (if (> errors/.size 0) (return {^status "recovery_required" ^errors errors}))
   (for failure in retirement_failures
-    (errors .push $"retirement failed while closing: ${failure/message}"))
+    (errors .push $"retirement failed while closing: ${(?? failure/message failure/.message)}"))
   # Cordis is retiring the whole composition; cleanup must not install fresh
   # selected-entry projections while its dependency graph is being closed.
   (set h/registry_observer nil)

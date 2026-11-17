@@ -11,7 +11,7 @@
     ($assert ($absent? (resolve_credential nil)))
     (for source in [{^env "MISSING"} {^api_key "SECRET_SENTINEL"}
                    {^env "SPEC_KEY" ^command ["unused"]} {^command []}]
-      (let failure (try (resolve_credential ^environment {} source) "accepted" catch Error $err/message))
+      (let failure (try (resolve_credential ^environment {} source) "accepted" catch Error $err/.message))
       ($assert (!= failure "accepted"))
       ($assert (! ($str/contains? failure "SECRET_SENTINEL")))))
 
@@ -25,7 +25,7 @@
         (for [mode timeout] in [["fail" 5000] ["slow" 25]]
           (let failure (try
             (resolve_credential ^timeout_ms timeout {^command [runner "run" fixture mode]})
-            "accepted" catch Error $err/message))
+            "accepted" catch Error $err/.message))
           ($assert (!= failure "accepted"))
           ($assert (! ($str/contains? failure "SECRET_SENTINEL")))
           ($assert (! ($str/contains? failure "fixture-token"))))))))

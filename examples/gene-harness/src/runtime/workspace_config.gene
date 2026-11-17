@@ -27,10 +27,10 @@
   ($pkg/canonical_digest config))
 
 (fn invalid [message : Str]
-  (fail (ServiceError ^code "invalid_request" ^message message)))
+  (fail (ServiceError ^code "invalid_request" ^_msg message)))
 
 (fn error_text [error] : Str
-  ($to_str (?? error/message error)))
+  ($to_str (?? error/.message error)))
 
 (fn check_setting_value [definition, value]
   (let expected definition/type)
@@ -56,7 +56,7 @@
 (fn require_definition [runtime, key : Str]
   (let definition (row runtime/h "settings" key))
   (if ($absent? definition)
-    (fail (ServiceError ^code "not_found" ^message $"Unknown setting ${key}.")))
+    (fail (ServiceError ^code "not_found" ^_msg $"Unknown setting ${key}.")))
   definition)
 
 # A launch flag overrides the saved value for this process only.
@@ -301,7 +301,7 @@
         (let config (read_config runtime))
         (if (&& (!= expected "") (!= expected (config_digest config)))
           (fail (ServiceError ^code "revision_conflict"
-            ^message "Workspace settings changed. Read them again before saving.")))
+            ^_msg "Workspace settings changed. Read them again before saving.")))
         (let candidate ($thaw ($freeze config)))
         (map_for [key value] in changes (candidate .put ($to_str key) value))
         (for key in reset (candidate .delete key))

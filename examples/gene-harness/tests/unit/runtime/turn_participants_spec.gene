@@ -18,7 +18,7 @@
       (if (== current "begin") (state .put "owner" name))
       ($assert (== state/owner name) "Participant state crossed an owner boundary.")
       (if (== current fail_at)
-        (fail (ParticipantFailure ^participant name ^phase current ^code "injected" ^message "injected")))
+        (fail (ParticipantFailure ^participant name ^phase current ^code "injected" ^_msg "injected")))
       {^owner name ^snapshot context/snapshot ^value value})))
   definition)
 
@@ -30,7 +30,7 @@
     (let earlier (participant "a" events))
     (let transaction (new_turn_transaction {^snapshot "leased-7"} [later first earlier]))
     (earlier .put "begin" (fn [context state value]
-      (fail (ParticipantFailure ^participant "a" ^phase "begin" ^code "mutated" ^message "A mutated definition ran."))))
+      (fail (ParticipantFailure ^participant "a" ^phase "begin" ^code "mutated" ^_msg "A mutated definition ran."))))
     (begin_turn_transaction transaction)
     (for phase in phases
       (let results (run_turn_phase transaction phase {^input phase}))
@@ -147,7 +147,7 @@
       (let definition (participant "a" events))
       (definition .put "finalize" (fn [context state completion]
         (events .push "a/finalize")
-        (fail (ParticipantFailure ^participant "a" ^phase "finalize" ^code "injected" ^message "finalize failed"))))
+        (fail (ParticipantFailure ^participant "a" ^phase "finalize" ^code "injected" ^_msg "finalize failed"))))
       (definition .put "release" (fn [context state completion]
         ($assert (== completion/turn_end_durable (! fail_seal)))
         (events .push "a/release")))

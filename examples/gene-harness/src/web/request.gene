@@ -8,7 +8,7 @@
   (json status ($json/stringify value)))
 
 (fn fail_request [code : Str, message : Str]
-  (fail (RoundError ^code code ^message message)))
+  (fail (RoundError ^code code ^_msg message)))
 
 (fn optional_field [data, key : Str]
   (let value (field ^default "" data key))

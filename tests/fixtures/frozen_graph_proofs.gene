@@ -51,7 +51,7 @@
     (let mutable [])
     (let shallow ($freeze_shallow [mutable]))
     (fn bad! [] (mutable .push caller_env))
-    (let error (try (bad!) "accepted" catch Error $err/message))
+    (let error (try (bad!) "accepted" catch Error $err/.message))
     ($assert ($str/contains? error "CallerEnv"))
     (assert_equal mutable/.size 0)
     (assert_equal shallow/0/.size 0))

@@ -23,7 +23,7 @@
   (if (|| state/closed/.get runtime/stopping/.get) (return nil))
   (let instant (?? now ($os/wall_ms)))
   (try (expire_automated_questions runtime state/controller instant)
-    catch Error ($println $"Housekeeping: ${$err/message}"))
+    catch Error ($println $"Housekeeping: ${$err/.message}"))
   (if_yes (&& runtime/body_gc_pending/.get (>= (- instant state/last_gc/.get) state/gc_interval))
     (if (collect_unreferenced_bodies runtime) (state/last_gc .set instant)))
   (unload_idle_sessions runtime/sessions)
@@ -38,7 +38,7 @@
     (state/task .set (spawn ^lane root
       (while (! state/closed/.get)
         ($sleep poll_ms)
-        (try (housekeeping_tick state) catch Error ($println $"Housekeeping: ${$err/message}"))))))
+        (try (housekeeping_tick state) catch Error ($println $"Housekeeping: ${$err/.message}"))))))
   state)
 
 (fn close_housekeeping [state]

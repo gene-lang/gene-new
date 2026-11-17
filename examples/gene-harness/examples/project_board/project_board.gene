@@ -1,7 +1,6 @@
 (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
 (import [Plugin PluginHost] ^from "src/plugin_api.gene")
-(type BoardError ^props {^message Str} ^impl [Error])
-(impl Error for BoardError)
+(type BoardError : Error)
 
 (fn initial_tasks []
   [{^id "welcome" ^revision "1" ^title "Try the project board" ^status "todo" ^notes "Filter, select and edit this task."}
@@ -28,18 +27,18 @@
              (for task in current
                (if (== task/id id)
                  (then
-                   (if (!= revision task/revision) (fail (BoardError ^message "Task changed. Reload the task before saving.")))
+                   (if (!= revision task/revision) (fail (BoardError ^_msg "Task changed. Reload the task before saving.")))
                    (set result {^id id ^title (?? title task/title) ^status (?? status task/status) ^notes (?? notes task/notes)
                      ^revision ($to_str (+ ($parse/parse_int revision) 1))})
                    (updated .push result)
                    (set found true))
                  (else (updated .push task))))
              (if_not found
-               (if (!= revision "") (fail (BoardError ^message "Task no longer exists.")))
+               (if (!= revision "") (fail (BoardError ^_msg "Task no longer exists.")))
                (set result {^id id ^title (?? title "") ^status (?? status "todo") ^notes (?? notes "") ^revision "1"})
                (updated .push result))
-             (if (== ($str/trim result/title) "") (fail (BoardError ^message "A task needs a title.")))
-             (if_not (["todo" "doing" "done"] .contains? result/status) (fail (BoardError ^message "Unknown task status.")))
+             (if (== ($str/trim result/title) "") (fail (BoardError ^_msg "A task needs a title.")))
+             (if_not (["todo" "doing" "done"] .contains? result/status) (fail (BoardError ^_msg "Unknown task status.")))
              (host .PluginHost:update_state {^tasks updated})
              result)))})
       (host .PluginHost:contribute "web_components"

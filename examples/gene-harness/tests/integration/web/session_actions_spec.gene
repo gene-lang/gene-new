@@ -80,7 +80,7 @@
         (service/publisher .set (fn [message] (messages .push message)))
         (try
           (let session (create_session service))
-          (set service/ui_audience (fn [] (fail (RoundError ^code "snapshot_fixture" ^message "Snapshot fixture failed."))))
+          (set service/ui_audience (fn [] (fail (RoundError ^code "snapshot_fixture" ^_msg "Snapshot fixture failed."))))
           (queue_snapshot service session/id)
           (let jobs [])
           (map_for [id slot] in service/snapshot_jobs/.get (jobs .push slot/.get))

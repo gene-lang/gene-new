@@ -35,9 +35,9 @@
         (let ctx {^opened [] ^closed []})
         (let owner (new_host_services ctx (specs) ^observe (fn [event, name]
           (if (&& (== event phase) (== name target))
-            (fail (HostServiceError ^message "injected startup failure"))))))
+            (fail (HostServiceError ^_msg "injected startup failure"))))))
         ($assert (try (start_host_services owner "normal") false catch Error
-          ($str/contains? $err/message "injected startup failure")))
+          ($str/contains? $err/.message "injected startup failure")))
         (let expected [])
         (var at ctx/opened/.size)
         (while (> at 0) (set at (- at 1)) (expected .push ctx/opened/%at))
@@ -49,11 +49,11 @@
     (let ctx {^opened [] ^closed []})
     (let definitions (specs))
     (definitions/0 .put "close" (fn [ctx, value]
-      (ctx/closed .push value) (fail (HostServiceError ^message "failed consumer cleanup"))))
+      (ctx/closed .push value) (fail (HostServiceError ^_msg "failed consumer cleanup"))))
     (let owner (new_host_services ctx definitions))
     (start_host_services owner "normal")
     ($assert (try (close_host_services owner) false catch HostServiceError
-      ($str/contains? $err/message "failed consumer cleanup")))
+      ($str/contains? $err/.message "failed consumer cleanup")))
     ($assert (== ctx/closed ["consumer" "transport" "ownership"])))
 
   (it "rejects cycles, unknown dependencies and unavailable recovery prerequisites" []
@@ -66,7 +66,7 @@
     (definitions/0 .put "requires" ["transport"])
     (let owner (new_host_services ctx definitions))
     ($assert (try (start_host_services owner "recovery") false catch HostServiceError
-      ($str/contains? $err/message "unavailable transport")))
+      ($str/contains? $err/.message "unavailable transport")))
     ($assert (== ctx/closed ["ownership"]))))
 
 (describe "Layered host service startup"
@@ -105,7 +105,7 @@
          {^name "worker" ^requires ["store"] ^open (fn [ctx] "worker")
           ^quiesce (fn [ctx, value]
             (set ctx/stopped true) (ctx/events .push "quiesce")
-            (if fail_quiesce (fail (HostServiceError ^message "quiesce failed"))))
+            (if fail_quiesce (fail (HostServiceError ^_msg "quiesce failed"))))
           ^close (fn [ctx, value] (ctx/events .push "worker"))}
          {^name "plugins" ^requires ["worker"] ^open (fn [ctx] "plugins")
           ^close (fn [ctx, value]

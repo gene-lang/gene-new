@@ -15,7 +15,7 @@
     (let failure $err)
     host/process/.cancel
     (let ended (try (await host/process) catch Error nil))
-    ($assert false ($to_str "Peer did not start: " failure/message "\n" (?? ended/stdout "") (?? ended/stderr "")))))
+    ($assert false ($to_str "Peer did not start: " failure/.message "\n" (?? ended/stdout "") (?? ended/stderr "")))))
 
 (describe "Channel cross-process recovery"
   (it "recovers either host at each input and output handoff boundary without replaying requests or replies" []

@@ -63,11 +63,11 @@
       [{^name "paper" ^fonts [{^family "Example" ^src "http://example.test/font.woff2"}]} "HTTPS"]]
       (let error (try (validate_theme_row value) nil catch ThemeError $err))
       ($assert ($present? error))
-      ($assert ($str/contains? error/message message) error/message))
+      ($assert ($str/contains? error/.message message) error/.message))
     (let icon_error (try (validate_icon {^name "Upper" ^svg "<svg/>"}) nil catch ThemeError $err))
-    ($assert ($str/contains? icon_error/message "kebab-case"))
+    ($assert ($str/contains? icon_error/.message "kebab-case"))
     (let missing (try (resolve_theme "missing") nil catch ThemeError $err))
-    ($assert ($str/contains? missing/message "Unknown theme missing")))
+    ($assert ($str/contains? missing/.message "Unknown theme missing")))
 
   (it "caches active assets separately from lazy previews and follows the asset base" []
     (let first (active_theme_assets "default" builtin_themes))
@@ -282,7 +282,7 @@
     ($assert (! ($str/contains? css "font-family: Example Extra;"))))
 
   (it "publishes font bytes with a content address and generates inherited faces" []
-    (let invalid (try ($web/font "missing-font.txt") "" catch Error $err/message))
+    (let invalid (try ($web/font "missing-font.txt") "" catch Error $err/.message))
     ($assert ($str/contains? invalid "web/font expects"))
     (let path ($path/join this_pkg/root "tmp" $"theme-font-${($crypto/random_hex 8)}.woff2"))
     (let exported ($to_str path ".export"))

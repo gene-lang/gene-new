@@ -27,7 +27,7 @@
   (refresh_dispatchers .set ($filter refresh_dispatchers/.get (fn [entry] (!= entry/token token)))))
 
 (fn auth_error [message : Str, status = nil, ^code code = nil]
-  (fail (ProviderError ^status status ^code code ^message message)))
+  (fail (ProviderError ^status status ^code code ^_msg message)))
 
 (fn auth_http [url : Str, method : Str, body = nil, ^timeout_ms timeout_ms : Int = 15000]
   (let headers {^accept "application/json"})
@@ -218,7 +218,7 @@
     (return {^record current ^error $err}))
   (if (&& (== current/refresh_identity_required true) ($absent? tokens/id_token))
     (return {^record current ^error (ProviderError ^status 401 ^code "identity_verification_required"
-      ^message "ChatGPT needs a fresh identity token after an interrupted verification; reconnect in Models")}))
+      ^_msg "ChatGPT needs a fresh identity token after an interrupted verification; reconnect in Models")}))
   (let received_at (if (== ($head current/pending_refresh_at) Int) (then current/pending_refresh_at) (else 0)))
   (let expires_at (+ received_at tokens/expires_in))
   (if (|| (<= expires_at (/ ($os/wall_ms) 1000))
@@ -226,7 +226,7 @@
     (then
       (current .delete "pending_refresh") (current .delete "pending_refresh_at")
       (return {^record current ^error (ProviderError ^code "refresh_response_expired"
-        ^message "ChatGPT token response expired while identity verification was pending; retry with the saved refresh token")})))
+        ^_msg "ChatGPT token response expired while identity verification was pending; retry with the saved refresh token")})))
   (try
     (if ($present? tokens/id_token)
       (then
@@ -239,7 +239,7 @@
     # A bad signature or unusable signing-key response must never authorize
     # inference, but must not discard a newly rotated refresh value either.
     (return {^record current ^error (ProviderError ^code "invalid_id_token"
-      ^message "ChatGPT refreshed identity could not be verified; retry or reconnect in Models")})
+      ^_msg "ChatGPT refreshed identity could not be verified; retry or reconnect in Models")})
   catch Error
     (let error $err)
     (if (== error/code "identity_mismatch")
@@ -252,7 +252,7 @@
   (current .delete "pending_refresh")
   (current .delete "pending_refresh_at")
   (if (! (plan_enabled? current))
-    (return {^record current ^error (ProviderError ^status 401 ^message "ChatGPT plan permission is no longer enabled; reconnect in Models")}))
+    (return {^record current ^error (ProviderError ^status 401 ^_msg "ChatGPT plan permission is no longer enabled; reconnect in Models")}))
   {^record current ^result {^access_token current/access_token ^account (account_id current) ^public (public_account current)}})
 
 (fn chatgpt_access_transaction [root, supplied, exchange_url, verifier, ^allow_refresh allow_refresh : Bool = true]
@@ -285,7 +285,7 @@
             "refresh_token_invalidated" "refresh_token_reused"] .contains? code))
           (then
             (current .delete "access_token") (current .delete "refresh_token") (current .put "expires_at" 0)
-            (return {^record current ^error (ProviderError ^status 401 ^code code ^message "ChatGPT session expired or was revoked; reconnect in Models")})))
+            (return {^record current ^error (ProviderError ^status 401 ^code code ^_msg "ChatGPT session expired or was revoked; reconnect in Models")})))
         (if (== code "invalid_client")
           (auth_error ^code "invalid_client" "ChatGPT client registration is invalid; check the integration's client configuration"))
         (auth_error ^code "refresh_failed" "ChatGPT token refresh could not complete; retry shortly" response/status)))

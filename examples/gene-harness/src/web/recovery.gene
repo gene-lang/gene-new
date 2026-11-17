@@ -172,9 +172,9 @@
         (try
           (handle request)
         catch AuthError
-          (response 401 {^code $err/code ^message $err/message})
+          (response 401 {^code $err/code ^message $err/.message})
         catch Error
-          (response 400 {^code (?? $err/code "recovery_error") ^message $err/message}))))
+          (response 400 {^code (?? $err/code "recovery_error") ^message $err/.message}))))
     (mark_ready runtime/state_root (?? (options .get "startup-id") "") runtime/epoch port true)
     ($println
       ($to_str

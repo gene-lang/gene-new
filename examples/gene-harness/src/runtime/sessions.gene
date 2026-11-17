@@ -17,8 +17,7 @@
 (import ^from "./patch" [recover_patch_temporaries])
 (import ^from "../kernel" [SessionChanged publish])
 
-(type SessionError ^props {^code Str ^message Str} ^impl [Error])
-(impl Error for SessionError)
+(type SessionError : Error ^props {^code Str})
 
 (type SessionState ^props {^id Str ^runtime Any ^history Any ^round Any ^outputs Any ^console Any ^last_access Any ^viewers Any})
 
@@ -43,7 +42,7 @@
 
 (fn require_open [manager : SessionManager]
   (if manager/closed/.get
-    (fail (SessionError ^code "closed" ^message "the session manager is closed")))
+    (fail (SessionError ^code "closed" ^_msg "the session manager is closed")))
   manager)
 
 (fn safe_id? [id : Str]
@@ -56,7 +55,7 @@
   (require_open manager)
   (let record (manager/index .get; .get id))
   (if ($absent? record)
-    (fail (SessionError ^code "not_found" ^message $"session ${id} does not exist")))
+    (fail (SessionError ^code "not_found" ^_msg $"session ${id} does not exist")))
   record)
 
 (fn restore_round [manager : SessionManager, id : Str]
@@ -76,7 +75,7 @@
 (fn open_session_manager [runtime, events, state_root : Str,
                           ^idle_timeout_ms idle_timeout_ms : Int = 600000, ^recover recover : Bool = true] : SessionManager
   (if (< idle_timeout_ms 0)
-    (fail (SessionError ^code "invalid_request" ^message "idle timeout must be non-negative")))
+    (fail (SessionError ^code "invalid_request" ^_msg "idle timeout must be non-negative")))
   ($fs/make_dir $"${state_root}/sessions")
   (map_for [key intent] in (core_states events "workspace" "workspace")
     (if (&& ($str/starts_with? ($to_str key) "session_delete/") (!= intent/done true))
@@ -203,7 +202,7 @@
   (let record (copy_data (require_record manager id)))
   (map_for [key value] in changes
     (if (== key "id")
-      (fail (SessionError ^code "invalid_request" ^message "session identity cannot change")))
+      (fail (SessionError ^code "invalid_request" ^_msg "session identity cannot change")))
     (record .put key value))
   (if_yes (== record/kind "child")
     (let owner (require_record manager record/parent/session))
@@ -239,29 +238,29 @@
   (require_open manager)
   (let chosen (if (== id "") $"s-${($crypto/random_hex 12)}" id))
   (if_not (safe_id? chosen)
-    (fail (SessionError ^code "invalid_request" ^message "invalid session id")))
+    (fail (SessionError ^code "invalid_request" ^_msg "invalid session id")))
   (let previous (manager/index .get; .get chosen))
   (if_not ($absent? previous)
     (if (&& ($present? channel) (!= previous/channel channel))
-      (fail (SessionError ^code "conflict" ^message "Session has another channel origin.")))
+      (fail (SessionError ^code "conflict" ^_msg "Session has another channel origin.")))
     (if (&& (== previous/kind kind) (== previous/trigger trigger) (== previous/occurrence occurrence)
             (== (?? previous/origin nil) origin)
             (|| (!= kind "child")
                 (&& (== previous/parent/session parent/session) (== previous/parent/delegation parent/delegation))))
       (return (copy_data previous)))
-    (fail (SessionError ^code "conflict" ^message $"session ${chosen} already exists")))
+    (fail (SessionError ^code "conflict" ^_msg $"session ${chosen} already exists")))
   (if_not (["interactive" "heartbeat" "scheduled" "cron" "child" "automated"] .contains? kind)
-    (fail (SessionError ^code "invalid_request" ^message "invalid session kind")))
+    (fail (SessionError ^code "invalid_request" ^_msg "invalid session kind")))
   (if_yes (== kind "child")
     (if (|| (!= ($head parent) Map) (!= ($head parent/session) Str)
             (!= ($head parent/round) Str) (!= ($head parent/delegation) Str))
-      (fail (SessionError ^code "invalid_request" ^message "A child session requires its parent session, round and delegation.")))
+      (fail (SessionError ^code "invalid_request" ^_msg "A child session requires its parent session, round and delegation.")))
     (let owner (require_record manager parent/session))
     (if (== owner/kind "child")
-      (fail (SessionError ^code "depth_limit" ^message "Nested child sessions are not supported."))))
+      (fail (SessionError ^code "depth_limit" ^_msg "Nested child sessions are not supported."))))
   (let name ($str/trim title))
   (if (|| (== name "") (> ($str/byte_size name) 256))
-    (fail (SessionError ^code "invalid_request" ^message "session title must have 1–256 bytes")))
+    (fail (SessionError ^code "invalid_request" ^_msg "session title must have 1–256 bytes")))
   (let now ($to_str ($now)))
   (let record
     {
@@ -411,7 +410,7 @@
     (with_delete_gates manager ids 0 root (fn []
       (let remove (fn []
         (if (&& ($present? revision) (!= revision (?? (/revision (require_record manager id)) 0)))
-          (fail (SessionError ^code "revision_conflict" ^message "Conversation changed; refresh before deleting it.")))
+          (fail (SessionError ^code "revision_conflict" ^_msg "Conversation changed; refresh before deleting it.")))
         (delete_session_locked ^explicit explicit manager id ids)))
       (if ($absent? manager/runtime/services/values/commands) (remove) (manager/runtime/services/values/commands/gate remove)))))))
 
@@ -442,7 +441,7 @@
       (if (&& ($present? record/slack_share)
               (! (["delivered" "failed"] .contains? record/slack_share/status)))
         (if explicit
-          (fail (SessionError ^code "busy" ^message "Finish or resolve the Slack share before deleting this conversation."))
+          (fail (SessionError ^code "busy" ^_msg "Finish or resolve the Slack share before deleting this conversation."))
           (return false)))
       (if (|| (["running" "waiting"] .contains? record/status)
               (&& (! explicit) (|| record/pinned record/attention
@@ -475,7 +474,7 @@
   (if manager/closed/.get (return nil))
   (map_for [id state] in manager/loaded/.get
     (if (session_running? state)
-      (fail (SessionError ^code "busy" ^message $"session ${id} still has a round"))))
+      (fail (SessionError ^code "busy" ^_msg $"session ${id} still has a round"))))
   (flush_event_store manager/events)
   (let ids [])
   (map_for [id state] in manager/loaded/.get

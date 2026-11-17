@@ -122,7 +122,7 @@
         (control peer {^type "engine/ready" ^kind kind}))
     catch Error
       (if (&& (! job/cancelled) (owns_voice? hub peer))
-        (control peer {^type "engine/error" ^kind kind ^message ($to_str $err/.Error:message)}))
+        (control peer {^type "engine/error" ^kind kind ^message ($to_str $err/.message)}))
     ensure (peer/warming .delete kind))))
   nil)
 
@@ -190,7 +190,7 @@
   catch Error
     (set outcome "failed")
     (if (&& (! capture/cancelled) (! peer/closed))
-      (control peer {^type "capture/error" ^id capture/id ^text capture/text ^message ($to_str $err/.Error:message)}))
+      (control peer {^type "capture/error" ^id capture/id ^text capture/text ^message ($to_str $err/.message)}))
   ensure
     (latency_trace hub peer "capture" capture/id
       {^outcome outcome ^recognizer (?? capture/recognizer "") ^frames capture/next ^audio_bytes capture/bytes
@@ -293,7 +293,7 @@
   catch Error
     (set outcome "failed")
     (if (&& (! speak/cancelled) (! peer/closed))
-      (control peer {^type "speak/error" ^id speak/id ^message ($to_str $err/.Error:message)}))
+      (control peer {^type "speak/error" ^id speak/id ^message ($to_str $err/.message)}))
   ensure
     (latency_trace hub peer "speak" speak/id
       {^clock "host-monotonic" ^outcome outcome ^reply (?? speak/reply "")
@@ -419,9 +419,9 @@
           (peer/used .put ($to_str request/stream) true)
           (peer/discarded .put ($to_str request/stream) true))
         (control peer {^type (if (== request/type "speak") "speak/error" "capture/error")
-          ^id request/id ^code code ^message ($to_str $err/.Error:message)}))
+          ^id request/id ^code code ^message ($to_str $err/.message)}))
       (else
-        (control peer {^type "error" ^code code ^message ($to_str $err/.Error:message)})
+        (control peer {^type "error" ^code code ^message ($to_str $err/.message)})
         (cancel_peer_streams hub peer)
         (peer .put "closed" true) (ws_close connection))))
   nil)

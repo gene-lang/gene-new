@@ -74,9 +74,9 @@
 (fn discover [h : Harness, query : Str = "", ^kind kind : Str = "", ^owner owner : Str = "", ^limit limit : Int = 12, ^offset offset : Int = 0, ^snapshot snapshot = nil]
   (let kinds (searchable_registries))
   (if (&& (!= kind "") (! (kinds .contains? kind)))
-    (fail (HarnessError ^message $"unknown discovery kind ${kind}; use ${kinds}")))
+    (fail (HarnessError ^_msg $"unknown discovery kind ${kind}; use ${kinds}")))
   (if (|| (< limit 1) (> limit 100) (< offset 0))
-    (fail (HarnessError ^message "discover requires limit 1–100 and offset >= 0")))
+    (fail (HarnessError ^_msg "discover requires limit 1–100 and offset >= 0")))
   (let matches [])
   (var total 0)
   (for registry in kinds

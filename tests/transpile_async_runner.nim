@@ -54,9 +54,7 @@ writeFile(consumerPath, """
 let collisionPath = workDir / "cancel_collision.gene"
 writeFile(collisionPath, """
 (mod cancel_collision ^profile web)
-(type AppError ^props {^kind Str})
-(impl Error for AppError
-  (message message [] : Str ^errors [] self/kind))
+(type AppError : Error ^props {^kind Str} (message message [] : Str ^errors [] ^^override self/kind))
 (fn boom [] : Never
   (fail (AppError ^kind "gene_cancellation")))
 (fn caught [] : Str

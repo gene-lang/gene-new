@@ -15,7 +15,7 @@
       (match task/.join
         (when (TaskOutcome/ok value) value)
         (when (TaskOutcome/error error) (fail error))
-        (else (fail (ProviderError ^message "Provider probe exceeded its limit"))))
+        (else (fail (ProviderError ^_msg "Provider probe exceeded its limit"))))
     ensure timer/.cancel timer/.join)))
 
 (fn cli_probe [command : Str, args, ^timeout_ms timeout_ms : Int = 5000]
@@ -23,15 +23,15 @@
     (let task ($os/exec_async command args... ^timeout_ms timeout_ms ^max_bytes 4194304))
     (let result (try (await task) ensure task/.cancel))
     (if (|| result/timed_out result/stdout_truncated result/stderr_truncated)
-      (fail (ProviderError ^message "Provider CLI probe exceeded its limit")))
+      (fail (ProviderError ^_msg "Provider CLI probe exceeded its limit")))
     result
-  catch Error (fail (ProviderError ^message "Provider CLI probe could not complete"))))
+  catch Error (fail (ProviderError ^_msg "Provider CLI probe could not complete"))))
 
 (fn cli_probe_json [command : Str, args, ^allow_failure allow_failure : Bool = false]
   (let result (cli_probe command args))
-  (if (&& (! allow_failure) (!= result/status 0)) (fail (ProviderError ^message "Provider CLI probe failed")))
+  (if (&& (! allow_failure) (!= result/status 0)) (fail (ProviderError ^_msg "Provider CLI probe failed")))
   (try ($json/parse result/stdout)
-    catch Error (fail (ProviderError ^message "Provider CLI returned invalid metadata"))))
+    catch Error (fail (ProviderError ^_msg "Provider CLI returned invalid metadata"))))
 
 (fn claude_connection [command : Str]
   (let data (try (cli_probe_json ^allow_failure true command ["auth" "status"])
@@ -82,7 +82,7 @@
 
 (fn require_probe_data [result]
   (if (|| (!= result/status 200) ($present? result/error))
-    (fail (ProviderError ^status result/status ^message "Provider model-list probe failed")))
+    (fail (ProviderError ^status result/status ^_msg "Provider model-list probe failed")))
   result/data)
 
 (fn openrouter_model_list [credential = nil, ^headers headers = {}]
@@ -96,7 +96,7 @@
   (var cursor nil)
   (loop
     (let remaining (- deadline ($os/monotonic_ms)))
-    (if (<= remaining 0) (fail (ProviderError ^status 0 ^message "Model-list probe timed out")))
+    (if (<= remaining 0) (fail (ProviderError ^status 0 ^_msg "Model-list probe timed out")))
     (let url ($to_str "https://api.anthropic.com/v1/models?limit=1000"
       (if ($present? cursor) (then $"&after_id=${($url/encode_component cursor)}") (else ""))))
     (let data (require_probe_data (probe_json ^credential credential
@@ -105,6 +105,6 @@
     (for model in (normalize_anthropic_models data) (result .push model))
     (if (!= data/has_more true) (break))
     (if (|| ($absent? data/last_id) (== data/last_id cursor))
-      (fail (ProviderError ^message "Provider returned an invalid model-list cursor")))
+      (fail (ProviderError ^_msg "Provider returned an invalid model-list cursor")))
     (set cursor data/last_id))
   result)

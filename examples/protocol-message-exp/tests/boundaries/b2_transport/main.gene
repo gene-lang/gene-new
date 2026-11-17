@@ -8,7 +8,7 @@
 (let article (Article ^title "A"))
 (fn attempt [thunk] (try (thunk) catch Error "ERR"))
 (fn first_line [text] ((text .split "; ") .get 0))
-(fn attempt_msg [thunk] (try (thunk) catch Error (first_line $err/message)))
+(fn attempt_msg [thunk] (try (thunk) catch Error (first_line $err/.message)))
 
 (let raw (raw_message))
 (let checked (view))

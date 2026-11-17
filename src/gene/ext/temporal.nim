@@ -70,10 +70,10 @@ proc temporalDateTimeFromInstant(instant: int64, offsetMinutes: int,
 
 proc temporalDigits(text: string, start, count: int): int =
   if start < 0 or count < 1 or start + count > text.len:
-    raise newException(GeneError, "invalid RFC3339 timestamp")
+    raiseBuiltinError("TimeError", "invalid RFC3339 timestamp")
   for index in start ..< start + count:
     if text[index] notin {'0'..'9'}:
-      raise newException(GeneError, "invalid RFC3339 timestamp")
+      raiseBuiltinError("TimeError", "invalid RFC3339 timestamp")
     result = result * 10 + ord(text[index]) - ord('0')
 
 proc temporalPad(value, width: int): string =
@@ -124,7 +124,7 @@ proc biTemporalParseRfc3339(args: openArray[Value]): Value {.nimcall.} =
   let source = args[0].strVal
   if source.len < 20 or source[4] != '-' or source[7] != '-' or
       source[10] notin {'T', 't'} or source[13] != ':' or source[16] != ':':
-    raise newException(GeneError, "invalid RFC3339 timestamp")
+    raiseBuiltinError("TimeError", "invalid RFC3339 timestamp")
   let year = temporalDigits(source, 0, 4)
   let month = temporalDigits(source, 5, 2)
   let day = temporalDigits(source, 8, 2)
@@ -132,7 +132,7 @@ proc biTemporalParseRfc3339(args: openArray[Value]): Value {.nimcall.} =
   let minute = temporalDigits(source, 14, 2)
   let second = temporalDigits(source, 17, 2)
   if second == 60:
-    raise newException(GeneError, "RFC3339 leap seconds are unsupported")
+    raiseBuiltinError("TimeError", "RFC3339 leap seconds are unsupported")
   var pos = 19
   var microsecond = 0
   if pos < source.len and source[pos] == '.':
@@ -141,7 +141,7 @@ proc biTemporalParseRfc3339(args: openArray[Value]): Value {.nimcall.} =
     while pos < source.len and source[pos] in {'0'..'9'}: inc pos
     let digits = pos - start
     if digits < 1 or digits > 6:
-      raise newException(GeneError,
+      raiseBuiltinError("TimeError",
         "RFC3339 fractional seconds require 1..6 digits")
     microsecond = temporalDigits(source, start, digits)
     for _ in digits ..< 6: microsecond *= 10
@@ -154,10 +154,10 @@ proc biTemporalParseRfc3339(args: openArray[Value]): Value {.nimcall.} =
     let minutes = temporalDigits(source, pos + 4, 2)
     if hours > 23 or minutes > 59 or
         (source[pos] == '-' and hours == 0 and minutes == 0):
-      raise newException(GeneError, "invalid RFC3339 UTC offset")
+      raiseBuiltinError("TimeError", "invalid RFC3339 UTC offset")
     offset = (hours * 60 + minutes) * (if source[pos] == '-': -1 else: 1)
   else:
-    raise newException(GeneError, "RFC3339 timestamp requires UTC offset")
+    raiseBuiltinError("TimeError", "RFC3339 timestamp requires UTC offset")
   newDateTime(year, month, day, hour, minute, second, microsecond,
     true, offset, if offset == 0 and source[pos] in {'Z', 'z'}: "UTC" else: "")
 

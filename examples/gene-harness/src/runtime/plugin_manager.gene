@@ -98,7 +98,7 @@
         (saved_state_writers $"${runtime/state_root}/events")
         (manifest_state_writers runtime/events/last_manifest/.get)))
   catch Error
-    (diagnostics .push {^kind "state_provenance" ^message $err/message}))
+    (diagnostics .push {^kind "state_provenance" ^message $err/.message}))
   (for id in ids
     (let entry (stored .get id))
     (let budgets (execution .get id))
@@ -112,7 +112,7 @@
     (try
       (set metadata (saved_metadata workspace/store id digest build))
     catch Error
-      (diagnostics .push {^id id ^message $err/message}))
+      (diagnostics .push {^id id ^message $err/.message}))
     (let provides (?? metadata/declared/provides []))
     (let requirements [])
     (for pair in (?? metadata/declared/requires [])
@@ -306,7 +306,7 @@
               ^mode "restricted"
               ^activation "unverified"}
           catch Error
-            (let message $err/message)
+            (let message $err/.message)
             (var metadata_error nil)
             (try
               (remember_failure ^mode "restricted"
@@ -316,7 +316,7 @@
                 id
                 message)
             catch Error
-              (set metadata_error $err/message))
+              (set metadata_error $err/.message))
             {
               ^id id
               ^!ok

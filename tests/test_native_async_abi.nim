@@ -90,14 +90,13 @@ proc fn[T](handle: LibHandle, name: string): T =
   cast[T](address)
 
 const prelude = """
-(type GpuError ^props {^message Str ^detail Any})
-(impl Error for GpuError)
+(type GpuError : Error ^props {^detail Any})
 (var factory_calls 0)
 (fn gpu_error [message detail]
   (set factory_calls (+ factory_calls 1))
-  (GpuError ^message message ^detail detail))
+  (GpuError ^_msg message ^detail detail))
 (fn raising_factory [message detail]
-  (fail (GpuError ^message "nested" ^detail nil)))
+  (fail (GpuError ^_msg "nested" ^detail nil)))
 (fn wrong_factory [message detail] 42)
 (fn spinning_factory [message detail]
   (var spins 0)
@@ -105,10 +104,10 @@ const prelude = """
 (fn checked [t] : (Task Any GpuError) t)
 (fn outcome [t]
   (try ["ok" (await t)]
-    catch GpuError ["gpu" $err/message $err/detail]
-    catch TypeError ["type" $err/message]
+    catch GpuError ["gpu" $err/.message $err/detail]
+    catch TypeError ["type" $err/.message]
     catch ErrorContractViolation ["violation"]
-    catch RuntimeError ["runtime" $err/message]))
+    catch RuntimeError ["runtime" $err/.message]))
 """
 
 type Harness = object
@@ -205,7 +204,7 @@ proc checkFactoryScheduling() =
     scope.assign("dependency", dependency)
     discard run(compileSource(
       "(native/register_factory (fn [message detail] " & operation &
-      " (GpuError ^message message ^detail detail)))"), scope)
+      " (GpuError ^_msg message ^detail detail)))"), scope)
     let failed = run(compileSource(
       "(native/start " & $failureIndex & ")"), scope)
     doAssert fail(failureIndex, 1, nil, 0, NoDetail, 0, nil, 0, Inline) == 0
@@ -222,7 +221,7 @@ proc checkFactoryScheduling() =
   discard run(compileSource("""
     (native/register_factory (fn [message detail]
       (await dependency)
-      (GpuError ^message message ^detail detail)))
+      (GpuError ^_msg message ^detail detail)))
   """), scope)
   let ready = run(compileSource("(native/start 100)"), scope)
   doAssert fail(100, 1, nil, 0, NoDetail, 0, nil, 0, Inline) == 0
@@ -829,10 +828,10 @@ const patternSource = """
   (try
     (if (== kind 1)
       (native/settle_err index
-        (GpuError ^message "device" ^detail (native/record_value bytes)))
+        (GpuError ^_msg "device" ^detail (native/record_value bytes)))
       (native/settle_ok index (native/record_value bytes)))
     catch Error
-      (native/settle_err index (RuntimeError ^message "malformed record"))))
+      (native/settle_err index (RuntimeError ^_msg "malformed record"))))
 (fn open_subscription []
   ($native/ingress/open pattern_library ingress_handler
     ^register "gene_pattern_register" ^unregister "gene_pattern_unregister"

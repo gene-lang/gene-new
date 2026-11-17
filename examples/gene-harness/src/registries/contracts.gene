@@ -4,113 +4,113 @@
 
 (fn validate_seam_row [candidate]
   (if (|| ($absent? candidate/name) ($absent? candidate/value))
-    (fail (HarnessError ^message "a seam row requires ^name and ^value"))
+    (fail (HarnessError ^_msg "a seam row requires ^name and ^value"))
     candidate))
 
 (fn validate_command_row [candidate]
   (if (|| ($absent? candidate/name) ($absent? candidate/doc) ($absent? candidate/run))
-    (fail (HarnessError ^message "a command row requires name doc run"))
+    (fail (HarnessError ^_msg "a command row requires name doc run"))
     candidate))
 
 (fn validate_function_row [candidate]
   (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/fn)))
-    (fail (HarnessError ^message "a function row requires name, doc and a callable fn")))
+    (fail (HarnessError ^_msg "a function row requires name, doc and a callable fn")))
   candidate)
 
 (fn validate_keyboard_action_row [candidate]
   (for field in ["id" "label" "doc" "context"]
     (let value (candidate .get field))
     (if (|| (!= ($head value) Str) (== value ""))
-      (fail (HarnessError ^message $"a keyboard action needs a non-empty ${field}"))))
+      (fail (HarnessError ^_msg $"a keyboard action needs a non-empty ${field}"))))
   (if (!= ($head candidate/default) Str)
-    (fail (HarnessError ^message "a keyboard action's default is a chord or an empty string")))
+    (fail (HarnessError ^_msg "a keyboard action's default is a chord or an empty string")))
   candidate)
 
 (fn validate_setting_row [candidate]
   (for field in ["key" "label" "group" "doc" "type" "applies"]
     (let value (candidate .get field))
     (if (|| (!= ($head value) Str) (== value ""))
-      (fail (HarnessError ^message $"a setting needs a non-empty ${field}"))))
+      (fail (HarnessError ^_msg $"a setting needs a non-empty ${field}"))))
   (if_not (["int" "str" "bool" "map" "any"] .contains? candidate/type)
-    (fail (HarnessError ^message "a setting type must be int, str, bool, map or any")))
+    (fail (HarnessError ^_msg "a setting type must be int, str, bool, map or any")))
   (if_not (["immediate" "next_round" "restart"] .contains? candidate/applies)
-    (fail (HarnessError ^message "a setting applies immediate, from next_round or after restart")))
+    (fail (HarnessError ^_msg "a setting applies immediate, from next_round or after restart")))
   (if (&& ($present? candidate/choices) (|| (!= ($head candidate/choices) Str) (== candidate/choices "")))
-    (fail (HarnessError ^message "a setting's choices names a setting_choices source")))
+    (fail (HarnessError ^_msg "a setting's choices names a setting_choices source")))
   (if ($present? candidate/scopes)
     (then
       (if (|| (!= ($head candidate/scopes) List) candidate/scopes/.empty?)
-        (fail (HarnessError ^message "a setting's scopes is a nonempty list")))
+        (fail (HarnessError ^_msg "a setting's scopes is a nonempty list")))
       (for scope in candidate/scopes
         (if_not (["workspace" "shared"] .contains? scope)
-          (fail (HarnessError ^message "a setting scope is workspace or shared"))))
+          (fail (HarnessError ^_msg "a setting scope is workspace or shared"))))
       (if_not (candidate/scopes .contains? "workspace")
-        (fail (HarnessError ^message "every setting has a workspace scope")))))
+        (fail (HarnessError ^_msg "every setting has a workspace scope")))))
   candidate)
 
 # A Settings sidebar destination. Settings name their group; a row adds a label,
 # order, doc or a custom section, and can create a destination with no settings.
 (fn validate_settings_group_row [candidate]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name ""))
-    (fail (HarnessError ^message "a settings group needs a non-empty name")))
+    (fail (HarnessError ^_msg "a settings group needs a non-empty name")))
   (for field in ["label" "doc" "section"]
     (let value (candidate .get field))
     (if (&& ($present? value) (|| (!= ($head value) Str) (== value "")))
-      (fail (HarnessError ^message $"a settings group ${field} is a non-empty string"))))
+      (fail (HarnessError ^_msg $"a settings group ${field} is a non-empty string"))))
   (if (&& ($present? candidate/order) (!= ($head candidate/order) Int))
-    (fail (HarnessError ^message "a settings group order is an integer")))
+    (fail (HarnessError ^_msg "a settings group order is an integer")))
   candidate)
 
 # Options for settings that name this source. closed means a value outside the
 # options is invalid; otherwise the options are suggestions.
 (fn validate_setting_choices_row [candidate]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name ""))
-    (fail (HarnessError ^message "a setting choices source needs a non-empty name")))
+    (fail (HarnessError ^_msg "a setting choices source needs a non-empty name")))
   (if_not ($runtime/callable? candidate/choices)
-    (fail (HarnessError ^message "a setting choices source needs a callable choices")))
+    (fail (HarnessError ^_msg "a setting choices source needs a callable choices")))
   (if (&& ($present? candidate/closed) (!= ($head candidate/closed) Bool))
-    (fail (HarnessError ^message "a setting choices closed flag is Bool")))
+    (fail (HarnessError ^_msg "a setting choices closed flag is Bool")))
   candidate)
 
 (fn validate_input_mode_row [candidate]
   (for field in ["name" "label" "hint" "submit_label" "prompt"]
     (let value (candidate .get field))
     (if (|| (!= ($head value) Str) (== value ""))
-      (fail (HarnessError ^message $"an input mode needs a non-empty ${field}"))))
+      (fail (HarnessError ^_msg $"an input mode needs a non-empty ${field}"))))
   (for field in ["classify" "run" "close"]
     (if_not ($runtime/callable? (candidate .get field))
-      (fail (HarnessError ^message $"an input mode needs a callable ${field}"))))
+      (fail (HarnessError ^_msg $"an input mode needs a callable ${field}"))))
   (if (&& ($present? candidate/reset_on_interrupt) (!= ($head candidate/reset_on_interrupt) Bool))
-    (fail (HarnessError ^message "input mode reset_on_interrupt must be Bool")))
+    (fail (HarnessError ^_msg "input mode reset_on_interrupt must be Bool")))
   candidate)
 
 (fn validate_provider_row [candidate, ^image image : Bool = false]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/configure)) (! ($runtime/callable? candidate/prepare)) (! ($runtime/callable? candidate/send)) (&& ($present? candidate/auto) (!= ($head candidate/auto) Int)))
-    (fail (HarnessError ^message "a provider row needs name, doc, configure, prepare and send")))
+    (fail (HarnessError ^_msg "a provider row needs name, doc, configure, prepare and send")))
   (if (&& (! image) ($present? candidate/available))
-    (fail (HarnessError ^message "Provider available was replaced by connection; connection probes are cached outside turns.")))
+    (fail (HarnessError ^_msg "Provider available was replaced by connection; connection probes are cached outside turns.")))
   (if (&& ($present? candidate/capabilities) (! ($runtime/callable? candidate/capabilities)))
-    (fail (HarnessError ^message "provider capabilities must be callable")))
+    (fail (HarnessError ^_msg "provider capabilities must be callable")))
   (for field in ["connection" "models"]
     (if (&& ($present? (candidate .get field)) (! ($runtime/callable? (candidate .get field))))
-      (fail (HarnessError ^message $"provider ${field} must be callable"))))
+      (fail (HarnessError ^_msg $"provider ${field} must be callable"))))
   (if (&& ($present? candidate/media_recording)
           (! (["inventory" "omit"] .contains? candidate/media_recording)))
-    (fail (HarnessError ^message "provider media_recording must be inventory or omit")))
+    (fail (HarnessError ^_msg "provider media_recording must be inventory or omit")))
   candidate)
 
 (fn validate_speech_row [candidate, kind : Str]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
           (&& ($present? candidate/auto) (!= ($head candidate/auto) Int)))
-    (fail (HarnessError ^message "A speech engine needs a name and optional integer auto rank.")))
+    (fail (HarnessError ^_msg "A speech engine needs a name and optional integer auto rank.")))
   (for field in ["available" "open" "close"
     (if (== kind "recognizer") (if (== candidate/mode "stream") "stream" "transcribe") "synthesize")]
     (if_not ($runtime/callable? (candidate .get field))
-      (fail (HarnessError ^message $"A speech ${kind} needs callable ${field}."))))
+      (fail (HarnessError ^_msg $"A speech ${kind} needs callable ${field}."))))
   (if (&& (== kind "recognizer") (! (["segments" "stream"] .contains? candidate/mode)))
-    (fail (HarnessError ^message "Recognizers declare mode segments or stream.")))
+    (fail (HarnessError ^_msg "Recognizers declare mode segments or stream.")))
   (if (&& (== kind "synthesizer") (!= ($head candidate/streaming) Bool))
-    (fail (HarnessError ^message "Synthesizers declare streaming Bool.")))
+    (fail (HarnessError ^_msg "Synthesizers declare streaming Bool.")))
   candidate)
 
 # A quick-decision engine (docs/decisions.md). available, open, decide and
@@ -120,29 +120,29 @@
   (if (|| (!= ($head candidate/name) Str) ($absent? (#"^[a-z][a-z0-9_]{0,39}$" .match candidate/name))
           (!= ($head candidate/doc) Str) (== ($str/trim candidate/doc) "")
           (&& ($present? candidate/auto) (!= ($head candidate/auto) Int)))
-    (fail (HarnessError ^message "A decision engine needs a lowercase name, a doc and an optional integer auto rank.")))
+    (fail (HarnessError ^_msg "A decision engine needs a lowercase name, a doc and an optional integer auto rank.")))
   (for field in ["available" "open" "close" "decide" "limits"]
     (if_not ($runtime/callable? (candidate .get field))
-      (fail (HarnessError ^message $"A decision engine needs callable ${field}."))))
+      (fail (HarnessError ^_msg $"A decision engine needs callable ${field}."))))
   candidate)
 
 (fn validate_image_generator_row [candidate]
   (validate_provider_row ^image true candidate)
   (for field in ["available" "capabilities"]
     (if_not ($runtime/callable? (candidate .get field))
-      (fail (HarnessError ^message $"an image generator needs callable ${field}"))))
+      (fail (HarnessError ^_msg $"an image generator needs callable ${field}"))))
   candidate)
 
 (fn validate_hook_row [candidate]
   (if (|| ($absent? candidate/name) (== candidate/name "")
           (!= ($head candidate/point) Str) (== candidate/point "") (! ($runtime/callable? candidate/run)))
-    (fail (HarnessError ^message "a hook row needs point, name and a callable run")))
+    (fail (HarnessError ^_msg "a hook row needs point, name and a callable run")))
   candidate)
 
 (fn validate_hook_point_row [candidate]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
           (! (["collect" "coordinator"] .contains? (?? candidate/dispatch "collect"))))
-    (fail (HarnessError ^message "a hook point needs a name and collect or coordinator dispatch")))
+    (fail (HarnessError ^_msg "a hook point needs a name and collect or coordinator dispatch")))
   candidate)
 
 # A feature slot names a single-producer feature independently of the plugin
@@ -151,12 +151,12 @@
 (fn validate_feature_slot_row [candidate]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
           (> ($str/byte_size candidate/name) 128))
-    (fail (HarnessError ^message "a feature slot row requires a nonempty name of at most 128 bytes")))
+    (fail (HarnessError ^_msg "a feature slot row requires a nonempty name of at most 128 bytes")))
   (if (&& ($present? candidate/takeover) (!= ($head candidate/takeover) Bool))
-    (fail (HarnessError ^message "a feature slot takeover flag must be a boolean")))
+    (fail (HarnessError ^_msg "a feature slot takeover flag must be a boolean")))
   (map_for [key value] in candidate
     (if_not (["name" "takeover" "summary" "tags" "docs"] .contains? ($to_str key))
-      (fail (HarnessError ^message $"Unknown feature slot field ${key}"))))
+      (fail (HarnessError ^_msg $"Unknown feature slot field ${key}"))))
   candidate)
 
 # Activation services are published as rows so their liveness follows the
@@ -166,7 +166,7 @@
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
           (!= ($head candidate/token) Str) (== candidate/token "")
           (&& ($present? candidate/slot) (|| (!= ($head candidate/slot) Str) (== candidate/slot ""))))
-    (fail (HarnessError ^message "a service row requires name, token and an optional nonempty slot")))
+    (fail (HarnessError ^_msg "a service row requires name, token and an optional nonempty slot")))
   candidate)
 
 # Plugin HTTP routes. `owner` routes run after browser admission (Origin,
@@ -183,12 +183,12 @@
 (fn validate_channel_transport_row [candidate]
   (if (|| (!= ($head candidate/name) Str) (== candidate/name "")
           (! ($runtime/callable? candidate/state)))
-    (fail (HarnessError ^message "a channel transport requires a name and a callable state")))
+    (fail (HarnessError ^_msg "a channel transport requires a name and a callable state")))
   (for field in ["render" "send" "remove" "reconcile" "lookup" "verify_account" "verify_route" "settings"]
     (if (&& ($present? (candidate .get field)) (! ($runtime/callable? (candidate .get field))))
-      (fail (HarnessError ^message $"channel transport ${field} must be callable"))))
+      (fail (HarnessError ^_msg $"channel transport ${field} must be callable"))))
   (if (&& ($present? candidate/pace_ms) (|| (!= ($head candidate/pace_ms) Int) (< candidate/pace_ms 0)))
-    (fail (HarnessError ^message "channel transport pace_ms must be a non-negative Int")))
+    (fail (HarnessError ^_msg "channel transport pace_ms must be a non-negative Int")))
   candidate)
 
 (fn validate_http_route_row [candidate]
@@ -197,65 +197,65 @@
           (!= ($head candidate/path) Str)
           (&& (!= candidate/path "") (! ($str/starts_with? candidate/path "/")))
           (! ($runtime/callable? candidate/handle)))
-    (fail (HarnessError ^message "an http route requires name, kind owner|callback, a path starting with / (or empty) and a callable handle")))
+    (fail (HarnessError ^_msg "an http route requires name, kind owner|callback, a path starting with / (or empty) and a callable handle")))
   (if (|| (!= ($head candidate/methods) List) candidate/methods/.empty?)
-    (fail (HarnessError ^message "an http route requires a nonempty methods list")))
+    (fail (HarnessError ^_msg "an http route requires a nonempty methods list")))
   (for method in candidate/methods
     (if_not (["GET" "POST" "PUT" "PATCH" "DELETE"] .contains? method)
-      (fail (HarnessError ^message $"Unsupported http route method ${method}"))))
+      (fail (HarnessError ^_msg $"Unsupported http route method ${method}"))))
   candidate)
 
 (fn validate_interaction_row [candidate]
   (if (|| ($absent? candidate/name) (! ($runtime/callable? candidate/validate_request)) (! ($runtime/callable? candidate/validate_reply)))
-    (fail (HarnessError ^message "an interaction needs a name and request/reply validators")))
+    (fail (HarnessError ^_msg "an interaction needs a name and request/reply validators")))
   # An optional render draws the kind's question view (docs/cards.md).
   (if (&& ($present? candidate/render) (! ($runtime/callable? candidate/render)))
-    (fail (HarnessError ^message "an interaction render must be callable")))
+    (fail (HarnessError ^_msg "an interaction render must be callable")))
   candidate)
 
 (fn validate_prompt_row [candidate]
   (if (|| ($absent? candidate/name) (== ($absent? candidate/text) ($absent? candidate/render)) (&& ($present? candidate/render) (! ($runtime/callable? candidate/render))))
     (fail
-      (HarnessError ^message "a prompt row requires name and exactly one of text or callable render")))
+      (HarnessError ^_msg "a prompt row requires name and exactly one of text or callable render")))
   candidate)
 
 (fn validate_discovery_metadata [candidate]
   (if (&& ($present? candidate/summary) (!= ($head candidate/summary) Str))
-    (fail (HarnessError ^message "a discovery summary must be a string")))
+    (fail (HarnessError ^_msg "a discovery summary must be a string")))
   (for field in ["tags" "docs"]
     (let values (candidate .get field))
     (if_not ($absent? values)
       (if (!= ($head values) List)
-        (fail (HarnessError ^message $"discovery ${field} must be a list of strings")))
+        (fail (HarnessError ^_msg $"discovery ${field} must be a list of strings")))
       (for value in values
         (if (|| (!= ($head value) Str) (== ($str/trim value) ""))
-          (fail (HarnessError ^message $"discovery ${field} must contain nonempty strings"))))))
+          (fail (HarnessError ^_msg $"discovery ${field} must contain nonempty strings"))))))
   candidate)
 
 (fn validate_docs_row [candidate]
   (if (|| ($absent? candidate/name) (== ($absent? candidate/text) ($absent? candidate/path)) (&& ($present? candidate/text) (!= ($head candidate/text) Str)) (&& ($present? candidate/path) (!= ($head candidate/path) Str)))
-    (fail (HarnessError ^message "a docs row requires name and exactly one of text or path")))
+    (fail (HarnessError ^_msg "a docs row requires name and exactly one of text or path")))
   candidate)
 
 (fn validate_event_type_row [candidate]
   (if (|| ($absent? candidate/name) ($absent? candidate/version) ($absent? candidate/ignorable))
-    (fail (HarnessError ^message "an event type row requires name version ignorable")))
+    (fail (HarnessError ^_msg "an event type row requires name version ignorable")))
   (if_yes (&& ($present? candidate/schema) (! ($runtime/callable? candidate/schema)))
-    (fail (HarnessError ^message "event type schema must be callable")))
+    (fail (HarnessError ^_msg "event type schema must be callable")))
   candidate)
 
 (fn validate_event_type_owner [owner : Str, candidate]
   (if (== owner "core")
     (then
       (if_not (&& (== candidate/origin "core") (== candidate/owner "core"))
-        (fail (HarnessError ^message "core event rows must be stamped core/core"))))
+        (fail (HarnessError ^_msg "core event rows must be stamped core/core"))))
     (else
       (if_not (== candidate/origin "plugin")
-        (fail (HarnessError ^message "plugins cannot declare core event origin")))
+        (fail (HarnessError ^_msg "plugins cannot declare core event origin")))
       (var declared_owner ($to_str candidate/owner))
       (if_not (|| (== declared_owner owner) (== owner $"descriptor:${declared_owner}"))
         (fail
-          (HarnessError ^message $"event owner ${declared_owner} does not match contributor ${owner}")))))
+          (HarnessError ^_msg $"event owner ${declared_owner} does not match contributor ${owner}")))))
   candidate)
 
 (fn cancel_subscription_row [context, candidate]

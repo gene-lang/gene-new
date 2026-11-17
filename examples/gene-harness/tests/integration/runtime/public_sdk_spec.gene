@@ -66,7 +66,7 @@
               (import [nothing] ^from %path)
               (fn init [descriptor] (Plugin ^id "invalid" ^activate (fn [host] nil)))))
             ($assert (try (register_plugin first/workspace first/h "invalid" invalid) false
-              catch Error ($str/contains? $err/message "outside its dependency closure"))))
+              catch Error ($str/contains? $err/.message "outside its dependency closure"))))
         ensure (close_runtime first))
         (let restarted (open_runtime root "default" profile))
         (try (check_sdk restarted) ensure (close_runtime restarted))))))

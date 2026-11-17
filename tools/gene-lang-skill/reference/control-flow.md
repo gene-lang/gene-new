@@ -130,7 +130,7 @@ deep nesting.
 (try
   (checked_value (load))
 catch ExampleError
-  $"error: ${$err_msg}"
+  $"error: ${$err/.message}"
 catch Error
   "unknown error"
 ensure
@@ -138,9 +138,10 @@ ensure
 ```
 
 What follows `catch` is a type. The catch body reads the whole error through
-`$err`; `$err_msg` calls its retained `Error:message` implementation. Use
-`catch Error` for any ordinary error; `catch Any` is a compile error. `fail` raises a recoverable value that
-implements Error; `panic` does not. Clause heads align
+`$err`; `$err/.message` reads its message; `unwind` runs cleanup only when the
+try is left by a failure. Use
+`catch Error` for any ordinary error; `catch Any` is a compile error. `fail` raises a value of an Error type;
+`panic` does not. Clause heads align
 under `try` and their bodies indent once. See `reference/declarations.md` for
 declaring an error type and a function's `^errors` row.
 

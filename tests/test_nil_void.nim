@@ -110,7 +110,7 @@ suite "nil — stored versus missing":
     check nilEval("""
       (type P ^props {^name Str ^age Int?})
       (let p (P ^name "A" ^age 3))
-      [(p .delete "age") p/age (try (p .delete "name") catch Error $err/message)]
+      [(p .delete "age") p/age (try (p .delete "name") catch Error $err/.message)]
     """) == "[3 nil \"cannot remove required field 'name' from P\"]"
 
 suite "nil — statement returns":

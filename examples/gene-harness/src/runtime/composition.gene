@@ -3,8 +3,7 @@
 (type CompositionSnapshot ^props {^id Int ^registries Any ^instances Any ^plugins Any? ^registry_owners Any?})
 (type SnapshotLease ^props {^snapshot CompositionSnapshot ^counter Any ^closed Any ^label Str?})
 (type CompositionState ^props {^current Any ^next_id Any ^snapshots Any ^counts Any ^pending Any ^retiring Any ^retire Any ^closed Any ^closing Any ^publishing Any ^mutating Any ^publications Any ^publication_gate Any ^leases Any ^publication_diagnostics Any})
-(type CompositionClosed ^props {^message Str} ^impl [Error])
-(impl Error for CompositionClosed)
+(type CompositionClosed : Error)
 
 # Collection data is copied and frozen; callables and resource handles retain
 # their identity. A plugin's mutable state is independent of registry visibility.
@@ -24,7 +23,7 @@
   value)
 
 (fn require_open [state : CompositionState]
-  (if state/closed/.get (fail (CompositionClosed ^message "workspace composition is closed")))
+  (if state/closed/.get (fail (CompositionClosed ^_msg "workspace composition is closed")))
   state)
 
 (fn new_composition_state [registries, instances, retire] : CompositionState
@@ -81,7 +80,7 @@
 
 (fn acquire_snapshot [state : CompositionState, ^label label : Str = "unlabelled"] : SnapshotLease
   (require_open state)
-  (if state/closing/.get (fail (CompositionClosed ^message "workspace composition is closing")))
+  (if state/closing/.get (fail (CompositionClosed ^_msg "workspace composition is closing")))
   (while true
     (let snapshot state/current/.get)
     (let counter (state/counts/.get .get ($to_str snapshot/id)))
@@ -109,10 +108,10 @@
 # withdrawn resource. Call before publication's retirement drain.
 (fn retain_snapshot [state : CompositionState, snapshot] : SnapshotLease
   (require_open state)
-  (if state/closing/.get (fail (CompositionClosed ^message "workspace composition is closing")))
+  (if state/closing/.get (fail (CompositionClosed ^_msg "workspace composition is closing")))
   (let counter (state/counts/.get .get ($to_str snapshot/id)))
   (if ($absent? counter)
-    (fail (CompositionClosed ^message "snapshot has already retired")))
+    (fail (CompositionClosed ^_msg "snapshot has already retired")))
   (adjust_count counter 1)
   (let lease (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false) ^label "publication observer"))
   (state/leases/.get .push lease)
@@ -217,7 +216,7 @@
     (try (listener/callback previous snapshot)
       catch Error
         (record_publication_diagnostic state id
-          {^kind "observer" ^message $err/message})))
+          {^kind "observer" ^message $err/.message})))
   (drain_retirements state)
   snapshot)
 
@@ -251,7 +250,7 @@
 (fn ^^private leaf_messages [error] : Any
   (let causes (error_causes error))
   (if ($absent? causes)
-    (return [($to_str (try (?? error/message error) catch Error error))]))
+    (return [($to_str (try (?? error/.message error) catch Error error))]))
   (let out [])
   (for cause in causes
     (for message in (leaf_messages cause) (out .push message)))
@@ -259,14 +258,14 @@
 
 (fn ^^private failure_message [error] : Str
   (let causes (error_causes error))
-  (if ($absent? causes) (return ($to_str error/message)))
+  (if ($absent? causes) (return ($to_str error/.message)))
   (let parts [])
   (for cause in causes
     (let plugin (try cause/plugin catch Error nil))
     (for message in (leaf_messages cause)
       (parts .push (if ($absent? plugin) message $"${plugin}: ${message}"))))
   (let detail ($str/join parts "; "))
-  $"${error/message}: ${detail}")
+  $"${error/.message}: ${detail}")
 
 # A retirement ticket is independent of every other ticket. One failing
 # cleanup is recorded and the rest still run: a single failure must not strand
@@ -322,7 +321,7 @@
       (then
         (let held ($map ($filter state/leases/.get
           (fn [lease] (== ($to_str lease/snapshot/id) ($to_str id)))) (fn [lease] lease/label)))
-        (fail (CompositionClosed ^message
+        (fail (CompositionClosed ^_msg
           $"composition still has active turn leases at snapshot ${id}: ${counter/.load}; holders ${held}")))))
   (state/closing .set true)
   (drain_retirements state))

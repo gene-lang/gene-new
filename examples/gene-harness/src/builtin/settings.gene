@@ -11,7 +11,7 @@
 (const efforts ["auto" "none" "minimal" "low" "medium" "high" "xhigh" "max"])
 
 (fn invalid [message : Str]
-  (fail (ServiceError ^code "invalid_request" ^message message)))
+  (fail (ServiceError ^code "invalid_request" ^_msg message)))
 
 # Gene data as editable text, without the serde envelope, and back.
 # Defaults and registry values are frozen; thaw them so the text reads as plain data.
@@ -397,7 +397,7 @@
     (let tree (row/render context))
     (ui .UiHost:validate tree ^view "settings")
     tree
-    catch Error (section_error name ($to_str (?? $err/message $err)))))
+    catch Error (section_error name ($to_str (?? $err/.message $err)))))
 
 (fn settings_layout [scope : Str, selected : Str, current, nav, body, section]
   `(section ^key "settings" ^class_name "settings_layout"
@@ -439,7 +439,7 @@
         (when "Appearance" (appearance_group workspace scope))
         (else (generic_group workspace manager selected scope)))
       catch Error
-        (let reason ($to_str (?? $err/message $err)))
+        (let reason ($to_str (?? $err/.message $err)))
         [`(p ^key "group-error" ^role "alert" ^class_name "web_notice web_notice_error"
             %$"This group could not be read: ${reason}")]))
   (let section (section_block host ui current/section context))
@@ -452,7 +452,7 @@
     composed
     catch Error
       (settings_layout scope selected current nav body
-        (section_error current/section ($to_str (?? $err/message $err))))))
+        (section_error current/section ($to_str (?? $err/.message $err))))))
 
 # Actions: each Save targets exactly one store.
 

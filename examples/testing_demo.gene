@@ -6,10 +6,9 @@
 
 (fn twice [n : Int] : Int (* n 2))
 
-(type InputError ^props {^message Str})
-(impl Error for InputError)
+(type InputError : Error)
 (fn positive [n : Int] : Int ^errors [InputError]
-  (if (> n 0) n (fail (InputError ^message "expected positive"))))
+  (if (> n 0) n (fail (InputError ^_msg "expected positive"))))
 
 (describe "arithmetic"
   (it "doubles an integer" []
@@ -20,7 +19,7 @@
 
   (it "reports a domain error" []
     (let error (assert_raises (fn [] (positive 0)) InputError))
-    (assert_equal error/message "expected positive")))
+    (assert_equal error/.message "expected positive")))
 
 (describe "a list"
   (before_each [t]

@@ -41,7 +41,7 @@ suite "execution expiry":
       (let invoke ($runtime/bind_call
         (fn [] (while true (try (spin) catch Error (caught .set (+ caught/.get 1))))) []
         ^policy {^timeout_ms 20}))
-      [(try (invoke) false catch Error ($str/contains? $err/message "timeout"))
+      [(try (invoke) false catch Error ($str/contains? $err/.message "timeout"))
        caught/.get (+ 1 2)]
     """) == "[true 0 3]"
 
@@ -61,7 +61,7 @@ suite "execution expiry":
           (fn [] (try (spin) catch Error (caught .set 1))) []
           ^policy {^timeout_ms 1000}))
         (try (inner) catch Error (caught .set 2))) [] ^policy {^timeout_ms 20}))
-      [(try (outer) false catch Error ($str/contains? $err/message "timeout")) caught/.get]
+      [(try (outer) false catch Error ($str/contains? $err/.message "timeout")) caught/.get]
     """) == "[true 0]"
 
   test "time expiry allows finite cleanup and cleanup-local control flow":
@@ -87,7 +87,7 @@ suite "execution expiry":
         (let invoke ($runtime/bind_call (fn []
           (while true (try (spin) ensure EXIT))
           (resumed .set true)) [] ^policy {^timeout_ms 20}))
-        [(try (invoke) false catch Error ($str/contains? $err/message "timeout")) resumed/.get]
+        [(try (invoke) false catch Error ($str/contains? $err/.message "timeout")) resumed/.get]
       """.replace("EXIT", exit)) == "[true false]"
 
   test "infinite cleanup shares a bounded grace and preserves the timeout":
@@ -95,7 +95,7 @@ suite "execution expiry":
       (let invoke ($runtime/bind_call (fn []
         (try (spin) ensure (while true nil))) [] ^policy {^timeout_ms 20}))
       (try (invoke) nil catch Error
-        [($str/contains? $err/message "timeout") $err/cleanup_truncated $err/cleanup_reason])
+        [($str/contains? $err/.message "timeout") $err/cleanup_truncated $err/cleanup_reason])
     """) == "[true true \"timeout\"]"
 
   test "memory expiry cannot be caught and cleanup stops at its fixed ceiling":
@@ -109,7 +109,7 @@ suite "execution expiry":
           ensure (while true (held .push {^value [1 2 3 4 5 6 7 8]})))) []
         ^policy {^max_memory_mb 1}))
       (try (invoke) nil catch Error
-        [($str/contains? $err/message "memory limit") caught/.get
+        [($str/contains? $err/.message "memory limit") caught/.get
          $err/cleanup_truncated $err/cleanup_reason])
     """) == "[true false true \"memory\"]"
 
@@ -120,7 +120,7 @@ suite "execution expiry":
         (try (while true (held .push [1 2 3 4 5 6 7 8]))
           ensure (while true nil))) [] ^policy {^max_memory_mb 1}))
       (try (invoke) nil catch Error
-        [($str/contains? $err/message "memory limit")
+        [($str/contains? $err/.message "memory limit")
          $err/cleanup_truncated $err/cleanup_reason])
     """) == "[true true \"timeout\"]"
 
@@ -133,7 +133,7 @@ suite "execution expiry":
           (while true
             (try (while true (held .push [1 2 3 4 5 6 7 8])) ensure EXIT))
           (resumed .set true)) [] ^policy {^max_memory_mb 1}))
-        [(try (invoke) false catch Error ($str/contains? $err/message "memory limit"))
+        [(try (invoke) false catch Error ($str/contains? $err/.message "memory limit"))
          resumed/.get]
       """.replace("EXIT", exit)) == "[true false]"
 
@@ -145,7 +145,7 @@ suite "execution expiry":
         ^policy {^timeout_ms 100}))
       (scope
         (let task (spawn ^lane root
-          (try (invoke) false catch Error ($str/contains? $err/message "timeout"))))
+          (try (invoke) false catch Error ($str/contains? $err/.message "timeout"))))
         [(await task) trace])
     """) == "[true [1 2]]"
 
@@ -167,7 +167,7 @@ suite "execution expiry":
         (try (try (inner) catch Error (resumed .set true))
           ensure (while true nil))) [] ^policy {^timeout_ms 60}))
       [(try (outer) false catch Error
-          [($str/contains? $err/message "timeout") $err/cleanup_truncated])
+          [($str/contains? $err/.message "timeout") $err/cleanup_truncated])
        resumed/.get]
     """) == "[[true true] false]"
 
@@ -191,7 +191,7 @@ suite "execution expiry":
               (try (/ 1 0) catch Error (trace .push "handled"))
               (/ 1 0))
           ensure (trace .push "outer"))) [] ^policy {^timeout_ms 100}))
-      [(try (invoke) false catch Error ($str/contains? $err/message "timeout")) trace]
+      [(try (invoke) false catch Error ($str/contains? $err/.message "timeout")) trace]
     """) == "[true [\"handled\" \"outer\"]]"
 
   test "generator pulls and native re-entry retain terminal expiry":
@@ -200,13 +200,13 @@ suite "execution expiry":
         (try (yield 1) ensure (/ 1 0)))
       (let invoke ($runtime/bind_call (fn []
         (for item in (items) (spin))) [] ^policy {^timeout_ms 20}))
-      (try (invoke) false catch Error ($str/contains? $err/message "timeout"))
+      (try (invoke) false catch Error ($str/contains? $err/.message "timeout"))
     """) == "true"
     check watched("""
       (let invoke ($runtime/bind_call (fn []
         ($map [1] (fn [item] (while true (try (repeat 100 nil) catch Error nil))))) []
         ^policy {^timeout_ms 20}))
-      (try (invoke) false catch Error ($str/contains? $err/message "timeout"))
+      (try (invoke) false catch Error ($str/contains? $err/.message "timeout"))
     """) == "true"
 
   test "expiry reached in a child task still terminates the owning policy":
@@ -217,7 +217,7 @@ suite "execution expiry":
           (let child (spawn ^lane root (spin)))
           (try (await child) catch Error (resumed .set true)))) []
         ^policy {^timeout_ms 20}))
-      [(try (invoke) false catch Error ($str/contains? $err/message "timeout")) resumed/.get]
+      [(try (invoke) false catch Error ($str/contains? $err/.message "timeout")) resumed/.get]
     """) == "[true false]"
 
   test "expired defaults never enter the function body":
@@ -225,7 +225,7 @@ suite "execution expiry":
       (let entered ($cell false))
       (let invoke ($runtime/bind_call (fn [x = (do ($sleep 30) (repeat 100 nil) 7)]
         (entered .set true)) [] ^policy {^timeout_ms 10}))
-      [(try (invoke) false catch Error ($str/contains? $err/message "timeout")) entered/.get]
+      [(try (invoke) false catch Error ($str/contains? $err/.message "timeout")) entered/.get]
     """) == "[true false]"
 
   test "eval and runtime compilation keep the owning deadline":
@@ -235,7 +235,7 @@ suite "execution expiry":
           (do (macro looping [] (while true nil))
               (try (looping) catch Error "escaped"))))
         false
-        catch Error ($str/contains? $err/message "timeout"))
+        catch Error ($str/contains? $err/.message "timeout"))
     """) == "true"
 
   test "ordinary error cleanup can still return successfully":
@@ -276,7 +276,7 @@ suite "execution expiry":
         (let task (spawn ^lane root (invoke)))
         (match task/.join
           (when (TaskOutcome/error error)
-            ($str/contains? error/message "eval timeout exceeded"))
+            ($str/contains? error/.message "eval timeout exceeded"))
           (else false)))
     """) == "true"
     check watched("""
@@ -333,7 +333,7 @@ suite "execution expiry":
             catch Error (caught .set true))) [] ^policy {^timeout_ms 100}))
         (let start ($os/monotonic_ms))
         (let expired (try (invoke) false catch Error
-          ($str/contains? $err/message "timeout")))
+          ($str/contains? $err/.message "timeout")))
         transaction/.discard
         [expired caught/.get (< (- ($os/monotonic_ms) start) 800)]
       """.replace("DIRECTORY", directory.replace('\\', '/').escape())

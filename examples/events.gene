@@ -322,7 +322,7 @@ bus/.close
 ($println $"   after close:  ${bus/.subscription_count} subscription(s)")
 ($println
   (try (bus .publish (OrderPlaced ^order_id "o_9" ^total 1.0))
-    catch EventBusClosedError $"   publish refused: ${$err/message}"))
+    catch EventBusClosedError $"   publish refused: ${$err/.message}"))
 
 ($println "")
 ($println "== done ==")

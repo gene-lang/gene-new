@@ -38,86 +38,122 @@ suite "errors — gradual runtime contract":
     errorContractCheck """(try (+ 1 "x") catch Error 7)""", "7"
     errorContractCheck """(try (+ 1 "x") catch (| JsonError Error) 7)""", "7"
 
-  test "Error default access and the message shortcut use the original value":
+  test "a raised error is the original value and answers message":
     errorContractCheck """
-      (let original (AssertionError ^message "same"))
+      (let original (AssertionError ^_msg "same"))
       (try (fail original)
         catch Error [(same? original $err) (== original $err)
-          $err/message $err/.Error:message $err_msg])
-    """, "[true true \"same\" \"same\" \"same\"]"
+          $err/.message $err/_msg])
+    """, "[true true \"same\" \"same\"]"
 
-  test "custom Error messages are lazy and called on each shortcut use":
+  test "Throwable Error and user errors are nominal types":
+    errorContractCheck """
+      (type InputError : Error ^props {^field Str})
+      (type NotFound : Error)
+      (let input (InputError ^field "age" ^_msg "age must be positive"))
+      (let missing (NotFound))
+      [input/field input/_msg input/.message
+       missing/.message missing/_msg
+       (try (fail (NotFound)) catch InputError "wrong" catch NotFound "typed")
+       (try (fail input) catch Error $err/.message)
+       (try (fail (Error ^_msg "plain")) catch Error $err/.message)]
+    """, "[\"age\" \"age must be positive\" \"age must be positive\" \"\" nil " &
+         "\"typed\" \"age must be positive\" \"plain\"]"
+
+  test "fail admits only values of the Error branch":
+    errorContractCheck """
+      (type JustData ^props {^message Str})
+      [(try (fail (JustData ^message "data")) catch TypeError true)
+       (try (fail (Throwable ^_msg "root")) catch TypeError true)
+       (try (fail "text") catch TypeError true)
+       (try (fail nil) catch TypeError true)]
+    """, "[true true true true]"
+
+  test "a caught error reads an undeclared name as nil":
+    errorContractCheck """
+      (type NotFound : Error ^props {^path Str})
+      (try (fail (NotFound ^path "/x")) catch Error [$err/path $err/code $err/_cause])
+    """, "[\"/x\" nil nil]"
+
+  test "a message override runs on each read":
     errorContractCheck """
       (var calls 0)
-      (type StatusError ^props {^code Int})
-      (impl Error for StatusError
-        (message message [] : Str ^errors []
+      (type StatusError : Error ^props {^code Int}
+        (message message [] : Str ^errors [] ^^override
           (set calls (+ calls 1)) $"status ${self/code}"))
       (try (fail (StatusError ^code 503)) catch Error nil)
       (let before calls)
       (let texts (try (fail (StatusError ^code 404))
-        catch Error [$err_msg $err_msg]))
+        catch Error [$err/.message $err/.message]))
       [before calls texts]
     """, "[0 2 [\"status 404\" \"status 404\"]]"
 
-  test "message shortcuts capture the lexical catch and respect nesting":
+  test "an override is the error's message and the stored field stays readable":
     errorContractCheck """
-      (let later (try (fail (AssertionError ^message "outer"))
-        catch Error
-          (let inner (try (fail (AssertionError ^message "inner"))
-            catch Error $err_msg))
-          (fn [] [inner $err_msg])))
-      (later)
-    """, "[\"inner\" \"outer\"]"
-    for source in ["$err", "$err_msg", "(set $err_msg \"changed\")"]:
+      (type Distinct : Error
+        (message message [] : Str ^errors [] ^^override "direct"))
+      (try (fail (Distinct ^_msg "stored"))
+        catch Error [$err/.message $err/_msg])
+    """, "[\"direct\" \"stored\"]"
+
+  test "message overrides keep the inherited contract":
+    for declaration in [
+        "(type Bad : Error (message message [] : Str? ^errors [] ^^override nil))",
+        "(type Bad : Error (message message [] : Str ^^override \"x\"))",
+        "(type Bad : Error (message message [] : Str ^errors [Error] ^^override \"x\"))",
+        "(type Bad : Error ^props {^_msg Str})",
+        "(type Bad : Error ^props {^_cause Any})"]:
+      expect GeneError: discard gradualErrorEval(declaration)
+
+  test "the Error protocol forms and the message shortcut are gone":
+    for source in [
+        "(type Old ^props {^message Str}) (impl Error for Old)",
+        "(type Old ^props {^message Str} ^impl [Error])",
+        "(try (fail (AssertionError ^_msg \"x\")) catch Error $err_msg)",
+        "(try (fail (AssertionError ^_msg \"x\")) catch Error $err/.Error:message)"]:
       expect GeneError: discard gradualErrorEval(source)
 
-  test "a type-direct message coexists with the Error message":
+  test "the catch binding is lexical and respects nesting":
     errorContractCheck """
-      (type Distinct ^props {^message Str}
-        (message message [] : Str ^errors [] "direct"))
-      (impl Error for Distinct)
-      (try (fail (Distinct ^message "protocol"))
-        catch Error [$err/.message $err/.Error:message $err_msg])
-    """, "[\"direct\" \"protocol\" \"protocol\"]"
-
-  test "invalid default backing schemas are rejected":
-    for fields in ["{}", "{^message Str?}", "{^message Int}"]:
-      expect GeneError:
-        discard gradualErrorEval("(type Invalid ^props " & fields & ") (impl Error for Invalid)")
-
-  test "message-shaped values do not implicitly become errors":
-    errorContractCheck """
-      (type JustData ^props {^message Str})
-      (try (fail (JustData ^message "data")) catch TypeError true)
-    """, "true"
+      (let later (try (fail (AssertionError ^_msg "outer"))
+        catch Error
+          (let inner (try (fail (AssertionError ^_msg "inner"))
+            catch Error $err/.message))
+          (fn [] [inner $err/.message])))
+      (later)
+    """, "[\"inner\" \"outer\"]"
+    for source in ["$err", "$err/.message", "(set $err/.message \"changed\")"]:
+      expect GeneError: discard gradualErrorEval(source)
 
   test "open error rows admit unknown ordinary errors without changing them":
     errorContractCheck """
       (fn open [callback] ^errors [AssertionError Error] (callback))
-      (try (open (fn [] (/ 1 0))) catch RuntimeError $err_msg)
+      (try (open (fn [] (/ 1 0))) catch RuntimeError $err/.message)
     """, "\"division by zero\""
 
   test "row aliases unions Never and redundant subtypes normalize by coverage":
     errorContractCheck """
-      (type ParentError ^props {^message Str})
-      (impl Error for ParentError)
+      (type ParentError : Error)
       (type ChildError : ParentError ^props {})
       (alias Empty Never)
       (alias Both (| ParentError ChildError))
       (alias Open Error)
       (fn closed [] ^errors [Empty Both ParentError]
-        (fail (ChildError ^message "child")))
+        (fail (ChildError ^_msg "child")))
       (fn opened [] ^errors [ParentError Open Empty]
         ($assert false "other"))
-      [(try (closed) catch ParentError $err_msg)
-       (try (opened) catch AssertionError $err_msg)]
+      [(try (closed) catch ParentError $err/.message)
+       (try (opened) catch AssertionError $err/.message)]
     """, "[\"child\" \"other\"]"
+
+  test "error rows name Error types only":
+    for row in ["[Str]", "[Throwable]", "[(| Int Error)]"]:
+      expect GeneError:
+        discard gradualErrorEval("(fn f [] ^errors " & row & " nil) (f)")
 
   test "nested callable signatures compare semantic open error coverage":
     errorContractCheck """
-      (type Known ^props {^message Str})
-      (impl Error for Known)
+      (type Known : Error)
       (protocol Invoke
         (message invoke [callback : (Callable [] Any ^errors [Known Error])]
           : Any ^errors [Error]))
@@ -125,8 +161,8 @@ suite "errors — gradual runtime contract":
       (impl Invoke for Receiver
         (message invoke [callback : (Callable [] Any ^errors [Error Known Known Never])]
           : Any ^errors [Error] (callback)))
-      (try ((Receiver) .Invoke:invoke (fn [] (fail (Known ^message "known"))))
-        catch Known $err_msg)
+      (try ((Receiver) .Invoke:invoke (fn [] (fail (Known ^_msg "known"))))
+        catch Known $err/.message)
     """, "\"known\""
 
   test "a checked row creates one violation and retains the original cause":
@@ -136,8 +172,8 @@ suite "errors — gradual runtime contract":
       (fn outer [] ^errors [] (middle))
       (try (outer)
         catch AssertionError "wrong"
-        catch ErrorContractViolation [$err/where $err/cause/message
-          $err/cause/.Error:message])
+        catch ErrorContractViolation [$err/where $err/_cause/_msg
+          $err/_cause/.message])
     """, "[\"closed\" \"cause\" \"cause\"]"
 
   test "checked callable views create the same single violation":
@@ -146,16 +182,16 @@ suite "errors — gradual runtime contract":
         (fn [] ($assert false "view cause")))
       (fn outer [] ^errors [] (guarded))
       (try (outer) catch ErrorContractViolation
-        [$err/where $err/cause/message])
+        [$err/where $err/_cause/.message])
     """, "[\"Callable contract\" \"view cause\"]"
 
   test "generated and freshly constructed TypeErrors have different provenance":
     errorContractCheck """
       (fn generated [] ^errors [] (let n : Int "bad"))
       (fn explicit [] ^errors []
-        (fail (TypeError ^message "user" ^where "x" ^expected "Int" ^actual "Str")))
+        (fail (TypeError ^_msg "user" ^where "x" ^expected "Int" ^actual "Str")))
       [(try (generated) catch TypeError "generated")
-       (try (explicit) catch ErrorContractViolation $err/cause/message)]
+       (try (explicit) catch ErrorContractViolation $err/_cause/.message)]
     """, "[\"generated\" \"user\"]"
 
   test "rethrow aliases preserve generated classification and identity":
@@ -174,56 +210,49 @@ suite "errors — gradual runtime contract":
     errorContractCheck """
       (fn wrapper [] ^errors []
         (try (let n : Int "bad") catch TypeError
-          (fail (ErrorContractViolation ^message "new" ^where "user"
-            ^expected [] ^actual TypeError ^cause $err))))
+          (fail (ErrorContractViolation ^_msg "new" ^where "user"
+            ^expected [] ^actual TypeError ^_cause $err))))
       (try (wrapper) catch ErrorContractViolation
-        [$err/where $err/cause/where])
+        [$err/where $err/_cause/where])
     """, "[\"wrapper\" \"user\"]"
+
+  test "a cause is a Throwable":
+    errorContractCheck """
+      (type Outer : Error)
+      (let inner (AssertionError ^_msg "inner"))
+      (let outer (Outer ^_msg "outer" ^_cause inner))
+      [outer/_cause/.message
+       (try (Outer ^_cause 3) catch TypeError "rejected")]
+    """, "[\"inner\" \"rejected\"]"
 
   test "default-expression failures belong to the callee's row":
     errorContractCheck """
       (fn with_default [x = ($assert false "default")] ^errors [] x)
       [(with_default 7)
        (try (with_default) catch ErrorContractViolation
-         [$err/where $err/cause/message])]
+         [$err/where $err/_cause/.message])]
     """, "[7 [\"with_default\" \"default\"]]"
 
-  test "scoped Error conformance travels with an escaping failure":
+  test "an error formats through its own type wherever it is caught":
     errorContractCheck """
-      (type Local ^props {^message Str})
       (fn raise_local []
-        (impl Error for Local
-          (message message [] : Str ^errors [] "raising scope"))
-        (fail (Local ^message "raw")))
-      (try (raise_local) catch Error [$err/message $err_msg])
-    """, "[\"raw\" \"raising scope\"]"
+        (type Local : Error
+          (message message [] : Str ^errors [] ^^override "declaring scope"))
+        (fail (Local ^_msg "raw")))
+      (try (raise_local) catch Error [$err/_msg $err/.message])
+    """, "[\"raw\" \"declaring scope\"]"
 
-  test "a catcher's local provider does not replace an incoming witness":
+  test "freezing and thawing an error preserve its type and message":
     errorContractCheck """
-      (type Local ^props {^message Str})
-      (fn raise_local []
-        (impl Error for Local
-          (message message [] : Str ^errors [] "original"))
-        (fail (Local ^message "raw")))
-      (fn recover []
-        (impl Error for Local
-          (message message [] : Str ^errors [] "catcher"))
-        (try (raise_local) catch Error $err_msg))
-      (recover)
-    """, "\"original\""
-
-  test "freezing and thawing an error preserve its retained conformance":
-    errorContractCheck """
-      (type Local ^props {^code Int})
+      (type Local : Error ^props {^code Int}
+        (message message [] : Str ^errors [] ^^override $"local ${self/code}"))
       (fn snapshots []
-        (impl Error for Local
-          (message message [] : Str ^errors [] $"local ${self/code}"))
         (try (fail (Local ^code 7)) catch Error
           [($freeze $err) ($freeze_shallow $err) ($thaw ($freeze $err))]))
       (let errors (snapshots))
-      [(try (fail errors/0) catch Error $err_msg)
-       (try (fail errors/1) catch Error $err_msg)
-       (try (fail errors/2) catch Error $err_msg)]
+      [(try (fail errors/0) catch Error $err/.message)
+       (try (fail errors/1) catch Error $err/.message)
+       (try (fail errors/2) catch Error $err/.message)]
     """, "[\"local 7\" \"local 7\" \"local 7\"]"
 
   test "container copies preserve generated failure provenance":
@@ -233,63 +262,120 @@ suite "errors — gradual runtime contract":
       (try (rethrow saved) catch TypeError "generated")
     """, "\"generated\""
 
-  test "overwriting an owning binding does not invalidate an escaped witness":
+  test "an escaped error outlives the scope that declared its type":
     errorContractCheck """
       (fn make []
-        (type Local ^props {^message Str})
-        (impl Error for Local
-          (message message [] : Str ^errors [] self/message))
-        (var original (Local ^message "still alive"))
+        (type Local : Error
+          (message message [] : Str ^errors [] ^^override self/_msg))
+        (var original (Local ^_msg "still alive"))
         (let saved (try (fail original) catch Error $err))
         (set original nil)
         saved)
       (let saved (make))
-      (try (fail saved) catch Error $err_msg)
+      (try (fail saved) catch Error $err/.message)
     """, "\"still alive\""
 
-  test "Send checks a retained formatter even on a nominal Send type":
+  test "an override returning a non-Str raises a generated TypeError":
     errorContractCheck """
-      (type Local ^props {^code Int})
-      (impl Send for Local)
-      (fn saved_error []
-        (let secret ($cell "local only"))
-        (impl Error for Local
-          (message message [] : Str ^errors [] (secret .get)))
-        (try (fail (Local ^code 7)) catch Error ($freeze $err)))
-      (let saved (saved_error))
-      (let channel ($channel))
-      [(try (channel .try_send saved) catch TypeError "not Send")
-       (try (fail saved) catch Error $err_msg)]
-    """, "[\"not Send\" \"local only\"]"
-
-  test "formatter return checks remain generated failures":
-    errorContractCheck """
-      (type Broken ^props {^code Int})
-      (impl Error for Broken
-        (message message [] : Str ^errors [] 7))
+      (type Broken : Error ^props {^code Int}
+        (message message [] : Str ^errors [] ^^override self/_msg))
       (fn recover [] ^errors []
-        (try (fail (Broken ^code 1)) catch Error $err_msg))
+        (try (fail (Broken ^code 1)) catch Error $err/.message))
       (try (recover) catch TypeError "bad formatter")
     """, "\"bad formatter\""
 
-  test "terminal reporting uses custom messages with a nonrecursive fallback":
+  test "terminal reporting uses the message with a type-name fallback":
     for bad in [false, true]:
       let scope = newGlobalScope(newApplication())
       let body = if bad: "(/ 1 0)" else: "\"display text\""
-      let source = "(var calls 0) (type Custom ^props {^code Int}) " &
-        "(impl Error for Custom (message message [] : Str ^errors [] " &
-        "(set calls (+ calls 1)) " & body & ")) (fail (Custom ^code 7))"
+      let source = "(var calls 0) (type Custom : Error ^props {^code Int} " &
+        "(message message [] : Str ^errors [] ^^override " &
+        "(set calls (+ calls 1)) " & body & ")) " &
+        "(fail (Custom ^code 7))"
       try:
         discard run(compileSource(source), scope)
         check false
       except GeneError as error:
         let original = error.errVal
         let displayed = errorDiagnosticMessage(error, scope)
-        if bad: check error.msg in displayed
+        if bad: check displayed == "Custom"
         else: check displayed == "Custom: display text"
         check error.errVal.bits == original.bits
         check not error.errVal.generatedFailure
         check scope.lookup("calls").intVal == 1
+    let scope = newGlobalScope(newApplication())
+    try:
+      discard run(compileSource("(type NotFound : Error) (fail (NotFound))"), scope)
+      check false
+    except GeneError as error:
+      check errorDiagnosticMessage(error, scope) == "NotFound"
+
+  test "unwind runs only when the try is left by unwinding":
+    errorContractCheck """
+      (type E : Error)
+      (fn run [body] : Any
+        (var log [])
+        (try
+          (try (body log) catch E (log .push "catch")
+            unwind (log .push "unwind") ensure (log .push "ensure"))
+          catch Error (log .push $err/.message))
+        log)
+      (fn returning [log] (try (return 1) unwind (log .push "unwind") ensure (log .push "ensure")))
+      (var looped [])
+      (for x in [1]
+        (try (break) unwind (looped .push "unwind") ensure (looped .push "ensure")))
+      [(run (fn [log] (log .push "body")))
+       (run (fn [log] (fail (E ^_msg "caught"))))
+       (run (fn [log] (fail (AssertionError ^_msg "escaped"))))
+       (do (var log []) (returning log) log)
+       looped]
+    """, "[[\"body\" \"ensure\"] [\"catch\" \"ensure\"] " &
+         "[\"unwind\" \"ensure\" \"escaped\"] [\"ensure\"] [\"ensure\"]]"
+
+  test "unwind runs for a failing catch body and keeps the original on its own failure":
+    errorContractCheck """
+      (type E : Error)
+      (var log [])
+      [(try
+         (try (fail (E ^_msg "a")) catch E (fail (E ^_msg "from catch"))
+           unwind (log .push "unwind"))
+         catch Error $err/.message)
+       (try
+         (try (fail (E ^_msg "orig")) unwind (fail (E ^_msg "cleanup"))
+           ensure (log .push "ensure"))
+         catch Error $err/.message)
+       log]
+    """, "[\"from catch\" \"orig\" [\"unwind\" \"ensure\"]]"
+
+  test "unwind runs on cancellation and panic":
+    errorContractCheck """
+      (var log [])
+      (let task (spawn (try ($sleep 1000) unwind (log .push "cancel unwind"))))
+      ($sleep 10)
+      task/.cancel
+      [(task .join) log]
+    """, "[TaskOutcome/cancelled [\"cancel unwind\"]]"
+    let scope = newGlobalScope(newApplication())
+    expect GenePanic:
+      discard run(compileSource(
+        "(var log []) (try (panic \"p\") unwind (log .push \"panic unwind\"))"), scope)
+    check scope.lookup("log").print() == "[\"panic unwind\"]"
+
+  test "try clauses must be ordered catch then unwind then ensure":
+    for source in ["(try 1 ensure 2 unwind 3)", "(try 1 unwind 2 catch Error 3)",
+                   "(try 1 unwind 2 unwind 3)"]:
+      expect GeneError: discard gradualErrorEval(source)
+
+  test "a failure escaping a nested frame of a cleanup keeps the original error":
+    errorContractCheck """
+      (type E : Error)
+      (fn bad [] (fail (E ^_msg "call")))
+      [(try (try (fail (E ^_msg "orig")) ensure (bad)) catch Error $err/.message)
+       (try (try (fail (E ^_msg "orig")) ensure (try (fail (E ^_msg "inner")) ensure nil))
+         catch Error $err/.message)
+       (try (try 1 ensure (try (fail (E ^_msg "cleanup")) ensure nil))
+         catch Error $err/.message)]
+    """, "[\"orig\" \"orig\" \"cleanup\"]"
 
   test "propagation restores the host exception context":
     for source in [
@@ -303,27 +389,26 @@ suite "errors — gradual runtime contract":
       discard gradualErrorEval(source)
       check getCurrentException() == previous
 
-  test "native task admission retains the producing scope's Error provider":
+  test "a native task failure is admitted by its type alone":
     let scope = newGlobalScope(newApplication())
-    scope.implOverlayRoot = true
     let error = run(compileSource("""
-      (type Local ^props {^code Int})
-      (impl Error for Local
-        (message message [] : Str ^errors [] $"native ${self/code}"))
+      (type Local : Error ^props {^code Int}
+        (message message [] : Str ^errors [] ^^override $"native ${self/code}"))
       (Local ^code 7)
     """), scope)
-    let task = nativeNewAsyncTask()
+    let rejected = nativeNewAsyncTask()
     expect GeneError:
-      discard nativeTaskFail(task, "native", error, hasValue = true)
-    check not task.taskDone
-    check nativeTaskFail(task, "native", error, hasValue = true, scope = scope)
+      discard nativeTaskFail(rejected, "native", newStr("not an error"), hasValue = true)
+    check not rejected.taskDone
+    let task = nativeNewAsyncTask()
+    check nativeTaskFail(task, "native", error, hasValue = true)
     check not nativeTaskFail(task, "already settled", NIL, hasValue = true)
-    # A separately rooted scope has not imported the Local implementation.
+    # A separately rooted scope needs nothing from the producer to format it.
     let consumer = newGlobalScope(scope.application())
     consumer.define("task", task)
-    check run(compileSource("(try (await task) catch Error $err_msg)"), consumer).strVal == "native 7"
+    check run(compileSource("(try (await task) catch Error $err/.message)"), consumer).strVal == "native 7"
 
-  test "already-admitted native failures retain generated provenance":
+  test "native failures retain generated provenance":
     let producer = newGlobalScope(newApplication())
     let error = run(compileSource("(try (let n : Int \"bad\") catch TypeError $err)"), producer)
     let task = nativeNewAsyncTask()
@@ -344,7 +429,7 @@ suite "errors — gradual runtime contract":
       let outcome = run(compileSource("(failed .join)"), scope)
       check outcome.head.enumVariantName == "error"
       check outcome.body[0].head.typeName == "RuntimeError"
-      check outcome.body[0].props["message"].strVal == ""
+      check outcome.body[0].props["_msg"].strVal == ""
       check not failed.taskAwaited
       check run(compileSource("(try (await failed) catch RuntimeError true)"), scope).boolVal
       let panicked = if constructed: newPanickedTask("") else: nativeNewAsyncTask()
@@ -366,9 +451,8 @@ suite "errors — gradual runtime contract":
     let error = outcome.body[0]
     check error.head.typeName == "ErrorContractViolation"
     check error.generatedFailure
-    check error.props["cause"].head.typeName == "RuntimeError"
-    check error.props["cause"].props["message"].strVal == "native failure"
-    check error.props["cause"].hasErrorWitness
+    check error.props["_cause"].head.typeName == "RuntimeError"
+    check error.props["_cause"].props["_msg"].strVal == "native failure"
 
 proc strictErrorCompile(source: string): Chunk =
   compileSource("(mod checked ^errors_mode strict)\n" & source,
@@ -383,31 +467,31 @@ suite "errors — static catch or declare":
       "(try (m) catch Error nil))")
 
   test "macro block loop exits keep following errors reachable":
-    let setup = "(type AfterLoop ^props {^message Str}) (impl Error for AfterLoop) " &
+    let setup = "(type AfterLoop : Error) " &
       "(macro scoped [body...] `(do (let keep (fn [] 1)) %body...)) "
     for loopBody in ["(scoped (break))", "(try (scoped (break)) ensure nil)"]:
       expect GeneError:
         discard strictErrorCompile(setup & "(fn bad [] ^errors [] " &
-          "(while true " & loopBody & ") (fail (AfterLoop ^message \"after\")))")
+          "(while true " & loopBody & ") (fail (AfterLoop ^_msg \"after\")))")
       discard strictErrorCompile(setup & "(fn allowed [] ^errors [AfterLoop] " &
-        "(while true " & loopBody & ") (fail (AfterLoop ^message \"after\")))")
+        "(while true " & loopBody & ") (fail (AfterLoop ^_msg \"after\")))")
 
   test "macro-local callable bindings do not replace caller error contracts":
-    let setup = "(type HiddenError ^props {^message Str}) (impl Error for HiddenError) " &
-      "(fn risky ^^private [] ^errors [HiddenError] (fail (HiddenError ^message \"bad\"))) " &
+    let setup = "(type HiddenError : Error) " &
+      "(fn risky ^^private [] ^errors [HiddenError] (fail (HiddenError ^_msg \"bad\"))) " &
       "(macro locally [] `(do (let risky (fn [] nil)) nil)) "
     expect GeneError:
       discard strictErrorCompile(setup & "(fn bad [] ^errors [] (locally) (risky))")
     discard strictErrorCompile(setup & "(fn allowed [] ^errors [HiddenError] (locally) (risky))")
 
   test "macro returns and ensure returns end the caller's error path":
-    let setup = "(type UnreachableError ^props {^message Str}) (impl Error for UnreachableError) " &
+    let setup = "(type UnreachableError : Error) " &
       "(macro scoped [body...] `(do (let keep (fn [] 1)) %body...)) "
     discard strictErrorCompile(setup & "(fn finish [] ^errors [] " &
-      "(scoped (return 7)) (fail (UnreachableError ^message \"unreachable\")))")
+      "(scoped (return 7)) (fail (UnreachableError ^_msg \"unreachable\")))")
     discard strictErrorCompile(setup & "(fn finish [] ^errors [] " &
       "(while true (try (scoped (break)) ensure (return 7))) " &
-      "(fail (UnreachableError ^message \"unreachable\")))")
+      "(fail (UnreachableError ^_msg \"unreachable\")))")
 
   test "strict public functions require explicit rows while private helpers infer":
     expect GeneError: discard strictErrorCompile("(fn public [] 1)")
@@ -416,10 +500,9 @@ suite "errors — static catch or declare":
 
   test "strict checking follows unannotated helper chains":
     let helpers = """
-      (type ConfigError ^props {^message Str})
-      (impl Error for ConfigError)
+      (type ConfigError : Error)
       (fn decode ^^private [bad : Bool] : Str
-        (if bad (fail (ConfigError ^message "bad")) "ready"))
+        (if bad (fail (ConfigError ^_msg "bad")) "ready"))
       (fn load_config ^^private [bad : Bool] : Str (decode bad))
     """
     try:
@@ -438,7 +521,7 @@ suite "errors — static catch or declare":
   test "opaque calls require Error rather than a closed row":
     discard strictErrorCompile("(fn invoke [callback : Callable] ^errors [Error] (callback))")
     discard strictErrorCompile("(fn invoke [callback : Callable] ^errors [] " &
-      "(try (callback) catch Error $err_msg))")
+      "(try (callback) catch Error $err/.message))")
     expect GeneError:
       discard strictErrorCompile("(fn invoke [callback : Callable] ^errors [] (callback))")
 
@@ -452,7 +535,7 @@ suite "errors — static catch or declare":
       "(fn invoke [callback : Callable] ^errors [AllErrors] (callback))")
 
   test "specific catches preserve the open remainder":
-    let declarations = "(type Known ^props {^message Str}) (impl Error for Known) "
+    let declarations = "(type Known : Error) "
     expect GeneError:
       discard strictErrorCompile(declarations &
         "(fn invoke [callback : Callable] ^errors [Known] " &
@@ -558,7 +641,7 @@ suite "errors — static catch or declare":
     """), newGlobalScope(newApplication())).rangeStop == 3
     check run(strictErrorCompile("""
       (fn invalid [] ^errors [RuntimeError] ($range 0 3 0))
-      (try (invalid) catch RuntimeError $err_msg)
+      (try (invalid) catch RuntimeError $err/.message)
     """), newGlobalScope(newApplication())).strVal == "range step must not be zero"
 
   test "ranges retain iterable behavior without inheriting eager List messages":
@@ -676,14 +759,13 @@ suite "errors — static catch or declare":
 
   test "inherited direct messages retain declaration-bound Self error rows":
     let source = """
-      (type Problem ^props {^message Str}
-        (impl Error)
+      (type Problem : Error
         (message raise [] : Nil ^errors [Self] (fail self)))
       (type Specific : Problem ^props {})
       (fn propagate [] : Nil ^errors [Problem]
-        ((Specific ^message "specific") .raise))
+        ((Specific ^_msg "specific") .raise))
       (fn recover [] : Str ^errors []
-        (try (propagate) "wrong" catch Problem $err_msg))
+        (try (propagate) "wrong" catch Problem $err/.message))
     """
     discard strictErrorCompile(source)
     check run(strictErrorCompile(source & "(recover)"),
@@ -839,9 +921,8 @@ suite "errors — module summaries":
   test "a strict caller infers a dynamic dependency without changing its policy":
     let root = errorModuleRoot()
     writeFile(root / "dep.gene", """
-      (type ConfigError ^props {^message Str})
-      (impl Error for ConfigError)
-      (fn decode ^^private [] (fail (ConfigError ^message "dependency")))
+      (type ConfigError : Error)
+      (fn decode ^^private [] (fail (ConfigError ^_msg "dependency")))
       (fn load [] (decode))
     """)
     writeFile(root / "good.gene", """
@@ -902,12 +983,11 @@ suite "errors — module summaries":
   test "imports preserve direct inherited and protocol message contracts":
     let root = errorModuleRoot()
     writeFile(root / "messages.gene", """
-      (type Failure ^props {^message Str})
-      (impl Error for Failure)
+      (type Failure : Error)
       (type Base ^props {}
         (message label [] : Str ^errors [] "base")
         (message copy [] : Self ^errors [] self)
-        (message query [value : Str = (fail (Failure ^message "default"))]
+        (message query [value : Str = (fail (Failure ^_msg "default"))]
           : Str ^errors [Failure] value))
       (type Child : Base ^props {})
       (protocol P (message value [] : Str ^errors [Failure]))
@@ -917,7 +997,7 @@ suite "errors — module summaries":
       (type Box ^props {})
       (impl Diamond for Box
         (message value [] : Str ^errors [Failure]
-          (fail (Failure ^message "protocol"))))
+          (fail (Failure ^_msg "protocol"))))
     """)
     writeFile(root / "messages_good.gene", """
       (mod good ^errors_mode strict)
@@ -926,7 +1006,7 @@ suite "errors — module summaries":
       (fn copy_label [child : Child] : Str ^errors [] ((child .copy) .label))
       (fn query [child : Child] : Str ^errors [Failure] (child .query))
       (fn recover [] : Str ^errors []
-        (try ((Box) .Diamond:value) catch Failure $err_msg))
+        (try ((Box) .Diamond:value) catch Failure $err/.message))
     """)
     writeFile(root / "messages_bad.gene", """
       (mod bad ^errors_mode strict)
@@ -977,16 +1057,15 @@ suite "errors — module summaries":
   test "renamed error imports retain both nominal identity and usable proof names":
     let root = errorModuleRoot()
     writeFile(root / "renamed_provider.gene", """
-      (type Original ^props {^message Str})
-      (impl Error for Original)
-      (fn produce [] : Nil ^errors [Original] (fail (Original ^message "renamed")))
+      (type Original : Error)
+      (fn produce [] : Nil ^errors [Original] (fail (Original ^_msg "renamed")))
     """)
     writeFile(root / "renamed_client.gene", """
       (mod renamed ^errors_mode strict)
       (import [Original : Expected produce] ^from "./renamed_provider.gene")
       (fn helper ^^private [] (produce))
       (fn run [] : Str ^errors []
-        (try (helper) "wrong" catch Expected $err_msg))
+        (try (helper) "wrong" catch Expected $err/.message))
     """)
     let app = newApplication(root)
     let module = app.loadFileModule(root / "renamed_client.gene")
@@ -996,8 +1075,7 @@ suite "errors — module summaries":
   test "compiled interfaces round-trip message rows and declaring Self":
     let source = """
       (mod library ^errors_mode strict)
-      (type Failure ^props {^message Str})
-      (impl Error for Failure)
+      (type Failure : Error)
       (protocol P (message check [] : Int ^errors [Failure]))
       (type Base ^props {} (message same [] : Self ^errors [] self))
       (type Child : Base ^props {})
@@ -1069,10 +1147,11 @@ suite "errors — module summaries":
     discard app.compileFileModule(root / "protocol_names_good.gene")
     expect GeneError: discard app.compileFileModule(root / "protocol_names_bad.gene")
 
-  test "Error inheritance and exported aliases preserve the builtin contract":
+  test "an Error parameter and an exported alias keep the builtin contract":
     discard strictErrorCompile("""
-      (protocol Detailed ^inherit [Error] (message code [] : Int ^errors []))
-      (fn text [error : Detailed] : Str ^errors [] (error .Detailed:message))
+      (type Detailed : Error ^props {^code Int})
+      (fn text [error : Error] : Str ^errors [] error/.message)
+      (fn detail [error : Detailed] : Str ^errors [] error/.message)
     """)
     let root = errorModuleRoot()
     writeFile(root / "error_alias.gene", "(alias AllErrors Error)")
@@ -1207,11 +1286,6 @@ suite "errors — retained strict assumptions":
         (protocol P (message value [] : Int ^errors []))
         (fn invalid [] ^errors [] (let held P:value) (held 1))
       """)
-    check run(strictErrorCompile("""
-      (fn factory ^^private [] Error:message)
-      (fn text [error : Error] : Str ^errors [MessageError] ((factory) error))
-      (try (text (AssertionError ^message "bound error")) catch MessageError "wrong")
-    """), newGlobalScope(newApplication())).strVal == "bound error"
 
   test "inferred returned callable contracts reject broadening before publication":
     let app = newApplication()
@@ -1460,7 +1534,7 @@ suite "errors — retained strict assumptions":
     except GeneError as error:
       require error.hasErrVal
       check error.errVal.head.typeName == "ErrorContractViolation"
-      check "requires revalidation" in error.errVal.props["cause"].props["message"].strVal
+      check "requires revalidation" in error.errVal.props["_cause"].props["_msg"].strVal
     check spoofedNativeCalls == 0
     # The trusted implementation remains usable through a lexical alias.
     let valid = newGlobalScope(app)
@@ -1556,12 +1630,11 @@ suite "errors — retained strict assumptions":
     check run(compileSource("(helper)", useLocalSlots = false), namespace.nsScope).intVal == 1
     namespace.nsScope.assign("helper", gradualErrorEval("(fn [] ^errors [Error] 2)"))
 
-  test "a retained Error formatter survives sandbox generation release":
+  test "a retained error formats after its sandbox generation is released":
     let root = getCurrentDir() / "tmp" / "error_generation_release"
     createDir(root)
     writeFile(root / "plugin.gene", """
-      (type Local ^props {^code Int})
-      (impl Error for Local (message message [] : Str ^errors [] "retained generation"))
+      (type Local : Error ^props {^code Int} (message message [] : Str ^errors [] ^^override "retained generation"))
       (fn raise_error [] ^errors [Error] (fail (Local ^code 7)))
     """)
     let app = newApplication(root)
@@ -1577,7 +1650,7 @@ suite "errors — retained strict assumptions":
       (set plugin nil)
       (set generation nil)
       (set tx nil)
-      (try (fail held) catch Error $err_msg)
+      (try (fail held) catch Error $err/.message)
     """.replace("DIR", newStr(root).print())
     check run(compileSource(program), scope).strVal == "retained generation"
 
@@ -1590,14 +1663,12 @@ suite "errors — retained strict assumptions":
     let producer = newGlobalScope(app)
     producer.implOverlayRoot = true
     let held = run(compileSource("""
-      (type Local ^props {^code Int})
-      (impl Error for Local
-        (message message [] : Str ^errors [] ($fs/read_text PATH)))
+      (type Local : Error ^props {^code Int} (message message [] : Str ^errors [] ^^override ($fs/read_text PATH)))
       (try (fail (Local ^code 7)) catch Error $err)
     """.replace("PATH", newStr(path).print())), producer)
     producer.define("held", held)
     try:
-      check run(compileSource("(try (fail held) catch Error $err_msg)"), producer).strVal == "permitted"
+      check run(compileSource("(try (fail held) catch Error $err/.message)"), producer).strVal == "permitted"
     except GeneError as error:
       checkpoint error.errVal.print()
       raise
@@ -1698,34 +1769,6 @@ suite "errors — retained strict assumptions":
     check app.moduleCacheEntryCount() == beforeModules
     check app.canonicalImplCount() == beforeImpls
 
-  test "an admitted error keeps the old formatter after a scoped provider reload":
-    let root = getCurrentDir() / "tmp" / "error_formatter_reload"
-    createDir(root)
-    writeFile(root / "model.gene", "(type Local ^props {^code Int})")
-    writeFile(root / "provider.gene", """
-      (import [Local] ^from "./model.gene")
-      (impl Error for Local ^^export
-        (message message [] : Str ^errors [] "old formatter"))
-    """)
-    let app = newApplication(root)
-    let scope = newGlobalScope(app)
-    let held = run(compileSource("""
-      (import [Local] ^from "./model.gene")
-      (import_impl Error for Local ^from "./provider.gene")
-      (try (fail (Local ^code 1)) catch Error $err)
-    """), scope)
-    scope.define("held", held)
-    writeFile(root / "provider.gene", """
-      (import [Local] ^from "./model.gene")
-      (impl Error for Local ^^export
-        (message message [] : Str ^errors [] "new formatter"))
-    """)
-    discard app.reloadFileModule(root / "provider.gene")
-    check run(compileSource("""
-      [(try (fail held) catch Error $err_msg)
-       (try (fail (Local ^code 2)) catch Error $err_msg)]
-    """, useLocalSlots = false), scope).print() == "[\"old formatter\" \"new formatter\"]"
-
   test "protocol replacement is rejected before invalidating a retained caller":
     let root = getCurrentDir() / "tmp" / "error_dispatch_updates"
     createDir(root)
@@ -1821,12 +1864,10 @@ suite "errors — retained strict assumptions":
       let app = newApplication()
       let scope = newGlobalScope(app)
       discard run(strictErrorCompile("""
-        (type First ^props {^message Str})
-        (impl Error for First)
-        (type Second ^props {^message Str})
-        (impl Error for Second)
+        (type First : Error)
+        (type Second : Error)
         (alias Caught First)
-        (fn failer ^^private [] (fail (First ^message "original")))
+        (fn failer ^^private [] (fail (First ^_msg "original")))
         (fn client [] ^errors [] (try (failer) catch Caught 7))
       """), scope)
       let replacement = run(compileSource("Second"), scope)

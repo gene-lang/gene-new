@@ -10,12 +10,11 @@
 (fn source [bad]
   ($to_str `(mod plugin
     (import ^from "src/plugin_api.gene" [Plugin PluginHost])
-    (type FixtureFailure ^props {^message Str} ^impl [Error])
-    (impl Error for FixtureFailure)
+    (type FixtureFailure : Error)
     (fn init [descriptor]
       (Plugin ^id "cli_fixture" ^provides [["functions" "cli_value"]]
         ^activate (fn [host]
-          (if %bad (fail (FixtureFailure ^message "broken model replacement"))
+          (if %bad (fail (FixtureFailure ^_msg "broken model replacement"))
             (host .PluginHost:contribute "functions"
               {^name "cli_value" ^doc "Read retained state."
                ^fn (fn [] (host .PluginHost:state))}))))))))

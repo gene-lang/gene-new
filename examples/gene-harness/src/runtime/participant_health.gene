@@ -23,7 +23,7 @@
     (if (&& ($present? existing) (== existing/digest definition/_source_digest)) (return nil))
     (quarantine_participant runtime/workspace definition/_owner
       {^format 1 ^id definition/_owner ^digest definition/_source_digest
-       ^participant definition/name ^phase phase ^message (byte_prefix error/message 1024)
+       ^participant definition/name ^phase phase ^message (byte_prefix error/.message 1024)
        ^at ($to_str ($now))})))
   nil)
 

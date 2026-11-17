@@ -17,7 +17,7 @@
   (let record {^id id ^kind kind ^plan (?? request/id nil) ^state "running" ^result nil})
   (control/jobs/.get .put id record)
   (let task
-    (spawn ^lane root ($runtime/with_context nil (fn [] (try (let result (if (== kind "validate") (validate_plan control/runtime request) (apply_plan control/runtime request/id))) (record .put "result" result) (record .put "state" "done") catch Error (record .put "result" {^state "failed" ^code (?? $err/code "error") ^message $err/message}) (record .put "state" "failed") ensure (control/tasks/.get .delete id))))))
+    (spawn ^lane root ($runtime/with_context nil (fn [] (try (let result (if (== kind "validate") (validate_plan control/runtime request) (apply_plan control/runtime request/id))) (record .put "result" result) (record .put "state" "done") catch Error (record .put "result" {^state "failed" ^code (?? $err/code "error") ^message $err/.message}) (record .put "state" "failed") ensure (control/tasks/.get .delete id))))))
   (control/tasks/.get .put id task)
   {^id id ^state "running"})
 

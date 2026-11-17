@@ -1,5 +1,5 @@
 ## Conservative ordinary-error inference over compiled GIR. Working over GIR
-## means template macros and $err_msg have already been lowered by the compiler.
+## means template macros have already been lowered by the compiler.
 ## Recursive summaries converge on finite type identities; diagnostics keep
 ## bounded source edges rather than recursively expanded call-chain strings.
 
@@ -78,6 +78,7 @@ type
     deferred: ErrorEffectSummary
     caught: bool
     caughtErrors: ErrorEffectSummary
+    throwable: bool # statically an Error value of unknown concrete type
     target: Value
     dispatchContract: bool
     dispatchTypeDepth: int
@@ -112,6 +113,7 @@ type
     constructor: AnalyzedFunction
     constructorKnown: bool
     protocol: bool
+    throwable: bool # descends from the built-in Error type
 
   AnalyzedFunction = ref object
     proto: FunctionProto
@@ -388,7 +390,9 @@ proc valueFromType(analysis: ErrorAnalysis, typ: Value,
     elif typ.symVal == "Task": result.kind = avTask
     elif typ.symVal == "Stream": result.kind = avStream
     elif typ.symVal in ["Fn", "Callable"]: result.kind = avFunction
-    elif typ.symVal == "Error": result.kind = avNode
+    elif typ.symVal == "Error":
+      result.kind = avNode
+      result.throwable = true
     else:
       result.nominal = analysis.resolveType(typ, environment)
       if result.nominal != nil: result.kind = avNode
@@ -480,10 +484,12 @@ proc newErrorAnalysis*(root: Chunk,
                "MessageError", "ParseError", "ValueProtocolPending",
                "ValueNotHashable", "ValueOperationReentry", "OrderError",
                "IoError", "IoBusy", "IoClosed", "IoBackpressure",
-               "JsonError", "OsError", "DbError", "EndOfStream"]:
+               "JsonError", "OsError", "DbError", "EndOfStream",
+               "DecodeError", "TimeError", "NativeLibraryError", "LimitExceeded"]:
     let typ = AnalyzedType(info: builtinError(name), constructorKnown: true, methodsKnown: true,
+      throwable: true,
       fields: initTable[string, Value](), methods: initTable[string, AnalyzedFunction]())
-    typ.fields["message"] = newSym("Str")
+    typ.fields["_msg"] = newSym("Str?")
     result.types[typ.info.identity] = typ
     builtins.values[name] = ErrorBinding(immutable: true,
       value: AbstractValue(kind: avType, nominal: typ, name: name))
@@ -493,13 +499,12 @@ proc newErrorAnalysis*(root: Chunk,
       value: AbstractValue(kind: avType, name: name, typ: newSym(name)))
   builtins.values["Error"] = ErrorBinding(immutable: true,
     value: AbstractValue(kind: avProtocol, name: "Error"))
-  let errorProtocol = AnalyzedType(info: builtinError("Error"), protocol: true,
-    methodsKnown: true, methods: initTable[string, AnalyzedFunction]())
-  errorProtocol.methods["message"] = AnalyzedFunction(environment: builtins,
-    requirementOnly: true, public: true, resultValue: scalarValue("Str"),
-    summary: CallableErrorSummary(name: "message", identity: "builtin:Error/message",
-      declared: true, resultType: newSym("Str")))
-  result.types["builtin:Error"] = errorProtocol
+  # `Error` names the built-in root of every recoverable error. A row or a
+  # catch that names it is open, so it is kept as a distinguished value
+  # instead of one more named entry.
+  result.types["builtin:Error"] = AnalyzedType(info: builtinError("Error"),
+    throwable: true, methodsKnown: true,
+    methods: initTable[string, AnalyzedFunction]())
   for name in ["+", "-", "*", "/", "//", "==", "!=", "<", ">", "<=", ">=", "same?", "not", "|"]:
     builtins.values[name] = ErrorBinding(immutable: true,
       value: AbstractValue(kind: avNative, name: name))
@@ -1216,10 +1221,19 @@ proc messageValue(analysis: ErrorAnalysis, receiver, qualifier: AbstractValue,
       contractKnown: true,
       contract: if function.summary.declared: function.summary.declaredRow
                 else: ErrorEffectSummary(open: true))
-  if qualifier != nil and qualifier.kind == avProtocol and qualifier.nominal == nil and
-      qualifier.name == "Error" and name == "message":
-    return AbstractValue(kind: avMessage, name: name, contractKnown: true,
-                          resultType: newSym("Str"))
+  # Every Throwable answers `message` with the inherited contract
+  # `[] : Str ^errors []`; an override is checked against it at declaration.
+  # A type that declares its own override is resolved below like any method.
+  if name == "message" and receiver != nil and
+      (qualifier == nil or (qualifier.hasLiteral and qualifier.literal.kind == vkNil)):
+    var inherited = receiver.caught or receiver.throwable
+    if receiver.nominal != nil and receiver.nominal.throwable and
+        not visibleMethods(receiver.nominal).hasKey("message"):
+      inherited = true
+    if inherited and (receiver.nominal == nil or
+        not visibleMethods(receiver.nominal).hasKey("message")):
+      return AbstractValue(kind: avMessage, name: name, contractKnown: true,
+                            resultType: newSym("Str"))
   if qualifier != nil and qualifier.kind == avProtocol and qualifier.nominal != nil:
     let methods = visibleMethods(qualifier.nominal)
     if methods.hasKey(name): return dispatched(methods[name], qualifier.nominal)
@@ -1716,7 +1730,14 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       if value.nominal != nil and state.stack.len > 0 and state.stack[0].nominal != nil:
         let parent = state.stack[0].nominal
         value.nominal.parent = parent
+        value.nominal.throwable = parent.throwable
         value.nominal.info.ancestors = @[parent.info.identity] & parent.info.ancestors
+      elif value.nominal != nil and state.stack.len > 0 and
+          state.stack[0].kind == avProtocol and state.stack[0].nominal == nil and
+          state.stack[0].name == "Error":
+        # `(type X : Error ...)`: the built-in root stays out of `ancestors`,
+        # because a row that names it is open rather than a named entry.
+        value.nominal.throwable = true
       state.stack.setLen(0)
       push value
     of opMakeProtocol:
@@ -1726,10 +1747,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         value.nominal.protocolParents = @[]
         for i in countdown(proto.parentCount - 1, 0):
           let parent = state.pop()
-          value.nominal.protocolParents.add(
-            if parent.kind == avProtocol and parent.nominal == nil and parent.name == "Error":
-              analysis.types["builtin:Error"]
-            else: parent.nominal)
+          value.nominal.protocolParents.add parent.nominal
       state.stack.setLen(0)
       push value
     of opMakeAlias:
@@ -1761,10 +1779,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
         errors.open = true
       else:
         errors.mergeErrors(iface.initializationErrors)
-        let protocolType = if protocol.nominal != nil: protocol.nominal
-                           elif protocol.kind == avProtocol and protocol.name == "Error":
-                             analysis.types["builtin:Error"]
-                           else: nil
+        let protocolType = protocol.nominal
         var supplied = false
         if protocolType != nil and receiver.nominal != nil:
           for implementation in iface.exportedImpls:
@@ -1821,11 +1836,6 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       let qualifier = state.pop()
       let bound = analysis.messageValue(nil, qualifier, inst.name, environment)
       bound.boundMessage = true
-      if qualifier.kind == avProtocol and qualifier.nominal == nil and
-          qualifier.name == "Error" and inst.name == "message":
-        bound.fn = analysis.types["builtin:Error"].methods["message"]
-        bound.target = newSym("Error")
-        bound.dispatchContract = true
       push bound
     # A fused send is analyzed as the opResolveMessage it replaced; its
     # argument loads and call follow in the chunk.
@@ -2227,6 +2237,8 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
                 scalarValue("Bool") else: scalarValue("Int"))
     of opNot:
       discard state.pop()
+      push scalarValue("Bool")
+    of opInFailureCleanup:
       push scalarValue("Bool")
     else:
       # An unsupported operation is an ordinary-error possibility, never a

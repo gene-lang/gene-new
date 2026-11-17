@@ -32,7 +32,7 @@ suite "Self — forward declaration readiness":
       (protocol P (message value [] : Int 99))
       (type Dog ^props {}) (type Pup : Dog ^props {})
       (impl P for Pup ^^override)
-      (let early (try ((Pup) .P:value) catch RuntimeError $err/message))
+      (let early (try ((Pup) .P:value) catch RuntimeError $err/.message))
       (impl P for Dog (message value [] : Int 7))
       [($str/starts_with? early "declaration not ready: P for Pup is held until")
        ($str/contains? early "impl P for Dog")
@@ -43,7 +43,7 @@ suite "Self — forward declaration readiness":
     let source = "(protocol P (message m [] : Str))\n" &
       "(type A ^props {})\n" &
       "(impl P for A (message m [] : Str \"a\"))\n" &
-      "(let observed (try ((A) .P:m) catch RuntimeError $err/message))\n" &
+      "(let observed (try ((A) .P:m) catch RuntimeError $err/.message))\n" &
       "(type B ^props {})\n" &
       "(impl P for B (message m [] : Str \"b\"))\n" &
       "observed"
@@ -293,7 +293,7 @@ suite "Self — live overlay dependencies":
 suite "Self — checked error contracts":
   test "protocol error rows bind Self and inherited replacements name the original type":
     check selfTypeEval("""
-      (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom))))
+      (type Boom : Error ^props {} (message message [] : Str ^errors [] ^^override ($to_str (quote Boom)))) 
       (protocol P (message raise [] : Int ^errors [Self]))
       (impl P for Boom (message raise [] : Int ^errors [Self] (fail self)))
       (type Child : Boom ^props {})
@@ -304,7 +304,7 @@ suite "Self — checked error contracts":
 
   test "an error row alias cannot conceal replacement Self":
     selfTypeError("""
-      (type Boom ^props {}) (impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom))))
+      (type Boom : Error ^props {} (message message [] : Str ^errors [] ^^override ($to_str (quote Boom)))) 
       (alias Hidden Self)
       (protocol P (message raise [] : Int ^errors [Self]))
       (impl P for Boom (message raise [] : Int ^errors [Self] (fail self)))
@@ -316,8 +316,8 @@ suite "Self — checked error contracts":
     check selfTypeEval("""
       (protocol P ^^universal
         (message raise [] : Int ^errors [RuntimeError]
-          (fail (RuntimeError ^message "declared"))))
-      (try (1 .P:raise) catch RuntimeError $err/message)
+          (fail (RuntimeError ^_msg "declared"))))
+      (try (1 .P:raise) catch RuntimeError $err/.message)
     """) == "\"declared\""
 
 suite "Self — forward annotation dependencies":
@@ -348,8 +348,7 @@ suite "Self — forward annotation dependencies":
 
   test "direct error rows wait for the receiver's Error conformance":
     check selfTypeEval("""
-      (type Boom ^props {} (message raise [] : Int ^errors [Self] (fail self)))
-      (impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom))))
+      (type Boom : Error ^props {} (message raise [] : Int ^errors [Self] (fail self)) (message message [] : Str ^errors [] ^^override ($to_str (quote Boom))))
       (try ((Boom) .raise) catch Boom 7)
     """) == "7"
 
@@ -382,7 +381,7 @@ suite "Self — conformance boundary coherence":
     except GeneError as error:
       diagnostic = error.msg
       line = error.loc.line
-      check error.errVal.props["message"].strVal.contains("Copyable.Self = Dog")
+      check error.errVal.props["_msg"].strVal.contains("Copyable.Self = Dog")
     check line == 5
     check diagnostic.contains("called at mixed.gene:9")
     check diagnostic.contains("Duplicable.Self = FaultyPup")
@@ -426,9 +425,9 @@ suite "Self — conformance boundary coherence":
 suite "Self — nested error annotations":
   test "an escaping nested function retains its declaring error type":
     check selfTypeEval("""
-      (type Boom ^props {}
-        (message raiser [] (fn [] : Int ^errors [Self] (fail self))))
-      (impl Error for Boom (message message [] : Str ^errors [] ($to_str (quote Boom))))
+      (type Boom : Error ^props {}
+        (message raiser [] (fn [] : Int ^errors [Self] (fail self)))
+        (message message [] : Str ^errors [] ^^override ($to_str (quote Boom))))
       (type Child : Boom ^props {})
       (let raise_child ((Child) .raiser))
       (try (raise_child) catch Boom 7)

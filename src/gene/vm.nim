@@ -535,7 +535,8 @@ type
     sortCallbackTemplate: FunctionProto
     outputCallbackTemplate: FunctionProto
     callableViewTemplate: FunctionProto
-    errorDefaultMessage: Value
+    throwableType: Value  # root of every value `fail` can raise
+    errorType: Value      # its handleable branch; what `catch Error` names
     tests: TestRegistry
     strictErrorRegistrations: seq[StrictErrorRegistration]
     errorModeOverride: string
@@ -2553,13 +2554,27 @@ proc bindBudgetedCallScope(callee: Value, proto: FunctionProto,
                            callerScope: Scope): tuple[scope: Scope, returnType: Value]
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool
 proc normalizeErrorTypes(scope: Scope, expressions: openArray[Value]): seq[Value]
+proc descendsFromType(typ, ancestor: Value): bool =
+  ## Walks the nominal parent chain; a type descends from itself.
+  var current = typ
+  while current.kind == vkType:
+    if current.bits == ancestor.bits: return true
+    current = current.typeParent
+  false
+
+proc isThrowableType(app: Application, typ: Value): bool {.inline.} =
+  ## Whether `typ` descends from the built-in `Throwable`.
+  descendsFromType(typ, app.throwableType)
+
+proc isErrorBranchType(app: Application, typ: Value): bool {.inline.} =
+  ## Whether `typ` descends from the built-in `Error`, the handleable branch.
+  descendsFromType(typ, app.errorType)
+
 proc admitErrorValue(value: Value, scope: Scope): Value
-proc retainedErrorFormatter(value: Value, scope: Scope): Value
 proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError
 proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
                                 name: string, scope: Scope): ref GeneError
-proc buildErrorProtocol(root: Scope): Value
-proc validateDefaultErrorBacking(receiver, formatter: Value, scope: Scope)
+proc buildThrowableTypes(root: Scope)
 proc errorDisplayMessage*(error: ref GeneError, scope: Scope): string
 proc errorDiagnosticMessage*(error: ref GeneError, scope: Scope): string
 proc enforceDeferredErrors(value, errorType: Value, where: string, scope: Scope)
@@ -2861,11 +2876,31 @@ var activeIndexOperations {.threadvar.}: seq[ActiveIndexOperation]
 
 proc raiseValueSemanticError(kind, message: string) {.noreturn.} =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   let typ = builtinBinding(if activeVmScope != nil: activeVmScope[] else: nil, kind)
   var error: ref GeneError
   new(error)
   error.msg = kind & ": " & message
+  error.errVal = newNode(if typ.kind == vkType: typ else: newSym(kind),
+                         props = props, immutable = true)
+  error.hasErrVal = true
+  raise error
+
+proc raiseBuiltinError*(kind, message: string, scope: Scope = nil,
+                        extra: openArray[(string, Value)] = []) {.noreturn.} =
+  ## Raise a failure a correct program can meet (bad input, a missing library,
+  ## an exhausted limit) as a value of the built-in Error type `kind`, rather
+  ## than as a message-only failure. `scope` locates the Application whose
+  ## built-in type is used; without one the active VM scope is used.
+  var props = initPropTable()
+  props["_msg"] = newStr(message)
+  for (key, value) in extra: props[key] = value
+  let context = if scope != nil: scope
+                elif activeVmScope != nil: activeVmScope[] else: nil
+  let typ = builtinBinding(context, kind)
+  var error: ref GeneError
+  new(error)
+  error.msg = message
   error.errVal = newNode(if typ.kind == vkType: typ else: newSym(kind),
                          props = props, immutable = true)
   error.hasErrVal = true
@@ -3835,7 +3870,7 @@ proc requireChannel(name: string, value: Value) =
 
 proc raiseChannelClosed(scope: Scope) =
   var props = initPropTable()
-  props["message"] = newStr("channel is closed")
+  props["_msg"] = newStr("channel is closed")
   var head = newSym("ChannelClosed")
   var closedType: Value
   if builtinTypeBinding(scope, "ChannelClosed", closedType) and
@@ -4133,7 +4168,7 @@ proc requireActor(name: string, value: Value) =
 
 proc raiseActorClosed(scope: Scope) =
   var props = initPropTable()
-  props["message"] = newStr("actor is closed")
+  props["_msg"] = newStr("actor is closed")
   var head = newSym("ActorClosed")
   var closedType: Value
   if builtinTypeBinding(scope, "ActorClosed", closedType) and
@@ -4151,7 +4186,7 @@ proc raiseReplyAlreadySent(scope: Scope) =
   ## error named ReplyAlreadySent (async-http-server proposal §18.2).
   const message = "reply has already been sent"
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var head = newSym("ReplyAlreadySent")
   var sentType: Value
   if builtinTypeBinding(scope, "ReplyAlreadySent", sentType) and
@@ -4166,7 +4201,7 @@ proc raiseReplyAlreadySent(scope: Scope) =
 
 proc actorErrorValue(scope: Scope, message: string): Value =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var head = newSym("ActorError")
   var actorError: Value
   if builtinTypeBinding(scope, "ActorError", actorError) and
@@ -5118,7 +5153,7 @@ proc builtInTypeHead(scope: Scope, name: string): Value =
 
 proc raiseEndOfStream(scope: Scope) =
   var props = initPropTable()
-  props["message"] = newStr("end of stream")
+  props["_msg"] = newStr("end of stream")
   var e: ref GeneError
   new(e)
   e.msg = "end of stream"
@@ -5128,7 +5163,7 @@ proc raiseEndOfStream(scope: Scope) =
 
 proc raiseModuleRefError(scope: Scope, typeName, name, message: string) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   props["name"] = newStr(name)
   var e: ref GeneError
   new(e)
@@ -5300,7 +5335,7 @@ proc raiseReaderError(name, message, typeName: string, scope: Scope,
                       contexts: openArray[ReadContextFrame] = []) =
   let fullMessage = name & ": " & message
   var props = initPropTable()
-  props["message"] = newStr(fullMessage)
+  props["_msg"] = newStr(fullMessage)
   if line > 0:
     props["source"] = newStr(sourceName)
     props["line"] = newInt(line)
@@ -5883,7 +5918,7 @@ proc biStreamTryNext(args: openArray[Value], call: ptr NativeCall): Value {.nimc
       if e.hasErrVal: e.errVal
       else:
         var props = initPropTable()
-        props["message"] = newStr(e.msg)
+        props["_msg"] = newStr(e.msg)
         newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
     return tryNextError(scope, errVal)
   try:
@@ -5894,7 +5929,7 @@ proc biStreamTryNext(args: openArray[Value], call: ptr NativeCall): Value {.nimc
       if e.hasErrVal: e.errVal
       else:
         var props = initPropTable()
-        props["message"] = newStr(e.msg)
+        props["_msg"] = newStr(e.msg)
         newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
     tryNextError(scope, errVal)
 
@@ -9402,7 +9437,7 @@ proc biFfiOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   let path = args[0].strVal
   let handle = loadLib(path)
   if handle == nil:
-    raise newException(GeneError, "ffi/open failed to load library: " & path)
+    raiseBuiltinError("NativeLibraryError", "ffi/open failed to load library: " & path)
   newFfiLibrary(cast[pointer](handle), path, unloadFfiLibrary)
 
 proc isDynamicFfiScalarParamLabel(label: string): bool =
@@ -9503,7 +9538,7 @@ proc biFfiBind(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   let address = symAddr(cast[LibHandle](args[0].ffiLibraryHandle),
                         symbol.cstring)
   if address == nil:
-    raise newException(GeneError, "ffi/bind symbol not found: " & symbol)
+    raiseBuiltinError("NativeLibraryError", "ffi/bind symbol not found: " & symbol)
   var releaseName = ""
   var releaseAddress: pointer
   if args.len == 5:
@@ -9514,7 +9549,7 @@ proc biFfiBind(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
     releaseAddress = symAddr(cast[LibHandle](args[0].ffiLibraryHandle),
                              releaseName.cstring)
     if releaseAddress == nil:
-      raise newException(GeneError,
+      raiseBuiltinError("NativeLibraryError",
         "ffi/bind release symbol not found: " & releaseName)
   if returnLabel.startsWith("(C/OwnedPtr ") and releaseAddress == nil:
     raise newException(GeneError,
@@ -9917,7 +9952,7 @@ proc biRuntimeRequireRootLane(args: openArray[Value],
   if currentEventLane() != scheduler.rootLane:
     let message = "operation requires the scheduler root lane"
     var props = initPropTable()
-    props["message"] = newStr(message)
+    props["_msg"] = newStr(message)
     var head = newSym("RuntimeLaneError")
     var runtimeLaneError: Value
     if builtinTypeBinding(scope, "RuntimeLaneError", runtimeLaneError) and
@@ -10443,8 +10478,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   discard checkedChunk.emit(Instruction(op: opLoadLocal, intArg: 0, name: "payload"))
   discard checkedChunk.emit(Instruction(op: opCheckCallableResult))
   discard checkedChunk.emit(Instruction(op: opReturn))
-  let errorProtocol = buildErrorProtocol(result)
-  result.define("Error", errorProtocol)
+  buildThrowableTypes(result)
+  let errorRoot = app.errorType
   let sendProtocol = newProtocol("Send", [])
   result.define("Send", sendProtocol)
   # Marker protocol (empty): a module-level instance whose type implements it
@@ -10522,13 +10557,10 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
       "(fn put_at [self index : Int value : Any] : Any nil)",
       @["self", "index", "value"])], scope = result)
   result.define("IndexWrite", indexWrite)
-  let runtimeError = newType("RuntimeError", NIL,
-    @[TypeField(name: "message", optional: false,
-                typeExpr: newSym("Str"), scope: result)],
-    @[errorProtocol], result)
+  let runtimeError = newType("RuntimeError", errorRoot,
+    @[],
+    @[], result)
   result.define("RuntimeError", runtimeError)
-  result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: runtimeError)
   let runtimeLaneError = newType("RuntimeLaneError", runtimeError,
                                  @[], @[], result)
   result.define("RuntimeLaneError", runtimeLaneError)
@@ -10536,23 +10568,18 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                "ValueOperationReentry", "OrderError"]:
     result.define(name, newType(name, runtimeError, @[], @[], result))
   var typeErrorFields: seq[TypeField]
-  for name in ["message", "where", "expected", "actual"]:
+  for name in ["where", "expected", "actual"]:
     typeErrorFields.add TypeField(name: name, optional: false,
                                   typeExpr: newSym("Str"), scope: result)
-  let typeError = newType("TypeError", NIL, typeErrorFields,
-                          @[errorProtocol], result)
+  let typeError = newType("TypeError", errorRoot, typeErrorFields,
+                          @[], result)
   result.define("TypeError", typeError)
-  result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: typeError)
-  let contractViolation = newType("ErrorContractViolation", NIL,
-    @[TypeField(name: "message", typeExpr: newSym("Str"), scope: result),
-      TypeField(name: "where", typeExpr: newSym("Str"), scope: result),
+  let contractViolation = newType("ErrorContractViolation", errorRoot,
+    @[TypeField(name: "where", typeExpr: newSym("Str"), scope: result),
       TypeField(name: "expected", typeExpr: newSym("List"), scope: result),
-      TypeField(name: "actual", typeExpr: newSym("Any"), scope: result),
-      TypeField(name: "cause", typeExpr: newSym("Any"), scope: result)],
-    @[errorProtocol], result)
+      TypeField(name: "actual", typeExpr: newSym("Any"), scope: result)],
+    @[], result)
   result.define("ErrorContractViolation", contractViolation)
-  result.impls.add ProtocolImpl(protocol: errorProtocol, receiver: contractViolation)
   # A send that resolves to an Fexpr is a distinct dynamic call-kind
   # mismatch. It inherits TypeError's diagnostic fields and Error impl so
   # callers can catch it specifically without losing ordinary type matching.
@@ -10564,14 +10591,11 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # matches, and carries where/receiver_type/message diagnostics.
   let messageError = newType("MessageError", typeError, @[], @[], result)
   result.define("MessageError", messageError)
-  let refError = newType("RefError", NIL,
-                         @[TypeField(name: "message", optional: false,
-                                     typeExpr: newSym("Str"), scope: result),
-                           TypeField(name: "name", optional: false,
+  let refError = newType("RefError", errorRoot,
+                         @[TypeField(name: "name", optional: false,
                                      typeExpr: newSym("Str"), scope: result)],
-                         @[errorProtocol], result)
+                         @[], result)
   result.define("RefError", refError)
-  result.impls.add ProtocolImpl(protocol: errorProtocol, receiver: refError)
   for name in ["UnknownRef", "RefNotResolved", "RefAlreadyResolved",
                "CircularRefResolution", "InvalidRefDefinition"]:
     result.define(name, newType(name, refError, @[], @[], result))
@@ -10583,13 +10607,10 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     assert spec[0] in LeafValueKinds
     result.defineBuiltinType(spec[0], spec[1], newSeq[(string, Value)]())
   result.defineBuiltinType(vkString, "Str", strReceiverNatives())
-  let matchError = newType("MatchError", NIL,
-                           @[TypeField(name: "message", optional: false,
-                                       typeExpr: newSym("Str"), scope: result)],
-                           @[errorProtocol], result)
+  let matchError = newType("MatchError", errorRoot,
+                           @[],
+                           @[], result)
   result.define("MatchError", matchError)
-  result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: matchError)
   let selectorMissing = newType("PathMissing", matchError,
                                 @[
                                   TypeField(name: "segment", optional: false,
@@ -10597,10 +10618,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                                 ],
                                 @[], result)
   result.define("PathMissing", selectorMissing)
-  let compileError = newType("CompileError", NIL,
-                             @[TypeField(name: "message", optional: false,
-                                         typeExpr: newSym("Str"), scope: result),
-                               TypeField(name: "source", optional: true,
+  let compileError = newType("CompileError", errorRoot,
+                             @[TypeField(name: "source", optional: true,
                                          typeExpr: newSym("Str"), scope: result),
                                TypeField(name: "line", optional: true,
                                          typeExpr: newSym("Int"), scope: result),
@@ -10608,10 +10627,20 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                                          typeExpr: newSym("Int"), scope: result),
                                TypeField(name: "contexts", optional: true,
                                          typeExpr: newSym("Any"), scope: result)],
-                             @[errorProtocol], result)
+                             @[], result)
   result.define("CompileError", compileError)
-  result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: compileError)
+  # Recoverable failures the runtime reports with their own types (§6 of the
+  # error design): undecodable bytes or text, temporal data and local-time
+  # resolution, native libraries that cannot be loaded, and an execution
+  # policy that expired, seen from the caller that set it.
+  result.define("DecodeError", newType("DecodeError", errorRoot, @[], @[], result))
+  result.define("TimeError", newType("TimeError", errorRoot, @[], @[], result))
+  result.define("NativeLibraryError", newType("NativeLibraryError", errorRoot,
+    @[TypeField(name: "path", optional: true, typeExpr: newSym("Str"), scope: result)],
+    @[], result))
+  result.define("LimitExceeded", newType("LimitExceeded", errorRoot,
+    @[TypeField(name: "reason", optional: false, typeExpr: newSym("Str"), scope: result)],
+    @[], result))
   let parseError = newType("ParseError", compileError, @[], @[], result)
   result.define("ParseError", parseError)
   let lexError = newType("LexError", compileError, @[], @[], result)
@@ -10648,27 +10677,18 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                           ],
                           @[], result)
   result.define("Match", matchType)
-  let channelClosed = newType("ChannelClosed", NIL,
-                              @[TypeField(name: "message", optional: false,
-                                          typeExpr: newSym("Str"), scope: result)],
-                              @[errorProtocol], result)
+  let channelClosed = newType("ChannelClosed", errorRoot,
+                              @[],
+                              @[], result)
   result.define("ChannelClosed", channelClosed)
-  result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: channelClosed)
-  let endOfStream = newType("EndOfStream", NIL,
-                            @[TypeField(name: "message", optional: false,
-                                        typeExpr: newSym("Str"), scope: result)],
-                            @[errorProtocol], result)
+  let endOfStream = newType("EndOfStream", errorRoot,
+                            @[],
+                            @[], result)
   result.define("EndOfStream", endOfStream)
-  result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: endOfStream)
-  let actorError = newType("ActorError", NIL,
-                            @[TypeField(name: "message", optional: false,
-                                        typeExpr: newSym("Str"), scope: result)],
-                            @[errorProtocol], result)
+  let actorError = newType("ActorError", errorRoot,
+                            @[],
+                            @[], result)
   result.define("ActorError", actorError)
-  result.impls.add ProtocolImpl(protocol: errorProtocol,
-                                receiver: actorError)
   let actorClosed = newType("ActorClosed", actorError, @[], @[], result)
   result.define("ActorClosed", actorClosed)
   let replyAlreadySent = newType("ReplyAlreadySent", actorError, @[], @[],
@@ -11357,13 +11377,6 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
       result.define("each", eachFn)
   registerEventNamespace(result)
   registerTestingNamespace(result)
-  # Built-in errors are installed directly rather than through source impl
-  # assembly. Complete their newly nonempty Error interface here as well.
-  for impl in result.impls.mitems:
-    if impl.protocol.isErrorProtocol and impl.messages.len == 0:
-      impl.messages.add ImplMessage(
-        message: errorProtocol.protocolMessages["message"],
-        fn: app.errorDefaultMessage)
   # The standard library lives under the unshadowable `gene` root and is reached
   # as `gene/x` or its `$x` sugar (design §2.1). Nothing else is pre-bound: a
   # bare name means whatever the program binds it to, so reading a name tells
@@ -12088,7 +12101,7 @@ proc installPackageResource*(app: Application, packageId, path,
                  else: app.packagesById[packageId].root / path
   if not fileExists(absolute) or symlinkExists(absolute) or
       not containsPath(canonicalPath(root), canonicalPath(absolute)):
-    raise newException(GeneError,
+    raiseBuiltinError("PackageResourceError",
       "selected package resource source is unavailable: " & path)
   var resources = app.resourceIndex[packageId]
   if resources.hasKey(path) and
@@ -14715,9 +14728,6 @@ proc assembleImpl(scope: Scope, protocol, receiver: Value,
     if count > 1:
       raise newException(GeneError,
         "duplicate impl message: " & qualifiedMessageName(message))
-  for entry in entries:
-    if entry.message.protocolMessageProtocol.isErrorProtocol:
-      validateDefaultErrorBacking(receiver, entry.fn, scope)
   if exported and visibility != ivScoped:
     let label = if visibility == ivCanonical: "canonical" else: "overlay"
     raise newException(GeneError, label & " impls cannot be exported")
@@ -15959,13 +15969,9 @@ proc isSendableValue(value: Value, scope: Scope,
       return false
     if value.nodeResourceId != 0:
       return false
-    # A raised error carries behavior as well as its visible data. A nominal
-    # Send impl cannot authorize a formatter that captures a Cell/Env or other
-    # non-Send state. Apply the ordinary callable capture rules to that edge.
+    # A raised error carries diagnostics beside its visible data.
     let evidence = value.errorEvidence
     if evidence != nil:
-      if not isSendableValue(evidence.formatter, scope, seen, mode):
-        return false
       for _, item in evidence.diagnostics:
         if not isSendableValue(item, scope, seen, mode):
           return false
@@ -16650,9 +16656,6 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
     publishSpawnValue(value.borrowedNodeHead, seenScopes, seenValues, seenChunks)
     let evidence = value.errorEvidence
     if evidence != nil:
-      publishSpawnValue(evidence.protocol, seenScopes, seenValues, seenChunks)
-      publishSpawnValue(evidence.formatter, seenScopes, seenValues, seenChunks)
-      publishSpawnScope(evidence.environment, seenScopes, seenValues, seenChunks)
       for _, item in evidence.diagnostics:
         publishSpawnValue(item, seenScopes, seenValues, seenChunks)
     let props {.cursor.} = value.props
@@ -16950,31 +16953,12 @@ proc validateRequiredImpls(scope: Scope) =
     scope.validateRequiredImplType(typ)
 
 proc isErrorValue(scope: Scope, value: Value): bool =
-  if value.hasErrorWitness: return true
-  if value.kind != vkNode:
-    return false
-  # `$err` is the whole caught Error value, so `(fail $err)` is the re-raise
-  # idiom. Runtime diagnostics without a more specific value are synthesized
-  # as `RuntimeError`; accept the old symbol-headed shape too while persisted
-  # values and external producers migrate.
-  let synthesized = value.head.isSymbol("Error")
-  if not synthesized and value.head.kind != vkType:
-    return false
-  var errorProtocol: Value
-  if not builtinTypeBinding(scope, "Error", errorProtocol) or
-      errorProtocol.kind != vkProtocol:
-    return false
-  synthesized or scope.typeImplementsProtocol(value.head, errorProtocol)
+  ## `$err` is the whole caught value, so `(fail $err)` is the re-raise idiom.
+  value.kind == vkNode and value.head.kind == vkType and
+    scope.application().isErrorBranchType(value.head)
 
 proc isErrorType(scope: Scope, typ: Value): bool =
-  if typ.isErrorProtocol: return true
-  if typ.kind != vkType:
-    return false
-  var errorProtocol: Value
-  if not builtinTypeBinding(scope, "Error", errorProtocol) or
-      errorProtocol.kind != vkProtocol:
-    return false
-  scope.typeImplementsProtocol(typ, errorProtocol)
+  scope.application().isErrorBranchType(typ)
 
 proc popCheckedErrorTypes(stack: var seq[Value], sp: var int, count: int,
                           scope: Scope): seq[Value] =
@@ -16995,8 +16979,8 @@ proc popCheckedErrorTypes(stack: var seq[Value], sp: var int, count: int,
 proc raiseFailedValue(value: Value) =
   var e: ref GeneError
   new(e)
-  e.msg = if value.props.hasKey("message") and value.props["message"].kind == vkString:
-            value.props["message"].strVal
+  e.msg = if value.props.hasKey("_msg") and value.props["_msg"].kind == vkString:
+            value.props["_msg"].strVal
           else: "failure of " & value.head.typeName
   e.errVal = value
   e.hasErrVal = true
@@ -17080,10 +17064,7 @@ proc nativeTaskFail*(task: Value, message: string, value: Value = NIL,
     if task.taskDone: return false
     var payload = value
     if hasValue:
-      if scope == nil and not value.hasErrorWitness:
-        raise newException(GeneError,
-          "typed native task failures require their producing scope or an admitted Error value")
-      if scope != nil: payload = admitErrorValue(value, scope)
+      payload = admitErrorValue(value, scope)
       if currentEventLane() != currentScheduler().rootLane:
         var seen = initHashSet[uint64]()
         if not isSendableValue(payload, scope, seen, csmWorker):
@@ -17205,7 +17186,7 @@ proc taskOutcomeValue(scope: Scope, name: string, value = NIL): Value =
 
 proc runtimeErrorValue(scope: Scope, message: string): Value =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   newNode(builtInTypeHead(scope, "RuntimeError"), props = props,
           immutable = true)
 
@@ -17263,7 +17244,7 @@ proc biTaskDone(args: openArray[Value]): Value {.nimcall.} =
 
 proc raiseMatchError(scope: Scope, message: string) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var head = newSym("MatchError")
   var matchError: Value
   if builtinTypeBinding(scope, "MatchError", matchError) and
@@ -17278,7 +17259,7 @@ proc raiseMatchError(scope: Scope, message: string) =
 
 proc raiseCompileError(scope: Scope, message: string) =
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   var head = newSym("CompileError")
   var compileError: Value
   if builtinTypeBinding(scope, "CompileError", compileError) and
@@ -17785,8 +17766,6 @@ proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
   let recvType = receiver.receiverType
   case qualifier.kind
   of vkProtocol:
-    if qualifier.isErrorProtocol and name == "message" and receiver.hasErrorWitness:
-      return retainedErrorFormatter(receiver, scope)
     var message = qualifier.protocolMessages.getOrDefault(name, MISSING)
     if message.isMissing:
       let candidates = qualifier.protocolClosureByName(name)
@@ -17827,9 +17806,6 @@ proc resolveProtocolMessageRaw(scope: Scope, message, receiver: Value): Value =
       "protocol message '" & message.protocolMessageName &
       "' has no visible implementation scope")
   let protocol = message.protocolMessageProtocol
-  if protocol.isErrorProtocol and message.protocolMessageName == "message" and
-      receiver.hasErrorWitness:
-    return retainedErrorFormatter(receiver, scope)
   let recvType = receiver.receiverType
   if recvType.kind != vkType:
     # A receiver with no nominal type carries no impl, but the send still failed
@@ -18534,7 +18510,7 @@ proc annotateDefaultReturnFailure(error: ref GeneError, proto: FunctionProto,
     elif not same(firstSelf, binding.selfType): mixed = true
   if not mixed:
     if error.hasErrVal and error.errVal.kind == vkNode:
-      error.errVal.setNodeProp("message", newStr(error.msg))
+      error.errVal.setNodeProp("_msg", newStr(error.msg))
     return
   error.msg.add "\n  conformance Self bindings:"
   for binding in selected.selfBindings:
@@ -18548,7 +18524,7 @@ proc annotateDefaultReturnFailure(error: ref GeneError, proto: FunctionProto,
         binding.originProtocol.protocolName & " for " &
         binding.originReceiver.typeName & ")"
   if error.hasErrVal and error.errVal.kind == vkNode:
-    error.errVal.setNodeProp("message", newStr(error.msg))
+    error.errVal.setNodeProp("_msg", newStr(error.msg))
 
 proc appendNativeTrace(e: ref GeneError, calleeName: string,
                        proto: FunctionProto) =
@@ -19522,7 +19498,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
 
   template prepareBudgetFailure(failure: ref GeneBudgetExpiry) =
     if not failure.budget.expiryError.hasErrVal:
-      failure.budget.expiryError = normalizeFailure(failure.budget.expiryError, scope)
+      # Seen from outside its policy, expiry is an ordinary outcome for the
+      # caller that set the budget: a LimitExceeded naming which limit ran out.
+      let expiry = failure.budget.expiryError
+      var props = initPropTable()
+      props["_msg"] = newStr(expiry.msg)
+      props["reason"] = newStr(if failure.budget.memoryExpired: "memory" else: "timeout")
+      expiry.errVal = newNode(builtInTypeHead(scope, "LimitExceeded"), props = props,
+                              immutable = true)
+      expiry.hasErrVal = true
+      failure.budget.expiryError = normalizeFailure(expiry, scope)
       let loc = if failure.budget.expiryError.loc.hasSourceLoc:
                   failure.budget.expiryError.loc
                 else: instructionLocBefore(chunk, ip)
@@ -24113,6 +24098,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let panicVal = spop()
           rejectCallerEnvEscape("panic payload", panicVal)
           raisePanicValue(panicVal)
+        of opInFailureCleanup:
+          # The `unwind` clause: a cleanup frame entered by a failure, panic,
+          # cancellation or policy expiry, not by completion or a return.
+          spush(if curFrameKind in {fkEnsureErrorBody, fkEnsurePanicBody,
+                                    fkEnsureCancelBody}: TRUE else: FALSE)
         of opYield:
           if not stopOnYield:
             raise newException(GeneError, "yield is only valid in a generator")
@@ -24412,6 +24402,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # boundaries on the function frames crossed. A catch that fires resumes the
       # outer dispatch loop with its result; otherwise the error propagates out.
       let errorLoc = instructionLocBefore(chunk, ip)
+      template preserveFirstCleanupError() =
+        # The failure escaped a nested frame (an inner try, a call) of a
+        # cleanup body that is already running for an earlier error. That
+        # cleanup has now failed, and its failure is dropped: the earlier
+        # error continues, as when the cleanup body raises directly.
+        if curFrameKind == fkEnsureErrorBody and curPendingError != nil:
+          err = curPendingError
       let preservingFirstCleanupError =
         curFrameKind == fkEnsureErrorBody and curPendingError != nil
       var err =
@@ -24464,7 +24461,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if err.hasErrVal: err.errVal
             else:
               var props = initPropTable()
-              props["message"] = newStr(err.msg)
+              props["_msg"] = newStr(err.msg)
               newNode(builtInTypeHead(h.scope, "RuntimeError"), props = props)
           var caught = false
           for cl in h.tp.catches:
@@ -24496,6 +24493,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             closeCurrentForStream()
             err = translateErrorBoundary(curChecksErrors, curErrorTypes,
                                          curFnName, scope, err)
+            preserveFirstCleanupError()
             retireUnwoundScope()
             releaseCurrentCallScope()
         elif frames.len == 0:
@@ -24512,6 +24510,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           closeCurrentForStream()
           err = translateErrorBoundary(curChecksErrors, curErrorTypes,
                                        curFnName, scope, err)
+          preserveFirstCleanupError()
           retireUnwoundScope()
           releaseCurrentCallScope()
       # Reached only via `break` (a catch fired): fall through to the outer
@@ -26911,7 +26910,7 @@ proc raiseTypeError*(where, expected: string, value: Value, scope: Scope,
   if hint.len > 0:
     message = message & "; " & hint
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   props["where"] = newStr(where)
   props["expected"] = newStr(expected)
   props["actual"] = newStr(actual)
@@ -26932,7 +26931,7 @@ proc raiseTypeError*(where, expected: string, value: Value, scope: Scope,
 proc nativeRuntimeError*(scope: Scope, kind, message: string): ref GeneError =
   ## Native checked code reports structured failures without unwinding C frames.
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   result = newException(GeneError, message)
   result.errVal = newNode(builtInTypeHead(scope, kind), props = props, immutable = true)
   result.hasErrVal = true
@@ -26947,7 +26946,7 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
   if hint.len > 0:
     message = message & "; " & hint
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   props["where"] = newStr(where)
   props["expected"] = newStr(expected)
   props["actual"] = newStr(actual)
@@ -27094,7 +27093,7 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
       full.add "; protocol messages visible here: " & hints.join(", ") &
         " — use a qualified send"
   var props = initPropTable()
-  props["message"] = newStr(full)
+  props["_msg"] = newStr(full)
   props["where"] = newStr("message send")
   props["receiver_type"] = newStr(receiverType)
   if protocol.len > 0:
@@ -27713,8 +27712,6 @@ proc matchesDeviceBufferType(args: openArray[Value], value: Value,
                 typeExprIdentity(closeTypeExpr(actual, scope)))
 
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
-  if expr.isErrorProtocol and value.hasErrorWitness:
-    return true
   if expr.kind == vkNil:
     return true
   case expr.kind
@@ -27729,10 +27726,6 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
              matchesTypeExpr(newSym(name[0 ..< name.len - 1]), value, scope)
     if name == "Callable":
       return value.valueImplementsCallable(scope)
-    if name == "Error" and value.hasErrorWitness:
-      var resolved: Value
-      if scope.lookupOptional(name, resolved) and resolved.isErrorProtocol:
-        return true
     if name.len > 5 and name.startsWith("gene/"):
       # `$X/y` reads as a path and is normalised in `closeTypeExpr`; the bare
       # `gene/X/y` spelling arrives here as a symbol instead. Both name the
@@ -28762,8 +28755,6 @@ proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
   if errVal.kind != vkNode or errVal.head.kind != vkType:
     return false
   for typ in allowed:
-    if typ.isErrorProtocol and errVal.hasErrorWitness:
-      return true
     if errVal.head.isSubtypeOf(if typ.isTypeAlias: typ.typeAliasExpr else: typ):
       return true
   false
@@ -28813,19 +28804,11 @@ proc raisePathNotIndexable(target, segment: Value) =
   raise newException(GeneError, message)
 
 proc errorReadsOpen(target: Value): bool =
-  ## An Error value reads an undeclared name as absent: a handler holding an
-  ## error of unknown type probes `code`, `cause` and the like. Conformance is
-  ## inspected without running any user code.
-  if target.hasErrorWitness: return true
-  var current = target.head
-  while current.kind == vkType:
-    for protocol in current.typeRequiredProtocols:
-      if protocol.isErrorProtocol: return true
-    current = current.typeParent
-  try:
-    isErrorValue(pathReadScope(), target)
-  except GeneError:
-    false
+  ## A Throwable value reads an undeclared name as absent: a handler holding
+  ## an error of unknown type probes `code` and the like. The parent chain
+  ## decides, so no user code runs.
+  let head {.cursor.} = target.borrowedNodeHead
+  head.kind == vkType and pathReadScope().application().isThrowableType(head)
 
 proc typeDeclaresFieldId(typ: Value, keyId: int): bool {.inline.} =
   if keyId < 0: return false
@@ -29001,7 +28984,7 @@ proc selectorStrict(selector: Value): bool =
 proc raisePathMissing(segment: Value) =
   let message = "Path lookup failed at segment: " & segment.print()
   var props = initPropTable()
-  props["message"] = newStr(message)
+  props["_msg"] = newStr(message)
   props["segment"] = segment
   var head = newSym("PathMissing")
   let root = builtinsScope()
@@ -35372,9 +35355,27 @@ proc checkModuleErrorGraph(app: Application, entryPath: string) =
     raise firstFailure
 
 proc compileModuleArtifact(app: Application, absPath: string): ModuleCompileArtifact =
-  result = compileModuleArtifactRaw(app, absPath)
-  if result.chunk.errorsMode != ecmDynamic and not result.chunk.errorChecksComplete:
-    app.checkModuleErrorGraph(absPath)
+  ## A module that fails to compile is an expected failure for whoever loads
+  ## it, so a message-only compiler diagnostic reaches the loader as a
+  ## `CompileError`. A failure that already carries a value, such as a
+  ## `ParseError` or an error a macro raised, keeps it.
+  try:
+    result = compileModuleArtifactRaw(app, absPath)
+    if result.chunk.errorsMode != ecmDynamic and not result.chunk.errorChecksComplete:
+      app.checkModuleErrorGraph(absPath)
+  except GeneError as e:
+    # Only a plain diagnostic is converted. Package, build and dependency
+    # failures are their own Nim classes that hosts and tooling dispatch on.
+    if e.hasErrVal or e.name != "GeneError": raise
+    try:
+      raiseCompileError(app.builtinsScope(), e.msg)
+    except GeneError as diagnostic:
+      diagnostic.loc = e.loc
+      diagnostic.errVal.setNodeProp("source", newStr(e.loc.sourceName))
+      if e.loc.line > 0:
+        diagnostic.errVal.setNodeProp("line", newInt(e.loc.line))
+        diagnostic.errVal.setNodeProp("col", newInt(e.loc.col))
+      raise
 
 
 

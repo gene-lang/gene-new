@@ -149,7 +149,7 @@
             (record .put "result" {^code "resumed" ^text "Queue holds cleared. Unresolved pauses and active work still block admission."})
             record))))
         {^code "ok" ^text text ^round responding_round}
-      catch Error {^code (?? $err/code "control_error") ^text (?? $err/message "The control failed.")}))
+      catch Error {^code (?? $err/code "control_error") ^text (?? $err/.message "The control failed.")}))
       (complete_control queues id result))))))
   (if (&& (["stop" "replace-paused"] .contains? outcome/command/name)
           (["ok" "replaced"] .contains? outcome/result/code)
