@@ -35,12 +35,12 @@ suite "errors — gradual runtime contract":
         ("(| Str Error)", "Str is not an error type")]:
       var message = ""
       try:
-        discard gradualErrorEval("(try (+ 1 \"x\") catch " & clause & " 1)")
+        discard gradualErrorEval("(try (fail (Probe)) catch " & clause & " 1)")
       except GeneError as error:
         message = error.msg
       check expected in message
-    errorContractCheck """(try (+ 1 "x") catch Error 7)""", "7"
-    errorContractCheck """(try (+ 1 "x") catch (| JsonError Error) 7)""", "7"
+    errorContractCheck """(try (fail (Probe)) catch Error 7)""", "7"
+    errorContractCheck """(try (fail (Probe)) catch (| JsonError Error) 7)""", "7"
 
   test "a raised error is the original value and answers message":
     errorContractCheck """
@@ -189,36 +189,20 @@ suite "errors — gradual runtime contract":
         [$err/where $err/_cause/.message])
     """, "[\"Callable contract\" \"view cause\"]"
 
-  test "generated and freshly constructed TypeErrors have different provenance":
+  test "faults pass error rows, errors are checked, whoever builds them":
     errorContractCheck """
       (fn generated [] ^errors [] (let n : Int "bad"))
       (fn explicit [] ^errors []
         (fail (TypeFault ^_msg "user" ^where "x" ^expected "Int" ^actual "Str")))
-      [(try (generated) catch TypeFault "generated")
-       (try (explicit) catch ContractViolation $err/_cause/.message)]
-    """, "[\"generated\" \"user\"]"
-
-  test "rethrow aliases preserve generated classification and identity":
-    errorContractCheck """
+      (fn ordinary [] ^errors [] (fail (Probe ^_msg "probe")))
       (var original nil)
-      (fn inner [] ^errors [] (let n : Int "bad"))
       (fn again [] ^errors []
-        (try (inner) catch Error
-          (set original $err)
-          (let alias $err)
-          (fail alias)))
-      (try (again) catch TypeFault (same? original $err))
-    """, "true"
-
-  test "freshly wrapping a generated failure produces an ordinary error":
-    errorContractCheck """
-      (fn wrapper [] ^errors []
-        (try (let n : Int "bad") catch TypeFault
-          (fail (ContractViolation ^_msg "new" ^where "user"
-            ^expected [] ^actual TypeFault ^_cause $err))))
-      (try (wrapper) catch ContractViolation
-        [$err/where $err/_cause/where])
-    """, "[\"wrapper\" \"user\"]"
+        (try (generated) catch Throwable (set original $err) (fail $err)))
+      [(try (generated) catch Error "wrong" catch TypeFault "generated")
+       (try (explicit) catch Error "wrong" catch TypeFault $err/.message)
+       (try (ordinary) catch ContractViolation $err/_cause/.message)
+       (try (again) catch TypeFault (same? original $err))]
+    """, "[\"generated\" \"user\" \"probe\" true]"
 
   test "a cause is a Throwable":
     errorContractCheck """
@@ -359,7 +343,7 @@ suite "errors — gradual runtime contract":
       [(task .join) log]
     """, "[TaskOutcome/cancelled [\"cancel unwind\"]]"
     let scope = newGlobalScope(newApplication())
-    expect GenePanic:
+    expect GeneError:
       discard run(compileSource(
         "(var log []) (try (panic \"p\") unwind (log .push \"panic unwind\"))"), scope)
     check scope.lookup("log").print() == "[\"panic unwind\"]"
@@ -382,11 +366,11 @@ suite "errors — gradual runtime contract":
 
   test "propagation restores the host exception context":
     for source in [
-      "(try (let n : Int \"bad\") catch Error nil)",
+      "(try (let n : Int \"bad\") catch Throwable nil)",
       "(let f : (Callable [] Any ^errors []) (fn [] (fail (Probe)))) " &
         "(try (f) catch ContractViolation nil)",
       "(let stream ([1] => (fn [x] (fail \"invalid\")))) " &
-        "(try (stream .next) catch Error nil)"
+        "(try (stream .next) catch Throwable nil)"
     ]:
       let previous = getCurrentException()
       discard gradualErrorEval(source)
@@ -430,7 +414,7 @@ suite "errors — gradual runtime contract":
       if not constructed: check nativeTaskFail(failed, "", scope = scope)
       scope.define("failed", failed)
       let outcome = run(compileSource("(failed .join)"), scope)
-      check outcome.head.enumVariantName == "error"
+      check outcome.head.enumVariantName == "fault"
       check outcome.body[0].head.typeName == "RuntimeFault"
       check outcome.body[0].props["_msg"].strVal == ""
       check not failed.taskAwaited
@@ -438,11 +422,11 @@ suite "errors — gradual runtime contract":
       let panicked = if constructed: newPanickedTask("") else: nativeNewAsyncTask()
       if not constructed: check tryPanicTask(panicked, "")
       scope.define("panicked", panicked)
-      check run(compileSource("(panicked .join)"), scope).head.enumVariantName == "panic"
-      expect GenePanic:
+      check run(compileSource("(panicked .join)"), scope).head.enumVariantName == "fault"
+      expect GeneError:
         discard run(compileSource("(try (await panicked) catch Error false)"), scope)
 
-  test "join validates message-only native failures against deferred rows":
+  test "join reports a message-only native failure as a fault past deferred rows":
     let task = nativeNewAsyncTask()
     check nativeTaskFail(task, "native failure")
     let scope = newGlobalScope(newApplication())
@@ -451,10 +435,10 @@ suite "errors — gradual runtime contract":
       (let bounded : (Task Any Never) task)
       (bounded .join)
     """), scope)
+    check outcome.head.enumVariantName == "fault"
     let error = outcome.body[0]
-    check error.head.typeName == "ContractViolation"
-    check error.props["_cause"].head.typeName == "RuntimeFault"
-    check error.props["_cause"].props["_msg"].strVal == "native failure"
+    check error.head.typeName == "RuntimeFault"
+    check error.props["_msg"].strVal == "native failure"
 
 proc strictErrorCompile(source: string): Chunk =
   compileSource("(mod checked ^errors_mode strict)\n" & probePrelude & source,
@@ -552,99 +536,6 @@ suite "errors — static catch or declare":
                        "(try (failure) catch Error nil ensure (fail (Probe)))"]:
       expect GeneError:
         discard strictErrorCompile(helper & "(fn main [] ^errors [] " & expression & ")")
-
-  test "native call shapes contribute ordinary errors before their body":
-    for expression in ["(not)", "(not false true)", "(not false ^extra 1)",
-                       "(same? 1)", "($assert)", "($parse/parse_int)",
-                       "($map [] (fn [x] x) 3)", "($into [] [] [] )"]:
-      expect GeneError:
-        discard strictErrorCompile("(fn invalid [] ^errors [] " & expression & ")")
-      discard strictErrorCompile("(fn allowed [] ^errors [RuntimeFault] " & expression & ")")
-    check run(strictErrorCompile("""
-      (fn invalid [] ^errors [RuntimeFault] (not false true))
-      (try (invalid) catch RuntimeFault true)
-    """), newGlobalScope(newApplication())).boolVal
-    check run(strictErrorCompile("[(+) (-) (*) (==) (<)]"),
-              newGlobalScope(newApplication())).print() == "[0 0 1 true true]"
-
-  test "native collection summaries preserve shape and validation effects":
-    for expression in ["($take [1] -1)", "($take -1)",
-                       "($into ($to_stream [1]) 0)", "($into [1] {})",
-                       "($read_one \"1 2\")"]:
-      expect GeneError:
-        discard strictErrorCompile("(fn invalid [] ^errors [] " & expression & ")")
-    discard strictErrorCompile("""
-      (fn parse [] ^errors [ParseError RuntimeFault] ($read_one "1 2"))
-      (fn collect [] ^errors [RuntimeFault] ($into [1] {}))
-    """)
-    check run(strictErrorCompile("""
-      (fn same [x : Int] : Int ^errors [] x)
-      (fn collect [] ^errors []
-        [($into ($range 0 3) [])
-         ($map_map {^a 1} same)
-         ($into ($take ($to_stream [1 2 3]) 2) [])])
-      (collect)
-    """), newGlobalScope(newApplication())).print() == "[[0 1 2] {^a 1} [1 2]]"
-    expect GeneError:
-      discard strictErrorCompile("""
-        (fn same [x : Int] : Int ^errors [] x)
-        (fn invalid [] ^errors [] ($take ($map_map {^a 1} same) 1))
-      """)
-
-  test "native message summaries include invocation state failures":
-    for expression in ["(#[1] .push 2)", "([1] .size 2)", "({^a 1} .push 2)",
-                       "({^a 1} .size)", "({^a 1} .empty?)",
-                       "(($to_stream []) .next)"]:
-      expect GeneError:
-        discard strictErrorCompile("(fn invalid [] ^errors [] " & expression & ")")
-    check run(strictErrorCompile("""
-      (fn exhausted [] ^errors [EndOfStream RuntimeFault]
-        (($to_stream []) .next))
-      (try (exhausted) catch EndOfStream true catch RuntimeFault false)
-    """), newGlobalScope(newApplication())).boolVal
-    check run(strictErrorCompile("""
-      (fn mutate [] ^errors [RuntimeFault] (#[1] .push 2))
-      (try (mutate) catch RuntimeFault true)
-    """), newGlobalScope(newApplication())).boolVal
-    check run(strictErrorCompile("[([1 2] .size) ($map_empty? {^a 1})]"),
-              newGlobalScope(newApplication())).print() == "[2 false]"
-
-  test "outcome-returning methods contain producer errors but retain state errors":
-    let outcome = run(strictErrorCompile("""
-      (fn inspect [source : (Stream Any Probe)] ^errors [] (source .try_next))
-      (let source ($map ($to_stream [1])
-        (fn [x] ^errors [Probe] (fail (Probe)))))
-      (inspect source)
-    """), newGlobalScope(newApplication()))
-    check outcome.head.enumVariantName == "error"
-    expect GeneError:
-      discard strictErrorCompile("(fn join [task : (Task Any Never)] ^errors [] (task .join))")
-    check run(strictErrorCompile("""
-      (fn consume [task : (Task Int Never)] ^errors [RuntimeFault]
-        (await task)
-        (task .join))
-      (try (consume (spawn 1)) catch RuntimeFault true)
-    """), newGlobalScope(newApplication())).boolVal
-
-  test "range construction includes ordinary bounds and step failures":
-    for expression in ["($range 0 3 0)", "($range 0)",
-                       "($range 0 9223372036854775808)",
-                       "($range 0 3 1 7)"]:
-      expect GeneError:
-        discard strictErrorCompile("(fn invalid [] ^errors [] " & expression & ")")
-      discard strictErrorCompile("(fn allowed [] ^errors [RuntimeFault] " & expression & ")")
-    expect GeneError:
-      discard strictErrorCompile("(fn uncertain [stop : Int] ^errors [] ($range 0 stop))")
-    expect GeneError:
-      discard strictErrorCompile("(fn uncertain [step : I64] ^errors [] ($range 0 3 step))")
-    check run(strictErrorCompile("""
-      (fn fixed [stop : I64] : Range ^errors [] ($range 0 stop))
-      (fixed 3)
-    """), newGlobalScope(newApplication())).rangeStop == 3
-    check run(strictErrorCompile("""
-      (fn invalid [] ^errors [RuntimeFault] ($range 0 3 0))
-      (try (invalid) catch RuntimeFault $err/.message)
-    """), newGlobalScope(newApplication())).strVal == "range step must not be zero"
 
   test "ranges retain iterable behavior without inheriting eager List messages":
     expect GeneError:
@@ -773,147 +664,19 @@ suite "errors — static catch or declare":
     check run(strictErrorCompile(source & "(recover)"),
               newGlobalScope(newApplication())).strVal == "specific"
 
-  test "task creation is separate from awaiting its failure":
-    discard strictErrorCompile("(fn create [] ^errors [] " &
-      "(spawn (fail (Probe))))")
-    expect GeneError:
-      discard strictErrorCompile("(fn consume [task : (Task Any Probe)] " &
-        "^errors [] (await task))")
-    discard strictErrorCompile("(fn consume [task : (Task Any Probe)] " &
-      "^errors [RuntimeFault] (try (await task) catch Probe nil))")
-    expect GeneError:
-      discard strictErrorCompile("(fn consume [task : (Task Any Never)] " &
-        "^errors [] (await task))")
-
-  test "await state follows aliases and conditional consumption":
-    for body in [
-        "(let task (spawn 1)) (await task) (await task)",
-        "(let task (spawn 1)) (let alias task) (await alias) (await task)",
-        "(let task (spawn 1)) (if flag (await task)) (await task)",
-        "(let task (spawn 1)) (repeat 2 (await task))"]:
-      expect GeneError:
-        discard strictErrorCompile("(fn invalid [flag : Bool] ^errors [] " & body & ")")
-    check run(strictErrorCompile("""
-      (fn valid [] ^errors [] (let task (spawn 7)) (await task))
-      (valid)
-    """), newGlobalScope(newApplication())).intVal == 7
-    check run(strictErrorCompile("""
-      (fn repeat_await [] ^errors [RuntimeFault]
-        (let task (spawn 1)) (await task) (await task))
-      (try (repeat_await) catch RuntimeFault true)
-    """), newGlobalScope(newApplication())).boolVal
-    check run(strictErrorCompile("""
-      (fn independent [] ^errors []
-        (let first (spawn 1))
-        (let second (spawn 2))
-        (+ (await first) (await second)))
-      (independent)
-    """), newGlobalScope(newApplication())).intVal == 3
-    check run(strictErrorCompile("""
-      (fn fresh_each_time [] ^errors []
-        (try (scope (repeat 3 (let task (spawn 1)) (await task)))
-          catch RuntimeFault nil) 7)
-      (fresh_each_time)
-    """), newGlobalScope(newApplication())).intVal == 7
-    expect GeneError:
-      discard strictErrorCompile("""
-        (fn consume [task : (Task Int Never)] ^errors [RuntimeFault] (await task))
-        (fn invalid [] ^errors []
-          (let task (spawn 1))
-          (try (consume task) catch RuntimeFault nil)
-          (await task))
-      """)
-
-  test "opaque evaluation invalidates task freshness even when its errors are caught":
-    expect GeneError:
-      discard strictErrorCompile("""
-        (fn invalid [] ^errors []
-          (let task (spawn 1))
-          (try (eval (quote (await task)) ^in (env)) catch Error nil)
-          (await task))
-      """)
-    check run(strictErrorCompile("""
-      (fn consume [] ^errors [RuntimeFault]
-        (let task (spawn 1))
-        (try (eval (quote (await task)) ^in (env)) catch Error nil)
-        (await task))
-      (try (consume) catch RuntimeFault true)
-    """), newGlobalScope(newApplication())).boolVal
-
-  test "nested task code cannot hide consumption of a captured task":
-    for body in [
-        "(try (await first) catch Error nil)",
-        "(try 1 ensure (try (await first) catch Error nil))",
-        "(try (fail (Probe)) catch Probe (try (await first) catch Error nil))",
-        "(match true (when true (try (await first) catch Error nil)) (else nil))",
-        "(spawn (try (await first) catch Error nil))"]:
-      checkpoint body
-      expect GeneError:
-        discard strictErrorCompile("""
-          (fn invalid [] ^errors []
-            (let first (spawn 1))
-            (let second (spawn BODY))
-            (await second)
-            (await first))
-        """.replace("BODY", body))
-
-  test "catch and ensure paths preserve actual task consumption obligations":
-    check run(strictErrorCompile("""
-      (fn valid [] ^errors []
-        (let task (spawn (fail (Probe))))
-        (try (fail (Probe)) (await task) catch Probe nil)
-        (try (await task) catch Probe 7))
-      (valid)
-    """), newGlobalScope(newApplication())).intVal == 7
-    for body in [
-        "(try (await task) catch Probe nil)",
-        "(try (fail (Probe)) catch Probe (try (await task) catch Error nil))",
-        "(try 1 ensure (try (await task) catch Error nil))"]:
-      checkpoint body
-      check run(strictErrorCompile("""
-        (fn valid [] ^errors []
-          (let task (spawn (fail (Probe)))) BODY 7)
-        (valid)
-      """.replace("BODY", body)), newGlobalScope(newApplication())).intVal == 7
-      expect GeneError:
-        discard strictErrorCompile("""
-          (fn invalid [] ^errors []
-            (let task (spawn (fail (Probe)))) BODY
-            (try (await task) catch Probe nil))
-        """.replace("BODY", body))
-
-  test "match branches preserve task identity and possible consumption":
-    for branch in ["(when true (await task)) (else nil)",
-                   "(when true nil) (else (await task))"]:
-      expect GeneError:
-        discard strictErrorCompile("""
-          (fn invalid [flag : Bool] ^errors []
-            (let task (spawn 1))
-            (match flag BRANCH)
-            (await task))
-        """.replace("BRANCH", branch))
-    check run(strictErrorCompile("""
-      (fn valid [flag : Bool] ^errors []
-        (let task (spawn 7))
-        (match flag (when true 1) (else 2))
-        (await task))
-      (valid true)
-    """), newGlobalScope(newApplication())).intVal == 7
-
-  test "scope waiting does not consume or propagate child outcomes":
-    expect GeneError:
-      discard strictErrorCompile("(fn work [] ^errors [] (scope (spawn (fail (Probe))) nil))")
-    check run(strictErrorCompile("""
-      (fn work [] ^errors [RuntimeFault]
-        (scope (spawn (fail (Probe))) 7))
-      (try (work) catch RuntimeFault 0)
-    """), newGlobalScope(newApplication())).intVal == 7
-    check run(strictErrorCompile("""
-      (fn work [] ^errors [RuntimeFault]
-        (let task (scope (spawn (fail (Probe)))))
-        (try (await task) catch Probe 7))
-      (try (work) catch RuntimeFault 0)
-    """), newGlobalScope(newApplication())).intVal == 7
+  test "defects from natives and a second await add no obligation":
+    # Wrong arity, invalid arguments and a second await are Faults: strict
+    # code does not declare them, and catch Error does not catch them.
+    discard strictErrorCompile("""
+      (fn add [a : Int, b : Int] : Int ^errors [] (+ a b))
+      (fn twice [task] : Any ^errors [Error] (await task) (await task))
+      (fn sized [items : List] : Int ^errors [] (items .size))
+    """)
+    check gradualErrorEval("""
+      (let task (spawn 1))
+      (await task)
+      (try (await task) catch Error "error" catch RuntimeFault "fault")
+    """).print() == "\"fault\""
 
 suite "errors — module summaries":
   proc errorModuleRoot(): string =
