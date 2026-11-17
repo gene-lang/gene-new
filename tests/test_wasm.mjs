@@ -116,7 +116,7 @@ const cases = [
    '(let later (try (local_error) catch Error (fn [] $err/.message))) (later)',
    0, '"code 7"', ""],
   ['(let checked : (Callable [] Any ^errors []) ' +
-   '(fn [] (fail (AssertionFault ^_msg "original")))) ' +
+   '(fn [] (fail (Error ^_msg "original")))) ' +
    '(fn outer [] ^errors [] (checked)) ' +
    '(try (outer) catch ContractViolation $err/_cause/.message)',
    0, '"original"', ""],
@@ -142,7 +142,7 @@ const cases = [
    '(type Child : Parent ^props {}) (((Child ^n 7) .values) -> $into [])',
    0, "[7]", ""],
   ['(fn ^^generator bad [] : (Stream Int Never) ' +
-   '(try (yield 1) ensure (fail (AssertionFault ^_msg "cleanup")))) ' +
+   '(try (yield 1) ensure (fail (Error ^_msg "cleanup")))) ' +
    '(let s (bad)) (s .next) (try (s .close) false catch ContractViolation true)',
    0, "true", ""],
   ['(import $log [new_logger log_debug]) ' +
@@ -189,7 +189,7 @@ for (const [src, wantStatus, wantText, wantOut] of cases) {
 }
 
 const strictFailure = geneEval(
-  '(mod checked ^errors_mode strict) (fn invalid [] ^errors [] ($assert false))');
+  '(mod checked ^errors_mode strict) (fn invalid [] ^errors [] (fail (Error ^_msg \"x\")))');
 if (strictFailure.status === 0 || !strictFailure.text.includes('error checking:')) {
   failed++;
   console.error(`FAIL wasm strict error policy: ${JSON.stringify(strictFailure)}`);
