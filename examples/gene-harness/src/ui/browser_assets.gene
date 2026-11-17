@@ -18,7 +18,11 @@
   (if (|| (!= ($head payload) Map) (!= ($head payload/name) Str)
           ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match payload/name)))
     (fail (Error ^_msg "A browser client needs a stable contribution name.")))
-  (let url ($web/module_url payload/asset))
+  # A contribution is plugin data: a value that is not a compiled web module
+  # is rejected as an Error, with the native's complaint kept as the cause.
+  (let url (try ($web/module_url payload/asset)
+    catch Fault
+      (fail (Error ^_msg "A browser client needs a web_module or web/load asset." ^_cause $err))))
   (let style (stylesheet_url payload/style))
   {^name payload/name ^title (?? payload/title payload/name) ^url url ^stylesheet style})
 

@@ -87,7 +87,7 @@
       (fn [workspace]
         (with_service workspace ^provider
           (fn [request]
-            "(let shown ($to_str session/id \"|\" workspace/root \"|\" manager/.running? \"|\" (try session_id catch Error \"gone\") \"|\" (try workspace_root catch Error \"gone\")))\n(Outcome ^^done ^reply shown)")
+            "(let shown ($to_str session/id \"|\" workspace/root \"|\" manager/.running? \"|\" (try session_id catch Fault \"gone\") \"|\" (try workspace_root catch Fault \"gone\")))\n(Outcome ^^done ^reply shown)")
           (fn [service]
             (let session (create_session service))
             (let admitted (submit service session/id "objects" 1 "go"))
