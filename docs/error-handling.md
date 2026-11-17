@@ -138,6 +138,25 @@ loaded is a `NativeLibraryError`, and a compile failure reached through `eval`
 or a module import is a `CompileError`. Policy expiry seen from the caller that
 set the policy is `(LimitExceeded ^reason "timeout")` or `^reason "memory"`.
 
+
+### Host throws on web
+
+On the web profile a value that host JavaScript throws is not a Gene
+Throwable. The catch prologue wraps it before any clause is tested, so no
+handler sees a bare host value:
+
+- `(HostError ^_msg <text> ^value <thrown value>)` for an ordinary host throw,
+  a JS `Error`, string, number or `undefined` alike. `HostError` is an Error,
+  so a failed `fetch` reaches `catch Error`;
+- `(HostFault ^_msg <text> ^value <thrown value>)` for stack exhaustion and
+  out-of-memory errors.
+
+The original value is in `$err/value`. A clause that names a JavaScript error
+class does not match a host throw. Failures raised by the generated runtime's
+own helpers (an out-of-range index, an invalid argument) are `RuntimeFault`s,
+as on the VM, and a boundary failure is a `TypeFault`. `catch Throwable`
+compiles to `true`.
+
 ## Choosing how much checking to require
 
 Module syntax:

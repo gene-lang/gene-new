@@ -201,8 +201,9 @@ type
     implementedProtocols*: seq[string]
     protocolBindings*: Table[string, WebType]
     protocolMethods*: seq[WebImplMethod]
-    implementsError*: bool
-    errorRoot*: bool # declared `: Error`; the built-in root is not a JS parent
+    implementsError*: bool # a Throwable: declared under `Error` or `Fault`
+    errorRoot*: bool # declared `: Error` or `: Fault`; the root is not a JS parent
+    faultBranch*: bool # under `Fault`: never in rows, not caught by `catch Error`
     loc*: SourceLoc
 
   WebEnumVariant* = object
@@ -377,6 +378,7 @@ type
     enumDecls: Table[string, WebEnumDecl]
     protocolDecls: Table[string, WebProtocolDecl]
     errorTypes: HashSet[string]
+    faultTypes: HashSet[string]   # Throwables of the Fault branch
     contractTypeValues: Table[string, Value]
     protocolImplTargets: HashSet[string]
     currentTypeName: string
@@ -830,8 +832,9 @@ proc tsType(typ: WebType): string =
   of wtkGl: "WebGL2RenderingContext"
   of wtkGlObject: glObjectTsType(typ.name)
   of wtkNominal:
-    if typ.name == "Error": "unknown"
-    elif typ.name == "ContractViolation": "globalThis.Error"
+    if typ.name in ["Error", "Fault", "Throwable", "Panic"]: "unknown"
+    elif typ.name in ["ContractViolation", "HostError", "HostFault"]: "globalThis.Error"
+    elif typ.name == "TypeFault": "globalThis.TypeError"
     elif typ.name in ["Call", "RuntimeFault", "MessageFault"]: "GeneNode"
     else: mangleWebName(typ.name)
   of wtkUnion:
@@ -1521,6 +1524,9 @@ proc validateCallableProps(analysis: WebAnalysis, form: Value,
       raise webError(loc, label & " ^errors entries must name Error types")
     if typ.name in seen: continue
     seen.incl typ.name
+    if typ.name == "Throwable" or typ.name in analysis.faultTypes:
+      raise webError(loc, "Fault types are unchecked; remove " & typ.name &
+        " from ^errors")
     if typ.name != "Error" and typ.name notin analysis.errorTypes:
       raise webError(loc, label & " ^errors type " & typ.name &
         " does not implement Error")
@@ -1646,16 +1652,18 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
     if form.body[2].kind != vkSymbol:
       raise webError(loc, "web type parent must be a declared type name")
     if form.body[2].symVal == "Throwable":
-      raise webError(loc, "a web type extends Error, not Throwable")
-    if form.body[2].symVal == "Error" and not analysis.typeDecls.hasKey("Error"):
-      # `Error` is the built-in root, not an emitted class. Its two fields are
-      # inherited by every error type.
+      raise webError(loc, "a web type extends Error or Fault, not Throwable")
+    if form.body[2].symVal in ["Error", "Fault"] and
+        not analysis.typeDecls.hasKey(form.body[2].symVal):
+      # `Error` and `Fault` are built-in roots, not emitted classes. Their two
+      # fields are inherited by every Throwable.
       result.implementsError = true
       result.errorRoot = true
+      result.faultBranch = form.body[2].symVal == "Fault"
       result.fields.add WebField(sourceName: "_msg", emittedName: "_msg",
         typ: analysis.parseAnnotation(newSym("Str?"), loc), optional: true)
       result.fields.add WebField(sourceName: "_cause", emittedName: "_cause",
-        typ: analysis.parseAnnotation(newSym("Error?"), loc), optional: true)
+        typ: analysis.parseAnnotation(newSym("Throwable?"), loc), optional: true)
     else:
       result.parentName = form.body[2].symVal
     memberStart = 3
@@ -5335,6 +5343,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   for name, declaration in importedTypes:
     if declaration.implementsError:
       analysis.errorTypes.incl name
+    if declaration.faultBranch:
+      analysis.faultTypes.incl name
     for protocolName in declaration.implementedProtocols:
       analysis.protocolImplTargets.incl(protocolName & "\x1f" & name)
   let errorDeclaration = parseWebProtocolDecl(analysis,
@@ -5347,12 +5357,18 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     message.symbolName = "$gene_error_message"
     message.defaultFactory = "$gene_error_message_default"
   analysis.protocolDecls["Error"] = errorDeclaration
-  for name in ["RuntimeFault", "TypeFault", "ContractViolation", "MatchFault", "PathMissing", "EndOfStream"]:
+  for name in ["Throwable", "Fault", "RuntimeFault", "TypeFault", "ContractViolation",
+               "MatchFault", "PathMissing", "MessageFault", "CallKindFault",
+               "AssertionFault", "Panic", "HostFault", "EndOfStream", "HostError"]:
     analysis.errorTypes.incl name
+  for name in ["Fault", "RuntimeFault", "TypeFault", "ContractViolation", "MatchFault",
+               "PathMissing", "MessageFault", "CallKindFault", "AssertionFault",
+               "Panic", "HostFault"]:
+    analysis.faultTypes.incl name
   for name in ["TypeFault", "ContractViolation"]:
     let declaration = WebTypeDecl(sourceName: name,
-      emittedName: if name == "TypeFault": "$gene_user_type_error" else: "$gene_contract_type",
-      originId: "builtin:" & name, implementsError: true)
+      emittedName: if name == "TypeFault": "$gene_type_fault" else: "$gene_contract_type",
+      originId: "builtin:" & name, implementsError: true, faultBranch: true)
     declaration.fields.add WebField(sourceName: "_msg", emittedName: "_msg",
       typ: parseWebType(newSym("Str?"), SourceLoc()), optional: true)
     declaration.fields.add WebField(sourceName: "where", emittedName: "where", typ: webType(wtkStr))
@@ -5445,6 +5461,11 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
           name notin analysis.errorTypes:
         analysis.errorTypes.incl name
         declaration.implementsError = true
+        inheritedErrors = true
+      if (declaration.faultBranch or declaration.parentName in analysis.faultTypes) and
+          name notin analysis.faultTypes:
+        analysis.faultTypes.incl name
+        declaration.faultBranch = true
         inheritedErrors = true
   # The backend keeps `message` on an internal symbol-keyed slot, so that a
   # Gene error, a RuntimeFault node and a host exception all answer one runtime
@@ -6198,20 +6219,35 @@ proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
     raise newException(WebProfileError,
       "unsupported emitted web pattern kind: " & $pattern.kind)
 
+const WebNodeFaultNames = ["MessageFault", "CallKindFault", "AssertionFault",
+  "RuntimeLaneFault", "OrderFault", "RefFault", "ReplyAlreadySent",
+  "ValueProtocolPending", "ValueNotHashable", "ValueOperationReentry"]
+  ## Built-in Faults the web runtime raises, if at all, as node data.
+
 proc emitCatchType(emitter: var WebEmitter, errorType: Value,
                    target: string): string =
-  ## Catch syntax names a type, not a destructuring pattern. JavaScript errors
-  ## use native classes for the built-in boundaries and generated classes for
-  ## user nominal Error types; `Error` is the explicit recoverable catch-all.
+  ## Catch syntax names a type, not a destructuring pattern. The caught value is
+  ## already a Throwable (the prologue wrapped host throws), so the roots test
+  ## its branch; built-ins test their runtime representation and user types
+  ## their class.
   if errorType.kind == vkSymbol:
     let name = errorType.symVal
-    if name == "Error":
-      return "$gene_is_error(" & target & ")"
-    if name == "ContractViolation":
-      return target & " instanceof $gene_contract_type"
-    if name == "RuntimeFault":
-      let value = if emitter.typescript: "(" & target & " as any)" else: target
-      return value & "?.head === Symbol.for(\"RuntimeFault\")"
+    let value = if emitter.typescript: "(" & target & " as any)" else: target
+    case name
+    of "Throwable": return "true"
+    of "Error": return "$gene_is_error(" & target & ")"
+    of "Fault": return "($gene_branch_of(" & target & ") === \"fault\")"
+    of "ContractViolation": return target & " instanceof $gene_contract_type"
+    of "TypeFault": return target & " instanceof $gene_type_fault"
+    of "HostError": return target & " instanceof $gene_host_error"
+    of "HostFault": return target & " instanceof $gene_host_fault"
+    of "Panic": return "(" & value & "?.[Symbol.for(\"gene.panic\")] === true)"
+    of "RuntimeFault":
+      return "(" & value & "?.head === Symbol.for(\"RuntimeFault\") || " &
+        value & "?.constructor?.$gene_runtime === true)"
+    else: discard
+    if name in WebNodeFaultNames:
+      return "(" & value & "?.head === Symbol.for(" & jsString(name) & "))"
     let emitted =
       case name
       of "MatchFault": "GeneMatchError"
@@ -7413,10 +7449,11 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       let caught = emitter.temp()
       emitter.line("catch (" & caught & ") {")
       inc emitter.indent
-      emitter.line("if ($gene_cancelled(" & caught & ") || " &
-        (if emitter.typescript: "(" & caught & " as any)" else: caught) &
-        "?.[Symbol.for(\"gene.panic\")]) throw " & caught & ";")
-      emitter.line("$gene_admit_error(" & caught & ");")
+      # Cancellation is a control transfer, never a Throwable. Every other
+      # thrown value reaches the clauses as one: a host throw is wrapped as a
+      # HostError, or a HostFault for stack or memory exhaustion.
+      emitter.line("if ($gene_cancelled(" & caught & ")) throw " & caught & ";")
+      emitter.line(caught & " = $gene_wrap_thrown(" & caught & ");")
       for i, errorType in expr.patterns:
         let condition = emitter.emitCatchType(errorType, caught)
         emitter.line((if i == 0: "if" else: "else if") & " (" & condition & ") {")
@@ -8171,6 +8208,15 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
         if declaration.sourceName == typ.name: protocol = declaration
       if typ.name == "Error":
         emitter.line("if (!$gene_is_error(value)) $gene_type_error(where, \"Error\", value);")
+      elif typ.name == "Fault":
+        emitter.line("if ($gene_branch_of(value) !== \"fault\") $gene_type_error(where, \"Fault\", value);")
+      elif typ.name == "Throwable":
+        emitter.line("if ($gene_branch_of(value) === null) $gene_type_error(where, \"Throwable\", value);")
+      elif typ.name == "TypeFault":
+        emitter.line("if (!(value instanceof $gene_type_fault)) $gene_type_error(where, \"TypeFault\", value);")
+      elif typ.name in ["HostError", "HostFault"]:
+        emitter.line("if (!(value instanceof $gene_" & (if typ.name == "HostError": "host_error" else: "host_fault") &
+          ")) $gene_type_error(where, " & jsString(typ.name) & ", value);")
       elif typ.name == "ContractViolation":
         emitter.line("if (!(value instanceof $gene_contract_type)) $gene_type_error(where, \"ContractViolation\", value);")
       elif typ.name in ["Call", "RuntimeFault", "MessageFault"]:
@@ -8335,6 +8381,10 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
     " = new Set([" & fieldNames.join(", ") & "]);")
   emitter.line("static " & (if ts: "readonly $gene_error: boolean" else: "$gene_error") &
     " = " & (if declaration.implementsError: "true" else: "false") & ";")
+  if declaration.implementsError:
+    # The branch is the parent chain: `catch Error` and `catch Fault` read it.
+    emitter.line("static " & (if ts: "readonly $gene_branch: string" else: "$gene_branch") &
+      " = " & jsString(if declaration.faultBranch: "fault" else: "error") & ";")
   let fieldsType = if emitter.typescript:
     ": Record<string, unknown> = {}, body: unknown[] = [], $in_progress: boolean = false, immutable: boolean = false"
   else: " = {}, body = [], $in_progress = false, immutable = false"
@@ -8669,7 +8719,7 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   emitter.line("}")
   dec emitter.indent
   emitter.line("}")
-  emitter.line("toJSON() { throw new TypeError(\"Callable views are not serializable\"); }")
+  emitter.line("toJSON() { throw new $gene_runtime_type_error(\"Callable views are not serializable\"); }")
   dec emitter.indent
   emitter.line("}")
 
@@ -9049,7 +9099,7 @@ proc emitModule(module: WebModule, typescript: bool,
       (if typescript: ": boolean" else: "") & " = false) {")
     inc emitter.indent
     emitter.line("this.start = start; this.stop = stop; this.step = step; this.inclusive = inclusive;")
-    emitter.line("if (step === 0n) throw new RangeError(\"range step must not be zero\");")
+    emitter.line("if (step === 0n) throw new $gene_runtime_range_error(\"range step must not be zero\");")
     dec emitter.indent
     emitter.line("}")
     emitter.line("*[Symbol.iterator]()" &
@@ -9075,6 +9125,7 @@ proc emitModule(module: WebModule, typescript: bool,
   if needsStream:
     emitter.line("export class GeneEndOfStream extends Error {")
     inc emitter.indent
+    emitter.line("static $gene_branch = \"error\";")
     emitter.line("constructor() { super(\"end of stream\"); this.name = \"EndOfStream\"; }")
     dec emitter.indent
     emitter.line("}")
@@ -9105,7 +9156,7 @@ proc emitModule(module: WebModule, typescript: bool,
     inc emitter.indent
     emitter.line("if (this.buffered !== undefined) return this.buffered;")
     emitter.line("if (this.closed) return { done: true, value: undefined };")
-    emitter.line("if (this.pulling) throw new Error(\"a Stream cannot be pulled reentrantly\");")
+    emitter.line("if (this.pulling) throw new $gene_runtime_error(\"a Stream cannot be pulled reentrantly\");")
     emitter.line("this.pulling = true;")
     emitter.line("try { while (!this.closed && this.source) { const item = this.source.next(); if (this.closed) break; if (item.done) { this.close(); break; } if (item.value !== undefined) { this.buffered = item; return item; } } return { done: true, value: undefined }; } catch (primary) { try { this.close(); } catch (_) {} throw primary; } finally { this.pulling = false; }")
     dec emitter.indent
@@ -9174,7 +9225,7 @@ proc emitModule(module: WebModule, typescript: bool,
       emitter.line("function $gene_stream_take(source" & anyType & ", count" &
         anyType & ")" & anyType & " {")
       inc emitter.indent
-      emitter.line("if (typeof count !== \"bigint\" || count < 0n) throw new RangeError(\"take count must be a non-negative Int\");")
+      emitter.line("if (typeof count !== \"bigint\" || count < 0n) throw new $gene_runtime_range_error(\"take count must be a non-negative Int\");")
       emitter.line("if (Array.isArray(source)) return source.slice(0, Number(count));")
       emitter.line("let remaining = count, bounded" & anyType & ";")
       emitter.line("function* taken() { while (remaining > 0n && source.has_next()) { const item = source.next(); remaining -= 1n; if (remaining === 0n) bounded.detach(); yield item; } }")
@@ -9283,7 +9334,7 @@ proc emitModule(module: WebModule, typescript: bool,
     inc emitter.indent
     emitter.line("const p = " & (if typescript: "parent as Node" else: "parent") & ", c = " &
       (if typescript: "child as Node" else: "child") & ";")
-    emitter.line("if (index < 0n || index > BigInt(p.childNodes.length)) throw new RangeError('dom/insert_at index out of range');")
+    emitter.line("if (index < 0n || index > BigInt(p.childNodes.length)) throw new $gene_runtime_range_error('dom/insert_at index out of range');")
     emitter.line("const before = p.childNodes[Number(index)] ?? null; if (before === c) return;")
     emitter.line("const active = p.ownerDocument?.activeElement" & (if typescript: " as HTMLInputElement | null" else: "") & ";")
     emitter.line("const retained = active != null && c.contains(active), start = retained ? active.selectionStart : null, end = retained ? active.selectionEnd : null;")
@@ -9347,21 +9398,21 @@ proc emitModule(module: WebModule, typescript: bool,
     let numParam = if typescript: "x: number" else: "x"
     let numReturn = if typescript: ": number" else: ""
     emitter.line("function $gene_math_sqrt(" & numParam & ")" & numReturn &
-      " { if (x < 0) throw new RangeError(" &
+      " { if (x < 0) throw new $gene_runtime_range_error(" &
       "\"math/sqrt expects a non-negative number\"); return Math.sqrt(x); }")
   if moduleUsesBuiltin(module, ["math/log", "math/log2", "math/log10"]):
     let logParams = if typescript: "x: number, where: string, op: (n: number) => number"
                     else: "x, where, op"
     let numReturn = if typescript: ": number" else: ""
     emitter.line("function $gene_math_log(" & logParams & ")" & numReturn &
-      " { if (x <= 0) throw new RangeError(where + " &
+      " { if (x <= 0) throw new $gene_runtime_range_error(where + " &
       "\" expects a positive number\"); return op(x); }")
   if moduleUsesBuiltin(module, ["math/asin", "math/acos"]):
     let arcParams = if typescript: "x: number, where: string, op: (n: number) => number"
                     else: "x, where, op"
     let numReturn = if typescript: ": number" else: ""
     emitter.line("function $gene_math_arc(" & arcParams & ")" & numReturn &
-      " { if (x < -1 || x > 1) throw new RangeError(where + " &
+      " { if (x < -1 || x > 1) throw new $gene_runtime_range_error(where + " &
       "\" expects a number in -1..1\"); return op(x); }")
   # `to_int` truncates toward zero and refuses NaN and anything outside the
   # Int64 range, exactly as `biToInt` does. The range check is worth a note: the
@@ -9373,17 +9424,17 @@ proc emitModule(module: WebModule, typescript: bool,
     let numParam = if typescript: "x: number | bigint" else: "x"
     let bigReturn = if typescript: ": bigint" else: ""
     emitter.line("function $gene_to_int(" & numParam & ")" & bigReturn &
-      " { if (typeof x === \"bigint\") return x; if (Number.isNaN(x)) throw new RangeError(\"to_int got NaN\"); " &
+      " { if (typeof x === \"bigint\") return x; if (Number.isNaN(x)) throw new $gene_runtime_range_error(\"to_int got NaN\"); " &
       "const t = Math.trunc(x); " &
       "if (t >= 9223372036854775808 || t < -9223372036854775808) " &
-      "throw new RangeError(\"to_int is out of Int range: \" + x); " &
+      "throw new $gene_runtime_range_error(\"to_int is out of Int range: \" + x); " &
       "return BigInt(t); }")
   if moduleUsesBuiltin(module, ["math/clamp"]):
     let clampParams = if typescript: "x: number, lo: number, hi: number"
                       else: "x, lo, hi"
     let numReturn = if typescript: ": number" else: ""
     emitter.line("function $gene_math_clamp(" & clampParams & ")" & numReturn &
-      " { if (lo > hi) throw new RangeError(" &
+      " { if (lo > hi) throw new $gene_runtime_range_error(" &
       "\"math/clamp lower bound exceeds upper bound\"); " &
       "return x < lo ? lo : x > hi ? hi : x; }")
   if moduleUsesBuiltin(module, ["dom/element"]):
@@ -9391,7 +9442,7 @@ proc emitModule(module: WebModule, typescript: bool,
     let ret = if typescript: ": EventTarget" else: ""
     emitter.line("function $gene_dom_element(" & idParam & ")" & ret &
       " { const el = document.getElementById(id); if (!el) " &
-      "throw new TypeError(`dom/element: no element with id ${id}`); " &
+      "throw new $gene_runtime_type_error(`dom/element: no element with id ${id}`); " &
       "return el; }")
   if moduleUsesBuiltin(module, ["dom/rect_left", "dom/rect_top",
                                 "dom/rect_width", "dom/rect_height"]):
@@ -9407,7 +9458,7 @@ proc emitModule(module: WebModule, typescript: bool,
     let strReturn = if typescript: ": string" else: ""
     emitter.line("function $gene_event_str(" & evParams & ")" & strReturn &
       " { const v = event?.[field]; if (typeof v !== \"string\") " &
-      "throw new TypeError(`event has no string ${field}`); return v; }")
+      "throw new $gene_runtime_type_error(`event has no string ${field}`); return v; }")
   if moduleUsesBuiltin(module, ["event/button", "event/client_x",
                                 "event/client_y", "event/delta_y",
                                 "event/movement_x", "event/movement_y"]):
@@ -9415,7 +9466,7 @@ proc emitModule(module: WebModule, typescript: bool,
     let numReturn = if typescript: ": number" else: ""
     emitter.line("function $gene_event_num(" & evParams & ")" & numReturn &
       " { const v = event?.[field]; if (typeof v !== \"number\") " &
-      "throw new TypeError(`event has no numeric ${field}`); return v; }")
+      "throw new $gene_runtime_type_error(`event has no numeric ${field}`); return v; }")
   if moduleUsesBuiltin(module, ["image/load"]):
     let imgParams = if typescript: "src: string, onLoad: (image: EventTarget) => void"
                     else: "src, onLoad"
@@ -9432,10 +9483,10 @@ proc emitModule(module: WebModule, typescript: bool,
     let filesReturn = if typescript: ": File[]" else: ""
     let voidReturn = if typescript: ": void" else: ""
     emitter.line("function $gene_file(value" & anyParam & ")" & fileReturn &
-      " { if (!(value instanceof File)) throw new TypeError('files operation expects a File'); return value; }")
+      " { if (!(value instanceof File)) throw new $gene_runtime_type_error('files operation expects a File'); return value; }")
     emitter.line("function $gene_files_input(input" & targetParam & ")" & filesReturn &
       " { if (!(input instanceof HTMLInputElement) || input.type !== 'file') " &
-      "throw new TypeError('files/from_input expects a file input'); return Array.from(input.files || []); }")
+      "throw new $gene_runtime_type_error('files/from_input expects a file input'); return Array.from(input.files || []); }")
     emitter.line("function $gene_files_event(event" & anyParam & ")" & filesReturn &
       " { return Array.from(event?.dataTransfer?.files || event?.clipboardData?.files || []).map($gene_file); }")
     let readParams = if typescript:
@@ -9445,7 +9496,7 @@ proc emitModule(module: WebModule, typescript: bool,
       (if typescript: ": EventTarget" else: "") & " {")
     inc emitter.indent
     emitter.line("const file = $gene_file(value); const reader = new FileReader();")
-    emitter.line("if (maxBytes < 0n || maxBytes > 67108864n) throw new RangeError('files/read_base64 limit must be 0..64 MiB');")
+    emitter.line("if (maxBytes < 0n || maxBytes > 67108864n) throw new $gene_runtime_range_error('files/read_base64 limit must be 0..64 MiB');")
     emitter.line("if (BigInt(file.size) > maxBytes) { queueMicrotask(() => onError('File exceeds the configured size limit.')); return reader; }")
     emitter.line("reader.onload = () => { const data = reader.result; if (typeof data !== 'string' || !data.includes(';base64,')) { onError('File did not produce base64 data.'); return; } onRead(data.slice(data.indexOf(',') + 1)); };")
     emitter.line("reader.onerror = () => onError('The selected file could not be read.');")
@@ -9454,7 +9505,7 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line("function $gene_file_cancel(reader" & targetParam & ")" & voidReturn &
-      " { if (!(reader instanceof FileReader)) throw new TypeError('files/cancel expects a FileReader'); reader.abort(); }")
+      " { if (!(reader instanceof FileReader)) throw new $gene_runtime_type_error('files/cancel expects a FileReader'); reader.abort(); }")
   for op in ["lower", "upper"]:
     if moduleUsesBuiltin(module, ["str/" & op]):
       let params = if typescript: "s: string" else: "s"
@@ -9623,7 +9674,7 @@ proc emitModule(module: WebModule, typescript: bool,
       else: "language, partial, final, ended"
     emitter.line("function $gene_speech_recognize_start(" & startParams & ")" &
       (if typescript: ": EventTarget" else: "") & " {")
-    emitter.line("  const Constructor = $gene_speech_constructor(); if (!Constructor) throw new TypeError('Speech recognition is unavailable in this browser.');")
+    emitter.line("  const Constructor = $gene_speech_constructor(); if (!Constructor) throw new $gene_runtime_type_error('Speech recognition is unavailable in this browser.');")
     emitter.line("  const recognizer = new Constructor(); recognizer.lang = language; recognizer.continuous = true; recognizer.interimResults = true;")
     emitter.line("  const handle = new EventTarget()" & (if typescript: " as $GeneSpeechCapture" else: "") & ";")
     emitter.line("  let finished = false; let failure = ''; const finals" &
@@ -9706,7 +9757,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("function $gene_canvas_context(" & elParam & ")" & ctxReturn &
       " { const ctx = (element" &
       (if typescript: " as HTMLCanvasElement" else: "") &
-      ").getContext(\"2d\"); if (!ctx) throw new TypeError(" &
+      ").getContext(\"2d\"); if (!ctx) throw new $gene_runtime_type_error(" &
       "\"canvas/context expects a canvas element\"); return ctx; }")
   if moduleUsesBuiltin(module, ["gl/context"]):
     let glParam = if typescript: "element: EventTarget" else: "element"
@@ -9718,7 +9769,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("function $gene_gl_context(" & glParam & ")" & glReturn &
       " { const gl = (element" &
       (if typescript: " as HTMLCanvasElement" else: "") &
-      ").getContext(\"webgl2\"); if (!gl) throw new TypeError(" &
+      ").getContext(\"webgl2\"); if (!gl) throw new $gene_runtime_type_error(" &
       "\"gl/context requires a canvas with WebGL2 support\"); return gl; }")
   if moduleUsesBuiltin(module, ["gl/create_buffer", "gl/create_shader",
                                 "gl/create_program", "gl/create_texture",
@@ -9734,7 +9785,7 @@ proc emitModule(module: WebModule, typescript: bool,
     # anyway.
     emitter.line("function $gene_gl_require(" & reqParams & ")" &
       (if typescript: ": any" else: "") &
-      " { if (value === null || value === undefined) throw new TypeError(" &
+      " { if (value === null || value === undefined) throw new $gene_runtime_type_error(" &
       "what + \" returned no handle\"); return value; }")
   if moduleUsesBuiltin(module, ["canvas/set_size"]):
     let sizeParams = if typescript: "element: EventTarget, w: number, h: number"
@@ -9759,11 +9810,11 @@ proc emitModule(module: WebModule, typescript: bool,
     let voidReturn = if typescript: ": void" else: ""
     emitter.line("function $gene_dom_prevent_default(" & eventParam & ")" &
       voidReturn & " { if (typeof event?.preventDefault !== \"function\") " &
-      "throw new TypeError(\"dom/prevent_default expected an Event\"); " &
+      "throw new $gene_runtime_type_error(\"dom/prevent_default expected an Event\"); " &
       "event.preventDefault(); }")
     emitter.line("function $gene_dom_stop_propagation(" & eventParam & ")" &
       voidReturn & " { if (typeof event?.stopPropagation !== \"function\") " &
-      "throw new TypeError(\"dom/stop_propagation expected an Event\"); " &
+      "throw new $gene_runtime_type_error(\"dom/stop_propagation expected an Event\"); " &
       "event.stopPropagation(); }")
     emitter.line()
   if moduleUsesBuiltin(module, ["session_storage/get", "session_storage/set", "session_storage/remove"]):
@@ -9844,9 +9895,9 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("const encode = (item" & dynamic & ")" &
       (if typescript: ": string" else: "") & " => {")
     inc emitter.indent
-    emitter.line("if (item === null) return \"null\"; if (typeof item === \"bigint\") return item.toString(); if (typeof item === \"number\") { if (!Number.isFinite(item)) throw new TypeError(\"JSON cannot encode non-finite F64\"); return String(item); } if (typeof item === \"string\" || typeof item === \"boolean\") return JSON.stringify(item);")
-    emitter.line("if (typeof item !== \"object\") throw new TypeError(`JSON cannot encode ${typeof item}`); if (seen.has(item)) throw new TypeError(\"JSON cannot encode cycles\"); seen.add(item);")
-    emitter.line("let result; if (Array.isArray(item)) result = `[${item.map(encode).join(\",\")}]`; else if (item?.$gene_map === true) result = `{${[...item].filter(([key, val]) => !(omitNil && val == null)).map(([key, val]) => { if (typeof key !== \"string\") throw new TypeError(\"JSON Map keys must be Str\"); return `${JSON.stringify(key)}:${encode(val)}`; }).join(\",\")}}`; else result = `{${Object.entries(item).filter(([key, val]) => !(omitNil && val == null)).map(([key, val]) => `${JSON.stringify(key)}:${encode(val)}`).join(\",\")}}`; seen.delete(item); return result;")
+    emitter.line("if (item === null) return \"null\"; if (typeof item === \"bigint\") return item.toString(); if (typeof item === \"number\") { if (!Number.isFinite(item)) throw new $gene_runtime_type_error(\"JSON cannot encode non-finite F64\"); return String(item); } if (typeof item === \"string\" || typeof item === \"boolean\") return JSON.stringify(item);")
+    emitter.line("if (typeof item !== \"object\") throw new $gene_runtime_type_error(`JSON cannot encode ${typeof item}`); if (seen.has(item)) throw new $gene_runtime_type_error(\"JSON cannot encode cycles\"); seen.add(item);")
+    emitter.line("let result; if (Array.isArray(item)) result = `[${item.map(encode).join(\",\")}]`; else if (item?.$gene_map === true) result = `{${[...item].filter(([key, val]) => !(omitNil && val == null)).map(([key, val]) => { if (typeof key !== \"string\") throw new $gene_runtime_type_error(\"JSON Map keys must be Str\"); return `${JSON.stringify(key)}:${encode(val)}`; }).join(\",\")}}`; else result = `{${Object.entries(item).filter(([key, val]) => !(omitNil && val == null)).map(([key, val]) => `${JSON.stringify(key)}:${encode(val)}`).join(\",\")}}`; seen.delete(item); return result;")
     dec emitter.indent
     emitter.line("}; return encode(value);")
     dec emitter.indent
@@ -9895,8 +9946,8 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("}")
     emitter.line("function $gene_delete(value" & dynamic & ", key" & dynamic & ")" & dynamic & " {")
     inc emitter.indent
-    emitter.line("if (value == null) throw new TypeError(\"cannot mutate an absent value\");")
-    emitter.line("if (Object.isFrozen(value)) throw new TypeError(\"cannot mutate a frozen value\");")
+    emitter.line("if (value == null) throw new $gene_runtime_type_error(\"cannot mutate an absent value\");")
+    emitter.line("if (Object.isFrozen(value)) throw new $gene_runtime_type_error(\"cannot mutate a frozen value\");")
     emitter.line("if (value?.$gene_map === true) { const had = value.has(key); const old = had ? value.get(key) : null; if (had) value.delete(key); return old; }")
     emitter.line("key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key);")
     emitter.line("if (!Object.prototype.hasOwnProperty.call(value, key)) return null;")
@@ -9909,11 +9960,11 @@ proc emitModule(module: WebModule, typescript: bool,
       ", next" & dynamic & ")" & dynamic & " {")
     inc emitter.indent
     emitter.line("if (next === undefined) next = null;")
-    emitter.line("if (value == null) throw new TypeError(\"cannot mutate an absent value\");")
-    emitter.line("if (Object.isFrozen(value)) throw new TypeError(\"cannot mutate a frozen value\");")
+    emitter.line("if (value == null) throw new $gene_runtime_type_error(\"cannot mutate an absent value\");")
+    emitter.line("if (Object.isFrozen(value)) throw new $gene_runtime_type_error(\"cannot mutate a frozen value\");")
     emitter.line("if (value[$gene_prop_order]) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); const order = value[$gene_prop_order]; const at = order.indexOf(key); if (next === undefined) { delete value[key]; if (at >= 0) order.splice(at, 1); } else { if (at < 0) order.push(key); Object.defineProperty(value, key, { value: next, enumerable: true, writable: true, configurable: true }); } return next; }")
     emitter.line("if (typeof key === \"bigint\") key = Number(key);")
-    emitter.line("if (value?.$gene_map === true) throw new TypeError(\"cannot mutate an immutable Map\");")
+    emitter.line("if (value?.$gene_map === true) throw new $gene_runtime_type_error(\"cannot mutate an immutable Map\");")
     # A negative index is resolved against the length *before* anything else
     # reads it, so the node-body and array arms below index the same slot the VM
     # would (`updateIndex`), and an out-of-range write raises instead of
@@ -9946,6 +9997,7 @@ proc emitModule(module: WebModule, typescript: bool,
   if moduleUsesStrictSelector(module):
     emitter.line("class GenePathMissing extends Error {")
     inc emitter.indent
+    emitter.line("static $gene_branch = \"fault\";")
     emitter.line("constructor(segment" &
       (if typescript: ": unknown" else: "") &
       ") { super(`Path segment ${String(segment)} is missing`); this.name = \"PathMissing\"; }")
@@ -10011,6 +10063,7 @@ proc emitModule(module: WebModule, typescript: bool,
   if moduleUsesPatternMatching(module):
     emitter.line("class GeneMatchError extends Error {")
     inc emitter.indent
+    emitter.line("static $gene_branch = \"fault\";")
     emitter.line("constructor(value" &
       (if typescript: ": unknown" else: "") & ") {")
     inc emitter.indent
@@ -10773,6 +10826,7 @@ proc loadWebGraph(sourcePath: string,
                 implementedProtocols: implementedProtocols,
                 protocolMethods: protocolMethods, protocolBindings: protocolBindings,
                 implementsError: declaration.implementsError,
+                faultBranch: declaration.faultBranch,
                 loc: spec.loc)
               foundDeclaration = true
           for declaration in dependency.enums:

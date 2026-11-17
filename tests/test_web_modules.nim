@@ -51,6 +51,85 @@ suite "web catch types":
     discard analyzeWebModule("(mod catch_types ^profile web) " &
       "(fn run [] : Int (try 1 catch Error 2))", "catch_types.gene")
 
+  test "a host throw reaches a catch as a HostError or HostFault":
+    let root = createTempDir("gene-web-host-throw-", "")
+    defer: removeDir(root)
+    writeFile(root / "host.mjs", """
+      export function throw_value(kind) {
+        if (kind === "string") throw "x";
+        if (kind === "number") throw 3;
+        if (kind === "undefined") throw undefined;
+        if (kind === "type") throw new TypeError("t");
+        const deep = () => deep();
+        deep();
+      }
+    """)
+    writeFile(root / "host_throw.gene", """
+      (mod host_throw ^profile web)
+      (js/fn throw_value [kind : Str] : Nil ^from "./host.mjs")
+      (fn probe [kind : Str] : Str
+        (try (throw_value kind) "returned"
+          catch Fault $"fault ${$err/.message}"
+          catch Error $"error ${$err/.message}"))
+      (fn wrapped [kind : Str] : Bool
+        (try (throw_value kind) false catch HostError true))
+      (fn run [] : (List Str)
+        [(probe "string") (probe "number") (probe "type")
+         (try (throw_value "string") "returned" catch Throwable $err/.message)
+         (if (wrapped "undefined") "host-error" "other")
+         (try (throw_value "deep") "returned" catch HostFault "host-fault")])
+    """)
+    discard buildWebModule(root / "host_throw.gene", root / "out")
+    copyFile(root / "host.mjs", root / "out" / "host.mjs")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {run} from './host_throw.mjs';
+      assert.deepEqual(run(), ["error x", "error 3", "error t", "x", "host-error", "host-fault"]);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
+  test "branch catches: Error, Fault and named built-in Faults":
+    let root = createTempDir("gene-web-branch-catch-", "")
+    defer: removeDir(root)
+    writeFile(root / "branch_catch.gene", """
+      (mod branch_catch ^profile web)
+      (type Probe : Error)
+      (type Invariant : Fault ^props {^code Int})
+      (fn typed [x : Int] : Int x)
+      (fn classify [kind : Str] : Str
+        (try
+          (if (== kind "error") (fail (Probe ^_msg "probe"))
+            (if (== kind "fault") (fail (Invariant ^code 7 ^_msg "broken"))
+              (if (== kind "zero") (do (// 1 0) "")
+                (do (let v : Any kind) (typed v) ""))))
+          catch Error $"error ${$err/.message}"
+          catch Invariant $"invariant ${$err/.message}"
+          catch RuntimeFault $"runtime ${$err/.message}"
+          catch TypeFault "type"))
+      (fn rows [] : Str ^errors [] (fail (Invariant ^code 1 ^_msg "passes")))
+      (fn run [] : (List Str)
+        [(classify "error") (classify "fault") (classify "zero") (classify "type")
+         (try (rows) catch ContractViolation "violation" catch Fault $err/.message)])
+    """)
+    discard buildWebModule(root / "branch_catch.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {run} from './branch_catch.mjs';
+      assert.deepEqual(run(), ["error probe", "invariant broken", "runtime division by zero", "type", "passes"]);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+    var message = ""
+    try:
+      discard analyzeWebModule("(mod fault_row ^profile web) (type Invariant : Fault) " &
+        "(fn run [] : Int ^errors [Invariant] 1)", "fault_row.gene")
+    except WebProfileError as error:
+      message = error.msg
+    check "Fault types are unchecked" in message
+
 suite "web macros with gensym":
   const swapSource = """
     (mod NAME ^profile web)
@@ -549,7 +628,7 @@ suite "web named rest and property spread":
       (fn typed_run [] : Int
         (typed ^count 2))
       (fn typed_bad [] : Bool
-        (try (typed ^count "bad") false catch Error true))
+        (try (typed ^count "bad") false catch TypeFault true))
     """)
     discard buildWebModule(root / "named_rest.gene", root / "out")
     writeFile(root / "out" / "check.mjs", """
