@@ -218,7 +218,7 @@
         (let preview (select_provider ^allow_unready true runtime (session_settings metadata settings)))
         (set selected preview/selection)
         (set reason preview/reason)
-      catch Any
+      catch Error
         (let effective (session_settings metadata settings))
         (let choice (provider_choice runtime effective))
         (set selected {^provider choice/name ^model (?? (nonempty effective/model) "Unavailable")

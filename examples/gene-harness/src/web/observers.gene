@@ -46,7 +46,7 @@
         (ctx/subscriptions .push
           (service/runtime/h/bus .subscribe HarnessEvent (fn [event] (on_event service event))))
         service
-      catch Any (stop_observers ctx) (fail $err)))
+      catch Error (stop_observers ctx) (fail $err)))
     ^recover nil ^quiesce (fn [ctx, service] (stop_observers ctx))
     ^close (fn [ctx, service] (stop_observers ctx))}
    # Browser refresh only; shared values reach execution without it.

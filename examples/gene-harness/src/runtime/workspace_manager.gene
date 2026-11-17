@@ -89,12 +89,12 @@
 
 (fn manager_redact [root : Str, text : Str]
   (var result text)
-  (let secret (try ($str/trim ($fs/read_text $"${root}/.gene-harness/web_secret")) catch Any ""))
+  (let secret (try ($str/trim ($fs/read_text $"${root}/.gene-harness/web_secret")) catch Error ""))
   (if (!= secret "") (set result ($str/join ($str/split result secret) "[redacted]")))
   (let credentials
     (try
       ($serde/read_data ($fs/read_text $"${root}/.gene-harness/cli_cookie"))
-    catch Any
+    catch Error
       nil))
   (for value in [credentials/cookie credentials/csrf]
     (if (&& (== ($head value) Str) (!= value ""))
@@ -109,7 +109,7 @@
       (let text
         (try
           ((Path "text") ($fs/read_text_page ^lines 100000 ^max_bytes 1048576 path))
-        catch Any
+        catch Error
           ""))
       (if (!= text "")
         (parts .push
@@ -144,7 +144,7 @@
     (let settings (read_workspace_settings entry/dir))
     (result .put "port" settings/port)
     (result .put "metadata_revision" ($pkg/canonical_digest settings))
-  catch Any
+  catch Error
     (result .put "status" "error")
     (result .put "message" ($to_str $err/message))
     (return result))
@@ -165,7 +165,7 @@
     (result .put "epoch" client/connection/epoch)
     (result .put "pending_port" (&& (!= result/port 0) (!= result/port client/connection/port)))
     (result .put "running" (?? status/running 0))
-  catch Any
+  catch Error
     (result .put "status" "unavailable")
     (result .put
       "message"
@@ -229,7 +229,7 @@
 (fn start_manager_polling [manager]
   (if_not ($absent? manager/poller/.get) (return nil))
   (manager/poller .set
-    (spawn ^lane root ($runtime/with_context nil (fn [] (while (! manager/closed/.get) (try (manager_refresh manager) catch Any nil) ($sleep 1500))))))
+    (spawn ^lane root ($runtime/with_context nil (fn [] (while (! manager/closed/.get) (try (manager_refresh manager) catch Error nil) ($sleep 1500))))))
   nil)
 
 (fn close_workspace_manager [manager]
@@ -399,7 +399,7 @@
   (try
     (let client (connect ^deadline due entry/dir))
     (api ^deadline due client "POST" "/control" {^action "stop" ^confirm confirmed})
-  catch Any
+  catch Error
     (if (== $err/code "confirmation_required")
       (return
         {
@@ -506,7 +506,7 @@
         (if (== result/status "confirmation_required")
           result
           observed)
-      catch Any
+      catch Error
         (let error $err)
         (if_yes (&& ($present? entry) (["unavailable" "control_timeout" "startup_timeout" "startup_failed"] .contains? error/code))
           (let status

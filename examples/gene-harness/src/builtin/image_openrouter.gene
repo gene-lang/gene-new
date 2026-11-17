@@ -21,7 +21,7 @@
       ^timeout_ms 5000 ^max_bytes 2097152}))
     (if (!= response/status 200) (return nil))
     ($json/parse response/body)
-  catch Any nil))
+  catch Error nil))
 
 (fn allows [parameters, key : Str, value]
   (let descriptor (parameters .get key))
@@ -239,9 +239,9 @@
     (transport {^method "POST" ^url "https://openrouter.ai/api/v1/images"
       ^headers {^content-type "application/json" ^authorization $"Bearer ${key}"}
       ^body ($json/stringify body) ^timeout_ms prepared/timeout_ms ^max_bytes 16777216})
-    catch Any (image_error "transport_failed" "OpenRouter image transport failed; no retry was made.")))
+    catch Error (image_error "transport_failed" "OpenRouter image transport failed; no retry was made.")))
   (if_yes (!= response/status 200)
-    (let parsed (try ($json/parse response/body) catch Any nil))
+    (let parsed (try ($json/parse response/body) catch Error nil))
     (let message (if (== ($head parsed/error/message) Str) (nonempty parsed/error/message) nil))
     (let diagnostic (if ($absent? message) nil
       (safe_error ($str/join ($str/split message key) "[redacted]") inventory)))
@@ -252,7 +252,7 @@
   (if (> ($str/byte_size response/body) 16777216)
     (image_error "response_too_large" "OpenRouter image response exceeds 16 MiB."))
   (let parsed (try ($json/parse response/body)
-    catch Any (image_error "invalid_response" "OpenRouter returned invalid image JSON.")))
+    catch Error (image_error "invalid_response" "OpenRouter returned invalid image JSON.")))
   (let usage (image_usage parsed/usage))
   # Preserve billed usage even when the adapter cannot return valid bytes.
   (if (|| (!= ($head parsed/data) List) (!= parsed/data/.size 1))
@@ -264,7 +264,7 @@
   (if (> ($str/byte_size image/b64_json) 13981016)
     (fail (ImageError ^code "image_too_large" ^usage usage ^message "Generated image exceeds 10 MiB.")))
   (let bytes (try ($base64/decode image/b64_json)
-    catch Any nil))
+    catch Error nil))
   (if ($absent? bytes)
     (fail (ImageError ^code "invalid_image" ^usage usage ^message "OpenRouter returned invalid image encoding.")))
   (if (> ($binary/size bytes) 10485760)

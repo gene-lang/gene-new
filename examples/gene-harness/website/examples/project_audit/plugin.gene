@@ -30,7 +30,7 @@
     (rows .push (table_row "**Total**" summary/totals))
     (rows .push "")
     (try ($fs/write_text summary/report_path ($str/join rows "\n"))
-      catch Any (audit_error "write_failed" $"Could not write ${summary/report_path}." "write" summary/report_path))
+      catch Error (audit_error "write_failed" $"Could not write ${summary/report_path}." "write" summary/report_path))
     (host .PluginHost:update_state summary)
     summary)
 
@@ -45,7 +45,7 @@
     (let totals {^non_empty 0 ^todo 0 ^fixme 0})
     (for path in paths
       (let text (try ($fs/read_text path)
-        catch Any (audit_error "read_failed" $"Could not read ${path}." "read" path)))
+        catch Error (audit_error "read_failed" $"Could not read ${path}." "read" path)))
       (let counts {^path path ^non_empty 0 ^todo 0 ^fixme 0})
       (for line in ($str/split text "\n")
         (if (!= ($str/trim line) "") (counts .put "non_empty" (+ counts/non_empty 1)))

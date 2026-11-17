@@ -18,7 +18,7 @@
 
 (fn operator_context [ctx, turn]
   (let config (effective_config ctx/runtime))
-  (let reviewer (try (select_provider ctx/runtime config) catch Any nil))
+  (let reviewer (try (select_provider ctx/runtime config) catch Error nil))
   (let pinned (if ($absent? reviewer) nil
     ($freeze_shallow {^name reviewer/name ^settings ($freeze reviewer/settings)
       ^row ($freeze_shallow reviewer/row)})))

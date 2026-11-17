@@ -306,7 +306,7 @@
             (let report ($json/parse text))
             (if (&& (== report/type "appearance_report") (== ($head report/saved) Map) (== ($head report/rendered) Map))
               (report_appearance host/runtime client_id {^saved report/saved ^rendered report/rendered}))
-          catch Any nil))
+          catch Error nil))
         ^on_close (fn [connection] (remove_peer push connection)))))
     (if_yes (== request/path $"${(api_root)}/sessions")
       (if (== request/method "GET")
@@ -416,7 +416,7 @@
         catch CompositionConflict (response 409 {^code $err/code ^message $err/message})
         catch CompositionError (response 400 {^code "composition_error" ^message $err/message})
         catch PluginHistoryError (response 400 {^code "history_error" ^message $err/message})
-        catch Any
+        catch Error
           ($println $"Harness ${request/method} ${request/path} failed: ${$err/message}")
           (response 500 {^code "internal_error" ^message "The Harness could not complete this request. See the server output."}))))
 
@@ -450,7 +450,7 @@
       (clear_connection root (if ($absent? host) "" host/epoch))
     ensure
       (try
-        (if_not ($absent? server) (try (stop server) catch Any nil))
+        (if_not ($absent? server) (try (stop server) catch Error nil))
       ensure
         (try
           (if_not ($absent? host) (close_session_service host))

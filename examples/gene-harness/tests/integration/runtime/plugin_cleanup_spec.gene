@@ -64,7 +64,7 @@
         ($assert (== calls/.get/.size 2))
         ($assert (calls/.get .contains? "healthy"))
         ($assert (calls/.get .contains? "failed"))
-        ($assert (try (acquire_snapshot h/snapshots) false catch Any true))))))
+        ($assert (try (acquire_snapshot h/snapshots) false catch Error true))))))
 
 (describe "Concurrent callback ownership"
   (it "keeps callbacks added by a live activation while another scope's table is being retired" []

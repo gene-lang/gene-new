@@ -285,7 +285,7 @@
           (notice ^key "render" ui "")
           (set ui/render_error false)
           (restore_focus ui)
-        catch Any
+        catch Error
           (set ui/render_error true)
           (notice ^key "render" ^^sticky ^severity "error"
             ui
@@ -335,7 +335,7 @@
   (set ui/workspace workspace)
   (var saved (?? (storage_get (pending_key ui)) ""))
   (if_yes (!= saved "")
-    (set ui/pending (try ($json/parse saved) catch Any nil))
+    (set ui/pending (try ($json/parse saved) catch Error nil))
     (if_not ($absent? ui/pending)
       (if (== (text ui/pending/format) "2")
         (do

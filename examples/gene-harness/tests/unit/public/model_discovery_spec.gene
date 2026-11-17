@@ -86,7 +86,7 @@
   (it "rejects malformed lists and invents no capabilities for compatible endpoints" []
     (for normalize in [normalize_openrouter_models normalize_chatgpt_models
                       normalize_anthropic_models normalize_compatible_models]
-      (let rejected (try (normalize {}) false catch Any true))
+      (let rejected (try (normalize {}) false catch Error true))
       ($assert rejected "bad discovery JSON replaced the catalog"))
     (let models (normalize_compatible_models {^data [{^id "local"}]}))
     ($assert (== models/0/efforts []))

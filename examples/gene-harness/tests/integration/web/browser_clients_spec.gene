@@ -23,7 +23,7 @@
           ($assert (!= client/stylesheet ""))
           (let recovery (host_status ^safe true service))
           ($assert (== recovery/browser_clients/.size 0))
-          ($assert (try (validate_browser_client {^name "unsafe" ^url "https://example.com/code.js"}) false catch Any true))
+          ($assert (try (validate_browser_client {^name "unsafe" ^url "https://example.com/code.js"}) false catch Error true))
           (set_plugin_enabled service/runtime/workspace service/runtime/h "spotlight" false)
           (let disabled (host_status service))
           ($assert (== disabled/browser_clients/.size 3))

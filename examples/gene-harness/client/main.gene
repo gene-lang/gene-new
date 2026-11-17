@@ -421,7 +421,7 @@
           {^code "disconnected" ^message "Connection lost. Your draft is saved."}
           (try
             ($json/parse body)
-          catch Any
+          catch Error
             {^code "invalid_response" ^message "The Harness returned an unreadable response."})))
       (done status result))))
 
@@ -1712,7 +1712,7 @@
   (if_yes (== client/selected "") (return))
   (if_yes ($absent? client/mode_pending)
     (var saved : Str (?? (storage_get (mode_pending_key client/selected)) ""))
-    (if_yes (!= saved "") (set client/mode_pending (try ($json/parse saved) catch Any nil))))
+    (if_yes (!= saved "") (set client/mode_pending (try ($json/parse saved) catch Error nil))))
   (if_yes ($absent? client/mode_pending) (return))
   (var pending : Any client/mode_pending)
   (for record in records
@@ -1931,7 +1931,7 @@
     (then
       (try
         {^id data/id ^^ok ^result (client_operation client operation data/args)}
-        catch Any
+        catch Error
           {^id data/id ^!ok ^error "The browser could not run this operation."}))
     (else {^id data/id ^!ok ^error $"Unknown client operation ${operation}."})))
   ($http/request "POST" $"${(api_root)}/clients/reply" ($json/stringify reply)
@@ -2034,7 +2034,7 @@
           (if (&& (str/starts_with? queued "/") (! (str/starts_with? queued "//")))
             (send_command client queued)
             (stage_submission client queued)))))
-  catch Any
+  catch Error
     (notice ^key "connection" ^^sticky client "Refreshing the live connection…")
     (connect_socket client)))
 
@@ -2236,7 +2236,7 @@
                     ^!durable}])
               true)))))
     (render_tabs client)
-  catch Any
+  catch Error
     (connect_stream client tab)))
 
 (fn authenticated [client : Client, data : Any] : Nil
@@ -2245,7 +2245,7 @@
   (set_hidden "auth_notice" true)
   (var saved : Str (?? (storage_get "gene-harness/pending") ""))
   (if_yes (!= saved "")
-    (set client/pending (try ($json/parse saved) catch Any nil)))
+    (set client/pending (try ($json/parse saved) catch Error nil)))
   (if_not ($absent? client/pending)
     (var id : Str client/pending/session)
     (set client/selected id))

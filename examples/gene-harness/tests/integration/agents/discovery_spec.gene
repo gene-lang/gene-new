@@ -74,12 +74,12 @@
           ($assert (== ((Path "total") (discover ^kind "functions" h "bicycle")) 1))
           ($assert (== ((Path "total") (discover ^owner "other" h "bicycle")) 0))
           (for call in [(fn [] (discover ^kind "unknown" h)) (fn [] (discover ^limit 0 h)) (fn [] (discover ^offset -1 h))]
-            ($assert (try (call) false catch Any true)))
+            ($assert (try (call) false catch Error true)))
           (for invalid in [{^tags "not-a-list"} {^docs [1]} {^summary 42}]
             (let candidate {^name "bad" ^text "body"})
             (map_for [key value] in invalid
               (candidate .put key value))
-            ($assert (try (contribute h "probe" "docs" candidate) false catch Any true)))
+            ($assert (try (contribute h "probe" "docs" candidate) false catch Error true)))
           (for name in ["discover" "doc"]
             ($assert
               (try
@@ -89,7 +89,7 @@
                   "functions"
                   {^name name ^doc "Shadow a helper." ^fn (fn [] nil)})
                 false
-              catch Any
+              catch Error
                 ($str/contains? $err/message "reserved"))))
         ensure
           (shutdown_harness h)))))
@@ -129,7 +129,7 @@
             (try
               (doc h "widget/guide")
               false
-            catch Any
+            catch Error
               ($str/contains? $err/message "discover")))
         ensure
           (shutdown_harness h)))))
@@ -155,7 +155,7 @@
           ($assert (> ((Path "total") (discover ^owner "repl" runtime/h)) 0))
           (set_plugin_enabled runtime/workspace runtime/h "repl" false)
           ($assert (== ((Path "total") (discover ^owner "repl" runtime/h)) 0))
-          ($assert (try (doc runtime/h "harness/repl") false catch Any true))
+          ($assert (try (doc runtime/h "harness/repl") false catch Error true))
           (set_plugin_enabled runtime/workspace runtime/h "repl" true)
           ($assert (> ((Path "total") (discover ^owner "repl" runtime/h)) 0))
         ensure

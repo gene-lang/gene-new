@@ -42,7 +42,7 @@
     (let renderer (renderers .get kind))
     (if_yes (&& ($absent? (?? question/view nil)) ($present? renderer))
       (let drawn (try (renderer ($freeze copy))
-        catch Any (fail (QuestionError ^message $"question ${question/id} ${kind} render: ${$err/message}"))))
+        catch Error (fail (QuestionError ^message $"question ${question/id} ${kind} render: ${$err/message}"))))
       (copy .put "view" (question_view question/id drawn (?? copy/choices nil) kind)))
     # Opt-in single-click answering; the default is select, then Answer.
     (if_not ($absent? question/submit_on_answer)

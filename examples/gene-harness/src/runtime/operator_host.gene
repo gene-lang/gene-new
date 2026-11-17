@@ -18,7 +18,7 @@
   (if (state/closed .swap true) (return nil))
   (let errors [])
   (for mode in ["sh" "repl"]
-    (try (close_kind state mode) catch Any (errors .push $err/message)))
+    (try (close_kind state mode) catch Error (errors .push $err/message)))
   (if_not errors/.empty?
     (fail (ServiceError ^code "cleanup_failed" ^message $"Operator session cleanup failed: ${errors}")))
   nil)
@@ -49,7 +49,7 @@
         (state/readers .put mode remaining)
         (if (== remaining 0) (close_kind state mode))))))
       (record/values/.get .put mode true)
-    catch Any
+    catch Error
       (state/readers .put mode (- (state/readers .get mode) 1))
       (fail $err))))
   nil)

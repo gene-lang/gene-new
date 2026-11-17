@@ -223,7 +223,7 @@
               (set manager/changes draft/changes)
               (set manager/restore draft/restore)
               (set manager/repair draft/repair))
-          catch Any
+          catch Error
             nil)))
       (set manager/ready true)
       (if_yes (&& (has_draft manager) (!= manager/base manager/revision)) (set manager/plan nil))

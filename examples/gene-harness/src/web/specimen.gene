@@ -39,10 +39,10 @@
 (fn palette_samples [theme, mode : Str]
   (let tokens (resolved_tokens theme mode))
   (let items [])
-  (let background (try (color_value tokens "surface") catch Any ""))
+  (let background (try (color_value tokens "surface") catch Error ""))
   (for name in public_tokens
     (let suffix ($str/join ($str/split name "-") "_"))
-    (let value (try (color_value tokens name) catch Any (?? (tokens .get name) "initial")))
+    (let value (try (color_value tokens name) catch Error (?? (tokens .get name) "initial")))
     (let ratio (if (&& ($present? (#"^#[0-9a-fA-F]{6}$" .match value)) ($present? (#"^#[0-9a-fA-F]{6}$" .match background)))
       ($to_str (contrast_ratio value background) ":1 on surface") "measuring"))
     (items .push `(div ^class_name %$"theme_swatch token_${suffix}"
@@ -155,7 +155,7 @@
       (columns .push `(section ^class_name "theme_preview web_stack" ^preview_theme %name
         (h2 %theme/title)
         (div ^class_name "theme_modes" %(mode_samples theme "light" declared section field) %(mode_samples theme "dark" declared section field))))
-    catch Any
+    catch Error
       (columns .push `(section ^class_name "web_stack"
         (h2 %name)
         (p ^class_name "web_notice web_notice_error" %$"${name}: ${$err/message}")))))

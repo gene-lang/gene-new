@@ -157,7 +157,7 @@
   (workspace/history_profile .set (data_copy profile))
   (for builtin in (?? profile/builtins [])
     (try (remember_descriptor ^mode "host" workspace/store identity "builtin" builtin)
-      catch Any (workspace/metadata_errors/.get .push {^id builtin/id ^message $err/message})))
+      catch Error (workspace/metadata_errors/.get .push {^id builtin/id ^message $err/message})))
   (if ($absent? workspace/history_head/.get)
     (workspace/history_head .set
       (archive_baseline workspace/store
@@ -198,13 +198,13 @@
     (manifest .put "history_head" history)
     (try
       (workspace/store .Store:checkpoint next {^composition manifest})
-    catch Any
+    catch Error
       (let original $err)
       # A backend may report a maintenance/acknowledgment error after CURRENT
       # advanced. Resolve that outcome before treating an accepted plan as a
       # rejection. Unreadable authority is explicitly uncertain, never retried.
       (let recovered (try workspace/store/.Store:load_checkpoint
-        catch Any (fail (CompositionCommitUncertain ^code "commit_uncertain"
+        catch Error (fail (CompositionCommitUncertain ^code "commit_uncertain"
           ^message "Composition commit outcome is unreadable. Restart and inspect the authoritative checkpoint before another change."))))
       (if (|| ($absent? recovered) (!= recovered/records/composition/history_head history))
         (fail original)))
@@ -266,7 +266,7 @@
     (try
       (remember_failure workspace/store workspace/history_build/.get
         (?? (previous_module_digest (composition_entries workspace) id) "builtin") id message)
-    catch Any
+    catch Error
       (workspace/metadata_errors/.get .push {^id id ^message $err/message}))))
 
 (fn close_workspace [workspace : Workspace]

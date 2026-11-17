@@ -33,7 +33,7 @@
 
 (fn engine_rows [host, rows, kind : Str, label : Str]
   (for engine in (host .PluginHost:rows kind)
-    (let reason (try (engine/available) catch Any "The availability check failed."))
+    (let reason (try (engine/available) catch Error "The availability check failed."))
     (rows .push
       `(tr ^key %$"${kind}/${engine/name}"
          (td (strong %engine/name) (br) (small ^class_name "web_muted" %(?? engine/summary "")))
@@ -68,7 +68,7 @@
 .models-menu, .voice-panel { border-radius: var(--radius-surface); border-color: var(--edge); }
 """)))
     nil
-    catch Any $err/.Error:message))
+    catch Error $err/.Error:message))
   (Plugin ^id "voice" ^requires ["voice/host" "sessions/host"]
     ^provides [["browser_clients" "voice"] ["hooks" "request/prepare/voice"]
       ["speech_recognizers" "whisper_local"] ["speech_recognizers" "macos"] ["speech_synthesizers" "piper"]

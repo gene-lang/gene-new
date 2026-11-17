@@ -50,7 +50,7 @@
   (if (service/closed .swap true) (return nil))
   (services .set ($filter services/.get (fn [item] (! (same? item/token service/token)))))
   (map_for [name entry] in service/resources/.get
-    (try (entry/row/close entry/resource) catch Any nil))
+    (try (entry/row/close entry/resource) catch Error nil))
   (service/resources .set {})
   nil)
 
@@ -182,7 +182,7 @@
   nil)
 
 (fn engine_reason [candidate, settings] ^^private
-  (let result (try (candidate/available settings) catch Any ($to_str "The availability check failed: " $err/message)))
+  (let result (try (candidate/available settings) catch Error ($to_str "The availability check failed: " $err/message)))
   (if (|| ($absent? result) (== result true)) (return nil))
   (if (== result false) (return "This decision engine is unavailable."))
   (if (== ($head result) Str) result "The engine returned an invalid availability result."))
@@ -215,7 +215,7 @@
    ^source "auto" ^reason nil})
 
 (fn engine_limits [choice] ^^private
-  (let reported (try (choice/row/limits choice/settings) catch Any nil))
+  (let reported (try (choice/row/limits choice/settings) catch Error nil))
   (let request (if (== ($head reported/request_tokens) Int) reported/request_tokens 32000))
   (let question (if (== ($head reported/question_tokens) Int) reported/question_tokens request))
   (let overhead (if (== ($head reported/overhead_tokens) Int) reported/overhead_tokens 0))
@@ -265,7 +265,7 @@
       (return cached/resource))
     (if_yes ($present? cached)
       (service/resources/.get .delete choice/name)
-      (try (cached/row/close cached/resource) catch Any nil))
+      (try (cached/row/close cached/resource) catch Error nil))
     (let resource (choice/row/open choice/settings))
     (service/resources/.get .put choice/name {^key key ^row choice/row ^resource resource})
     resource)))
@@ -275,7 +275,7 @@
     (let cached (service/resources/.get .get choice/name))
     (if_yes ($present? cached)
       (service/resources/.get .delete choice/name)
-      (try (cached/row/close cached/resource) catch Any nil))))
+      (try (cached/row/close cached/resource) catch Error nil))))
   nil)
 
 (fn decision_session [request] ^^private
@@ -362,7 +362,7 @@
 
 (fn fence_current? [fence] : Bool ^^private
   (if (|| (!= ($head fence) Map) (! ($runtime/callable? fence/active))) (return true))
-  (try (== (fence/active) true) catch Any false))
+  (try (== (fence/active) true) catch Error false))
 
 (fn record_trace [service, session, request, result] ^^private
   (let payload {^type "decision" ^use request/use ^engine (?? result/engine "") ^model (?? result/model nil)
@@ -372,7 +372,7 @@
     (if (nonempty_text? session)
       (append_core_event service/runtime/events "session" session payload)
       (append_core_event service/runtime/events "workspace" "workspace" payload))
-  catch Any nil)
+  catch Error nil)
   nil)
 
 # One notice per engine per session while this host runs.

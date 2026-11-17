@@ -32,7 +32,7 @@
     (fn init [descriptor]
       ($assert (== descriptor/core_interface "gene-harness/PluginHost:3"))
       (Plugin ^id %id ^activate (fn [host]
-        ($assert (try host/h false catch Any true))
+        ($assert (try host/h false catch Error true))
         (host .PluginHost:contribute "functions"
           {^name ($to_str %id "_version") ^doc "Public source contract." ^fn (fn [] 3)}))))))
 
@@ -42,12 +42,12 @@
     (fn init [descriptor]
       ($assert (== descriptor/core_interface "gene-harness/PluginHost:3"))
       (Plugin ^id "compat" ^activate (fn [host]
-        ($assert (try host/h false catch Any true))
-        ($assert (try host/effects false catch Any true))
+        ($assert (try host/h false catch Error true))
+        ($assert (try host/effects false catch Error true))
         ($assert (! ((host .PluginHost:registry_names) .contains? "views")))
         (for seam in ["loop" "voice/runtime"]
           ($assert (try (host .PluginHost:resolve seam) false
-            catch Any ($str/contains? $err/message "no provider for seam")))
+            catch Error ($str/contains? $err/message "no provider for seam")))
           ($assert ($absent? (host .PluginHost:row "seams" seam)))
           ($assert (! ((host .PluginHost:row_keys "seams") .contains? seam)))
           ($assert (($filter (host .PluginHost:rows "seams")
@@ -55,25 +55,25 @@
         (let service (host .PluginHost:resolve "operator/host"))
         (let retained ($cell nil))
         (host .PluginHost:defer (fn []
-          ($assert (try host/h false catch Any true))
+          ($assert (try host/h false catch Error true))
           ($assert ($present? host/.PluginHost:execution_budget))
           ($fs/write_text %marker ($to_str %n))))
         (let subscription (host .PluginHost:subscribe DurableRecord (fn [event] nil)))
-        ($assert (try subscription/bus false catch Any true))
+        ($assert (try subscription/bus false catch Error true))
         subscription/.cancel
         (let observed ($cell 0))
         (host .PluginHost:subscribe DurableRecord (fn [event]
-          ($assert (try (event/envelope .put "type" "changed") false catch Any true))
+          ($assert (try (event/envelope .put "type" "changed") false catch Error true))
           (observed .set (+ observed/.get 1))))
         (host .PluginHost:contribute "functions" {^name "compat_events" ^doc "Observed inert durable envelopes."
           ^fn (fn [] observed/.get)})
         (host .PluginHost:contribute "functions" {^name "compat_version" ^doc "Public receiver."
-          ^fn (fn [] ($assert (try host/h false catch Any true)) host/.PluginHost:execution_budget %n)})
+          ^fn (fn [] ($assert (try host/h false catch Error true)) host/.PluginHost:execution_budget %n)})
         (host .PluginHost:contribute "functions" {^name "compat_handle" ^doc "Public activation identity."
           ^fn (fn [] host)})
         (host .PluginHost:create_registry {^name "compat_rows" ^^unique ^key "name"
           ^on_remove (fn [receiver, candidate]
-            ($assert (try receiver/h false catch Any true))
+            ($assert (try receiver/h false catch Error true))
             receiver/.PluginHost:execution_budget
             ($fs/write_text ($to_str %marker ".removed") ($to_str %n)))})
         (host .PluginHost:contribute "compat_rows" {^name "entry"})
@@ -89,7 +89,7 @@
             (let forged (CommandContext ^runtime nil ^manager nil ^session ctx/session
               ^raw ctx/raw ^id ctx/id ^output ctx/output ^snapshot ctx/snapshot))
             ($assert (try (service .OperatorHost:command "help" forged) false
-              catch Any (== $err/code "command_required")))
+              catch Error (== $err/code "command_required")))
             (service .OperatorHost:command "run" ctx))})
         (host .PluginHost:contribute "commands" {^name "compat_mode" ^doc "Open the public input mode."
           ^run (fn [ctx : CommandContext] (CommandResult ^display "Mode open." ^mode "compat_mode"))})
@@ -109,10 +109,10 @@
           ^render (fn [context, session]
             ($assert ($absent? context/h))
             ($assert ($absent? context/runtime))
-            ($assert (try (context .put "workspace_root" "changed") false catch Any true))
+            ($assert (try (context .put "workspace_root" "changed") false catch Error true))
             $"public:${context/workspace_root}:${session/kind}")}))
         ^deactivate (fn [host]
-          ($assert (try host/h false catch Any true))
+          ($assert (try host/h false catch Error true))
           ($assert ($present? host/.PluginHost:execution_budget)))))))
 
 (describe "Stored interface requirements"
@@ -145,7 +145,7 @@
           ($assert (! plan/valid) ($to_str plan))
           ($assert ($str/contains? ($str/join plan/errors "\n") "gene-harness/PluginHost:2"))
           ($assert (try (revert_plugin runtime/workspace runtime/h "retired" old_revision/.get) false
-            catch Any ($str/contains? $err/message "gene-harness/PluginHost:2")))
+            catch Error ($str/contains? $err/message "gene-harness/PluginHost:2")))
           ($assert (== (composition_revision runtime/workspace) before))
         ensure (close_runtime runtime)))))
 
@@ -202,7 +202,7 @@
           (let nested (command runtime "/compat_nested (+ 21 21)"))
           ($assert (== nested/item/value "42") ($to_str nested))
           ($assert (try (invoke runtime "compat_retained") false
-            catch Any (== $err/code "command_required")))
+            catch Error (== $err/code "command_required")))
           (let old_host (invoke runtime "compat_handle"))
           (let lease (acquire_snapshot runtime/h/snapshots))
           (let old_callback (/fn (row runtime/h "functions" "compat_version")))
@@ -217,9 +217,9 @@
           ($assert (== ($fs/read_text marker) "3"))
           ($assert (== ($fs/read_text $"${marker}.removed") "3"))
           (let retired_error (try old_host/.PluginHost:execution_budget {^message "unexpected success"}
-            catch Any {^code $err/code ^message $err/message}))
+            catch Error {^code $err/code ^message $err/message}))
           ($assert (== retired_error/code "unavailable") ($to_str retired_error))
-          ($assert (try (old_callback) false catch Any true))
+          ($assert (try (old_callback) false catch Error true))
         ensure (close_runtime runtime))
         (let restarted (open_runtime root "default" profile))
         (try
@@ -255,10 +255,10 @@
             (let bad ($thaw ($freeze good/0)))
             (map_for [key value] in extra (bad/interfaces .put key value))
             (let direct (try (verify_stored_entry runtime/workspace bad) ""
-              catch Any $err/message))
+              catch Error $err/message))
             ($assert ($str/contains? direct "unsupported interface") direct)
             (let loaded (try (load_entry_descriptor runtime/workspace runtime/h bad) ""
-              catch Any $err/message))
+              catch Error $err/message))
             ($assert (== direct loaded))
             (let revision (commit_composition runtime/workspace [bad]))
             (let plan (validate_plan runtime {^base_revision revision ^changes []}))
@@ -266,7 +266,7 @@
             ($assert ((plan/errors .join "\n") .contains? direct))
             (commit_composition runtime/workspace good)
             (let reverted (try (revert_plugin runtime/workspace runtime/h "compat" revision) ""
-              catch Any $err/message))
+              catch Error $err/message))
             ($assert (== direct reverted)))
         ensure (close_runtime runtime))))))
 
@@ -287,7 +287,7 @@
                   ($fs/write_text %marker "cleanup")))
                 (host .PluginHost:create_registry {^name "partial_rows" ^^unique ^key "name"
                   ^on_remove (fn [receiver, candidate]
-                    ($assert (try receiver/h false catch Any true))
+                    ($assert (try receiver/h false catch Error true))
                     receiver/.PluginHost:execution_budget
                     ($fs/write_text ($to_str %marker ".removed") "removed"))})
                 (host .PluginHost:contribute "partial_rows" {^name "entry"})
@@ -311,7 +311,7 @@
           (fn init [descriptor]
             (Plugin ^id "versioned" ^activate (fn [host]
               (host .PluginHost:contribute "functions" {^name "versioned" ^doc "Selected interface."
-                ^fn (fn [] {^core descriptor/core_interface ^opaque (try host/h false catch Any true)})})))))))
+                ^fn (fn [] {^core descriptor/core_interface ^opaque (try host/h false catch Error true)})})))))))
         (try
           (register_plugin runtime/workspace runtime/h "versioned" source)
           ($assert (== (invoke runtime "versioned") {^core "gene-harness/PluginHost:3" ^opaque true}))

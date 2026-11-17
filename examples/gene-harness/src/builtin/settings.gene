@@ -21,7 +21,7 @@
 
 (fn read_data_text [text : Str]
   (try ($serde/read_data $"(serde_v1 ${text})")
-    catch Any (invalid "Enter Gene data, such as {^timeout_ms 600000}.")))
+    catch Error (invalid "Enter Gene data, such as {^timeout_ms 600000}.")))
 
 (fn display [value] : Str
   (if ($absent? value) "none"
@@ -47,7 +47,7 @@
     (when "int"
       (do
         (let text ($str/trim ($to_str value)))
-        (let parsed (try ($parse/parse_int text) catch Any nil))
+        (let parsed (try ($parse/parse_int text) catch Error nil))
         (if ($absent? parsed) (invalid $"${definition/label} must be a whole number."))
         parsed))
     (when "bool" (== value true))
@@ -397,7 +397,7 @@
     (let tree (row/render context))
     (ui .UiHost:validate tree ^view "settings")
     tree
-    catch Any (section_error name ($to_str (?? $err/message $err)))))
+    catch Error (section_error name ($to_str (?? $err/message $err)))))
 
 (fn settings_layout [scope : Str, selected : Str, current, nav, body, section]
   `(section ^key "settings" ^class_name "settings_layout"
@@ -438,7 +438,7 @@
         (when "Keyboard Shortcuts" (keyboard_group workspace state scope))
         (when "Appearance" (appearance_group workspace scope))
         (else (generic_group workspace manager selected scope)))
-      catch Any
+      catch Error
         (let reason ($to_str (?? $err/message $err)))
         [`(p ^key "group-error" ^role "alert" ^class_name "web_notice web_notice_error"
             %$"This group could not be read: ${reason}")]))
@@ -450,7 +450,7 @@
   (try
     (ui .UiHost:validate composed ^view "settings")
     composed
-    catch Any
+    catch Error
       (settings_layout scope selected current nav body
         (section_error current/section ($to_str (?? $err/message $err))))))
 

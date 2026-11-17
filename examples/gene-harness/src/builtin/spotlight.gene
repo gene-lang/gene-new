@@ -43,7 +43,7 @@
     (if ($absent? stylesheet/.get)
       (stylesheet .set ($web/stylesheet "spotlight" style)))
     nil
-    catch Any $err/.Error:message))
+    catch Error $err/.Error:message))
   (let prepared_asset asset/.get)
   (let prepared_style stylesheet/.get)
   (Plugin ^id "spotlight" ^provides [["browser_clients" "spotlight"]]

@@ -12,7 +12,7 @@
     (match record
       (when {^pid pid ^started started ^entry entry} record)
       (else nil))
-    catch Any nil))
+    catch Error nil))
 
 (fn acquire_workspace_lock [root : Str, entry : Str, ^wait_ms wait_ms : Int = 0] : WorkspaceLock
   (let canonical ($fs/real_path root))

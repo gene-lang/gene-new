@@ -39,11 +39,11 @@
           ($assert (try
             (submit_command ^expected original ^request_id "stale" ^sequence 2
               runtime/services/values/commands "default" "/launch_probe") false
-            catch Any (== $err/code "revision_conflict")))
+            catch Error (== $err/code "revision_conflict")))
           ($assert (try
             (submit_command ^expected replacement ^request_id "first" ^sequence 1
               runtime/services/values/commands "default" "/launch_probe") false
-            catch Any (== $err/code "submission_conflict")))
+            catch Error (== $err/code "submission_conflict")))
           ($assert (== (/next_id (command_state runtime "default")) 2))
           ($assert (== calls/.get 1))
           (remove_owner runtime/h "probe")

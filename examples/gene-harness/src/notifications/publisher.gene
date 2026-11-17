@@ -26,7 +26,7 @@
   (let tree
     (try
       (bounded_component_view ^^interactive value)
-    catch Any
+    catch Error
       (notification_error "invalid_request" $err/message)))
   (fn check [node]
     (if (!= ($head node) Map) (return nil))
@@ -180,7 +180,7 @@
       inbox
       source
       input)
-  catch Any
+  catch Error
     {^!ok ^code (?? $err/code "notification_failed") ^message $err/message}))
 
 (fn source_message [inbox, source : Str, id : Str]
@@ -206,7 +206,7 @@
       inbox
       source
       input)
-  catch Any
+  catch Error
     {^!ok ^code (?? $err/code "notification_failed") ^message $err/message}))
 
 (fn list_source_messages [inbox, source : Str]

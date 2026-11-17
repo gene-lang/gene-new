@@ -25,17 +25,17 @@
     (if (|| result/timed_out result/stdout_truncated result/stderr_truncated)
       (fail (ProviderError ^message "Provider CLI probe exceeded its limit")))
     result
-  catch Any (fail (ProviderError ^message "Provider CLI probe could not complete"))))
+  catch Error (fail (ProviderError ^message "Provider CLI probe could not complete"))))
 
 (fn cli_probe_json [command : Str, args, ^allow_failure allow_failure : Bool = false]
   (let result (cli_probe command args))
   (if (&& (! allow_failure) (!= result/status 0)) (fail (ProviderError ^message "Provider CLI probe failed")))
   (try ($json/parse result/stdout)
-    catch Any (fail (ProviderError ^message "Provider CLI returned invalid metadata"))))
+    catch Error (fail (ProviderError ^message "Provider CLI returned invalid metadata"))))
 
 (fn claude_connection [command : Str]
   (let data (try (cli_probe_json ^allow_failure true command ["auth" "status"])
-    catch Any (return {^state "unavailable" ^label "Claude Code" ^billing "unknown"
+    catch Error (return {^state "unavailable" ^label "Claude Code" ^billing "unknown"
       ^^stale
       ^reason "Claude Code status is unavailable; install claude or check its executable setting."})))
   (if (!= ($head data/loggedIn) Bool)
@@ -61,7 +61,7 @@
   ^timeout_ms timeout_ms : Int = 5000]
   (let deadline (+ ($os/monotonic_ms) timeout_ms))
   (let secret (try (resolve_credential ^timeout_ms timeout_ms credential)
-    catch Any (return {^state "sign_in_required" ^label name ^billing "metered"
+    catch Error (return {^state "sign_in_required" ^label name ^billing "metered"
       ^reason $"${name} credential is unavailable."})))
   (let wire ($thaw ($freeze headers)))
   (if ($present? secret)

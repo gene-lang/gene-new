@@ -27,7 +27,7 @@
               ^state (if (== state "ready") "ready" "error") ^asset record/asset
               ^error (if (== state "ready") "" "Upload interrupted. Remove it and choose the file again.")
               ^removed false ^reader nil ^file nil})))
-      catch Any (set saved [])))
+      catch Error (set saved [])))
     (set media/drafts/%session saved)))
   saved)
 
@@ -183,7 +183,7 @@
               (finish_upload media item code result))))))
       (fn [message : Str] : Nil
         (finish_upload media item 400 {^message message}))))
-  catch Any (finish_upload media item 400 {^message "The selected file could not be read."})))
+  catch Error (finish_upload media item 400 {^message "The selected file could not be read."})))
 
 (fn add_files [media : MediaComposer, files : (List Any)] : Nil
   (if_not media/enabled (return))

@@ -65,7 +65,7 @@
               ^retain_rounds ["pinned"]} runtime "default" "" 1000
               (fn [request] (fail "unfittable policy called the model")))
             false
-          catch Any ($str/contains? $err/message "cannot fit")))
+          catch Error ($str/contains? $err/message "cannot fit")))
           ($assert (== ($serde/write_data (history_state runtime "default")) before)
             "failed compaction changed persisted history")
         ensure (close_runtime runtime))

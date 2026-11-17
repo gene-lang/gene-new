@@ -14,7 +14,7 @@
   catch Error
     (let failure $err)
     host/process/.cancel
-    (let ended (try (await host/process) catch Any nil))
+    (let ended (try (await host/process) catch Error nil))
     ($assert false ($to_str "Peer did not start: " failure/message "\n" (?? ended/stdout "") (?? ended/stderr "")))))
 
 (describe "Channel cross-process recovery"

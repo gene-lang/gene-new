@@ -35,4 +35,4 @@
     (try
       (host/effects .defer (fn [] (revoke_service_handle token)))
       handle
-    catch Any (revoke_service_handle token) (fail $err)))))
+    catch Error (revoke_service_handle token) (fail $err)))))

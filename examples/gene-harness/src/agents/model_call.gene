@@ -63,7 +63,7 @@
          ^session request/session ^round request/round ^turn request/turn
          ^budget request/budget ^config request/config
          ^messages messages ^settings selected/settings ^selection selected/selection ^max_tokens request/max_tokens})
-    catch Any
+    catch Error
       (if inventory/.empty? (fail $err))
       (fail (HarnessError ^message $"${selected/name} could not prepare image inputs."))))
   (let prepared ($freeze input))
@@ -78,19 +78,19 @@
     (try
       (set result (selected/row/send prepared))
       (returned .set true)
-    catch Any
+    catch Error
       (returned .set true)
       (let failure $err)
       (if (== failure/code "connection_changed")
         (try
           (let catalog (row runtime/h "seams" "models/catalog"))
           (if ($present? catalog) (catalog/value/refresh))
-        catch Any nil))
+        catch Error nil))
       (if (== failure/status 401)
         (try
           (let catalog (row runtime/h "seams" "models/catalog"))
           (if ($present? catalog) (catalog/value/failed selected/name 401 selected/selection/transport))
-        catch Any nil))
+        catch Error nil))
       (let message (if inventory/.empty?
         (then ($to_str failure/message))
         (elif (|| ($absent? recorded_request) ($present? recorded_request/harness_prepared_omitted)) $"${selected/name} image-input request failed; opaque provider detail was omitted.")

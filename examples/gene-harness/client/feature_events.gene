@@ -37,4 +37,4 @@
     (try
       (var callback : (Fn [Str Str Any] Nil) listener/callback)
       (callback kind session ($json/parse ($json/stringify data)))
-    catch Any ($console/error "A browser feature listener failed."))))
+    catch Error ($console/error "A browser feature listener failed."))))

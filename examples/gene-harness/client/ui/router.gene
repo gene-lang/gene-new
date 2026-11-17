@@ -182,7 +182,7 @@
   (var fresh (!= nav/workspace ui/workspace))
   (if_yes fresh
     (set nav/workspace ui/workspace)
-    (var saved : Any (try ($json/parse (?? (storage_get (navigation_key ui)) "{}")) catch Any nil))
+    (var saved : Any (try ($json/parse (?? (storage_get (navigation_key ui)) "{}")) catch Error nil))
     (set nav/remembered (copy_map saved/presentations))
     (set nav/versions (copy_map saved/versions))
     (set nav/last_view (text saved/last_view))

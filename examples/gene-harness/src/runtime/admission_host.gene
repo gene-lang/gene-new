@@ -19,13 +19,13 @@
 # unusable choice, otherwise warnings (unready provider, effort resolution,
 # uncatalogued model). Selection stays host-owned.
 (fn ^^private check_model_settings [runtime, input]
-  (let choice (try (validate_model_settings (?? input {})) catch Any (return {^error $err/message})))
+  (let choice (try (validate_model_settings (?? input {})) catch Error (return {^error $err/message})))
   (if (&& ($present? choice/provider) ($absent? (row runtime/h "providers" choice/provider)))
     (return {^error $"Unknown provider ${choice/provider}"}))
   (let base (effective_config runtime))
   (let selected (try (select_provider ^allow_unready true runtime
     (session_settings {^model_settings choice} base))
-    catch Any
+    catch Error
       (if (&& (!= $err/code "not_ready") (> ($map_size choice) 0)) (return {^error $err/message}))
       {^reason $err/message}))
   (let warnings [])

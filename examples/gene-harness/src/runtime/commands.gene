@@ -128,7 +128,7 @@
 # A receipt stores frozen data, which a live object such as `workspace` cannot be.
 (fn displayable_result [value]
   (if ($absent? value) (return "nil"))
-  (try ($freeze value) catch Any ($to_str value)))
+  (try ($freeze value) catch Error ($to_str value)))
 
 (fn run_command [ctx]
   (let forms ($into ($parse/read_all ^source ctx/id ^^locs ctx/raw) []))
@@ -318,7 +318,7 @@
         (if_not ($absent? result/mode)
           (try
             (enter_mode manager/modes session result/mode lease/snapshot)
-          catch Any
+          catch Error
             (set result (CommandResult ^status "failed" ^display $err/message))
             (record .put "error_code" (?? $err/code "mode_closed"))))
         (let text
@@ -522,7 +522,7 @@ Stopped."""))))
           (try (finish_command manager session record lease outcome)
             ensure
               (mode_command_finished manager/modes session record)
-              (if_not ($absent? parsed/on_finish) (try (parsed/on_finish) catch Any nil)))
+              (if_not ($absent? parsed/on_finish) (try (parsed/on_finish) catch Error nil)))
         ensure (release_body_use manager/runtime))))
     (set watched true)
     (parsed .put "lease_transferred" true)
@@ -537,7 +537,7 @@ Stopped."""))))
       (if (&& ($absent? supplied_lease) ($present? lease))
         (release_snapshot manager/runtime/h/snapshots lease))
       (if_not ($absent? parsed/on_finish)
-        (try (parsed/on_finish) catch Any nil)))))
+        (try (parsed/on_finish) catch Error nil)))))
 
 (fn command_receipt [manager, session : Str, id : Str]
   (let state (command_state manager/runtime session))

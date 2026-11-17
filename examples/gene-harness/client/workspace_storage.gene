@@ -15,7 +15,7 @@
     (if_yes ($absent? document/dataset/workspaceId) (return ""))
     (var identity : Str document/dataset/workspaceId)
     identity
-    catch Any ""))
+    catch Error ""))
   (workspace_storage_key workspace key))
 
 (fn storage_get [key : Str] : Str

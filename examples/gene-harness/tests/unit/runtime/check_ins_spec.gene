@@ -8,7 +8,7 @@
 (import [check_in_cases] ^from "../../fixtures/check_in_cases")
 
 (fn raises? [thunk] : Bool
-  (try (thunk) false catch Any true))
+  (try (thunk) false catch Error true))
 
 (fn ok_answers [progress, now]
   {^status "ok" ^answers {^progress {^choice "advancing" ^probabilities progress} ^operator_now {^value now}}})

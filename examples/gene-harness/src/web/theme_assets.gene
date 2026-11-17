@@ -18,12 +18,12 @@
   (if ($absent? (cache/resolved .get name))
     (cache/resolved .put name
       (try {^theme (resolve_theme name themes)}
-       catch Any {^error ($to_str $err/message)})))
+       catch Error {^error ($to_str $err/message)})))
   (cache/resolved .get name))
 
 (fn body_preloads [theme, mode : Str]
   (let result [])
-  (let family (try (color_value (resolved_tokens theme mode) "font-sans") catch Any ""))
+  (let family (try (color_value (resolved_tokens theme mode) "font-sans") catch Error ""))
   (let first_family ($str/lower ($str/trim (/0 ($str/split family ",")))))
   (let name ($str/join ($str/split ($str/join ($str/split first_family "\"") "") "'") ""))
   (var body_face nil)

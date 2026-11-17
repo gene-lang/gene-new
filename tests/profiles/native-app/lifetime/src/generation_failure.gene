@@ -41,7 +41,7 @@
     ($assert (try
       (failed .prepare (options plugin_dir "failing.gene"))
       false
-      catch Any true))
+      catch Error true))
     failed/.discard)
   (repeat 100 (one))
   (checkpoint "warm" 100)

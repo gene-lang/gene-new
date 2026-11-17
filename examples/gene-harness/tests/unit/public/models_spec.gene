@@ -8,7 +8,7 @@
     (validate_model_settings {^effort "low"})
     (validate_model_settings {^provider "example" ^model "model" ^effort "auto"})
     (for value in ["model" {^model "unscoped"} {^effort 1} {^effort ""} {^api_key "secret"}]
-      (let rejected (try (validate_model_settings value) false catch Any true))
+      (let rejected (try (validate_model_settings value) false catch Error true))
       ($assert rejected "malformed selection was accepted")))
 
   (it "resolves portable effort without rounding into native extras" []
@@ -24,7 +24,7 @@
       ($assert (== (resolve_effort requested model) expected)
         $"Unexpected effort resolution for ${requested}"))
     (for model in [opus {}]
-      (let rejected (try (resolve_effort "ultra" model) false catch Any true))
+      (let rejected (try (resolve_effort "ultra" model) false catch Error true))
       ($assert rejected "unlisted native effort was accepted")))
 
   (it "uses the selected model's window and input capabilities" []
@@ -43,7 +43,7 @@
 
   (it "rejects historical images for a known text-only model before sending" []
     (let messages [{^role "user" ^content "previous image" ^images [{^mime "image/png" ^data "data"}]}])
-    (let rejected (try (require_model_input {^input ["text"]} messages) false catch Any true))
+    (let rejected (try (require_model_input {^input ["text"]} messages) false catch Error true))
     ($assert rejected "a text-only selection accepted images")
     (require_model_input {^input ["text" "image"]} messages)
     (require_model_input {} messages)))

@@ -157,7 +157,7 @@
         (?? active/options/digest "builtin")
         active/plugin
         contributions)
-    catch Any
+    catch Error
       (diagnostics .push {^id owner ^message $err/message})))
   (workspace/metadata_errors .set diagnostics)
   nil)

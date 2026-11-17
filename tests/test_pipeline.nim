@@ -97,7 +97,7 @@ suite "pipeline — prepared lazy invocation":
     pipelineCheck """
       (fn gather [xs...] xs)
       (let bad 3)
-      (try ([] => gather bad...) catch Any $err/message)
+      (try ([] => gather bad...) catch Error $err/message)
     """, "\"call splice expects a list, map, or node\""
 
   test "guarded sends prepare once and validate descriptors only on demand":
@@ -193,7 +193,7 @@ suite "pipeline — prepared lazy invocation":
       (try ((Bad) => + 1) catch TypeError "bad conversion")
     """, "\"bad conversion\""
     pipelineCheck """
-      (try ({^a 1} => + 1) catch Any "pairs required")
+      (try ({^a 1} => + 1) catch Error "pairs required")
     """, "\"pairs required\""
 
   test "lookahead does not repeat calls or lose the final take item":
@@ -371,20 +371,20 @@ suite "pipeline — prepared lazy invocation":
     pipelineCheck """
       (var pending nil)
       (set pending ([1] => (fn [x] (pending .next))))
-      [(try (pending .next) catch Any $err/message) (pending .has_next)]
+      [(try (pending .next) catch Error $err/message) (pending .has_next)]
     """, "[\"a Stream cannot be pulled reentrantly\" false]"
 
   test "take detaches before a downstream failure on the limiting item":
     pipelineCheck """
       (let source ($to_stream [1 2 3]))
       (fn stop [x] (if (== x 2) (fail (RuntimeError ^message "stop")) x))
-      (try (source -> $take 2 => stop -> $into []) catch Any nil)
+      (try (source -> $take 2 => stop -> $into []) catch Error nil)
       (source .next)
     """, "3"
     pipelineCheck """
       (let source ($to_stream [1 2 3]))
       (fn stop [x] (fail (RuntimeError ^message "stop")))
-      (try (source -> $take 2 => stop -> $into []) catch Any nil)
+      (try (source -> $take 2 => stop -> $into []) catch Error nil)
       (source .has_next)
     """, "false"
 
@@ -430,5 +430,5 @@ suite "pipeline — prepared lazy invocation":
       (let pending ($filter_map (naturals) (fn [x] nil)))
       (let consume ($runtime/bind_call (fn [] (pending .next)) []
                     ^policy {^timeout_ms 20}))
-      [(try (consume) false catch Any true) (pending .has_next)]
+      [(try (consume) false catch Error true) (pending .has_next)]
     """, "[true false]"

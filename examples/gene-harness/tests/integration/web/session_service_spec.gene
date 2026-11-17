@@ -150,7 +150,7 @@
             (try
               (answer service session/id waiting/questions/id {^!ok})
               false
-            catch Any
+            catch Error
               true)
             "conflicting answer retry was accepted")
           ($println "web turn loop: protocol 9 service, code-only provider, questions and reply dedupe")
@@ -167,7 +167,7 @@
           (let pinned (edit_session service record/id {^^pinned ^title "Changed"} 0))
           ($assert pinned/pinned "pinning did not persist")
           ($assert (== pinned/title "Changed") "metadata edit lost title")
-          ($assert (try (edit_session service record/id {^title "stale"} 0) false catch Any true)
+          ($assert (try (edit_session service record/id {^title "stale"} 0) false catch Error true)
             "stale metadata edit was accepted")
           (update_session service/runtime/sessions record/id {^^attention})
           (let before (list_sessions service))
@@ -175,7 +175,7 @@
           (acknowledge_attention service record/id)
           (let after (list_sessions service))
           ($assert (== after/needs_attention/.size 0) "opening an existing tab did not clear attention")
-          ($assert (try (submit service record/id "cli-only" 1 "/new") false catch Any true)
+          ($assert (try (submit service record/id "cli-only" 1 "/new") false catch Error true)
             "web host admitted a CLI-only command")
           ($println "web metadata: pinning, titles, revision conflict, attention acknowledgement and CLI-only commands")
         ensure (close_session_service service))))))
@@ -503,7 +503,7 @@
           (let current clicked/card)
           (let ref {^id "count" ^definition_revision current/definition_revision ^revision current/revision})
           ($assert (try (command service id "/help" ^card {^id "count" ^definition_revision 1 ^revision 1}) false
-            catch Any true) "a command from an old tree ran")
+            catch Error true) "a command from an old tree ran")
           (command service id "/help" ^card ref)
           (set_test_provider service/runtime (fn [request] "(Outcome ^^done ^reply \"got it\")"))
           (let sent (submit ^card ref service id "send-1" 2 "Count sent."))
@@ -546,7 +546,7 @@
           ($fs/write_text config_path "(")
           ($assert (try (command service id "/slow" ^card {^id "slowcard"
               ^definition_revision slow_card/definition_revision ^revision slow_card/revision}) false
-            catch Any true) "a command started with an unreadable configuration")
+            catch Error true) "a command started with an unreadable configuration")
           ($fs/write_text config_path saved_config)
           ($assert (== (?? (service/runtime/services/values/cards/inflight/.get .get id) 0) 0)
             "a failed command start left the resume barrier held")
@@ -570,7 +570,7 @@
 (stage "before console")
 ($println "late output")
 (stage "after console")
-(try (append_prompt "late" "no") catch Any ($println $err/message)))))
+(try (append_prompt "late" "no") catch Error ($println $err/message)))))
 child/.detach
 (save_child child)
 (Outcome ^^done ^reply "done")""")))

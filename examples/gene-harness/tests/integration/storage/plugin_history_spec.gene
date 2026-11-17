@@ -149,7 +149,7 @@
             (try
               (revert_plugin restarted/workspace restarted/h "example" 1)
               false
-            catch Any
+            catch Error
               ($str/contains? $err/message "blob is missing")))
           ($assert (== (composition_revision restarted/workspace) disabled_revert/revision))
           (restarted/workspace/blob_store .Store:put blob_key bytes)
@@ -256,14 +256,14 @@
         (let disabled [{^id "plugin_admin" ^builtin true ^disabled true}])
         (try
           (set runtime/workspace/store (CheckpointStore ^inner original ^mode "before"))
-          ($assert (try (commit_composition runtime/workspace disabled) false catch Any true))
+          ($assert (try (commit_composition runtime/workspace disabled) false catch Error true))
           ($assert (== (composition_revision runtime/workspace) 0))
           ($assert (== ((composition_history runtime/workspace) .size) 1))
           (set runtime/workspace/store (CheckpointStore ^inner original ^mode "after"))
           ($assert (== (commit_composition runtime/workspace disabled) 1))
           ($assert (== (composition_revision runtime/workspace) 1))
           (set runtime/workspace/store (CheckpointStore ^inner original ^mode "unreadable"))
-          ($assert (try (commit_composition runtime/workspace []) false catch Any (== $err/code "commit_uncertain")))
+          ($assert (try (commit_composition runtime/workspace []) false catch Error (== $err/code "commit_uncertain")))
           # In-memory state makes no false claim after an ambiguous write.
           ($assert (== (composition_revision runtime/workspace) 1))
         ensure

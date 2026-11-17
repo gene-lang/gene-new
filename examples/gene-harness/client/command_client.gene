@@ -68,7 +68,7 @@
       (for field in ["session" "request_id" "text" "submission_seq"]
         (if_yes (== (text envelope/%field) "") (set valid false)))
       (if valid (set client/pending envelope) (set client/pending {^^invalid}))
-    catch Any
+    catch Error
       (set client/pending {^^invalid}))
     (recover_command client)))
 

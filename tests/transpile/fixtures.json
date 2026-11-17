@@ -784,8 +784,8 @@
     },
     {
       "id": "numeric.int_division_by_zero",
-      "source": "(try (/ 7 0) catch Any $err)",
-      "web_source": "(mod numeric_int_div_zero ^profile web) (fn run [] : Any (try (/ 7 0) catch Any $err))",
+      "source": "(try (/ 7 0) catch Error $err)",
+      "web_source": "(mod numeric_int_div_zero ^profile web) (fn run [] : Any (try (/ 7 0) catch Error $err))",
       "web_export": "run",
       "expected_value": {
         "kind": "node",
@@ -812,8 +812,8 @@
     },
     {
       "id": "numeric.f64_division_by_zero",
-      "source": "(try (/ 7.0 0.0) catch Any $err)",
-      "web_source": "(mod numeric_f64_div_zero ^profile web) (fn run [] : Any (try (/ 7.0 0.0) catch Any $err))",
+      "source": "(try (/ 7.0 0.0) catch Error $err)",
+      "web_source": "(mod numeric_f64_div_zero ^profile web) (fn run [] : Any (try (/ 7.0 0.0) catch Error $err))",
       "web_export": "run",
       "expected_value": {
         "kind": "node",
@@ -840,8 +840,8 @@
     },
     {
       "id": "numeric.remainder_by_zero",
-      "source": "(try (// 7 0) catch Any $err)",
-      "web_source": "(mod numeric_rem_zero ^profile web) (fn run [] : Any (try (// 7 0) catch Any $err))",
+      "source": "(try (// 7 0) catch Error $err)",
+      "web_source": "(mod numeric_rem_zero ^profile web) (fn run [] : Any (try (// 7 0) catch Error $err))",
       "web_export": "run",
       "expected_value": {
         "kind": "node",
@@ -994,8 +994,8 @@
     },
     {
       "id": "pattern.declared_error_type_does_not_shadow",
-      "source": "(type Error ^props {^m Str}) (try (/ 7 0) catch Any $err/message)",
-      "web_source": "(mod pattern_error_shadow ^profile web) (type Error ^props {^m Str}) (fn run [] : Str (try (do (/ 7 0) \"ok\") catch Any $err/message))",
+      "source": "(type Error ^props {^m Str}) (try (/ 7 0) catch Error $err/message)",
+      "web_source": "(mod pattern_error_shadow ^profile web) (type Error ^props {^m Str}) (fn run [] : Str (try (do (/ 7 0) \"ok\") catch Error $err/message))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -1773,8 +1773,8 @@
     },
     {
       "id": "data.selector_default_and_strict",
-      "source": "(let fallback (Path ^default \"unknown\" \"name\")) (let strict (Path ^^strict \"name\")) [(fallback {^age 1}) (try (strict {^age 1}) catch Any \"missing\")]",
-      "web_source": "(mod data_path_options ^profile web) (fn run [] : (List Str) (let fallback (Path ^default \"unknown\" \"name\")) (let strict (Path ^^strict \"name\")) [(fallback {^age 1}) (try (strict {^age 1}) catch Any \"missing\")])",
+      "source": "(let fallback (Path ^default \"unknown\" \"name\")) (let strict (Path ^^strict \"name\")) [(fallback {^age 1}) (try (strict {^age 1}) catch Error \"missing\")]",
+      "web_source": "(mod data_path_options ^profile web) (fn run [] : (List Str) (let fallback (Path ^default \"unknown\" \"name\")) (let strict (Path ^^strict \"name\")) [(fallback {^age 1}) (try (strict {^age 1}) catch Error \"missing\")])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -1797,8 +1797,8 @@
     },
     {
       "id": "data.immutable_node",
-      "source": "(type Item ^props {^label Str}) (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch Any node/label)",
-      "web_source": "(mod data_immutable_node ^profile web) (type Item ^props {^label Str}) (fn run [] : Str (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch Any node/label))",
+      "source": "(type Item ^props {^label Str}) (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch Error node/label)",
+      "web_source": "(mod data_immutable_node ^profile web) (type Item ^props {^label Str}) (fn run [] : Str (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch Error node/label))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -3552,8 +3552,8 @@
     },
     {
       "id": "portable.buffer_fractional_index_rejected",
-      "source": "(fn run [] : Bool (var b ($buffer F64 3)) (try (b .set 0.5 1.0) false catch Any true)) (run)",
-      "web_source": "(mod portable_buffer_fractional_index_rejected ^profile web) (fn run [] : Bool (var b ($buffer F64 3)) (try (b .set 0.5 1.0) false catch Any true))",
+      "source": "(fn run [] : Bool (var b ($buffer F64 3)) (try (b .set 0.5 1.0) false catch Error true)) (run)",
+      "web_source": "(mod portable_buffer_fractional_index_rejected ^profile web) (fn run [] : Bool (var b ($buffer F64 3)) (try (b .set 0.5 1.0) false catch Error true))",
       "web_export": "run",
       "expected_value": {
         "kind": "bool",
@@ -3612,8 +3612,8 @@
     },
     {
       "id": "portable.buffer_fill_range_checked",
-      "source": "(fn run [] : Int (var b ($buffer U8 2)) (b .fill 7) (try (b .fill 8 0 3) nil catch Any nil) (b .get 1)) (run)",
-      "web_source": "(mod portable_buffer_fill_range_checked ^profile web) (fn run [] : Int (var b ($buffer U8 2)) (b .fill 7) (try (b .fill 8 0 3) nil catch Any nil) (b .get 1))",
+      "source": "(fn run [] : Int (var b ($buffer U8 2)) (b .fill 7) (try (b .fill 8 0 3) nil catch Error nil) (b .get 1)) (run)",
+      "web_source": "(mod portable_buffer_fill_range_checked ^profile web) (fn run [] : Int (var b ($buffer U8 2)) (b .fill 7) (try (b .fill 8 0 3) nil catch Error nil) (b .get 1))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -3627,8 +3627,8 @@
     },
     {
       "id": "portable.buffer_copy_requires_equal_lengths",
-      "source": "(fn run [] : Int (var a ($buffer U8 1)) (var b ($buffer U8 2)) (b .fill 7) (try (b .copy_from a) nil catch Any nil) (b .get 0)) (run)",
-      "web_source": "(mod portable_buffer_copy_requires_equal_lengths ^profile web) (fn run [] : Int (var a ($buffer U8 1)) (var b ($buffer U8 2)) (b .fill 7) (try (b .copy_from a) nil catch Any nil) (b .get 0))",
+      "source": "(fn run [] : Int (var a ($buffer U8 1)) (var b ($buffer U8 2)) (b .fill 7) (try (b .copy_from a) nil catch Error nil) (b .get 0)) (run)",
+      "web_source": "(mod portable_buffer_copy_requires_equal_lengths ^profile web) (fn run [] : Int (var a ($buffer U8 1)) (var b ($buffer U8 2)) (b .fill 7) (try (b .copy_from a) nil catch Error nil) (b .get 0))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -3702,8 +3702,8 @@
     },
     {
       "id": "portable.buffer_argument_evaluation_before_error",
-      "source": "(fn mark [b : (Buffer U8)] : Int (b .set 0 1)) (fn run [] : Int (var log ($buffer U8 1)) (var b ($buffer U8 1)) (try (b .set 99 (mark log)) nil catch Any nil) (log .get 0)) (run)",
-      "web_source": "(mod portable_buffer_argument_evaluation_before_error ^profile web) (fn mark [b : (Buffer U8)] : Int (b .set 0 1)) (fn run [] : Int (var log ($buffer U8 1)) (var b ($buffer U8 1)) (try (b .set 99 (mark log)) nil catch Any nil) (log .get 0))",
+      "source": "(fn mark [b : (Buffer U8)] : Int (b .set 0 1)) (fn run [] : Int (var log ($buffer U8 1)) (var b ($buffer U8 1)) (try (b .set 99 (mark log)) nil catch Error nil) (log .get 0)) (run)",
+      "web_source": "(mod portable_buffer_argument_evaluation_before_error ^profile web) (fn mark [b : (Buffer U8)] : Int (b .set 0 1)) (fn run [] : Int (var log ($buffer U8 1)) (var b ($buffer U8 1)) (try (b .set 99 (mark log)) nil catch Error nil) (log .get 0))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -5925,8 +5925,8 @@
     },
     {
       "id": "path_read.typed_fields",
-      "source": "(type P ^props {^name Str ^age Int?}) (fn nmae_of [value : Any] : Any (try value/nmae catch Any \"raised\")) (fn field_of [value : Any key : Str] : Any (try value/%key catch Any \"raised\")) (fn run [] : (List Any) (let p (P ^name \"Ada\")) [(field_of p \"name\") (field_of p \"age\") (field_of p \"nmae\") (nmae_of p)]) (run)",
-      "web_source": "(mod path_read_typed_fields ^profile web) (type P ^props {^name Str ^age Int?}) (fn nmae_of [value : Any] : Any (try value/nmae catch Any \"raised\")) (fn field_of [value : Any key : Str] : Any (try value/%key catch Any \"raised\")) (fn run [] : (List Any) (let p (P ^name \"Ada\")) [(field_of p \"name\") (field_of p \"age\") (field_of p \"nmae\") (nmae_of p)])",
+      "source": "(type P ^props {^name Str ^age Int?}) (fn nmae_of [value : Any] : Any (try value/nmae catch Error \"raised\")) (fn field_of [value : Any key : Str] : Any (try value/%key catch Error \"raised\")) (fn run [] : (List Any) (let p (P ^name \"Ada\")) [(field_of p \"name\") (field_of p \"age\") (field_of p \"nmae\") (nmae_of p)]) (run)",
+      "web_source": "(mod path_read_typed_fields ^profile web) (type P ^props {^name Str ^age Int?}) (fn nmae_of [value : Any] : Any (try value/nmae catch Error \"raised\")) (fn field_of [value : Any key : Str] : Any (try value/%key catch Error \"raised\")) (fn run [] : (List Any) (let p (P ^name \"Ada\")) [(field_of p \"name\") (field_of p \"age\") (field_of p \"nmae\") (nmae_of p)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5975,8 +5975,8 @@
     },
     {
       "id": "path_read.no_member_receivers",
-      "source": "(fn name_of [value : Any] : Any (try value/b catch Any \"raised\")) (fn first_of [value : Any] : Any (try value/0 catch Any \"raised\")) (fn run [] : (List Any) [(name_of 6) (name_of \"abc\") (name_of true) (name_of [1 2]) (first_of 6) (first_of \"abc\") (first_of [10 20])]) (run)",
-      "web_source": "(mod path_read_no_member_receivers ^profile web) (fn name_of [value : Any] : Any (try value/b catch Any \"raised\")) (fn first_of [value : Any] : Any (try value/0 catch Any \"raised\")) (fn run [] : (List Any) [(name_of 6) (name_of \"abc\") (name_of true) (name_of [1 2]) (first_of 6) (first_of \"abc\") (first_of [10 20])])",
+      "source": "(fn name_of [value : Any] : Any (try value/b catch Error \"raised\")) (fn first_of [value : Any] : Any (try value/0 catch Error \"raised\")) (fn run [] : (List Any) [(name_of 6) (name_of \"abc\") (name_of true) (name_of [1 2]) (first_of 6) (first_of \"abc\") (first_of [10 20])]) (run)",
+      "web_source": "(mod path_read_no_member_receivers ^profile web) (fn name_of [value : Any] : Any (try value/b catch Error \"raised\")) (fn first_of [value : Any] : Any (try value/0 catch Error \"raised\")) (fn run [] : (List Any) [(name_of 6) (name_of \"abc\") (name_of true) (name_of [1 2]) (first_of 6) (first_of \"abc\") (first_of [10 20])])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -6019,8 +6019,8 @@
     },
     {
       "id": "path_read.map_segments",
-      "source": "(fn first_of [value : Any] : Any (try value/0 catch Any \"raised\")) (fn missing_of [value : Any] : Any value/missing) (fn run [] : (List Any) [(first_of {^a 1}) (missing_of {^a 1})]) (run)",
-      "web_source": "(mod path_read_map_segments ^profile web) (fn first_of [value : Any] : Any (try value/0 catch Any \"raised\")) (fn missing_of [value : Any] : Any value/missing) (fn run [] : (List Any) [(first_of {^a 1}) (missing_of {^a 1})])",
+      "source": "(fn first_of [value : Any] : Any (try value/0 catch Error \"raised\")) (fn missing_of [value : Any] : Any value/missing) (fn run [] : (List Any) [(first_of {^a 1}) (missing_of {^a 1})]) (run)",
+      "web_source": "(mod path_read_map_segments ^profile web) (fn first_of [value : Any] : Any (try value/0 catch Error \"raised\")) (fn missing_of [value : Any] : Any value/missing) (fn run [] : (List Any) [(first_of {^a 1}) (missing_of {^a 1})])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -6072,8 +6072,8 @@
     },
     {
       "id": "path_read.stream_rejected",
-      "source": "(fn x_of [s : Any] : Any (try s/x catch Any \"raised\")) (fn run [] : (List Any) [(x_of ($to_stream [{^x 1}]))]) (run)",
-      "web_source": "(mod path_read_stream_rejected ^profile web) (fn x_of [s : Any] : Any (try s/x catch Any \"raised\")) (fn run [] : (List Any) [(x_of ($to_stream [{^x 1}]))])",
+      "source": "(fn x_of [s : Any] : Any (try s/x catch Error \"raised\")) (fn run [] : (List Any) [(x_of ($to_stream [{^x 1}]))]) (run)",
+      "web_source": "(mod path_read_stream_rejected ^profile web) (fn x_of [s : Any] : Any (try s/x catch Error \"raised\")) (fn run [] : (List Any) [(x_of ($to_stream [{^x 1}]))])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -6183,8 +6183,8 @@
     },
     {
       "id": "path_read.stream_index_rejected",
-      "source": "(fn first_of [s : Any] : Any (try s/0 catch Any \"raised\")) (fn run [] : (List Any) [(first_of ($to_stream [[1 2]]))]) (run)",
-      "web_source": "(mod path_read_stream_index_rejected ^profile web) (fn first_of [s : Any] : Any (try s/0 catch Any \"raised\")) (fn run [] : (List Any) [(first_of ($to_stream [[1 2]]))])",
+      "source": "(fn first_of [s : Any] : Any (try s/0 catch Error \"raised\")) (fn run [] : (List Any) [(first_of ($to_stream [[1 2]]))]) (run)",
+      "web_source": "(mod path_read_stream_index_rejected ^profile web) (fn first_of [s : Any] : Any (try s/0 catch Error \"raised\")) (fn run [] : (List Any) [(first_of ($to_stream [[1 2]]))])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",

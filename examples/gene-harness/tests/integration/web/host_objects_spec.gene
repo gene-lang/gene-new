@@ -50,7 +50,7 @@
           ($assert ($str/contains? printed "(cycle)") "the real objects are cyclic")
           ($assert (== (run_output service session/id "($println (== workspace workspace))") "true\n"))
           (let frozen (run_output service session/id
-            "($println (try ($freeze workspace) \"frozen\" catch Any \"refused\"))"))
+            "($println (try ($freeze workspace) \"frozen\" catch Error \"refused\"))"))
           ($assert (== frozen "refused\n")))))))
 
   (it "exposes the real internals by property path" []
@@ -87,7 +87,7 @@
       (fn [workspace]
         (with_service workspace ^provider
           (fn [request]
-            "(let shown ($to_str session/id \"|\" workspace/root \"|\" manager/.running? \"|\" (try session_id catch Any \"gone\") \"|\" (try workspace_root catch Any \"gone\")))\n(Outcome ^^done ^reply shown)")
+            "(let shown ($to_str session/id \"|\" workspace/root \"|\" manager/.running? \"|\" (try session_id catch Error \"gone\") \"|\" (try workspace_root catch Error \"gone\")))\n(Outcome ^^done ^reply shown)")
           (fn [service]
             (let session (create_session service))
             (let admitted (submit service session/id "objects" 1 "go"))
@@ -168,7 +168,7 @@
           (let found (/sessions (shown .sessions ^q "renamed")))
           ($assert (== found/.size 1))
           ($assert (== found/0/id second/id))
-          (let stale (try (second .rename "x" ^revision 99) "applied" catch Any $err/code))
+          (let stale (try (second .rename "x" ^revision 99) "applied" catch Error $err/code))
           ($assert (== stale "revision_conflict") stale)
           # Code in one session can work on another with the operator's operations.
           (let driven (run_output service first_session/id
@@ -181,7 +181,7 @@
           (let deleted (run_output service first_session/id
             $"($println (/deleted ((workspace .session \"${second/id}\") .delete)))"))
           ($assert ($str/contains? deleted second/id) deleted)
-          (let gone (try (shown .session second/id) "found" catch Any "not found"))
+          (let gone (try (shown .session second/id) "found" catch Error "not found"))
           ($assert (== gone "not found")))))))
 
   (it "lists every public message with its contract" []
@@ -250,9 +250,9 @@
           (let listed manager/.workspaces)
           ($assert (== listed/workspaces/.size 1))
           ($assert (== listed/workspaces/0/id "alpha"))
-          (let control (try (manager .control "start" {^id "alpha"}) "ran" catch Any $err/code))
+          (let control (try (manager .control "start" {^id "alpha"}) "ran" catch Error $err/code))
           ($assert (== control "unavailable") control)
-          (let inspect (try (manager .workspace "alpha") "ran" catch Any $err/code))
+          (let inspect (try (manager .workspace "alpha") "ran" catch Error $err/code))
           ($assert (== inspect "unavailable") inspect))))))
 
   (it "changes shared defaults from an ordinary workspace with a revision check" []
@@ -266,7 +266,7 @@
           (let after manager/.model_configuration)
           ($assert (== (/model after/config/default) "chosen"))
           (let stale (try (manager .set_default_model {^provider "test" ^model "other"} before/digest)
-            "saved" catch Any $err/code))
+            "saved" catch Error $err/code))
           ($assert (== stale "revision_conflict") stale))))))
 
   (it "lets a conversation that starts with only the three names find its way" []

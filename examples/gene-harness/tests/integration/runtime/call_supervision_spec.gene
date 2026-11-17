@@ -18,7 +18,7 @@
         # Stress binaries may deliberately run longer slices; permit the same
         # proportional latency there while keeping all progress/cleanup checks.
         # Ordinary binaries have no test query and retain the 100 ms bound.
-        (let quantum (try ($runtime/test_scheduler_quantum) catch Any 512))
+        (let quantum (try ($runtime/test_scheduler_quantum) catch Error 512))
         (let latency_bound ($math/max 100 (/ (* 100 quantum) 512)))
         ($println $"responsiveness quantum=${quantum}, latency bound=${latency_bound} ms")
         (let entered ($cell false))

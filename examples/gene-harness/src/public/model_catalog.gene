@@ -61,7 +61,7 @@
       (if (ids .contains? clean/id) (continue))
       (ids .push clean/id)
       (result .push checked)
-    catch Any nil))
+    catch Error nil))
   (if (&& (> models/.size 0) (== result/.size 0))
     (fail (ProviderError ^message "Provider model list contains no valid models")))
   result)
@@ -115,7 +115,7 @@
 (fn read_file [catalog]
   (let reserved (reserved_provider_names catalog))
   (try (read_models_file ^reserved reserved catalog/root)
-    catch Any {^config {^version 1 ^default {} ^models [] ^providers [] ^presets []}
+    catch Error {^config {^version 1 ^default {} ^models [] ^providers [] ^presets []}
       ^errors [{^section "file" ^reason "Cannot read models.gene; check file permissions."}] ^digest "unreadable"}))
 
 (fn accept_file [catalog, file]
@@ -181,8 +181,8 @@
         (catalog/discovered/.get .put name
           {^models models ^transport entry/transport ^provider_transport entry/provider_transport
            ^updated_ms entry/updated_ms ^^stale})
-      catch Any nil))
-  catch Any nil))
+      catch Error nil))
+  catch Error nil))
 
 (fn save_catalog_cache [catalog]
   (let providers {})
@@ -193,7 +193,7 @@
     ($fs/make_dir ($path/join catalog/root ".gene-harness"))
     ($fs/write_text_atomic ($path/join catalog/root ".gene-harness" "model_catalog.gene")
       ($serde/write_data {^version 1 ^providers providers}))
-  catch Any nil))
+  catch Error nil))
 
 (fn probe_provider [catalog, candidate]
   (let name candidate/name)
@@ -216,7 +216,7 @@
       (|| ($absent? checked/account) (== checked/account previous/connection/account)))
       (then (set stale true))
       (else (set connection checked)))
-  catch Any (set stale true))
+  catch Error (set stale true))
   (let identity (transport_identity candidate connection))
   (let keep_models (&& same (|| (!= connection/state "ready") (== previous/transport identity))))
   (var models (if keep_models (then (?? previous/models [])) (else [])))
@@ -228,7 +228,7 @@
           (try
             (set models (canonical_models (bounded_probe candidate/models)))
             (set updated ($os/wall_ms))
-          catch Any
+          catch Error
             (set stale true)
             (if ([401 403] .contains? $err/status)
               (then
@@ -306,14 +306,14 @@
         (then
           (let due_only (! catalog/requested/.get))
           (catalog/requested .set false)
-          (try (refresh_catalog ^due_only due_only catalog) catch Any nil)))
+          (try (refresh_catalog ^due_only due_only catalog) catch Error nil)))
       (if (>= ($os/monotonic_ms) catalog/next_file_check/.get)
         (then
           (let file (read_file catalog))
           (if (!= file/digest catalog/file/.get/digest)
             (then
               (try (accept_file catalog file) (publish_catalog catalog)
-                catch Any (request_catalog_refresh catalog))))
+                catch Error (request_catalog_refresh catalog))))
           (catalog/next_file_check .set (+ ($os/monotonic_ms) 1000))))
       ($sleep 100)))))
 
@@ -335,7 +335,7 @@
          ^models (canonical_models (?? found/models []))
          ^transport found/transport ^provider_transport found/provider_transport
          ^updated_ms found/updated_ms ^stale (== found/stale true)})
-    catch Any nil))
+    catch Error nil))
   (catalog/file .set (read_file catalog))
   (publish_catalog catalog)
   (if start
@@ -361,7 +361,7 @@
 
 (fn set_catalog_default [catalog, selection, expected : Str]
   (try (validate_model_settings selection)
-    catch Any (fail (ModelsFileError ^code "invalid_models" ^message $err/message)))
+    catch Error (fail (ModelsFileError ^code "invalid_models" ^message $err/message)))
   (if (|| ($absent? selection/provider) ($absent? selection/model))
     (fail (ModelsFileError ^code "invalid_models" ^message "A shared default requires provider and model")))
   (if (!= expected catalog/file/.get/digest)

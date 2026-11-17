@@ -347,6 +347,11 @@ receives other errors. Catching `SomeError` leaves `Error` in the escaping
 summary; catching `Error` covers all ordinary errors from the protected body.
 Recovery and cleanup can introduce new escaping errors of their own.
 
+A `catch` clause names an error type. `catch Error` is the general recoverable
+catch. `catch Any`, and a clause naming a built-in value type such as `Str` or
+`Int`, is a compile error: no such value can be raised, so the clause could
+never run.
+
 An open row does not force callers to catch every named error separately.
 A caller can catch `SomeError` and declare `[Error]` for the rest, catch all
 errors, or simply propagate the full row. Panic and cancellation remain

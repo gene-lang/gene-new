@@ -63,7 +63,7 @@
       (if ($present? source/profile) (then (args .push "--profile") (args .push source/profile)))
       (args .push "auth") (args .push "status")
       (let status (try (cli_probe source/command args)
-        catch Any (return {^state "sign_in_required" ^label label ^billing "metered"
+        catch Error (return {^state "sign_in_required" ^label label ^billing "metered"
           ^reason "Install ant and run ant auth login, or set ANTHROPIC_API_KEY."})))
       # ant documents status as diagnostic output, not an exit-status health check.
       (let metadata (ant_status_metadata status/stdout))
@@ -72,7 +72,7 @@
   (let remaining (- deadline ($os/monotonic_ms)))
   (if (<= remaining 0) (fail (ProviderError ^message "Anthropic connection check timed out")))
   (let headers (try (anthropic_headers ^timeout_ms remaining source)
-    catch Any (return {^state "sign_in_required" ^label label ^billing "metered"
+    catch Error (return {^state "sign_in_required" ^label label ^billing "metered"
       ^reason "Anthropic credential is unavailable; use ANTHROPIC_API_KEY or run ant auth login. Claude subscription tokens cannot be used here."})))
   (let left (- deadline ($os/monotonic_ms)))
   (if (<= left 0) (fail (ProviderError ^message "Anthropic connection check timed out")))

@@ -55,7 +55,7 @@
             (try
               (parse_submission runtime/h "/rnu 1")
               false
-            catch Any
+            catch Error
               true)
             "unknown slash command was sent to the model")
           (let run (submit_command manager "default" "/run (+ 1 2)"))
@@ -252,7 +252,7 @@ three""")
           ($assert (== (/status (command_receipt runtime/services/values/commands "default" running/id)) "running") "retention removed running work")
           ($assert
             (try (submit_command runtime/services/values/commands "default" "/run (mark)" ^request_id "same" ^sequence 1) false
-              catch Any (== $err/code "submission_conflict"))
+              catch Error (== $err/code "submission_conflict"))
             "an expired request sequence was re-executed")
           ($assert (== count/.get 1) "expired identity repeated its side effect")
           (cancel_command runtime/services/values/commands "default" running/id)

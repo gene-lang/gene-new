@@ -101,7 +101,7 @@
 
 (fn read_endpoint_file [runtime, root : Str]
   (try (read_models_file ^reserved (endpoint_reserved_names runtime) root)
-    catch Any
+    catch Error
       {^config {^version 1 ^default {} ^providers [] ^models [] ^presets []}
        ^errors [{^section "file" ^reason "Cannot read models.gene; check file permissions."}] ^digest "unreadable"}))
 
@@ -147,7 +147,7 @@
         (try
           (apply_endpoint_publication state job/root)
           (job/error .set nil)
-        catch Any
+        catch Error
           (job/error .set $err)
           (state/endpoint_error .set "Endpoint configuration could not be activated; inspect the model_endpoints plugin.")
         ensure (job/done .set true)))
@@ -176,7 +176,7 @@
         (let root state/root/.get)
         (if (&& ($present? root) (endpoint_source_enabled? state/runtime))
           (sync_endpoint_file state root (read_endpoint_file state/runtime root)))
-      catch Any
+      catch Error
         (state/endpoint_error .set "Endpoint configuration could not be activated; inspect the model_endpoints plugin."))
       ($sleep 1000)))))
 
@@ -202,7 +202,7 @@
       (close_file_watch watch)
       (state/watches .delete revision)))
     {^^available}
-  catch Any
+  catch Error
     (close_file_watch watch) (state/watches .delete revision) (fail $err)))
 
 (fn active_model_catalog [runtime]
@@ -258,7 +258,7 @@
 (fn save_model_default [handle, selection, expected : Str] ^^private
   (let catalog (require_catalog handle))
   (try (validate_model_settings selection)
-    catch Any (fail (ModelsFileError ^code "invalid_models" ^message $err/message)))
+    catch Error (fail (ModelsFileError ^code "invalid_models" ^message $err/message)))
   (if (|| ($absent? selection/provider) ($absent? selection/model))
     (fail (ModelsFileError ^code "invalid_models" ^message "A shared default requires provider and model")))
   (if (!= expected catalog/file/.get/digest)
@@ -286,7 +286,7 @@
   (let service (require_service handle))
   (if (!= session "") (require_record service/runtime/sessions session))
   (let choice (try (validate_model_settings selection)
-    catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+    catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message))))
   (let base (effective_config service/runtime))
   (let metadata {^model_settings choice})
   (let settings (session_settings metadata base))
@@ -299,7 +299,7 @@
   (with_session_gate service/runtime/sessions $"round/${session}" (fn []
     (require_record service/runtime/sessions session)
     (let choice (try (validate_model_settings selection)
-      catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+      catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message))))
     (let pins (selection_pins service/runtime))
     (for key in ["provider" "model" "effort"]
       (if (&& ($present? (choice .get key)) ($present? (pins .get key))
@@ -309,7 +309,7 @@
       (then
         (let base (effective_config service/runtime))
         (try (select_provider ^allow_unready true service/runtime (session_settings {^model_settings choice} base))
-          catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message)))))
+          catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message)))))
     (update_session service/runtime/sessions session {^model_settings (if (== ($map_size choice) 0)
       (then nil) (else choice))})
     (choice_preview handle session choice))))
@@ -333,7 +333,7 @@
   (if (== argument "") (return (CommandResult ^display (choice_text info))))
   (let choice (if (== name "model")
     (then (try (named_model_choice ^current_provider info/provider (catalog_snapshot catalog) argument info/requested_effort)
-      catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+      catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message))))
     (else
       (let next ($thaw ($freeze (?? metadata/model_settings {}))))
       (next .put "effort" ($str/lower argument))
@@ -372,7 +372,7 @@
       (close_model_catalog catalog)
       (if (same? (state/catalogs .get revision) catalog) (state/catalogs .delete revision))))
     {^^available}
-  catch Any
+  catch Error
     (close_model_catalog catalog)
     (state/catalogs .delete revision)
     (fail $err)))
@@ -403,14 +403,14 @@
     (if (== provider "chatgpt")
       (then (new_chatgpt_login ^account account ^registration registration callback))
       (else (openrouter_login callback)))
-    catch Any (fail (ServiceError ^code "unavailable" ^message $err/message))))
+    catch Error (fail (ServiceError ^code "unavailable" ^message $err/message))))
   (try
     (for id in expired (state/logins .delete id))
     (state/logins .put attempt/id attempt)
     (attempt/worker .set (spawn_effect_call service/host/effects "Model sign-in" run_openrouter_login [attempt]))
     (service/host/effects .defer (fn [] (close_login attempt)))
     {^id attempt/id ^provider provider ^state "pending" ^url attempt/url}
-  catch Any
+  catch Error
     (close_login attempt)
     (fail (ServiceError ^code "unavailable" ^message "The sign-in attempt could not start."))))
 
@@ -435,14 +435,14 @@
 
 (fn model_account_action [handle, id : Str, action : Str] ^^private
   (let service (require_service handle))
-  (let selected (try (active_chatgpt_id) catch Any nil))
+  (let selected (try (active_chatgpt_id) catch Error nil))
   (let result (try
     (match action
       (when "select" {^^ok ^account (select_chatgpt_account nil id)})
       (when "sign_out" (sign_out_chatgpt ^account id))
       (when "acknowledge" (acknowledge_chatgpt_plan nil id))
       (else (fail (ServiceError ^code "invalid_request" ^message "Use select, sign_out or acknowledge for a ChatGPT account."))))
-    catch Any (fail (ServiceError ^code "invalid_request" ^message $err/message))))
+    catch Error (fail (ServiceError ^code "invalid_request" ^message $err/message))))
   (if (|| (== action "select") (&& (== action "sign_out") (== id selected))) (publish_chatgpt_account service))
   result)
 

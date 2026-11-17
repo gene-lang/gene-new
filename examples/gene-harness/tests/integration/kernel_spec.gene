@@ -20,7 +20,7 @@
             (contribute h "core" "commands" {^name name ^doc "Core command." ^run (fn [ctx] nil)})
             ($assert (try
               (contribute ^^replace h "intruder" "commands" {^name name ^doc "Steal command." ^run (fn [ctx] nil)})
-              false catch Any ($str/contains? $err/message "reserved by core"))))
+              false catch Error ($str/contains? $err/message "reserved by core"))))
         ensure (shutdown_harness h))))))
 
 (describe "Harness kernel snapshots"
@@ -49,7 +49,7 @@
             (try
               (payload .put "doc" "changed")
               false
-            catch Any
+            catch Error
               true)
             "published registry payload is mutable")
           (let response ($cell nil))

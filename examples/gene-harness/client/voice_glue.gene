@@ -78,7 +78,7 @@
     (var review : Any ($json/parse saved))
     (if_yes (&& (!= (string_or review/text "") "") (!= (str/trim value) ""))
       (return review/input))
-    catch Any nil)
+    catch Error nil)
   (storage_remove key)
   nil)
 

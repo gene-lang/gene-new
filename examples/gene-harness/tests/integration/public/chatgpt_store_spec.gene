@@ -47,8 +47,8 @@
         ($assert (== signed_out/active one/id) "sign-out silently selected another account")
         (for account in signed_out/accounts
           (if (== account/id one/id) ($assert (== account/state "sign_in_required"))))
-        ($assert (try (select_chatgpt_account root "../../outside") false catch Any true))
-        ($assert (try (select_chatgpt_account root ($crypto/sha256 "missing")) false catch Any true)))))
+        ($assert (try (select_chatgpt_account root "../../outside") false catch Error true))
+        ($assert (try (select_chatgpt_account root ($crypto/sha256 "missing")) false catch Error true)))))
 
   (it "persists one host UUID across independent processes" []
     (isolated this_mod/.path "persists one host UUID across independent processes"

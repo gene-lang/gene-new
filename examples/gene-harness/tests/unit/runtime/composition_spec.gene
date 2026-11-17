@@ -14,9 +14,9 @@
     (let initial (current_snapshot state))
     (registry .put "extra" true)
     ($assert ($absent? initial/registries/extra) "input mutation changed a snapshot")
-    ($assert (try (initial/registries .put "extra" true) false catch Any true)
+    ($assert (try (initial/registries .put "extra" true) false catch Error true)
       "snapshot registry map is writable")
-    ($assert (try (initial/registries/functions/0 .put "name" "changed") false catch Any true)
+    ($assert (try (initial/registries/functions/0 .put "name" "changed") false catch Error true)
       "nested registry rows are writable")
     (let lease (acquire_snapshot state))
     (scope
@@ -68,7 +68,7 @@
     (close_composition_state state)
     b/.cancel
     ($assert (try (subscribe_publications state (fn [old next] nil)) false
-      catch Any true))))
+      catch Error true))))
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

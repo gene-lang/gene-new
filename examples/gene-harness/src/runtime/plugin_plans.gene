@@ -202,7 +202,7 @@
             (then (set data inspected/descriptor) (checked .put id inspected/descriptor))
             (elif (== inspected/code "unsupported_interface") (errors .push $"${id}: ${inspected/message}"))
             (else (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}")))
-        catch Any
+        catch Error
           (if repair
             (warnings .push $"${id}: unavailable during repair: ${$err/message}")
             (errors .push $"${id}: ${$err/message}"))))
@@ -278,7 +278,7 @@
   (let captured
     (try
       (data_copy request)
-    catch Any
+    catch Error
       {^capture_error "The invalid request could not be serialized."}))
   (append_history_result ^kind "attempt"
     runtime/workspace/store
@@ -299,12 +299,12 @@
       (var plan nil)
       (try
         (set plan (prepare_plan runtime request))
-      catch Any
+      catch Error
         (let original $err)
         (let message (failure_text original))
         (try
           (record_validation_failure runtime request message)
-        catch Any
+        catch Error
           (plan_error $"${message} (Validation history could not be saved: ${$err/message})"))
         (fail original))
       (if_not plan/valid
@@ -397,7 +397,7 @@
         (outcome .put "id" id)
         (outcome .put "revision" (composition_revision workspace))
         outcome
-      catch Any
+      catch Error
         (let message (failure_text $err))
         (let error_code (?? $err/code nil))
         (let result
@@ -409,7 +409,7 @@
         (var audit_error nil)
         (try
           (append_history_result ^kind "attempt" workspace/store before_head result)
-        catch Any
+        catch Error
           (set audit_error $err/message))
         (if (|| (!= before (composition_revision workspace)) (== error_code "commit_uncertain"))
           (return
@@ -447,7 +447,7 @@
         (let result (apply_plan_once runtime id))
         (runtime/workspace/store .Store:put key result)
         result
-      catch Any
+      catch Error
         (runtime/workspace/store .Store:put
           key
           {

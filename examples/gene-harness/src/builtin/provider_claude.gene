@@ -33,7 +33,7 @@
   (if (|| response/stdout_truncated response/stderr_truncated)
     (fail (ProviderError ^message
       "Claude CLI output exceeded its byte limit; incomplete output was not executed")))
-  (let parsed (try ($json/parse response/stdout) catch Any nil))
+  (let parsed (try ($json/parse response/stdout) catch Error nil))
   (if_not (== ($head parsed) Map)
     (fail (ProviderError ^message
       "Claude CLI returned no valid JSON result; check claude auth status and update Claude Code if a flag is unsupported")))
@@ -87,17 +87,17 @@
              (try
                (exec_async prepared/cmd prepared/args...
                  ^timeout_ms prepared/timeout_ms ^max_bytes 2000000)
-             catch Any
+             catch Error
                (fail (ProviderError ^message
                  "Cannot start Claude Code; install or update claude"))))
            (let response
              (try (await task)
-               catch Any
+               catch Error
                  (fail (ProviderError ^message
                    "Claude Code could not run; check GENE_HARNESS_CLAUDE_COMMAND"))
                ensure task/.cancel))
            (let text (claude_text response))
-           (let parsed (try ($json/parse response/stdout) catch Any nil))
+           (let parsed (try ($json/parse response/stdout) catch Error nil))
            {^text text ^usage parsed/usage})})
       (contribute_text_doc host "harness/providers/claude"
         "Local Claude Code CLI transport and invocation contract."

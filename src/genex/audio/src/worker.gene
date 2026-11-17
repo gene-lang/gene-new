@@ -60,7 +60,7 @@
   (let task (spawn ^lane root ($runtime/with_context nil (fn []
     (try
       (while (! worker/closed/.get) (message (read_json worker/reader)))
-    catch Any
+    catch Error
       (if_not worker/closed/.get (error)))))))
   (worker .put "dispatch_task" task)
   nil)

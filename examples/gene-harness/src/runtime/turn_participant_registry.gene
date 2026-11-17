@@ -57,7 +57,7 @@
     (if ($str/contains? slot "/")
       (invalid_definition candidate/name "Use one participant name below the owner namespace."))
     (if_not ($absent? candidate/bindings)
-      (let parsed (try ($into ($parse/read_all owner) []) catch Any []))
+      (let parsed (try ($into ($parse/read_all owner) []) catch Error []))
       (if (|| (!= parsed/.size 1) (!= ($head parsed/0) Sym) (!= ($to_str parsed/0) owner)
               (["Outcome" "workspace" "manager" "session" "doc" "discover" "append_prompt_at"
                 "attachment" "recall"] .contains? owner)

@@ -52,7 +52,7 @@
                 (fn []
                   (committed .set (+ committed/.get 1))))
               false
-            catch Any
+            catch Error
               true))
           (let rejected (current_snapshot runtime/h/snapshots))
           ($assert (== rejected/id before/id))
@@ -105,7 +105,7 @@
                 (fn []
                   (fail "commit must not run")))
               "unexpected success"
-            catch Any
+            catch Error
               $err/message))
           ($assert ($str/contains? message "cleanup fixture failed") message)
           (let after (current_snapshot runtime/h/snapshots))
@@ -195,7 +195,7 @@
             (try
               (apply_plan runtime stale/id)
               false
-            catch Any
+            catch Error
               (== $err/code "stale_composition")))
           ($assert (== (composition_revision runtime/workspace) 2))
           (let config_plan (validate_plan runtime {^base_revision 2 ^changes []}))
@@ -207,7 +207,7 @@
             (try
               (apply_plan runtime config_plan/id)
               false
-            catch Any
+            catch Error
               (== $err/code "stale_plan")))
         ensure
           (close_runtime runtime))))))
@@ -282,7 +282,7 @@
             (try
               (apply_plan runtime host_plan/id)
               false
-            catch Any
+            catch Error
               (== $err/code "stale_plan")))
           (runtime/workspace/history_build .set build)
           (let profile_plan
@@ -292,7 +292,7 @@
             (try
               (apply_plan runtime profile_plan/id)
               false
-            catch Any
+            catch Error
               (== $err/code "stale_plan")))
           (set runtime/profile/name "identity")
           (let source
@@ -301,7 +301,7 @@
                 (mod plugin
                   (import ^from "src/plugin_api.gene" [Plugin])
                   (fn init [descriptor]
-                    (let mode (try ($fs/exists? ".") "full" catch Any "restricted"))
+                    (let mode (try ($fs/exists? ".") "full" catch Error "restricted"))
                     (Plugin ^id "shape" ^provides [["functions" mode]] ^activate (fn [host] ($fs/write_text "must-not-activate" "bad"))))))))
           (let plan
             (validate_plan
@@ -364,7 +364,7 @@
             {
               ^base_revision 0
               ^changes [{^id "malformed" ^kind "replace" ^source "(mod plugin (fn"}]})
-          ($assert (try (validate_plan runtime request) false catch Any true))
+          ($assert (try (validate_plan runtime request) false catch Error true))
           (let attempts (history_results ^kind "attempt" runtime/workspace/store baseline))
           ($assert (== attempts/.size 1))
           ($assert (== attempts/0/result/stage "validation"))

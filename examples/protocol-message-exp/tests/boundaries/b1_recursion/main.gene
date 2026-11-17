@@ -28,4 +28,4 @@
 # 3. identical value graph: nothing in the tree changed between runs
 ($println $"tree unchanged: ${(== tree/children/2/children/.size 4)}")
 # 4. a plain host without the pair cannot send directly (call-form normalization)
-($println $"fresh send in this module: ${(try (Render:render article nil) catch Any $err/message)}")
+($println $"fresh send in this module: ${(try (Render:render article nil) catch Error $err/message)}")

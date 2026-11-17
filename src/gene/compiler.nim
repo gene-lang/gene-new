@@ -9237,6 +9237,26 @@ proc compileReturn(c: var Compiler, node: Value) =
     compileExpr(c, node.body[0], tail = true)
   discard c.emit(opExplicitReturn)
 
+const NonErrorCatchTypes* = ["Nil", "Present", "Bool", "Int", "I64", "I32",
+  "F64", "Float", "Str", "Sym", "Char", "Bytes", "List", "Map", "PropMap",
+  "Set", "HashMap", "Range", "Callable", "Fn", "Task", "Stream", "Never"]
+
+proc nonErrorCatchTypeMessage*(errorType: Value): string =
+  ## A `catch` clause names an error type. `Any` and the built-in value types
+  ## can never be raised, so a clause naming one is a mistake, not a handler
+  ## that happens never to match. Empty when the type is acceptable.
+  if errorType.kind == vkNode and errorType.head.isSymbol("|"):
+    for item in errorType.body:
+      result = nonErrorCatchTypeMessage(item)
+      if result.len > 0: return
+    return ""
+  if errorType.kind != vkSymbol: return ""
+  let name = errorType.symVal
+  if name == "Any":
+    return "Any is not an error type; use `catch Error` to catch every recoverable error"
+  if name in NonErrorCatchTypes:
+    return name & " is not an error type; `catch` requires an error type"
+
 proc compileTry(c: var Compiler, node: Value) =
   ## (try body... catch ErrorType recovery... [catch ...] [ensure cleanup...]) — the
   ## `catch`/`ensure` markers are bare symbols in the flat body.
@@ -9258,7 +9278,10 @@ proc compileTry(c: var Compiler, node: Value) =
         errorType.isSymbol("_") or
         (errorType.kind == vkNode and errorType.props.len > 0):
       raise newException(GeneError,
-        "catch requires an error type; use Any to catch every recoverable error")
+        "catch requires an error type; use Error to catch every recoverable error")
+    let rejected = nonErrorCatchTypeMessage(errorType)
+    if rejected.len > 0:
+      raise newException(GeneError, rejected)
     let pattern = newNode(newSym(CatchErrorBindingName),
       body = @[newSym(":"), errorType])
     inc i

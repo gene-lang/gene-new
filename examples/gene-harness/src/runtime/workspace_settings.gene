@@ -53,7 +53,7 @@
 # directory, like --workspace.
 (fn manager_root_path [^explicit explicit = nil, ^environment environment = nil] : Str
   (try (shared_manager_root_path ^explicit explicit ^environment environment)
-    catch Any (settings_error $err/message)))
+    catch Error (settings_error $err/message)))
 
 (fn initialize_manager_workspace [^root explicit = nil]
   (let selected (manager_root_path ^explicit explicit))

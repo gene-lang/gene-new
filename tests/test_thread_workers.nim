@@ -699,7 +699,7 @@ suite "threaded scheduler workers":
       withGeneAsyncIoQueueSetting "0":
         check run(compileSource(
           "(try (await ($fs/read_text_async path)) " &
-          " catch Any $err/message)"), scope).print() ==
+          " catch Error $err/message)"), scope).print() ==
           "\"fs/read_text_async failed: async I/O queue full\""
 
   test "root await drives worker-backed async file write":
@@ -816,7 +816,7 @@ suite "threaded scheduler workers":
           "  (var cancelled ($fs/write_text_async cancelledPath \"cancelled\")) " &
           "  (cancelled .cancel) " &
           "  (var next ($fs/write_text_async nextPath \"next\")) " &
-          "  [(await blocker) (try (await next) catch Any $err/message)])"),
+          "  [(await blocker) (try (await next) catch Error $err/message)])"),
           scope).print() == "[\"worker release\" nil]"
     joinThread(serverThread)
     check not fileExists(cancelledPath)
@@ -872,7 +872,7 @@ suite "threaded scheduler workers":
          "    ^handle (fn [ctx state msg] " &
          "      (var (Get ^reply reply) msg) " &
          "      (var value (gate .recv)) " &
-         "      (try (reply .send value) catch Any nil) " &
+         "      (try (reply .send value) catch Error nil) " &
          "      ($actor/continue state)))) " &
          "  (var pending (a .ask " &
          "    (fn [reply] " &
@@ -887,7 +887,7 @@ suite "threaded scheduler workers":
          "  (fn send_once [value] " &
          "    (try (do ((reply_cell .load) .send value) " &
          "             (mark_success)) " &
-         "      catch Any nil)) " &
+         "      catch Error nil)) " &
          "  (var a1 (spawn (send_once 1))) " &
          "  (var a2 (spawn (send_once 2))) " &
          "  (var a3 (spawn (send_once 3))) " &

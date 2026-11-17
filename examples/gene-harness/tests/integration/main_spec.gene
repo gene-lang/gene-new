@@ -229,7 +229,7 @@
             {^config invalid_config ^expected_digest configured/digest}))
           ($assert (== secret/status 400))
           ($assert (! ($str/contains? secret/body/message "SECRET_SENTINEL")))
-        catch Any
+        catch Error
           (let message $err/message)
           (let stopped (stop_host host))
           ($assert false ($to_str message "\n" stopped/stdout stopped/stderr))
@@ -635,7 +635,7 @@
               "POST"
               (session_path session "/commands")
               {^text "/run ($os/exit 17)" ^request_id "crash" ^submission_seq "2"})
-          catch Any
+          catch Error
             nil)
           ($assert (== ((Path "status") (await host/process)) 17) "fixture did not crash the host")
           ($assert
@@ -689,7 +689,7 @@
           (let before ($os/monotonic_ms))
           (try
             (api (connect host/root) "POST" "/control" {^action "stop" ^^confirm})
-          catch Any
+          catch Error
             nil)
           ($assert
             (== ((Path "status") (await host/process)) 0)

@@ -102,7 +102,7 @@
             (try
               (restore_plugin enabled/workspace enabled/h "missing")
               false
-            catch Any
+            catch Error
               ($str/contains? $err/message "no profile default"))
             "restore silently removed an id without a profile default")
         ensure
@@ -154,7 +154,7 @@
             (try
               (register_plugin first/workspace first/h "web" replacement)
               false
-            catch Any
+            catch Error
               ($str/contains? $err/message "use ^^replace"))
             "profile id was claimed without explicit replacement")
           (let replaced (register_plugin ^^replace first/workspace first/h "web" replacement))

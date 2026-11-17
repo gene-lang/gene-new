@@ -45,7 +45,7 @@
               (! (has_transparent_pixels decoded/pixels)))
         (reject "missing_dependency" "PNG decoder probe failed."))))
     profile
-  catch Any
+  catch Error
     (reject "missing_dependency"
       "Transparent PNG generation needs the working genex/raster v2 decoder. Build it with gene run src/genex/raster/tools/build.gene and configure GENE_RASTER_WORKER_V2.")))
 
@@ -71,7 +71,7 @@
           (if (== $err/timed_out true)
             (reject "decode_timeout" "PNG decoding exceeded the remaining generation-phase time.")
             (reject "decode_failed" "The generated PNG could not be decoded."))
-        catch Any (reject "decode_failed" "The generated PNG could not be inspected within the decoding limits.")))
+        catch Error (reject "decode_failed" "The generated PNG could not be inspected within the decoding limits.")))
       (if_not transparent
         (reject "opaque_image" "The generated PNG has no transparent pixels."))
       (metadata .put "has_transparent_pixels" true)))

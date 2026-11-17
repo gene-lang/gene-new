@@ -17,7 +17,7 @@
       (else "check model access, thinking support, and request limits")))
     (fail (ProviderError ^status response/status ^message $"anthropic ${response/status}: ${help}")))
   (let parsed (try ($json/parse response/body)
-    catch Any (fail (ProviderError ^message "anthropic returned invalid JSON"))))
+    catch Error (fail (ProviderError ^message "anthropic returned invalid JSON"))))
   (if_not (== ($head parsed) Map)
     (fail (ProviderError ^message "anthropic returned an invalid message")))
   (if (|| (!= parsed/type "message") (!= parsed/role "assistant"))

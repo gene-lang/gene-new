@@ -16,7 +16,7 @@
 (fn shared_settings_root [runtime] : Str
   (for plugin in (?? runtime/profile/plugins [])
     (if ((?? plugin/requires []) .contains? "workspaces/host") (return runtime/root)))
-  (try (manager_root_path ^explicit (?? runtime/launch/root nil)) catch Any ""))
+  (try (manager_root_path ^explicit (?? runtime/launch/root nil)) catch Error ""))
 
 # A missing file holds no values. A damaged one reports its error and contributes
 # nothing, so reads keep working from workspace values and defaults.
@@ -29,7 +29,7 @@
     (let values ($serde/read_data ($fs/read_text path)))
     (if (!= ($head values) Map) (fail "settings.gene must be an inert map"))
     {^values values ^digest (shared_settings_digest values) ^errors [] ^root root}
-  catch Any
+  catch Error
     (let reason ($to_str "settings.gene cannot be read: " (?? $err/message $err)))
     {^values {} ^digest "unreadable" ^root root ^errors [{^section "file" ^reason reason}]}))
 

@@ -343,7 +343,7 @@
          ^timeout_ms settings/timeout_ms ^max_response_bytes 16777216
          ^max_image_bytes service/store/max_file_bytes})))
       (try ($json/stringify prepared)
-        catch Any (image_error "invalid_preparation" "Generator preparation must contain plain request data and media IDs."))
+        catch Error (image_error "invalid_preparation" "Generator preparation must contain plain request data and media IDs."))
       (record_request service/runtime request call_id selected prepared)
       (dispatched .set true)
       (live .put "stage" "generation")

@@ -10,7 +10,7 @@
   (try
     ($into ($parse/read_all code) [])
     true
-  catch Any
+  catch Error
     false))
 
 (fn block_start? [line : Str]

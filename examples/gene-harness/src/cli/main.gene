@@ -352,7 +352,7 @@ Profile: """
                   catch CliError
                     (if (!= $err/code "unavailable") (fail $err)) {}))
                 (try (named_model_choice ^current_provider info/provider catalog options/model (?? info/requested_effort "auto"))
-                  catch Any (problem $err/message)))))
+                  catch Error (problem $err/message)))))
           (elif ($present? options/provider) {^provider options/provider})
           (else ($thaw ($freeze (?? state/session/model_settings {}))))))
         (if ($present? options/effort) (choice .put "effort" ($str/lower ($str/trim options/effort))))
@@ -371,7 +371,7 @@ Profile: """
           "POST"
           (session_path session (if (== kind "round") "/rounds" "/commands"))
           payload)
-      catch Any
+      catch Error
         (fail
           (CliError ^code (?? $err/code "request_failed") ^message $"${$err/message} Request ${request_id}, sequence ${sequence}, kind ${kind}." ^request_id request_id ^submission_seq sequence ^kind kind ^session session))))
     (if (|| (== options/wait true) (&& (== kind "command") (!= (options .get "no-wait") true)))

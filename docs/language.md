@@ -124,7 +124,7 @@ property, never node anatomy: `value/.body` reads the body.
 ```gene runnable
 (type Person ^props {^name Str ^nickname Str?})
 (let ada (Person ^name "Ada"))
-[ada/nickname (try ada/nmae catch Any "raised") ($has_key? ada "nmae")]
+[ada/nickname (try ada/nmae catch Error "raised") ($has_key? ada "nmae")]
 # [nil "raised" false]
 ```
 

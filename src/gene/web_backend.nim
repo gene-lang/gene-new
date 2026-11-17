@@ -4269,7 +4269,10 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           errorType.isSym("_") or
           (errorType.kind == vkNode and errorType.props.len > 0):
         raise webError(loc,
-          "web catch requires an error type; use Any to catch every recoverable error")
+          "web catch requires an error type; use Error to catch every recoverable error")
+      let rejected = nonErrorCatchTypeMessage(errorType)
+      if rejected.len > 0:
+        raise webError(loc, rejected)
       inc i
       var catchForms: seq[Value]
       while i < value.body.len and not (value.body[i].isSym("catch") or
@@ -6120,11 +6123,9 @@ proc emitCatchType(emitter: var WebEmitter, errorType: Value,
                    target: string): string =
   ## Catch syntax names a type, not a destructuring pattern. JavaScript errors
   ## use native classes for the built-in boundaries and generated classes for
-  ## user nominal Error types; `Any` is the explicit recoverable catch-all.
+  ## user nominal Error types; `Error` is the explicit recoverable catch-all.
   if errorType.kind == vkSymbol:
     let name = errorType.symVal
-    if name == "Any":
-      return "true"
     if name == "Error":
       return "$gene_is_error(" & target & ")"
     if name == "ErrorContractViolation":

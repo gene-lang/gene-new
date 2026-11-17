@@ -29,7 +29,7 @@
   (let value
     (try
       ($serde/read_data ($fs/read_text path))
-    catch Any
+    catch Error
       (media_error "unavailable" "The media index could not be read.")))
   (if_not (&& (== value/format 2) (== ($head value/assets) Map))
     (media_error "unavailable" "Unsupported or damaged media index."))
@@ -173,7 +173,7 @@
   (let data
     (try
       ($fs/read_bytes path)
-    catch Any
+    catch Error
       (media_error "unavailable" "Attachment bytes are unavailable.")))
   (if_not (&& (== ($binary/size data) record/size) (== ($crypto/sha256 data) record/digest))
     (media_error "unavailable" "Attachment integrity check failed."))
@@ -240,7 +240,7 @@
   (if (> ($str/byte_size encoded) (* 4 (/ (+ store/max_file_bytes 2) 3)))
     (media_error "too_large" "The encoded attachment exceeds the upload limit."))
   (let data (try ($base64/decode encoded)
-    catch Any (media_error "invalid_request" "Attachment data must be canonical base64.")))
+    catch Error (media_error "invalid_request" "Attachment data must be canonical base64.")))
   (put_media store name data))
 
 (fn validate_media_refs [store : MediaStore, ids]

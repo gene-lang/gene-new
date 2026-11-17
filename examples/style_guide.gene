@@ -214,7 +214,7 @@ line two"""
     (checked_value (load))
   catch ExampleError
     $"error: ${$err/message}"
-  catch Any
+  catch Error
     "unknown error"
   ensure
     (close)))

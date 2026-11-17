@@ -142,7 +142,7 @@
         (try
           (let refused (try (call runtime "create_trigger" {^id "bad" ^kind "scheduled"
             ^at (+ ($os/wall_ms) 86400000) ^request "x" ^model_settings {^provider "no_such_provider"}})
-            "accepted" catch Any $err/message))
+            "accepted" catch Error $err/message))
           ($assert ($str/contains? refused "Unknown provider") refused)
           (call runtime "create_trigger" {^id "missed" ^kind "scheduled" ^at (+ ($os/wall_ms) 1500) ^request "Missed."})
         ensure (close_harness harness))

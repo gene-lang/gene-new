@@ -45,7 +45,7 @@
           ($assert (try
             (api client "POST" path {^text "/help" ^request_id "concurrent" ^submission_seq "1"
               ^expected_command expected}) false
-            catch Any (== $err/code "submission_conflict")))
+            catch Error (== $err/code "submission_conflict")))
           (let recovered (api client "GET" $"/sessions/${target/id}/requests/spotlight-http?kind=command"))
           ($assert (== accepted/id recovered/id))
           (let duplicate (api client "POST" path envelope))
@@ -55,7 +55,7 @@
           ($assert (try
             (api client "POST" path {^text "/help" ^request_id "stale-http" ^submission_seq "2"
               ^expected_command stale}) false
-            catch Any (== $err/code "revision_conflict")))
+            catch Error (== $err/code "revision_conflict")))
         ensure (stop_host host))))))
 
 (fn main [args] : Int (run_spec args))

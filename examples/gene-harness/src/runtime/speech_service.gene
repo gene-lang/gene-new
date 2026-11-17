@@ -18,7 +18,7 @@
   (?? (/voice (effective_config service/runtime)) {}))
 
 (fn speech_reason [candidate]
-  (let result (try (candidate/available) catch Any $err/.Error:message))
+  (let result (try (candidate/available) catch Error $err/.Error:message))
   (if (|| ($absent? result) (== result true)) (return nil))
   (if (== result false) (return "This speech engine is unavailable."))
   (if (== ($head result) Str) result "The engine returned an invalid availability result."))
@@ -106,7 +106,7 @@
     (if_not service/dirty/.get (return nil))
     (let resources (service/resources .swap {}))
     (map_for [kind opened] in resources
-      (try (opened/row/close opened/resource) catch Any nil))
+      (try (opened/row/close opened/resource) catch Error nil))
     # Also collect an open result abandoned by a cancelled host job.
     (for registry in ["speech_recognizers" "speech_synthesizers"]
       (for engine in (rows service/runtime/h registry)

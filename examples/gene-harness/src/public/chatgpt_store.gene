@@ -54,7 +54,7 @@
   (let path (account_path root id))
   (if (! ($fs/exists? path)) (return nil))
   (try (require_record ($json/parse ($fs/read_text path)) id)
-    catch Any (fail (ProviderError ^message "ChatGPT account record is unreadable; sign in again"))))
+    catch Error (fail (ProviderError ^message "ChatGPT account record is unreadable; sign in again"))))
 
 (fn active_chatgpt_id [root = nil]
   (let path ($path/join (chatgpt_root root) "active.json"))
@@ -62,7 +62,7 @@
   (try
     (let value ($json/parse ($fs/read_text path)))
     (require_account_id value/id)
-  catch Any (fail (ProviderError ^message "ChatGPT account selection is unreadable; choose an account in Models"))))
+  catch Error (fail (ProviderError ^message "ChatGPT account selection is unreadable; choose an account in Models"))))
 
 (fn plan_enabled? [record] : Bool
   (&& ($present? record) (== ($head record/scopes) List)
@@ -103,11 +103,11 @@
     (if ($absent? (#"^[0-9a-f]{64}[.]json$" .match name)) (continue))
     (let id ($str/slice_bytes name 0 64))
     (let account (try (public_account (read_chatgpt_record root id))
-      catch Any {^id id ^label $"Unreadable account ${($str/slice_bytes id 0 8)}" ^state "unavailable"
+      catch Error {^id id ^label $"Unreadable account ${($str/slice_bytes id 0 8)}" ^state "unavailable"
         ^reason "This local record cannot be read; sign in again."}))
     (accounts .push account))
   (let selected (try {^active (active_chatgpt_id root)}
-    catch Any {^active nil ^error "Saved ChatGPT account selection is unreadable; choose an account or sign in again."}))
+    catch Error {^active nil ^error "Saved ChatGPT account selection is unreadable; choose an account or sign in again."}))
   (selected .put "accounts" accounts)
   selected)
 
@@ -166,7 +166,7 @@
     (let path ($path/join (chatgpt_root root) "host.json"))
     (if ($fs/exists? path)
       (then
-        (let stored (try ($json/parse ($fs/read_text path)) catch Any nil))
+        (let stored (try ($json/parse ($fs/read_text path)) catch Error nil))
         (if (|| (!= ($head stored/id) Str)
           ($absent? (#"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" .match stored/id)))
           (fail (ProviderError ^message "ChatGPT host identity is unreadable; repair the local host record before signing in")))

@@ -52,7 +52,7 @@
     (var color (blend (computed_color probe $"var(--${role})") surface))
     (var measured (/ ($math/round (* 100.0 (ratio color surface))) 100.0))
     ($dom/set_text element $"${source} · ${measured}:1 on surface")
-  catch Any
+  catch Error
     ($dom/set_text element $"${source} · ratio unavailable")
   ensure
     ($dom/remove probe)))

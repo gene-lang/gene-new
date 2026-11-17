@@ -52,7 +52,7 @@
   `(do (let %name %value) %body...))
 
 (show "scoped binding" (with_value answer 21 (* answer 2)) 42)
-(show "binding stays local" (try answer catch Any "hidden") "hidden")
+(show "binding stays local" (try answer catch Error "hidden") "hidden")
 
 # --- 3. Named parameters, defaults, and syntax destructuring -------------
 

@@ -84,6 +84,6 @@ without running any body:
   (var missing [])
   (for sample in samples
     (try ($runtime/signature operation sample)
-      catch Any (missing .push ($to_str sample))))
+      catch Error (missing .push ($to_str sample))))
   missing)
 ```

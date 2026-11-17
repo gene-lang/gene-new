@@ -418,7 +418,7 @@
     (if_yes (!= default_effort "") (set model/default_effort default_effort))
     (if_yes (! found) (entries .push model))
     (set config/models entries) (save page config)
-  catch Any (notice page "Check the model's context window and effort values." true)))
+  catch Error (notice page "Check the model's context window and effort values." true)))
 
 (fn main [root : EventTarget] : Nil
   (var page (ModelsPage ^root root ^notice ($dom/element "models_notice") ^csrf "" ^file nil ^catalog nil

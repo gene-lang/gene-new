@@ -59,7 +59,7 @@
           ($assert (== status/owner/accounts/0/id "test"))
           ($assert (! ($str/contains? ($json/stringify status) "xoxb-test")))
           ($assert (! ($str/contains? ($json/stringify status) "fake-slack-credentials")))
-          ($assert (try (status/owner/accounts .push {}) false catch Any true))
+          ($assert (try (status/owner/accounts .push {}) false catch Error true))
         ensure (close_session_service service))
         ($assert (== opened/.get closed/.get))
         (let restarted (test_service ^workspace root ^channel_options options

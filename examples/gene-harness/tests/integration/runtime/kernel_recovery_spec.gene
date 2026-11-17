@@ -46,7 +46,7 @@
         ensure (close_runtime first))
         (let pointer $"${root}/.gene-harness/events/CURRENT")
         (let before ($fs/read_text pointer))
-        (let error (try (open_runtime root "default" profile ^mode "doctor") "accepted" catch Any $err/message))
+        (let error (try (open_runtime root "default" profile ^mode "doctor") "accepted" catch Error $err/message))
         ($assert ($str/contains? error "unknown required core event") error)
         ($assert (== ($fs/read_text pointer) before) "Refused catalog startup changed the event checkpoint.")
         (let events (open_event_store $"${root}/.gene-harness/events"))

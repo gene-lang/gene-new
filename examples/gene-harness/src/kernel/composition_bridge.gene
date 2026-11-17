@@ -86,12 +86,12 @@
     # diagnostic and cannot change a plugin's status or roll the tables back.
     (try
       (publication_metadata h snapshot)
-    catch Any
+    catch Error
       (record_publication_diagnostic h/snapshots snapshot
         {^kind "metadata" ^message $err/message}))
     (try
       (notify h (CompositionChanged ^revision snapshot/id))
-    catch Any
+    catch Error
       (record_publication_diagnostic h/snapshots snapshot
         {^kind "notification" ^message $err/message})))
   nil)
@@ -340,7 +340,7 @@
   (let baseline_observer h/registry_observer)
   (try
     (reconcile_registry_candidate ^strict strict ^pending pending ^accept accept ^commit commit ^prepare prepare h)
-  catch Any
+  catch Error
     (if_yes (&& ($present? committed) committed/.get)
       (h/composer/bridge/published .set h/composition/.current_plugins)
       (publish_registry_snapshot h)
@@ -414,7 +414,7 @@
       (reconcile_cordis_harness ^strict true ^pending pending ^accept accept
         ^commit (fn [] (commit) (committed .set true)) ^committed committed ^prepare prepare h)
       {^published true ^state "applied"}
-    catch Any
+    catch Error
       (if committed/.get
         {^published true ^state "recovery_required" ^message $err/message}
         (do
@@ -440,7 +440,7 @@
     ; .delete plugin/id)
   (try
     (reconcile_cordis_harness h)
-  catch Any
+  catch Error
     (h/plugin_errors
       .get
       ; .put plugin/id ($to_str $err)))
@@ -466,7 +466,7 @@
     (h/plugin_errors/.get .delete plugin/id))
   (try
     (reconcile_cordis_harness h)
-  catch Any
+  catch Error
     (var failure ($to_str $err))
     (for admission in admissions
       (h/plugin_errors/.get .put admission/plugin/id failure)))
@@ -567,7 +567,7 @@
   (var retirement_failures [])
   (try
     (set retirement_failures (begin_close_composition_state h/snapshots))
-  catch Any
+  catch Error
     (errors .push ($to_str $err)))
   # Only held leases stop the close. A failed retirement is reported and the
   # rest of the composition still closes.
@@ -579,10 +579,10 @@
   (set h/registry_observer nil)
   (try
     h/composition/.close
-  catch Any
+  catch Error
     (errors .push ($to_str $err)))
   (try (close_composition_state h/snapshots)
-    catch Any (errors .push ($to_str $err)))
+    catch Error (errors .push ($to_str $err)))
   (h/plugins .set (fresh_map))
   (h/composer/bridge/entries .set (fresh_map))
   (h/plugin_errors .set (fresh_map))

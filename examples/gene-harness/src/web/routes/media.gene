@@ -13,7 +13,7 @@
         ^max_files 16 ^max_message_bytes 41943040})))
     (if_yes (== request/method "POST")
       (let data (try ($json/parse request/body ^^strict ^max_depth 8)
-        catch Any (fail_request "invalid_request" "The upload must contain a JSON object.")))
+        catch Error (fail_request "invalid_request" "The upload must contain a JSON object.")))
       (return (response 201 (put_media_base64 media_store
         (field data "name") (field data "data"))))))
   (if_yes (&& (== parts/.size 5) (== parts/1 "api") (== parts/2 (api_version))

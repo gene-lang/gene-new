@@ -47,7 +47,7 @@
     (invalid $"Setting ${definition/key} must be at least ${definition/min}."))
   (if ($present? definition/validate)
     (try (definition/validate value)
-      catch Any
+      catch Error
         (if (== ($head $err) ServiceError) (fail $err))
         (let reason (error_text $err))
         (invalid $"Setting ${definition/key} was rejected: ${reason}")))
@@ -95,7 +95,7 @@
   (try
     (let chosen (select_provider ^allow_unready true ^model_only true runtime complete))
     {^provider chosen/selection/provider ^model chosen/selection/model}
-  catch Any nil))
+  catch Error nil))
 
 # Options for one setting from its named `setting_choices` source. Evaluation is a
 # read of cached catalogs. A failure leaves the saved value inspectable. A
@@ -119,7 +119,7 @@
     (let shaped (if (== ($head result) List) {^options result} result))
     {^source name ^options (?? shaped/options []) ^complete (?? shaped/complete true)
      ^closed (== source/closed true) ^reason (?? shaped/reason nil)}
-  catch Any
+  catch Error
     {^source name ^options [] ^complete false ^closed (== source/closed true)
      ^reason ($to_str "The " name " choices could not be read: " (error_text $err)) ^^failed}))
 
@@ -261,7 +261,7 @@
     ($runtime/with_context nil (fn []
       (while (! watch/closed/.get)
         ($sleep interval_ms)
-        (let digest (try (/digest (read_shared_settings shared_root)) catch Any state/observed/.get))
+        (let digest (try (/digest (read_shared_settings shared_root)) catch Error state/observed/.get))
         (if_yes (&& (! watch/closed/.get) (!= digest state/observed/.get))
           (announce runtime "shared" digest [])))))))
   watch)

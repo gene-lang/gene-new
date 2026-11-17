@@ -70,6 +70,6 @@
   (try
     (start_host_services services mode)
     context/runtime
-  catch Any
+  catch Error
     (if_not ($absent? context/runtime) (context/runtime/closed .set true))
     (fail $err)))

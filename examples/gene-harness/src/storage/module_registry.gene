@@ -191,7 +191,7 @@
   (if events (validate_descriptor_events h descriptor))
   (if_not ($absent? workspace/history_build/.get)
     (try (remember_descriptor workspace/store workspace/history_build/.get entry/module_digest descriptor)
-      catch Any (workspace/metadata_errors/.get .push {^id entry/id ^message $err/message})))
+      catch Error (workspace/metadata_errors/.get .push {^id entry/id ^message $err/message})))
   descriptor)
 
 (fn validate_descriptor_events [h : Harness, descriptor]

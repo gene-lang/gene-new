@@ -139,7 +139,7 @@ ensure
 
 What follows `catch` is a type. The catch body reads the whole error through
 `$err`; `$err_msg` calls its retained `Error:message` implementation. Use
-`catch Error` for any ordinary error. `fail` raises a recoverable value that
+`catch Error` for any ordinary error; `catch Any` is a compile error. `fail` raises a recoverable value that
 implements Error; `panic` does not. Clause heads align
 under `try` and their bodies indent once. See `reference/declarations.md` for
 declaring an error type and a function's `^errors` row.

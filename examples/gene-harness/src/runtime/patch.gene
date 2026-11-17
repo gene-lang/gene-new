@@ -194,8 +194,8 @@
           (if (&& exists (! linked) (!= info/kind "file"))
             (patch_error $"${relative}: patch requires a file"))
           (let physical (if linked ($fs/real_path path) path))
-          (let target (if linked (try ($fs/info physical) catch Any nil) info))
-          (let content (if exists (try ($fs/read_text physical) catch Any nil) nil))
+          (let target (if linked (try ($fs/info physical) catch Error nil) info))
+          (let content (if exists (try ($fs/read_text physical) catch Error nil) nil))
           (if (&& exists (! linked) ($absent? content))
             (patch_error $"${relative}: cannot read original file"))
           (originals .put relative {^exists exists ^symlink linked ^link_target info/link_target
@@ -231,7 +231,7 @@
     (if (!= operation/kind "delete")
       (try
         (if ($fs/exists? operation/temporary) ($fs/remove operation/temporary))
-        catch Any nil))))
+        catch Error nil))))
 
 (fn patch_summary [plan]
   (let summaries [])
@@ -280,7 +280,7 @@
           (changed .push {^relative operation/path ^physical ($path/join plan/root operation/path)}))))
     (cleanup_temporaries plan)
     {^status "applied" ^text $"applied: ${(patch_summary plan)}" ^files plan/files ^!attention}
-    catch Any
+    catch Error
       (let reason $err/message)
       (let restored [])
       (let partial [])
@@ -299,7 +299,7 @@
                   (if_not ($absent? original/mode) ($fs/set_mode original/physical original/mode)))))
             (else ($fs/remove change/physical)))
           (restored .push relative)
-          catch Any (partial .push relative)))
+          catch Error (partial .push relative)))
       (cleanup_temporaries plan)
       (let restored_names ($str/join restored ", "))
       (let partial_names ($str/join partial ", "))
@@ -313,7 +313,7 @@
   (try
     (with_patch_gate root (fn []
       (commit_patch (prepare_patch root text) ^fail_after_renames fail_after_renames)))
-    catch Any {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^!attention}))
+    catch Error {^status "failed" ^text $"failed: ${$err/message}" ^files [] ^!attention}))
 
 (fn recover_patch_temporaries [root : Str, files]
   (for relative in files

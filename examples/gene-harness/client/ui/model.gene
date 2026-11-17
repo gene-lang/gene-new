@@ -73,7 +73,7 @@
   (if_not ($absent? memory) (return (copy_map memory)))
   (var raw (?? (storage_get key) ""))
   (if_yes (== raw "") (return {}))
-  (try (copy_map ($json/parse raw)) catch Any {}))
+  (try (copy_map ($json/parse raw)) catch Error {}))
 
 (fn persist_pending [ui : UiClient] : Bool
   (storage_set (pending_key ui) ($json/stringify ui/pending)))

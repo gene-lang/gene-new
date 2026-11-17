@@ -61,7 +61,7 @@
       (reconcile_composition ^strict true ^allow_pending pending ^accept accept ^commit commit
         self plugins entries)
     catch RecoveryRequired (fail $err)
-    catch Any
+    catch Error
       (record/base_owner .set previous_base)
       (record/policies .set previous_policies)
       (set record/specs previous_specs)
@@ -516,7 +516,7 @@
   catch RecoveryRequired
     (set snapshot record/loader/.inspect)
     (set retirement_failure $err)
-  catch Any
+  catch Error
     (record/projections .set previous_projections)
     (record/base_owner .set previous_base)
     (record/dispose_projections .set ($thaw #[]))
@@ -528,7 +528,7 @@
     (record/busy .set false))
   # The candidate committed; the projections it replaced can now retire.
   (for instance in record/dispose_projections/.get
-    (try instance/.dispose catch Any nil))
+    (try instance/.dispose catch Error nil))
   (record/dispose_projections .set ($thaw #[]))
   # A failed plugin keeps whatever last active revision it had.
   (let failed (failure_ids (failed_entries snapshot)))
@@ -551,7 +551,7 @@
   (let before ($size (/diagnostics record/runtime/.inspect)))
   (let errors [])
   (try record/runtime/.close
-    catch Any (errors .push $err/message))
+    catch Error (errors .push $err/message))
   (var at 0)
   (for diagnostic in (/diagnostics record/runtime/.inspect)
     (if (&& (>= at before) (["cleanup_failed" "loader_close_failed"] .contains? diagnostic/kind))

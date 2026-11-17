@@ -143,7 +143,7 @@
           (let created (save ^id "new" ^title "New task"))
           ($assert (== created/status "todo"))
           ($assert (== created/notes ""))
-          ($assert (try (save ^id "untitled") false catch Any true))
+          ($assert (try (save ^id "untitled") false catch Error true))
           ($assert (!= view/data_revision (/data_revision (ui_status service/runtime))))
           (let invalidations ($filter events (fn [message] (== message/type "ui/state"))))
           ($assert (> invalidations/.size 0))

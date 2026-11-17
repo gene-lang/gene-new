@@ -179,7 +179,7 @@
 # example). Answered by round_lifecycle handlers, not a feature import.
 (fn owned_children? [runtime, session : Str, round] : Bool
   (try (claimed? (dispatch_round_event runtime "round/outstanding" {^session session ^round round/id}))
-    catch Any false))
+    catch Error false))
 
 (fn run_round [runtime, session : Str, round, ^resume resume : Bool = false]
   (let metadata (require_record runtime/sessions session))
@@ -257,7 +257,7 @@
       (let ended {^type "turn/end" ^turn number ^round round/id ^reason reason
         ^text (if failed ($str/join ($map errors /message) "; ") (?? terminal/error nil)) ^!synthetic})
       # A short result line per turn, for check-ins and their repetition rule.
-      (let evidence (try (turn_evidence (if failed (terminal .assoc "error" ended/text) terminal)) catch Any nil))
+      (let evidence (try (turn_evidence (if failed (terminal .assoc "error" ended/text) terminal)) catch Error nil))
       (if_yes ($present? evidence)
         (ended .put "result_line" evidence/line)
         (ended .put "evidence" (evidence .assoc "line" nil)))
@@ -371,7 +371,7 @@
       (let elided
         (try
           (elide_response runtime session number text)
-        catch Any
+        catch Error
           {^text text ^blobs {}}))
       (let response_recorded ($cell false))
       (fn record_response [files, ^hint hint = nil]
@@ -442,7 +442,7 @@
                  ^items result/request_items}))))
         (result .put "prepared_request_items" prepared/items))
       (set body_completed true)
-    catch Any
+    catch Error
       (set failure $err)
       (if (== ($head $err) ParticipantFailure) (set stage $"participants/${$err/phase}"))
       (let kind (if (|| (== ($head $err) TurnReadinessFailure) (== $err/code "connection_changed"))
@@ -458,7 +458,7 @@
         (if ($absent? transaction)
           (seal_turn terminal [])
           (finish_turn_transaction transaction terminal seal_turn))
-      catch Any
+      catch Error
         (if_yes ($absent? failure)
           (set failure $err)
           (let failed_phase (?? $err/errors/0/phase (?? $err/phase "finish")))

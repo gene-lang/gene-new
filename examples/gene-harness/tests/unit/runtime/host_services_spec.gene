@@ -36,7 +36,7 @@
         (let owner (new_host_services ctx (specs) ^observe (fn [event, name]
           (if (&& (== event phase) (== name target))
             (fail (HostServiceError ^message "injected startup failure"))))))
-        ($assert (try (start_host_services owner "normal") false catch Any
+        ($assert (try (start_host_services owner "normal") false catch Error
           ($str/contains? $err/message "injected startup failure")))
         (let expected [])
         (var at ctx/opened/.size)

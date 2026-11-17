@@ -87,7 +87,7 @@
         (fn [] (render_component ^^interactive h record/payload/render context))))
       (validate_view_actions view record/payload lease/snapshot)
       (result .put "view" view)
-    catch Any (result .put "error" $err/message))
+    catch Error (result .put "error" $err/message))
     result
   ensure (release_snapshot h/snapshots lease)))
 

@@ -137,7 +137,7 @@
     ($assert (== ((resolved_tokens child "light") .get "radius-surface") "2px"))
     ($assert (== ((resolved_tokens child "dark") .get "radius-surface") "4px"))
     (themes .put "loop" {^name "loop" ^extends "loop"})
-    ($assert (try (resolve_theme "loop" themes) false catch Any true))
+    ($assert (try (resolve_theme "loop" themes) false catch Error true))
     (themes .put "modes" {^name "modes" ^tokens {^dark {^font_sans "Dark Sans, sans-serif" ^board_lane_radius "8px" ^sidebar_width "30rem"}}})
     (let modes (resolve_theme "modes" themes))
     (let light (mode_tokens modes "light"))
@@ -282,7 +282,7 @@
     ($assert (! ($str/contains? css "font-family: Example Extra;"))))
 
   (it "publishes font bytes with a content address and generates inherited faces" []
-    (let invalid (try ($web/font "missing-font.txt") "" catch Any $err/message))
+    (let invalid (try ($web/font "missing-font.txt") "" catch Error $err/message))
     ($assert ($str/contains? invalid "web/font expects"))
     (let path ($path/join this_pkg/root "tmp" $"theme-font-${($crypto/random_hex 8)}.woff2"))
     (let exported ($to_str path ".export"))

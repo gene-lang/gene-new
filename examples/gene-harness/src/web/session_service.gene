@@ -331,7 +331,7 @@
       (append_core_event service/runtime/events "session" session
         {^type "trace" ^kind "voice/audio_reply_missing"
          ^text "voice/audio_reply_missing" ^round event/payload/round ^^ignorable})
-    catch Any nil))
+    catch Error nil))
   nil)
 
 (fn command_input_record [session : Str, record]
@@ -384,7 +384,7 @@
             (let data (snapshot ^!console ^safe safe service session))
             (if (snapshot_job_current? service session version)
               (publish_message service "snapshot" session data)))))
-      catch Any
+      catch Error
         (if (snapshot_job_current? service session version)
           (publish_message service "error" session {^message ($to_str $err/message)}))
       ensure (service/snapshot_jobs/.get .delete id))))
@@ -400,7 +400,7 @@
         (let active (model_catalog service))
         (if (== active/id changed/revision)
           (publish_message service "models/catalog" "" {^revision changed/revision}))
-      catch Any nil))
+      catch Error nil))
     (when (changed : ModeChanged)
       (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
     (when (changed : CompositionChanged)
@@ -496,7 +496,7 @@
   (set service/lifecycle (open_session_lifecycle service publish_message handle_harness_event
     ^channel_options channel_options ^observe service_event))
   service
-  catch Any
+  catch Error
     (let original $err)
     (if_not ($absent? service) (service/closed .set true))
     (if (|| ($absent? service) ($absent? service/lifecycle))
@@ -631,7 +631,7 @@
     # A retried request returns its earlier receipt and starts nothing.
     (if_not started/.get (release))
     record
-  catch Any
+  catch Error
     (if_not started/.get (release))
     (fail $err)))
 
@@ -695,7 +695,7 @@
       (let reference (?? source/continuation/items_ref source/request_items_ref))
       (set available (&& ($present? reference) (== tail/round source/id)
         (== tail/turn source/last_turn)
-        (try (== ($head ($serde/read_data (read_body service/runtime reference))) List) catch Any false))))
+        (try (== ($head ($serde/read_data (read_body service/runtime reference))) List) catch Error false))))
     (result .put "resumable" available))
   result)
 
@@ -882,7 +882,7 @@
           (render_component ^sidebar (== candidate/slot "conversation_sidebar")
             service/runtime/h candidate/render context)))
       (item .put "view" view)
-    catch Any
+    catch Error
       (item .put "error" $err/message))
     (components .push item))
   components)
@@ -1391,7 +1391,7 @@
 (fn install_host_objects [runtime, launch]
   (let live runtime/services/values/manager)
   (let root (if ($present? live) (then runtime/root)
-    (else (try (manager_root_path ^explicit (?? launch/root nil)) catch Any ""))))
+    (else (try (manager_root_path ^explicit (?? launch/root nil)) catch Error ""))))
   (let manager (HarnessManager ^runtime runtime ^root root
     ^workspaces_dir (if (== root "") "" ($path/join root "workspaces"))
     ^archive_dir (if (== root "") "" ($path/join root "archive"))

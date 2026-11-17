@@ -41,7 +41,7 @@
       (let path $"${runtime/state_root}/blobs/${value}")
       (if_not ($fs/exists? path) (return nil))
       (live .put value true)
-      (let nested (try ($serde/read_data (read_body runtime value)) catch Any nil))
+      (let nested (try ($serde/read_data (read_body runtime value)) catch Error nil))
       (if_not ($absent? nested) (mark_body_references runtime nested live))
       (return nil)))
   (if (== ($head value) Map)

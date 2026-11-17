@@ -25,7 +25,7 @@
     (set draft/held true)
     (if_yes (! (storage_set key ($json/stringify draft)))
       (client/changed "The refused voice draft could not be marked for review. Inspect it before sending more."))
-  catch Any (client/changed "The saved voice draft needs inspection before another submission.")))
+  catch Error (client/changed "The saved voice draft needs inspection before another submission.")))
 
 (fn admitted [client : RoundClient, receipt : Any] : Nil
   (var envelope : Any client/pending)
@@ -52,7 +52,7 @@
           # review draft while this admission was still unresolved.
           (set draft/held (flag draft/review_required))
           (storage_set key ($json/stringify draft))))
-    catch Any (client/changed "The admitted voice draft could not be updated; inspect it before sending more.")))
+    catch Error (client/changed "The admitted voice draft could not be updated; inspect it before sending more.")))
   (clear_pending client)
   (client/settled envelope receipt))
 
@@ -93,7 +93,7 @@
       (for field in ["session" "request_id" "text" "submission_seq"]
         (if_yes (== (text envelope/%field) "") (set valid false)))
       (if valid (set client/pending envelope) (set client/pending {^^invalid}))
-    catch Any (set client/pending {^^invalid}))
+    catch Error (set client/pending {^^invalid}))
     (recover_round client)))
 
 (fn dispatch_round [client : RoundClient, session : Str, value : Str, input : Any,
@@ -109,7 +109,7 @@
   (try
     (set input_copy ($json/parse ($json/stringify input)))
     (if_yes ($present? model_settings) (set model_copy ($json/parse ($json/stringify model_settings))))
-    catch Any
+    catch Error
       (hold_draft client session)
       (done 400 {^^not_sent ^message "Voice input metadata could not be encoded."}) (return))
   (set client/resolving true)

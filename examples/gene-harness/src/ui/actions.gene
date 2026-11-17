@@ -29,7 +29,7 @@
   # Domain events are buffered independently of the receipt log. A durable
   # "done" receipt must never get ahead of the writes it acknowledges.
   (try (flush_event_store manager/runtime/events)
-    catch Any
+    catch Error
       (changes .put "status" "interrupted")
       (changes .put "error_code" "persistence_unknown")
       (changes .put "display" (byte_prefix
@@ -110,7 +110,7 @@
     (manager/watchers/.get .put id watcher)
     (set transferred true)
     admitted/record
-  catch Any
+  catch Error
     (if (&& (!= admitted_id "") (! transferred) ($absent? (manager/active/.get .get admitted_id)))
       (return (update_action manager/log admitted_id
         {^status "failed" ^display (byte_prefix ($to_str $err/message) 16384) ^error_code "admission_setup"})))

@@ -30,7 +30,7 @@
   (try
     (var value : PropMap ($json/parse saved))
     value
-  catch Any
+  catch Error
     {}))
 
 (fn create_question_editors [notices : Notices,

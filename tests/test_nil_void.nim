@@ -8,7 +8,7 @@ suite "nil — optional parameters":
   test "a nil-admitting fixed parameter is required without a default":
     check nilEval("""
       (fn f [x : Int?] : Int? x)
-      [(f nil) (f 4) (try (f "s") catch TypeError "bad") (try (f) catch Any "arity")]
+      [(f nil) (f 4) (try (f "s") catch TypeError "bad") (try (f) catch Error "arity")]
     """) == "[nil 4 \"bad\" \"arity\"]"
   test "= nil makes a nil-admitting parameter omissible":
     check nilEval("""

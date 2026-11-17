@@ -177,7 +177,7 @@
     (send host {^type "hello" ^csrf host/csrf ^client_id host/client_id ^formats ["s16le"]})))
   ($ws/on_text socket (fn [value : Str] : Nil
     (if_yes (|| host/closed (!= epoch host/epoch)) (return))
-    (try (control host ($json/parse value)) catch Any (host_error host "The host sent an invalid voice control frame."))))
+    (try (control host ($json/parse value)) catch Error (host_error host "The host sent an invalid voice control frame."))))
   ($ws/on_bytes socket (fn [frame : (Buffer U8)] : Nil
     (if_yes (== epoch host/epoch) (bytes host frame))))
   ($ws/on_close socket (fn [] : Nil

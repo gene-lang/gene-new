@@ -24,7 +24,7 @@
   (if_not ($absent? state/client/.get)
     (map_for [session present] in owners
       (try (close_session state/client/.get ($to_str session))
-        catch Any (errors .push $err/message))))
+        catch Error (errors .push $err/message))))
   (if_not errors/.empty?
     (fail (ServiceError ^code "cleanup_failed" ^message $"Computer session cleanup needs attention: ${errors}")))
   nil)
@@ -52,7 +52,7 @@
         (state/readers .set (- state/readers/.get 1))
         (if (== state/readers/.get 0) (close_grants state))))))
       (record/values/.get .put "started" true)
-    catch Any
+    catch Error
       (state/readers .set (- state/readers/.get 1))
       (fail $err))))
   nil)

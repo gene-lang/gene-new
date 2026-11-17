@@ -24,7 +24,7 @@
           (try
             (authenticate reopened "invalid")
             false
-          catch Any
+          catch Error
             true)
           "unknown cookie was accepted")
         ($println "browser auth: persisted secret, cookie and CSRF survive restart")))))
@@ -47,12 +47,12 @@
         ($assert (== (/mode ($fs/info $"${root}/web_secret")) 384) "owner credential is not private")
         ($assert (== (/mode ($fs/info $"${root}/web_sessions")) 384) "cookie records are not private")
         (reset_auth auth)
-        ($assert (try (exchange auth token) false catch Any true) "reset accepted the previous owner token")
-        ($assert (try (authenticate auth second/cookie) false catch Any true) "reset accepted the previous cookie")
+        ($assert (try (exchange auth token) false catch Error true) "reset accepted the previous owner token")
+        ($assert (try (authenticate auth second/cookie) false catch Error true) "reset accepted the previous cookie")
         # A stale pre-reset cookie snapshot must not restore access.
         ($fs/write_text_atomic ^^owner_only $"${root}/web_sessions" old_records)
         (let reopened (open_auth root))
-        ($assert (try (authenticate reopened first/cookie) false catch Any true) "old cookies revived after crash")
+        ($assert (try (authenticate reopened first/cookie) false catch Error true) "old cookies revived after crash")
         (let fresh (exchange reopened auth/secret))
         ($assert (== (/csrf (authenticate (open_auth root) fresh/cookie)) fresh/csrf) "new credentials did not survive restart"))))
   (it "accepts only cookies from the current owner generation" []
@@ -67,7 +67,7 @@
         (let auth (open_auth root))
         ($assert (== (/csrf (authenticate auth "current")) "keep"))
         (for cookie in ["stale" "untagged"]
-          ($assert (try (authenticate auth cookie) false catch Any true) cookie))))))
+          ($assert (try (authenticate auth cookie) false catch Error true) cookie))))))
 
 (fn main [args] : Int
   (run_spec args))

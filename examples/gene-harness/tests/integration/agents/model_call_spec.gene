@@ -342,7 +342,7 @@
             (call_model runtime
               {^session "default" ^round "r" ^turn 1
                ^config {} ^messages []})
-          catch Any nil)
+          catch Error nil)
           (let results (event_payloads runtime "model/result"))
           ($assert (== results/.size 1) "large error lacked a model result")
           (let digest results/0/error/harness_blob)
@@ -511,7 +511,7 @@
       (calls .set 0)
       (mode .set "timeout")
       (let exhausted (try (call_model runtime request) "accepted"
-        catch Any $err/message))
+        catch Error $err/message))
       (assert_equal calls/.get 2)
       ($assert ($str/contains? exhausted
         "retry model provider request exceeded 1.5 s (2 attempts)"))

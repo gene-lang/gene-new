@@ -253,7 +253,7 @@
           (do
             (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
             (workspace/errors/.get .delete id)))
-      catch Any
+      catch Error
         (set status "error")
         (record_quarantine workspace id $err/message))
       (if (== status "ready") (reset_participant_quarantine workspace id))

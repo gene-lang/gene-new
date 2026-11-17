@@ -207,7 +207,7 @@ when defined(geneRcStats):
           "(var local {^value [item ($to_str item)]}) " &
           "(var typed : Str ($to_str item)) " &
           "(set typed \"next\") " & ending & ")) " &
-          "(repeat i in 100 (try (work) catch Any nil))"
+          "(repeat i in 100 (try (work) catch Error nil))"
         discard leakedManaged(source)
         checkpoint ending
         check leakedManaged(source) == 0
@@ -806,7 +806,7 @@ when defined(geneRcStats):
       # broken; GC of arbitrary mixed scope/Value cycles is not implemented.
       check leakedManaged("(fn target [] (fail \"expected\")) " &
         "(fn invoke [] (var bound ($runtime/bind_call target [])) " &
-        " (try (bound) catch Any nil ensure (set bound nil))) " &
+        " (try (bound) catch Error nil ensure (set bound nil))) " &
         "(repeat 100 (invoke))") == 0
 
     test "checked callable views reclaim targets and invocation scopes":
@@ -816,7 +816,7 @@ when defined(geneRcStats):
       check leakedManaged("(fn use [f : (Callable [Int] Int)] (f 1)) " &
         "(repeat 100 (use (fn [x] x)))") == 0
       check leakedManaged("(fn bad [x] (fail \"expected\")) " &
-        "(fn use [f : (Callable [Int] Int)] (try (f 1) catch Any nil)) " &
+        "(fn use [f : (Callable [Int] Int)] (try (f 1) catch Error nil)) " &
         "(repeat 100 (use bad))") == 0
       check leakedManaged("(let f : (Callable [] Any ^errors []) " &
         "(fn [] ($assert false))) (try (f) catch ErrorContractViolation nil)") == 0
@@ -830,7 +830,7 @@ when defined(geneRcStats):
         "(fn collect [items...] items) " &
         "(let s ([1] => collect args...)) (s .close)") == 0
       check leakedManaged("(fn broken [x] (fail \"expected\")) " &
-        "(let s ([1] => broken)) (try (s .next) catch Any nil)") == 0
+        "(let s ([1] => broken)) (try (s .next) catch Error nil)") == 0
 
     test "filesystem walk releases retained frames after early close":
       let dir = getTempDir() / "gene-walk-rc-spec"
@@ -1112,7 +1112,7 @@ when defined(geneRcStats):
           "(import * : p ^from \"./prov\") " &
           "(let item (Item)) (var i 0) " &
           "(fn body [] " & pair &
-          "  (let f (fn [] (try item/.Render:render catch Any \"hidden\"))) (f)) " &
+          "  (let f (fn [] (try item/.Render:render catch Error \"hidden\"))) (f)) " &
           "(body) ($runtime/test_collect) nil")
         GC_fullCollect()
         let before = liveManaged
@@ -1212,7 +1212,7 @@ when defined(geneRcStats):
           "(for x in [2] (set f (fn [] x)) (return 1)) nil)") == 0
         check repeatedBodyLeak("(fn inner [] (var f nil) " &
           "(for x in [2] (set f (fn [] x))) (fail \"boom\")) " &
-          "(fn body [] (try (inner) catch Any nil) nil)") == 0
+          "(fn body [] (try (inner) catch Error nil) nil)") == 0
         # A function a native calls back, and a spawned task body.
         check repeatedBodyLeak("(fn body [] ([1] .map (fn [e] (var f nil) " &
           "(for y in [1] (set f (fn [] y))) 1)) nil)") == 0
@@ -1302,7 +1302,7 @@ when defined(geneRcStats):
           "(tx .discard) " &
           "(var failed ($runtime/sandbox_transaction)) " &
           "($assert (try (failed .prepare " & sandboxOptions("failing.gene") &
-          ") false catch Any true)) " &
+          ") false catch Error true)) " &
           "(failed .discard)"
         discard leakedManaged(source)
         check leakedManaged(source) == 0
@@ -1382,7 +1382,7 @@ when defined(geneRcStats):
       check leakedManaged(
         "(fn inspect! [] (eval (quote 1) ^in caller_env)) (inspect!)") == 0
       check leakedManaged(
-        "(fn reject! [] (try [caller_env] catch Any nil)) (reject!)") == 0
+        "(fn reject! [] (try [caller_env] catch Error nil)) (reject!)") == 0
       check leakedManaged(
         "(var x 1) " &
         "(fn snapshot! [] (caller_env .snapshot [\"x\"])) " &

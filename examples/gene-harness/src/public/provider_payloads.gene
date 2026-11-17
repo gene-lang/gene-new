@@ -82,7 +82,7 @@
 
 (fn require_messages_success [response, label : Str]
   (if (== response/status 200) (return nil))
-  (let data (try ($json/parse response/body) catch Any nil))
+  (let data (try ($json/parse response/body) catch Error nil))
   (let detail (if (== ($head data/error/message) Str) (then ($str/lower data/error/message)) (else "")))
   (let credit_error (&& ([400 402] .contains? response/status)
     (|| ($str/contains? detail "insufficient credit")
@@ -102,7 +102,7 @@
 (fn response_json [response, label : Str]
   (require_success response label)
   (let value (try ($json/parse response/body)
-    catch Any (fail (ProviderError ^message $"${label} returned invalid JSON"))))
+    catch Error (fail (ProviderError ^message $"${label} returned invalid JSON"))))
   (if (!= ($head value) Map) (fail (ProviderError ^message $"${label} returned an invalid response")))
   value)
 
@@ -163,7 +163,7 @@
   (let data ($str/join lines "\n"))
   (if (|| (== data "") (== data "[DONE]")) (return nil))
   (let event (try ($json/parse data)
-    catch Any (fail (ProviderError ^message $"${label} returned invalid stream data"))))
+    catch Error (fail (ProviderError ^message $"${label} returned invalid stream data"))))
   (if (!= ($head event) Map) (fail (ProviderError ^message $"${label} returned an invalid stream event")))
   event)
 

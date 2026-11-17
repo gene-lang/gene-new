@@ -33,7 +33,7 @@
     (if ($has_key? value key) (result .put key (value .get key))))
   # Reject process handles/functions/Bytes in advertised, durable metadata.
   (try ($json/stringify result)
-    catch Any (image_error "invalid_capabilities" "Capabilities must contain JSON data."))
+    catch Error (image_error "invalid_capabilities" "Capabilities must contain JSON data."))
   ($freeze result))
 
 (fn check_available [row, role : Str]
@@ -87,7 +87,7 @@
      ^max_image_bytes store/max_file_bytes ^options (?? configuration/generator_options {})}))
   (if (!= ($head settings) Map) (image_error "invalid_generator" "Generator settings must be a map."))
   (try ($json/stringify settings)
-    catch Any (image_error "invalid_generator" "Generator settings must be credential-free JSON data."))
+    catch Error (image_error "invalid_generator" "Generator settings must be credential-free JSON data."))
   (let generator_caps (capabilities generator/payload settings))
   (require_capability generator_caps "image_output" "The image generator")
   (if (|| (! references/.empty?) (> request/max_attempts 1))

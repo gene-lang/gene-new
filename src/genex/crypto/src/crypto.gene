@@ -18,7 +18,7 @@
   (let plus ($str/join ($str/split value "-") "+"))
   (let slash ($str/join ($str/split plus "_") "/"))
   (try ($base64/decode ($to_str slash padding))
-    catch Any (fail (CryptoError ^message "Invalid base64url data"))))
+    catch Error (fail (CryptoError ^message "Invalid base64url data"))))
 
 (fn sha256_bytes [value] : Bytes
   (let digits {^"0" 0 ^"1" 1 ^"2" 2 ^"3" 3 ^"4" 4 ^"5" 5 ^"6" 6 ^"7" 7 ^"8" 8 ^"9" 9
@@ -103,4 +103,4 @@
           (!= claims/at_hash (encode_url ($binary/slice (sha256_bytes access_token) 0 16))))
           (fail (CryptoError ^message "ID token access-token binding failed")))))
     claims
-  catch Any (fail (CryptoError ^message "ID token verification failed"))))
+  catch Error (fail (CryptoError ^message "ID token verification failed"))))

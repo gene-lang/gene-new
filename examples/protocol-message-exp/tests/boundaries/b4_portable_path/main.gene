@@ -5,5 +5,5 @@
 (import [attempt] ^from "../common/util")
 (import ^from "./loader" [])
 (let article (Article ^title "A"))
-(fn full_message [thunk] (try (thunk) catch Any $err/message))
+(fn full_message [thunk] (try (thunk) catch Error $err/message))
 ($println $"suggestion: ${(full_message (fn [] article/.Render:render))}")

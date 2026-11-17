@@ -87,7 +87,7 @@
           ($assert ($str/contains? started/url "127.0.0.1%3A45678"))
           (let attempt (runtime/services/values/models_host/logins .get started/id))
           ($assert (== (/state (catalog/login_status started/id)) "pending"))
-          ($assert (try (catalog/connect "openrouter") false catch Any true))
+          ($assert (try (catalog/connect "openrouter") false catch Error true))
           (uninstall runtime/h "models")
           ($assert (== attempt/status/.get "cancelled"))
           ($assert attempt/worker/.get/.done?)
@@ -125,7 +125,7 @@
           ($assert (== (/active (list_chatgpt_accounts auth_root)) b/id) "choosing an account did not repair corrupt active.json")
           ($assert (== (/account (/connection (/chatgpt (/providers (catalog/snapshot))))) b/id))
           ($assert (try (select_provider ^selection before/selection runtime {}) false
-            catch Any (== $err/code "connection_changed")))
+            catch Error (== $err/code "connection_changed")))
           ($assert (== (/account (/selection (select_provider runtime {^provider "chatgpt" ^model "fake"}))) b/id))
         ensure (close_runtime runtime))))))
 

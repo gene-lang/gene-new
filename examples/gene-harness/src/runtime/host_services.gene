@@ -68,9 +68,9 @@
     (let item acquired/%draining)
     (if (|| ($absent? item/value) ($absent? item/spec/quiesce)) (continue))
     (try (item/spec/quiesce owner/context item/value)
-      catch Any (errors .push {^service item/spec/name ^phase "quiesce" ^message $err/message}))
+      catch Error (errors .push {^service item/spec/name ^phase "quiesce" ^message $err/message}))
     (try (service_event owner "quiesce" item/spec/name)
-      catch Any (errors .push {^service item/spec/name ^phase "quiesce" ^message $err/message})))
+      catch Error (errors .push {^service item/spec/name ^phase "quiesce" ^message $err/message})))
   (if_not errors/.empty?
     (fail (HostServiceError ^message $"Host service quiescence failed: ${errors}" ^errors errors)))
   nil)
@@ -88,9 +88,9 @@
     # A skipped mode or an initializer that acquired no resource has no close.
     (if (|| ($absent? item/value) ($absent? item/spec/close)) (continue))
     (try (item/spec/close owner/context item/value)
-      catch Any (errors .push {^service item/spec/name ^phase "close" ^message $err/message}))
+      catch Error (errors .push {^service item/spec/name ^phase "close" ^message $err/message}))
     (try (service_event owner "close" item/spec/name)
-      catch Any (errors .push {^service item/spec/name ^message $err/message})))
+      catch Error (errors .push {^service item/spec/name ^message $err/message})))
   (for item in acquired
     (if (== item/spec/borrowed true) (continue))
     (if (same? (owner/values .get item/spec/name) item/value)
@@ -125,10 +125,10 @@
       (available .put spec/name true)
       (service_event owner "after" spec/name))
     owner
-  catch Any
+  catch Error
     (let original $err)
     (try (close_host_services owner)
-      catch Any
+      catch Error
         (fail (HostServiceError
           ^message $"Startup failed: ${original/message}; ${$err/message}"
           ^errors $err/errors)))

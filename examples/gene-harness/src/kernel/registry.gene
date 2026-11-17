@@ -412,7 +412,7 @@
     (var entry owned/%i)
     (try
       (cleanup_owned_registry_row h entry/record entry/registry)
-    catch Any
+    catch Error
       (if ($absent? failure) (set failure $err)))
     (set i (- i 1)))
   (expire_scope_callbacks effects)
@@ -434,15 +434,15 @@
       (let errors (remove_registry h definition/name))
       (if_not errors/.empty?
         (fail (HarnessError ^message $"Registry ${definition/name} cleanup failed: ${errors}")))
-      catch Any (if ($absent? failure) (set failure $err))))
+      catch Error (if ($absent? failure) (set failure $err))))
   (if_not ($absent? failure) (fail failure))
   nil)
 
 (fn release_activation_resources [h : Harness, effects, owned_rows, owned_registries]
   (var failure nil)
-  (try (release_activation_rows h effects owned_rows) catch Any (set failure $err))
+  (try (release_activation_rows h effects owned_rows) catch Error (set failure $err))
   (try (release_activation_registries h owned_registries)
-    catch Any (if ($absent? failure) (set failure $err)))
+    catch Error (if ($absent? failure) (set failure $err)))
   (if_not ($absent? failure) (fail failure))
   nil)
 
@@ -484,7 +484,7 @@
   (while (>= i 0)
     (try
       (remove_registry_row h owned/%i)
-    catch Any
+    catch Error
       (errors .push ($to_str $err/message)))
     (set i (- i 1)))
   (var owned_registries (fresh_list))
@@ -513,7 +513,7 @@
   (while (>= i 0)
     (try
       (remove_registry_row h records/%i/row_id)
-    catch Any
+    catch Error
       (errors .push ($to_str $err/message)))
     (set i (- i 1)))
   (var registries_cell h/registries)

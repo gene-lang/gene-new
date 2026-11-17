@@ -137,7 +137,7 @@
     (if_not changes/.empty?
       (append_boundary_item result number "plugins" (plugin_change_summary changes))
       (let preview (if ($absent? publication_preview) nil
-        (try (publication_preview session changes) catch Any (byte_prefix $err/message 512))))
+        (try (publication_preview session changes) catch Error (byte_prefix $err/message 512))))
       (if_not ($absent? preview)
         (append_boundary_item result number "ui" preview)))
     (if (== result/validated/rejected_done true)

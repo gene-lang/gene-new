@@ -200,10 +200,10 @@
           (scripted [($to_str renames_card "\n(Outcome ^^done ^reply \"made\")")
                      """(let local 5)
 (let failure (try (card "renames" ^title "Broken" ^state {} ^view (fn [state] `(p %local))) nil
-  catch Any $err/message))
+  catch Error $err/message))
 (Outcome ^^done ^reply (?? failure "no error"))"""
                      """(let failure (try (card "other" ^title "Too long a title for a card that has to stay concise and short" `(p "x")) nil
-  catch Any $err/message))
+  catch Error $err/message))
 (Outcome ^^done ^reply (?? failure "no error"))"""])))
         (try
           (let first (submit_round controller "default" "r1" 1 "make"))
@@ -248,7 +248,7 @@
           (let board (card_record runtime "default" "board"))
           ($assert (== board/kind "live") "a plugin function could not show a card")
           ($assert (== board/round admitted/id) "a plugin card did not belong to the calling round")
-          ($assert (try (show_card "outside" ^title "Outside" `(p "x")) false catch Any true)
+          ($assert (try (show_card "outside" ^title "Outside" `(p "x")) false catch Error true)
             "show_card worked outside a turn")
           (let warned (define_card runtime "default" "r0" 1 "typo"
             {^title "Typo" ^state {} ^view (quote (fn [state] `(p "ok")))
@@ -317,8 +317,8 @@
             ($assert (== (/status (card_action_receipt reopened "default" "early")) "done")
               "a committed earlier admission resolved as interrupted")
           ensure (close_runtime reopened))
-        catch Any
-          (try (close_runtime runtime) catch Any nil)
+        catch Error
+          (try (close_runtime runtime) catch Error nil)
           (fail $err)))))
 
   (it "refuses a pruned current-generation identity behind a backlog of admitted clicks" []

@@ -93,7 +93,7 @@
             (!= ($str/trim ($last lines)) "```"))
       (return (invalid_review "Use one JSON object, optionally in a json code fence, without surrounding prose.")))
     (set body ($str/join ($take ($drop lines 1) (- lines/.size 2)) "\n")))
-  (let value (try ($json/parse body) catch Any nil))
+  (let value (try ($json/parse body) catch Error nil))
   (if (!= ($head value) Map) (return (invalid_review "Review must be a JSON object.")))
   (if (|| (!= ($head value/score) Int) (< value/score 0) (> value/score 100))
     (return (invalid_review "score must be a JSON integer from 0 through 100, without coercion.")))

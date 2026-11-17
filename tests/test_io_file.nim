@@ -552,7 +552,7 @@ when compileOption("threads") and defined(posix):
           ^stdout_pipe writer))
         (reader .IoResource:close)
         (await (reader .IoResource:wait_closed))
-        (let failed (try (await task) false catch Any true))
+        (let failed (try (await task) false catch Error true))
         (await (writer .IoResource:wait_closed))
         (let stats ($runtime/gc_stats))
         [failed stats/io_cleanup_leases]
@@ -569,7 +569,7 @@ when compileOption("threads") and defined(posix):
         (let rejected (try
           ($os/exec_stream_async "true"
             ^stdout_chan lines ^stdout_pipe writer)
-          false catch Any true))
+          false catch Error true))
         (writer .IoResource:close)
         (reader .IoResource:close)
         (await (writer .IoResource:wait_closed))
@@ -766,6 +766,6 @@ else:
         (let IoError $io/IoError)
         [(try (await ($io/open_read "missing")) false catch IoError true)
          (try (await ($io/open_write "missing")) false catch IoError true)
-         (try ($io/pipe) false catch Any true)]
+         (try ($io/pipe) false catch Error true)]
       """), newGlobalScope())
       check value.print() == "[true true true]"

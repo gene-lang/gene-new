@@ -204,7 +204,7 @@
                   ^request_id "stale-action"
                   ^sequence 2})
               false
-            catch Any
+            catch Error
               (== $err/code "revision_conflict"))
             "old action rebound to replacement code")
           (let before_disable
@@ -221,7 +221,7 @@
                 service/runtime
                 {^notification before_disable/id ^revision before_disable/revision ^action "draft"})
               false
-            catch Any
+            catch Error
               (== $err/code "revision_conflict"))
             "disabled publisher retained live action handles")
           (let read_only
@@ -242,7 +242,7 @@
           ($assert (! failure/ok) "publisher reported success after storage failure")
           ($assert (== ($fs/read_text $"${workspace}/business-save") "committed"))
           ($assert (== count ($size ((Path "messages") (inbox_snapshot service/runtime/services/values/inbox)))))
-        catch Any
+        catch Error
           ($println $"Notification test failed before cleanup: ${$err/message}")
           (fail $err)
         ensure

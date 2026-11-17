@@ -173,7 +173,7 @@
           (handle request)
         catch AuthError
           (response 401 {^code $err/code ^message $err/message})
-        catch Any
+        catch Error
           (response 400 {^code (?? $err/code "recovery_error") ^message $err/message}))))
     (mark_ready runtime/state_root (?? (options .get "startup-id") "") runtime/epoch port true)
     ($println
@@ -191,5 +191,5 @@ Workspace plugins are not running."""))
   ensure
     (close_plugin_control control)
     (clear_connection runtime/root runtime/epoch)
-    (if_not ($absent? server) (try (stop server) catch Any nil))
+    (if_not ($absent? server) (try (stop server) catch Error nil))
     (close_runtime runtime)))

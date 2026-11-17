@@ -35,7 +35,7 @@
   (if_yes ($absent? drafts/choices/%key)
     (var saved (?? (storage_get (model_draft_key drafts key)) ""))
     (if_yes (!= saved "")
-      (try (set drafts/choices/%key ($json/parse saved)) catch Any nil)))
+      (try (set drafts/choices/%key ($json/parse saved)) catch Error nil)))
   drafts/choices/%key)
 
 (fn choose_model_draft [client : Client, selection : Any] : Nil

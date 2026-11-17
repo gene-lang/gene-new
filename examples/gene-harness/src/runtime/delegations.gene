@@ -416,7 +416,7 @@
   (checkpoint_delegations service parent)
   (for child in cancel
     (if_not ($absent? child/round)
-      (try (service/callbacks/cancel child/session child/round) catch Any nil)))
+      (try (service/callbacks/cancel child/session child/round) catch Error nil)))
   nil)
 
 (fn close_delegation_owner [service, session : Str, round : Str, reason : Str]
@@ -447,7 +447,7 @@
         (settle_delegation service parent admission
           {^state "cancelled" ^message "Cancelled by the parent." ^turn_count (?? admission/turns_used 0)})
         (if_not ($absent? admission/round)
-          (try (service/callbacks/cancel admission/session admission/round) catch Any nil)))
+          (try (service/callbacks/cancel admission/session admission/round) catch Error nil)))
       (service/dirty .set true)
       (public_delegation service record admission))))))
 
@@ -641,7 +641,7 @@
         (admission .put "round" receipt/id)
         (checkpoint_delegations service parent ^changed [admission/id])
         (if_not ($absent? service/checkpoint) (service/checkpoint "child_admitted" parent/session))
-      catch Any
+      catch Error
         (if (== $err/code "busy")
           (then
             (admission .put "state" "queued")
@@ -745,7 +745,7 @@
       (while (! service/closed/.get)
         (if (service/dirty .swap false)
           (try (process_delegations service)
-            catch Any
+            catch Error
               (service .put "last_error" ($to_str $err/message " at " $err/file ":" $err/line))
               (service/dirty .set true)))
         ($sleep 25))))))

@@ -20,8 +20,8 @@
               ^normalize (fn [context value]
                 ($assert ($absent? context/runtime))
                 ($assert ($absent? context/snapshot))
-                ($assert (try (context .put "forged" true) false catch Any true))
-                ($assert (try (value .put "forged" true) false catch Any true))
+                ($assert (try (context .put "forged" true) false catch Error true))
+                ($assert (try (value .put "forged" true) false catch Error true))
                 {^kind "plugin" ^owner "toy" ^marker value/marker ^subject context/subject})})
            (if %overlap
              (host .PluginHost:contribute "initiators"

@@ -173,7 +173,7 @@
   (if (== root_id round/id) (return (request_text round)))
   (let saved (core_state runtime/events "session" session "rounds"))
   (let state (if ($absent? saved) nil
-    (if ($absent? saved/digest) saved (try ($serde/read_data (read_body runtime saved/digest)) catch Any nil))))
+    (if ($absent? saved/digest) saved (try ($serde/read_data (read_body runtime saved/digest)) catch Error nil))))
   (for receipt in (?? state/receipts [])
     (if (== receipt/id root_id) (return (request_text receipt))))
   (request_text round))

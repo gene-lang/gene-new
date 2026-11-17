@@ -36,8 +36,8 @@
     (let task (request ^url url ^method method ^headers headers ^body (?? body "")
       ^timeout_ms timeout_ms ^max_bytes 262144))
     (let response (try (await task) ensure task/.cancel))
-    {^status response/status ^data (try ($json/parse response/body) catch Any nil)}
-  catch Any (auth_error ^code "auth_service_unavailable" "ChatGPT authentication service could not be reached; retry shortly")))
+    {^status response/status ^data (try ($json/parse response/body) catch Error nil)}
+  catch Error (auth_error ^code "auth_service_unavailable" "ChatGPT authentication service could not be reached; retry shortly")))
 
 (fn chatgpt_signing_keys [header, ^fetch fetch = auth_http, ^now_ms supplied_now = nil]
   (let now (?? supplied_now ($os/monotonic_ms)))
@@ -47,7 +47,7 @@
     (for key in (?? cached/keys/keys [])
       (if (== key/kid header/kid) (set known true)))
     (if (&& ($present? cached) known (< now cached/expires_at)) (return cached/keys))
-    (let result (try (fetch ^timeout_ms 5000 jwks_url "GET") catch Any nil))
+    (let result (try (fetch ^timeout_ms 5000 jwks_url "GET") catch Error nil))
     (if (|| (!= result/status 200) (!= ($head result/data/keys) List))
       (then
         # Only a known key gets a bounded stale grace on an unavailable JWKS
@@ -61,7 +61,7 @@
   (let header (try
     (let parts ($str/split tokens/id_token "."))
     ($json/parse ($binary/decode_utf8 (decode_url parts/0)))
-    catch Any nil))
+    catch Error nil))
   (let keys (chatgpt_signing_keys header))
   (verify_id_token ^access_token tokens/access_token ^require_nonce (! refresh)
     tokens/id_token keys issuer client nonce (/ ($os/wall_ms) 1000)))
@@ -72,7 +72,7 @@
     (let bytes ($binary/from_list zeros/.to_list))
     (verify_rs256 bytes ($binary/from_list [1]) ($binary/from_list []) bytes)
     nil
-  catch Any
+  catch Error
     (auth_error ^code "signature_backend_unavailable" "ChatGPT sign-in needs the native genex/crypto verifier. Repair the Harness native build with OpenSSL 3 and the current Gene runtime; other providers remain usable.")))
 
 (fn new_chatgpt_login [callback : Str, ^root root = nil, ^account account = nil,
@@ -168,7 +168,7 @@
         (then "ChatGPT is connected. You can return to Gene Harness.")
         (else "Identity sign-in succeeded, but ChatGPT plan permission was not granted. Return to Models to reconnect."))})
       (else {^status 400 ^message "This sign-in attempt has ended."}))
-  catch Any
+  catch Error
     (if (== attempt/status/.get "exchanging") (attempt/status .set "failed"))
     {^status 400 ^message "ChatGPT sign-in could not be verified. The existing account was preserved; return to Models and sign in again."}))
 
@@ -202,7 +202,7 @@
     (let parts ($str/split token "."))
     (let claims ($json/parse ($binary/decode_utf8 (decode_url parts/1))))
     (&& (== ($head claims/exp) Int) (<= claims/exp (- now 5)))
-  catch Any false))
+  catch Error false))
 
 (fn finish_chatgpt_refresh [current, verifier]
   (let tokens current/pending_refresh)
@@ -210,7 +210,7 @@
     (require_tokens ^renewable true tokens)
     (let scopes (token_scopes tokens current/scopes))
     (current .put "scopes" scopes)
-  catch Any
+  catch Error
     # The rotated refresh value is already durable. A subsequent call may
     # exchange that value again to recover malformed non-identity metadata.
     (current .delete "pending_refresh")
@@ -240,7 +240,7 @@
     # inference, but must not discard a newly rotated refresh value either.
     (return {^record current ^error (ProviderError ^code "invalid_id_token"
       ^message "ChatGPT refreshed identity could not be verified; retry or reconnect in Models")})
-  catch Any
+  catch Error
     (let error $err)
     (if (== error/code "identity_mismatch")
       (for field in ["access_token" "refresh_token" "id_token" "pending_refresh" "pending_refresh_at"] (current .delete field)))
@@ -320,7 +320,7 @@
         (if ($absent? endpoint)
           (then
             (let configuration (try (auth_http ^timeout_ms 5000
-              "https://auth.openai.com/.well-known/openid-configuration" "GET") catch Any nil))
+              "https://auth.openai.com/.well-known/openid-configuration" "GET") catch Error nil))
             (if (&& (== configuration/status 200) (== configuration/data/issuer issuer)
               (== ($head configuration/data/revocation_endpoint) Str)
               ($present? (#"^https://auth[.]openai[.]com/[^?#]*$" .match configuration/data/revocation_endpoint)))
@@ -330,7 +330,7 @@
             (var attempt 0)
             (while (&& (< attempt 3) (! confirmed))
               (let result (try (auth_http ^timeout_ms 5000 endpoint "POST" (query_string
-                {^token current/refresh_token ^token_type_hint "refresh_token" ^client_id current/client_id})) catch Any nil))
+                {^token current/refresh_token ^token_type_hint "refresh_token" ^client_id current/client_id})) catch Error nil))
               (if (== result/status 200)
                 (then (set confirmed true))
                 (elif (&& ($present? result/status) (< result/status 500)) (break))

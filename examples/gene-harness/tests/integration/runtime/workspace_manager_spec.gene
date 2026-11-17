@@ -41,7 +41,7 @@
           (! (lock_held? $"${root}/.gene-harness/launcher_lock"))) (return nil))
   (try
     (api (connect root) "POST" "/control" {^action "stop" ^^confirm})
-  catch Any
+  catch Error
     nil)
   # The stop response acknowledges admission. The supervisor still needs the
   # startup marker and log directory until it has reaped the child and exited.

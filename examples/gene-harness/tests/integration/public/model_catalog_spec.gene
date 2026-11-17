@@ -157,7 +157,7 @@
         (let started ($os/monotonic_ms))
         (let entered ($cell false))
         (let refused (try (bounded_probe ^timeout_ms 25 (fn [] (entered .set true) ($sleep 1000) "late"))
-          false catch Any true))
+          false catch Error true))
         ($assert refused)
         ($assert entered/.get "probe never entered the callback")
         ($assert (< (- ($os/monotonic_ms) started) 1000))

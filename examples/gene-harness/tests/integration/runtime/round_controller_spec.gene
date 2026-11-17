@@ -67,7 +67,7 @@
             (try
               (submit_round controller "slow" "extra" 2 "another")
               false
-            catch Any
+            catch Error
               true)
             "busy session accepted another round")
           (while (! entered/.get)

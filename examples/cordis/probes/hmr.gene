@@ -117,7 +117,7 @@
         (try
           (&& (== ((runtime/.root .require loaded_key) .LoadedValue:value) 2)
               (== reload_events/.get 3))
-        catch Any false))
+        catch Error false))
       (if_not delivered ($sleep 1)))
     (assert delivered
       $"watcher did not publish the expected event/value: ${watcher/.inspect}")
@@ -147,7 +147,7 @@
         (try
           (&& (== ((runtime/.root .require loaded_key) .LoadedValue:value) 1)
               (== reload_events/.get 4))
-        catch Any false))
+        catch Error false))
       (if_not delivered ($sleep 1)))
     (assert delivered
       $"watcher did not recover after rejection: ${watcher/.inspect}")

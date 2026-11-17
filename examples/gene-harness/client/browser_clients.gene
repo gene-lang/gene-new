@@ -25,12 +25,12 @@
     (try
       (var revoke : (Fn [] Nil) subscription)
       (revoke)
-    catch Any ($console/error "Browser contribution subscription cleanup failed.")))
+    catch Error ($console/error "Browser contribution subscription cleanup failed.")))
   (try
     (if_yes ($present? mount/harness_controller/dispose)
       (var cleanup : (Fn [] Nil) mount/harness_controller/dispose)
       (cleanup))
-  catch Any ($console/error "Browser contribution cleanup failed."))
+  catch Error ($console/error "Browser contribution cleanup failed."))
   (release_modal (text record/owner) true)
   ($dom/remove mount))
 
@@ -117,7 +117,7 @@
               (start mount)
               (var update : (Fn [Any] Nil) mount/harness_controller/update)
               (update current/status)
-            catch Any
+            catch Error
               (fail_client host ($to_str name) "Browser contribution failed to mount.")))
           (fn [message : Str] : Nil
             (var current : Any host/mounts/%name)
@@ -129,7 +129,7 @@
           (try
             (var update : (Fn [Any] Nil) record/root/harness_controller/update)
             (update status)
-          catch Any
+          catch Error
             (fail_client host ($to_str name) "Browser contribution failed to update.")))))))
 
 (fn create_clients [root : EventTarget, safe : Bool, bridge : Any] : BrowserClients
@@ -144,7 +144,7 @@
           (try
             (var key : (Fn [Any] Bool) record/root/harness_controller/key)
             (set handled (key event))
-          catch Any
+          catch Error
             (fail_client host ($to_str name) "Browser contribution keyboard handler failed.")
             (set handled true))))
       (if_yes handled ($dom/prevent_default event) ($dom/stop_propagation event))))

@@ -53,7 +53,7 @@
     ($assert ($present? (row runtime/h "functions" "budget_probe"))
       "The stored budget probe did not activate.")
     runtime
-  catch Any
+  catch Error
     (close_runtime runtime)
     (fail $err)))
 
@@ -89,7 +89,7 @@
           ($assert (> budget/remaining_ms 0))
           ($assert (< budget/remaining_ms 1000))
           (let started ($os/monotonic_ms))
-          ($assert (try (wait/fn 5000) false catch Any true))
+          ($assert (try (wait/fn 5000) false catch Error true))
           ($assert (< (- ($os/monotonic_ms) started) 4000)
             "Sleeping callback outlived its configured ceiling.")
         ensure (close_runtime runtime)))))

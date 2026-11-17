@@ -16,7 +16,7 @@
 
 (fn ^^private body_data [request]
   (try ($json/parse request/body)
-    catch Any (fail (TriggerError ^code "invalid_request" ^message "The request must contain JSON."))))
+    catch Error (fail (TriggerError ^code "invalid_request" ^message "The request must contain JSON."))))
 
 (fn ^^private handle [scheduler, request]
   (let parts ($filter ($str/split request/subpath "/") (fn [part] (!= part ""))))
@@ -43,4 +43,4 @@
    ^handle (fn [request]
      (try (handle scheduler request)
        catch TriggerError {^status (status_for $err/code) ^body {^code $err/code ^message $err/message}}
-       catch Any {^status 400 ^body {^code "invalid_request" ^message $err/message}}))})
+       catch Error {^status 400 ^body {^code "invalid_request" ^message $err/message}}))})

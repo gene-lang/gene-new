@@ -309,7 +309,7 @@
             (inbox/navigate {^component target ^presentation presentation}))
           false
           buttons))
-    catch Any
+    catch Error
       ($dom/set_text
         card/content
         "Details could not be displayed. Original references remain available.")))

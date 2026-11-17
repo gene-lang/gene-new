@@ -19,7 +19,7 @@
   (set ctx/bindings_closed true)
   (let errors [])
   (for name in ["channels/host" "admission/host"]
-    (try (withdraw_seam ctx/runtime/h "core" name) catch Any (errors .push $err/message)))
+    (try (withdraw_seam ctx/runtime/h "core" name) catch Error (errors .push $err/message)))
   (if_not errors/.empty? (fail (HostServiceError ^message $"Loop binding cleanup failed: ${errors}")))
   nil)
 
@@ -71,7 +71,7 @@
           (provide ctx/runtime/h "core" "channels/host"
             (channel_host_binding ctx/runtime ^options ctx/channel_options)))
         true
-      catch Any
+      catch Error
         (let original $err)
         (close_bindings ctx)
         (fail original)))

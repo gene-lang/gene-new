@@ -38,7 +38,7 @@
   (let result (await ($os/exec_async driver/command argv... ^timeout_ms 30000 ^max_bytes 16777216)))
   (if (|| result/timed_out result/truncated (!= result/status 0))
     (fail (ComputerError ^code "transport" ^message $"Cua Driver did not return a complete result (status ${result/status}). ${result/stderr}")))
-  (let parsed (try ($json/parse result/stdout) catch Any
+  (let parsed (try ($json/parse result/stdout) catch Error
     (fail (ComputerError ^code "transport" ^message "Cua Driver returned invalid JSON."))))
   (var image nil)
   (if capture
@@ -206,7 +206,7 @@
       (receipt .put "result" result)
       (receipt .put "message" "Inspect fresh state to verify the effect.")
       ($fs/write_text_atomic ^^owner_only path ($serde/write_data receipt))
-    catch Any
+    catch Error
       (receipt .put "state" "unknown")
       (receipt .put "message" $"Action outcome is unknown. ${$err/message}")
       ($fs/write_text_atomic ^^owner_only path ($serde/write_data receipt)))

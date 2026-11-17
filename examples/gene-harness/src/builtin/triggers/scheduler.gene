@@ -29,7 +29,7 @@
 (fn ^^private thawed [value] ($thaw ($serde/read_data ($serde/write_data value))))
 
 (fn ^^private setting [key : Str, fallback]
-  (let value (try (/value ((current_workspace) .setting key)) catch Any nil))
+  (let value (try (/value ((current_workspace) .setting key)) catch Error nil))
   (if (&& (== ($head value) Int) (> value 0)) value fallback))
 
 # --- records -----------------------------------------------------------
@@ -171,7 +171,7 @@
     (for message in (s/host .PluginHost:notifications)
       (if (== message/key $"trigger-blocked/${id}")
         (s/host .PluginHost:notification_clear message/id message/revision)))
-  catch Any nil))
+  catch Error nil))
 
 (fn delete_trigger [s, id : Str]
   (s/gate (fn []
@@ -315,7 +315,7 @@
         (try (s/host .PluginHost:notify
           {^key $"trigger-blocked/${definition/id}" ^severity "warning" ^^renew
            ^title $"Trigger ${definition/id} is waiting" ^summary reason})
-          catch Any nil)))))
+          catch Error nil)))))
 
 (fn ^^private prune_occurrences [s]
   (let keep (setting "trigger_occurrence_keep" 256))
@@ -369,7 +369,7 @@
 (fn ^^private sync_plugin_triggers [s, now]
   (let live {})
   (let stored (definitions s))
-  (for input in (try (s/host .PluginHost:rows "triggers") catch Any [])
+  (for input in (try (s/host .PluginHost:rows "triggers") catch Error [])
     (let data (thawed input))
     (let fingerprint ($crypto/sha256 ($serde/write_data data)))
     (live .put data/id true)
@@ -404,7 +404,7 @@
 (fn run_scheduler [s, ^poll_ms poll_ms : Int = 100]
   # The first tick after start reconciles what a previous producer admitted
   # and applies the missed-occurrence policy to downtime.
-  (try (tick_triggers s ^^boot) catch Any ($println $"Trigger scheduler: ${$err/message}"))
+  (try (tick_triggers s ^^boot) catch Error ($println $"Trigger scheduler: ${$err/message}"))
   (loop
     ($sleep poll_ms)
-    (try (tick_triggers s) catch Any ($println $"Trigger scheduler: ${$err/message}"))))
+    (try (tick_triggers s) catch Error ($println $"Trigger scheduler: ${$err/message}"))))

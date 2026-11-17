@@ -75,7 +75,7 @@
         ($assert (== (history_entry store committed "probe" 1) (entry 1)))
         (let baseline (history_revision store committed 0))
         ($assert (== baseline/host_build_id "unknown"))
-        ($assert (try (history_revision store committed 6) false catch Any true))
+        ($assert (try (history_revision store committed 6) false catch Error true))
         (let retry
           (archive_candidate
             store
@@ -121,7 +121,7 @@
         ($assert (== ((history_results store head) .size) 2))
         ($assert (== (archived_record store head) original))
         (store .Store:put $"plugin_history/revision/${head}" {^format 1 ^revision 999})
-        ($assert (try (history_list store head) false catch Any true))))))
+        ($assert (try (history_list store head) false catch Error true))))))
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

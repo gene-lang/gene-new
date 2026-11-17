@@ -850,7 +850,7 @@ suite "native api threaded attachment":
     let args = EventLaneArgs(
       scope: scope,
       chunk: compileSource(
-        "(try (tx .discard) \"missing\" catch Any $err/message)"))
+        "(try (tx .discard) \"missing\" catch Error $err/message)"))
 
     var worker: Thread[EventLaneArgs]
     createThread(worker, publishOnWorker, args)

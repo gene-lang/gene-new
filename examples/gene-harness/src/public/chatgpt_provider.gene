@@ -11,7 +11,7 @@
 (fn chatgpt_result [response]
   (if (!= response/status 200)
     (then
-      (let data (try ($json/parse response/body) catch Any nil))
+      (let data (try ($json/parse response/body) catch Error nil))
       (let shape (if (== ($head data/error) Map) (then "error")
         (elif ($present? data/detail) "detail") (else "other")))
       (chatgpt_failure ^status response/status ^shape shape
@@ -49,7 +49,7 @@
        catch ProviderError (return {^state (if (== $err/status 401) (then "sign_in_required") (else "unavailable"))
          ^stale (retryable_access_error? $err)
          ^label "ChatGPT" ^billing "plan" ^reason $err/message})
-       catch Any (return {^state "unavailable" ^label "ChatGPT" ^billing "plan"
+       catch Error (return {^state "unavailable" ^label "ChatGPT" ^billing "plan"
          ^reason "ChatGPT connection state could not be read; inspect its account in Models."})))
      (let remaining (- deadline ($os/monotonic_ms)))
      (let checked (if (<= remaining 0) (then {^status 0 ^error "timeout"})

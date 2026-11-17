@@ -86,7 +86,7 @@
       (return nil)))
   (try
     (record/task .set (spawn_effect_call record/effects $"service ${record/name}" record/thunk []))
-  catch Any
+  catch Error
     (record/state .set "failed")
     (record/error .set $err/message))
   nil)
@@ -113,7 +113,7 @@
   (record/task .set nil)
   (if_not ($absent? task)
     task/.cancel
-    (try task/.join catch Any nil))
+    (try task/.join catch Error nil))
   nil)
 
 (fn ^^private desired? [services, record, snapshot, holders]

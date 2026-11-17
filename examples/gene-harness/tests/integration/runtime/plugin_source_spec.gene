@@ -170,13 +170,13 @@
     ($assert (== before/source_origin/session "b"))
     ($assert (try
       (register_plugin ^^replace runtime/workspace runtime/h "probe" (source ^^bad_init "probe" 3))
-      false catch Any true))
+      false catch Error true))
     ($assert (== (stored runtime) before))
     (runtime/workspace/busy .set true)
     (try
       ($assert (try
         (register_plugin ^^replace runtime/workspace runtime/h "probe" (source "probe" 3))
-        false catch Any true))
+        false catch Error true))
     ensure (runtime/workspace/busy .set false))
     ($assert (== (stored runtime) before))
     (let broken ($runtime/with_context {^session "c" ^command "activation-test"}

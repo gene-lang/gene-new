@@ -43,7 +43,7 @@
           ($to_str `($fs/write_text %$"${root}/executed" "bad")))
         (try
           (read_workspace_settings root)
-        catch Any
+        catch Error
           nil)
         ($assert (! ($fs/exists? $"${root}/executed"))))))
   (it

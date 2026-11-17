@@ -54,7 +54,7 @@
     (if_yes (&& (== voice/mode "handsfree") (!= voice/recognizer "host")) (set voice/mode "hold"))
     (set voice/duplex (if (== (text value/duplex) "headphones") "headphones" "half"))
     (set voice/voice (text value/voice)) (set voice/language (text value/language "en-US"))
-  catch Any (set voice/feedback "Saved voice settings could not be read. Browser defaults are available.")))
+  catch Error (set voice/feedback "Saved voice settings could not be read. Browser defaults are available.")))
 
 (fn populate_voices [voice : Voice] : Nil
   (if_yes voice/disposed (return))
@@ -101,7 +101,7 @@
         (set voice/feedback "The saved voice draft needs review. Use Send queued voice when ready."))
       (set voice/drafts/drafts/%session {^text content ^audio_ms (integer value/audio_ms)
         ^recognizer (text value/recognizer voice/recognizer) ^held voice/held ^review_required (flag value/review_required)})
-    catch Any
+    catch Error
       (set voice/held true)
       (set voice/feedback "Saved voice draft is unreadable. Inspect it before discarding it."))))
 
@@ -111,7 +111,7 @@
   (if_not ($absent? voice/host)
     (var host (host_audio voice))
     (if_yes (< host/suppress_until (+ ($time/now) 200.0)) (set host/suppress_until (+ ($time/now) 200.0))))
-  (try ($audio/tone context frequency 0.07 0.04) catch Any nil))
+  (try ($audio/tone context frequency 0.07 0.04) catch Error nil))
 
 (fn paint [voice : Voice] : Nil
   (if_yes voice/disposed (return))
@@ -389,7 +389,7 @@
     (paint voice)
     ($time/after 120000.0 (fn [] : Nil
       (if_yes (&& (! voice/disposed) (== id voice/capture_id) voice/recording) (finish_capture voice))))
-  catch Any
+  catch Error
     (finish_utterance voice/drafts id "" "failed")
     (set voice/recording false) (set voice/capture_id "")
     (set voice/feedback "The microphone could not start. Check browser permission or type instead.")

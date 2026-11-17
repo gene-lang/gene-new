@@ -83,7 +83,7 @@
         (let result (await server))
         (audio_error $"Benchmark host exited: ${result/stderr}${result/stdout}"))
       (if (> ($os/monotonic_ms) ready_by) (audio_error "Benchmark host did not become ready."))
-      (set client (try (connect root) catch Any nil))
+      (set client (try (connect root) catch Error nil))
       (if ($absent? client) ($sleep 20)))
     (let browser_args ["--headless=new" "--mute-audio" "--no-first-run" "--no-default-browser-check"
       "--disable-background-networking" "--enable-logging" $"--log-file=${root}/chrome.log"
@@ -125,7 +125,7 @@
     0
   ensure
     (if_not ($absent? browser) browser/.cancel browser/.join)
-    (if_not ($absent? client) (try (api client "POST" "/control" {^action "stop" ^^confirm}) catch Any nil))
+    (if_not ($absent? client) (try (api client "POST" "/control" {^action "stop" ^^confirm}) catch Error nil))
     (let stopped_by (+ ($os/monotonic_ms) 10000))
     (while (&& (! server/.done?) (< ($os/monotonic_ms) stopped_by)) ($sleep 20))
     (if_not server/.done? server/.cancel)

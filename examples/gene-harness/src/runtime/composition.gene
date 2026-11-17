@@ -215,7 +215,7 @@
   (for listener in listeners
     (if_not listener/active/.get (continue))
     (try (listener/callback previous snapshot)
-      catch Any
+      catch Error
         (record_publication_diagnostic state id
           {^kind "observer" ^message $err/message})))
   (drain_retirements state)
@@ -245,13 +245,13 @@
 # that failed, each with its own causes. The diagnostic keeps the innermost
 # messages and the plugin each one came from.
 (fn ^^private error_causes [error] : Any
-  (let causes (try error/cause catch Any nil))
+  (let causes (try error/cause catch Error nil))
   (if (&& ($present? causes) (== ($head causes) List)) causes nil))
 
 (fn ^^private leaf_messages [error] : Any
   (let causes (error_causes error))
   (if ($absent? causes)
-    (return [($to_str (try (?? error/message error) catch Any error))]))
+    (return [($to_str (try (?? error/message error) catch Error error))]))
   (let out [])
   (for cause in causes
     (for message in (leaf_messages cause) (out .push message)))
@@ -262,7 +262,7 @@
   (if ($absent? causes) (return ($to_str error/message)))
   (let parts [])
   (for cause in causes
-    (let plugin (try cause/plugin catch Any nil))
+    (let plugin (try cause/plugin catch Error nil))
     (for message in (leaf_messages cause)
       (parts .push (if ($absent? plugin) message $"${plugin}: ${message}"))))
   (let detail ($str/join parts "; "))
@@ -288,7 +288,7 @@
   (for retirement in ready
     (try
       (state/retire retirement/ticket)
-    catch Any
+    catch Error
       (let failure {^kind "retirement" ^message (failure_message $err)})
       (failures .push failure)
       (record_publication_diagnostic state state/current/.get failure)))

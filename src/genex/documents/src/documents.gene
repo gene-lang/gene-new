@@ -55,7 +55,7 @@
       (let text
         (try
           ($binary/decode_utf8 data)
-        catch Any
+        catch Error
           (invalid "Text documents must contain valid UTF-8.")))
       (if ($str/contains? text ($binary/to_str ($binary/from_list [0])))
         (invalid "Text documents cannot contain NUL bytes."))

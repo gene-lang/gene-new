@@ -41,7 +41,7 @@
     (if_not (levels .contains? level) (levels .push level)))
   (let options [])
   (for level in levels
-    (let resolved (try {^effort (resolve_effort level model)} catch Any {^error ($to_str (?? $err/message $err))}))
+    (let resolved (try {^effort (resolve_effort level model)} catch Error {^error ($to_str (?? $err/message $err))}))
     (let effective (?? resolved/effort "provider default"))
     (options .push
       {^value level ^available ($absent? resolved/error) ^reason (?? resolved/error nil)
@@ -111,7 +111,7 @@
 
 .models-menu, .voice-panel { border-radius: var(--radius-surface); border-color: var(--edge); }
 """)))
-    nil catch Any $err/.Error:message))
+    nil catch Error $err/.Error:message))
   (Plugin ^id "models" ^requires ["models/host"]
     ^provides [["seams" "models/catalog"] ["seams" "models/page"] ["functions" "list_models"] ["docs" "harness/models"]
       ["commands" "model"] ["commands" "effort"] ["browser_clients" "models"]

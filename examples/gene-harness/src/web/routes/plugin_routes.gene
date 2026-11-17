@@ -43,6 +43,6 @@
     (let result (try
       ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot}
         (fn [] (route/handle projection)))
-      catch Any {^status 500 ^body {^error "plugin_route_failed" ^message $err/message}}))
+      catch Error {^status 500 ^body {^error "plugin_route_failed" ^message $err/message}}))
     (respond result)
   ensure (release_snapshot h/snapshots lease)))

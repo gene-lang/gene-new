@@ -33,7 +33,7 @@
 (fn jev_reply [status : Int, body : Str]
   (if (== status 200)
     (then
-      (let parsed (try ($json/parse ^^strict ^max_depth 16 body) catch Any nil))
+      (let parsed (try ($json/parse ^^strict ^max_depth 16 body) catch Error nil))
       (if (|| (!= ($head parsed) Map) (!= ($head parsed/answers) Map))
         (return (engine_status "error" "Jev returned a reply without answers.")))
       {^model (if (== ($head parsed/model) Str) parsed/model nil) ^answers parsed/answers
@@ -53,7 +53,7 @@
     ^headers {^authorization $"Bearer ${resource/key}" ^content-type "application/json"}
     ^body (jev_body request/settings request/state request/questions)
     ^timeout_ms ($math/max 1 request/timeout_ms) ^max_bytes 1048576)))
-  (jev_reply response/status (try ($binary/decode_utf8 response/body) catch Any "")))
+  (jev_reply response/status (try ($binary/decode_utf8 response/body) catch Error "")))
 
 (fn jev_row []
   {^name "jev" ^auto 10 ^summary "TypeSafe Jev, a cloud System One model"
@@ -85,7 +85,7 @@
   ($str/trim ($str/join body "\n")))
 
 (fn model_reply [text : Str]
-  (let parsed (try ($json/parse ^^strict ^max_depth 16 (model_reply_text text)) catch Any nil))
+  (let parsed (try ($json/parse ^^strict ^max_depth 16 (model_reply_text text)) catch Error nil))
   (if (!= ($head parsed) Map) (return (engine_status "error" "The model's reply was not a JSON object.")))
   {^answers parsed})
 

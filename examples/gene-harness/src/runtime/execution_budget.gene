@@ -58,9 +58,9 @@
   # exhausted budget or while holding the scope table's gate.
   (for finalize in finalizers
     (try (finalize)
-      catch Any
+      catch Error
         (if_not ($absent? scope/origin/output)
-          (try (scope/origin/output "Image-run cleanup could not be recorded.\n") catch Any nil))))
+          (try (scope/origin/output "Image-run cleanup could not be recorded.\n") catch Error nil))))
   nil)
 
 (fn register_execution_finalizer [finalize]

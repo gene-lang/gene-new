@@ -20,7 +20,7 @@
       (/key (read_openrouter_record))))
 
 (fn openrouter_connection []
-  (let key (try (api_key) catch Any nil))
+  (let key (try (api_key) catch Error nil))
   (let source (key_source))
   (let label (if ($present? source/env)
     (then "OpenRouter · environment key") (else "OpenRouter · Harness sign-in")))
@@ -37,7 +37,7 @@
     (fail (ProviderError ^status response/status ^message
       $"openrouter ${response/status}: provider request failed")))
   (let parsed (try ($json/parse response/body)
-    catch Any (fail (ProviderError ^message "openrouter returned invalid JSON"))))
+    catch Error (fail (ProviderError ^message "openrouter returned invalid JSON"))))
   (if (!= ($head parsed) Map)
     (fail (ProviderError ^message "openrouter returned an invalid assistant message")))
   (if ($present? parsed/error)

@@ -175,7 +175,7 @@
       (append_stamped_event_unlocked events scope stream event origin owner projection))))
   (if_not ($absent? events/observer)
     (try (events/observer envelope)
-      catch Any nil))
+      catch Error nil))
   envelope)
 
 (fn append_stamped_event_unlocked
@@ -380,7 +380,7 @@
         (if_not ($absent? version_schema) (set schema version_schema)))
       (var guarded ($runtime/guard_call schema schema_payload))
       (if_not guarded/ok (set schema_error guarded/message))
-    catch Any
+    catch Error
       (set schema_error ($to_str $err/message))))
   (if_not (== schema_error nil)
     (if (== envelope/origin "core")

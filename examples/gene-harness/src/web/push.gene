@@ -40,7 +40,7 @@
       # A dropped frame invalidates the stream. Reconnect gets a fresh snapshot.
       (peer .put "closed" true)
       (ws_close peer/connection))
-  catch Any
+  catch Error
     (peer .put "closed" true)
     (ws_close peer/connection)))
 
@@ -100,7 +100,7 @@
         (send_frame hub peer {^type "error" ^session session
           ^data {^code $err/code ^message $err/message}})))
     (send_frame hub peer {^type "ready" ^session session ^data nil})
-  catch Any
+  catch Error
     ($runtime/with_context nil (fn [] ($println $"Browser connection failed: ${$err/message}")))
     (peer .put "closed" true)
     (ws_close connection)))
@@ -136,7 +136,7 @@
     (peer .put "closed" true)
     (try
       (ws_close peer/connection)
-    catch Any
+    catch Error
       nil)
     (remove_peer hub peer/connection))
   nil)

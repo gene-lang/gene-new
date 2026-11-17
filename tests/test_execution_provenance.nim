@@ -23,7 +23,7 @@ proc provenanceFixture(base, name: string): string =
 (var info ($pkg/application))
 (var digests [($pkg/canonical_digest {^x 1 ^y 2})
               ($pkg/canonical_digest {^y 2 ^x 1})])
-(var immutable (try (info .put "root" "changed") false catch Any true))
+(var immutable (try (info .put "root" "changed") false catch Error true))
 """)
 
 proc provenanceGraph(root: string): MaterializedGraph =
@@ -105,8 +105,8 @@ suite "execution provenance":
 (var restricted ($runtime/load_sandboxed ($path/join this_pkg/root "src/mods")
   "reader.gene" [] [] "restricted"))
 (var data (restricted/read this_pkg))
-(var fs_denied (try (restricted/materialize this_pkg) "unexpected" catch Any $err/message))
-(var ffi_denied (try (restricted/open_module this_pkg) "unexpected" catch Any $err/message))
+(var fs_denied (try (restricted/materialize this_pkg) "unexpected" catch Error $err/message))
+(var ffi_denied (try (restricted/open_module this_pkg) "unexpected" catch Error $err/message))
 (var allowed ($runtime/load_sandboxed ($path/join this_pkg/root "src/mods")
   "reader.gene" ["fs"] [] "filesystem"))
 (var lease (allowed/materialize this_pkg))

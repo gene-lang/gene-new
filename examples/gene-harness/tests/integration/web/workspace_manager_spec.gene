@@ -47,7 +47,7 @@
   (try
     (ready_host host)
     host
-  catch Any
+  catch Error
     process/.cancel
     process/.join
     (fail $err)))
@@ -69,7 +69,7 @@
 (fn stop_managed [root]
   (try
     (api (connect root) "POST" "/control" {^action "stop" ^^confirm})
-  catch Any
+  catch Error
     nil))
 
 (describe
@@ -264,7 +264,7 @@
           (var refused false)
           (try
             (api client "POST" "/workspace/settings" {^changes {^alias "Renamed"}})
-          catch Any
+          catch Error
             (set refused true))
           ($assert refused "A legacy alias edit was accepted.")
           ($assert

@@ -51,7 +51,7 @@
           ($assert (try
             (load_part runtime {^harness_blob {^kind "media" ^id image/id
               ^digest "wrong" ^mime "image/png" ^encoding "base64"}})
-            false catch Any true))
+            false catch Error true))
           (let returned (result_record runtime $"Provider echoed ${image/data_url}" input/inventory))
           (assert_no_pixels runtime returned input/inventory)
           ($assert (== (load_part runtime returned) $"Provider echoed ${image/data_url}"))
@@ -114,7 +114,7 @@
           ($assert (== outcomes/0/payload/usage/cost 0.12))
           (assert_no_pixels runtime requests input/inventory)
           (timeout .set true)
-          ($assert (try (call_model runtime request ^!retry_timeouts) false catch Any true))
+          ($assert (try (call_model runtime request ^!retry_timeouts) false catch Error true))
           ($assert (== calls/.get 2) "Review transport retried a timed-out call.")
         ensure (close_runtime runtime))))))
 

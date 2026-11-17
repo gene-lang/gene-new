@@ -116,10 +116,10 @@ current view.
     ($assert (== (counter_set ^value "10") 10))
     ($assert (== (counter_add ^amount 2) 12))
     ($assert (== (counter_add ^amount -1) 11))
-    ($assert (try (counter_set ^value "oops") false catch Any true))
+    ($assert (try (counter_set ^value "oops") false catch Error true))
     ($assert (== (counter_get) 11))
     nil
-  catch Any $err))
+  catch Error $err))
 (counter_set ^value ($to_str before))
 ($assert ($absent? failure) ($to_str failure/message))
 (ui_configure {^^enabled ^default_view "counter"})

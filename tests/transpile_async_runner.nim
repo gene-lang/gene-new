@@ -23,7 +23,7 @@ writeFile(sourcePath, """
     (task .cancel)
     (try
       (await task)
-      catch Any 99
+      catch Error 99
       ensure (mark))))
 """)
 # The producer holds the `scope`/`spawn`; the consumer holds only the Gene
@@ -46,7 +46,7 @@ writeFile(consumerPath, """
 (fn guarded [] : Int
   (try
     (cancelled_work)
-    catch Any 99
+    catch Error 99
     ensure (mark2)))
 """)
 # A Gene error type may declare its own `^kind Str`. A structural check on that
@@ -104,7 +104,7 @@ try {
 }
 if (!crossModule) {
   throw new Error(
-    `imported cancellation was swallowed by catch Any (returned ${swallowed})`);
+    `imported cancellation was swallowed by catch Error (returned ${swallowed})`);
 }
 if (marks2 !== 1) throw new Error(`ensure ran ${marks2} times instead of once`);
 

@@ -32,7 +32,7 @@
       (let state (/snapshot ($terminal/pump terminal)))
       (if (|| state/stopped (>= ($os/monotonic_ms) due)) (break))
       ($sleep 20))
-  catch Any nil
+  catch Error nil
   ensure ($terminal/close terminal)))
 
 (describe "Harness startup browser links"

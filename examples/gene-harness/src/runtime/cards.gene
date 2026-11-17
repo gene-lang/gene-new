@@ -69,7 +69,7 @@
 (fn checked_state [state]
   (let encoded
     (try ($serde/write_data state)
-      catch Any (card_fail "invalid_request" "card state must be serializable data")))
+      catch Error (card_fail "invalid_request" "card state must be serializable data")))
   (if (> ($str/byte_size encoded) state_limit)
     (card_fail "too_large" "card state exceeds 64 KiB"))
   ($serde/read_data encoded))
@@ -168,7 +168,7 @@
             ($present? (bindings .get name)) (missing .contains? name)
             ($str/starts_with? name ".") ($str/starts_with? name "$") ($str/starts_with? name "^"))
       (continue))
-    (if_not (try (do (eval ($to_sym name) ^in environment) true) catch Any false)
+    (if_not (try (do (eval ($to_sym name) ^in environment) true) catch Error false)
       (missing .push name)))
   missing)
 
@@ -256,7 +256,7 @@
       (do
         (let lease (acquire_snapshot runtime/h/snapshots))
         (try
-          (for warning in (try (source_warnings runtime lease/snapshot session source) catch Any [])
+          (for warning in (try (source_warnings runtime lease/snapshot session source) catch Error [])
             (warnings .push warning))
           (render_live runtime lease session source state)
           ensure (release_snapshot runtime/h/snapshots lease)))
@@ -284,7 +284,7 @@
     # The outline lets the model check what the card drew.
     (let warned ($str/join warnings "; "))
     (if_not warnings/.empty?
-      (try (append_plugin_prompt "card" $"card ${id}: ${warned}") catch Any nil))
+      (try (append_plugin_prompt "card" $"card ${id}: ${warned}") catch Error nil))
     {^id id ^title title ^kind card/kind ^definition_revision card/definition_revision
      ^revision card/revision ^outline (view_outline tree) ^warnings warnings})))
 

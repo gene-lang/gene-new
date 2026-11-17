@@ -36,6 +36,21 @@ suite "web standard receiver methods":
       expect WebProfileError:
         discard buildWebModule(source, root / "out")
 
+suite "web catch types":
+  test "Any and value types are rejected as catch types":
+    for (clause, expected) in [
+        ("Any", "Any is not an error type; use `catch Error`"),
+        ("Str", "Str is not an error type")]:
+      var message = ""
+      try:
+        discard analyzeWebModule("(mod catch_types ^profile web) " &
+          "(fn run [] : Int (try 1 catch " & clause & " 2))", "catch_types.gene")
+      except WebProfileError as error:
+        message = error.msg
+      check expected in message
+    discard analyzeWebModule("(mod catch_types ^profile web) " &
+      "(fn run [] : Int (try 1 catch Error 2))", "catch_types.gene")
+
 suite "web macros with gensym":
   const swapSource = """
     (mod NAME ^profile web)
@@ -165,7 +180,7 @@ suite "web navigation host bindings":
     for entry in ["missing", "invalid"]:
       writeFile(root / (entry & "_host.gene"),
         "(var caught (try ($web/load \"" & root / (entry & ".gene") &
-        "\") false catch Any true))")
+        "\") false catch Error true))")
       let app = newApplication(root)
       let module = app.loadFileModule(root / (entry & "_host.gene"))
       check module.moduleRootNamespace.nsScope.lookup("caught").boolVal
@@ -177,7 +192,7 @@ suite "web navigation host bindings":
     """)
     writeFile(root / "panic_host.gene",
       "(var caught (try ($web/load \"" & root / "panic.gene" &
-      "\") false catch Any true))")
+      "\") false catch Error true))")
     let panicApp = newApplication(root)
     expect GenePanic:
       discard panicApp.loadFileModule(root / "panic_host.gene")
@@ -529,7 +544,7 @@ suite "web named rest and property spread":
       (fn typed_run [] : Int
         (typed ^count 2))
       (fn typed_bad [] : Bool
-        (try (typed ^count "bad") false catch Any true))
+        (try (typed ^count "bad") false catch Error true))
     """)
     discard buildWebModule(root / "named_rest.gene", root / "out")
     writeFile(root / "out" / "check.mjs", """

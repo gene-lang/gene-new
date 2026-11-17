@@ -56,7 +56,7 @@
   (if (<= ($str/byte_size text) maximum) (return text))
   (var end maximum)
   (while (> end 0)
-    (var prefix (try ($str/slice_bytes text 0 end) catch Any nil))
+    (var prefix (try ($str/slice_bytes text 0 end) catch Error nil))
     (if_not ($absent? prefix) (return prefix))
     (set end (- end 1)))
   "")

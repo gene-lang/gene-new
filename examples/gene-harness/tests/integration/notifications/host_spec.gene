@@ -54,7 +54,7 @@
         (let old_handle (resolve original/h "notifications/host"))
         (try
           (let h original/h)
-          ($assert (try (resolve h "loop") false catch Any
+          ($assert (try (resolve h "loop") false catch Error
             ($str/contains? $err/message "no provider for seam loop"))
             "fixture unexpectedly supplied raw runtime access")
           (let plain (call h "notification_post" {^title "Before replacement"}))
@@ -73,10 +73,10 @@
             ($assert (listed h receipt/id))
             (let detail (call h "notification_detail" receipt/id))
             ($assert (== detail/source (if (== receipt/id foreign/id) "other_producer" "operator")))
-            ($assert (try (detail .put "title" "mutated") false catch Any true)
+            ($assert (try (detail .put "title" "mutated") false catch Error true)
               "facade returned mutable public data"))
           (let listed_snapshot (call h "notification_list"))
-          ($assert (try (listed_snapshot/messages .push {}) false catch Any true))
+          ($assert (try (listed_snapshot/messages .push {}) false catch Error true))
           (let denied (call h "notification_update" foreign/id {^title "Stolen"}))
           ($assert (&& (! denied/ok) (== denied/code "forbidden")))
           (let plugin_denied (publisher/.get .PluginHost:notification_update keyed/id {^title "Stolen"}))
@@ -103,12 +103,12 @@
             (call h "notification_clear" receipt/id receipt/revision)
             ($assert (listed h receipt/id)))
           ($assert (try (call h "notification_clear" keyed/id (+ updated/revision 1)) false
-            catch Any (== $err/code "invalid_request")))
+            catch Error (== $err/code "invalid_request")))
           (call h "notification_clear" plain/id plain/revision)
           ($assert (! (listed h plain/id)))
           (saved .set {^plain plain ^keyed updated ^foreign foreign_updated ^actions after/actions})
         ensure (close_runtime original))
-        ($assert (try old_handle/.NotificationHost:list false catch Any (== $err/code "unavailable"))
+        ($assert (try old_handle/.NotificationHost:list false catch Error (== $err/code "unavailable"))
           "closed facade retained a workspace")
         (let restarted (open_runtime root "default" profile))
         (try

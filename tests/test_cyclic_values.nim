@@ -94,18 +94,18 @@ suite "cyclic values":
 
   test "freeze and thaw raise a catchable error on a cycle":
     cyclicCheck """
-      (try ($freeze (cyclic "p")) "frozen" catch Any $err/message)
+      (try ($freeze (cyclic "p")) "frozen" catch Error $err/message)
     """, "\"freeze cannot freeze a cyclic value\""
     cyclicCheck """
-      (try ($freeze (self_map)) "frozen" catch Any $err/message)
+      (try ($freeze (self_map)) "frozen" catch Error $err/message)
     """, "\"freeze cannot freeze a cyclic value\""
     cyclicCheck """
-      (try ($thaw (self_map)) "thawed" catch Any $err/message)
+      (try ($thaw (self_map)) "thawed" catch Error $err/message)
     """, "\"thaw cannot copy a cyclic value\""
 
   test "a failed freeze leaves later freezes working":
     cyclicCheck """
-      (try ($freeze (self_map)) catch Any nil)
+      (try ($freeze (self_map)) catch Error nil)
       ($freeze [1 [2]])
     """, "#[1 #[2]]"
 

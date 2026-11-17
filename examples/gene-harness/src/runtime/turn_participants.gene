@@ -75,7 +75,7 @@
     (for definition in transaction/participants
       (if (== definition/name name)
         (try (transaction/on_failure definition phase failure)
-          catch Any
+          catch Error
             (fail (participant_failure name phase code
               $"${message}; failure reporting also failed: ${$err/message}" ^cause failure))))))
   (fail failure))
@@ -177,7 +177,7 @@
     (set at (- at 1))
     (let entry transaction/entered/%at)
     (try (invoke_participant transaction entry "release" completion)
-      catch Any (errors .push $err)))
+      catch Error (errors .push $err)))
   (if_not errors/.empty?
     (transaction/failed .set true)
     (fail (ParticipantFailure ^participant "coordinator" ^phase "release" ^code "cleanup_failed"
@@ -193,7 +193,7 @@
   (let errors [])
   (for entry in transaction/entered
     (try (invoke_participant transaction entry "finalize" completion)
-      catch Any (errors .push $err)))
+      catch Error (errors .push $err)))
   (if_not errors/.empty? (transaction/failed .set true))
   (var sealed false)
   (var evidence nil)

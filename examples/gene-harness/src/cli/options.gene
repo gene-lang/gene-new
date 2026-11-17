@@ -9,7 +9,7 @@
 (fn argument_values [args]
   (try
     (if (== ($head args/.body) List) args/.body args)
-    catch Any args))
+    catch Error args))
 
 (fn parse_options [args]
   (let values (argument_values args))
@@ -96,7 +96,7 @@
   (let text ($fs/read_text path))
   (try
     ($serde/read_data text)
-  catch Any
+  catch Error
     (let forms ($into ($parse/read_all text) []))
     (if (|| (!= forms/.size 1) (!= ($head forms/0) Map))
       (problem "Definition must be an inert Gene map or serde data."))

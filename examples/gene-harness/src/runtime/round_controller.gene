@@ -320,7 +320,7 @@
   (if_yes (&& (== saved/state "paused") (== saved/continuation_mode "automatic")
               (! controller/runtime/stopping/.get))
       (try (continue_round ^operator false controller session saved/id "automatic")
-      catch Any (stop_continuation controller session saved/id $err)))
+      catch Error (stop_continuation controller session saved/id $err)))
   saved)
 
 (fn finish_round_unlocked [controller : RoundController, session : Str, receipt, outcome]
@@ -407,7 +407,7 @@
 (fn submit_round_impl [controller : RoundController, session : Str, request_id : Str, sequence : Int, text : Str, ^initiator initiator : Str = "user", ^on_admit on_admit = nil, ^media media = [], ^card card = nil, ^limits limits = nil, ^delegation delegation = nil, ^input input = nil, ^continuation continuation = nil, ^model_settings model_settings = nil, ^expected_transport expected_transport = nil, ^persist_model_settings persist_model_settings : Bool = false]
   (if ($present? model_settings)
     (try (validate_model_settings model_settings)
-      catch Any (fail (RoundError ^code "invalid_request" ^message $err/message))))
+      catch Error (fail (RoundError ^code "invalid_request" ^message $err/message))))
   (let source (resolve_initiator controller/runtime session initiator text input continuation))
   (let user_source (== source/kind "user"))
   (let channel_source source/channel)
@@ -668,7 +668,7 @@
       ^expected_transport (if operator (then nil) (else old/selection/transport))
       ^limits old/effective_limits ^continuation descriptor
       ^input (?? descriptor/input nil))
-  catch Any
+  catch Error
     (let failure $err)
     (let admitted (round_receipt controller session successor_id))
     (if (&& ($present? admitted) (== admitted/request_id request_id)) (return admitted))
@@ -684,7 +684,7 @@
     (if_not ($absent? receipt/continuation_stop) (continue))
     (if (|| (== receipt/continuation_mode "automatic") ($present? receipt/continuation_intent))
       (try (continue_round ^operator false controller session receipt/id (?? receipt/continuation_mode "manual"))
-        catch Any (stop_continuation controller session receipt/id $err))))
+        catch Error (stop_continuation controller session receipt/id $err))))
   nil)
 
 (fn answer_round [controller : RoundController, session : Str, batch_id : Str, values,
@@ -835,7 +835,7 @@
             (let batch (core_state controller/runtime/events "session" session $"questions/${receipt/questions/id}"))
             (if (&& ($present? batch) (== batch/status "answered") (== batch/intent "continue"))
               (continue_answered_round controller session receipt batch)))))))
-    catch Any
+    catch Error
       (append_core_event controller/runtime/events "session" session
         {^type "trace" ^text $"answered round did not resume: ${$err/message}" ^^ignorable})))
   pending/.size)

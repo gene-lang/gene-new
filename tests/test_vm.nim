@@ -425,7 +425,7 @@ suite "VM — proper tail calls":
     let structured = runStr(
       "(fn identity [x] x) " &
       "(fn guarded [x] " &
-      "  (try (return (identity x)) catch Any 0)) " &
+      "  (try (return (identity x)) catch Error 0)) " &
       "(guarded 7)")
     let structuredStats = finishTailCallStats()
     check structured == newInt(7)
@@ -770,7 +770,7 @@ suite "compiler — GIR emission":
 
     let protected = compileSource(
       "(fn g [] 1) " &
-      "(fn f [] (try (g) catch Any 0)) " &
+      "(fn f [] (try (g) catch Error 0)) " &
       "(fn w [] (while false (g)))")
     let tryCall = findNamedCall(protected.functions[1].chunk, "g")
     let loopCall = findNamedCall(protected.functions[2].chunk, "g")
@@ -1228,7 +1228,7 @@ suite "compiler — GIR emission":
     let loopBody = loopChunk.forLoops[0].body
     check loopBody.localNames == @["a", "b"]
 
-    let tryChunk = compileSource("(try 1 catch Any $err/message)")
+    let tryChunk = compileSource("(try 1 catch Error $err/message)")
     let catchBody = tryChunk.tries[0].catches[0].body
     check catchBody.localNames == @["$err"]
     check catchBody.instructions[0].op in {opLoadLocal, opLoadLocalField}
@@ -1610,7 +1610,7 @@ suite "gir — disassembly":
       discard compileSource("(fn f [] (let i 1) (repeat i in 2 nil) (set i 3)) (f)")
     # The name ends with the loop; bindings the body makes keep the
     # enclosing scope, as in `while`.
-    ck "(fn f [] (repeat i in 2 nil) (try i catch Any \"unbound\")) (f)",
+    ck "(fn f [] (repeat i in 2 nil) (try i catch Error \"unbound\")) (f)",
        "\"unbound\""
     ck "(fn f [] (repeat i in 2 (var last i)) last) (f)", "1"
     # Closures keep the index's slot; nested loops nest.
@@ -1619,14 +1619,14 @@ suite "gir — disassembly":
     ck "(fn f [] (var t []) (repeat i in 2 (repeat j in 2 (t .push [i j]))) t) (f)",
        "[[0 0] [0 1] [1 0] [1 1]]"
     # A body that reaches names at run time keeps the index visible by name.
-    ck "(fn f [] (var t []) (repeat i in 2 (try (t .push i) catch Any nil)) " &
-       "  (repeat i in 1 (try (t .push i) catch Any nil)) t) (f)", "[0 1 0]"
+    ck "(fn f [] (var t []) (repeat i in 2 (try (t .push i) catch Error nil)) " &
+       "  (repeat i in 1 (try (t .push i) catch Error nil)) t) (f)", "[0 1 0]"
     ck "(fn f [] (var t []) (macro m [] `i) (repeat i in 2 (t .push (m))) t) (f)",
        "[0 1]"
     ck "(fn f [] (var t []) (repeat i in 2 (t .push (eval (quote i) ^in (env)))) t) (f)",
        "[0 1]"
     expect GeneError:
-      discard compileSource("(fn f [] (let i 9) (repeat i in 2 (try i catch Any nil))) (f)")
+      discard compileSource("(fn f [] (let i 9) (repeat i in 2 (try i catch Error nil))) (f)")
     # Name-resolved code (the REPL, eval) rebinds the index.
     let scope = newGlobalScope()
     discard run(compileSource("(var xs []) (repeat i in 2 (xs .push i))",
@@ -1662,10 +1662,10 @@ suite "gir — disassembly":
        "    (set i (+ i 1)))) t) " &
        "(fn s [] (var t 0) " &
        "  (for x in [1 2] (if (== x 1) (var y 0)) (set y 5) (set t (+ t y))) t) " &
-       "[(try (f) catch Any $err_msg) (try (g) catch Any $err_msg) " &
-       " (try (h) catch Any $err_msg) (try (k) catch Any $err_msg) " &
-       " (try (m) catch Any $err_msg) (try (n) catch Any $err_msg) " &
-       " (try (s) catch Any $err_msg)]",
+       "[(try (f) catch Error $err_msg) (try (g) catch Error $err_msg) " &
+       " (try (h) catch Error $err_msg) (try (k) catch Error $err_msg) " &
+       " (try (m) catch Error $err_msg) (try (n) catch Error $err_msg) " &
+       " (try (s) catch Error $err_msg)]",
        "[\"undefined symbol: y\" \"undefined symbol: y\" " &
        "\"undefined symbol: y\" \"undefined symbol: y\" " &
        "\"undefined symbol: p\" \"undefined symbol: w\" " &
@@ -1840,15 +1840,15 @@ suite "vm — strings and interpolation":
 
   test "strings iterate explicitly by chars and bytes":
     ck "[($chars \"Aé\") ($bytes \"Aé\")]", "[['A' 'é'] [65 195 169]]"
-    ck "(try ($chars 1) catch Any $err/message)", "\"chars expects a Str\""
-    ck "(try ($bytes) catch Any $err/message)",
+    ck "(try ($chars 1) catch Error $err/message)", "\"chars expects a Str\""
+    ck "(try ($bytes) catch Error $err/message)",
        "\"bytes expects 1 argument, got 0\""
 
   test "graphemes group combining scalars":
     let s = "e\u0301x"
     ck "(var s \"" & s & "\") [($chars s) ($graphemes s) ($bytes s)]",
        "[['e' '\u0301' 'x'] [\"e\u0301\" \"x\"] [101 204 129 120]]"
-    ck "(try ($graphemes 1) catch Any $err/message)",
+    ck "(try ($graphemes 1) catch Error $err/message)",
        "\"graphemes expects a Str\""
 
   test "to_str is an ordinary variadic callable":
@@ -2000,7 +2000,7 @@ suite "vm — macros":
 
   test "runtime macro recursion is bounded within an expansion":
     ck "(fn f [] (macro again [] `(again)) " &
-       "(try (again) catch Any ($str/contains? $err/message \"expansion depth\"))) (f)", "true"
+       "(try (again) catch Error ($str/contains? $err/message \"expansion depth\"))) (f)", "true"
 
   test "runtime macro mutation invalidates caller value and capture assumptions":
     ck "(fn f [] (var n 1) (let read_n (fn [] n)) " &
@@ -2055,14 +2055,14 @@ suite "vm — macros":
     ck "(macro twice [x] `(+ %x %x)) " &
        "(fn capture! [] (caller_env .snapshot [])) " &
        "(let saved (capture!)) " &
-       "(try (eval (quote (twice 3)) ^in saved) catch Any \"isolated\")", "\"isolated\""
+       "(try (eval (quote (twice 3)) ^in saved) catch Error \"isolated\")", "\"isolated\""
     ck "(macro identity [x] `%x) " &
        "(fn f [] (try (eval (quote (identity (return 7))) ^in (env)) " &
        "catch CompileError \"no-target\")) (f)", "\"no-target\""
     ck "(macro twice [x] `(+ %x %x)) " &
        "(fn capture! [] (caller_env .snapshot [])) " &
        "(let closed (capture!)) (let child (closed .extend {^x 1})) " &
-       "(try (eval (quote (twice 3)) ^in child) catch Any \"isolated\")", "\"isolated\""
+       "(try (eval (quote (twice 3)) ^in child) catch Error \"isolated\")", "\"isolated\""
 
   test "Env macro metadata cannot hide borrowed caller authority":
     let scope = newGlobalScope()
@@ -2136,7 +2136,7 @@ suite "vm — macros":
        "(macro twice [x] `(+ %x %x)) (capture!)) " &
        "(let saved (make)) (let hidden 99) " &
        "(eval (quote [(helper 2) (twice 3) " &
-       "(try hidden catch Any \"isolated\")]) ^in saved)", "[42 6 \"isolated\"]"
+       "(try hidden catch Error \"isolated\")]) ^in saved)", "[42 6 \"isolated\"]"
 
   test "compiled macro environments survive deterministic artifact cloning":
     let source = "(macro twice [x] `(+ %x %x)) " &
@@ -2177,7 +2177,7 @@ suite "vm — macros":
       "(macro scaled [x] (helper x))",
       "(scaled 3)",
       "(macro discarded [] 1) (let)",
-      "(try (discarded) catch Any \"missing\")",
+      "(try (discarded) catch Error \"missing\")",
       "(macro retained [] 42) (var persisted 1) missing",
       "[(retained) persisted (scaled 3)]",
       "(fn call_it [scaled] (scaled 3))",
@@ -2207,15 +2207,15 @@ suite "vm — macros":
     ck "(macro with_value [name value body...] " &
        "`(do (let %name %value) %body...)) " &
        "[(with_value answer 42 (* answer 2)) " &
-       " (try answer catch Any \"hidden\")]", "[84 \"hidden\"]"
+       " (try answer catch Error \"hidden\")]", "[84 \"hidden\"]"
     ck "[(do ^^macro_result (let x 1) x) " &
        " (do ^^macro_result (let x 2) x) " &
-       " (try x catch Any \"hidden\")]", "[1 2 \"hidden\"]"
+       " (try x catch Error \"hidden\")]", "[1 2 \"hidden\"]"
     ck "(do ^!macro_result (let x 1)) " &
        "(do ^macro_result 7 (let y 2)) (+ x y)", "3"
     ck "(macro identity [x] `%x) " &
        "[(identity [(let inside 1) inside]) " &
-       " (try inside catch Any \"hidden\")]", "[[1 1] \"hidden\"]"
+       " (try inside catch Error \"hidden\")]", "[[1 1] \"hidden\"]"
 
   test "binding-only macro scopes retain direct caller local slots":
     let chunk = compileSource("(macro add [value] " &
@@ -2241,7 +2241,7 @@ suite "vm — macros":
     check run(cloneCompiledChunk(compiled), newGlobalScope()).print() == "[100 100]"
     let hidden = "(fn f [] (do ^^macro_result (let tmp 1) tmp) " &
       "(try (eval ($to_sym \"\\u0000gene_block:1:tmp\") ^in (env)) " &
-      "catch Any \"hidden\")) (f)"
+      "catch Error \"hidden\")) (f)"
     ck hidden, "\"hidden\""
 
   test "macro-local annotation values retain their lexical scope":
@@ -2305,7 +2305,7 @@ suite "vm — macros":
        "(macro with_label [body...] " &
        "`(do (impl Label for Int (message label [] : Str \"int\")) %body...)) " &
        "[(with_label (5 .Label:label)) " &
-       " (try (5 .Label:label) catch Any \"hidden\")]", "[\"int\" \"hidden\"]"
+       " (try (5 .Label:label) catch Error \"hidden\")]", "[\"int\" \"hidden\"]"
     ck "(protocol Label (message label [] : Str)) " &
        "(macro with_label [body...] " &
        "`(do (impl Label for Int (message label [] : Str \"int\")) %body...)) " &
@@ -2343,13 +2343,13 @@ suite "vm — macros":
   test "eval policies bound executable macro bodies":
     ck "(macro spin [] (while true nil)) " &
        "(try (eval (quote (spin)) ^in (env ^policy {^timeout_ms 20})) " &
-       "catch Any ($str/contains? $err/message \"timeout\"))", "true"
+       "catch Error ($str/contains? $err/message \"timeout\"))", "true"
     ck "(fn f [] (macro spin [] (while true nil)) " &
        "(try (eval (quote (spin)) ^in (env ^policy {^timeout_ms 20})) " &
-       "catch Any ($str/contains? $err/message \"timeout\"))) (f)", "true"
+       "catch Error ($str/contains? $err/message \"timeout\"))) (f)", "true"
     ck "(fn f [] (macro spin [] (while true nil)) " &
        "(try (eval (quote (1 -> + (spin))) ^in (env ^policy {^timeout_ms 20})) " &
-       "catch Any ($str/contains? $err/message \"timeout\"))) (f)", "true"
+       "catch Error ($str/contains? $err/message \"timeout\"))) (f)", "true"
 
   test "macro body helpers use the definition environment":
     ck "(fn helper [x] (* x 100)) " &
@@ -2375,7 +2375,7 @@ suite "vm — macros":
        "(is_same 1 2)", "false"
     ck "(macro make_adder [n] " &
        "`(do (macro add_n [x] `(+ %x %%n)) (add_n 2))) " &
-       "[(make_adder 3) (try add_n catch Any \"hidden\")]", "[5 \"hidden\"]"
+       "[(make_adder 3) (try add_n catch Error \"hidden\")]", "[5 \"hidden\"]"
 
   test "ordinary lexical bindings shadow outer macros in calls and values":
     ck "(macro twice [x] `(+ %x %x)) " &
@@ -2390,7 +2390,7 @@ suite "vm — macros":
        "(for twice in [7] twice)", "nil"
     ck "(macro twice [x] `(+ %x %x)) " &
        "(fn f [twice] (twice 3)) " &
-       "(try (f 9) catch Any \"not-callable\")", "\"not-callable\""
+       "(try (f 9) catch Error \"not-callable\")", "\"not-callable\""
     ck "(macro twice [x] `(+ %x %x)) " &
        "(fn f [] (macro twice [x] `(* %x 10)) (twice 3)) " &
        "[(f) (twice 3)]", "[30 6]"
@@ -2494,7 +2494,7 @@ suite "vm — macros":
     ck "(fn pair [a b] [a b]) (macro slot [] `_) " &
        "(1 -> pair 0 (slot))", "[0 1]"
     ck "(macro temporary [] `(do (let pipeline_local 3) pipeline_local)) " &
-       "[(0 -> + (temporary)) (try pipeline_local catch Any \"hidden\")]", "[3 \"hidden\"]"
+       "[(0 -> + (temporary)) (try pipeline_local catch Error \"hidden\")]", "[3 \"hidden\"]"
 
   test "macro calls bind named syntax props":
     ck "(macro scaled [value ^by n] `(+ %value %n)) " &
@@ -2619,9 +2619,9 @@ suite "vm — comparison and logic":
     ck "(== ($hash #[1 2]) ($hash ($freeze [1 2])))", "true"
     ck "(== ($hash (quote #(x @line 1 ^a 2))) " &
        "   ($hash (quote #(x @line 99 ^a 2))))", "true"
-    ck "(try ($hash [1 2]) catch Any $err/message)",
+    ck "(try ($hash [1 2]) catch Error $err/message)",
        "\"hash expects a hash-stable value\""
-    ck "(try ($hash #[($cell 1)]) catch Any $err/message)",
+    ck "(try ($hash #[($cell 1)]) catch Error $err/message)",
        "\"hash expects a hash-stable value\""
     expect GeneError: discard runStr("($hash)")
   test "same compares scalar values and heap identity":
@@ -2634,7 +2634,7 @@ suite "vm — comparison and logic":
     ck "($freeze_shallow [1 [2]])", "#[1 [2]]"
     ck "($freeze [1 {^a [2]}])", "#[1 #{^a #[2]}]"
     ck "($thaw ($freeze [1 {^a [2]}]))", "[1 {^a [2]}]"
-    ck "(try ($freeze [($cell 1)]) catch Any $err/message)",
+    ck "(try ($freeze [($cell 1)]) catch Error $err/message)",
        "\"freeze cannot freeze Cell\""
     expect GeneError: discard runStr("($freeze)")
   test "not":
@@ -2771,7 +2771,7 @@ suite "vm — functions and closures":
        "(var h (run 5)) (set top 20) (h)", "26"
     ck "(fn run [] (var g (fn [] (later))) (fn later [] 42) (g)) (run)", "42"
     ck "(fn run [] (var hs []) (try (for x in [1 2] (hs .push (fn [] x))) " &
-       "  catch Any nil) [(hs/0) (hs/1)]) (run)", "[1 2]"
+       "  catch Error nil) [(hs/0) (hs/1)]) (run)", "[1 2]"
     ck "(fn run [] (fn helper [n] (* n 2)) (var g (fn [] (helper 5))) (g)) " &
        "(run)", "10"
 
@@ -3218,7 +3218,7 @@ suite "vm — fused local sequences":
       # the instance's (an omitted optional field) takes the general path.
       [(+ p/x p/y) row/amount ($absent? row/missing) ($absent? p/missing)])
     [(count_to 6) (floats 2.0) (wide 9223372036854775807)
-     (try (store "text") "unreached" catch Any "store failed")
+     (try (store "text") "unreached" catch Error "store failed")
      (fields (Point ^x 3 ^y 4) {^amount 5})
      trace]
   """
@@ -3361,7 +3361,7 @@ suite "vm — fused sends":
       # argument whose slot was never defined.
       (let xs [1])
       (if flag (var y 1))
-      (try (xs .bogus y) catch MessageError "message" catch Any "argument"))
+      (try (xs .bogus y) catch MessageError "message" catch Error "argument"))
     (fn native_error [xs]
       # A native that fails reports the call's location.
       (xs .set 7 0))
@@ -3372,7 +3372,7 @@ suite "vm — fused sends":
       [(none ?.push 1) (xs ?.push 2) xs])
     [(plain_args 3) (instance_args (Point ^x 3 ^y 4)) (method_send 4)
      (callback 5) (undefined_arg false) (undefined_arg true)
-     (try (native_error [1 2]) catch Any $err/message) (optional_send [1])]
+     (try (native_error [1 2]) catch Error $err/message) (optional_send [1])]
   """
   const sendResult =
     "[[3 3 2 2 [3 3 3] [9 3 9 9] [0 2 4]] [3 nil] 46 [15 -1] \"message\" " &
@@ -3590,7 +3590,7 @@ suite "vm — scopeless field reads":
       total)
     [(loop_calls 5) (get_key {^key "k"}) (get_key {}) (missing (Point ^x 1 ^y 2))
      ((Counter ^value 1) .left) (member box)
-     (try (sum {^x 1 ^y "a"}) catch Any $err/message)]
+     (try (sum {^x 1 ^y "a"}) catch Error $err/message)]
   """
   const fieldResult =
     "[95 \"k\" nil nil nil 5 \"+ expects numbers, got vkString\"]"
@@ -3723,7 +3723,7 @@ suite "vm — plain native dispatch":
     let scope = newGlobalScope()
     scope.define("identity", newNativeFn("identity", nativeIdentity))
     check run(compileSource("""
-      (try (identity) catch Any nil)
+      (try (identity) catch Error nil)
       (identity "ok")
     """), scope).print() == "\"ok\""
     expect GeneError:
@@ -3838,10 +3838,10 @@ suite "vm — Paths":
        "((Path ^default fallback \"name\") {^age 37})",
        "\"unknown\""
     ck "((Path ^default \"unknown\" \"name\") {^name nil})", "nil"
-    ck "(try ((Path ^^strict \"name\") {^age 37}) catch Any $err/message)",
+    ck "(try ((Path ^^strict \"name\") {^age 37}) catch Error $err/message)",
        "\"Path lookup failed at segment: \\\"name\\\"\""
     ck "(try ((Path ^^strict ^default \"unknown\" \"name\") {^age 37}) " &
-       "catch Any $err/message)",
+       "catch Error $err/message)",
        "\"Path lookup failed at segment: \\\"name\\\"\""
     expect GeneError:
       discard runStr("((Path ^strict 1 \"name\") {^age 37})")
@@ -4242,14 +4242,14 @@ suite "vm — named rest and property spread":
        "[2 1]"
     ck "(var calls 0) (fn make [] (set calls (+ calls 1)) (fail \"boom\")) " &
        "(fn take [^x : Int] : Int x) (let override {^x 2}) " &
-       "[(try (take ^x (make) override...) catch Any \"caught\") calls]",
+       "[(try (take ^x (make) override...) catch Error \"caught\") calls]",
        "[\"caught\" 1]"
 
   test "general maps spread as named arguments and reject bad keys":
     ck "(fn f [^a ^b] [a b]) (let m {{\"a\": 1 \"b\": 2}}) (f m...)",
        "[1 2]"
     ck "(fn f [^a] a) " &
-       "(try (f {{[1]: 2}}...) catch Any \"key-error\")",
+       "(try (f {{[1]: 2}}...) catch Error \"key-error\")",
        "\"key-error\""
 
   test "named rest works for messages and data construction":
@@ -4319,7 +4319,7 @@ suite "vm — env and eval":
        "(fn capture! [] (caller_env .snapshot [\"x\"])) " &
        "(var saved (capture!)) " &
        "[(eval (quote x) ^in saved) " &
-       " (try (eval (quote secret) ^in saved) catch Any \"absent\")]",
+       " (try (eval (quote secret) ^in saved) catch Error \"absent\")]",
        "[1 \"absent\"]"
 
   test "env parent bindings are visible to eval":
@@ -4347,28 +4347,28 @@ suite "vm — env and eval":
        "3"
     ck "(try (eval (quote (while true nil)) " &
        "           ^in (env ^policy {^timeout_ms 20})) " &
-       "catch Any $err/message)",
+       "catch Error $err/message)",
        "\"eval timeout exceeded\""
     ck "(try (eval (quote (eval (quote (while true nil)) ^in (env))) " &
        "           ^in (env ^policy {^timeout_ms 40})) " &
-       "catch Any $err/message)",
+       "catch Error $err/message)",
        "\"eval timeout exceeded\""
     # A deadline is transitive across an ordinary call. The callee's bound
     # scope descends from its own lexical scope, so without this the first call
     # out of the evaluated form silently left the limit behind.
     ck "(fn spin [n : Int] (while true (set n (+ n 1))) n) " &
        "(try (eval (quote (spin 1)) ^in (env ^policy {^timeout_ms 200})) " &
-       "catch Any $err/message)",
+       "catch Error $err/message)",
        "\"eval timeout exceeded\""
     # Time and allocator state are sampled during policy-controlled execution.
     ck "(try (eval (quote (while true nil)) " &
        "           ^in (env ^policy {^timeout_ms 50})) " &
-       "catch Any $err/message)",
+       "catch Error $err/message)",
        "\"eval timeout exceeded\""
     ck "(try (eval (quote (do (var xs ($thaw #[])) " &
        "                      (while true (xs .push ($str/join [\"x\"] \"\"))))) " &
        "           ^in (env ^policy {^max_memory_mb 1})) " &
-       "catch Any $err/message)",
+       "catch Error $err/message)",
        "\"eval memory limit exceeded\""
     ck "(eval (quote (+ 1 2)) " &
        "      ^in (env ^policy {^timeout_ms 5000 " &
@@ -4667,7 +4667,7 @@ suite "vm — cooperative scheduler":
        "  (out .get))", "8"
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var t (spawn (try (fail (Error ^message \"x\")) " &
-       "                  catch Any (ch .recv)))) " &
+       "                  catch Error (ch .recv)))) " &
        "  (spawn (ch .send 9)) " &
        "  (await t))", "9"
   test "suspension preserves scope, supervisor, eval, and namespace sub-bodies":
@@ -4936,7 +4936,7 @@ suite "vm — cooperative scheduler":
        "(try (scope " &
        "       (spawn (do (ch .recv) (out .set 1))) " &
        "       nil) " &
-       "  catch Any $err/message) " &
+       "  catch Error $err/message) " &
        "(ch .send 1) " &
        "($sleep 1) " &
        "(out .get)", "0"
@@ -5100,16 +5100,16 @@ suite "vm — cooperative scheduler":
        "(fn handle [ctx state msg] " &
        "  (var (Get ^reply reply) msg) " &
        "  (var got (ch .recv)) " &
-       "  (try (reply .send got) catch Any $err/message) " &
+       "  (try (reply .send got) catch Error $err/message) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
        "(var pending (a .ask ^timeout_ms 5 " &
        "  (fn [reply] (saved .set reply) (Get ^reply reply)))) " &
        "(var err (try (await pending) catch ActorError $err/message)) " &
        "(var first-late (try ((saved .get) .send 9) " &
-       "                  catch Any $err/message)) " &
+       "                  catch Error $err/message)) " &
        "(var second-late (try ((saved .get) .send 10) " &
-       "                   catch Any $err/message)) " &
+       "                   catch Error $err/message)) " &
        "[err first-late second-late])",
        "[\"actor/ask timed out\" nil \"reply has already been sent\"]"
 
@@ -5141,16 +5141,16 @@ suite "vm — cooperative scheduler":
        "(fn handle [ctx state msg] " &
        "  (var (Get ^reply reply) msg) " &
        "  (var got (ch .recv)) " &
-       "  (try (reply .send got) catch Any $err/message) " &
+       "  (try (reply .send got) catch Error $err/message) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
        "(var pending (a .ask " &
        "  (fn [reply] (saved .set reply) (Get ^reply reply)))) " &
        "(pending .cancel) " &
        "(var first-late (try ((saved .get) .send 9) " &
-       "                  catch Any $err/message)) " &
+       "                  catch Error $err/message)) " &
        "(var second-late (try ((saved .get) .send 10) " &
-       "                   catch Any $err/message)) " &
+       "                   catch Error $err/message)) " &
        "[first-late second-late])",
        "[nil \"reply has already been sent\"]"
 
@@ -5674,7 +5674,7 @@ suite "vm — streams":
     ck "(var s ($read_all \"(a) #_ (ignored) (b 2)\")) " &
        "[(s .next) (s .next) (s .has_next)]",
        "[(a) (b 2) false]"
-    ck "(try ($read_one \"(a\") catch Any $err/message)",
+    ck "(try ($read_one \"(a\") catch Error $err/message)",
        "\"read_one: unexpected EOF: unclosed '('\\n  while reading '(' opened at 1:1; expected ')'\""
     ck "(try ($read_one \"(a\") catch ParseError $err/message)",
        "\"read_one: unexpected EOF: unclosed '('\\n  while reading '(' opened at 1:1; expected ')'\""

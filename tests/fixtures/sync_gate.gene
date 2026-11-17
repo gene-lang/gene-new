@@ -17,9 +17,9 @@
 
   (it "releases on errors and rejects reentry without stranding the token" []
     (let gate ($sync/gate))
-    (let message (try (gate (fn [] (gate (fn [] nil)))) "not rejected" catch Any $err/message))
+    (let message (try (gate (fn [] (gate (fn [] nil)))) "not rejected" catch Error $err/message))
     ($assert ($str/contains? message "non-reentrant"))
-    (try (gate (fn [] (fail (RuntimeError ^message "body failed")))) catch Any nil)
+    (try (gate (fn [] (fail (RuntimeError ^message "body failed")))) catch Error nil)
     (assert_equal (gate (fn [] "free")) "free"))
 
   (it "cancels a blocked waiter without losing the next acquisition" []
@@ -171,7 +171,7 @@
       (entered .send true) blocked/.recv))))
     entered/.recv
     (assert_equal entries/call true)
-    (let error (try ($sync/track entries "call" (fn [] nil)) "accepted" catch Any $err/message))
+    (let error (try ($sync/track entries "call" (fn [] nil)) "accepted" catch Error $err/message))
     ($assert ($str/contains? error "already registered"))
     (assert_equal entries/call true)
     task/.cancel task/.join
@@ -187,7 +187,7 @@
     ($assert (== ($head task/.join) TaskOutcome/panic))
     (assert_equal ($size entries) 0)
     ($sync/track entries "outer" (fn []
-      (try (gate (fn [] (fail (RuntimeError ^message "inner")))) catch Any nil)
+      (try (gate (fn [] (fail (RuntimeError ^message "inner")))) catch Error nil)
       (assert_equal entries/outer true)
       (assert_equal (gate (fn [] 42)) 42)))
     (assert_equal ($size entries) 0)))

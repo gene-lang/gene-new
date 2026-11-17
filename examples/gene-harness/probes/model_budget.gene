@@ -56,7 +56,7 @@
     (let requested attempt/requested) (let settings attempt/settings) (let prepared attempt/prepared)
     (let began ($os/monotonic_ms))
     (let result (try (provider/send prepared)
-      catch Any
+      catch Error
         (let failed {^provider args/2 ^model args/3 ^requested_effort requested
           ^effective_effort settings/effort ^ok false ^elapsed_ms (- ($os/monotonic_ms) began)
           ^reason "Provider attempt failed; no output was executed. Resolve the failure before repeating billed probes."})

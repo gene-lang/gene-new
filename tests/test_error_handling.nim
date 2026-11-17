@@ -22,6 +22,22 @@ proc spoofedNativePredicate(args: openArray[Value]): Value {.nimcall.} =
   raise newException(GeneError, "native body must not run under another model's proof")
 
 suite "errors — gradual runtime contract":
+  test "catch names an error type; Any and value types are rejected":
+    for (clause, expected) in [
+        ("Any", "Any is not an error type; use `catch Error`"),
+        ("Str", "Str is not an error type"),
+        ("Int", "Int is not an error type"),
+        ("(| JsonError Any)", "Any is not an error type"),
+        ("(| Str Error)", "Str is not an error type")]:
+      var message = ""
+      try:
+        discard gradualErrorEval("(try (+ 1 \"x\") catch " & clause & " 1)")
+      except GeneError as error:
+        message = error.msg
+      check expected in message
+    errorContractCheck """(try (+ 1 "x") catch Error 7)""", "7"
+    errorContractCheck """(try (+ 1 "x") catch (| JsonError Error) 7)""", "7"
+
   test "Error default access and the message shortcut use the original value":
     errorContractCheck """
       (let original (AssertionError ^message "same"))

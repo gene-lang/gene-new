@@ -25,7 +25,7 @@
     (if (!= state/format 1)
       (notification_error "unavailable" "Unsupported notification inbox format."))
     (Inbox ^backend backend ^state ($cell state) ^gate ($sync/gate) ^observer ($cell nil) ^progress ($cell {}))
-  catch Any
+  catch Error
     backend/.Store:close
     (fail $err)))
 
@@ -48,7 +48,7 @@
       (inbox/state .set next)
       # Delivery failure cannot change the outcome of a committed publication.
       (let observer inbox/observer/.get)
-      (if_not ($absent? observer) (try (observer "notifications/state" (inbox_snapshot inbox)) catch Any nil)))
+      (if_not ($absent? observer) (try (observer "notifications/state" (inbox_snapshot inbox)) catch Error nil)))
     result)))
 
 (fn visible [message, now : Int] : Bool
@@ -180,6 +180,6 @@
   (if_not ($absent? observer)
     (try
       (observer "notifications/progress" {^source source ^key key ^data data})
-    catch Any
+    catch Error
       nil))
   {^^ok ^^transient})

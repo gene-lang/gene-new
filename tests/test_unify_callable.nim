@@ -166,7 +166,7 @@ suite "unified callable — checked signatures":
       (let allowed : (Callable [Int] Int ^errors [Boom]) fail_it)
       (let denied : (Callable [Int] Int ^errors []) fail_it)
       [(try (allowed 7) catch Boom $err/n)
-       (try (denied 1) false catch Any true)
+       (try (denied 1) false catch Error true)
        (try (denied "bad") false catch TypeError true)]
     """, "[7 true true]"
 

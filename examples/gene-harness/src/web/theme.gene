@@ -188,7 +188,7 @@
     (let selector (if (== mode "light") ":root, [data-mode=\"light\"]" ":root[data-mode=\"dark\"], [data-mode=\"dark\"]"))
     (nodes .push (rule selector (decl_value "color-scheme" mode)
       (token_declarations tokens)...
-      (decl_value "--select-chevron" (select_chevron theme (try (color_value colors "muted") catch Any "currentColor")))))
+      (decl_value "--select-chevron" (select_chevron theme (try (color_value colors "muted") catch Error "currentColor")))))
     (set scopes ($to_str scopes (panel_scope tokens
       (if (== mode "light") ":root:not([data-mode=dark]), [data-mode=light]" ":root[data-mode=dark], [data-mode=dark]")))))
   (let icons {})
@@ -247,7 +247,7 @@
   (let tokens ($thaw ($freeze values)))
   (if (== ($map_size aliases) 0) (return tokens))
   (for name in ["font-sans" "font-mono" "font-display"]
-    (let value (try (color_value values name) catch Any (?? (values .get name) "")))
+    (let value (try (color_value values name) catch Error (?? (values .get name) "")))
     (tokens .put name (alias_font_value value aliases)))
   (map_for [key value] in values
     (if ($str/starts_with? ($to_str key) "type-")

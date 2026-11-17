@@ -51,7 +51,7 @@
             (try
               (doc runtime/h "missing")
               false
-            catch Any
+            catch Error
               ($str/contains? $err/message "gene/stdlib"))
             "unknown doc did not list registered chapters")
           (let lease (acquire_snapshot runtime/h/snapshots))

@@ -17,7 +17,7 @@
   (let body
     (try
       ($json/parse response/body)
-    catch Any
+    catch Error
       (problem ^code "invalid_response" "The host returned an invalid response.")))
   {^status response/status ^headers response/headers ^body body})
 
@@ -43,7 +43,7 @@
 (fn connect [root : Str, ^deadline deadline : Int = 0]
   (let connection (discover ^deadline deadline root))
   (let cache $"${root}/.gene-harness/cli_cookie")
-  (var credentials (try ($serde/read_data ($fs/read_text cache)) catch Any nil))
+  (var credentials (try ($serde/read_data ($fs/read_text cache)) catch Error nil))
   (if_yes (&& (== ($head credentials) Map) (== credentials/origin connection/origin) (== ($head credentials/cookie) Str) (== ($head credentials/csrf) Str))
     (let cached_response (wire ^deadline deadline ^credentials credentials connection "GET" "/status?ui=default"))
     (if_yes (== cached_response/status 200)

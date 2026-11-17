@@ -636,7 +636,7 @@ suite "AtomicArc generation retirement qualification":
         "(let tx ($runtime/sandbox_transaction)) (let g (tx .prepare " & good &
         ")) (tx .discard) nil",
         "(let tx ($runtime/sandbox_transaction)) (try (tx .prepare " & failed &
-        ") catch Any nil) (tx .discard) nil"]
+        ") catch Error nil) (tx .discard) nil"]
       proc batch(count: int) =
         for i in 0 ..< count:
           for source in forms: discard run(compileSource(source), newGlobalScope())

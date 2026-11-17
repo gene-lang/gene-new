@@ -31,7 +31,7 @@
       (fail (ProviderError ^message "Invalid sign-in record")))
     (require_login_key record/key)
     {^key record/key ^account ($str/slice_bytes ($crypto/sha256 record/key) 0 12)}
-  catch Any (fail (ProviderError ^message "OpenRouter sign-in record is unreadable; connect again"))))
+  catch Error (fail (ProviderError ^message "OpenRouter sign-in record is unreadable; connect again"))))
 
 (fn write_openrouter_record [root, key : Str]
   (require_login_key key)
@@ -130,7 +130,7 @@
     (if (== attempt/status/.get "complete")
       (then {^status 200 ^message "OpenRouter is connected. You can return to Gene Harness."})
       (else {^status 400 ^message "This sign-in attempt has ended."}))
-  catch Any
+  catch Error
     (if (== attempt/status/.get "exchanging") (attempt/status .set "failed"))
     {^status 400 ^message "OpenRouter sign-in could not finish. Return to Gene Harness and try again."}))
 

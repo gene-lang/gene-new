@@ -372,7 +372,7 @@
         (let code "(let questions {^ok {^type \"noul\" ^instructions \"The state looks fine.\"}})
 (let first (decide ^use \"code/test\" ^state {^x 1} ^questions questions))
 (let second (decide ^use \"code/test\" ^state {^x 1} ^questions questions))
-(let raised (try (decide ^use \"code/test\" ^state {} ^questions {}) false catch Any true))
+(let raised (try (decide ^use \"code/test\" ^state {} ^questions {}) false catch Error true))
 (Outcome ^^done ^reply ($to_str first/status \" \" first/engine \" \" first/answers/ok/value \" \" second/status \" \" raised))")
         (let controller (test_controller runtime (fn [call] code)))
         (try

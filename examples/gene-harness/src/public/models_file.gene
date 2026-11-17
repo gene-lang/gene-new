@@ -106,7 +106,7 @@
   (fields value ["version" "default" "providers" "models" "presets"] "models.gene")
   (if (!= value/version 1) (config_error "Unsupported models.gene version"))
   (let default (?? value/default {}))
-  (try (validate_model_settings default) catch Any (config_error $err/message))
+  (try (validate_model_settings default) catch Error (config_error $err/message))
   (let config {^version 1 ^default default ^providers [] ^models [] ^presets []})
   (let errors [])
   (let names ($thaw ($freeze reserved)))
@@ -135,7 +135,7 @@
             (preset_names .push checked/name)
             (config/presets .push checked))
           (else nil))
-      catch Any
+      catch Error
         (let issue {^section key ^index index ^reason $err/message})
         (if (&& (== key "providers") (== ($head entry/name) Str)) (issue .put "provider" entry/name))
         (errors .push issue))
@@ -153,11 +153,11 @@
   (let digest ($crypto/sha256 text))
   (try
     (let parsed (try ($serde/read_data text)
-      catch Any (config_error "models.gene is not valid inert serde data")))
+      catch Error (config_error "models.gene is not valid inert serde data")))
     (let result (normalize_models_file ^reserved reserved parsed))
     (result .put "digest" digest)
     result
-  catch Any
+  catch Error
     {^config {^version 1 ^default {} ^providers [] ^models [] ^presets []}
      ^errors [{^section "file" ^reason $err/message}] ^digest digest}))
 

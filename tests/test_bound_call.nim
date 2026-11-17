@@ -57,18 +57,18 @@ suite "runtime bound calls":
     check evalBoundCall("(let busy ($cell true)) " &
       "(fn value [] (if busy/.get (while true nil) 7)) " &
       "(let f ($runtime/bind_call value [] ^policy {^timeout_ms 20})) " &
-      "(let stopped (try (f) false catch Any true)) " &
+      "(let stopped (try (f) false catch Error true)) " &
       "(busy .set false) ($sleep 30) [stopped (f) (f)]").print() == "[true 7 7]"
 
   test "deadlines stop the target and ordinary execution resumes":
     check evalBoundCall("(fn spin [] (while true nil)) " &
       "(var f ($runtime/bind_call spin [] ^policy {^timeout_ms 20})) " &
-      "[(try (f) false catch Any true) (+ 2 3)]").print() == "[true 5]"
+      "[(try (f) false catch Error true) (+ 2 3)]").print() == "[true 5]"
 
   test "message application retains the dynamic caller's budget":
     check evalBoundCall("(type Worker (message work [] (while true nil))) " &
       "(var f ($runtime/bind_call Self:work [(Worker)] " &
-      " ^policy {^timeout_ms 20})) (try (f) false catch Any true)").print() == "true"
+      " ^policy {^timeout_ms 20})) (try (f) false catch Error true)").print() == "true"
 
   test "each binding retains its own scoped Callable implementation":
     check evalBoundCall("(type Item) " &
@@ -83,7 +83,7 @@ suite "runtime bound calls":
       "  (var inner ($runtime/bind_call spin [] ^policy {^timeout_ms 5000})) " &
       "  (inner)) " &
       "(var outer ($runtime/bind_call nested [] ^policy {^timeout_ms 20})) " &
-      "(try (outer) false catch Any ($str/contains? $err/message \"timeout\"))").print() == "true"
+      "(try (outer) false catch Error ($str/contains? $err/message \"timeout\"))").print() == "true"
 
   test "deadline starts when the binding is invoked":
     check evalBoundCall("(fn value [] 7) " &
@@ -134,14 +134,14 @@ suite "runtime bound calls":
 
   test "fexprs and borrowed caller environments cannot become durable bindings":
     check evalBoundCall("(fn syntax! [] nil) " &
-      "(try ($runtime/bind_call syntax! []) false catch Any true)").print() == "true"
+      "(try ($runtime/bind_call syntax! []) false catch Error true)").print() == "true"
     check evalBoundCall("(fn target [] 1) " &
       "(fn capture! [] ($runtime/bind_call target [])) " &
-      "(try (capture!) false catch Any true)").print() == "true"
+      "(try (capture!) false catch Error true)").print() == "true"
 
   test "invalid policy fields fail at binding time":
     check evalBoundCall("(fn target [] 1) " &
       "[(try ($runtime/bind_call target [] ^policy {^timeout_ms -1}) " &
-      " false catch Any true) " &
+      " false catch Error true) " &
       " (try ($runtime/bind_call target [] ^policy {^!allow_ffi}) " &
-      " false catch Any true)]").print() == "[true true]"
+      " false catch Error true)]").print() == "[true true]"

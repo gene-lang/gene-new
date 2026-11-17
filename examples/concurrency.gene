@@ -130,10 +130,10 @@
 ($println "")
 
 # -----------------------------------------------------------------------------
-# 4. cancellation contract — ensure runs, catch Any does not catch it
+# 4. cancellation contract — ensure runs, catch Error does not catch it
 #
 # Cancellation is a control signal, not an Error (§13.1.1). `try/catch`
-# with a wildcard `catch Any` form does NOT catch it; only `ensure` runs
+# with a wildcard `catch Error` form does NOT catch it; only `ensure` runs
 # during the unwind. Cancellation is observed at safepoints (await,
 # channel ops, sleep).
 # -----------------------------------------------------------------------------
@@ -150,9 +150,9 @@
   ($sleep 1)                             # give ensure a chance to run
   ($println "     cleanup ran:" cleanup_count/.get))
 
-($println "   - cancellation propagates past typed `catch` and `catch Any`")
-($println "     (live demo: a `try/catch Any \"caught\"` does not catch cancel;")
-($println "      see tests/spec_runner.nim 'catch Any does not intercept")
+($println "   - cancellation propagates past typed `catch` and `catch Error`")
+($println "     (live demo: a `try/catch Error \"caught\"` does not catch cancel;")
+($println "      see tests/spec_runner.nim 'catch Error does not intercept")
 ($println "      task cancellation' for the negative-case covered by tests.)")
 ($println "     In a cancellation-aware API (a future Task/await_cancellable),")
 ($println "     the receiving code would observe the signal directly; today's")

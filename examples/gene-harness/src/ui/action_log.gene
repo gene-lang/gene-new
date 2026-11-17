@@ -35,7 +35,7 @@
         (set changed true)))
     (if changed (checkpoint log recovered))
     log
-  catch Any
+  catch Error
     backend/.Store:close
     (fail $err)))
 
@@ -49,7 +49,7 @@
   (let observer log/observer/.get)
   (if_not ($absent? observer)
     # A transport failure cannot turn a committed operation into a refusal.
-    (try (observer (copy_data record) (action_metadata log)) catch Any nil)))
+    (try (observer (copy_data record) (action_metadata log)) catch Error nil)))
 
 (fn find_action [state, id : Str]
   (for record in state/records

@@ -148,7 +148,7 @@
               (if (["cancel" "shutdown"] .contains? mode)
                 (then (bounded_probe ^timeout_ms 50 (fn [] (chatgpt_access ^root root ^exchange_url url ^verify verify))))
                 (else (chatgpt_access ^root root ^exchange_url url ^verify verify)))
-              nil catch Any $err))
+              nil catch Error $err))
             ($assert ($present? first) mode)
             (if (== mode "verification")
               (then
@@ -171,7 +171,7 @@
                     ($assert (== first/code "invalid_id_token"))
                     ($assert (== refused/refresh_token "SECRET_NEW_REFRESH"))
                     ($assert ($present? refused/pending_refresh))
-                    ($assert (try (chatgpt_access ^root root ^exchange_url url ^verify verify) false catch Any true))
+                    ($assert (try (chatgpt_access ^root root ^exchange_url url ^verify verify) false catch Error true))
                     ($assert (== calls/.get 1) "an unverified identity caused another token exchange")))
                 (continue)))
             (if (== mode "shutdown") (close_runtime runtime))

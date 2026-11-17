@@ -97,7 +97,7 @@
       (if ($absent? runtime/events)
         (saved_state_writers $"${runtime/state_root}/events")
         (manifest_state_writers runtime/events/last_manifest/.get)))
-  catch Any
+  catch Error
     (diagnostics .push {^kind "state_provenance" ^message $err/message}))
   (for id in ids
     (let entry (stored .get id))
@@ -111,7 +111,7 @@
     (var metadata nil)
     (try
       (set metadata (saved_metadata workspace/store id digest build))
-    catch Any
+    catch Error
       (diagnostics .push {^id id ^message $err/message}))
     (let provides (?? metadata/declared/provides []))
     (let requirements [])
@@ -305,7 +305,7 @@
               ^descriptor data
               ^mode "restricted"
               ^activation "unverified"}
-          catch Any
+          catch Error
             (let message $err/message)
             (var metadata_error nil)
             (try
@@ -315,7 +315,7 @@
                 entry/module_digest
                 id
                 message)
-            catch Any
+            catch Error
               (set metadata_error $err/message))
             {
               ^id id

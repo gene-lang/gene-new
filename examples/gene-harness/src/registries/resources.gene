@@ -16,7 +16,7 @@
         (try (engine/close resource)
         ensure
           (owned .set ($filter owned/.get (fn [item] (! (same? item/resource resource))))))))
-      catch Any (engine/close resource) (fail $err)))
+      catch Error (engine/close resource) (fail $err)))
     (owned/.get .push {^resource resource ^lease lease})
     resource))
   (result .put "close" (fn [resource]
@@ -24,5 +24,5 @@
       (if (same? item/resource resource) (item/lease .dispose)))))
   (result .put "close_all" (fn []
     (let resources owned/.get)
-    (for item in resources (try (item/lease .dispose) catch Any nil))))
+    (for item in resources (try (item/lease .dispose) catch Error nil))))
   result)

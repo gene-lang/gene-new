@@ -1904,10 +1904,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       var protectedBy = permitted
       for clause in trial.catches:
         analysis.retainTypeReferences(clause.errorType, environment, function, loc, permitted)
-        if clause.errorType.kind == vkSymbol and clause.errorType.symVal == "Any":
-          protectedBy.open = true
-        else:
-          protectedBy.mergeErrors(analysis.rowFromTypes([clause.errorType], environment))
+        protectedBy.mergeErrors(analysis.rowFromTypes([clause.errorType], environment))
       let body = analysis.analyzeBody(trial.body, bodyEnvironment, function, depth + 1, protectedBy,
                                       initialState = addr state)
       result.taskCode = result.taskCode or body.taskCode
@@ -1931,9 +1928,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       mergeExit(returnState, body.returnState)
       var catchesAll = false
       for clause in trial.catches:
-        let covered = if clause.errorType.kind == vkSymbol and clause.errorType.symVal == "Any":
-                        ErrorEffectSummary(open: true)
-                      else: analysis.rowFromTypes([clause.errorType], environment)
+        let covered = analysis.rowFromTypes([clause.errorType], environment)
         var caught: ErrorEffectSummary
         if covered.open: caught = escaping
         else:

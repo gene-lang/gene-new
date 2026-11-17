@@ -49,7 +49,7 @@
           ($assert ($present? (row runtime/h "commands" "sh")))
           (set_plugin_enabled runtime/workspace runtime/h "gene_reference" false)
           ($assert
-            (try (doc runtime/h "gene/stdlib") false catch Any true)
+            (try (doc runtime/h "gene/stdlib") false catch Error true)
             "language chapter survived its plugin's disable")
           (set_plugin_enabled runtime/workspace runtime/h "gene_reference" true)
           (set_plugin_enabled runtime/workspace runtime/h "plugin_admin" false)

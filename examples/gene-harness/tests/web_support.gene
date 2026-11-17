@@ -29,7 +29,7 @@
     (if_yes host/process/.done?
       (let result (await host/process))
       ($assert false $"Host exited before ready: ${result/stdout}${result/stderr}"))
-    (let connection (try (discover host/root) catch Any nil))
+    (let connection (try (discover host/root) catch Error nil))
     (if (&& ($present? connection) (!= connection/epoch previous)) (return connection))
     ($assert (< ($os/monotonic_ms) due) "Host did not publish a ready connection")
     ($sleep 20)))
@@ -39,10 +39,10 @@
   (try
     (host .put "connection" (ready_host ^timeout_ms ready_timeout_ms host))
     host
-  catch Any
+  catch Error
     (let message $err/message)
     host/process/.cancel
-    (let stopped (try (await host/process) catch Any nil))
+    (let stopped (try (await host/process) catch Error nil))
     ($assert false ($to_str message "\n" (?? stopped/stdout "") (?? stopped/stderr "")))))
 
 (fn stop_host [host]
@@ -50,7 +50,7 @@
   (if_not host/process/.done?
     (try
       (api (connect host/root) "POST" "/control" {^action "stop" ^^confirm})
-    catch Any
+    catch Error
       nil))
   (let due (+ ($os/monotonic_ms) 10000))
   (while (&& (! host/process/.done?) (< ($os/monotonic_ms) due))

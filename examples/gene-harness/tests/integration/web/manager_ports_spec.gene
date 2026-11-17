@@ -23,7 +23,7 @@
           (var failed false)
           (try
             (set selected (bind_workspace state))
-          catch Any
+          catch Error
             (set failed true))
           ($assert failed "fixed configured port silently changed")
           (set selected (bind_workspace ^port 0 state))
@@ -36,7 +36,7 @@
           (set failed false)
           (try
             (set selected (bind_workspace ^port 0 ^restart_port occupied/port state))
-          catch Any
+          catch Error
             (set failed true))
           ($assert failed "restart ignored its original port")
           (write_workspace_settings root {^port 0})

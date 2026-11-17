@@ -94,7 +94,7 @@
           ($assert (! (call runtime "drop_record" "a")) "deleting an absent record reports false")
           ($assert ($absent? (call runtime "read_note" "a")))
           (let listed (call runtime "read_notes"))
-          ($assert (try (listed .push {}) false catch Any true) "record views are immutable")
+          ($assert (try (listed .push {}) false catch Error true) "record views are immutable")
         ensure (close_runtime runtime))
         (let restarted (open_runtime root "default" profile))
         (try

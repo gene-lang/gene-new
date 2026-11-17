@@ -179,7 +179,7 @@ suite "os/exec child settings":
       let scope = execScope(getTempDir())
       scope.define("nul", newStr("bad\0value"))
       check run(compileSource("(try " & source &
-        " false catch Any true)"), scope).print() == "true"
+        " false catch Error true)"), scope).print() == "true"
 
   test "captured synchronous execution supplies EOF on stdin":
     let scope = execScope(getTempDir())
@@ -210,7 +210,7 @@ suite "os/exec child settings":
       check parseFile(directory / "result.json")["directory"].getStr ==
         expandFilename(directory / "actual")
     check run(compileSource("""
-      (try ($os/exec ^dir bad_dir fixture "--exec-fixture" "print") false catch Any true)
+      (try ($os/exec ^dir bad_dir fixture "--exec-fixture" "print") false catch Error true)
     """), scope).print() == "true"
 
   test "every variant rejects executable text without a shebang":
@@ -233,7 +233,7 @@ suite "os/exec child settings":
         let call = if inFiber: "(await (spawn ^lane root " & invocation & "))"
                    else: invocation
         checkpoint variant & " fiber=" & $inFiber
-        check run(compileSource("(try " & call & " false catch Any true)"), scope).print() == "true"
+        check run(compileSource("(try " & call & " false catch Error true)"), scope).print() == "true"
 
   test "PATH priority, empty inheritance, removal, and relative program paths":
     let directory = createTempDir("gene-exec-path-priority-", "")
@@ -283,7 +283,7 @@ suite "os/exec notifications and monitor":
       let scope = execScope(getTempDir())
       execRejectNextSubmission()
       check run(compileSource("""
-        (try ($os/exec_async fixture "--exec-fixture" "print") false catch Any true)
+        (try ($os/exec_async fixture "--exec-fixture" "print") false catch Error true)
       """), scope).print() == "true"
       check execPendingCounts() == (0, 0)
       check run(compileSource("""
@@ -337,7 +337,7 @@ suite "os/exec notifications and monitor":
       (let responsive (< (- ($os/monotonic_ms) started) 1000))
       endpoints/0/.IoResource:close
       (await endpoints/0/.IoResource:wait_closed)
-      (let failed (try (await noisy) false catch Any true))
+      (let failed (try (await noisy) false catch Error true))
       (await endpoints/1/.IoResource:wait_closed)
       [quick/status responsive failed]
     """), execScope(getTempDir()))
@@ -379,7 +379,7 @@ suite "os/exec notifications and monitor":
       (repeat i in 80
         ($assert (== (/status (await ($os/exec_async fixture
           "--exec-fixture" "print"))) 0) "immediate child"))
-      (try (await ($os/exec_async "gene-missing-exec-17ac")) false catch Any true)
+      (try (await ($os/exec_async "gene-missing-exec-17ac")) false catch Error true)
     """), execScope(getTempDir()))
     check value.print() == "true"
     when defined(geneExecTests): check execPendingCounts() == (0, 0)
