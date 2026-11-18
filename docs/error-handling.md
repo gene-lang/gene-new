@@ -474,14 +474,14 @@ from every possible failure; it enforces the chosen error contract.
 **Handle all ordinary errors and optionally normalize them.** For example:
 
 ```gene
-(type IntegrationError : Error ^props {^cause Any})
+(type IntegrationError : Error)
 
 (fn call_plugin [callback : Callable] : Any ^errors [IntegrationError]
   (try (callback)
     catch Error
       (fail (IntegrationError
         ^_msg "Plugin operation failed"
-        ^cause $err))))
+        ^_cause $err))))
 ```
 
 Bare `Callable` contributes `Error`. `catch Error` handles every ordinary
