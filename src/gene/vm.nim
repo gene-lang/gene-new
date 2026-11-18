@@ -19160,7 +19160,9 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
       if op == opSetLocalPop and
           (ip + 1 >= count or chunk.instructions[ip + 1].op != opPop):
         break
-      scope.assignSlot(slot, inst[].name, stack[sp - 1])
+      if scope.slotMirror:
+        break
+      scope.slots[slot] = stack[sp - 1]
       if op == opSetLocalPop:
         dec sp
         discard move stack[sp]
@@ -19236,25 +19238,38 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
       stack[sp - 1] = other.value
       inc ip
     of opForInlineNext:
-      # The handler's range case: [range, next value] are the top of the
-      # stack. A List snapshot, or a body with bindings of its own to clear,
-      # is left to runLoop.
-      if sp < 2 or inst[].names.len != 0:
+      # The regular handler already made the iteration snapshot. Only plain
+      # scalar bindings in unmirrored slots can bypass its scope-storage path.
+      if sp < 2 or inst[].names.len != 0 or not stack[sp - 1].isSmallInt:
         break
       let source {.cursor.} = stack[sp - 2]
       let slot = inst[].intArg
-      if source.kind != vkRange or not stack[sp - 1].isSmallInt or
-          slot < 0 or slot >= scope.slots.len or
+      if slot < 0 or slot >= scope.slots.len or scope.slotMirror or
           scope.managedBindingPins.len != 0 or
           atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
         break
       let current = stack[sp - 1].smallIntVal
-      let step = source.rangeStep
-      if source.rangeDone(current) or not current.rangeCanAdvance(step):
-        ip = inst[].depth
-        continue
-      scope.redefineSlot(slot, inst[].name, stack[sp - 1])
-      stack[sp - 1] = newInt(current + step)
+      if source.kind == vkList:
+        if current < 0:
+          break
+        if current >= source.listItems.len:
+          ip = inst[].depth
+          continue
+        let item {.cursor.} = source.listItems[int(current)]
+        if not item.isSmallInt:
+          break
+        scope.slots[slot] = item
+        stack[sp - 1] = newInt(current + 1)
+      elif source.kind == vkRange:
+        let step = source.rangeStep
+        if source.rangeDone(current) or not current.rangeCanAdvance(step):
+          ip = inst[].depth
+          continue
+        scope.slots[slot] = stack[sp - 1]
+        stack[sp - 1] = newInt(current + step)
+      else:
+        break
+      scope.markSlotDefined(slot)
       inc ip
     of opCompareLocalsJumpIfFalse:
       if ip + 3 >= count:

@@ -51,6 +51,9 @@ const fastLoopPrograms = [
   """(fn f [] (var t 0) (for i in ($range 0 6) (let d (* i 2)) (set t (+ t d))) t)
      (f)""",
   """(fn f [] (var t 0) (for i in [3 4 5] (set t (+ t i))) t) (f)""",
+  # Hand the current item back to runLoop after earlier items ran in fastLoop.
+  """(fn f [xs] (var t 0) (for x in xs (set t (+ t x))) t)
+     [(f []) (f #[1 2 3]) (f [1 2 3.5 4]) (f [1 2 9223372036854775807 4])]""",
   """(fn f [] (var c 0)
        (for i in ($range 9223372036854775800 9223372036854775807)
          (set c (+ c 1)))
