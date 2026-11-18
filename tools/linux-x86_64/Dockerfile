@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-ARG NIM_VERSION=2.2.12
-ARG NIM_SHA256=7df1611449a6842af69322aa2c1206942982650a5f6bc0d37bc8ec109932f638
+ARG NIM_VERSION=2.4.2
+ARG NIM_SHA256=0ee5b16e81852a956d4fddb4aa44b5958c645c992132fa43be45f489573ee325
 RUN curl -fsSL -o /tmp/nim.tar.xz \
       https://nim-lang.org/download/nim-${NIM_VERSION}-linux_x64.tar.xz \
     && echo "${NIM_SHA256}  /tmp/nim.tar.xz" | sha256sum -c - \

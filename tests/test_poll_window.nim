@@ -78,7 +78,8 @@ suite "poll windows sample where exact polls do":
   test "errors caught inside the policy":
     sameSamples(underPolicy(
       "(do (var t 0) (repeat i in 60 " &
-      "  (try (if (== (// i 2) 0) (fail \"x\") (set t (+ t 1))) " &
+      "  (try (if (== (// i 2) 0) " &
+      "         (then (fail (Error ^_msg \"x\"))) (else (set t (+ t 1)))) " &
       "   catch Error (set t (+ t 2)))) t)"), "90")
 
   test "generators and spawned tasks":

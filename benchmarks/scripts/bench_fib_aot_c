@@ -25,6 +25,7 @@ echo
 mkdir -p bin build/aot-c
 GENE_SRC="build/aot-c/fibonacci_aot.gene"
 GEN_C="build/aot-c/fibonacci_aot.c"
+HOST="build/aot-c/gene"
 BIN="bin/fibonacci_aot_c"
 
 cat >"$GENE_SRC" <<'GENE'
@@ -34,8 +35,12 @@ cat >"$GENE_SRC" <<'GENE'
     (+ (fib64 (- n 1)) (fib64 (- n 2)))))
 GENE
 
+echo "Building the Gene host..."
+"$NIM_BIN" c --ic:on --path:src --hints:off \
+  --nimcache:build/nimcache/fibonacci-aot-c --out:"$HOST" src/gene.nim
+
 echo "Generating experimental C backend output..."
-"$NIM_BIN" c -r --path:src --hints:off src/gene.nim compile --target c "$GENE_SRC" >"$GEN_C"
+"$HOST" compile --target c "$GENE_SRC" >"$GEN_C"
 
 cat >>"$GEN_C" <<'C'
 

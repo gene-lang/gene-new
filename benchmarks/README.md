@@ -3,6 +3,12 @@
 Build the host in portable release mode with `nimble build`. Check
 `bin/gene --version`; `nimble debug` is for debugging, not performance baselines.
 
+The scripts in `benchmarks/scripts/`, `nimble perf`, and `nimble transpile_perf`
+use Nim's incremental compilation with caches under `build/nimcache/`. Keep
+the cache and the output binary for fast repeated runs. For independent
+builds, give each build its own `--nimcache` and output path. Set `GENE_EXE`
+to run `nimble transpile_perf` against an existing host.
+
 ## Matched VM operations
 
 ```sh
@@ -81,7 +87,8 @@ for timing boundaries, parameters, and interpretation.
 ## Repeatable core measurements
 
 ```sh
-nim c -d:release --path:src --hints:off -o:tmp/bench_core benchmarks/bench_core.nim
+nim c --ic:on -d:release --path:src --hints:off \
+  --nimcache:build/nimcache/bench-core -o:tmp/bench_core benchmarks/bench_core.nim
 bin/gene run benchmarks/run.gene tmp/perf-run tmp/bench_core
 ```
 

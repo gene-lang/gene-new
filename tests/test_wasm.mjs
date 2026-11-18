@@ -43,7 +43,7 @@ const cases = [
   ["", 0, "nil", ""],
   ["true", 0, "true", ""],
   ["false", 0, "false", ""],
-  ["void", 0, "void", ""],
+  ["nil", 0, "nil", ""],
   ["(+ 1 2)", 0, "3", ""],
   ["(if true 1 2)", 0, "1", ""],
   ["(fn f [n] (macro m [] (+ n 1)) (m)) [(f 2) (f 9)]", 0, "[3 10]", ""],
@@ -129,10 +129,10 @@ const cases = [
    '(bounded .close) (source .next)', 0, "1", ""],
   ['(type Rows ^props {} (message to_stream [] ($to_stream [1 2]))) ' +
    '((Rows) => + 1 -> $into [])', 0, "[2 3]", ""],
-  ['(fn drop [x] (if (== x 1) void nil)) ' +
-   '([1 2] => drop -> $into [])', 0, "[nil nil]", ""],
-  ['(fn drop [x] (if (== x 1) void nil)) ' +
-   '($into ($filter_map ($to_stream [1 2]) drop) [])', 0, "[nil]", ""],
+  ['(fn drop_first [x] (if (== x 1) (then nil) (else x))) ' +
+   '([1 2] => drop_first -> $into [])', 0, "[nil 2]", ""],
+  ['(fn drop_first [x] (if (== x 1) (then nil) (else x))) ' +
+   '($into ($filter_map ($to_stream [1 2]) drop_first) [])', 0, "[2]", ""],
   ['($str/join ["a" "b"] "-")', 0, '"a-b"', ""],
   ['(fn ^^generator empty [] (return)) ((empty) .has_next)', 0, "false", ""],
   ['(let produce (fn ^^generator [] (yield 1) (yield 2))) ' +

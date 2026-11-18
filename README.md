@@ -29,7 +29,7 @@ collects the result. Functions can also be written without annotations.
 
 ## Try it
 
-Requires Nim 2 or later. From a checkout:
+Requires Nim 2.4.2 or later. From a checkout:
 
 ```sh
 nimble build

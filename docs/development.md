@@ -103,6 +103,10 @@ uses `nim c -d:geneDebug -o:bin/gene src/gene.nim`. `gene --version` reports
 the actual mode, target, Nim version, memory manager and runtime checks.
 Implementation test programs keep their explicitly requested build mode.
 
+Use `nimble debug_ic` for repeated edits to the CLI or runtime. It builds
+`bin/gene` in debug mode and keeps incremental build data under
+`build/nimcache-gene-debug-ic`. `nimble debug` also builds the companion tools.
+
 Gene application tests use [`gene test`](testing.md). The Nim suites remain
 the compiler/runtime conformance and implementation tests.
 

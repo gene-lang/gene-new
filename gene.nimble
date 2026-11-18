@@ -20,10 +20,15 @@ namedBin["gene_registry"] = "gene-registry"
 
 # Dependencies
 
-requires "nim >= 2.0.0"
+requires "nim >= 2.4.2"
 
 task debug, "Build the instrumented CLI and companion tools":
   exec "nimble build -d:geneDebug"
+
+task debug_ic, "Build the instrumented CLI incrementally":
+  mkDir "bin"
+  exec "nim c --ic:on -d:geneDebug --path:src " &
+       "--nimcache:build/nimcache-gene-debug-ic -o:bin/gene src/gene.nim"
 
 task speedy, "Optimized build for maximum performance":
   exec "mkdir -p bin"
@@ -156,13 +161,18 @@ task host_bindings, "Check the web profile's host surface against lib.dom.d.ts":
   exec "node tools/check_host_bindings.mjs"
 
 task transpile_perf, "Measure web-profile numeric, compile, runtime, and size baselines":
-  exec "mkdir -p bin"
-  exec "nim c -d:release --path:src --hints:off -o:bin/gene src/gene.nim"
+  if getEnv("GENE_EXE").len == 0:
+    mkDir "build/transpile-perf"
+    let host = "build/transpile-perf/gene"
+    exec "nim c --ic:on -d:release --path:src --hints:off " &
+         "--nimcache:build/nimcache/transpile-perf -o:" & host & " src/gene.nim"
+    putEnv("GENE_EXE", host)
   exec "node benchmarks/transpile_numbers.mjs"
   exec "node benchmarks/transpile_web.mjs"
 
 task perf, "Run release-mode core benchmarks":
-  exec "nim c -r -d:release --path:src --hints:off benchmarks/bench_core.nim"
+  exec "nim c --ic:on -r -d:release --path:src --hints:off " &
+       "--nimcache:build/nimcache/bench-core benchmarks/bench_core.nim"
 
 task leakcheck, "Run refcount/scope leak tracking tests":
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
@@ -201,11 +211,8 @@ task verify, "Run tests, executable specs, and benchmarks":
   exec "nim c -r --path:src --hints:off tests/transpile_dom_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_files_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_embed_runner.nim"
-  exec "mkdir -p bin"
-  exec "nim c -d:release --path:src --hints:off -o:bin/gene src/gene.nim"
-  exec "node benchmarks/transpile_numbers.mjs"
-  exec "node benchmarks/transpile_web.mjs"
-  exec "nim c -r -d:release --path:src --hints:off benchmarks/bench_core.nim"
+  exec "nimble transpile_perf"
+  exec "nimble perf"
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_values.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_vm.nim"

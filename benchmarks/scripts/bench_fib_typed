@@ -33,8 +33,7 @@ mkdir -p bin build/nimcache
 CACHE_DIR="build/nimcache/fibonacci-typed-$MODE"
 
 echo "Compiling typed bytecode VM Fibonacci benchmark..."
-rm -f bin/fibonacci_typed 2>/dev/null
-"$NIM_BIN" c --hints:off --mm:orc -d:release -d:danger --path:src \
+"$NIM_BIN" c --ic:on --hints:off --mm:orc -d:release -d:danger --path:src \
   --nimcache:"$CACHE_DIR" --out:bin/fibonacci_typed "$SOURCE" >/dev/null
 
 if [ ! -x "./bin/fibonacci_typed" ]; then

@@ -11,9 +11,10 @@ import ./bench_self_type
 import ./reporting
 import gene/ext/logging
 import gene/[compiler, equality, gir, printer, reader, types, vm]
-import std/[json, monotimes, os, osproc, strutils, tables, times]
+import std/[json, monotimes, os, osproc, strutils, tables, times, volatile]
 
-var positiveZeroInput {.volatile.}: float64 = 0.0
+# Keep the reads volatile without conflicting global qualifiers in Nim's IC backend.
+var positiveZeroInput: float64 = 0.0
 
 type BenchNativeRecord = object
   value: int64
@@ -129,8 +130,8 @@ proc main() =
     checksum = checksum + v.intVal
 
   bench("value.zero_float.immediate_access", 2_000_000, i):
-    let v = newFloat(positiveZeroInput)
-    if v.kind == vkFloat and v.floatVal == positiveZeroInput:
+    let v = newFloat(volatileLoad(addr positiveZeroInput))
+    if v.kind == vkFloat and v.floatVal == volatileLoad(addr positiveZeroInput):
       checksum = checksum + 1
 
   let nodeHead = newSym("item")
