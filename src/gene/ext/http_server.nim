@@ -2121,11 +2121,14 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       ## generic 500s (stderr diagnostics preserved from the old server).
       let task = conn.task
       # A Panic value is the panic of a Gene handler; a native panic has none.
+      let panicked = task.taskHasPanic or
+        (task.taskHasErrorValue and task.taskErrorValue.isPanicValue)
       let panicMessage =
         if task.taskHasPanic: task.taskPanicMsg
-        elif task.taskHasErrorValue and task.taskErrorValue.isPanicValue: task.taskErrorMsg
+        elif panicked: task.taskErrorMsg
         else: ""
-      if task.taskHasPanic or panicMessage.len > 0:
+      # The Panic predicate decides, not the text: `(panic "")` is a panic too.
+      if panicked:
         HttpRuntimeLogger.emit(llError, "handler panic: " & panicMessage)
         logError(conn, panicMessage, panic = true)
         inc rt.failedRequests

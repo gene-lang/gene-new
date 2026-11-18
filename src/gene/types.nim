@@ -4549,6 +4549,11 @@ proc reachesTaskState(v: Value, target: pointer, budget: var int,
       return false
     if cast[pointer](state) == target:
       return true
+    # Each task lock on the recursion path stays held. A full visited table
+    # cannot tell whether this one is already among them, and its lock is not
+    # reentrant: answer "may reach" (trial deletion decides) before locking.
+    if visited.count >= visited.keys.len:
+      return true
     if visited.seenBefore(cast[uint64](cast[pointer](state))):
       return false
     acquire(state.lock)

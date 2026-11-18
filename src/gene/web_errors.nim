@@ -57,7 +57,7 @@ proc emitErrorRuntime(emitter: var WebEmitter) =
   emitter.line("})());")
   dec emitter.indent
   emitter.line("}")
-  emitter.line("function $gene_init_builtin(self" & any & ", fields" & any & ", body" & array & ", immutable" & (if emitter.typescript: ": boolean" else: "") & ")" & " { Object.assign(self, fields); self.$gene_body = body.map((value" & any & ") => value === undefined ? null : value); Object.defineProperty(self, Symbol.for(\"gene.record\"), { value: true }); if (immutable) { Object.freeze(self.$gene_body); Object.freeze(self); } }")
+  emitter.line("function $gene_init_builtin(self" & any & ", fields" & any & ", body" & array & ", immutable" & (if emitter.typescript: ": boolean" else: "") & ")" & " { if (fields._cause != null && $gene_branch_of(fields._cause) === null) $gene_type_error(`${self.constructor.$gene_name} field _cause`, \"Throwable?\", fields._cause); Object.assign(self, fields); self.$gene_body = body.map((value" & any & ") => value === undefined ? null : value); Object.defineProperty(self, Symbol.for(\"gene.record\"), { value: true }); if (immutable) { Object.freeze(self.$gene_body); Object.freeze(self); } }")
   emitter.line("const $gene_error_root" & any & " = $gene_builtin_error(\"errorRoot\", \"Error\", $gene_throwable_base, { $gene_branch: \"error\" });")
   emitter.line("const $gene_fault_root" & any & " = $gene_builtin_error(\"faultRoot\", \"Fault\", $gene_throwable_base, { $gene_branch: \"fault\" });")
   for entry in WebBuiltinErrors:

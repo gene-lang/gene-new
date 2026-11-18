@@ -689,6 +689,12 @@ proc callbackType(signature: WebFunctionSig): WebType =
         result.namedKeys.add param.argName
 
 proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
+  if expected != nil and actual != nil and expected.kind == wtkNominal and
+      actual.kind == wtkNominal and expected.name in ["Throwable", "Error", "Fault"] and
+      actual.name in analysis.errorTypes:
+    # The roots: Throwable takes every error type, Error and Fault their branch.
+    return expected.name == "Throwable" or
+      ((expected.name == "Fault") == (actual.name in analysis.faultTypes))
   if expected != nil and expected.kind == wtkPresent and actual != nil:
     # `Present` is every value except nil. A gradual `Any` is checked at run time.
     return actual.kind in {wtkAny, wtkPresent, wtkNever} or
@@ -5414,7 +5420,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       result.fields.add WebField(sourceName: "_msg", emittedName: "_msg",
         typ: parseWebType(newSym("Str?"), builtinLoc), optional: true)
       result.fields.add WebField(sourceName: "_cause", emittedName: "_cause",
-        typ: webType(wtkAny), optional: true)
+        typ: parseWebType(newSym("Throwable?"), builtinLoc), optional: true)
     if fields.len > 0:
       for key, annotation in read(fields).mapEntries:
         let typ = parseWebType(annotation, builtinLoc)
