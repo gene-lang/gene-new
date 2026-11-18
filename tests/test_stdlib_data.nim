@@ -15,6 +15,11 @@ proc dataError(source: string): string =
     error.msg
 
 suite "string and list receiver methods":
+  test "split preserves empty fields for byte and multibyte separators":
+    check evalData("""
+      [($str/split "" ",") ($str/split ",a,,é," ",") ($str/split "α💡💡β💡" "💡")]
+    """).print() == """[[""] ["" "a" "" "é" ""] ["α" "" "β" ""]]"""
+
   test "exposes existing text operations on literals, symbols and computed receivers":
     check evalData("""
       (let text " A,éB ")

@@ -798,11 +798,19 @@ proc biStrSplit(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "str/split expects 2 arguments, got " & $args.len)
   requireStr("str/split", args[0])
   requireStr("str/split separator", args[1])
-  if args[1].strVal.len == 0:
+  let source {.cursor.} = args[0].strVal
+  let separator {.cursor.} = args[1].strVal
+  if separator.len == 0:
     raise newException(GeneError, "str/split separator must not be empty")
   var items: seq[Value]
-  for part in args[0].strVal.split(args[1].strVal):
-    items.add newStr(part)
+  if separator.len == 1:
+    let ch = separator[0]
+    items = newSeqOfCap[Value](1 + source.count(ch))
+    for part in strutils.split(source, ch):
+      items.add newStr(part)
+  else:
+    for part in strutils.split(source, separator):
+      items.add newStr(part)
   newList(items)
 
 proc biStrTrim(args: openArray[Value]): Value {.nimcall.} =
