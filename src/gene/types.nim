@@ -8217,7 +8217,9 @@ proc intToString*(v: Value): string =
     raise newException(FieldDefect, "value is not an Int")
 
 proc intToFloat*(v: Value): float64 =
-  parseFloat(v.intToString)
+  case v.tagOf
+  of INT_TAG, INT64_TAG: float64(v.intVal)
+  else: parseFloat(v.intToString)
 
 proc intIsZero*(v: Value): bool {.inline.} =
   case v.bits shr TAG_SHIFT

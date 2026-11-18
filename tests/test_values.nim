@@ -1,6 +1,6 @@
 import gene/types
 import gene/equality
-import std/[tables, unittest]
+import std/[strutils, tables, unittest]
 
 suite "value — NaN boxing":
   test "value is one machine word":
@@ -47,6 +47,14 @@ suite "value — NaN boxing":
     check not x.intFitsInt64
     check newInt(high(int64)).tryIntVal(narrowed)
     check narrowed == high(int64)
+
+  test "Int widening rounds the same across immediate, boxed and big integers":
+    for literal in ["0", "-1", "140737488355327", "140737488355328",
+                    "9007199254740993", "9007199254740995", "-9007199254740995",
+                    "-9223372036854775808", "9223372036854775807",
+                    "9223372036854775808", "-9223372036854775809"]:
+      check cast[uint64](newIntFromDecimal(literal).intToFloat) ==
+        cast[uint64](parseFloat(literal))
 
   test "non-zero floats are stored directly":
     let x = newFloat(3.5)
