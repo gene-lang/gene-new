@@ -1024,9 +1024,9 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     # pull; they do not escape the invocation as ordinary errors.
     discard
   of "Task/join":
-    # TaskOutcome contains producer failures, but an already-awaited task is
-    # an invalid invocation. Joining itself does not consume the await result.
-    result.errors = oneError("RuntimeFault")
+    # TaskOutcome contains producer failures; they do not escape the
+    # invocation as ordinary errors, before or after an await.
+    discard
   else:
     result.errors.open = true
 

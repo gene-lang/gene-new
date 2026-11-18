@@ -7,18 +7,24 @@ suites in `tests/test_vm.nim`.
 - `scope` owns child tasks; normal exit waits, while error/cancellation cancels
   and waits for cleanup. Normal waiting does not consume task results or raise
   their stored failures. Detached tasks are explicit exceptions.
-- The VM's first `await` consumes the task result, including a failed result.
-  Repeating it through the same handle or an alias raises `RuntimeFault`, a
-  defect that no `catch Error` sees and no error row records.
+- `await` returns the task's value or raises its failure, and leaves the
+  outcome on the task. Every await, through the same handle or an alias and
+  from any number of awaiters at once, returns the same value or raises the
+  same failure.
 - `Task/join` waits without propagating the joined task's outcome. It returns
-  `TaskOutcome/ok`, `error`, `fault`, or `cancelled`, does not consume the
-  ordinary `await` result, and may be repeated. `error` carries an Error the
-  task's row describes; `fault` carries the Fault value, including the `Panic`
-  of a task that panicked. Cancellation of the joining
-  task still propagates normally.
-- `Task/done?` is a non-consuming readiness check. It stays true after the
-  task's result has been consumed by `await`; it does not wait or inspect the
-  outcome.
+  `TaskOutcome/ok`, `error`, `fault`, or `cancelled`, and may be repeated,
+  before or after an `await`. `error` carries an Error the task's row
+  describes; `fault` carries the Fault value, including the `Panic` of a task
+  that panicked. Cancellation of the joining task still propagates normally.
+- `Task/done?` is a readiness check. It does not wait or inspect the outcome.
+- A settled task keeps its outcome while anything reaches the task. An outcome
+  that reaches the task's own handle again, such as a closure over a Cell
+  that holds the task, forms a cycle. The runtime reclaims it once nothing
+  outside the cycle holds the task, its outcome, or the bindings the cycle runs
+  through. It rechecks when releasing a handle leaves the task with fewer
+  owners than before, and once more when the outermost run returns. The host
+  releases the top-level program scope after the run, so a cycle through its
+  bindings is rechecked only when the VM next runs.
 - Once task cancellation or policy expiry is observed, `return`, `break` and
   `continue` leaving its active cleanup cannot suppress the unwind or resume
   normal work. Recoverable failures leaving cleanup cannot replace that

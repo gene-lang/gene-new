@@ -12168,11 +12168,10 @@ proc installPackageNativeBinary*(app: Application, packageId, alias,
 
 proc biRuntimeGuardCall(args: openArray[Value],
                         call: ptr NativeCall): Value {.nimcall.} =
-  ## Invoke one callable while converting an unrecoverable Gene `panic` into a
-  ## data result at this explicit supervision boundary. Ordinary `try/catch`
-  ## deliberately does not catch panics; loaders and recovery kernels still
-  ## need a way to quarantine one untrusted module without terminating the
-  ## workspace. Cancellation remains a control signal and is not contained.
+  ## Invoke one callable and return a Panic it raises as data
+  ## (`{^ok false ^kind panic ^message ...}`); every other failure propagates.
+  ## A Panic is a catchable Fault, so `catch Throwable` or `catch Panic` can do
+  ## the same. Cancellation remains a control signal and is not contained.
   if args.len != 2:
     raise newException(GeneError,
       "runtime/guard_call expects a callable and one argument")
@@ -17144,10 +17143,11 @@ proc checkStreamBoundaryFailure(stream: Value,
 proc awaitTaskValue(task: Value): Value =
   if task.kind != vkTask:
     raise newException(GeneError, "await expects a Task")
-  # The current completed-task MVP consumes the payload on await. That breaks
-  # Task -> closure result -> scope -> Task cycles until live task frames have
-  # an explicit scheduler-owned reclamation path.
-  let payload = task.consumeTaskPayload()
+  # The outcome stays on the task: every await returns the same value or
+  # raises the same failure, and `join` still works afterwards. A closure
+  # result that reaches the task's own handle is reclaimed by the settled-task
+  # recheck (noteSettledTask).
+  let payload = task.taskPayload()
   if payload.hasPanic:
     # A task that panicked through the native panic path re-raises as the
     # same Panic value a Gene `(panic v)` produces.
@@ -17210,7 +17210,7 @@ proc runtimeErrorValue(scope: Scope, message: string): Value =
           immutable = true)
 
 proc taskJoinOutcome(task: Value, scope: Scope): Value =
-  let payload = task.peekTaskPayload()
+  let payload = task.taskPayload()
   if payload.hasPanic:
     # The outcome carries the Panic value itself; reporters bound its text.
     return taskOutcomeValue(scope, "fault",
@@ -20171,17 +20171,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       strunc(curStackBase)
       advanceForLoop()
     elif curFrameKind == fkTaskScopeBody:
-      let owned = curOwnedScope
-      curFrameKind = fkNormal
-      try:
-        owned.waitOwnedTasks()
-      finally:
-        owned.closeOwnedActors()
-      strunc(curStackBase)
-      var owner = frames.pop()
-      strunc(curStackBase)
-      loadFrameRegs(owner)
-      spush retValue
+      block:
+        let owned = curOwnedScope
+        curFrameKind = fkNormal
+        try:
+          owned.waitOwnedTasks()
+        finally:
+          owned.closeOwnedActors()
+        strunc(curStackBase)
+        var owner = frames.pop()
+        strunc(curStackBase)
+        loadFrameRegs(owner)
+        spush retValue
+      # Releasing the scope's settled tasks, and then the scope itself, can
+      # leave a task's payload reaching it only through its own cycle.
+      if unlikely(cycleRecheckPending):
+        drainReleasedCycles(scope)
     elif curFrameKind == fkSupervisorBody:
       let owned = curOwnedScope
       curFrameKind = fkNormal
@@ -24798,6 +24803,11 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
     var ip = 0
     let stopped = runLoop(chunk, scope, stack, ip, stopOnYield = false,
                           validateArg = validateImplRequirements)
+    if vmEntryDepth == 1 and unlikely(hasDeferredTaskRechecks()):
+      # The run boundary: settled tasks whose cycle an earlier recheck found
+      # still owned from outside get one more look (recheckDeferredTasks).
+      if recheckDeferredTasks() > 0:
+        inc app.retireEpoch
     if stopped.kind == rskYield:
       raise newException(GeneError, "yield is only valid in a generator")
     if stopped.kind == rskPause:
@@ -24815,9 +24825,9 @@ proc runReplSession*(scope: Scope,
                      writeOut: ReplWrite,
                      writeErr: ReplWrite,
                      options = defaultReplOptions()): int =
-  ## Run a REPL against an existing scope. Returns 0 for a normal exit and 1
-  ## when a panic aborts the session. Recoverable Gene/read errors are printed
-  ## and the session continues.
+  ## Run a REPL against an existing scope. Returns 0 when the input ends.
+  ## Read errors and every Gene failure, a Fault or a Panic included, are
+  ## printed and the session continues.
   var line: string
   var pendingSource = ""
   var pendingError = ""
@@ -25533,6 +25543,7 @@ proc runFiber(f: Fiber) =
       wakeTaskWaiters(f.task)
   finally:
     if not activeWorkerThread and f.task.kind == vkTask and f.task.taskDone:
+      noteSettledTask(f.task)
       let app = f.scope.application()
       if app.rootIoTasks.len > 0 or app.rootIoCleanupTasks.len > 0:
         app.pruneRootIoTasks()
@@ -25793,16 +25804,21 @@ when compileOption("threads") and defined(gcAtomicArc):
 
   proc stopSchedulerWorkers(s: SchedulerState) =
     var shouldJoin = false
+    var joining: typeof(s.workers)
     withSchedulerLock(s):
       if s.workerLeaseCount > 0:
         dec s.workerLeaseCount
-      if s.workersStarted and s.workerLeaseCount == 0:
+      # Only the stop that sets workerStop joins. A lease taken while it joins
+      # (outside the lock) ends here too, and must not join or reset the
+      # workers a second time; the first stop resets them when it is done.
+      if s.workersStarted and s.workerLeaseCount == 0 and not s.workerStop:
         s.workerStop = true
         broadcast(s.workerCond)
         shouldJoin = true
+        joining = s.workers
     if shouldJoin:
-      for i in 0 ..< s.workers.len:
-        joinThread(s.workers[i][])
+      for worker in joining:
+        joinThread(worker[])
       withSchedulerLock(s):
         s.workers.setLen(0)
         s.workerContexts.setLen(0)
@@ -26125,7 +26141,7 @@ proc invokeStreamCallback(stream, item: Value): Value =
         discard
     raise
   finally:
-    if pending.taskDone and not pending.taskAwaited:
+    if pending.taskDone and not pending.taskPayloadReleased:
       pending.clearTaskPayload()
     if pending.taskDone:
       # The result/exception has already been transferred to the caller. A

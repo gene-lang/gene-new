@@ -204,8 +204,8 @@ task before the child body can begin. Use `($runtime/require_root_lane)` when a
 lane-owned module must reject construction or mutation from a worker/foreign
 lane.
 
-`await` returns or propagates and consumes the task payload. `join` instead
-returns repeatable data without consuming `await`:
+`await` returns the value or propagates the failure, and can be repeated: the
+outcome stays on the task. `join` returns the same outcome as data instead:
 
 ```gene
 (match (task .join)

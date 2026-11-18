@@ -87,6 +87,7 @@ type AsyncFailureArgs = ref object
   scope: Scope
   accepted: bool
   rejected: bool
+  rejection: string
   unsettledOnRejection: bool
 
 proc failTaskOnWorker(args: AsyncFailureArgs) {.thread.} =
@@ -96,8 +97,9 @@ proc failTaskOnWorker(args: AsyncFailureArgs) {.thread.} =
       try:
         args.accepted = nativeTaskFail(args.task, "native", args.payload,
                                       hasValue = true, scope = args.scope)
-      except GeneError:
+      except GeneError as e:
         args.rejected = true
+        args.rejection = e.msg
         args.unsettledOnRejection = not args.task.taskDone
         discard nativeTaskFail(args.task, "rejected before publication", scope = args.scope)
     finally:
@@ -565,7 +567,7 @@ suite "native api threaded attachment":
         check library.ffiLibraryClosed
         when defined(geneRcStats):
           check nativeRootCount() == baseline
-  test "concurrent awaits consume once while joins retain a consistent outcome":
+  test "concurrent awaits and joins all see the same outcome":
     let app = newApplication()
     let producer = newGlobalScope(app)
     let generated = run(compileSource("(try (let n : Int \"bad\") catch TypeFault $err)"), producer)
@@ -585,16 +587,13 @@ suite "native api threaded attachment":
         (if peek
           (match (pending .join)
             (when (TaskOutcome/ok value) value)
-            (when (TaskOutcome/error (_ : TypeFault)) 8)
-            (when (TaskOutcome/error error)
-              (if (== error/.message "original") 9 -999))
+            (when (TaskOutcome/fault (_ : TypeFault)) 8)
+            (when (TaskOutcome/fault fault)
+              (if (== fault/.message "original") 9 -999))
             (else -999))
           (await pending))
         catch TypeFault 8
-        catch RuntimeFault
-          (if (== $err/.message "task result has already been awaited") -1
-            (if (== $err/.message "task result has already been consumed by await") -1
-              (if (== $err/.message "original") 9 -999))))
+        catch RuntimeFault (if (== $err/.message "original") 9 -999))
     """
     var arguments: array[sharedErrorWorkers, SharedAwaitArgs]
     var workers: array[sharedErrorWorkers, Thread[SharedAwaitArgs]]
@@ -612,18 +611,12 @@ suite "native api threaded attachment":
       check argument.outcomes.len == sharedErrorCount
     if not gate.failed.load(moAcquire):
       for i in 0 ..< sharedErrorCount:
-        var successes = 0
         let expected = case i mod 3
           of 0: 7
           of 1: 9
           else: 8
         for argument in arguments:
-          check argument.outcomes[i] in [-1, expected]
-          if argument.outcomes[i] == expected: inc successes
-        if i mod 2 == 0:
-          check arguments[0].outcomes[i] == expected
-        else:
-          check successes == 1
+          check argument.outcomes[i] == expected
 
   test "native failure publication checks the payload's Send requirements":
     for kind in ["data", "formatter", "admitted", "builtin"]:
@@ -643,7 +636,7 @@ suite "native api threaded attachment":
         """), scope)
       elif kind == "admitted":
         payload = run(compileSource("""
-          (try (fail ($freeze (AssertionFault ^_msg "native"))) catch Error $err)
+          (try (fail ($freeze (AssertionFault ^_msg "native"))) catch Fault $err)
         """), scope)
       else:
         # A foreign native thread may admit a built-in error before this
@@ -657,10 +650,12 @@ suite "native api threaded attachment":
       createThread(worker, failTaskOnWorker, args)
       joinThread(worker)
       scope.define("pending", task)
-      let caught = run(compileSource("(try (await pending) catch Error $err)"), scope)
+      # Both a Fault payload and the message-only rejection are Faults.
+      let caught = run(compileSource("(try (await pending) catch Throwable $err)"), scope)
       # A message override is part of the error's type, not a hidden edge on
       # the value, so a payload whose type formats through captured state is
       # published like any other value of that type.
+      checkpoint kind & ": " & args.rejection
       if kind in ["admitted", "builtin", "formatter"]:
         check args.accepted
         check not args.rejected
@@ -837,7 +832,7 @@ suite "native api threaded attachment":
       check not args.raised
       check args.output == "other"
       check run(compileSource("(gate (fn [] 42))"), scope) == newInt(42)
-      check run(compileSource("($size entries)"), scope) == newInt(0)
+      check run(compileSource("($map_size entries)"), scope) == newInt(0)
 
   test "sandbox transaction handles reject a non-owner lane":
     let scope = newGlobalScope()
@@ -846,7 +841,7 @@ suite "native api threaded attachment":
     let args = EventLaneArgs(
       scope: scope,
       chunk: compileSource(
-        "(try (tx .discard) \"missing\" catch Error $err/.message)"))
+        "(try (tx .discard) \"missing\" catch RuntimeFault $err/.message)"))
 
     var worker: Thread[EventLaneArgs]
     createThread(worker, publishOnWorker, args)

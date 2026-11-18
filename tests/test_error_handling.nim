@@ -420,7 +420,7 @@ suite "errors — gradual runtime contract":
       check outcome.head.enumVariantName == "fault"
       check outcome.body[0].head.typeName == "RuntimeFault"
       check outcome.body[0].props["_msg"].strVal == ""
-      check not failed.taskAwaited
+      check not failed.taskPayloadReleased
       check run(compileSource("(try (await failed) catch RuntimeFault true)"), scope).boolVal
       let panicked = if constructed: newPanickedTask("") else: nativeNewAsyncTask()
       if not constructed: check tryPanicTask(panicked, "")
@@ -670,9 +670,10 @@ suite "errors — static catch or declare":
     check run(strictErrorCompile(source & "(recover)"),
               newGlobalScope(newApplication())).strVal == "specific"
 
-  test "defects from natives and a second await add no obligation":
-    # Wrong arity, invalid arguments and a second await are Faults: strict
-    # code does not declare them, and catch Error does not catch them.
+  test "defects from natives add no obligation, and awaits repeat":
+    # Wrong arity and invalid arguments are Faults: strict code does not
+    # declare them, and catch Error does not catch them. A second await
+    # returns the same value, and a join after it the same outcome.
     discard strictErrorCompile("""
       (fn add [a : Int, b : Int] : Int ^errors [] (+ a b))
       (fn twice [task] : Any ^errors [Error] (await task) (await task))
@@ -681,8 +682,14 @@ suite "errors — static catch or declare":
     check gradualErrorEval("""
       (let task (spawn 1))
       (await task)
-      (try (await task) catch Error "error" catch RuntimeFault "fault")
-    """).print() == "\"fault\""
+      [(await task) (task .join)]
+    """).print() == "[1 #(TaskOutcome/ok 1)]"
+    check gradualErrorEval("""
+      (type Boom : Error)
+      (let task (spawn (fail (Boom ^_msg "boom"))))
+      (try (await task) catch Boom nil)
+      [(try (await task) catch Boom $err/.message) ($head (task .join))]
+    """).print() == "[\"boom\" TaskOutcome/error]"
 
 suite "errors — module summaries":
   proc errorModuleRoot(): string =
@@ -1121,23 +1128,23 @@ suite "errors — retained strict assumptions":
       expect GeneError: scope.assign("factory", replacement)
       check run(compileSource("(client)"), scope).print() == (if kind == "task": "1" else: "[1]")
 
-  test "an already-awaited task result adds no obligation, directly or forwarded":
-    # A second await is a RuntimeFault: unchecked, so no freshness is retained.
-    for (target, source) in [("factory", ""),
-                             ("helper", "(fn helper ^^private [] (spawn 1)) ")]:
-      let app = newApplication()
-      let scope = newGlobalScope(app)
-      let factory = if source.len > 0: "(fn factory ^^private [] (helper))"
-                    else: "(fn factory ^^private [] (spawn 1))"
-      discard run(strictErrorCompile(source & factory &
-        "(fn client [] ^errors [] (await (factory)))"), scope)
-      check run(compileSource("(client)"), scope).intVal == 1
-      let replacement = run(strictErrorCompile("""
-        (fn [] (let task (spawn 1)) (await task) task)
-      """), newGlobalScope(app))
-      scope.assign(target, replacement)
-      check run(compileSource("(try (client) catch Error false catch RuntimeFault true)"),
-                scope).boolVal
+  test "awaiting a task again adds no obligation, directly or forwarded":
+    # Await is idempotent, so the checker keeps no await state: a strict
+    # caller that awaits a task twice, or one already awaited, handles only
+    # the task's own row.
+    for (defs, call, expected) in [
+        ("(fn factory ^^private [] (spawn 1)) " &
+           "(fn twice [] ^errors [] (let task (factory)) (await task) (await task))",
+         "(twice)", "1"),
+        ("(fn helper ^^private [] (spawn 1)) (fn factory ^^private [] (helper)) " &
+           "(fn twice [] ^errors [] (let task (factory)) " &
+           "[(await task) (await task) (task .join)])",
+         "(twice)", "[1 1 #(TaskOutcome/ok 1)]"),
+        ("(fn client [task : (Task Int Never)] ^errors [] (await task))",
+         "(do (var t (spawn 1)) (await t) (client t))", "1")]:
+      let scope = newGlobalScope(newApplication())
+      discard run(strictErrorCompile(defs), scope)
+      check run(compileSource(call, useLocalSlots = false), scope).print() == expected
 
   test "lazy adapters retain source and callback assumptions until consumption":
     for wrap in ["($map (factory) callback)", "(forward)",

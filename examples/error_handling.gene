@@ -54,12 +54,13 @@
     ($into attempts [])
     catch StatusError ($println $err/.message))
 
-  # Task failures are handled at await. A failed await still consumes its result.
+  # Task failures are handled at await. The outcome stays on the task, so a
+  # second await raises the same error.
   (let attempt (spawn (load_config true)))
   (try
     (await attempt)
     catch ConfigError ($println $err/.message))
   (try
     (await attempt)
-    catch RuntimeFault ($println "Task result already consumed"))
+    catch ConfigError ($println $"again: ${$err/.message}"))
   0)

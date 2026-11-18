@@ -1054,7 +1054,7 @@ type
     done: bool
     cancelRequested: bool
     cancelled: bool
-    awaited: bool
+    released: bool             # clearTaskPayload dropped the outcome (private frames)
     external: bool
     result: Value
     failed: bool
@@ -1066,6 +1066,13 @@ type
     panicValue: Value
     hasPanicValue: bool
     retainedScopes: seq[Scope] # managed native result provenance until Task state dies
+    # A settled payload that may hold a closure can close Task -> payload ->
+    # scope -> ... -> Task. Owning lane only; see noteSettledTask.
+    cycleCandidate: bool
+    trackedSlot: int           # 1-based index in CycleWatches.trackedTasks
+    recheckQueued: bool        # in CycleWatches.pendingTasks
+    orphaned: bool             # its last task handle was released
+    recheckOwners: int         # fewest task-handle owners seen since it settled
 
   TaskData = ref object of GeneObjectData
     state: TaskState
@@ -3592,6 +3599,10 @@ proc refNode(g: var RetireGraph, address: pointer,
     result = g.nodes.len
     g.nodes.add RetireNode(kind: kind, address: address,
                            total: nimStrongRefs(address))
+    if kind == rnkTaskState:
+      # The cycle recheck list holds a counted reference of its own.
+      let state {.cursor.} = cast[TaskState](address)
+      g.nodes[result].total -= ord(state.trackedSlot > 0)
     g.refIndex[key] = result
 
 proc scopeNode(g: var RetireGraph, scope: Scope): int =
@@ -4319,6 +4330,8 @@ type
     watches: Table[uint64, CycleWatch]
     recheckBits: seq[uint64]  # watched values released to their inside references
     recheckRoots: seq[Scope]  # roots whose watched value was freed
+    trackedTasks: seq[TaskState]  # settled candidates since a handle let go of them
+    pendingTasks: seq[pointer]    # tracked ones to recheck (the list keeps them)
 
 # Never freed: a watch still open at exit holds Scopes whose Application the
 # VM module's globals have already destroyed.
@@ -4329,6 +4342,289 @@ proc cycleWatchesState(): ptr CycleWatches {.inline.} =
   if cycleWatchState == nil:
     cycleWatchState = create(CycleWatches)
   cycleWatchState
+
+template mayHoldClosureTag(bits: uint64): bool =
+  (bits and PAYLOAD_MASK) != 0 and
+    (bits shr TAG_SHIFT) in [FUNCTION_TAG, LIST_TAG, MAP_TAG, NODE_TAG,
+                             CYCLE_OBJECT_TAG]
+
+proc payloadMayHoldClosure(v: Value): bool =
+  ## Whether a settled payload can hold a closure. A container whose items are
+  ## all plain data cannot; a long or nested one is assumed to.
+  if not mayHoldClosureTag(v.bits):
+    return false
+  let payload = v.bits and PAYLOAD_MASK
+  case v.bits shr TAG_SHIFT
+  of LIST_TAG:
+    let p = cast[ptr GeneList](payload)
+    if p.items.len > 64: return true
+    for i in 0 ..< p.items.len:
+      if mayHoldClosureTag(p.items[i].bits): return true
+    false
+  of MAP_TAG:
+    let p = cast[ptr GeneMap](payload)
+    if p.entries.data.len > 64: return true
+    for i in 0 ..< p.entries.data.len:
+      if mayHoldClosureTag(p.entries.data[i].val.bits): return true
+    false
+  of NODE_TAG:
+    let p = cast[ptr GeneNode](payload)
+    if p.props.data.len + p.body.len > 64: return true
+    for i in 0 ..< p.props.data.len:
+      if mayHoldClosureTag(p.props.data[i].val.bits): return true
+    for i in 0 ..< p.body.len:
+      if mayHoldClosureTag(p.body[i].bits): return true
+    false
+  else:
+    true
+
+proc trackTask(watches: ptr CycleWatches, state: TaskState) =
+  if state.trackedSlot == 0:
+    watches.trackedTasks.add state
+    state.trackedSlot = watches.trackedTasks.len
+
+proc untrackTask(watches: ptr CycleWatches, state: TaskState) =
+  ## Drops the list's reference to `state`, which may free it.
+  let i = state.trackedSlot - 1
+  if i < 0:
+    return
+  state.trackedSlot = 0
+  let last = watches.trackedTasks.high
+  if i != last:
+    swap(watches.trackedTasks[i], watches.trackedTasks[last])
+    watches.trackedTasks[i].trackedSlot = i + 1
+  watches.trackedTasks.setLen(last)
+
+proc queueTaskRecheck(state: TaskState) {.noinline.} =
+  ## A settled candidate task (noteSettledTask) was let go of by one of its
+  ## owners. Its payload's closures are rechecked at the VM's next drain, as
+  ## a released watched value is (drainCycleRechecks). Only the drain removes
+  ## a task from the list, so a pending pointer always names a tracked one.
+  let watches = cycleWatchesState()
+  watches.trackTask(state)
+  if not state.recheckQueued:
+    state.recheckQueued = true
+    watches.pendingTasks.add cast[pointer](state)
+  cycleRecheckPending = true
+
+proc noteTaskRelease(state: TaskState, remaining: int) {.noinline.} =
+  ## A handle of a settled candidate task was released; `remaining` handles
+  ## are left. Only a new low counts: a temporary copy released back to the
+  ## level of a failed recheck cannot have freed the cycle. The last handle
+  ## takes its task with it, so a tracked task is dropped at the next drain.
+  if remaining == 0:
+    if state.trackedSlot > 0:
+      state.orphaned = true
+      queueTaskRecheck(state)
+  elif state.cycleCandidate and remaining < state.recheckOwners:
+    state.recheckOwners = remaining
+    queueTaskRecheck(state)
+
+proc collectClosureScopes(v: Value, roots: var seq[Scope], budget: var int,
+                          seen: var HashSet[uint64]) =
+  ## The scopes held by closures that `v` reaches through lists, maps, nodes,
+  ## and Cells: the roots from which a settled task's payload is rechecked.
+  ## Module and static scopes are never roots; trial deletion from a closure's
+  ## own scope still reaches them through parent edges.
+  dec budget
+  if budget < 0:
+    return
+  let bits = v.bits
+  case bits shr TAG_SHIFT
+  of FUNCTION_TAG:
+    let p = cast[ptr GeneFunction](bits and PAYLOAD_MASK)
+    let scope {.cursor.} = p.scope
+    if scope != nil and not scope.moduleRoot and not scope.moduleStatic and
+        scope notin roots:
+      roots.add scope
+  of LIST_TAG:
+    if seen.containsOrIncl(bits):
+      return
+    let p = cast[ptr GeneList](bits and PAYLOAD_MASK)
+    for i in 0 ..< p.items.len:
+      collectClosureScopes(p.items[i], roots, budget, seen)
+  of MAP_TAG:
+    if seen.containsOrIncl(bits):
+      return
+    let p = cast[ptr GeneMap](bits and PAYLOAD_MASK)
+    for i in 0 ..< p.entries.data.len:
+      collectClosureScopes(p.entries.data[i].val, roots, budget, seen)
+  of NODE_TAG:
+    if seen.containsOrIncl(bits):
+      return
+    let p = cast[ptr GeneNode](bits and PAYLOAD_MASK)
+    for i in 0 ..< p.props.data.len:
+      collectClosureScopes(p.props.data[i].val, roots, budget, seen)
+    for i in 0 ..< p.body.len:
+      collectClosureScopes(p.body[i], roots, budget, seen)
+  of CYCLE_OBJECT_TAG:
+    if seen.containsOrIncl(bits):
+      return
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](bits and PAYLOAD_MASK))
+    if data.objKind == okCell:
+      collectClosureScopes(CellData(data).value, roots, budget, seen)
+  else:
+    discard
+
+var taskRecheckAtBoundary: bool  # recheckDeferredTasks is draining
+
+type InlineVisited = object
+  ## A copy-free visited set for short walks; once full it stops recording
+  ## and the walk's budget bounds it.
+  keys: array[32, uint64]
+  count: int
+
+proc seenBefore(visited: var InlineVisited, key: uint64): bool =
+  for i in 0 ..< visited.count:
+    if visited.keys[i] == key:
+      return true
+  if visited.count < visited.keys.len:
+    visited.keys[visited.count] = key
+    inc visited.count
+  false
+
+proc reachesTaskState(v: Value, target: pointer, budget: var int,
+                      visited: var InlineVisited): bool =
+  ## Whether `v` reaches a Task whose state is `target`, through closures'
+  ## scope chains (bindings and owned tasks), lists, maps, nodes, Cells, and
+  ## settled tasks' payloads. A recheck runs trial deletion only when it does:
+  ## while the payload cannot reach its own task, the live task state keeps
+  ## everything the payload holds. The walk stops at loaded module roots and
+  ## the root scope, which are never retired this way. An exhausted budget
+  ## answers true.
+  dec budget
+  if budget < 0:
+    return true
+  let bits = v.bits
+  let payload = bits and PAYLOAD_MASK
+  if payload == 0:
+    return false
+  case bits shr TAG_SHIFT
+  of FUNCTION_TAG:
+    var scope {.cursor.} = cast[ptr GeneFunction](payload).scope
+    while scope != nil and scope.parent != nil and not scope.isLoadedModuleRoot:
+      if visited.seenBefore(cast[uint64](cast[pointer](scope))):
+        return false
+      for i in 0 ..< scope.slots.len:
+        if reachesTaskState(scope.slots[i], target, budget, visited): return true
+      for value in scope.vars.values:
+        if reachesTaskState(value, target, budget, visited): return true
+      for i in 0 ..< scope.ownedTasks.len:
+        if reachesTaskState(scope.ownedTasks[i], target, budget, visited): return true
+      scope = scope.parent
+    false
+  of LIST_TAG:
+    if visited.seenBefore(bits): return false
+    let p = cast[ptr GeneList](payload)
+    for i in 0 ..< p.items.len:
+      if reachesTaskState(p.items[i], target, budget, visited): return true
+    false
+  of MAP_TAG:
+    if visited.seenBefore(bits): return false
+    let p = cast[ptr GeneMap](payload)
+    for i in 0 ..< p.entries.data.len:
+      if reachesTaskState(p.entries.data[i].val, target, budget, visited): return true
+    false
+  of NODE_TAG:
+    if visited.seenBefore(bits): return false
+    let p = cast[ptr GeneNode](payload)
+    for i in 0 ..< p.props.data.len:
+      if reachesTaskState(p.props.data[i].val, target, budget, visited): return true
+    for i in 0 ..< p.body.len:
+      if reachesTaskState(p.body[i], target, budget, visited): return true
+    false
+  of CYCLE_OBJECT_TAG:
+    if visited.seenBefore(bits): return false
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
+    data.objKind == okCell and
+      reachesTaskState(CellData(data).value, target, budget, visited)
+  of OBJECT_TAG:
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](payload))
+    if data.objKind != okTask:
+      return false
+    let state {.cursor.} = cast[TaskData](data).state
+    if state == nil:
+      return false
+    if cast[pointer](state) == target:
+      return true
+    if visited.seenBefore(cast[uint64](cast[pointer](state))):
+      return false
+    acquire(state.lock)
+    try:
+      state.done and
+        (reachesTaskState(state.result, target, budget, visited) or
+         reachesTaskState(state.errorValue, target, budget, visited) or
+         reachesTaskState(state.panicValue, target, budget, visited))
+    finally:
+      release(state.lock)
+  else:
+    false
+
+proc collectTaskRecheckRoots(state: TaskState, payload: var Value,
+                             reaches: var bool): seq[Scope] =
+  ## The scopes a settled task's payload closures hold, with the payload value
+  ## they came from in `payload`, and whether the payload reaches the task
+  ## again (`reaches`).
+  var budget = 4096
+  var seen: HashSet[uint64]
+  acquire(state.lock)
+  try:
+    if state.done and state.cycleCandidate:
+      for value in [state.result, state.errorValue, state.panicValue]:
+        let before = result.len
+        collectClosureScopes(value, result, budget, seen)
+        if result.len > before and payload.bits == 0:
+          payload = value
+      if result.len == 0 and budget >= 0:
+        state.cycleCandidate = false # no closure: no cycle through a scope
+      elif result.len > 0:
+        var reachBudget = 4096
+        var visited: InlineVisited
+        let target = cast[pointer](state)
+        reaches = reachesTaskState(state.result, target, reachBudget, visited) or
+          reachesTaskState(state.errorValue, target, reachBudget, visited) or
+          reachesTaskState(state.panicValue, target, reachBudget, visited)
+  finally:
+    release(state.lock)
+
+proc watchableShared(bits: uint64): bool
+proc watchReturnedCycle*(root: Scope, returned: Value, owners = 1,
+                         reachedInside = false): bool
+
+proc recheckSettledTask(watches: ptr CycleWatches, state: TaskState): int =
+  ## Trial deletion from the scopes a tracked task's payload closures hold.
+  ## The list's reference keeps `state` alive and trial deletion discounts
+  ## it. A task stays tracked after a failed recheck, until a recheck at the
+  ## run boundary, a success, a watch, or its last handle; untracking may free
+  ## it, so nothing reads it afterwards.
+  if state.orphaned:
+    watches.untrackTask(state)
+    return 0
+  var payload: Value
+  var reaches = false
+  var roots = collectTaskRecheckRoots(state, payload, reaches)
+  var keep = roots.len > 0 and not taskRecheckAtBoundary
+  # With no way back to the task, the live task state keeps everything the
+  # payload holds; one can still form (a Cell set to the task later).
+  if roots.len > 0 and reaches:
+    if roots.len == 1 and watchableShared(payload.bits) and
+        not watches.watches.hasKey(payload.bits):
+      # Watch the payload, as a returned value is watched: a dry run that
+      # discounts its outside owners decides whether the cycle would retire
+      # without them (a join outcome or a variable can still hold it). The
+      # recheck runs once it is released down to the cycle's own references,
+      # which dropping this copy may already do. When the dry run fails, or
+      # never reaches the payload through its task, the real attempt fails too.
+      if watchReturnedCycle(roots[0], payload, owners = 1, reachedInside = true):
+        keep = false
+    else:
+      payload = Value(bits: 0)
+      result = retirePendingScopes(roots, generations = false)
+      if result > 0:
+        keep = false
+  payload = Value(bits: 0) # may queue the watch's recheck
+  if not keep:
+    watches.untrackTask(state)
 
 proc watchableShared(bits: uint64): bool =
   ## Whether `bits` is a watchable kind (list, map, node, function, Cell) that
@@ -4357,7 +4653,8 @@ proc setCycleWatched(bits: uint64) =
     CellData(cast[GeneObjectData](cast[pointer](payload))).cycleWatched = true
   else: discard
 
-proc watchReturnedCycle*(root: Scope, returned: Value, owners = 1): bool =
+proc watchReturnedCycle*(root: Scope, returned: Value, owners = 1,
+                         reachedInside = false): bool =
   ## A returning call scope that failed retirement because the value it
   ## returns still reaches its cycle (the value, or a closure or container in
   ## it, is also bound there) retires once the caller lets that value go. A dry
@@ -4365,14 +4662,17 @@ proc watchReturnedCycle*(root: Scope, returned: Value, owners = 1): bool =
   ## references; if so, the value is watched and the scope is rechecked when
   ## the value is released down to its references from inside the cycle, or
   ## freed. `owners` counts `root`'s known holders, as for
-  ## retireReturningCallScope.
+  ## retireReturningCallScope. `reachedInside` also requires the dry run to
+  ## reach the value from inside the cycle: a settled task's payload whose
+  ## task the dry run never reached could only be rechecked once it is freed.
   let bits = returned.bits
   if not watchableShared(bits) or cycleWatchesState().watches.hasKey(bits):
     return false
   var internal = 0
   var pending = @[root]
   if retirePendingScopes(pending, generations = false, extraOwners = owners,
-                         assumed = bits, assumedInternal = addr internal) == 0:
+                         assumed = bits, assumedInternal = addr internal) == 0 or
+      (reachedInside and internal == 0):
     return false
   cycleWatchesState().watches[bits] = CycleWatch(root: root, internal: internal)
   setCycleWatched(bits)
@@ -4403,12 +4703,18 @@ proc drainCycleRechecks*(): int =
   if generationRetiring:
     return 0
   let state = cycleWatchesState()
-  while state.recheckRoots.len > 0 or state.recheckBits.len > 0:
+  while state.recheckRoots.len > 0 or state.recheckBits.len > 0 or
+      state.pendingTasks.len > 0:
     # Each pending list holds exactly one reference of its own; a local copy
     # would be moved into it on last use, so none is kept.
     var pending: seq[Scope]
     var extraOwners = 0
-    if state.recheckRoots.len > 0:
+    if state.pendingTasks.len > 0:
+      let task {.cursor.} = cast[TaskState](state.pendingTasks.pop())
+      task.recheckQueued = false
+      result += recheckSettledTask(state, task)
+      continue
+    elif state.recheckRoots.len > 0:
       pending.add state.recheckRoots.pop()
     else:
       let bits = state.recheckBits.pop()
@@ -4420,6 +4726,29 @@ proc drainCycleRechecks*(): int =
       result += retirePendingScopes(pending, generations = false,
                                     extraOwners = extraOwners)
   cycleRecheckPending = false
+
+proc hasDeferredTaskRechecks*(): bool {.inline.} =
+  cycleWatchState != nil and cycleWatchState.trackedTasks.len > 0
+
+proc recheckDeferredTasks*(): int =
+  ## The run boundary: each settled candidate task a failed recheck left
+  ## tracked is rechecked once more, then forgotten; a later release of one
+  ## of its handles tracks it again. Called when the outermost run returns,
+  ## the last point its own bindings can still be the cycle's outside owners.
+  if generationRetiring:
+    return 0
+  let watches = cycleWatchesState()
+  for i in 0 ..< watches.trackedTasks.len:
+    let task {.cursor.} = watches.trackedTasks[i]
+    if not task.recheckQueued:
+      task.recheckQueued = true
+      watches.pendingTasks.add cast[pointer](task)
+  cycleRecheckPending = true
+  taskRecheckAtBoundary = true
+  try:
+    result = drainCycleRechecks()
+  finally:
+    taskRecheckAtBoundary = false
 
 proc cycleWatchCount*(): int =
   ## Values currently watched for a returned closure cycle (diagnostics).
@@ -4889,6 +5218,15 @@ proc rcReleaseFull(bits: uint64) =
       else:
         dec ns.valueRefs
       weakenOwnedNamespaceScope(ns)
+    elif data.objKind == okTask:
+      when nimRefCountReadable and not defined(gcAtomicArc):
+        # An owner let go of a settled task whose payload may reach it again
+        # through a closure; the rest of the cycle may now be unowned. Only
+        # AtomicArc runs worker lanes, so a published task is still on this one.
+        let state {.cursor.} = cast[TaskData](data).state
+        if unlikely(state != nil and
+                    (state.cycleCandidate or state.trackedSlot > 0)):
+          noteTaskRelease(state, nimStrongRefs(cast[pointer](data)) - 1)
     GC_unref(data)
   else: discard
 
@@ -6230,7 +6568,7 @@ template withReplyToLock(d: ReplyToData, body: untyped): untyped =
     release(d.lock)
 
 proc newTaskState(done = false, cancelRequested = false, cancelled = false,
-                  awaited = false, external = false, taskResult = NIL, errorMsg = "",
+                  released = false, external = false, taskResult = NIL, errorMsg = "",
                   errorValue = NIL, hasErrorValue = false,
                   panicMsg = "", panicValue = NIL,
                   hasPanicValue = false, failed = false, panicked = false): TaskState =
@@ -6241,7 +6579,7 @@ proc newTaskState(done = false, cancelRequested = false, cancelled = false,
   result.done = done
   result.cancelRequested = cancelRequested
   result.cancelled = cancelled
-  result.awaited = awaited
+  result.released = released
   result.external = external
   result.result = taskResult
   result.failed = failed or errorMsg.len > 0 or hasErrorValue
@@ -6500,10 +6838,10 @@ proc taskCancelRequested*(v: Value): bool =
   withTaskStateLock(data):
     result = data.cancelRequested
 
-proc taskAwaited*(v: Value): bool =
+proc taskPayloadReleased*(v: Value): bool =
   let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
-    result = data.awaited
+    result = data.released
 
 proc taskExternalPending*(v: Value): bool =
   let data {.cursor.} = taskState(v)
@@ -6613,16 +6951,13 @@ proc taskBoundaryScope*(v: Value): Scope =
 proc taskSharesState*(a, b: Value): bool =
   a.kind == vkTask and b.kind == vkTask and taskData(a).state == taskData(b).state
 
-proc readTaskPayload(v: Value, consume: static bool): TaskPayload =
-  ## Checking consumption and taking the outcome are one operation. Separate
-  ## reads let concurrent awaiters observe a payload after another cleared it.
+proc taskPayload*(v: Value): TaskPayload =
+  ## A settled task's outcome. Reading it leaves it in place, so every await
+  ## and join sees the same value or failure.
   let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
-    if data.awaited:
-      when consume:
-        raise newException(GeneError, "task result has already been awaited")
-      else:
-        raise newException(GeneError, "task result has already been consumed by await")
+    if data.released:
+      raise newException(GeneError, "task result was released")
     if not data.done:
       raise newException(GeneError, "task result is not ready")
     result.cancelled = data.cancelled
@@ -6630,36 +6965,18 @@ proc readTaskPayload(v: Value, consume: static bool): TaskPayload =
     result.hasErrorValue = data.hasErrorValue
     result.hasPanic = data.panicked
     result.hasPanicValue = data.hasPanicValue
-    when consume:
-      data.awaited = true
-      data.cancelRequested = false
-      result.value = move data.result
-      result.errorMessage = move data.errorMsg
-      result.errorValue = move data.errorValue
-      result.panicMessage = move data.panicMsg
-      result.panicValue = move data.panicValue
-      data.failed = false
-      data.hasErrorValue = false
-      data.panicked = false
-      data.hasPanicValue = false
-    else:
-      result.value = data.result
-      result.errorMessage = data.errorMsg
-      result.errorValue = data.errorValue
-      result.panicMessage = data.panicMsg
-      result.panicValue = data.panicValue
-
-proc consumeTaskPayload*(v: Value): TaskPayload =
-  readTaskPayload(v, true)
-
-proc peekTaskPayload*(v: Value): TaskPayload =
-  readTaskPayload(v, false)
+    result.value = data.result
+    result.errorMessage = data.errorMsg
+    result.errorValue = data.errorValue
+    result.panicMessage = data.panicMsg
+    result.panicValue = data.panicValue
 
 proc clearTaskPayload*(v: Value) =
   let data {.cursor.} = taskState(v)
   withTaskStateLock(data):
-    data.awaited = true
+    data.released = true
     data.cancelRequested = false
+    data.cycleCandidate = false
     data.result = NIL
     data.failed = false
     data.errorMsg = ""
@@ -9492,7 +9809,7 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
     var done: bool
     var cancelRequested: bool
     var cancelled: bool
-    var awaited: bool
+    var released: bool
     var sourceResult: Value
     var failed: bool
     var errorMsg: string
@@ -9506,7 +9823,7 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
       done = state.done
       cancelRequested = state.cancelRequested
       cancelled = state.cancelled
-      awaited = state.awaited
+      released = state.released
       sourceResult = state.result
       failed = state.failed
       errorMsg = state.errorMsg
@@ -9523,11 +9840,10 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
         escapedError.bits == sourceError.bits and
         escapedPanic.bits == sourcePanic.bits:
       return v
-    boxObject(TaskData(objKind: okTask,
-                       state: newTaskState(done = done,
+    let copied = newTaskState(done = done,
                          cancelRequested = cancelRequested,
                          cancelled = cancelled,
-                         awaited = awaited,
+                         released = released,
                          taskResult = escapedResult,
                          failed = failed,
                          errorMsg = errorMsg,
@@ -9536,7 +9852,16 @@ proc escapeKind(v: Value, guard: WeakScopeGuard, walk: var EscapeWalk): Value =
                          panicked = panicked,
                          panicMsg = panicMsg,
                          panicValue = escapedPanic,
-                         hasPanicValue = hasPanicValue),
+                         hasPanicValue = hasPanicValue)
+    when nimRefCountReadable and not defined(gcAtomicArc):
+      # A settled copy is a cycle candidate of its own (noteSettledTask); any
+      # release of one of its handles counts as a new low.
+      if done and not released and (payloadMayHoldClosure(escapedResult) or
+          payloadMayHoldClosure(escapedError) or payloadMayHoldClosure(escapedPanic)):
+        copied.cycleCandidate = true
+        copied.recheckOwners = high(int)
+    boxObject(TaskData(objKind: okTask,
+                       state: copied,
                        resultType: data.resultType,
                        errorType: data.errorType,
                        boundaryScope: data.boundaryScope))
@@ -9904,6 +10229,36 @@ proc tryPanicTask*(v: Value, message: string, value: Value = NIL,
 
 proc panicTask*(v: Value, message: string, value: Value = NIL, hasValue = false) =
   discard tryPanicTask(v, message, value, hasValue)
+
+proc noteSettledTask*(task: Value) =
+  ## The VM settled `task` on its owning lane. A payload that may hold a
+  ## closure can reach the task's own handle again (a closure over a binding
+  ## that holds the task), and nothing else sees that cycle: no activation
+  ## ends inside it, because a spawn body's scope chain is usually a private
+  ## snapshot. The task becomes a candidate, rechecked whenever releasing a
+  ## handle leaves it with fewer owners than ever since it settled (rcRelease).
+  when nimRefCountReadable and not defined(gcAtomicArc):
+    if task.bits shr TAG_SHIFT != OBJECT_TAG or (task.bits and PAYLOAD_MASK) == 0:
+      return
+    # A spawn publishes what its scope reaches, but only AtomicArc runs worker
+    # lanes, so a published task is still on this one.
+    let data {.cursor.} = cast[GeneObjectData](cast[pointer](task.bits and PAYLOAD_MASK))
+    if data.objKind != okTask:
+      return
+    let state {.cursor.} = cast[TaskData](data).state
+    if state == nil:
+      return
+    var candidate = false
+    withTaskStateLock(state):
+      candidate = state.done and not state.released and
+        (payloadMayHoldClosure(state.result) or
+         payloadMayHoldClosure(state.errorValue) or
+         payloadMayHoldClosure(state.panicValue))
+      state.cycleCandidate = candidate
+    if candidate:
+      # No recheck yet: the fiber still holds the task, and its release is
+      # the first new low.
+      state.recheckOwners = nimStrongRefs(cast[pointer](data))
 
 proc newFailedTask*(message: string, value: Value = NIL,
                     hasValue = false): Value =

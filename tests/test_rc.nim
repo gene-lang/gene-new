@@ -1530,6 +1530,62 @@ when defined(geneRcStats):
       check stream.streamNext.intVal == 42
       stream = NIL
 
+    test "a settled task whose payload closure reaches its own handle is reclaimed":
+      # Task -> result closure -> spawn scope -> ... -> Cell -> Task. A spawn
+      # that can move to a worker parents its scope on a private snapshot of
+      # the spawning activation, so no activation end sees this cycle; the
+      # task is rechecked when releasing a handle (the finished fiber's
+      # first) leaves it fewer owners, and at the run boundary.
+      let body = "(let holder ($cell nil)) " &
+        "(let t (spawn (fn [] holder/.get))) (holder .set t)"
+      for source in [
+          # Read by join, or settled by the scheduler while another task is
+          # awaited.
+          "(fn run_one [] " & body & " (t .join) nil) (repeat i in 8 (run_one))",
+          "(fn run_one [] " & body & " (await (spawn 1)) nil) " &
+            "(repeat i in 8 (run_one))",
+          # A scope wait, and a join whose outcome is the owning scope's
+          # value: the outcome still holds the closure when the scope exits.
+          "(fn run_one [] (scope " & body & ") nil) (repeat i in 8 (run_one))",
+          "(fn run_one [] (scope " & body & " (t .join)) nil) " &
+            "(repeat i in 8 (run_one))",
+          # A `var` capture keeps the spawn on its lane: its scope's parent is
+          # the activation itself.
+          "(fn run_one [] (var holder ($cell nil)) " &
+            "(var t (spawn (fn [] holder/.get))) (holder .set t) (t .join) nil) " &
+            "(repeat i in 8 (run_one))",
+          # Settled after every handle was gone.
+          "(fn run_one [] (let holder ($cell nil)) " &
+            "(holder .set (spawn (fn [] holder/.get))) nil) " &
+            "(repeat i in 8 (run_one)) (await (spawn 1))",
+          # Only the Cell holds the task, and it outlives the last recheck a
+          # handle release asked for: the run boundary reclaims it.
+          "(fn run_one [] (let holder ($cell nil)) " &
+            "(holder .set (spawn (fn [] holder/.get))) (holder/.get .join) nil) " &
+            "(repeat i in 8 (run_one))",
+          # The closure inside a map result, and inside an error payload.
+          "(fn run_one [] (let holder ($cell nil)) " &
+            "(let t (spawn {^get (fn [] holder/.get)})) (holder .set t) " &
+            "(t .join) nil) (repeat i in 8 (run_one))",
+          "(type Boom : Error ^props {^f Any}) " &
+            "(fn run_one [] (let holder ($cell nil)) " &
+            "(let t (spawn (fail (Boom ^f (fn [] holder/.get))))) " &
+            "(holder .set t) (t .join) nil) (repeat i in 8 (run_one))"]:
+        discard leakedManaged(source)
+        checkpoint source
+        check leakedManaged(source) == 0
+
+    test "a kept task's payload closure survives the cycle rechecks":
+      let scope = newGlobalScope()
+      check print(run(compileSource("""
+        (fn keep [] (let holder ($cell nil))
+          (let t (spawn (fn [] holder/.get))) (holder .set t) (t .join) t)
+        (var kept (keep))
+        (repeat i in 20 (keep))
+        ($runtime/test_collect)
+        (== ((await kept)) kept)
+      """), scope)) == "true"
+
     test "returned completed tasks keep result scopes alive":
       var task = NIL
       block:

@@ -603,21 +603,19 @@ cleanup. It does not add each child's deferred error row at scope exit.
 Requiring consumers to inspect those values, or to observe every child failure,
 is a separate policy and is not guaranteed by catch-or-declare checking.
 
-The VM consumes a task's result on its first `await`, even when that await
-raises its producer error. A later await through any alias raises a
-`RuntimeFault`. Concurrent awaits claim that result atomically; exactly one
-receives its value or failure, and the others receive the already-consumed
-`RuntimeFault`. A second await is a defect, so it adds no obligation: awaiting a
-parameter or another task of unknown state requires handling only the task's own
-row, and the checker tracks no consumption state.
+Every `await` of a task returns its value or raises its failure, and the
+outcome stays on the task: a later await through any alias, or a concurrent
+one, returns the same value or raises the same error. Awaiting a parameter or
+any other task requires handling only the task's own row; the checker tracks no
+await state.
 
 ```gene
 (fn recover [task : (Task Int ConfigError)] : Int ^errors []
   (try (await task) catch ConfigError 0))
 ```
 
-Joining an already-awaited task also raises a `RuntimeFault`; joining does not
-itself consume the await result. `Stream/next` and `Stream/peek` can raise
+Joining works before and after an await and returns the same outcome.
+`Stream/next` and `Stream/peek` can raise
 `EndOfStream`, an Error that callers include separately from the producer's
 deferred row. A reentered pull is a defect and adds nothing.
 
@@ -770,8 +768,8 @@ Key conformance cases:
 | An import may initialize a fallible dependency | Account for initialization regardless of the compiler/test process's warm cache. |
 | A strict unconditional import has no legal surrounding handler | Require empty ordinary initialization/load coverage or refactor fallible startup into a callable. |
 | A created task, stream, or closure fails later | Require handling at execution/consumption, not merely creation. |
-| An await raises and its error is caught | Its task result is still consumed; a later await raises a RuntimeFault, which adds no obligation. |
-| A task parameter has an empty deferred row | Awaiting it adds no obligation, whatever its consumption state. |
+| An await raises and its error is caught | A later await raises the same error; the task's row already describes it. |
+| A task parameter has an empty deferred row | Awaiting it adds no obligation, however often it is awaited. |
 | A scope exits with a failed child | Wait without raising or consuming its stored failure; account separately for waiting and cleanup errors. |
 | A dependency or impl update broadens an installed strict proof assumption | Reject publication until affected dependents are revalidated. |
 | A replacement changes only named hints alongside Error | Do not treat it as broader semantic error coverage. |

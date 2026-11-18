@@ -26,7 +26,7 @@
 # 243	src/gene/stdlib.nim
 # 19	src/gene/testing.nim
 # 2	src/gene/type_contracts.nim
-# 62	src/gene/types.nim
+# 61	src/gene/types.nim
 # 817	src/gene/vm.nim
 #
 src/gene.nim	--package-root is not a directory: 
@@ -1170,9 +1170,8 @@ src/gene/types.nim	node body index out of range:
 src/gene/types.nim	node body index out of range: 
 src/gene/types.nim	protocol ^inherit entries must be protocols
 src/gene/types.nim	range step must not be zero
-src/gene/types.nim	task result has already been awaited
-src/gene/types.nim	task result has already been consumed by await
 src/gene/types.nim	task result is not ready
+src/gene/types.nim	task result was released
 src/gene/types.nim	time hour must be in 0..23
 src/gene/types.nim	time microsecond must be in 0..999999
 src/gene/types.nim	time minute must be in 0..59
