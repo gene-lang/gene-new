@@ -468,7 +468,6 @@ proc evaluateMacroBody(definition: MacroDef, bindings: Table[string, Value],
       state.activeBudget = previousBudget
 
 macroEvaluator = evaluateMacroBody
-panicErrorCheck = isPanicError
 
 proc isIntrinsicValue(value: Value): bool {.nimcall, gcsafe.} =
   ## Runtime-kind values that every compilation phase shares: the native

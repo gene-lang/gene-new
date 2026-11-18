@@ -135,8 +135,16 @@ fails when an unlisted one appears. Failures a correct program can meet use
 Error types instead: bad base64 or UTF-8 is a `DecodeError`, bad RFC3339 or
 TZif data and an ambiguous local time are `TimeError`s, a library that cannot be
 loaded is a `NativeLibraryError`, and a compile failure reached through `eval`
-or a module import is a `CompileError`. Policy expiry seen from the caller that
-set the policy is `(LimitExceeded ^reason "timeout")` or `^reason "memory"`.
+or a module import is a `CompileError`. That includes a macro that fails while
+expanding, with a Panic or any other Throwable: the `CompileError`'s `_cause`
+is what it raised, rebuilt with the same built-in type and message (a type only
+the macro's phase defines becomes a `RuntimeFault` naming it). Policy expiry
+seen from the caller that set the policy is `(LimitExceeded ^reason "timeout")`
+or `^reason "memory"`.
+
+A Panic in an actor handler is a handler failure like any other: the
+supervisor's strategy restarts, stops or escalates, and the supervisor event
+marks it as a panic.
 
 
 ### Host throws on web

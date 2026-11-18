@@ -377,8 +377,7 @@
       (if_yes ($present? known/versions)
         (var version_schema (known/versions .get $"v${envelope/version}"))
         (if_not ($absent? version_schema) (set schema version_schema)))
-      (var guarded ($runtime/guard_call schema schema_payload))
-      (if_not guarded/ok (set schema_error guarded/message))
+      (schema schema_payload)
     catch Throwable
       (set schema_error ($to_str $err/.message))))
   (if_not (== schema_error nil)

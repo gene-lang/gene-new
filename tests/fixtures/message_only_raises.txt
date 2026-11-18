@@ -1901,7 +1901,6 @@ src/gene/vm.nim	runtime/constructor_signature expects a Type
 src/gene/vm.nim	runtime/context expects no arguments
 src/gene/vm.nim	runtime/execution_budget expects no arguments
 src/gene/vm.nim	runtime/gc_stats expects no arguments
-src/gene/vm.nim	runtime/guard_call expects a callable and one argument
 src/gene/vm.nim	runtime/load_sandboxed cannot resolve the calling application
 src/gene/vm.nim	runtime/load_sandboxed directory must be a Str
 src/gene/vm.nim	runtime/load_sandboxed entry must be a Str

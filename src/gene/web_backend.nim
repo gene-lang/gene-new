@@ -11,6 +11,7 @@ proc audioWorkletFile(): string
 
 type
   WebProfileError* = object of CatchableError
+    causeType*, causeMessage*: string # a macro's failure (GeneError's fields)
 
   WebTypeKind* = enum
     wtkNil, wtkBool, wtkStr, wtkSym, wtkInt, wtkF64,
@@ -5364,10 +5365,12 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     frontEnd = expandSourceUnitMacros(unit, importedMacros,
       gensymModule = "web::" & splitFile(sourcePath).name)
   except GeneError as error:
-    # A macro's panic stays a Panic; every other expansion failure is a
-    # profile diagnostic.
-    if panicErrorCheck != nil and panicErrorCheck(error): raise
-    raise newException(WebProfileError, error.msg)
+    # Every expansion failure, a macro's Panic included, is a profile
+    # diagnostic; the loader reports it as a CompileError.
+    let failure = newException(WebProfileError, error.msg)
+    failure.causeType = error.causeType
+    failure.causeMessage = error.causeMessage
+    raise failure
   macroExports = frontEnd.macroExports
   var analysis = WebAnalysis(
     unit: frontEnd.expanded,

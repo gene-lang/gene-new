@@ -2905,6 +2905,20 @@ proc raiseValueSemanticError(kind, message: string) {.noreturn.} =
   error.hasErrVal = true
   raise error
 
+proc compileFailureCause(scope: Scope, causeType, causeMessage: string): Value =
+  ## The `_cause` of a CompileError a macro's failure produced
+  ## (GeneError.causeType): the host's built-in type of that name with the
+  ## message, or a RuntimeFault naming a type only the macro phase defined.
+  var props = initPropTable()
+  var head: Value
+  if builtinTypeBinding(scope, causeType, head) and head.kind == vkType:
+    props["_msg"] = newStr(causeMessage)
+  else:
+    props["_msg"] = newStr(causeType & ": " & causeMessage)
+    if not (builtinTypeBinding(scope, "RuntimeFault", head) and head.kind == vkType):
+      head = newSym("RuntimeFault")
+  newNode(head, props = props)
+
 proc raiseBuiltinError*(kind, message: string, scope: Scope = nil,
                         extra: openArray[(string, Value)] = []) {.noreturn.} =
   ## Raise a failure a correct program can meet (bad input, a missing library,
@@ -4375,20 +4389,6 @@ proc failReplyTask(reply: Value, message: string, errVal: Value = NIL,
   if task.kind != vkTask or task.taskDone:
     return true
   failTask(task, message, errVal, hasValue)
-  wakeTaskWaiters(task)
-  true
-
-proc panicReplyTask(reply: Value, message: string, errVal: Value = NIL,
-                    hasValue = false): bool =
-  if reply.kind != vkReplyTo:
-    return false
-  let claimed = reply.claimReplyToCancel()
-  if not claimed.claimed:
-    return false
-  let task = claimed.task
-  if task.kind != vkTask or task.taskDone:
-    return true
-  panicTask(task, message, errVal, hasValue)
   wakeTaskWaiters(task)
   true
 
@@ -9766,8 +9766,6 @@ proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
 # machinery thousands of lines below.
 proc biRuntimeLoadSandboxed(args: openArray[Value],
                             call: ptr NativeCall): Value {.nimcall.}
-proc biRuntimeGuardCall(args: openArray[Value],
-                        call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeCallable(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeBindCall(args: openArray[Value],
@@ -9800,8 +9798,6 @@ proc biSandboxGenerationGraph(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.}
 proc biSandboxGenerationRelease(args: openArray[Value],
                                 call: ptr NativeCall): Value {.nimcall.}
-proc runtimePanicSummary(message: string, hasValue: bool,
-                         value: Value): string
 proc nextRuntimeResourceId*(): uint64
 proc newRuntimeResourceHandle*(scope: Scope, typeName: string,
                               id: uint64): Value
@@ -10173,6 +10169,8 @@ when not defined(geneWasm):
       # the block it belongs to.
       var error = newException(GeneError, "web_module " & proto.name & ": " & e.msg)
       error.loc = proto.loc
+      error.causeType = e.causeType
+      error.causeMessage = e.causeMessage
       raise error
     app.webAssets[proto.identity] = asset
     for route in webAssetRoutes(asset):
@@ -11145,10 +11143,6 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   when defined(geneRcStats):
     runtimeScope.define("test_collect", builtinNativeCallFn(
       "runtime/test_collect", biRuntimeTestCollect, acceptsNamed = false))
-  runtimeScope.define("guard_call",
-                      builtinNativeCallFn("runtime/guard_call",
-                                      biRuntimeGuardCall,
-                                      acceptsNamed = false))
   runtimeScope.define("callable?",
                       builtinNativeCallFn("runtime/callable?",
                                       biRuntimeCallable,
@@ -12165,35 +12159,6 @@ proc installPackageNativeBinary*(app: Application, packageId, alias,
     path: path, digest: digest, abiKind: abiKind,
     abiVersion: abiVersion, runtimeIdentity: runtimeIdentity)
   app.nativeBinaryIndex[packageId] = binaries
-
-proc biRuntimeGuardCall(args: openArray[Value],
-                        call: ptr NativeCall): Value {.nimcall.} =
-  ## Invoke one callable and return a Panic it raises as data
-  ## (`{^ok false ^kind panic ^message ...}`); every other failure propagates.
-  ## A Panic is a catchable Fault, so `catch Throwable` or `catch Panic` can do
-  ## the same. Cancellation remains a control signal and is not contained.
-  if args.len != 2:
-    raise newException(GeneError,
-      "runtime/guard_call expects a callable and one argument")
-  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
-  try:
-    let value = applyCall(args[0], [args[1]], NamedArgs(), scope)
-    var entries = initPropTable()
-    entries["ok"] = TRUE
-    entries["value"] = value
-    newMap(entries)
-  except GeneError as error:
-    # `(panic v)` raises a Panic value; every other failure propagates.
-    if not error.isPanicError: raise
-    let panicProps = error.errVal.props
-    let hasValue = panicProps.hasKey("value")
-    let message = runtimePanicSummary(error.msg, hasValue,
-                                      if hasValue: panicProps["value"] else: NIL)
-    var entries = initPropTable()
-    entries["ok"] = FALSE
-    entries["kind"] = newSym("panic")
-    entries["message"] = newStr(message)
-    newMap(entries)
 
 proc biRuntimeCallable(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.} =
@@ -17180,13 +17145,6 @@ proc boundedRuntimeSummary(text: string): string =
     result.add encoded
   result.add suffix
 
-proc runtimePanicSummary(message: string, hasValue: bool,
-                         value: Value): string =
-  let rendered =
-    if hasValue: value.print()
-    elif message.len > 0: message
-    else: "panic"
-  boundedRuntimeSummary(rendered)
 
 proc taskOutcomeVariant(scope: Scope, name: string): Value =
   let outcome = builtinBinding(scope, "TaskOutcome")
@@ -17280,9 +17238,15 @@ proc raiseMatchError(scope: Scope, message: string) =
   e.hasErrVal = true
   raise e
 
-proc raiseCompileError(scope: Scope, message: string) =
+proc raiseCompileError(scope: Scope, message: string, causeType = "",
+                       causeMessage = "") =
+  ## `causeType` names what a macro raised (GeneError.causeType). It becomes
+  ## `_cause` as the host's built-in type of that name, or a RuntimeFault
+  ## naming a type only the macro phase defined.
   var props = initPropTable()
   props["_msg"] = newStr(message)
+  if causeType.len > 0:
+    props["_cause"] = compileFailureCause(scope, causeType, causeMessage)
   var head = newSym("CompileError")
   var compileError: Value
   if builtinTypeBinding(scope, "CompileError", compileError) and
@@ -21606,7 +21570,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 compileEvalForm(node, macros = evalMacroBindings(env))
               except GeneError as e:
                 try:
-                  raiseCompileError(scope, e.msg)
+                  raiseCompileError(scope, e.msg, e.causeType, e.causeMessage)
                 except GeneError as diagnostic:
                   diagnostic.loc = e.loc
                   raise
@@ -25453,19 +25417,6 @@ proc runFiber(f: Fiber) =
   except GeneError as e:
     if f.privateCall:
       f.callError = e
-    if isActorFiber and e.isPanicError:
-      # A Panic stops the actor and propagates; supervision does not restart it.
-      closeActorAndCancelMailbox(actor)
-      discard panicReplyTask(f.actorAskReply, e.msg, e.errVal, hasValue = true)
-      var errorValue = e.errVal
-      if f.workerSafe and activeWorkerThread:
-        let published = workerPublicationValue(errorValue, f.actorScope)
-        errorValue =
-          if published.ok: published.value
-          else: newStr("actor worker panic payload does not satisfy Send")
-      emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
-                            errorValue, panic = true)
-      raise
     if isActorFiber:
       if f.workerSafe and activeWorkerThread and e.hasErrVal:
         let published = workerPublicationValue(e.errVal, f.actorScope)
@@ -25478,10 +25429,12 @@ proc runFiber(f: Fiber) =
           e.errVal = NIL
           e.hasErrVal = false
           e.msg = "actor worker error payload does not satisfy Send"
+      # A Panic is a handler failure like any other Fault: the strategy
+      # decides, and the supervisor event still says it was a panic.
       let askSettled = failReplyTask(f.actorAskReply, e)
       let errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
       emitSupervisorFailure(actor, f.actorMessage, f.actorScope, e.msg,
-                            errorValue)
+                            errorValue, panic = e.isPanicError)
       case actor.actorFailureStrategy
       of afsRestart:
         if actor.actorRestartInit.kind == vkNil:
@@ -35336,7 +35289,7 @@ proc compileModuleArtifact(app: Application, absPath: string): ModuleCompileArti
     # failures are their own Nim classes that hosts and tooling dispatch on.
     if e.hasErrVal or e.name != "GeneError": raise
     try:
-      raiseCompileError(app.builtinsScope(), e.msg)
+      raiseCompileError(app.builtinsScope(), e.msg, e.causeType, e.causeMessage)
     except GeneError as diagnostic:
       diagnostic.loc = e.loc
       diagnostic.errVal.setNodeProp("source", newStr(e.loc.sourceName))

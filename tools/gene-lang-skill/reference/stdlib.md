@@ -102,7 +102,7 @@ Root protocols: `Callable` `Error` `Send` `SerdeRef` `ToStr`.
 | `$ffi` | `bind` `open` | `Callable` `Library` `Load` |
 | `$aot` | `load` | — |
 | `$device` | `buffer` | `Buffer` `Compute` |
-| `$runtime` | `bind_call` `callable?` `configure_module` `gc_stats` `guard_call` `load_sandboxed` `require_root_lane` `sandbox_transaction` | `RuntimeLaneFault` `SandboxGeneration` `SandboxTransaction` |
+| `$runtime` | `bind_call` `callable?` `configure_module` `gc_stats` `load_sandboxed` `require_root_lane` `sandbox_transaction` | `RuntimeLaneFault` `SandboxGeneration` `SandboxTransaction` |
 | `$C` | — | C ABI type constructors for FFI (`Int`, `Ptr`, `CStr`, `Slice`, …) |
 
 ## Common calls and argument order

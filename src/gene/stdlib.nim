@@ -1118,6 +1118,13 @@ when not defined(geneWasm):
       compileWebFileAsset(args[0].strVal, readSource)
     except GeneError, GeneCancel:
       raise
+    except WebProfileError as error:
+      # A macro's failure keeps what it raised as the cause.
+      var extra: seq[(string, Value)]
+      if error.causeType.len > 0:
+        extra.add ("_cause", compileFailureCause(scope, error.causeType,
+                                                 error.causeMessage))
+      raiseBuiltinError("CompileError", "web/load: " & error.msg, extra = extra)
     except CatchableError as error:
       # Source IO and web-profile validation failures must cross the native
       # boundary as catchable Gene errors, like other filesystem operations.

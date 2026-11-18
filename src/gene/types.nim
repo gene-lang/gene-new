@@ -70,6 +70,8 @@ type
     loc*: SourceLoc
     errorKind*: GeneErrorKind
     errorDetail*: string
+    causeType*: string     ## a compile-time failure's Throwable (a macro's),
+    causeMessage*: string  ## by type name and message: its CompileError's `_cause`
   MatchFault* = object of GeneError    ## pattern match / destructuring failure
   GeneCancel* = object of CatchableError
     ## Cooperative task cancellation. Not caught by ordinary Gene `try/catch`.

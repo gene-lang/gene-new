@@ -1688,3 +1688,26 @@ suite "errors — retained strict assumptions":
       (fn main [] ^errors [] (try (left 3) catch Probe 7))
       (main)
     """, "7"
+
+suite "errors — panics at runtime boundaries":
+  test "a macro's failure is a CompileError that keeps what it raised as the cause":
+    check gradualErrorEval("""
+      (fn probe [form]
+        (try (eval ^in (env) form) nil
+          catch CompileError [($head $err/_cause) $err/_cause/.message]))
+      [(probe (quote (do (macro m [] (panic "macro panic")) (m))))
+       (probe (quote (do (macro m [] (let n : Int "x") 1) (m))))]
+    """).print() == "[[(type Panic) \"macro panic\"] [(type TypeFault) \"var 'n' expected Int, got Str\"]]"
+
+  test "a Panic in an actor handler goes through the supervisor's strategy":
+    check gradualErrorEval("""
+      (var seen ($cell 0))
+      (supervisor ^strategy restart
+        (var a ($actor/spawn ^init (fn [] 10)
+          ^handle (fn [ctx state msg]
+            (if (== msg 1) (panic "bad")
+              (do (seen .set state) ($actor/continue (+ state msg)))))))
+        (a .send 1)
+        (a .send 5)
+        (seen .get))
+    """).print() == "10"

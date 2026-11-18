@@ -8478,9 +8478,6 @@ suite "spec — structured tasks from design":
                "  (when (TaskOutcome/fault fault) (let message fault/.message) " &
                "    [(byte_size message) (byte_size fault/value)]))",
                "[5000 5000]")
-    check_eval("(var guarded ($runtime/guard_call (fn [v] (panic v)) \"" & payload & "\")) " &
-               "[($str/byte_size guarded/message) ($str/ends_with? guarded/message \"[truncated]\")]",
-               "[4096 true]")
 
   test "Task/join waits for cancellation cleanup and returns cancelled":
     check_eval("(var ch ($channel ^capacity 1)) " &
@@ -9434,12 +9431,6 @@ suite "spec — Env and eval from design":
                "                    ^policy {^timeout_ms 20})) " &
                "catch Error $err/.message)",
                "\"eval timeout exceeded\"")
-
-  test "runtime guard_call contains panic only at an explicit boundary":
-    check_eval("(var guarded " &
-               "  ($runtime/guard_call (fn [value] ($panic value)) \"boom\")) " &
-               "[guarded/ok guarded/kind guarded/message]",
-               "[false panic \"\\\"boom\\\"\"]")
 
 suite "spec — task context":
   test "sandbox namespace reflection matches the runtime's grant vocabulary":

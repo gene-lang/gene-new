@@ -330,15 +330,14 @@ suite "web navigation host bindings":
     """)
     writeFile(root / "panic_host.gene",
       "(var caught (try ($web/load \"" & root / "panic.gene" &
-      "\") false catch Error true))")
+      "\") nil catch CompileError $err/_cause))")
     let panicApp = newApplication(root)
-    # A macro's panic stays a Panic, which `catch Error` does not see.
-    var panicked = false
-    try:
-      discard panicApp.loadFileModule(root / "panic_host.gene")
-    except GeneError as error:
-      panicked = error.hasErrVal and error.errVal.head.typeName == "Panic"
-    check panicked
+    # A macro's Panic is a compile failure; the CompileError keeps it as the cause.
+    let caught = panicApp.loadFileModule(root / "panic_host.gene").
+      moduleRootNamespace.nsScope.lookup("caught")
+    check caught.kind == vkNode
+    check caught.head.typeName == "Panic"
+    check caught.props["_msg"].strVal.contains("web macro stopped")
 
   test "modal focus helpers and asynchronous module loading use browser primitives":
     let root = createTempDir("gene-web-modal-", "")

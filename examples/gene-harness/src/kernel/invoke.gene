@@ -5,16 +5,16 @@
 (import [supervised_call] ^from "../runtime/call_supervision")
 
 (fn invoke_bounded [callable, argument, limits : ExecutionLimits]
-  (var program (quote ($runtime/guard_call callable argument)))
-  (var guarded
-    (try
-      (eval ^in (env ^bindings {^callable callable ^argument argument} ^imports [$runtime] ^policy {^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
-        program)
-    catch Fault
-      (fail (HarnessError ^_msg $err/.message ^_cause $err))))
-  (if guarded/ok
-    guarded/value
-    (fail (HarnessError ^_msg $"plugin panic: ${guarded/message}"))))
+  # A plugin's Fault, a Panic included, becomes a HarnessError that keeps it
+  # as the cause.
+  (try
+    (eval ^in (env ^bindings {^callable callable ^argument argument} ^policy {^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms})
+      (quote (callable argument)))
+  catch Fault
+    (let message $err/.message)
+    (fail (HarnessError
+      ^_msg (if (== ($head $err) Panic) $"plugin panic: ${message}" message)
+      ^_cause $err))))
 
 (fn apply_argument_list [bundle]
   (bundle/callable bundle/args...))
