@@ -18,7 +18,7 @@
     (message dispose [] : Nil (include_dispose self))))
 
 (fn include_failure ^^private [message : Str]
-  (fail (CompositionError ^_msg message ^cause nil ^plugin nil
+  (fail (CompositionError ^_msg message ^plugin nil
                           ^instance_uid nil ^entry_id nil)))
 
 (fn copy_list ^^private [source]

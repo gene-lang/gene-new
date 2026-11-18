@@ -4,7 +4,7 @@
 (import [supervised_call] ^from "./call_supervision")
 
 (type ParticipantFailure : Error ^props {^participant Str ^phase Str ^code Str
-  ^cause Any? ^errors Any?})
+  ^errors Any?})
 (type TurnTransaction ^props {^context Any ^participants Any ^entered Any
   ^started Any ^closed Any ^failed Any ^last_phase Any ^limits Any ^finishing Any ^scope Any ^on_failure Any?})
 
@@ -34,7 +34,7 @@
     (callback context state value)))
 
 (fn participant_failure [name : Str, phase : Str, code : Str, message : Str, ^cause cause = nil]
-  (ParticipantFailure ^participant name ^phase phase ^code code ^cause cause
+  (ParticipantFailure ^participant name ^phase phase ^code code ^_cause cause
     ^_msg $"Turn participant ${name} failed in ${phase}: ${message}"))
 
 (fn new_turn_transaction [context, participants,

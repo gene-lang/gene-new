@@ -350,7 +350,10 @@
 
 (fn cordis_failure [kind, message : Str, cause = nil, plugin = nil, instance_uid = nil, entry_id = nil] ^^private
   (fail
-    (kind ^_msg message ^cause cause ^plugin plugin ^instance_uid instance_uid ^entry_id entry_id)))
+    (if (== ($head cause) List)
+      (kind ^_msg message ^errors cause ^_cause (if cause/.empty? nil cause/0)
+        ^plugin plugin ^instance_uid instance_uid ^entry_id entry_id)
+      (kind ^_msg message ^_cause cause ^plugin plugin ^instance_uid instance_uid ^entry_id entry_id))))
 
 (fn require_positive_limits [limits] ^^private
   (if_not (== ($head limits) InvocationLimits)
@@ -1462,7 +1465,7 @@
     (when (TaskOutcome/error error)
       error)
     (when (TaskOutcome/fault fault) (let message fault/.message)
-      (PluginCleanupError ^_msg $"effect task panicked: ${message}" ^cause message ^plugin nil ^instance_uid nil ^entry_id nil))
+      (PluginCleanupError ^_msg $"effect task panicked: ${message}" ^_cause fault ^plugin nil ^instance_uid nil ^entry_id nil))
     (else
       nil)))
 
@@ -1510,7 +1513,7 @@
   (scope/entries .set (fresh_list))
   (scope/value .set nil)
   (if (== errors/.size 0) (return nil))
-  (PluginCleanupError ^_msg $"${errors/.size} effect cleanup operation(s) failed: ${errors}" ^cause errors ^plugin scope/owner/plugin/id ^instance_uid scope/owner/uid ^entry_id scope/owner/entry_id))
+  (PluginCleanupError ^_msg $"${errors/.size} effect cleanup operation(s) failed: ${errors}" ^errors errors ^_cause errors/0 ^plugin scope/owner/plugin/id ^instance_uid scope/owner/uid ^entry_id scope/owner/entry_id))
 
 (fn owner_defer [owner, cleanup] ^^private
   (var scope (require_accepting_scope owner))
@@ -2597,7 +2600,7 @@
   # A wrapped failure names its cause, which carries the plugin's own error.
   (if (absent? error) (return nil))
   (var text (try ($to_str error/.message) catch Throwable ($to_str error)))
-  (var cause (try error/cause catch Throwable nil))
+  (var cause (try error/_cause catch Throwable nil))
   (if_not (absent? cause) (set text $"${text}: $(failure_text cause)"))
   text)
 

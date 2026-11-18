@@ -562,7 +562,7 @@
     (if_not (== current/token handle/token) (kept .push current)))
   (compositions .set kept)
   (if_not errors/.empty?
-    (fail (RecoveryRequired ^_msg $"Host plugin cleanup failed: ${errors}" ^cause errors)))
+    (fail (RecoveryRequired ^_msg $"Host plugin cleanup failed: ${errors}" ^errors errors)))
   nil)
 
 (fn invoke_host_callback [callback, args, policy, context] ^^private

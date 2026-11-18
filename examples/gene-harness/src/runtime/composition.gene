@@ -244,7 +244,8 @@
 # that failed, each with its own causes. The diagnostic keeps the innermost
 # messages and the plugin each one came from.
 (fn ^^private error_causes [error] : Any
-  (let causes (try error/cause catch Error nil))
+  # Cordis aggregates keep their failures in `errors`; Harness errors in `cause`.
+  (let causes (try (?? error/errors error/cause) catch Throwable nil))
   (if (&& ($present? causes) (== ($head causes) List)) causes nil))
 
 (fn ^^private leaf_messages [error] : Any

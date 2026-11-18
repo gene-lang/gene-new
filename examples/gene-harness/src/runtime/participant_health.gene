@@ -15,7 +15,7 @@
   # Operator cancellation is not evidence of a faulty participant. A callback
   # deadline is reported separately by its supervised contributor guard.
   (if (|| (== error/code "cancelled")
-          (&& (== ($head error/cause) CallbackCancelled) (! error/cause/deadline))) (return nil))
+          (&& (== ($head error/_cause) CallbackCancelled) (! error/_cause/deadline))) (return nil))
   (run_composition_change runtime/h/snapshots (fn []
     (let current (runtime/h/plugin_policies/.get .get definition/_owner))
     (if (!= current/activation_revision definition/_activation_revision) (return nil))

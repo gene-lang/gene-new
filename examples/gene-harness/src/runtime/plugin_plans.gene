@@ -23,9 +23,8 @@
   # A cause chain may end in a plain Str.
   (if (== ($head error) Str) (return error))
   (let message ($to_str (?? error/.message error)))
-  # Harness errors name their cause `cause`; a ContractViolation or any other
-  # Throwable carries it in the inherited `_cause`.
-  (let cause (?? error/cause error/_cause))
+  # Every Throwable carries the error it wraps in the inherited `_cause`.
+  (let cause error/_cause)
   (if (|| (>= depth 6) ($absent? cause)) (return message))
   $"${message}: ${(failure_text cause (+ depth 1))}")
 

@@ -100,8 +100,10 @@
 
 # One base error shape keeps structured causes and lifecycle identity intact.
 # The nominal children remain distinct so callers can catch by remedy.
+# The inherited `_cause` holds the one Throwable this error wraps; `errors`
+# holds the failures an aggregate (a cleanup or retirement) collected.
 (type CordisError : Error
-  ^props {^cause Any?
+  ^props {^errors Any?
           ^plugin Str?
           ^instance_uid Int?
           ^entry_id Str?}
