@@ -124,7 +124,9 @@ catch body, cancellation or policy expiry. It does not run on normal completion
 or when `return`, `break` or `continue` leaves the try. Its order is catch,
 then `unwind`, then `ensure`. A failing `unwind` or `ensure` body during an
 unwind is dropped, and the original failure continues; under cancellation or
-expiry the terminal reason stays terminal.
+expiry the terminal reason stays terminal. So an `unwind` body adds nothing to
+the enclosing function's `^errors` row, while an `ensure` body does: it also
+runs on normal completion, where its failure escapes.
 
 ### Message-only runtime failures
 

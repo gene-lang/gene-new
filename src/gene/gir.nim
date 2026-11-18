@@ -590,6 +590,8 @@ type
     messageErrors*: Table[string, CallableErrorSummary]
     protocolMessageErrors*: seq[CallableErrorSummary] # full identity closure, including shadowed names
     errorType*: ErrorTypeSummary
+    throwableType*: bool # errorType descends from Throwable
+    faultType*: bool     # errorType is on the Fault branch: never in a row
 
   ImportSpec* = object
     fromModule*: bool                 # true: `^from "path"`; false: namespace path

@@ -189,6 +189,121 @@ suite "web catch types":
       message = error.msg
     check "Fault types are unchecked" in message
 
+  test "a value known only as a Throwable does not satisfy a branch root":
+    for (call, expected) in [
+        ("(fn through [x : Throwable] : Str (require_error x))", "expected Error, got Throwable"),
+        ("(fn through [x : Throwable] : Str (require_fault x))", "expected Fault, got Throwable"),
+        ("(fn through [x : RuntimeFault] : Str (require_error x))", "expected Error, got RuntimeFault")]:
+      var message = ""
+      try:
+        discard analyzeWebModule("(mod roots ^profile web) " &
+          "(fn require_error [x : Error] : Str \"error\") " &
+          "(fn require_fault [x : Fault] : Str \"fault\") " & call, "roots.gene")
+      except WebProfileError as error:
+        message = error.msg
+      check expected in message
+    discard analyzeWebModule("(mod roots ^profile web) " &
+      "(type Bad : Error) " &
+      "(fn require_throwable [x : Throwable] : Str \"any\") " &
+      "(fn require_fault [x : Fault] : Str \"fault\") " &
+      "(fn run [] : (List Str) [(require_throwable (Bad ^_msg \"b\")) " &
+      "(require_fault (RuntimeFault ^_msg \"r\"))])", "roots.gene")
+
+  test "a message send on an Any receiver dispatches on the runtime value":
+    let root = createTempDir("gene-web-any-message-", "")
+    defer: removeDir(root)
+    writeFile(root / "any_message.gene", """
+      (mod any_message ^profile web)
+      (type Envelope (message message [] : Str "hello"))
+      (type Count (message message [] : Int 7))
+      (type Plain ^props {^n Int})
+      (type Bad : Error)
+      (fn read_message [v : Any] : Str v/.message)
+      (fn send_message [v : Any] : Any v/.message)
+      (fn send_optional [v : Any] : Any v/?.message)
+      (fn optional_error [v : Error?] : Str? v/?.message)
+      (fn present_error [v : Error] : Str v/?.message)
+      (fn run [] : (List Str)
+        [(read_message (Envelope))
+         (read_message (Bad ^_msg "bad"))
+         (try (fail (Bad ^_msg "caught")) catch Error $err/.message)
+         (try (read_message (Plain ^n 1)) catch MessageFault $err/.message)
+         (try (read_message 5) catch MessageFault $err/.message)
+         (try (read_message nil) catch MessageFault $err/.message)])
+      (fn results [] : (List Any)
+        [(send_message (Count)) (send_optional nil) (send_optional (Bad ^_msg "b"))
+         (optional_error nil) (optional_error (Bad ^_msg "o")) (present_error (Bad ^_msg "p"))])
+    """)
+    discard buildWebModule(root / "any_message.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {run, results} from './any_message.mjs';
+      assert.deepEqual(run(), ["hello", "bad", "caught",
+        "no message 'message' on Plain", "no message 'message' on Int",
+        "no message 'message' on Nil"]);
+      assert.deepEqual(results(), [7n, null, "b", null, "o", "p"]);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
+  test "built-in Throwables on JS error classes check causes and hide host fields":
+    for typ in ["TypeFault", "ContractViolation"]:
+      var message = ""
+      try:
+        discard analyzeWebModule("(mod causes ^profile web) (fn run [] : Any (" & typ &
+          " ^where \"\" ^expected \"\" ^actual \"\" ^_cause 7))", "causes.gene")
+      except WebProfileError as error:
+        message = error.msg
+      check "expected (| Throwable Nil), got Int" in message
+    let root = createTempDir("gene-web-special-throwables-", "")
+    defer: removeDir(root)
+    writeFile(root / "special.gene", """
+      (mod special ^profile web)
+      (type Sub : TypeFault)
+      (fn read_name [v : Any] : Any v/name)
+      (fn read_where [v : Any] : Any v/where)
+      (fn with_cause [c : Any] : Any (TypeFault ^where "w" ^expected "e" ^actual "a" ^_cause c))
+      (fn inner_cause [] : Any
+        (let made (with_cause (RuntimeFault ^_msg "inner")))
+        made/_cause/.message)
+      (fn same [a : Any b : Any] : Bool (== a b))
+      (fn runtime_fields [] : Any (try (range 0 2 0) nil catch RuntimeFault [$err/name $err/stack]))
+      (fn equalities [] : (List Bool)
+        [(same (HostError ^_msg "x" ^value 1) (HostFault ^_msg "x" ^value 1))
+         (same (HostError ^_msg "x" ^value 1) (HostError ^_msg "x" ^value 1))
+         (same (Error ^_msg "x") (Fault ^_msg "x"))
+         (same (Sub ^where "w" ^expected "e" ^actual "a") (TypeFault ^where "w" ^expected "e" ^actual "a"))
+         (try (range 0 2 0) false catch RuntimeFault (same $err (RuntimeFault ^_msg $err/.message)))])
+      (fn run [] : (List Any)
+        [(try (fail (TypeFault ^where "w" ^expected "e" ^actual "a")) nil catch TypeFault $err/stack)
+         (read_name (HostError ^_msg "h" ^value 1))
+         (read_name (TypeFault ^where "w" ^expected "e" ^actual "a"))
+         (read_where (TypeFault ^where "w" ^expected "e" ^actual "a"))
+         (try (fail (Sub ^where "sub" ^expected "e" ^actual "a")) nil catch TypeFault $err/where)
+         (try (with_cause 7) "accepted" catch TypeFault "rejected")
+         (inner_cause)])
+    """)
+    discard buildWebModule(root / "special.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {run, runtime_fields, equalities} from './special.mjs';
+      assert.deepEqual(run(), [null, null, null, "w", "sub", "rejected", "inner"]);
+      assert.deepEqual(runtime_fields(), [null, null]);
+      assert.deepEqual(equalities(), [false, true, false, false, true]);
+      const classes = globalThis[Symbol.for("gene.error.classes.v4")];
+      for (const key of ["typeFault", "contractViolation", "hostError", "hostFault"]) {
+        const e = new classes[key]({ _msg: "m" });
+        assert.ok(e instanceof Error);
+        assert.ok(!Object.keys(e).includes('name'));
+        assert.equal(e.stack.split('\n')[0], `${e.constructor.$gene_name}: m`);
+        assert.throws(() => new classes[key]({ _msg: "m", _cause: 7 }), (err) => err instanceof classes.typeFault);
+      }
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
 suite "web macros with gensym":
   const swapSource = """
     (mod NAME ^profile web)

@@ -2036,10 +2036,11 @@
     (match task/.join
       (when (TaskOutcome/error error)
         (errors .push error))
-      (when (TaskOutcome/fault fault) (let message fault/.message)
-        (errors .push message))
+      # Every entry is a Throwable: the first becomes the aggregate's `_cause`.
+      (when (TaskOutcome/fault fault)
+        (errors .push fault))
       (when TaskOutcome/cancelled
-        (errors .push "hook task cancelled"))
+        (errors .push (HookDispatchError ^_msg "hook task cancelled")))
       (else
         nil)))
   (if (> errors/.size 0)

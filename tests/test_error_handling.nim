@@ -540,6 +540,25 @@ suite "errors — static catch or declare":
       expect GeneError:
         discard strictErrorCompile(helper & "(fn main [] ^errors [] " & expression & ")")
 
+  test "an unwind-only cleanup adds nothing to the escaping row":
+    # A failure in the unwind arm is dropped and the earlier one continues.
+    discard strictErrorCompile("(fn main [] ^errors [] (try 1 unwind (fail (Probe))))")
+    discard strictErrorCompile("(fn main [] ^errors [] " &
+      "(try 1 unwind (fail (Probe)) ensure nil))")
+    for expression in ["(try 1 unwind nil ensure (fail (Probe)))",
+                       "(try (fail (Probe)) unwind nil)",
+                       "(do (try 1 unwind nil) (fail (Probe)))"]:
+      expect GeneError:
+        discard strictErrorCompile("(fn main [] ^errors [] " & expression & ")")
+
+  test "the Throwable roots construct and answer message without an open row":
+    discard strictErrorCompile("(fn make [] : Error ^errors [] (Error ^_msg \"ok\"))")
+    discard strictErrorCompile("(fn make [] : Throwable ^errors [] (Throwable ^_msg \"ok\"))")
+    for typ in ["Throwable", "Error", "Fault", "RuntimeFault"]:
+      discard strictErrorCompile("(fn show [x : " & typ & "] : Str ^errors [] x/.message)")
+    expect GeneError:
+      discard strictErrorCompile("(fn main [] ^errors [] (fail (Error ^_msg \"open\")))")
+
   test "ranges retain iterable behavior without inheriting eager List messages":
     expect GeneError:
       discard strictErrorCompile("""
@@ -809,6 +828,30 @@ suite "errors — module summaries":
       raise
     expect GeneError: discard app.compileFileModule(root / "messages_bad.gene")
     expect GeneError: discard app.compileFileModule(root / "messages_default_bad.gene")
+
+  test "imports keep a type's Throwable branch":
+    let root = errorModuleRoot()
+    writeFile(root / "branches.gene", """
+      (type Broken : Fault)
+      (type Bad : Error)
+    """)
+    writeFile(root / "branches_good.gene", """
+      (mod good ^errors_mode strict)
+      (import [Broken Bad] ^from "./branches.gene")
+      (type Worse : Broken)
+      (fn emit [] ^errors [] (fail (Broken ^_msg "defect")))
+      (fn emit_worse [] ^errors [] (fail (Worse ^_msg "defect")))
+      (fn show [x : Bad] : Str ^errors [] x/.message)
+      (fn show_fault [x : Broken] : Str ^errors [] x/.message)
+    """)
+    writeFile(root / "branches_bad.gene", """
+      (mod bad ^errors_mode strict)
+      (import [Bad] ^from "./branches.gene")
+      (fn emit [] ^errors [] (fail (Bad ^_msg "checked")))
+    """)
+    let app = newApplication(root)
+    discard app.loadFileModule(root / "branches_good.gene")
+    expect GeneError: discard app.compileFileModule(root / "branches_bad.gene")
 
   test "protocol-typed bare sends cannot assume a qualified protocol body":
     expect GeneError:

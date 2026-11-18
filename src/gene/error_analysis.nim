@@ -108,7 +108,7 @@ type
     constructor: AnalyzedFunction
     constructorKnown: bool
     protocol: bool
-    throwable: bool # descends from the built-in Error type
+    throwable: bool # descends from Throwable (either branch): answers `message`
     fault: bool     # descends from the built-in Fault type: never checked
 
   AnalyzedFunction = ref object
@@ -125,6 +125,10 @@ type
     bindings: Table[string, ErrorBinding]
     initialized: HashSet[string]
     outerWrites: Table[string, ErrorBinding]
+    # Reached only inside the failure arm of an `unwind` cleanup. The VM
+    # drops a failure raised there and the earlier one continues, so the arm
+    # is checked like any body but adds nothing to the escaping row.
+    failureCleanup: bool
 
   BodyErrors = object
     errors: ErrorEffectSummary
@@ -227,6 +231,10 @@ proc `=destroy`(analysis: var ErrorAnalysisData) =
 proc unknownValue(): AbstractValue = AbstractValue(kind: avUnknown)
 proc scalarValue(name: string): AbstractValue =
   AbstractValue(kind: avScalar, typ: newSym(name))
+
+const FailureCleanupTest = "\x00failure_cleanup?"
+  ## Names the Bool that `opInFailureCleanup` pushes, so the branch it guards
+  ## is known to run only while an earlier failure unwinds.
 
 proc copyValue(value: AbstractValue): AbstractValue =
   if value == nil: return unknownValue()
@@ -392,7 +400,7 @@ proc valueFromType(analysis: ErrorAnalysis, typ: Value,
     elif typ.symVal == "Task": result.kind = avTask
     elif typ.symVal == "Stream": result.kind = avStream
     elif typ.symVal in ["Fn", "Callable"]: result.kind = avFunction
-    elif typ.symVal == "Error":
+    elif typ.symVal in ["Error", "Throwable"]:
       result.kind = avNode
       result.throwable = true
     else:
@@ -497,8 +505,8 @@ proc newErrorAnalysis*(root: Chunk,
   builtins.values["Error"] = ErrorBinding(immutable: true,
     value: AbstractValue(kind: avProtocol, name: "Error"))
   for name in BuiltinFaultNames:
-    let typ = AnalyzedType(info: builtinError(name), fault: true, methodsKnown: true,
-      constructorKnown: true, fields: initTable[string, Value](),
+    let typ = AnalyzedType(info: builtinError(name), throwable: true, fault: true,
+      methodsKnown: true, constructorKnown: true, fields: initTable[string, Value](),
       methods: initTable[string, AnalyzedFunction]())
     result.types[typ.info.identity] = typ
     builtins.values[name] = ErrorBinding(immutable: true,
@@ -623,6 +631,9 @@ proc mergeState(target: var AbstractState, source: AbstractState): bool =
     if name in source.initialized: initialized.incl name
   if initialized != target.initialized:
     target.initialized = initialized
+    result = true
+  if target.failureCleanup and not source.failureCleanup:
+    target.failureCleanup = false
     result = true
 
 proc pop(state: var AbstractState): AbstractValue =
@@ -828,6 +839,13 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     else:
       result.value = analysis.valueFromType(callee.typ, environment)
       if constructorCall: result.errors.open = true
+    return
+  if callee.kind == avProtocol and callee.nominal == nil and
+      callee.name in ["Error", "Throwable"]:
+    # `(Error ^_msg "x")` builds a root value: a bad field is a TypeFault and
+    # `new` without a ctor a RuntimeFault, both outside every row. The binding
+    # stays a distinguished value because a row or catch naming it is open.
+    result.value = analysis.valueFromType(newSym(callee.name), environment)
     return
   if callee.kind != avNative:
     result.errors.open = true
@@ -1229,7 +1247,8 @@ proc interfaceEnvironment(analysis: ErrorAnalysis, iface: CompileNamespaceInterf
       let typeInfo = if entry.errorType.identity.len > 0: entry.errorType
                      else: ErrorTypeSummary(identity: prefix & "/" & name, name: name, expr: newSym(name))
       let info = AnalyzedType(info: typeInfo, protocol: entry.category == cbcProtocol,
-        methodsKnown: entry.messageErrorsKnown,
+        methodsKnown: entry.messageErrorsKnown, throwable: entry.throwableType,
+        fault: entry.faultType,
         fields: initTable[string, Value](), methods: initTable[string, AnalyzedFunction]())
       analysis.types[info.info.identity] = info
       if entry.category == cbcType and entry.constructorErrors != nil:
@@ -1387,6 +1406,7 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
   proc observeException(state: AbstractState) =
     var snapshot = state
     snapshot.stack = @[]
+    snapshot.failureCleanup = false
     if exceptional == nil:
       new(exceptional)
       exceptional[] = snapshot
@@ -1488,6 +1508,12 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     let inst = chunk.instructions[ip]
     let loc = chunk.location(ip)
     var next = true
+    let droppedFailures = state.failureCleanup
+    var errorsBefore: ErrorEffectSummary
+    var originsBefore = 0
+    if droppedFailures:
+      errorsBefore = errors
+      if function != nil: originsBefore = function.summary.origins.len
     template push(value: AbstractValue) = state.stack.add value
     template load(name: string): AbstractValue =
       block:
@@ -2064,6 +2090,8 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       let condition = state.pop()
       if not condition.hasLiteral or not condition.literal.isTruthy: enqueue(inst.intArg, state)
       if condition.hasLiteral and not condition.literal.isTruthy: next = false
+      elif condition.kind == avScalar and condition.name == FailureCleanupTest:
+        state.failureCleanup = true # the arm taken only for an unwind
     of opJumpIfFalseOrPop, opJumpIfTrueOrPop, opJumpIfPresentOrPop, opJumpIfAbsent:
       enqueue(inst.intArg, state)
       if inst.op != opJumpIfAbsent: discard state.pop()
@@ -2111,7 +2139,9 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       discard state.pop()
       push scalarValue("Bool")
     of opInFailureCleanup:
-      push scalarValue("Bool")
+      let test = scalarValue("Bool")
+      test.name = FailureCleanupTest
+      push test
     else:
       # An unsupported operation is an ordinary-error possibility, never a
       # successful empty proof. Warning and strict modes share this fallback.
@@ -2121,6 +2151,10 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
     if state.stack.len > 256:
       errors.open = true
       state.stack = @[unknownValue()]
+    if droppedFailures:
+      errors = errorsBefore
+      if function != nil and function.summary.origins.len > originsBefore:
+        function.summary.origins.setLen(originsBefore)
     if next: enqueue(ip + 1, state)
   result.errors = errors
   result.normalExit = normalState != nil
@@ -2499,6 +2533,10 @@ proc attachErrorInterfaces*(analysis: ErrorAnalysis, iface: CompileNamespaceInte
         entry.errorType = analysis.types["builtin:Error"].info
       elif nominal != nil:
         entry.errorType = nominal.info
+        # The branch is not in `ancestors` (an Error root is left out of it),
+        # so an importer would otherwise see a Fault as a checked type.
+        entry.throwableType = nominal.throwable
+        entry.faultType = nominal.fault
         entry.messageErrorsKnown = methodsComplete(nominal)
         entry.messageErrors = initTable[string, CallableErrorSummary]()
         for methodName, methodFn in visibleMethods(nominal):
@@ -2584,6 +2622,7 @@ proc errorInterfaceKey*(iface: CompileNamespaceInterface): string =
     result.part(name)
     result.part($entry.category)
     result.part(typeKey(entry.errorType))
+    result.part($entry.throwableType & ":" & $entry.faultType)
     result.part(callableKey(entry.callableErrors))
     result.part(callableKey(entry.constructorErrors))
     result.part($entry.messageErrorsKnown)

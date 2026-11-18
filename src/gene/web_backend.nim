@@ -688,13 +688,22 @@ proc callbackType(signature: WebFunctionSig): WebType =
       elif not param.optional:
         result.namedKeys.add param.argName
 
+proc isCatchErrorForm(form: Value): bool =
+  ## `$err` as written: only ever bound to a caught Throwable.
+  form.isSym(WebCatchErrorBindingName) or
+    (form.kind == vkNode and form.head.isSym("path") and form.body.len == 2 and
+     form.body[0].isSym("gene") and form.body[1].isSym("err"))
+
 proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
   if expected != nil and actual != nil and expected.kind == wtkNominal and
       actual.kind == wtkNominal and expected.name in ["Throwable", "Error", "Fault"] and
       actual.name in analysis.errorTypes:
     # The roots: Throwable takes every error type, Error and Fault their branch.
-    return expected.name == "Throwable" or
-      ((expected.name == "Fault") == (actual.name in analysis.faultTypes))
+    # A value known only as a Throwable may be on either branch, so neither
+    # branch root accepts it without a check.
+    if expected.name == "Throwable": return true
+    if actual.name == "Throwable": return false
+    return (expected.name == "Fault") == (actual.name in analysis.faultTypes)
   if expected != nil and expected.kind == wtkPresent and actual != nil:
     # `Present` is every value except nil. A gradual `Any` is checked at run time.
     return actual.kind in {wtkAny, wtkPresent, wtkNever} or
@@ -2814,14 +2823,30 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     else:
       raise webError(loc, "web send requires a statically known message")
     validateWebMessageName(messageName, loc)
+    let optionalSend = value.body[0].isSym("?~")
+    var presentType = receiver.typ
+    if optionalSend and presentType.kind == wtkUnion:
+      var members: seq[WebType]
+      for member in presentType.members:
+        if member.kind != wtkNil: members.add member
+      presentType = unionType(members)
+    let throwableReceiver = analysis.isWebErrorType(presentType) or
+      isCatchErrorForm(value.head)
     if protocolMessage == nil and messageName == "message" and not isSuper and
-        (receiver.typ.kind == wtkAny or analysis.isWebErrorType(receiver.typ)):
-      # Every Throwable answers `message`. The receiver may be a Gene error, a
-      # RuntimeFault node or a host exception, so the send goes through the
-      # runtime rather than a static method.
+        (receiver.typ.kind == wtkAny or throwableReceiver):
+      # Every Throwable answers `message` with a Str. The receiver may be a Gene
+      # error, a RuntimeFault node or a host exception, so the send goes through
+      # the runtime rather than a static method. Any other receiver typed Any
+      # is dispatched at run time to its own `message`, whose result is its own.
       if value.body.len != 2:
         raise webError(loc, "message expects no arguments")
-      return WebExpr(kind: wekBuiltin, text: "error_message", typ: webType(wtkStr),
+      # `?.` adds nil only when the receiver itself may be nil.
+      if throwableReceiver and not (optionalSend and typeAllowsNil(receiver.typ)):
+        return WebExpr(kind: wekBuiltin, text: "error_message", typ: webType(wtkStr),
+                        loc: loc, children: @[receiver])
+      return WebExpr(kind: wekBuiltin, text: "any_message", boolValue: optionalSend,
+                      typ: if throwableReceiver: unionType(webType(wtkStr), webType(wtkNil))
+                           else: webType(wtkAny),
                       loc: loc, children: @[receiver])
     if protocolMessage == nil and receiver.typ.kind in {wtkPropMap, wtkMap} and
         messageName in ["size", "empty?", "map", "filter_map", "filter", "each"]:
@@ -5446,7 +5471,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       declaration.fields.add WebField(sourceName: field, emittedName: field,
         typ: if name == "TypeFault": webType(wtkStr) else: webType(wtkAny))
     declaration.fields.add WebField(sourceName: "_cause", emittedName: "_cause",
-      typ: webType(wtkAny), optional: true)
+      typ: parseWebType(newSym("Throwable?"), SourceLoc()), optional: true)
     analysis.typeDecls[name] = declaration
   analysis.protocolDecls["Callable"] = WebProtocolDecl(
     sourceName: "Callable", emittedName: "Callable",
@@ -6532,6 +6557,8 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     for child in expr.children: arguments.add emitter.emitExpr(child)
     case expr.text
     of "error_message": "$gene_error_text(" & arguments[0] & ")"
+    of "any_message":
+      "$gene_any_message(" & arguments[0] & (if expr.boolValue: ", true" else: "") & ")"
     of "namespace_lookup": "$gene_namespace_lookup(" & arguments.join(", ") & ")"
     of "str/join": arguments[0] & ".join(" & (if arguments.len == 1: "\"\"" else: arguments[1]) & ")"
     of "str/split": arguments[0] & ".split(" & arguments[1] & ")"
@@ -8017,6 +8044,11 @@ proc emitStructuralEquality(emitter: var WebEmitter,
     # instances) is equal only to itself, as in the VM.
     emitter.line("const $plain = (v" & (if emitter.typescript: ": any" else: "") & ") => { const p = Object.getPrototypeOf(v); return p === Object.prototype || p === null || v[Symbol.for(\"gene.record\")] === true || v.constructor?.name === \"GeneNode\" || v.constructor?.name === \"GeneRange\"; };")
     emitter.line("if (!$plain(a) || !$plain(b)) return false;")
+    # A record equals only a record of the same type, as nodes with different
+    # heads differ on the VM. The generated RuntimeFault classes are one type.
+    emitter.line("const $nominal = (v" & (if emitter.typescript: ": any" else: "") &
+      ") => v[Symbol.for(\"gene.record\")] !== true ? null : Object.prototype.hasOwnProperty.call(v.constructor ?? {}, \"$gene_runtime\") ? \"RuntimeFault\" : Object.getPrototypeOf(v);")
+    emitter.line("if ($nominal(a) !== $nominal(b)) return false;")
     emitter.line("const aKeys = Object.keys(a).filter(key => key !== \"meta\");")
     emitter.line("const bKeys = Object.keys(b).filter(key => key !== \"meta\");")
     emitter.line("if (aKeys.length !== bKeys.length) return false;")
@@ -8037,6 +8069,8 @@ proc emitStructuralEquality(emitter: var WebEmitter,
     " { return a === b || (a == null && b == null) || (a != null && b != null && a.constructor?.name === \"GeneRange\" && b.constructor?.name === \"GeneRange\" && a.start === b.start && a.stop === b.stop && a.step === b.step && a.inclusive === b.inclusive); }")
   emitter.line()
 
+proc allFields(module: WebModule, declaration: WebTypeDecl): seq[WebField]
+
 proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = false) =
   var types: seq[WebType]
   for fn in module.functions & module.defaultBodies:
@@ -8048,7 +8082,9 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
     for param in extern.params: collectValidatorTypes(param.typ, types)
     collectValidatorTypes(extern.returnType, types)
   for declaration in module.types:
-    for field in declaration.fields: collectValidatorTypes(field.typ, types)
+    # Inherited fields too: `$gene_validate` checks a built-in parent's fields
+    # (TypeFault's `where`, Error's `_cause`) that nothing else may name.
+    for field in allFields(module, declaration): collectValidatorTypes(field.typ, types)
     for bodyType in declaration.bodyFields:
       collectValidatorTypes(bodyType, types)
     if declaration.bodyRest != nil:
