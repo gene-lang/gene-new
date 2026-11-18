@@ -3582,6 +3582,26 @@ proc callProtos(chunk: Chunk): seq[FunctionProto] =
       for message in typ.messages: found[].add message.fn)
   found[]
 
+suite "vm — small integer closures":
+  test "closures sharing code read their own captures and preserve numeric promotion":
+    ck """(fn scale [k] (fn [x] (* x k)))
+          (let a (scale 3))
+          (let b (scale 7))
+          (let choices [a b])
+          [(a 4) (b 4) (choices/0 0.5) (a 140737488355327)
+           ((scale 140737488355327) 140737488355327)]""",
+       "[12 28 1.5 422212465065981 19807040628565802923409276929]"
+
+  test "fallback runs effects once and reports the ordinary division error":
+    ck """(fn logged [k log] (fn [x] (let y (+ k x)) (log .push x) y))
+          (let log [])
+          (let f (logged 7 log))
+          [(f 3) log]""", "[10 [3]]"
+    expect GeneError:
+      discard runStr("""(fn make_rem [d] (fn [x] (// x d)))
+                        (let f (make_rem 0))
+                        (+ 1 (f 42))""")
+
 suite "vm — scopeless field reads":
   const fieldProgram = """
     (type Point ^props {^x Int ^y Int ^z Int?})

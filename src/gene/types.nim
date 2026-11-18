@@ -8318,7 +8318,7 @@ proc mulOverflows64(a, b: int64, product: var int64): bool {.
   ## The C compiler's checked multiply: true when the exact product does not
   ## fit an int64.
 
-proc checkedMul64(a, b: int64, outValue: var int64): bool {.inline.} =
+proc checkedMul64*(a, b: int64, outValue: var int64): bool {.inline.} =
   # One multiply and a flag test. Deciding the same thing from magnitudes
   # costs an integer division on every Int multiplication.
   not mulOverflows64(a, b, outValue)

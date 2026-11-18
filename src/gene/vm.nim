@@ -18967,6 +18967,66 @@ proc weakScopeLiveOnStack(ctx: pointer, target: pointer): bool {.nimcall.} =
       current = current.parent
   false
 
+let smallIntClosureEnabled = getEnv("GENE_ASTRA_LEAF", "1") != "0"
+
+proc trySmallIntClosure(proto: FunctionProto, lexical: Scope, arg: Value): Value {.noinline.} =
+  # Speculative pure evaluation. No Gene stack, scope or program value is
+  # modified until this returns a small Int. NIL means retry the ordinary call.
+  if not smallIntClosureEnabled or not proto.simpleCall or not proto.needsCallScope or
+      proto.isSyntaxFn or proto.frameNeedsImplValidation or proto.params.len != 1 or
+      proto.positionalSlots.len != 1 or proto.positionalSlots[0] != 0 or
+      not arg.isSmallInt or lexical == nil:
+    return NIL
+  let body {.cursor.} = proto.chunk
+  if body == nil or body.instructions.len > 16 or body.privateLocalSlots.len != 0:
+    return NIL
+  var values: array[16, int64]
+  var top = 0
+  for ip in 0 ..< body.instructions.len:
+    let inst = addr body.instructions[ip]
+    case inst.op
+    of opLoadLocal:
+      if inst.intArg != 0: return NIL
+      values[top] = arg.smallIntVal
+      inc top
+    of opLoadOuterLocal:
+      let slot = inst.intArg
+      if inst.depth != 1 or slot < 0 or slot >= lexical.slots.len or
+          not lexical.slotDefined(slot) or not lexical.slots[slot].isSmallInt:
+        return NIL
+      values[top] = lexical.slots[slot].smallIntVal
+      inc top
+    of opNativeFast2, opNativeFastConst:
+      var rhs: int64
+      if inst.op == opNativeFastConst:
+        if inst.depth < 0 or inst.depth >= body.constants.len or
+            not body.constants[inst.depth].isSmallInt: return NIL
+        rhs = body.constants[inst.depth].smallIntVal
+      else:
+        if top < 2: return NIL
+        dec top
+        rhs = values[top]
+      if top == 0: return NIL
+      let lhs = values[top - 1]
+      var val: int64
+      case inst.intArg
+      of ord(nfkAdd): val = lhs + rhs
+      of ord(nfkSub): val = lhs - rhs
+      of ord(nfkMul):
+        if not checkedMul64(lhs, rhs, val): return NIL
+      of ord(nfkRem):
+        if rhs == 0: return NIL
+        val = lhs mod rhs
+      else: return NIL
+      if not fitsSmallInt(val): return NIL
+      values[top - 1] = val
+    of opReturn:
+      if top == 1 and ip == body.instructions.high:
+        return smallIntOf(values[0])
+      return NIL
+    else: return NIL
+  NIL
+
 var fastLoopEnabled* = true
   ## Whether `runLoop` hands loop bodies to `fastLoop`. Tests turn it off to
   ## run the same programs through `runLoop` alone and compare.
@@ -22193,6 +22253,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let calleeScope {.cursor.} = cast[Scope](callee.fnScopeAddr)
             if code != nil and code of FunctionProto:
               let proto {.cursor.} = FunctionProto(code)
+              # Tail calls use the ordinary entry path for trace and fallback accounting.
+              if proto.capturePlan != nil and argCount == 1 and not inst[].tail and
+                  instructionBudget <= 0 and evalBudget == nil and
+                  not callee.fnHasErrorLease and proto.canBypassCallBudget(calleeScope, scope):
+                let number = trySmallIntClosure(proto, calleeScope, stack[argsStart])
+                if number.isSmallInt:
+                  strunc(argsStart)
+                  spush number
+                  continue
               if proto.nativeOp != ncoNone and
                   proto.canBypassCallBudget(calleeScope, scope):
                 let native =
@@ -22789,6 +22858,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let calleeScope {.cursor.} = cast[Scope](callee.fnScopeAddr)
             if code != nil and code of FunctionProto:
               let proto {.cursor.} = FunctionProto(code)
+              if proto.capturePlan != nil and argCount == 1 and namedCount == 0 and not inst[].tail and
+                  instructionBudget <= 0 and evalBudget == nil and
+                  not callee.fnHasErrorLease and proto.canBypassCallBudget(calleeScope, scope):
+                let number = trySmallIntClosure(proto, calleeScope, stack[argsStart])
+                if number.isSmallInt:
+                  strunc(calleeIndex)
+                  spush number
+                  continue
               if proto.nativeOp != ncoNone and
                   proto.canBypassCallBudget(calleeScope, scope):
                 var nativeNamed: NamedArgs
