@@ -816,7 +816,16 @@ proc biStrSplit(args: openArray[Value]): Value {.nimcall.} =
 proc biStrTrim(args: openArray[Value]): Value {.nimcall.} =
   requireOne("str/trim", args)
   requireStr("str/trim", args[0])
-  newStr(args[0].strVal.strip())
+  let source {.cursor.} = args[0].strVal
+  var first = 0
+  var last = source.len
+  while first < last and source[first] in {' ', '\x09'..'\x0d'}:
+    inc first
+  while last > first and source[last - 1] in {' ', '\x09'..'\x0d'}:
+    dec last
+  if first < last and (ord(source[first]) >= 128 or ord(source[last - 1]) >= 128):
+    return newStr(source.strip())
+  newStr(source[first ..< last])
 
 proc biStrLower(args: openArray[Value]): Value {.nimcall.} =
   requireOne("str/lower", args)

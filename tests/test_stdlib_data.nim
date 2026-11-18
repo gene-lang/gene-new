@@ -15,6 +15,12 @@ proc dataError(source: string): string =
     error.msg
 
 suite "string and list receiver methods":
+  test "trim handles empty input and mixed ASCII and Unicode whitespace":
+    check evalData("""
+      [($str/trim "") ($str/trim " \t\r\n ") ($str/trim "  a💡b  ")
+       ($str/trim " \u00a0β\u3000 ")]
+    """).print() == """["" "" "a💡b" "β"]"""
+
   test "split preserves empty fields for byte and multibyte separators":
     check evalData("""
       [($str/split "" ",") ($str/split ",a,,é," ",") ($str/split "α💡💡β💡" "💡")]
