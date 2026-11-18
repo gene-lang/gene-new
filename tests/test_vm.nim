@@ -5621,16 +5621,18 @@ suite "vm — actors":
        "                       ^strategy s) " &
        "     [failed m s]))]",
        "[\"bad\" [7 \"bad\" escalate]]"
-    expect GeneError:
-      discard runStr("(type Get ^props {^reply (ReplyTo Int)}) " &
-                     "(impl Send for Get) " &
-                     "(supervisor ^strategy stop " &
-                     "  (var a ($actor/spawn ^init (fn [] 0) " &
-                     "    ^handle (fn [ctx state msg] " &
-                     "      (panic \"halt\")))) " &
-                     "  (var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
-                     "  ($sleep 1) " &
-                     "  \"after\")")
+    # A handler's Panic goes through the strategy: the actor stops, the ask
+    # fails with the Panic, and the supervisor body carries on.
+    check runStr("(type Get ^props {^reply (ReplyTo Int)}) " &
+                 "(impl Send for Get) " &
+                 "(supervisor ^strategy stop " &
+                 "  (var a ($actor/spawn ^init (fn [] 0) " &
+                 "    ^handle (fn [ctx state msg] " &
+                 "      (panic \"halt\")))) " &
+                 "  (var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
+                 "  ($sleep 1) " &
+                 "  [(try (await pending) \"none\" catch Panic \"panic\") \"after\"])").print() ==
+      "[\"panic\" \"after\"]"
     expect GeneCancel:
       discard runStr("(type Boom : Error) " &
                      " " &

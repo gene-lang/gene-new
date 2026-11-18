@@ -9221,18 +9221,19 @@ suite "spec — actors from design":
                "                       ^strategy s) " &
                "     [failed m s]))]",
                "[\"bad\" [7 \"bad\" escalate]]")
-    expect GeneError:
-      discard run(compileSource("(type Get ^props {^reply (ReplyTo Int)}) " &
-                                "(impl Send for Get) " &
-                                "(supervisor ^strategy stop " &
-                                "  (var a ($actor/spawn ^init (fn [] 0) " &
-                                "    ^handle (fn [ctx state msg] " &
-                                "      (panic \"halt\")))) " &
-                                "  (var pending (a .ask " &
-                                "    (fn [reply] (Get ^reply reply)))) " &
-                                "  ($sleep 1) " &
-                                "  \"after\")"),
-                  newGlobalScope())
+    # A handler's Panic goes through the strategy: the actor stops, the ask
+    # fails with the Panic, and the supervisor body carries on.
+    check run(compileSource("(type Get ^props {^reply (ReplyTo Int)}) " &
+                            "(impl Send for Get) " &
+                            "(supervisor ^strategy stop " &
+                            "  (var a ($actor/spawn ^init (fn [] 0) " &
+                            "    ^handle (fn [ctx state msg] " &
+                            "      (panic \"halt\")))) " &
+                            "  (var pending (a .ask " &
+                            "    (fn [reply] (Get ^reply reply)))) " &
+                            "  ($sleep 1) " &
+                            "  [(try (await pending) \"none\" catch Panic \"panic\") \"after\"])"),
+              newGlobalScope()).print() == "[\"panic\" \"after\"]"
 
 suite "spec — Env and eval from design":
   test "a captured function does not retain an expired defining budget":
