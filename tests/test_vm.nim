@@ -1796,6 +1796,17 @@ suite "vm — literals and self-evaluation":
     expect GeneError:
       discard runStr("(Set [1])")
     ck "(Set #[1])", "(Set #[1])"
+  test "bulk Sets preserve order and distinguish integer, symbol and string keys":
+    ck """(let keys [])
+          (repeat i in 40 (keys .push (// i 5)))
+          (keys .push (quote x))
+          (let s (Set keys...))
+          (keys .push "x")
+          (let mixed (Set keys...))
+          [(s .into []) ($set_has? s 0) (s .contains? 5)
+           ($set_has? s (quote x)) (s .contains? "x") (mixed .contains? "x")
+           (try ($set_has? s []) catch TypeFault true)]""",
+       "[[0 1 2 3 4 x] true false true false true true]"
   test "bytes literals are self-evaluating":
     ck "[#B#01000001 #B16#4869 #B64#SGk=]",
        "[#B16#41 #B16#4869 #B16#4869]"

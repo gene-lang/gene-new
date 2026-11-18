@@ -3295,6 +3295,9 @@ proc biContains(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   of vkSet:
     beginKeyOperation(source)
     defer: endKeyOperation()
+    var found: bool
+    if tryImmediateSetContains(source, args[1], found):
+      return newBool(found)
     requireHashStableKey("Set/contains?", args[1])
     for item in source.setItems:
       if semanticEqual(item, args[1]): return TRUE
@@ -3609,6 +3612,9 @@ proc requireHashStableKey(name: string, key: Value) =
   discard semanticHash(key)
 
 proc buildSet(name: string, values: openArray[Value]): Value =
+  let indexed = tryBuildImmediateSet(values)
+  if not indexed.isNil:
+    return indexed
   var items: seq[Value]
   for value in values:
     requireHashStableKey(name, value)
@@ -7859,6 +7865,9 @@ proc biSetHas(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "Set/has expects a Set")
   beginKeyOperation(args[0])
   defer: endKeyOperation()
+  var found: bool
+  if tryImmediateSetContains(args[0], args[1], found):
+    return newBool(found)
   requireHashStableKey("Set/has", args[1])
   newBool(findEqualValue(args[0].setItems, args[1]) >= 0)
 

@@ -970,6 +970,7 @@ type
   SetData = ref object of GeneObjectData
     inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     items: seq[Value]
+    immediateIndex: HashSet[uint64] # membership only; items preserves iteration order
 
   HashMapData = ref object of GeneObjectData
     inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
@@ -8554,6 +8555,32 @@ proc newMap*(entries: sink PropTable = initPropTable(),
 
 proc newSet*(items: sink seq[Value] = @[]): Value =
   boxObject(SetData(objKind: okSet, items: items))
+
+proc bitwiseSetKey(v: Value): bool {.inline.} =
+  # Only canonical immediates whose semantic equality is bit equality.
+  v.isSmallInt or v.isSymbolValue
+
+proc tryBuildImmediateSet*(values: openArray[Value]): Value =
+  if values.len < 32:
+    return NIL
+  for value in values:
+    if not bitwiseSetKey(value):
+      return NIL
+  var seen: HashSet[uint64]
+  var ordered: seq[Value]
+  for value in values:
+    if not seen.containsOrIncl(value.bits):
+      ordered.add value
+  boxObject(SetData(objKind: okSet, items: move ordered, immediateIndex: move seen))
+
+proc tryImmediateSetContains*(v, key: Value, found: var bool): bool =
+  if not bitwiseSetKey(key):
+    return false
+  let data {.cursor.} = SetData(objData(v))
+  if data.immediateIndex.len == 0:
+    return false
+  found = key.bits in data.immediateIndex
+  true
 
 proc newHashMap*(entries: sink seq[HashMapEntry] = @[]): Value =
   boxObject(HashMapData(objKind: okHashMap, entries: entries))
