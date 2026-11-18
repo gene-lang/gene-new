@@ -90,6 +90,65 @@ suite "web catch types":
     checkpoint ran.output
     check ran.exitCode == 0
 
+  test "Throwables are JS Errors with stacks, and built-in types are constructible":
+    let root = createTempDir("gene-web-error-stacks-", "")
+    defer: removeDir(root)
+    writeFile(root / "stacks.gene", """
+      (mod stacks ^profile web)
+      (type Boom : Error ^props {^code Int})
+      (type Bug : Fault)
+      (type Odd : RuntimeFault ^props {^name Str? ^stack Str?})
+      (type Formatted : Error ^props {^code Int}
+        (message message [] : Str ^errors [] ^^override $"code ${self/code}"))
+      (fn user_error [] : Int (fail (Boom ^_msg "boom" ^code 1)))
+      (fn user_fault [] : Int (fail (Bug ^_msg "bug")))
+      (fn plain_error [] : Int (fail (Error ^_msg "plain")))
+      (fn plain_fault [] : Int (fail (Fault ^_msg "fault")))
+      (fn runtime_fault [] : Int (fail (RuntimeFault ^_msg "rt")))
+      (fn formatted [] : Int (fail (Formatted ^code 7)))
+      (fn divide [a : Int b : Int] : Int (/ a b))
+      (fn unmatched [x : Int] : Int (match ^!exhaustive x (when 1 1)))
+      (fn catches [] : (List Str)
+        [(try (fail (Error ^_msg "e")) "none" catch Error $err/.message)
+         (try (fail (Fault ^_msg "f")) "none" catch Error "wrong" catch Fault $err/.message)
+         (try (fail (RuntimeFault ^_msg "r")) "none" catch RuntimeFault $err/.message)
+         (try (fail (Odd ^_msg "o")) "none" catch RuntimeFault $err/.message)
+         (try (fail (MessageFault ^_msg "m" ^where "w" ^expected "x" ^actual "y"))
+           "none" catch TypeFault $err/.message)
+         (try (fail (PathMissing ^_msg "p" ^segment "k")) "none" catch MatchFault $err/.message)])
+      (fn caught_odd [] : Any (try (fail (Odd ^_msg "o" ^name "n" ^stack "s")) nil catch RuntimeFault $err))
+      (fn caught_boom [] : Any (try (fail (Boom ^_msg "b" ^code 2)) nil catch Error $err))
+      (fn read_stack [e : Any] : Any e/stack)
+      (fn read_name [e : Any] : Any e/name)
+      (fn same_boom [] : Bool (== (Boom ^_msg "b" ^code 2) (Boom ^_msg "b" ^code 2)))
+    """)
+    discard buildWebModule(root / "stacks.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import * as m from './stacks.mjs';
+      const thrown = (f) => { try { f(); } catch (e) { return e; } assert.fail('no throw'); };
+      for (const [f, header] of [[m.user_error, 'Boom: boom'], [m.user_fault, 'Bug: bug'],
+          [m.plain_error, 'Error: plain'], [m.plain_fault, 'Fault: fault'],
+          [m.runtime_fault, 'RuntimeFault: rt'], [m.formatted, 'Formatted: code 7'],
+          [() => m.divide(1n, 0n), 'RuntimeFault: division by zero'],
+          [() => m.unmatched(2n), 'MatchFault: no pattern matched 2']]) {
+        const e = thrown(f);
+        assert.ok(e instanceof Error);
+        assert.equal(e.stack.split('\n')[0], header);
+        assert.match(e.stack.split('\n')[1], /^\s+at /);
+        assert.ok(!Object.keys(e).includes('message') && !Object.keys(e).includes('name'));
+      }
+      assert.deepEqual(m.catches(), ['e', 'f', 'r', 'o', 'm', 'p']);
+      const odd = m.caught_odd();
+      assert.deepEqual([odd.name, odd.stack, m.read_name(odd), m.read_stack(odd)], ['n', 's', 'n', 's']);
+      const boom = m.caught_boom();
+      assert.deepEqual([boom.name, boom.message, m.read_name(boom), m.read_stack(boom)], ['Boom', 'b', null, null]);
+      assert.equal(m.same_boom(), true);
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
   test "branch catches: Error, Fault and named built-in Faults":
     let root = createTempDir("gene-web-branch-catch-", "")
     defer: removeDir(root)

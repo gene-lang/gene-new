@@ -1,12 +1,12 @@
 ## Throwable classes and branch tests shared across generated ES modules.
 ## Included by web.nim.
 ##
-## A Gene Throwable on web is one of:
-## - an instance of a class whose static `$gene_branch` is "error" or "fault":
-##   user types under `Error` or `Fault`, and the built-in classes below;
-## - a RuntimeFault (or other built-in Fault) raised as Gene node data.
-## The branch decides `catch Error` and `catch Fault`, as the parent chain does
-## on the VM. A thrown value that is neither is a host throw: the catch prologue
+## A Gene Throwable on web is an instance of a class whose static
+## `$gene_branch` is "error" or "fault": user types under `Error` or `Fault`
+## and the built-in classes below. Every one extends `globalThis.Error`, so it
+## carries a JS stack and prints in devtools as `Name: message`. The branch
+## decides `catch Error` and `catch Fault`, as the parent chain does on the VM.
+## (Node data headed by a built-in Fault name is still recognized.) A thrown value that is neither is a host throw: the catch prologue
 ## wraps it as a HostError, or a HostFault for stack or memory exhaustion.
 ## Every built-in class lives in one registry on `globalThis`, so `instanceof`
 ## holds across the modules of an application.
@@ -18,7 +18,7 @@ proc emitErrorRuntime(emitter: var WebEmitter) =
   let branchType = if emitter.typescript: ": string | null" else: ""
   let never = if emitter.typescript: ": never" else: ""
   let global = if emitter.typescript: "(globalThis as any)" else: "globalThis"
-  emitter.line("const $gene_error_key = Symbol.for(\"gene.error.classes.v2\");")
+  emitter.line("const $gene_error_key = Symbol.for(\"gene.error.classes.v3\");")
   emitter.line("const $gene_errors" & any & " = " & global & "[$gene_error_key] ?? (() => { const state" & any & " = {}; Object.defineProperty(globalThis, $gene_error_key, { value: state }); return state; })();")
   emitter.line("const $gene_error_message = Symbol.for(\"gene.Error.message\");")
   # A built-in Throwable: fields as given, `_msg` also as the JS message.
@@ -29,6 +29,45 @@ proc emitErrorRuntime(emitter: var WebEmitter) =
       " = class extends " & base & " { static $gene_branch = \"" & branch & "\";" &
       (if runtime: " static $gene_runtime = true;" else: "") &
       " constructor" & ctorParams & " { super(fields?._msg ?? \"\"); Object.assign(this, fields); this.name = \"" & jsName & "\"; } });")
+  # The Gene Throwable base: no own `message` or `name`, so a record's
+  # closed-schema and equality loops over `Object.keys` see only its fields.
+  # Its accessors answer devtools and the lazily formatted `stack` header from
+  # the type name and the Gene message; a field of the same name shadows them.
+  emitter.line("const $gene_throwable_base" & any & " = $gene_errors.throwable ?? ($gene_errors.throwable = (() => {")
+  inc emitter.indent
+  emitter.line("const base = class extends globalThis.Error { static $gene_name = \"Throwable\"; constructor(_fields" & any & " = {}) { super(); } };")
+  emitter.line("const own = (self" & any & ", key" & str & ", value" & any & ") => Object.defineProperty(self, key, { value, writable: true, enumerable: true, configurable: true });")
+  emitter.line("Object.defineProperty(base.prototype, \"name\", { get(" & (if emitter.typescript: "this: any" else: "") & ") { return this.constructor?.$gene_name ?? \"Error\"; }, set(" & (if emitter.typescript: "this: any, " else: "") & "value" & any & ") { own(this, \"name\", value); }, configurable: true });")
+  emitter.line("Object.defineProperty(base.prototype, \"message\", { get(" & (if emitter.typescript: "this: any" else: "") & ") { return $gene_js_message(this); }, set(" & (if emitter.typescript: "this: any, " else: "") & "value" & any & ") { own(this, \"message\", value); }, configurable: true });")
+  emitter.line("return base;")
+  dec emitter.indent
+  emitter.line("})());")
+  # A built-in Throwable type users can also construct, `(RuntimeFault ^_msg
+  # "x")`: a record like a user type, initialized only when it is the class
+  # constructed (a user subtype initializes itself).
+  emitter.line("function $gene_builtin_error(key" & str & ", name" & str & ", parent" & any & ", statics" & any & " = {})" & any & " {")
+  inc emitter.indent
+  emitter.line("return $gene_errors[key] ?? ($gene_errors[key] = (() => {")
+  inc emitter.indent
+  emitter.line("const cls" & any & " = class extends parent { constructor(fields" & any & " = {}, body" & array & " = [], _in_progress = false, immutable = false) { super(fields, body, true, false); if (new.target === cls) $gene_init_builtin(this, fields, body, immutable); } };")
+  emitter.line("Object.defineProperty(cls, \"name\", { value: name });")
+  emitter.line("Object.assign(cls, { $gene_name: name, $gene_error: true, $gene_fields: new Set([\"_msg\", \"_cause\", ...Object.keys(statics.$gene_extra ?? {})]) }, statics);")
+  emitter.line("return cls;")
+  dec emitter.indent
+  emitter.line("})());")
+  dec emitter.indent
+  emitter.line("}")
+  emitter.line("function $gene_init_builtin(self" & any & ", fields" & any & ", body" & array & ", immutable" & (if emitter.typescript: ": boolean" else: "") & ")" & " { Object.assign(self, fields); self.$gene_body = body.map((value" & any & ") => value === undefined ? null : value); Object.defineProperty(self, Symbol.for(\"gene.record\"), { value: true }); if (immutable) { Object.freeze(self.$gene_body); Object.freeze(self); } }")
+  emitter.line("const $gene_error_root" & any & " = $gene_builtin_error(\"errorRoot\", \"Error\", $gene_throwable_base, { $gene_branch: \"error\" });")
+  emitter.line("const $gene_fault_root" & any & " = $gene_builtin_error(\"faultRoot\", \"Fault\", $gene_throwable_base, { $gene_branch: \"fault\" });")
+  for entry in WebBuiltinErrors:
+    if entry.parent.len == 0: continue # the two roots, above
+    emitter.line("const " & entry.js & any & " = $gene_builtin_error(\"" & entry.js[6 .. ^1] &
+      "\", \"" & entry.name & "\", " & webBuiltinErrorJs(entry.parent) &
+      (if entry.name == "RuntimeFault": ", { $gene_runtime: true }" else: "") & ");")
+  emitter.line("function $gene_match_failure(value" & any & ")" & any & " { return new $gene_match_fault({ _msg: `no pattern matched ${String(value)}` }); }")
+  emitter.line("function $gene_path_failure(segment" & any & ")" & any & " { return new $gene_path_missing({ _msg: `Path segment ${String(segment)} is missing`, segment }); }")
+  emitter.line("function $gene_end_of_stream_failure()" & any & " { return new $gene_end_of_stream({ _msg: \"end of stream\" }); }")
   emitter.builtinClass("$gene_contract_type", "contractViolation", "globalThis.Error", "fault", "ContractViolation")
   emitter.builtinClass("$gene_type_fault", "typeFault", "globalThis.TypeError", "fault", "TypeFault")
   emitter.builtinClass("$gene_host_error", "hostError", "globalThis.Error", "error", "HostError")
@@ -62,7 +101,11 @@ proc emitErrorRuntime(emitter: var WebEmitter) =
   dec emitter.indent
   emitter.line("}")
   emitter.line("function $gene_error_property(value" & any & ", key" & str & ")" & any & " { return value?.[Symbol.for(\"gene.node\")] === true ? value.props[key] : value?.[key]; }")
-  emitter.line("function $gene_default_error_message(" & (if emitter.typescript: "this: any" else: "") & ")" & str & " { const stored = $gene_error_property(this, \"_msg\"); if (typeof stored === \"string\") return stored; if (stored != null) return $gene_type_error(\"message return\", \"Str\", stored); return this instanceof globalThis.Error ? String(this.message) : \"\"; }")
+  emitter.line("function $gene_default_error_message(" & (if emitter.typescript: "this: any" else: "") & ")" & str & " { const stored = $gene_error_property(this, \"_msg\"); if (typeof stored === \"string\") return stored; if (stored != null) return $gene_type_error(\"message return\", \"Str\", stored); return this instanceof globalThis.Error && !(this instanceof $gene_throwable_base) ? String(this.message) : \"\"; }")
+  emitter.line("(" & (if emitter.typescript: "$gene_default_error_message as any" else: "$gene_default_error_message") & ").$gene_default = true;")
+  # The JS `message` of a Gene Throwable: its Gene message, without letting a
+  # failing or non-string formatter escape a devtools read.
+  emitter.line("function $gene_js_message(value" & any & ")" & str & " { const formatter = value?.[$gene_error_message]; if (typeof formatter === \"function\" && formatter.$gene_default !== true) { try { const text = formatter.call(value); if (typeof text === \"string\") return text; } catch (_) {} } const stored = value?._msg; return typeof stored === \"string\" ? stored : \"\"; }")
   emitter.line("function $gene_error_message_default(_check" & any & " = null) { return $gene_default_error_message; }")
   emitter.line("function $gene_admit_error(value" & any & ")" & any & " { if ($gene_branch_of(value) === null) return $gene_type_error(\"Error admission\", \"value of an Error or Fault type\", value); return value; }")
   emitter.line("function $gene_error_text(value" & any & ")" & str & " { const formatter = typeof value?.[$gene_error_message] === \"function\" ? value[$gene_error_message] : $gene_default_error_message; const text = formatter.call(value); if (typeof text !== \"string\") return $gene_type_error(\"message return\", \"Str\", text); return text; }")

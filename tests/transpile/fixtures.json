@@ -293,6 +293,38 @@
       }
     },
     {
+      "id": "errors.builtin_construction",
+      "source": "[(try (fail (Error ^_msg \"plain\")) \"none\" catch Error $err/.message) (try (fail (Fault ^_msg \"fault\")) \"none\" catch Error \"wrong\" catch Fault $err/.message) (try (fail (RuntimeFault ^_msg \"rt\")) \"none\" catch RuntimeFault $err/.message) (try (fail (PathMissing ^_msg \"p\" ^segment \"k\")) \"none\" catch MatchFault $err/.message)]",
+      "web_source": "(mod errors_builtin_construction ^profile web) (fn run [] : (List Str) [(try (fail (Error ^_msg \"plain\")) \"none\" catch Error $err/.message) (try (fail (Fault ^_msg \"fault\")) \"none\" catch Error \"wrong\" catch Fault $err/.message) (try (fail (RuntimeFault ^_msg \"rt\")) \"none\" catch RuntimeFault $err/.message) (try (fail (PathMissing ^_msg \"p\" ^segment \"k\")) \"none\" catch MatchFault $err/.message)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "plain"
+          },
+          {
+            "kind": "str",
+            "value": "fault"
+          },
+          {
+            "kind": "str",
+            "value": "rt"
+          },
+          {
+            "kind": "str",
+            "value": "p"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
       "id": "receiver.evaluation_order",
       "source": "(var log []) (fn source [] (log .push \"receiver\") \"a,b\") (fn separator [] (log .push \"separator\") \",\") (let parts ((source) .split (separator))) [log parts]",
       "web_source": "(mod receiver_evaluation_order ^profile web) (fn source [log : (List Str)] : Str (log .push \"receiver\") \"a,b\") (fn separator [log : (List Str)] : Str (log .push \"separator\") \",\") (fn run [] : (List (List Str)) (var log : (List Str) []) (let parts ((source log) .split (separator log))) [log parts])",

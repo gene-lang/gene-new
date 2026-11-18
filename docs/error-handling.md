@@ -157,6 +157,25 @@ own helpers (an out-of-range index, an invalid argument) are `RuntimeFault`s,
 as on the VM, and a boundary failure is a `TypeFault`. `catch Throwable`
 compiles to `true`.
 
+### Throwables on web
+
+Every Gene Throwable on web is a JavaScript `Error`: user types under `Error`
+or `Fault`, and the built-in types. Each carries the JS stack from where it
+was constructed, and devtools and Node print it as `Type: message`, where the
+message is the type's Gene `message`. With source maps, the frames name `.gene`
+lines. The `stack`, `name` and `message` JS properties stay out of the value's
+fields: a path read of an undeclared `stack` or `name` is nil, as on the VM,
+and a type may still declare fields with those names.
+
+The built-in types are constructible as on the VM: `(Error ^_msg "x")`,
+`(Fault ...)`, `RuntimeFault` and its subtypes, `MatchFault`, `PathMissing`,
+`EndOfStream`, `AssertionFault`, `RefFault`, `ReplyAlreadySent`,
+`MessageFault`, `CallKindFault`, `TypeFault`, `ContractViolation`,
+`HostError` and `HostFault`, with the VM's fields. A user type can extend any
+of them, and `catch` of a type catches its subtypes (`catch MatchFault`
+catches `PathMissing`; `catch TypeFault` catches `MessageFault` and
+`CallKindFault`). The classes are shared by every module of an application.
+
 ## Choosing how much checking to require
 
 Module syntax:

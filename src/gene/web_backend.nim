@@ -806,6 +806,44 @@ proc typeName(typ: WebType): string =
 proc mangleWebName*(name: string): string
 proc jsString(value: string): string
 
+type WebBuiltinError = tuple[name, js, parent: string, fault: bool, fields: string]
+
+const WebBuiltinErrors: array[16, WebBuiltinError] = [
+  ## Built-in Throwable types the web runtime defines as classes, which user
+  ## code can construct and subtype as on the VM. Fields beyond `_msg` and
+  ## `_cause` follow the VM's declarations. MessageFault and CallKindFault are
+  ## TypeFaults on the VM; here `catch TypeFault` tests them too.
+  ("Error", "$gene_error_root", "", false, ""),
+  ("Fault", "$gene_fault_root", "", true, ""),
+  ("RuntimeFault", "$gene_runtime_fault", "Fault", true, ""),
+  ("RuntimeLaneFault", "$gene_runtime_lane_fault", "RuntimeFault", true, ""),
+  ("OrderFault", "$gene_order_fault", "RuntimeFault", true, ""),
+  ("ValueProtocolPending", "$gene_value_protocol_pending", "RuntimeFault", true, ""),
+  ("ValueNotHashable", "$gene_value_not_hashable", "RuntimeFault", true, ""),
+  ("ValueOperationReentry", "$gene_value_operation_reentry", "RuntimeFault", true, ""),
+  ("MatchFault", "$gene_match_fault", "Fault", true, ""),
+  ("PathMissing", "$gene_path_missing", "MatchFault", true, "{^segment Any}"),
+  ("EndOfStream", "$gene_end_of_stream", "Error", false, ""),
+  ("AssertionFault", "$gene_assertion_fault", "Fault", true,
+   "{^has_comparison Bool? ^actual Any ^expected Any}"),
+  ("RefFault", "$gene_ref_fault", "Fault", true, "{^name Str}"),
+  ("ReplyAlreadySent", "$gene_reply_already_sent", "Fault", true, ""),
+  ("MessageFault", "$gene_message_fault", "Fault", true,
+   "{^where Str ^expected Str ^actual Str}"),
+  ("CallKindFault", "$gene_call_kind_fault", "Fault", true,
+   "{^where Str ^expected Str ^actual Str}")]
+
+proc webBuiltinErrorJs(name: string): string =
+  ## The runtime class of a built-in Throwable type, or "" for none.
+  for entry in WebBuiltinErrors:
+    if entry.name == name: return entry.js
+  case name
+  of "TypeFault": "$gene_type_fault"
+  of "ContractViolation": "$gene_contract_type"
+  of "HostError": "$gene_host_error"
+  of "HostFault": "$gene_host_fault"
+  else: ""
+
 proc tsType(typ: WebType): string =
   case typ.kind
   of wtkNil: "null"
@@ -835,7 +873,8 @@ proc tsType(typ: WebType): string =
     if typ.name in ["Error", "Fault", "Throwable", "Panic"]: "unknown"
     elif typ.name in ["ContractViolation", "HostError", "HostFault"]: "globalThis.Error"
     elif typ.name == "TypeFault": "globalThis.TypeError"
-    elif typ.name in ["Call", "RuntimeFault", "MessageFault"]: "GeneNode"
+    elif typ.name == "Call": "GeneNode"
+    elif webBuiltinErrorJs(typ.name).len > 0: "any"
     else: mangleWebName(typ.name)
   of wtkUnion:
     var parts: seq[string]
@@ -1653,8 +1692,7 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
       raise webError(loc, "web type parent must be a declared type name")
     if form.body[2].symVal == "Throwable":
       raise webError(loc, "a web type extends Error or Fault, not Throwable")
-    if form.body[2].symVal in ["Error", "Fault"] and
-        not analysis.typeDecls.hasKey(form.body[2].symVal):
+    if form.body[2].symVal in ["Error", "Fault"]:
       # `Error` and `Fault` are built-in roots, not emitted classes. Their two
       # fields are inherited by every Throwable.
       result.implementsError = true
@@ -5357,14 +5395,37 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     message.symbolName = "$gene_error_message"
     message.defaultFactory = "$gene_error_message_default"
   analysis.protocolDecls["Error"] = errorDeclaration
-  for name in ["Throwable", "Fault", "RuntimeFault", "TypeFault", "ContractViolation",
-               "MatchFault", "PathMissing", "MessageFault", "CallKindFault",
-               "AssertionFault", "Panic", "HostFault", "EndOfStream", "HostError"]:
+  for name in ["Throwable", "TypeFault", "ContractViolation", "Panic", "HostFault",
+               "HostError"]:
     analysis.errorTypes.incl name
-  for name in ["Fault", "RuntimeFault", "TypeFault", "ContractViolation", "MatchFault",
-               "PathMissing", "MessageFault", "CallKindFault", "AssertionFault",
-               "Panic", "HostFault"]:
+  for name in ["TypeFault", "ContractViolation", "Panic", "HostFault"]:
     analysis.faultTypes.incl name
+  # The constructible built-ins: `(Error ^_msg "x")`, `(RuntimeFault ...)`,
+  # and the rest of WebBuiltinErrors, plus the host wrappers.
+  let builtinLoc = SourceLoc(sourceName: "<builtin errors>", line: 1, col: 1)
+  proc builtinDecl(name, js, parent: string, fault: bool, fields: string): WebTypeDecl =
+    result = WebTypeDecl(sourceName: name, emittedName: js, loc: builtinLoc,
+      originId: "builtin:" & name, implementsError: true, faultBranch: fault,
+      parentName: parent)
+    if parent.len == 0:
+      result.fields.add WebField(sourceName: "_msg", emittedName: "_msg",
+        typ: parseWebType(newSym("Str?"), builtinLoc), optional: true)
+      result.fields.add WebField(sourceName: "_cause", emittedName: "_cause",
+        typ: webType(wtkAny), optional: true)
+    if fields.len > 0:
+      for key, annotation in read(fields).mapEntries:
+        let typ = parseWebType(annotation, builtinLoc)
+        result.fields.add WebField(sourceName: key, emittedName: mangleWebName(key),
+          typ: typ, optional: typeAllowsNil(typ))
+  for entry in WebBuiltinErrors:
+    analysis.errorTypes.incl entry.name
+    if entry.fault: analysis.faultTypes.incl entry.name
+    analysis.typeDecls[entry.name] =
+      builtinDecl(entry.name, entry.js, entry.parent, entry.fault, entry.fields)
+  analysis.typeDecls["HostError"] =
+    builtinDecl("HostError", "$gene_host_error", "Error", false, "{^value Any}")
+  analysis.typeDecls["HostFault"] =
+    builtinDecl("HostFault", "$gene_host_fault", "Fault", true, "{^value Any}")
   for name in ["TypeFault", "ContractViolation"]:
     let declaration = WebTypeDecl(sourceName: name,
       emittedName: if name == "TypeFault": "$gene_type_fault" else: "$gene_contract_type",
@@ -6219,10 +6280,6 @@ proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
     raise newException(WebProfileError,
       "unsupported emitted web pattern kind: " & $pattern.kind)
 
-const WebNodeFaultNames = ["MessageFault", "CallKindFault", "AssertionFault",
-  "RuntimeLaneFault", "OrderFault", "RefFault", "ReplyAlreadySent",
-  "ValueProtocolPending", "ValueNotHashable", "ValueOperationReentry"]
-  ## Built-in Faults the web runtime raises, if at all, as node data.
 
 proc emitCatchType(emitter: var WebEmitter, errorType: Value,
                    target: string): string =
@@ -6237,24 +6294,19 @@ proc emitCatchType(emitter: var WebEmitter, errorType: Value,
     of "Throwable": return "true"
     of "Error": return "$gene_is_error(" & target & ")"
     of "Fault": return "($gene_branch_of(" & target & ") === \"fault\")"
-    of "ContractViolation": return target & " instanceof $gene_contract_type"
-    of "TypeFault": return target & " instanceof $gene_type_fault"
-    of "HostError": return target & " instanceof $gene_host_error"
-    of "HostFault": return target & " instanceof $gene_host_fault"
     of "Panic": return "(" & value & "?.[Symbol.for(\"gene.panic\")] === true)"
     of "RuntimeFault":
+      # Its subtypes and the generated helpers' JS-typed RuntimeFaults carry
+      # the static marker.
       return "(" & value & "?.head === Symbol.for(\"RuntimeFault\") || " &
         value & "?.constructor?.$gene_runtime === true)"
+    of "TypeFault":
+      # MessageFault and CallKindFault are TypeFaults on the VM.
+      return "(" & target & " instanceof $gene_type_fault || " & target &
+        " instanceof $gene_message_fault || " & target & " instanceof $gene_call_kind_fault)"
     else: discard
-    if name in WebNodeFaultNames:
-      return "(" & value & "?.head === Symbol.for(" & jsString(name) & "))"
-    let emitted =
-      case name
-      of "MatchFault": "GeneMatchError"
-      of "PathMissing": "GenePathMissing"
-      of "EndOfStream": "GeneEndOfStream"
-      else: mangleWebName(name)
-    return target & " instanceof " & emitted
+    let builtin = webBuiltinErrorJs(name)
+    return target & " instanceof " & (if builtin.len > 0: builtin else: mangleWebName(name))
   if errorType.kind == vkNode and errorType.head.isSym("|") and
       errorType.body.len >= 2:
     var alternatives: seq[string]
@@ -6995,7 +7047,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       var declarations: seq[string]
       let patternScope = if expr.patternScopes.len > 0: expr.patternScopes[0] else: nil
       let condition = emitter.emitPattern(expr.patterns[0], target, declarations, patternScope)
-      emitter.line("if (!(" & condition & ")) throw new GeneMatchError(" & target & ");")
+      emitter.line("if (!(" & condition & ")) throw $gene_match_failure(" & target & ");")
       for declaration in declarations:
         emitter.line(if expr.mutable: "let " & declaration[6 .. ^1]
                      else: declaration)
@@ -7050,7 +7102,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       var declarations: seq[string]
       let condition = emitter.emitPattern(expr.patterns[0], itemName, declarations,
         if expr.patternScopes.len > 0: expr.patternScopes[0] else: nil)
-      emitter.line("if (!(" & condition & ")) throw new GeneMatchError(" & itemName & ");")
+      emitter.line("if (!(" & condition & ")) throw $gene_match_failure(" & itemName & ");")
       for declaration in declarations: emitter.line(declaration)
     let body = emitter.emitExpr(expr.children[1])
     if expr.children[1].typ.kind != wtkNever: emitter.line("void " & body & ";")
@@ -7093,7 +7145,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       dec emitter.indent
       emitter.line("}")
     if expr.keys.len == 0 or expr.keys[^1] != "else":
-      emitter.line("else { throw new GeneMatchError(" & matched & "); }")
+      emitter.line("else { throw $gene_match_failure(" & matched & "); }")
     target
   of wekPath:
     var current = emitter.emitExpr(expr.children[0])
@@ -7145,7 +7197,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       # stored nil (a hit) is told apart from a miss for `^strict` and `^default`.
       statements.add current & " = $gene_get_raw(" & current & ", " & segment & "); "
       if expr.boolValue:
-        statements.add "if (" & current & " === undefined) throw new GenePathMissing(" & segment & "); "
+        statements.add "if (" & current & " === undefined) throw $gene_path_failure(" & segment & "); "
       elif defaultName.len > 0:
         statements.add "if (" & current & " === undefined) return " &
           defaultName & "; "
@@ -7222,7 +7274,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
                    else: "." & expr.text
       emitter.line("const " & resolvedMethod & " = " & target & member &
         (if expr.defaultFactory.len > 0: " ?? " & expr.defaultFactory & "()" else: "") & ";")
-      emitter.line("if (typeof " & resolvedMethod & " !== \"function\") throw new GeneNode(Symbol.for(\"MessageFault\"), { _msg: \"no applicable message implementation\" });")
+      emitter.line("if (typeof " & resolvedMethod & " !== \"function\") throw new $gene_message_fault({ _msg: \"no applicable message implementation\" });")
     var arguments: seq[string]
     for i in 1 ..< expr.children.len:
       let argument = emitter.emitExpr(expr.children[i])
@@ -7638,7 +7690,7 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
     elif param.optional:
       emitter.line(param.emittedName & " = null;")
     else:
-      emitter.line("throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: " &
+      emitter.line("throw new $gene_runtime_fault({ _msg: " &
         jsString("function '" & fn.sourceName & "' missing named argument: " &
           param.argName) & " }, [], true);")
     emitter.line(param.emittedName & " = " & validatorName(param.typ) & "(" &
@@ -8119,7 +8171,7 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
         for item in typ.errorTypes:
           if item.kind != wtkNominal or
               (item.name notin emitter.errorTypes and
-               item.name notin ["TypeFault", "RuntimeFault", "MessageFault"]):
+               webBuiltinErrorJs(item.name).len == 0):
             raise newException(WebProfileError,
               "Callable ^errors entries must name supported Error types")
           errors.add validatorName(item)
@@ -8212,14 +8264,11 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule, boundOnly = fals
         emitter.line("if ($gene_branch_of(value) !== \"fault\") $gene_type_error(where, \"Fault\", value);")
       elif typ.name == "Throwable":
         emitter.line("if ($gene_branch_of(value) === null) $gene_type_error(where, \"Throwable\", value);")
-      elif typ.name == "TypeFault":
-        emitter.line("if (!(value instanceof $gene_type_fault)) $gene_type_error(where, \"TypeFault\", value);")
-      elif typ.name in ["HostError", "HostFault"]:
-        emitter.line("if (!(value instanceof $gene_" & (if typ.name == "HostError": "host_error" else: "host_fault") &
+      elif webBuiltinErrorJs(typ.name).len > 0:
+        # A built-in Throwable type accepts what `catch` of it catches.
+        emitter.line("if (!(" & emitter.emitCatchType(newSym(typ.name), "value") &
           ")) $gene_type_error(where, " & jsString(typ.name) & ", value);")
-      elif typ.name == "ContractViolation":
-        emitter.line("if (!(value instanceof $gene_contract_type)) $gene_type_error(where, \"ContractViolation\", value);")
-      elif typ.name in ["Call", "RuntimeFault", "MessageFault"]:
+      elif typ.name == "Call":
         emitter.line("if (!$gene_is_node(value) || value.head !== Symbol.for(" &
           jsString(typ.name) & ")) $gene_type_error(where, " & jsString(typ.name) & ", value);")
       elif protocol != nil:
@@ -8349,9 +8398,16 @@ proc inheritedConstructor(module: WebModule,
 proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
                          declaration: WebTypeDecl) =
   emitter.currentLoc = declaration.loc
-  let extendsClause = if declaration.parentName.len > 0:
-                        " extends " & mangleWebName(declaration.parentName)
-                      else: ""
+  # A type under `Error` or `Fault` extends the runtime root, so it is a JS
+  # Error with a stack; a built-in parent is its runtime class.
+  let builtinParent = webBuiltinErrorJs(declaration.parentName)
+  let extendsClause =
+    if declaration.parentName.len > 0:
+      " extends " & (if builtinParent.len > 0: builtinParent
+                     else: mangleWebName(declaration.parentName))
+    elif declaration.errorRoot:
+      " extends " & (if declaration.faultBranch: "$gene_fault_root" else: "$gene_error_root")
+    else: ""
   emitter.line("export class " & declaration.emittedName & extendsClause & " {")
   inc emitter.indent
   if emitter.typescript:
@@ -8390,9 +8446,15 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
   else: " = {}, body = [], $in_progress = false, immutable = false"
   emitter.line("constructor(fields" & fieldsType & ") {")
   inc emitter.indent
-  if declaration.parentName.len > 0:
+  if declaration.parentName.len > 0 or declaration.errorRoot:
     emitter.line("super(fields, body, true);")
   emitter.line("Object.assign(this, fields);")
+  if declaration.implementsError:
+    for field in allFields(module, declaration):
+      if field.sourceName == "stack":
+        # JS gives every Error an own, non-enumerable `stack`; the field must
+        # stay visible to the closed schema, equality and path reads.
+        emitter.line("if (Object.prototype.hasOwnProperty.call(fields, \"stack\")) Object.defineProperty(this, \"stack\", { value: fields.stack, writable: true, enumerable: true, configurable: true });")
   emitter.line("this.$gene_body = body.map(value => value === undefined ? null : value);")
   # An instance under construction is marked, so `$gene_set` can tell a ctor's
   # field write from an ordinary one. Without it, a ctor that fills two fields
@@ -8668,7 +8730,7 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   emitter.line("const shape = target[$gene_callable_shape];")
   emitter.line("if (shape) {")
   inc emitter.indent
-  emitter.line("if (args.length < (shape.required ?? shape.positionals) || args.length > shape.positionals) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"function expects \" + shape.positionals + \" positional arguments\" }, [], true);")
+  emitter.line("if (args.length < (shape.required ?? shape.positionals) || args.length > shape.positionals) throw new $gene_runtime_fault({ _msg: \"function expects \" + shape.positionals + \" positional arguments\" }, [], true);")
   emitter.line("const ordered" & arr & " = shape.order.map((entry" & a & ") => typeof entry === \"number\" ? (entry < args.length ? args[entry] : $gene_missing) : Object.prototype.hasOwnProperty.call(named, entry) ? named[entry] : $gene_missing);")
   emitter.line("if (shape.namedRest) {")
   inc emitter.indent
@@ -8678,14 +8740,14 @@ proc emitCallableRuntime(emitter: var WebEmitter) =
   dec emitter.indent
   emitter.line("} else {")
   inc emitter.indent
-  emitter.line("for (const key of Object.keys(named)) if (!shape.names.includes(key)) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"unexpected named argument: \" + key }, [], true);")
+  emitter.line("for (const key of Object.keys(named)) if (!shape.names.includes(key)) throw new $gene_runtime_fault({ _msg: \"unexpected named argument: \" + key }, [], true);")
   dec emitter.indent
   emitter.line("}")
   emitter.line("return target(...ordered);")
   dec emitter.indent
   emitter.line("}")
-  emitter.line("if (Object.keys(named).length !== 0) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"unexpected named argument\" });")
-  emitter.line("if (args.length !== target.length) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"function expects \" + target.length + \" positional arguments\" });")
+  emitter.line("if (Object.keys(named).length !== 0) throw new $gene_runtime_fault({ _msg: \"unexpected named argument\" });")
+  emitter.line("if (args.length !== target.length) throw new $gene_runtime_fault({ _msg: \"function expects \" + target.length + \" positional arguments\" });")
   emitter.line("return target(...args);")
   dec emitter.indent
   emitter.line("}")
@@ -9013,7 +9075,7 @@ proc emitModule(module: WebModule, typescript: bool,
     # A zero divisor is a catchable Gene error in the VM for both numeric types
     # (`vm.nim` `biDiv`/`biRem`), so raise the VM's own value rather than
     # letting JS return Infinity or throw a RangeError.
-    let divisionByZero = "throw new GeneNode(Symbol.for(\"RuntimeFault\"), " &
+    let divisionByZero = "throw new $gene_runtime_fault(" &
       "{ _msg: \"division by zero\" }, [], true);"
     if needsIntDivisor:
       let intType = if typescript: ": bigint" else: ""
@@ -9040,13 +9102,13 @@ proc emitModule(module: WebModule, typescript: bool,
     let strType = if typescript: ": string" else: ""
     emitter.line("function $gene_index_value(index" & anyType & ")" & numType & " {")
     inc emitter.indent
-    emitter.line("if (typeof index === \"bigint\") { if (index < -9223372036854775808n || index > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"index is out of range\" }, [], true); return Number(index); }")
-    emitter.line("if (!Number.isInteger(index)) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"index must be a whole number\" }, [], true);")
-    emitter.line("if (index >= 9223372036854775808 || index < -9223372036854775808) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"index is out of range\" }, [], true);")
+    emitter.line("if (typeof index === \"bigint\") { if (index < -9223372036854775808n || index > 9223372036854775807n) throw new $gene_runtime_fault({ _msg: \"index is out of range\" }, [], true); return Number(index); }")
+    emitter.line("if (!Number.isInteger(index)) throw new $gene_runtime_fault({ _msg: \"index must be a whole number\" }, [], true);")
+    emitter.line("if (index >= 9223372036854775808 || index < -9223372036854775808) throw new $gene_runtime_fault({ _msg: \"index is out of range\" }, [], true);")
     emitter.line("return index;")
     dec emitter.indent
     emitter.line("}")
-    emitter.line("function $gene_buffer_length(length" & anyType & ")" & numType & " { const n = $gene_index_value(length); if (n < 0) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"buffer length must be non-negative\" }, [], true); return n; }")
+    emitter.line("function $gene_buffer_length(length" & anyType & ")" & numType & " { const n = $gene_index_value(length); if (n < 0) throw new $gene_runtime_fault({ _msg: \"buffer length must be non-negative\" }, [], true); return n; }")
     emitter.line("function $gene_at(seq" & anyType & ", index" & anyType &
       ")" & anyType &
       " { index = $gene_index_value(index); const found = index < 0 ? seq[seq.length + index] : seq[index]; return found === undefined ? null : found; }")
@@ -9055,8 +9117,8 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("function $gene_index(name" & strType & ", length" & numType &
       ", index" & anyType & ")" & numType &
       " { index = $gene_index_value(index); const at = index < 0 ? length + index : index;" &
-      " if (at < 0 || at >= length) throw new GeneNode(Symbol.for(\"RuntimeFault\")," &
-      " { _msg: name + \" index out of range: \" + index }, [], true);" &
+      " if (at < 0 || at >= length) throw new $gene_runtime_fault(" &
+      "{ _msg: name + \" index out of range: \" + index }, [], true);" &
       " return at; }")
     # The receiver-is-not-a-simple-name fallback: `$gene_index` needs the length,
     # and re-emitting a non-trivial receiver to read `.length` would evaluate it
@@ -9072,19 +9134,19 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("const bounds = $gene_buffer_limits[kind]; if (typeof value !== \"bigint\" || value < bounds[0] || value > bounds[1]) $gene_type_error(where, kind, value); return Number(value);")
     dec emitter.indent
     emitter.line("}")
-    emitter.line("function $gene_buffer_bound(value" & anyType & ", length" & numType & ", where" & strType & ")" & numType & " { const n = $gene_index_value(value); if (n < 0 || n > length) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: where + \" range endpoint is out of range\" }, [], true); return n; }")
+    emitter.line("function $gene_buffer_bound(value" & anyType & ", length" & numType & ", where" & strType & ")" & numType & " { const n = $gene_index_value(value); if (n < 0 || n > length) throw new $gene_runtime_fault({ _msg: where + \" range endpoint is out of range\" }, [], true); return n; }")
     emitter.line("function $gene_buffer_set(target" & anyType & ", index" & anyType & ", value" & anyType & ", kind" & strType & ")" & anyType & " { const at = $gene_index(\"Buffer/set\", target.length, index); const stored = $gene_buffer_value(value, kind, \"Buffer/set item\"); target[at] = stored; return value; }")
     emitter.line("function $gene_buffer_fill(target" & anyType & ", value" & anyType & ", kind" & strType & ", first" & anyType & " = 0, last" & anyType & " = target.length)" & anyType & " {")
     inc emitter.indent
     emitter.line("const stored = $gene_buffer_value(value, kind, \"Buffer/fill item\"); first = $gene_buffer_bound(first, target.length, \"Buffer/fill\"); last = $gene_buffer_bound(last, target.length, \"Buffer/fill\");")
-    emitter.line("if (last < first) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"Buffer/fill: end is before start\" }, [], true); target.fill(stored, first, last); return null;")
+    emitter.line("if (last < first) throw new $gene_runtime_fault({ _msg: \"Buffer/fill: end is before start\" }, [], true); target.fill(stored, first, last); return null;")
     dec emitter.indent
     emitter.line("}")
     emitter.line("function $gene_buffer_copy(target" & anyType & ", source" & anyType & ", first" & anyType & " = undefined, last" & anyType & " = undefined, offset" & anyType & " = 0)" & anyType & " {")
     inc emitter.indent
-    emitter.line("if (first === undefined) { if (target.length !== source.length) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"Buffer/copy_from: whole-buffer copy needs equal lengths\" }, [], true); first = 0; last = source.length; }")
+    emitter.line("if (first === undefined) { if (target.length !== source.length) throw new $gene_runtime_fault({ _msg: \"Buffer/copy_from: whole-buffer copy needs equal lengths\" }, [], true); first = 0; last = source.length; }")
     emitter.line("first = $gene_buffer_bound(first, source.length, \"Buffer/copy_from\"); last = $gene_buffer_bound(last, source.length, \"Buffer/copy_from\"); offset = $gene_buffer_bound(offset, target.length, \"Buffer/copy_from\");")
-    emitter.line("if (last < first || last - first > target.length - offset) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"Buffer/copy_from: invalid range or destination capacity\" }, [], true); target.set(source.subarray(first, last), offset); return null;")
+    emitter.line("if (last < first || last - first > target.length - offset) throw new $gene_runtime_fault({ _msg: \"Buffer/copy_from: invalid range or destination capacity\" }, [], true); target.set(source.subarray(first, last), offset); return null;")
     dec emitter.indent
     emitter.line("}")
     emitter.line()
@@ -9123,12 +9185,7 @@ proc emitModule(module: WebModule, typescript: bool,
       (if typescript: ": bigint" else: "") &
       " { return BigInt(value != null && value.$gene_map === true ? value.size : Object.keys(value ?? {}).length); }")
   if needsStream:
-    emitter.line("export class GeneEndOfStream extends Error {")
-    inc emitter.indent
-    emitter.line("static $gene_branch = \"error\";")
-    emitter.line("constructor() { super(\"end of stream\"); this.name = \"EndOfStream\"; }")
-    dec emitter.indent
-    emitter.line("}")
+    emitter.line("export const GeneEndOfStream" & (if typescript: ": any" else: "") & " = $gene_end_of_stream;")
     emitter.line("export class GeneStream" &
       (if typescript: "<T>" else: "") & " {")
     inc emitter.indent
@@ -9166,16 +9223,16 @@ proc emitModule(module: WebModule, typescript: bool,
       (if typescript: "!" else: "") & ".has_next()) { this.close(); return false; } return !this.closed; }); } return !this.pull().done; }")
     emitter.line("peek()" & (if typescript: ": T" else: "") & " {")
     inc emitter.indent
-    emitter.line("if (this.checkItem) { if (!this.has_next()) throw new GeneEndOfStream(); const source = this.upstream" &
+    emitter.line("if (this.checkItem) { if (!this.has_next()) throw $gene_end_of_stream_failure(); const source = this.upstream" &
       (if typescript: "!" else: "") & ", check = this.checkItem; return this.checked(() => check(source.peek())); }")
-    emitter.line("const item = this.pull(); if (item.done) throw new GeneEndOfStream(); return item.value;")
+    emitter.line("const item = this.pull(); if (item.done) throw $gene_end_of_stream_failure(); return item.value;")
     dec emitter.indent
     emitter.line("}")
     emitter.line("next()" & (if typescript: ": T" else: "") & " {")
     inc emitter.indent
     emitter.line("if (this.checkItem) { const item = this.peek(); this.checked(() => this.upstream" &
       (if typescript: "!" else: "") & ".next()); return item; }")
-    emitter.line("const item = this.pull(); if (item.done) throw new GeneEndOfStream(); this.buffered = undefined; return item.value;")
+    emitter.line("const item = this.pull(); if (item.done) throw $gene_end_of_stream_failure(); this.buffered = undefined; return item.value;")
     dec emitter.indent
     emitter.line("}")
     emitter.line("close()" & (if typescript: ": null" else: "") & " {")
@@ -9536,13 +9593,13 @@ proc emitModule(module: WebModule, typescript: bool,
   if moduleUsesBuiltin(module, ["str/slice_bytes"]):
     let params = if typescript: "s: string, start: bigint, maxBytes: bigint" else: "s, start, maxBytes"
     emitter.line("function $gene_str_slice_bytes(" & params & ")" & (if typescript: ": string" else: "") & " {")
-    emitter.line("  if (start < -9223372036854775808n || start > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"str/slice_bytes start expects an Int in int64 range\" }, [], true);")
-    emitter.line("  if (maxBytes < -9223372036854775808n || maxBytes > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"str/slice_bytes max_bytes expects an Int in int64 range\" }, [], true);")
-    emitter.line("  if (start < 0n || maxBytes < 0n) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"str/slice_bytes start and max_bytes must be non-negative\" }, [], true);")
+    emitter.line("  if (start < -9223372036854775808n || start > 9223372036854775807n) throw new $gene_runtime_fault({ _msg: \"str/slice_bytes start expects an Int in int64 range\" }, [], true);")
+    emitter.line("  if (maxBytes < -9223372036854775808n || maxBytes > 9223372036854775807n) throw new $gene_runtime_fault({ _msg: \"str/slice_bytes max_bytes expects an Int in int64 range\" }, [], true);")
+    emitter.line("  if (start < 0n || maxBytes < 0n) throw new $gene_runtime_fault({ _msg: \"str/slice_bytes start and max_bytes must be non-negative\" }, [], true);")
     emitter.line("  const bytes = $gene_str_to_utf8(s);")
-    emitter.line("  if (start > BigInt(bytes.length)) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"str/slice_bytes start exceeds string byte size\" }, [], true);")
+    emitter.line("  if (start > BigInt(bytes.length)) throw new $gene_runtime_fault({ _msg: \"str/slice_bytes start exceeds string byte size\" }, [], true);")
     emitter.line("  const first = Number(start);")
-    emitter.line("  if (first < bytes.length && (bytes[first] & 0xc0) === 0x80) throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: \"str/slice_bytes start must be a UTF-8 boundary\" }, [], true);")
+    emitter.line("  if (first < bytes.length && (bytes[first] & 0xc0) === 0x80) throw new $gene_runtime_fault({ _msg: \"str/slice_bytes start must be a UTF-8 boundary\" }, [], true);")
     emitter.line("  let last = first + Number(maxBytes > BigInt(bytes.length - first) ? BigInt(bytes.length - first) : maxBytes);")
     emitter.line("  while (last > first && last < bytes.length && (bytes[last] & 0xc0) === 0x80) last--;")
     emitter.line("  return $gene_str_from_utf8(bytes.subarray(first, last));")
@@ -9931,7 +9988,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (typeof key === \"number\" && (Array.isArray(value) || ArrayBuffer.isView(value))) return $gene_at(value, key);")
     # A name segment on a node reads a prop, never the node's anatomy.
     emitter.line("if ($gene_is_node(value)) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); return Object.prototype.hasOwnProperty.call(value.props, key) ? value.props[key] : undefined; }")
-    emitter.line("if (value[Symbol.for(\"gene.record\")] === true) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); if (Object.prototype.hasOwnProperty.call(value, key)) return value[key]; const type = value.constructor; if (type.$gene_fields?.has(key) || type.$gene_error === true) return undefined; $gene_path_fault(value, key, false); }")
+    emitter.line("if (value[Symbol.for(\"gene.record\")] === true) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); if (Object.prototype.propertyIsEnumerable.call(value, key)) return value[key]; const type = value.constructor; if (type.$gene_fields?.has(key) || type.$gene_error === true) return undefined; $gene_path_fault(value, key, false); }")
     emitter.line("if (typeof key === \"string\" && !(key in Object(value))) { const camel = key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase()); if (camel in Object(value)) key = camel; }")
     emitter.line("return value[key];")
     dec emitter.indent
@@ -9941,7 +9998,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("const label = " & (if needsStream: "value instanceof GeneStream ? \"Stream\" : " else: "") & "typeof value === \"string\" ? \"Str\" : typeof value === \"boolean\" ? \"Bool\" : typeof value === \"symbol\" ? \"Sym\" : typeof value === \"bigint\" ? \"Int\" : typeof value === \"number\" ? \"F64\" : Array.isArray(value) ? \"List\" : (value[$gene_prop_order] || value?.$gene_map === true) ? \"Map\" : (value?.constructor?.$gene_name ?? \"Value\");")
     emitter.line("const name = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key);")
     emitter.line("const message = value?.[Symbol.for(\"gene.record\")] === true ? `${label} has no field '${name}'` : index ? `${label} cannot be indexed through a path` : `${label} has no fields, so '${name}' cannot be read through a path`;")
-    emitter.line("throw new GeneNode(Symbol.for(\"RuntimeFault\"), { _msg: message }, [], true);")
+    emitter.line("throw new $gene_runtime_fault({ _msg: message }, [], true);")
     dec emitter.indent
     emitter.line("}")
     emitter.line("function $gene_delete(value" & dynamic & ", key" & dynamic & ")" & dynamic & " {")
@@ -9991,16 +10048,6 @@ proc emitModule(module: WebModule, typescript: bool,
     # construction, and `$gene_new` checks it once when the ctor finishes.
     emitter.line("if (typeof value.$gene_validate === \"function\" && !value.$gene_in_progress) { try { value.$gene_validate(); } catch (error) { if (had) value[key] = previous; else delete value[key]; throw error; } }")
     emitter.line("return next;")
-    dec emitter.indent
-    emitter.line("}")
-    emitter.line()
-  if moduleUsesStrictSelector(module):
-    emitter.line("class GenePathMissing extends Error {")
-    inc emitter.indent
-    emitter.line("static $gene_branch = \"fault\";")
-    emitter.line("constructor(segment" &
-      (if typescript: ": unknown" else: "") &
-      ") { super(`Path segment ${String(segment)} is missing`); this.name = \"PathMissing\"; }")
     dec emitter.indent
     emitter.line("}")
     emitter.line()
@@ -10060,20 +10107,6 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.emitImplDeclaration(implementation)
   for implementation in module.impls:
     emitImplAndSources(implementation)
-  if moduleUsesPatternMatching(module):
-    emitter.line("class GeneMatchError extends Error {")
-    inc emitter.indent
-    emitter.line("static $gene_branch = \"fault\";")
-    emitter.line("constructor(value" &
-      (if typescript: ": unknown" else: "") & ") {")
-    inc emitter.indent
-    emitter.line("super(`no pattern matched ${String(value)}`);")
-    emitter.line("this.name = \"MatchFault\";")
-    dec emitter.indent
-    emitter.line("}")
-    dec emitter.indent
-    emitter.line("}")
-    emitter.line()
   var needsEquality = needsMapEquality or moduleUsesStructuralEquality(module)
   if needsEquality:
     let needsObjectEquality =
@@ -10229,7 +10262,7 @@ proc emitDeclarations(module: WebModule): string =
       result.add "  }>;\n}>;\n"
   for declaration in module.types:
     result.add "export declare class " & declaration.emittedName &
-      (if declaration.parentName.len > 0:
+      (if declaration.parentName.len > 0 and webBuiltinErrorJs(declaration.parentName).len == 0:
         " extends " & mangleWebName(declaration.parentName)
        else: "") & " {\n"
     for field in allFields(module, declaration):
