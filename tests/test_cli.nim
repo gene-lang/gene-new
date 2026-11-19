@@ -133,6 +133,32 @@ suite "cli — gene run":
     check "; nim-opt=speed; " in built.output
     check "; bounds=true; overflow=true)" in built.output
 
+  test "incremental package builds reuse warm binaries and relink after mode changes":
+    let root = cliDir / "incremental-build-mode"
+    createDir(root / "src")
+    copyFile("config.nims", root / "config.nims")
+    copyFile("nim.cfg", root / "nim.cfg")
+    copyFile("tests/fixtures/build_mode/gene.nim", root / "src" / "gene.nim")
+    let executable = addFileExt(root / "probe", ExeExt)
+    let command = "nim c -r -d:NimblePkgVersion=0.1.0 --hints:off --path:" &
+      shellQuote(absolutePath("src")) & " --out:" & shellQuote(executable)
+    proc buildMode(flags = ""): string =
+      let built = execCmdEx(command & " " & flags & " " &
+        shellQuote(root / "src" / "gene.nim"), workingDir = root)
+      checkpoint built.output
+      check built.exitCode == 0
+      built.output
+    check "(release; " in buildMode()
+    let cache = root / "build" / "nimcache" / "gene-ic"
+    check fileExists(cache / "ic.version")
+    let linked = getFileInfo(executable)
+    check "(release; " in buildMode()
+    check getFileInfo(executable).id == linked.id
+    check getLastModificationTime(executable) == linked.lastWriteTime
+    for flags in ["-d:geneDebug", "--ic:off -d:geneDebug"]:
+      check "(debug; " in buildMode(flags)
+      check "(release; " in buildMode()
+
   test "missing source paths report file not found":
     for path in ["nonexistent.gene", "missing/program.gene"]:
       let ran = runGene(["run", path])

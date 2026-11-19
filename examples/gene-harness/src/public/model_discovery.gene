@@ -96,6 +96,30 @@
     (result .push model))
   result)
 
+(fn normalize_deepseek_models [payload]
+  (let result [])
+  (for source in (catalog_items payload "data")
+    (if (|| (!= ($head source/id) Str) (== source/id "")) (continue))
+    (let model {^id source/id
+      ^label (if (== ($head source/name) Str) (then source/name) (else source/id))})
+    (copy_positive model "window" source/context_window)
+    (copy_positive model "max_output" source/max_output_tokens)
+    (if (== ($head source/input_modalities) List)
+      (then
+        (let inputs [])
+        (for kind in ["text" "image"]
+          (if (source/input_modalities .contains? kind) (inputs .push kind)))
+        (model .put "input" inputs)))
+    (if (== ($head source/effort/supported_levels) List)
+      (then
+        (let efforts ["none"])
+        (for level in ["low" "high" "max"]
+          (if (source/effort/supported_levels .contains? level) (efforts .push level)))
+        (model .put "efforts" efforts)
+        (copy_default model source/effort/default_level)))
+    (result .push model))
+  result)
+
 (fn normalize_compatible_models [payload]
   (let result [])
   (for source in (catalog_items payload "data")

@@ -86,6 +86,7 @@
     (when "chatgpt" "Continue with ChatGPT and authorize plan usage. Identity sign-in alone does not enable inference.")
     (when "anthropic" "Set ANTHROPIC_API_KEY or run ant auth login, then refresh connections. The API key takes precedence; both routes use API billing.")
     (when "openrouter" "Connect with OpenRouter or set OPENROUTER_API_KEY. An environment key takes precedence over a saved sign-in.")
+    (when "deepseek" "Set DEEPSEEK_API_KEY, then refresh connections.")
     (else
       (if ($present? configured/credential/env)
         (then ($to_str "Configure " (text configured/credential/env) ", then refresh connections."))

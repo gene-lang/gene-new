@@ -70,6 +70,18 @@
     ($assert (== provider/config_digest before))
     ($assert (== provider/builtin_models/0/efforts [])))
 
+  (it "sends DeepSeek thinking-off and image content using its chat fields" []
+    (let input (call "none"))
+    (input .put "messages" [{^role "user" ^content "Describe this image"
+      ^images [{^mime "image/png" ^data "aW1hZ2U="}]}])
+    (let prepared (prepare_chat input "deepseek_chat"))
+    ($assert (== prepared/body/reasoning_effort "none"))
+    ($assert (== prepared/body/max_tokens 8192))
+    ($assert ($absent? prepared/body/max_completion_tokens))
+    ($assert (== prepared/body/messages/0/content/0/text "Describe this image"))
+    ($assert (== prepared/body/messages/0/content/1/type "image_url"))
+    ($assert (== prepared/body/messages/0/content/1/image_url/url "data:image/png;base64,aW1hZ2U=")))
+
   (it "keeps protocol effort and budget fields distinct without credentials" []
     (for [constructor effort_key budget_key] in [[openai_chat "reasoning_effort" "max_completion_tokens"]
       [openrouter_chat "reasoning" "max_tokens"] [openai_responses "reasoning" "max_output_tokens"]

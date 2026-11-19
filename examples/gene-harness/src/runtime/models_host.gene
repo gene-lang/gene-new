@@ -87,7 +87,7 @@
   nil)
 
 (fn endpoint_reserved_names [runtime]
-  (let names ["chatgpt" "claude" "anthropic" "openrouter" "offline" "scripted"])
+  (let names ["chatgpt" "claude" "anthropic" "openrouter" "deepseek" "offline" "scripted"])
   (for record in (registry_row_records runtime/h "providers")
     (if (&& (!= record/owner "model_endpoints") (! (names .contains? record/key)))
       (names .push record/key)))

@@ -22,7 +22,9 @@
 
 (fn prepare_chat [call, adapter : Str]
   (let body {^model call/settings/model ^messages (chat_messages call/messages)})
-  (body .put (if (== adapter "openrouter_chat") "max_tokens" "max_completion_tokens") (output_budget call))
+  (let budget_key (if (["openrouter_chat" "deepseek_chat"] .contains? adapter)
+    (then "max_tokens") (else "max_completion_tokens")))
+  (body .put budget_key (output_budget call))
   (if ($present? call/settings/effort)
     (if (== adapter "openrouter_chat")
       (then (body .put "reasoning" {^effort call/settings/effort}))

@@ -1,12 +1,12 @@
 ## A bounded, single-writer registry behind a TLS reverse proxy. It deliberately
 ## binds loopback only and has no Gene evaluator or online private signing key.
 import std/[base64, monotimes, nativesockets, net, os, strutils, sysrand,
-            tables, tempfiles, times]
+            tables, tempfiles, times, volatile]
 import gene/[package, printer, registry_store, release_crypto]
 when defined(posix): import std/posix
 
-var stopping {.volatile.} = false
-proc requestStop(signal: cint) {.noconv.} = stopping = true
+var stopping = false
+proc requestStop(signal: cint) {.noconv.} = volatileStore(addr stopping, true)
 
 proc reject(status: int, message: string) {.noreturn.} =
   var error = newException(RegistryServiceError, message)
@@ -203,12 +203,12 @@ proc main() =
   server.listen(32)
   stdout.writeLine("registry listening 127.0.0.1:" & $server.getLocalAddr()[1])
   stdout.flushFile()
-  while not stopping:
+  while not volatileLoad(addr stopping):
     var readable = @[server.getFd()]
     try:
       if selectRead(readable, 250) <= 0: continue
     except OSError:
-      if stopping: break
+      if volatileLoad(addr stopping): break
       raise
     var client: owned(Socket)
     server.accept(client)

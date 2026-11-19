@@ -16,6 +16,10 @@ same model offered through two connections is two different choices.
 | `claude` | Installed Claude Code CLI | Claude Code owns its login and billing selection |
 | `anthropic` | Anthropic Messages API, metered | `ANTHROPIC_API_KEY`, then an existing `ant` Console login |
 | `openrouter` | OpenRouter Chat Completions | `OPENROUTER_API_KEY`, then `OPENROUTER_KEY`, then the Harness Connect record |
+| `deepseek` | DeepSeek Chat Completions, metered | `DEEPSEEK_API_KEY` |
+
+Select `deepseek` as the provider to use DeepSeek V4.1 Flash by default.
+Its API model ID is `deepseek-flash`.
 
 See [Claude providers](claude.md) for CLI setup, API authentication and transport
 limits. Harness sign-in records default to `~/.config/gene-harness/`;
@@ -54,9 +58,9 @@ Saved configuration takes precedence over ambient
 not leak into the selected provider.
 
 Automatic selection prefers ready plan/local routes to metered routes. Built-in
-ranks are Claude Code, ChatGPT, Anthropic and OpenRouter. The browser can ask for
-a first-use default when several connections are ready. A selected unavailable
-connection makes the profile `not_ready`; it does not silently fall back.
+ranks are Claude Code, ChatGPT, Anthropic, OpenRouter and DeepSeek. The browser
+can ask for a first-use default when several connections are ready. A selected
+unavailable connection makes the profile `not_ready` and stops the round.
 
 A typed model ID absent from the catalog is accepted as unverified. Unknown
 model metadata uses a 128,000-token context window unless capped by workspace
@@ -119,7 +123,7 @@ service and a model it supports.
 | Model | `id`; `provider` for top-level overrides; optional `label`, `rank`, `window`, `max_output`, `input`, `efforts`, `default_effort`, `hidden`, `effective_percent`, `prompt_limit_bytes`, `pricing` |
 | Preset | `name`, `provider`, `model`, optional `effort` |
 
-Supported adapters are `openai_chat`, `openrouter_chat`,
+Supported adapters are `openai_chat`, `openrouter_chat`, `deepseek_chat`,
 `openai_responses` and `anthropic_messages`. They preserve their distinct
 wire fields and response handling. Known protocols can be configured through
 the file; a new protocol requires a provider plugin.

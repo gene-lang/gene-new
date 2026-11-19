@@ -18,7 +18,8 @@
       ^GENE_HARNESS_THINKING_EFFORT nil
       ^ANTHROPIC_API_KEY nil
       ^OPENROUTER_API_KEY nil
-      ^OPENROUTER_KEY nil})
+      ^OPENROUTER_KEY nil
+      ^DEEPSEEK_API_KEY nil})
   (await
     ($os/exec_stdio_async ^env environment
       ($os/executable_path)

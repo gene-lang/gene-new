@@ -71,7 +71,7 @@
   (fields value ["name" "adapter" "base_url" "credential" "discover" "models"] "provider")
   (require_text value/name "Provider name")
   (if (reserved .contains? value/name) (config_error $"Provider ${value/name} is already defined"))
-  (if_not (["openai_chat" "openrouter_chat" "openai_responses" "anthropic_messages"] .contains? value/adapter)
+  (if_not (["openai_chat" "openrouter_chat" "deepseek_chat" "openai_responses" "anthropic_messages"] .contains? value/adapter)
     (config_error "Unknown provider adapter"))
   (require_text value/base_url "Provider base_url")
   (if_not (|| ($str/starts_with? value/base_url "http://") ($str/starts_with? value/base_url "https://"))
@@ -101,7 +101,7 @@
     ^effort (?? value/effort "auto")})
   ($thaw ($freeze value)))
 
-(fn normalize_models_file [value, ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "offline" "scripted"]]
+(fn normalize_models_file [value, ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "deepseek" "offline" "scripted"]]
   (fields value ["version" "default" "providers" "models" "presets"] "models.gene")
   (if (!= value/version 1) (config_error "Unsupported models.gene version"))
   (let default (?? value/default {}))
@@ -143,7 +143,7 @@
 
 (fn models_path [root : Str] ($path/join root ".gene-harness" "models.gene"))
 
-(fn read_models_file [root : Str, ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "offline" "scripted"]]
+(fn read_models_file [root : Str, ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "deepseek" "offline" "scripted"]]
   (let path (models_path root))
   (if (! ($fs/exists? path))
     (return {^config {^version 1 ^default {} ^providers [] ^models [] ^presets []}
@@ -161,7 +161,7 @@
      ^errors [{^section "file" ^reason $err/.message}] ^digest digest}))
 
 (fn write_models_file [root : Str, value, expected : Str, ^wait_ms wait_ms : Int = 1000,
-  ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "offline" "scripted"]]
+  ^reserved reserved = ["chatgpt" "claude" "anthropic" "openrouter" "deepseek" "offline" "scripted"]]
   (let checked (normalize_models_file ^reserved reserved value))
   (if (! checked/errors/.empty?) (config_error checked/errors/0/reason))
   ($fs/make_dir ($path/join root ".gene-harness"))

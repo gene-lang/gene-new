@@ -1,0 +1,33 @@
+(mod provider_deepseek)
+(import [Plugin PluginHost] ^from "../plugin_api")
+(import [contribute_text_doc] ^from "../public/documentation")
+(import [deepseek_models] ^from "../public/model_defaults")
+(import [deepseek_chat nonempty] ^from "../public/provider")
+
+(fn provider_deepseek [] : Plugin
+  (Plugin ^id "provider_deepseek" ^provides [["providers" "deepseek"]]
+    ^activate (fn [host]
+      (let provider (deepseek_chat
+        {^name "deepseek" ^base_url "https://api.deepseek.com"
+         ^credential {^env "DEEPSEEK_API_KEY"} ^^discover ^models (deepseek_models)}))
+      (let connection provider/connection)
+      (provider .put "connection" (fn []
+        (let state (connection))
+        (state .put "label" "DeepSeek")
+        (state .put "billing" "metered")
+        (if (== state/state "sign_in_required")
+          (then (state .put "reason" "Set DEEPSEEK_API_KEY and refresh connections.")))
+        (let key (nonempty ($os/env? "DEEPSEEK_API_KEY")))
+        (if ($present? key)
+          (then (state .put "account" ($to_str "Key " ($str/slice_bytes ($crypto/sha256 key) 0 12)))))
+        state))
+      (provider/transport .put "billing" "metered")
+      (provider .put "auto" 5)
+      (provider .put "doc" "Use the DeepSeek API with DeepSeek V4.1 Flash by default.")
+      (provider .put "tags" ["provider" "model" "deepseek"])
+      (provider .put "docs" ["harness/providers/deepseek"])
+      (host .PluginHost:contribute "providers" provider)
+      (contribute_text_doc host "harness/providers/deepseek"
+        "Direct DeepSeek API connection."
+        "Set DEEPSEEK_API_KEY for this metered connection. The default model is DeepSeek V4.1 Flash (deepseek-flash), with text and image inputs. Discovery uses the DeepSeek model list. Credentials are read at the transport boundary."
+        ^tags ["provider" "model" "deepseek"]))))

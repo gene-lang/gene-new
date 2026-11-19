@@ -38,7 +38,8 @@
       ^GENE_HARNESS_OFFLINE nil
       ^ANTHROPIC_API_KEY nil
       ^OPENROUTER_API_KEY nil
-      ^OPENROUTER_KEY nil})
+      ^OPENROUTER_KEY nil
+      ^DEEPSEEK_API_KEY nil})
   (let process
     ($os/exec_async ^env environment ^max_bytes 1048576 ^timeout_ms 240000
       ($os/executable_path)

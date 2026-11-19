@@ -3,10 +3,42 @@ when withDir(thisDir(), system.fileExists("nimble.paths")):
   include "nimble.paths"
 # end Nimble config
 
+import std/[os, strutils]
+
 # Executables used by people should not accidentally run the instrumented
 # interpreter. Keep implementation tests at their requested build mode, and
 # retain an explicit debug build for the CLI and its companion tools.
 if projectName() in ["gene", "gene_fmt", "gene_lsp", "gene_viewer", "gene_registry"]:
+  if projectDir() == thisDir() / "src":
+    let executableCache = thisDir() / "build" / "nimcache" / (projectName() & "-ic")
+    var incremental = defined(NimblePkgVersion)
+    var command = ""
+    var separateCache = false
+    for i in 1 .. paramCount():
+      let arg = paramStr(i)
+      if arg.len == 0: continue
+      if arg[0] != '-':
+        if command.len > 0: break
+        command = arg
+      case arg
+      of "--ic:on", "--ic=on": incremental = true
+      of "--ic:off", "--ic=off": incremental = false
+      else:
+        for prefix in ["--nimcache:", "--nimcache="]:
+          if arg.startsWith(prefix):
+            separateCache = absolutePath(arg[prefix.len .. ^1]) != executableCache
+    if incremental:
+      # Share the link marker across configurations that write the same binary.
+      # Nim keeps their compiled modules in separate configuration directories.
+      switch("nimcache", executableCache)
+      switch("ic", "on")
+    if command in ["c", "compile", "cc", "cpp", "objc", "r"] and
+        (not incremental or (defined(NimblePkgVersion) and separateCache)):
+      # Builds outside this cache can replace a binary without updating its
+      # link marker. Drop the marker so the next build relinks cached objects.
+      let linkMarker = executableCache / "ic_link_args.txt"
+      if system.fileExists(linkMarker): rmFile(linkMarker)
+
   when defined(geneDebug):
     when defined(release) or defined(danger):
       quit("geneDebug cannot be combined with release or danger")
@@ -85,7 +117,7 @@ when defined(linux) or defined(emscripten):
 # `SDKROOT` always wins, and nothing changes on a toolchain where the default
 # works. Probe results are cached per SDK and compiler version.
 when defined(macosx) and not defined(emscripten):
-  import std/[algorithm, os, strutils]
+  import std/algorithm
 
   proc sdkVersion(name: string): seq[int] =
     # "MacOSX26.5.sdk" -> @[26, 5]; anything else -> @[]

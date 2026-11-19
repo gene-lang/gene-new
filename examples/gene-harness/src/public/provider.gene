@@ -4,7 +4,7 @@
 (import [resolve_effort model_entry] ^from "./models")
 (import [model_capabilities] ^from "./models")
 (import [validate_provider] ^from "./models_file")
-(import [normalize_compatible_models] ^from "./model_discovery")
+(import [normalize_compatible_models normalize_deepseek_models] ^from "./model_discovery")
 (import [prepare_chat prepare_responses prepare_messages chat_result responses_stream_result messages_stream_result]
   ^from "./provider_payloads")
 (import $os [exec_async])
@@ -154,7 +154,9 @@
   (let response (probe_json ^headers headers ^timeout_ms remaining (endpoint_url entry/base_url "models")))
   (if (|| (!= response/status 200) ($present? response/error))
     (fail (ProviderError ^status response/status ^_msg "Model discovery could not complete")))
-  (normalize_compatible_models response/data))
+  (if (== entry/adapter "deepseek_chat")
+    (then (normalize_deepseek_models response/data))
+    (else (normalize_compatible_models response/data))))
 
 (fn endpoint_provider [input]
   (let entry (try (validate_provider input [])
@@ -178,6 +180,7 @@
      (match adapter
        (when "openai_chat" (prepare_chat call adapter))
        (when "openrouter_chat" (prepare_chat call adapter))
+       (when "deepseek_chat" (prepare_chat call adapter))
        (when "openai_responses" (prepare_responses call))
        (when "anthropic_messages" (prepare_messages call))
        (else (fail (ProviderError ^_msg "Unknown endpoint adapter")))))
@@ -199,6 +202,7 @@
 
 (fn openai_chat [entry] (endpoint_provider (entry .assoc "adapter" "openai_chat")))
 (fn openrouter_chat [entry] (endpoint_provider (entry .assoc "adapter" "openrouter_chat")))
+(fn deepseek_chat [entry] (endpoint_provider (entry .assoc "adapter" "deepseek_chat")))
 (fn openai_responses [entry] (endpoint_provider (entry .assoc "adapter" "openai_responses")))
 (fn anthropic_messages [entry] (endpoint_provider (entry .assoc "adapter" "anthropic_messages")))
 

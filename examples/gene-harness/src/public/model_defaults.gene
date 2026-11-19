@@ -36,3 +36,11 @@
       ^input ["text"] ^prompt_limit_bytes 131072
       ^efforts ["none" "low" "medium" "high" "xhigh" "max"]}))
   result)
+
+(fn deepseek_models []
+  [{^id "deepseek-flash" ^label "DeepSeek V4.1 Flash"
+    ^window 1048576 ^max_output 393216 ^input ["text" "image"]
+    ^efforts ["none" "low" "high" "max"] ^default_effort "high"}
+   {^id "deepseek-v4-pro" ^label "DeepSeek V4 Pro"
+    ^window 1048576 ^max_output 393216 ^input ["text"]
+    ^efforts ["none" "low" "high" "max"] ^default_effort "high"}])
