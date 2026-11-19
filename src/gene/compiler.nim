@@ -11378,6 +11378,8 @@ proc fuseSequences(chunk: Chunk, seen: var HashSet[pointer]) =
     if chunk.instructions[i].op == opResolveMessage and
         chunk.instructions.fusedSequenceFollows(i, opSend):
       chunk.instructions[i].op = opSend
+  if chunk.owner != nil and chunk.owner.chunk == chunk:
+    chunk.owner.deriveSmallIntLeaf()
   for body, _ in chunk.nestedChunks:
     fuseSequences(body, seen)
   template fuseMessages(messages: untyped) =

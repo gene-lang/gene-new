@@ -121,6 +121,19 @@ suite "fastLoop":
       discard fastLoopOutcome(fastLoopPrograms[0], false)
       check fastLoopRuns == before
 
+    test "mirrored loops complete slot writes in fastLoop":
+      for source in [
+        "(var total 0) (repeat i in 100 (set total (+ total i))) total",
+        """(ns totals
+             (var total 0)
+             (repeat i in 100 (set total (+ total i))))
+           totals/total"""
+      ]:
+        let before = fastLoopMirroredWrites
+        check fastLoopOutcome(source, true) == "4950"
+        check fastLoopMirroredWrites >= before + 100
+        check fastLoopOutcome(source, false) == "4950"
+
   test "the kernels give their known results":
     check fastLoopOutcome(fastLoopPrograms[1], true) == "499500"
     check fastLoopOutcome(fastLoopPrograms[2], true) == "1180591620717411303424"

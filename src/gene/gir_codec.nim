@@ -527,7 +527,23 @@ proc toJsonHook(chunk: Chunk,
 proc toJsonHook(fn: FunctionProto, options: ToJsonOptions): JsonNode =
   if fn == nil: return newJNull()
   validateUnlinkedFunction(fn)
-  toJson(fn[], options)
+  result = toJson(fn[], options)
+  result.delete("smallIntLeafEligible")
+
+proc fromJsonHook(fn: var FunctionProto, node: JsonNode, options = Joptions()) =
+  if node.kind == JNull:
+    fn = nil
+    return
+  if node.kind != JObject or node.hasKey("smallIntLeafEligible"):
+    raise newException(ValueError, "invalid encoded GIR function")
+  # Supply the derived field only to the object decoder. Keep the portable
+  # schema strict and compatible with artifacts written before this fast path.
+  var fields = newJObject()
+  for key, value in node:
+    fields[key] = value
+  fields["smallIntLeafEligible"] = %false
+  fn = FunctionProto()
+  fromJson(fn[], fields, options)
 
 proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
   var seenChunks = initHashSet[pointer]()
@@ -557,6 +573,7 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
     validateSummary(fn.errorSummary)
     restoreChunk(fn.chunk, fn)
     restoreChunk(fn.scopelessChunk, fn)
+    fn.deriveSmallIntLeaf()
     if fn.scopelessChunk != nil:
       # A scopeless body addresses its frame's cells by index: arguments and
       # locals may be read, only locals written. The locals' cells exist

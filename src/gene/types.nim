@@ -970,7 +970,9 @@ type
   SetData = ref object of GeneObjectData
     inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     items: seq[Value]
-    immediateIndex: HashSet[uint64] # membership only; items preserves iteration order
+    # Membership index for canonical immediates only. Keep it in sync with
+    # items, which owns iteration order. Published Sets have no mutator.
+    immediateIndex: HashSet[uint64]
 
   HashMapData = ref object of GeneObjectData
     inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
@@ -2400,7 +2402,9 @@ proc clearObjectEdges(data: GeneObjectData) =
   of okDate, okTime, okDateTime, okTimezone, okDuration:
     discard
   of okSet:
-    SetData(data).items.setLen(0)
+    let d = SetData(data)
+    d.items.setLen(0)
+    reset(d.immediateIndex)
   of okHashMap:
     HashMapData(data).entries.setLen(0)
   of okPipeline:
@@ -8553,31 +8557,44 @@ proc newMap*(entries: sink PropTable = initPropTable(),
       if p.frozenGraphProofs == 0: break
   boxPtr(MAP_TAG, p)
 
-proc newSet*(items: sink seq[Value] = @[]): Value =
-  boxObject(SetData(objKind: okSet, items: items))
-
 proc bitwiseSetKey(v: Value): bool {.inline.} =
-  # Only canonical immediates whose semantic equality is bit equality.
+  # Canonical Small Ints and interned Symbols have bitwise semantic equality.
   v.isSmallInt or v.isSymbolValue
 
-proc tryBuildImmediateSet*(values: openArray[Value]): Value =
-  if values.len < 32:
-    return NIL
+# Linear scans avoid allocating a hash table for small sets. Larger
+# immediate inputs can deduplicate in expected linear time instead of
+# comparing each input against all earlier distinct items.
+const ImmediateSetIndexMin = 32
+
+proc canBuildImmediateSetIndex(values: openArray[Value]): bool {.inline.} =
+  if values.len < ImmediateSetIndexMin: return false
   for value in values:
-    if not bitwiseSetKey(value):
-      return NIL
+    if not bitwiseSetKey(value): return false
+  true
+
+proc newSet*(items: sink seq[Value] = @[]): Value =
+  var index: HashSet[uint64]
+  if canBuildImmediateSetIndex(items):
+    for item in items:
+      index.incl item.bits
+    if index.len < ImmediateSetIndexMin:
+      reset(index)
+  boxObject(SetData(objKind: okSet, items: move items, immediateIndex: move index))
+
+proc tryBuildImmediateSet*(values: openArray[Value]): Value =
+  if not canBuildImmediateSetIndex(values): return NIL
   var seen: HashSet[uint64]
   var ordered: seq[Value]
   for value in values:
     if not seen.containsOrIncl(value.bits):
       ordered.add value
+  if ordered.len < ImmediateSetIndexMin:
+    reset(seen)
   boxObject(SetData(objKind: okSet, items: move ordered, immediateIndex: move seen))
 
-proc tryImmediateSetContains*(v, key: Value, found: var bool): bool =
-  if not bitwiseSetKey(key):
-    return false
+proc tryImmediateSetContains*(v, key: Value, found: var bool): bool {.inline.} =
   let data {.cursor.} = SetData(objData(v))
-  if data.immediateIndex.len == 0:
+  if data.immediateIndex.len == 0 or not bitwiseSetKey(key):
     return false
   found = key.bits in data.immediateIndex
   true
@@ -8835,8 +8852,10 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
   of vkSet:
     let data = SetData(objData(v))
     retirePatchedStamp(data.inertEpoch)
-    for i in 0 ..< data.items.len:
-      data.items[i] = patchPendingModuleRef(data.items[i], name, target, seen)
+    # Indexed entries are immediates and cannot contain pending module refs.
+    if data.immediateIndex.len == 0:
+      for i in 0 ..< data.items.len:
+        data.items[i] = patchPendingModuleRef(data.items[i], name, target, seen)
   of vkNode:
     let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
     retirePatchedStamp(p.inertEpoch)

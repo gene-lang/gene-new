@@ -805,6 +805,7 @@ proc biStrSplit(args: openArray[Value]): Value {.nimcall.} =
   var items: seq[Value]
   if separator.len == 1:
     let ch = separator[0]
+    # Count fields once to reserve their storage and avoid repeated growth.
     items = newSeqOfCap[Value](1 + source.count(ch))
     for part in strutils.split(source, ch):
       items.add newStr(part)
@@ -824,7 +825,7 @@ proc biStrTrim(args: openArray[Value]): Value {.nimcall.} =
   while last > first and source[last - 1] in {' ', '\x09'..'\x0d'}:
     dec last
   if first < last and (ord(source[first]) >= 128 or ord(source[last - 1]) >= 128):
-    return newStr(source.strip())
+    return newStr(unicode.strip(source.toOpenArray(first, last - 1)))
   newStr(source[first ..< last])
 
 proc biStrLower(args: openArray[Value]): Value {.nimcall.} =

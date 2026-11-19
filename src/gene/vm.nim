@@ -18967,31 +18967,28 @@ proc weakScopeLiveOnStack(ctx: pointer, target: pointer): bool {.nimcall.} =
       current = current.parent
   false
 
-let smallIntClosureEnabled = getEnv("GENE_ASTRA_LEAF", "1") != "0"
+when defined(geneFastLoopTests):
+  var smallIntClosureEnabled* = getEnv("GENE_ASTRA_LEAF", "1") != "0"
+  var smallIntClosureAttempts*: int
+else:
+  let smallIntClosureEnabled = getEnv("GENE_ASTRA_LEAF", "1") != "0"
 
 proc trySmallIntClosure(proto: FunctionProto, lexical: Scope, arg: Value): Value {.noinline.} =
-  # Speculative pure evaluation. No Gene stack, scope or program value is
-  # modified until this returns a small Int. NIL means retry the ordinary call.
-  if not smallIntClosureEnabled or not proto.simpleCall or not proto.needsCallScope or
-      proto.isSyntaxFn or proto.frameNeedsImplValidation or proto.params.len != 1 or
-      proto.positionalSlots.len != 1 or proto.positionalSlots[0] != 0 or
-      not arg.isSmallInt or lexical == nil:
-    return NIL
+  # deriveSmallIntLeaf checked the instructions and stack shape. A dynamic
+  # operand or arithmetic miss returns nil with the ordinary call untouched.
+  when defined(geneFastLoopTests): inc smallIntClosureAttempts
   let body {.cursor.} = proto.chunk
-  if body == nil or body.instructions.len > 16 or body.privateLocalSlots.len != 0:
-    return NIL
-  var values: array[16, int64]
+  var values: array[MaxSmallIntLeafInstructions, int64]
   var top = 0
   for ip in 0 ..< body.instructions.len:
     let inst = addr body.instructions[ip]
     case inst.op
     of opLoadLocal:
-      if inst.intArg != 0: return NIL
       values[top] = arg.smallIntVal
       inc top
     of opLoadOuterLocal:
       let slot = inst.intArg
-      if inst.depth != 1 or slot < 0 or slot >= lexical.slots.len or
+      if slot >= lexical.slots.len or
           not lexical.slotDefined(slot) or not lexical.slots[slot].isSmallInt:
         return NIL
       values[top] = lexical.slots[slot].smallIntVal
@@ -18999,14 +18996,10 @@ proc trySmallIntClosure(proto: FunctionProto, lexical: Scope, arg: Value): Value
     of opNativeFast2, opNativeFastConst:
       var rhs: int64
       if inst.op == opNativeFastConst:
-        if inst.depth < 0 or inst.depth >= body.constants.len or
-            not body.constants[inst.depth].isSmallInt: return NIL
         rhs = body.constants[inst.depth].smallIntVal
       else:
-        if top < 2: return NIL
         dec top
         rhs = values[top]
-      if top == 0: return NIL
       let lhs = values[top - 1]
       var val: int64
       case inst.intArg
@@ -19021,9 +19014,7 @@ proc trySmallIntClosure(proto: FunctionProto, lexical: Scope, arg: Value): Value
       if not fitsSmallInt(val): return NIL
       values[top - 1] = val
     of opReturn:
-      if top == 1 and ip == body.instructions.high:
-        return smallIntOf(values[0])
-      return NIL
+      return smallIntOf(values[0])
     else: return NIL
   NIL
 
@@ -19037,6 +19028,8 @@ type FastRun = object
 when defined(geneFastLoopTests):
   var fastLoopRuns*: int
     ## How many times `fastLoop` was entered, for the tests that check it runs.
+  var fastLoopMirroredWrites*: int
+    ## Mirrored slot writes completed within `fastLoop`.
 
 const fastLoopOps = {opPushConst, opLoadLocal, opLoadLocalFast, opPop, opNot,
   opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop, opSetLocal,
@@ -19075,8 +19068,8 @@ proc fastLoopBody(chunk: Chunk, first, last, at: int): bool {.inline.} =
     scanFastLoopBody(chunk, first, last, at)
 
 {.push boundChecks: off, overflowChecks: off.}
-proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
-              startIp, startSp: int): FastRun {.noinline.} =
+proc fastLoopForScope(chunk: Chunk, scope: Scope, stack: var seq[Value],
+                      startIp, startSp: int, mirrored: static bool): FastRun {.noinline.} =
   ## Runs the instructions from `startIp` for as long as each is one of a few
   ## simple ones whose fast path applies, exactly as `runLoop`'s handler for it
   ## would, and stops at the first other one, leaving it for `runLoop`. It never
@@ -19220,9 +19213,13 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
       if op == opSetLocalPop and
           (ip + 1 >= count or chunk.instructions[ip + 1].op != opPop):
         break
-      if scope.slotMirror:
-        break
       scope.slots[slot] = stack[sp - 1]
+      when mirrored:
+        # This is assignSlot's immediate store with typing, pins, and strict
+        # binding updates ruled out above. Reflection materializes on demand.
+        scope.varsDirty = true
+        scope.touchSlots()
+        when defined(geneFastLoopTests): inc fastLoopMirroredWrites
       if op == opSetLocalPop:
         dec sp
         discard move stack[sp]
@@ -19304,10 +19301,17 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
         break
       let source {.cursor.} = stack[sp - 2]
       let slot = inst[].intArg
-      if slot < 0 or slot >= scope.slots.len or scope.slotMirror or
+      if slot < 0 or slot >= scope.slots.len or
           scope.managedBindingPins.len != 0 or
           atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
         break
+      template storeIterationValue(value: Value) =
+        when mirrored:
+          scope.redefineSlot(slot, inst[].name, value)
+          when defined(geneFastLoopTests): inc fastLoopMirroredWrites
+        else:
+          scope.slots[slot] = value
+          scope.markSlotDefined(slot)
       let current = stack[sp - 1].smallIntVal
       if source.kind == vkList:
         if current < 0:
@@ -19318,18 +19322,17 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
         let item {.cursor.} = source.listItems[int(current)]
         if not item.isSmallInt:
           break
-        scope.slots[slot] = item
+        storeIterationValue(item)
         stack[sp - 1] = newInt(current + 1)
       elif source.kind == vkRange:
         let step = source.rangeStep
         if source.rangeDone(current) or not current.rangeCanAdvance(step):
           ip = inst[].depth
           continue
-        scope.slots[slot] = stack[sp - 1]
+        storeIterationValue(stack[sp - 1])
         stack[sp - 1] = newInt(current + step)
       else:
         break
-      scope.markSlotDefined(slot)
       inc ip
     of opCompareLocalsJumpIfFalse:
       if ip + 3 >= count:
@@ -19363,6 +19366,15 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
       break
   FastRun(ip: ip, sp: sp)
 {.pop.}
+
+proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
+              startIp, startSp: int): FastRun {.inline.} =
+  # Mirroring stays fixed for the whole activation. Specialize once here so
+  # every scalar store in a function loop can skip the mirror-mode branch.
+  if scope.slotMirror:
+    fastLoopForScope(chunk, scope, stack, startIp, startSp, true)
+  else:
+    fastLoopForScope(chunk, scope, stack, startIp, startSp, false)
 
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
@@ -22254,7 +22266,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if code != nil and code of FunctionProto:
               let proto {.cursor.} = FunctionProto(code)
               # Tail calls use the ordinary entry path for trace and fallback accounting.
-              if proto.capturePlan != nil and argCount == 1 and not inst[].tail and
+              if proto.smallIntLeafEligible and argCount == 1 and not inst[].tail and
+                  smallIntClosureEnabled and stack[argsStart].isSmallInt and
                   instructionBudget <= 0 and evalBudget == nil and
                   not callee.fnHasErrorLease and proto.canBypassCallBudget(calleeScope, scope):
                 let number = trySmallIntClosure(proto, calleeScope, stack[argsStart])
@@ -22858,7 +22871,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let calleeScope {.cursor.} = cast[Scope](callee.fnScopeAddr)
             if code != nil and code of FunctionProto:
               let proto {.cursor.} = FunctionProto(code)
-              if proto.capturePlan != nil and argCount == 1 and namedCount == 0 and not inst[].tail and
+              if proto.smallIntLeafEligible and argCount == 1 and namedCount == 0 and
+                  not inst[].tail and smallIntClosureEnabled and stack[argsStart].isSmallInt and
                   instructionBudget <= 0 and evalBudget == nil and
                   not callee.fnHasErrorLease and proto.canBypassCallBudget(calleeScope, scope):
                 let number = trySmallIntClosure(proto, calleeScope, stack[argsStart])

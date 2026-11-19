@@ -1807,6 +1807,31 @@ suite "vm — literals and self-evaluation":
            ($set_has? s (quote x)) (s .contains? "x") (mixed .contains? "x")
            (try ($set_has? s []) catch TypeFault true)]""",
        "[[0 1 2 3 4 x] true false true false true true]"
+  test "copies retain the index for large immediate Sets":
+    let copies = runStr("""(let keys [])
+                           (repeat i in 40 (keys .push i))
+                           (let s (Set keys...))
+                           [s ($freeze_shallow s) ($freeze s) ($thaw s)
+                            ($filter s (fn [item] true))]""")
+    for copy in copies.listItems:
+      var found = false
+      check copy.setItems.len == 40
+      check copy.setItems[0].intVal == 0
+      check copy.setItems[^1].intVal == 39
+      check copy.tryImmediateSetContains(newInt(32), found)
+      check found
+      check copy.tryImmediateSetContains(newInt(40), found)
+      check not found
+
+  test "the index cutoff uses distinct keys":
+    let deduplicated = runStr("""(let keys [])
+                                  (repeat i in 40 (keys .push (// i 5)))
+                                  (Set keys...)""")
+    var found = false
+    check deduplicated.setItems.len == 5
+    check not deduplicated.tryImmediateSetContains(newInt(4), found)
+    check equal(deduplicated, runStr("(Set 0 1 2 3 4)"))
+
   test "bytes literals are self-evaluating":
     ck "[#B#01000001 #B16#4869 #B64#SGk=]",
        "[#B16#41 #B16#4869 #B16#4869]"
@@ -3601,6 +3626,39 @@ suite "vm — small integer closures":
       discard runStr("""(fn make_rem [d] (fn [x] (// x d)))
                         (let f (make_rem 0))
                         (+ 1 (f 42))""")
+
+  when defined(geneFastLoopTests):
+    test "eligible closures stay fast through GIR cloning and agree with the ordinary path":
+      const source = """(fn scale [k] (fn [x] (+ (* x k) 1)))
+                        (let f (scale 3))
+                        (let choices [f])
+                        [(f 4) (choices/0 6) (f 0.5) (f 140737488355327)]"""
+      let original = compileSource(source)
+      let cloned = cloneCompiledChunk(original)
+      let saved = smallIntClosureEnabled
+      defer: smallIntClosureEnabled = saved
+      for chunk in [original, cloned]:
+        smallIntClosureEnabled = true
+        let before = smallIntClosureAttempts
+        check run(chunk, newGlobalScope()).print() == "[13 19 2.5 422212465065982]"
+        check smallIntClosureAttempts - before == 3
+      smallIntClosureEnabled = false
+      let before = smallIntClosureAttempts
+      check runStr(source).print() == "[13 19 2.5 422212465065982]"
+      check smallIntClosureAttempts == before
+
+    test "ineligible code and non-small arguments skip helper entry":
+      let saved = smallIntClosureEnabled
+      defer: smallIntClosureEnabled = saved
+      smallIntClosureEnabled = true
+      let before = smallIntClosureAttempts
+      ck """(fn branching [k]
+              (fn [x] (if (< x k) (then (+ x k)) (else (- x k)))))
+            (fn scale [k] (fn [x] (* x k)))
+            (let branch (branching 3))
+            (let fast (scale 3))
+            [(branch 5) (fast 0.5)]""", "[2 1.5]"
+      check smallIntClosureAttempts == before
 
 suite "vm — scopeless field reads":
   const fieldProgram = """

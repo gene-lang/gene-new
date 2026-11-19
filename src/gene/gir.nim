@@ -16,6 +16,7 @@ const
   CurrentNamespaceBindingName* = "\x00gene_ns"
   BlockBindingPrefix* = "\x00gene_block:"
   MaxCaptureLevels* = 8 # activation levels a closure copies from (CapturePlan)
+  MaxSmallIntLeafInstructions* = 16
 
 type
   OpCode* = enum
@@ -425,6 +426,7 @@ type
     isMacroBody*: bool # keep the complete live definition environment
     preparedPipelineItem*: bool
     fastBindPositionalScalars*: bool # use trailing flag padding; preserve existing hot offsets
+    smallIntLeafEligible*: bool # derived from the final body, never serialized
     selfParentSlot*: int
     nativeOp*: NativeCompileOp
     nativeParamIndex*: int
@@ -3952,6 +3954,42 @@ proc localsDefinedWhereUsed(chunk: Chunk, params: int): bool =
     else:
       flow(i + 1, s, m)
   true
+
+proc deriveSmallIntLeaf*(proto: FunctionProto) =
+  ## Admit only straight-line arithmetic over the unary argument, immediate
+  ## captures, and Small Int constants. The VM still checks dynamic operands.
+  proto.smallIntLeafEligible = false
+  if proto.capturePlan == nil or not proto.simpleCall or not proto.needsCallScope or
+      proto.isSyntaxFn or proto.frameNeedsImplValidation or proto.params.len != 1 or
+      proto.positionalSlots.len != 1 or proto.positionalSlots[0] != 0:
+    return
+  let body {.cursor.} = proto.chunk
+  if body == nil or body.instructions.len > MaxSmallIntLeafInstructions or
+      body.privateLocalSlots.len != 0:
+    return
+  var stackDepth = 0
+  for i, inst in body.instructions:
+    case inst.op
+    of opLoadLocal:
+      if inst.intArg != 0: return
+      inc stackDepth
+    of opLoadOuterLocal:
+      if inst.depth != 1 or inst.intArg < 0: return
+      inc stackDepth
+    of opNativeFast2, opNativeFastConst:
+      if inst.intArg notin [ord(nfkAdd), ord(nfkSub), ord(nfkMul), ord(nfkRem)]:
+        return
+      if inst.op == opNativeFast2:
+        if stackDepth < 2: return
+        dec stackDepth
+      elif stackDepth == 0 or inst.depth < 0 or inst.depth >= body.constants.len or
+          not body.constants[inst.depth].isSmallInt:
+        return
+    of opReturn:
+      proto.smallIntLeafEligible = stackDepth == 1 and i == body.instructions.high
+      return
+    else:
+      return
 
 proc deriveScopelessChunk*(proto: FunctionProto) =
   ## Scopeless calling convention: a leaf, untyped body can run with the
