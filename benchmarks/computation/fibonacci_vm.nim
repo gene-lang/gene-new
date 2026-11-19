@@ -2,7 +2,7 @@
 ##
 ## The benchmark compiles each Gene program once, then measures VM execution.
 
-import gene/[compiler, printer, types, vm]
+import ../../src/gene/[compiler, printer, types, vm]
 import std/[os, strformat, strutils, times]
 
 proc fibNumber(n: int): int64 =

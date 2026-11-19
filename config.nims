@@ -122,3 +122,13 @@ when defined(macosx) and not defined(emscripten):
         if sdkLinks(dir, compiler):
           putEnv("SDKROOT", dir)
           break
+
+  # An incremental (`--ic:on`) build links from a preparsed config and never
+  # sees an SDKROOT this config set in the compiler's environment. Pass the
+  # chosen SDK to every compile and link command as well, so one-shot and
+  # incremental builds agree. A parent directory's config may have chosen it,
+  # so this follows the environment rather than the block above.
+  let chosenSdk = getEnv("SDKROOT")
+  if chosenSdk.len > 0:
+    switch("passC", "-isysroot " & quoteShell(chosenSdk))
+    switch("passL", "-isysroot " & quoteShell(chosenSdk))

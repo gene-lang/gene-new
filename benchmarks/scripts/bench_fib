@@ -10,6 +10,9 @@ set -euo pipefail
 #   GENE_BENCH_MODE=vm     (default: vm)
 #   NIM=/path/to/nim       (default: nim, or ~/.nimble/bin/nim)
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+
 echo "=== Gene Benchmark ==="
 echo "Date: $(date '+%Y-%m-%d %H:%M:%S %A')"
 echo "Git commit: $(git rev-parse HEAD)"
@@ -41,22 +44,25 @@ echo "Mode: $MODE"
 echo ""
 
 CACHE_DIR="build/nimcache/fibonacci-$MODE"
-BUILD_LOG="$CACHE_DIR/build.log"
-mkdir -p bin "$CACHE_DIR"
+# Keep the build log outside the nimcache: an incremental build whose config
+# changed resets that directory, which used to delete the log before it could
+# report the failure.
+BUILD_LOG="build/logs/fibonacci-$MODE-build.log"
+mkdir -p bin "$CACHE_DIR" "$(dirname "$BUILD_LOG")"
 
 echo "Compiling $LABEL..."
-CMD=("$NIM_BIN" c --ic:on --hints:off --mm:orc -d:release -d:danger --path:src --nimcache:"$CACHE_DIR" --out:bin/fibonacci "$SOURCE")
+CMD=("$NIM_BIN" c --ic:on --hints:off --mm:orc -d:release -d:danger --path:"$ROOT/src" --nimcache:"$CACHE_DIR" --out:"$ROOT/bin/fibonacci" "$SOURCE")
 if ! "${CMD[@]}" >"$BUILD_LOG" 2>&1; then
   grep -v "Warning:" "$BUILD_LOG" | grep -v "ignoring duplicate libraries" || true
   exit 1
 fi
 grep -v "Warning:" "$BUILD_LOG" | grep -v "ignoring duplicate libraries" || true
 
-if [ ! -x "./bin/fibonacci" ]; then
+if [ ! -x "$ROOT/bin/fibonacci" ]; then
   echo "Error: bin/fibonacci was not produced" >&2
   exit 1
 fi
 
 echo ""
 echo "Running benchmark..."
-./bin/fibonacci "$@"
+"$ROOT/bin/fibonacci" "$@"

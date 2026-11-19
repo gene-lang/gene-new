@@ -4,7 +4,7 @@
 ## function annotated as Int -> Int so type-boundary fast paths are visible in
 ## perf runs.
 
-import gene/[compiler, printer, types, vm]
+import ../../src/gene/[compiler, printer, types, vm]
 import std/[os, strformat, strutils, times]
 
 proc fibNumber(n: int): int64 =

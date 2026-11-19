@@ -2,7 +2,7 @@
 ##
 ## The benchmark compiles each Gene program once, then measures VM execution.
 
-import gene/[compiler, vm]
+import ../../src/gene/[compiler, vm]
 import std/[os, strformat, strutils, times]
 
 proc parsePositiveInt(raw: string, label: string): int =
