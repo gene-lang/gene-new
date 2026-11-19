@@ -18968,10 +18968,9 @@ proc weakScopeLiveOnStack(ctx: pointer, target: pointer): bool {.nimcall.} =
   false
 
 when defined(geneFastLoopTests):
-  var smallIntClosureEnabled* = getEnv("GENE_ASTRA_LEAF", "1") != "0"
   var smallIntClosureAttempts*: int
-else:
-  let smallIntClosureEnabled = getEnv("GENE_ASTRA_LEAF", "1") != "0"
+    ## Whether eligible closures reach `trySmallIntClosure`, for the tests that
+    ## check the compiler-derived eligibility and the call-site guards.
 
 proc trySmallIntClosure(proto: FunctionProto, lexical: Scope, arg: Value): Value {.noinline.} =
   # deriveSmallIntLeaf checked the instructions and stack shape. A dynamic
@@ -22267,7 +22266,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               let proto {.cursor.} = FunctionProto(code)
               # Tail calls use the ordinary entry path for trace and fallback accounting.
               if proto.smallIntLeafEligible and argCount == 1 and not inst[].tail and
-                  smallIntClosureEnabled and stack[argsStart].isSmallInt and
+                  stack[argsStart].isSmallInt and
                   instructionBudget <= 0 and evalBudget == nil and
                   not callee.fnHasErrorLease and proto.canBypassCallBudget(calleeScope, scope):
                 let number = trySmallIntClosure(proto, calleeScope, stack[argsStart])
@@ -22872,7 +22871,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if code != nil and code of FunctionProto:
               let proto {.cursor.} = FunctionProto(code)
               if proto.smallIntLeafEligible and argCount == 1 and namedCount == 0 and
-                  not inst[].tail and smallIntClosureEnabled and stack[argsStart].isSmallInt and
+                  not inst[].tail and stack[argsStart].isSmallInt and
                   instructionBudget <= 0 and evalBudget == nil and
                   not callee.fnHasErrorLease and proto.canBypassCallBudget(calleeScope, scope):
                 let number = trySmallIntClosure(proto, calleeScope, stack[argsStart])

@@ -3628,29 +3628,28 @@ suite "vm — small integer closures":
                         (+ 1 (f 42))""")
 
   when defined(geneFastLoopTests):
-    test "eligible closures stay fast through GIR cloning and agree with the ordinary path":
+    test "eligible closures stay fast through GIR cloning":
       const source = """(fn scale [k] (fn [x] (+ (* x k) 1)))
                         (let f (scale 3))
                         (let choices [f])
                         [(f 4) (choices/0 6) (f 0.5) (f 140737488355327)]"""
       let original = compileSource(source)
       let cloned = cloneCompiledChunk(original)
-      let saved = smallIntClosureEnabled
-      defer: smallIntClosureEnabled = saved
       for chunk in [original, cloned]:
-        smallIntClosureEnabled = true
         let before = smallIntClosureAttempts
         check run(chunk, newGlobalScope()).print() == "[13 19 2.5 422212465065982]"
         check smallIntClosureAttempts - before == 3
-      smallIntClosureEnabled = false
+      # A semantically equal body the leaf derivation rejects answers the same
+      # through the ordinary path, and never enters the helper.
+      let ordinary = compileSource("""(fn scale [k] (fn [x] (let one 1) (+ (* x k) one)))
+                                       (let f (scale 3))
+                                       (let choices [f])
+                                       [(f 4) (choices/0 6) (f 0.5) (f 140737488355327)]""")
       let before = smallIntClosureAttempts
-      check runStr(source).print() == "[13 19 2.5 422212465065982]"
+      check run(ordinary, newGlobalScope()).print() == "[13 19 2.5 422212465065982]"
       check smallIntClosureAttempts == before
 
     test "ineligible code and non-small arguments skip helper entry":
-      let saved = smallIntClosureEnabled
-      defer: smallIntClosureEnabled = saved
-      smallIntClosureEnabled = true
       let before = smallIntClosureAttempts
       ck """(fn branching [k]
               (fn [x] (if (< x k) (then (+ x k)) (else (- x k)))))

@@ -84,8 +84,8 @@ processes, excludes warmup and calibration, and writes raw results, provenance,
 `summary.json`, and `report.md`. See [the workload contract](general/README.md)
 for timing boundaries, parameters, and interpretation.
 
-The closure workload uses direct calls. Set `GENE_ASTRA_LEAF=0` before starting
-Gene to measure those calls with the small-Int closure optimization disabled.
+The closure workload calls its closures directly. Higher-order helpers that
+invoke closures through `applyCall` do not take the direct-call path.
 
 ## Repeatable core measurements
 
