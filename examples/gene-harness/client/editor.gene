@@ -298,7 +298,7 @@
 
 (fn selection_prompt [path : Str, revision : Str, start : Int, finish : Int,
                       source : Str, ^kind kind : Str] : Str
-  $"[Gene ${kind} ${path}:${start}-${finish} revision ${revision}]\n```gene\n${source}\n```")
+  $"[Gene ${kind}] ${path} (UTF-8 bytes ${start}-${finish}, revision ${revision})\n```gene\n${source}\n```")
 
 (fn attach_draft [panel : EditorPanel] : Nil
   (var selection : Any panel/selection)

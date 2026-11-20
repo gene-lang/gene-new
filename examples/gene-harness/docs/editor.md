@@ -111,8 +111,10 @@ saved bytes before staging a message that names the path, range, and revision.
 Ranges are byte offsets into the editor's LF, BOM-free text — the same text
 analysis reports — not offsets into the raw file. The route checks the raw-byte
 revision and then slices that text, so CRLF and BOM files keep the helper's
-offsets. If the file changed, the operator is asked to reopen it rather than
-sharing text from a different version. **Attach draft** stages exactly the text on
+offsets. A range that does not fall on UTF-8 boundaries is rejected with `400`.
+If the file changed, the operator is asked to reopen it rather than sharing
+text from a different version. The staged label says "UTF-8 bytes" so it is not
+confused with `/view`'s line range. **Attach draft** stages exactly the text on
 screen from the analyzed draft and labels it as a draft selection.
 
 ## Logs tab

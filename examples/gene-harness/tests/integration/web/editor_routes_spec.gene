@@ -200,6 +200,30 @@
           (let stale_body (body stale))
           ($assert (== stale_body/changed true) ($to_str stale_body))
 
+          # A malformed range must be a 400, not a fault or a silent
+          # truncation. The client sends helper spans, but the route owns the
+          # byte-boundary check.
+          ($fs/write_text ($path/join root "unicode.gene") "a😀b\n")
+          (let unicode_read (download client "unicode.gene"))
+          (let unicode_revision unicode_read/document/revision)
+          (let valid_unicode (post_route client "/p/editor/selection"
+            {^path "unicode.gene" ^revision unicode_revision
+             ^start_byte 1 ^end_byte 5}))
+          ($assert (== valid_unicode/status 200)
+            ($to_str valid_unicode/status " " valid_unicode/body))
+          (let valid_unicode_body (body valid_unicode))
+          ($assert (== valid_unicode_body/text "😀"))
+          (let mid_start (post_route client "/p/editor/selection"
+            {^path "unicode.gene" ^revision unicode_revision
+             ^start_byte 2 ^end_byte 5}))
+          ($assert (== mid_start/status 400)
+            $"a selection starting mid-character returned ${mid_start/status}: ${mid_start/body}")
+          (let mid_end (post_route client "/p/editor/selection"
+            {^path "unicode.gene" ^revision unicode_revision
+             ^start_byte 1 ^end_byte 3}))
+          ($assert (== mid_end/status 400)
+            $"a selection ending mid-character returned ${mid_end/status}: ${mid_end/body}")
+
           # --- analysis and formatting -------------------------------------
           (let text "(fn ^^generator values\n  [limit]\n  (yield limit))\n")
           (let caret ($str/byte_size "(fn ^^generator "))

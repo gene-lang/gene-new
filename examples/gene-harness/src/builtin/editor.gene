@@ -223,8 +223,11 @@
   (let size ($str/byte_size content))
   (if (|| (< start 0) (< finish start) (> finish size))
     (return (failure 400 "selection range is outside the file")))
-  (let text (try ($str/slice_bytes content start (- finish start)) catch Error nil))
-  (if ($absent? text) (return (failure 400 "selection does not fall on UTF-8 boundaries")))
+  (let text (try ($str/slice_bytes content start (- finish start)) catch Throwable nil))
+  # A bad end boundary truncates silently rather than failing, so compare the
+  # delivered length with the requested span as well as catching a bad start.
+  (if (|| ($absent? text) (!= ($str/byte_size text) (- finish start)))
+    (return (failure 400 "selection does not fall on UTF-8 boundaries")))
   (ok {^ok true ^revision revision ^text text
        ^line_endings decoded/line_endings ^bom decoded/bom}))
 

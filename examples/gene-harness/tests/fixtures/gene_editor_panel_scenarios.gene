@@ -177,7 +177,7 @@
     (do
       (var staged (text sc/staged/-1 ""))
       (expect sc "attach: the attachment names the range"
-        (contains staged "demo.gene:11-33"))
+        (contains staged "demo.gene (UTF-8 bytes 11-33"))
       (expect sc "attach: the attachment names the revision"
         (contains staged "revision rev-1"))
       (expect sc "attach: the attachment carries the exact source"

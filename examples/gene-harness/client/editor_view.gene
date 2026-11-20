@@ -137,7 +137,7 @@
 (fn selection_prompt [path : Str, revision : Str, start : Int, finish : Int, source : Str,
                       ^kind kind : Str = "selection"] : Str
   (var label (if (== kind "log") "Harness host log" "Gene selection"))
-  $"[${label}] ${path}:${start}-${finish} (revision ${revision})\n```gene\n${source}\n```")
+  $"[${label}] ${path} (UTF-8 bytes ${start}-${finish}, revision ${revision})\n```gene\n${source}\n```")
 
 (fn editor_event [view : EditorView, event : Any] : Nil
   (var kind (text_of event/type ""))
