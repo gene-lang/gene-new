@@ -13,23 +13,10 @@
 
 import std/[strutils, tables, unicode]
 import ../../gene/[reader, types]
+import ../declaration_kinds
 import ../source_positions
 import ../source_index as sourceIndex
-export source_positions
-
-const
-  # LSP SymbolKind constants (the protocol's numeric encoding).
-  skModule* = 2
-  skNamespace* = 3
-  skClass* = 5
-  skMethod* = 6
-  skEnum* = 10
-  skInterface* = 11
-  skFunction* = 12
-  skVariable* = 13
-  skConstructor* = 9
-  skEnumMember* = 22
-  skObject* = 19
+export declaration_kinds, source_positions
 
 type
   LspRange* = object

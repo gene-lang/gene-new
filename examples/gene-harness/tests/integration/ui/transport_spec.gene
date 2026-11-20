@@ -30,7 +30,9 @@
           (var client (connect root))
           (let status (api client "GET" "/status"))
           ($assert (== status/protocol 9))
-          (let view status/ui/components/0)
+          (let view ($first ($filter status/ui/components
+            (fn [item] (== item/name "project_board")))))
+          ($assert ($present? view) "the project board view is missing")
           (let request {^input_id "1:wire" ^generation status/ui/actions/generation
             ^component view/name ^revision view/revision ^function "board_save"
             ^function_revision view/functions/board_save ^instance "wire-instance"

@@ -4,7 +4,7 @@
 (import [text flag integer] ^from "../src/common/launcher.gene")
 
 (type BrowserClients ^props {^root EventTarget ^safe Bool ^bridge Any
-  ^mounts PropMap ^generation Int})
+  ^mounts PropMap ^outlets PropMap ^descriptors PropMap ^generation Int})
 
 (fn dispose [host : BrowserClients, name : Str] : Nil
   (var record : Any host/mounts/%name)
@@ -43,9 +43,16 @@
   ($console/error message))
 
 (fn update_clients [host : BrowserClients, descriptors : (List Any), status : Any] : Nil
+  (set host/descriptors {})
+  (for descriptor in descriptors
+    (var key (text descriptor/name))
+    (set host/descriptors/%key descriptor))
   (var wanted : PropMap {})
   (if_yes (! host/safe)
     (for descriptor in descriptors
+      # View-scoped clients are mounted by their view outlet, not into the
+      # page's toolbar and composer outlets.
+      (if (== (text descriptor/scope "page") "view") (continue))
       (var name (text descriptor/name))
       (set wanted/%name descriptor)))
   (map_for [name record] in host/mounts
@@ -132,8 +139,193 @@
           catch Throwable
             (fail_client host ($to_str name) "Browser contribution failed to update.")))))))
 
+# ---------------------------------------------------------------------------
+# View-owned outlets
+# ---------------------------------------------------------------------------
+
+(fn outlet_descriptor [host : BrowserClients, name : Str] : Any
+  (var descriptor : Any host/descriptors/%name)
+  descriptor)
+
+(fn dispose_outlet [host : BrowserClients, name : Str] : Nil
+  (var record : Any host/outlets/%name)
+  (if_yes ($absent? record) (return))
+  (set host/outlets/%name nil)
+  (if_yes (flag record/failed) (return))
+  (var root : EventTarget record/element)
+  (var subscriptions : (List Any) (if ($absent? record/subscriptions) [] record/subscriptions))
+  (for subscription in subscriptions
+    (try
+      (var revoke : (Fn [] Nil) subscription)
+      (revoke)
+    catch Throwable ($console/error "View outlet subscription cleanup failed.")))
+  (try
+    (if_yes ($present? root/harness_controller/dispose)
+      (var cleanup : (Fn [] Nil) root/harness_controller/dispose)
+      (cleanup))
+  catch Throwable ($console/error "View outlet cleanup failed."))
+  (release_modal (text record/owner) true)
+  (if_yes ($present? root) ($dom/clear root)))
+
+(fn fail_outlet [host : BrowserClients, name : Str, element : EventTarget, message : Str] : Nil
+  (var record : Any host/outlets/%name)
+  (dispose_outlet host name)
+  (set host/outlets/%name {^^failed ^revision (if ($present? record) (text record/revision) "")
+                           ^element element ^generation (if ($present? record) (integer record/generation) 0)})
+  ($dom/set_text element "The editor view could not be loaded.")
+  ($console/error message))
+
+(fn mount_outlet [host : BrowserClients, name : Str, outlet : Any,
+                  context : Any, descriptor : Any] : Nil
+  (var element : EventTarget outlet/element)
+  ($dom/clear element)
+  (set host/generation (+ host/generation 1))
+  (var generation host/generation)
+  (var source_bridge : PropMap host/bridge)
+  (var bridge : PropMap {})
+  (map_for [key value] in source_bridge (set bridge/%key value))
+  (var capabilities : Any {})
+  (if_yes ($present? source_bridge/capabilities_for)
+    (var provide_capabilities : (Fn [Str] Any) source_bridge/capabilities_for)
+    (set capabilities (provide_capabilities name)))
+  (set bridge/capabilities capabilities)
+  (set bridge/capabilities_for nil)
+  (set bridge/toolbar ($dom/create_element "span"))
+  (set bridge/composer_actions nil)
+  (set bridge/view
+    {^name (text context/view_name) ^title (text context/view/title)
+     ^presentation (text context/view/presentation)
+     ^state_version (text context/view/state_version "1")
+     ^view_state context/view_state})
+  (set bridge/save_view_state context/save)
+  (var owner $"${name}:view:${generation}")
+  (var subscriptions : (List Any) [])
+  (set bridge/subscribe (fn [callback : (Fn [Str Str Any] Nil)] : (Fn [] Nil)
+    (var current : Any host/outlets/%name)
+    (if_yes (|| ($absent? current) (flag current/failed) (!= (integer current/generation) generation))
+      (return (fn [] : Nil (return))))
+    (var unsubscribe : (Fn [] Nil)
+      (if ($absent? source_bridge/subscribe_owned)
+        (do
+          (var subscribe : (Fn [(Fn [Str Str Any] Nil)] (Fn [] Nil)) source_bridge/subscribe)
+          (subscribe callback))
+        (do
+          (var subscribe_owned : (Fn [Str (Fn [Str Str Any] Nil)] (Fn [] Nil)) source_bridge/subscribe_owned)
+          (subscribe_owned ($to_str name) callback))))
+    (var active true)
+    (var revoke (fn [] : Nil
+      (if_yes (! active) (return))
+      (set active false)
+      (unsubscribe)))
+    (subscriptions .push revoke)
+    revoke))
+  (set bridge/subscribe_owned nil)
+  (set element/harness_bridge bridge)
+  (set element/harness_owner owner)
+  (var record
+    {^element element ^key (text outlet/key) ^view (text context/view_name)
+     ^workspace (text context/workspace) ^revision (text descriptor/revision)
+     ^owner owner ^generation generation
+     ^subscriptions subscriptions ^status context/status ^!failed})
+  (set host/outlets/%name record)
+  (if_yes (!= (text descriptor/stylesheet) "")
+    ($dom/append element ($dom/render
+      `(link ^rel "stylesheet" ^href %(text descriptor/stylesheet)))))
+  ($browser/load_module (text descriptor/url)
+    (fn [module : Any] : Nil
+      (var current : Any host/outlets/%name)
+      (var current_element : EventTarget current/element)
+      (if_yes (|| ($absent? current) (!= (integer current/generation) generation)
+                  (! (same? current_element element)))
+        (return))
+      (try
+        (var start : (Fn [EventTarget] Nil) module/main)
+        (start element)
+        (var update : (Fn [Any] Nil) element/harness_controller/update)
+        (update context/status)
+      catch Throwable
+        (do
+          ($console/error $err/.message)
+          (fail_outlet host name element "The editor view failed to mount."))))
+    (fn [message : Str] : Nil
+      (var current : Any host/outlets/%name)
+      (var current_element : EventTarget current/element)
+      (if_yes (|| ($absent? current) (!= (integer current/generation) generation)
+                  (! (same? current_element element)))
+        (return))
+      (fail_outlet host name element message))))
+
+(fn update_outlets [host : BrowserClients, outlets : (List Any), context : Any] : Nil
+  # The view tree supplies the outlet element and identity; this manager keeps
+  # exactly one contribution mount per outlet name and disposes it when the
+  # view, element, workspace, or contribution revision changes.
+  (var wanted : PropMap {})
+  (for outlet in outlets
+    (var name (text outlet/name))
+    (if (!= name "") (set wanted/%name outlet)))
+  (if (== (text context/view_name) "")
+    (do
+      (map_for [name record] in host/outlets (dispose_outlet host ($to_str name)))
+      (return)))
+  (map_for [raw_name record] in host/outlets
+    (var name ($to_str raw_name))
+    (var next : Any wanted/%name)
+    (var replaced false)
+    (if ($present? next)
+      (do
+        (var next_element : EventTarget next/element)
+        (var record_element : EventTarget record/element)
+        (set replaced (! (same? next_element record_element)))))
+    (if (|| ($absent? next)
+            (== (text context/view_name) "")
+            (!= (text context/workspace) (text record/workspace))
+            (!= (text context/view_name) (text record/view))
+            replaced)
+      (dispose_outlet host name)))
+  (map_for [raw_name outlet] in wanted
+    (var name ($to_str raw_name))
+    (var descriptor (outlet_descriptor host name))
+    (var record : Any host/outlets/%name)
+    (if ($present? record)
+      (if (flag record/failed)
+        (if (&& ($present? descriptor)
+                (!= (text descriptor/revision) (text record/revision)))
+          (do
+            (set host/outlets/%name nil)
+            (mount_outlet host name outlet context descriptor)))
+        (if ($absent? descriptor)
+          (do
+            (dispose_outlet host name)
+            (set host/outlets/%name {^^failed ^revision "" ^element outlet/element ^generation 0})
+            ($dom/set_text outlet/element "The editor view is unavailable."))
+          (if (!= (text descriptor/revision) (text record/revision))
+            (do
+              (dispose_outlet host name)
+              (mount_outlet host name outlet context descriptor))
+            (do
+              (set record/status context/status)
+              (var bridge : PropMap record/element/harness_bridge)
+              (set bridge/view
+                {^name (text context/view_name) ^title (text context/view/title)
+                 ^presentation (text context/view/presentation)
+                 ^state_version (text context/view/state_version "1")
+                 ^view_state context/view_state})
+              (set bridge/save_view_state context/save)
+              (if ($present? record/element/harness_controller/update)
+                (try
+                  (var update : (Fn [Any] Nil) record/element/harness_controller/update)
+                  (update context/status)
+                catch Throwable
+                  (fail_outlet host name outlet/element "The editor view failed to update.")))))))
+      (if ($present? descriptor)
+        (mount_outlet host name outlet context descriptor)
+        (do
+          ($dom/set_text outlet/element "The editor view is unavailable.")
+          (set host/outlets/%name {^^failed ^revision "" ^element outlet/element ^generation 0}))))))
+
 (fn create_clients [root : EventTarget, safe : Bool, bridge : Any] : BrowserClients
-  (var host (BrowserClients ^root root ^safe safe ^bridge bridge ^mounts {} ^generation 0))
+  (var host (BrowserClients ^root root ^safe safe ^bridge bridge ^mounts {}
+    ^outlets {} ^descriptors {} ^generation 0))
   ($dom/add_event_listener ^^capture ($dom/window) "keydown"
     (fn [event : Any] : Nil
       (if_yes (|| ($event/is_composing event) (chord_recording?)) (return))
@@ -146,6 +338,15 @@
             (set handled (key event))
           catch Throwable
             (fail_client host ($to_str name) "Browser contribution keyboard handler failed.")
+            (set handled true))))
+      (map_for [name record] in host/outlets
+        (if_yes (&& (! handled) ($present? record) (! (flag record/failed))
+                    ($present? record/element/harness_controller/key))
+          (try
+            (var key : (Fn [Any] Bool) record/element/harness_controller/key)
+            (set handled (key event))
+          catch Throwable
+            (fail_outlet host ($to_str name) record/element "View outlet keyboard handler failed.")
             (set handled true))))
       (if_yes handled ($dom/prevent_default event) ($dom/stop_propagation event))))
   host)

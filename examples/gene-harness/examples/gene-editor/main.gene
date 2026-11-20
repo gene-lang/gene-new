@@ -1,0 +1,473 @@
+#!/usr/bin/env gene run
+# =============================================================================
+# Gene editor demo — the standalone component from
+# tmp/gene-web-editor.md, served by a plain Gene script.
+#
+#   GET  /                     the demo page (editor + document picker + Logs)
+#   GET  /api/documents        fixture list
+#   GET  /api/document?id=...  decoded text, revision, and encoding metadata
+#   POST /api/save             revision-checked in-memory save
+#   POST /api/analyze          gene-viewer --machine analyze
+#   POST /api/format           gene-viewer --machine format
+#   GET  /api/log?cursor=N     simulated, append-only log with a gap and reset
+#
+# Save is in memory: this demo owns the documents it seeds, so a save updates
+# the stored bytes and their digest and nothing on disk changes. The revision
+# check is real — a stale base gets a conflict with the current text.
+#
+# Run:  bin/gene run examples/gene-harness/examples/gene-editor/main.gene
+# Then: open http://127.0.0.1:8091
+#
+# The analysis and format routes exec `gene-viewer --machine …`, found next to
+# the Gene executable and then on PATH, the same order the CLI uses. Without
+# it the routes answer `unavailable`, and the editor keeps its textarea and
+# hides the outline, tree, diagnostics, and Format.
+# =============================================================================
+
+(mod gene_editor_demo
+  @doc "Standalone demo host for the reusable Gene web editor")
+
+(import $html [render])
+(import $json [parse stringify])
+(import $net/http [Response Server serve not_found])
+(import $web [script])
+
+# ---------------------------------------------------------------------------
+# Coercions
+# ---------------------------------------------------------------------------
+
+(fn text [value : Any, fallback : Str = ""] : Str
+  (if ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn flag [value : Any] : Bool
+  (if ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn int_of [value : Any, fallback : Int] : Int
+  # JSON numbers arrive as Int, query parameters as Str; both are ordinary
+  # ways for the host to name a cursor or a version.
+  (if ($absent? value) (return fallback))
+  (var parsed
+    (try
+      (var direct : Int value)
+      direct
+      catch Throwable
+        (try
+          (var source : Str value)
+          ($parse/parse_int source)
+          catch Throwable fallback)))
+  parsed)
+
+# ---------------------------------------------------------------------------
+# Encoding: bytes <-> LF text with a recorded line-ending style and BOM
+# ---------------------------------------------------------------------------
+
+(fn starts_with_bom [values : (List Int)] : Bool
+  (&& (>= ($size values) 3)
+      (== values/0 239) (== values/1 187) (== values/2 191)))
+
+(fn without_bom [values : (List Int)] : (List Int)
+  (var out : (List Int) [])
+  (var index 0)
+  (var skip (if (starts_with_bom values) 3 0))
+  (while (< index ($size values))
+    (if (>= index skip) (out .push values/%index))
+    (set index (+ index 1)))
+  out)
+
+(fn line_ending_style [values : (List Int)] : Str
+  # `crlf`, `cr`, `lf`, or `mixed`. Mixed files are the one encoding this
+  # first version refuses to edit: re-encoding one style would rewrite lines
+  # the operator never touched.
+  (var crlf 0)
+  (var cr 0)
+  (var lf 0)
+  (var index 0)
+  (while (< index ($size values))
+    (var byte values/%index)
+    (if (== byte 13)
+      (do
+        (var next (+ index 1))
+        (if (&& (< next ($size values)) (== values/%next 10))
+          (do (set crlf (+ crlf 1)) (set index next))
+          (set cr (+ cr 1))))
+      (if (== byte 10) (set lf (+ lf 1))))
+    (set index (+ index 1)))
+  (var styles 0)
+  (if (> crlf 0) (set styles (+ styles 1)))
+  (if (> cr 0) (set styles (+ styles 1)))
+  (if (> lf 0) (set styles (+ styles 1)))
+  (if (> styles 1) (return "mixed"))
+  (if (> crlf 0) (return "crlf"))
+  (if (> cr 0) (return "cr"))
+  "lf")
+
+(fn normalize_newlines [source : Str] : Str
+  (var with_lf ($str/join ($str/split source "\r\n") "\n"))
+  ($str/join ($str/split with_lf "\r") "\n"))
+
+(fn encode_text [source : Str, endings : Str, bom : Bool] : Bytes
+  (var style (if (== endings "") "lf" endings))
+  (var encoded source)
+  (if (== style "crlf")
+    (set encoded ($str/join ($str/split source "\n") "\r\n"))
+    (if (== style "cr")
+      (set encoded ($str/join ($str/split source "\n") "\r"))))
+  (var values : (List Int) ($binary/to_list ($binary/from_str encoded)))
+  (if bom
+    (do
+      (var prefixed : (List Int) [239 187 191])
+      (for value in values (prefixed .push value))
+      (set values prefixed)))
+  ($binary/from_list values))
+
+(fn decode_raw [raw : Bytes] : Any
+  (var values ($binary/to_list raw))
+  (var bom (starts_with_bom values))
+  (var payload ($binary/from_list (without_bom values)))
+  (try
+    (var decoded ($binary/decode_utf8 payload))
+    (var endings (line_ending_style (without_bom values)))
+    {^ok true
+     ^text (normalize_newlines decoded)
+     ^line_endings endings
+     ^bom bom
+     ^reason (if (== endings "mixed")
+               "mixed line endings; opened read-only"
+               "")}
+    catch Error
+      (var message (text $err/_msg ""))
+      {^ok false ^message $"invalid UTF-8: ${message}"}))
+
+# ---------------------------------------------------------------------------
+# In-memory documents
+# ---------------------------------------------------------------------------
+
+(type DemoDoc ^props {
+  ^id Str
+  ^name Str
+  ^raw Bytes
+  ^revision Str
+  ^line_endings Str
+  ^bom Bool
+  ^readonly Bool
+  ^reason Str
+  ^origin Str})
+
+(var documents : (List DemoDoc) [])
+(var document_index {})
+
+(fn stored [id : Str] : Any
+  document_index/%id)
+
+(fn index_documents [] : Nil
+  (set document_index {})
+  (for document in documents
+    (var id document/id)
+    (set document_index/%id document)))
+
+(fn add_document [id : Str, name : Str, raw : Bytes, origin : Str] : Nil
+  (var decoded (decode_raw raw))
+  (if (! (flag decoded/ok))
+    (do
+      (var detail (text decoded/message ""))
+      ($println $"skip fixture ${id}: ${detail}")
+      (return)))
+  (var endings (text decoded/line_endings "lf"))
+  (var readonly (== endings "mixed"))
+  (var document
+    (DemoDoc
+      ^id id
+      ^name name
+      ^raw raw
+      ^revision ($crypto/sha256 raw)
+      ^line_endings endings
+      ^bom (flag decoded/bom)
+      ^readonly readonly
+      ^reason (if readonly (text decoded/reason "opened read-only") "")
+      ^origin origin))
+  (documents .push document)
+  (index_documents))
+
+(fn add_text_document [id : Str, name : Str, source : Str, endings : Str,
+                       bom : Bool, origin : Str] : Nil
+  (add_document id name (encode_text source endings bom) origin))
+
+(fn document_payload [document : Any] : Any
+  (var decoded (decode_raw document/raw))
+  {^id document/id
+   ^name document/name
+   ^path document/id
+   ^kind "source"
+   ^text (text decoded/text "")
+   ^revision document/revision
+   ^line_endings document/line_endings
+   ^bom document/bom
+   ^readonly document/readonly
+   ^reason document/reason})
+
+(fn document_list [] : Any
+  (var rows : (List Any) [])
+  (for document in documents
+    (rows .push {^id document/id
+                 ^name document/name
+                 ^readonly document/readonly
+                 ^reason document/reason
+                 ^line_endings document/line_endings
+                 ^bom document/bom}))
+  rows)
+
+# ---------------------------------------------------------------------------
+# gene-viewer machine mode
+# ---------------------------------------------------------------------------
+
+(var temp_sequence 0)
+(let demo_dir ($path/parent this_mod/.path))
+(let temp_dir ($path/join demo_dir "tmp"))
+(let fixtures_dir ($path/join demo_dir "fixtures"))
+
+(fn helper_path [] : Str
+  # Next to the executable first, then PATH — the CLI's own lookup order. The
+  # PATH case is left to exec, which resolves it the same way `gene view` does.
+  (var sibling ($path/join ($path/parent ($os/executable_path)) "gene-viewer"))
+  (if ($fs/exists? sibling) sibling "gene-viewer"))
+
+(fn helper_on_path? [] : Bool
+  (var probe
+    (try
+      ($os/exec ^timeout_ms 3000 ^max_bytes 65536
+        "sh" "-c" "command -v gene-viewer")
+      catch Error nil))
+  (&& ($present? probe) (== probe/status 0)))
+
+(fn run_helper [mode : Str, request : Any] : Any
+  (var helper (helper_path))
+  (if (&& (== helper "gene-viewer") (! (helper_on_path?)))
+    (return
+      {^ok false ^unavailable true
+       ^message "gene-viewer was not found next to the Gene executable or on PATH; build it with `nimble tools`"}))
+  (if (! ($fs/exists? temp_dir)) ($fs/make_dir temp_dir))
+  (set temp_sequence (+ temp_sequence 1))
+  (var version (int_of request/version 0))
+  (var source_name (text request/name "draft.gene"))
+  (var body (text request/text ""))
+  (var path ($path/join temp_dir
+    $"draft-${($os/process_id)}-${temp_sequence}.gene"))
+  ($fs/write_text path body)
+  (var args : (List Str) ["--machine" mode
+                        "--name" source_name
+                        "--version" ($to_str version)
+                        "--text-file" path])
+  (if (&& (== mode "analyze") ($present? request/select_utf16_start))
+    (do
+      (args .push "--select-utf16-start")
+      (args .push ($to_str (int_of request/select_utf16_start 0)))
+      (args .push "--select-utf16-end")
+      (args .push ($to_str (int_of request/select_utf16_end 0)))))
+  (var result
+    (try
+      ($os/exec ^timeout_ms 10000 ^max_bytes 4194304 helper args...)
+      catch Error nil))
+  ($fs/remove path)
+  (if ($absent? result)
+    (return
+      {^ok false ^unavailable true
+       ^message "gene-viewer could not be started; build it with `nimble tools`"}))
+  (if (|| (!= result/status 0) (== (text result/stdout "") ""))
+    (do
+      (var stderr ($str/trim (text result/stderr "")))
+      (return
+        {^ok false
+         ^message (if (== stderr "")
+                    "gene-viewer returned no output"
+                    $"gene-viewer failed: ${stderr}")})))
+  (try
+    (var response (parse result/stdout))
+    response
+    catch Error
+      (var message (text $err/_msg ""))
+      {^ok false ^message $"gene-viewer returned invalid JSON: ${message}"}))
+
+# ---------------------------------------------------------------------------
+# Simulated log stream
+# ---------------------------------------------------------------------------
+# The transport is what a real adapter implements: an opaque cursor and the
+# lines delivered since it. The producer here is deterministic so the demo can
+# be replayed, and every fifth poll reports a gap and the twelfth a reset.
+
+(var log_polls 0)
+
+(fn pad2 [value : Int] : Str
+  (if (< value 10) $"0${value}" ($to_str value)))
+
+(fn log_line [number : Int] : Str
+  $"2026-11-20T10:${(pad2 number)}:00Z INFO host round=${number} ready")
+
+(fn log_batch [cursor : Int] : Any
+  (set log_polls (+ log_polls 1))
+  (var lines : (List Str) [])
+  (var count (if (== log_polls 12) 0 (+ 1 (// log_polls 3))))
+  (var index 0)
+  (while (< index count)
+    (lines .push (log_line (+ cursor index)))
+    (set index (+ index 1)))
+  (if (== log_polls 12)
+    (do
+      (set log_polls 0)
+      {^ok true ^reset true ^gap "" ^cursor "0"
+       ^lines ["2026-11-20T10:59:59Z INFO log rotated; following the new segment"]})
+    (if (== (// log_polls 5) 0)
+      {^ok true ^gap $"simulated rotation at poll ${log_polls}"
+       ^cursor ($to_str (+ cursor count)) ^lines lines}
+      {^ok true ^gap "" ^cursor ($to_str (+ cursor count)) ^lines lines})))
+
+# ---------------------------------------------------------------------------
+# Page
+# ---------------------------------------------------------------------------
+
+(var demo_client
+  ($web/load ($path/join demo_dir "client.gene")))
+
+(var page_css
+  ($str/join
+    ["html,body{height:100%;margin:0;background:#0b0b0b;color:#e5e5e5;font:14px/1.5 system-ui}"
+     "body{display:flex;flex-direction:column}"
+     ".demo-bar{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid #27272a;background:#111}"
+     ".demo-bar strong{font-size:14px}"
+     ".demo-docs{display:flex;gap:4px;flex-wrap:wrap}"
+     ".demo-docs button{font:inherit;font-size:12px;padding:2px 8px;border-radius:4px;border:1px solid #3f3f46;background:#18181b;color:inherit;cursor:pointer}"
+     ".demo-docs button.active{background:#1d4ed8;border-color:#1d4ed8}"
+     ".demo-status{margin-left:auto;font-size:12px;color:#a1a1aa}"
+     "#editor_root{flex:1;min-height:0}"]
+    "\n"))
+
+(fn page [] : Str
+  ($to_str "<!doctype html>"
+    (render
+      `(html
+         (head (title "Gene editor demo")
+               (meta ^charset "utf-8")
+               (style %page_css))
+         (body
+           (div ^class "demo-bar"
+             (strong "Gene editor")
+             (div ^id "demo_docs" ^class "demo-docs")
+             (span ^id "demo_status" ^class "demo-status" "starting…"))
+           (div ^id "editor_root")
+           %(script demo_client ^mount "editor_root"))))))
+
+# ---------------------------------------------------------------------------
+# Saving
+# ---------------------------------------------------------------------------
+
+(fn save_document [document : Any, body : Any] : Any
+  (if (flag document/readonly)
+    (return {^ok false ^message (text document/reason "read-only")}))
+  (var submitted (text body/text ""))
+  (var endings (text body/line_endings document/line_endings))
+  (var bom (if ($present? body/bom) (flag body/bom) (flag document/bom)))
+  (var base (text body/base_revision ""))
+  (var encoded (encode_text submitted endings bom))
+  (var digest ($crypto/sha256 encoded))
+  # A retried request that already landed is success without a write: the
+  # digest of the bytes the submitted snapshot would produce matches the
+  # stored revision. An unchanged base then allows the write; a different
+  # revision is a conflict that keeps the client's draft.
+  (if (== digest document/revision)
+    (return {^ok true ^revision document/revision ^line_endings endings
+             ^bom bom ^text submitted}))
+  (if (!= base document/revision)
+    (do
+      (var current (decode_raw document/raw))
+      (return {^ok false ^conflict true ^revision document/revision
+               ^line_endings document/line_endings ^bom document/bom
+               ^text (text current/text "")
+               ^message "the saved document changed since this draft was based on it"})))
+  (set document/raw encoded)
+  (set document/revision digest)
+  (set document/line_endings endings)
+  (set document/bom bom)
+  (index_documents)
+  {^ok true ^revision digest ^line_endings endings ^bom bom ^text submitted})
+
+# ---------------------------------------------------------------------------
+# Responses and routing
+# ---------------------------------------------------------------------------
+
+(fn as_json [value : Any] : Response
+  (Response ^status 200 ^headers {^content-type "application/json"}
+            ^body (stringify value)))
+
+(fn failure [status : Int, message : Str] : Response
+  (Response ^status status ^headers {^content-type "application/json"}
+            ^body (stringify {^ok false ^message message})))
+
+(fn body_json [req : Any] : Any
+  (try
+    (parse (text req/body "{}"))
+    catch Error nil))
+
+(fn handle [req] : Any
+  (match [req/method req/path]
+    (when ["GET" "/"]
+      (page))
+    (when ["GET" "/api/documents"]
+      (as_json {^ok true ^documents (document_list)}))
+    (when ["GET" "/api/document"]
+      (var document (stored (text req/params/id "")))
+      (if ($absent? document)
+        (failure 404 "no such document")
+        (as_json {^ok true ^document (document_payload document)})))
+    (when ["POST" "/api/save"]
+      (var body (body_json req))
+      (if ($absent? body)
+        (failure 400 "invalid JSON body")
+        (do
+          (var document (stored (text body/id "")))
+          (if ($absent? document)
+            (failure 404 "no such document")
+            (as_json (save_document document body))))))
+    (when ["POST" "/api/analyze"]
+      (var body (body_json req))
+      (if ($absent? body)
+        (failure 400 "invalid JSON body")
+        (as_json (run_helper "analyze" body))))
+    (when ["POST" "/api/format"]
+      (var body (body_json req))
+      (if ($absent? body)
+        (failure 400 "invalid JSON body")
+        (as_json (run_helper "format" body))))
+    (when ["GET" "/api/log"]
+      (as_json (log_batch (int_of (text req/params/cursor "0") 0))))
+    (else
+      (not_found "<h1>404</h1><p>No such route.</p>"))))
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+(fn seed_fixture [name : Str] : Nil
+  (var path ($path/join fixtures_dir name))
+  (if ($fs/exists? path)
+    (add_document name name ($fs/read_bytes path) $"fixture ${name}")
+    ($println $"fixture not found: ${path}")))
+
+(seed_fixture "provider.gene")
+(seed_fixture "types.gene")
+(seed_fixture "scratch.gene")
+
+(add_text_document "crlf-bom.gene" "crlf-bom.gene"
+  "# Saved with CRLF and a UTF-8 BOM so the editor preserves both.\n(mod crlf_bom)\n\n(var greeting \"hello\")\n"
+  "crlf" true "synthetic encoding fixture")
+
+(add_document "mixed.gene" "mixed.gene"
+  ($binary/from_list
+    [35 32 109 105 120 101 100 13 10 40 109 111 100 32 109 105 120 101 100 41 10])
+  "synthetic mixed-ending fixture")
+
+($println "Gene editor demo listening on http://127.0.0.1:8091")
+($println $"documents: {($size documents)} · helper: {(helper_path)}")
+(serve (Server ^host "127.0.0.1" ^port 8091) handle)

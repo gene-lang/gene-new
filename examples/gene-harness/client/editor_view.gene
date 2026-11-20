@@ -1,0 +1,534 @@
+# Dockable Gene editor view.
+#
+# This is the browser client behind the editor plugin's `web_components` view
+# row. The host renders a keyed outlet for it and keeps that DOM node while the
+# view tree updates; this module owns the mounted editor for the lifetime of
+# the outlet. When the view is left the host disposes the controller and the
+# component's draft survives in workspace-scoped storage. Source and log
+# surfaces are independent mounts, so their drafts, scroll positions, and undo
+# history do not interfere.
+
+(mod harness_editor_view ^profile web)
+
+(import [Editor EditorServices EditorDocument editor_document mount_editor]
+  ^from "./components/gene_editor.gene")
+(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+
+(type EditorView ^props {
+  ^root EventTarget
+  ^bridge Any
+  ^title EventTarget
+  ^path_input EventTarget
+  ^status EventTarget
+  ^source_root EventTarget
+  ^log_root EventTarget
+  ^tab_source EventTarget
+  ^tab_logs EventTarget
+  ^open_button EventTarget
+  ^attach_button EventTarget
+  ^source Any
+  ^log_view Any
+  ^available Bool
+  ^dirty Bool
+  ^path Str
+  ^tab Str
+  ^cursor Str
+  ^generation Int
+  ^disposed Bool
+  ^selection Any
+  ^drafts PropMap
+  ^storage_warned Bool
+  ^mode Str})
+
+(fn text_of [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn flag_of [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn int_of [value : Any, fallback : Int = 0] : Int
+  (if_yes ($absent? value) (return fallback))
+  (var result : Int value)
+  result)
+
+(fn say [view : EditorView, message : Str] : Nil
+  ($dom/set_text view/status message))
+
+(fn bridge_call [view : EditorView, method : Str, path : Str, payload : Any,
+                 done : (Fn [Int Any] Nil)] : Nil
+  (var call : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) view/bridge/api)
+  (call method path payload done))
+
+(fn available_plugins? [status : Any] : Bool
+  (var plugins : (List Any) (if ($absent? status/plugins) [] status/plugins))
+  (var found false)
+  (for plugin in plugins
+    (if (== (text_of plugin/id "") "editor")
+      (set found (== (text_of plugin/state "") "ready"))))
+  found)
+
+# ---------------------------------------------------------------------------
+# Scoped drafts
+# ---------------------------------------------------------------------------
+
+(fn draft_key [view : EditorView, id : Str] : Str
+  $"gene-harness/editor-draft/view/${id}")
+
+(fn draft_get [view : EditorView, id : Str] : Any
+  (var remembered : Any view/drafts/%id)
+  (if ($present? remembered) (return remembered))
+  (var encoded (storage_get (draft_key view id)))
+  (if (== encoded "") (return nil))
+  (var decoded (try ($json/parse encoded) catch Error nil))
+  (if ($present? decoded) (set view/drafts/%id decoded))
+  decoded)
+
+(fn draft_put [view : EditorView, id : Str, value : Any] : Nil
+  (set view/drafts/%id value)
+  (var encoded ($json/stringify value))
+  (if (> ($str/byte_size encoded) 262144)
+    (do
+      (storage_remove (draft_key view id))
+      (if (! view/storage_warned)
+        (do
+          (set view/storage_warned true)
+          (say view "This draft is too large to recover after a reload; it is kept in this tab only.")))
+      (return)))
+  (if (! (storage_set (draft_key view id) encoded))
+    (if (! view/storage_warned)
+      (do
+        (set view/storage_warned true)
+        (say view "This tab cannot store drafts; the draft is kept in memory until the page closes.")))))
+
+(fn draft_delete [view : EditorView, id : Str] : Nil
+  (set view/drafts/%id nil)
+  (storage_remove (draft_key view id)))
+
+# ---------------------------------------------------------------------------
+# View state
+# ---------------------------------------------------------------------------
+
+(fn persist_state [view : EditorView] : Nil
+  (if ($absent? view/bridge/save_view_state) (return))
+  (var save : (Fn [Any] Nil) view/bridge/save_view_state)
+  (save {^path view/path ^tab view/tab ^log_cursor view/cursor}))
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+
+(fn unavailable_response [request : Any, message : Str] : Any
+  (var response {^ok false ^unavailable true ^message message})
+  (if ($present? request/version) (set response/version request/version))
+  response)
+
+(fn update_attach [view : EditorView] : Nil
+  (var enabled false)
+  (if (== view/tab "source")
+    (if (&& (&& view/available (! view/dirty)) ($present? view/selection))
+      (set enabled true))
+    (set enabled (&& view/available ($present? view/log_view))))
+  (set view/attach_button/disabled (! enabled)))
+
+(fn selection_prompt [path : Str, revision : Str, start : Int, finish : Int, source : Str,
+                      ^kind kind : Str = "selection"] : Str
+  (var label (if (== kind "log") "Harness host log" "Gene selection"))
+  $"[${label}] ${path}:${start}-${finish} (revision ${revision})\n```gene\n${source}\n```")
+
+(fn editor_event [view : EditorView, event : Any] : Nil
+  (var kind (text_of event/type ""))
+  (if (== kind "selection")
+    (do
+      (set view/selection event)
+      (var shown_path (text_of event/path ""))
+      (say view
+        (if (flag_of event/stale)
+          "Selection is from an older draft; wait for analysis."
+          $"Selected ${shown_path} @${($to_str (int_of event/start_utf16))}."))
+      (update_attach view))
+    (if (== kind "dirty")
+      (do
+        (set view/dirty (flag_of event/dirty))
+        (update_attach view))
+      (if (== kind "save")
+        (do
+          (set view/dirty (! (flag_of event/ok)))
+          (if (flag_of event/ok)
+            (do
+              (var revision (text_of event/revision ""))
+              (say view $"Saved revision ${revision}."))
+            (say view (text_of event/message "The save did not complete.")))
+          (update_attach view))))))
+
+# ---------------------------------------------------------------------------
+# Source document
+# ---------------------------------------------------------------------------
+
+(fn services [view : EditorView] : EditorServices
+  (EditorServices
+    ^save (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+      (if (! view/available)
+        (done {^ok false ^message "The editor plugin is disabled; saving resumes when it is enabled."})
+        (bridge_call view "POST" "/p/editor/save" request
+          (fn [status : Int, data : Any] : Nil
+            (if (|| (== status 200) (&& (>= status 400) (< status 500)))
+              (done data)
+              (done {^ok false ^message (text_of data/message
+                "The save could not be completed; the draft is kept.")}))))))
+    ^analyze (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+      (if (! view/available)
+        (done (unavailable_response request "The editor plugin is disabled."))
+        (bridge_call view "POST" "/p/editor/analyze" request
+          (fn [status : Int, data : Any] : Nil
+            (var response : Any (if ($present? data) data
+              {^ok false ^message "The analysis request failed; try again."}))
+            (if ($absent? response/version) (set response/version request/version))
+            (if ($absent? response/ok) (set response/ok false))
+            (done response)))))
+    ^format (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+      (if (! view/available)
+        (done (unavailable_response request "The editor plugin is disabled."))
+        (bridge_call view "POST" "/p/editor/format" request
+          (fn [status : Int, data : Any] : Nil
+            (var response : Any (if ($present? data) data
+              {^ok false ^message "The format request failed; try again."}))
+            (if ($absent? response/version) (set response/version request/version))
+            (if ($absent? response/ok) (set response/ok false))
+            (done response)))))
+    ^store_get (fn [id : Str] : Any (draft_get view id))
+    ^store_put (fn [id : Str, value : Any] : Nil (draft_put view id value))
+    ^store_delete (fn [id : Str] : Nil (draft_delete view id))
+    ^emit (fn [event : Any] : Nil (editor_event view event))))
+
+(fn editor_of [view : EditorView] : Editor
+  (var raw : Any view/source)
+  (var editor : Editor raw)
+  editor)
+
+(fn open_path [view : EditorView, path : Str] : Nil
+  (if (== path "") (do (say view "Choose a workspace file to open.") (return)))
+  (if (! view/available)
+    (do (say view "Editor unavailable — enable the editor plugin to open files.") (return)))
+  (set view/path path)
+  ($dom/set_input_value view/path_input path)
+  (say view "Opening…")
+  (bridge_call view "GET"
+    $"/p/editor/document?path=${(url/encode_component path)}" nil
+    (fn [status : Int, data : Any] : Nil
+      (if view/disposed (return))
+      (if (!= status 200)
+        (do (say view (text_of data/message "The file could not be opened.")) (return)))
+      (var payload : Any data/document)
+      (var document
+        (editor_document (text_of payload/id path) (text_of payload/name path)
+                         (text_of payload/text "")))
+      (set document/path (text_of payload/path path))
+      (set document/revision (text_of payload/revision ""))
+      (set document/line_endings (text_of payload/line_endings "lf"))
+      (set document/bom (flag_of payload/bom))
+      (set document/readonly (flag_of payload/readonly))
+      (set document/reason (text_of payload/reason ""))
+      (if ($absent? view/source)
+        (set view/source (mount_editor view/source_root document (services view)))
+        (do (var target : Editor (editor_of view)) (target/open document)))
+      ($dom/set_text view/title $"Gene editor · ${(text_of payload/name path)}")
+      (set view/selection nil)
+      (if (flag_of payload/readonly)
+        (say view (text_of payload/reason "This file is read-only."))
+        (say view (text_of payload/revision "")))
+      (persist_state view))))
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+
+(fn log_editor_of [view : EditorView] : Editor
+  (var raw : Any view/log_view)
+  (var editor : Editor raw)
+  editor)
+
+(fn log_url [view : EditorView] : Str
+  $"/p/editor/log?source=host&cursor=${(url/encode_component view/cursor)}")
+
+(fn poll_log [view : EditorView] : Nil
+  (if (|| view/disposed (! view/available) (!= view/tab "logs") ($absent? view/log_view))
+    (return))
+  (var generation view/generation)
+  (bridge_call view "GET" (log_url view) nil
+    (fn [status : Int, data : Any] : Nil
+      (if (|| view/disposed (!= generation view/generation) (!= view/tab "logs")
+              ($absent? view/log_view))
+        (return))
+      (if (!= status 200)
+        (do
+          (say view (text_of data/message "The host log could not be read."))
+          ($time/after 3000.0
+            (fn [] : Nil
+              (if (== generation view/generation) (poll_log view))))
+          (return)))
+      (var lines : (List Str) [])
+      (var raw_lines : Any data/lines)
+      (if ($present? raw_lines) (set lines raw_lines))
+      (var gap (text_of data/gap ""))
+      (var state (text_of data/state "ok"))
+      (var cursor (text_of data/cursor ""))
+      (if (|| (> ($size lines) 0) (!= gap ""))
+        (do
+          (var log_target (log_editor_of view))
+          (log_target/append_log {^lines lines ^gap gap ^reset false})))
+      (if (!= cursor "")
+        (do (set view/cursor cursor) (persist_state view)))
+      (if (!= gap "") (say view $"host log: ${gap}"))
+      (if (== state "absent") (say view (text_of data/message "No retained host log yet.")))
+      (if (== state "unreadable") (say view (text_of data/message "The host log is unreadable.")))
+      ($time/after (if (== state "ok") 800.0 3000.0)
+        (fn [] : Nil
+          (if (== generation view/generation) (poll_log view)))))))
+
+(fn show_logs [view : EditorView] : Nil
+  (set view/tab "logs")
+  ($dom/set_class view/tab_source "active" false)
+  ($dom/set_class view/tab_logs "active" true)
+  (set view/source_root/hidden true)
+  (set view/log_root/hidden false)
+  (set view/generation (+ view/generation 1))
+  (if (! view/available)
+    (do (say view "Editor unavailable — enable the editor plugin to read logs.")
+        (update_attach view)
+        (return)))
+  (if ($absent? view/log_view)
+    (do
+      (var document (editor_document "host.log" "Host log" ""))
+      (set document/kind "log")
+      (set view/log_view (mount_editor view/log_root document (services view)))))
+  (say view "Reading Harness host log…")
+  (persist_state view)
+  (poll_log view))
+
+(fn show_source [view : EditorView] : Nil
+  (set view/tab "source")
+  ($dom/set_class view/tab_source "active" true)
+  ($dom/set_class view/tab_logs "active" false)
+  (set view/source_root/hidden false)
+  (set view/log_root/hidden true)
+  (set view/generation (+ view/generation 1))
+  (say view (if view/available "Source mode." "Editor unavailable — enable the editor plugin."))
+  (update_attach view)
+  (persist_state view))
+
+# ---------------------------------------------------------------------------
+# Attach
+# ---------------------------------------------------------------------------
+
+(fn attach [view : EditorView] : Nil
+  (if ($absent? view/bridge/attach)
+    (do (say view "This host cannot stage attachments from a view.") (return)))
+  (var stage : (Fn [Str] Bool) view/bridge/attach)
+  (if (== view/tab "source")
+    (do
+      (var selection : Any view/selection)
+      (if ($absent? selection)
+        (do (say view "Select a form in the editor first.") (return)))
+      (var path (text_of selection/path view/path))
+      (var revision (text_of selection/revision ""))
+      (var start (int_of selection/start_byte))
+      (var finish (int_of selection/end_byte start))
+      (bridge_call view "POST" "/p/editor/selection"
+        {^path path ^revision revision ^start_byte start ^end_byte finish}
+        (fn [status : Int, data : Any] : Nil
+          (if view/disposed (return))
+          (if (!= status 200)
+            (do (say view (text_of data/message "The selection could not be verified.")) (return)))
+          (if (flag_of data/changed)
+            (do (say view "The saved file changed since this selection; reopen and select again.") (return)))
+          (if (stage (selection_prompt path (text_of data/revision revision)
+                       start finish (text_of data/text "")))
+            (say view "Saved selection attached to the composer.")
+            (say view "The composer is not accepting attachments right now.")))))
+    (do
+      (if ($absent? view/log_view)
+        (do (say view "Open the Logs tab first.") (return)))
+      (var log_target (log_editor_of view))
+      (var body (log_target/log_text))
+      (if (== body "")
+        (do (say view "No log lines are loaded yet.") (return)))
+      (var lines (str/split body "\n"))
+      (var count ($size lines))
+      (var kept : (List Str) [])
+      (var total 0)
+      (var first count)
+      (var index (- count 1))
+      (var done false)
+      (while (&& (>= index 0) (! done))
+        (var line lines/%index)
+        (var cost (+ ($str/byte_size line) 1))
+        (if (|| (>= (- count index) 80) (> (+ total cost) 16384))
+          (set done true)
+          (do
+            (set total (+ total cost))
+            (set first index)
+            (set index (- index 1)))))
+      (set index first)
+      (while (< index count)
+        (kept .push lines/%index)
+        (set index (+ index 1)))
+      (var body_text (str/join kept "\n"))
+      (if (stage $"[Harness host log: last ${($size kept)} line(s), redacted]\n```\n${body_text}\n```")
+        (say view $"Attached ${($size kept)} redacted log line(s).")
+        (say view "The composer is not accepting attachments right now.")))))
+
+# ---------------------------------------------------------------------------
+# Availability, keys, mount
+# ---------------------------------------------------------------------------
+
+(fn apply_status [view : EditorView, status : Any] : Nil
+  (var was view/available)
+  (var now (available_plugins? status))
+  (set view/available now)
+  (if (&& was (! now))
+    (do
+      (say view "Editor unavailable — the editor plugin is disabled. Drafts are kept.")
+      (set view/generation (+ view/generation 1))))
+  (if (&& (! was) now)
+    (do
+      (say view "Editor available.")
+      (if ($present? view/source)
+        (do
+          (var target (editor_of view))
+          (target/refresh)))
+      (if (== view/tab "logs") (poll_log view))))
+  (update_attach view))
+
+(fn view_key [view : EditorView, event : Any] : Bool
+  (if (&& (! ($event/ctrl_key event)) (! ($event/meta_key event)))
+    (return false))
+  (if (!= ($event/key event) "s")
+    (return false))
+  (if (|| (! view/available) (!= view/tab "source") ($absent? view/source))
+    (return false))
+  ($dom/prevent_default event)
+  (var target (editor_of view))
+  (target/save)
+  true)
+
+(fn view_dispose [view : EditorView] : Nil
+  (set view/disposed true)
+  (set view/generation (+ view/generation 1))
+  (var source : Any view/source)
+  (if ($present? source)
+    (do (var target : Editor source) (target/dispose)))
+  (var logs : Any view/log_view)
+  (if ($present? logs)
+    (do (var log_target : Editor logs) (log_target/dispose)))
+  (persist_state view))
+
+(fn bridge_call_state [bridge : Any] : Any
+  (var state_fn : (Fn [] Any) bridge/state)
+  (state_fn))
+
+(fn button [label : Str, primary : Bool] : EventTarget
+  (var node ($dom/create_element "button"))
+  ($dom/set_attribute node "type" "button")
+  ($dom/set_text node label)
+  node)
+
+(fn build [root : EventTarget, bridge : Any] : EditorView
+  (var shell ($dom/create_element "div"))
+  ($dom/set_style root "height" "100%")
+  ($dom/set_style shell "display" "flex")
+  ($dom/set_style shell "flex-direction" "column")
+  ($dom/set_style shell "height" "100%")
+  ($dom/set_style shell "min-height" "0")
+  ($dom/set_attribute shell "class" "editor_view_shell")
+  (var head ($dom/create_element "div"))
+  ($dom/set_style head "display" "flex")
+  ($dom/set_style head "gap" "6px")
+  ($dom/set_style head "align-items" "center")
+  ($dom/set_style head "padding" "4px 0")
+  (var title ($dom/create_element "strong"))
+  ($dom/set_text title "Gene editor")
+  (var path_input ($dom/create_element "input"))
+  ($dom/set_attribute path_input "type" "text")
+  ($dom/set_attribute path_input "placeholder" "workspace-relative path")
+  ($dom/set_attribute path_input "aria-label" "Editor file path")
+  ($dom/set_style path_input "flex" "1")
+  ($dom/set_style path_input "min-width" "0")
+  (var open_button (button "Open" false))
+  (var attach_button (button "Attach selection" false))
+  (var tabs ($dom/create_element "div"))
+  ($dom/set_style tabs "display" "flex")
+  ($dom/set_style tabs "gap" "4px")
+  (var tab_source (button "Source" true))
+  (var tab_logs (button "Logs" false))
+  ($dom/set_class tab_source "active" true)
+  ($dom/append tabs tab_source)
+  ($dom/append tabs tab_logs)
+  (var status ($dom/create_element "span"))
+  ($dom/set_style status "font-size" "11px")
+  ($dom/set_style status "opacity" "0.85")
+  ($dom/set_style status "flex" "1")
+  ($dom/set_style status "min-width" "0")
+  ($dom/set_style status "overflow" "hidden")
+  ($dom/set_style status "text-overflow" "ellipsis")
+  ($dom/set_style status "white-space" "nowrap")
+  ($dom/append head title)
+  ($dom/append head tabs)
+  ($dom/append head path_input)
+  ($dom/append head open_button)
+  ($dom/append head attach_button)
+  ($dom/append head status)
+  (var source_root ($dom/create_element "div"))
+  ($dom/set_style source_root "flex" "1")
+  ($dom/set_style source_root "min-height" "0")
+  (var log_root ($dom/create_element "div"))
+  ($dom/set_style log_root "flex" "1")
+  ($dom/set_style log_root "min-height" "0")
+  (set log_root/hidden true)
+  ($dom/append shell head)
+  ($dom/append shell source_root)
+  ($dom/append shell log_root)
+  ($dom/append root shell)
+  (var saved : Any bridge/view/view_state)
+  (var view
+    (EditorView ^root root ^bridge bridge ^title title ^path_input path_input
+      ^status status ^source_root source_root ^log_root log_root
+      ^tab_source tab_source ^tab_logs tab_logs ^open_button open_button
+      ^attach_button attach_button ^source nil ^log_view nil
+      ^available (available_plugins? (bridge_call_state bridge)) ^dirty false
+      ^path (text_of saved/path "") ^tab (text_of saved/tab "source")
+      ^cursor (text_of saved/log_cursor "") ^generation 0 ^disposed false
+      ^selection nil ^drafts {} ^storage_warned false ^mode "source"))
+  ($dom/set_input_value path_input view/path)
+  (if (!= view/path "")
+    (do ($dom/set_text view/title $"Gene editor · ${view/path}") (open_path view view/path)))
+  ($dom/add_event_listener open_button "click"
+    (fn [event : Any] : Nil (open_path view ($dom/input_value path_input))))
+  ($dom/add_event_listener path_input "keydown"
+    (fn [event : Any] : Nil
+      (if (== ($event/key event) "Enter")
+        (do ($dom/prevent_default event) (open_path view ($dom/input_value path_input))))))
+  ($dom/add_event_listener attach_button "click"
+    (fn [event : Any] : Nil (attach view)))
+  ($dom/add_event_listener tab_source "click"
+    (fn [event : Any] : Nil (show_source view)))
+  ($dom/add_event_listener tab_logs "click"
+    (fn [event : Any] : Nil (show_logs view)))
+  (set view/attach_button/disabled true)
+  (if (== view/tab "logs") (show_logs view) (show_source view))
+  view)
+
+(fn main [root : EventTarget] : Nil
+  (var bridge : Any root/harness_bridge)
+  (var view (build root bridge))
+  (var controller
+    {^update (fn [status : Any] : Nil
+                (if_not view/disposed (apply_status view status)))
+     ^key (fn [event : Any] : Bool
+             (if view/disposed false (view_key view event)))
+     ^dispose (fn [] : Nil (view_dispose view))})
+  (set root/harness_controller controller)
+  nil)

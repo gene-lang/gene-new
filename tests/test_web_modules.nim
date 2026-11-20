@@ -36,6 +36,46 @@ suite "web standard receiver methods":
       expect WebProfileError:
         discard buildWebModule(source, root / "out")
 
+suite "web bindings that shadow host globals":
+  test "a local or parameter named like a browser global keeps its meaning":
+    let root = createTempDir("gene-web-shadow-", "")
+    defer: removeDir(root)
+    writeFile(root / "shadow.gene", """
+      (mod shadow ^profile web)
+      (fn run [] : (List Str)
+        (var document "doc")
+        (let window "win")
+        (for navigator in ["nav"]
+          (return [document window navigator]))
+        [document window])
+      (fn echo [document : Str, window : Str] : Str
+        (str/join [document window] "/"))
+      (fn caller [document : Str] : Str
+        (var window document)
+        window)
+      (type Box ^props {^value Str})
+      (fn setter [path : Str] : Str
+        (var box (Box ^value "a"))
+        (set box/value path)
+        box/value)
+    """)
+    discard buildWebModule(root / "shadow.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {run, echo, caller, setter} from './shadow.mjs';
+      globalThis.document = { marker: 'host' };
+      globalThis.window = { marker: 'host' };
+      Object.defineProperty(globalThis, 'navigator', {
+        value: { marker: 'host' }, configurable: true, writable: true });
+      assert.deepEqual(run(), ['doc', 'win', 'nav']);
+      assert.equal(echo('a', 'b'), 'a/b');
+      assert.equal(caller('x'), 'x');
+      assert.equal(setter('b'), 'b');
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
 suite "web leaf predicate":
   test "distinguishes text and scalar leaves from structures and callables":
     let root = createTempDir("gene-web-leaf-", "")

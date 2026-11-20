@@ -11,7 +11,7 @@ and measurement records are available in Git history.
 - [Design and ownership](design.md), [protocol](protocol.md) and [contributor guide](../CONTRIBUTING.md)
 - [Plugin contract, manager and source history](plugins.md), [operator guide](plugin-manager-guide.md)
 - [Turn participants, Outcome schemas and initiators](turn-participants.md)
-- [Browser client](web-client.md), [workspace views](workspace-views.md) and [components](web-components.md)
+- [Browser client](web-client.md), [workspace views](workspace-views.md), [components](web-components.md) and the [Gene editor panel](editor.md)
 - [Workspace manager](manager.md), [commands](commands.md), [shell](shell.md) and [REPL](repl.md)
 - [Notifications](notification.md), [cards](cards.md), [media](media.md) and [images](image-generation.md)
 - [Voice](audio.md), [computer use](computer.md), [Slack channels](channels.md) and [sub-agents](sub-agent.md)

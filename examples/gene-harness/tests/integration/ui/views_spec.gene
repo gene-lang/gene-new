@@ -117,8 +117,10 @@
           (configure {^^enabled ^layout "panel" ^panel "project_board" ^tokens {^light {^accent "#335577"}}})
           (assert_board_outline service/runtime 0)
           (let descriptors (plugin_views (ui_status service/runtime)))
-          ($assert (== descriptors/.size 2))
-          (let descriptor descriptors/0)
+          (let descriptor_names ($map descriptors (fn [item] item/name)))
+          ($assert (== descriptors/.size 3) ($to_str descriptor_names))
+          (let descriptor ($first ($filter descriptors (fn [item] (== item/name "project_board")))))
+          ($assert ($present? descriptor) "the board view is missing")
           ($assert ($absent? descriptor/view))
           (let view (ui_render service/runtime session/id "project_board" descriptor/revision {^filter "feedback" ^selected "feedback"}))
           ($assert (try

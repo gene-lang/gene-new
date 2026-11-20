@@ -3,7 +3,7 @@
 (import [resolve] ^from "../kernel")
 (import [acquire_snapshot release_snapshot current_snapshot] ^from "../runtime/composition")
 (import [spawn_composition_call] ^from "../runtime/cordis_adapter")
-(import [bounded_component_view WebComponentError] ^from "./components")
+(import [bounded_component_view component_outlets WebComponentError] ^from "./components")
 (import [ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error view_listed? view_actions] ^from "./state")
 (import [view_outline outline_text] ^from "./outline")
 
@@ -88,6 +88,10 @@
       (let view ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^^ui_render}
         (fn [] (render_component ^^interactive h record/payload/render context))))
       (validate_view_actions view record/payload lease/snapshot)
+      (for outlet in (component_outlets view)
+        (if ($absent? (ui_record lease/snapshot "browser_clients" outlet))
+          (fail (WebComponentError ^_msg
+            $"view outlet requires an enabled browser contribution ${outlet}"))))
       (result .put "view" view)
     catch Error (result .put "error" $err/.message))
     result

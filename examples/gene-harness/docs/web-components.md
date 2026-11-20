@@ -25,6 +25,18 @@ Disabling/removing a plugin removes its components. A replacement's absence
 restores the built-in view. Restart reconstructs enabled components and their
 durable plugin state.
 
+## View-owned browser outlet
+
+A stateful view may include an empty, keyed `div` with `^data-outlet NAME` in its
+rendered tree. `NAME` must match an enabled `browser_clients` contribution.
+The host keeps that DOM node across view-tree updates and mounts the compiled
+browser module in it; the module receives `root/harness_bridge` with the active
+view, its scalar view state, and `save_view_state`. The mount is disposed when
+the outlet disappears, the view or workspace changes, or the contribution is
+replaced or disabled. The contribution may declare `^scope "view"` so it is not
+also mounted into the page toolbar or composer. The editor plugin's
+`editor_view` is the reference implementation; see [the editor](editor.md).
+
 ## Static view and actions
 
 Use ordinary quoted Gene nodes as view data:

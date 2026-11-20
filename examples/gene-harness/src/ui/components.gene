@@ -83,7 +83,8 @@
     "height"
     "columns"
     "inset"
-    "chord"])
+    "chord"
+    "data-outlet"])
 
 (fn component_error [message : Str]
   (fail (WebComponentError ^_msg ($to_str message
@@ -177,6 +178,15 @@
         (component_error "appearance requires a preference select"))
       (attributes .put "data-appearance" item)
       (continue))
+    # A host-owned outlet for a compiled browser contribution. The key is
+    # required below so the client can keep one DOM node and its mount across
+    # view-tree updates.
+    (if_yes (== name "data-outlet")
+      (if (|| (!= tag "div") (!= ($head item) Str)
+              ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match item)))
+        (component_error "data-outlet requires a div and a browser contribution name"))
+      (attributes .put "data-outlet" item)
+      (continue))
     (if_yes (== name "args")
       (if (!= ($head item) Map) (component_error "action args must be a map"))
       ($serde/write_data item)
@@ -239,6 +249,12 @@
       (if (|| (!= tag "a") (! (["_self" "_blank"] .contains? item)))
         (component_error "link targets require an anchor and must be _self or _blank")))
     (attributes .put ($regex/replace_all #"_" name "-") (if (== item true) "" ($to_str item))))
+  (if ($present? attributes/data-outlet)
+    (do
+      (if ($absent? attributes/key)
+        (component_error "data-outlet requires a stable key"))
+      (if_not children/.empty?
+        (component_error "data-outlet owns its children and must be empty"))))
   (if (== attributes/target "_blank")
     (attributes .put "rel" "noopener"))
   (if_not ($absent? attributes/class-name)
@@ -371,6 +387,20 @@
   (checked .put "style_css" css)
   (checked .put "style_class" (if ($absent? scoped_style) "" (class_name scoped_style)))
   nil)
+
+(fn collect_outlets [value, found : (List Str)] : Nil
+  (if (!= ($head value) Map) (return))
+  (if ($absent? value/tag) (return))
+  (let props (?? value/props {}))
+  (if ($present? props/data-outlet) (found .push props/data-outlet))
+  (for child in (?? value/children []) (collect_outlets child found)))
+
+(fn component_outlets [tree] : (List Str)
+  # Checked view trees only; collect outlets in source order without exposing
+  # the surrounding component shape.
+  (var found : (List Str) [])
+  (collect_outlets tree found)
+  found)
 
 (fn validate_web_component [candidate]
   (if (|| (!= ($head candidate/name) Str) ($absent? (#"^[a-z][a-z0-9_]{0,79}$" .match candidate/name)))

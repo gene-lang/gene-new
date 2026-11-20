@@ -1,0 +1,597 @@
+# Browser scenarios for the reusable Gene editor, compiled as a web module and
+# run under Node with the small DOM in gene_editor_dom.mjs.
+#
+# This is the milestone-1 behavior list from tmp/gene-web-editor.md: an outline
+# and caret selection, stale analysis replies, a missing helper, save success
+# and conflict, a lost save followed by a retry, restoring a draft after
+# remounting, independent mounts, an unfinished buffer with a supplementary
+# character, and a log stream with pauses and gaps.
+#
+# Assertions run in Gene, next to the component. The Node driver only supplies
+# the DOM, waits for the debounce timer, and prints the result object.
+#
+# The web profile has no module-level mutable state, so one Scenario record
+# carries the scripted hosts, captured requests, and failures between steps.
+
+(mod gene_editor_scenarios ^profile web)
+
+(import [mount_editor editor_document EditorDocument EditorServices Editor]
+  ^from "../../client/components/gene_editor.gene")
+
+(type Scenario ^props {
+  ^failures (List Str)
+  ^checks Int
+  ^events (List Any)
+  ^analyze_requests (List Any)
+  ^held (List Any)
+  ^save_requests (List Any)
+  ^analyze_hold Bool
+  ^analyze_reply Any
+  ^save_reply Any
+  ^format_reply Any
+  ^analyze_rows (List Any)
+  ^analyze_tree (List Any)
+  ^analyze_partial Bool
+  ^analyze_found Bool
+  ^analyze_selected_start Int
+  ^analyze_selected_end Int
+  ^debounce_requests Int
+  ^debounce_editor Any})
+
+(fn new_scenario [] : Scenario
+  (Scenario ^failures [] ^checks 0 ^events [] ^analyze_requests [] ^held []
+            ^save_requests [] ^analyze_hold false ^analyze_reply nil
+            ^save_reply nil ^format_reply nil ^analyze_rows [] ^analyze_tree []
+            ^analyze_partial false ^analyze_found false
+            ^analyze_selected_start 0 ^analyze_selected_end 0
+            ^debounce_requests 0 ^debounce_editor nil))
+
+# ---------------------------------------------------------------------------
+# Assertions and coercions
+# ---------------------------------------------------------------------------
+
+(fn text [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn flag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn int_of [value : Any, fallback : Int] : Int
+  (if_yes ($absent? value) (return fallback))
+  (var result : Int value)
+  result)
+
+(fn expect [sc : Scenario, name : Str, condition : Bool] : Nil
+  (set sc/checks (+ sc/checks 1))
+  (if (! condition) (sc/failures .push name)))
+
+(fn expect_text [sc : Scenario, name : Str, actual : Any, wanted : Str] : Nil
+  (set sc/checks (+ sc/checks 1))
+  (var got (text actual ""))
+  (if (!= got wanted)
+    (sc/failures .push
+      (str/join [name ": expected '" wanted "', got '" got "'"] ""))))
+
+(fn expect_int [sc : Scenario, name : Str, actual : Any, wanted : Int] : Nil
+  (set sc/checks (+ sc/checks 1))
+  (var got (int_of actual -999999))
+  (if (!= got wanted)
+    (sc/failures .push
+      (str/join [name ": expected " ($to_str wanted) ", got " ($to_str got)] ""))))
+
+(fn event_of [sc : Scenario, kind : Str] : Any
+  (var found : Any nil)
+  (var index 0)
+  (while (< index ($size sc/events))
+    (var event : Any (sc/events .get index))
+    (if ($present? event)
+      (if (== (text event/type "") kind) (set found event)))
+    (set index (+ index 1)))
+  found)
+
+(fn snapshot [editor : Editor] : Any
+  (editor/snapshot))
+
+(fn snap_text [editor : Editor] : Str
+  (var snap (snapshot editor))
+  (text snap/text ""))
+
+(fn stored [store : PropMap, id : Str] : Any
+  (var value : Any store/%id)
+  value)
+
+# ---------------------------------------------------------------------------
+# Scripted hosts
+# ---------------------------------------------------------------------------
+
+(fn outline_entry [name : Str, kind : Str, start : Int, finish : Int,
+                   closed : Bool] : Any
+  {^name name ^kind 12 ^kindName kind ^detail "" ^closed closed
+   ^startByte start ^endByte finish ^startUtf16 start ^endUtf16 finish
+   ^nameStartByte start ^nameEndByte finish})
+
+(fn tree_entry [id : Int, label : Str, path : Str, start : Int, finish : Int,
+                closed : Bool, children : (List Any)] : Any
+  {^id id ^label label ^summary "" ^path path ^kind "node" ^closed closed
+   ^startByte start ^endByte finish ^startUtf16 start ^endUtf16 finish
+   ^children children ^more 0})
+
+(fn response_for [sc : Scenario, request : Any] : Any
+  (var version (int_of request/version 0))
+  (var selected (if sc/analyze_found
+    {^found true ^start sc/analyze_selected_start ^end sc/analyze_selected_end}
+    {^found false}))
+  (var diagnostics : (List Any) [])
+  (if sc/analyze_partial
+    (diagnostics .push
+      {^message "unexpected EOF: unclosed '('" ^line 1 ^col 1}))
+  {^protocol 1 ^ok true ^parsed true ^partial sc/analyze_partial
+   ^version version
+   ^outline sc/analyze_rows
+   ^tree {^children sc/analyze_tree}
+   ^selected selected
+   ^diagnostics diagnostics})
+
+(fn make_services [sc : Scenario, store : PropMap] : EditorServices
+  (EditorServices
+    ^save (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+      (sc/save_requests .push request)
+      (var reply : Any sc/save_reply)
+      (if ($absent? reply)
+        (set reply {^ok true ^revision "rev-2"
+                    ^line_endings request/line_endings
+                    ^bom request/bom}))
+      (done reply))
+    ^analyze (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+      (sc/analyze_requests .push request)
+      (if sc/analyze_hold
+        (sc/held .push {^request request ^done done})
+        (do
+          (var reply : Any sc/analyze_reply)
+          (if ($absent? reply)
+            (set reply (response_for sc request)))
+          (done reply))))
+    ^format (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+      (var reply : Any sc/format_reply)
+      (if ($absent? reply)
+        (set reply {^ok true ^text request/text ^version request/version}))
+      (done reply))
+    ^store_get (fn [id : Str] : Any
+      (var value : Any store/%id)
+      value)
+    ^store_put (fn [id : Str, value : Any] : Nil
+      (set store/%id value))
+    ^store_delete (fn [id : Str] : Nil
+      (set store/%id nil))
+    ^emit (fn [event : Any] : Nil
+      (sc/events .push event))))
+
+(fn mount_source [sc : Scenario, store : PropMap, id : Str, source : Str,
+                  revision : Str] : Editor
+  (var document (editor_document id id source))
+  (set document/revision revision)
+  (set document/path id)
+  (mount_editor ($dom/create_element "div") document (make_services sc store)))
+
+(fn deliver_analysis [sc : Scenario, index : Int, reply : Any] : Nil
+  (var entry : Any (sc/held .get index))
+  (if ($absent? entry) (return))
+  (var done : (Fn [Any] Nil) entry/done)
+  (done reply))
+
+# ---------------------------------------------------------------------------
+# Scenarios
+# ---------------------------------------------------------------------------
+
+(fn scenario_outline [sc : Scenario] : Nil
+  (set sc/analyze_rows [
+    (outline_entry "demo" "module" 0 10 true)
+    (outline_entry "greet" "function" 11 33 true)
+    (outline_entry "counter" "variable" 34 48 true)])
+  (set sc/analyze_tree [
+    (tree_entry 0 "0" "0" 0 10 true [])
+    (tree_entry 1 "1" "1" 11 33 true [(tree_entry 3 "head" "1/head" 12 14 true [])])
+    (tree_entry 2 "2" "2" 34 48 true [])])
+  (set sc/analyze_found true)
+  (set sc/analyze_selected_start 15)
+  (set sc/analyze_selected_end 15)
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-1"
+    "(mod demo)\n(fn greet [name] name)\n(var counter 0)" "rev-1"))
+  (var snap (snapshot editor))
+  (expect_text sc "outline: analysis is current" snap/analysis "current")
+  (expect_int sc "outline: declarations" snap/outline_count 3)
+  (expect_int sc "outline: tree rows" snap/tree_count 4)
+  (expect sc "outline: clean on mount" (! (flag snap/dirty)))
+  (editor/reveal {^start_utf16 15 ^end_utf16 15})
+  (set snap (snapshot editor))
+  (expect_text sc "outline: caret selects the enclosing form"
+    snap/selected_path "1")
+  (var selection (event_of sc "selection"))
+  (expect sc "outline: a selection event was emitted" ($present? selection))
+  (expect_text sc "outline: the event carries the form path"
+    selection/path "1")
+  (expect_text sc "outline: the event carries the exact source"
+    selection/text "(fn greet [name] name)")
+  (expect_text sc "outline: the event carries the revision"
+    selection/revision "rev-1")
+  (expect_int sc "outline: byte spans come from the reply"
+    (int_of selection/start_byte -1) 11)
+  (editor/dispose))
+
+(fn scenario_stale [sc : Scenario] : Nil
+  (set sc/analyze_rows [])
+  (set sc/analyze_tree [])
+  (set sc/analyze_found false)
+  (set sc/analyze_hold true)
+  (set sc/held [])
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-2" "abc" "rev-1"))
+  (editor/replace_range 0 0 "x")
+  (editor/refresh)
+  (editor/replace_range 0 0 "y")
+  (editor/refresh)
+  (expect_int sc "stale: three versions were requested" ($size sc/held) 3)
+  (var snap (snapshot editor))
+  (var version (int_of snap/version 0))
+  # Deliver the intermediate request first. It is out of date by the time it
+  # arrives and must not claim the current buffer.
+  (var middle : Any (sc/held .get 1))
+  (var middle_request : Any middle/request)
+  (deliver_analysis sc 1 (response_for sc middle_request))
+  (set snap (snapshot editor))
+  (expect_int sc "stale: an older reply is discarded"
+    (int_of snap/analyzed_version -1) -1)
+  (var latest : Any (sc/held .get 2))
+  (var latest_request : Any latest/request)
+  (deliver_analysis sc 2 (response_for sc latest_request))
+  (set snap (snapshot editor))
+  (expect_int sc "stale: the current reply is applied"
+    (int_of snap/analyzed_version -1) (int_of latest_request/version 0))
+  (expect_int sc "stale: the applied version is the buffer version"
+    (int_of snap/analyzed_version -1) version)
+  (set sc/analyze_hold false)
+  (editor/dispose))
+
+(fn scenario_missing_helper [sc : Scenario] : Nil
+  (set sc/analyze_hold false)
+  (set sc/analyze_reply
+    {^ok false ^unavailable true ^message "gene-viewer was not found"})
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-3" "(fn broken []" "rev-1"))
+  (var snap (snapshot editor))
+  (expect sc "missing: analysis is marked unavailable" (flag snap/degraded))
+  (expect_int sc "missing: no outline is shown" snap/outline_count 0)
+  (editor/replace_range 0 0 ";; ")
+  (expect_text sc "missing: the buffer still edits"
+    (snap_text editor) ";; (fn broken []")
+  (set sc/analyze_reply nil)
+  (editor/dispose))
+
+(fn scenario_save [sc : Scenario] : Nil
+  (set sc/analyze_hold false)
+  (set sc/save_requests [])
+  (set sc/save_reply nil)
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-4" "before" "rev-1"))
+  (editor/replace_range 0 0 "// x\n")
+  (editor/save)
+  (var snap (snapshot editor))
+  (expect_text sc "save: state settles to idle" snap/save_state "idle")
+  (expect_text sc "save: the returned revision is adopted" snap/revision "rev-2")
+  (expect sc "save: the draft is clean after a full save"
+    (! (flag snap/dirty)))
+  (expect sc "save: the stored draft is cleared"
+    ($absent? (stored store "doc-4")))
+  (expect_int sc "save: one request was submitted" ($size sc/save_requests) 1)
+  (var request : Any (sc/save_requests .get 0))
+  (expect_text sc "save: the request carries the edited text"
+    request/text "// x\nbefore")
+  (expect_text sc "save: the request carries the base revision"
+    request/base_revision "rev-1")
+  # A newer edit made while a save is in flight stays a draft on the new base.
+  (set sc/save_reply {^ok true ^revision "rev-3"})
+  (editor/replace_range 0 0 "// y\n")
+  (editor/save)
+  (editor/replace_range 0 0 "// z\n")
+  (set snap (snapshot editor))
+  (expect sc "save: edits after submission keep the draft dirty"
+    (flag snap/dirty))
+  (var kept (stored store "doc-4"))
+  (expect_text sc "save: the draft is kept on the new base"
+    kept/base_revision "rev-3")
+  (editor/dispose))
+
+(fn scenario_conflict [sc : Scenario] : Nil
+  (set sc/save_requests [])
+  (set sc/save_reply
+    {^ok false ^conflict true ^revision "rev-9" ^text "disk"})
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-5" "mine" "rev-1"))
+  (editor/replace_range 0 0 "draft ")
+  (editor/save)
+  (var snap (snapshot editor))
+  (expect_text sc "conflict: state is reported" snap/save_state "conflict")
+  (expect sc "conflict: the draft stays dirty" (flag snap/dirty))
+  (expect sc "conflict: the draft stays in the store"
+    ($present? (stored store "doc-5")))
+  (expect_text sc "conflict: the base revision is not adopted"
+    snap/revision "rev-1")
+  (editor/compare)
+  (set snap (snapshot editor))
+  (expect sc "conflict: comparison opens the diff" (flag snap/diff_visible))
+  (editor/dispose))
+
+(fn scenario_retry [sc : Scenario] : Nil
+  (set sc/save_requests [])
+  (set sc/save_reply {^ok false ^message "connection lost"})
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-6" "base" "rev-1"))
+  (editor/replace_range 0 0 "one ")
+  (editor/save)
+  (var snap (snapshot editor))
+  (expect_text sc "retry: a lost response is reported" snap/save_state "failed")
+  (editor/replace_range 0 0 "two ")
+  (set sc/save_reply {^ok true ^revision "rev-7"})
+  (editor/retry)
+  (expect_int sc "retry: one retry request was sent" ($size sc/save_requests) 2)
+  (var first : Any (sc/save_requests .get 0))
+  (var retried : Any (sc/save_requests .get 1))
+  (expect_text sc "retry: the exact submitted snapshot is resent"
+    retried/text (text first/text ""))
+  (expect_text sc "retry: the retried base is the submitted base"
+    retried/base_revision (text first/base_revision ""))
+  (expect sc "retry: edits made after submission stay separate"
+    (!= (text retried/text "") (snap_text editor)))
+  (set snap (snapshot editor))
+  (expect_text sc "retry: the successful retry settles" snap/save_state "idle")
+  (expect_text sc "retry: the retried revision is adopted" snap/revision "rev-7")
+  (expect sc "retry: the newer edit keeps the draft dirty" (flag snap/dirty))
+  (editor/dispose))
+
+(fn scenario_draft_restore [sc : Scenario] : Nil
+  (set sc/save_requests [])
+  (var store : PropMap {})
+  (var first (mount_source sc store "doc-7" "original" "rev-1"))
+  (first/replace_range 0 0 "// note\n")
+  (first/dispose)
+  (expect sc "draft: disposal keeps the stored draft"
+    ($present? (stored store "doc-7")))
+  (var second (mount_source sc store "doc-7" "original" "rev-1"))
+  (var snap (snapshot second))
+  (expect_text sc "draft: the buffer is restored"
+    (snap_text second) "// note\noriginal")
+  (expect sc "draft: the restored draft is dirty" (flag snap/dirty))
+  (expect_text sc "draft: the restored base is kept" snap/revision "rev-1")
+  (second/dispose)
+  # A draft whose base is older than the current saved revision is restored
+  # but the newer revision is not silently adopted.
+  (var moved (mount_source sc store "doc-7" "original" "rev-8"))
+  (var moved_snap (snapshot moved))
+  (expect sc "draft: an older base is surfaced"
+    (str/contains? (text moved_snap/save_message "") "older revision"))
+  (expect_text sc "draft: the draft still wins over the new base"
+    (snap_text moved) "// note\noriginal")
+  (expect_text sc "draft: the draft base is kept"
+    moved_snap/revision "rev-1")
+  (moved/dispose))
+
+(fn scenario_multiple_mounts [sc : Scenario] : Nil
+  (set sc/analyze_hold false)
+  (set sc/analyze_rows [])
+  (set sc/analyze_tree [])
+  (set sc/analyze_found false)
+  (var store_a : PropMap {})
+  (var store_b : PropMap {})
+  (var first (mount_source sc store_a "doc-a" "alpha" "rev-1"))
+  (var second (mount_source sc store_b "doc-b" "beta" "rev-1"))
+  (first/replace_range 0 0 "one ")
+  (expect_text sc "mounts: the first mount edits" (snap_text first) "one alpha")
+  (expect_text sc "mounts: the second mount is untouched"
+    (snap_text second) "beta")
+  (first/dispose)
+  (expect_text sc "mounts: disposal leaves the sibling alone"
+    (snap_text second) "beta")
+  (second/replace_range 0 0 "two ")
+  (expect_text sc "mounts: the sibling still edits" (snap_text second) "two beta")
+  (second/dispose))
+
+(fn scenario_partial_unicode [sc : Scenario] : Nil
+  (set sc/analyze_hold false)
+  (set sc/analyze_partial true)
+  (set sc/analyze_rows [
+    (outline_entry "🙂" "function" 0 12 false)])
+  (set sc/analyze_tree [
+    (tree_entry 0 "0" "0" 0 12 false [])])
+  (set sc/analyze_found true)
+  (set sc/analyze_selected_start 0)
+  (set sc/analyze_selected_end 12)
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-8" "(fn 🙂 [x] x" "rev-1"))
+  (var snap (snapshot editor))
+  (expect sc "partial: the buffer is marked partial" (flag snap/partial))
+  (expect sc "partial: the buffer is not stale" (! (flag snap/stale)))
+  (expect_int sc "partial: the outline is shown" snap/outline_count 1)
+  (editor/reveal {^start_utf16 4 ^end_utf16 4})
+  (var selection (event_of sc "selection"))
+  (expect_text sc "partial: caret selection includes the supplementary character"
+    selection/text "(fn 🙂 [x] x")
+  (expect_int sc "partial: the selection starts at byte zero"
+    (int_of selection/start_byte -1) 0)
+  # A lexical error keeps the previous outline as stale rather than clearing it.
+  (set sc/analyze_reply
+    {^ok false ^parsed false
+     ^diagnostics [{^message "unterminated string" ^line 1 ^col 5}]})
+  (editor/refresh)
+  (set snap (snapshot editor))
+  (expect sc "lexical: the view is marked stale" (flag snap/stale))
+  (expect_int sc "lexical: the last outline is kept" snap/outline_count 1)
+  (expect_int sc "lexical: no new analysis version was claimed"
+    (int_of snap/analyzed_version -1) 0)
+  (set sc/analyze_reply nil)
+  (set sc/analyze_partial false)
+  (editor/dispose))
+
+(fn scenario_format [sc : Scenario] : Nil
+  (set sc/analyze_hold false)
+  (set sc/analyze_rows [])
+  (set sc/analyze_tree [])
+  (set sc/analyze_found false)
+  (set sc/format_reply {^ok true ^text "formatted\n"})
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-9" "unformatted" "rev-1"))
+  (editor/format)
+  (var snap (snapshot editor))
+  (expect sc "format: a preview is pending" (flag snap/format_pending))
+  (expect sc "format: the diff is visible" (flag snap/diff_visible))
+  (editor/apply_format)
+  (set snap (snapshot editor))
+  (expect_text sc "format: apply replaces the buffer"
+    (snap_text editor) "formatted\n")
+  (expect_int sc "format: apply records one undo entry"
+    (int_of snap/undo_count 0) 1)
+  (editor/dispose))
+
+(fn scenario_log [sc : Scenario] : Nil
+  (var store : PropMap {})
+  (var document (editor_document "log-1" "host.log" "line 1\nline 2\nline 3"))
+  (set document/kind "log")
+  (var editor
+    (mount_editor ($dom/create_element "div") document (make_services sc store)))
+  (var snap (snapshot editor))
+  (expect_int sc "log: snapshot lines are loaded" snap/log_count 3)
+  (expect sc "log: follow starts enabled" (flag snap/log_follow))
+  (editor/append_log {^lines ["line 4" "line 5"]})
+  (set snap (snapshot editor))
+  (expect_int sc "log: appended lines are counted" snap/log_count 5)
+  (editor/pause)
+  (editor/append_log {^lines ["line 6"]})
+  (set snap (snapshot editor))
+  (expect_int sc "log: paused arrivals are retained" snap/log_count 6)
+  (expect_int sc "log: paused arrivals are unread" snap/log_unread 1)
+  (editor/append_log {^gap "rotation"})
+  (set snap (snapshot editor))
+  (expect_int sc "log: the gap marker is inserted" snap/log_count 7)
+  (expect_text sc "log: the gap is labelled" snap/log_gap "rotation")
+  (editor/latest)
+  (set snap (snapshot editor))
+  (expect sc "log: jump to latest resumes follow" (flag snap/log_follow))
+  (expect_int sc "log: jump to latest clears unread" snap/log_unread 0)
+  (editor/search "line 6")
+  (set snap (snapshot editor))
+  # The matching line plus the gap marker that explains the discontinuity.
+  (expect_int sc "log: search filters the visible rows" snap/log_visible 2)
+  (expect_int sc "log: search keeps every entry" snap/log_count 7)
+  (editor/search "")
+  (editor/append_log {^reset true ^lines ["fresh"]})
+  (set snap (snapshot editor))
+  (expect_int sc "log: reset replaces the buffer" snap/log_count 1)
+  (expect_text sc "log: reset clears the gap label" snap/log_gap "")
+  # The display buffer is bounded; dropped lines are counted, not silent.
+  (var many : (List Str) [])
+  (var index 0)
+  (while (< index 4100)
+    (many .push $"row ${index}")
+    (set index (+ index 1)))
+  (editor/append_log {^lines many})
+  (set snap (snapshot editor))
+  (expect_int sc "log: the display buffer keeps 4000 lines" snap/log_count 4000)
+  (expect sc "log: dropping older lines is reported"
+    (> (int_of snap/log_dropped 0) 0))
+  (editor/dispose))
+
+(fn scenario_replace_saved [sc : Scenario] : Nil
+  (set sc/analyze_hold false)
+  (set sc/analyze_rows [])
+  (set sc/analyze_tree [])
+  (set sc/analyze_found false)
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-10" "clean" "rev-1"))
+  (editor/replace_saved {^text "external\n" ^revision "rev-2"})
+  (var snap (snapshot editor))
+  (expect_text sc "replace: a clean buffer adopts the new snapshot"
+    (snap_text editor) "external\n")
+  (expect_text sc "replace: the new revision is adopted" snap/revision "rev-2")
+  (expect sc "replace: the adopted text is clean" (! (flag snap/dirty)))
+  (editor/replace_range 0 0 "mine ")
+  (editor/replace_saved {^text "agent\n" ^revision "rev-3"})
+  (set snap (snapshot editor))
+  (expect_text sc "replace: a dirty buffer keeps the draft"
+    (snap_text editor) "mine external\n")
+  (expect_text sc "replace: the saved snapshot advances" snap/revision "rev-3")
+  (expect sc "replace: the draft stays dirty" (flag snap/dirty))
+  (editor/dispose)
+  (var readonly_document (editor_document "ro-1" "ro.gene" "fixed"))
+  (set readonly_document/readonly true)
+  (set readonly_document/reason "mixed line endings")
+  (var readonly_editor
+    (mount_editor ($dom/create_element "div") readonly_document
+                  (make_services sc {})))
+  (var readonly_snap (snapshot readonly_editor))
+  (expect sc "readonly: the document reports read-only"
+    (flag readonly_snap/readonly))
+  (expect_int sc "readonly: save submits nothing" ($size sc/save_requests) 0)
+  (readonly_editor/dispose))
+
+(fn scenario_debounce [sc : Scenario] : Nil
+  (set sc/analyze_hold true)
+  (set sc/held [])
+  (var store : PropMap {})
+  (var editor (mount_source sc store "doc-11" "abc" "rev-1"))
+  (set sc/debounce_requests ($size sc/analyze_requests))
+  (editor/replace_range 0 0 "x")
+  (set sc/debounce_editor editor))
+
+# ---------------------------------------------------------------------------
+# Entry points
+# ---------------------------------------------------------------------------
+
+(fn run_scenarios [sc : Scenario] : Nil
+  (set sc/failures [])
+  (set sc/checks 0)
+  (set sc/events [])
+  (set sc/analyze_requests [])
+  (set sc/analyze_reply nil)
+  (set sc/save_reply nil)
+  (set sc/format_reply nil)
+  (set sc/analyze_partial false)
+  (set sc/analyze_hold false)
+  (scenario_outline sc)
+  (scenario_stale sc)
+  (scenario_missing_helper sc)
+  (scenario_save sc)
+  (scenario_conflict sc)
+  (scenario_retry sc)
+  (scenario_draft_restore sc)
+  (scenario_multiple_mounts sc)
+  (scenario_partial_unicode sc)
+  (scenario_format sc)
+  (scenario_log sc)
+  (scenario_replace_saved sc)
+  (scenario_debounce sc))
+
+(fn result [sc : Scenario, phase : Str] : Str
+  ($json/stringify {^phase phase ^checks sc/checks ^failures sc/failures}))
+
+(fn run [] : Any
+  # One record carries every scripted host and every failure. `finish` is
+  # called by the Node driver after it waits past the typing debounce.
+  (var sc (new_scenario))
+  (run_scenarios sc)
+  {^sync (result sc "sync")
+   ^finish (fn [] : Str
+     (var arrived (> ($size sc/analyze_requests) sc/debounce_requests))
+     (if (! arrived)
+       (sc/failures .push
+         "debounce: no analysis request arrived after the pause"))
+     (set sc/checks (+ sc/checks 1))
+     (var editor : Any sc/debounce_editor)
+     (if_yes ($present? editor)
+       (do
+         (var target : Editor editor)
+         (target/dispose)))
+     (result sc "timers"))})

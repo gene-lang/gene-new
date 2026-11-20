@@ -1,0 +1,14 @@
+# A deliberately small buffer. It is the one to edit first: the outline shows
+# three declarations, the tree expands each on demand, and a save writes the
+# whole document back through the host callback.
+
+(mod scratch)
+
+(var counter 0)
+
+(fn bump [] : Int
+  (set counter (+ counter 1))
+  counter)
+
+(fn label [value : Int] : Str
+  $"count: ${value}")

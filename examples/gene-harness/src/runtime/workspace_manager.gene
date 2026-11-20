@@ -10,6 +10,7 @@
 (import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
 (import ^from "../cli/client" [connect api connection_link])
 (import ^from "../public/text" [byte_prefix byte_suffix])
+(import ^from "../public/log_redaction" [redact_secrets])
 (import ^from "../plugin_api" [HarnessEvent])
 (import ^from "../kernel" [publish])
 
@@ -87,18 +88,9 @@
   (manager/confirmations/.get .delete id))
 
 (fn manager_redact [root : Str, text : Str]
-  (var result text)
-  (let secret (try ($str/trim ($fs/read_text $"${root}/.gene-harness/web_secret")) catch Error ""))
-  (if (!= secret "") (set result ($str/join ($str/split result secret) "[redacted]")))
-  (let credentials
-    (try
-      ($serde/read_data ($fs/read_text $"${root}/.gene-harness/cli_cookie"))
-    catch Error
-      nil))
-  (for value in [credentials/cookie credentials/csrf]
-    (if (&& (== ($head value) Str) (!= value ""))
-      (set result ($str/join ($str/split result value) "[redacted]"))))
-  (byte_suffix result 16384))
+  # Replacements are shared with the browser log route; only the excerpt cap
+  # belongs to the manager's bounded diagnostics.
+  (byte_suffix (redact_secrets root text) 16384))
 
 (fn manager_diagnostics [root : Str]
   (let parts [])

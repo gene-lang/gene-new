@@ -1,0 +1,41 @@
+# Declarations of every kind the outline knows about, plus a few characters
+# outside the Basic Multilingual Plane so offset conversions have something
+# real to disagree about if they are wrong.
+
+(mod types
+  @doc "Types and protocols for the editor demo — 🙂 and 𝄞 are on purpose")
+
+(var registry {})
+
+(type Account
+  ^props {^id Int ^name Str}
+  (ctor [id : Int, name : Str]
+    (Account ^id id ^name name))
+  (message label [self] : Str
+    $"${self/id}: ${self/name}")
+  (message rename [self, name : Str] : Str
+    (set self/name name)))
+
+(protocol Greeter
+  (message greet [] : Str))
+
+(impl Greeter for Account
+  (message greet [self]
+    $"Hello, ${self/.label}"))
+
+(enum Level quiet normal (loud weight))
+
+(macro with_timing [body]
+  `(do (var started ($os/monotonic_ms))
+       (var value %body)
+       (var elapsed (- ($os/monotonic_ms) started))
+       [value elapsed]))
+
+(fn summarize [account : Account] : Str
+  (var text (account .label))
+  (var suffix "𝄞")
+  $"${text} ${suffix}")
+
+(ns helpers
+  (fn shout [text : Str] : Str
+    ($str/upper text)))

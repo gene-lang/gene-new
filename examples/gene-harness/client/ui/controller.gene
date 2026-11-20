@@ -28,6 +28,17 @@
 (import ^from "../sidebar.gene" [create_sidebar])
 (import ^from "./router.gene" [navigate update_views install_router capture_view restore_focus update_url layout])
 
+(fn outlet_nodes [ui : UiClient] : (List Any)
+  # Outlets that survived this render, in node-key order. The element identity
+  # is what lets the browser-client manager keep a mount across updates.
+  (var found : (List Any) [])
+  (map_for [key raw] in ui/nodes
+    (var node : UiNode raw)
+    (if (&& (== node/seen ui/generation) ($present? node/props/data-outlet))
+      (found .push {^name (text node/props/data-outlet) ^element node/element
+                    ^key key})))
+  found)
+
 (fn specimen_ratios [ui : UiClient] : Nil
   (var ready true)
   (map_for [key raw] in ui/nodes
@@ -281,6 +292,7 @@
             (fn [node : UiNode] : Nil
               (submit_action ui node)))
           (specimen_ratios ui)
+          (ui/outlet_sync (outlet_nodes ui))
           (set ui/rendered_revision revision)
           (notice ^key "render" ui "")
           (set ui/render_error false)
@@ -318,6 +330,8 @@
   (set ui/forms {})
   (set ui/last_data "")
   ($dom/clear ui/target)
+  (var no_outlets : (List Any) [])
+  (ui/outlet_sync no_outlets)
   (var value (saved_view ui (state_key ui)))
   (var restored (copy_map value/state))
   (map_for [key initial] in ui/state
@@ -420,7 +434,7 @@
     ^!bar_hidden ^!focus_pending ^action_generation 0 ^action_revision "" ^sidebar (create_sidebar root safe)
     ^restore (fn [view : Any] : Nil (return)) ^refresh (fn [] : Nil (return))))
   (var ui
-    (UiClient ^browser_appearance nil ^applied_tokens [] ^keyboard {} ^root root ^target ($dom/element "ui_view") ^safe safe ^!ready ^session "" ^workspace "" ^epoch "" ^metadata_revision "" ^rendered_revision "" ^descriptor nil ^settings nil ^instance "" ^version "" ^notices notices ^state {} ^drafts {} ^forms {} ^nodes {} ^generation 0 ^sequence 0 ^debounce 0 ^last_data "" ^!loading ^!render_error ^pending nil ^!resolving ^navigation navigation ^navigate (fn [target : Str, presentation : Str] : Nil (return)) ^api api ^select select ^command command ^prompt prompt ^appearance appearance))
+    (UiClient ^browser_appearance nil ^applied_tokens [] ^keyboard {} ^root root ^target ($dom/element "ui_view") ^safe safe ^!ready ^session "" ^workspace "" ^epoch "" ^metadata_revision "" ^rendered_revision "" ^descriptor nil ^settings nil ^instance "" ^version "" ^notices notices ^state {} ^drafts {} ^forms {} ^nodes {} ^generation 0 ^sequence 0 ^debounce 0 ^last_data "" ^!loading ^!render_error ^pending nil ^!resolving ^navigation navigation ^navigate (fn [target : Str, presentation : Str] : Nil (return)) ^api api ^select select ^command command ^prompt prompt ^appearance appearance ^outlet_sync (fn [outlets : (List Any)] : Nil (return))))
   (set navigation/restore (fn [view : Any] : Nil (restore_view ui view)))
   (set navigation/refresh (fn [] : Nil (refresh ui)))
   (set ui/navigate (fn [target : Str, presentation : Str] : Nil (navigate ui target presentation) (return)))

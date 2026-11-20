@@ -1,0 +1,102 @@
+# Call `gene-viewer --machine …` on behalf of an editor host.
+#
+# The companion is a separate executable (`nimble tools`), looked up next to the
+# Gene executable and then on PATH — the same order the CLI uses. A missing
+# helper is a supported state: callers receive `{ok false, unavailable true}` and
+# degrade to a plain textarea instead of failing the request.
+#
+# The buffer travels through a temporary file because exec gives a child EOF on
+# stdin. Responses are the helper's bounded JSON, tagged with the caller's
+# version so a late reply can be discarded.
+
+(mod gene_viewer)
+
+(import $json [parse])
+
+(fn helper_path [] : Str
+  (let sibling ($path/join ($path/parent ($os/executable_path)) "gene-viewer"))
+  (if ($fs/exists? sibling) sibling "gene-viewer"))
+
+(fn helper_available? [] : Bool
+  (let helper (helper_path))
+  (if (!= helper "gene-viewer") (return true))
+  (let probe (try
+    ($os/exec ^timeout_ms 3000 ^max_bytes 65536 "sh" "-c" "command -v gene-viewer")
+    catch Error nil))
+  (&& ($present? probe) (== probe/status 0)))
+
+(fn unavailable [] : Any
+  {^ok false ^unavailable true
+   ^message "gene-viewer was not found next to the Gene executable or on PATH; build it with `nimble tools`"})
+
+(fn as_int [value : Any, fallback : Int] : Int
+  (if ($absent? value) (return fallback))
+  (try
+    (let direct : Int value)
+    direct
+    catch Throwable
+      (try
+        (let source : Str value)
+        ($parse/parse_int source)
+        catch Throwable fallback)))
+
+(fn as_text [value : Any, fallback : Str = ""] : Str
+  (if ($absent? value) (return fallback))
+  (try
+    (let result : Str value)
+    result
+    catch Throwable fallback))
+
+(fn tagged [response : Any, version : Int] : Any
+  # The helper echoes `--version`, but a failure response has no version of its
+  # own. Tagging here is what lets the browser discard a reply to a draft it has
+  # already replaced.
+  (if (== ($head response) Map)
+    (do
+      (response .put "version" version)
+      response)
+    response))
+
+(fn run_machine [mode : Str, request : Any, temp_dir : Str] : Any
+  (if_not (helper_available?) (return (unavailable)))
+  (if_not ($fs/exists? temp_dir) ($fs/make_dir temp_dir))
+  (let version (as_int request/version 0))
+  (let name (as_text request/name "draft.gene"))
+  (let text (as_text request/text ""))
+  (let path ($path/join temp_dir
+    $"draft-${($os/process_id)}-${($crypto/random_hex 8)}.gene"))
+  ($fs/write_text path text)
+  (var args [
+    "--machine" mode
+    "--name" name
+    "--version" ($to_str version)
+    "--text-file" path])
+  (if (&& (== mode "analyze") ($present? request/select_utf16_start))
+    (do
+      (args .push "--select-utf16-start")
+      (args .push ($to_str (as_int request/select_utf16_start 0)))
+      (args .push "--select-utf16-end")
+      (args .push ($to_str (as_int request/select_utf16_end 0)))))
+  (let result (try
+    ($os/exec ^timeout_ms 10000 ^max_bytes 4194304 (helper_path) args...)
+    catch Error nil))
+  ($fs/remove path)
+  (if ($absent? result)
+    (return (tagged {^ok false ^unavailable true
+                     ^message "gene-viewer could not be started; build it with `nimble tools`"}
+                    version)))
+  (if (|| (!= result/status 0) (== (as_text result/stdout "") ""))
+    (do
+      (let stderr ($str/trim (as_text result/stderr "")))
+      (return (tagged {^ok false
+                       ^message (if (== stderr "")
+                                  "gene-viewer returned no output"
+                                  $"gene-viewer failed: ${stderr}")}
+                      version))))
+  (try
+    (tagged (parse result/stdout) version)
+    catch Error
+      (let detail (as_text $err/.message ""))
+      (tagged {^ok false
+               ^message $"gene-viewer returned invalid JSON: ${detail}"}
+              version)))

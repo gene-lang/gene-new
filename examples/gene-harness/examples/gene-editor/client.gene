@@ -1,0 +1,246 @@
+# The demo page's browser half.
+#
+# It supplies the editor's host services — document reads, revision-aware
+# saves, analysis and formatting through the demo server, an in-memory draft
+# store owned by this page, and log polling — and keeps its own presentation
+# (document picker, status line) outside the component.
+
+(mod gene_editor_client ^profile web)
+
+(import [mount_editor editor_document EditorDocument EditorServices Editor]
+  ^from "../../client/components/gene_editor.gene")
+
+# ---------------------------------------------------------------------------
+# Coercions
+# ---------------------------------------------------------------------------
+
+(fn text [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn flag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn int_of [value : Any, fallback : Int] : Int
+  (if_yes ($absent? value) (return fallback))
+  (var result : Int value)
+  result)
+
+(fn str_list [value : Any] : (List Str)
+  (var out : (List Str) [])
+  (if_yes ($present? value)
+    (var items : (List Any) value)
+    (for item in items
+      (out .push (text item ""))))
+  out)
+
+# ---------------------------------------------------------------------------
+# Page chrome
+# ---------------------------------------------------------------------------
+
+(fn say [status_node : EventTarget, message : Str] : Nil
+  ($dom/set_text status_node message))
+
+(fn doc_button [id : Str, label : Str, active : Bool] : EventTarget
+  (var node ($dom/create_element "button"))
+  ($dom/set_attribute node "type" "button")
+  ($dom/set_attribute node "data-id" id)
+  ($dom/set_text node label)
+  ($dom/set_class node "active" active)
+  node)
+
+(fn render_docs [list_node : EventTarget, documents : (List Any), current : Str,
+                 on_pick : (Fn [Str] Nil)] : (List Any)
+  ($dom/clear list_node)
+  (var rows : (List Any) [])
+  (for document in documents
+    (var id (text document/id ""))
+    (var name (text document/name id))
+    (var readonly (flag document/readonly))
+    (var label (if readonly $"${name} (read-only)" name))
+    (var node (doc_button id label (== id current)))
+    ($dom/add_event_listener node "click"
+      (fn [event : Any] : Nil (on_pick id)))
+    ($dom/append list_node node)
+    (rows .push {^id id ^node node}))
+  (var logs (doc_button "__logs__" "Logs" (== current "__logs__")))
+  ($dom/add_event_listener logs "click"
+    (fn [event : Any] : Nil (on_pick "__logs__")))
+  ($dom/append list_node logs)
+  (rows .push {^id "__logs__" ^node logs})
+  rows)
+
+(fn mark_active [rows : (List Any), current : Str] : Nil
+  (for row in rows
+    (var id (text row/id ""))
+    (var node : EventTarget row/node)
+    ($dom/set_class node "active" (== id current))))
+
+# ---------------------------------------------------------------------------
+# Log polling
+# ---------------------------------------------------------------------------
+
+(fn poll_log [editor : Editor, page : PropMap, status_node : EventTarget] : Nil
+  (var generation (int_of page/generation 0))
+  (var cursor (text page/cursor "0"))
+  (var url $"/api/log?cursor=${cursor}")
+  ($http/get url
+    (fn [body : Str] : Nil
+      # A view switch bumps the generation; an in-flight reply from the
+      # previous view is dropped rather than appended to the new document.
+      (if (!= generation (int_of page/generation 0)) (return))
+      (var data ($json/parse body))
+      (if (! (flag data/ok)) (return))
+      (var lines (str_list data/lines))
+      (var gap (text data/gap ""))
+      (var reset (flag data/reset))
+      (editor/append_log {^lines lines ^gap gap ^reset reset})
+      (set page/cursor (text data/cursor cursor))
+      (if (!= gap "") (say status_node $"log: ${gap}"))
+      ($time/after 900.0
+        (fn [] : Nil (poll_log editor page status_node))))))
+
+# ---------------------------------------------------------------------------
+# Document loading
+# ---------------------------------------------------------------------------
+
+(fn open_document [editor : Editor, page : PropMap, status_node : EventTarget,
+                   id : Str] : Nil
+  (var url $"/api/document?id=${(url/encode_component id)}")
+  ($http/get url
+    (fn [body : Str] : Nil
+      (var data ($json/parse body))
+      (if (! (flag data/ok))
+        (do (say status_node (text data/message "could not open document"))
+            (return)))
+      (var payload : Any data/document)
+      (var name (text payload/name id))
+      (var document (editor_document (text payload/id id) name
+                                     (text payload/text "")))
+      (set document/path (text payload/path id))
+      (set document/revision (text payload/revision ""))
+      (set document/line_endings (text payload/line_endings "lf"))
+      (set document/bom (flag payload/bom))
+      (set document/readonly (flag payload/readonly))
+      (set document/reason (text payload/reason ""))
+      (set page/current (text payload/id id))
+      (set page/mode "source")
+      (editor/open document)
+      (var reason (text payload/reason "read-only"))
+      (var revision (text payload/revision ""))
+      (say status_node
+        (if (flag payload/readonly)
+          $"${name}: ${reason}"
+          $"${name} · ${revision}")))))
+
+(fn open_logs [editor : Editor, page : PropMap, status_node : EventTarget] : Nil
+  (set page/mode "log")
+  (set page/cursor "0")
+  (set page/generation (+ (int_of page/generation 0) 1))
+  (var document (editor_document "host.log" "host.log (simulated)" ""))
+  (set document/kind "log")
+  (editor/open document)
+  (say status_node "log: following simulated host output")
+  (poll_log editor page status_node))
+
+# ---------------------------------------------------------------------------
+# Picker
+# ---------------------------------------------------------------------------
+
+(fn pick_document [editor : Editor, page : PropMap, status_node : EventTarget,
+                   id : Str] : Nil
+  (var rows : (List Any) [])
+  (if_yes ($present? page/rows) (set rows page/rows))
+  (mark_active rows id)
+  (if (== id "__logs__")
+    (do
+      (set page/current "__logs__")
+      (open_logs editor page status_node))
+    (do
+      (set page/current id)
+      (open_document editor page status_node id))))
+
+(fn load_listing [editor : Editor, page : PropMap, list_node : EventTarget,
+                  status_node : EventTarget] : Nil
+  ($http/get "/api/documents"
+    (fn [body : Str] : Nil
+      (var data ($json/parse body))
+      (var documents : (List Any) [])
+      (if ($present? data/documents) (set documents data/documents))
+      (set page/documents documents)
+      (var current (text page/current ""))
+      (var rows (render_docs list_node documents current
+        (fn [id : Str] : Nil
+          (pick_document editor page status_node id))))
+      (set page/rows rows)
+      (if (!= current "")
+        nil
+        (do
+          (var first : Any (documents .get 0))
+          (if ($present? first)
+            (pick_document editor page status_node (text first/id ""))))))))
+
+# ---------------------------------------------------------------------------
+# Entry
+# ---------------------------------------------------------------------------
+
+(fn main [root : EventTarget] : Nil
+  (var list_node ($dom/element "demo_docs"))
+  (var status_node ($dom/element "demo_status"))
+  (var drafts {})
+
+  (var services
+    (EditorServices
+      ^save (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+        ($http/request "POST" "/api/save" ($json/stringify request) {}
+          (fn [status : Int, body : Str] : Nil
+            (if (== status 200)
+              (done ($json/parse body))
+              (done {^ok false ^message $"save request failed (${status})"})))))
+      ^analyze (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+        ($http/request "POST" "/api/analyze" ($json/stringify request) {}
+          (fn [status : Int, body : Str] : Nil
+            (if (!= status 200)
+              (done {^ok false ^message $"analysis request failed (${status})"})
+              (do
+                (var response ($json/parse body))
+                (if ($absent? response/version)
+                  (set response/version request/version))
+                (done response))))))
+      ^format (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+        ($http/request "POST" "/api/format" ($json/stringify request) {}
+          (fn [status : Int, body : Str] : Nil
+            (if (!= status 200)
+              (done {^ok false ^message $"format request failed (${status})"})
+              (do
+                (var response ($json/parse body))
+                (if ($absent? response/version)
+                  (set response/version request/version))
+                (done response))))))
+      ^store_get (fn [id : Str] : Any
+        (var value : Any drafts/%id)
+        value)
+      ^store_put (fn [id : Str, value : Any] : Nil
+        (set drafts/%id value))
+      ^store_delete (fn [id : Str] : Nil
+        (set drafts/%id nil))
+      ^emit (fn [event : Any] : Nil
+        (var kind (text event/type ""))
+        (if (== kind "selection")
+          (do
+            (var path (text event/path ""))
+            (var start (text event/start_utf16 "0"))
+            (if (!= path "")
+              (say status_node $"selected ${path} @ ${start}")))))))
+
+  (var page {^generation 0 ^cursor "0" ^mode "source" ^current ""})
+  (var no_documents : (List Any) [])
+  (var no_rows : (List Any) [])
+  (set page/documents no_documents)
+  (set page/rows no_rows)
+  (var opening (editor_document "scratch.gene" "scratch.gene" ""))
+  (var editor (mount_editor root opening services))
+  (load_listing editor page list_node status_node))

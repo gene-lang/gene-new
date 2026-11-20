@@ -100,8 +100,12 @@ created or replayed by acknowledgement.
 ## Compiled Gene browser contributions
 
 `browser_clients` is a unique, ordered registry. A contribution contains a
-stable `name`, optional `title` and prepared `style`, and an `asset` produced by
-`$web/load`. It cannot supply an arbitrary JavaScript URL. Compilation validates
+stable `name`, optional `title` and prepared `style`, an `asset` produced by
+`$web/load`, and an optional `scope`: `page` (the default) mounts it into the
+page outlets, while `view` lets a `web_components` view mount it in a keyed
+`data-outlet` node instead. View outlets keep their DOM node across view-tree
+updates and dispose the controller when the view, workspace, revision, or
+availability changes. It cannot supply an arbitrary JavaScript URL. Compilation validates
 the Gene import graph and disallows external `js/fn` imports. The host publishes
 the entry and dependencies with content-addressed names and sends a descriptor
 containing owner, contribution revision, module URL, and optional stylesheet URL.

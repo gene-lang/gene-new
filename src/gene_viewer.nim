@@ -4,11 +4,19 @@
 ## execs this binary; execv is what lets the full-screen viewer own the
 ## controlling terminal directly rather than through a parent process.
 ##
-## Options are parsed from argv[1] here, where `gene view` parsed from argv[2]
-## (past the subcommand name) — the delegation drops "view" before handing over.
+## `--machine analyze|format` is the same reader-backed index in a form a
+## browser can consume (docs/workflows.md): one JSON request in, one JSON
+## response out, no terminal and no alternate screen.
 
 import std/[os, strutils]
 import tools/viewer/app as viewer_app
+import tools/viewer/machine as viewer_machine
+
+proc machineArgs(): seq[string] =
+  ## Everything after the `--machine` word, the way the mode's own parser
+  ## expects it.
+  for i in 2 .. paramCount():
+    result.add paramStr(i)
 
 proc parseViewCli(): viewer_app.ViewerOptions =
   result.col = 1
@@ -56,6 +64,9 @@ proc parseViewCli(): viewer_app.ViewerOptions =
     raise newException(ValueError, "'view' needs a file path")
   if result.initialPath.len > 0 and result.line > 0:
     raise newException(ValueError, "--path and --line are mutually exclusive")
+
+if paramCount() >= 1 and paramStr(1) == "--machine":
+  quit(viewer_machine.runMachine(machineArgs()))
 
 try:
   quit(viewer_app.runViewer(parseViewCli()))

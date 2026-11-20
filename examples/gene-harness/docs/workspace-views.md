@@ -37,7 +37,12 @@ defaults; changes to those defaults do not move tabs already in use.
 ## Plugin contract
 
 Register a `web_components` row with `slot: view`, a title, `view_state`,
-`state_version`, declared function `actions`, and a `render` callback. See
+`state_version`, declared function `actions`, and a `render` callback. A view
+that owns a compiled browser surface may render an empty keyed `data-outlet`
+element naming an enabled `browser_clients` contribution; the host keeps that
+outlet mounted across view-tree updates and disposes it when the view or
+workspace changes. See [web components](web-components.md) and the
+[editor view](editor.md). See
 [web components](web-components.md) for the supported data-tree vocabulary.
 The distinct `panel` slot uses the same renderer with docked defaults and a
 title fallback. `view` rows default to full-screen mode. The name `harness` is reserved.

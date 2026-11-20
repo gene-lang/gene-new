@@ -1,0 +1,264 @@
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect api] ^from "../../../src/cli/client")
+(import [offline_profile] ^from "../../../src/profiles/offline")
+(import [api_root] ^from "../../../src/web/contract")
+(import $json [parse stringify])
+(import $net/http_client [request])
+
+# Milestone 2a: the bundled editor plugin's owner routes. They are the only
+# authority the browser editor has, so the tests below are about file identity
+# and revision safety rather than presentation:
+#
+#   - reads report exact encoding metadata and a digest of the raw bytes;
+#   - a save is checked under the same patch gate as agent edits, preserves
+#     line endings, BOM, and mode, writes through a symlink, and is atomic;
+#   - a retry whose bytes already landed succeeds without a second write;
+#   - a stale base or changed encoding is a conflict that keeps the caller's
+#     draft;
+#   - a saved selection resolves against the same revision or asks for a
+#     refresh;
+#   - analysis and formatting go through gene-viewer's machine mode.
+
+(fn raw [client, method : Str, path : Str, headers, ^body body : Str = "{}"]
+  (let pending (request ^method method ^url $"${client/connection/origin}${path}"
+    ^headers headers ^body body ^timeout_ms 10000 ^max_bytes 65536))
+  (try (await pending) ensure pending/.cancel))
+
+(fn owner_headers [client, ^csrf csrf : Bool = false]
+  (let headers
+    {^origin client/connection/origin
+     ^cookie client/credentials/cookie
+     ^content-type "application/json"})
+  (if csrf (headers .put "x-csrf-token" client/credentials/csrf))
+  headers)
+
+(fn get_route [client, path : Str]
+  (raw client "GET" $"${(api_root)}${path}" (owner_headers client)))
+
+(fn post_route [client, path : Str, payload]
+  (raw client "POST" $"${(api_root)}${path}" (owner_headers client ^csrf true)
+    ^body ($json/stringify payload)))
+
+(fn as_text [value : Any, fallback : Str = ""] : Str
+  (if ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn body [response] : Any
+  (try (parse response/body) catch Error nil))
+
+(fn download [client, relative : Str] : Any
+  (let response (get_route client $"/p/editor/document?path=${($url/encode_component relative)}"))
+  ($assert (== response/status 200) ($to_str response/status " " response/body))
+  (body response))
+
+(fn save [client, relative : Str, text : Str, base : Str,
+          ^line_endings line_endings : Str = "lf", ^bom bom : Bool = false]
+  (post_route client "/p/editor/save"
+    {^path relative ^text text ^base_revision base
+     ^line_endings line_endings ^bom bom}))
+
+(describe "Gene editor owner routes"
+  (it "reads, saves, conflicts, and verifies selections against the same bytes" []
+    (isolated this_mod/.path
+      "reads, saves, conflicts, and verifies selections against the same bytes"
+      (fn [root]
+        (let lf_path ($path/join root "lf.gene"))
+        (let lf_text "(mod lf)\n(var value 1)\n")
+        ($fs/write_text lf_path lf_text)
+        ($fs/set_mode lf_path 384)
+        (let crlf_raw ($binary/concat
+          [($binary/from_list [239 187 191])
+           ($binary/from_str "(mod crlf)\r\n(var value 2)\r\n")]))
+        ($fs/write_bytes ($path/join root "crlf.gene") crlf_raw)
+        ($fs/write_text ($path/join root "mixed.gene") "one\r\ntwo\n")
+        ($fs/write_bytes ($path/join root "bad.gene") ($binary/from_list [255 254]))
+        ($fs/create_symlink "lf.gene" ($path/join root "link.gene"))
+
+        (let host (start_host root))
+        (try
+          (let client (connect root))
+
+          # --- reads -------------------------------------------------------
+          (let read_lf (download client "lf.gene"))
+          ($assert (== read_lf/ok true) ($to_str read_lf))
+          ($assert (== read_lf/document/text lf_text))
+          ($assert (== read_lf/document/revision ($crypto/sha256 lf_text)))
+          ($assert (== read_lf/document/line_endings "lf"))
+          ($assert (== read_lf/document/readonly false))
+
+          (let read_crlf (download client "crlf.gene"))
+          ($assert (== read_crlf/document/line_endings "crlf") ($to_str read_crlf))
+          ($assert (== read_crlf/document/bom true))
+          ($assert (== read_crlf/document/text "(mod crlf)\n(var value 2)\n"))
+          ($assert (== read_crlf/document/revision ($crypto/sha256 crlf_raw)))
+
+          (let read_mixed (download client "mixed.gene"))
+          ($assert (== read_mixed/document/readonly true))
+          ($assert ($str/contains? read_mixed/document/reason "mixed"))
+
+          (let bad (get_route client "/p/editor/document?path=bad.gene"))
+          ($assert (== bad/status 422) ($to_str bad/status " " bad/body))
+          (let missing (get_route client "/p/editor/document?path=nope.gene"))
+          ($assert (== missing/status 404) ($to_str missing/status))
+          (let escape (get_route client "/p/editor/document?path=../outside.gene"))
+          ($assert (== escape/status 400) ($to_str escape/status))
+
+          # --- save: content, revision, and mode ---------------------------
+          (let changed "(mod lf)\n(var value 42)\n")
+          (let saved (save client "lf.gene" changed read_lf/document/revision))
+          ($assert (== saved/status 200) ($to_str saved/status " " saved/body))
+          (let saved_body (body saved))
+          ($assert (== saved_body/ok true) ($to_str saved_body))
+          ($assert (== saved_body/revision ($crypto/sha256 changed)))
+          ($assert (== ($fs/read_text lf_path) changed))
+          (let lf_info ($fs/info lf_path))
+          ($assert (== lf_info/mode 384) "the file mode is preserved")
+
+          # A retried snapshot whose bytes already landed is success without a
+          # write; an unchanged base is no longer required.
+          (let retried (save client "lf.gene" changed "stale-base"))
+          ($assert (== retried/status 200) ($to_str retried/status " " retried/body))
+          (let retried_body (body retried))
+          ($assert (== retried_body/revision ($crypto/sha256 changed)))
+
+          # A stale base with different bytes is a conflict that carries the
+          # current text, so the caller can keep the draft and compare.
+          (let conflict (save client "lf.gene" "stale" "old-revision"))
+          ($assert (== conflict/status 409) ($to_str conflict/status " " conflict/body))
+          (let conflict_body (body conflict))
+          ($assert (== conflict_body/conflict true))
+          ($assert (== conflict_body/text changed))
+          ($assert (== conflict_body/revision ($crypto/sha256 changed)))
+          ($assert (== ($fs/read_text lf_path) changed) "a conflict writes nothing")
+
+          # --- encoding is preserved across a save -------------------------
+          (let next_crlf "(mod crlf)\n(var value 3)\n")
+          (let crlf_saved (save client "crlf.gene" next_crlf
+            read_crlf/document/revision ^line_endings "crlf" ^bom true))
+          ($assert (== crlf_saved/status 200) ($to_str crlf_saved/status " " crlf_saved/body))
+          (let crlf_after ($fs/read_bytes ($path/join root "crlf.gene")))
+          ($assert (== ($binary/get crlf_after 0) 239) "the BOM is preserved")
+          ($assert (== ($binary/get crlf_after 1) 187))
+          ($assert (== ($binary/get crlf_after 2) 191))
+          ($assert ($str/contains? ($binary/to_str crlf_after) "\r\n")
+            "the CRLF line endings are preserved")
+          # Submitted metadata must match the bytes the save is based on.
+          (let crlf_saved_body (body crlf_saved))
+          (let metadata_conflict (save client "crlf.gene" "x"
+            crlf_saved_body/revision ^line_endings "lf" ^bom false))
+          ($assert (== metadata_conflict/status 409) ($to_str metadata_conflict/status))
+
+          # Mixed-ending files stay read-only even when the base matches.
+          (let mixed_save (save client "mixed.gene" "x" read_mixed/document/revision
+            ^line_endings "mixed" ^bom false))
+          ($assert (== mixed_save/status 409) ($to_str mixed_save/status " " mixed_save/body))
+          (let mixed_save_body (body mixed_save))
+          ($assert (== mixed_save_body/code "read_only"))
+
+          # --- a save through a symlink updates the target ----------------
+          (let read_link (download client "link.gene"))
+          (let linked_text "(mod lf)\n(var through_link 1)\n")
+          (let linked (save client "link.gene" linked_text
+            read_link/document/revision))
+          ($assert (== linked/status 200) ($to_str linked/status " " linked/body))
+          ($assert (== ($fs/read_text lf_path) linked_text))
+          (let link_info ($fs/info ($path/join root "link.gene") ^!follow))
+          ($assert (== link_info/symlink true) "the link is still a link")
+
+          # --- selection verification --------------------------------------
+          (let current (body (get_route client "/p/editor/document?path=lf.gene")))
+          (let start ($str/byte_size "(mod lf)\n"))
+          (let finish (+ start 13))
+          (let verified (post_route client "/p/editor/selection"
+            {^path "lf.gene" ^revision current/document/revision
+             ^start_byte start ^end_byte finish}))
+          ($assert (== verified/status 200) ($to_str verified/status " " verified/body))
+          (let verified_body (body verified))
+          ($assert (== verified_body/ok true))
+          ($assert (== verified_body/text "(var through_"))
+          (let stale (post_route client "/p/editor/selection"
+            {^path "lf.gene" ^revision "stale"
+             ^start_byte start ^end_byte finish}))
+          (let stale_body (body stale))
+          ($assert (== stale_body/changed true) ($to_str stale_body))
+
+          # --- analysis and formatting -------------------------------------
+          (let text "(fn ^^generator values\n  [limit]\n  (yield limit))\n")
+          (let caret ($str/byte_size "(fn ^^generator "))
+          (let analyzed (post_route client "/p/editor/analyze"
+            {^name "lf.gene" ^text text ^version 4
+             ^select_utf16_start caret ^select_utf16_end caret}))
+          ($assert (== analyzed/status 200) ($to_str analyzed/status " " analyzed/body))
+          (let reply (body analyzed))
+          ($assert (== reply/version 4) ($to_str reply))
+          ($assert (== reply/partial false))
+          ($assert (== reply/outline/0/name "values"))
+          ($assert (== reply/outline/0/detail "generator"))
+          ($assert (== reply/selected/found true))
+
+          (let formatted (post_route client "/p/editor/format"
+            {^name "x.gene" ^text "(fn  f[x]x)" ^version 1}))
+          ($assert (== formatted/status 200) ($to_str formatted/status))
+          (let formatted_body (body formatted))
+          ($assert (== formatted_body/text "(fn f [x]\n  x)\n") ($to_str formatted_body))
+
+          # The panel shows its transcript button from this status entry, so
+          # the plugin must report ready in a workspace status snapshot.
+          (let status (api client "GET" "/status?ui=default"))
+          (var plugins : (List Any) status/plugins)
+          (var editor_state "")
+          (for plugin in plugins
+            (if (== (as_text plugin/id "") "editor")
+              (set editor_state (as_text plugin/state ""))))
+          ($assert (== editor_state "ready") $"editor plugin state: ${editor_state}")
+
+          # --- host log tail ----------------------------------------------
+          (let log_path ($path/join root ".gene-harness/host.log"))
+          (let web_secret
+            (try ($str/trim ($fs/read_text ($path/join root ".gene-harness/web_secret")))
+              catch Error ""))
+          (let marker (if (== web_secret "")
+            "editor-route-marker\n"
+            $"editor-route-marker ${web_secret}\n"))
+          (var existing ($binary/from_list []))
+          (if ($fs/exists? log_path) (set existing ($fs/read_bytes log_path)))
+          ($fs/write_bytes_atomic log_path
+            ($binary/concat [existing ($binary/from_str marker)]))
+          (let log_response (get_route client "/p/editor/log?source=host"))
+          ($assert (== log_response/status 200)
+            ($to_str log_response/status " " log_response/body))
+          (let log_body (body log_response))
+          ($assert (== log_body/state "ok") ($to_str log_body))
+          ($assert (> ($str/byte_size log_body/cursor) 0) "the log route returned no cursor")
+          (var marker_seen false)
+          (for line in log_body/lines
+            (if ($str/contains? line "editor-route-marker") (set marker_seen true)))
+          ($assert marker_seen "the host log tail did not include the appended marker")
+          (if (!= web_secret "")
+            (for line in log_body/lines
+              ($assert (! ($str/contains? line web_secret))
+                "the host log tail leaked a credential")))
+          # A cursor advances even when the file does not change, and a later
+          # line is delivered exactly once from the stored cursor.
+          (let idle (body (get_route client $"/p/editor/log?source=host&cursor=${($url/encode_component log_body/cursor)}")))
+          ($assert (== ($size idle/lines) 0) ($to_str idle))
+          (let later ($binary/concat [($fs/read_bytes log_path) ($binary/from_str "editor-route-later\n")]))
+          ($fs/write_bytes_atomic log_path later)
+          (let next (body (get_route client $"/p/editor/log?source=host&cursor=${($url/encode_component log_body/cursor)}")))
+          ($assert (== (next .get "lines") ["editor-route-later"]) ($to_str next))
+          (let unknown_log (get_route client "/p/editor/log?source=other"))
+          ($assert (== unknown_log/status 400) ($to_str unknown_log/status))
+
+          # An owner route keeps browser admission: a POST without the CSRF
+          # token is refused before the handler runs.
+          (let forged (raw client "POST" $"${(api_root)}/p/editor/save"
+            {^origin client/connection/origin ^cookie client/credentials/cookie
+             ^content-type "application/json"}
+            ^body "{}"))
+          ($assert (== forged/status 403) ($to_str forged/status))
+        ensure (stop_host host))))))
+
+(fn main [args] : Int (run_spec args))

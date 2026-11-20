@@ -143,7 +143,9 @@
       (set ui/nodes {})
       (set ui/loading false)
       (set ui/render_error false)
-      ($dom/clear ui/target))
+      ($dom/clear ui/target)
+      (var no_outlets : (List Any) [])
+      (ui/outlet_sync no_outlets))
     (do
       (set nav/last_view target)
       (set nav/remembered/%target chosen)

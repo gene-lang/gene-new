@@ -114,7 +114,7 @@ plugin and is removed when the activation unloads. Common rows are:
 | `hooks` | `{^point ^name ^run}`; an ordered listener at a published shaping point |
 | `triggers` | A definition that starts workspace work without a user |
 | `web_components` | `{^name ^slot ^view}` or `{^name ^slot ^render}`; quoted UI, with `view_state` and `actions` for interactive view forms |
-| `browser_clients` | Owned browser asset and optional stylesheet mounted through the host bridge |
+| `browser_clients` | Owned browser asset and optional stylesheet mounted through the host bridge; `scope` is `page` (default) or `view` for a view-owned outlet |
 | `ui_actions`, `ui_links` | Named supervised functions used by workspace views and navigation |
 
 The host also maintains `seams`, `event_types`, `subscriptions` and

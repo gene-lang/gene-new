@@ -17,4 +17,4 @@
   ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget
   ^browser_appearance Any ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
   ^browser_clients Any ^command_client Any ^creation_unknown Bool?
-  ^feature_events Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^services Any? ^features Any?})
+  ^feature_events Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^services Any? ^features Any? ^editor Any?})

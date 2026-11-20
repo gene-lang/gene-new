@@ -143,7 +143,29 @@
                (section ^id "offline_notice" ^class "auth_notice" ^^hidden
                  (strong "Command demo mode — no model connected")
                  "Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat with the configured model. Use /help to explore commands.")
-               (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
+               (div ^id "transcript_region" ^class "transcript_region"
+                 (section ^id "transcript" ^class "transcript" ^aria-label "Conversation")
+                 (aside ^id "editor_panel" ^class "editor_panel" ^^hidden
+                   ^aria-label "Gene editor"
+                   (div ^class "editor_head"
+                     (strong ^id "editor_title" "Gene editor")
+                     (div ^class "editor_tabs" ^role "tablist" ^aria-label "Editor mode"
+                       (button ^id "editor_tab_source" ^type "button" ^role "tab"
+                         ^aria-selected "true" ^class "active" "Source")
+                       (button ^id "editor_tab_logs" ^type "button" ^role "tab"
+                         ^aria-selected "false" "Logs"))
+                     (span ^id "editor_status" ^class "editor_status" ^role "status")
+                     (button ^id "editor_attach_log" ^type "button" ^^hidden "Attach log")
+                     (button ^id "editor_close" ^class "quiet" ^type "button" "Close"))
+                   (div ^id "editor_source_view" ^class "editor_source_view"
+                     (div ^class "editor_path_row"
+                       (input ^id "editor_path" ^type "text" ^placeholder "workspace-relative path"
+                         ^aria-label "Editor file path" ^spellcheck "false")
+                       (button ^id "editor_open" ^type "button" "Open")
+                       (button ^id "editor_attach" ^type "button" "Attach selection")
+                       (button ^id "editor_attach_draft" ^type "button" "Attach draft"))
+                     (div ^id "gene_editor_root" ^class "gene_editor_root"))
+                   (div ^id "gene_log_root" ^class "gene_log_root" ^^hidden)))
                (button ^id "new_output" ^class "new_output" ^type "button" ^^hidden (span ^id "new_output_label" "New output") (span ^class "icon" ^data-icon "arrow-down" ^aria-hidden "true"))
                (div ^class "composer_wrap"
                  (section ^id "channel_delivery" ^class "auth_notice" ^^hidden ^role "status")

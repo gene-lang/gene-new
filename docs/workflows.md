@@ -168,6 +168,20 @@ slashes can use existing Gene string syntax, such as
 encoding tags as ordinary source. This view only reads source; it does not
 deserialize or execute stored values.
 
+`gene-viewer` also has a bounded machine mode for editors that are not a
+terminal: `gene-viewer --machine analyze` reads one buffer (from stdin or
+`--text-file`) and writes one JSON object with the draft version it was given,
+diagnostics, the ordered declaration outline, the structure tree, and the
+children of the form enclosing the caret. `--machine format` runs the same
+formatter as `gene fmt`. Ranges are half-open UTF-8 byte spans plus their UTF-16
+offsets against the exact text in the request, so a browser textarea can use
+them without re-encoding the buffer. Responses are bounded by row, child,
+depth, and input-size limits; a partial buffer keeps its outline and is marked
+`partial`, while a lexical error reports `ok: false` so an editor can keep the
+last good view as stale. The reusable component and its standalone demo live in
+[`client/components/gene_editor.gene`](../examples/gene-harness/client/components/gene_editor.gene)
+and [the editor demo](../examples/gene-harness/examples/gene-editor/README.md).
+
 Use two-space indentation, snake_case names, and ordinary names for mutation
 methods such as `push` or `put`. A trailing `!` is reserved for fexprs. The
 preferred spelling for a zero-argument send is `a/.x` rather than `(a .x)`

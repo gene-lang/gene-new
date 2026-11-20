@@ -18,7 +18,7 @@
 (import [LiveOutput create_output output_entry receive_output output_text historical_records
   turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open command_output_text]
   ^from "./live_output.gene")
-(import [BrowserClients create_clients update_clients] ^from "./browser_clients.gene")
+(import [BrowserClients create_clients update_clients update_outlets] ^from "./browser_clients.gene")
 (import [FeatureEvents create_feature_events subscribe_feature feature_subscribed? emit_feature_event]
   ^from "./feature_events.gene")
 (import [SessionMenu create_session_menu open_session_menu bind_session_menu finish_session_menu_render]
@@ -53,7 +53,9 @@
   [MediaComposer create_media media_select media_move media_ids media_has
    media_blocked media_admitted media_controls])
 (import ^from "./components.gene" [render_slot])
-(import ^from "./ui/model.gene" [UiClient UiNavigation copy_map])
+(import [create_editor_panel configure_editor editor_available? editor_open? open_editor close_editor EditorPanel]
+  ^from "./editor.gene")
+(import ^from "./ui/model.gene" [UiClient UiNavigation copy_map persist_view])
 (import ^from "./ui/router.gene" [navigate update_url run_action action_chord])
 (import ^from "./ui/chords.gene" [event_chord])
 (import ^from "./ui/navigation.gene" [view_url])
@@ -79,7 +81,7 @@
   [ProducerInbox create_producer_inbox producer_ready producer_event opened_inbox])
 (import ^from "./ui/controller.gene"
   [create : create_ui update : update_ui controls : ui_controls event : ui_event open_reference
-   set_appearance : ui_appearance])
+   outlet_nodes set_appearance : ui_appearance])
 
 
 (fn ensure_feature_host [client : Client] : Nil
@@ -304,6 +306,37 @@
           (done code data) ($dom/focus client/prompt))
         (done code data)))))
 
+(fn view_state_save [client : Client, changes : Any] : Nil
+  # Browser-owned views keep selection and display preferences in the same
+  # scalar view state rendered views use, so they survive a view switch.
+  (if ($absent? client/ui) (return))
+  (var ui : UiClient client/ui)
+  (if ($absent? ui/descriptor) (return))
+  (var declared : PropMap (if ($absent? ui/descriptor/view_state) {} ui/descriptor/view_state))
+  (var entries : PropMap (if ($absent? changes) {} changes))
+  (map_for [raw_key value] in entries
+    (var key ($to_str raw_key))
+    (if (&& ($present? declared/%key) ($leaf? value))
+      (set ui/state/%key value)))
+  (persist_view ui))
+
+(fn outlet_context [client : Client] : Any
+  (var ui : UiClient client/ui)
+  {^workspace ui/workspace
+   ^view_name (string_or ui/descriptor/name "")
+   ^view {^title (string_or ui/descriptor/title "")
+          ^presentation (string_or ui/navigation/presentation "")
+          ^state_version (string_or ui/descriptor/state_version "1")}
+   ^view_state (copy_map ui/state)
+   ^save (fn [changes : Any] : Nil (view_state_save client changes))
+   ^status client/status})
+
+(fn sync_outlets [client : Client] : Nil
+  (if (|| ($absent? client/ui) ($absent? client/browser_clients)) (return))
+  (var ui : UiClient client/ui)
+  (var browsers : BrowserClients client/browser_clients)
+  (update_outlets browsers (outlet_nodes ui) (outlet_context client)))
+
 (fn browser_bridge [client : Client] : Any
   {^toolbar ($dom/element "browser_client_toolbar")
    ^composer_actions ($dom/element "browser_client_composer_actions")
@@ -323,6 +356,10 @@
      (api client method path payload done))
    ^command (fn [session : Str, text : Str, expected : Any, done : (Fn [Int Any] Nil)] : Nil
      (launcher_command client session text expected done))
+   ^attach (fn [text : Str] : Bool
+     (if (&& client/ready client/connected (! client/sending))
+       (do (stage_prompt client text) true)
+       false))
    ^navigate (fn [item : Any, done : (Fn [Int Any] Nil)] : Nil (launcher_navigate client item done))
    ^keyboard_owned (fn [] : Bool (keyboard_owned?))
    ^ensure_session (fn [done : (Fn [Int Any] Nil)] : Nil
@@ -402,6 +439,11 @@
   (if_yes ($absent? value) (return fallback))
   (var text : Str value)
   text)
+
+(fn int_or [value : Any, fallback : Int] : Int
+  (if_yes ($absent? value) (return fallback))
+  (var number : Int value)
+  number)
 
 (fn api [client : Client, method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
   (var address
@@ -854,7 +896,20 @@
       ($dom/append
         target
         ($dom/render
-          `(button ^type "button" ^on_click %(fn [event : Any] : Nil (send_command client $"/view ${path}:${first}")) "Next page"))))))
+          `(button ^type "button" ^on_click %(fn [event : Any] : Nil (send_command client $"/view ${path}:${first}")) "Next page")))))
+  (if (&& (== (string_or view/kind "") "gene") ($present? client/editor))
+    (do
+      (var raw_panel : Any client/editor)
+      (var panel : EditorPanel raw_panel)
+      (if (editor_available? panel)
+        (do
+          (var editor_path : Str view/path)
+          (var editor_from (int_or view/from 1))
+          (var editor_to (int_or view/to editor_from))
+          ($dom/append
+            target
+            ($dom/render
+              `(button ^type "button" ^on_click %(fn [event : Any] : Nil (open_editor panel editor_path ^from editor_from ^to editor_to)) "Open in Gene editor"))))))))
 
 (fn render_run [client : Client, blocks : (List Any), run : Any] : Nil
   (var target ($dom/render `(section ^class_name "run")))
@@ -1098,12 +1153,21 @@
     (var commands : CommandClient client/command_client)
     (configure_commands commands (string_or data/workspace "")))
 
+  (if_not ($absent? client/editor)
+    (do
+      (var raw_panel : Any client/editor)
+      (var panel : EditorPanel raw_panel)
+      (var was_available (editor_available? panel))
+      (configure_editor panel data/plugins)
+      (if (&& (!= was_available (editor_available? panel)) (! (editor_open? panel)))
+        (render_transcript client))))
   (if_not ($absent? client/ui)
     (var ui : UiClient client/ui)
     (update_ui ui data/ui))
   (if_not ($absent? client/browser_clients)
     (var browsers : BrowserClients client/browser_clients)
     (update_clients browsers (launcher_items data/browser_clients) data))
+  (sync_outlets client)
   (var components : (List Any) [])
   (if_not ($absent? data/web_components) (set components data/web_components))
   (var components_changed (!= ($json/stringify client/components) ($json/stringify components)))
@@ -2412,6 +2476,18 @@
       (fn [text : Str] : Nil
         (stage_prompt client text))
       client/appearance))
+  (if_not ($absent? client/browser_clients)
+    (var outlet_browsers : BrowserClients client/browser_clients)
+    (var outlet_ui : UiClient client/ui)
+    (set outlet_ui/outlet_sync
+      (fn [outlets : (List Any)] : Nil
+        (update_outlets outlet_browsers outlets (outlet_context client)))))
+  (set client/editor
+    (create_editor_panel
+      root
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
+        (api client method path payload done))
+      (fn [text : Str] : Nil (stage_prompt client text))))
   # api already carries safe-UI admission for this document.
   (var appearance (start_appearance
     (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil

@@ -1,0 +1,572 @@
+# Host-owned Gene editor panel for the classic workspace.
+#
+# The panel is a caller of the reusable component in
+# `components/gene_editor.gene`: it supplies the owner-route adapter for reads,
+# saves, analysis, formatting, and selection verification, and the workspace-
+# scoped draft store. It lives inside `classic_workspace`, so a full-screen
+# workspace view hides it without unmounting anything: analysis and an
+# in-flight Save keep running, and returning shows the same caret and undo
+# history.
+#
+# Availability comes from the editor plugin's entry in the workspace status'
+# `^plugins` list. A disabled plugin leaves the draft in place; new
+# route-backed operations answer `unavailable` until it is enabled again, and
+# the panel then re-analyzes the preserved buffer.
+
+(mod harness_editor_panel ^profile web)
+
+(import [mount_editor editor_document EditorDocument EditorServices Editor]
+  ^from "./components/gene_editor.gene")
+(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+
+(type EditorPanel ^props {
+  ^workspace Str
+  ^slot Str
+  ^panel EventTarget
+  ^title EventTarget
+  ^status EventTarget
+  ^tab_source EventTarget
+  ^tab_logs EventTarget
+  ^source_view EventTarget
+  ^log_root EventTarget
+  ^attach_log EventTarget
+  ^path_input EventTarget
+  ^attach EventTarget
+  ^attach_draft EventTarget
+  ^close_button EventTarget
+  ^open_button EventTarget
+  ^editor_root EventTarget
+  ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)
+  ^stage (Fn [Str] Nil)
+  ^editor Any?
+  ^log_editor Any?
+  ^log_cursor Str
+  ^log_generation Int
+  ^mode Str
+  ^drafts PropMap
+  ^selection Any
+  ^snapshot Any
+  ^path Str
+  ^available Bool
+  ^state Str
+  ^dirty Bool
+  ^storage_ok Bool
+  ^storage_warned Bool})
+
+# ---------------------------------------------------------------------------
+# Small coercions
+# ---------------------------------------------------------------------------
+
+(fn string_or [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn int_of [value : Any, fallback : Int] : Int
+  (if_yes ($absent? value) (return fallback))
+  (var result : Int value)
+  result)
+
+(fn flag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn say [panel : EditorPanel, message : Str] : Nil
+  ($dom/set_text panel/status message))
+
+# ---------------------------------------------------------------------------
+# Drafts: memory first, session storage best-effort
+# ---------------------------------------------------------------------------
+
+(fn draft_key [panel : EditorPanel, id : Str] : Str
+  $"gene-harness/editor-draft/${panel/slot}/${id}")
+
+(fn draft_get [panel : EditorPanel, id : Str] : Any
+  (var remembered : Any panel/drafts/%id)
+  (if ($present? remembered) (return remembered))
+  (var encoded (storage_get (draft_key panel id)))
+  (if (== encoded "") (return nil))
+  (var decoded (try ($json/parse encoded) catch Error nil))
+  (if ($present? decoded) (set panel/drafts/%id decoded))
+  decoded)
+
+(fn draft_put [panel : EditorPanel, id : Str, value : Any] : Nil
+  (set panel/drafts/%id value)
+  (var encoded ($json/stringify value))
+  (if (> ($str/byte_size encoded) 262144)
+    (do
+      (storage_remove (draft_key panel id))
+      (if (! panel/storage_warned)
+        (do
+          (set panel/storage_warned true)
+          (say panel "This draft is too large to recover after a reload; it is kept in this tab only.")))
+      (return)))
+  (if (! (storage_set (draft_key panel id) encoded))
+    (if (! panel/storage_warned)
+      (do
+        (set panel/storage_warned true)
+        (say panel "This tab cannot store drafts; the draft is kept in memory until the page closes.")))))
+
+(fn draft_delete [panel : EditorPanel, id : Str] : Nil
+  (set panel/drafts/%id nil)
+  (storage_remove (draft_key panel id)))
+
+# ---------------------------------------------------------------------------
+# Route-backed host services
+# ---------------------------------------------------------------------------
+
+(fn unavailable_response [request : Any, message : Str] : Any
+  (var response {^ok false ^unavailable true ^message message})
+  (if ($present? request/version) (set response/version request/version))
+  response)
+
+(fn editor_services [panel : EditorPanel] : EditorServices
+  (EditorServices
+    ^save (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+      (if (! panel/available)
+        (done {^ok false
+               ^message "The editor plugin is disabled; saving resumes when it is enabled."})
+        (panel/api "POST" "/p/editor/save" request
+          (fn [status : Int, data : Any] : Nil
+            (if (|| (== status 200) (&& (>= status 400) (< status 500)))
+              (done data)
+              (done {^ok false
+                     ^message (string_or data/message
+                       "The save could not be completed; the draft is kept.")}))))))
+    ^analyze (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+      (if (! panel/available)
+        (done (unavailable_response request
+          "The editor plugin is disabled; analysis resumes when it is enabled."))
+        (panel/api "POST" "/p/editor/analyze" request
+          (fn [status : Int, data : Any] : Nil
+            (var response : Any (if ($present? data) data
+              {^ok false ^message "The analysis request failed; try again."}))
+            (if ($absent? response/version)
+              (set response/version request/version))
+            (if ($absent? response/ok) (set response/ok false))
+            (done response)))))
+    ^format (fn [request : Any, done : (Fn [Any] Nil)] : Nil
+      (if (! panel/available)
+        (done {^ok false
+               ^message "The editor plugin is disabled; formatting resumes when it is enabled."})
+        (panel/api "POST" "/p/editor/format" request
+          (fn [status : Int, data : Any] : Nil
+            (var response : Any (if ($present? data) data
+              {^ok false ^message "The format request failed; try again."}))
+            (if ($absent? response/version)
+              (set response/version request/version))
+            (if ($absent? response/ok) (set response/ok false))
+            (done response)))))
+    ^store_get (fn [id : Str] : Any (draft_get panel id))
+    ^store_put (fn [id : Str, value : Any] : Nil (draft_put panel id value))
+    ^store_delete (fn [id : Str] : Nil (draft_delete panel id))
+    ^emit (fn [event : Any] : Nil (editor_event panel event))))
+
+(fn refresh_snapshot [panel : EditorPanel] : Nil
+  (var editor : Any panel/editor)
+  (if ($present? editor)
+    (do
+      (var target : Editor editor)
+      (var snap : Any (target/snapshot))
+      (set panel/snapshot snap)
+      (set panel/dirty (flag snap/dirty)))))
+
+(fn editor_event [panel : EditorPanel, event : Any] : Nil
+  (var kind (string_or event/type ""))
+  (if (== kind "selection")
+    (do
+      (set panel/selection event)
+      (var path (string_or event/path ""))
+      (var start (int_of event/start_utf16 0))
+      (var label ($str/join ["Selected " path " @" ($to_str start) ". Attach saved or draft."] ""))
+      (say panel
+        (if (flag event/stale)
+          "Selection is from an older draft; wait for analysis."
+          label))))
+  (if (== kind "dirty")
+    (do
+      (set panel/dirty (flag event/dirty))
+      (refresh_snapshot panel)))
+  (if (== kind "save")
+    (do
+      (refresh_snapshot panel)
+      (if (flag event/ok)
+        (do
+          (set panel/selection nil)
+          (say panel "Saved."))
+        (if (flag event/conflict)
+          (say panel "Save conflict: the file changed. Compare with the saved version.")
+          (say panel "Save failed; the draft is kept and Retry resubmits it."))))))
+
+# ---------------------------------------------------------------------------
+# Opening and closing
+# ---------------------------------------------------------------------------
+
+(fn editor_of [panel : EditorPanel] : Editor
+  (var raw : Any panel/editor)
+  (var reached : Editor raw)
+  reached)
+
+(fn open_document [panel : EditorPanel, path : Str, first : Int, last : Int] : Nil
+  (var url $"/p/editor/document?path=${(url/encode_component path)}")
+  (panel/api "GET" url nil
+    (fn [status : Int, data : Any] : Nil
+      (if (!= status 200)
+        (do
+          (say panel (string_or data/message "The file could not be opened."))
+          (return)))
+      (var payload : Any data/document)
+      (var document
+        (editor_document (string_or payload/id path)
+                         (string_or payload/name path)
+                         (string_or payload/text "")))
+      (set document/path (string_or payload/path path))
+      (set document/revision (string_or payload/revision ""))
+      (set document/line_endings (string_or payload/line_endings "lf"))
+      (set document/bom (flag payload/bom))
+      (set document/readonly (flag payload/readonly))
+      (set document/reason (string_or payload/reason ""))
+      (var editor : Any panel/editor)
+      (if ($absent? editor)
+        (set panel/editor (mount_editor panel/editor_root document
+                                        (editor_services panel)))
+        (do
+          (var target : Editor editor)
+          (target/open document)))
+      (var observed (editor_of panel))
+      (var snap : Any (observed/snapshot))
+      (set panel/snapshot snap)
+      (set panel/dirty (flag snap/dirty))
+      (set panel/selection nil)
+      (var shown_name (string_or payload/name path))
+      ($dom/set_text panel/title $"Gene editor · ${shown_name}")
+      (if (> first 0)
+        (do
+          (var shown (editor_of panel))
+          (shown/reveal {^line first ^end_line last})))
+      (var shown_revision (string_or payload/revision ""))
+      (say panel
+        (if (flag payload/readonly)
+          (string_or payload/reason "This file is read-only.")
+          shown_revision)))))
+
+(fn open_editor [panel : EditorPanel, path : Str,
+                 ^from first : Int = 0, ^to last : Int = 0] : Nil
+  (var chosen (if (== path "") (string_or panel/path "") path))
+  (if (== chosen "")
+    (do (say panel "Choose a workspace file to open.") (return)))
+  (if (! panel/available)
+    (do
+      (set panel/panel/hidden false)
+      (say panel "Editor unavailable — enable the editor plugin to open files.")
+      (return)))
+  (set panel/panel/hidden false)
+  (set_tab panel "source")
+  (stop_log_polling panel)
+  (set panel/path chosen)
+  ($dom/set_input_value panel/path_input chosen)
+  ($dom/set_text panel/title $"Gene editor · ${chosen}")
+  (say panel "Opening…")
+  (open_document panel chosen first last))
+
+(fn close_editor [panel : EditorPanel] : Nil
+  (var editor : Any panel/editor)
+  (if ($present? editor)
+    (do
+      (var target : Editor editor)
+      (target/dispose)))
+  (set panel/editor nil)
+  (var log_editor : Any panel/log_editor)
+  (if ($present? log_editor)
+    (do
+      (var log_target : Editor log_editor)
+      (log_target/dispose)))
+  (set panel/log_editor nil)
+  (stop_log_polling panel)
+  (set panel/log_cursor "")
+  (set panel/panel/hidden true)
+  (set panel/selection nil)
+  nil)
+
+# ---------------------------------------------------------------------------
+# Attachments
+# ---------------------------------------------------------------------------
+
+(fn selection_text [selection : Any] : Str
+  (string_or selection/text ""))
+
+(fn selection_prompt [path : Str, revision : Str, start : Int, finish : Int,
+                      source : Str, ^kind kind : Str] : Str
+  $"[Gene ${kind} ${path}:${start}-${finish} revision ${revision}]\n```gene\n${source}\n```")
+
+(fn attach_draft [panel : EditorPanel] : Nil
+  (var selection : Any panel/selection)
+  (if ($absent? selection)
+    (do (say panel "Select a form in the editor first.") (return)))
+  (var source (selection_text selection))
+  (if (== source "")
+    (do (say panel "The selection is not from the analyzed buffer yet; wait for analysis.") (return)))
+  (var path (if (== (string_or selection/path "") "") panel/path
+    (string_or panel/path "")))
+  (var start (int_of selection/start_byte 0))
+  (var finish (int_of selection/end_byte start))
+  (var revision (string_or selection/revision ""))
+  (panel/stage
+    (selection_prompt path revision start finish source ^kind "draft selection"))
+  (say panel "Draft selection attached to the composer."))
+
+(fn attach_saved [panel : EditorPanel] : Nil
+  (var selection : Any panel/selection)
+  (if ($absent? selection)
+    (do (say panel "Select a form in the editor first.") (return)))
+  (if panel/dirty
+    (do
+      (say panel "The buffer has unsaved edits; use Attach draft to share exactly what is on screen.")
+      (return)))
+  (var path (string_or panel/path ""))
+  (var revision (string_or selection/revision ""))
+  (var start (int_of selection/start_byte 0))
+  (var finish (int_of selection/end_byte start))
+  (if (== path "")
+    (do (say panel "Open a file first.") (return)))
+  (panel/api "POST" "/p/editor/selection"
+    {^path path ^revision revision ^start_byte start ^end_byte finish}
+    (fn [status : Int, data : Any] : Nil
+      (if (!= status 200)
+        (do
+          (say panel (string_or data/message "The selection could not be verified."))
+          (return)))
+      (if (flag data/changed)
+        (do
+          (say panel "The saved file changed since this selection; reopen it and select again.")
+          (return)))
+      (var source (string_or data/text ""))
+      (panel/stage
+        (selection_prompt path (string_or data/revision revision) start finish
+                          source ^kind "selection"))
+      (say panel "Saved selection attached to the composer."))))
+
+# ---------------------------------------------------------------------------
+# Host log tab
+# ---------------------------------------------------------------------------
+
+(fn log_editor_of [panel : EditorPanel] : Editor
+  (var raw : Any panel/log_editor)
+  (var editor : Editor raw)
+  editor)
+
+(fn set_tab [panel : EditorPanel, mode : Str] : Nil
+  (set panel/mode mode)
+  (var source (== mode "source"))
+  ($dom/set_class panel/tab_source "active" source)
+  ($dom/set_class panel/tab_logs "active" (! source))
+  ($dom/set_attribute panel/tab_source "aria-selected" (if source "true" "false"))
+  ($dom/set_attribute panel/tab_logs "aria-selected" (if source "false" "true"))
+  (set panel/source_view/hidden (! source))
+  (set panel/log_root/hidden source)
+  (set panel/attach_log/hidden source))
+
+(fn stop_log_polling [panel : EditorPanel] : Nil
+  (set panel/log_generation (+ panel/log_generation 1)))
+
+(fn log_url [panel : EditorPanel] : Str
+  $"/p/editor/log?source=host&cursor=${(url/encode_component panel/log_cursor)}")
+
+(fn poll_log [panel : EditorPanel] : Nil
+  (if (|| (! panel/available) (!= panel/mode "logs")) (return))
+  (var generation panel/log_generation)
+  (panel/api "GET" (log_url panel) nil
+    (fn [status : Int, data : Any] : Nil
+      (if (|| (!= generation panel/log_generation)
+              (!= panel/mode "logs")
+              ($absent? panel/log_editor))
+        (return))
+      (if (!= status 200)
+        (do
+          (say panel (string_or data/message "The host log could not be read."))
+          ($time/after 3000.0
+            (fn [] : Nil
+              (if (== generation panel/log_generation) (poll_log panel))))
+          (return)))
+      (var lines : (List Str) [])
+      (var raw_lines : Any data/lines)
+      (if ($present? raw_lines) (set lines raw_lines))
+      (var gap (string_or data/gap ""))
+      (var state (string_or data/state "ok"))
+      (var cursor (string_or data/cursor ""))
+      (var editor (log_editor_of panel))
+      (if (|| (> ($size lines) 0) (!= gap ""))
+        (editor/append_log {^lines lines ^gap gap ^reset false}))
+      (if (!= cursor "") (set panel/log_cursor cursor))
+      (if (!= gap "")
+        (say panel $"host log: ${gap}"))
+      (if (== state "absent")
+        (say panel (string_or data/message "No retained host log yet.")))
+      (if (== state "unreadable")
+        (say panel (string_or data/message "The host log is unreadable.")))
+      ($time/after (if (== state "ok") 800.0 3000.0)
+        (fn [] : Nil
+          (if (== generation panel/log_generation) (poll_log panel)))))))
+
+(fn show_logs [panel : EditorPanel] : Nil
+  (set_tab panel "logs")
+  (if (! panel/available)
+    (do (say panel "Editor unavailable — enable the editor plugin to read logs.")
+        (stop_log_polling panel)
+        (return)))
+  (if ($absent? panel/log_editor)
+    (do
+      (var document (editor_document "host.log" "Host log" ""))
+      (set document/kind "log")
+      (set panel/log_editor
+        (mount_editor panel/log_root document (editor_services panel)))))
+  (set panel/log_generation (+ panel/log_generation 1))
+  (say panel "Reading Harness host log…")
+  (poll_log panel))
+
+(fn show_source [panel : EditorPanel] : Nil
+  (set_tab panel "source")
+  (stop_log_polling panel)
+  (say panel
+    (if panel/available "Source mode." "Editor unavailable — enable the editor plugin.")))
+
+(fn attach_log [panel : EditorPanel] : Nil
+  (if ($absent? panel/log_editor)
+    (do (say panel "Open the Logs tab first.") (return)))
+  (var log_target (log_editor_of panel))
+  (var body (log_target/log_text))
+  (if (== body "")
+    (do (say panel "No log lines are loaded yet.") (return)))
+  (var lines (str/split body "\n"))
+  (var count ($size lines))
+  (var kept : (List Str) [])
+  (var total 0)
+  (var first count)
+  (var index (- count 1))
+  (var done false)
+  (while (&& (>= index 0) (! done))
+    (var line lines/%index)
+    (var cost (+ ($str/byte_size line) 1))
+    (if (|| (>= (- count index) 80) (> (+ total cost) 16384))
+      (set done true)
+      (do
+        (set total (+ total cost))
+        (set first index)
+        (set index (- index 1)))))
+  (var selected : (List Str) [])
+  (set index first)
+  (while (< index count)
+    (selected .push lines/%index)
+    (set index (+ index 1)))
+  (var kept_text (str/join selected "\n"))
+  (var shown ($size selected))
+  (panel/stage
+    $"[Harness host log: last ${shown} line(s), redacted]\n```\n${kept_text}\n```")
+  (say panel $"Attached ${shown} redacted log line(s) to the composer."))
+
+# ---------------------------------------------------------------------------
+# Availability from workspace status
+# ---------------------------------------------------------------------------
+
+(fn configure_editor [panel : EditorPanel, plugins : Any] : Bool
+  (var state "")
+  (var items : (List Any) [])
+  (if ($present? plugins) (set items plugins))
+  (for plugin in items
+    (if (== (string_or plugin/id "") "editor")
+      (set state (string_or plugin/state ""))))
+  (var available (== state "ready"))
+  (var changed (!= available panel/available))
+  (set panel/available available)
+  (set panel/state state)
+  (if changed
+    (if available
+      (do
+        (var editor : Any panel/editor)
+        (if ($present? editor)
+          (do
+            (var target : Editor editor)
+            (target/refresh)))
+        (if (== panel/mode "logs")
+          (do
+            (set panel/log_generation (+ panel/log_generation 1))
+            (poll_log panel)))
+        (say panel "Editor available."))
+      (do
+        (stop_log_polling panel)
+        (say panel "Editor unavailable — the editor plugin is disabled. The draft is kept."))))
+  changed)
+
+(fn editor_available? [panel : EditorPanel] : Bool
+  panel/available)
+
+(fn editor_open? [panel : EditorPanel] : Bool
+  (! panel/panel/hidden))
+
+# ---------------------------------------------------------------------------
+# Construction
+# ---------------------------------------------------------------------------
+
+(fn create_editor_panel [root : EventTarget,
+                         api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil),
+                         stage : (Fn [Str] Nil),
+                         ^workspace workspace : Str = "",
+                         ^slot slot : Str = "panel"] : EditorPanel
+  (var panel
+    (EditorPanel
+      ^workspace workspace
+      ^slot slot
+      ^panel ($dom/element "editor_panel")
+      ^title ($dom/element "editor_title")
+      ^status ($dom/element "editor_status")
+      ^tab_source ($dom/element "editor_tab_source")
+      ^tab_logs ($dom/element "editor_tab_logs")
+      ^source_view ($dom/element "editor_source_view")
+      ^log_root ($dom/element "gene_log_root")
+      ^attach_log ($dom/element "editor_attach_log")
+      ^path_input ($dom/element "editor_path")
+      ^attach ($dom/element "editor_attach")
+      ^attach_draft ($dom/element "editor_attach_draft")
+      ^close_button ($dom/element "editor_close")
+      ^open_button ($dom/element "editor_open")
+      ^editor_root ($dom/element "gene_editor_root")
+      ^api api
+      ^stage stage
+      ^editor nil
+      ^log_editor nil
+      ^log_cursor ""
+      ^log_generation 0
+      ^mode "source"
+      ^drafts {}
+      ^selection nil
+      ^snapshot nil
+      ^path ""
+      ^!available
+      ^state ""
+      ^!dirty
+      ^storage_ok true
+      ^!storage_warned))
+  ($dom/add_event_listener panel/open_button "click"
+    (fn [event : Any] : Nil
+      (open_editor panel (string_or ($dom/input_value panel/path_input) ""))))
+  ($dom/add_event_listener panel/path_input "keydown"
+    (fn [event : Any] : Nil
+      (if (== (string_or ($event/key event) "") "Enter")
+        (do
+          ($dom/prevent_default event)
+          (open_editor panel (string_or ($dom/input_value panel/path_input) ""))))))
+  ($dom/add_event_listener panel/close_button "click"
+    (fn [event : Any] : Nil (close_editor panel)))
+  ($dom/add_event_listener panel/attach "click"
+    (fn [event : Any] : Nil (attach_saved panel)))
+  ($dom/add_event_listener panel/attach_draft "click"
+    (fn [event : Any] : Nil (attach_draft panel)))
+  ($dom/add_event_listener panel/tab_source "click"
+    (fn [event : Any] : Nil (show_source panel)))
+  ($dom/add_event_listener panel/tab_logs "click"
+    (fn [event : Any] : Nil (show_logs panel)))
+  ($dom/add_event_listener panel/attach_log "click"
+    (fn [event : Any] : Nil (attach_log panel)))
+  (say panel "Editor unavailable until the workspace reports the editor plugin ready.")
+  panel)

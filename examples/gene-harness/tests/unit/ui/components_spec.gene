@@ -241,3 +241,19 @@
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))
   result/exit_code)
+
+(describe "View-owned browser outlets"
+  (it "requires an empty keyed div naming a browser contribution" []
+    (let accepted (bounded_component_view ^^interactive
+      {^tag "div" ^props {^data-outlet "editor_view" ^key "outlet"} ^children []}))
+    ($assert (== accepted/props/data-outlet "editor_view"))
+    (let rejects (fn [tree]
+      (try (bounded_component_view ^^interactive tree) false catch Error true)))
+    ($assert (rejects {^tag "div" ^props {^data-outlet "editor_view"} ^children []})
+      "an outlet without a stable key was accepted")
+    ($assert (rejects {^tag "div" ^props {^data-outlet "editor_view" ^key "k"} ^children ["owned"]})
+      "an outlet with children was accepted")
+    ($assert (rejects {^tag "span" ^props {^data-outlet "editor_view" ^key "k"} ^children []})
+      "an outlet on a span was accepted")
+    ($assert (rejects {^tag "div" ^props {^data-outlet "Bad Name" ^key "k"} ^children []})
+      "an invalid contribution name was accepted")))

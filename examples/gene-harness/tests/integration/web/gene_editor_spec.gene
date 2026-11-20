@@ -1,0 +1,132 @@
+(import $test [describe it])
+(import [isolated run_spec package_path] ^from "../../support")
+(import $json [parse stringify])
+(import [page] ^from "../../../src/web/page")
+
+# Milestone 1 of tmp/gene-web-editor.md: the standalone component, the demo
+# client, and the gene-viewer machine helper, exercised end to end.
+#
+# Browser interaction is checked by compiling the component and its scenario
+# module to a web module and running it under Node with the small DOM in
+# tests/fixtures/gene_editor_dom.mjs. Real layout and focus behavior still
+# belong in a live browser.
+
+(fn run_node [args : (List Str), timeout : Int]
+  (await ($os/exec_async ^timeout_ms timeout ^max_bytes 4194304 args...)))
+
+(describe "Gene web editor"
+  (it "passes the browser scenarios, compiles the demo, and runs the machine helper" []
+    (isolated this_mod/.path
+      "passes the browser scenarios, compiles the demo, and runs the machine helper"
+      (fn [workspace]
+        (let scenarios_dir ($path/join workspace "scenarios"))
+        (let scenarios (await ($os/exec_async ^timeout_ms 120000 ^max_bytes 4194304
+          ($os/executable_path) "build" "--target" "web" "--out-dir" scenarios_dir
+          (package_path "tests/fixtures/gene_editor_scenarios.gene"))))
+        ($assert (== scenarios/status 0)
+          $"scenario build failed: {scenarios/stdout}{scenarios/stderr}")
+        (let ran (await ($os/exec_async ^timeout_ms 60000 ^max_bytes 4194304
+          "node" (package_path "tests/fixtures/gene_editor_driver.mjs")
+          scenarios_dir)))
+        ($assert (== ran/status 0)
+          $"editor scenarios failed:\n{ran/stdout}{ran/stderr}")
+        ($assert ($str/contains? ran/stdout "all editor scenarios passed")
+          ran/stdout)
+
+        # The demo client only needs to build: its page and routes are checked
+        # by the demo itself, which is an ordinary application rather than a
+        # test fixture.
+        (let demo_dir ($path/join workspace "demo"))
+        (let demo (await ($os/exec_async ^timeout_ms 120000 ^max_bytes 4194304
+          ($os/executable_path) "build" "--target" "web" "--out-dir" demo_dir
+          (package_path "examples/gene-editor/client.gene"))))
+        ($assert (== demo/status 0)
+          $"demo client build failed: {demo/stdout}{demo/stderr}")
+        (let mounted (await ($os/exec_async ^timeout_ms 60000 ^max_bytes 4194304
+          "node" (package_path "tests/fixtures/gene_editor_demo_driver.mjs")
+          demo_dir)))
+        ($assert (== mounted/status 0)
+          $"demo client mount failed:\n{mounted/stdout}{mounted/stderr}")
+
+        # The Harness panel layer: availability, attachments, conflicts, and
+        # draft restoration through workspace-scoped storage.
+        (let panel_dir ($path/join workspace "panel"))
+        (let panel_build (await ($os/exec_async ^timeout_ms 120000 ^max_bytes 4194304
+          ($os/executable_path) "build" "--target" "web" "--out-dir" panel_dir
+          (package_path "tests/fixtures/gene_editor_panel_scenarios.gene"))))
+        ($assert (== panel_build/status 0)
+          $"panel scenario build failed: {panel_build/stdout}{panel_build/stderr}")
+        (let panel_ran (await ($os/exec_async ^timeout_ms 60000 ^max_bytes 4194304
+          "node" (package_path "tests/fixtures/gene_editor_panel_driver.mjs")
+          panel_dir)))
+        ($assert (== panel_ran/status 0)
+          $"Harness editor panel scenarios failed:\n{panel_ran/stdout}{panel_ran/stderr}")
+
+        # Every element id the panel module looks up must exist in the
+        # host-owned page, the same contract the client spec keeps for
+        # client/main.gene.
+        (let source ($fs/read_text (package_path "client/editor.gene")))
+        (let rendered (page ^workspace "/workspace/editor-spec"))
+        (for line in ($str/split source "\n")
+          (let parts ($str/split line "($dom/element \""))
+          (for part in ($drop parts 1)
+            (let id (($str/split part "\"") .first))
+            (if (!= id "")
+              ($assert ($str/contains? rendered $"id=\"${id}\"")
+                $"client/editor.gene looks up element id ${id}, which src/web/page.gene does not render"))))
+
+        # The companion tool is built separately (`nimble tools`). Where it is
+        # absent, the component's degraded path is already covered by the
+        # "missing helper" browser scenario, so this drops to the build checks.
+        (let viewer ($path/join ($path/parent ($os/executable_path)) "gene-viewer"))
+        (if ($fs/exists? viewer)
+          (do
+            (let draft ($path/join workspace "draft.gene"))
+            ($fs/write_text draft "(fn 🙂 [x] x")
+            (let analysis (await ($os/exec_async ^timeout_ms 20000 ^max_bytes 4194304
+              viewer "--machine" "analyze" "--name" "draft.gene" "--version" "3"
+              "--text-file" draft "--select-utf16" "4")))
+            ($assert (== analysis/status 0)
+              $"gene-viewer analyze failed: {analysis/stderr}")
+            (let reply (parse analysis/stdout))
+            ($assert (== reply/version 3) "the helper echoes the draft version")
+            ($assert (== reply/ok true) "an unfinished buffer still indexes")
+            ($assert (== reply/parsed false) "the unfinished buffer does not parse")
+            ($assert (== reply/partial true) "the unfinished buffer is partial")
+            ($assert (> ($size reply/outline) 0) "the outline keeps the declaration")
+            ($assert (== reply/outline/0/closed false) "the declaration is marked open")
+            ($assert (== reply/selected/found true) "the caret selects a form")
+            ($assert (== reply/selected/startByte 0) "the selection starts at byte zero")
+            ($assert (== reply/selected/endByte 14) "the selection ends after the emoji form")
+            ($assert (== reply/selected/startUtf16 0) "UTF-16 start matches")
+            ($assert (== reply/selected/endUtf16 12)
+              "UTF-16 offsets count the supplementary character as two units")
+            # A lexical error is the stale-view signal: no outline for the text.
+            (let broken ($path/join workspace "broken.gene"))
+            ($fs/write_text broken "(fn broken [] \"unterminated)")
+            (let broken_run
+              (await ($os/exec_async ^timeout_ms 20000 ^max_bytes 4194304
+                viewer "--machine" "analyze" "--text-file" broken)))
+            ($assert (== broken_run/status 0)
+              $"broken analyze failed: {broken_run/stdout}{broken_run/stderr}")
+            (let broken_reply (parse broken_run/stdout))
+            ($assert (== broken_reply/ok false)
+              "a lexical error reports ok false")
+            ($assert (== ($size broken_reply/outline) 0)
+              "a lexical error reports no outline")
+            # Formatting goes through the same tool and the existing formatter.
+            (let unformatted ($path/join workspace "unformatted.gene"))
+            ($fs/write_text unformatted "(fn  f[x]x)")
+            (let format_run
+              (await ($os/exec_async ^timeout_ms 20000 ^max_bytes 4194304
+                viewer "--machine" "format" "--text-file" unformatted)))
+            ($assert (== format_run/status 0)
+              $"format failed: {format_run/stdout}{format_run/stderr}")
+            (let formatted (parse format_run/stdout))
+            ($assert (== formatted/ok true) "format succeeds")
+            ($assert (== formatted/changed true) "format reports a change")
+            ($assert (== formatted/text "(fn f [x]\n  x)\n")
+              $"unexpected formatted text: {formatted/text}"))
+          ($println "gene-viewer is not built here; skipping the helper checks"))))))
+
+(fn main [args] : Int (run_spec args))

@@ -1,0 +1,341 @@
+# Browser scenarios for the Harness editor panel wrapper.
+#
+# The panel supplies the owner-route adapter and the workspace draft store to
+# the reusable component. These scenarios cover the 2a behaviors that live in
+# that layer: availability from workspace status, opening a file, attaching a
+# verified saved selection, attaching the exact draft, a save conflict, and
+# restoring a draft after the panel is closed and reopened.
+
+(mod gene_editor_panel_scenarios ^profile web)
+
+(import [create_editor_panel configure_editor editor_available? editor_open?
+         open_editor close_editor attach_saved attach_draft show_logs show_source
+         poll_log attach_log EditorPanel]
+  ^from "../../client/editor.gene")
+(import [Editor] ^from "../../client/components/gene_editor.gene")
+
+(type Scenario ^props {
+  ^failures (List Str)
+  ^checks Int
+  ^staged (List Str)
+  ^requests (List Any)
+  ^panel Any
+  ^text Str
+  ^save_mode Str
+  ^selection_text Str
+  ^log_polls Int})
+
+(fn text [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn flag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn expect [sc : Scenario, name : Str, condition : Bool] : Nil
+  (set sc/checks (+ sc/checks 1))
+  (if (! condition) (sc/failures .push name)))
+
+(fn expect_text [sc : Scenario, name : Str, actual : Any, wanted : Str] : Nil
+  (set sc/checks (+ sc/checks 1))
+  (var got (text actual ""))
+  (if (!= got wanted)
+    (sc/failures .push
+      (str/join [name ": expected '" wanted "', got '" got "'"] ""))))
+
+(fn contains [haystack : Str, needle : Str] : Bool
+  ($str/contains? haystack needle))
+
+(fn snapshot [panel : EditorPanel] : Any
+  (var raw : Any panel/editor)
+  (var editor : Editor raw)
+  (editor/snapshot))
+
+(fn panel_editor [panel : EditorPanel] : Editor
+  (var raw : Any panel/editor)
+  (var editor : Editor raw)
+  editor)
+
+(fn int_or [value : Any, fallback : Int] : Int
+  (if_yes ($absent? value) (return fallback))
+  (var result : Int value)
+  result)
+
+(fn api [sc : Scenario, method : Str, path : Str, payload : Any,
+         done : (Fn [Int Any] Nil)] : Nil
+  (sc/requests .push {^method method ^path path})
+  (if (contains path "/p/editor/log")
+    (do
+      (set sc/log_polls (+ sc/log_polls 1))
+      (if (== sc/log_polls 1)
+        (done 200 {^ok true ^state "ok" ^cursor "c1"
+                   ^lines ["boot one" "boot two"] ^gap ""})
+        (if (== sc/log_polls 2)
+          (done 200 {^ok true ^state "ok" ^cursor "c2"
+                     ^lines ["ready"] ^gap ""})
+          (if (== sc/log_polls 3)
+            (done 200 {^ok true ^state "gap" ^cursor "c3"
+                       ^lines ["after gap"] ^gap "continuity lost"
+                       ^message ""})
+            (do
+              (var idle : (List Str) [])
+              (done 200 {^ok true ^state "ok" ^cursor "c3"
+                         ^lines idle ^gap ""})))))
+      (return)))
+  (if (== method "GET")
+    (do
+      (done 200 {^ok true
+                 ^document {^id "demo.gene" ^name "demo.gene" ^path "demo.gene"
+                            ^kind "source" ^text sc/text ^revision "rev-1"
+                            ^line_endings "lf" ^bom false ^readonly false
+                            ^reason ""}})
+      (return)))
+  (if (contains path "/selection")
+    (do
+      (done 200 {^ok true ^revision "rev-1" ^text sc/selection_text
+                 ^line_endings "lf" ^bom false})
+      (return)))
+  (if (contains path "/save")
+    (do
+      (if (== sc/save_mode "conflict")
+        (done 409 {^ok false ^conflict true ^revision "rev-disk"
+                   ^line_endings "lf" ^bom false ^text "disk text"})
+        (done 200 {^ok true ^revision "rev-2" ^line_endings "lf" ^bom false}))
+      (return)))
+  (if (contains path "/analyze")
+    (do
+      (var version (int_or payload/version 0))
+      (var no_outline : (List Any) [])
+      (var no_children : (List Any) [])
+      (var rows : (List Any) [
+        {^id 0 ^label "0" ^summary "" ^path "0" ^kind "node" ^closed true
+         ^startByte 0 ^endByte 10 ^startUtf16 0 ^endUtf16 10
+         ^children no_children ^more 0}
+        {^id 1 ^label "1" ^summary "" ^path "1" ^kind "node" ^closed true
+         ^startByte 11 ^endByte 33 ^startUtf16 11 ^endUtf16 33
+         ^children no_children ^more 0}])
+      (done 200
+        {^ok true ^parsed true ^partial false ^version version
+         ^outline no_outline
+         ^tree {^children rows}
+         ^selected {^found false}
+         ^diagnostics no_outline})
+      (return)))
+  (done 200 {^ok true}))
+
+(fn stage [sc : Scenario, text_value : Str] : Nil
+  (sc/staged .push text_value))
+
+(fn ready_plugins [] : Any
+  [{^id "editor" ^state "ready"}])
+
+(fn pending_plugins [] : Any
+  [{^id "editor" ^state "pending"}])
+
+(fn run_scenario [sc : Scenario] : Nil
+  (var root ($dom/element "gene_editor_root"))
+  (var panel
+    (create_editor_panel
+      root
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
+        (api sc method path payload done))
+      (fn [text_value : Str] : Nil (stage sc text_value))))
+  (set sc/panel panel)
+
+  # Availability follows the workspace status entry.
+  (configure_editor panel (pending_plugins))
+  (expect sc "availability: pending is not ready" (! (editor_available? panel)))
+  (open_editor panel "demo.gene")
+  (expect sc "availability: opening while disabled mounts nothing"
+    ($absent? panel/editor))
+  (expect sc "availability: the panel reports unavailable"
+    (contains ($dom/text panel/status) "unavailable"))
+  (configure_editor panel (ready_plugins))
+  (expect sc "availability: ready enables the editor" (editor_available? panel))
+
+  # Opening mounts once and asks for analysis.
+  (open_editor panel "demo.gene")
+  (expect sc "open: an editor is mounted" ($present? panel/editor))
+  (var snap (snapshot panel))
+  (expect_text sc "open: analysis is current" snap/analysis "current")
+  (expect_text sc "open: the buffer holds the file" snap/text sc/text)
+
+  # A reveal emits a selection the panel can attach after verification.
+  (var editor_reveal (panel_editor panel))
+  (editor_reveal/reveal {^start_utf16 11 ^end_utf16 11})
+  (var selection : Any sc/panel/selection)
+  (expect sc "attach: a selection was captured" ($present? selection))
+  (expect_text sc "attach: the selection carries the form text"
+    selection/text "(fn greet [name] name)")
+  (attach_saved panel)
+  (expect sc "attach: a saved selection reaches the composer"
+    (== ($size sc/staged) 1))
+  (if (> ($size sc/staged) 0)
+    (do
+      (var staged (text sc/staged/-1 ""))
+      (expect sc "attach: the attachment names the range"
+        (contains staged "demo.gene:11-33"))
+      (expect sc "attach: the attachment names the revision"
+        (contains staged "revision rev-1"))
+      (expect sc "attach: the attachment carries the exact source"
+        (contains staged "(fn greet [name] name)"))))
+
+  # A draft edit keeps its own preview path.
+  (var editor_edit (panel_editor panel))
+  (editor_edit/replace_range 0 0 "// draft\n")
+  (set snap (snapshot panel))
+  (expect sc "draft: the buffer is dirty" (flag snap/dirty))
+  (attach_draft panel)
+  (expect sc "draft: the draft attachment reaches the composer"
+    (== ($size sc/staged) 2))
+
+  # A conflict keeps the draft and surfaces the comparison state.
+  (set sc/save_mode "conflict")
+  (var editor_save (panel_editor panel))
+  (editor_save/save)
+  (set snap (snapshot panel))
+  (expect_text sc "save: the conflict is reported" snap/save_state "conflict")
+  (expect sc "save: the draft survives a conflict" (flag snap/dirty))
+  (expect sc "save: the toolbar explains the conflict"
+    (contains ($dom/text panel/status) "conflict"))
+
+  # Disabling the plugin keeps the mount and the draft, and stops new
+  # route-backed work; re-enabling re-analyzes the preserved buffer.
+  (configure_editor panel (pending_plugins))
+  (expect sc "disable: the panel is unavailable" (! (editor_available? panel)))
+  (var editor_disable (panel_editor panel))
+  (editor_disable/refresh)
+  (set snap (snapshot panel))
+  (expect sc "disable: the component reports no analysis" (flag snap/degraded))
+  (expect sc "disable: the draft is still in the buffer" (flag snap/dirty))
+  (configure_editor panel (ready_plugins))
+  (var editor_enable (panel_editor panel))
+  (editor_enable/refresh)
+  (set snap (snapshot panel))
+  (expect sc "enable: analysis resumes" (! (flag snap/degraded)))
+
+  # Closing disposes the mount but leaves the workspace-scoped draft, so
+  # reopening restores the operator's unsaved text.
+  (close_editor panel)
+  (expect sc "close: the mount is disposed" ($absent? panel/editor))
+  (open_editor panel "demo.gene")
+  (set snap (snapshot panel))
+  (expect sc "reopen: a mount is created again" ($present? panel/editor))
+  (expect sc "reopen: the draft is dirty" (flag snap/dirty))
+  (expect sc "reopen: the draft text is restored"
+    (contains (text snap/text "") "// draft"))
+  (close_editor panel)
+
+  # A fresh panel object is what a page reload produces: the in-memory map is
+  # gone, and the draft must come back from workspace-scoped session storage.
+  (var reloaded
+    (create_editor_panel
+      root
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
+        (api sc method path payload done))
+      (fn [text_value : Str] : Nil (stage sc text_value))))
+  (configure_editor reloaded (ready_plugins))
+  (open_editor reloaded "demo.gene")
+  (var reloaded_snap (snapshot reloaded))
+  (expect sc "reload: the draft is restored from session storage"
+    (contains (text reloaded_snap/text "") "// draft"))
+  (close_editor reloaded)
+
+  # Without a workspace identity the tab cannot store drafts. The panel keeps
+  # the buffer in memory and says so instead of pretending it is recoverable.
+  (var identity ($dom/element "harness_document"))
+  (set identity/dataset/workspaceId "")
+  (var memory_panel
+    (create_editor_panel
+      root
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
+        (api sc method path payload done))
+      (fn [text_value : Str] : Nil (stage sc text_value))))
+  (configure_editor memory_panel (ready_plugins))
+  (open_editor memory_panel "demo.gene")
+  (var memory_editor (panel_editor memory_panel))
+  (memory_editor/replace_range 0 0 "// memory\n")
+  (expect sc "storage: the panel warns that the draft is memory-only"
+    (contains ($dom/text memory_panel/status) "memory"))
+  (var memory_snap (snapshot memory_panel))
+  (expect sc "storage: the draft still edits in memory" (flag memory_snap/dirty))
+  (close_editor memory_panel))
+
+(fn int_of [value : Any, fallback : Int] : Int
+  (if_yes ($absent? value) (return fallback))
+  (var result : Int value)
+  result)
+
+(fn log_count [editor : Editor] : Int
+  (var snap (editor/snapshot))
+  (int_of snap/log_count 0))
+
+(fn run_logs [sc : Scenario] : Nil
+  (var root ($dom/element "gene_editor_root"))
+  (var panel
+    (create_editor_panel
+      root
+      (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
+        (api sc method path payload done))
+      (fn [text_value : Str] : Nil (stage sc text_value))))
+  (configure_editor panel (ready_plugins))
+  (open_editor panel "demo.gene")
+  (var source_raw : Any panel/editor)
+  (var source : Editor source_raw)
+  (source/replace_range 0 0 "// source draft\n")
+
+  # Switching to Logs mounts the stream surface and begins polling.
+  (show_logs panel)
+  (expect sc "logs: a log viewer is mounted" ($present? panel/log_editor))
+  (var log_raw : Any panel/log_editor)
+  (var log_viewer : Editor log_raw)
+  (expect sc "logs: the opening batch arrives" (== (log_count log_viewer) 2))
+  (poll_log panel)
+  (poll_log panel)
+  (var snap (log_viewer/snapshot))
+  (expect sc "logs: all batches are appended" (>= (int_of snap/log_count 0) 4))
+  (expect sc "logs: a gap is labelled"
+    ($str/contains? (text snap/log_gap "") "continuity lost"))
+
+  # Attach stages the already-redacted buffer with a size bound.
+  (attach_log panel)
+  (var staged_count ($size sc/staged))
+  (expect sc "logs: attach stages a message" (> staged_count 0))
+  (if (> staged_count 0)
+    (do
+      (var staged (text sc/staged/-1 ""))
+      (expect sc "logs: the attachment identifies the host log"
+        ($str/contains? staged "Harness host log"))
+      (expect sc "logs: the attachment includes boot output"
+        ($str/contains? staged "boot one"))))
+
+  # Source and log surfaces stay mounted with their own state.
+  (show_source panel)
+  (expect sc "tabs: the source surface returns" (== panel/mode "source"))
+  (var source_snap (source/snapshot))
+  (expect sc "tabs: the same source mount kept the draft"
+    ($str/contains? (text source_snap/text "") "// source draft"))
+  (show_logs panel)
+  (expect sc "tabs: the same log mount kept its lines"
+    (>= (log_count log_viewer) 4))
+  (var before (log_count log_viewer))
+  (configure_editor panel (pending_plugins))
+  (poll_log panel)
+  (expect sc "logs: a disabled plugin stops polling"
+    (== (log_count log_viewer) before))
+  (configure_editor panel (ready_plugins))
+  (close_editor panel)
+  (expect sc "logs: closing disposes the log mount" ($absent? panel/log_editor)))
+
+(fn run [] : Str
+  (var sc
+    (Scenario ^failures [] ^checks 0 ^staged [] ^requests [] ^panel nil
+              ^text "(mod demo)\n(fn greet [name] name)\n"
+              ^save_mode "ok" ^selection_text "(fn greet [name] name)"
+              ^log_polls 0))
+  (run_scenario sc)
+  (run_logs sc)
+  ($json/stringify {^checks sc/checks ^failures sc/failures}))

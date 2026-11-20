@@ -1,0 +1,361 @@
+# Bounded, resumable reading of the Harness host log.
+#
+# The log is one active segment plus at most one previous segment, each bounded
+# at 1 MiB by `host_log`. A poll names the segment it was reading, a byte
+# offset at a line boundary, and a digest of that segment's prefix through the
+# offset. Comparing the digest is what tells a continuation apart from a
+# rotated or truncated file:
+#
+#   * the active prefix still matches -> deliver the rest of the active file;
+#   * the previous segment matches    -> the active file rotated; finish the
+#                                        previous segment, then continue active;
+#   * neither matches                 -> continuity is lost; report a gap and
+#                                        resume from the available tail.
+#
+# Only complete lines advance the delivered cursor. An incomplete final line is
+# carried into the next poll, so a UTF-8 sequence or a credential that straddles
+# a write boundary is never delivered in halves. Long lines and large poll
+# budgets are truncated or deferred with an explicit marker.
+#
+# Cursors are opaque JSON strings; callers must treat them as token values.
+
+(mod log_tail)
+
+(fn int_or [value : Any, fallback : Int] : Int
+  (if ($absent? value) (return fallback))
+  (try
+    (let direct : Int value)
+    direct
+    catch Throwable
+      (try
+        (let source : Str value)
+        ($parse/parse_int source)
+        catch Throwable fallback)))
+
+(fn text_or [value : Any, fallback : Str = ""] : Str
+  (if ($absent? value) (return fallback))
+  (try
+    (let direct : Str value)
+    direct
+    catch Throwable fallback))
+
+(fn min_int [left : Int, right : Int] : Int
+  (if (< left right) left right))
+
+(fn max_int [left : Int, right : Int] : Int
+  (if (> left right) left right))
+
+# ---------------------------------------------------------------------------
+# Cursors
+# ---------------------------------------------------------------------------
+
+(fn encode_cursor [source : Str, segment : Str, offset : Int, prefix : Str] : Str
+  ($json/stringify {^v 1 ^source source ^segment segment ^offset offset
+                    ^prefix prefix}))
+
+(fn decode_cursor [raw : Str, source : Str] : Any
+  (if (== raw "") (return nil))
+  (let data (try ($json/parse raw) catch Error nil))
+  (if ($absent? data) (return nil))
+  (if (!= (int_or data/v 0) 1) (return nil))
+  (if (!= (text_or data/source "") source) (return nil))
+  (let segment (text_or data/segment "active"))
+  (if (! (["active" "previous"] .contains? segment)) (return nil))
+  (let offset (int_or data/offset 0))
+  (if (< offset 0) (return nil))
+  {^segment segment ^offset offset ^prefix (text_or data/prefix "")})
+
+# ---------------------------------------------------------------------------
+# Segment parsing
+# ---------------------------------------------------------------------------
+
+(fn read_raw [path : Str] : Any
+  (if (== path "") (return nil))
+  (if_not ($fs/exists? path) (return nil))
+  (try ($fs/read_bytes path) catch Error nil))
+
+(fn parse_segment [raw : Any] : Any
+  # Complete lines, their byte starts, and the start of the incomplete tail.
+  # Decoding the whole segment once is cheaper and clearer than scanning bytes
+  # for newlines; segments are capped at 1 MiB by the writer.
+  (if ($absent? raw)
+    (return {^ok true ^present false ^size 0 ^lines [] ^starts [] ^incomplete 0}))
+  (let decoded (try ($binary/decode_utf8 raw) catch Error nil))
+  (if ($absent? decoded)
+    (return {^ok false ^present true
+             ^message "the log segment is not valid UTF-8"}))
+  (let parts ($str/split decoded "\n"))
+  (let count ($size parts))
+  (var lines : (List Str) [])
+  (var starts : (List Int) [])
+  (var offset 0)
+  (var index 0)
+  (while (< index (- count 1))
+    (let line parts/%index)
+    (lines .push line)
+    (starts .push offset)
+    (set offset (+ offset (+ ($str/byte_size line) 1)))
+    (set index (+ index 1)))
+  {^ok true ^present true ^size ($binary/size raw) ^lines lines ^starts starts
+   ^incomplete offset})
+
+(fn prefix_digest [raw : Bytes, offset : Int] : Str
+  (let bounded (min_int (max_int offset 0) ($binary/size raw)))
+  ($crypto/sha256 ($binary/slice raw 0 bounded)))
+
+(fn prefix_matches [raw : Any, segment : Any, offset : Int, prefix : Str] : Bool
+  (if ($absent? raw) (return false))
+  (if (! segment/ok) (return false))
+  (if (|| (< offset 0) (> offset segment/size)) (return false))
+  (== (prefix_digest raw offset) prefix))
+
+# ---------------------------------------------------------------------------
+# Collecting line batches
+# ---------------------------------------------------------------------------
+
+(fn render_line [line : Str, max_line : Int] : Any
+  (if (<= ($str/byte_size line) max_line)
+    (return {^text line ^truncated false}))
+  (let head ($str/slice_bytes line 0 max_line))
+  {^text ($str/join [head " … [line truncated]"] "") ^truncated true})
+
+(fn collect [raw : Bytes, segment : Any, start : Int, max_bytes : Int,
+             max_line : Int] : Any
+  # Lines from `start`, which must be a line boundary (or the segment end).
+  # The cursor stops before the incomplete tail, so the next poll can carry it.
+  (if (! segment/ok)
+    (return {^ok false ^message (text_or segment/message "unreadable segment")}))
+  (let size segment/size)
+  (if (|| (< start 0) (> start size))
+    (return {^ok false ^message "the log cursor is outside its segment"}))
+  (if (== start size)
+    (return {^ok true ^lines [] ^bytes 0 ^end start ^consumed true
+             ^truncated 0 ^skipped 0}))
+  (let starts segment/starts)
+  (var index 0)
+  (var found -1)
+  (var count ($size starts))
+  (while (< index count)
+    (if (== starts/%index start)
+      (do (set found index) (set index count))
+      (set index (+ index 1))))
+  (if (< found 0)
+    (return {^ok false ^message "the log cursor is not on a line boundary"}))
+  (var lines : (List Str) [])
+  (var bytes 0)
+  (var end start)
+  (var truncated 0)
+  (var skipped 0)
+  (var at found)
+  (let line_count ($size segment/lines))
+  (var full false)
+  (while (< at line_count)
+    (let line segment/lines/%at)
+    (let rendered (render_line line max_line))
+    (let cost (+ ($str/byte_size rendered/text) 1))
+    (let source_bytes (+ ($str/byte_size line) 1))
+    (if (&& (> ($size lines) 0) (> (+ bytes cost) max_bytes))
+      (do (set full true) (set at line_count))
+      (do
+        (if rendered/truncated
+          (do
+            (set truncated (+ truncated 1))
+            (set skipped (+ skipped (- ($str/byte_size line) ($str/byte_size
+              ($str/slice_bytes rendered/text 0 max_line)))))))
+        (lines .push rendered/text)
+        (set bytes (+ bytes cost))
+        (set at (+ at 1)))))
+  # Derive the exact end from the last consumed line instead of the render size.
+  (if (> ($size lines) 0)
+    (do
+      (let last (+ found (- ($size lines) 1)))
+      (let line_end (+ segment/starts/%last (+ ($str/byte_size segment/lines/%last) 1)))
+      (set end line_end)))
+  {^ok true ^lines lines ^bytes bytes ^end end
+   ^consumed (== (+ found ($size lines)) line_count)
+   ^truncated truncated ^skipped skipped})
+
+(fn tail_start [segment : Any, initial_lines : Int, max_bytes : Int,
+                max_line : Int] : Int
+  # Start of the newest lines that fit the initial byte and count budget.
+  (let lines segment/lines)
+  (let starts segment/starts)
+  (let count ($size lines))
+  (if (== count 0) (return segment/size))
+  (var index (- count 1))
+  (var bytes 0)
+  (var first count)
+  (var full false)
+  (while (&& (>= index 0) (! full))
+    (let line lines/%index)
+    (let rendered (render_line line max_line))
+    (let cost (+ ($str/byte_size rendered/text) 1))
+    (if (&& (< first count)
+             (|| (>= (- count first) initial_lines)
+                 (> (+ bytes cost) max_bytes)))
+      (set full true)
+      (do
+        (set bytes (+ bytes cost))
+        (set first index)
+        (set index (- index 1)))))
+  (if (== first count) (return segment/size))
+  starts/%first)
+
+# ---------------------------------------------------------------------------
+# Responses
+# ---------------------------------------------------------------------------
+
+(fn empty_response [state : Str, message : Str] : Any
+  (var no_lines : (List Str) [])
+  {^ok true ^state state ^lines no_lines ^cursor "" ^gap "" ^truncated 0
+   ^skipped 0 ^message message})
+
+(fn finish [source : Str, segment_name : Str, raw : Bytes, segment : Any,
+            payload : Any, gap : Str, redact : (Fn [Str] Str),
+            ^note note : Str = ""] : Any
+  (let joined ($str/join payload/lines "\n"))
+  (let redacted (redact joined))
+  (var lines : (List Str) [])
+  (if (!= joined "")
+    (set lines ($str/split redacted "\n")))
+  {^ok true
+   ^state (if (== gap "") "ok" "gap")
+   ^lines lines
+   ^cursor (encode_cursor source segment_name payload/end
+                           (prefix_digest raw payload/end))
+   ^gap gap
+   ^note note
+   ^truncated payload/truncated
+   ^skipped payload/skipped
+   ^bytes payload/bytes})
+
+(fn remaining_budget [max_bytes : Int, used : Int] : Int
+  (max_int 0 (- max_bytes used)))
+
+# ---------------------------------------------------------------------------
+# Read
+# ---------------------------------------------------------------------------
+
+(fn read_log [source : Str, active_path : Str, previous_path : Str,
+              cursor_text : Str, options : Any,
+              redact : (Fn [Str] Str)] : Any
+  (var max_bytes (max_int 4096 (int_or options/max_bytes 65536)))
+  (var max_line (max_int 256 (int_or options/max_line_bytes 8192)))
+  (if (> max_line max_bytes) (set max_line max_bytes))
+  (if (> max_line (- max_bytes 32)) (set max_line (max_int 256 (- max_bytes 32))))
+  (let initial_lines (max_int 1 (int_or options/initial_lines 200)))
+  (let active_raw (read_raw active_path))
+  (let previous_raw (read_raw previous_path))
+  (let active (parse_segment active_raw))
+  (let previous (parse_segment previous_raw))
+  (if (&& ($absent? active_raw) ($absent? previous_raw))
+    (return (empty_response "absent"
+      "No retained host log yet. A foreground launch may keep its output only on the terminal.")))
+  (if (&& (! ($absent? active_raw)) (! active/ok))
+    (return (empty_response "unreadable" (text_or active/message "the host log is unreadable"))))
+  (if (&& (! ($absent? previous_raw)) (! previous/ok))
+    (return (empty_response "unreadable" (text_or previous/message "the previous host log is unreadable"))))
+  (let cursor (decode_cursor cursor_text source))
+  (var segment_name "active")
+  (var parsed active)
+  (var raw active_raw)
+  (if ($absent? active_raw)
+    (do (set segment_name "previous") (set parsed previous) (set raw previous_raw)))
+
+  (if ($absent? cursor)
+    (do
+      (let start (tail_start parsed initial_lines max_bytes max_line))
+      (let payload (collect raw parsed start max_bytes max_line))
+      (if (! payload/ok)
+        (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
+      (return (finish source segment_name raw parsed payload "" redact
+                      ^note (if (== segment_name "previous") "host log rotated" "")))))
+
+  # Resume from the cursor's segment; rotation moves the old active segment
+  # aside, so a prefix that now matches `previous` continues there first.
+  (if (== cursor/segment "active")
+    (return (resume_active source active_raw active previous_raw previous
+              cursor max_bytes max_line redact)))
+  (return (resume_previous source active_raw active previous_raw previous
+            cursor max_bytes max_line redact)))
+
+(fn combined_finish [source : Str, first : Any, second : Any,
+                     active_raw : Bytes, active : Any, redact : (Fn [Str] Str),
+                     ^note note : Str] : Any
+  (var lines : (List Str) [])
+  (for line in first/lines (lines .push line))
+  (for line in second/lines (lines .push line))
+  (let payload {^lines lines ^bytes (+ first/bytes second/bytes)
+                ^end second/end ^consumed second/consumed
+                ^truncated (+ first/truncated second/truncated)
+                ^skipped (+ first/skipped second/skipped)})
+  (finish source "active" active_raw active payload "" redact ^note note))
+
+(fn resume_active [source : Str, active_raw : Any, active : Any,
+                   previous_raw : Any, previous : Any, cursor : Any,
+                   max_bytes : Int, max_line : Int,
+                   redact : (Fn [Str] Str)] : Any
+  (if (prefix_matches active_raw active cursor/offset cursor/prefix)
+    (do
+      (let payload (collect active_raw active cursor/offset max_bytes max_line))
+      (if (! payload/ok)
+        (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
+      (return (finish source "active" active_raw active payload "" redact))))
+  (if (&& ($present? previous_raw) previous/ok
+          (prefix_matches previous_raw previous cursor/offset cursor/prefix))
+    (do
+      (let first (collect previous_raw previous cursor/offset max_bytes max_line))
+      (if (! first/ok)
+        (return (empty_response "unreadable" (text_or first/message "the previous host log is unreadable"))))
+      (if (&& first/consumed ($present? active_raw) active/ok)
+        (do
+          (let second (collect active_raw active 0
+            (remaining_budget max_bytes first/bytes) max_line))
+          (if (! second/ok)
+            (return (empty_response "unreadable" (text_or second/message "the host log is unreadable"))))
+          (return (combined_finish source first second active_raw active redact
+                    ^note "finished the previous host log segment")))
+        (return (finish source "previous" previous_raw previous first "" redact
+                        ^note "host log rotated")))))
+  (resume_after_gap source active_raw active previous_raw previous
+    200 max_bytes max_line redact))
+
+(fn resume_previous [source : Str, active_raw : Any, active : Any,
+                     previous_raw : Any, previous : Any, cursor : Any,
+                     max_bytes : Int, max_line : Int,
+                     redact : (Fn [Str] Str)] : Any
+  (if (prefix_matches previous_raw previous cursor/offset cursor/prefix)
+    (do
+      (let first (collect previous_raw previous cursor/offset max_bytes max_line))
+      (if (! first/ok)
+        (return (empty_response "unreadable" (text_or first/message "the previous host log is unreadable"))))
+      (if (&& first/consumed ($present? active_raw) active/ok)
+        (do
+          (let second (collect active_raw active 0
+            (remaining_budget max_bytes first/bytes) max_line))
+          (if (! second/ok)
+            (return (empty_response "unreadable" (text_or second/message "the host log is unreadable"))))
+          (return (combined_finish source first second active_raw active redact
+                    ^note "host log rotated")))
+        (return (finish source "previous" previous_raw previous first "" redact
+                        ^note "host log rotated")))))
+  (resume_after_gap source active_raw active previous_raw previous
+    200 max_bytes max_line redact))
+
+(fn resume_after_gap [source : Str, active_raw : Any, active : Any,
+                      previous_raw : Any, previous : Any, initial_lines : Int,
+                      max_bytes : Int, max_line : Int,
+                      redact : (Fn [Str] Str)] : Any
+  # Neither segment carries the cursor's prefix: report the discontinuity and
+  # resume from the available tail rather than guessing at a continuation.
+  (var segment_name "active")
+  (var raw active_raw)
+  (var parsed active)
+  (if ($absent? active_raw)
+    (do (set segment_name "previous") (set raw previous_raw) (set parsed previous)))
+  (let start (tail_start parsed initial_lines max_bytes max_line))
+  (let payload (collect raw parsed start max_bytes max_line))
+  (if (! payload/ok)
+    (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
+  (finish source segment_name raw parsed payload
+          "log continuity lost; resumed from the available tail" redact))

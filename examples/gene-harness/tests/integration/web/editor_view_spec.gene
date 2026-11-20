@@ -1,0 +1,126 @@
+(import $test [describe it])
+(import [isolated run_spec test_service package_path] ^from "../../support")
+(import [host_status close_session_service] ^from "../../../src/web/session_service")
+(import [ui_preview] ^from "../../../src/ui/views")
+(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import [row] ^from "../../../src/kernel")
+
+# Milestone 3: the editor plugin publishes a view-scoped browser client, its
+# web_components row renders a keyed outlet, and an outlet must name an enabled
+# contribution. The client half is covered by the two Node drivers.
+
+(fn component_named [status : Any, name : Str] : Any
+  (var found nil)
+  (var components : (List Any) (if ($absent? status/ui/components) [] status/ui/components))
+  (for component in components
+    (if (== (text component/name "") name) (set found component)))
+  found)
+
+(fn client_named [status : Any, name : Str] : Any
+  (var found nil)
+  (var clients : (List Any) (if ($absent? status/browser_clients) [] status/browser_clients))
+  (for client in clients
+    (if (== (text client/name "") name) (set found client)))
+  found)
+
+(fn text [value : Any, fallback : Str = ""] : Str
+  (if ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn view_has_outlet [tree : Any, name : Str] : Bool
+  (if (!= ($head tree) Map) (return false))
+  (if (== (text tree/props/data-outlet "") name) (return true))
+  (for child in (?? tree/children [])
+    (if (view_has_outlet child name) (return true)))
+  false)
+
+(fn bad_outlet_plugin [] : Plugin
+  (Plugin ^id "bad_outlet"
+    ^provides [["web_components" "bad_outlet_view"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "web_components"
+        {^name "bad_outlet_view" ^title "Bad outlet" ^slot "view"
+         ^view_state {^selected ""}
+         ^render (fn [context]
+           `(div ^data-outlet "missing_contribution" ^key "bad_outlet"))}))))
+
+(describe "Harness view-owned editor outlet"
+  (it "publishes a view-scoped client and renders the keyed outlet" []
+    (isolated this_mod/.path "publishes a view-scoped client and renders the keyed outlet"
+      ^timeout_ms 300000
+      (fn [workspace]
+        (let service (test_service ^workspace workspace ^provider (fn [request] "")))
+        (try
+          ((/fn (row service/runtime/h "functions" "ui_configure"))
+            {^^enabled ^layout "panel"})
+          (let status (host_status service))
+          (let client (client_named status "editor_view"))
+          ($assert ($present? client) "the editor view browser client is not published")
+          ($assert (== (text client/scope "") "view")
+            "the editor view client must be view-scoped so the page does not mount it")
+          ($assert ($str/ends_with? (text client/url "") ".mjs"))
+          (let component (component_named status "editor_view"))
+          (var listed : (List Str) [])
+          (for item in (?? status/ui/components [])
+            (listed .push (text item/name "")))
+          ($assert ($present? component)
+            $"the editor view is not listed; have ${($json/stringify listed)} errors ${($json/stringify service/runtime/h/plugin_errors/.get)}")
+          ($assert (== (text component/slot "") "view"))
+          ($assert ($present? component/view_state/path))
+          ($assert ($present? component/view_state/tab))
+
+          (let preview (ui_preview service/runtime "editor_view" {}))
+          ($assert ($absent? preview/error) ($to_str preview/error))
+          ($assert (view_has_outlet preview/view "editor_view")
+            "the editor view render did not contain its outlet")
+
+          # An outlet that names no enabled contribution fails the view render
+          # instead of mounting a blank host element.
+          (let invalid_dir ($path/join workspace "invalid-outlet"))
+          ($fs/make_dir invalid_dir)
+          (let invalid (test_service ^workspace invalid_dir ^provider (fn [request] "")
+            ^plugins [(bad_outlet_plugin)]))
+          (try
+            ((/fn (row invalid/runtime/h "functions" "ui_configure")) {^^enabled})
+            (let invalid_status (host_status invalid))
+            (var invalid_names : (List Str) [])
+            (for item in (?? invalid_status/ui/components [])
+              (invalid_names .push (text item/name "")))
+            (var bad_message "")
+            (try
+              (let bad (ui_preview invalid/runtime "bad_outlet_view" {}))
+              (if ($present? bad/error) (set bad_message (text bad/error "")))
+              catch Error (set bad_message $err/.message))
+            ($assert ($str/contains? bad_message "missing_contribution")
+              $"a missing outlet contribution was not rejected: ${bad_message}; views ${($json/stringify invalid_names)}; errors ${($json/stringify invalid/runtime/h/plugin_errors/.get)}")
+            ensure (close_session_service invalid))
+          ensure (close_session_service service)))))
+
+  (it "keeps the outlet mount across updates and disposes it on lifecycle changes" []
+    (isolated this_mod/.path "keeps the outlet mount across updates and disposes it on lifecycle changes"
+      ^timeout_ms 300000
+      (fn [workspace]
+        (let build_dir ($path/join workspace "outlet"))
+        (let build (await ($os/exec_async ^timeout_ms 180000 ^max_bytes 4194304
+          ($os/executable_path) "build" "--target" "web" "--out-dir" build_dir
+          (package_path "client/browser_clients.gene"))))
+        ($assert (== build/status 0) $"outlet build failed: {build/stdout}{build/stderr}")
+        (let ran (await ($os/exec_async ^timeout_ms 60000 ^max_bytes 4194304
+          "node" (package_path "tests/fixtures/gene_editor_outlet_driver.mjs")
+          build_dir)))
+        ($assert (== ran/status 0) $"view outlet scenarios failed:\n{ran/stdout}{ran/stderr}")
+
+        (let view_dir ($path/join workspace "view"))
+        (let view_build (await ($os/exec_async ^timeout_ms 120000 ^max_bytes 4194304
+          ($os/executable_path) "build" "--target" "web" "--out-dir" view_dir
+          (package_path "client/editor_view.gene"))))
+        ($assert (== view_build/status 0)
+          $"dockable view build failed: {view_build/stdout}{view_build/stderr}")
+        (let view_ran (await ($os/exec_async ^timeout_ms 60000 ^max_bytes 4194304
+          "node" (package_path "tests/fixtures/gene_editor_view_driver.mjs")
+          view_dir)))
+        ($assert (== view_ran/status 0)
+          $"dockable view scenarios failed:\n{view_ran/stdout}{view_ran/stderr}")))))
+
+(fn main [args] : Int (run_spec args))

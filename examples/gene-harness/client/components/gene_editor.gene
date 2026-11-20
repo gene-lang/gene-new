@@ -1,0 +1,1682 @@
+# A reusable browser editor for Gene source and append-only text streams.
+#
+# The component owns a document buffer, its caret, a draft, an outline, a
+# structure tree, a diff view, and — for a stream — a bounded follow-mode
+# buffer. It owns none of the authority: reads, revision-aware saves, analysis,
+# formatting, the draft store, and the log transport all arrive as callbacks
+# supplied by the embedding (a demo page, the Harness, or a test). Nothing here
+# imports Harness, so the same file mounts in a standalone demo and inside an
+# application.
+#
+# Range conventions
+#   * The analysis helper reports half-open UTF-8 byte spans plus the matching
+#     UTF-16 offsets against the exact draft it was given.
+#   * The textarea speaks UTF-16 units, so selection and reveal use UTF-16.
+#     Byte spans are reported back with the revision they belong to.
+#   * Every analysis reply carries a draft version. A reply for a version the
+#     buffer has moved past is discarded, and the previous outline stays on
+#     screen while a newer one is in flight.
+#
+# Host services (all required; pass inert callbacks to disable a feature)
+#   save          (Fn [Any (Fn [Any] Nil)] Nil)   request -> done(response)
+#   analyze       (Fn [Any (Fn [Any] Nil)] Nil)   request -> done(response)
+#   format        (Fn [Any (Fn [Any] Nil)] Nil)   request -> done(response)
+#   store_get     (Fn [Str] Any)                  document id -> draft or nil
+#   store_put     (Fn [Str Any] Nil)              document id, draft
+#   store_delete  (Fn [Str] Nil)                  document id
+#   emit          (Fn [Any] Nil)                  editor event
+#
+# Save request:  {id, path, name, text, base_revision, line_endings, bom, version}
+# Save response: {ok, revision, line_endings, bom, conflict, message, text}
+# Analyze request:  {id, name, text, version, select_utf16_start, select_utf16_end}
+# Analyze response: the gene-viewer machine response, or
+#                   {ok false, unavailable true, message}
+# Format request:   {id, name, text, version, base_revision}
+# Format response:  {ok, text, diagnostics}
+
+(mod gene_editor ^profile web)
+
+(import [line_starts line_index line_span line_col position_label slice_utf16
+  diff_rows changed_rows log_entry trim_log visible_lines indent_style
+  kind_glyph draft]
+  ^from "./gene_editor_model.gene")
+
+# ---------------------------------------------------------------------------
+# Coercions for data that crossed JSON
+# ---------------------------------------------------------------------------
+
+(fn text [value : Any, fallback : Str = ""] : Str
+  (if_yes ($absent? value) (return fallback))
+  (var result : Str value)
+  result)
+
+(fn flag [value : Any] : Bool
+  (if_yes ($absent? value) (return false))
+  (var result : Bool value)
+  result)
+
+(fn int_or [value : Any, fallback : Int] : Int
+  (if_yes ($absent? value) (return fallback))
+  (var result : Int value)
+  result)
+
+(fn str_list [value : Any] : (List Str)
+  (var out : (List Str) [])
+  (if_yes ($present? value)
+    (var items : (List Any) value)
+    (for item in items
+      (out .push (text item ""))))
+  out)
+
+(fn initial_lines [value : Str] : (List Str)
+  # A log snapshot arrives as one text. Splitting it once here keeps the entry
+  # list the component's own: appends add entries, and a search filters them.
+  (var lines : (List Str) [])
+  (var parts : (List Str) (str/split value "\n"))
+  (var count ($size parts))
+  (var index 0)
+  (for part in parts
+    (if (|| (!= index (- count 1)) (!= part ""))
+      (lines .push part))
+    (set index (+ index 1)))
+  lines)
+
+(fn first_message [response : Any, fallback : Str] : Str
+  (var diagnostics : (List Any) [])
+  (if_yes ($present? response/diagnostics) (set diagnostics response/diagnostics))
+  (if (== ($size diagnostics) 0) (return fallback))
+  (var first : Any (diagnostics .get 0))
+  (if ($absent? first) (return fallback))
+  (var message (text first/message fallback))
+  (var line (int_or first/line 1))
+  (var col (int_or first/col 1))
+  $"L${line}:${col} ${message}")
+
+# ---------------------------------------------------------------------------
+# Contracts
+# ---------------------------------------------------------------------------
+
+(type EditorDocument ^props {
+  ^id Str
+  ^name Str
+  ^path Str
+  ^text Str
+  ^revision Str
+  ^line_endings Str
+  ^bom Bool
+  ^readonly Bool
+  ^reason Str
+  ^kind Str
+  ^line Int
+  ^end_line Int
+  ^cursor Str})
+
+(type EditorServices ^props {
+  ^save (Fn [Any (Fn [Any] Nil)] Nil)
+  ^analyze (Fn [Any (Fn [Any] Nil)] Nil)
+  ^format (Fn [Any (Fn [Any] Nil)] Nil)
+  ^store_get (Fn [Str] Any)
+  ^store_put (Fn [Str Any] Nil)
+  ^store_delete (Fn [Str] Nil)
+  ^emit (Fn [Any] Nil)})
+
+(fn editor_document [id : Str, name : Str, source : Str] : EditorDocument
+  # The ordinary case: one editable UTF-8 source document. A host that knows
+  # the file's encoding fills the remaining fields itself.
+  (EditorDocument ^id id ^name name ^path "" ^text source ^revision ""
+                  ^line_endings "lf" ^bom false ^readonly false ^reason ""
+                  ^kind "source" ^line 0 ^end_line 0 ^cursor ""))
+
+(type EditorRow ^props {
+  ^id Int
+  ^depth Int
+  ^label Str
+  ^summary Str
+  ^path Str
+  ^kind Str
+  ^start_byte Int
+  ^end_byte Int
+  ^start Int
+  ^finish Int
+  ^closed Bool})
+
+(type EditorState ^props {
+  ^root EventTarget
+  ^shell EventTarget
+  ^document EditorDocument
+  ^services EditorServices
+  ^text_area EventTarget
+  ^log_view EventTarget
+  ^log_lines EventTarget
+  ^outline_box EventTarget
+  ^tree_box EventTarget
+  ^diff_box EventTarget
+  ^diff_lines EventTarget
+  ^diff_title EventTarget
+  ^status EventTarget
+  ^position EventTarget
+  ^title EventTarget
+  ^badge EventTarget
+  ^search EventTarget
+  ^save_button EventTarget
+  ^format_button EventTarget
+  ^changes_button EventTarget
+  ^compare_button EventTarget
+  ^retry_button EventTarget
+  ^apply_button EventTarget
+  ^discard_button EventTarget
+  ^pause_button EventTarget
+  ^latest_button EventTarget
+  ^copy_button EventTarget
+  ^outline (List EditorRow)
+  ^outline_nodes (List EventTarget)
+  ^tree (List EditorRow)
+  ^tree_nodes (List EventTarget)
+  ^text Str
+  ^saved_text Str
+  ^revision Str
+  ^line_endings Str
+  ^bom Bool
+  ^readonly Bool
+  ^starts (List Int)
+  ^version Int
+  ^analyzed_version Int
+  ^analyzed_text Str
+  ^partial Bool
+  ^degraded Bool
+  ^stale Bool
+  ^diagnostic Str
+  ^selected_path Str
+  ^selected_id Int
+  ^selected_start Int
+  ^selected_end Int
+  ^dirty Bool
+  ^diff_visible Bool
+  ^format_text Str?
+  ^save_state Str
+  ^save_message Str
+  ^pending Any
+  ^disk_text Str?
+  ^undo (List Any)
+  ^redo (List Any)
+  ^log_entries (List Any)
+  ^log_nodes (List EventTarget)
+  ^log_unread Int
+  ^log_follow Bool
+  ^log_query Str
+  ^log_gap Str
+  ^log_dropped Int
+  ^disposed Bool})
+
+(type Editor ^props {
+  ^root EventTarget
+  ^document EditorDocument
+  ^services EditorServices
+  ^state EditorState
+  ^open (Fn [EditorDocument] Nil)
+  ^reveal (Fn [Any] Nil)
+  ^replace_saved (Fn [Any] Nil)
+  ^append_log (Fn [Any] Nil)
+  ^replace_range (Fn [Int Int Str] Nil)
+  ^save (Fn [] Nil)
+  ^retry (Fn [] Nil)
+  ^format (Fn [] Nil)
+  ^apply_format (Fn [] Nil)
+  ^discard_format (Fn [] Nil)
+  ^changes (Fn [] Nil)
+  ^compare (Fn [] Nil)
+  ^close_diff (Fn [] Nil)
+  ^pause (Fn [] Nil)
+  ^resume (Fn [] Nil)
+  ^latest (Fn [] Nil)
+  ^search (Fn [Str] Nil)
+  ^copy (Fn [] Nil)
+  ^log_text (Fn [] Str)
+  ^refresh (Fn [] Nil)
+  ^focus (Fn [] Nil)
+  ^snapshot (Fn [] Any)
+  ^dispose (Fn [] Nil)})
+
+# ---------------------------------------------------------------------------
+# DOM helpers
+# ---------------------------------------------------------------------------
+
+(fn element [tag : Str, class_name : Str] : EventTarget
+  (var node ($dom/create_element tag))
+  (if (!= class_name "") ($dom/set_attribute node "class" class_name))
+  node)
+
+(fn labelled [tag : Str, class_name : Str, value : Str] : EventTarget
+  (var node (element tag class_name))
+  ($dom/set_text node value)
+  node)
+
+(fn hide [node : EventTarget] : Nil
+  ($dom/set_attribute node "hidden" ""))
+
+(fn show [node : EventTarget] : Nil
+  ($dom/remove_attribute node "hidden"))
+
+(fn action_button [label : Str, class_name : Str,
+                   handler : (Fn [Any] Nil)] : EventTarget
+  (var node (labelled "button" class_name label))
+  ($dom/set_attribute node "type" "button")
+  ($dom/add_event_listener node "click" handler)
+  node)
+
+(fn node_at [nodes : (List EventTarget), index : Int] : EventTarget
+  # A typed list of nodes still reports an optional element, and the web
+  # profile refuses to narrow that into a DOM argument. The placeholder keeps
+  # a stale index harmless instead of letting one settle into a thrown type
+  # fault inside an event handler.
+  (var value : Any (nodes .get index))
+  (if ($absent? value) (return (element "div" "ge-absent")))
+  (var node : EventTarget value)
+  node)
+
+(fn styles [] : Str
+  (str/join [
+    ".gene-editor{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--surface,#111);color:var(--ink,#e6e6e6);font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}"
+    ".gene-editor [hidden]{display:none !important}"
+    ".ge-toolbar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--line,#333);flex-wrap:wrap}"
+    ".ge-title{font-weight:600}"
+    ".ge-badge{font-size:11px;padding:1px 6px;border-radius:99px;background:var(--soft,#222);color:var(--muted,#aaa)}"
+    ".ge-badge.unsaved{background:#7c2d12;color:#fdba74}"
+    ".ge-actions{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}"
+    ".gene-editor button{font:inherit;font-size:12px;padding:2px 8px;border-radius:4px;border:1px solid var(--line,#333);background:var(--soft,#222);color:inherit;cursor:pointer}"
+    ".gene-editor button[disabled]{opacity:.45;cursor:default}"
+    ".gene-editor button.primary{background:#1d4ed8;border-color:#1d4ed8;color:#fff}"
+    ".ge-body{display:flex;flex:1;min-height:0}"
+    ".ge-outline{width:210px;border-right:1px solid var(--line,#333);overflow:auto;padding:4px 0;flex:0 0 auto}"
+    ".ge-tree{width:290px;border-left:1px solid var(--line,#333);overflow:auto;padding:4px 0;flex:0 0 auto}"
+    ".ge-main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;position:relative}"
+    ".ge-text{flex:1;resize:none;border:0;outline:none;padding:8px 10px;background:transparent;color:inherit;font:inherit;white-space:pre;tab-size:2;min-height:0}"
+    ".ge-panel-title{padding:2px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted,#888)}"
+    ".ge-panel-body{min-height:0}"
+    ".ge-row{padding:1px 8px;white-space:pre;overflow:hidden;text-overflow:ellipsis;cursor:pointer;border-left:2px solid transparent;font-size:12px}"
+    ".ge-row:hover{background:var(--soft,#1d1d1d)}"
+    ".ge-row.sel{background:#1e3a8a;border-left-color:#60a5fa}"
+    ".ge-row.stale{opacity:.5;cursor:default}"
+    ".ge-row .ge-kind{color:var(--muted,#888);margin-right:4px}"
+    ".ge-row .ge-summary{color:#9ca3af}"
+    ".ge-row.closed .ge-summary{color:#fbbf24}"
+    ".ge-empty{padding:4px 10px;color:var(--muted,#888);font-size:12px}"
+    ".ge-footer{display:flex;gap:10px;align-items:center;padding:3px 10px;border-top:1px solid var(--line,#333);font-size:11px;color:var(--muted,#9ca3af);min-height:20px}"
+    ".ge-footer .ge-status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+    ".ge-footer .ge-status.error{color:#f87171}"
+    ".ge-footer .ge-status.warn{color:#fbbf24}"
+    ".ge-diff{border-top:1px solid var(--line,#333);max-height:38%;overflow:auto;background:#0b0b0b}"
+    ".ge-diff-head{display:flex;gap:8px;align-items:center;padding:3px 10px;position:sticky;top:0;background:#0b0b0b}"
+    ".ge-diff-head .ge-diff-title{flex:1;font-size:12px;color:var(--muted,#a3a3a3)}"
+    ".ge-diff-line{padding:0 10px;white-space:pre-wrap;word-break:break-word}"
+    ".ge-diff-line.add{background:#052e16;color:#86efac}"
+    ".ge-diff-line.remove{background:#450a0a;color:#fca5a5}"
+    ".ge-diff-line.same{color:#6b7280}"
+    ".ge-log{flex:1;overflow:auto;padding:4px 0;background:#0b0b0b}"
+    ".ge-log-line{padding:0 10px;white-space:pre-wrap;word-break:break-word;cursor:text}"
+    ".ge-log-line:hover{background:#171717}"
+    ".ge-log-line.selected{background:#1e3a8a}"
+    ".ge-log-line.gap{color:#fbbf24;font-style:italic;background:#1c1917}"
+    ".ge-search{font:inherit;font-size:12px;padding:2px 8px;border-radius:4px;border:1px solid var(--line,#333);background:#0b0b0b;color:inherit;min-width:12ch}"
+  ] "\n"))
+
+# ---------------------------------------------------------------------------
+# Draft store and events
+# ---------------------------------------------------------------------------
+
+(fn stored_draft [state : EditorState] : Any
+  (var services state/services)
+  (var document state/document)
+  (services/store_get document/id))
+
+(fn write_draft [state : EditorState] : Nil
+  (if (|| state/readonly state/disposed) (return))
+  (var services state/services)
+  (var document state/document)
+  (if (== document/id "") (return))
+  (services/store_put document/id
+    (draft state/text state/revision state/line_endings state/bom)))
+
+(fn clear_draft [state : EditorState] : Nil
+  (var services state/services)
+  (var document state/document)
+  (if (== document/id "") (return))
+  (services/store_delete document/id))
+
+(fn emit [state : EditorState, event : Any] : Nil
+  (if state/disposed (return))
+  (var services state/services)
+  (services/emit event))
+
+(fn emit_dirty [state : EditorState] : Nil
+  (var document state/document)
+  (emit state {^type "dirty" ^document document/id ^dirty state/dirty}))
+
+(fn selection_event [state : EditorState, row : Any] : Any
+  (var document state/document)
+  (if_yes ($absent? row) (return nil))
+  (var start (int_or row/start 0))
+  (var finish (int_or row/finish 0))
+  (var start_byte (int_or row/start_byte 0))
+  (var end_byte (int_or row/end_byte 0))
+  (var path (text row/path ""))
+  (var source "")
+  (if (== state/analyzed_version state/version)
+    (set source (slice_utf16 state/text start finish)))
+  {^type "selection"
+   ^document document/id
+   ^revision state/revision
+   ^path path
+   ^start_byte start_byte
+   ^end_byte end_byte
+   ^start_utf16 start
+   ^end_utf16 finish
+   ^text source
+   ^stale (!= state/analyzed_version state/version)})
+
+# ---------------------------------------------------------------------------
+# Status and titles
+# ---------------------------------------------------------------------------
+
+(fn analysis_label [state : EditorState] : Str
+  (if state/degraded (return "no analysis"))
+  (if state/stale (return "stale"))
+  (if state/partial (return "partial"))
+  (if (== state/analyzed_version -1) (return "not analyzed"))
+  (if (== state/analyzed_version state/version) (return "current"))
+  "waiting")
+
+(fn render_title [state : EditorState] : Nil
+  (var document state/document)
+  ($dom/set_text state/title document/name)
+  (if (!= document/path "")
+    ($dom/set_attribute state/title "title" document/path))
+  (if state/readonly
+    ($dom/set_text state/badge "read-only")
+    ($dom/set_text state/badge (if state/dirty "unsaved" "saved")))
+  ($dom/set_class state/badge "unsaved"
+    (&& state/dirty (! state/readonly))))
+
+(fn render_status [state : EditorState] : Nil
+  (var message state/save_message)
+  (if (== message "") (set message state/diagnostic))
+  (var label (analysis_label state))
+  (var combined (if (== message "") label $"${label} · ${message}"))
+  ($dom/set_text state/status combined)
+  ($dom/set_class state/status "error"
+    (&& (! state/stale) (!= state/diagnostic "")))
+  ($dom/set_class state/status "warn" state/stale))
+
+# ---------------------------------------------------------------------------
+# Rows: outline and structure tree
+# ---------------------------------------------------------------------------
+
+(fn outline_row [item : Any] : EditorRow
+  (var name (text item/name "?"))
+  (var detail (text item/detail ""))
+  (var summary (if (== detail "") "" detail))
+  (EditorRow
+    ^id (int_or item/id 0)
+    ^depth 0
+    ^label name
+    ^summary summary
+    ^path (if (== summary "") name $"${name} · ${summary}")
+    ^kind (text item/kindName "declaration")
+    ^start_byte (int_or item/startByte 0)
+    ^end_byte (int_or item/endByte 0)
+    ^start (int_or item/startUtf16 0)
+    ^finish (int_or item/endUtf16 0)
+    ^closed (flag item/closed)))
+
+(fn tree_row [item : Any, depth : Int] : EditorRow
+  (EditorRow
+    ^id (int_or item/id 0)
+    ^depth depth
+    ^label (text item/label "?")
+    ^summary (text item/summary "")
+    ^path (text item/path "/")
+    ^kind (text item/kind "atom")
+    ^start_byte (int_or item/startByte 0)
+    ^end_byte (int_or item/endByte 0)
+    ^start (int_or item/startUtf16 0)
+    ^finish (int_or item/endUtf16 0)
+    ^closed (flag item/closed)))
+
+(fn row_node [state : EditorState, row : EditorRow] : EventTarget
+  (var node (element "div" "ge-row"))
+  ($dom/set_attribute node "role" "option")
+  ($dom/set_attribute node "tabindex" "0")
+  ($dom/set_style node "padding-left" (indent_style row/depth))
+  (var glyph (labelled "span" "ge-kind" (kind_glyph row/kind)))
+  (var label (labelled "span" "ge-label" row/label))
+  ($dom/append node glyph)
+  ($dom/append node label)
+  (var summary row/summary)
+  (if (!= summary "")
+    ($dom/append node
+      (labelled "span" "ge-summary" $" ${summary}")))
+  ($dom/set_class node "closed" (! row/closed))
+  (var start row/start)
+  (var finish row/finish)
+  ($dom/add_event_listener node "click"
+    (fn [event : Any] : Nil
+      (if state/stale (return))
+      (if (!= state/analyzed_version state/version) (return))
+      (reveal_offsets state start finish)))
+  ($dom/add_event_listener node "keydown"
+    (fn [event : Any] : Nil
+      (var key (text ($event/key event) ""))
+      (if (|| (== key "Enter") (== key " "))
+        (do
+          ($dom/prevent_default event)
+          (if state/stale (return))
+          (if (!= state/analyzed_version state/version) (return))
+          (reveal_offsets state start finish)))))
+  node)
+
+(fn empty_hint [message : Str] : EventTarget
+  (labelled "div" "ge-empty" message))
+
+# ---------------------------------------------------------------------------
+# Diff
+# ---------------------------------------------------------------------------
+
+(fn render_diff [state : EditorState, title : Str, rows : (List Any),
+                 source_when_empty : Str] : Nil
+  ($dom/clear state/diff_lines)
+  ($dom/set_text state/diff_title title)
+  (var shown 0)
+  (for row in rows
+    (var kind (text row/kind "same"))
+    (if (|| (== kind "same") (>= shown 400)) (continue))
+    (set shown (+ shown 1))
+    (var body (text row/text ""))
+    (var marker (if (== kind "add") "+" "-"))
+    ($dom/append state/diff_lines
+      (labelled "div" $"ge-diff-line ${kind}" $"${marker} ${body}")))
+  (if (== shown 0)
+    ($dom/append state/diff_lines (empty_hint source_when_empty))
+    (if (>= shown 400)
+      ($dom/append state/diff_lines
+        (empty_hint "diff truncated at 400 changed lines"))))
+  (show state/diff_box)
+  (set state/diff_visible true))
+
+(fn hide_diff [state : EditorState] : Nil
+  (hide state/diff_box)
+  (set state/diff_visible false))
+
+# ---------------------------------------------------------------------------
+# Log rendering
+# ---------------------------------------------------------------------------
+
+(fn log_line_node [state : EditorState, entry : Any, index : Int] : EventTarget
+  (var line (text entry/text ""))
+  (var gap (flag entry/gap))
+  (var node (labelled "div" "ge-log-line" line))
+  ($dom/set_class node "gap" gap)
+  ($dom/set_class node "selected" (flag entry/selected))
+  (if (! gap)
+    ($dom/add_event_listener node "click"
+      (fn [event : Any] : Nil (toggle_log_line state index))))
+  node)
+
+(fn toggle_log_line [state : EditorState, index : Int] : Nil
+  (var entries (visible_lines state/log_entries state/log_query))
+  (if (|| (< index 0) (>= index ($size entries))) (return))
+  (var entry : Any (entries .get index))
+  (if ($absent? entry) (return))
+  (var selected (flag entry/selected))
+  (set entry/selected (! selected))
+  (var nodes state/log_nodes)
+  (if (< index ($size nodes))
+    (do
+      (var node (node_at nodes index))
+      ($dom/set_class node "selected" (! selected))))
+  nil)
+
+(fn render_log [state : EditorState] : Nil
+  ($dom/clear state/log_lines)
+  (set state/log_nodes [])
+  (var entries (visible_lines state/log_entries state/log_query))
+  (var index 0)
+  (while (< index ($size entries))
+    (var entry : Any (entries .get index))
+    (if_yes ($present? entry)
+      (do
+        (var node (log_line_node state entry index))
+        ($dom/append state/log_lines node)
+        (state/log_nodes .push node)))
+    (set index (+ index 1)))
+  (if (== ($size entries) 0)
+    ($dom/append state/log_lines (empty_hint "no log lines")))
+  (if state/log_follow
+    (do ($dom/scroll_end state/log_view) (set state/log_unread 0))))
+
+# ---------------------------------------------------------------------------
+# Analysis
+# ---------------------------------------------------------------------------
+
+(fn request_analysis [state : EditorState, ^force force : Bool = false] : Nil
+  # `force` is an explicit request from the embedding (or the panel's
+  # availability change): it is allowed to leave the degraded state that an
+  # automatic retry must not hammer.
+  (if state/disposed (return))
+  (if (&& state/degraded (! force)) (return))
+  (if force (set state/degraded false))
+  (var document state/document)
+  (if (!= document/kind "source") (return))
+  (var version state/version)
+  (var caret state/selected_start)
+  (var services state/services)
+  (services/analyze
+    {^id document/id
+     ^name document/name
+     ^text state/text
+     ^version version
+     ^select_utf16_start caret
+     ^select_utf16_end caret}
+    (fn [response : Any] : Nil (accept_analysis state version response))))
+
+(fn schedule_analysis [state : EditorState] : Nil
+  (if state/disposed (return))
+  (var version state/version)
+  ($time/after 180.0
+    (fn [] : Nil
+      (if (|| state/disposed (!= version state/version)) (return))
+      (request_analysis state))))
+
+(fn accept_analysis [state : EditorState, version : Int, response : Any] : Nil
+  (if state/disposed (return))
+  (if (!= (int_or response/version version) state/version) (return))
+  (if (! (flag response/ok))
+    (do
+      (if (flag response/unavailable)
+        (do
+          (set state/degraded true)
+          (set state/diagnostic
+            (text response/message "Analysis helper unavailable"))
+          (hide state/format_button)
+          (hide state/outline_box)
+          (hide state/tree_box))
+        (do
+          # A lexical error cannot be indexed. Keep the last usable outline
+          # visible, mark it stale, and disable its navigation until a later
+          # reply matches this buffer again.
+          (set state/stale true)
+          (set state/diagnostic
+            (first_message response "Cannot index this buffer"))))
+      (render_status state)
+      (return)))
+  (set state/degraded false)
+  (set state/stale false)
+  (set state/partial (flag response/partial))
+  (set state/diagnostic (if (flag response/parsed)
+    "" (first_message response "Buffer does not parse")))
+  (set state/analyzed_version version)
+  (set state/analyzed_text state/text)
+  (show state/outline_box)
+  (show state/tree_box)
+  (show state/format_button)
+  (render_outline state response/outline)
+  (render_tree state response/tree)
+  (var caret (int_or response/selected/start state/selected_start))
+  (if (flag response/selected/found)
+    (select_row_at state caret)
+    (select_row_at state state/selected_start))
+  (render_status state))
+
+(fn render_outline [state : EditorState, outline : Any] : Nil
+  ($dom/clear state/outline_box)
+  (set state/outline [])
+  (set state/outline_nodes [])
+  (var items : (List Any) [])
+  (if_yes ($present? outline) (set items outline))
+  (for item in items
+    (var row (outline_row item))
+    (var node (row_node state row))
+    ($dom/append state/outline_box node)
+    (state/outline .push row)
+    (state/outline_nodes .push node))
+  (if (== ($size state/outline) 0)
+    ($dom/append state/outline_box (empty_hint "no declarations"))))
+
+(fn flatten_tree [state : EditorState, item : Any, depth : Int] : Nil
+  (if (> ($size state/tree) 900) (return))
+  (var children : (List Any) [])
+  (if_yes ($present? item/children) (set children item/children))
+  (for child in children
+    (var row (tree_row child depth))
+    (var node (row_node state row))
+    ($dom/append state/tree_box node)
+    (state/tree .push row)
+    (state/tree_nodes .push node)
+    (flatten_tree state child (+ depth 1))))
+
+(fn render_tree [state : EditorState, tree : Any] : Nil
+  ($dom/clear state/tree_box)
+  (set state/tree [])
+  (set state/tree_nodes [])
+  (if_yes ($present? tree) (flatten_tree state tree 0))
+  (if (== ($size state/tree) 0)
+    ($dom/append state/tree_box (empty_hint "no structure"))))
+
+# ---------------------------------------------------------------------------
+# Selection and reveal
+# ---------------------------------------------------------------------------
+
+(fn scroll_rows [view : EventTarget, index : Int] : Nil
+  (var target (- (* ($to_float index) 18.0) 72.0))
+  (if (< target 0.0) (set target 0.0))
+  ($dom/set_scroll_top view target))
+
+(fn row_index [state : EditorState, row : Any] : Int
+  (var target (int_or row/id -1))
+  (var index 0)
+  (for candidate in state/tree
+    (if (== candidate/id target) (return index))
+    (set index (+ index 1)))
+  -1)
+
+(fn find_row [state : EditorState, offset : Int] : Any
+  # The innermost analysed row containing the offset: the smallest span that
+  # still contains it. Containers are the only selectable rows, which is what
+  # makes a caret inside `(fn foo …)` select the whole form rather than the
+  # atom `foo`.
+  (var best : Any nil)
+  (var best_span -1)
+  (for row in state/tree
+    (var start row/start)
+    (var finish row/finish)
+    (if (|| (< offset start) (> offset finish)) (continue))
+    (if (== finish start) (continue))
+    (var span (- finish start))
+    (if (|| ($absent? best) (< span best_span))
+      (do (set best row) (set best_span span))))
+  best)
+
+(fn highlight_row [state : EditorState, row : Any] : Nil
+  (var selected_index -1)
+  (if_yes ($present? row) (set selected_index (row_index state row)))
+  (var nodes state/tree_nodes)
+  (var index 0)
+  (while (< index ($size nodes))
+    (var node (node_at nodes index))
+    ($dom/set_class node "sel" (== index selected_index))
+    (set index (+ index 1)))
+  (if (&& (>= selected_index 0) (< selected_index ($size nodes)))
+    (scroll_rows state/tree_box selected_index))
+  nil)
+
+(fn select_row_at [state : EditorState, offset : Int] : Nil
+  (var row (find_row state offset))
+  (var starts state/starts)
+  ($dom/set_text state/position (position_label starts offset))
+  (if_yes ($absent? row)
+    (do
+      (highlight_row state nil)
+      (set state/selected_path "")
+      (return)))
+  (set state/selected_path (text row/path ""))
+  (set state/selected_start (int_or row/start offset))
+  (set state/selected_end (int_or row/finish offset))
+  (highlight_row state row)
+  (emit state (selection_event state row))
+  nil)
+
+(fn reveal_offsets [state : EditorState, start : Int, finish : Int] : Nil
+  (set state/selected_start start)
+  (set state/selected_end finish)
+  (var area state/text_area)
+  (set area/selection_start ($to_float start))
+  (set area/selection_end ($to_float finish))
+  ($dom/focus area)
+  (scroll_text_to state start)
+  (if (== state/analyzed_version state/version)
+    (select_row_at state start)
+    (do
+      (var starts state/starts)
+      ($dom/set_text state/position (position_label starts start)))))
+
+(fn scroll_text_to [state : EditorState, offset : Int] : Nil
+  (var starts state/starts)
+  (var line (line_index starts offset))
+  (var count ($size starts))
+  (var area state/text_area)
+  (var height ($dom/scroll_height area))
+  (var visible ($to_float area/client_height))
+  (var per 0.0)
+  (if (> count 1) (set per (/ height ($to_float count))))
+  (var target (- (* ($to_float line) per) (* visible 0.5)))
+  (if (< target 0.0) (set target 0.0))
+  ($dom/set_scroll_top area target))
+
+(fn reveal_lines [state : EditorState, line : Int, end_line : Int] : Nil
+  (var source state/text)
+  (var starts (line_starts source))
+  (var from 0)
+  (var to 0)
+  (if (> line 0)
+    (do
+      (var span (line_span starts (- line 1) ($size source)))
+      (set from (int_or span/start 0))
+      (if (> end_line line)
+        (do
+          (var beyond (line_span starts (- end_line 1) ($size source)))
+          (set to (int_or beyond/end from)))
+        (set to (int_or span/end from)))))
+  (reveal_offsets state from to))
+
+# ---------------------------------------------------------------------------
+# Editing
+# ---------------------------------------------------------------------------
+
+(fn adopt_text [state : EditorState, value : Str, start : Int, finish : Int] : Nil
+  (set state/text value)
+  (set state/version (+ state/version 1))
+  (set state/starts (line_starts value))
+  (set state/dirty (!= value state/saved_text))
+  (set state/selected_start start)
+  (set state/selected_end finish)
+  (var area state/text_area)
+  (set area/value value)
+  (set area/selection_start ($to_float start))
+  (set area/selection_end ($to_float finish))
+  (render_title state)
+  (write_draft state)
+  (emit_dirty state)
+  (schedule_analysis state))
+
+(fn note_input [state : EditorState, value : Str, start : Int, finish : Int] : Nil
+  (set state/text value)
+  (set state/version (+ state/version 1))
+  (set state/starts (line_starts value))
+  (set state/dirty (!= value state/saved_text))
+  (set state/selected_start start)
+  (set state/selected_end finish)
+  (render_title state)
+  (write_draft state)
+  (emit_dirty state)
+  (schedule_analysis state))
+
+(fn record_undo [state : EditorState, before : Str, after : Str] : Nil
+  (var entries state/undo)
+  (entries .push {^before before ^after after})
+  (if (> ($size entries) 40)
+    (do
+      (var kept : (List Any) [])
+      (var index 1)
+      (while (< index ($size entries))
+        (kept .push (entries .get index))
+        (set index (+ index 1)))
+      (set entries kept)))
+  (set state/undo entries)
+  (state/redo .clear))
+
+(fn undo_edit [state : EditorState] : Bool
+  (if (== ($size state/undo) 0) (return false))
+  (var entry : Any (state/undo .pop))
+  (if ($absent? entry) (return false))
+  (var after (text entry/after ""))
+  (if (!= after state/text)
+    (do (state/undo .push entry) (return false)))
+  (var before (text entry/before ""))
+  (state/redo .push entry)
+  (adopt_text state before ($size before) ($size before))
+  true)
+
+(fn redo_edit [state : EditorState] : Bool
+  (if (== ($size state/redo) 0) (return false))
+  (var entry : Any (state/redo .pop))
+  (if ($absent? entry) (return false))
+  (var before (text entry/before ""))
+  (if (!= before state/text)
+    (do (state/redo .push entry) (return false)))
+  (var after (text entry/after ""))
+  (state/undo .push entry)
+  (adopt_text state after ($size after) ($size after))
+  true)
+
+(fn replace_range [state : EditorState, start : Int, finish : Int, value : Str] : Nil
+  (var source state/text)
+  (var length ($size source))
+  (var from start)
+  (var to finish)
+  (if (< from 0) (set from 0))
+  (if (> from length) (set from length))
+  (if (< to from) (set to from))
+  (if (> to length) (set to length))
+  (var before (slice_utf16 source 0 from))
+  (var after (slice_utf16 source to length))
+  (var next (str/join [before value after] ""))
+  (var caret (+ from ($size value)))
+  (record_undo state source next)
+  (adopt_text state next caret caret)
+  nil)
+
+# ---------------------------------------------------------------------------
+# Save and conflict
+# ---------------------------------------------------------------------------
+
+(fn render_save_state [state : EditorState] : Nil
+  (var saving (== state/save_state "saving"))
+  (if saving
+    ($dom/set_attribute state/save_button "disabled" "")
+    ($dom/remove_attribute state/save_button "disabled"))
+  (if (== state/save_state "failed")
+    (show state/retry_button)
+    (hide state/retry_button))
+  (if (== state/save_state "conflict")
+    (show state/compare_button)
+    (if ($present? state/disk_text)
+      (show state/compare_button)
+      (hide state/compare_button))))
+
+(fn save_document [state : EditorState] : Nil
+  (if (|| state/disposed state/readonly) (return))
+  (if (== state/save_state "saving") (return))
+  (submit_save state state/text state/revision))
+
+(fn submit_save [state : EditorState, value : Str, base : Str] : Nil
+  (var document state/document)
+  (var request
+    {^id document/id
+     ^path document/path
+     ^name document/name
+     ^text value
+     ^base_revision base
+     ^line_endings state/line_endings
+     ^bom state/bom
+     ^version state/version})
+  (set state/pending request)
+  (set state/save_state "saving")
+  (set state/save_message "Saving…")
+  (render_save_state state)
+  (render_status state)
+  (var services state/services)
+  (services/save request
+    (fn [response : Any] : Nil (accept_save state request response))))
+
+(fn retry_save [state : EditorState] : Nil
+  (if_yes ($absent? state/pending)
+    (do (save_document state) (return)))
+  # Retry the exact snapshot that was submitted. Edits made since then are a
+  # newer draft and must not ride along with the stale one.
+  (var request : Any state/pending)
+  (set state/save_state "saving")
+  (set state/save_message "Retrying…")
+  (render_save_state state)
+  (render_status state)
+  (var services state/services)
+  (services/save request
+    (fn [response : Any] : Nil (accept_save state request response))))
+
+(fn draft_matches [stored : Any, request : Any] : Bool
+  (if ($absent? stored) (return false))
+  (var stored_text (text stored/text ""))
+  (var stored_base (text stored/base_revision ""))
+  (var wanted (text request/text ""))
+  (var wanted_base (text request/base_revision ""))
+  (&& (== stored_text wanted) (== stored_base wanted_base)))
+
+(fn accept_save [state : EditorState, request : Any, response : Any] : Nil
+  (var ok (flag response/ok))
+  (var conflict (flag response/conflict))
+  (if state/disposed
+    (do
+      # The mount is gone, but the save was already submitted. Keep the store
+      # honest for the next mount instead of leaving a draft that describes a
+      # revision the file no longer has.
+      (if ok
+        (do
+          (var stored (stored_draft state))
+          (if (draft_matches stored request) (clear_draft state))))
+      (return)))
+  (var document state/document)
+  (if ok
+    (then
+      (var revision (text response/revision (text request/base_revision)))
+      (var endings (if ($present? response/line_endings)
+        (text response/line_endings (text request/line_endings))
+        (text request/line_endings)))
+      (var bom (if ($present? response/bom)
+        (flag response/bom) (flag request/bom)))
+      (var submitted (text request/text ""))
+      (var unchanged (== state/text submitted))
+      (set state/revision revision)
+      (set state/line_endings endings)
+      (set state/bom bom)
+      (set state/saved_text submitted)
+      (set state/disk_text nil)
+      (set state/save_state "idle")
+      (set state/save_message
+        (if unchanged "Saved" "Saved · newer edits kept as a draft"))
+      (var next_document
+        (EditorDocument
+          ^id document/id ^name document/name ^path document/path
+          ^text (if unchanged submitted state/text)
+          ^revision revision ^line_endings endings ^bom bom
+          ^readonly document/readonly ^reason document/reason
+          ^kind document/kind ^line 0 ^end_line 0 ^cursor document/cursor))
+      (set state/document next_document)
+      (if unchanged
+        (do
+          (var latest (stored_draft state))
+          (if (draft_matches latest request) (clear_draft state)))
+        (write_draft state))
+      (set state/dirty (!= state/text state/saved_text))
+      (render_title state)
+      (render_save_state state)
+      (render_status state)
+      (emit_dirty state)
+      (emit state {^type "save" ^document document/id ^ok true
+                   ^revision revision}))
+    (elif conflict
+      (do
+        # Keep the draft and its base revision, and show what the saved file
+        # now says. Adopting the returned revision here would let a later Save
+        # overwrite a change the operator has not reviewed.
+        (set state/save_state "conflict")
+        (set state/save_message "Saved file changed since this draft's base")
+        (if ($present? response/text)
+          (set state/disk_text (text response/text "")))
+        (render_save_state state)
+        (render_status state)
+        (emit state {^type "save" ^document document/id ^ok false
+                     ^conflict true})))
+    (else
+      (do
+        (set state/save_state "failed")
+        (set state/save_message
+          (text response/message "Save failed; retry keeps the same snapshot"))
+        (render_save_state state)
+        (render_status state)
+        (emit state {^type "save" ^document document/id ^ok false
+                     ^conflict false})))))
+
+(fn compare_draft [state : EditorState] : Nil
+  (var saved state/saved_text)
+  (var title "Changes against the saved version")
+  (if_yes ($present? state/disk_text)
+    (do
+      (set saved (text state/disk_text ""))
+      (set title "Saved file vs. this draft")))
+  (var rows (diff_rows saved state/text))
+  (var changed (changed_rows rows))
+  (if (== changed 0)
+    (do
+      (set state/save_message "No changes")
+      (render_status state))
+    (do
+      (render_diff state title rows "no line changes")
+      (show state/discard_button)
+      (hide state/apply_button))))
+
+# ---------------------------------------------------------------------------
+# Format
+# ---------------------------------------------------------------------------
+
+(fn request_format [state : EditorState] : Nil
+  (if state/disposed (return))
+  (if (|| state/degraded state/readonly) (return))
+  (var document state/document)
+  (var request
+    {^id document/id ^name document/name ^text state/text
+     ^version state/version ^base_revision state/revision})
+  (var services state/services)
+  (set state/save_message "Formatting…")
+  (render_status state)
+  (services/format request
+    (fn [response : Any] : Nil (accept_format state request response))))
+
+(fn accept_format [state : EditorState, request : Any, response : Any] : Nil
+  (if state/disposed (return))
+  (if (!= (int_or response/version state/version) state/version) (return))
+  (if (flag response/ok)
+    (do
+      (var formatted (text response/text ""))
+      (if (== formatted "")
+        (do
+          (set state/save_message "Formatter returned nothing")
+          (render_status state)
+          (return)))
+      (if (== formatted state/text)
+        (do
+          (set state/save_message "Already formatted")
+          (render_status state)
+          (return)))
+      (set state/format_text formatted)
+      (var rows (diff_rows state/text formatted))
+      (render_diff state $"Format preview · ${(changed_rows rows)} changed line(s)"
+                   rows "formatter made no changes")
+      (show state/apply_button)
+      (show state/discard_button)
+      (set state/save_message "Format preview")
+      (render_status state))
+    (do
+      (set state/save_message
+        (first_message response "Format failed"))
+      (render_status state))))
+
+(fn apply_format [state : EditorState] : Nil
+  (if ($absent? state/format_text) (return))
+  (var formatted (text state/format_text ""))
+  (set state/format_text nil)
+  (hide state/apply_button)
+  (hide state/discard_button)
+  (hide_diff state)
+  (if (== formatted state/text)
+    (do
+      (set state/save_message "")
+      (render_status state)
+      (return)))
+  (record_undo state state/text formatted)
+  (adopt_text state formatted 0 0)
+  (set state/save_message "Format applied as one undoable edit")
+  (render_status state)
+  (request_analysis state))
+
+(fn discard_format [state : EditorState] : Nil
+  (set state/format_text nil)
+  (hide state/apply_button)
+  (hide state/discard_button)
+  (hide_diff state)
+  (set state/save_message "")
+  (render_status state))
+
+# ---------------------------------------------------------------------------
+# Log tail
+# ---------------------------------------------------------------------------
+
+(fn render_log_status [state : EditorState] : Nil
+  (var label (if state/log_follow "following" "paused"))
+  (var message state/save_message)
+  (if (!= message "")
+    ($dom/set_text state/status $"${label} · ${message}")
+    ($dom/set_text state/status label))
+  ($dom/set_class state/status "warn" (! state/log_follow))
+  ($dom/set_class state/status "error" false))
+
+(fn log_scroll [state : EditorState] : Nil
+  (var at_end ($dom/near_end state/log_view 48.0))
+  (set state/log_follow at_end)
+  (if at_end
+    (do
+      (set state/log_unread 0)
+      ($dom/set_text state/pause_button "Pause"))
+    ($dom/set_text state/pause_button "Resume"))
+  (render_log_status state))
+
+(fn pause_log [state : EditorState] : Nil
+  (set state/log_follow false)
+  ($dom/set_text state/pause_button "Resume")
+  (render_log_status state))
+
+(fn resume_log [state : EditorState] : Nil
+  (set state/log_follow true)
+  (set state/log_unread 0)
+  ($dom/set_text state/pause_button "Pause")
+  ($dom/scroll_end state/log_view)
+  (render_log_status state))
+
+(fn trim_log_nodes [state : EditorState, dropped : Int] : Nil
+  (var nodes state/log_nodes)
+  (var removed 0)
+  (while (&& (< removed dropped) (> ($size nodes) 0))
+    ($dom/remove (node_at nodes 0))
+    (set removed (+ removed 1)))
+  (var kept : (List EventTarget) [])
+  (var index 0)
+  (while (< index ($size nodes))
+    (if (>= index removed)
+      (kept .push (node_at nodes index)))
+    (set index (+ index 1)))
+  (set state/log_nodes kept))
+
+(fn append_log_nodes [state : EditorState, added : Int] : Nil
+  (var entries state/log_entries)
+  (var start (- ($size entries) added))
+  (if (< start 0) (set start 0))
+  (var index start)
+  (while (< index ($size entries))
+    (var entry : Any (entries .get index))
+    (if_yes ($present? entry)
+      (do
+        (var node (log_line_node state entry index))
+        ($dom/append state/log_lines node)
+        (state/log_nodes .push node)))
+    (set index (+ index 1)))
+  nil)
+
+(fn append_log [state : EditorState, batch : Any] : Nil
+  (if state/disposed (return))
+  (if (flag batch/reset)
+    (do
+      # A reset is the host's "the cursor is not comparable any more" signal:
+      # the loaded text is no longer the tail, so drop it before the batch that
+      # replaces it is applied.
+      (set state/log_entries [])
+      (set state/log_nodes [])
+      (set state/log_unread 0)
+      (set state/log_follow true)
+      (set state/log_gap "")
+      (set state/log_dropped 0)
+      ($dom/clear state/log_lines)))
+  (var gap_label (text batch/gap ""))
+  (var lines (str_list batch/lines))
+  (var incoming : (List Any) [])
+  (if (!= gap_label "")
+    (do
+      (incoming .push (log_entry $"── gap: ${gap_label} ──" true))
+      (set state/log_gap gap_label)))
+  (for line in lines
+    (incoming .push (log_entry line false)))
+  (var added ($size incoming))
+  (if (== added 0)
+    (do
+      (render_log state)
+      (render_log_status state)
+      (return)))
+  (var merged : (List Any) [])
+  (for entry in state/log_entries (merged .push entry))
+  (for entry in incoming (merged .push entry))
+  (var trimmed (trim_log merged 4000 524288))
+  (var kept : (List Any) trimmed/entries)
+  (var dropped (int_or trimmed/dropped 0))
+  (set state/log_entries kept)
+  (if (> dropped 0)
+    (do
+      (set state/log_dropped (+ state/log_dropped dropped))
+      (trim_log_nodes state dropped)))
+  (if (!= state/log_query "")
+    (do
+      (set state/log_unread (+ state/log_unread added))
+      (render_log_status state)
+      (return)))
+  (append_log_nodes state added)
+  (if state/log_follow
+    (do
+      (set state/log_unread 0)
+      ($dom/scroll_end state/log_view))
+    (do
+      (set state/log_unread (+ state/log_unread added))
+      ($dom/set_text state/pause_button "Resume")))
+  (render_log_status state))
+
+(fn set_log_query [state : EditorState, query : Str] : Nil
+  (set state/log_query query)
+  (set state/log_unread 0)
+  (render_log state)
+  (render_log_status state))
+
+(fn log_text [state : EditorState] : Str
+  # Selected lines when the operator picked any; otherwise every visible line
+  # except discontinuities. Attach and Copy share this, so both speak for the
+  # same already-redacted buffer.
+  (var entries (visible_lines state/log_entries state/log_query))
+  (var lines : (List Str) [])
+  (var selected 0)
+  (for entry in entries
+    (var picked (flag entry/selected))
+    (if picked
+      (do
+        (set selected (+ selected 1))
+        (lines .push (text entry/text "")))))
+  (if (== selected 0)
+    (for entry in entries
+      (var gap (flag entry/gap))
+      (if (! gap) (lines .push (text entry/text "")))))
+  (str/join lines "\n"))
+
+(fn copy_log [state : EditorState] : Nil
+  (var body (log_text state))
+  (var lines (str/split body "\n"))
+  (var count ($size lines))
+  (if (== body "")
+    (do
+      (set state/save_message "Nothing to copy")
+      (render_log_status state))
+    (do
+      ($browser/copy body
+        (fn [ok : Bool] : Nil
+          (set state/save_message
+            (if ok $"Copied ${count} line(s)" "Copy failed"))
+          (render_log_status state)))
+      (var document state/document)
+      (emit state {^type "log_selection" ^document document/id ^count count
+                   ^lines lines}))))
+
+# ---------------------------------------------------------------------------
+# Mounting
+# ---------------------------------------------------------------------------
+
+(fn prepare_listeners [state : EditorState] : Nil
+  ($dom/add_event_listener state/text_area "input"
+    (fn [event : Any] : Nil
+      (var area state/text_area)
+      (var value (text area/value ""))
+      (if (== value state/text) (return))
+      (note_input state value ($to_int area/selection_start)
+                  ($to_int area/selection_end))))
+  ($dom/add_event_listener state/text_area "keydown"
+    (fn [event : Any] : Nil
+      (var key (text ($event/key event) ""))
+      (if (== key "z")
+        (do
+          (var modifier (|| ($event/meta_key event) ($event/ctrl_key event)))
+          (if modifier
+            (do
+              (var handled (if ($event/shift_key event)
+                (redo_edit state) (undo_edit state)))
+              (if handled ($dom/prevent_default event))))))))
+  ($dom/add_event_listener state/text_area "keyup"
+    (fn [event : Any] : Nil (follow_caret state)))
+  ($dom/add_event_listener state/text_area "click"
+    (fn [event : Any] : Nil (follow_caret state)))
+  ($dom/add_event_listener state/log_view "scroll"
+    (fn [event : Any] : Nil (log_scroll state)))
+  ($dom/add_event_listener state/search "input"
+    (fn [event : Any] : Nil
+      (var input state/search)
+      (var value (text input/value ""))
+      (set_log_query state value))))
+
+(fn follow_caret [state : EditorState] : Nil
+  (var area state/text_area)
+  (var start ($to_int area/selection_start))
+  (set state/selected_start start)
+  (set state/selected_end ($to_int area/selection_end))
+  (if (== state/analyzed_version state/version)
+    (select_row_at state start)
+    (do
+      (var starts state/starts)
+      ($dom/set_text state/position (position_label starts start)))))
+
+(fn prepare_buttons [state : EditorState] : Nil
+  (set state/save_button
+    (action_button "Save" "primary"
+      (fn [event : Any] : Nil (save_document state))))
+  (set state/format_button
+    (action_button "Format" "secondary"
+      (fn [event : Any] : Nil (request_format state))))
+  (set state/changes_button
+    (action_button "Changes" "secondary"
+      (fn [event : Any] : Nil (compare_draft state))))
+  (set state/compare_button
+    (action_button "Compare with saved" "secondary"
+      (fn [event : Any] : Nil (compare_draft state))))
+  (set state/retry_button
+    (action_button "Retry save" "secondary"
+      (fn [event : Any] : Nil (retry_save state))))
+  (set state/apply_button
+    (action_button "Apply" "primary"
+      (fn [event : Any] : Nil (apply_format state))))
+  (set state/discard_button
+    (action_button "Dismiss" "secondary"
+      (fn [event : Any] : Nil (discard_format state))))
+  (set state/pause_button
+    (action_button "Pause" "secondary"
+      (fn [event : Any] : Nil
+        (if state/log_follow (pause_log state) (resume_log state)))))
+  (set state/latest_button
+    (action_button "Latest" "secondary"
+      (fn [event : Any] : Nil (resume_log state))))
+  (set state/copy_button
+    (action_button "Copy" "secondary"
+      (fn [event : Any] : Nil (copy_log state))))
+  (hide state/compare_button)
+  (hide state/retry_button)
+  (hide state/apply_button)
+  (hide state/discard_button))
+
+(fn build_toolbar [state : EditorState] : EventTarget
+  (var document state/document)
+  (var toolbar (element "div" "ge-toolbar"))
+  ($dom/append toolbar state/title)
+  ($dom/append toolbar state/badge)
+  (var actions (element "div" "ge-actions"))
+  (if (== document/kind "log")
+    (do
+      (set state/search
+        (element "input" "ge-search"))
+      ($dom/set_attribute state/search "type" "search")
+      ($dom/set_attribute state/search "placeholder" "filter lines")
+      ($dom/set_attribute state/search "aria-label" "Filter log lines")
+      ($dom/set_text state/search "")
+      ($dom/append actions state/search)
+      ($dom/append actions state/pause_button)
+      ($dom/append actions state/latest_button)
+      ($dom/append actions state/copy_button))
+    (do
+      ($dom/append actions state/changes_button)
+      ($dom/append actions state/format_button)
+      ($dom/append actions state/compare_button)
+      ($dom/append actions state/retry_button)
+      ($dom/append actions state/apply_button)
+      ($dom/append actions state/discard_button)
+      (if document/readonly
+        (hide state/save_button)
+        ($dom/append actions state/save_button))))
+  ($dom/append toolbar actions)
+  toolbar)
+
+(fn build_footer [state : EditorState] : EventTarget
+  (var footer (element "div" "ge-footer"))
+  ($dom/append footer state/status)
+  ($dom/append footer state/position)
+  footer)
+
+(fn panel_box [state : EditorState, title : Str, body_class : Str,
+               box_class : Str] : Any
+  (var box (element "div" box_class))
+  ($dom/append box (labelled "div" "ge-panel-title" title))
+  (var body (element "div" body_class))
+  ($dom/append box body)
+  {^box box ^body body})
+
+(fn build_source_body [state : EditorState] : EventTarget
+  (var body (element "div" "ge-body"))
+  (var outline (panel_box state "Outline" "ge-panel-body" "ge-outline"))
+  (set state/outline_box outline/body)
+  ($dom/append body outline/box)
+  (var main (element "div" "ge-main"))
+  ($dom/append main state/text_area)
+  ($dom/append main state/diff_box)
+  ($dom/append body main)
+  (var tree (panel_box state "Structure" "ge-panel-body" "ge-tree"))
+  (set state/tree_box tree/body)
+  ($dom/append body tree/box)
+  body)
+
+(fn build_log_body [state : EditorState] : EventTarget
+  (var body (element "div" "ge-body"))
+  (var main (element "div" "ge-main"))
+  ($dom/append state/log_view state/log_lines)
+  ($dom/append main state/log_view)
+  ($dom/append body main)
+  body)
+
+(fn build_shell [state : EditorState] : Nil
+  ($dom/clear state/root)
+  (var shell (element "div" "gene-editor"))
+  (var visual (element "style" "ge-style"))
+  ($dom/set_text visual (styles))
+  ($dom/append shell visual)
+  ($dom/append shell (build_toolbar state))
+  (var document state/document)
+  (if (== document/kind "log")
+    ($dom/append shell (build_log_body state))
+    ($dom/append shell (build_source_body state)))
+  ($dom/append shell (build_footer state))
+  ($dom/append state/root shell)
+  (set state/shell shell)
+  (render_title state)
+  (render_status state)
+  (render_save_state state))
+
+(fn restore_draft [state : EditorState] : Bool
+  (var stored (stored_draft state))
+  (if_yes ($absent? stored) (return false))
+  (var stored_text (text stored/text ""))
+  (if (== stored_text state/text) (return false))
+  (var base (text stored/base_revision ""))
+  (if (!= base "") (set state/revision base))
+  (set state/line_endings (text stored/line_endings state/line_endings))
+  (if ($present? stored/bom) (set state/bom (flag stored/bom)))
+  (set state/text stored_text)
+  (set state/starts (line_starts stored_text))
+  (set state/version 1)
+  (set state/dirty true)
+  (set state/text_area/value stored_text)
+  (var document state/document)
+  (if (!= base document/revision)
+    (set state/save_message "Restored a draft based on an older revision")
+    (set state/disk_text document/text))
+  (render_title state)
+  true)
+
+(fn mount_document [state : EditorState] : Nil
+  (var document state/document)
+  (set state/shell (element "div" "ge-shell"))
+  (set state/text document/text)
+  (set state/saved_text document/text)
+  (set state/revision document/revision)
+  (set state/line_endings document/line_endings)
+  (set state/bom document/bom)
+  (set state/readonly document/readonly)
+  (set state/starts (line_starts document/text))
+  (set state/version 0)
+  (set state/analyzed_version -1)
+  (set state/analyzed_text "")
+  (set state/partial false)
+  (set state/degraded false)
+  (set state/stale false)
+  (set state/diagnostic "")
+  (set state/selected_path "")
+  (set state/selected_id -1)
+  (set state/selected_start 0)
+  (set state/selected_end 0)
+  (set state/dirty false)
+  (set state/diff_visible false)
+  (set state/format_text nil)
+  (set state/save_state "idle")
+  (set state/save_message (if document/readonly document/reason ""))
+  (set state/pending nil)
+  (set state/disk_text nil)
+  (set state/undo [])
+  (set state/redo [])
+  (set state/outline [])
+  (set state/outline_nodes [])
+  (set state/tree [])
+  (set state/tree_nodes [])
+  (set state/log_entries [])
+  (set state/log_nodes [])
+  (set state/log_unread 0)
+  (set state/log_follow true)
+  (set state/log_query "")
+  (set state/log_gap "")
+  (set state/log_dropped 0)
+  (if (== document/kind "log")
+    (do
+      (var lines (initial_lines document/text))
+      (var entries : (List Any) [])
+      (for line in lines
+        (entries .push (log_entry line false)))
+      (set state/log_entries entries)
+      (set state/text_area/value "")
+      (build_shell state)
+      (render_log state)
+      (render_log_status state))
+    (do
+      (set state/text_area/value document/text)
+      (build_shell state)
+      (if (restore_draft state)
+        (render_status state)
+        (do
+          (if (|| (> document/line 0) (> document/end_line 0))
+            (reveal_lines state document/line document/end_line)
+            (request_analysis state))))))
+  nil)
+
+# ---------------------------------------------------------------------------
+# Public snapshot and disposal
+# ---------------------------------------------------------------------------
+
+(fn editor_snapshot [state : EditorState] : Any
+  (var document state/document)
+  {^id document/id
+   ^name document/name
+   ^kind document/kind
+   ^text state/text
+   ^revision state/revision
+   ^line_endings state/line_endings
+   ^bom state/bom
+   ^readonly state/readonly
+   ^dirty state/dirty
+   ^version state/version
+   ^analyzed_version state/analyzed_version
+   ^analysis (analysis_label state)
+   ^partial state/partial
+   ^degraded state/degraded
+   ^stale state/stale
+   ^diagnostic state/diagnostic
+   ^outline_count ($size state/outline)
+   ^tree_count ($size state/tree)
+   ^selected_path state/selected_path
+   ^selected_start state/selected_start
+   ^selected_end state/selected_end
+   ^save_state state/save_state
+   ^save_message state/save_message
+   ^diff_visible state/diff_visible
+   ^format_pending ($present? state/format_text)
+   ^log_count ($size state/log_entries)
+   ^log_visible ($size (visible_lines state/log_entries state/log_query))
+   ^log_unread state/log_unread
+   ^log_follow state/log_follow
+   ^log_gap state/log_gap
+   ^log_dropped state/log_dropped
+   ^undo_count ($size state/undo)
+   ^redo_count ($size state/redo)
+   ^disposed state/disposed})
+
+(fn dispose_editor [state : EditorState] : Nil
+  (if state/disposed (return))
+  (write_draft state)
+  (set state/disposed true)
+  ($dom/clear state/root))
+
+(fn create_editor [root : EventTarget, document : EditorDocument,
+                   services : EditorServices] : Editor
+  (var state
+    (EditorState
+      ^root root
+      ^shell (element "div" "ge-shell")
+      ^document document
+      ^services services
+      ^text_area (element "textarea" "ge-text")
+      ^log_view (element "div" "ge-log")
+      ^log_lines (element "div" "ge-log-lines")
+      ^outline_box (element "div" "")
+      ^tree_box (element "div" "")
+      ^diff_box (element "div" "ge-diff")
+      ^diff_lines (element "div" "ge-diff-lines")
+      ^diff_title (element "div" "ge-diff-title")
+      ^status (labelled "span" "ge-status" "")
+      ^position (labelled "span" "ge-position" "")
+      ^title (labelled "span" "ge-title" "")
+      ^badge (labelled "span" "ge-badge" "saved")
+      ^search (element "input" "ge-search")
+      ^save_button (element "button" "")
+      ^format_button (element "button" "")
+      ^changes_button (element "button" "")
+      ^compare_button (element "button" "")
+      ^retry_button (element "button" "")
+      ^apply_button (element "button" "")
+      ^discard_button (element "button" "")
+      ^pause_button (element "button" "")
+      ^latest_button (element "button" "")
+      ^copy_button (element "button" "")
+      ^outline [] ^outline_nodes [] ^tree [] ^tree_nodes []
+      ^text "" ^saved_text "" ^revision "" ^line_endings "lf" ^bom false
+      ^readonly false ^starts [0] ^version 0 ^analyzed_version -1
+      ^analyzed_text "" ^partial false ^degraded false ^stale false
+      ^diagnostic "" ^selected_path "" ^selected_id -1 ^selected_start 0
+      ^selected_end 0 ^dirty false ^diff_visible false ^format_text nil
+      ^save_state "idle" ^save_message "" ^pending nil ^disk_text nil
+      ^undo [] ^redo [] ^log_entries [] ^log_nodes [] ^log_unread 0
+      ^log_follow true ^log_query "" ^log_gap "" ^log_dropped 0
+      ^disposed false))
+  (prepare_text_area state)
+  (prepare_diff state)
+  (prepare_buttons state)
+  (prepare_listeners state)
+  (var editor
+    (Editor
+      ^root root
+      ^document document
+      ^services services
+      ^state state
+      ^open (fn [next : EditorDocument] : Nil
+        (set state/document next)
+        (mount_document state))
+      ^reveal (fn [range : Any] : Nil
+        (if (|| (> (int_or range/line 0) 0) (> (int_or range/end_line 0) 0))
+          (reveal_lines state (int_or range/line 0) (int_or range/end_line 0))
+          (reveal_offsets state (int_or range/start_utf16 0)
+                          (int_or range/end_utf16
+                            (int_or range/start_utf16 0)))))
+      ^replace_saved (fn [snapshot : Any] : Nil
+        (replace_saved_snapshot state snapshot))
+      ^append_log (fn [batch : Any] : Nil (append_log state batch))
+      ^replace_range (fn [start : Int, finish : Int, value : Str] : Nil
+        (replace_range state start finish value))
+      ^save (fn [] : Nil (save_document state))
+      ^retry (fn [] : Nil (retry_save state))
+      ^format (fn [] : Nil (request_format state))
+      ^apply_format (fn [] : Nil (apply_format state))
+      ^discard_format (fn [] : Nil (discard_format state))
+      ^changes (fn [] : Nil (compare_draft state))
+      ^compare (fn [] : Nil (compare_draft state))
+      ^close_diff (fn [] : Nil (hide_diff state))
+      ^pause (fn [] : Nil (pause_log state))
+      ^resume (fn [] : Nil (resume_log state))
+      ^latest (fn [] : Nil (resume_log state))
+      ^search (fn [query : Str] : Nil (set_log_query state query))
+      ^copy (fn [] : Nil (copy_log state))
+      ^log_text (fn [] : Str (log_text state))
+      ^refresh (fn [] : Nil (request_analysis state ^^force))
+      ^focus (fn [] : Nil ($dom/focus state/text_area))
+      ^snapshot (fn [] : Any (editor_snapshot state))
+      ^dispose (fn [] : Nil (dispose_editor state))))
+  (mount_document state)
+  editor)
+
+(fn mount_editor [root : EventTarget, document : EditorDocument,
+                  services : EditorServices] : Editor
+  (create_editor root document services))
+
+(fn prepare_text_area [state : EditorState] : Nil
+  (var area state/text_area)
+  ($dom/set_attribute area "spellcheck" "false")
+  ($dom/set_attribute area "autocapitalize" "off")
+  ($dom/set_attribute area "autocomplete" "off")
+  ($dom/set_attribute area "role" "textbox")
+  ($dom/set_attribute area "aria-label" "Source text"))
+
+(fn prepare_diff [state : EditorState] : Nil
+  (var head (element "div" "ge-diff-head"))
+  ($dom/append head state/diff_title)
+  ($dom/append head
+    (action_button "Close" "secondary"
+      (fn [event : Any] : Nil (hide_diff state))))
+  ($dom/append state/diff_box head)
+  ($dom/append state/diff_box state/diff_lines)
+  (hide state/diff_box))
+
+(fn replace_saved_snapshot [state : EditorState, snapshot : Any] : Nil
+  (var value (text snapshot/text state/text))
+  (var revision (text snapshot/revision state/revision))
+  (var clean (! state/dirty))
+  (set state/saved_text value)
+  (set state/revision revision)
+  (if ($present? snapshot/line_endings)
+    (set state/line_endings (text snapshot/line_endings state/line_endings)))
+  (if ($present? snapshot/bom) (set state/bom (flag snapshot/bom)))
+  (if clean
+    (do
+      (set state/text value)
+      (set state/text_area/value value)
+      (set state/version (+ state/version 1))
+      (set state/starts (line_starts value))
+      (set state/dirty false)
+      (clear_draft state)
+      (render_title state)
+      (schedule_analysis state))
+    (do
+      # A dirty draft keeps the operator's text; the newer saved snapshot is
+      # available for comparison, not silently adopted.
+      (set state/disk_text value)
+      (set state/save_state "conflict")
+      (set state/save_message "Saved file changed; the draft was kept")))
+  (render_save_state state)
+  (render_status state))

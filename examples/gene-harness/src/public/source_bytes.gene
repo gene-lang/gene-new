@@ -1,0 +1,97 @@
+# Source bytes <-> editable text with a recorded line-ending style and BOM.
+#
+# Editors hand a textarea LF text and need to put the exact bytes back. The
+# revision of a file is the digest of those bytes, so decoding and encoding must
+# round-trip: a file that opened as CRLF with a BOM saves as CRLF with a BOM,
+# and only the operator's edits differ. Mixed line endings are reported rather
+# than rewritten; callers may show such a file read-only.
+
+(mod source_bytes)
+
+(fn bom_bytes [] : Bytes
+  ($binary/from_list [239 187 191]))
+
+(fn starts_with_bom [raw : Bytes] : Bool
+  (let size ($binary/size raw))
+  (&& (>= size 3)
+      (== ($binary/get raw 0) 239)
+      (== ($binary/get raw 1) 187)
+      (== ($binary/get raw 2) 191)))
+
+(fn line_endings_of_text [text : Str] : Str
+  # `crlf`, `cr`, `lf`, or `mixed`, measured on the decoded text before it is
+  # normalized. A line break is counted once: CRLF is not also a lone CR and a
+  # lone LF.
+  (let lines ($str/split text "\n"))
+  (var crlf 0)
+  (var cr 0)
+  (var lf 0)
+  (var index 0)
+  (let count ($size lines))
+  (while (< index count)
+    (var line lines/%index)
+    (var last (== index (- count 1)))
+    (var ends_with_cr ($str/ends_with? line "\r"))
+    (var crlf_line false)
+    (if (&& ends_with_cr (! last))
+      (do
+        (set crlf (+ crlf 1))
+        (set crlf_line true)
+        (set line ($str/slice_bytes line 0 (- ($str/byte_size line) 1))))
+      (if (&& ends_with_cr last)
+        (do
+          (set cr (+ cr 1))
+          (set line ($str/slice_bytes line 0 (- ($str/byte_size line) 1))))))
+    # Any CR left inside the line is a lone-CR separator.
+    (let parts ($str/split line "\r"))
+    (if (> ($size parts) 1)
+      (set cr (+ cr (- ($size parts) 1))))
+    # The split consumed one LF per line boundary; only count it when the
+    # boundary was not part of a CRLF pair.
+    (if (&& (! last) (! crlf_line))
+      (set lf (+ lf 1)))
+    (set index (+ index 1)))
+  (var styles 0)
+  (if (> crlf 0) (set styles (+ styles 1)))
+  (if (> cr 0) (set styles (+ styles 1)))
+  (if (> lf 0) (set styles (+ styles 1)))
+  (if (> styles 1) (return "mixed"))
+  (if (> crlf 0) (return "crlf"))
+  (if (> cr 0) (return "cr"))
+  "lf")
+
+(fn normalize_newlines [source : Str] : Str
+  (let with_lf ($str/join ($str/split source "\r\n") "\n"))
+  ($str/join ($str/split with_lf "\r") "\n"))
+
+(fn encode_source [source : Str, line_endings : Str, bom : Bool] : Bytes
+  (let style (if (== line_endings "") "lf" line_endings))
+  (let text (normalize_newlines source))
+  (var encoded text)
+  (if (== style "crlf")
+    (set encoded ($str/join ($str/split text "\n") "\r\n"))
+    (if (== style "cr")
+      (set encoded ($str/join ($str/split text "\n") "\r"))))
+  (let body ($binary/from_str encoded))
+  (if bom ($binary/concat [(bom_bytes) body]) body))
+
+(fn decode_source [raw : Bytes] : Any
+  # Returns the editable LF text, the byte-encoding metadata, and the digest
+  # the caller should use as the revision. Invalid UTF-8 is reported, not
+  # replaced: saving a lossy decode would rewrite text the operator never saw.
+  (let bom (starts_with_bom raw))
+  (let payload (if bom ($binary/slice raw 3 (- ($binary/size raw) 3)) raw))
+  (try
+    (let decoded ($binary/decode_utf8 payload))
+    (let line_endings (line_endings_of_text decoded))
+    {^ok true
+     ^text (normalize_newlines decoded)
+     ^line_endings line_endings
+     ^bom bom
+     ^revision ($crypto/sha256 raw)
+     ^reason (if (== line_endings "mixed")
+               "mixed line endings; opened read-only"
+               "")}
+    catch Error
+      (let detail ($str/trim $err/.message))
+      {^ok false ^message $"invalid UTF-8: ${detail}"}))

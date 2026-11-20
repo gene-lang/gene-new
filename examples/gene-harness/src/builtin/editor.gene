@@ -1,0 +1,299 @@
+# The bundled Gene editor plugin.
+#
+# It owns the authenticated owner routes a browser editor needs: read a file
+# with its encoding metadata, save against a byte revision, verify a selection
+# against the saved bytes, and run `gene-viewer --machine` for analysis and
+# formatting. All work happens in the workspace's owning host process, so the
+# same revision check and patch gate that guard agent patches guard a save.
+#
+# The host-owned editor panel is part of the main browser client; this plugin
+# only provides the routes, which is why the panel can ship before a dockable
+# view-owned wrapper.
+
+(mod editor)
+(import [Plugin PluginHost current_workspace] ^from "../plugin_api")
+(import [with_patch_gate checked_path temporary_path] ^from "../runtime/patch")
+(import [decode_source encode_source] ^from "../public/source_bytes")
+(import [run_machine] ^from "../public/gene_viewer")
+(import [read_log] ^from "../public/log_tail")
+(import [redact_secrets] ^from "../public/log_redaction")
+(import $json [parse])
+
+# ---------------------------------------------------------------------------
+# Request helpers
+# ---------------------------------------------------------------------------
+
+(fn as_text [value : Any, fallback : Str = ""] : Str
+  (if ($absent? value) (return fallback))
+  (try
+    (let result : Str value)
+    result
+    catch Throwable fallback))
+
+(fn as_int [value : Any, fallback : Int] : Int
+  (if ($absent? value) (return fallback))
+  (try
+    (let direct : Int value)
+    direct
+    catch Throwable
+      (try
+        (let source : Str value)
+        ($parse/parse_int source)
+        catch Throwable fallback)))
+
+(fn as_flag [value : Any] : Bool
+  (if ($absent? value) (return false))
+  (try
+    (let result : Bool value)
+    result
+    catch Throwable false))
+
+(fn body_json [req] : Any
+  (try
+    (parse (as_text req/body "{}"))
+    catch Error nil))
+
+(fn ok [body : Any] : Any
+  {^status 200 ^body body})
+
+(fn failure [status : Int, message : Str] : Any
+  {^status status ^body {^ok false ^message message}})
+
+(fn workspace_root [] : Str
+  (let workspace (current_workspace))
+  workspace/root)
+
+(fn temp_dir [root : Str] : Str
+  ($path/join root ".gene-harness/editor"))
+
+(fn tagged [response : Any, version : Int] : Any
+  (if (== ($head response) Map)
+    (do
+      (response .put "version" version)
+      response)
+    response))
+
+# ---------------------------------------------------------------------------
+# Document reads
+# ---------------------------------------------------------------------------
+
+(fn document_payload [relative : Str, decoded : Any] : Any
+  (let readonly (== decoded/line_endings "mixed"))
+  {^id relative
+   ^name relative
+   ^path relative
+   ^kind "source"
+   ^text decoded/text
+   ^revision decoded/revision
+   ^line_endings decoded/line_endings
+   ^bom decoded/bom
+   ^readonly readonly
+   ^reason (if readonly (as_text decoded/reason "read-only") "")})
+
+(fn read_document [req] : Any
+  (let relative (as_text req/params/path ""))
+  (if (== relative "") (return (failure 400 "path is required")))
+  (let checked (try (checked_path relative) catch Error ""))
+  (if (== checked "") (return (failure 400 "invalid relative path")))
+  (let path ($path/join (workspace_root) checked))
+  (if_not ($fs/exists? path) (return (failure 404 "file not found")))
+  (let info (try ($fs/info path) catch Error nil))
+  (if ($absent? info) (return (failure 500 "cannot inspect file")))
+  (if (!= info/kind "file") (return (failure 400 "the editor opens files, not directories")))
+  (let raw (try ($fs/read_bytes path) catch Error nil))
+  (if ($absent? raw) (return (failure 500 "cannot read file")))
+  (let decoded (decode_source raw))
+  (if_not (as_flag decoded/ok)
+    (return (failure 422 (as_text decoded/message "invalid UTF-8"))))
+  (ok {^ok true ^document (document_payload checked decoded)}))
+
+# ---------------------------------------------------------------------------
+# Saves
+# ---------------------------------------------------------------------------
+
+(fn conflict_payload [decoded : Any, ^code code : Str = "", ^message message : Str = ""] : Any
+  {^status 409
+   ^body
+   {^ok false ^conflict true
+    ^code (if (== code "") "revision_changed" code)
+    ^message (if (== message "")
+               "the saved file changed since this draft was based on it"
+               message)
+    ^revision decoded/revision
+    ^line_endings decoded/line_endings
+    ^bom decoded/bom
+    ^text decoded/text}})
+
+(fn write_replacement [physical : Str, path : Str, encoded : Bytes,
+                       revision : Str, line_endings : Str, bom : Bool] : Any
+  (let info (try ($fs/info path) catch Error nil))
+  (let mode (if ($absent? info) 420 (?? info/mode 420)))
+  (let temporary (temporary_path physical))
+  (try
+    ($fs/write_bytes temporary encoded)
+    ($fs/set_mode temporary mode)
+    ($fs/rename temporary physical)
+    (ok {^ok true ^revision revision ^line_endings line_endings ^bom bom})
+    catch Error
+      (let detail ($str/trim $err/.message))
+      (try ($fs/remove temporary) catch Error nil)
+      (failure 500 $"the replacement could not be published: ${detail}")))
+
+(fn save_document [req] : Any
+  (let body (body_json req))
+  (if ($absent? body) (return (failure 400 "invalid JSON body")))
+  (let relative (as_text body/path ""))
+  (if (== relative "") (return (failure 400 "path is required")))
+  (let checked (try (checked_path relative) catch Error ""))
+  (if (== checked "") (return (failure 400 "invalid relative path")))
+  (let submitted (as_text body/text ""))
+  (let expected (as_text body/base_revision ""))
+  (let line_endings (as_text body/line_endings "lf"))
+  (let bom (as_flag body/bom))
+  (let root (workspace_root))
+  (let path ($path/join root checked))
+  (with_patch_gate root
+    (fn []
+      (if_not ($fs/exists? path) (return (failure 404 "file not found")))
+      (let info (try ($fs/info path) catch Error nil))
+      (if ($absent? info) (return (failure 500 "cannot inspect file")))
+      (if (!= info/kind "file") (return (failure 400 "the editor saves files, not directories")))
+      (let link (try ($fs/info path ^!follow) catch Error nil))
+      (let physical (if (&& ($present? link) (== link/symlink true))
+        (do
+          (let resolved (try ($fs/real_path path) catch Error nil))
+          (if ($absent? resolved) (return (failure 500 "cannot resolve symbolic link")))
+          resolved)
+        path))
+      (let raw (try ($fs/read_bytes physical) catch Error nil))
+      (if ($absent? raw) (return (failure 500 "cannot read file")))
+      (let current_digest ($crypto/sha256 raw))
+      (let decoded (decode_source raw))
+      (let encoded (encode_source submitted line_endings bom))
+      (let submitted_digest ($crypto/sha256 encoded))
+      # A retried request whose bytes already landed is success without a
+      # write. The digest names the exact snapshot, so this cannot mistake a
+      # different save for a retry.
+      (if (== submitted_digest current_digest)
+        (return (ok {^ok true ^revision current_digest
+                     ^line_endings line_endings ^bom bom})))
+      (if (|| (!= expected current_digest) (! (as_flag decoded/ok)))
+        (return (conflict_payload decoded)))
+      # Mixed endings are the one encoding this editor refuses to write: a
+      # whole-file re-encode would normalize line breaks the operator never
+      # touched. The file opens read-only, and a save explains why.
+      (if (== decoded/line_endings "mixed")
+        (return (conflict_payload decoded ^code "read_only"
+          ^message "mixed line endings; this file is opened read-only")))
+      (if (|| (!= decoded/line_endings line_endings) (!= decoded/bom bom))
+        (return (conflict_payload decoded ^code "encoding_changed"
+          ^message "the file's line endings or BOM changed since this draft was based on it")))
+      (write_replacement physical path encoded submitted_digest line_endings bom))))
+
+# ---------------------------------------------------------------------------
+# Selection verification
+# ---------------------------------------------------------------------------
+
+(fn verify_selection [req] : Any
+  # A saved selection is resolved against the same bytes at submission. If the
+  # revision moved, the caller asks the operator to refresh the attachment
+  # rather than silently sharing text from a different version.
+  (let body (body_json req))
+  (if ($absent? body) (return (failure 400 "invalid JSON body")))
+  (let relative (as_text body/path ""))
+  (let checked (try (checked_path relative) catch Error ""))
+  (if (== checked "") (return (failure 400 "invalid relative path")))
+  (let expected (as_text body/revision ""))
+  (let start (as_int body/start_byte 0))
+  (let finish (as_int body/end_byte start))
+  (let path ($path/join (workspace_root) checked))
+  (if_not ($fs/exists? path) (return (failure 404 "file not found")))
+  (let raw (try ($fs/read_bytes path) catch Error nil))
+  (if ($absent? raw) (return (failure 500 "cannot read file")))
+  (let revision ($crypto/sha256 raw))
+  (if (!= revision expected)
+    (return (ok {^ok false ^changed true ^revision revision})))
+  (let decoded (decode_source raw))
+  (if_not (as_flag decoded/ok)
+    (return (failure 422 (as_text decoded/message "invalid UTF-8"))))
+  (let size ($binary/size raw))
+  (if (|| (< start 0) (< finish start) (> finish size))
+    (return (failure 400 "selection range is outside the file")))
+  (let payload (if (as_flag decoded/bom) ($binary/slice raw 3 (- size 3)) raw))
+  (let text (try
+    ($binary/decode_utf8 ($binary/slice payload start (- finish start)))
+    catch Error nil))
+  (if ($absent? text) (return (failure 400 "selection does not fall on UTF-8 boundaries")))
+  (ok {^ok true ^revision revision ^text text
+       ^line_endings decoded/line_endings ^bom decoded/bom}))
+
+# ---------------------------------------------------------------------------
+# Analysis and formatting
+# ---------------------------------------------------------------------------
+
+(fn machine_route [mode : Str, req] : Any
+  (let body (body_json req))
+  (if ($absent? body) (return (failure 400 "invalid JSON body")))
+  (let version (as_int body/version 0))
+  (let root (workspace_root))
+  (let response (run_machine mode body (temp_dir root)))
+  (ok (tagged response version)))
+
+# ---------------------------------------------------------------------------
+# Host log tail
+# ---------------------------------------------------------------------------
+
+(fn log_route [req] : Any
+  (let source (as_text req/params/source "host"))
+  (if (!= source "host")
+    (return (failure 400 $"unknown log source ${source}")))
+  (let root (workspace_root))
+  (let options
+    {^max_bytes (as_int req/params/max_bytes 65536)
+     ^max_line_bytes 8192
+     ^initial_lines (as_int req/params/lines 200)})
+  (ok (read_log source
+        ($path/join root ".gene-harness/host.log")
+        ($path/join root ".gene-harness/host.log.1")
+        (as_text req/params/cursor "")
+        options
+        (fn [text : Str] : Str (redact_secrets root text)))))
+
+# ---------------------------------------------------------------------------
+# Plugin
+# ---------------------------------------------------------------------------
+
+(fn route [name : Str, methods : (List Str), path : Str, handle] : Any
+  {^name name ^kind "owner" ^methods methods ^path path ^handle handle})
+
+(fn editor [] : Plugin
+  # Prepared before activation, as browser-client descriptors require.
+  (let asset ($web/load ($path/join this_pkg/root "client" "editor_view.gene")))
+  (Plugin ^id "editor"
+    ^provides [["http_routes" "editor/document"] ["http_routes" "editor/save"]
+               ["http_routes" "editor/selection"] ["http_routes" "editor/analyze"]
+               ["http_routes" "editor/format"] ["http_routes" "editor/log"]
+               ["browser_clients" "editor_view"] ["web_components" "editor_view"]]
+    ^activate (fn [host]
+      (host .PluginHost:contribute "http_routes"
+        (route "document" ["GET"] "/document" read_document))
+      (host .PluginHost:contribute "http_routes"
+        (route "save" ["POST"] "/save" save_document))
+      (host .PluginHost:contribute "http_routes"
+        (route "selection" ["POST"] "/selection" verify_selection))
+      (host .PluginHost:contribute "http_routes"
+        (route "analyze" ["POST"] "/analyze" (fn [req] (machine_route "analyze" req))))
+      (host .PluginHost:contribute "http_routes"
+        (route "format" ["POST"] "/format" (fn [req] (machine_route "format" req))))
+      (host .PluginHost:contribute "http_routes"
+        (route "log" ["GET"] "/log" log_route))
+      (host .PluginHost:contribute "browser_clients"
+        {^name "editor_view" ^title "Gene editor view" ^asset asset ^scope "view"})
+      (host .PluginHost:contribute "web_components"
+        {^name "editor_view" ^title "Gene editor" ^slot "view"
+         ^default_presentation "docked"
+         ^view_state {^path "" ^tab "source" ^log_cursor ""}
+         ^state_version "1"
+         ^render (fn [context]
+           `(div ^class "editor_view_outlet" ^data-outlet "editor_view"
+              ^key "editor_view_outlet"))}))))

@@ -822,6 +822,23 @@ proc typeName(typ: WebType): string =
 proc mangleWebName*(name: string): string
 proc jsString(value: string): string
 
+const webHostGlobals = [
+  # Bare names the generated module refers to for host facilities. A local or
+  # parameter with one of these names is ordinary source — `document` is a
+  # perfectly good variable — but emitting it verbatim would shadow the browser
+  # object for every line after the declaration. The generated code is what
+  # gives way, not the program. Module-level declarations are exported under
+  # their Gene names, so they are handled by the export surface instead.
+  "document", "window", "navigator", "console", "globalThis", "BigInt",
+  "Math", "JSON", "Number", "String", "Boolean", "Object", "Array",
+  "Promise", "Symbol", "Error", "TypeError", "RangeError", "URL",
+  "setTimeout", "clearTimeout", "parseInt", "parseFloat"]
+
+proc escapeHostGlobal(name: string): string =
+  for global in webHostGlobals:
+    if name == global: return "$gene_local_" & name
+  name
+
 type WebBuiltinError = tuple[name, js, parent: string, fault: bool, fields: string]
 
 const WebBuiltinErrors: array[16, WebBuiltinError] = [
@@ -1436,7 +1453,7 @@ proc parseParams(analysis: WebAnalysis, value: Value,
         raise webError(loc, "web named rest parameter '" & restName &
           "' cannot have a default")
       result.add WebParam(sourceName: restName,
-                          emittedName: mangleWebName(restName), typ: typ,
+                          emittedName: escapeHostGlobal(mangleWebName(restName)), typ: typ,
                           loc: loc, named: false, optional: false,
                           argName: restName, namedRest: true)
       i = j
@@ -1474,7 +1491,7 @@ proc parseParams(analysis: WebAnalysis, value: Value,
         raise webError(loc, "required positional parameter cannot follow an optional positional parameter")
       sawOptional = sawOptional or optional
     result.add WebParam(sourceName: local,
-                        emittedName: mangleWebName(local), typ: typ,
+                        emittedName: escapeHostGlobal(mangleWebName(local)), typ: typ,
                         loc: loc, named: named,
                         optional: optional,
                         argName: name.symVal, hasDefault: hasDefault,
@@ -1494,7 +1511,7 @@ proc inferredParams(analysis: WebAnalysis, value: Value, expected: WebType,
       raise webError(loc,
         "an inferred web callback takes plain positional parameters")
     result.add WebParam(sourceName: item.symVal,
-                        emittedName: mangleWebName(item.symVal),
+                        emittedName: escapeHostGlobal(mangleWebName(item.symVal)),
                         typ: expected.params[index], loc: loc,
                         argName: item.symVal)
     inc index
@@ -2315,8 +2332,9 @@ proc declareWebBinding(analysis: WebAnalysis, bindings: var Table[string, WebBin
   if bindings.hasKey(name) and bindings[name].scopeId == analysis.bindingScopeId and
       not (bindings[name].branchOnly != 0 and bindings[name].branchOnly == analysis.branchGroup):
     raise webError(loc, "duplicate web binding: " & name)
-  let emitted = if analysis.bindingScopeId == 0: mangleWebName(name)
-                else: "$macro_" & $analysis.bindingScopeId & "_" & mangleWebName(name)
+  let base = escapeHostGlobal(mangleWebName(name))
+  let emitted = if analysis.bindingScopeId == 0: base
+                else: "$macro_" & $analysis.bindingScopeId & "_" & base
   bindings[name] = WebBinding(typ: typ, mutable: mutable,
     scopeId: analysis.bindingScopeId, emittedName: emitted)
 
@@ -2735,7 +2753,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   let loc = analysis.locFor(value)
   if value.head.kind == vkSymbol and value.head.symVal == "StrBuilder":
     raise webError(loc, "StrBuilder is not provided by the web profile")
-  if value.head.kind == vkSymbol and bindings.hasKey(value.head.symVal):
+  # `a/b` desugars to a `(path a b)` node. That structural head wins over a
+  # binding named `path`, exactly as on the VM, so a local named `path` cannot
+  # silently turn a field access into a call.
+  let structuralPath = value.head.kind == vkSymbol and
+    value.head.symVal == "path"
+  if not structuralPath and value.head.kind == vkSymbol and
+      bindings.hasKey(value.head.symVal):
     requireWebBinding(value.head.symVal, bindings[value.head.symVal], loc)
   var directSend: Value
   try:
@@ -2754,7 +2778,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if expected != nil:
       result.typ = expected
     return
-  if value.head.kind == vkSymbol and bindings.hasKey(value.head.symVal) and
+  if not structuralPath and value.head.kind == vkSymbol and
+      bindings.hasKey(value.head.symVal) and
       bindings[value.head.symVal].typ.kind == wtkCallable:
     return analysis.analyzeCallableInvocation(value,
       analysis.analyzeExpr(value.head, bindings), bindings, loc)

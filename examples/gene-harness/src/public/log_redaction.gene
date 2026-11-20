@@ -1,0 +1,22 @@
+# Credential replacement for Harness log text.
+#
+# The manager's diagnostics and the browser Logs tab must both redact the
+# same runtime secrets. Keeping only the replacement here means the browser
+# route can reuse it without inheriting the manager's excerpt size cap.
+
+(mod log_redaction)
+
+(fn redact_secrets [root : Str, text : Str] : Str
+  (var result text)
+  (let secret
+    (try ($str/trim ($fs/read_text $"${root}/.gene-harness/web_secret")) catch Error ""))
+  (if (!= secret "") (set result ($str/join ($str/split result secret) "[redacted]")))
+  (let credentials
+    (try
+      ($serde/read_data ($fs/read_text $"${root}/.gene-harness/cli_cookie"))
+    catch Error
+      nil))
+  (for value in [(?? credentials/cookie nil) (?? credentials/csrf nil)]
+    (if (&& (== ($head value) Str) (!= value ""))
+      (set result ($str/join ($str/split result value) "[redacted]"))))
+  result)

@@ -1,0 +1,272 @@
+# Pure helpers for the browser Gene editor.
+#
+# Everything here is a function of its arguments: no DOM, no store, no
+# module-level state. That is what lets the same edit produce the same draft
+# and the same diff in two independent mounts, and it keeps the component
+# itself about state, presentation, and transport.
+#
+# Offsets in this module are the browser's: UTF-16 code units, the unit a
+# textarea's `selectionStart` speaks. The analysis helper reports UTF-8 byte
+# spans and the matching UTF-16 offsets, so the component never has to
+# re-encode a buffer to convert between them.
+
+(mod gene_editor_model ^profile web)
+
+# The profile has no `get` on a typed list that widens away the nil, so these
+# two accessors are what every loop below uses instead of sprinkling guards.
+(fn nth [values : (List Int), index : Int] : Int
+  (if (|| (< index 0) (>= index ($size values))) 0 values/%index))
+
+(fn nth_text [values : (List Str), index : Int] : Str
+  (if (|| (< index 0) (>= index ($size values))) "" values/%index))
+
+# ---------------------------------------------------------------------------
+# Lines and offsets
+# ---------------------------------------------------------------------------
+
+(fn line_starts [text : Str] : (List Int)
+  # UTF-16 offset of the start of every line. A trailing newline yields a
+  # final empty line, which is the line the caret sits on after pressing
+  # Enter at the end of the buffer.
+  (var starts : (List Int) [])
+  (starts .push 0)
+  (var offset 0)
+  (var previous "")
+  (var first true)
+  (for line in (str/split text "\n")
+    (if first
+      (set first false)
+      (do (set offset (+ (+ offset ($size previous)) 1))
+          (starts .push offset)))
+    (set previous line))
+  starts)
+
+(fn line_index [starts : (List Int), offset : Int] : Int
+  # Zero-based line holding `offset`. The offset is clamped into the buffer
+  # so a caret reported just past the end still names a real line.
+  (var bounded offset)
+  (if (< bounded 0) (set bounded 0))
+  (var index (- ($size starts) 1))
+  (while (> index 0)
+    (if (<= (nth starts index) bounded) (break))
+    (set index (- index 1)))
+  index)
+
+(fn line_start [starts : (List Int), line : Int] : Int
+  (if (|| (< line 0) (>= line ($size starts))) 0 (nth starts line)))
+
+(fn line_span [starts : (List Int), line : Int, length : Int] : Any
+  # Half-open [start, end) of one line without its newline.
+  (var index line)
+  (if (< index 0) (set index 0))
+  (if (>= index ($size starts))
+    (return {^start length ^end length ^line index}))
+  (var start (nth starts index))
+  (var finish start)
+  (if (< (+ index 1) ($size starts))
+    (set finish (- (nth starts (+ index 1)) 1))
+    (set finish length))
+  (if (< finish start) (set finish start))
+  {^start start ^end finish ^line index})
+
+(fn line_col [starts : (List Int), offset : Int] : Any
+  (var line (line_index starts offset))
+  (var start (line_start starts line))
+  (var column offset)
+  (if (< column start) (set column start))
+  {^line line ^col (- column start)})
+
+(fn position_label [starts : (List Int), offset : Int] : Str
+  (var place (line_col starts offset))
+  (var line : Int place/line)
+  (var col : Int place/col)
+  $"L${(+ line 1)}:${(+ col 1)}")
+
+(fn slice_utf16 [text : Str, start : Int, finish : Int] : Str
+  # Exactly the characters a textarea reports between two selection offsets.
+  (var chars : (List Str) (str/split text ""))
+  (var count ($size chars))
+  (var from start)
+  (var to finish)
+  (if (< from 0) (set from 0))
+  (if (> to count) (set to count))
+  (if (>= from to) (return ""))
+  (var out : (List Str) [])
+  (var i from)
+  (while (< i to)
+    (out .push (nth_text chars i))
+    (set i (+ i 1)))
+  (str/join out ""))
+
+# ---------------------------------------------------------------------------
+# Diff
+# ---------------------------------------------------------------------------
+
+(fn diff_row [kind : Str, text : Str, left : Int, right : Int] : Any
+  {^kind kind ^text text ^left left ^right right})
+
+(fn same_rows [lines : (List Str), left : Int, right : Int, count : Int] : (List Any)
+  (var rows : (List Any) [])
+  (var i 0)
+  (while (< i count)
+    (rows .push (diff_row "same" (nth_text lines (+ left i)) (+ left i) (+ right i)))
+    (set i (+ i 1)))
+  rows)
+
+(fn coarse_diff [left : (List Str), right : (List Str)] : (List Any)
+  # No LCS above the cap: keep the common prefix and suffix and show the
+  # middle as one removed block followed by one added block. It is a true
+  # diff (applying it reproduces `right`), just not a minimal one — far better
+  # than freezing the page on a two-thousand-line buffer.
+  (var left_count ($size left))
+  (var right_count ($size right))
+  (var prefix 0)
+  (while (&& (< prefix left_count) (< prefix right_count)
+              (== (nth_text left prefix) (nth_text right prefix)))
+    (set prefix (+ prefix 1)))
+  (var suffix 0)
+  (while (&& (< (+ suffix prefix) left_count) (< (+ suffix prefix) right_count)
+              (== (nth_text left (- (- left_count 1) suffix))
+                  (nth_text right (- (- right_count 1) suffix))))
+    (set suffix (+ suffix 1)))
+  (var rows (same_rows left 0 0 prefix))
+  (var i prefix)
+  (while (< i (- left_count suffix))
+    (rows .push (diff_row "remove" (nth_text left i) i -1))
+    (set i (+ i 1)))
+  (var j prefix)
+  (while (< j (- right_count suffix))
+    (rows .push (diff_row "add" (nth_text right j) -1 j))
+    (set j (+ j 1)))
+  (var tail (same_rows left (- left_count suffix) (- right_count suffix) suffix))
+  (for row in tail (rows .push row))
+  rows)
+
+(fn diff_rows [before : Str, after : Str] : (List Any)
+  # Line diff: `same`, `remove`, and `add` rows in reading order. Empty text
+  # is one empty line so an empty draft and an empty file compare cleanly.
+  (var left : (List Str) (str/split before "\n"))
+  (var right : (List Str) (str/split after "\n"))
+  (var n ($size left))
+  (var m ($size right))
+  (if (== before after) (return (same_rows left 0 0 n)))
+  (if (|| (> n 300) (> m 300)) (return (coarse_diff left right)))
+  (var stride (+ m 1))
+  (var table : (List Int) [])
+  (var cells (* (+ n 1) stride))
+  (var i 0)
+  (while (< i cells)
+    (table .push 0)
+    (set i (+ i 1)))
+  (var at 0)
+  (set i (- n 1))
+  (while (>= i 0)
+    (var column (- m 1))
+    (while (>= column 0)
+      (set at (+ (* i stride) column))
+      (if (== (nth_text left i) (nth_text right column))
+        (set table/%at (+ 1 (nth table (+ (* (+ i 1) stride) (+ column 1)))))
+        (do
+          (var down (nth table (+ (* (+ i 1) stride) column)))
+          (var across (nth table (+ (* i stride) (+ column 1))))
+          (set table/%at (if (> down across) down across))))
+      (set column (- column 1)))
+    (set i (- i 1)))
+  (var rows : (List Any) [])
+  (set i 0)
+  (var j 0)
+  (while (&& (< i n) (< j m))
+    (if (== (nth_text left i) (nth_text right j))
+      (then
+        (rows .push (diff_row "same" (nth_text left i) i j))
+        (set i (+ i 1))
+        (set j (+ j 1)))
+      (elif (>= (nth table (+ (* (+ i 1) stride) j))
+                (nth table (+ (* i stride) (+ j 1))))
+        (rows .push (diff_row "remove" (nth_text left i) i -1))
+        (set i (+ i 1)))
+      (else
+        (rows .push (diff_row "add" (nth_text right j) -1 j))
+        (set j (+ j 1)))))
+  (while (< i n)
+    (rows .push (diff_row "remove" (nth_text left i) i -1))
+    (set i (+ i 1)))
+  (while (< j m)
+    (rows .push (diff_row "add" (nth_text right j) -1 j))
+    (set j (+ j 1)))
+  rows)
+
+(fn changed_rows [rows : (List Any)] : Int
+  (var count 0)
+  (for row in rows
+    (var kind : Str row/kind)
+    (if (!= kind "same") (set count (+ count 1))))
+  count)
+
+# ---------------------------------------------------------------------------
+# Log buffer
+# ---------------------------------------------------------------------------
+
+(fn log_entry [text : Str, gap : Bool] : Any
+  {^text text ^gap gap ^selected false})
+
+(fn trim_log [entries : (List Any), max_entries : Int, max_units : Int] : Any
+  # The bounded display buffer: newest entries survive. Returns the kept
+  # entries and how many older ones were dropped, so the view can label the
+  # loss instead of silently losing the top of the log.
+  (var total 0)
+  (var start ($size entries))
+  (var i (- ($size entries) 1))
+  (while (>= i 0)
+    (var entry : Any (entries .get i))
+    (var text : Str entry/text)
+    (var units ($size text))
+    (if (&& (> start 0)
+            (|| (> (+ total units) max_units)
+                (>= (- ($size entries) start) max_entries)))
+      (break))
+    (set total (+ total units))
+    (set start i)
+    (set i (- i 1)))
+  (var kept : (List Any) [])
+  (set i start)
+  (while (< i ($size entries))
+    (kept .push (entries .get i))
+    (set i (+ i 1)))
+  {^entries kept ^dropped start})
+
+(fn visible_lines [entries : (List Any), query : Str] : (List Any)
+  # The searchable view: every entry when there is no query, otherwise the
+  # entries whose text contains it (a gap marker is always shown). Plain
+  # substring matching is deliberate: a log line is not a pattern dialect.
+  (if (== query "") (return entries))
+  (var needle (str/lower query))
+  (var kept : (List Any) [])
+  (for entry in entries
+    (var text : Str entry/text)
+    (var gap : Bool entry/gap)
+    (if (|| gap (str/contains? (str/lower text) needle))
+      (kept .push entry)))
+  kept)
+
+# ---------------------------------------------------------------------------
+# Display
+# ---------------------------------------------------------------------------
+
+(fn indent_style [depth : Int] : Str
+  (var units (* depth 2))
+  $"padding-left: ${units}ch")
+
+(fn kind_glyph [kind : Str] : Str
+  (if (== kind "node") (then "()")
+    (elif (== kind "list") "[]")
+    (elif (== kind "prop_map") "{}")
+    (elif (== kind "map") "{->}")
+    (elif (== kind "quasiquote") "`")
+    (elif (== kind "unquote") "%")
+    (elif (== kind "comment") "#")
+    (elif (== kind "atom") "·")
+    (else "?")))
+
+(fn draft [text : Str, base_revision : Str, line_endings : Str, bom : Bool] : Any
+  {^text text ^base_revision base_revision ^line_endings line_endings ^bom bom})

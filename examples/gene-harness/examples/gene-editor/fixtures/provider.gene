@@ -1,0 +1,43 @@
+# A small provider module, written the way an operator would find one in a
+# real workspace: configuration up top, one function to jump to, and comments
+# that explain the decisions rather than restating the code.
+
+(mod provider
+  @doc "A local model provider used by the editor demo")
+
+(var defaults
+  {^model "small"
+   ^base_url "https://api.example.com/v1"
+   ^timeout_ms 30000
+   ^retries 2})
+
+(var cache {})
+
+(fn configure [name : Str, options : Map] : Map
+  # The default lives here so a change is a one-line diff in the editor.
+  (var merged {^model "small" ^timeout_ms 30000})
+  (for key in (options .keys)
+    (set merged/%key (options .get key)))
+  (set defaults/%name merged)
+  merged)
+
+(fn enabled? [name : Str] : Bool
+  ($present? (cache .get name)))
+
+(fn describe [name : Str] : Str
+  (var entry (defaults .get name))
+  (if_yes ($absent? entry)
+    (return $"${name}: not configured"))
+  (var model ($to_str (entry .get "model")))
+  $"${name}: ${model}")
+
+(fn reset [] : Nil
+  (set cache {}))
+
+(var ready false)
+
+(fn ready? [] : Bool
+  (if_yes (! ready)
+    (do (set ready true)
+        (configure "default" {})))
+  ready)

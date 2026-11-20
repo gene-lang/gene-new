@@ -1,0 +1,234 @@
+(import $test [describe it run])
+(import [read_log] ^from "../../../src/public/log_tail")
+(import [redact_secrets] ^from "../../../src/public/log_redaction")
+
+# The cursor contract from tmp/gene-web-editor.md: byte offsets on line
+# boundaries, a prefix digest per segment, carried incomplete lines, rotation
+# through the previous segment, a gap when continuity cannot be proved, and
+# bounded batches that never split a line.
+
+(fn new_dir [] : Str
+  (let dir ($path/join this_pkg/root "tmp" $"log-tail-${($crypto/random_hex 8)}"))
+  ($fs/make_dir dir)
+  dir)
+
+(fn identity [value : Str] : Str
+  value)
+
+(fn read [active : Str, previous : Str, cursor : Str, ^max_bytes max_bytes : Int = 65536,
+          ^max_line max_line : Int = 8192, ^initial initial : Int = 200,
+          ^redact redact = identity] : Any
+  (read_log "host" active previous cursor
+    {^max_bytes max_bytes ^max_line_bytes max_line ^initial_lines initial}
+    redact))
+
+(fn joined [response : Any] : Str
+  ($str/join response/lines "\n"))
+
+(fn append [path : Str, text : Str] : Nil
+  (let existing (if ($fs/exists? path) ($fs/read_text path) ""))
+  ($fs/write_text path ($to_str existing text)))
+
+(describe "Host log tail"
+  (it "opens on the newest lines and then delivers only new complete lines" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    (var source "")
+    (var index 0)
+    (while (< index 300)
+      (set source ($to_str source $"line ${index}\n"))
+      (set index (+ index 1)))
+    ($fs/write_text active source)
+    (let first (read active previous ""))
+    ($assert (== first/state "ok") ($to_str first))
+    ($assert (== ($size first/lines) 200) ($to_str ($size first/lines)))
+    ($assert (== first/lines/0 "line 100"))
+    ($assert (== first/lines/199 "line 299"))
+    (append active "line 300\nline 301\n")
+    (let second (read active previous first/cursor))
+    ($assert (== ($size second/lines) 2) ($to_str second))
+    ($assert (== (joined second) "line 300\nline 301"))
+    (let third (read active previous second/cursor))
+    ($assert (== ($size third/lines) 0) "an idle poll delivered old lines")
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
+  (it "carries an incomplete final line into the next poll" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "ready\nhalf")
+    (let first (read active previous ""))
+    ($assert (== (joined first) "ready"))
+    (append active " line\nnext\n")
+    (let second (read active previous first/cursor))
+    ($assert (== (joined second) "half line\nnext") "the carried line was not completed")
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
+  (it "finishes the previous segment when the active file rotates" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "one\n")
+    (let first (read active previous ""))
+    ($assert (== (joined first) "one"))
+    # Append to the active segment, then rotate it aside.
+    (append active "two\n")
+    ($fs/rename active previous)
+    ($fs/write_text active "three\n")
+    (let second (read active previous first/cursor))
+    ($assert (== second/state "ok") ($to_str second))
+    ($assert (== (joined second) "two\nthree") ($to_str second))
+    (append active "four\n")
+    (let third (read active previous second/cursor))
+    ($assert (== (joined third) "four") ($to_str third))
+    ($fs/remove active)
+    ($fs/remove previous)
+    ($fs/remove_dir dir))
+
+  (it "keeps a previous-segment cursor across bounded polls, then switches" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "one\n")
+    (let first (read active previous ""))
+    ($fs/rename active previous)
+    (var source "")
+    (var index 0)
+    (while (< index 20)
+      (set source ($to_str source $"two-${index}\n"))
+      (set index (+ index 1)))
+    ($fs/write_text active source)
+    (var cursor first/cursor)
+    (var all : (List Str) [])
+    (var polls 0)
+    (var reached_active false)
+    (while (&& (< polls 40) (! reached_active))
+      (let response (read active previous cursor ^max_bytes 48))
+      ($assert (== response/state "ok") ($to_str response))
+      (for line in response/lines (all .push line))
+      (set cursor response/cursor)
+      (set polls (+ polls 1))
+      (let decoded ($json/parse cursor))
+      (if (== (text_of decoded/segment) "active") (set reached_active true)))
+    ($assert reached_active "the cursor never reached the active segment")
+    ($assert (== all/0 "two-0") ($to_str all/0))
+    ($assert (== all/19 "two-19") ($to_str all/19))
+    ($fs/remove active)
+    ($fs/remove previous)
+    ($fs/remove_dir dir))
+
+  (it "reports a gap and resumes from the available tail when identity is lost" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "a\nb\n")
+    (let first (read active previous ""))
+    # Replace the active file with unrelated content and remove the previous
+    # segment: neither prefix can match the cursor.
+    ($fs/write_text active "x\ny\nz\n")
+    (let gap (read active previous first/cursor))
+    ($assert (== gap/state "gap") ($to_str gap))
+    ($assert ($str/contains? gap/gap "continuity lost"))
+    ($assert (== (joined gap) "x\ny\nz"))
+    (append active "w\n")
+    (let after (read active previous gap/cursor))
+    ($assert (== (joined after) "w") ($to_str after))
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
+  (it "truncates a long line and advances past it" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    (var long "")
+    (var index 0)
+    (while (< index 500)
+      (set long ($to_str long "x"))
+      (set index (+ index 1)))
+    ($fs/write_text active ($to_str long "\nnext\n"))
+    (let first (read active previous "" ^max_bytes 4096 ^max_line 100))
+    ($assert (== ($size first/lines) 2) ($to_str first))
+    ($assert ($str/contains? first/lines/0 "line truncated"))
+    ($assert (== first/lines/1 "next"))
+    ($assert (== first/truncated 1))
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
+  (it "bounds each batch and continues without dropping lines" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    (var source "")
+    (var index 0)
+    (while (< index 60)
+      (set source ($to_str source $"entry-${index}\n"))
+      (set index (+ index 1)))
+    ($fs/write_text active "")
+    (let opening (read active previous ""))
+    (var cursor opening/cursor)
+    (append active source)
+    (var all : (List Str) [])
+    (var polls 0)
+    (var done false)
+    (while (&& (! done) (< polls 100))
+      (let response (read active previous cursor ^max_bytes 32))
+      (if (== ($size response/lines) 0)
+        (set done true)
+        (do
+          (for line in response/lines (all .push line))
+          (set cursor response/cursor)
+          (set polls (+ polls 1)))))
+    ($assert (== ($size all) 60) ($to_str ($size all)))
+    ($assert (== all/0 "entry-0"))
+    ($assert (== all/59 "entry-59"))
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
+  (it "redacts through the caller without changing cursor offsets" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "token SECRET here\nafter\n")
+    (let redact (fn [value : Str] : Str
+      ($str/join ($str/split value "SECRET") "[redacted]")))
+    (let first (read active previous "" ^redact redact))
+    ($assert (== (joined first) "token [redacted] here\nafter") ($to_str first))
+    (append active "next SECRET\n")
+    (let second (read active previous first/cursor ^redact redact))
+    ($assert (== (joined second) "next [redacted]") ($to_str second))
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
+  (it "reports absent and unreadable sources explicitly" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    (let absent (read active previous ""))
+    ($assert (== absent/state "absent"))
+    ($assert ($str/contains? absent/message "No retained host log"))
+    ($fs/write_bytes active ($binary/from_list [255 254]))
+    (let unreadable (read active previous ""))
+    ($assert (== unreadable/state "unreadable") ($to_str unreadable))
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
+  (it "treats a cursor for another source as a fresh open" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "one\n")
+    (let foreign ($json/stringify {^v 1 ^source "other" ^segment "active"
+                                  ^offset 0 ^prefix ""}))
+    (let response (read active previous foreign))
+    ($assert (== response/state "ok"))
+    ($assert (== (joined response) "one"))
+    ($fs/remove active)
+    ($fs/remove_dir dir)))
+
+(fn text_of [value] : Str
+  (if ($absent? value) "" ($to_str value)))
+
+(fn main [args] : Int (run args))
