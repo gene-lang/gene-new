@@ -74,21 +74,56 @@
   (if_not ($fs/exists? path) (return nil))
   (try ($fs/read_bytes path) catch Error nil))
 
+(fn last_newline [raw : Bytes] : Int
+  (var at (- ($binary/size raw) 1))
+  (while (>= at 0)
+    (if (== ($binary/get raw at) 10) (return at))
+    (set at (- at 1)))
+  -1)
+
+(fn leading_partial [raw : Bytes] : Int
+  # UTF-8 continuation bytes at the start of a segment can be the rest of a
+  # sequence whose first bytes are at the end of the previous segment.
+  (var at 0)
+  (var limit (min_int 3 ($binary/size raw)))
+  (var running true)
+  (while (&& running (< at limit))
+    (let byte ($binary/get raw at))
+    (if (&& (>= byte 128) (< byte 192))
+      (set at (+ at 1))
+      (set running false)))
+  at)
+
 (fn parse_segment [raw : Any] : Any
   # Complete lines, their byte starts, and the start of the incomplete tail.
-  # Decoding the whole segment once is cheaper and clearer than scanning bytes
-  # for newlines; segments are capped at 1 MiB by the writer.
+  # A rotation can split a UTF-8 sequence: the previous segment may end with
+  # leading bytes and the active segment begin with continuation bytes. Decode
+  # the complete-line prefix only; the partial tail is rejoined by the caller.
   (if ($absent? raw)
     (return {^ok true ^present false ^size 0 ^lines [] ^starts [] ^incomplete 0}))
-  (let decoded (try ($binary/decode_utf8 raw) catch Error nil))
+  (let size ($binary/size raw))
+  (var decoded (try ($binary/decode_utf8 raw) catch Error nil))
+  (var skip 0)
   (if ($absent? decoded)
-    (return {^ok false ^present true
-             ^message "the log segment is not valid UTF-8"}))
+    (do
+      (set skip (leading_partial raw))
+      (let boundary (last_newline raw))
+      (if (< boundary 0)
+        (if (== skip 0)
+          (return {^ok false ^present true
+                   ^message "the log segment is not valid UTF-8"})
+          (return {^ok true ^present true ^size size ^lines [] ^starts []
+                   ^incomplete 0})))
+      (let prefix ($binary/slice raw skip (- (+ boundary 1) skip)))
+      (set decoded (try ($binary/decode_utf8 prefix) catch Error nil))
+      (if ($absent? decoded)
+        (return {^ok false ^present true
+                 ^message "the log segment is not valid UTF-8"}))))
   (let parts ($str/split decoded "\n"))
   (let count ($size parts))
   (var lines : (List Str) [])
   (var starts : (List Int) [])
-  (var offset 0)
+  (var offset skip)
   (var index 0)
   (while (< index (- count 1))
     (let line parts/%index)
@@ -96,7 +131,7 @@
     (starts .push offset)
     (set offset (+ offset (+ ($str/byte_size line) 1)))
     (set index (+ index 1)))
-  {^ok true ^present true ^size ($binary/size raw) ^lines lines ^starts starts
+  {^ok true ^present true ^size size ^lines lines ^starts starts
    ^incomplete offset})
 
 (fn prefix_digest [raw : Bytes, offset : Int] : Str
@@ -129,6 +164,11 @@
   (if (|| (< start 0) (> start size))
     (return {^ok false ^message "the log cursor is outside its segment"}))
   (if (== start size)
+    (return {^ok true ^lines [] ^bytes 0 ^end start ^consumed true
+             ^truncated 0 ^skipped 0}))
+  # A cursor parked at the start of the incomplete tail is caught up, not
+  # corrupt. The next poll retries after the writer finishes the line.
+  (if (== start segment/incomplete)
     (return {^ok true ^lines [] ^bytes 0 ^end start ^consumed true
              ^truncated 0 ^skipped 0}))
   (let starts segment/starts)
@@ -291,6 +331,114 @@
                 ^skipped (+ first/skipped second/skipped)})
   (finish source "active" active_raw active payload "" redact ^note note))
 
+(fn finish_waiting_previous [source : Str, first : Any, previous_raw : Bytes,
+                             previous : Any, redact : (Fn [Str] Str)] : Any
+  # The previous segment ends mid-line and the active file cannot complete it
+  # yet. Deliver the complete lines, but keep the cursor on the partial tail so
+  # the next poll can join and redact the whole line.
+  (let payload
+    {^lines first/lines ^bytes first/bytes ^end previous/incomplete
+     ^consumed false ^truncated first/truncated ^skipped first/skipped})
+  (finish source "previous" previous_raw previous payload "" redact
+          ^note "waiting for the rest of a rotated line"))
+
+(fn join_rotation [source : Str, first : Any, previous_raw : Bytes,
+                   previous : Any, active_raw : Bytes, active : Any,
+                   max_bytes : Int, max_line : Int,
+                   redact : (Fn [Str] Str)] : Any
+  # The previous segment ends mid-line. Join its raw tail to the first complete
+  # active line *before* decoding, rendering, and redacting: a rotation can split
+  # a UTF-8 sequence or a credential, and neither half may be delivered alone.
+  (if (|| ($absent? active_raw) (! active/ok) (== ($size active/lines) 0))
+    (return (finish_waiting_previous source first previous_raw previous redact)))
+  (let tail_bytes ($binary/slice previous_raw previous/incomplete
+                    (- previous/size previous/incomplete)))
+  (let first_end (+ active/starts/0 (+ ($str/byte_size active/lines/0) 1)))
+  (let active_head ($binary/slice active_raw 0 first_end))
+  (let joined_raw ($binary/concat [tail_bytes active_head]))
+  (let joined_text (try ($binary/decode_utf8 joined_raw) catch Error nil))
+  (if ($absent? joined_text)
+    (return (empty_response "unreadable"
+      "the log line split by rotation is not valid UTF-8")))
+  (let parts ($str/split joined_text "\n"))
+  (let rendered (render_line parts/0 max_line))
+  (var lines : (List Str) [])
+  (for line in first/lines (lines .push line))
+  (lines .push rendered/text)
+  (var used (+ first/bytes (+ ($str/byte_size rendered/text) 1)))
+  (var truncated (+ first/truncated (if rendered/truncated 1 0)))
+  (var skipped (+ first/skipped
+    (if rendered/truncated
+      (max_int 0 (- ($str/byte_size parts/0) ($str/byte_size
+        ($str/slice_bytes parts/0 0 max_line))))
+      0)))
+  # Trailing active lines share the response budget; anything trimmed is
+  # delivered by the next poll from the cursor below.
+  (var kept 1)
+  (var at 1)
+  (let line_count ($size active/lines))
+  (var full false)
+  (while (&& (< at line_count) (! full))
+    (let rendered_line (render_line active/lines/%at max_line))
+    (let cost (+ ($str/byte_size rendered_line/text) 1))
+    (if (> (+ used cost) max_bytes)
+      (set full true)
+      (do
+        (lines .push rendered_line/text)
+        (set used (+ used cost))
+        (set kept (+ kept 1))
+        (if rendered_line/truncated
+          (do
+            (set truncated (+ truncated 1))
+            (set skipped (+ skipped (max_int 0 (- ($str/byte_size active/lines/%at)
+              ($str/byte_size ($str/slice_bytes rendered_line/text 0 max_line))))))))
+        (set at (+ at 1)))))
+  (var end first_end)
+  (if (> kept 1)
+    (do
+      (let last (- kept 1))
+      (set end (+ active/starts/%last (+ ($str/byte_size active/lines/%last) 1)))))
+  (let payload
+    {^lines lines ^bytes used ^end end ^consumed (== kept line_count)
+     ^truncated truncated ^skipped skipped})
+  (finish source "active" active_raw active payload "" redact
+          ^note "joined a line split by rotation"))
+
+(fn continue_previous [source : Str, first : Any, previous_raw : Bytes,
+                       previous : Any, active_raw : Bytes, active : Any,
+                       max_bytes : Int, max_line : Int,
+                       redact : (Fn [Str] Str)] : Any
+  (if (! first/consumed)
+    (return (finish source "previous" previous_raw previous first "" redact
+                    ^note "host log rotated")))
+  # A segment filled to its byte limit can end mid-line; the writer continues
+  # that line at the start of the new active file.
+  (if (< previous/incomplete previous/size)
+    (return (join_rotation source first previous_raw previous
+              active_raw active max_bytes max_line redact)))
+  (if (&& ($present? active_raw) active/ok)
+    (do
+      (let second (collect active_raw active 0
+        (remaining_budget max_bytes first/bytes) max_line))
+      (if (! second/ok)
+        (return (empty_response "unreadable"
+          (text_or second/message "the host log is unreadable"))))
+      (return (combined_finish source first second active_raw active redact
+                ^note "finished the previous host log segment"))))
+  (finish source "previous" previous_raw previous first "" redact
+          ^note "host log rotated"))
+
+(fn resume_previous_segment [source : Str, previous_raw : Bytes, previous : Any,
+                             active_raw : Bytes, active : Any, cursor : Any,
+                             max_bytes : Int, max_line : Int,
+                             redact : (Fn [Str] Str)] : Any
+  (let first (collect previous_raw previous cursor/offset max_bytes max_line))
+  (if (! first/ok)
+    (return (empty_response "unreadable"
+      (text_or first/message "the previous host log is unreadable"))))
+  (continue_previous source first previous_raw previous
+    active_raw active max_bytes max_line redact))
+
 (fn resume_active [source : Str, active_raw : Any, active : Any,
                    previous_raw : Any, previous : Any, cursor : Any,
                    max_bytes : Int, max_line : Int,
@@ -303,20 +451,8 @@
       (return (finish source "active" active_raw active payload "" redact))))
   (if (&& ($present? previous_raw) previous/ok
           (prefix_matches previous_raw previous cursor/offset cursor/prefix))
-    (do
-      (let first (collect previous_raw previous cursor/offset max_bytes max_line))
-      (if (! first/ok)
-        (return (empty_response "unreadable" (text_or first/message "the previous host log is unreadable"))))
-      (if (&& first/consumed ($present? active_raw) active/ok)
-        (do
-          (let second (collect active_raw active 0
-            (remaining_budget max_bytes first/bytes) max_line))
-          (if (! second/ok)
-            (return (empty_response "unreadable" (text_or second/message "the host log is unreadable"))))
-          (return (combined_finish source first second active_raw active redact
-                    ^note "finished the previous host log segment")))
-        (return (finish source "previous" previous_raw previous first "" redact
-                        ^note "host log rotated")))))
+    (return (resume_previous_segment source previous_raw previous
+              active_raw active cursor max_bytes max_line redact)))
   (resume_after_gap source active_raw active previous_raw previous
     200 max_bytes max_line redact))
 
@@ -325,20 +461,8 @@
                      max_bytes : Int, max_line : Int,
                      redact : (Fn [Str] Str)] : Any
   (if (prefix_matches previous_raw previous cursor/offset cursor/prefix)
-    (do
-      (let first (collect previous_raw previous cursor/offset max_bytes max_line))
-      (if (! first/ok)
-        (return (empty_response "unreadable" (text_or first/message "the previous host log is unreadable"))))
-      (if (&& first/consumed ($present? active_raw) active/ok)
-        (do
-          (let second (collect active_raw active 0
-            (remaining_budget max_bytes first/bytes) max_line))
-          (if (! second/ok)
-            (return (empty_response "unreadable" (text_or second/message "the host log is unreadable"))))
-          (return (combined_finish source first second active_raw active redact
-                    ^note "host log rotated")))
-        (return (finish source "previous" previous_raw previous first "" redact
-                        ^note "host log rotated")))))
+    (return (resume_previous_segment source previous_raw previous
+              active_raw active cursor max_bytes max_line redact)))
   (resume_after_gap source active_raw active previous_raw previous
     200 max_bytes max_line redact))
 

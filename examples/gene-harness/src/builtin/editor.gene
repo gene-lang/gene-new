@@ -216,13 +216,14 @@
   (let decoded (decode_source raw))
   (if_not (as_flag decoded/ok)
     (return (failure 422 (as_text decoded/message "invalid UTF-8"))))
-  (let size ($binary/size raw))
+  # Analysis spans address the editor's LF, BOM-free text, not the raw file.
+  # Slice that text so CRLF and BOM files keep the same offsets the helper
+  # reported; the revision check above already bound the request to the bytes.
+  (let content (as_text decoded/text ""))
+  (let size ($str/byte_size content))
   (if (|| (< start 0) (< finish start) (> finish size))
     (return (failure 400 "selection range is outside the file")))
-  (let payload (if (as_flag decoded/bom) ($binary/slice raw 3 (- size 3)) raw))
-  (let text (try
-    ($binary/decode_utf8 ($binary/slice payload start (- finish start)))
-    catch Error nil))
+  (let text (try ($str/slice_bytes content start (- finish start)) catch Error nil))
   (if ($absent? text) (return (failure 400 "selection does not fall on UTF-8 boundaries")))
   (ok {^ok true ^revision revision ^text text
        ^line_endings decoded/line_endings ^bom decoded/bom}))

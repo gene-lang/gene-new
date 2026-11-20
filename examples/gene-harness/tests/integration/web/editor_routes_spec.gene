@@ -151,6 +151,21 @@
             crlf_saved_body/revision ^line_endings "lf" ^bom false))
           ($assert (== metadata_conflict/status 409) ($to_str metadata_conflict/status))
 
+          # Selection offsets are into the editor's LF, BOM-free text. The raw
+          # CRLF+BOM file has two extra bytes on the first line and three at the
+          # front, so slicing raw bytes would return the wrong span.
+          (let crlf_selection (post_route client "/p/editor/selection"
+            {^path "crlf.gene" ^revision crlf_saved_body/revision
+             ^start_byte ($str/byte_size "(mod crlf)\n(var ")             ^end_byte (+ ($str/byte_size "(mod crlf)\n(var ") 5)}))
+          ($assert (== crlf_selection/status 200)
+            ($to_str crlf_selection/status " " crlf_selection/body))
+          (let crlf_selection_body (body crlf_selection))
+          ($assert (== crlf_selection_body/ok true))
+          ($assert (== crlf_selection_body/text "value")
+            $"CRLF+BOM selection returned ${crlf_selection_body/text}")
+          ($assert (== crlf_selection_body/line_endings "crlf"))
+          ($assert (== crlf_selection_body/bom true))
+
           # Mixed-ending files stay read-only even when the base matches.
           (let mixed_save (save client "mixed.gene" "x" read_mixed/document/revision
             ^line_endings "mixed" ^bom false))

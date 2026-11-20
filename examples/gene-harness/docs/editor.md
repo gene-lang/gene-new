@@ -108,8 +108,11 @@ every status update:
 
 **Attach selection** verifies the selected byte range and revision against the
 saved bytes before staging a message that names the path, range, and revision.
-If the file changed, the operator is asked to reopen it rather than sharing
-text from a different version. **Attach draft** stages exactly the text on
+Ranges are byte offsets into the editor's LF, BOM-free text — the same text
+analysis reports — not offsets into the raw file. The route checks the raw-byte
+revision and then slices that text, so CRLF and BOM files keep the helper's
+offsets. If the file changed, the operator is asked to reopen it rather than
+sharing text from a different version. **Attach draft** stages exactly the text on
 screen from the analyzed draft and labels it as a draft selection.
 
 ## Logs tab
@@ -132,8 +135,11 @@ offset. Each poll compares the prefix:
   available tail.
 
 Only complete lines advance the cursor, so an incomplete final line is carried
-into the next poll and a UTF-8 sequence or credential is never delivered in
-halves. Long lines are truncated with a visible marker and the cursor advances
+into the next poll. A rotation can fall mid-line: the previous segment's tail
+is joined to the start of the active file as bytes before decoding, rendering,
+and redaction, and the cursor stays on the partial tail until the active line
+completes. A UTF-8 sequence or credential split by rotation is therefore never
+delivered in halves. Long lines are truncated with a visible marker and the cursor advances
 past them; each response is bounded (64 KiB and 8 KiB per line by default).
 Text is redacted with the same replacements the manager's diagnostics use,
 applied before delivery and independently of the manager's excerpt cap.

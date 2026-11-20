@@ -120,6 +120,81 @@
     ($fs/remove previous)
     ($fs/remove_dir dir))
 
+  (it "joins a line split by rotation before delivering and redacting it" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "a\nb\n")
+    (let first (read active previous ""))
+    ($assert (== (joined first) "a\nb"))
+    # The writer filled the segment mid-line, rotated, and continued the same
+    # line at the start of the new active file.
+    (append active "c\ntoken=SEC")
+    ($fs/rename active previous)
+    ($fs/write_text active "RET and more\nd\n")
+    (let redact (fn [value : Str] : Str
+      ($str/join ($str/split value "SECRET") "[redacted]")))
+    (let second (read active previous first/cursor ^redact redact))
+    ($assert (== second/state "ok") ($to_str second))
+    ($assert (== (joined second) "c\ntoken=[redacted] and more\nd") ($to_str second))
+    ($fs/remove active)
+    ($fs/remove previous)
+    ($fs/remove_dir dir))
+
+  (it "rejoins a UTF-8 sequence split across the rotation" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "a\nb\n")
+    (let first (read active previous ""))
+    # The writer filled the previous segment after the first two bytes of an
+    # astral character and continued the remaining two bytes in the active log.
+    ($fs/write_bytes previous
+      ($binary/concat [($binary/from_str "a\nb\nc\n") ($binary/from_list [240 159])]))
+    ($fs/write_bytes active
+      ($binary/concat [($binary/from_list [152 128]) ($binary/from_str " more\nd\n")]))
+    (let second (read active previous first/cursor))
+    ($assert (== second/state "ok") ($to_str second))
+    ($assert (== (joined second) "c\n😀 more\nd") ($to_str second))
+    ($fs/remove active)
+    ($fs/remove previous)
+    ($fs/remove_dir dir))
+
+  (it "keeps a rotation cursor at the previous tail until the active line completes" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "a\nb\n")
+    (let first (read active previous ""))
+    (append active "c\ntoken=SEC")
+    ($fs/rename active previous)
+    ($fs/write_text active "RET")
+    (let second (read active previous first/cursor))
+    ($assert (== second/state "ok") ($to_str second))
+    ($assert (== (joined second) "c") ($to_str second))
+    (let cursor ($json/parse second/cursor))
+    ($assert (== (text_of cursor/segment) "previous"))
+    (append active " and more\nd\n")
+    (let third (read active previous second/cursor))
+    ($assert (== (joined third) "token=SECRET and more\nd") ($to_str third))
+    ($fs/remove active)
+    ($fs/remove previous)
+    ($fs/remove_dir dir))
+
+  (it "treats a cursor at an incomplete final line as caught up" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    ($fs/write_text active "a\nb\nparti")
+    (let first (read active previous ""))
+    ($assert (== (joined first) "a\nb") ($to_str first))
+    (let second (read active previous first/cursor))
+    ($assert (== second/state "ok") ($to_str second))
+    ($assert (== ($size second/lines) 0) ($to_str second))
+    ($assert (== second/cursor first/cursor))
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
   (it "reports a gap and resumes from the available tail when identity is lost" []
     (let dir (new_dir))
     (let active ($path/join dir "host.log"))
