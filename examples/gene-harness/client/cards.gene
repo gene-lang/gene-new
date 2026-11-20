@@ -132,7 +132,7 @@
 (fn render_card_tree [host : CardHost, session : Str, card : Any, tree : Any, enabled : Bool,
   fields : (List Any)] : EventTarget
   (if_yes ($absent? tree) (return ($dom/create_text "")))
-  (if_yes ($absent? tree/tag)
+  (if_yes ($leaf? tree)
     (var text : Str tree)
     (return ($dom/create_text text)))
   (var tag : Str tree/tag)
@@ -263,7 +263,7 @@
 (fn question_tree [tree : Any, selected : (Fn [Any] Bool), on_answer : (Fn [Any] Nil),
   on_prompt : (Fn [Str] Nil), enabled : Bool] : EventTarget
   (if_yes ($absent? tree) (return ($dom/create_text "")))
-  (if_yes ($absent? tree/tag)
+  (if_yes ($leaf? tree)
     (var text : Str tree)
     (return ($dom/create_text text)))
   (var tag : Str tree/tag)

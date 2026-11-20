@@ -3866,6 +3866,12 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "absent?", "present?":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkBool)
+      of "leaf?":
+        # The same base case the VM's `leaf?` provides, and for the same
+        # reason: a generic walk over view/data trees needs a way to stop at a
+        # text value without path-reading a field a Str does not declare.
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkBool)
       of "buffer":
         # `(buffer T n)` — n zeroed elements, lowered to `new Float32Array(n)`
         # and friends. Handled here rather than through `paramTypes` because the
@@ -6623,6 +6629,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "to_float": "Number(" & arguments[0] & ")"
     of "absent?": "(" & arguments[0] & " == null)"
     of "present?": "(" & arguments[0] & " != null)"
+    of "leaf?": "$gene_leaf(" & arguments[0] & ")"
     of "console/log": "console.log(" & arguments[0] & ")"
     of "console/warn": "console.warn(" & arguments[0] & ")"
     of "console/error": "console.error(" & arguments[0] & ")"
@@ -8907,6 +8914,15 @@ proc emitModule(module: WebModule, typescript: bool,
     let a = if typescript: ": any" else: ""
     emitter.line("const $gene_missing" & a & " = Object.freeze({ [Symbol.for(\"gene.call.missing\")]: true });")
     emitter.line("function $gene_is_missing(value" & a & ") { return value != null && value[Symbol.for(\"gene.call.missing\")] === true; }")
+  if moduleUsesBuiltin(module, ["leaf?"]):
+    # The VM's `leaf?`: absence and scalar values are leaves; callables and
+    # structured values are not. Browsers spell Int as bigint and F64 as
+    # number, and neither is an object.
+    let params = if typescript: "value: any" else: "value"
+    let returns = if typescript: ": boolean" else: ""
+    emitter.line("function $gene_leaf(" & params & ")" & returns &
+      " { return value == null || (typeof value !== \"object\" && typeof value !== \"function\"); }")
+    emitter.line()
   let needsIntDivisor = moduleUsesDivision(module, wtkInt)
   let needsF64Divisor = moduleUsesDivision(module, wtkF64)
   # A negative index counts from the end (design §1/§2, `users/-1/name`), and

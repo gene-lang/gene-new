@@ -2,7 +2,7 @@
 
 (fn render_element [tree : Any, on_command : (Fn [Str] Nil), on_prompt : (Fn [Str] Nil), on_navigate : (Fn [Str Str] Nil), enabled : Bool, buttons : (List Any), ^widgets widgets : Any = nil] : EventTarget
   (if_yes ($absent? tree) (return ($dom/create_text "")))
-  (if_yes ($absent? tree/tag)
+  (if_yes ($leaf? tree)
     (var text : Str tree)
     (return ($dom/create_text text)))
   (var tag : Str tree/tag)

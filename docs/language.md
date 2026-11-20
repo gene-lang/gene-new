@@ -317,6 +317,11 @@ Only false and nil are falsy. Zero and an empty string are truthy.
 `if` returns a value; `do` groups expressions and returns the last one.
 For presence, prefer `($present? x)` to `(! ($absent? x))`. Only `nil` is absent; `false`, zero, empty strings and empty collections are present.
 
+To walk a tree of nodes and scalar data, test `($leaf? x)` before reading a field.
+`nil`, scalar values and cells are leaves; a node, collection or callable is
+not. A walk can stop at a text child instead of path-reading a field a `Str`
+does not declare.
+
 Prefer an `elif` chain to nesting another `if` in each else branch:
 
 ```gene runnable

@@ -15,7 +15,7 @@
 
 (fn patch_node [ui : UiClient, tree : Any, parent : EventTarget, at : Int, path : Str, form : Str,
   changed : (Fn [UiNode] Nil), submit : (Fn [UiNode] Nil)] : Nil
-  (var tag (text tree/tag "#text"))
+  (var tag (if ($leaf? tree) "#text" (text tree/tag "#text")))
   (var props (if (== tag "#text") {} (copy_map tree/props)))
   (var key (text props/key path))
   (var found : Any ui/nodes/%key)

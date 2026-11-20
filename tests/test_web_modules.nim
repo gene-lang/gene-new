@@ -36,6 +36,32 @@ suite "web standard receiver methods":
       expect WebProfileError:
         discard buildWebModule(source, root / "out")
 
+suite "web leaf predicate":
+  test "distinguishes text and scalar leaves from structures and callables":
+    let root = createTempDir("gene-web-leaf-", "")
+    defer: removeDir(root)
+    writeFile(root / "leaf.gene", """
+      (mod leaf ^profile web)
+      (fn classify [value : Any] : Str
+        (if ($leaf? value) "leaf" "structure"))
+    """)
+    discard buildWebModule(root / "leaf.gene", root / "out")
+    writeFile(root / "out" / "check.mjs", """
+      import assert from 'node:assert/strict';
+      import {classify} from './leaf.mjs';
+      assert.equal(classify("Conversations"), 'leaf');
+      assert.equal(classify(0n), 'leaf');
+      assert.equal(classify(0), 'leaf');
+      assert.equal(classify(true), 'leaf');
+      assert.equal(classify(null), 'leaf');
+      assert.equal(classify({tag: 'div', props: {}, children: []}), 'structure');
+      assert.equal(classify([]), 'structure');
+      assert.equal(classify(() => 1), 'structure');
+    """)
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
 suite "web catch types":
   test "Any and value types are rejected as catch types":
     for (clause, expected) in [
