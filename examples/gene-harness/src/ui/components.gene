@@ -351,8 +351,9 @@
 (fn bounded_card_view [value, mode : Str]
   (if_not (["static" "live" "question"] .contains? mode) (card_error "unknown card mode"))
   (let view (component_view ^card mode ^keys {} value))
-  (if (> ($str/byte_size ($json/stringify view)) 65536)
-    (card_error "card view exceeds 64 KiB"))
+  (let bytes ($str/byte_size ($json/stringify view)))
+  (if (> bytes 65536)
+    (card_error $"card view exceeds 64 KiB (${bytes} bytes)"))
   view)
 
 # Whether a validated wire tree carries slash-command buttons. Those make a
@@ -366,8 +367,9 @@
 
 (fn bounded_component_view [value, ^interactive interactive : Bool = false, ^sidebar sidebar : Bool = false]
   (let view (component_view ^interactive interactive ^keys {} ^widgets (if sidebar {} nil) value))
-  (if (> ($str/byte_size ($json/stringify view)) 65536)
-    (component_error "web component view exceeds 64 KiB"))
+  (let bytes ($str/byte_size ($json/stringify view)))
+  (if (> bytes 65536)
+    (component_error $"web component view exceeds 64 KiB (${bytes} bytes)"))
   view)
 
 # A style contribution is `$css` node data. It is scoped to the component with
