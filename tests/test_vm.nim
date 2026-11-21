@@ -1634,6 +1634,40 @@ suite "gir — disassembly":
     check run(compileSource("(repeat i in 1 (xs .push i)) xs",
       useLocalSlots = false), scope).print() == "[0 1 0]"
 
+  test "a repeat leaves no operand-stack residue":
+    # Regression: the count and index bindings stayed on the operand stack. A
+    # call whose callee was already pushed then read the count as its callee,
+    # and a repeat run inside a loop grew the frame once per iteration.
+    ck "($to_str (repeat i in 3 i))", "\"nil\""
+    ck "($to_str (repeat 3 \"x\"))", "\"nil\""
+    ck "(fn f [a b] [a b]) (f 1 (repeat i in 3 i))", "[1 nil]"
+    ck "(fn f [a] a) ($to_str (f (repeat i in 2 \"x\")))", "\"nil\""
+    ck "(fn f [a] a) (f (repeat i in 3 i))", "nil"
+    ck "(fn f [a] a) (f (repeat 2 \"x\"))", "nil"
+    # The loop's effects still run before the call that consumes its nil.
+    ck "(var t 0) (fn f [a b] [a b]) " &
+       "(f (repeat i in 3 (set t (+ t i))) (repeat j in 2 (set t (+ t 10)))) t",
+       "23"
+    # Each prologue binding is popped, not left for the enclosing call.
+    let chunk = compileSource("(repeat i in 2 nil)")
+    var sawLimit = false
+    var sawIndex = false
+    for i, inst in chunk.instructions:
+      case inst.op
+      of opRedefineLocal:
+        if inst.name.contains("repeat_limit"):
+          check i + 1 < chunk.instructions.len
+          check chunk.instructions[i + 1].op == opPop
+          sawLimit = true
+      of opDefineLocal:
+        if inst.name.endsWith(":i"):
+          check i + 1 < chunk.instructions.len
+          check chunk.instructions[i + 1].op == opPop
+          sawIndex = true
+      else: discard
+    check sawLimit
+    check sawIndex
+
   test "an inlined for starts each item without the body's bindings":
     # A frame loop runs each item in a fresh scope, so a binding the body made
     # for one item is undefined for the next, after a continue, and on the

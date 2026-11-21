@@ -8851,17 +8851,24 @@ proc emitRebindableBinding(c: var Compiler, name: string) =
 
 proc compileRepeatLoop(c: var Compiler, body: openArray[Value], indexed: bool,
                        privateIndex = false) =
+  ## The count and index are declarations, and a declaration leaves its value
+  ## on the operand stack. A `repeat` is an expression, so each one is popped
+  ## here: an unpopped count sits between an enclosing call's callee and its
+  ## arguments (the callee slot then holds the count), and one left in a loop
+  ## body accumulates once per iteration.
   if indexed:
     let indexName = body[0].symVal
     let limitName = c.nextTemp("repeat_limit")
     compileExpr(c, body[2])
     c.emitRebindableBinding(limitName)
+    discard c.emit(opPop)                   # discard the count binding
     c.emitConst newInt(0)
     var saved: LoopIndexBinding
     if privateIndex:
       saved = c.beginLoopIndex(indexName)
     else:
       c.emitRebindableBinding(indexName)
+    discard c.emit(opPop)                   # discard the index binding
 
     let enter = c.emit(opLoopEnter)
     let start = c.chunk.instructions.len
@@ -8891,6 +8898,7 @@ proc compileRepeatLoop(c: var Compiler, body: openArray[Value], indexed: bool,
   let remainingName = c.nextTemp("repeat_remaining")
   compileExpr(c, body[0])
   c.emitRebindableBinding(remainingName)
+  discard c.emit(opPop)                     # discard the count binding
 
   let enter = c.emit(opLoopEnter)
   let start = c.chunk.instructions.len
