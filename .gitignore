@@ -91,6 +91,7 @@ tmp/
 *.tmp
 archive/
 work/
+examples/math/
 !src/genex/archive/
 !src/genex/archive/**
 *.vsix
