@@ -1,7 +1,8 @@
-# The triggers plugin's browser client: a toolbar button and a panel that
-# lists, creates and deletes trigger definitions through the plugin's own
-# route (/api/vN/p/triggers). Mounted by the host bridge; removed with the
-# plugin.
+# The triggers plugin's browser client: a panel that lists, creates and
+# deletes trigger definitions through the plugin's own route
+# (/api/vN/p/triggers). Search Harness opens it through the bridge; the
+# toolbar no longer carries a Triggers button. Mounted by the host bridge;
+# removed with the plugin.
 (mod triggers_client ^profile web)
 (import [api_root] ^from "../../src/web/contract.gene")
 (import [text] ^from "../../src/common/launcher.gene")
@@ -50,9 +51,18 @@
         (var problem (text result/message))
         ($dom/set_text state/message (if (== problem "") "Could not create the trigger." problem)))))))
 
+(fn close_panel [state : Any] : Nil
+  (set state/open false)
+  ($dom/set_attribute state/panel "hidden" ""))
+
+(fn open_panel [state : Any] : Nil
+  (if_yes state/open (return))
+  (set state/open true)
+  ($dom/remove_attribute state/panel "hidden")
+  (load state))
+
 (fn main [root : EventTarget] : Nil
   (var bridge : Any root/harness_bridge)
-  (var button ($dom/render `(button ^type "button" ^class_name "triggers-launcher" ^title "Triggers" "Triggers")))
   (var panel ($dom/render `(section ^class_name "triggers-panel" ^aria-label "Triggers" ^^hidden)))
   (var list ($dom/render `(div ^class_name "triggers-list")))
   (var message ($dom/render `(div ^class_name "triggers-message" ^role "status" ^aria-live "polite")))
@@ -62,21 +72,19 @@
   (var schedule ($dom/render `(input ^type "text" ^placeholder "every_ms, UTC time or cron" ^aria-label "Schedule")))
   (var request ($dom/render `(textarea ^placeholder "Request" ^aria-label "Request")))
   (var submit ($dom/render `(button ^type "button" "Create")))
-  (var state {^bridge bridge ^list list ^message message ^id id ^kind kind ^schedule schedule ^request request ^open false})
+  (var close_button ($dom/render `(button ^type "button" "Close")))
+  (var state {^bridge bridge ^panel panel ^list list ^message message ^id id ^kind kind ^schedule schedule ^request request ^open false})
+  # Search Harness reaches this through the host bridge's shared map.
+  (var shared : Any bridge/shared)
+  (set shared/open_triggers (fn [] : Nil (open_panel state)))
   (set root/harness_controller
-    {^dispose (fn [] : Nil ($dom/remove button) ($dom/remove panel))
+    {^dispose (fn [] : Nil
+       (set shared/open_triggers nil)
+       ($dom/remove panel))
      ^update (fn [status : Any] : Nil nil)
      ^key (fn [event : Any] : Bool false)})
   ($dom/append root panel)
+  ($dom/append panel close_button)
   (for element in [list message id kind schedule request submit] ($dom/append panel element))
-  (var toolbar : EventTarget bridge/toolbar)
-  ($dom/append toolbar button)
-  ($dom/add_event_listener button "click" (fn [event : Any] : Nil
-    (if_yes state/open
-      (set state/open false)
-      ($dom/set_attribute panel "hidden" "")
-      (return))
-    (set state/open true)
-    ($dom/remove_attribute panel "hidden")
-    (load state)))
+  ($dom/add_event_listener close_button "click" (fn [event : Any] : Nil (close_panel state)))
   ($dom/add_event_listener submit "click" (fn [event : Any] : Nil (create state))))

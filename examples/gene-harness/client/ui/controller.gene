@@ -390,10 +390,6 @@
   (set ui/ready ready)
   (set ui/session session)
   ($dom/set_attribute
-    ($dom/element "ui_default_link")
-    "href"
-    $"/ui/default?session=${($url/encode_component session)}")
-  ($dom/set_attribute
     ($dom/element "ui_workspace_link")
     "href"
     $"/?session=${($url/encode_component session)}")

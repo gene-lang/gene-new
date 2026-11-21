@@ -1,5 +1,5 @@
 (mod harness_client ^profile web)
-(import ^from "./appearance.gene" [BrowserAppearance start_appearance appearance_event change_appearance])
+(import ^from "./appearance.gene" [BrowserAppearance start_appearance appearance_event])
 (import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
 (import [api_root client_record_limit] ^from "../src/web/contract.gene")
 
@@ -58,7 +58,7 @@
 (import ^from "./ui/model.gene" [UiClient UiNavigation copy_map persist_view])
 (import ^from "./ui/router.gene" [navigate update_url run_action action_chord])
 (import ^from "./ui/chords.gene" [event_chord])
-(import ^from "./ui/navigation.gene" [view_url])
+(import ^from "./ui/navigation.gene" [go view_url])
 (import ^from "./sidebar.gene" [close_mobile_sidebar update_sidebar])
 (import ^from "./notices.gene" [Notices create_notices put_notice remove_notice])
 (import ^from "./confirmations.gene" [Confirmations create_confirmations command_confirmation])
@@ -338,7 +338,11 @@
   (update_outlets browsers (outlet_nodes ui) (outlet_context client)))
 
 (fn browser_bridge [client : Client] : Any
-  {^toolbar ($dom/element "browser_client_toolbar")
+  # Contributions receive a shallow copy of this bridge. `shared` is copied by
+  # reference, so one client can publish an opener another client (Search)
+  # invokes without reaching into the other client's private bridge.
+  {^shared {}
+   ^toolbar ($dom/element "browser_client_toolbar")
    ^composer_actions ($dom/element "browser_client_composer_actions")
    ^state (fn [] : Any
      (var ui : UiClient client/ui)
@@ -1106,7 +1110,6 @@
   (if_yes (&& (!= mode "light") (!= mode "dark")) (return))
   (set client/appearance mode)
   ($dom/set_attribute ($dom/element "harness_document") "data-mode" mode)
-  ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light" "Dark"))
   (if_not ($absent? client/ui)
     (var ui : UiClient client/ui)
     (ui_appearance ui mode)))
@@ -2500,13 +2503,14 @@
         (var socket : EventTarget client/socket)
         (if_yes ($ws/open? socket)
           ($ws/send socket ($json/stringify {^type "appearance_report" ^saved answer/saved ^rendered answer/rendered}))))
-      )))
+      )
+    ^theme_toggle false))
   (set client/browser_appearance appearance)
   (var appearance_ui : UiClient client/ui)
   (set appearance_ui/browser_appearance appearance)
-  ($dom/add_event_listener ($dom/element "theme_toggle") "click"
+  ($dom/add_event_listener ($dom/element "ui_default_link") "click"
     (fn [event : Any] : Nil
-      (change_appearance appearance {^mode (if (== client/appearance "dark") "light" "dark")})))
+      (go $"/ui/default?session=${($url/encode_component client/selected)}")))
   ($dom/add_event_listener ($dom/window) "popstate"
     (fn [event : Any] : Nil
       (var search ($browser/search))

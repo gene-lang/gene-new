@@ -5,7 +5,7 @@
 
 (type BrowserAppearance ^props {^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)
   ^changed (Fn [Any] Nil) ^error (Fn [Any] Nil) ^report (Fn [Any] Nil)
-  ^answer Any ^sequence Int ^signature Str ^safe Bool ^queued PropMap ^posting Bool
+  ^answer Any ^sequence Int ^signature Str ^safe Bool ^theme_toggle Bool ^queued PropMap ^posting Bool
   ^refreshing Bool ^refresh_again Bool ^report_pending Bool ^registry_revision Str ^observed_revision Str
   ^preview_ready PropMap ^preview_pending PropMap ^preview_links (List EventTarget)})
 
@@ -36,7 +36,10 @@
   (if_yes (!= previous/rendered/stylesheet rendered/stylesheet)
     ($dom/set_attribute link "href" rendered/stylesheet))
   (var mode : Str rendered/mode)
-  ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light" "Dark"))
+  # The main host bar no longer renders a theme launcher; the plugin and
+  # model pages still do and opt in with `^theme_toggle true`.
+  (if state/theme_toggle
+    ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light" "Dark")))
   (state/changed answer)
   (state/report answer)
   (set state/report_pending false))
@@ -104,9 +107,10 @@
 
 (fn start_appearance [api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil), changed : (Fn [Any] Nil), safe : Bool = false,
   ^on_error on_error : (Fn [Any] Nil) = (fn [error : Any] : Nil (return)),
-  ^report report : (Fn [Any] Nil) = (fn [answer : Any] : Nil (return))] : BrowserAppearance
+  ^report report : (Fn [Any] Nil) = (fn [answer : Any] : Nil (return)),
+  ^theme_toggle theme_toggle : Bool = true] : BrowserAppearance
   (var state (BrowserAppearance ^api api ^changed changed ^error on_error ^report report
-    ^answer nil ^sequence 0 ^signature "" ^safe safe ^queued {} ^!posting ^!refreshing ^!refresh_again
+    ^answer nil ^sequence 0 ^signature "" ^safe safe ^theme_toggle theme_toggle ^queued {} ^!posting ^!refreshing ^!refresh_again
     ^!report_pending ^registry_revision "" ^observed_revision "" ^preview_ready {} ^preview_pending {} ^preview_links []))
   ($dom/add_event_listener ($dom/window) "focus" (fn [event : Any] : Nil (refresh_appearance state)))
   ($dom/add_event_listener ($dom/window) "visibilitychange"

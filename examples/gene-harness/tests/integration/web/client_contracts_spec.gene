@@ -22,7 +22,7 @@
       (fn [workspace]
         (let output $"${workspace}/compiled")
         (for entry in ["client/main.gene" "client/editor.gene" "client/editor_view.gene"
-                      "client/plugins/host_audio.gene"
+                      "client/plugins/host_audio.gene" "client/plugins/triggers.gene"
                       "client/plugins/models_picker.gene" "client/plugins/spotlight.gene"]
           (let built (await ($os/exec_async ^timeout_ms 30000 ^max_bytes 1048576
             ($os/executable_path) "build" "--target" "web" "--out-dir" output (package_path entry))))
@@ -31,12 +31,22 @@
         (for id in (element_ids ($fs/read_text (package_path "client/main.gene")))
           ($assert ($str/contains? harness_page $"id=\"${id}\"")
             $"client/main.gene looks up element id ${id}, which src/web/page.gene does not render"))
+        # The host bar no longer carries theme, plugin, or trigger launchers.
+        ($assert ($str/contains? harness_page "id=\"ui_default_link\"")
+          "the Recovery control is missing from the host bar")
+        ($assert (! ($str/contains? harness_page "id=\"theme_toggle\""))
+          "the host bar still renders a theme launcher")
+        ($assert (! ($str/contains? harness_page "id=\"plugin_manager_link\""))
+          "the host bar still renders a plugin link")
         ($fs/write_text ($path/join output "a.html") harness_page)
         ($fs/write_text ($path/join output "b.html") (page ^workspace "/workspace/b"))
         ($fs/write_text ($path/join output "plugins.html") (plugin_page ^workspace "/workspace/a"))
         (let storage (await ($os/exec_async ^timeout_ms 15000 ^max_bytes 1048576
           "node" (package_path "tests/fixtures/workspace_storage.mjs") output)))
-        ($assert (== storage/status 0) $"workspace storage: ${storage/stdout}${storage/stderr}"))))
+        ($assert (== storage/status 0) $"workspace storage: ${storage/stdout}${storage/stderr}")
+        (let search (await ($os/exec_async ^timeout_ms 30000 ^max_bytes 1048576
+          "node" (package_path "tests/fixtures/search_actions_driver.mjs") output)))
+        ($assert (== search/status 0) $"search actions: ${search/stdout}${search/stderr}"))))
 
   (it "routes editor requests through the versioned API root" []
     # Plugin routes are registered under api_root (/api/v9/p/<owner>/...).
@@ -44,6 +54,15 @@
     (for entry in ["client/editor.gene" "client/editor_view.gene"]
       (let source ($fs/read_text (package_path entry)))
       ($assert (! ($str/contains? source "\"/p/editor/"))
-        $"{entry} hard-codes a plugin route without api_root"))))
+        $"{entry} hard-codes a plugin route without api_root")))
+
+  (it "offers host actions in Search Harness" []
+    (let spotlight ($fs/read_text (package_path "client/plugins/spotlight.gene")))
+    (for action in ["action:triggers" "action:plugins" "action:restart" "action:stop"]
+      ($assert ($str/contains? spotlight action)
+        $"Search Harness does not offer ${action}"))
+    (let triggers ($fs/read_text (package_path "client/plugins/triggers.gene")))
+    ($assert ($str/contains? triggers "open_triggers")
+      "the triggers panel is not reachable from search")))
 
 (fn main [args] : Int (run_spec args))

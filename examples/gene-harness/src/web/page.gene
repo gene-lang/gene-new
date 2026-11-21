@@ -13,7 +13,6 @@
   (let preloads (appearance_preloads chosen))
   (let mode rendered/mode)
   (let workspace_id (if (== workspace "") "" ($crypto/sha256 workspace)))
-  (let toggle_label (if (== mode "dark") "Light" "Dark"))
   ($to_str
     "<!doctype html>"
     (render
@@ -48,9 +47,7 @@
                  (button ^id "command_receipt_recover" ^type "button" ^^hidden "Resolve command")
                  (button ^id "voice_receipt_recover" ^type "button" ^^hidden "Resolve voice submission")
                  (button ^id "notifications_button" ^type "button" ^aria-expanded "false" ^aria-controls "notification_center" "Notifications")
-                 (button ^id "theme_toggle" ^type "button" ^title "Switch the color theme" %toggle_label)
-                 (a ^id "ui_default_link" ^href "/ui/default" "Recovery UI")
-                 (a ^id "plugin_manager_link" ^href "/plugins" "Plugins")
+                 (button ^id "ui_default_link" ^type "button" "Recovery UI")
                  (a ^id "ui_workspace_link" ^href "/" ^^hidden "Return to workspace UI"))
                (div ^class "ui_host_actions"
                  (span ^id "ui_pending_owner")

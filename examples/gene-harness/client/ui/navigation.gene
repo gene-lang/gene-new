@@ -45,6 +45,12 @@
   (if_yes (> views/.size 0) (return (nav_text views/0/name)))
   "harness")
 
+# Full-page navigation. The host bar's former anchors are now buttons and
+# search results, and history.push_state cannot load a different document.
+(fn go [url : Str] : Nil
+  (var window ($dom/window))
+  (set window/location/href url))
+
 (fn view_url [session : Str, view : Str, presentation : Str, safe : Bool] : Str
   (var url $"/?session=${($url/encode_component session)}")
   (if_yes safe (return $"${url}&ui=default"))

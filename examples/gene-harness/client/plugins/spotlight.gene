@@ -1,12 +1,13 @@
 (mod harness_spotlight ^profile web)
 (import [api_root] ^from "../../src/web/contract.gene")
 (import [text flag items match_rank insert_ranked merge_results moved] ^from "../../src/common/launcher.gene")
+(import [go] ^from "../ui/navigation.gene")
 
 (type Spotlight ^props {^root EventTarget ^bridge Any ^owner Str ^button EventTarget
   ^panel EventTarget ^input EventTarget ^list EventTarget ^message EventTarget ^crumb EventTarget
   ^open Bool ^disposed Bool ^opening Int ^query_generation Int ^step_generation Int ^published Int ^step Str
   ^items (List Any) ^active Int ^busy Bool ^awaiting_receipt Bool ^partial Bool ^parent Any ^command Any
-  ^target Str ^query Str ^status Any ^steps PropMap ^step_key Str ^feedback Str ^availability Str})
+  ^target Str ^query Str ^status Any ^steps PropMap ^step_key Str ^confirm Str ^feedback Str ^availability Str})
 
 (fn close [spot : Spotlight, restore : Bool = true] : Nil
   (if_yes (! spot/open) (return))
@@ -17,7 +18,7 @@
   (set spot/items []) (set spot/active -1)
   (set spot/steps {}) (set spot/parent nil) (set spot/command nil)
   (set spot/target "") (set spot/query "") (set spot/step "")
-  (set spot/feedback "") (set spot/availability "")
+  (set spot/confirm "") (set spot/feedback "") (set spot/availability "")
   ($dom/remove_attribute spot/input "aria-activedescendant")
   (var release : (Fn [Str Bool] Nil) spot/bridge/release)
   (release spot/owner restore))
@@ -65,12 +66,67 @@
     (return "This view is unavailable. Refresh the results."))
   "")
 
+(fn activate_action [spot : Spotlight, item : Any] : Nil
+  # Host actions run outside the command channel. Restart and stop require a
+  # second selection because Enter alone must not stop a running workspace.
+  (var action (text item/action))
+  (if (|| (== action "restart") (== action "stop"))
+    (if (!= spot/confirm action)
+      (do
+        (set spot/confirm action)
+        (set spot/busy false)
+        (set spot/feedback (if (== action "stop")
+          "Select Stop Harness again to stop the host."
+          "Select Restart Harness again to restart the host."))
+        ($dom/set_text spot/message spot/feedback))
+      (do
+        (set spot/confirm "")
+        (var api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) spot/bridge/api)
+        (api "POST" $"${(api_root)}/control" {^action action ^^confirm}
+          (fn [code : Int, data : Any] : Nil
+            (if (== code 200)
+              (do (set spot/busy false) (close spot false))
+              (do
+                (set spot/busy false)
+                (set spot/feedback (text data/message "The host did not accept the request."))
+                ($dom/set_text spot/message spot/feedback)))))))
+    (do
+      (set spot/confirm "")
+      (if (== action "triggers")
+        (do
+          (var shared : Any spot/bridge/shared)
+          (var open : Any shared/open_triggers)
+          (if ($present? open)
+            (do
+              (var open_triggers : (Fn [] Nil) open)
+              (open_triggers)
+              (set spot/busy false)
+              (close spot false))
+            (do
+              (set spot/busy false)
+              (set spot/feedback "The triggers plugin is not available.")
+              ($dom/set_text spot/message spot/feedback))))
+        (do
+          (go "/plugins")
+          (set spot/busy false)
+          (close spot false))))))
+
 (fn activate [spot : Spotlight, index : Int] : Nil
   (if_yes (|| (! spot/open) spot/disposed spot/busy (< index 0) (>= index spot/items/.size)) (return))
   (var item : Any spot/items/%index)
   (var reason (unavailable spot item))
   (if_yes (!= reason "")
     (set spot/feedback reason) ($dom/set_text spot/message reason) (return))
+  (var kind (text item/kind))
+  (var action (if (== kind "action") (text item/action) ""))
+  (if (|| (!= kind "action") (&& (!= action "restart") (!= action "stop")))
+    (set spot/confirm "")
+    nil)
+  (if (&& (== kind "action")
+          (|| (== action "triggers") (== action "plugins")
+              (== action "restart") (== action "stop")))
+    (do (activate_action spot item) (return))
+    nil)
   (if_yes (&& (== (text item/kind) "command") (== (text item/command/name) "theme"))
     (set spot/parent {^query spot/query ^items spot/items ^active index ^partial spot/partial})
     (set spot/step "theme")
@@ -157,6 +213,14 @@
       ^subtitle "Action" ^aliases "new chat"}
      {^id "action:attention" ^kind "action" ^action "attention" ^title "Needs attention"
       ^subtitle "Navigation" ^aliases "notifications questions"}
+     {^id "action:triggers" ^kind "action" ^action "triggers" ^title "Triggers"
+      ^subtitle "Action" ^aliases "trigger automation schedule"}
+     {^id "action:plugins" ^kind "action" ^action "plugins" ^title "Plugins"
+      ^subtitle "Navigation" ^aliases "plugin manager extensions"}
+     {^id "action:restart" ^kind "action" ^action "restart" ^title "Restart Harness"
+      ^subtitle "Host control" ^aliases "restart reload host"}
+     {^id "action:stop" ^kind "action" ^action "stop" ^title "Stop Harness"
+      ^subtitle "Host control" ^aliases "stop shutdown host"}
      {^id "view:harness" ^kind "view" ^view "harness" ^title "Classic Harness"
       ^subtitle "View" ^aliases "chat"}])
   (var views (items current/views))
@@ -188,6 +252,7 @@
 
 (fn search [spot : Spotlight, query : Str] : Nil
   (if_yes (! spot/awaiting_receipt) (set spot/feedback ""))
+  (set spot/confirm "")
   (set spot/query query)
   (set spot/query_generation (+ spot/query_generation 1))
   (set spot/published -1)
@@ -286,7 +351,7 @@
   (var spot (Spotlight ^root root ^bridge bridge ^owner owner ^button button ^panel panel
     ^input input ^list list ^message message ^crumb crumb ^!open ^!disposed ^opening 0
     ^query_generation 0 ^step_generation 0 ^published -1 ^step "" ^items [] ^active -1 ^!busy ^!awaiting_receipt ^!partial
-    ^parent nil ^command nil ^target "" ^query "" ^status nil ^steps {} ^step_key "" ^feedback "" ^availability ""))
+    ^parent nil ^command nil ^target "" ^query "" ^status nil ^steps {} ^step_key "" ^confirm "" ^feedback "" ^availability ""))
   # Publish cleanup before mounting anything that can fail.
   (set root/harness_controller
     {^dispose (fn [] : Nil (set spot/disposed true) ($dom/remove button) (close spot true))

@@ -43,6 +43,14 @@ class FakeNode {
     return child;
   }
 
+  append(...nodes) {
+    for (const node of nodes) {
+      this.appendChild(typeof node === 'string'
+        ? this.ownerDocument.createTextNode(node)
+        : node);
+    }
+  }
+
   insertBefore(child, reference) {
     if (child.parentNode) child.parentNode.removeChild(child);
     const at = reference ? this.childNodes.indexOf(reference) : -1;

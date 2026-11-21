@@ -2,8 +2,16 @@
 
 The default `spotlight` plugin adds **Search ⌘K** to the host bar. Cmd+K opens a
 compact autocomplete dialog from the conversation or a plugin view. Type to
-find workspace conversations, views, Help, Change theme, New conversation, or
-Needs attention. Ordinary queries never submit prompts or evaluate code.
+find workspace conversations, views, Help, Change theme, New conversation,
+Needs attention, Triggers, Plugins, or Restart/Stop Harness. Ordinary queries
+never submit prompts or evaluate code.
+
+The host bar itself no longer carries Triggers, Plugins, or a theme launcher.
+**Triggers** opens the triggers panel in place (its Close button dismisses it);
+**Plugins** loads `/plugins`; **Restart Harness** and **Stop Harness** post the
+confirmed control request. Restart and Stop require selecting the same result
+a second time: the first selection only shows what the second will do, so a
+single Enter cannot stop a running workspace.
 
 | Key | Behavior |
 | --- | --- |
