@@ -21,7 +21,8 @@
       "compiles the browser client and keeps its page and storage boundaries"
       (fn [workspace]
         (let output $"${workspace}/compiled")
-        (for entry in ["client/main.gene" "client/plugins/host_audio.gene"
+        (for entry in ["client/main.gene" "client/editor.gene" "client/editor_view.gene"
+                      "client/plugins/host_audio.gene"
                       "client/plugins/models_picker.gene" "client/plugins/spotlight.gene"]
           (let built (await ($os/exec_async ^timeout_ms 30000 ^max_bytes 1048576
             ($os/executable_path) "build" "--target" "web" "--out-dir" output (package_path entry))))
@@ -35,6 +36,14 @@
         ($fs/write_text ($path/join output "plugins.html") (plugin_page ^workspace "/workspace/a"))
         (let storage (await ($os/exec_async ^timeout_ms 15000 ^max_bytes 1048576
           "node" (package_path "tests/fixtures/workspace_storage.mjs") output)))
-        ($assert (== storage/status 0) $"workspace storage: ${storage/stdout}${storage/stderr}")))))
+        ($assert (== storage/status 0) $"workspace storage: ${storage/stdout}${storage/stderr}"))))
+
+  (it "routes editor requests through the versioned API root" []
+    # Plugin routes are registered under api_root (/api/v9/p/<owner>/...).
+    # A literal "/p/editor/..." path skips the versioned prefix and 404s.
+    (for entry in ["client/editor.gene" "client/editor_view.gene"]
+      (let source ($fs/read_text (package_path entry)))
+      ($assert (! ($str/contains? source "\"/p/editor/"))
+        $"{entry} hard-codes a plugin route without api_root"))))
 
 (fn main [args] : Int (run_spec args))

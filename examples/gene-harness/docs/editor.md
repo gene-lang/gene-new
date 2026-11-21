@@ -48,7 +48,8 @@ and offers comparison; the newer revision is never adopted silently.
 
 ## Routes
 
-All routes are `owner` routes under `/api/v1/p/editor` and therefore run after
+All routes are `owner` routes under the versioned API root, `/api/v9/p/editor`
+(the `api_root` of the current protocol), and therefore run after
 the existing same-origin, owner-cookie, and CSRF checks.
 
 | Route | Purpose |
@@ -125,7 +126,7 @@ draft, caret, undo history, and each surface's scroll position. Logs are
 polled only while the tab is visible; hiding it stops the timer chain, and a
 delayed reply for a previous tab or plugin state is discarded.
 
-`GET /p/editor/log` reads the retained `.gene-harness/host.log` and its
+`GET /api/v9/p/editor/log` reads the retained `.gene-harness/host.log` and its
 `host.log.1` predecessor. The cursor is opaque: a segment name, a byte offset
 at a line boundary, and a SHA-256 digest of that segment's prefix through the
 offset. Each poll compares the prefix:

@@ -18,6 +18,7 @@
 (import [mount_editor editor_document EditorDocument EditorServices Editor]
   ^from "./components/gene_editor.gene")
 (import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+(import [api_root] ^from "../src/web/contract.gene")
 
 (type EditorPanel ^props {
   ^workspace Str
@@ -127,7 +128,7 @@
       (if (! panel/available)
         (done {^ok false
                ^message "The editor plugin is disabled; saving resumes when it is enabled."})
-        (panel/api "POST" "/p/editor/save" request
+        (panel/api "POST" $"${(api_root)}/p/editor/save" request
           (fn [status : Int, data : Any] : Nil
             (if (|| (== status 200) (&& (>= status 400) (< status 500)))
               (done data)
@@ -138,7 +139,7 @@
       (if (! panel/available)
         (done (unavailable_response request
           "The editor plugin is disabled; analysis resumes when it is enabled."))
-        (panel/api "POST" "/p/editor/analyze" request
+        (panel/api "POST" $"${(api_root)}/p/editor/analyze" request
           (fn [status : Int, data : Any] : Nil
             (var response : Any (if ($present? data) data
               {^ok false ^message "The analysis request failed; try again."}))
@@ -150,7 +151,7 @@
       (if (! panel/available)
         (done {^ok false
                ^message "The editor plugin is disabled; formatting resumes when it is enabled."})
-        (panel/api "POST" "/p/editor/format" request
+        (panel/api "POST" $"${(api_root)}/p/editor/format" request
           (fn [status : Int, data : Any] : Nil
             (var response : Any (if ($present? data) data
               {^ok false ^message "The format request failed; try again."}))
@@ -209,7 +210,7 @@
   reached)
 
 (fn open_document [panel : EditorPanel, path : Str, first : Int, last : Int] : Nil
-  (var url $"/p/editor/document?path=${(url/encode_component path)}")
+  (var url $"${(api_root)}/p/editor/document?path=${(url/encode_component path)}")
   (panel/api "GET" url nil
     (fn [status : Int, data : Any] : Nil
       (if (!= status 200)
@@ -330,7 +331,7 @@
   (var finish (int_of selection/end_byte start))
   (if (== path "")
     (do (say panel "Open a file first.") (return)))
-  (panel/api "POST" "/p/editor/selection"
+  (panel/api "POST" $"${(api_root)}/p/editor/selection"
     {^path path ^revision revision ^start_byte start ^end_byte finish}
     (fn [status : Int, data : Any] : Nil
       (if (!= status 200)
@@ -371,7 +372,7 @@
   (set panel/log_generation (+ panel/log_generation 1)))
 
 (fn log_url [panel : EditorPanel] : Str
-  $"/p/editor/log?source=host&cursor=${(url/encode_component panel/log_cursor)}")
+  $"${(api_root)}/p/editor/log?source=host&cursor=${(url/encode_component panel/log_cursor)}")
 
 (fn poll_log [panel : EditorPanel] : Nil
   (if (|| (! panel/available) (!= panel/mode "logs")) (return))

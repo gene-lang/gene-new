@@ -13,6 +13,7 @@
 (import [Editor EditorServices EditorDocument editor_document mount_editor]
   ^from "./components/gene_editor.gene")
 (import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
+(import [api_root] ^from "../src/web/contract.gene")
 
 (type EditorView ^props {
   ^root EventTarget
@@ -173,7 +174,7 @@
     ^save (fn [request : Any, done : (Fn [Any] Nil)] : Nil
       (if (! view/available)
         (done {^ok false ^message "The editor plugin is disabled; saving resumes when it is enabled."})
-        (bridge_call view "POST" "/p/editor/save" request
+        (bridge_call view "POST" $"${(api_root)}/p/editor/save" request
           (fn [status : Int, data : Any] : Nil
             (if (|| (== status 200) (&& (>= status 400) (< status 500)))
               (done data)
@@ -182,7 +183,7 @@
     ^analyze (fn [request : Any, done : (Fn [Any] Nil)] : Nil
       (if (! view/available)
         (done (unavailable_response request "The editor plugin is disabled."))
-        (bridge_call view "POST" "/p/editor/analyze" request
+        (bridge_call view "POST" $"${(api_root)}/p/editor/analyze" request
           (fn [status : Int, data : Any] : Nil
             (var response : Any (if ($present? data) data
               {^ok false ^message "The analysis request failed; try again."}))
@@ -192,7 +193,7 @@
     ^format (fn [request : Any, done : (Fn [Any] Nil)] : Nil
       (if (! view/available)
         (done (unavailable_response request "The editor plugin is disabled."))
-        (bridge_call view "POST" "/p/editor/format" request
+        (bridge_call view "POST" $"${(api_root)}/p/editor/format" request
           (fn [status : Int, data : Any] : Nil
             (var response : Any (if ($present? data) data
               {^ok false ^message "The format request failed; try again."}))
@@ -217,7 +218,7 @@
   ($dom/set_input_value view/path_input path)
   (say view "Opening…")
   (bridge_call view "GET"
-    $"/p/editor/document?path=${(url/encode_component path)}" nil
+    $"${(api_root)}/p/editor/document?path=${(url/encode_component path)}" nil
     (fn [status : Int, data : Any] : Nil
       (if view/disposed (return))
       (if (!= status 200)
@@ -252,7 +253,7 @@
   editor)
 
 (fn log_url [view : EditorView] : Str
-  $"/p/editor/log?source=host&cursor=${(url/encode_component view/cursor)}")
+  $"${(api_root)}/p/editor/log?source=host&cursor=${(url/encode_component view/cursor)}")
 
 (fn poll_log [view : EditorView] : Nil
   (if (|| view/disposed (! view/available) (!= view/tab "logs") ($absent? view/log_view))
@@ -337,7 +338,7 @@
       (var revision (text_of selection/revision ""))
       (var start (int_of selection/start_byte))
       (var finish (int_of selection/end_byte start))
-      (bridge_call view "POST" "/p/editor/selection"
+      (bridge_call view "POST" $"${(api_root)}/p/editor/selection"
         {^path path ^revision revision ^start_byte start ^end_byte finish}
         (fn [status : Int, data : Any] : Nil
           (if view/disposed (return))
