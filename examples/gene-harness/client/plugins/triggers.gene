@@ -51,6 +51,25 @@
         (var problem (text result/message))
         ($dom/set_text state/message (if (== problem "") "Could not create the trigger." problem)))))))
 
+(fn style_panel [panel : EventTarget] : Nil
+  # The contribution's mount root is a div after the app shell, so an
+  # in-flow panel can open offscreen. Present the panel as a fixed overlay.
+  ($dom/set_style panel "position" "fixed")
+  ($dom/set_style panel "top" "4.5rem")
+  ($dom/set_style panel "right" "1rem")
+  ($dom/set_style panel "z-index" "var(--layer-drawer, 60)")
+  ($dom/set_style panel "width" "min(30rem, calc(100vw - 2rem))")
+  ($dom/set_style panel "max-height" "calc(100vh - 6rem)")
+  ($dom/set_style panel "overflow" "auto")
+  ($dom/set_style panel "padding" "var(--space-3, 0.75rem)")
+  ($dom/set_style panel "background" "var(--surface-raised, Canvas)")
+  ($dom/set_style panel "color" "var(--ink, CanvasText)")
+  ($dom/set_style panel "border" "var(--border-width, 1px) solid var(--edge, GrayText)")
+  ($dom/set_style panel "border-radius" "var(--radius-surface, 0.5rem)")
+  ($dom/set_style panel "box-shadow" "var(--shadow-overlay, 0 0 1rem rgba(0,0,0,.35))")
+  ($dom/set_style panel "display" "grid")
+  ($dom/set_style panel "gap" "var(--space-2, 0.5rem)"))
+
 (fn close_panel [state : Any] : Nil
   (set state/open false)
   ($dom/set_attribute state/panel "hidden" ""))
@@ -59,7 +78,8 @@
   (if_yes state/open (return))
   (set state/open true)
   ($dom/remove_attribute state/panel "hidden")
-  (load state))
+  (load state)
+  ($dom/focus state/id))
 
 (fn main [root : EventTarget] : Nil
   (var bridge : Any root/harness_bridge)
@@ -73,6 +93,12 @@
   (var request ($dom/render `(textarea ^placeholder "Request" ^aria-label "Request")))
   (var submit ($dom/render `(button ^type "button" "Create")))
   (var close_button ($dom/render `(button ^type "button" "Close")))
+  (var heading ($dom/render `(div (strong "Triggers"))))
+  ($dom/set_style heading "display" "flex")
+  ($dom/set_style heading "justify-content" "space-between")
+  ($dom/set_style heading "align-items" "center")
+  ($dom/append heading close_button)
+  (style_panel panel)
   (var state {^bridge bridge ^panel panel ^list list ^message message ^id id ^kind kind ^schedule schedule ^request request ^open false})
   # Search Harness reaches this through the host bridge's shared map.
   (var shared : Any bridge/shared)
@@ -82,9 +108,12 @@
        (set shared/open_triggers nil)
        ($dom/remove panel))
      ^update (fn [status : Any] : Nil nil)
-     ^key (fn [event : Any] : Bool false)})
+     ^key (fn [event : Any] : Bool
+       (if (&& state/open (== ($event/code event) "Escape"))
+         (do (close_panel state) true)
+         false))})
   ($dom/append root panel)
-  ($dom/append panel close_button)
+  ($dom/append panel heading)
   (for element in [list message id kind schedule request submit] ($dom/append panel element))
   ($dom/add_event_listener close_button "click" (fn [event : Any] : Nil (close_panel state)))
   ($dom/add_event_listener submit "click" (fn [event : Any] : Nil (create state))))

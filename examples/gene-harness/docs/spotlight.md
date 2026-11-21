@@ -152,6 +152,7 @@ The bridge supplies:
 | Field | Contract |
 | --- | --- |
 | `toolbar` | This contribution's host-owned toolbar outlet. |
+| `shared` | A map shared by reference across every browser client; publish a capability there for another contribution to call (Search opens the trigger panel through it). |
 | `state [] : Any` | Current session/title, command descriptors, view descriptors, readiness and pending command. |
 | `api [method path payload done]` | Authenticated API; `done [status : Int result : Any]`. |
 | `navigate [result done]` | Conversation/view/common-action routing with explicit success/refusal. |

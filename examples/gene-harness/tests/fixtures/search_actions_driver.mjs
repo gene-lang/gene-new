@@ -52,6 +52,9 @@ await tick(10);
 const panels = findAll(triggerRoot, node => node.classList?.contains('triggers-panel'));
 const panel = panels[0];
 check('opens the trigger panel', Boolean(panel) && panel.hidden === false);
+check('presents the panel as a fixed overlay',
+  panel?.style?.getPropertyValue('position') === 'fixed',
+  panel ? JSON.stringify([...panel.style?._styles ?? []]) : 'missing panel');
 check('loads trigger definitions',
   triggerRequests.some(request => request.method === 'GET' && String(request.path).endsWith('/p/triggers')),
   JSON.stringify(triggerRequests));
