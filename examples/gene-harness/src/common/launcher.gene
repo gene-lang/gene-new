@@ -3,8 +3,11 @@
 
 (fn text [value : Any, fallback : Str = ""] : Str
   (if_yes ($absent? value) (return fallback))
-  (var result : Str value)
-  result)
+  # A PropMap iterates its keys as Syms, so text-valued metadata and view
+  # data can arrive as either spelling. `$to_str` accepts the union; a Sym
+  # renders as its name.
+  (var result : (| Str Sym) value)
+  ($to_str result))
 
 (fn flag [value : Any] : Bool
   (if_yes ($absent? value) (return false))

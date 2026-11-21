@@ -47,7 +47,9 @@ const bridge = {
 const host = clients.create_clients(document.body, false, bridge);
 const element = document.createElement('div');
 document.body.appendChild(element);
-const outlet = { name: 'probe', element, key: 'probe_outlet' };
+// A real view tree iterates PropMap keys, which are Syms. A symbol key
+// exercises the text boundary the host record runs through.
+const outlet = { name: 'probe', element, key: Symbol.for('probe_outlet') };
 const saves = [];
 const status = { ready: true, plugins: [{ id: 'probe', state: 'ready' }] };
 const context = {

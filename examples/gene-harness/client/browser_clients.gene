@@ -223,6 +223,8 @@
   (set element/harness_bridge bridge)
   (set element/harness_owner owner)
   (var record
+    # The view tree iterates a PropMap, so `outlet/key` is a Sym; the shared
+    # text helper accepts the Str/Sym union and renders a Sym by name.
     {^element element ^key (text outlet/key) ^view (text context/view_name)
      ^workspace (text context/workspace) ^revision (text descriptor/revision)
      ^owner owner ^generation generation
