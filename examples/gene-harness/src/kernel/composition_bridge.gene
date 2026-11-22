@@ -45,8 +45,8 @@
   snapshot)
 
 (fn ^^private publish_registry_snapshot [h : Harness]
-  (if_yes (&& ($present? h/snapshots) (! h/snapshots/closed/.get))
-    (let plugins [])
+  (if (&& ($present? h/snapshots) (! h/snapshots/closed/.get))
+    (do (let plugins [])
     (let states ($cell nil))
     (let seen {})
     (map_for [id plugin] in h/plugins/.get
@@ -71,7 +71,7 @@
               ^id entry/id
               ^status (if entry/disabled
                         "disabled"
-                        "error")
+                        else "error")
               ^module_digest entry/module_digest
               ^error (h/workspace/errors/.get .get entry/id)}))))
     (let registry_owners {})
@@ -94,7 +94,7 @@
       (notify h (CompositionChanged ^revision snapshot/id))
     catch Throwable
       (record_publication_diagnostic h/snapshots snapshot
-        {^kind "notification" ^message $err/.message})))
+        {^kind "notification" ^message $err/.message}))))
   nil)
 
 (fn ^^private clone_registries [h : Harness]
@@ -170,7 +170,7 @@
         ^max_memory_mb limits/max_memory_mb ^timeout_ms limits/timeout_ms))
       (configure_plugin_module module callback_limits)
       (describe_plugin_module h module id
-        ^core_interface (?? core_interface (if ($absent? h/workspace) "" h/workspace/core_interface))
+        ^core_interface (?? core_interface (if ($absent? h/workspace) "" else h/workspace/core_interface))
         ^limits bounded))
     (message context [plugin, effects, observer, policy] : PluginHost
       # Cordis withdraws a re-staged entry before staging it. This covers a
@@ -178,10 +178,10 @@
       (self .RegistryHost:withdraw_owner plugin/id)
       (var h self/h)
       (set h/registry_observer observer)
-      (let default (if ($absent? h/workspace) nil (h/workspace/profile_plugins/.get .get plugin/id)))
+      (let default (if ($absent? h/workspace) nil else (h/workspace/profile_plugins/.get .get plugin/id)))
       (let writer ($freeze
-        {^digest (?? policy/digest (if (same? default/plugin plugin) "builtin" "unknown"))
-         ^host_build_id (if ($absent? h/workspace) "unknown" h/workspace/history_build/.get)}))
+        {^digest (?? policy/digest (if (same? default/plugin plugin) "builtin" else "unknown"))
+         ^host_build_id (if ($absent? h/workspace) "unknown" else h/workspace/history_build/.get)}))
       (var context (Host ^h h ^owner plugin/id ^effects effects ^notification_revision ($crypto/random_hex 16)
         ^state_writer writer))
       (let receiver (make_plugin_receiver context))
@@ -190,7 +190,7 @@
       (h/plugin_policies/.get .put plugin/id
         {^limits (ExecutionLimits
            ^max_memory_mb policy/limits/max_memory_mb ^timeout_ms policy/limits/timeout_ms)
-         ^init_limits (if policy/host nil policy/init_limits)
+         ^init_limits (if policy/host nil else policy/init_limits)
          ^core_interface policy/core_interface
          ^source_digest writer/digest ^host_build_id writer/host_build_id
          ^activation_revision context/notification_revision
@@ -209,10 +209,10 @@
       receiver)
     (message selected [registry_name : Str, key : Str] : Any
       (var h self/h)
-      (if_yes (== registry_name "$registries")
-        (let definition (h/registries/.get .get key))
+      (if (== registry_name "$registries")
+        (do (let definition (h/registries/.get .get key))
         (if ($absent? definition) (return nil))
-        (return {^row_id definition/revision ^payload {^name key} ^effects definition/effects}))
+        (return {^row_id definition/revision ^payload {^name key} ^effects definition/effects})))
       (if_not (registry_exists? h registry_name) (return nil))
       (var selected nil)
       # Cordis invokes selection callbacks outside RegistryHost.activate's
@@ -225,7 +225,7 @@
           (let registry (registry_named h registry_name))
           (for record in registry/rows/.get
             (if (&& ($absent? selected) (== record/key key)) (set selected record))))
-        (set selected (row_record h registry_name key)))
+        else (set selected (row_record h registry_name key)))
       (if ($absent? selected) (return nil))
       {^row_id selected/row_id ^payload selected/payload ^effects selected/effects})))
 
@@ -235,7 +235,7 @@
 (fn ^^private release_activation_policy [h : Harness, owner : Str, context]
   (var policies h/plugin_policies/.get)
   (var current (policies .get owner))
-  (if_yes (&& ($present? current) (== current/context context)) (policies .delete owner))
+  (if (&& ($present? current) (== current/context context)) (policies .delete owner))
   nil)
 
 (fn new_harness
@@ -279,9 +279,9 @@
     (new_composition (make_cordis_registry_host h)
       ^limits (if ($absent? limits)
         (response_execution_limits)
-        limits)
+        else limits)
       ^options (LoaderOptions
-        ^plugin_root (if ($absent? workspace) $"${package_root}/plugins/generated" workspace/generated_dir)
+        ^plugin_root (if ($absent? workspace) $"${package_root}/plugins/generated" else workspace/generated_dir)
         ^shared (sdk_modules)
         ^max_namespaces ($runtime/sandbox_namespaces)
         ^default_limits nil ^reload_policy nil
@@ -343,10 +343,10 @@
   (try
     (reconcile_registry_candidate ^strict strict ^pending pending ^accept accept ^commit commit ^prepare prepare h)
   catch Throwable
-    (if_yes (&& ($present? committed) committed/.get)
-      (h/composer/bridge/published .set h/composition/.current_plugins)
+    (if (&& ($present? committed) committed/.get)
+      (do (h/composer/bridge/published .set h/composition/.current_plugins)
       (publish_registry_snapshot h)
-      (fail $err))
+      (fail $err)))
     (h/registries .set baseline)
     (h/ledger .set baseline_ledger)
     (h/row_index .set baseline_index)
@@ -385,7 +385,7 @@
       (if strict
         {^snapshot (h/composition .reconcile_strict ^pending pending
           plugins h/composer/bridge/entries/.get accept commit) ^failures []}
-        (h/composition .reconcile_available plugins h/composer/bridge/entries/.get failed))
+        else (h/composition .reconcile_available plugins h/composer/bridge/entries/.get failed))
       ensure
         (h/composition .prepare_owners nil)))
   (for failure in result/failures
@@ -419,7 +419,7 @@
     catch Throwable
       (if committed/.get
         {^published true ^state "recovery_required" ^message $err/.message}
-        (do
+        else (do
           (h/plugins .set previous_plugins)
           (h/composer/bridge/entries .set previous_options)
           (h/plugin_errors .set previous_errors)
@@ -428,7 +428,7 @@
 (fn put_cordis_plugin [h : Harness, plugin : Plugin, entry_options, ^replace replace : Bool = false]
   (run_composition_change h/snapshots (fn []
   (if ($absent? h/composition) (fail (HarnessError ^_msg "Harness has no Cordis composition")))
-  (if_yes (&& (! replace) ($present? (h/plugins .get; .get plugin/id)))
+  (if (&& (! replace) ($present? (h/plugins .get; .get plugin/id)))
     (fail (HarnessError ^_msg $"plugin ${plugin/id} already installed")))
   (validate_plugin_descriptor h plugin/id plugin)
   (h/plugins
@@ -458,7 +458,7 @@
 
   (for admission in admissions
     (var plugin admission/plugin)
-    (if_yes ($present? (h/plugins/.get .get plugin/id))
+    (if ($present? (h/plugins/.get .get plugin/id))
       (fail (HarnessError ^_msg $"plugin ${plugin/id} already installed")))
     (validate_plugin_descriptor h plugin/id plugin))
   (for admission in admissions
@@ -496,9 +496,9 @@
   (let state (states/.get .get id))
   (if ($absent? state) (return "pending"))
   (match state
-    (when "active" "ready")
-    (when "failed" "error")
-    (else state)))
+    when "active" "ready"
+    when "failed" "error"
+    else state))
 
 (fn status_of [h : Harness, id : Str] : Str
   (status_in h ($cell nil) id))
@@ -513,7 +513,7 @@
       (if (&& (== entry/id id) ($present? entry/error))
         (do
           (let error entry/error)
-          (return (if (== ($head error) Str) error ($to_str error)))))))
+          (return (if (== ($head error) Str) error else ($to_str error)))))))
   nil)
 
 (fn ^^private plugin_ids [h : Harness] : Any
@@ -589,7 +589,7 @@
   (h/composer/bridge/entries .set (fresh_map))
   (h/plugin_errors .set (fresh_map))
   (flush_harness h)
-  {^status (if (== errors/.size 0) "closed" "recovery_required") ^errors errors})
+  {^status (if (== errors/.size 0) "closed" else "recovery_required") ^errors errors})
 
 (fn ^^private installed [h : Harness] : Any
   (plugin_ids h))

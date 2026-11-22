@@ -16,7 +16,7 @@
 ## (`tests/test_cli.nim` asserts parse-equivalence and idempotence).
 
 import std/[strutils, tables]
-import ../gene/[reader, types, printer]
+import ../gene/[clause_syntax, reader, types, printer]
 import ./lsp/analysis as span
 import ./source_index
 
@@ -242,8 +242,8 @@ proc declarationPrefixCount(head: string, body: openArray[Value]): int =
 proc headerBodyCount(head: string, body: openArray[Value]): int =
   ## Number of positional items kept on the opening line of a broken form.
   case head
-  of "if", "if_yes", "if_not", "while", "when", "elif", "match", "case",
-     "let", "var", "const", "set", "spawn":
+  of "if", "if_not", "while", "match", "case", "let", "var", "const", "set",
+     "spawn":
     1
   of "for", "map_for", "repeat":
     if body.len >= 3 and body[1].isSym("in"): 3 else: 1
@@ -252,7 +252,7 @@ proc headerBodyCount(head: string, body: openArray[Value]): int =
     2
   of "impl":
     if body.len >= 3 and body[1].isSym("for"): 3 else: 1
-  of "do", "else", "then", "try", "loop", "supervisor":
+  of "do", "try", "loop", "supervisor":
     0
   of "fn", "macro", "message", "ctor", "mod", "ns", "type",
      "enum", "protocol":
@@ -550,6 +550,25 @@ proc rawStr(s: string): string =
 proc fits(v: Value, indent: int): bool =
   not hasMultilineString(v) and indent + oneLine(v).len <= MaxWidth
 
+proc armBodyPreferMultiline(forms: openArray[Value]): bool =
+  if forms.len > 1:
+    return true
+  if forms.len == 1 and forms[0].kind == vkNode and
+      forms[0].head.kind == vkSymbol and forms[0].head.symVal == "do" and
+      forms[0].body.len > 1:
+    return true
+  false
+
+proc clausesPreferMultiline(arms: openArray[ClauseArm],
+                            elseBody: openArray[Value]): bool =
+  for arm in arms:
+    if armBodyPreferMultiline(arm.body):
+      return true
+  armBodyPreferMultiline(elseBody)
+
+proc bodyPairPreferMultiline(body, elseBody: openArray[Value]): bool =
+  armBodyPreferMultiline(body) or armBodyPreferMultiline(elseBody)
+
 proc prefersMultiline(v: Value): bool =
   if v.kind == vkPipeline:
     return v.pipelineStages.len >= 2
@@ -567,26 +586,26 @@ proc prefersMultiline(v: Value): bool =
   of "protocol", "impl", "ns":
     bodyCount > headerBodyCount(head, v.body)
   of "if":
-    if bodyCount >= 3:
-      return true
-    for item in v.body:
-      if item.kind == vkNode and item.head.kind == vkSymbol and
-          item.head.symVal in ["then", "elif", "else"]:
-        return true
-    false
-  of "if_yes", "if_not":
+    let split = tryDecodeIf(v)
+    if not split.valid:
+      return bodyCount >= 3
+    clausesPreferMultiline(split.clauses.arms, split.clauses.elseBody)
+  of "if_not":
     bodyCount > 2
   of "if_present":
-    if bodyCount > 3:
-      return true
-    for item in v.body:
-      if item.kind == vkNode and item.head.kind == vkSymbol and
-          item.head.symVal == "else":
-        return true
-    false
-  of "then", "else", "when", "elif":
-    bodyCount > 0
-  of "match", "try":
+    let split = tryDecodeIfPresent(v)
+    if not split.valid:
+      return bodyCount > 3
+    bodyPairPreferMultiline(split.clauses.body, split.clauses.elseBody)
+  of "match":
+    let split = tryDecodeMatch(v)
+    if not split.valid:
+      return bodyCount > 1
+    var multiline = false
+    for arm in split.clauses.arms:
+      multiline = multiline or arm.body.len > 1
+    multiline or split.clauses.elseBody.len > 1
+  of "try":
     bodyCount > 1
   of "for", "map_for":
     bodyCount > headerBodyCount(head, v.body)
@@ -595,7 +614,83 @@ proc prefersMultiline(v: Value): bool =
   else:
     false
 
+proc breakFlatIf(v: Value, indent: int, clauses: IfClauses): string =
+  ## Flat `if`: arm bodies indent one level; `elif` and `else` align with the
+  ## opening paren.
+  let pad = repeat(' ', indent + 2)
+  var sb = (if v.nodeImmutable: "#(" else: "(") & oneLine(v.head)
+  addProps(sb, v.meta, "@")
+  addProps(sb, v.props, "^")
+  sb.add " " & oneLine(clauses.condition)
+  if clauses.arms.len == 0 and clauses.hasElse:
+    # Else-only keeps `else` on the opening line, as in `(if x else ...)`.
+    sb.add " else"
+    for form in clauses.elseBody:
+      sb.add "\n" & pad & fmtValue(form, indent + 2)
+    return sb & ")"
+  for index, arm in clauses.arms:
+    if index > 0:
+      sb.add "\n" & repeat(' ', indent) & "elif " &
+        fmtValue(arm.header, indent + 5)
+    for form in arm.body:
+      sb.add "\n" & pad & fmtValue(form, indent + 2)
+  if clauses.hasElse:
+    sb.add "\n" & repeat(' ', indent) & "else"
+    for form in clauses.elseBody:
+      sb.add "\n" & pad & fmtValue(form, indent + 2)
+  sb & ")"
+
+proc breakFlatIfPresent(v: Value, indent: int,
+                        clauses: PresentClauses): string =
+  let pad = repeat(' ', indent + 2)
+  var sb = (if v.nodeImmutable: "#(" else: "(") & oneLine(v.head)
+  addProps(sb, v.meta, "@")
+  addProps(sb, v.props, "^")
+  sb.add " " & oneLine(clauses.binder) & " " & oneLine(clauses.tested)
+  for form in clauses.body:
+    sb.add "\n" & pad & fmtValue(form, indent + 2)
+  if clauses.hasElse:
+    sb.add "\n" & repeat(' ', indent) & "else"
+    for form in clauses.elseBody:
+      sb.add "\n" & pad & fmtValue(form, indent + 2)
+  sb & ")"
+
+proc breakFlatMatch(v: Value, indent: int, clauses: MatchClauses): string =
+  ## Flat `match`: `when`/`else` arms indent one level and their bodies one
+  ## level further, as in the language reference.
+  let armPad = repeat(' ', indent + 2)
+  let bodyPad = repeat(' ', indent + 4)
+  var sb = (if v.nodeImmutable: "#(" else: "(") & oneLine(v.head)
+  addProps(sb, v.meta, "@")
+  addProps(sb, v.props, "^")
+  sb.add " " & oneLine(clauses.value)
+  for arm in clauses.arms:
+    sb.add "\n" & armPad & "when " & fmtValue(arm.header, indent + 7)
+    for form in arm.body:
+      sb.add "\n" & bodyPad & fmtValue(form, indent + 4)
+  if clauses.hasElse:
+    sb.add "\n" & armPad & "else"
+    for form in clauses.elseBody:
+      sb.add "\n" & bodyPad & fmtValue(form, indent + 4)
+  sb & ")"
+
 proc breakNode(v: Value, indent: int): string =
+  if v.head.kind == vkSymbol:
+    case v.head.symVal
+    of "if":
+      let split = tryDecodeIf(v)
+      if split.valid:
+        return breakFlatIf(v, indent, split.clauses)
+    of "if_present":
+      let split = tryDecodeIfPresent(v)
+      if split.valid:
+        return breakFlatIfPresent(v, indent, split.clauses)
+    of "match":
+      let split = tryDecodeMatch(v)
+      if split.valid:
+        return breakFlatMatch(v, indent, split.clauses)
+    else:
+      discard
   let pad = repeat(' ', indent + 2)
   let pipeline = pipelineParts(v)
   if pipeline.stages.len >= 2:

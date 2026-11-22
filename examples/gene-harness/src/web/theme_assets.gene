@@ -9,9 +9,9 @@
 
 (fn catalog_cache [themes]
   (let revision ($to_str ($web/asset_base) "|" (themes_revision themes)))
-  (if_yes ($absent? (catalogs .get revision))
-    (if (>= ($map_size catalogs) 8) (set catalogs {}))
-    (catalogs .put revision {^resolved {} ^active {} ^previews {}}))
+  (if ($absent? (catalogs .get revision))
+    (do (if (>= ($map_size catalogs) 8) (set catalogs {}))
+    (catalogs .put revision {^resolved {} ^active {} ^previews {}})))
   (catalogs .get revision))
 
 (fn cached_resolution [cache, name : Str, themes]
@@ -38,12 +38,12 @@
     (let cache (catalog_cache themes))
     (let selected (cached_resolution cache wanted themes))
     (let theme (if ($present? selected/theme) selected/theme
-      (/theme (cached_resolution cache "default" themes))))
+      else (/theme (cached_resolution cache "default" themes))))
     (let name theme/name)
-    (if_yes ($absent? (cache/active .get name))
-      (let link ($web/stylesheet $"harness-theme-${name}" (generate_theme theme)))
+    (if ($absent? (cache/active .get name))
+      (do (let link ($web/stylesheet $"harness-theme-${name}" (generate_theme theme)))
       (cache/active .put name ($freeze {^name name ^stylesheet (/href ($props link))
-        ^preloads {^light (body_preloads theme "light") ^dark (body_preloads theme "dark")}})))
+        ^preloads {^light (body_preloads theme "light") ^dark (body_preloads theme "dark")}}))))
     (cache/active .get name))))
 
 (fn theme_preview_asset [name : Str, themes]
@@ -51,7 +51,7 @@
     (let cache (catalog_cache themes))
     (let selected (cached_resolution cache name themes))
     (if ($present? selected/error) (theme_error selected/error))
-    (if_yes ($absent? (cache/previews .get name))
-      (let link ($web/stylesheet $"harness-preview-${name}" (preview_css selected/theme)))
-      (cache/previews .put name (/href ($props link))))
+    (if ($absent? (cache/previews .get name))
+      (do (let link ($web/stylesheet $"harness-preview-${name}" (preview_css selected/theme)))
+      (cache/previews .put name (/href ($props link)))))
     (cache/previews .get name))))

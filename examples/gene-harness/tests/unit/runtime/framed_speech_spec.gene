@@ -16,7 +16,7 @@
         (requests/.get .push request)
         (if (== request/text "reject")
           (write_json output {^ok false ^message "invalid request"})
-          (do (write_json output {^ok true})
+          else (do (write_json output {^ok true})
             (write_packet output pcm) (write_packet output ($binary/from_list [])))))))
     (let worker {^reader reader ^writer writer ^task task ^gate ($sync/gate) ^closed ($cell false)})
     (let delivered [])

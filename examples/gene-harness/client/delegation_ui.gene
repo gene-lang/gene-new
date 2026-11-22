@@ -10,21 +10,21 @@
 (type DelegationUi ^props {^epoch Int ^recovery Any? ^subscribed Bool})
 (fn state [client : Client] : DelegationUi
   (var states (features client))
-  (if_yes ($absent? states/delegation) (set states/delegation (DelegationUi ^epoch 0 ^!subscribed)))
+  (if ($absent? states/delegation) (set states/delegation (DelegationUi ^epoch 0 ^!subscribed)))
   (var result : DelegationUi states/delegation) result)
 
 (fn initialize_delegation [client : Client] : Nil
   (var feature (state client))
-  (if_yes feature/subscribed (return))
+  (if feature/subscribed (return))
   (set feature/subscribed true)
   (subscribe_feature (client_events client)
     (fn [kind : Str, session : Str, data : Any] : Nil
-      (if_yes (!= kind "delegation") (return))
+      (if (!= kind "delegation") (return))
       (if (== session client/selected)
         (do
           (set client/records (merge_delegation client/records data))
           (render_transcript client))
-        (do
+        else (do
           (var tab : Any (session_tab client session))
           (var cache : Any tab/cache)
           (var records : (List Any) cache/records)
@@ -40,8 +40,8 @@
 
 (fn render_delegation [client : Client, target : EventTarget, block : Any] : Bool
   (var phase (string_or block/phase ""))
-  (if_yes (== phase "delegation/update") (return true))
-  (if_yes (!= phase "delegation") (return false))
+  (if (== phase "delegation/update") (return true))
+  (if (!= phase "delegation") (return false))
   (var feature (state client))
   (var session client/selected)
   (var epoch feature/epoch)
@@ -52,17 +52,17 @@
       (var id : Str data/id)
       (api client "POST" $"${(api_root)}/sessions/${session}/delegations/${id}/cancel" {^admission data/admission}
         (fn [code : Int, result : Any] : Nil
-          (if_yes (!= code 200) (show_error client result ^session session)))))
+          (if (!= code 200) (show_error client result ^session session)))))
     (fn [] : Bool (&& (== session client/selected) (== epoch feature/epoch)))))
   true)
 
 (fn render_delegation_recovery [client : Client, target : EventTarget] : Nil
   (var feature (state client))
-  (if_yes ($absent? feature/recovery) (return))
+  (if ($absent? feature/recovery) (return))
   (var recovery : Any feature/recovery)
   (var session client/selected)
   ($dom/append target (recovery_view recovery (fn [action : Str] : Nil
     (api client "POST" $"${(api_root)}/sessions/${session}/delegations/recovery"
       {^round_id recovery/round ^action action}
       (fn [code : Int, result : Any] : Nil
-        (if_yes (!= code 200) (show_error client result ^session session))))))))
+        (if (!= code 200) (show_error client result ^session session))))))))

@@ -32,7 +32,7 @@
           (calls/.get .push request)
           (if (== calls/.get/.size 1)
             "(Outcome ^prompt \"UNIQUE_PENDING_PAYLOAD\" ^reply \"Inspected the task.\")"
-            "(Outcome ^^done ^reply \"Finished.\")"))))
+            else "(Outcome ^^done ^reply \"Finished.\")"))))
         (try
           (one_turn_rounds service)
           (let session (create_session service))
@@ -78,7 +78,7 @@
         (let service (test_service ^workspace workspace ^provider (fn [request]
           (calls/.get .push request)
           (if (< calls/.get/.size 4) "(Outcome ^prompt \"Keep working.\" ^reply \"Working.\")"
-            "(Outcome ^^done ^reply \"Finished automatically.\")"))))
+            else "(Outcome ^^done ^reply \"Finished automatically.\")"))))
         (try
           (one_turn_rounds service)
           (let session (create_session service))
@@ -106,7 +106,7 @@
           (calls/.get .push request)
           (if (== calls/.get/.size 1)
             "(media_import \"pixel.png\") (Outcome ^prompt \"Inspect the image.\" ^reply \"Image prepared.\")"
-            "(Outcome ^^done ^reply \"Image inspected.\")"))))
+            else "(Outcome ^^done ^reply \"Image inspected.\")"))))
         (try
           (one_turn_rounds service)
           ($fs/write_bytes $"${service/runtime/root}/pixel.png" (png))
@@ -173,7 +173,7 @@
           (calls/.get .push request)
           (if (== calls/.get/.size 1)
             "(Outcome ^questions [{^id \"color\" ^prompt \"Color?\"}] ^reply \"Choose a color.\")"
-            "(Outcome ^^done ^reply \"Choice received.\")"))))
+            else "(Outcome ^^done ^reply \"Choice received.\")"))))
         (try
           (one_turn_rounds service)
           (let session (create_session service))
@@ -250,7 +250,7 @@
         (let calls ($cell 0)) (let entered ($cell false))
         (let service (test_service ^workspace workspace ^provider (fn [request]
           (calls .set (+ calls/.get 1))
-          (if_yes (> calls/.get 1) (entered .set true) ($sleep 1000))
+          (if (> calls/.get 1) (do (entered .set true) ($sleep 1000)))
           "(Outcome ^prompt \"Keep working.\" ^reply \"Working.\")")))
         (try
           (one_turn_rounds service)
@@ -275,8 +275,8 @@
         (let service (test_service ^workspace workspace ^without_plugins ["models"] ^provider (fn [request]
           (calls .set (+ calls/.get 1))
           (if (== calls/.get 1)
-            (then "(Outcome ^prompt \"continue\")")
-            (else "(Outcome ^^done ^reply \"done\")")))))
+            "(Outcome ^prompt \"continue\")"
+            else "(Outcome ^^done ^reply \"done\")"))))
         (let connection ($cell {^providers {^test {^connection
           {^state "ready" ^billing "plan" ^transport "first"}}}}))
         (try

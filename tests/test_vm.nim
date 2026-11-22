@@ -307,8 +307,8 @@ suite "VM — proper tail calls":
   test "mutual and higher-order tail chains keep physical frames flat":
     beginTailCallStats()
     let mutual = runStr(
-      "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
-      "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
+      "(fn is_even [n] (if (== n 0) true else (is_odd (- n 1)))) " &
+      "(fn is_odd [n] (if (== n 0) false else (is_even (- n 1)))) " &
       "(is_even 20000)")
     let mutualStats = finishTailCallStats()
     check mutual == TRUE
@@ -317,7 +317,7 @@ suite "VM — proper tail calls":
 
     beginTailCallStats()
     let higherOrder = runStr(
-      "(fn bounce [f n] (if (== n 0) 0 (f f (- n 1)))) " &
+      "(fn bounce [f n] (if (== n 0) 0 else (f f (- n 1)))) " &
       "(bounce bounce 20000)")
     let higherOrderStats = finishTailCallStats()
     check higherOrder == newInt(0)
@@ -327,7 +327,7 @@ suite "VM — proper tail calls":
     beginTailCallStats()
     let spliceValue = runStr(
       "(fn bounce_splice [f n] " &
-      "  (if (== n 0) 0 (f [f (- n 1)]...))) " &
+      "  (if (== n 0) 0 else (f [f (- n 1)]...))) " &
       "(bounce_splice bounce_splice 10000)")
     let spliceStats = finishTailCallStats()
     check spliceValue == newInt(0)
@@ -338,7 +338,7 @@ suite "VM — proper tail calls":
     let namedValue = runStr(
       "(fn bounce_named [n ^step] " &
       "  (if (== n 0) 0 " &
-      "    (bounce_named ^step step (- n step)))) " &
+      "    else (bounce_named ^step step (- n step)))) " &
       "(bounce_named ^step 1 10000)")
     let namedStats = finishTailCallStats()
     check namedValue == newInt(0)
@@ -350,8 +350,8 @@ suite "VM — proper tail calls":
     let value = runStr(
       "(fn consume [xs n] " &
       "  (match xs " &
-      "    (when [] (if (== n 0) 0 (consume [n] (- n 1)))) " &
-      "    (else (consume [] n)))) " &
+      "    when [] (if (== n 0) 0 else (consume [n] (- n 1))) " &
+      "    else (consume [] n))) " &
       "(consume [] 10000)")
     let stats = finishTailCallStats()
     check value == newInt(0)
@@ -363,9 +363,9 @@ suite "VM — proper tail calls":
     let nestedValue = runStr(
       "(fn nested_match [n] " &
       "  (match n " &
-      "    (when 0 0) " &
-      "    (else (match n " &
-      "      (else (nested_match (- n 1))))))) " &
+      "    when 0 0 " &
+      "    else (match n " &
+      "      else (nested_match (- n 1))))) " &
       "(nested_match 5000)")
     let nestedStats = finishTailCallStats()
     check nestedValue == newInt(0)
@@ -377,7 +377,7 @@ suite "VM — proper tail calls":
     beginTailCallStats()
     let value = runStr(
       "(fn count_down [n] : F64 " &
-      "  (if (== n 0) 0.0 (count_down (- n 1)))) " &
+      "  (if (== n 0) 0.0 else (count_down (- n 1)))) " &
       "(count_down 10000)")
     let stats = finishTailCallStats()
     check value == newFloat(0.0)
@@ -387,11 +387,11 @@ suite "VM — proper tail calls":
     beginTailCallStats()
     let scalars = runStr(
       "(fn bool_down [n] : Bool " &
-      "  (if (== n 0) true (bool_down (- n 1)))) " &
+      "  (if (== n 0) true else (bool_down (- n 1)))) " &
       "(fn str_down [n] : Str " &
-      "  (if (== n 0) \"done\" (str_down (- n 1)))) " &
+      "  (if (== n 0) \"done\" else (str_down (- n 1)))) " &
       "(fn nil_down [n] : Nil " &
-      "  (if (== n 0) nil (nil_down (- n 1)))) " &
+      "  (if (== n 0) nil else (nil_down (- n 1)))) " &
       "[(bool_down 2000) (str_down 2000) (nil_down 2000)]")
     let scalarStats = finishTailCallStats()
     check scalars.print() == "[true \"done\" nil]"
@@ -402,7 +402,7 @@ suite "VM — proper tail calls":
     beginTailCallStats()
     let value = runStr(
       "(fn typed_bounce [f n] : Str " &
-      "  (if (== n 0) \"done\" (f f (- n 1)))) " &
+      "  (if (== n 0) \"done\" else (f f (- n 1)))) " &
       "(typed_bounce typed_bounce 100)")
     let stats = finishTailCallStats()
     check value.print() == "\"done\""
@@ -413,7 +413,7 @@ suite "VM — proper tail calls":
     beginTailCallStats()
     let checked = runStr(
       "(fn checked_count ^errors [] [n] " &
-      "  (if (== n 0) 0 (checked_count (- n 1)))) " &
+      "  (if (== n 0) 0 else (checked_count (- n 1)))) " &
       "(checked_count 100)")
     let checkedStats = finishTailCallStats()
     check checked == newInt(0)
@@ -466,10 +466,10 @@ suite "VM — proper tail calls":
       "(fn retain [f] (set saved f) 0) " &
       "(fn outer [x] " &
       "  (match true ^!exhaustive " &
-      "    (when true " &
+      "    when true " &
       "      (var inner (fn [] x)) " &
       "      (set x (+ x 0)) " &
-      "      (retain inner)))) " &
+      "      (retain inner))) " &
       "(outer 9) (saved)")
     let armStats = finishTailCallStats()
     check armValue == newInt(9)
@@ -545,7 +545,7 @@ suite "VM — proper tail calls":
       "(impl Callable for Bounce " &
       "  (message apply [self call] " &
       "    (var n (/0 call)) " &
-      "    (if (== n 0) 0 (self (- n 1))))) " &
+      "    (if (== n 0) 0 else (self (- n 1))))) " &
       "(var bounce (Bounce)) (bounce 10000)")
     let stats = finishTailCallStats()
     check value == newInt(0)
@@ -559,7 +559,7 @@ suite "VM — proper tail calls":
       "  (ctor [n] (self .put `n n)) " &
       "  (message down [] " &
       "    (if (== self/n 0) 0 " &
-      "      ((new Box (- self/n 1)) .down)))) " &
+      "      else ((new Box (- self/n 1)) .down)))) " &
       "((new Box 5000) .down)")
     let sendStats = finishTailCallStats()
     check sendValue == newInt(0)
@@ -572,7 +572,7 @@ suite "VM — proper tail calls":
       "(type QualifiedWalker ^props {}) " &
       "(impl Down for QualifiedWalker " &
       "  (message down [n] " &
-      "    (if (== n 0) 0 (self .Down:down (- n 1))))) " &
+      "    (if (== n 0) 0 else (self .Down:down (- n 1))))) " &
       "((QualifiedWalker) .Down:down 5000)")
     let qualifiedStats = finishTailCallStats()
     check qualifiedValue == newInt(0)
@@ -583,7 +583,7 @@ suite "VM — proper tail calls":
     let superValue = runStr(
       "(type ParentWalker ^props {} " &
       "  (message down [n] " &
-      "    (if (== n 0) 0 (self .down (- n 1))))) " &
+      "    (if (== n 0) 0 else (self .down (- n 1))))) " &
       "(type ChildWalker : ParentWalker ^props {} " &
       "  (message down [n] ^^override (super .down n))) " &
       "((ChildWalker) .down 5000)")
@@ -596,7 +596,7 @@ suite "VM — proper tail calls":
     let optionalValue = runStr(
       "(type OptionalWalker ^props {} " &
       "  (message down [n] " &
-      "    (if (== n 0) 0 (self ?.down (- n 1))))) " &
+      "    (if (== n 0) 0 else (self ?.down (- n 1))))) " &
       "((OptionalWalker) .down 5000)")
     let optionalStats = finishTailCallStats()
     check optionalValue == newInt(0)
@@ -609,7 +609,7 @@ suite "VM — proper tail calls":
       "(type Walker ^props {} " &
       "  (impl Step " &
       "    (message step [n] " &
-      "      (if (== n 0) 0 (next self (- n 1)))))) " &
+      "      (if (== n 0) 0 else (next self (- n 1)))))) " &
       "(var next Step:step) (next (Walker) 5000)")
     let messageStats = finishTailCallStats()
     check messageValue == newInt(0)
@@ -620,9 +620,9 @@ suite "VM — proper tail calls":
     beginTailCallStats()
     let value = runStr(
       "(fn finish_a [n] " &
-      "  (if (== n 0) 0 (return (finish_b (- n 1))))) " &
+      "  (if (== n 0) 0 else (return (finish_b (- n 1))))) " &
       "(fn finish_b [n] " &
-      "  (if (== n 0) 0 (return (finish_a (- n 1))))) " &
+      "  (if (== n 0) 0 else (return (finish_a (- n 1))))) " &
       "(finish_a 10000)")
     let stats = finishTailCallStats()
     check value == newInt(0)
@@ -634,8 +634,8 @@ suite "VM — proper tail calls":
     try:
       discard runStr(
         "(fn explode [] (var value : Int \"bad\") value) " &
-        "(fn left [n] (if (== n 0) (explode) (right (- n 1)))) " &
-        "(fn right [n] (if (== n 0) (explode) (left (- n 1)))) " &
+        "(fn left [n] (if (== n 0) (explode) else (right (- n 1)))) " &
+        "(fn right [n] (if (== n 0) (explode) else (left (- n 1)))) " &
         "(left 500)")
     except GeneError as error:
       caught = error
@@ -650,8 +650,8 @@ suite "VM — proper tail calls":
   test "fiber suspension preserves bounded tail continuation state":
     beginTailCallStats()
     let value = runStr(
-      "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
-      "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
+      "(fn is_even [n] (if (== n 0) true else (is_odd (- n 1)))) " &
+      "(fn is_odd [n] (if (== n 0) false else (is_even (- n 1)))) " &
       # Tail-call counters are thread-local. Keep this continuation on the
       # observing lane so the atomicArc worker build measures the same fiber
       # whose stats are read below.
@@ -685,8 +685,8 @@ suite "compiler — GIR emission":
   test "tail-position proof reaches calls, match arms, and callable bodies":
     let chunk = compileSource(
       "(fn g [x] x) (fn h [x] x) (fn k [x] x) " &
-      "(fn f [x] (if x (g x) (h (k x)))) " &
-      "(fn walk [xs] (match xs (when [] 0) (else (walk [])))) " &
+      "(fn f [x] (if x (g x) else (h (k x)))) " &
+      "(fn walk [xs] (match xs when [] 0 else (walk []))) " &
       "(type T ^props {} (ctor [] (g 1)) (message m [] (g 1))) " &
       "(g 1)")
     var f: FunctionProto
@@ -756,7 +756,7 @@ suite "compiler — GIR emission":
 
     for body in [
       "(do 1 (g))",
-      "(if_yes true (g))",
+      "(if true (g))",
       "(if_not false (g))",
       "(&& true (g))",
       "(|| false (g))",
@@ -781,7 +781,7 @@ suite "compiler — GIR emission":
 
   test "GIR round-trips tail metadata and rejects the previous format":
     let chunk = compileSource(
-      "(fn walk [xs] (match xs (when [] 0) (else (walk []))))")
+      "(fn walk [xs] (match xs when [] 0 else (walk [])))")
     let iface = CompileNamespaceInterface(
       entries: initTable[string, CompileInterfaceEntry]())
     let artifact = ExecutableGir(entryIdentity: "test/module",
@@ -1136,7 +1136,7 @@ suite "compiler — GIR emission":
     check sawSetY
 
   test "rewrites stable recursive var-bound closures to recur":
-    let chunk = compileSource("(var fib (fn [n] (if (< n 2) n (fib (- n 1)))))")
+    let chunk = compileSource("(var fib (fn [n] (if (< n 2) n else (fib (- n 1)))))")
     check chunk.localNames == @["fib"]
     let proto = chunk.functions[0]
     var sawRecur = false
@@ -1149,7 +1149,7 @@ suite "compiler — GIR emission":
 
   test "keeps mutable recursive var-bound calls callable-first":
     let chunk = compileSource(
-      "(var fib (fn [n] (if (< n 2) n (fib (- n 1))))) " &
+      "(var fib (fn [n] (if (< n 2) n else (fib (- n 1))))) " &
       "(set fib (fn [n] n))")
     let proto = chunk.functions[0]
     check proto.chunk.instructions[5].op == opLoadOuterLocal
@@ -1187,7 +1187,7 @@ suite "compiler — GIR emission":
 
   test "emits slots for match branch bindings and outer updates":
     let chunk = compileSource(
-      "(var total 0) (match [1 2] ^!exhaustive (when [a b] (set total (+ a b))))")
+      "(var total 0) (match [1 2] ^!exhaustive when [a b] (set total (+ a b)))")
     check chunk.localNames == @["total"]
     let body = chunk.matches[0].clauses[0].body
     check body.localNames == @["a", "b"]
@@ -1216,7 +1216,7 @@ suite "compiler — GIR emission":
     check sawLoadB
 
   test "emits one branch slot for typed pattern binders":
-    let chunk = compileSource("(match \"hi\" ^!exhaustive (when (s : Str) s))")
+    let chunk = compileSource("(match \"hi\" ^!exhaustive when (s : Str) s)")
     let body = chunk.matches[0].clauses[0].body
     check body.localNames == @["s"]
     check body.instructions[0].op == opLoadLocal
@@ -1537,7 +1537,7 @@ suite "gir — disassembly":
   test "prints same-scope typed integer recur ops":
     let dump = compileSource(
       "(var fib (fn [n : Int] : Int " &
-      "  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))").disassemble()
+      "  (if (< n 2) n else (+ (fib (- n 1)) (fib (- n 2))))))").disassemble()
     check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=1")
     check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=2")
     check dump.contains("opReturnIntAdd2 name=+")
@@ -1547,7 +1547,7 @@ suite "gir — disassembly":
     # return, which the fused add-return must not have replaced.
     let src =
       "(fn ways [n : Int] : Int " &
-      "  (if (< n 2) 1 (+ (ways (- n 1)) (ways (- n 2))))) " &
+      "  (if (< n 2) 1 else (+ (ways (- n 1)) (ways (- n 2))))) " &
       "[(ways 0) (ways 1) (ways 5) (ways 10)]"
     check compileSource(src).disassemble().contains("opReturnIntAdd2 name=+")
     ck src, "[1 1 8 89]"
@@ -1590,8 +1590,8 @@ suite "gir — disassembly":
        "  (for x in [3] (set t (+ t x))) [x t]) (f)", "[100 6]"
     ck "(fn total [rows] (var t 0) (for r in rows (set t (+ t r/amount))) t) " &
        "(total [{^amount 2} {^amount 3}])", "5"
-    ck "(fn f [xs] (var t 0) (for x in xs (if (> x 1) (then (set t (+ t x))) " &
-       "  (else (set t (- t 1))))) t) (f [1 2 3])", "4"
+    ck "(fn f [xs] (var t 0) (for x in xs (if (> x 1) (set t (+ t x)) " &
+       "  else (set t (- t 1)))) t) (f [1 2 3])", "4"
     # Map entries are read by the map family; strings iterate characters.
     ck "(fn f [m] (var n 0) (map_for kv in m (set n (+ n 1))) n) (f {^a 1 ^b 2})", "2"
     ck "(fn f [s] (var n 0) (for c in s (set n (+ n 1))) n) (f \"abc\")", "3"
@@ -1753,7 +1753,7 @@ suite "gir — disassembly":
 
   test "runs same-scope tail recursion through recur ops":
     let src =
-      "(var countdown (fn [n] (if (< n 1) n (countdown (- n 1))))) " &
+      "(var countdown (fn [n] (if (< n 1) n else (countdown (- n 1))))) " &
       "(countdown 128)"
     let dump = compileSource(src).disassemble()
     check dump.contains("opRecur1LocalIntSubImmSameScope slot=0 name=n imm=1")
@@ -1972,8 +1972,8 @@ suite "vm — quasiquote templates":
     ck "(let x 5) `#{^items #[%x]}", "#{^items #[5]}"
     ck "(let x 5) `[1 `[2 %x] %x]",
        "[1 (quasiquote [2 (unquote x)]) 5]"
-    ck "(let a 1) (match [1 2] (when [%a b] b) (when _ \"no\"))", "2"
-    ck "(let a 3) (match [1 2] (when [%a b] b) (when _ \"no\"))", "\"no\""
+    ck "(let a 1) (match [1 2] when [%a b] b when _ \"no\")", "2"
+    ck "(let a 3) (match [1 2] when [%a b] b when _ \"no\")", "\"no\""
 
   test "nested quasiquote preserves inner splice depth":
     ck "(var xs [1 2]) `(outer `(inner %xs...))",
@@ -2028,7 +2028,7 @@ suite "vm — macros":
     ck "(fn f [n] (macro update [] `(set n (+ n 1))) (update) n) (f 2)", "3"
     ck "(fn f [n] (macro finish [] `(do (let local 7) (return (+ n local)))) " &
        "(finish) 99) (f 2)", "9"
-    ck "(fn f [] (var n 0) (macro stop [] (if (== n 2) `(break) nil)) " &
+    ck "(fn f [] (var n 0) (macro stop [] (if (== n 2) `(break) else nil)) " &
        "(repeat i in 5 (set n (+ n 1)) (stop)) n) (f)", "2"
 
   test "runtime macro environments retain definition values after the function returns":
@@ -2384,7 +2384,7 @@ suite "vm — macros":
   test "marked locals preserve 300000-deep tail recursion":
     beginTailCallStats()
     ck "(macro step [next] `(do (let temp %next) (count_down temp))) " &
-       "(fn count_down [n : Int] (if (== n 0) 0 (step (- n 1)))) " &
+       "(fn count_down [n : Int] (if (== n 0) 0 else (step (- n 1)))) " &
        "(count_down 300000)", "0"
     let stats = finishTailCallStats()
     check stats.maxPhysicalFrames < 10
@@ -2395,7 +2395,7 @@ suite "vm — macros":
        "(macro step [next] `(do " &
        "(impl Label for Item (message label [self] : Str \"local\")) " &
        "(count_down %next))) " &
-       "(fn count_down [n : Int] (if (== n 0) 0 (step (- n 1)))) " &
+       "(fn count_down [n : Int] (if (== n 0) 0 else (step (- n 1)))) " &
        "(count_down 300000)", "0"
     let stats = finishTailCallStats()
     check stats.maxPhysicalFrames < 10
@@ -2404,7 +2404,7 @@ suite "vm — macros":
     ck "(macro add_one [x] (+ x 1)) (add_one 2)", "3"
     ck "(macro computed [x] (let n (+ x 1)) `(+ %n %(* n 2))) " &
        "(computed 2)", "9"
-    ck "(macro choose [x] (if x `(quote yes) `(quote no))) " &
+    ck "(macro choose [x] (if x `(quote yes) else `(quote no))) " &
        "[(choose true) (choose false)]", "[yes no]"
     ck "(macro stop [x] (return x) 99) (stop 7)", "7"
     expect GeneError:
@@ -2441,7 +2441,7 @@ suite "vm — macros":
     ck "(macro lam [p body] `(fn [%p] %body)) ((lam n (* n 2)) 4)", "8"
     ck "(macro is_same [x y] " &
        "`(do (let a %x) (match %y " &
-       "(when %(quote (unquote a)) true) (when _ false)))) " &
+       "when %(quote (unquote a)) true when _ false))) " &
        "(is_same 1 2)", "false"
     ck "(macro make_adder [n] " &
        "`(do (macro add_n [x] `(+ %x %%n)) (add_n 2))) " &
@@ -2467,7 +2467,7 @@ suite "vm — macros":
 
   test "shared expansion artifact preserves source and macro provenance":
     let source = "(macro choose_unless [condition yes no] " &
-      "`(if (! %condition) %yes %no))\n" &
+      "`(if (! %condition) %yes else %no))\n" &
       "(choose_unless false \"expanded\" \"wrong\")"
     let artifact = expandSourceUnitMacros(
       readAllWithLocs(source, "macro_provenance.gene"))
@@ -2475,7 +2475,7 @@ suite "vm — macros":
     check artifact.expanded.forms.len == 1
     check artifact.macroExports.hasKey("choose_unless")
     check artifact.expanded.forms[0].print() ==
-      "(do ^^macro_result (if (! false) \"expanded\" \"wrong\"))"
+      "(do ^^macro_result (if (! false) \"expanded\" else \"wrong\"))"
     var sawCallSite = false
     for _, provenance in artifact.provenance:
       if provenance.macroName == "choose_unless" and
@@ -2510,11 +2510,19 @@ suite "vm — macros":
     let pipeline = expandSourceUnitMacros(readAllWithLocs(pipelineSource))
     check run(compileSource(pipelineSource), newGlobalScope()).print() ==
       run(compileForms(pipeline.expanded.forms), newGlobalScope()).print()
-    for bad in [
-      "(macro fallback [v] `(else %v)) (if false (then 1) (fallback 2))",
-      "(macro otherwise [v] `(when _ %v)) (match 1 (when 2 2) (otherwise 3))"]:
-      expect GeneError: discard compileSource(bad)
-      expect GeneError: discard expandSourceUnitMacros(readAllWithLocs(bad))
+    # A macro in an arm body is an expression: it expands after the arms are
+    # split, and it may itself produce a complete flat conditional.
+    check run(compileSource(
+      "(macro twice [x] `(* 2 %x)) (if false 1 else (twice 3))"),
+      newGlobalScope()).print() == "6"
+    check run(compileSource(
+      "(macro pick [a b] `(if true %a else %b)) " &
+      "(match 1 when 2 2 else (pick 3 4))"),
+      newGlobalScope()).print() == "3"
+    let expandedIf = expandSourceUnitMacros(readAllWithLocs(
+      "(macro choose [c a b] `(if %c %a else %b)) (choose false 1 2)"))
+    check run(compileForms(expandedIf.expanded.forms),
+              newGlobalScope()).print() == "2"
 
   test "parameters shadow macros in executable defaults on both frontends":
     let source = "(macro twice [x] `(+ %x %x)) " &
@@ -2551,7 +2559,7 @@ suite "vm — macros":
       expect GeneError: discard compileSource(bad)
       expect GeneError: discard expandSourceUnitMacros(readAllWithLocs(bad))
     ck "(let value 90) [(match (quote (quote 4)) ^!exhaustive " &
-       "(when (quote value) value)) value]", "[4 90]"
+       "when (quote value) value) value]", "[4 90]"
     let metadata = "(macro explode [] (panic \"metadata was executed\")) " &
       "(+ 1 2 @note (explode)) (1 -> + 2 @note (explode)) " &
       "(ffi/library lib ^macos (explode))"
@@ -2746,16 +2754,16 @@ suite "vm — special forms":
     ck "(do 1 2 3)", "3"
     ck "(do)", "nil"
   test "if compact form":
-    ck "(if true 1 2)", "1"
-    ck "(if false 1 2)", "2"
-    ck "(if nil 1 2)", "2"
-    ck "(if nil 1 2)", "2"
-    ck "(if 0 1 2)", "1"     # 0 is truthy; only false and nil are falsy
+    ck "(if true 1 else 2)", "1"
+    ck "(if false 1 else 2)", "2"
+    ck "(if nil 1 else 2)", "2"
+    ck "(if nil 1 else 2)", "2"
+    ck "(if 0 1 else 2)", "1"     # 0 is truthy; only false and nil are falsy
     ck "(if false 1)", "nil"
   test "if full form with then/elif/else":
-    ck "(if (< 2 1) (then 10) (elif (< 1 2) 20) (else 30))", "20"
-    ck "(if (< 2 1) (then 10) (else 30))", "30"
-    ck "(if (< 1 2) (then 10) (else 30))", "10"
+    ck "(if (< 2 1) 10 elif (< 1 2) 20 else 30)", "20"
+    ck "(if (< 2 1) 10 else 30)", "30"
+    ck "(if (< 1 2) 10 else 30)", "10"
   test "var binds and returns the value":
     ck "(var x 5) x", "5"
     ck "(var x 5) (+ x 1)", "6"
@@ -2793,9 +2801,9 @@ suite "vm — special forms":
        "catch TypeFault $err/where)",
        "\"set 'x'\""
   test "slotted conditional locals remain undefined when not executed":
-    ck "((fn [flag] (if flag (var x 1) nil) x) true)", "1"
+    ck "((fn [flag] (if flag (var x 1) else nil) x) true)", "1"
     expect GeneError:
-      discard runStr("((fn [flag] (if flag (var x 1) nil) x) false)")
+      discard runStr("((fn [flag] (if flag (var x 1) else nil) x) false)")
   test "set on an undefined name raises":
     expect GeneError: discard runStr("(set nope 1)")
   test "undefined symbol raises":
@@ -2835,7 +2843,7 @@ suite "vm — functions and closures":
        "  (acc .push (fn [] (+ n x y))))) (acc .map (fn [f] (f)))) (run 100)",
        "[111 121 112 122]"
     ck "(fn outer [a] (fn [b] (fn [] (+ a b)))) (((outer 1) 2))", "3"
-    ck "(fn run [] (match [5 6] ^!exhaustive (when [a b] (fn [] (* a b))))) ((run))", "30"
+    ck "(fn run [] (match [5 6] ^!exhaustive when [a b] (fn [] (* a b)))) ((run))", "30"
     ck "(var top 10) (fn run [a] (var g nil) " &
        "  (for x in [1] (set g (fn [] (+ top a x)))) g) " &
        "(var h (run 5)) (set top 20) (h)", "26"
@@ -2849,18 +2857,18 @@ suite "vm — functions and closures":
     # `x` is bound on one branch only. A closure made while it is unbound
     # captures the pooled call scope by reference, so that activation keeps
     # its scope instead of recycling it for the next call.
-    let src = "(fn f [c n] (if c (var x 1) nil) (fn [] (if c x n))) "
+    let src = "(fn f [c n] (if c (var x 1) else nil) (fn [] (if c x else n))) "
     check compileSource(src).functions[0].poolCallScope
     ck src & "(var g (f false 5)) (f false 6) (f true 7) [(g) ((f true 8))]",
        "[5 1]"
     ck src & "(fn run [] (var g (f false 5)) (f false 6) (g)) (run)", "5"
     # A native-invoked call releases its pooled scope itself.
-    ck "(var gs ([0 5 6] .map (fn [n] (if (== n 0) (var x 1) nil) " &
-       "  (fn [] (if (== n 0) x n))))) [(gs/0) (gs/1) (gs/2)]",
+    ck "(var gs ([0 5 6] .map (fn [n] (if (== n 0) (var x 1) else nil) " &
+       "  (fn [] (if (== n 0) x else n))))) [(gs/0) (gs/1) (gs/2)]",
        "[1 5 6]"
     # A tail call from the activation that now holds its scope.
     ck "(var saved nil) (fn retain [f] (set saved f) 0) " &
-       "(fn f [c n] (if c (var x 1) nil) (retain (fn [] (if c x n)))) " &
+       "(fn f [c n] (if c (var x 1) else nil) (retain (fn [] (if c x else n)))) " &
        "(f false 5) (f false 6) (saved)", "6"
 
   test "capture plans copy only bindings that are never rebound":
@@ -2923,24 +2931,24 @@ suite "vm — functions and closures":
   test "default expressions see earlier slot-backed parameters":
     ck "((fn [x y = x] y) 7)", "7"
   test "recursion via a var-bound self reference":
-    ck "(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)", "55"
+    ck "(var fib (fn [n] (if (< n 2) n else (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)", "55"
   test "recursion via a named function declaration":
-    ck "(fn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)", "55"
+    ck "(fn fib [n] (if (< n 2) n else (+ (fib (- n 1)) (fib (- n 2))))) (fib 10)", "55"
   test "deep non-tail recursion runs on the heap frame stack, not the Nim stack":
     # Pre-trampoline this recursed one Nim frame per call and overflowed the
     # OS stack. Now simple calls push heap Frames, so deep call chains succeed.
-    ck "(fn count [n] (if (== n 0) 0 (+ 1 (count (- n 1))))) (count 200000)",
+    ck "(fn count [n] (if (== n 0) 0 else (+ 1 (count (- n 1))))) (count 200000)",
        "200000"
   test "deep recursion through a typed (general-path) function uses heap frames":
     # Typed params / return types take the general call path; it is now on the
     # frame stack too, so deep recursion through it no longer grows the Nim stack.
-    ck "(fn count [n : Int] : Int (if (== n 0) 0 (+ 1 (count (- n 1))))) " &
+    ck "(fn count [n : Int] : Int (if (== n 0) 0 else (+ 1 (count (- n 1))))) " &
        "(count 200000)", "200000"
   test "deep recursion through an ^errors function uses heap frames":
     # ^errors functions also push heap frames now; the loop's exception handler
     # applies the undeclared-error boundary on unwind, so deep recursion through
     # a checked function no longer grows the Nim stack on the success path.
-    ck "(fn count ^errors [] [n] (if (== n 0) 0 (+ 1 (count (- n 1))))) " &
+    ck "(fn count ^errors [] [n] (if (== n 0) 0 else (+ 1 (count (- n 1))))) " &
        "(count 200000)", "200000"
   test "recoverable errors expose bytecode frame traces":
     ck "(fn outer [] (inner)) " &
@@ -3034,7 +3042,7 @@ suite "vm — optimized typed boundaries":
 
   test "parameter and assignment failures keep their complete diagnostics":
     ck """
-      (fn text [x : Str] (if (== x "") "empty" x))
+      (fn text [x : Str] (if (== x "") "empty" else x))
       (try (text 7) catch TypeFault
         [$err/where $err/expected $err/actual $err/.message])
     """, "[\"parameter 'x'\" \"Str\" \"Int\" \"parameter 'x' expected Str, got Int\"]"
@@ -3045,21 +3053,21 @@ suite "vm — optimized typed boundaries":
 
   test "return labels survive bytecode calls and native callbacks":
     ck """
-      (fn text [x] : Str (if x 7 "ok"))
+      (fn text [x] : Str (if x 7 else "ok"))
       (try (text true) catch TypeFault [$err/where $err/.message])
     """, "[\"return from 'text'\" \"return from 'text' expected Str, got Int\"]"
     ck """
-      (fn text [x] : Str (if x 7 "ok"))
+      (fn text [x] : Str (if x 7 else "ok"))
       (try ($map [true] text) catch TypeFault [$err/where $err/.message])
     """, "[\"return from 'text'\" \"return from 'text' expected Str, got Int\"]"
     ck """
-      (try ((fn [x] : Str (if x 7 "ok")) true)
+      (try ((fn [x] : Str (if x 7 else "ok")) true)
         catch TypeFault $err/where)
     """, "\"return from ''\""
 
   test "lazy parameter labels preserve stream guidance":
     ck """
-      (fn number [x : Int] (if (> x 0) x 0))
+      (fn number [x : Int] (if (> x 0) x else 0))
       (try (number ($to_stream [1])) catch TypeFault $err/.message)
     """, "\"parameter 'x' expected Int, got Stream; if this function should receive individual items, use '=>' in the pipeline\""
 
@@ -3264,20 +3272,20 @@ suite "vm — fused local sequences":
       (var half (/ n 2))
       (while (< i n)
         # The then branch jumps to the opPop kept after the else branch's set.
-        (if (>= i half) (set total (+ total i)) (set total (- total 1)))
-        (if (!= i half) (trace .push i) nil)
+        (if (>= i half) (set total (+ total i)) else (set total (- total 1)))
+        (if (!= i half) (trace .push i) else nil)
         # A comparison with a constant, on a computed operand.
-        (if (== (// i 2) 0) (set total (+ total 100)) nil)
+        (if (== (// i 2) 0) (set total (+ total 100)) else nil)
         (set i (+ i 1)))
       total)
     (fn floats [x]
       # Float operands take the unfused path one instruction at a time.
       (var y 0.5)
       (while (< y x) (set y (+ y 1.0)))
-      (if (> y 1.0) y 0.0))
+      (if (> y 1.0) y else 0.0))
     (fn wide [v]
       # So does a big Int compared with a constant.
-      (if (> (* v v) 0) "positive" "other"))
+      (if (> (* v v) 0) "positive" else "other"))
     (fn store [value]
       (var k : Int 0)
       (set k value)
@@ -3686,7 +3694,7 @@ suite "vm — small integer closures":
     test "ineligible code and non-small arguments skip helper entry":
       let before = smallIntClosureAttempts
       ck """(fn branching [k]
-              (fn [x] (if (< x k) (then (+ x k)) (else (- x k)))))
+              (fn [x] (if (< x k) (+ x k) else (- x k))))
             (fn scale [k] (fn [x] (* x k)))
             (let branch (branching 3))
             (let fast (scale 3))
@@ -3749,11 +3757,11 @@ suite "vm — scopeless field reads":
 suite "vm — scalar call binding":
   test "compiler admits only the supported calling shapes":
     for source in [
-      "(fn f [x : F64] : F64 (if (> x 0.0) x 0.0))",
-      "(fn f [x : Str] (if (== x \"\") \"empty\" x))",
-      "(fn f [x : Any] : Any (if ($absent? x) nil x))",
-      "(fn f [x : Int] (if (> x 0) x 0))",
-      "(fn f [] : Str (if true \"a\" \"b\"))"]:
+      "(fn f [x : F64] : F64 (if (> x 0.0) x else 0.0))",
+      "(fn f [x : Str] (if (== x \"\") \"empty\" else x))",
+      "(fn f [x : Any] : Any (if ($absent? x) nil else x))",
+      "(fn f [x : Int] (if (> x 0) x else 0))",
+      "(fn f [] : Str (if true \"a\" else \"b\"))"]:
       let proto = compileSource(source).functions[^1]
       check proto.fastBindPositionalScalars
       check not proto.simpleCall
@@ -3767,7 +3775,7 @@ suite "vm — scalar call binding":
       check not compileSource(source).functions[^1].fastBindPositionalScalars
 
   test "GIR retains and validates the scalar binding proof":
-    let chunk = compileSource("(fn f [x : Str] : Str (if (== x \"\") \"a\" x)) (f \"ok\")")
+    let chunk = compileSource("(fn f [x : Str] : Str (if (== x \"\") \"a\" else x)) (f \"ok\")")
     let artifact = ExecutableGir(entryIdentity: "test/scalar",
       modules: @[CompiledModule(identity: "test/scalar", chunk: chunk,
         macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
@@ -3804,18 +3812,18 @@ suite "vm — scalar call binding":
 
   test "direct outer computed spread and callback calls share scalar checks":
     ck """
-      (fn number [x : F64] : F64 (if (> x 0.0) (+ x 1.0) 0.0))
+      (fn number [x : F64] : F64 (if (> x 0.0) (+ x 1.0) else 0.0))
       (fn outer [] : F64 (number 2.0))
-      [(number 1.0) (outer) ((if true number nil) 3.0)
+      [(number 1.0) (outer) ((if true number else nil) 3.0)
        (number [4.0]...) ($map [5.0 6.0] number)
        (try (number 1) catch TypeFault $err/where)]
     """, "[2.0 3.0 4.0 5.0 [6.0 7.0] \"parameter 'x'\"]"
 
   test "pooled scalar and Any calls do not retain another call's contract":
     ck """
-      (fn text [x : Str] : Str (if (== x "") "empty" x))
+      (fn text [x : Str] : Str (if (== x "") "empty" else x))
       (fn dynamic [x : Any] : Any (set x [x]) x)
-      (fn integer [x : Int] (if (> x 0) x 0))
+      (fn integer [x : Int] (if (> x 0) x else 0))
       (var last nil)
       (repeat i in 100
         (text "ok")
@@ -3835,8 +3843,8 @@ suite "vm — plain native dispatch":
       (fn invoke []
         (let local identity)
         [(zero) (local ["one"]) (outer ["outer"])
-         ((if true identity pack) ["computed"])
-         (pack "x" 2 true) ((if true pack identity) "a" 2)])
+         ((if true identity else pack) ["computed"])
+         (pack "x" 2 true) ((if true pack else identity) "a" 2)])
       [(zero) (invoke)]
     """), scope).print() ==
       "[[] [[] [\"one\"] [\"outer\"] [\"computed\"] [\"x\" 2 true] [\"a\" 2]]]"
@@ -3855,8 +3863,8 @@ suite "vm — plain native dispatch":
     let scope = newGlobalScope()
     scope.define("reenter", newNativeFn("reenter", nativeReenter))
     check run(compileSource("""
-      (fn increment [x] (if (> x 0) (+ x 1) 0))
-      [(reenter increment 41) ((if true reenter nil) increment 9)]
+      (fn increment [x] (if (> x 0) (+ x 1) else 0))
+      [(reenter increment 41) ((if true reenter else nil) increment 9)]
     """), scope).print() == "[42 10]"
 
   test "plain-native bridges preserve timer suspension and frame requests":
@@ -3876,7 +3884,7 @@ suite "vm — plain native dispatch":
         nativeBridgeTarget = mappedScope.lookup("gene").nsScope.lookup("map")
         check run(compileSource("""
           (let mapped (spawn
-            ((if true bridge nil) [1 2]
+            ((if true bridge else nil) [1 2]
               (fn [x] ($sleep 1) (+ x 1)))))
           (await mapped)
         """), mappedScope).print() == "[2 3]"
@@ -4276,7 +4284,7 @@ suite "vm — namespaces":
     ck "(ns a (fn value [] 1)) (ns b (fn value [] 2)) " &
        "(var target a) (var i 0) " &
        "(while (< i 2) " &
-       "  (let name (if (== i 0) (then \"fa\") (else \"fb\"))) " &
+       "  (let name (if (== i 0) \"fa\" else \"fb\")) " &
        "  (fn target/%name [] ($ns/value)) " &
        "  (set target b) (set i (+ i 1))) " &
        "[((a .lookup \"fa\")) ((b .lookup \"fb\"))]",
@@ -4633,8 +4641,8 @@ suite "vm — channels":
        " (ch .try_send 2) " &
        " (ch .recv) " &
        " (match (ch .try_recv) ^!exhaustive " &
-       "   (when TryRecv/empty true) " &
-       "   (when (TryRecv/value _) false))]",
+       "   when TryRecv/empty true " &
+       "   when (TryRecv/value _) false)]",
        "[true false 1 true]"
 
   test "try_recv distinguishes empty, Nil, Nil, and ordinary payloads":
@@ -4643,10 +4651,10 @@ suite "vm — channels":
        "(ch .send nil) " &
        "(ch .send nil) " &
        "(ch .send 7) " &
-       "[(match empty-result ^!exhaustive (when TryRecv/empty `empty)) " &
-       " (match (ch .try_recv) ^!exhaustive (when (TryRecv/value v) v)) " &
-       " (match (ch .try_recv) ^!exhaustive (when (TryRecv/value v) v)) " &
-       " (match (ch .try_recv) ^!exhaustive (when (TryRecv/value v) v))]",
+       "[(match empty-result ^!exhaustive when TryRecv/empty `empty) " &
+       " (match (ch .try_recv) ^!exhaustive when (TryRecv/value v) v) " &
+       " (match (ch .try_recv) ^!exhaustive when (TryRecv/value v) v) " &
+       " (match (ch .try_recv) ^!exhaustive when (TryRecv/value v) v)]",
        "[empty nil nil 7]"
 
   test "closed channels drain buffered values before ChannelClosed":
@@ -4777,7 +4785,7 @@ suite "vm — cooperative scheduler":
   test "suspension preserves match, for, and catch sub-bodies":
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var t (spawn (match 1 ^!exhaustive " &
-       "                  (when 1 (ch .recv))))) " &
+       "                  when 1 (ch .recv)))) " &
        "  (spawn (ch .send 7)) " &
        "  (await t))", "7"
     ck "(scope (var ch ($channel ^capacity 1)) " &
@@ -4852,7 +4860,7 @@ suite "vm — cooperative scheduler":
        "3"
     ck "(scope " &
        "  (var fib (fn [n : Int] : Int " &
-       "    (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) " &
+       "    (if (< n 2) n else (+ (fib (- n 1)) (fib (- n 2)))))) " &
        "  (var t (spawn (fib 5))) " &
        "  (set fib (fn [n : Int] : Int 0)) " &
        "  (await t))",
@@ -5177,9 +5185,9 @@ suite "vm — cooperative scheduler":
        "(fn handle [ctx state msg] " &
        "  (var got (ch .recv)) " &
        "  (match msg ^!exhaustive " &
-       "    (when (Get ^reply reply) " &
+       "    when (Get ^reply reply) " &
        "      (reply .send (+ state got)) " &
-       "      ($actor/continue state)))) " &
+       "      ($actor/continue state))) " &
        "(var a ($actor/spawn ^init (fn [] 40) ^handle handle)) " &
        "(var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
        "(ch .send 2) " &
@@ -5191,9 +5199,9 @@ suite "vm — cooperative scheduler":
        "  (var a ($actor/spawn ^init (fn [] 41) " &
        "    ^handle (fn [ctx state msg] " &
        "      (match msg ^!exhaustive " &
-       "        (when (Get ^reply reply) " &
+       "        when (Get ^reply reply) " &
        "          (reply .send state) " &
-       "          ($actor/continue state)))))) " &
+       "          ($actor/continue state))))) " &
        "  (var t (spawn (await (a .ask (fn [reply] (Get ^reply reply)))))) " &
        "  (await t))", "41"
 
@@ -5244,11 +5252,11 @@ suite "vm — cooperative scheduler":
                      "(var ch ($channel ^capacity 1)) " &
                      "(fn handle [ctx state msg] " &
                      "  (match msg ^!exhaustive " &
-                     "    (when (Get ^reply reply) " &
+                     "    when (Get ^reply reply) " &
                      "      (var got (ch .recv)) " &
                      "      (reply .send got) " &
-                     "      ($actor/continue state)) " &
-                     "    (when (Tick) ($actor/continue state)))) " &
+                     "      ($actor/continue state) " &
+                     "    when (Tick) ($actor/continue state))) " &
                      "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
                      "(var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
                      "(pending .cancel) " &
@@ -5285,9 +5293,9 @@ suite "vm — cooperative scheduler":
                      "  (var a ($actor/spawn ^init (fn [] 41) " &
                      "    ^handle (fn [ctx state msg] " &
                      "      (match msg ^!exhaustive " &
-                     "        (when (Get ^reply reply) " &
+                     "        when (Get ^reply reply) " &
                      "          (reply .send state) " &
-                     "          ($actor/continue state)))))) " &
+                     "          ($actor/continue state))))) " &
                      "  (set pending (a .ask " &
                      "    (fn [reply] (Get ^reply reply)))) " &
                      "  nil) " &
@@ -5436,9 +5444,9 @@ suite "vm — actors":
        "(impl Send for Get) " &
        "(fn handle [ctx state msg] : (ActorStep Int) " &
        "  (match msg ^!exhaustive " &
-       "    (when (Get ^reply reply) " &
+       "    when (Get ^reply reply) " &
        "      (reply .send state) " &
-       "      ($actor/continue state)))) " &
+       "      ($actor/continue state))) " &
        "(var a : (ActorRef Get) " &
        "  ($actor/spawn ^init (fn [] 41) ^handle handle)) " &
        "(await (a .ask (fn [reply] (Get ^reply reply))))",
@@ -5450,9 +5458,9 @@ suite "vm — actors":
        "    ($actor/spawn ^init (fn [] 41) " &
        "      ^handle (fn [ctx state msg] " &
        "        (match msg ^!exhaustive " &
-       "          (when (Get ^reply reply) " &
+       "          when (Get ^reply reply) " &
        "            (reply .send state) " &
-       "            ($actor/continue state)))))) " &
+       "            ($actor/continue state))))) " &
        "  (fn (choose result err) [t : (Task result err) fallback : result] " &
        "    fallback) " &
        "  (try (choose (a .ask (fn [reply] (Get ^reply reply))) \"bad\") " &
@@ -5466,9 +5474,9 @@ suite "vm — actors":
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (match msg ^!exhaustive " &
-       "        (when (Get ^reply reply) " &
+       "        when (Get ^reply reply) " &
        "          (reply .send \"bad\") " &
-       "          ($actor/continue state)))))) " &
+       "          ($actor/continue state))))) " &
        "(try (await (a .ask (fn [reply] (Get ^reply reply)))) " &
        "catch TypeFault $err/where)",
        "\"ReplyTo/send value\""
@@ -5513,7 +5521,7 @@ suite "vm — actors":
        "    ^handle (fn [ctx state msg] " &
        "      (if (== msg 1) " &
        "        (fail (Boom ^_msg \"bad\")) " &
-       "        (do " &
+       "        else (do " &
        "          (seen .set state) " &
        "          ($actor/continue (+ state msg))))))) " &
        "  (a .send 1) " &
@@ -5536,7 +5544,7 @@ suite "vm — actors":
        "  (var attempts 0) " &
        "  (var stats ($runtime/gc_stats)) " &
        "  (while (< attempts 1000) " &
-       "    (if (> stats/supervisor_retry_drops 0) (then (break))) " &
+       "    (if (> stats/supervisor_retry_drops 0) (break)) " &
        "    ($sleep 1) " &
        "    (set attempts (+ attempts 1)) " &
        "    (set stats ($runtime/gc_stats))) " &
@@ -5563,7 +5571,7 @@ suite "vm — actors":
        "    ^handle (fn [ctx state msg] " &
        "      (if (== msg 1) " &
        "        (fail (Boom ^_msg \"bad\")) " &
-       "        (do " &
+       "        else (do " &
        "          (seen .set state) " &
        "          ($actor/continue (+ state msg))))))) " &
        "  (spawn (a .send 1)) " &
@@ -5574,13 +5582,13 @@ suite "vm — actors":
        "  (while (< tries 100) " &
        "    (if (== (seen .get) 0) " &
        "      (do ($sleep 1) (set tries (+ tries 1))) " &
-       "      (set tries 100))) " &
+       "      else (set tries 100))) " &
        "  [(seen .get) " &
        "   (match event ^!exhaustive " &
-       "     (when (ActorFailure ^failed_message failed " &
+       "     when (ActorFailure ^failed_message failed " &
        "                         ^error (Boom ^_msg m) " &
        "                         ^panic p ^strategy s) " &
-       "       [failed m p s]))])",
+       "       [failed m p s])])",
        "[10 [1 \"bad\" false restart]]"
     ck "(type Boom : Error) " &
        " " &
@@ -5597,10 +5605,10 @@ suite "vm — actors":
        "  (var busy (events .recv)) " &
        "  [busy " &
        "   (match event ^!exhaustive " &
-       "     (when (ActorFailure ^failed_message failed " &
+       "     when (ActorFailure ^failed_message failed " &
        "                         ^error (Boom ^_msg m) " &
        "                         ^strategy s) " &
-       "       [failed m s]))])",
+       "       [failed m s])])",
        "[\"busy\" [1 \"bad\" restart]]"
     ck "(type Boom : Error) " &
        " " &
@@ -5619,10 +5627,10 @@ suite "vm — actors":
        "  (var busy (events .recv)) " &
        "  [busy dead-busy " &
        "   (match event ^!exhaustive " &
-       "     (when (ActorFailure ^failed_message failed " &
+       "     when (ActorFailure ^failed_message failed " &
        "                         ^error (Boom ^_msg m) " &
        "                         ^strategy s) " &
-       "       [failed m s]))])",
+       "       [failed m s])])",
        "[\"busy\" \"dead-busy\" [4 \"bad\" restart]]"
     ck "(type Boom : Error) " &
        " " &
@@ -5637,10 +5645,10 @@ suite "vm — actors":
        "  (var event (events .recv)) " &
        "  [busy " &
        "   (match event ^!exhaustive " &
-       "     (when (ActorFailure ^failed_message failed " &
+       "     when (ActorFailure ^failed_message failed " &
        "                         ^error (Boom ^_msg m) " &
        "                         ^strategy s) " &
-       "       [failed m s]))])",
+       "       [failed m s])])",
        "[\"busy\" [3 \"bad\" restart]]"
     ck "(type Boom : Error) " &
        " " &
@@ -5655,10 +5663,10 @@ suite "vm — actors":
        "  ($sleep 1) " &
        "  (var event (dead .recv)) " &
        "  (match event ^!exhaustive " &
-       "    (when (ActorFailure ^failed_message failed " &
+       "    when (ActorFailure ^failed_message failed " &
        "                        ^error (Boom ^_msg m) " &
        "                        ^strategy s) " &
-       "      [failed m s])))",
+       "      [failed m s]))",
        "[2 \"bad\" restart]"
     ck "(type Boom : Error) " &
        " " &
@@ -5672,10 +5680,10 @@ suite "vm — actors":
        "  ($sleep 1) " &
        "  (var event (dead .recv)) " &
        "  (match event ^!exhaustive " &
-       "    (when (ActorFailure ^failed_message failed " &
+       "    when (ActorFailure ^failed_message failed " &
        "                        ^error (Boom ^_msg m) " &
        "                        ^strategy s) " &
-       "      [failed m s])))",
+       "      [failed m s]))",
        "[6 \"bad\" restart]"
     ck "(type Boom : Error) " &
        " " &
@@ -5689,7 +5697,7 @@ suite "vm — actors":
        "    ^handle (fn [ctx state msg] " &
        "      (if (== msg 1) " &
        "        (fail (Boom ^_msg \"bad\")) " &
-       "        (do " &
+       "        else (do " &
        "          (seen .set state) " &
        "          ($actor/continue (+ state msg))))))) " &
        "  (a .send 1) " &
@@ -5738,10 +5746,10 @@ suite "vm — actors":
        "(var event (parent-events .recv)) " &
        "[outcome " &
        " (match event ^!exhaustive " &
-       "   (when (ActorFailure ^failed_message failed " &
+       "   when (ActorFailure ^failed_message failed " &
        "                       ^error (Boom ^_msg m) " &
        "                       ^strategy s) " &
-       "     [failed m s]))]",
+       "     [failed m s])]",
        "[\"bad\" [7 \"bad\" escalate]]"
     # A handler's Panic goes through the strategy: the actor stops, the ask
     # fails with the Panic, and the supervisor body carries on.
@@ -5856,7 +5864,7 @@ suite "vm — streams":
        "[2 4 6 false]"
 
   test "stream map emits nil results":
-    ck "(var s ($map ($to_stream [1 2]) (fn [x] (if (== x 1) nil x)))) " &
+    ck "(var s ($map ($to_stream [1 2]) (fn [x] (if (== x 1) nil else x)))) " &
        "[(s .next) (s .has_next) (s .next) (s .has_next)]",
        "[nil true 2 false]"
 
@@ -5985,7 +5993,7 @@ suite "vm — streams":
     check scope.lookup("closes").cellValue.intVal == 1
 
   test "return exits functions and terminates generators without an item":
-    ck "(fn choose [yes] (if yes (then (return 7))) 9) " &
+    ck "(fn choose [yes] (if yes (return 7)) 9) " &
        "[(choose true) (choose false)]",
        "[7 9]"
     ck "(var cleaned ($cell 0)) " &

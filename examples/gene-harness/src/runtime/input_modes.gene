@@ -71,18 +71,18 @@
   (scope
     (let cleanup (spawn ^lane root (scope (state/row/payload/close session reason))))
     (match cleanup/.join
-      (when (TaskOutcome/ok value) nil)
-      (when (TaskOutcome/error error)
+      when (TaskOutcome/ok value) nil
+      when (TaskOutcome/error error)
         (log_event "mode/cleanup_failed" $"Input mode cleanup: ${error/.message}"
-          ^target {^session session} ^data {^error error/.message}))
-      (when (TaskOutcome/fault fault)
+          ^target {^session session} ^data {^error error/.message})
+      when (TaskOutcome/fault fault)
         (let message fault/.message)
         (log_event "mode/cleanup_failed"
-          (if (== ($head fault) Panic) $"Input mode cleanup panic: ${message}" $"Input mode cleanup: ${message}")
-          ^target {^session session} ^data {^panic (== ($head fault) Panic) ^error message}))
-      (else
+          (if (== ($head fault) Panic) $"Input mode cleanup panic: ${message}" else $"Input mode cleanup: ${message}")
+          ^target {^session session} ^data {^panic (== ($head fault) Panic) ^error message})
+      else
         (log_event "mode/cleanup_failed" "Input mode cleanup was cancelled."
-          ^target {^session session} ^data {^cancelled true}))))
+          ^target {^session session} ^data {^cancelled true})))
   nil)
 
 # Called with round/ID held, including by session removal. The command watcher
@@ -120,14 +120,14 @@
     (if (|| (== input_id "") (> ($str/byte_size input_id) 128))
       (problem manager session "invalid_request" "An input needs an id of at most 128 bytes."))
     (for record in (manager/records session)
-      (if_yes (&& (== record/mode_instance instance) (== record/input_id input_id))
-        (if (!= record/raw text)
+      (if (&& (== record/mode_instance instance) (== record/input_id input_id))
+        (do (if (!= record/raw text)
           (problem manager session "submission_conflict" "Input identity has different content."))
-        (return record)))
+        (return record))))
     (let kind (state/row/payload/classify text))
-    (if_yes (== kind "leave")
-      (close_mode_locked manager session "left")
-      (return {^^closed}))
+    (if (== kind "leave")
+      (do (close_mode_locked manager session "left")
+      (return {^^closed})))
     (if (== kind "incomplete") (return {^^incomplete}))
     (if (== kind "ignored") (return {^^ignored}))
     (if (!= kind "input")
@@ -150,15 +150,15 @@
   (state/completed .set true)
   (with_session_gate manager/runtime/sessions $"round/${session}" (fn []
     (let current (manager/states/.get .get session))
-    (if_yes (&& (same? current state) (== state/running record/id))
+    (if (&& (same? current state) (== state/running record/id))
       # A failed input may have exhausted its budget before Gene ensure ran.
       # The owner resets opted-in native state using its own cleanup context.
-      (if_yes (&& (== state/row/payload/reset_on_interrupt true)
+      (do (if (&& (== state/row/payload/reset_on_interrupt true)
         (|| (== record/status "cancelled")
           (&& (== record/status "failed") ($absent? record/exit))))
         (close_mode_resources state session "interrupted"))
       (state .put "running" nil)
-      (changed manager session "finished"))))
+      (changed manager session "finished")))))
   nil)
 
 (fn expire_modes [manager, ^now now = nil]
@@ -167,11 +167,10 @@
   (map_for [session state] in manager/states/.get
     (let loaded (manager/runtime/sessions/loaded/.get .get session))
     (if (|| ($absent? loaded) (== loaded/viewers/.get 0))
-      (then
-        (if ($absent? state/last_left) (state .put "last_left" instant))
+      (if ($absent? state/last_left) (state .put "last_left" instant))
         (if (&& ($absent? state/running) (>= (- instant state/last_left) 60000))
-          (due .push [($to_str session) state/instance])))
-      (else (state .put "last_left" nil))))
+          (due .push [($to_str session) state/instance]))
+      else (state .put "last_left" nil)))
   (for entry in due
     (with_session_gate manager/runtime/sessions $"round/${entry/0}" (fn []
       (let state (manager/states/.get .get entry/0))
@@ -188,7 +187,7 @@
     (let live (mode_record snapshot state/row/payload/name))
     (if (same_mode_row? state/row live)
       (state .put "row" live)
-      (withdrawn .push [($to_str session) state/instance])))
+      else (withdrawn .push [($to_str session) state/instance])))
   (for entry in withdrawn
     # Keep the old close callback alive only during this close transition.
     (let lease (retain_snapshot manager/runtime/h/snapshots previous))

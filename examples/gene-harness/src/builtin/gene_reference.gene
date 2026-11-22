@@ -21,7 +21,7 @@
            ["declarations" "declarations" "Functions, types, protocols, modules and imports."
              ["fn" "type" "protocol" "import" "module"]]
            ["control_flow" "control-flow" "Conditionals, multi-step guards, loops, tasks and streams."
-             ["if" "if_yes" "if_not" "elif" "then" "else" "loops" "match" "tasks"]]
+             ["if" "if_not" "if_present" "elif" "else" "loops" "match" "tasks"]]
            ["stdlib" "stdlib" "Standard-library namespaces, files, processes and built-in messages."
              ["stdlib" "fs" "files" "os" "exec" "process" "http" "json" "serde" "collections"]]]
         (contribute_doc host $"gene/${entry/0}" entry/2

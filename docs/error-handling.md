@@ -344,7 +344,7 @@ For example, both helpers below omit `^errors`:
 (fn decode ^^private [bad : Bool] : Str
   (if bad
     (fail (ConfigError ^_msg "Invalid configuration"))
-    "ready"))
+    else "ready"))
 
 (fn load_config ^^private [bad : Bool] : Str
   (decode bad))

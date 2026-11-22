@@ -21,11 +21,11 @@
   (let accepted (value .has_key? "value"))
   (let rejected (value .has_key? "error"))
   (if (== accepted rejected) (schema_failure name "An Outcome schema must accept or reject exactly once."))
-  (if_yes rejected
-    (if (|| (!= ($head value/error) Str) (== ($str/trim value/error) "")
+  (if rejected
+    (do (if (|| (!= ($head value/error) Str) (== ($str/trim value/error) "")
             (value .has_key? "warning") (value .has_key? "suspend"))
       (schema_failure name "A schema rejection requires nonempty error text."))
-    (return {^error value/error}))
+    (return {^error value/error})))
   (if (&& ($present? value/warning) (!= ($head value/warning) Str))
     (schema_failure name "Schema warning must be text."))
   (if (&& (value .has_key? "suspend") (!= ($head value/suspend) Bool))
@@ -81,7 +81,7 @@
   nil)
 
 (fn normalize_extension_fields [snapshot, context, raw]
-  (let input (if ($absent? raw) {} raw))
+  (let input (if ($absent? raw) {} else raw))
   (if (!= ($head input) Map) (return {^error "Outcome extensions must be a map of registered keys."}))
   (let definitions [])
   (let known {})
@@ -98,24 +98,24 @@
     (if_not (input .has_key? definition/name) (continue))
     (let value (input .get definition/name))
     (let scoped (context .assoc "extension_inputs" input))
-    (let limits (if definition/_host (default_execution_limits) (response_execution_limits)))
+    (let limits (if definition/_host (default_execution_limits) else (response_execution_limits)))
     (let outcome (supervised_call definition/schema [scoped value] limits))
     (let verdict (match outcome ^!exhaustive
-      (when (TaskOutcome/ok result) result)
-      (when (TaskOutcome/error failure)
+      when (TaskOutcome/ok result) result
+      when (TaskOutcome/error failure)
         (fail (ParticipantFailure ^participant definition/name ^phase "outcome/schema"
-          ^code "callback_error" ^_cause failure ^_msg $"Outcome schema ${definition/name} failed: ${failure/.message}")))
-      (when (TaskOutcome/fault fault) (let message fault/.message)
+          ^code "callback_error" ^_cause failure ^_msg $"Outcome schema ${definition/name} failed: ${failure/.message}"))
+      when (TaskOutcome/fault fault) (let message fault/.message)
         (if (== ($head fault) Panic) (schema_failure definition/name message)
-          (fail (ParticipantFailure ^participant definition/name ^phase "outcome/schema"
-            ^code "callback_error" ^_cause fault ^_msg $"Outcome schema ${definition/name} failed: ${message}"))))
-      (when TaskOutcome/cancelled (schema_failure definition/name "Outcome schema cancelled or exceeded its budget."))))
+          else (fail (ParticipantFailure ^participant definition/name ^phase "outcome/schema"
+            ^code "callback_error" ^_cause fault ^_msg $"Outcome schema ${definition/name} failed: ${message}")))
+      when TaskOutcome/cancelled (schema_failure definition/name "Outcome schema cancelled or exceeded its budget.")))
     (if (verdict .has_key? "error")
       (return {^error $"Outcome extension ${definition/name}: ${verdict/error}"}))
     (values .put definition/name verdict/value)
-    (if_yes (== verdict/suspend true)
-      (if_not ($absent? suspension)
+    (if (== verdict/suspend true)
+      (do (if_not ($absent? suspension)
         (return {^error "Only one Outcome extension can request suspension."}))
-      (set suspension definition/name))
+      (set suspension definition/name)))
     (if_not ($absent? verdict/warning) (warnings .push verdict/warning)))
   {^values (freeze_turn_data values) ^warnings warnings ^suspension suspension})

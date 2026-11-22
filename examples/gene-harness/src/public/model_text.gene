@@ -21,4 +21,4 @@
   (if (|| (> ($str/byte_size text) 1024) ($str/contains? text "data:image/")
           ($str/contains? text "#B16#"))
     "Image-input provider call failed; its payload-bearing diagnostic was omitted."
-    text))
+    else text))

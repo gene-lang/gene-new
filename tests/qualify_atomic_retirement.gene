@@ -4,7 +4,7 @@
   (let modes ["disabled" "probe"])
   (for option in args/.body
     ($assert (|| (== option "--asan") (== option "--tsan")) "expected --asan or --tsan")
-    (modes .push (if (== option "--asan") "asan" "tsan")))
+    (modes .push (if (== option "--asan") "asan" else "tsan")))
   ($fs/make_dir "tmp/atomic-retirement-qualification")
   (let root ($fs/real_path "tmp/atomic-retirement-qualification"))
   (var results [])
@@ -40,7 +40,7 @@
        "late SDK entry waits through nested collector seals"
        "owner dependent native cleanup defers a draining collector"
        "last owner SDK cleanup runs outside the admission lock"
-       "foreign SDK callbacks can finish after Scope edges detach"] []))
+       "foreign SDK callbacks can finish after Scope edges detach"] else []))
     (let run (await ($os/exec_async output filters...
       ^timeout_ms 180000 ^max_bytes 1048576)))
     ($fs/write_text $"${output}-run.log" ($to_str run/stdout run/stderr))

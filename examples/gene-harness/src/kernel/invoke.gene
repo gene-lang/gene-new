@@ -13,7 +13,7 @@
   catch Fault
     (let message $err/.message)
     (fail (HarnessError
-      ^_msg (if (== ($head $err) Panic) $"plugin panic: ${message}" message)
+      ^_msg (if (== ($head $err) Panic) $"plugin panic: ${message}" else message)
       ^_cause $err))))
 
 (fn apply_argument_list [bundle]
@@ -22,17 +22,17 @@
 (fn invoke_supervised [callable, args, limits : ExecutionLimits]
   (let outcome (supervised_call callable args limits))
   (match ^!exhaustive outcome
-    (when (TaskOutcome/ok value)
-      value)
-    (when (TaskOutcome/error error)
-      (fail error))
-    (when (TaskOutcome/fault fault) (let message fault/.message)
+    when (TaskOutcome/ok value)
+      value
+    when (TaskOutcome/error error)
+      (fail error)
+    when (TaskOutcome/fault fault) (let message fault/.message)
       # The plugin boundary turns a plugin's defect into a HarnessError and keeps
       # the defect as the cause.
       (fail (HarnessError ^_cause fault
-        ^_msg (if (== ($head fault) Panic) $"plugin panic: ${message}" message))))
-    (when TaskOutcome/cancelled
-      (fail (HarnessError ^_msg "plugin invocation was cancelled or exceeded its deadline")))))
+        ^_msg (if (== ($head fault) Panic) $"plugin panic: ${message}" else message)))
+    when TaskOutcome/cancelled
+      (fail (HarnessError ^_msg "plugin invocation was cancelled or exceeded its deadline"))))
 
 (fn configure_plugin_module [module, limits : ExecutionLimits]
   (var policy

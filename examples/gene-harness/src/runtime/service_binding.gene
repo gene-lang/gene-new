@@ -4,4 +4,4 @@
 (type HostServiceBinding ^props {^factory Any})
 
 (fn bind_service [value, host]
-  (if (== ($head value) HostServiceBinding) (value/factory host) value))
+  (if (== ($head value) HostServiceBinding) (value/factory host) else value))

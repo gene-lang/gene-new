@@ -107,7 +107,7 @@
     (isolated this_mod/.path "disables only its account and closes the runtime even when retiring configuration fails"
       (fn [workspace]
         (for fail_retirement in [false true]
-          (let root ($path/join workspace (if fail_retirement "failure" "ordinary")))
+          (let root ($path/join workspace (if fail_retirement "failure" else "ordinary")))
           (fixture root (fn [service calls route]
             (configure_account service/runtime/services/values/channels/owner "other" ^config {^secret_file "/unused" ^library "/unused"}
               {^transport "slack" ^team "T456" ^app "A456" ^bot "B456" ^bot_user "UBOT2" ^operator "UOTHER"})

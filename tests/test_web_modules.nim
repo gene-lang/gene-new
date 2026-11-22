@@ -83,7 +83,7 @@ suite "web leaf predicate":
     writeFile(root / "leaf.gene", """
       (mod leaf ^profile web)
       (fn classify [value : Any] : Str
-        (if ($leaf? value) "leaf" "structure"))
+        (if ($leaf? value) "leaf" else "structure"))
     """)
     discard buildWebModule(root / "leaf.gene", root / "out")
     writeFile(root / "out" / "check.mjs", """
@@ -142,7 +142,7 @@ suite "web catch types":
       (fn run [] : (List Str)
         [(probe "string") (probe "number") (probe "type")
          (try (throw_value "string") "returned" catch Throwable $err/.message)
-         (if (wrapped "undefined") "host-error" "other")
+         (if (wrapped "undefined") "host-error" else "other")
          (try (throw_value "deep") "returned" catch HostFault "host-fault")])
     """)
     discard buildWebModule(root / "host_throw.gene", root / "out")
@@ -173,7 +173,7 @@ suite "web catch types":
       (fn runtime_fault [] : Int (fail (RuntimeFault ^_msg "rt")))
       (fn formatted [] : Int (fail (Formatted ^code 7)))
       (fn divide [a : Int b : Int] : Int (/ a b))
-      (fn unmatched [x : Int] : Int (match ^!exhaustive x (when 1 1)))
+      (fn unmatched [x : Int] : Int (match ^!exhaustive x when 1 1))
       (fn catches [] : (List Str)
         [(try (fail (Error ^_msg "e")) "none" catch Error $err/.message)
          (try (fail (Fault ^_msg "f")) "none" catch Error "wrong" catch Fault $err/.message)
@@ -226,9 +226,9 @@ suite "web catch types":
       (fn classify [kind : Str] : Str
         (try
           (if (== kind "error") (fail (Probe ^_msg "probe"))
-            (if (== kind "fault") (fail (Invariant ^code 7 ^_msg "broken"))
-              (if (== kind "zero") (do (// 1 0) "")
-                (do (let v : Any kind) (typed v) ""))))
+            else (if (== kind "fault") (fail (Invariant ^code 7 ^_msg "broken"))
+              else (if (== kind "zero") (do (// 1 0) "")
+                else (do (let v : Any kind) (typed v) ""))))
           catch Error $"error ${$err/.message}"
           catch Invariant $"invariant ${$err/.message}"
           catch RuntimeFault $"runtime ${$err/.message}"
@@ -528,7 +528,7 @@ suite "web navigation host bindings":
       (fn modal [target : EventTarget] : Int
         (var previous ($dom/active_element))
         ($dom/set_inert ($dom/body) true)
-        (if_yes (&& ($dom/connected? previous) ($dom/contains? target previous))
+        (if (&& ($dom/connected? previous) ($dom/contains? target previous))
           ($dom/focus previous))
         ($size ($dom/focusables target)))
       (fn load [url : Str, ready : (Fn [Any] Nil), error : (Fn [Str] Nil)] : Nil

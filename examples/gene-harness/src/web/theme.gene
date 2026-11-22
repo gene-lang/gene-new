@@ -32,7 +32,7 @@
 (let builtin_themes ($freeze {^default default_theme ^minimal minimal_theme}))
 
 (fn theme_mode [value] : Str
-  (if (theme_modes .contains? value) (then value) (else "light")))
+  (if (theme_modes .contains? value) value else "light"))
 
 (fn css_name [name] : Str ($str/join ($str/split ($to_str name) "_") "-"))
 
@@ -47,22 +47,22 @@
   (let seen [])
   (for item in trail (seen .push item))
   (seen .push name)
-  (let parent (if (== name "default") nil (resolve_theme (?? source/extends "default") themes seen)))
+  (let parent (if (== name "default") nil else (resolve_theme (?? source/extends "default") themes seen)))
   (let result {^name name ^title (?? source/title name) ^doc (?? source/doc "")
     ^tokens {^shared {} ^light {} ^dark {}} ^icons {} ^fonts [] ^styles []})
   (for mode in ["shared" "light" "dark"]
     (if ($present? parent) (merge_tokens result/tokens/%mode parent/tokens/%mode))
     # A child's shared choice wins over a mode-specific value in its parent.
     # The child's own mode map remains the most specific choice.
-    (if_yes (!= mode "shared")
+    (if (!= mode "shared")
       (map_for [key value] in (?? source/tokens/shared {})
         (let name (css_name key))
         (if ($present? (result/tokens/%mode .get name)) (result/tokens/%mode .put name value))))
     (merge_tokens result/tokens/%mode source/tokens/%mode))
-  (if_yes ($present? parent)
-    (merge_tokens result/icons parent/icons)
+  (if ($present? parent)
+    (do (merge_tokens result/icons parent/icons)
     (for face in parent/fonts (result/fonts .push face))
-    (for style in parent/styles (result/styles .push style)))
+    (for style in parent/styles (result/styles .push style))))
   (merge_tokens result/icons source/icons)
   (for face in (?? source/fonts [])
     (let prepared {})
@@ -95,7 +95,7 @@
 (fn rem_size [value : Str] : Float
   (if_not ($str/ends_with? value "rem") (theme_error "Theme layout sizes must be plain rem lengths."))
   (let raw ($str/slice_bytes value 0 (- ($str/byte_size value) 3)))
-  (let number (if ($str/starts_with? raw ".") ($to_str "0" raw) raw))
+  (let number (if ($str/starts_with? raw ".") ($to_str "0" raw) else raw))
   (+ 0.0 ($json/parse number)))
 
 (fn narrow_breakpoint [theme] : Float
@@ -118,7 +118,7 @@
     (let already_scaled (|| ($str/contains? value "--density") ($str/contains? value "var(--space-")
       ($str/contains? value "var(--control-height)")))
     (tokens .put key (if (&& scaled (! already_scaled))
-      (then $"calc(${value} * var(--density))") (else value))))
+      $"calc(${value} * var(--density))" else value)))
   tokens)
 
 (fn density_owned? [name : Str] : Bool
@@ -143,9 +143,9 @@
       (map_for [target ignored] in selected
         (let token ($to_str target))
         (if (density_owned? token) (continue))
-        (if_yes (|| ($str/contains? value $"var(--${token})") ($str/contains? value $"var(--${token},"))
-          (set dependent true) (break)))
-      (if_yes dependent (selected .put name true) (set changed true))))
+        (if (|| ($str/contains? value $"var(--${token})") ($str/contains? value $"var(--${token},"))
+          (do (set dependent true) (break))))
+      (if dependent (do (selected .put name true) (set changed true)))))
   (let tokens {})
   (map_for [key ignored] in selected
     (let name ($to_str key))
@@ -184,13 +184,13 @@
     (let global_values {})
     (map_for [key value] in theme/tokens/%mode
       (if (density_owned? ($to_str key)) (global_values .put key value)))
-    (nodes .push (rule (if (== mode "light") ":root:not([data-mode=dark])" ":root[data-mode=dark]") (token_declarations (density_tokens global_values))...))
-    (let selector (if (== mode "light") ":root, [data-mode=\"light\"]" ":root[data-mode=\"dark\"], [data-mode=\"dark\"]"))
+    (nodes .push (rule (if (== mode "light") ":root:not([data-mode=dark])" else ":root[data-mode=dark]") (token_declarations (density_tokens global_values))...))
+    (let selector (if (== mode "light") ":root, [data-mode=\"light\"]" else ":root[data-mode=\"dark\"], [data-mode=\"dark\"]"))
     (nodes .push (rule selector (decl_value "color-scheme" mode)
       (token_declarations tokens)...
       (decl_value "--select-chevron" (select_chevron theme (try (color_value colors "muted") catch Error "currentColor")))))
     (set scopes ($to_str scopes (panel_scope tokens
-      (if (== mode "light") ":root:not([data-mode=dark]), [data-mode=light]" ":root[data-mode=dark], [data-mode=dark]")))))
+      (if (== mode "light") ":root:not([data-mode=dark]), [data-mode=light]" else ":root[data-mode=dark], [data-mode=dark]")))))
   (let icons {})
   (map_for [name svg] in theme/icons (icons .put $"icon-${name}" (svg_url svg)))
   (nodes .push (rule ":root" (token_declarations icons)...))
@@ -209,8 +209,8 @@
   (if (&& (>= ($str/byte_size text) 2)
           (|| (&& ($str/starts_with? text "\"") ($str/ends_with? text "\""))
               (&& ($str/starts_with? text "'") ($str/ends_with? text "'"))))
-    (then ($str/slice_bytes text 1 (- ($str/byte_size text) 2)))
-    (else text)))
+    ($str/slice_bytes text 1 (- ($str/byte_size text) 2))
+    else text))
 
 (fn preview_font_name [theme, family : Str] : Str
   ($to_str "harness-preview-" theme/name "-" ($str/slice_bytes ($crypto/sha256 ($str/lower family)) 0 12)))
@@ -224,11 +224,11 @@
     (for line in ($str/split (render_css style) "\n")
       (let text ($str/trim line))
       (if ($str/starts_with? text "@font-face")
-        (then (set in_face true))
-        (elif (&& in_face ($str/starts_with? text "font-family:"))
+        (set in_face true)
+        elif (&& in_face ($str/starts_with? text "font-family:"))
           (let family (unquote_family ($str/slice_bytes text 12 (- ($str/byte_size text) 13))))
-          (aliases .put ($str/lower family) (preview_font_name theme family)))
-        (elif (== text "}") (set in_face false)))))
+          (aliases .put ($str/lower family) (preview_font_name theme family))
+        elif (== text "}") (set in_face false))))
   aliases)
 
 (fn font_alias_pattern [family : Str]
@@ -259,7 +259,7 @@
   (for line in ($str/split source "\n")
     (let text ($str/trim line))
     (lines .push (if (|| ($str/starts_with? text "font-family:") ($str/starts_with? text "font:"))
-      (then (alias_font_value line aliases)) (else line))))
+      (alias_font_value line aliases) else line)))
   ($str/join lines "\n"))
 
 # A specimen compares themes without changing the page's own root values.
@@ -294,10 +294,9 @@
   (let value (tokens .get name))
   (if ($absent? value) (theme_error $"Missing color token ${name}"))
   (if ($str/starts_with? value "var(--")
-    (then
-      (let seen ($into trail [])) (seen .push name)
-      (color_value tokens ($str/slice_bytes value 6 (- ($str/byte_size value) 7)) seen))
-    (else value)))
+    (let seen ($into trail [])) (seen .push name)
+      (color_value tokens ($str/slice_bytes value 6 (- ($str/byte_size value) 7)) seen)
+    else value))
 
 (var default_resolved (resolve_theme))
 (var light_palette (resolved_tokens default_resolved "light"))
@@ -326,7 +325,7 @@
 (fn linear_channel [value : Float] : Float
   (if (<= value 0.04045)
     (/ value 12.92)
-    ($math/pow (/ (+ value 0.055) 1.055) 2.4)))
+    else ($math/pow (/ (+ value 0.055) 1.055) 2.4)))
 
 (fn relative_luminance [color : Str] : Float
   (+ (* 0.2126 (linear_channel (hex_channel color 1)))
@@ -338,4 +337,4 @@
   (let b (relative_luminance second))
   (if (> a b)
     (/ (+ a 0.05) (+ b 0.05))
-    (/ (+ b 0.05) (+ a 0.05))))
+    else (/ (+ b 0.05) (+ a 0.05))))

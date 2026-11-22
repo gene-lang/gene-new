@@ -11,9 +11,9 @@
 
 (fn joined [task]
   (match task/.join
-    (when (TaskOutcome/ok value) value)
-    (when (TaskOutcome/error error) (fail error))
-    (else ($assert false "sign-in fixture was cancelled"))))
+    when (TaskOutcome/ok value) value
+    when (TaskOutcome/error error) (fail error)
+    else ($assert false "sign-in fixture was cancelled")))
 
 (describe "Provider loopback sign-in"
   (it "validates callback state, exchanges PKCE once and stores only owner-readable credentials" []
@@ -80,8 +80,7 @@
         ensure (stop issuer))))
         (serve issuer ^handler (fn [incoming]
           (if (== incoming/path "/auth/callback")
-            (then
-              (let result (complete_openrouter_login pending/.get incoming/params))
+            (do (let result (complete_openrouter_login pending/.get incoming/params))
               (return (text result/status result/message))))
           (exchanges .set (+ exchanges/.get 1))
           ($assert (== incoming/method "POST")) ($assert (== incoming/path "/auth/keys"))
@@ -91,8 +90,7 @@
           ($assert (== body/code_challenge_method "S256"))
           (if (== mode/.get "failure") (return (json 403 "{\"error\":\"SECRET_DIAGNOSTIC\"}")))
           (if (== mode/.get "wait")
-            (then
-              (blocked .set true)
+            (do (blocked .set true)
               (while (! release/.get) ($sleep 1))
               (return (json 200 "{\"key\":\"LATE_SECRET_KEY\"}"))))
           (json 200 "{\"key\":\"SECRET_KEY\"}")))

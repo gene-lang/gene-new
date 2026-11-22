@@ -11,7 +11,7 @@
   (let account (state/accounts .get account_id))
   (let event (normalize_envelope account envelope))
   (if ($absent? event) {^status "ignored" ^reason "unsupported_envelope"}
-    (record_ingress owner account_id event)))
+    else (record_ingress owner account_id event)))
 
 # The Slack row's delivery callbacks over a fake HTTP requester.
 (fn slack_row [requester]

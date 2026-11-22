@@ -59,9 +59,9 @@
   (let key ($pkg/canonical_digest pair))
   (providers .put key id)
   (var claim (claims .get key))
-  (if_yes ($absent? claim)
-    (set claim {^registry pair/0 ^key pair/1 ^owners []})
-    (claims .put key claim))
+  (if ($absent? claim)
+    (do (set claim {^registry pair/0 ^key pair/1 ^owners []})
+    (claims .put key claim)))
   (if_not (claim/owners .contains? id) (claim/owners .push id)))
 
 (fn drop_entry [entries, id]
@@ -80,29 +80,29 @@
       (plan_error "each change needs a unique plugin id"))
     (seen .push id)
     (let index (find_entry_index next id))
-    (let existing (if (== index -1) nil next/%index))
+    (let existing (if (== index -1) nil else next/%index))
     (let builtin ($present? (workspace/profile_plugins/.get .get id)))
     (let enabled (!= existing/disabled true))
     (let kind operation/kind)
     (if (! (["set_enabled" "restore" "revert" "replace"] .contains? kind))
       (plan_error $"unknown plugin change ${kind}"))
-    (if_yes (== kind "set_enabled")
-      (if (!= ($head operation/enabled) Bool) (plan_error "enabled must be a boolean"))
+    (if (== kind "set_enabled")
+      (do (if (!= ($head operation/enabled) Bool) (plan_error "enabled must be a boolean"))
       (if (&& ($absent? existing) (! builtin)) (plan_error $"unknown plugin ${id}"))
       (if (|| ($absent? existing) (== existing/builtin true))
         (do
           (set next (drop_entry next id))
           (if_not operation/enabled (next .push {^id id ^^builtin ^^disabled})))
-        (do
+        else (do
           (let updated (data_copy existing))
           (updated .put "disabled" (! operation/enabled))
           (set next (entries_with next updated true))))
-      (continue))
-    (if_yes (== kind "restore")
-      (if_not builtin (plan_error $"plugin ${id} has no current profile default"))
+      (continue)))
+    (if (== kind "restore")
+      (do (if_not builtin (plan_error $"plugin ${id} has no current profile default"))
       (set next (drop_entry next id))
       (if (== operation/enabled false) (next .push {^id id ^^builtin ^^disabled}))
-      (continue))
+      (continue)))
     (var updated nil)
     (if (== kind "revert")
       (do
@@ -114,11 +114,11 @@
           (plan_error "no stored plugin version in that revision; restore defaults separately"))
         (set updated (data_copy old/entries/%found))
         (preserve_creation_on_revert updated existing))
-      (do
+      else (do
         (let dependencies
           (if (&& (== ($head operation/dependency_source) Str) (!= ($str/trim operation/dependency_source) ""))
             ($into ($parse/read_all operation/dependency_source) [])
-            (?? operation/dependencies [])))
+            else (?? operation/dependencies [])))
         (set updated (stage_plugin_entry ^dependencies dependencies workspace id operation/source))
         (updated .put "source_origin" {^kind "operator"})
         (assign_creation updated existing)))
@@ -143,7 +143,7 @@
     (let next (desired_by_id .get id))
     (if (!= previous next)
       (changes .push
-        {^id id ^before (if ($absent? previous) nil previous) ^after (if ($absent? next) nil next)})))
+        {^id id ^before (if ($absent? previous) nil else previous) ^after (if ($absent? next) nil else next)})))
   changes)
 
 (fn prepare_plan [runtime, request]
@@ -162,7 +162,7 @@
     (var historical_build nil)
     (let warnings [(if (== runtime/recovery true)
       "Recovery saves desired state without activating plugins. Readiness and state compatibility remain unverified until normal startup."
-      "Activation and application-state compatibility are unverified until Apply.")
+      else "Activation and application-state compatibility are unverified until Apply.")
       "Full-grant initialization and activation may have external effects. Disposing a rejected candidate does not undo those effects."])
     (if_not ($absent? request/restore_revision)
       (if (!= ($head request/restore_revision) Int) (plan_error "restore_revision must be an integer"))
@@ -196,21 +196,21 @@
             (current_defaults .push {^id id ^host_build_id stamp/host_build_id ^historical_host_build_id historical_build}))
           (let default (workspace/profile_plugins/.get .get id))
           (if ($absent? default) (errors .push $"profile default ${id} is unavailable")
-            (set data (descriptor_data default/plugin))))
-        (try
+            else (set data (descriptor_data default/plugin))))
+        else (try
           (verify_stored_entry workspace entry)
           (let inspected (inspect_descriptor ^candidate entry runtime id))
           (if inspected/ok
-            (then (set data inspected/descriptor) (checked .put id inspected/descriptor))
-            (elif (== inspected/code "unsupported_interface") (errors .push $"${id}: ${inspected/message}"))
-            (else (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}")))
+            (set data inspected/descriptor) (checked .put id inspected/descriptor)
+            elif (== inspected/code "unsupported_interface") (errors .push $"${id}: ${inspected/message}")
+            else (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}"))
         catch Error
           (if repair
             (warnings .push $"${id}: unavailable during repair: ${$err/.message}")
-            (errors .push $"${id}: ${$err/.message}"))))
-      (if_yes ($absent? data)
-        (let saved (saved_metadata workspace/store id (?? entry/module_digest "builtin") stamp/host_build_id))
-        (set data saved/declared))
+            else (errors .push $"${id}: ${$err/.message}"))))
+      (if ($absent? data)
+        (do (let saved (saved_metadata workspace/store id (?? entry/module_digest "builtin") stamp/host_build_id))
+        (set data saved/declared)))
       (if_not ($absent? data)
         (descriptors .put id data)
         (for pair in data/provides (claim_capability providers claims pair id)))
@@ -251,9 +251,9 @@
         (missing .push {^id "profile" ^registry pair/0 ^key pair/1})))
     (if_not missing/.empty?
       (warnings .push (if (== runtime/recovery true)
-        (then "Some requirements are unavailable while recovery is active. Normal startup will reconcile the saved composition.")
-        (elif repair "Unmet requirements are permitted by this repair plan. Activation failures still reject the whole candidate.")
-        (else "Some requirements are predicted to be unavailable. Apply will verify the complete candidate before committing."))))
+        "Some requirements are unavailable while recovery is active. Normal startup will reconcile the saved composition."
+        elif repair "Unmet requirements are permitted by this repair plan. Activation failures still reject the whole candidate."
+        else "Some requirements are predicted to be unavailable. Apply will verify the complete candidate before committing.")))
     (let impact [])
     (for changed in diff
       (let prior (current .get changed/id))
@@ -267,7 +267,7 @@
       ^retry retry
       ^repair repair ^restore_revision (?? request/restore_revision nil)
       ^reason (if (== ($head request/reason) Str) request/reason
-        $"Reviewed ${diff/.size} plugin change(s)")
+        else $"Reviewed ${diff/.size} plugin change(s)")
       ^at ($to_str ($now))})
     (let id ($pkg/canonical_digest plan))
     (workspace/store .Store:put $"plugin_plan/${id}" plan)
@@ -334,9 +334,9 @@
         (fail
           (CompositionConflict ^code "stale_plan" ^expected plan/base_revision ^actual (composition_revision workspace) ^_msg "Host, profile, or configuration changed; validate this draft again.")))
       (if_not plan/errors/.empty? (plan_error "plan has validation errors"))
-      (if_yes (&& plan/diff/.empty? (!= plan/retry true))
-        (reset_plan_participants workspace plan)
-        (return {^id id ^state "applied" ^revision plan/base_revision ^^no_change}))
+      (if (&& plan/diff/.empty? (!= plan/retry true))
+        (do (reset_plan_participants workspace plan)
+        (return {^id id ^state "applied" ^revision plan/base_revision ^^no_change})))
       (let origin
         {
           ^kind "operator"
@@ -347,11 +347,11 @@
       (let before (composition_revision workspace))
       (let before_head workspace/history_head/.get)
       (try
-        (if_yes (== runtime/recovery true)
-          (let revision (commit_composition ^origin origin workspace plan/entries))
+        (if (== runtime/recovery true)
+          (do (let revision (commit_composition ^origin origin workspace plan/entries))
           (reset_plan_participants workspace plan)
           (composition_history_result workspace {^plan id ^status "unverified" ^operation "repair"})
-          (return {^id id ^revision revision ^state "saved" ^activation "unverified"}))
+          (return {^id id ^revision revision ^state "saved" ^activation "unverified"})))
         (let admissions [])
         (let effective (effective_entries workspace plan/entries))
         (map_for [name entry] in effective
@@ -359,7 +359,7 @@
           (if (== entry/disabled true) (continue))
           (if ($absent? entry/module_digest)
             (admissions .push (workspace/profile_plugins/.get .get plugin_id))
-            (do
+            else (do
               (verify_stored_entry workspace entry)
               (let descriptor (load_entry_descriptor ^!events workspace runtime/h entry))
               (let expected (plan/checked .get plugin_id))
@@ -394,7 +394,7 @@
             ^message (?? outcome/message nil)
             ^readiness (if plan/repair
                          "unverified"
-                         "ready")
+                         else "ready")
             ^host_build_id workspace/history_build/.get})
         (outcome .put "id" id)
         (outcome .put "revision" (composition_revision workspace))
@@ -433,7 +433,7 @@
       ^state "interrupted"
       ^revision (composition_revision runtime/workspace)
       ^message "This application was interrupted. Inspect the current composition and validate a new plan; it will not be replayed."}
-    result))
+    else result))
 
 (fn apply_plan [runtime, id : Str]
   (run_composition_change
@@ -456,7 +456,7 @@
             ^id id
             ^state (if ($absent? $err/code)
                      "failed"
-                     "stale")
+                     else "stale")
             ^code (?? $err/code "error")
             ^message (failure_text $err)})
         (fail $err)))))

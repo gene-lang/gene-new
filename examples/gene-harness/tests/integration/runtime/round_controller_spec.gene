@@ -55,9 +55,9 @@
           (test_controller
             runtime
             (fn [request]
-              (if_yes (== request/session "slow")
-                (entered .set true)
-                ($sleep 5000))
+              (if (== request/session "slow")
+                (do (entered .set true)
+                ($sleep 5000)))
               "(Outcome ^^done ^reply \"done\")")))
         (try
           (create_session ^id "slow" runtime/sessions)
@@ -105,7 +105,7 @@
         (let controller (test_controller runtime (fn [request]
           (let n (calls .swap (+ calls/.get 1)))
           (if (== n 0) "(Outcome ^questions [{^id \"q\" ^prompt \"Answer?\"}])"
-            "(Outcome ^^done ^reply \"answered\")"))))
+            else "(Outcome ^^done ^reply \"answered\")"))))
         (try
           (create_session runtime/sessions ^id "race")
           (append_message runtime "race" "user" "stored before the first load")
@@ -237,7 +237,7 @@
           (calls .set (+ calls/.get 1))
           (if (== calls/.get 1)
             "(Outcome ^questions [{^id \"q\" ^prompt \"Continue?\"}])"
-            "(Outcome ^^done ^reply \"done\")"))))
+            else "(Outcome ^^done ^reply \"done\")"))))
         (try
           (let first (submit_round controller "default" "u1" 1 "ask"))
           ((/watcher (controller/rounds/.get .get "default")) .join)
@@ -370,13 +370,12 @@
         (let plugin (snapshot_fixture "fake://one" (fn [call]
           (calls/.get .push call/settings)
           (if (== calls/.get/.size 1)
-            (then
-              (let changed ($thaw ($freeze cache/.get)))
+            (let changed ($thaw ($freeze cache/.get)))
               (changed/default .put "model" "small")
               (changed/providers/snapshot/models/0 .put "window" 32000)
               (cache .set changed)
-              {^text "(Outcome ^prompt \"one more turn\")"})
-            (else {^text "(Outcome ^^done ^reply \"done\")"})))))
+              {^text "(Outcome ^prompt \"one more turn\")"}
+            else {^text "(Outcome ^^done ^reply \"done\")"}))))
         (let runtime (open_runtime workspace "default"
           (Profile ^name "test" ^plugins [plugin] ^provider "snapshot")))
         (let controller (test_controller runtime nil))

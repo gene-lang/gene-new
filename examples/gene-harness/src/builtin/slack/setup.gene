@@ -22,19 +22,19 @@
     (if (! identity/member) (slack_error "forbidden" "Invite the Slack bot into the configured channel first."))
     (if (== identity/operator "")
       (slack_error "invalid_request" "Initial pairing requires the operator's Slack user token in the credential file."))
-    (let native (if ($absent? driver) (load_socket_library library) (driver/load library)))
+    (let native (if ($absent? driver) (load_socket_library library) else (driver/load library)))
     (let socket (if ($absent? driver) (connect_socket client native credentials/app)
-      (driver/connect client native credentials/app)))
+      else (driver/connect client native credentials/app)))
     (try
       (let due (+ ($os/monotonic_ms) 10000))
       (var hello nil)
       (while ($absent? hello)
         (if (>= ($os/monotonic_ms) due) (slack_error "unavailable" "Slack connection hello timed out."))
-        (set hello (if ($absent? driver) (socket_message native socket) (driver/receive native socket)))
+        (set hello (if ($absent? driver) (socket_message native socket) else (driver/receive native socket)))
         (if ($absent? hello) ($sleep 5)))
       (if (|| (!= hello/type "hello") (!= hello/connection_info/app_id identity/app))
         (slack_error "forbidden" "The Slack app and bot tokens do not identify the same application."))
-    ensure (if ($absent? driver) ($C/close socket) (driver/close socket)))
+    ensure (if ($absent? driver) ($C/close socket) else (driver/close socket)))
     {^identity {^transport "slack" ^team identity/team ^app identity/app ^bot identity/bot
                 ^bot_user identity/bot_user ^operator identity/operator}
      ^config {^secret_file filename ^library library} ^channel credentials/channel}

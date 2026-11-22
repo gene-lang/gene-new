@@ -44,8 +44,7 @@
   (var expected (patch .get "expected_module"))
   (var target (patch .get "entry"))
   (if (&& ($present? expected) (!= expected (entry .get "module")))
-    (then
-      (warnings .push
+    (do (warnings .push
         $"patch for ${target} skipped: expected module ${expected}")
       (return false)))
   (for field in ["config" "disabled" "isolate" "intercept"]
@@ -66,10 +65,9 @@
 (fn apply_patch_in_entries ^^private [entries, target : Str, prefix, patch, warnings]
   (for entry in entries
     (var local_id (entry .get "id"))
-    (var full_id (if ($absent? prefix) local_id $"${prefix}:${local_id}"))
+    (var full_id (if ($absent? prefix) local_id else $"${prefix}:${local_id}"))
     (if (== full_id target)
-      (then
-        (patch_entry entry patch warnings)
+      (do (patch_entry entry patch warnings)
         (return true)))
     (if (== (entry .get "group") true)
       (if (apply_patch_in_entries
@@ -110,7 +108,7 @@
     (apply_patches parsed include/patches include/warnings/.get))
   (if ($absent? mode)
     (include/loader .reconcile manifest)
-    (include/loader .reconcile manifest mode)))
+    else (include/loader .reconcile manifest mode)))
 
 (fn include_write ^^private [include : IncludeHandle, manifest, mode]
   (require_active include)
@@ -120,7 +118,7 @@
   (write_text_atomic include/path ($to_str checked))
   (if ($absent? mode)
     (include/loader .reconcile checked)
-    (include/loader .reconcile checked mode)))
+    else (include/loader .reconcile checked mode)))
 
 (fn include_inspect ^^private [include : IncludeHandle]
   ($freeze {^path include/path ^writable include/writable

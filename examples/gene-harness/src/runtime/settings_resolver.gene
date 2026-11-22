@@ -41,8 +41,8 @@
 # without a definition keep their stored values.
 (fn resolve_config [workspace_values, definitions, shared_root : Str]
   (let shared (if (&& (!= shared_root "") (needs_shared? definitions workspace_values))
-    (then (/values (read_shared_settings shared_root)))
-    (else {})))
+    (/values (read_shared_settings shared_root))
+    else {}))
   (let result workspace_values)
   (map_for [key definition] in definitions
     (let name ($to_str key))
@@ -75,7 +75,7 @@
 
 (fn settings_revision [runtime] : Int
   (let state (settings_state runtime))
-  (if ($absent? state) 0 state/revision/.get))
+  (if ($absent? state) 0 else state/revision/.get))
 
 (fn bump_settings_revision [runtime]
   (let state (settings_state runtime))
@@ -93,4 +93,4 @@
 
 (fn active_settings [runtime]
   (let state (settings_state runtime))
-  (if ($absent? state) {} state/active/.get))
+  (if ($absent? state) {} else state/active/.get))

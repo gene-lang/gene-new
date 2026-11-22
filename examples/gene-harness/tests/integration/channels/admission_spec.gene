@@ -57,7 +57,7 @@
         (let calls ($cell 0))
         (fixture workspace (fn [request]
           (calls .set (+ calls/.get 1))
-          (if (== calls/.get 1) "(Outcome ^prompt \"Pending work.\")" "(Outcome ^^done ^reply \"Done.\")"))
+          (if (== calls/.get 1) "(Outcome ^prompt \"Pending work.\")" else "(Outcome ^^done ^reply \"Done.\")"))
           (fn [f]
             (let filename ($path/join workspace ".gene-harness" "config.gene"))
             (let config ($serde/read_data ($fs/read_text filename)))
@@ -89,31 +89,31 @@
                 (try
                   {^kind "admitted" ^receipt (submit_round f/service/runtime/services/values/controller f/session "browser-forced" 1 "Unsent browser draft"
                     ^on_admit (fn [receipt]
-                      (if blocked (then (entered .set true) (admission .recv)))))}
+                      (if blocked (do (entered .set true) (admission .recv)))))}
                 catch RoundError {^kind $err/code})))
               (let channel (fn [blocked]
                 (admit_channel_queue f/service/runtime/services/values/controller f/session (fn [parts]
-                  (if blocked (then (entered .set true) (admission .recv)))
+                  (if blocked (do (entered .set true) (admission .recv)))
                   (authorize_parts f/owner f/route/id parts ^workspace root)))))
               (scope
-                (let first (spawn ^lane root (if (== winner "browser") (browser true) (channel true))))
+                (let first (spawn ^lane root (if (== winner "browser") (browser true) else (channel true))))
                 (let due (+ ($os/monotonic_ms) 5000))
                 (while (! entered/.get)
                   ($assert (< ($os/monotonic_ms) due) "Winning admission did not acquire the session gate")
                   ($sleep 1))
                 (let second (spawn ^lane root
                   (do (attempted .set true)
-                    (if (== winner "browser") (channel false) (browser false)))))
+                    (if (== winner "browser") (channel false) else (browser false)))))
                 (while (! attempted/.get) ($sleep 1))
                 (admission .send nil)
                 ($assert (== (/kind (await first)) "admitted"))
                 ($assert (== (/kind (await second)) "busy")))
               ($assert (== ($size (/receipts (round_state f/service/runtime/services/values/controller f/session))) 1))
-              ($assert (== (/pending (queue_status f/queues f/session)) (if (== winner "browser") 1 0)))
+              ($assert (== (/pending (queue_status f/queues f/session)) (if (== winner "browser") 1 else 0)))
               (model .send nil) (wait_round f/service f/session)
-              (if_yes (== winner "browser")
-                ($assert (== (/kind (drain f)) "admitted"))
-                (model .send nil) (wait_round f/service f/session))
+              (if (== winner "browser")
+                (do ($assert (== (/kind (drain f)) "admitted"))
+                (model .send nil) (wait_round f/service f/session)))
               ($assert (== (/pending (queue_status f/queues f/session)) 0))))))))
 
   (it "leaves arrivals during authorization for the next drain" []
@@ -194,7 +194,7 @@
         (fixture workspace (fn [request]
           (calls .set (+ calls/.get 1))
           (if (== calls/.get 1) "(Outcome ^prompt \"Pending channel work.\" ^reply \"Inspected.\")"
-            "(Outcome ^^done ^reply \"Finished.\")"))
+            else "(Outcome ^^done ^reply \"Finished.\")"))
           (fn [f]
             (let file ($path/join workspace ".gene-harness" "config.gene"))
             (let config ($serde/read_data ($fs/read_text file)))

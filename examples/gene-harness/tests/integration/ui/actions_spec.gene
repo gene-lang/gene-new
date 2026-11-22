@@ -43,7 +43,7 @@
                     (if emit (host .PluginHost:emit_event "action_probe/event" {^value "workspace"}))
                     (if spin (while true ($sleep 1)))
                     (if_not ($absent? payload) ($sleep 30))
-                    (if ($absent? payload) "complete" payload/value))})
+                    (if ($absent? payload) "complete" else payload/value))})
                 (host .PluginHost:contribute "web_components"
                   {^name "probe" ^slot "view" ^title "Probe" ^view_state {}
                    ^actions ["probe_action"] ^render (fn [ctx] (quote (p "Probe")))}))) {})

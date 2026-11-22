@@ -7,7 +7,7 @@
 # The hosted entry receives its argv as a Node; direct callers pass a List.
 (fn argument_values [args]
   (try
-    (if (== ($head args/.body) List) args/.body args)
+    (if (== ($head args/.body) List) args/.body else args)
     catch Error args))
 
 (fn parse_options [args]
@@ -62,27 +62,25 @@
   (while (< i argv/.size)
     (let arg ($to_str argv/%i))
     (if (&& (! literal) (== arg "--"))
-      (then
-        (set literal true))
-      (elif (&& (! literal) ($str/starts_with? arg "--"))
+      (set literal true)
+      elif (&& (! literal) ($str/starts_with? arg "--"))
         (let key ($str/slice_bytes arg 2 (- ($str/byte_size arg) 2)))
         (if (valued .contains? key)
-          (then
-            (set i (+ i 1))
+          (set i (+ i 1))
             (if (>= i argv/.size) (problem $"${arg} needs a value"))
             (if (== key "workspace") (set explicit_workspace true))
-            (options .put key ($to_str argv/%i)))
-          (elif (flags .contains? key)
-            (options .put key true))
-          (else
-            (problem $"Unknown option ${arg}. Use --help for usage."))))
-      (else
-        (words .push arg)))
+            (options .put key ($to_str argv/%i))
+          elif (flags .contains? key)
+            (options .put key true)
+          else
+            (problem $"Unknown option ${arg}. Use --help for usage."))
+      else
+        (words .push arg))
     (set i (+ i 1)))
-  (let command (if words/.empty? "web" words/0))
-  (if_yes (== command "manager")
-    (if explicit_workspace (problem "manager hosts its root directory; use --root DIR instead of --workspace."))
-    (options .delete "workspace"))
+  (let command (if words/.empty? "web" else words/0))
+  (if (== command "manager")
+    (do (if explicit_workspace (problem "manager hosts its root directory; use --root DIR instead of --workspace."))
+    (options .delete "workspace")))
   (if (&& (! (["manager" "web"] .contains? command)) ($present? options/root))
     (problem "--root applies only to web and manager hosts."))
   {^options options ^words words ^command command})

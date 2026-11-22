@@ -31,7 +31,7 @@
 
 (fn statement [id : Str, version : Int, ^replace replace : Bool = false]
   ($to_str "(register_plugin \"" id "\" (quote " (source id version) ")"
-    (if replace " ^^replace" "") ")"))
+    (if replace " ^^replace" else "") ")"))
 
 (fn stored [runtime, id : Str = "probe"]
   (for entry in (composition_entries runtime/workspace)

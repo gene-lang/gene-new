@@ -10,23 +10,23 @@
 (type QuestionEditor ^props {^key Str ^session Str ^batch Any ^answers PropMap ^skips PropMap ^sending Bool ^error Str ^views (List Any)})
 
 (fn qtext [value : Any, fallback : Str = ""] : Str
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Str value)
   result)
 
 (fn qjson [value : Any] : Str
-  ($json/stringify (if ($absent? value) nil value)))
+  ($json/stringify (if ($absent? value) nil else value)))
 
 (fn choice_label [value : Any] : Str
   (var encoded (qjson value))
-  (if_yes (str/starts_with? encoded "\"") (return (qtext value)))
-  (if_yes (== encoded "true") (return "Yes"))
-  (if_yes (== encoded "false") (return "No"))
+  (if (str/starts_with? encoded "\"") (return (qtext value)))
+  (if (== encoded "true") (return "Yes"))
+  (if (== encoded "false") (return "No"))
   encoded)
 
 (fn restored_map [key : Str] : PropMap
   (var saved (?? (storage_get key) ""))
-  (if_yes (== saved "") (return {}))
+  (if (== saved "") (return {}))
   (try
     (var value : PropMap ($json/parse saved))
     value
@@ -56,7 +56,7 @@
     (if_not ($absent? question/recommended)
       (if (== (qjson question/multi) "true")
         (set answers/%id [question/recommended])
-        (set answers/%id question/recommended))))
+        else (set answers/%id question/recommended))))
   (var draft : Any controller/drafts/%key)
   (var pending : Any controller/pending/%key)
   (if_not ($absent? pending) (set answers pending/answers))
@@ -76,15 +76,15 @@
     ($dom/set_text
       status
       (if editor/sending
-        (then "Sending answer…")
-        (elif (!= editor/error "") editor/error)
-        (elif pending "Answer outcome unknown. Resolve reuses the original reply.")
-        (else "")))
+        "Sending answer…"
+        elif (!= editor/error "") editor/error
+        elif pending "Answer outcome unknown. Resolve reuses the original reply."
+        else ""))
     (var submit : EventTarget view/submit)
     (var dismiss : EventTarget view/dismiss)
     (var cancel : EventTarget view/cancel)
     (set submit/disabled (|| (! controller/ready) editor/sending))
-    ($dom/set_text submit (if pending "Resolve answer" "Answer"))
+    ($dom/set_text submit (if pending "Resolve answer" else "Answer"))
     (set dismiss/disabled (|| (! controller/ready) editor/sending pending))
     (set cancel/disabled (|| (! controller/ready) editor/sending))
     (set cancel/hidden (== (qtext editor/batch/round_id) ""))
@@ -93,28 +93,28 @@
       (var element : EventTarget field/element)
       (var id (qtext field/id))
       (var kind (qtext field/kind))
-      (if_yes (== kind "view")
-        (render_question_view controller editor field (&& controller/ready (! editor/sending) (! pending)))
-        (continue))
+      (if (== kind "view")
+        (do (render_question_view controller editor field (&& controller/ready (! editor/sending) (! pending)))
+        (continue)))
       (set element/disabled (|| editor/sending pending))
       (match kind
-        (when "skip" (set element/checked (== (qjson editor/skips/%id) "true")))
-        (when "multi" (do
+        when "skip" (set element/checked (== (qjson editor/skips/%id) "true"))
+        when "multi" (do
             (var checked false)
             (if_not ($absent? editor/answers/%id)
               (var picked : (List Any) editor/answers/%id)
               (for value in picked
-                (if_yes (== (qjson value) (qjson field/choice)) (set checked true))))
-            (set element/checked checked)))
-        (else
-          (var value (if (== kind "text") (qtext editor/answers/%id) "-1"))
-          (if_yes (== kind "select")
-            (var choices : (List Any) field/choices)
+                (if (== (qjson value) (qjson field/choice)) (set checked true))))
+            (set element/checked checked))
+        else
+          (var value (if (== kind "text") (qtext editor/answers/%id) else "-1"))
+          (if (== kind "select")
+            (do (var choices : (List Any) field/choices)
             (var index 0)
             (for choice in choices
-              (if_yes (== (qjson choice) (qjson editor/answers/%id)) (set value ($to_str index)))
-              (set index (+ index 1))))
-          (if_yes (!= ($dom/input_value element) value) ($dom/set_input_value element value)))))))
+              (if (== (qjson choice) (qjson editor/answers/%id)) (set value ($to_str index)))
+              (set index (+ index 1)))))
+          (if (!= ($dom/input_value element) value) ($dom/set_input_value element value))))))
 
 # A question view's answer buttons select draft values; Answer still submits
 # the whole batch (docs/cards.md).
@@ -127,14 +127,14 @@
   ($dom/append container
     (question_tree question/view
       (fn [value : Any] : Bool
-        (if_yes ($absent? editor/answers/%id) (return false))
+        (if ($absent? editor/answers/%id) (return false))
         (var current_json (qjson editor/answers/%id))
         (var value_json (qjson value))
-        (if_yes (== current_json value_json) (return true))
-        (if_yes (&& multi (str/starts_with? current_json "["))
-          (var picked : (List Any) editor/answers/%id)
+        (if (== current_json value_json) (return true))
+        (if (&& multi (str/starts_with? current_json "["))
+          (do (var picked : (List Any) editor/answers/%id)
           (for item in picked
-            (if_yes (== (qjson item) value_json) (return true))))
+            (if (== (qjson item) value_json) (return true)))))
         false)
       (fn [value : Any] : Nil
         (if multi
@@ -144,14 +144,14 @@
             (if_not ($absent? editor/answers/%id)
               (var saved : (List Any) editor/answers/%id)
               (for item in saved
-                (if (== (qjson item) (qjson value)) (set removed true) (next .push item))))
+                (if (== (qjson item) (qjson value)) (set removed true) else (next .push item))))
             (if_not removed (next .push value))
             (set editor/answers/%id next))
-          (set editor/answers/%id value))
+          else (set editor/answers/%id value))
         (store_draft controller editor)
         # An opt-in single-click question submits its one answer at once.
         (var batch_questions : (List Any) editor/batch/questions)
-        (if_yes (&& (! multi) (== (qjson question/submit_on_answer) "true") (== ($size batch_questions) 1) enabled)
+        (if (&& (! multi) (== (qjson question/submit_on_answer) "true") (== ($size batch_questions) 1) enabled)
           (send_reply controller editor false)))
       controller/stage
       enabled)))
@@ -164,15 +164,15 @@
   (sync_question controller editor))
 
 (fn send_reply [controller : QuestionEditors, editor : QuestionEditor, dismiss : Bool] : Nil
-  (if_yes (|| (! controller/ready) editor/sending) (return))
+  (if (|| (! controller/ready) editor/sending) (return))
   (var key editor/key)
   (var payload : Any controller/pending/%key)
-  (if_yes ($absent? payload)
-    (var answers : PropMap {})
+  (if ($absent? payload)
+    (do (var answers : PropMap {})
     (if_not dismiss
       (map_for [raw_id value] in editor/answers
         (var id ($to_str raw_id))
-        (if_yes (&& ($present? value) (!= (qjson editor/skips/%id) "true") (!= (qjson value) "\"\""))
+        (if (&& ($present? value) (!= (qjson editor/skips/%id) "true") (!= (qjson value) "\"\""))
           (set answers/%id value))))
     (set payload
       ($json/parse
@@ -183,7 +183,7 @@
             ^round_id editor/batch/round_id
             ^answers answers
             ^dismiss dismiss})))
-    (set controller/pending/%key payload))
+    (set controller/pending/%key payload)))
   (if_not (storage_set "gene-harness/question-replies" (qjson controller/pending))
     (set editor/error "Browser storage is required before answering. Resolve will retry this exact reply.")
     (sync_question controller editor)
@@ -207,9 +207,9 @@
               (set editor/error "Answer accepted.")
               (controller/drafts .delete key)
               (storage_set "gene-harness/question-drafts" (qjson controller/drafts)))
-            (set editor/error (qtext data/message "This batch cannot accept the reply.")))
+            else (set editor/error (qtext data/message "This batch cannot accept the reply.")))
           (remove_notice controller/notices "questions" session key))
-        (put_notice
+        else (put_notice
           controller/notices
           ($dom/element "notice")
           "questions"
@@ -232,7 +232,7 @@
           controller
           (qtext payload/session)
           {^id payload/batch_id ^round_id (qtext payload/round_id) ^questions empty}))
-      (if_yes editor/sending (continue))
+      (if editor/sending (continue))
       (set editor/sending true)
       (var session (qtext payload/session))
       (controller/api
@@ -243,7 +243,7 @@
           (set editor/sending false)
           (if (== code 200)
             (send_reply controller editor false)
-            (do
+            else (do
               (set editor/error "The original conversation could not be checked. The reply is still pending.")
               (sync_question controller editor)
               (controller/changed session))))))))
@@ -256,7 +256,7 @@
 
 (fn cancel_question_round [controller : QuestionEditors, editor : QuestionEditor] : Nil
   (var round (qtext editor/batch/round_id))
-  (if_yes (|| (! controller/ready) editor/sending (== round "")) (return))
+  (if (|| (! controller/ready) editor/sending (== round "")) (return))
   (var session editor/session)
   (set editor/sending true)
   (sync_question controller editor)
@@ -273,24 +273,24 @@
           (storage_set "gene-harness/question-replies" (qjson controller/pending))
           (remove_notice controller/notices "questions" session key)
           (set editor/error "Cancellation requested."))
-        (set editor/error "Cancellation was not confirmed. The original question remains available."))
+        else (set editor/error "Cancellation was not confirmed. The original question remains available."))
       (sync_question controller editor)
       (controller/changed session))))
 
 (fn mount_question [controller : QuestionEditors, session : Str, batch : Any, target : EventTarget, slot : Str] : Nil
-  (var identity (if ($absent? batch) "" (question_key session (qtext batch/id))))
+  (var identity (if ($absent? batch) "" else (question_key session (qtext batch/id))))
   (var previous : Any controller/mounts/%slot)
-  (if_yes (== (qtext previous/key) identity) (return))
+  (if (== (qtext previous/key) identity) (return))
   (if_not ($absent? previous)
     (var previous_key (qtext previous/key))
     (var old : QuestionEditor controller/editors/%previous_key)
     (var kept : (List Any) [])
     (for view in old/views
-      (if_yes (!= (qtext view/slot) slot) (kept .push view)))
+      (if (!= (qtext view/slot) slot) (kept .push view)))
     (set old/views kept))
   ($dom/clear target)
   (controller/mounts .delete slot)
-  (if_yes (== identity "") (return))
+  (if (== identity "") (return))
   (var editor (editor_for controller session batch))
   (set editor/batch batch)
   (var form ($dom/render `(form ^class_name "question_editor")))
@@ -300,13 +300,13 @@
     (var id (qtext question/id))
     (var group ($dom/render `(fieldset (legend %(qtext question/prompt)))))
     (var choices : Any question/choices)
-    (if_yes ($present? question/view)
-      (var view_container ($dom/render `(div ^class_name "question_view")))
-      (fields .push {^element view_container ^kind "view" ^id id ^question question})
-      ($dom/append group view_container))
     (if ($present? question/view)
-      (then nil)
-      (elif ($absent? choices)
+      (do (var view_container ($dom/render `(div ^class_name "question_view")))
+      (fields .push {^element view_container ^kind "view" ^id id ^question question})
+      ($dom/append group view_container)))
+    (if ($present? question/view)
+      nil
+      elif ($absent? choices)
         (var input ($dom/render `(textarea ^rows "2" ^aria-label %(qtext question/prompt))))
         (fields .push {^element input ^kind "text" ^id id})
         ($dom/add_event_listener
@@ -315,8 +315,8 @@
           (fn [event : Any] : Nil
             (set editor/answers/%id ($dom/input_value input))
             (store_draft controller editor)))
-        ($dom/append group input))
-      (elif (== (qjson question/multi) "true")
+        ($dom/append group input)
+      elif (== (qjson question/multi) "true")
         (var values : (List Any) choices)
         (for choice in values
           (var input ($dom/render `(input ^type "checkbox")))
@@ -332,12 +332,12 @@
               (if_not ($absent? editor/answers/%id)
                 (var saved : (List Any) editor/answers/%id)
                 (for value in saved
-                  (if_yes (!= (qjson value) (qjson choice)) (picked .push value))))
-              (if_yes input/checked (picked .push choice))
+                  (if (!= (qjson value) (qjson choice)) (picked .push value))))
+              (if input/checked (picked .push choice))
               (set editor/answers/%id picked)
               (store_draft controller editor)))
-          ($dom/append group label)))
-      (else
+          ($dom/append group label))
+      else
         (var select
           ($dom/render `(select ^aria-label %(qtext question/prompt) (option ^value "-1" "Skip"))))
         (var values : (List Any) choices)
@@ -354,10 +354,10 @@
           (fn [event : Any] : Nil
             (var selected : Int ($json/parse ($dom/input_value select)))
             (if (< selected 0)
-              (then (editor/answers .delete id))
-              (else (set editor/answers/%id values/%selected)))
+              (editor/answers .delete id)
+              else (set editor/answers/%id values/%selected))
             (store_draft controller editor)))
-        ($dom/append group select)))
+        ($dom/append group select))
     (var skip ($dom/render `(input ^type "checkbox")))
     (var label ($dom/render `(label ^class_name "question_skip")))
     ($dom/append label skip)

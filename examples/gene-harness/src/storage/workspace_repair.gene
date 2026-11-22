@@ -21,15 +21,15 @@
   (for entry in (composition_entries workspace)
     (if (== entry/builtin true)
       (out .push $"${entry/id}: built-in disabled")
-      (out .push
+      else (out .push
         ($to_str entry/id ": stored "
-          (if (entry_enabled? entry) "enabled" "disabled")
-          (if (== entry/replaces_builtin true) " (replaces built-in)" "")))))
+          (if (entry_enabled? entry) "enabled" else "disabled")
+          (if (== entry/replaces_builtin true) " (replaces built-in)" else "")))))
   (map_for [id message] in workspace/errors/.get
     (out .push
       (if ($absent? active)
         $"${id}: ${message}"
-        $"${id}: ${message} (desired ${desired}, active ${active})")))
+        else $"${id}: ${message} (desired ${desired}, active ${active})")))
   (if (&& (== workspace/errors/.get #{}) ($absent? active) (> desired 0))
     (out .push $"composition desired ${desired}: no successful activation revision recorded"))
   (if (&& (== workspace/errors/.get #{}) ($present? active) (!= desired active))
@@ -42,28 +42,26 @@
   (var next_entries (fresh_list))
   (for entry in entries
     (if (== entry/id id)
-      (then
-        (set found true)
+      (set found true)
         (if (== entry/builtin true)
-          (then
-            (if disabled (next_entries .push entry)))
-          (else
+          (if disabled (next_entries .push entry))
+          else
             (let next_entry (data_copy entry))
             (if_not (== (entry_enabled? entry) (! disabled))
               (next_entry .put "disabled" disabled))
-            (next_entries .push next_entry))))
-      (else (next_entries .push entry))))
+            (next_entries .push next_entry))
+      else (next_entries .push entry)))
   (if_not found
     (if ($absent? (workspace/profile_plugins/.get .get id))
-      (then (fail (CompositionError ^_msg $"composition entry ${id} does not exist")))
-      (elif disabled (next_entries .push {^id id ^^builtin ^^disabled}))
-      (else
+      (fail (CompositionError ^_msg $"composition entry ${id} does not exist"))
+      elif disabled (next_entries .push {^id id ^^builtin ^^disabled})
+      else
         (reset_participant_quarantine workspace id)
-        (return (composition_revision workspace)))))
+        (return (composition_revision workspace))))
   (if_not disabled (reset_participant_quarantine workspace id))
   (if (== next_entries entries) (return (composition_revision workspace)))
   (var revision (commit_composition ^origin (?? origin
-    {^kind (if ($absent? h) "direct" "offline") ^operation (if disabled "disable" "enable") ^plugin id})
+    {^kind (if ($absent? h) "direct" else "offline") ^operation (if disabled "disable" else "enable") ^plugin id})
     workspace next_entries))
   (if_not ($absent? h)
     (var digest (previous_module_digest next_entries id))
@@ -76,7 +74,7 @@
       0
       (if disabled
         "disabled"
-        "enabled"))
+        else "enabled"))
     (flush_harness h)
     (composition_history_result workspace {^plugin id ^status "unverified" ^operation "offline_repair"}))
   revision)
@@ -94,10 +92,10 @@
   (for entry in entries
     (if (== entry/id id)
       (set removed true)
-      (kept .push entry)))
+      else (kept .push entry)))
   (if_not removed (return (composition_revision workspace)))
   (let revision (commit_composition ^origin (?? origin
-    {^kind (if ($absent? h) "direct" "offline") ^operation "restore_default" ^plugin id}) workspace kept))
+    {^kind (if ($absent? h) "direct" else "offline") ^operation "restore_default" ^plugin id}) workspace kept))
   (if_not ($absent? h)
     (record_composition_change h id (previous_module_digest entries id) nil
       revision 0 "restored")
@@ -107,20 +105,20 @@
 
 (fn set_plugin_enabled [workspace, h, id : Str, enabled : Bool, ^readiness readiness = nil]
   (let context ($runtime/context))
-  (let origin (change_origin h (if enabled "enable" "disable") id))
+  (let origin (change_origin h (if enabled "enable" else "disable") id))
   (let apply (fn [] (run_composition_change h/snapshots (fn []
     (let revision (set_entry_disabled ^origin origin workspace id (! enabled)))
     (activate_desired_plugin workspace h id)
     (let digest (previous_module_digest (composition_entries workspace) id))
-    (record_composition_change h id digest digest revision (?? origin/turn 0) (if enabled "enabled" "disabled"))
+    (record_composition_change h id digest digest revision (?? origin/turn 0) (if enabled "enabled" else "disabled"))
     (flush_harness h)
     (update_active_revision workspace h)
-    (record_application_result ^readiness readiness workspace h {^plugin id ^status (if enabled (status_of h id) "disabled")})
-    {^id id ^revision revision ^status (if enabled (status_of h id) "disabled") ^boundary "immediate"}))))
+    (record_application_result ^readiness readiness workspace h {^plugin id ^status (if enabled (status_of h id) else "disabled")})
+    {^id id ^revision revision ^status (if enabled (status_of h id) else "disabled") ^boundary "immediate"}))))
   (if (&& ($present? context/turn) (== context/turn/state/.get "open"))
-    (then (queue_composition_change h/snapshots {^id id ^kind "enabled" ^apply apply})
-      {^id id ^status "queued" ^boundary "turn"})
-    (else (apply))))
+    (queue_composition_change h/snapshots {^id id ^kind "enabled" ^apply apply})
+      {^id id ^status "queued" ^boundary "turn"}
+    else (apply)))
 
 (fn restore_plugin [workspace : Workspace, h : Harness, id : Str, ^readiness readiness = nil]
   (let context ($runtime/context))
@@ -134,9 +132,9 @@
     (record_application_result ^readiness readiness workspace h {^plugin id ^status (status_of h id)})
     {^id id ^revision revision ^status (status_of h id) ^boundary "immediate"}))))
   (if (&& ($present? context/turn) (== context/turn/state/.get "open"))
-    (then (queue_composition_change h/snapshots {^id id ^kind "restored" ^apply apply})
-      {^id id ^status "queued" ^boundary "turn"})
-    (else (apply))))
+    (queue_composition_change h/snapshots {^id id ^kind "restored" ^apply apply})
+      {^id id ^status "queued" ^boundary "turn"}
+    else (apply)))
 
 (fn enable_entry [workspace : Workspace, id : Str, ^h h = nil]
   (set_entry_disabled ^h h workspace id false))
@@ -148,31 +146,31 @@
     (record .put "attempts" (history_results ^kind "attempt" workspace/store record/id))
     (if_not ($absent? record/origin/plan)
       (let key $"plugin_plan/${record/origin/plan}")
-      (if_yes (workspace/store .Store:has? key)
-        (let plan (workspace/store .Store:get key))
+      (if (workspace/store .Store:has? key)
+        (do (let plan (workspace/store .Store:get key))
         (if (!= ($pkg/canonical_digest plan) record/origin/plan)
           (fail (CompositionError ^_msg "archived validation plan digest mismatch")))
-        (record .put "validation" {^plan record/origin/plan ^warnings plan/warnings ^errors plan/errors}))))
+        (record .put "validation" {^plan record/origin/plan ^warnings plan/warnings ^errors plan/errors})))))
   (if (== id "") (return records))
   (let selected [])
   (for record in records
     (for item in record/entries
-      (if_yes (== item/id id)
-        (let row (data_copy record))
+      (if (== item/id id)
+        (do (let row (data_copy record))
         (row .put "entry" item)
         (row .delete "entries")
         (selected .push row)
-        (break))))
+        (break)))))
   selected)
 
 (fn plugin_history_page [workspace : Workspace, id : Str = "", ^limit limit : Int = 50, ^before before = nil]
   (let records (composition_history ^limit limit ^before before workspace))
   (let history (plugin_history ^limit limit ^before before workspace id))
   (var next nil)
-  (if_yes (&& (== records/.size limit) (> records/.size 0))
-    (let index (- records/.size 1))
+  (if (&& (== records/.size limit) (> records/.size 0))
+    (do (let index (- records/.size 1))
     (let last records/%index)
-    (if (> last/revision 0) (set next last/revision)))
+    (if (> last/revision 0) (set next last/revision))))
   {^revision (composition_revision workspace) ^history history ^next_before next})
 
 (fn verify_stored_entry [workspace : Workspace, saved]
@@ -201,8 +199,8 @@
   (verify_stored_entry workspace saved)
   (let current (composition_entries workspace))
   (let index (find_entry_index current id))
-  (preserve_creation_on_revert saved (if (== index -1) nil current/%index))
-  (saved .put "disabled" (if (== index -1) false (== current/%index/disabled true)))
+  (preserve_creation_on_revert saved (if (== index -1) nil else current/%index))
+  (saved .put "disabled" (if (== index -1) false else (== current/%index/disabled true)))
   (if_not ($absent? (workspace/profile_plugins/.get .get id))
     (saved .put "replaces_builtin" true))
   saved)
@@ -234,7 +232,7 @@
   (let origin (change_origin h "revert" id))
   (origin .put "source_revision" revision)
   (saved .put "origin" origin)
-  (let descriptor (if (entry_enabled? saved) (load_entry_descriptor workspace h saved) nil))
+  (let descriptor (if (entry_enabled? saved) (load_entry_descriptor workspace h saved) else nil))
   (let apply (fn []
     (run_composition_change h/snapshots (fn []
       (check_reversion_base workspace base)
@@ -249,8 +247,8 @@
             (set status (activate_descriptor ^^fresh workspace h descriptor saved))
             (if (== status "error")
               (record_quarantine workspace id (plugin_error h id))
-              (workspace/errors/.get .delete id)))
-          (do
+              else (workspace/errors/.get .delete id)))
+          else (do
             (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
             (workspace/errors/.get .delete id)))
       catch Error
@@ -268,4 +266,4 @@
     (do
       (queue_composition_change h/snapshots {^id id ^kind "revert" ^apply apply})
       {^id id ^source_revision revision ^status "queued" ^boundary "turn"})
-    (apply)))
+    else (apply)))

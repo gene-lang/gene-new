@@ -12,7 +12,7 @@
     (let value (decision .get field))
     (if_not ([Int Float] .contains? ($head value))
       (fail (HistoryPolicyError ^_msg $"history policy ${field} must be a number")))
-    (if (|| (! (> value 0)) (!= (- value value) (if (== ($head value) Float) 0.0 0)))
+    (if (|| (! (> value 0)) (!= (- value value) (if (== ($head value) Float) 0.0 else 0)))
       (fail (HistoryPolicyError ^_msg $"history policy ${field} must be positive and finite"))))
   (if_not (> decision/trigger_bytes decision/target_bytes)
     (fail (HistoryPolicyError ^_msg "history policy trigger_bytes must exceed target_bytes")))

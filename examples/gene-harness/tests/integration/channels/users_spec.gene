@@ -117,7 +117,7 @@
             (calls/.get .push request/method)
             (if (== request/method "users.info")
               (response {^!ok ^error "missing_scope"})
-              (response {^^ok ^channel {^id "C123" ^name "team-dobi"}}))))
+              else (response {^^ok ^channel {^id "C123" ^name "team-dobi"}}))))
           ($assert (== (/body/name (channel_request channels "POST" "/api/v9/channels/user"
             {^account "dobi" ^team "T123" ^author "UOWNER"})) ""))
           ($assert (== (/body/name (channel_request channels "POST" "/api/v9/channels/channel"

@@ -15,16 +15,16 @@
   (var record : Any {^id id ^owner owner ^callback callback ^^active})
   (events/listeners .push record)
   (fn [] : Nil
-    (if_yes (! (flag record/active)) (return))
+    (if (! (flag record/active)) (return))
     (set record/active false)
     (var kept : (List Any) [])
     (for entry in events/listeners
-      (if_yes (!= (text entry/id) id) (kept .push entry)))
+      (if (!= (text entry/id) id) (kept .push entry)))
     (set events/listeners kept)))
 
 (fn feature_subscribed? [events : FeatureEvents, owner : Str] : Bool
   (for listener in events/listeners
-    (if_yes (&& (flag listener/active) (== (text listener/owner) owner)) (return true)))
+    (if (&& (flag listener/active) (== (text listener/owner) owner)) (return true)))
   false)
 
 (fn emit_feature_event [events : FeatureEvents, kind : Str, session : Str, data : Any] : Nil
@@ -33,7 +33,7 @@
   (var listeners : (List Any) [])
   (for listener in events/listeners (listeners .push listener))
   (for listener in listeners
-    (if_yes (! (flag listener/active)) (continue))
+    (if (! (flag listener/active)) (continue))
     (try
       (var callback : (Fn [Str Str Any] Nil) listener/callback)
       (callback kind session ($json/parse ($json/stringify data)))

@@ -29,24 +29,23 @@
     # A registry can be supplied later by another plugin. Its absence, like a
     # missing selected row or seam, is a dependency wait rather than bad syntax.
     (if (== ($head requirement) List)
-      (then
-        (if_not (== requirement/.size 2)
+      (if_not (== requirement/.size 2)
           (fail (HarnessError ^_msg "plugin requirement pair needs registry and key")))
         (for value in requirement
           (if (|| (!= ($head value) Str) (== value ""))
-            (fail (HarnessError ^_msg "plugin requirement names must be nonempty strings")))))
-      (elif (== ($head requirement) Map)
+            (fail (HarnessError ^_msg "plugin requirement names must be nonempty strings"))))
+      elif (== ($head requirement) Map)
         (if_not (&& (== ($map_size requirement) 1) (== ($head requirement/registry) Str)
                     (!= requirement/registry ""))
-          (fail (HarnessError ^_msg "registry requirement must be {^registry NAME}"))))
-      (else
+          (fail (HarnessError ^_msg "registry requirement must be {^registry NAME}")))
+      else
         (if (|| (!= ($head requirement) Str) (== requirement ""))
-          (fail (HarnessError ^_msg "seam requirement must be a nonempty string"))))))
+          (fail (HarnessError ^_msg "seam requirement must be a nonempty string")))))
   p)
 
 (fn describe_plugin_module [h : Harness, module, expected_id : Str, ^core_interface core_interface : Str = "", ^limits limits = nil] : Plugin
   (var context (DescriptorContext ^module_id expected_id ^core_interface core_interface))
-  (var bounded (if ($absent? limits) (default_execution_limits) limits))
+  (var bounded (if ($absent? limits) (default_execution_limits) else limits))
   (var p (invoke_bounded module/init context bounded))
   (validate_plugin_descriptor h expected_id p))
 
@@ -123,24 +122,24 @@
     (var checked
       (if ($absent? event_type/schema)
         payload
-        (invoke_owned_callable record/h record/owner event_type/schema [payload])))
+        else (invoke_owned_callable record/h record/owner event_type/schema [payload])))
     (let context ($runtime/context))
-    (let session (if ($absent? context) nil (?? context/session nil)))
-    (let scope (if ($absent? session) "workspace" "session"))
-    (let stream (if ($absent? session) "workspace" ($to_str session)))
+    (let session (if ($absent? context) nil else (?? context/session nil)))
+    (let scope (if ($absent? session) "workspace" else "session"))
+    (let stream (if ($absent? session) "workspace" else ($to_str session)))
     (services/emit_event record/owner scope stream
       {^type name ^version event_type/version ^ignorable event_type/ignorable ^data checked}))
   (message state [^session session = nil] : Any
     (var record self)
     (if ($absent? record/h/plugin_services) (return nil))
-    (let scope (if ($absent? session) "workspace" "session"))
-    (let stream (if ($absent? session) "workspace" ($to_str session)))
+    (let scope (if ($absent? session) "workspace" else "session"))
+    (let stream (if ($absent? session) "workspace" else ($to_str session)))
     (record/h/plugin_services/state record/owner scope stream))
   (message update_state [value, ^session session = nil] : Any
     (var record self)
     (let services (require_plugin_services record/h))
-    (let scope (if ($absent? session) "workspace" "session"))
-    (let stream (if ($absent? session) "workspace" ($to_str session)))
+    (let scope (if ($absent? session) "workspace" else "session"))
+    (let stream (if ($absent? session) "workspace" else ($to_str session)))
     (services/update_state record/owner scope stream record/state_writer value))
   (message put_record [kind : Str, key : Str, value] : Any
     (let services (require_plugin_services self/h))

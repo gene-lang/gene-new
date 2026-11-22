@@ -25,7 +25,7 @@
         (let code ($cell ""))
         (let ticks ($cell 0))
         (let service (test_service ^workspace workspace ^provider (fn [context]
-          (if (== context/session "busy") code/.get "(Outcome ^^done ^reply \"done\")"))))
+          (if (== context/session "busy") code/.get else "(Outcome ^^done ^reply \"done\")"))))
         (contribute service/runtime/h "core" "functions"
           {^name "entered" ^doc "Mark response entry." ^fn (fn [] (entered .set true))})
         (contribute service/runtime/h "core" "functions"
@@ -91,8 +91,8 @@
           (json 200 ($json/stringify (list_sessions service)))))
         (let outcome tester/.join)
         (match outcome
-          (when (TaskOutcome/ok value) value)
-          (when (TaskOutcome/error error) (fail error))
-          (else ($assert false $"responsiveness task did not finish: ${outcome}")))))))
+          when (TaskOutcome/ok value) value
+          when (TaskOutcome/error error) (fail error)
+          else ($assert false $"responsiveness task did not finish: ${outcome}"))))))
 
 (fn main [args] : Int (run_spec args))

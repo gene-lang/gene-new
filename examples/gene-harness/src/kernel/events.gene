@@ -28,10 +28,10 @@
 (type CardChanged : HarnessEvent ^props {^session Str ^card Any ^event Str})
 
 (fn hydrate_harness_log [h : Harness]
-  (if_yes h/log_hydrated/.get (return))
+  (if h/log_hydrated/.get (return))
   (if_not ($absent? h/event_store)
     (for envelope in (events_for h/event_store h/event_scope h/event_stream)
-      (if_yes (["lifecycle" "message" "output" "trace"] .contains? ($to_str envelope/type))
+      (if (["lifecycle" "message" "output" "trace"] .contains? ($to_str envelope/type))
         (if_not ($absent? envelope/payload/text)
           (var record {^kind envelope/type ^text envelope/payload/text ^seq envelope/seq})
           (for name in ["truncated" "original_bytes"]
@@ -48,9 +48,9 @@
 
 (fn ^^private log_event_payload [record]
   (var payload {^type record/kind ^text record/text})
-  (if_yes (== record/truncated true)
-    (payload .put "truncated" true)
-    (payload .put "original_bytes" record/original_bytes))
+  (if (== record/truncated true)
+    (do (payload .put "truncated" true)
+    (payload .put "original_bytes" record/original_bytes)))
   payload)
 
 (fn ^^private text_prefix [text : Str, maximum : Int] : Str
@@ -67,12 +67,12 @@
   (var size ($str/byte_size original))
   (var limit 65536)
   (while true
-    (if_yes (> size limit)
-      (var marker $"\n[truncated; original ${size} bytes]")
+    (if (> size limit)
+      (do (var marker $"\n[truncated; original ${size} bytes]")
       (record .put "text"
         $"${(text_prefix original ($math/max 0 (- limit ($str/byte_size marker))))}${marker}")
       (record .put "truncated" true)
-      (record .put "original_bytes" size))
+      (record .put "original_bytes" size)))
     # Check the serialized envelope too: escaping can exceed the byte cap.
     (if (|| ($absent? h/event_store)
             (<= (core_event_size h/event_scope h/event_stream (log_event_payload record))
@@ -129,7 +129,7 @@
     ^target {^revision revision}
     ^data {^entry id ^operation operation ^previous_digest (?? previous_digest "")
            ^new_digest (?? new_digest "") ^turn turn}
-    ^event (if ($present? envelope) {^stream h/event_stream ^seq envelope/seq} nil))
+    ^event (if ($present? envelope) {^stream h/event_stream ^seq envelope/seq} else nil))
   nil)
 
 (fn log_append [h : Harness, kind : Str, text : Str] : Any
@@ -159,7 +159,7 @@
   # observer that fails silently is worse than one that stops the world,
   # because nothing anywhere records that it happened.
   (var r (publish h event))
-  (if_yes (> r/failed 0)
+  (if (> r/failed 0)
     (for err in r/errors
       (log_append h "lifecycle" $"observer failed: ${err/.message}")))
   nil)

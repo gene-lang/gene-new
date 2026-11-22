@@ -393,31 +393,37 @@ proc expression(c: var CheckedEmitter, expr: Value): CheckedValue =
       c.drop(left)
       c.drop(right)
     elif head == "if":
-      let condition = c.expression(expr.body[0])
-      let branch = c.flag()
-      c.line branch & " = " & truth(condition) & ";"
-      c.drop(condition)
-      c.line "if (" & branch & ") {"
-      let yes = c.expression(expr.body[1])
-      if yes.kind == ckInteger:
-        result = c.integer(c.kindFlag())
-        c.line "gene_aot_int_copy(&" & result.code & ", &" & yes.code & ");"
-        c.line result.tag & " = " & yes.tag & ";"
+      let split = tryDecodeIf(expr)
+      if not split.valid or split.clauses.arms.len != 1 or
+          split.clauses.arms[0].body.len != 1 or
+          not split.clauses.hasElse or split.clauses.elseBody.len != 1:
+        discard aotLoweringGap(expr, "unsupported native conditional shape")
       else:
-        result = c.scalar(if yes.kind == ckNil: ckPointer else: yes.kind,
-                          if yes.kind == ckNil: "void *" else: yes.cType)
-        c.line result.code & " = " & yes.code & ";"
-      c.drop(yes)
-      c.line "} else {"
-      let no = c.expression(expr.body[2])
-      if result.kind == ckInteger and no.kind == ckInteger:
-        c.line "gene_aot_int_copy(&" & result.code & ", &" & no.code & ");"
-        c.line result.tag & " = " & no.tag & ";"
-      elif result.kind == no.kind or (result.kind == ckPointer and no.kind == ckNil):
-        c.line result.code & " = " & no.code & ";"
-      else: discard aotLoweringGap(expr, "incompatible native conditional arms")
-      c.drop(no)
-      c.line "}"
+        let condition = c.expression(split.clauses.condition)
+        let branch = c.flag()
+        c.line branch & " = " & truth(condition) & ";"
+        c.drop(condition)
+        c.line "if (" & branch & ") {"
+        let yes = c.expression(split.clauses.arms[0].body[0])
+        if yes.kind == ckInteger:
+          result = c.integer(c.kindFlag())
+          c.line "gene_aot_int_copy(&" & result.code & ", &" & yes.code & ");"
+          c.line result.tag & " = " & yes.tag & ";"
+        else:
+          result = c.scalar(if yes.kind == ckNil: ckPointer else: yes.kind,
+                            if yes.kind == ckNil: "void *" else: yes.cType)
+          c.line result.code & " = " & yes.code & ";"
+        c.drop(yes)
+        c.line "} else {"
+        let no = c.expression(split.clauses.elseBody[0])
+        if result.kind == ckInteger and no.kind == ckInteger:
+          c.line "gene_aot_int_copy(&" & result.code & ", &" & no.code & ");"
+          c.line result.tag & " = " & no.tag & ";"
+        elif result.kind == no.kind or (result.kind == ckPointer and no.kind == ckNil):
+          c.line result.code & " = " & no.code & ";"
+        else: discard aotLoweringGap(expr, "incompatible native conditional arms")
+        c.drop(no)
+        c.line "}"
     elif head == "do":
       for i in 0 ..< expr.body.high: c.statement(expr.body[i])
       result = c.expression(expr.body[^1])

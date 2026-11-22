@@ -12,9 +12,9 @@
 (fn anthropic_text [response] : Str
   (if_not (== response/status 200)
     (let help (match response/status
-      (when 401 "check ANTHROPIC_API_KEY")
-      (when 429 "rate or usage limit reached; try again later")
-      (else "check model access, thinking support, and request limits")))
+      when 401 "check ANTHROPIC_API_KEY"
+      when 429 "rate or usage limit reached; try again later"
+      else "check model access, thinking support, and request limits"))
     (fail (ProviderError ^status response/status ^_msg $"anthropic ${response/status}: ${help}")))
   (let parsed (try ($json/parse response/body)
     catch Error (fail (ProviderError ^_msg "anthropic returned invalid JSON"))))
@@ -35,10 +35,10 @@
     (fail (ProviderError ^_msg "anthropic returned invalid content")))
   (let parts [])
   (for block in parsed/content
-    (if_yes (== block/type "text")
-      (if_not (== ($head block/text) Str)
+    (if (== block/type "text")
+      (do (if_not (== ($head block/text) Str)
         (fail (ProviderError ^_msg "anthropic returned invalid text content")))
-      (parts .push block/text)))
+      (parts .push block/text))))
   (let text ($str/join parts ""))
   (if (== ($str/trim text) "")
     (fail (ProviderError ^_msg "anthropic returned no output text")))

@@ -32,7 +32,7 @@
   (let footer (#"\s+\*Sent using\*[ \t]+<@[UW][A-Z0-9]+(?:\|[^>\r\n]+)?>$" .match source))
   (if ($absent? footer) (return text))
   (let stripped ($str/trim ($str/slice_bytes source 0 footer/start)))
-  (if ($present? (#"^![a-z]" .match stripped)) stripped text))
+  (if ($present? (#"^![a-z]" .match stripped)) stripped else text))
 
 # nil: an envelope type Slack does not deliver work through (nothing to record).
 (fn normalize_envelope [account, envelope]
@@ -59,9 +59,9 @@
     {^channel (slack_id event/channel "CG" "channel ID")
      ^thread (slack_ts (?? event/thread_ts event/ts)) ^message (slack_ts event/ts)
      ^author (slack_id event/user "UW" "author ID")
-     ^text (if (== text/.trim "") event/text text/.trim)}
+     ^text (if (== text/.trim "") event/text else text/.trim)}
     catch SlackError nil))
-  (if_yes ($absent? message) (result .put "reason" "invalid_event") (return result))
+  (if ($absent? message) (do (result .put "reason" "invalid_event") (return result)))
   (result .put "message" message)
   (result .put "mentioned" (event/text .contains? mention))
   (result .delete "reason")
@@ -71,11 +71,11 @@
 # caller may acknowledge.
 (fn receive_envelope [channels, supplied, envelope]
   (var account supplied)
-  (if_yes (== ($head supplied) Str)
-    (set account nil)
+  (if (== ($head supplied) Str)
+    (do (set account nil)
     (for candidate in (channels .ChannelHost:accounts "slack")
       (if (== candidate/id supplied) (set account candidate)))
-    (if ($absent? account) (slack_error "not_found" "Slack account not configured.")))
+    (if ($absent? account) (slack_error "not_found" "Slack account not configured."))))
   (let event (normalize_envelope account envelope))
   (if ($absent? event) (return {^status "ignored" ^reason "unsupported_envelope"}))
   (channels .ChannelHost:receive account/id event))

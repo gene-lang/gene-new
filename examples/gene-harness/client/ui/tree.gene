@@ -7,7 +7,7 @@
 
 (fn metadata [name : Str] : Bool
   (for key in ["key" "field" "state" "action" "args" "positional" "success-state" "command" "prompt" "switch-view" "presentation"]
-    (if_yes (== key name) (return true)))
+    (if (== key name) (return true)))
   false)
 
 (fn input_tag [tag : Str] : Bool
@@ -15,30 +15,30 @@
 
 (fn patch_node [ui : UiClient, tree : Any, parent : EventTarget, at : Int, path : Str, form : Str,
   changed : (Fn [UiNode] Nil), submit : (Fn [UiNode] Nil)] : Nil
-  (var tag (if ($leaf? tree) "#text" (text tree/tag "#text")))
-  (var props (if (== tag "#text") {} (copy_map tree/props)))
+  (var tag (if ($leaf? tree) "#text" else (text tree/tag "#text")))
+  (var props (if (== tag "#text") {} else (copy_map tree/props)))
   (var key (text props/key path))
   (var found : Any ui/nodes/%key)
-  (if_yes ($present? found)
-    (var previous : UiNode found)
-    (if_yes (!= previous/tag tag)
-      ($dom/remove previous/element)
-      (set found nil)))
+  (if ($present? found)
+    (do (var previous : UiNode found)
+    (if (!= previous/tag tag)
+      (do ($dom/remove previous/element)
+      (set found nil)))))
   (var node : UiNode
     (if ($absent? found)
-      (UiNode ^key key ^tag tag ^element (if (== tag "#text") ($dom/create_text "") ($dom/create_element tag))
+      (UiNode ^key key ^tag tag ^element (if (== tag "#text") ($dom/create_text "") else ($dom/create_element tag))
         ^props {} ^form form ^seen ui/generation)
-      found))
+      else found))
   (var created ($absent? found))
   (set ui/nodes/%key node)
   (set node/seen ui/generation)
   (set node/form form)
   (if (== tag "#text")
     ($dom/set_text node/element (text tree))
-    (do
+    else (do
       (map_for [old_name value] in node/props
         (var name ($to_str old_name))
-        (if_yes (&& (! (metadata name)) ($absent? props/%name))
+        (if (&& (! (metadata name)) ($absent? props/%name))
           ($dom/remove_attribute node/element name)))
       (set node/props props)
       ($dom/set_attribute node/element "data-ui-key" key)
@@ -47,18 +47,18 @@
         (if_not (metadata name)
           (var attribute : Str value)
           ($dom/set_attribute node/element name attribute)))
-      (if_yes created
-        (if_yes (input_tag tag)
+      (if created
+        (do (if (input_tag tag)
           ($dom/add_event_listener node/element "input" (fn [event : Any] : Nil (changed node))))
-        (if_yes (&& (== tag "input") ($present? props/data-record-chord))
+        (if (&& (== tag "input") ($present? props/data-record-chord))
           (bind_recorder node changed))
-        (if_yes (== tag "button")
+        (if (== tag "button")
           ($dom/add_event_listener node/element "click" (fn [event : Any] : Nil
             (if_not ($absent? node/props/switch-view)
               ($dom/prevent_default event)
               (ui/navigate (text node/props/switch-view) (text node/props/presentation))
               (return))
-            (if_yes (|| (! ui/ready) ui/loading) (return))
+            (if (|| (! ui/ready) ui/loading) (return))
             (if_not ($absent? node/props/state)
               ($dom/prevent_default event)
               (changed node))
@@ -69,26 +69,26 @@
             (if_not ($absent? node/props/prompt)
               (ui/navigate "harness" "")
               (ui/prompt (text node/props/prompt))))))
-        (if_yes (== tag "form")
+        (if (== tag "form")
           ($dom/add_event_listener node/element "submit" (fn [event : Any] : Nil
-            ($dom/prevent_default event) (submit node)))))
+            ($dom/prevent_default event) (submit node))))))
       (var children : (List Any) tree/children)
       (var index 0)
       (for child in children
-        (patch_node ui child node/element index $"${path}/${index}" (if (== tag "form") key form) changed submit)
+        (patch_node ui child node/element index $"${path}/${index}" (if (== tag "form") key else form) changed submit)
         (set index (+ index 1)))
-      (if_yes (input_tag tag)
-        (var draft : Any ui/drafts/%key)
+      (if (input_tag tag)
+        (do (var draft : Any ui/drafts/%key)
         (if (== (text props/type) "checkbox")
-          (set node/element/checked (if ($absent? draft) ($present? props/checked) (flag draft/value)))
-          (do
-            (var value (if ($absent? draft) (text props/value) (text draft/value)))
-            (if_yes (!= value ($dom/input_value node/element)) ($dom/set_input_value node/element value)))))
-      (if_yes ($present? props/data-chord)
+          (set node/element/checked (if ($absent? draft) ($present? props/checked) else (flag draft/value)))
+          else (do
+            (var value (if ($absent? draft) (text props/value) else (text draft/value)))
+            (if (!= value ($dom/input_value node/element)) ($dom/set_input_value node/element value))))))
+      (if ($present? props/data-chord)
         ($dom/set_text node/element (format_chord (text props/data-chord) ($browser/platform))))))
-  (if_yes (&& ($present? props/data-appearance) ($present? ui/browser_appearance))
-    (var appearance : BrowserAppearance ui/browser_appearance)
-    (appearance_control appearance node/element props/data-appearance))
+  (if (&& ($present? props/data-appearance) ($present? ui/browser_appearance))
+    (do (var appearance : BrowserAppearance ui/browser_appearance)
+    (appearance_control appearance node/element props/data-appearance)))
   ($dom/insert_at parent node/element at))
 
 # The recorder keeps keys from typing or running shortcuts and stores the chord.
@@ -96,10 +96,10 @@
 (fn bind_recorder [node : UiNode, changed : (Fn [UiNode] Nil)] : Nil
   ($dom/add_event_listener node/element "focus" (fn [event : Any] : Nil (set_chord_recorder node/element)))
   ($dom/add_event_listener node/element "keydown" (fn [event : Any] : Nil
-    (if_yes ($event/is_composing event) (return))
+    (if ($event/is_composing event) (return))
     (var code ($event/code event))
-    (if_yes (modifier_code? code) (return))
-    (if_yes (&& (== code "Tab") (! ($event/ctrl_key event)) (! ($event/alt_key event)) (! ($event/meta_key event)))
+    (if (modifier_code? code) (return))
+    (if (&& (== code "Tab") (! ($event/ctrl_key event)) (! ($event/alt_key event)) (! ($event/meta_key event)))
       (return))
     ($dom/prevent_default event)
     ($dom/stop_propagation event)
@@ -112,7 +112,7 @@
   (patch_node ui tree ui/target 0 "@root" "" changed submit)
   (map_for [key raw] in ui/nodes
     (var node : UiNode raw)
-    (if_yes (!= node/seen ui/generation)
-      ($dom/remove node/element)
-      (ui/nodes .delete key)))
+    (if (!= node/seen ui/generation)
+      (do ($dom/remove node/element)
+      (ui/nodes .delete key))))
   (sync_controls ui))

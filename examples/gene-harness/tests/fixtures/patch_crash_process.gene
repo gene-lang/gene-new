@@ -17,15 +17,14 @@
     "(Outcome ^^done ^reply \"patched\")\n*** Begin Patch\n*** Update File: a.txt\n@@\n-a0\n+a1\n*** Update File: b.txt\n@@\n-b0\n+b1\n*** End Patch\n"
     ^record (fn [kind data]
       (if (== kind "turn/response")
-        (then
-          (append_core_event runtime/events "session" "default"
+        (do (append_core_event runtime/events "session" "default"
             {^type "turn/response" ^turn 1 ^round "p1" ^text "two-file patch" ^blobs {} ^patch_files data/patch_files})
           (record_core_state runtime/events "session" "default" "session/state" "patch/1"
             {^files data/patch_files ^state "started" ^round "p1" ^turn 1})
           (flush_event_store runtime/events))))
     ^after_patch_rename (fn [number]
-      (if_yes (== number 1)
-        ($fs/write_text_atomic "owner-pid" ($to_str ($os/process_id)))
-        ($sleep 60000)))))
+      (if (== number 1)
+        (do ($fs/write_text_atomic "owner-pid" ($to_str ($os/process_id)))
+        ($sleep 60000))))))
 
 (fn main [args] (hold_patch args/0))

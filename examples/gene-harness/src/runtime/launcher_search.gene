@@ -12,21 +12,21 @@
   (var partial false)
   (let q ($str/lower ($str/trim query)))
   (map_for [id record] in manager/index/.get
-    (if_yes (|| (>= inspected 20000) (> ($os/monotonic_ms) deadline))
-      (set partial true) (break))
+    (if (|| (>= inspected 20000) (> ($os/monotonic_ms) deadline))
+      (do (set partial true) (break)))
     (set inspected (+ inspected 1))
     (let session ($to_str id))
     (let title (byte_prefix record/title 512))
     (let snippet (byte_prefix record/first_request 4096))
     (var rank (match_rank title "" q))
-    (if_yes (&& (< rank 0) ($str/contains? ($str/lower snippet) q)) (set rank 5))
-    (if_yes (== q "")
+    (if (&& (< rank 0) ($str/contains? ($str/lower snippet) q)) (set rank 5))
+    (if (== q "")
       (set rank (if record/pinned
-        (then 5)
-        (elif (== record/kind "interactive") 6)
-        (else 7))))
+        5
+        elif (== record/kind "interactive") 6
+        else 7)))
     (if (< rank 0) (continue))
-    (let origin (if ($absent? record/parent/session) "" $" · from ${record/parent/session}"))
+    (let origin (if ($absent? record/parent/session) "" else $" · from ${record/parent/session}"))
     (set found (insert_ranked found
       {^id $"conversation:${session}" ^session session ^title title ^kind "conversation"
        ^session_kind record/kind ^parent record/parent

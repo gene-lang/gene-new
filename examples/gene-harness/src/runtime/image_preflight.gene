@@ -18,7 +18,7 @@
   {^id owner ^source_digest "unknown"})
 
 (fn capabilities [row, settings]
-  (let value (if ($absent? row/capabilities) {} (row/capabilities settings)))
+  (let value (if ($absent? row/capabilities) {} else (row/capabilities settings)))
   (if (!= ($head value) Map) (image_error "invalid_capabilities" "Capabilities must be a map."))
   (let result {})
   (for key in ["image_input" "image_output" "image_edit"]
@@ -98,9 +98,9 @@
     (if (|| (!= ($head generator_caps/output_formats) List)
             (! (generator_caps/output_formats .contains? "png")))
       (image_error "unsupported_output" "The image generator cannot select PNG output.")))
-  (let generation_images (if (> request/max_attempts 1) reviewer_images references))
+  (let generation_images (if (> request/max_attempts 1) reviewer_images else references))
   (check_image_limits generator_caps generation_images generation_images/.size
-    (+ bytes (if (> request/max_attempts 1) store/max_file_bytes 0)) "The image generator")
+    (+ bytes (if (> request/max_attempts 1) store/max_file_bytes else 0)) "The image generator")
   (let dimensions (?? settings/dimensions (pixel_dimensions request/size)))
   (if (&& (== request/background "transparent") ($present? dimensions)
           (|| (> dimensions/width 2048) (> dimensions/height 2048)))

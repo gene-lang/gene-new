@@ -1,27 +1,27 @@
 (mod delegation_views ^profile web)
 
 (fn dtext [value : Any, fallback : Str = ""] : Str
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var text : Str value)
   text)
 
 (fn dint [value : Any, fallback : Int = 0] : Int
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var number : Int value)
   number)
 
 (fn dflag [value : Any] : Bool
-  (if_yes ($absent? value) (return false))
+  (if ($absent? value) (return false))
   (var flag : Bool value)
   flag)
 
 (fn dlist [value : Any] : (List Any)
-  (if_yes ($absent? value) (return []))
+  (if ($absent? value) (return []))
   (var items : (List Any) value)
   items)
 
 (fn dstrings [value : Any] : (List Str)
-  (if_yes ($absent? value) (return []))
+  (if ($absent? value) (return []))
   (var items : (List Str) value)
   items)
 
@@ -56,22 +56,22 @@
     (p %$"${used} / ${limit} turns"))))
   (var clock ($dom/render `(p %(elapsed_text elapsed))))
   ($dom/append body clock)
-  (if_yes (&& ($present? data/started_at_ms)
+  (if (&& ($present? data/started_at_ms)
              (|| (== state "running") (== state "waiting") (== state "queued")))
     (tick_elapsed clock elapsed alive))
   (if_not ($absent? data/usage/total_tokens)
     (var known : Bool data/usage/tokens_known)
     (var tokens (dint data/usage/total_tokens))
-    ($dom/append body ($dom/render `(p %(if known $"${tokens} tokens" "Token usage unavailable")))))
-  (if_yes (== state "waiting")
+    ($dom/append body ($dom/render `(p %(if known $"${tokens} tokens" else "Token usage unavailable")))))
+  (if (== state "waiting")
     ($dom/append body ($dom/render `(p "Waiting for an answer in the child session."))))
   (var reply (dtext data/reply (dtext data/message)))
-  (if_yes (!= reply "") ($dom/append body ($dom/render `(pre %reply))))
+  (if (!= reply "") ($dom/append body ($dom/render `(pre %reply))))
   ($dom/append section body)
   (var controls ($dom/render `(div ^class_name "card_controls")))
-  (if_yes (dflag data/session_exists)
+  (if (dflag data/session_exists)
     ($dom/append controls (session_link (dtext data/session) "Open child session" open)))
-  (if_yes (dflag data/can_cancel)
+  (if (dflag data/can_cancel)
     ($dom/append controls ($dom/render `(button ^type "button"
       ^on_click %(fn [event : Any] : Nil (cancel)) "Cancel"))))
   ($dom/append section controls)

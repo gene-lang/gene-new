@@ -362,7 +362,7 @@ suite "threaded scheduler workers":
           "    (while (< i 50000000) (set i (+ i 1))) " &
           "    i))) " &
           "  ($sleep 10) " &
-          "  (if (< (started .load) 1) (panic \"worker did not start\") nil) " &
+          "  (if (< (started .load) 1) (panic \"worker did not start\") else nil) " &
           "  (t .cancel) " &
           "  (await t))"), newGlobalScope())
 
@@ -525,7 +525,7 @@ suite "threaded scheduler workers":
          "      (set old (success .load)) " &
          "      (set stored (success .compare_exchange old (+ old 1))))) " &
          "  (fn send_once [value] " &
-         "    (if (ch .try_send value) (mark_success) nil)) " &
+         "    (if (ch .try_send value) (mark_success) else nil)) " &
          "  (var a (spawn (send_once 1))) " &
          "  (var b (spawn (send_once 2))) " &
          "  (var c (spawn (send_once 3))) " &
@@ -554,8 +554,8 @@ suite "threaded scheduler workers":
          "  (fn recv_once [] " &
          "    (var got (ch .try_recv)) " &
          "    (match got ^!exhaustive " &
-         "      (when TryRecv/empty nil) " &
-         "      (when (TryRecv/value _) (mark_success)))) " &
+         "      when TryRecv/empty nil " &
+         "      when (TryRecv/value _) (mark_success))) " &
          "  (var a (spawn (recv_once))) " &
          "  (var b (spawn (recv_once))) " &
          "  (var c (spawn (recv_once))) " &
@@ -576,8 +576,8 @@ suite "threaded scheduler workers":
          "  (ch .send 41) " &
          "  (var result (await (spawn (ch .try_recv)))) " &
          "  (match result ^!exhaustive " &
-         "    (when (TryRecv/value n) (+ n 1)) " &
-         "    (when TryRecv/empty 0)))",
+         "    when (TryRecv/value n) (+ n 1) " &
+         "    when TryRecv/empty 0))",
          "42"
 
   test "worker-candidate actor try_send respects mailbox capacity":
@@ -597,7 +597,7 @@ suite "threaded scheduler workers":
          "      (set old (success .load)) " &
          "      (set stored (success .compare_exchange old (+ old 1))))) " &
          "  (fn send_once [value] " &
-         "    (if (a .try_send value) (mark_success) nil)) " &
+         "    (if (a .try_send value) (mark_success) else nil)) " &
          "  (var t1 (spawn (send_once 1))) " &
          "  (var t2 (spawn (send_once 2))) " &
          "  (var t3 (spawn (send_once 3))) " &

@@ -17,7 +17,7 @@
   (let median
     (if (== (// count 2) 0)
       (/ (+ ordered/%previous ordered/%middle) 2.0)
-      ordered/%middle))
+      else ordered/%middle))
   {^samples values ^median median ^min ordered/0 ^max ordered/%last})
 
 (let rows ["empty" "fn" "closure" "type_direct" "qualified" "closure_over_send"
@@ -69,14 +69,13 @@
         (let report ($json/parse process/stdout))
         (let key $"${layout}/${row}")
         (if (== round 0)
-          (then
-            (reference .put key report/checksum)
-            (entry/cells .put key {^ns_per_op [] ^elapsed_ms []}))
-          (else
+          (reference .put key report/checksum)
+            (entry/cells .put key {^ns_per_op [] ^elapsed_ms []})
+          else
             ($assert (== (reference .get key) report/checksum) $"checksum changed for ${key}")
             (let group (entry/cells .get key))
             (group/ns_per_op .push report/ns_per_op)
-            (group/elapsed_ms .push report/elapsed_ms)))))
+            (group/elapsed_ms .push report/elapsed_ms))))
     ($println $"round ${round} done"))
   (let summary [])
   (for entry in executables

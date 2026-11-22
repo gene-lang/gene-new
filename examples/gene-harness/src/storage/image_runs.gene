@@ -50,7 +50,7 @@
     (var review nil)
     (for attempt in (?? state/attempts [])
       (if (== attempt/image_id item/id) (set review attempt/review)))
-    (item .put "review_status" (if ($absent? review) "unreviewed" "reviewed"))
+    (item .put "review_status" (if ($absent? review) "unreviewed" else "reviewed"))
     (item .put "score" (?? review/score nil))
     (item .put "recall" $"image.${item/generation/run}"))
   items)

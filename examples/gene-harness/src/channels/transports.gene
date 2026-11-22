@@ -30,9 +30,9 @@
 
 (fn ^^private as_channel_error [failure]
   (if (== ($head failure) ChannelError) (return failure))
-  (ChannelError ^code (if (== ($head failure/code) Str) failure/code "transport_error")
-    ^_msg (if (== ($head failure/.message) Str) failure/.message "The channel transport failed.")
-    ^retry_after_ms (if (== ($head failure/retry_after_ms) Int) failure/retry_after_ms nil)))
+  (ChannelError ^code (if (== ($head failure/code) Str) failure/code else "transport_error")
+    ^_msg (if (== ($head failure/.message) Str) failure/.message else "The channel transport failed.")
+    ^retry_after_ms (if (== ($head failure/retry_after_ms) Int) failure/retry_after_ms else nil)))
 
 (fn transport_call [row, field : Str, request]
   (let callback (row .get field))
@@ -47,7 +47,7 @@
   (let outcome (try (transport_call row field request) catch Error fallback))
   (if (|| (!= ($head outcome) Map)
           (! (["sent" "pending" "uncertain" "failed"] .contains? outcome/status)))
-    fallback outcome))
+    fallback else outcome))
 
 # The transport renders text into its parts; the host chooses the transcript
 # link that may leave the workspace. kind "title" renders a thread root.

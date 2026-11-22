@@ -27,7 +27,7 @@
     (let available (offered .get name))
     (if ($absent? available)
       (return $"unsupported interface ${name}: requires ${version}; this host does not provide it"))
-    (let supported (if (== ($head available) List) available [available]))
+    (let supported (if (== ($head available) List) available else [available]))
     (if_not (supported .contains? version)
       (return $"unsupported interface ${name}: requires ${version}; this host provides ${supported}")))
   "")

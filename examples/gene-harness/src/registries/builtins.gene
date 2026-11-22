@@ -18,7 +18,7 @@
 (fn ^^private route_prefix [owner : Str, candidate]
   (if (== candidate/kind "owner")
     $"${(api_root)}/p/${owner}${candidate/path}"
-    $"/callback/${owner}${candidate/path}"))
+    else $"/callback/${owner}${candidate/path}"))
 
 (fn builtin_registry_specs [h, lookup]
   (let discovery_reserved {^discover "" ^doc "" ^workspace "" ^manager "" ^session ""})

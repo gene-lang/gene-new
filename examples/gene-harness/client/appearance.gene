@@ -10,16 +10,16 @@
   ^preview_ready PropMap ^preview_pending PropMap ^preview_links (List EventTarget)})
 
 (fn apply_answer [state : BrowserAppearance, answer : Any] : Nil
-  (if_yes ($absent? answer/rendered) (return))
+  (if ($absent? answer/rendered) (return))
   (var signature ($json/stringify answer))
-  (if_yes (== signature state/signature)
-    (if_yes state/report_pending (state/report answer) (set state/report_pending false))
-    (return))
+  (if (== signature state/signature)
+    (do (if state/report_pending (do (state/report answer) (set state/report_pending false)))
+    (return)))
   (var revision (text answer/rendered/theme_revision))
-  (if_yes (!= revision state/registry_revision)
-    (for link in state/preview_links ($dom/remove link))
+  (if (!= revision state/registry_revision)
+    (do (for link in state/preview_links ($dom/remove link))
     (set state/preview_links [])
-    (set state/preview_pending {}) (set state/preview_ready {}))
+    (set state/preview_pending {}) (set state/preview_ready {})))
   (set state/registry_revision revision)
   (set state/observed_revision revision)
   (var previous : Any state/answer)
@@ -33,53 +33,53 @@
   ($dom/set_attribute root "data-text-size" rendered/text_size)
   ($dom/set_attribute root "data-content-width" rendered/content_width)
   (var link ($dom/element "harness_theme"))
-  (if_yes (!= previous/rendered/stylesheet rendered/stylesheet)
+  (if (!= previous/rendered/stylesheet rendered/stylesheet)
     ($dom/set_attribute link "href" rendered/stylesheet))
   (var mode : Str rendered/mode)
   # The main host bar no longer renders a theme launcher; the plugin and
   # model pages still do and opt in with `^theme_toggle true`.
   (if state/theme_toggle
-    ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light" "Dark")))
+    ($dom/set_text ($dom/element "theme_toggle") (if (== mode "dark") "Light" else "Dark")))
   (state/changed answer)
   (state/report answer)
   (set state/report_pending false))
 
 (fn appearance_path [state : BrowserAppearance] : Str
-  ($to_str (api_root) "/appearance" (if state/safe "?ui=default" "")))
+  ($to_str (api_root) "/appearance" (if state/safe "?ui=default" else "")))
 
 (fn refresh_appearance [state : BrowserAppearance, report : Bool = false] : Nil
-  (if_yes report (set state/report_pending true))
+  (if report (set state/report_pending true))
   (set state/sequence (+ state/sequence 1))
-  (if_yes state/refreshing (set state/refresh_again true) (return))
+  (if state/refreshing (do (set state/refresh_again true) (return)))
   (set state/refreshing true)
   (var sequence state/sequence)
   (state/api "GET" (appearance_path state) nil
     (fn [code : Int, answer : Any] : Nil
       (set state/refreshing false)
       (if state/refresh_again
-        (then (set state/refresh_again false) (refresh_appearance state))
-        (elif (&& (== code 200) (== sequence state/sequence)) (apply_answer state answer))))))
+        (set state/refresh_again false) (refresh_appearance state)
+        elif (&& (== code 200) (== sequence state/sequence)) (apply_answer state answer)))))
 
 # Broadcasts arrive on each conversation socket; only one owns page appearance.
 (fn appearance_event [state : BrowserAppearance, kind : Str, data : Any, selected : Bool] : Nil
   (if_not selected (return))
   (match kind
-    (when "appearance_changed" (refresh_appearance state))
-    (when "ready" (refresh_appearance state true))
-    (when "appearance_request" (change_appearance state data))
-    (when "ui/state"
+    when "appearance_changed" (refresh_appearance state)
+    when "ready" (refresh_appearance state true)
+    when "appearance_request" (change_appearance state data)
+    when "ui/state"
       (var revision (text data/theme_revision))
-      (if_yes (&& (!= revision "") (!= revision state/observed_revision))
-        (set state/observed_revision revision)
+      (if (&& (!= revision "") (!= revision state/observed_revision))
+        (do (set state/observed_revision revision)
         (refresh_appearance state)))
-    (else (return))))
+    else (return)))
 
 (fn queued_changes? [state : BrowserAppearance] : Bool
   (map_for [key value] in state/queued (return true))
   false)
 
 (fn write_appearance [state : BrowserAppearance] : Nil
-  (if_yes (|| state/posting (! (queued_changes? state))) (return))
+  (if (|| state/posting (! (queued_changes? state))) (return))
   (var fields : Any state/queued)
   (set state/queued {})
   (set state/posting true)
@@ -87,13 +87,13 @@
   (state/api "POST" (appearance_path state) fields
     (fn [code : Int, answer : Any] : Nil
       (set state/posting false)
-      (if_yes (!= code 200)
-        (state/error answer)
+      (if (!= code 200)
+        (do (state/error answer)
         # Roll controls back even if the follow-up GET cannot authenticate.
-        (if_yes ($present? state/answer) (state/changed state/answer)))
+        (if ($present? state/answer) (state/changed state/answer))))
       (if (queued_changes? state)
-        (then (write_appearance state))
-        (else (refresh_appearance state))))))
+        (write_appearance state)
+        else (refresh_appearance state)))))
 
 (fn change_appearance [state : BrowserAppearance, fields : Any] : Nil
   # Serialize this document's writes so each request carries the preceding
@@ -114,46 +114,46 @@
     ^!report_pending ^registry_revision "" ^observed_revision "" ^preview_ready {} ^preview_pending {} ^preview_links []))
   ($dom/add_event_listener ($dom/window) "focus" (fn [event : Any] : Nil (refresh_appearance state)))
   ($dom/add_event_listener ($dom/window) "visibilitychange"
-    (fn [event : Any] : Nil (if_yes ($browser/visible?) (refresh_appearance state))))
+    (fn [event : Any] : Nil (if ($browser/visible?) (refresh_appearance state))))
   ($dom/add_event_listener ($dom/element "harness_theme") "load"
-    (fn [event : Any] : Nil (if_yes ($present? state/answer) (state/changed state/answer))))
+    (fn [event : Any] : Nil (if ($present? state/answer) (state/changed state/answer))))
   (refresh_appearance state)
   state)
 
 (fn load_preview [state : BrowserAppearance, name : Str, loaded : (Fn [] Nil)] : Bool
-  (if_yes (flag state/preview_ready/%name) (return true))
-  (if_yes (flag state/preview_pending/%name) (return false))
+  (if (flag state/preview_ready/%name) (return true))
+  (if (flag state/preview_pending/%name) (return false))
   (set state/preview_pending/%name true)
   (var revision state/registry_revision)
-  (var suffix (if state/safe "&ui=default" ""))
+  (var suffix (if state/safe "&ui=default" else ""))
   (state/api "GET" $"${(api_root)}/appearance/preview?theme=${($url/encode_component name)}${suffix}" nil
     (fn [code : Int, answer : Any] : Nil
-      (if_yes (!= revision state/registry_revision) (return))
-      (if_yes (!= code 200)
-        (set state/preview_pending/%name false) (state/error answer) (return))
-      (if_yes (!= (text answer/revision) revision)
-        (set state/preview_pending/%name false) (refresh_appearance state) (return))
+      (if (!= revision state/registry_revision) (return))
+      (if (!= code 200)
+        (do (set state/preview_pending/%name false) (state/error answer) (return)))
+      (if (!= (text answer/revision) revision)
+        (do (set state/preview_pending/%name false) (refresh_appearance state) (return)))
       (var link ($dom/create_element "link"))
       ($dom/set_attribute link "rel" "stylesheet")
       ($dom/set_attribute link "href" answer/stylesheet)
       ($dom/add_event_listener link "load" (fn [event : Any] : Nil
-        (if_yes (== revision state/registry_revision)
-          (set state/preview_ready/%name true)
-          (loaded))))
+        (if (== revision state/registry_revision)
+          (do (set state/preview_ready/%name true)
+          (loaded)))))
       ($dom/add_event_listener link "error" (fn [event : Any] : Nil
-        (if_yes (== revision state/registry_revision)
-          (set state/preview_pending/%name false)
-          (state/error {^message "The theme preview could not be loaded. Refresh to try again."}))))
+        (if (== revision state/registry_revision)
+          (do (set state/preview_pending/%name false)
+          (state/error {^message "The theme preview could not be loaded. Refresh to try again."})))))
       (state/preview_links .push link)
       ($dom/append ($dom/element "theme_preview_styles") link)))
   false)
 
 (fn appearance_control [state : BrowserAppearance, element : EventTarget, field : Str] : Nil
-  (if_yes ($absent? state/answer) (return))
+  (if ($absent? state/answer) (return))
   (var saved : Any state/answer/saved)
   (var rendered : Any state/answer/rendered)
-  (if_yes (== field "preview")
-    (var preview_name : Str rendered/theme)
+  (if (== field "preview")
+    (do (var preview_name : Str rendered/theme)
     ($dom/set_attribute element "data-preview-theme" preview_name)
     ($dom/clear element)
     ($dom/append element ($dom/render
@@ -163,17 +163,17 @@
         (section ^data-mode "dark" ^class_name "theme_mode web_card"
           (h4 "Dark") (p "Text, surfaces and emphasis.") (span ^class_name "web_badge" "Sample")))))
     (load_preview state preview_name (fn [] : Nil (return)))
-    (return))
+    (return)))
   (var current : Any (?? saved/%field rendered/%field))
   (var value : Str current)
-  (if_yes (== field "theme")
-    ($dom/clear element)
+  (if (== field "theme")
+    (do ($dom/clear element)
     (var found false)
     (var themes : (List Any) state/answer/themes)
     (for theme in themes
       (var name : Str theme/name)
-      (if_yes (== name value) (set found true))
+      (if (== name value) (set found true))
       ($dom/append element ($dom/render `(option ^value %name %theme/title))))
     (if_not found
-      ($dom/append element ($dom/render `(option ^value %value %$"${value} (not installed here)")))))
+      ($dom/append element ($dom/render `(option ^value %value %$"${value} (not installed here)"))))))
   ($dom/set_input_value element value))

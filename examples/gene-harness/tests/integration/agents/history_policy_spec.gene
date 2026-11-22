@@ -112,7 +112,7 @@
           (fn [prepared]
             (if (== prepared/purpose "history/summary")
               "Summary from the replacement."
-              "(Outcome ^^done ^reply \"done\")"))))
+              else "(Outcome ^^done ^reply \"done\")"))))
         (try
           (let lease (acquire_snapshot runtime/h/snapshots))
           (try

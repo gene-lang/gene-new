@@ -5,7 +5,7 @@
   (let words args/.body)
   ($assert (>= words/.size 2) "usage: verify_scheduler.gene TEST_GENE NEW_OUTPUT [--gates] [--proofs] [--applications]")
   (let binary ($fs/real_path words/0))
-  (let out (if (== words/1 "auto") $"tmp/semantic-contracts/run-${($os/wall_ms)}" words/1))
+  (let out (if (== words/1 "auto") $"tmp/semantic-contracts/run-${($os/wall_ms)}" else words/1))
   ($assert (! ($fs/exists? out)) "output directory must be new")
   ($fs/make_dir out)
   ($println $"qualification logs: ${out}")
@@ -16,16 +16,15 @@
     (if (< index 2) (continue))
     (let option words/%index)
     (if ($str/starts_with? option "--quantum=")
-      (then
-        ($assert (! selected) "select at most one quantum")
+      ($assert (! selected) "select at most one quantum")
         (let parts ($str/split option "="))
         ($assert (== parts/.size 2) "expected --quantum=N")
         (let quantum ($parse/parse_int parts/1))
         ($assert ([1 7 512 4096] .contains? quantum) "select quantum 1, 7, 512 or 4096")
         (set quanta [quantum])
-        (set selected true))
-      (else
-        ($assert (["--gates" "--proofs" "--applications"] .contains? option) $"unknown option: ${option}"))))
+        (set selected true)
+      else
+        ($assert (["--gates" "--proofs" "--applications"] .contains? option) $"unknown option: ${option}")))
   (let revision ($os/exec "git" "rev-parse" "HEAD" ^dir root))
   (let changes ($os/exec "git" "diff" "--no-ext-diff" ^dir root ^max_bytes 16777216))
   ($assert (&& (== revision/status 0) (== changes/status 0) (! changes/truncated)) "cannot record source provenance")
@@ -40,7 +39,7 @@
     (if (== path "") (continue))
     (let absolute ($path/join root path))
     (manifest .push {^path path ^sha256 (if ($fs/exists? absolute)
-      ($crypto/sha256 ($fs/read_bytes absolute)) nil)}))
+      ($crypto/sha256 ($fs/read_bytes absolute)) else nil)}))
   ($fs/write_text ($path/join out "source-manifest.json") ($json/stringify manifest))
   ($fs/write_text ($path/join out "metadata.json") ($json/stringify
     {^binary binary ^binary_sha256 ($crypto/sha256 ($fs/read_bytes binary))

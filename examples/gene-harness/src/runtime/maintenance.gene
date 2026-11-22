@@ -15,31 +15,31 @@
             ^expected expected = nil, ^before before = nil, ^limit limit : Int = 50,
             ^query query : Str = "", ^state state : Str = ""]
   (let runtime
-    (open_runtime ^entry "offline maintenance" ^!activate ^mode (if (== action "doctor") "doctor" "recovery")
+    (open_runtime ^entry "offline maintenance" ^!activate ^mode (if (== action "doctor") "doctor" else "recovery")
       (prepare_workspace_root ^root root)
       "default"
       (workspace_profile root)))
   (try
     (if (== action "plugins") (return (plugin_catalog ^query query ^state state runtime)))
-    (if_yes (== action "doctor")
+    (if (== action "doctor")
       (return {^findings (doctor runtime/workspace)}))
     (if (== action "history")
       (return (plugin_history_page ^limit limit ^before before runtime/workspace id)))
     (if (== id "") (fail (Error ^_msg "A plugin id is required.")))
-    (if_yes (== action "revert")
-      (if (!= ($head revision) Int) (fail (Error ^_msg "revert requires a historical composition revision")))
-      (return (revert_entry ^expected expected runtime/workspace id revision)))
+    (if (== action "revert")
+      (do (if (!= ($head revision) Int) (fail (Error ^_msg "revert requires a historical composition revision")))
+      (return (revert_entry ^expected expected runtime/workspace id revision))))
     (let base (composition_revision runtime/workspace))
     (let committed_revision
       (match action
-        (when "disable"
-          (disable_entry ^h runtime/h runtime/workspace id))
-        (when "enable"
-          (enable_entry ^h runtime/h runtime/workspace id))
-        (when "restore"
-          (restore_entry ^h runtime/h runtime/workspace id))
-        (else
-          (fail (Error ^_msg "Unknown maintenance operation.")))))
+        when "disable"
+          (disable_entry ^h runtime/h runtime/workspace id)
+        when "enable"
+          (enable_entry ^h runtime/h runtime/workspace id)
+        when "restore"
+          (restore_entry ^h runtime/h runtime/workspace id)
+        else
+          (fail (Error ^_msg "Unknown maintenance operation."))))
     {^action action ^id id ^revision committed_revision ^changed (!= base committed_revision)}
   ensure
     (close_runtime runtime)))

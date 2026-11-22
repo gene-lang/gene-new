@@ -17,7 +17,7 @@
   (let record {^id id ^kind kind ^plan (?? request/id nil) ^state "running" ^result nil})
   (control/jobs/.get .put id record)
   (let task
-    (spawn ^lane root ($runtime/with_context {^log_target {^plugin (?? request/plugin "plugin-control")}} (fn [] (try (let result (if (== kind "validate") (validate_plan control/runtime request) (apply_plan control/runtime request/id))) (record .put "result" result) (record .put "state" "done") catch Error (record .put "result" {^state "failed" ^code (?? $err/code "error") ^message $err/.message}) (record .put "state" "failed") ensure (control/tasks/.get .delete id))))))
+    (spawn ^lane root ($runtime/with_context {^log_target {^plugin (?? request/plugin "plugin-control")}} (fn [] (try (let result (if (== kind "validate") (validate_plan control/runtime request) else (apply_plan control/runtime request/id))) (record .put "result" result) (record .put "state" "done") catch Error (record .put "result" {^state "failed" ^code (?? $err/code "error") ^message $err/.message}) (record .put "state" "failed") ensure (control/tasks/.get .delete id))))))
   (control/tasks/.get .put id task)
   {^id id ^state "running"})
 
@@ -28,17 +28,17 @@
 
 (fn plugin_control_request [control : PluginControl, request]
   (let path request/path)
-  (if_yes (&& (== request/method "POST") ([$"${(api_root)}/plugins/plans/validate" $"${(api_root)}/plugins/plans/apply"] .contains? path))
-    (let body (try ($json/parse ^^strict ^max_depth 32 request/body) catch Error nil))
+  (if (&& (== request/method "POST") ([$"${(api_root)}/plugins/plans/validate" $"${(api_root)}/plugins/plans/apply"] .contains? path))
+    (do (let body (try ($json/parse ^^strict ^max_depth 32 request/body) catch Error nil))
     (if (!= ($head body) Map)
       (return {^status 400 ^body {^code "invalid_request" ^message "A JSON object is required."}}))
-    (let kind (if (== path $"${(api_root)}/plugins/plans/validate") "validate" "apply"))
+    (let kind (if (== path $"${(api_root)}/plugins/plans/validate") "validate" else "apply"))
     (if (&& (== kind "apply") (!= ($head body/id) Str))
       (return
         {^status 400 ^body {^code "invalid_request" ^message "Validated plan id is required."}}))
-    (return {^status 202 ^body (start_plugin_job control kind body)}))
-  (if_yes (&& (== request/method "GET") ($str/starts_with? path $"${(api_root)}/plugins/jobs/"))
-    (let prefix ($str/byte_size $"${(api_root)}/plugins/jobs/"))
+    (return {^status 202 ^body (start_plugin_job control kind body)})))
+  (if (&& (== request/method "GET") ($str/starts_with? path $"${(api_root)}/plugins/jobs/"))
+    (do (let prefix ($str/byte_size $"${(api_root)}/plugins/jobs/"))
     (let id ($str/slice_bytes path prefix (- ($str/byte_size path) prefix)))
     (let job (plugin_job control id))
     (return
@@ -48,10 +48,10 @@
           ^body {
                   ^code "not_found"
                   ^message "This operation is unavailable after restart. Inspect its plan result."}}
-        {^status 200 ^body job})))
-  (if_yes (&& (== request/method "GET") (== path $"${(api_root)}/plugins/plans/result"))
-    (let result (plan_result control/runtime (?? request/params/id "")))
-    (return {^status 200 ^body {^result result}}))
+        else {^status 200 ^body job}))))
+  (if (&& (== request/method "GET") (== path $"${(api_root)}/plugins/plans/result"))
+    (do (let result (plan_result control/runtime (?? request/params/id "")))
+    (return {^status 200 ^body {^result result}})))
   nil)
 
 (fn close_plugin_control [control : PluginControl]

@@ -13,23 +13,23 @@
 (type VoiceGlue ^props {^rounds Any?})
 (fn voice_state [client : Client] : VoiceGlue
   (var states (features client))
-  (if_yes ($absent? states/voice) (set states/voice (VoiceGlue)))
+  (if ($absent? states/voice) (set states/voice (VoiceGlue)))
   (var state : VoiceGlue states/voice) state)
 (fn configure_voice [client : Client, data : Any] : Nil
   (var state (voice_state client))
-  (if_yes ($absent? state/rounds) (return))
+  (if ($absent? state/rounds) (return))
   (var raw : Any state/rounds)
   (var rounds : RoundClient raw)
   (configure_rounds rounds (string_or data/workspace "")))
 
 (fn voice_pending? [client : Client] : Bool
   (var state (voice_state client))
-  (if_yes ($absent? state/rounds) (return false))
+  (if ($absent? state/rounds) (return false))
   (var voice (voice_rounds client))
   ($present? voice/pending))
 
 (fn browser_capabilities [client : Client, name : Str] : Any
-  (if_yes (!= name "voice") (return {}))
+  (if (!= name "voice") (return {}))
   {^voice {
     ^pending (fn [] : Bool (voice_pending? client))
     ^submit (fn [session : Str, value : Str, input : Any, done : (Fn [Int Any] Nil)] : Nil
@@ -40,8 +40,8 @@
 (fn voice_replay_handler [client : Client] : Any
   (var available false)
   (for contribution in (launcher_items client/status/browser_clients)
-    (if_yes (== (string_or contribution/name "") "voice") (set available true)))
-  (if_yes (|| (! available) (! (feature_subscribed? (client_events client) "voice"))) (return nil))
+    (if (== (string_or contribution/name "") "voice") (set available true)))
+  (if (|| (! available) (! (feature_subscribed? (client_events client) "voice"))) (return nil))
   (var session client/selected)
   (fn [record : Any] : Nil (browser_event client "voice/replay" session record)))
 
@@ -53,10 +53,10 @@
 
 (fn voice_submit [client : Client, session : Str, value : Str, input : Any,
                   done : (Fn [Int Any] Nil)] : Nil
-  (if_yes (|| (! client/ready) client/sending ($present? client/pending))
-    (done 409 {^^not_sent ^message "Resolve the current submission before sending voice."}) (return))
-  (if_yes (! (model_allows_submit ^resume false client))
-    (done 409 {^^not_sent ^message "Choose a default model, then review and send the voice draft."}) (return))
+  (if (|| (! client/ready) client/sending ($present? client/pending))
+    (do (done 409 {^^not_sent ^message "Resolve the current submission before sending voice."}) (return)))
+  (if (! (model_allows_submit ^resume false client))
+    (do (done 409 {^^not_sent ^message "Choose a default model, then review and send the voice draft."}) (return)))
   (var choice : Any {})
   (attach_model_draft client choice session)
   (set client/sending true) (update_controls client)
@@ -73,27 +73,27 @@
 (fn reviewed_voice_input [client : Client, session : Str, value : Str] : Any
   (var key (voice_review_key client session))
   (var saved (?? (storage_get key) ""))
-  (if_yes (== saved "") (return nil))
+  (if (== saved "") (return nil))
   (try
     (var review : Any ($json/parse saved))
-    (if_yes (&& (!= (string_or review/text "") "") (!= (str/trim value) ""))
+    (if (&& (!= (string_or review/text "") "") (!= (str/trim value) ""))
       (return review/input))
     catch Error nil)
   (storage_remove key)
   nil)
 
 (fn voice_review [client : Client, session : Str, value : Str, input : Any] : Bool
-  (if_yes (|| (== session "") client/sending ($present? client/pending)) (return false))
+  (if (|| (== session "") client/sending ($present? client/pending)) (return false))
   (var previous (if (== session client/selected) ($dom/input_value client/prompt)
-    (?? (storage_get (draft_key session)) "")))
-  (var combined ($to_str previous (if (== previous "") "" "\n\n") value))
-  (if_yes (! (storage_set (voice_review_key client session)
+    else (?? (storage_get (draft_key session)) "")))
+  (var combined ($to_str previous (if (== previous "") "" else "\n\n") value))
+  (if (! (storage_set (voice_review_key client session)
     ($json/stringify {^text value ^input input}))) (return false))
-  (if_yes (! (storage_set (draft_key session) combined)) (return false))
-  (if_yes (== session client/selected)
-    ($dom/set_input_value client/prompt combined)
+  (if (! (storage_set (draft_key session) combined)) (return false))
+  (if (== session client/selected)
+    (do ($dom/set_input_value client/prompt combined)
     (notice client "Voice text appended for review. Edit freely; Enter sends text only. Clear the composer to return to typed input. Attachments stay in your draft.")
-    ($dom/focus client/prompt))
+    ($dom/focus client/prompt)))
   true)
 
 (fn initialize_voice [client : Client] : Nil
@@ -116,13 +116,13 @@
         (model_draft_admitted client session envelope)
         (apply_run client session receipt)
         (var key (voice_review_key client session))
-        (if_yes (!= (?? (storage_get key) "") "")
-          (storage_remove key)
+        (if (!= (?? (storage_get key) "") "")
+          (do (storage_remove key)
           (if (== session client/selected)
-            (if_yes (== (string_or envelope/text "") ($dom/input_value client/prompt))
-              ($dom/set_input_value client/prompt "") (remember_draft client))
-            (if_yes (== (?? (storage_get (draft_key session)) "") (string_or envelope/text ""))
-              (storage_remove (draft_key session)))))
+            (if (== (string_or envelope/text "") ($dom/input_value client/prompt))
+              (do ($dom/set_input_value client/prompt "") (remember_draft client)))
+            else (if (== (?? (storage_get (draft_key session)) "") (string_or envelope/text ""))
+              (storage_remove (draft_key session))))))
         (browser_event client "voice/admitted" session receipt))))
   ($dom/add_event_listener ($dom/element "voice_receipt_recover") "click"
     (fn [event : Any] : Nil

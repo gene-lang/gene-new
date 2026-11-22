@@ -8,11 +8,11 @@
 (fn media_reference [image]
   {^id image/id ^digest image/digest
    ^mime (if (["image/png" "image/jpeg" "image/webp"] .contains? image/mime)
-     image/mime "unknown")})
+     image/mime else "unknown")})
 
 (fn payload_key [image]
   (if_not ($absent? image/digest) (return image/digest))
-  ($crypto/sha256 (if (== ($head image/base64) Str) image/base64 "uncatalogued")))
+  ($crypto/sha256 (if (== ($head image/base64) Str) image/base64 else "uncatalogued")))
 
 (import [escaped_slashes payload_forms redact_image_text safe_error] ^from "../public/model_text" ^^export)
 
@@ -24,8 +24,8 @@
       (let next [])
       (for part in parts
         (if (!= ($head part) Str)
-          (then (next .push part))
-          (else
+          (next .push part)
+          else
             (let pieces ($str/split part form/1))
             (if (> pieces/.size 1) (matched .put (payload_key image) true))
             (var index 0)
@@ -33,22 +33,22 @@
               (if (!= piece "") (next .push piece))
               (if (< index (- pieces/.size 1))
                 (next .push (if ($absent? image/id) "[uncatalogued image omitted]"
-                  (MediaToken ^reference (media_reference image) ^encoding form/0))))
-              (set index (+ index 1))))))
+                  else (MediaToken ^reference (media_reference image) ^encoding form/0))))
+              (set index (+ index 1)))))
       (set parts next)))
   (if (== parts/.size 0)
-    (then "")
-    (elif (== parts/.size 1) parts/0)
-    (else (TextTokens ^parts parts))))
+    ""
+    elif (== parts/.size 1) parts/0
+    else (TextTokens ^parts parts)))
 
 (fn replace_media [value, inventory, matched]
   (if (== ($head value) Str) (return (split_media_text value inventory matched)))
   (if (== ($head value) List)
     (return ($map value (fn [item] (replace_media item inventory matched)))))
-  (if_yes (== ($head value) Map)
-    (let result {})
+  (if (== ($head value) Map)
+    (do (let result {})
     (map_for [key item] in value (result .put key (replace_media item inventory matched)))
-    (return result))
+    (return result)))
   value)
 
 (fn store_part [runtime, value]
@@ -60,16 +60,16 @@
       ^parts ($map value/parts (fn [part] (store_part runtime part)))}}))
   (if (== ($head value) Str)
     (return (if (> ($str/byte_size value) 256)
-      {^harness_blob (write_body runtime value)} value)))
+      {^harness_blob (write_body runtime value)} else value)))
   (if (== ($head value) List)
     (return ($map value (fn [part] (store_part runtime part)))))
-  (if_yes (== ($head value) Map)
-    (let result {})
+  (if (== ($head value) Map)
+    (do (let result {})
     (map_for [key item] in value (result .put key (store_part runtime item)))
     (if (&& (== ($map_size value) 1)
             (|| ($has_key? value "harness_blob") ($has_key? value "harness_literal")))
       (return {^harness_literal result}))
-    (return result))
+    (return result)))
   value)
 
 (fn restore_media [runtime, reference]
@@ -86,10 +86,9 @@
   (fail (Error ^_msg "Recorded image encoding is unsupported.")))
 
 (fn load_part [runtime, value]
-  (if_yes (== ($head value) Map)
-    (if (== ($map_size value) 1)
-      (then
-        (if_not ($absent? value/harness_blob)
+  (if (== ($head value) Map)
+    (do (if (== ($map_size value) 1)
+      (do (if_not ($absent? value/harness_blob)
           (if (== ($head value/harness_blob) Str)
             (return (read_body runtime value/harness_blob)))
           (if (== value/harness_blob/kind "media")
@@ -104,7 +103,7 @@
           (return result))))
     (let result {})
     (map_for [key item] in value (result .put key (load_part runtime item)))
-    (return result))
+    (return result)))
   (if (== ($head value) List)
     (return ($map value (fn [part] (load_part runtime part)))))
   value)
@@ -117,14 +116,14 @@
   (if (== ($head value) TextTokens) (return (opaque_value? value/parts)))
   (if (== ($head value) Str)
     (return ($str/contains? value "data:image/")))
-  (if_yes (== ($head value) List)
-    (for item in value (if (opaque_value? item) (return true)))
-    (return false))
-  (if_yes (== ($head value) Map)
-    (map_for [key item] in value
+  (if (== ($head value) List)
+    (do (for item in value (if (opaque_value? item) (return true)))
+    (return false)))
+  (if (== ($head value) Map)
+    (do (map_for [key item] in value
       (if (|| ($str/contains? ($to_str key) "data:image/") (opaque_value? item))
         (return true)))
-    (return false))
+    (return false)))
   (! ([Int Float Bool Nil Nil] .contains? ($head value))))
 
 # Opaque/custom preparation stays compatible with send. It simply cannot be
@@ -137,7 +136,7 @@
   (for image in inventory
     (if ($absent? image/id) (set reason "Prepared input includes uncatalogued image data.")))
   (let matched {})
-  (let rewritten (if ($absent? reason) (replace_media prepared inventory matched) nil))
+  (let rewritten (if ($absent? reason) (replace_media prepared inventory matched) else nil))
   (for image in inventory
     (if_not ($has_key? matched (payload_key image))
       (if ($absent? reason) (set reason "Provider transformed or omitted an input image."))))

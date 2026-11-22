@@ -33,12 +33,12 @@
         (let controller (test_controller runtime (fn [call]
           (let metadata (require_record runtime/sessions call/session))
           (if (== metadata/kind "child")
-            (then ($sleep 60000) "(Outcome ^^done)")
-            (else
+            ($sleep 60000) "(Outcome ^^done)"
+            else
               (let n (calls .swap (+ calls/.get 1)))
               (if (== n 0)
                 "(delegate \"a\" ^title \"A\" ^brief \"Inspect A.\") (delegate \"b\" ^title \"B\" ^brief \"Inspect B.\") (Outcome ^prompt \"Work independently\")"
-                "(Outcome ^prompt \"Drain child work\")"))))))
+                else "(Outcome ^prompt \"Drain child work\")")))))
         (let round (submit_round controller "default" "drain-stop" 1 "Coordinate the tasks."))
         (wait_for (fn []
           (let receipt (round_receipt controller "default" round/id))
@@ -52,11 +52,11 @@
         (let resumed (test_controller restored (fn [call]
           (let metadata (require_record restored/sessions call/session))
           (if (== metadata/kind "child")
-            (then ($sleep 40) "(Outcome ^^done ^reply \"QUEUED_AFTER_RECOVERY\")")
-            (else
+            ($sleep 40) "(Outcome ^^done ^reply \"QUEUED_AFTER_RECOVERY\")"
+            else
               (collections .set (+ collections/.get 1))
               ($assert ($str/contains? ($to_str call/messages) "QUEUED_AFTER_RECOVERY"))
-              "(Outcome ^^done ^reply \"Drain recovered and collected\")")))))
+              "(Outcome ^^done ^reply \"Drain recovered and collected\")"))))
         (try
           (let held (delegation_blocks restored/services/values/delegations "default"))
           ($assert ($present? held/recovery))
@@ -74,14 +74,14 @@
         (let controller (test_controller runtime (fn [call]
           (let metadata (require_record runtime/sessions call/session))
           (if (== metadata/kind "child")
-            (then ($sleep 1000) "(Outcome ^^done ^reply \"too late\")")
-            (else
+            ($sleep 1000) "(Outcome ^^done ^reply \"too late\")"
+            else
               (let n (calls .swap (+ calls/.get 1)))
               (if (== n 0)
-                (then "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\" ^timeout_ms 80) (disable_plugin \"delegation\") (Outcome ^wait \"all\")")
-                (else
+                "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\" ^timeout_ms 80) (disable_plugin \"delegation\") (Outcome ^wait \"all\")"
+                else
                   ($assert ($str/contains? ($to_str call/messages) "timed out"))
-                  "(Outcome ^^done ^reply \"Failure collected\")")))))))
+                  "(Outcome ^^done ^reply \"Failure collected\")")))))
         (try
           (let round (submit_round controller "default" "disabled" 1 "Run an audit."))
           (wait_for (fn [] (== (/state (round_receipt controller "default" round/id)) "done")) "Disabled plugin orphaned work.")
@@ -101,8 +101,8 @@
         (let controller (test_controller runtime (fn [call]
           (let metadata (require_record runtime/sessions call/session))
           (if (== metadata/kind "child")
-            (then (started .set true) ($sleep 60000) "(Outcome ^^done ^reply \"late\")")
-            (else "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")")))))
+            (started .set true) ($sleep 60000) "(Outcome ^^done ^reply \"late\")"
+            else "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")"))))
         (let first (submit_round controller "default" "first" 1 "Hold a slot."))
         (wait_for (fn [] started/.get) "First child did not start.")
         (create_session runtime/sessions ^id "queued")
@@ -114,10 +114,10 @@
         (let root_calls ($cell 0))
         (let resumed (test_controller restored (fn [call]
           (let metadata (require_record restored/sessions call/session))
-          (if_yes (== call/session "default") (root_calls .set (+ root_calls/.get 1)))
+          (if (== call/session "default") (root_calls .set (+ root_calls/.get 1)))
           (if (== metadata/kind "child")
             "(Outcome ^^done ^reply \"Queued child completed\")"
-            "(Outcome ^^done ^reply \"Result collected\")"))))
+            else "(Outcome ^^done ^reply \"Result collected\")"))))
         (try
           (let held (delegation_blocks restored/services/values/delegations "default"))
           ($assert ($present? held/recovery))
@@ -140,23 +140,22 @@
           (let controller (test_controller runtime (fn [call]
             (let metadata (require_record runtime/sessions call/session))
             (if (== metadata/kind "child")
-              (then
-                (if (== mode "running")
-                  (then ($sleep 60000) "(Outcome ^^done)")
-                  (else "(Outcome ^questions [{^id \"scope\" ^prompt \"Which scope?\"}])")))
-              (else
+              (if (== mode "running")
+                  ($sleep 60000) "(Outcome ^^done)"
+                  else "(Outcome ^questions [{^id \"scope\" ^prompt \"Which scope?\"}])")
+              else
                 (let n (calls .swap (+ calls/.get 1)))
                 (if (== n 0)
-                  (then (if (== mode "running")
+                  (if (== mode "running")
                     "(delegate \"a\" ^title \"A\" ^brief \"Inspect A.\") (delegate \"b\" ^title \"B\" ^brief \"Inspect B.\") (Outcome ^prompt \"Keep working\")"
-                    "(delegate \"a\" ^title \"A\" ^brief \"Ask which scope.\") (Outcome ^wait \"all\")"))
-                  (else ($sleep 60000) "(Outcome ^^done)")))))))
+                    else "(delegate \"a\" ^title \"A\" ^brief \"Ask which scope.\") (Outcome ^wait \"all\")")
+                  else ($sleep 60000) "(Outcome ^^done)")))))
           (let round (submit_round controller "default" "stop" 1 "Coordinate tasks."))
           (wait_for (fn []
             (let blocks (delegation_blocks runtime/services/values/delegations "default"))
             (if (== mode "running")
               (&& (>= calls/.get 2) (== blocks/records/.size 2) (== blocks/records/0/state "running"))
-              (&& (== blocks/records/.size 1) (== blocks/records/0/state "waiting")))) "Stop case was not ready.")
+              else (&& (== blocks/records/.size 1) (== blocks/records/0/state "waiting")))) "Stop case was not ready.")
           (close_round_controller controller)
           (close_runtime runtime)
           (let restored (open_runtime root "default" (baseline_profile)))
@@ -164,14 +163,13 @@
           (try
             (let blocks (delegation_blocks restored/services/values/delegations "default"))
             (if (== mode "running")
-              (then
-                ($assert (== (/state (round_receipt resumed "default" round/id)) "cancelled"))
-                (for child in blocks/records ($assert (== child/state "cancelled"))))
-              (else
+              ($assert (== (/state (round_receipt resumed "default" round/id)) "cancelled"))
+                (for child in blocks/records ($assert (== child/state "cancelled")))
+              else
                 ($assert ($absent? blocks/recovery))
                 ($assert (== blocks/records/0/state "waiting"))
                 (answer_round resumed blocks/records/0/session blocks/records/0/questions/id {^scope "web"})
-                (wait_for (fn [] (== (/state (round_receipt resumed "default" round/id)) "done")) "Child question did not resume after Stop.")))
+                (wait_for (fn [] (== (/state (round_receipt resumed "default" round/id)) "done")) "Child question did not resume after Stop."))
           ensure (close_round_controller resumed) (close_runtime restored)))))))
 
 (fn main [args] : Int (run_spec args))

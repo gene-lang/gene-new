@@ -63,7 +63,7 @@
 (fn close_file_watch [watch]
   (if (watch/closed .swap true) (return nil))
   (let worker watch/worker/.get)
-  (if (&& ($present? worker) (! worker/.done?)) (then worker/.cancel worker/.join))
+  (if (&& ($present? worker) (! worker/.done?)) (do worker/.cancel worker/.join))
   nil)
 
 (fn close_models_host [state]
@@ -81,7 +81,7 @@
   (for task in state/refresh_tasks/.get task/.join)
   (state/refresh_tasks .set [])
   (let publisher state/publisher/.get)
-  (if (&& ($present? publisher) (! publisher/.done?)) (then publisher/.cancel publisher/.join))
+  (if (&& ($present? publisher) (! publisher/.done?)) (do publisher/.cancel publisher/.join))
   (for job in state/publications/.get (job/done .set true))
   (state/publications .set [])
   nil)
@@ -126,8 +126,7 @@
     (let file (read_endpoint_file runtime root))
     (var changed false)
     (if (&& (endpoint_source_enabled? runtime) (! (endpoints_match? runtime file/config/providers)))
-      (then
-        (let status (put_cordis_plugin ^^replace runtime/h (endpoint_plugin file/config/providers)
+      (do (let status (put_cordis_plugin ^^replace runtime/h (endpoint_plugin file/config/providers)
           {^^host ^limits runtime/profile/limits ^digest "builtin"}))
         (if (|| (!= status "ready") (! (endpoints_match? runtime file/config/providers)))
           (fail (ServiceError ^code "unavailable" ^_msg "Endpoint configuration is not ready; inspect the model_endpoints plugin.")))
@@ -215,7 +214,7 @@
   # only open one, rather than choosing between activations by order.
   (let open [])
   (map_for [revision catalog] in state/catalogs (if_not catalog/closed/.get (open .push catalog)))
-  (if (== open/.size 1) open/0 selected))
+  (if (== open/.size 1) open/0 else selected))
 
 (fn require_catalog [handle] ^^private
   (let service (require_service handle))
@@ -231,8 +230,8 @@
   (let state service/config/state)
   (let file catalog/file/.get)
   (let endpoint_error (if (&& (! file/config/providers/.empty?) (! (endpoint_source_enabled? service/runtime)))
-    (then "File-defined providers are disabled or overridden. Restore model_endpoints in Plugins to apply these entries.")
-    (else state/endpoint_error/.get)))
+    "File-defined providers are disabled or overridden. Restore model_endpoints in Plugins to apply these entries."
+    else state/endpoint_error/.get))
   {^config ($freeze file/config) ^errors ($freeze file/errors)
    ^digest file/digest ^revision catalog/state/.get/id ^path (models_path catalog/root) ^endpoint_error endpoint_error})
 
@@ -250,8 +249,7 @@
   ($runtime/with_context {^log_target {^workspace service/runtime/root}} (fn []
     (let current (active_model_catalog service/runtime))
     (if (&& ($present? current) (== current/root root) (! current/closed/.get))
-      (then
-        (adopt_catalog_file current (read_endpoint_file service/runtime root))
+      (do (adopt_catalog_file current (read_endpoint_file service/runtime root))
         (return (catalog_snapshot current))))
     {^digest saved/digest ^default saved/config/default})))
 
@@ -306,12 +304,11 @@
               (!= (choice .get key) (pins .get key)))
         (fail (ServiceError ^code "invalid_request" ^_msg $"${key} is fixed by this host's launch or profile settings"))))
     (if (> ($map_size choice) 0)
-      (then
-        (let base (effective_config service/runtime))
+      (do (let base (effective_config service/runtime))
         (try (select_provider ^allow_unready true service/runtime (session_settings {^model_settings choice} base))
           catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message)))))
     (update_session service/runtime/sessions session {^model_settings (if (== ($map_size choice) 0)
-      (then nil) (else choice))})
+      nil else choice)})
     (choice_preview handle session choice))))
 
 (fn choice_text [info] ^^private
@@ -320,8 +317,8 @@
   (let requested info/requested_effort)
   (let effective (?? info/effective_effort "provider default"))
   ($to_str $"${provider}/${model} · ${requested} → ${effective}"
-    (if (== info/unverified_model true) (then "\nUnverified model id: not in the catalog; access has not been checked.") (else ""))
-    (if ($present? info/reason) (then $"\n${info/reason}") (else ""))))
+    (if (== info/unverified_model true) "\nUnverified model id: not in the catalog; access has not been checked." else "")
+    (if ($present? info/reason) $"\n${info/reason}" else "")))
 
 (fn model_command [handle, name : Str, context] ^^private
   (let service (require_service handle))
@@ -332,12 +329,12 @@
   (let argument ($str/trim context/raw))
   (if (== argument "") (return (CommandResult ^display (choice_text info))))
   (let choice (if (== name "model")
-    (then (try (named_model_choice ^current_provider info/provider (catalog_snapshot catalog) argument info/requested_effort)
-      catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message))))
-    (else
+    (try (named_model_choice ^current_provider info/provider (catalog_snapshot catalog) argument info/requested_effort)
+      catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message)))
+    else
       (let next ($thaw ($freeze (?? metadata/model_settings {}))))
       (next .put "effort" ($str/lower argument))
-      next)))
+      next))
   (let result (select_session_model handle context/session choice))
   (CommandResult ^display (choice_text result/model)))
 
@@ -400,8 +397,8 @@
   (let callback $"http://127.0.0.1:${port}/auth/callback")
   (let attempt (try
     (if (== provider "chatgpt")
-      (then (new_chatgpt_login ^account account ^registration registration callback))
-      (else (openrouter_login callback)))
+      (new_chatgpt_login ^account account ^registration registration callback)
+      else (openrouter_login callback))
     catch Error (fail (ServiceError ^code "unavailable" ^_msg $err/.message))))
   (try
     (for id in expired (state/logins .delete id))
@@ -418,9 +415,9 @@
   (var chosen nil)
   (for account in accounts/accounts (if (== account/id accounts/active) (set chosen account)))
   (let connection {^state (?? chosen/state "sign_in_required")
-    ^label (if ($present? chosen) (then ($to_str "ChatGPT · " chosen/label)) (else "ChatGPT"))
+    ^label (if ($present? chosen) ($to_str "ChatGPT · " chosen/label) else "ChatGPT")
     ^billing "plan" ^account chosen/id
-    ^reason (?? chosen/reason (if ($absent? chosen) (then "Continue with ChatGPT in Models to connect an account.") (else nil)))})
+    ^reason (?? chosen/reason (if ($absent? chosen) "Continue with ChatGPT in Models to connect an account." else nil))})
   ($runtime/with_context {^log_target {^workspace service/runtime/root}} (fn []
     (run_composition_change service/runtime/h/snapshots (fn []
       (let catalogs [])
@@ -437,10 +434,10 @@
   (let selected (try (active_chatgpt_id) catch Error nil))
   (let result (try
     (match action
-      (when "select" {^^ok ^account (select_chatgpt_account nil id)})
-      (when "sign_out" (sign_out_chatgpt ^account id))
-      (when "acknowledge" (acknowledge_chatgpt_plan nil id))
-      (else (fail (ServiceError ^code "invalid_request" ^_msg "Use select, sign_out or acknowledge for a ChatGPT account."))))
+      when "select" {^^ok ^account (select_chatgpt_account nil id)}
+      when "sign_out" (sign_out_chatgpt ^account id)
+      when "acknowledge" (acknowledge_chatgpt_plan nil id)
+      else (fail (ServiceError ^code "invalid_request" ^_msg "Use select, sign_out or acknowledge for a ChatGPT account.")))
     catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message))))
   (if (|| (== action "select") (&& (== action "sign_out") (== id selected))) (publish_chatgpt_account service))
   result)
@@ -452,8 +449,7 @@
   (if ($absent? attempt) (fail (ServiceError ^code "not_found" ^_msg "Sign-in attempt not found.")))
   (if cancel (close_login attempt))
   (if (== attempt/status/.get "complete")
-    (then
-      (let catalog (require_catalog handle))
+    (do (let catalog (require_catalog handle))
       (request_catalog_refresh catalog)))
   (login_status attempt))
 
@@ -462,11 +458,10 @@
   (let state service/config/state)
   (map_for [id attempt] in state/logins
     (let callback_state (if (== attempt/provider "openrouter")
-      (then (?? params/state params/openrouter_state)) (else params/state)))
+      (?? params/state params/openrouter_state) else params/state))
     (if (== callback_state attempt/state)
-      (then
-        (let result (if (== attempt/provider "chatgpt")
-          (then (complete_chatgpt_login attempt params)) (else (complete_openrouter_login attempt params))))
+      (do (let result (if (== attempt/provider "chatgpt")
+          (complete_chatgpt_login attempt params) else (complete_openrouter_login attempt params)))
         (if (&& (== attempt/provider "chatgpt") (== attempt/status/.get "complete")) (publish_chatgpt_account service))
         (return result))))
   {^status 400 ^message "Sign-in state did not match. Return to Gene Harness and connect again."})

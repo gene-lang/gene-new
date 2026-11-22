@@ -20,21 +20,21 @@
         ^body_digest (digest rendered)}}})
   (if_not ($absent? rendered/blocks) (data .put "blocks" rendered/blocks))
   (let update ($present? request/ts))
-  (if update (then (data .put "ts" request/ts))
-    (else
+  (if update (data .put "ts" request/ts)
+    else
       (data .put "unfurl_links" false) (data .put "unfurl_media" false)
-      (if_not ($absent? request/thread) (data .put "thread_ts" request/thread))))
+      (if_not ($absent? request/thread) (data .put "thread_ts" request/thread)))
   (try
-    (let response (api_call api (if update "chat.update" "chat.postMessage") data))
+    (let response (api_call api (if update "chat.update" else "chat.postMessage") data))
     # An unrecognizable timestamp cannot be linked or updated later.
     (if (|| (!= ($head response/ts) Str) ($absent? (#"^[0-9]{1,20}\.[0-9]{1,9}$" .match response/ts)))
       (return {^status "uncertain" ^error "invalid_response"}))
     {^status "sent" ^ts response/ts}
   catch SlackError
     (if (== $err/code "rate_limited")
-      (then {^status "pending" ^error "rate_limited" ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))})
-      (elif (uncertain_codes .contains? $err/code) {^status "uncertain" ^error $err/code})
-      (else {^status "failed" ^error $err/code}))
+      {^status "pending" ^error "rate_limited" ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))}
+      elif (uncertain_codes .contains? $err/code) {^status "uncertain" ^error $err/code}
+      else {^status "failed" ^error $err/code})
   catch Error {^status "uncertain" ^error "unconfirmed_response"}))
 
 # Removing a known status message is idempotent, unlike posting one.
@@ -45,10 +45,10 @@
     {^status "sent" ^ts part/ts}
   catch SlackError
     (if (== $err/code "message_not_found")
-      (then {^status "sent" ^ts part/ts})
-      (elif (|| (== $err/code "rate_limited") (uncertain_codes .contains? $err/code))
-        {^status "pending" ^error $err/code ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))})
-      (else {^status "failed" ^error $err/code}))
+      {^status "sent" ^ts part/ts}
+      elif (|| (== $err/code "rate_limited") (uncertain_codes .contains? $err/code))
+        {^status "pending" ^error $err/code ^retry_at (+ ($os/wall_ms) (?? $err/retry_after_ms 1000))}
+      else {^status "failed" ^error $err/code})
   catch Error {^status "pending" ^error "unconfirmed_removal" ^retry_at (+ ($os/wall_ms) 1000)}))
 
 # One bounded history page. A part counts as delivered only when exactly one
@@ -58,11 +58,11 @@
   (let original request/delivery)
   (let account request/account)
   (let new_root request/new_root)
-  (let thread (if (== original/intent/mode "thread") original/parts/0/ts original/intent/thread))
+  (let thread (if (== original/intent/mode "thread") original/parts/0/ts else original/intent/thread))
   (let query {^channel original/intent/channel ^include_all_metadata true ^limit 100})
   (if_not new_root (query .put "ts" thread))
   (if_not ($absent? original/reconcile_cursor) (query .put "cursor" original/reconcile_cursor))
-  (let response (api_call api (if new_root "conversations.history" "conversations.replies") query ^http_method "GET"))
+  (let response (api_call api (if new_root "conversations.history" else "conversations.replies") query ^http_method "GET"))
   (let found [])
   (for part in original/parts
     (if (!= part/status "uncertain") (continue))
@@ -75,7 +75,7 @@
                (== external/delivery original/intent/id) (== external/part index)
                (== external/revision original/intent/revision)
                (if new_root (== (?? message/thread_ts message/ts) message/ts)
-                 (== (?? message/thread_ts message/ts) thread))
+                 else (== (?? message/thread_ts message/ts) thread))
                (== external/body_digest (digest original/intent/parts/%index)))
         (matches .push message)))
     (if (== matches/.size 1) (found .push {^index index ^ts matches/0/ts})))

@@ -41,10 +41,10 @@
     catch Throwable fallback))
 
 (fn min_int [left : Int, right : Int] : Int
-  (if (< left right) left right))
+  (if (< left right) left else right))
 
 (fn max_int [left : Int, right : Int] : Int
-  (if (> left right) left right))
+  (if (> left right) left else right))
 
 # ---------------------------------------------------------------------------
 # Cursors
@@ -92,7 +92,7 @@
     (let byte ($binary/get raw at))
     (if (&& (>= byte 128) (< byte 192))
       (set at (+ at 1))
-      (set running false)))
+      else (set running false)))
   at)
 
 (fn parse_segment [raw : Any] : Any
@@ -113,7 +113,7 @@
         (if (== skip 0)
           (return {^ok false ^present true
                    ^message "the log segment is not valid UTF-8"})
-          (return {^ok true ^present true ^size size ^lines [] ^starts []
+          else (return {^ok true ^present true ^size size ^lines [] ^starts []
                    ^incomplete 0})))
       (let prefix ($binary/slice raw skip (- (+ boundary 1) skip)))
       (set decoded (try ($binary/decode_utf8 prefix) catch Error nil))
@@ -180,7 +180,7 @@
   (while (< index count)
     (if (== starts/%index start)
       (do (set found index) (set index count))
-      (set index (+ index 1))))
+      else (set index (+ index 1))))
   (if (< found 0)
     (return {^ok false ^message "the log cursor is not on a line boundary"}))
   (var lines : (List Str) [])
@@ -199,7 +199,7 @@
     (let source_bytes (+ ($str/byte_size safe) 1))
     (if (&& (> ($size lines) 0) (> (+ bytes cost) max_bytes))
       (do (set full true) (set at line_count))
-      (do
+      else (do
         (if rendered/truncated
           (do
             (set truncated (+ truncated 1))
@@ -238,7 +238,7 @@
              (|| (>= (- count first) initial_lines)
                  (> (+ bytes cost) max_bytes)))
       (set full true)
-      (do
+      else (do
         (set bytes (+ bytes cost))
         (set first index)
         (set index (- index 1)))))
@@ -264,9 +264,9 @@
     (set lines ($map ($str/split redacted "\n")
       (fn [line]
         (let record (try (parse_record line) catch Error nil))
-        (if ($present? record) (render_text record) line)))))
+        (if ($present? record) (render_text record) else line)))))
   {^ok true
-   ^state (if (== gap "") "ok" "gap")
+   ^state (if (== gap "") "ok" else "gap")
    ^lines lines
    ^raw_lines (?? payload/raw_lines [])
    ^cursor (encode_cursor source segment_name payload/end
@@ -317,7 +317,7 @@
       (if (! payload/ok)
         (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
       (return (finish source segment_name raw parsed payload "" redact
-                      ^note (if (== segment_name "previous") "host log rotated" "")))))
+                      ^note (if (== segment_name "previous") "host log rotated" else "")))))
 
   # Resume from the cursor's segment; rotation moves the old active segment
   # aside, so a prefix that now matches `previous` continues there first.
@@ -380,12 +380,12 @@
   (lines .push rendered/text)
   (raws .push (redact parts/0))
   (var used (+ first/bytes (+ ($str/byte_size rendered/text) 1)))
-  (var truncated (+ first/truncated (if rendered/truncated 1 0)))
+  (var truncated (+ first/truncated (if rendered/truncated 1 else 0)))
   (var skipped (+ first/skipped
     (if rendered/truncated
       (max_int 0 (- ($str/byte_size parts/0) ($str/byte_size
         ($str/slice_bytes parts/0 0 max_line))))
-      0)))
+      else 0)))
   # Trailing active lines share the response budget; anything trimmed is
   # delivered by the next poll from the cursor below.
   (var kept 1)
@@ -397,7 +397,7 @@
     (let cost (+ ($str/byte_size rendered_line/text) 1))
     (if (> (+ used cost) max_bytes)
       (set full true)
-      (do
+      else (do
         (lines .push rendered_line/text)
         (raws .push (redact active/lines/%at))
         (set used (+ used cost))

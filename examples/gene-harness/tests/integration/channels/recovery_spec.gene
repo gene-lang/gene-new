@@ -93,7 +93,7 @@
             (let result (drain_session service/runtime/services/values/channels session))
             ($assert (["admitted" "held"] .contains? result/kind))
             ($assert (== (read_count root) before))
-            ($assert (== before (if (== point "effect") 1 0)))
+            ($assert (== before (if (== point "effect") 1 else 0)))
             (let rounds (round_state service/runtime/services/values/controller session))
             ($assert (== rounds/receipts/.size 1))
             ($assert (== rounds/receipts/0/state "interrupted"))
@@ -116,11 +116,11 @@
             ($assert (== (read_count root) 1))
             (handoff_outputs service/runtime/services/values/channels ^^force)
             (let before (output_result service/runtime/services/values/channels/owner "test-reply"))
-            (if_yes (== point "remote_unknown")
-              ($assert (== before/parts/0/status "sent"))
+            (if (== point "remote_unknown")
+              (do ($assert (== before/parts/0/status "sent"))
               ($assert (== before/parts/1/status "uncertain"))
               ($assert (== before/parts/2/status "pending"))
-              (reconcile_remote service/runtime/services/values/channels/owner (api_adapter api) "test-reply"))
+              (reconcile_remote service/runtime/services/values/channels/owner (api_adapter api) "test-reply")))
             (let delivered (deliver_output service/runtime/services/values/channels/owner (api_adapter api) "test-reply"))
             ($assert (== delivered/status "delivered"))
             (handoff_outputs service/runtime/services/values/channels ^^force)
@@ -151,20 +151,19 @@
             ($assert ($absent? last/deadline_ms))
             ($assert (/held (queue_status service/runtime/services/values/channel_queues session)))
             (if (== point "question_answered")
-              (then
-                ($assert (last/request .contains? "Slack message 2.000001 from UOTHER"))
-                ($assert (== rounds/receipts/.size 1)))
-              (else
+              ($assert (last/request .contains? "Slack message 2.000001 from UOTHER"))
+                ($assert (== rounds/receipts/.size 1))
+              else
                 ($assert (== rounds/receipts/.size 2))
                 ($assert (== last/input/kind "channel"))
-                ($assert (== (/pending (queue_status service/runtime/services/values/channel_queues session)) 1))))
+                ($assert (== (/pending (queue_status service/runtime/services/values/channel_queues session)) 1)))
           ensure (close_session_service service))))))
 
   (it "recovers a recorded paused-task replacement but preserves a newer Stop" []
     (isolated this_mod/.path "recovers a recorded paused-task replacement but preserves a newer Stop"
       (fn [workspace]
         (for newer in [false true]
-          (let parent ($path/join workspace (if newer "new-stop" "ordinary")))
+          (let parent ($path/join workspace (if newer "new-stop" else "ordinary")))
           ($fs/make_dir parent)
           (let root (crashed parent "replacement_saved"))
           (let service (counted_service root))
@@ -174,15 +173,14 @@
             (handoff_inputs service/runtime/services/values/channels)
             (let result (drain_session service/runtime/services/values/channels session))
             (if newer
-              (then
-                ($assert (== result/kind "held"))
+              ($assert (== result/kind "held"))
                 ($assert (== (read_count root) 1))
-                ($assert (/held (queue_status service/runtime/services/values/channel_queues session))))
-              (else
+                ($assert (/held (queue_status service/runtime/services/values/channel_queues session)))
+              else
                 ($assert (== result/kind "admitted"))
                 (wait_round service session)
                 ($assert (== (read_count root) 2))
-                ($assert (! (/held (queue_status service/runtime/services/values/channel_queues session))))))
+                ($assert (! (/held (queue_status service/runtime/services/values/channel_queues session)))))
           ensure (close_session_service service))))))
 
   (it "keeps Stop, failure, manual-pause and oversized holds after process death and unrelated browser completion" []
@@ -202,22 +200,22 @@
             ($println ($to_str "Browser round completed after: " point)) ($io/flush_stdout)
             ($assert (/held (queue_status service/runtime/services/values/channel_queues session)))
             ($assert (== (/kind (drain_session service/runtime/services/values/channels session)) "held"))
-            (if_yes (== point "stop_hold")
-              (handoff_inputs service/runtime/services/values/channels)
+            (if (== point "stop_hold")
+              (do (handoff_inputs service/runtime/services/values/channels)
               (let saved (snapshot service/runtime/services/values/channel_queues))
               (map_for [id control] in saved/controls
                 (if (== control/command/name "stop")
                   ($assert (== control/result/code "ok") "A recorded Stop replayed against later browser work")))
-              ($assert (/held (queue_status service/runtime/services/values/channel_queues session))))
-            (if_yes (== point "oversized_hold")
-              (let parts (pending_parts service/runtime/services/values/channel_queues session))
+              ($assert (/held (queue_status service/runtime/services/values/channel_queues session)))))
+            (if (== point "oversized_hold")
+              (do (let parts (pending_parts service/runtime/services/values/channel_queues session))
               (let held (queue_status service/runtime/services/values/channel_queues session))
               (let discarded (discard_inputs service/runtime/services/values/channel_queues session held/revision [parts/2/id] "Reviewed after restart."))
               ($assert (/held (queue_status service/runtime/services/values/channel_queues session)))
               (resume_queue service/runtime/services/values/channel_queues session discarded/revision)
               ($assert (== (/kind (drain_session service/runtime/services/values/channels session)) "admitted"))
               (wait_round service session)
-              ($assert (! (/held (queue_status service/runtime/services/values/channel_queues session)))))
+              ($assert (! (/held (queue_status service/runtime/services/values/channel_queues session))))))
           ensure (close_session_service service))))))
 )
 

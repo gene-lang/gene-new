@@ -13,9 +13,9 @@
         (let service (test_service ^workspace workspace ^provider (fn [request]
           (calls/.get .push request)
           (if (== calls/.get/.size 1)
-            (then "(Outcome ^reply \"Checking the files.\" ^prompt \"finish\")")
-            (elif (== calls/.get/.size 2) "(Outcome ^^done ^reply \"Details are on screen.\" ^audio_reply \"The change is ready.\")")
-            (else "(Outcome ^^done ^reply \"A valid typed reply.\" ^audio_reply 5)")))))
+            "(Outcome ^reply \"Checking the files.\" ^prompt \"finish\")"
+            elif (== calls/.get/.size 2) "(Outcome ^^done ^reply \"Details are on screen.\" ^audio_reply \"The change is ready.\")"
+            else "(Outcome ^^done ^reply \"A valid typed reply.\" ^audio_reply 5)"))))
         (try
           (let session (create_session service))
           (let claim (claim_voice service/runtime/services/values/voice session/id "page" true))

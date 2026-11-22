@@ -118,7 +118,7 @@
        (import ^from "src/plugin_api.gene" [Plugin PluginHost])
        (type FixtureError : Error)
        (fn init [descriptor]
-         (Plugin ^id %id ^provides [["functions" %id]] ^activate (fn [host] (if %bad (fail (FixtureError ^_msg "bad candidate")) (host .PluginHost:contribute "functions" {^name %id ^doc "Plan fixture." ^fn (fn [] %n)}))))))))
+         (Plugin ^id %id ^provides [["functions" %id]] ^activate (fn [host] (if %bad (fail (FixtureError ^_msg "bad candidate")) else (host .PluginHost:contribute "functions" {^name %id ^doc "Plan fixture." ^fn (fn [] %n)}))))))))
 
 (describe
   "Validated plugin plans"
@@ -418,4 +418,4 @@
     (do
       (crash_apply args/0)
       1)
-    (run_spec args)))
+    else (run_spec args)))

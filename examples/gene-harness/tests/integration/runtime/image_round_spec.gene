@@ -22,7 +22,7 @@
           (calls/.get .push request)
           (if (== calls/.get/.size 1)
             "(image_generate \"A Gene logo.\") (Outcome ^^done ^reply \"Premature.\")"
-            "(image_generate \"A Gene logo.\") (Outcome ^^done ^reply \"Here is the finished image.\")")))
+            else "(image_generate \"A Gene logo.\") (Outcome ^^done ^reply \"Here is the finished image.\")")))
         (var fixture (image_fixture workspace [(review 72) (review 86)] ^main_reply main))
         (let controller (test_controller fixture/runtime nil))
         (var saved nil)

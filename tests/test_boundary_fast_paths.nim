@@ -88,7 +88,7 @@ suite "locals on the scopeless calling convention":
   const locals = """
     (fn chain [x] (let y (* x 2)) (let z (+ y 1)) (+ y z))
     (fn reassign [x] (var y 1) (set y (+ y x)) y)
-    (fn cond [x] (if (> x 0) (do (let y 1) (+ x y)) x))
+    (fn cond [x] (if (> x 0) (do (let y 1) (+ x y)) else x))
     (fn pair [x] (let y [x x]) (let z {^a y}) z/a)
     (fn bad [x] (let y (+ x "s")) y)
     (fn outer [x] (chain x))
@@ -96,8 +96,8 @@ suite "locals on the scopeless calling convention":
     (fn set_param [x] (set x 1) x)
     (fn looped [n] (var t 0) (repeat i in n (set t (+ t i))) t)
     (fn mk [x] (let y x) (fn [] y))
-    (fn branchvar [flag] (if flag (var x 1) nil) x)
-    (fn both [flag] (if flag (var x 1) (var x 2)) x)
+    (fn branchvar [flag] (if flag (var x 1) else nil) x)
+    (fn both [flag] (if flag (var x 1) else (var x 2)) x)
     """
 
   test "a leaf whose locals are defined on every path to their uses gets one":
@@ -130,7 +130,7 @@ suite "scalar annotations on the scopeless calling convention":
     (fn ret_const [a : Str] : Int 5)
     (fn ret_checked [a : Str] : Int a)
     (fn deep [n : Int] (id_int (id_int n)))
-    (fn down [n : Int] (if (< n 1) 0 (+ n (down (- n 1)))))
+    (fn down [n : Int] (if (< n 1) 0 else (+ n (down (- n 1)))))
     (fn named_like [Int : Str] Int)
     """
 

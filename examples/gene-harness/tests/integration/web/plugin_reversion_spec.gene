@@ -15,7 +15,7 @@
       (Plugin ^id "cli_fixture" ^provides [["functions" "cli_value"]]
         ^activate (fn [host]
           (if %bad (fail (FixtureFailure ^_msg "broken model replacement"))
-            (host .PluginHost:contribute "functions"
+            else (host .PluginHost:contribute "functions"
               {^name "cli_value" ^doc "Read retained state."
                ^fn (fn [] (host .PluginHost:state))}))))))))
 

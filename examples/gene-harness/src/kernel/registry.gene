@@ -40,7 +40,7 @@
   (var found (registries .get name))
   (if ($absent? found)
     (fail (HarnessError ^_msg $"registry ${name} is not defined"))
-    found))
+    else found))
 
 (fn registry_exists? [h : Harness, name : Str] : Bool
   (var registries h/registries/.get)
@@ -49,8 +49,7 @@
 (fn registry [h : Harness, name : Str, ^unique unique : Bool = false, ^ordered ordered : Bool = false,
   ^schema schema = nil, ^on_remove on_remove = nil, ^owner owner : Str = "core", ^spec spec = nil] : Registry
   (if (queue_registry_change? h)
-    (then
-      (let placeholder
+    (do (let placeholder
         (Registry ^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove
           ^owner owner ^rows ($cell []) ^spec (?? spec {}) ^revision "queued"))
       (queue_composition_change
@@ -83,7 +82,7 @@
     (Registry ^name name ^unique (?? declared/unique false) ^ordered (?? declared/ordered false)
       ^schema (bind_registry_callback h owner declared/schema)
       ^on_remove (bind_registry_callback h owner declared/on_remove)
-      ^key (if ($runtime/callable? declared/key) (bind_registry_callback h owner declared/key) (?? declared/key "name"))
+      ^key (if ($runtime/callable? declared/key) (bind_registry_callback h owner declared/key) else (?? declared/key "name"))
       ^prepare (bind_registry_callback h owner declared/prepare)
       ^owner owner ^rows ($cell (fresh_list)) ^spec (immutable_view declared)
       ^revision ($crypto/random_hex 16) ^effects policy/effects ^owner_context (callback_receiver h owner)))
@@ -165,7 +164,7 @@
 (fn registry_names [h : Harness]
   (var out (fresh_list))
   (let view (registry_read_view h))
-  (let registries (if ($absent? view) h/registries/.get view))
+  (let registries (if ($absent? view) h/registries/.get else view))
   (map_for [name value] in registries
     (out .push ($to_str name)))
   out)
@@ -178,7 +177,7 @@
 (fn ^^private string_before? [left : Str, right : Str] : Bool
   (var a (($str/to_utf8 left) .to_list))
   (var b (($str/to_utf8 right) .to_list))
-  (var limit (if (< a/.size b/.size) a/.size b/.size))
+  (var limit (if (< a/.size b/.size) a/.size else b/.size))
   (var i 0)
   (while (< i limit)
     (if_not (== a/%i b/%i) (return (< a/%i b/%i)))
@@ -187,10 +186,10 @@
 
 (fn ^^private registry_row_before? [a : RegistryRow, b : RegistryRow] : Bool
   (if (!= a/priority b/priority)
-    (then (< a/priority b/priority))
-    (elif (!= a/config_order b/config_order) (< a/config_order b/config_order))
-    (elif (!= a/owner b/owner) (string_before? a/owner b/owner))
-    (else (string_before? a/row_id b/row_id))))
+    (< a/priority b/priority)
+    elif (!= a/config_order b/config_order) (< a/config_order b/config_order)
+    elif (!= a/owner b/owner) (string_before? a/owner b/owner)
+    else (string_before? a/row_id b/row_id)))
 
 # Cordis runs the activations of one reconcile as concurrent tasks, and they
 # share the registry rows and the ledger. Rebuilding one of those tables calls
@@ -209,9 +208,9 @@
     (var next (fresh_list))
     (var inserted false)
     (for current in r/rows/.get
-      (if_yes (&& (! inserted) (registry_row_before? record current))
-        (next .push record)
-        (set inserted true))
+      (if (&& (! inserted) (registry_row_before? record current))
+        (do (next .push record)
+        (set inserted true)))
       (next .push current))
     (if_not inserted (next .push record))
     (r/rows .set next))))
@@ -225,8 +224,7 @@
       ($present? context/publication)
       context/publication/.get))
   (if (&& ($present? h/snapshots) (! candidate))
-    (then
-      (let snapshot (current_snapshot h/snapshots))
+    (do (let snapshot (current_snapshot h/snapshots))
       (return snapshot/registries)))
   nil)
 
@@ -271,7 +269,7 @@
   (var found (row_record h registry_name key))
   (if ($absent? found)
     nil
-    found/payload))
+    else found/payload))
 
 (fn ^^private ledger_record [h : Harness, owner : Str, row_id : Str]
   (row_gate (fn []
@@ -291,7 +289,7 @@
       (if_not (== candidate row_id) (kept .push candidate)))
     (if (== kept/.size 0)
       (ledger .delete owner)
-      (ledger .put owner kept))
+      else (ledger .put owner kept))
     (ledger_cell .set ledger))))
 
 (fn remove_registry_row [h : Harness, row_id : Str, ^cleanup cleanup = true]
@@ -300,8 +298,7 @@
   (var record (row_index .get row_id))
   (if ($absent? record) (return false))
   (if (queue_registry_change? h)
-    (then
-      (queue_composition_change
+    (do (queue_composition_change
         h/snapshots
         {
           ^id record/owner
@@ -321,10 +318,10 @@
   (row_index_cell .set row_index)
   (ledger_forget h record/owner row_id)
   (if_not ($absent? h/registry_observer) (h/registry_observer record/registry record/key))
-  (if_yes cleanup
-    (if_not ($absent? record/cleanup_state) (record/cleanup_state .set false))
+  (if cleanup
+    (do (if_not ($absent? record/cleanup_state) (record/cleanup_state .set false))
     (if_not ($absent? r/on_remove)
-      (r/on_remove r/owner_context record/payload)))
+      (r/on_remove r/owner_context record/payload))))
   (publish_direct_registry_change h)
   true)
 
@@ -335,23 +332,22 @@
    ^config_order config_order : Int = 0,
    ^replace replace : Bool = false] : Str
   (if (queue_registry_change? h)
-    (then
-      (queue_composition_change h/snapshots {^id owner ^kind "contribution"
+    (do (queue_composition_change h/snapshots {^id owner ^kind "contribution"
         ^apply (fn [] (contribute h owner registry_name payload ^key key ^priority priority ^config_order config_order ^replace replace))})
       (return $"queued:${owner}:${registry_name}")))
   (if (serialize_registry_change? h)
     (return (registry_change h (fn [] (contribute h owner registry_name payload ^key key ^priority priority ^config_order config_order ^replace replace)))))
 
   (let r (registry_named h registry_name))
-  (var checked (if ($absent? r/schema) payload (r/schema payload)))
+  (var checked (if ($absent? r/schema) payload else (r/schema payload)))
   (validate_discovery_metadata checked)
   (if_not ($absent? r/prepare) (set checked (r/prepare owner checked)))
   (let logical_key
     (if ($absent? key)
-      ($to_str (if ($runtime/callable? r/key) (r/key checked) (?? (checked .get r/key) "")))
-      ($to_str key)))
+      ($to_str (if ($runtime/callable? r/key) (r/key checked) else (?? (checked .get r/key) "")))
+      else ($to_str key)))
   (let reserved_owner ((?? r/spec/reserved {}) .get logical_key))
-  (let reserved_label (if (== reserved_owner "") "the host" reserved_owner))
+  (let reserved_label (if (== reserved_owner "") "the host" else reserved_owner))
   (if (&& ($present? reserved_owner) (!= owner reserved_owner))
     (fail (HarnessError ^_msg
       $"registry ${registry_name} key ${logical_key} is reserved by ${reserved_label}")))
@@ -371,14 +367,14 @@
   (for candidate in r/rows/.get
     (if (&& ($absent? existing) (== candidate/key logical_key))
       (set existing candidate)))
-  (if_yes (&& (== r/spec/same_owner true) ($present? existing)
+  (if (&& (== r/spec/same_owner true) ($present? existing)
               (!= existing/owner owner))
     (fail (HarnessError
       ^_msg $"registry ${registry_name} key ${logical_key} is owned by ${existing/owner}")))
-  (if_yes (&& r/unique ($present? existing) (! replace))
+  (if (&& r/unique ($present? existing) (! replace))
     (fail (HarnessError
       ^_msg $"registry ${registry_name} key ${logical_key} already exists")))
-  (if_yes (&& r/unique ($present? existing))
+  (if (&& r/unique ($present? existing))
     (remove_registry_row h existing/row_id))
   (var row_id (next_registry_row_id h owner registry_name))
   (var acquired h/next_row_id/.get)
@@ -387,7 +383,7 @@
     (RegistryRow ^row_id row_id ^owner owner ^registry registry_name
                  ^key logical_key ^payload checked ^priority priority
                  ^config_order config_order ^acquired acquired ^effects policy/effects
-                 ^cleanup_state (if ($absent? policy/effects) nil ($cell true))))
+                 ^cleanup_state (if ($absent? policy/effects) nil else ($cell true))))
   (insert_registry_row r record)
   (var row_index_cell h/row_index)
   (var row_index row_index_cell/.get)
@@ -471,8 +467,7 @@
 
 (fn remove_owner [h : Harness, owner : Str]
   (if (queue_registry_change? h)
-    (then
-      (queue_composition_change
+    (do (queue_composition_change
         h/snapshots
         {^id owner ^kind "removal" ^apply (fn [] (remove_owner h owner))})
       (return [])))
@@ -501,8 +496,7 @@
   (var r (registry_named h name))
   (if (== r/owner "core") (fail (HarnessError ^_msg $"core registry ${name} cannot be removed")))
   (if (queue_registry_change? h)
-    (then
-      (queue_composition_change
+    (do (queue_composition_change
         h/snapshots
         {^id r/owner ^kind "removal" ^apply (fn [] (remove_registry h name))})
       (return [])))
@@ -535,21 +529,21 @@
       (try
         ($runtime/with_context {^composition h/snapshots ^publication publication} thunk)
       ensure (publication .set false)))
-    (registry_change h thunk)))
+    else (registry_change h thunk)))
 
 (fn ^^private policy_for_owner [h : Harness, owner : Str]
   (var policy (h/plugin_policies .get; .get owner))
   (if ($absent? policy)
     {^limits (default_execution_limits) ^^host ^context nil}
-    policy))
+    else policy))
 
 (fn ^^private callback_receiver [h : Harness, owner : Str]
   (var policy (policy_for_owner h owner))
   (if ($absent? policy/effects)
-    (then h)
-    (elif ($absent? policy/context)
-      (fail (HarnessError ^_msg $"plugin ${owner} callback context is unavailable")))
-    (else policy/context)))
+    h
+    elif ($absent? policy/context)
+      (fail (HarnessError ^_msg $"plugin ${owner} callback context is unavailable"))
+    else policy/context))
 
 (fn enter_plugin_execution [h : Harness]
   (h/plugin_depth .set (+ h/plugin_depth/.get 1)))
@@ -557,7 +551,7 @@
 (fn leave_plugin_execution [h : Harness]
   (var depth (- h/plugin_depth/.get 1))
   (h/plugin_depth .set depth)
-  (if_yes (&& (== depth 0) ($present? h/event_store)) (flush_event_store h/event_store)))
+  (if (&& (== depth 0) ($present? h/event_store)) (flush_event_store h/event_store)))
 
 (fn invoke_owned_callable [h : Harness, owner : Str, callable, args]
   (var policy (policy_for_owner h owner))
@@ -568,7 +562,7 @@
       # supervised task. Wrapping that in a second bounded evaluator would make
       # the join suspend outside a fiber.
       (apply_argument_list {^callable callable ^args args})
-      (invoke_supervised callable args policy/limits))
+      else (invoke_supervised callable args policy/limits))
   ensure
     # PluginHost state mutations are queued while the bounded callback is
     # active. Flush only after it has unwound, at the core boundary that owns

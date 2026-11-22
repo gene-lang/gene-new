@@ -9,7 +9,7 @@
 (type UiClient ^props {^keyboard PropMap ^root EventTarget ^target EventTarget ^safe Bool ^ready Bool ^session Str ^workspace Str ^epoch Str ^metadata_revision Str ^rendered_revision Str ^descriptor Any ^settings Any ^instance Str ^version Str ^notices Notices ^state PropMap ^drafts PropMap ^forms PropMap ^nodes PropMap ^generation Int ^sequence Int ^debounce Int ^last_data Str ^loading Bool ^render_error Bool ^pending Any ^resolving Bool ^navigation UiNavigation ^navigate (Fn [Str Str] Nil) ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^select (Fn [Str] Nil) ^command (Fn [Str] Nil) ^prompt (Fn [Str] Nil) ^applied_tokens (List Str) ^browser_appearance Any ^appearance Str ^outlet_sync (Fn [(List Any)] Nil)})
 
 (fn text [value : Any, fallback : Str = ""] : Str
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   # A PropMap iterates its keys as Syms, so text-valued metadata and view
   # data can arrive as either spelling. `$to_str` accepts the union; a Sym
   # renders as its name.
@@ -17,12 +17,12 @@
   ($to_str result))
 
 (fn flag [value : Any] : Bool
-  (if_yes ($absent? value) (return false))
+  (if ($absent? value) (return false))
   (var result : Bool value)
   result)
 
 (fn copy_map [value : Any] : PropMap
-  (if_yes ($absent? value) (return {}))
+  (if ($absent? value) (return {}))
   (var result : PropMap ($json/parse ($json/stringify value)))
   result)
 
@@ -38,7 +38,7 @@
     Any
     (if ($absent? origin)
       {^session ui/session ^component (text ui/descriptor/name)}
-      origin))
+      else origin))
   (var scope ($json/stringify [(text captured/session) (text captured/component)]))
   (put_notice ^action action
     ui/notices
@@ -59,32 +59,32 @@
   $"gene-harness/ui-pending/${ui/workspace}")
 
 (fn persist_view [ui : UiClient] : Nil
-  (if_yes (&& (!= ui/workspace "") ($present? ui/descriptor))
-    (var origin {^session "" ^component ui/descriptor/name ^workspace ui/workspace})
+  (if (&& (!= ui/workspace "") ($present? ui/descriptor))
+    (do (var origin {^session "" ^component ui/descriptor/name ^workspace ui/workspace})
     (var key (state_key ui))
     (var saved {^state ui/state ^drafts ui/drafts ^forms ui/forms
       ^focus ui/navigation/focus ^scroll ($to_int ui/navigation/scroll)})
     (set ui/navigation/snapshots/%key (copy_map saved))
     (if (storage_set key ($json/stringify saved))
       (notice ^key "storage" ^origin origin ui "")
-      (notice ^key "storage" ^origin origin ^^sticky ^severity "error"
+      else (notice ^key "storage" ^origin origin ^^sticky ^severity "error"
         ui
-        "Panel drafts could not be saved in browser storage. Keep this page open."))))
+        "Panel drafts could not be saved in browser storage. Keep this page open.")))))
 
 (fn saved_view [ui : UiClient, key : Str] : PropMap
   (var memory : Any ui/navigation/snapshots/%key)
   (if_not ($absent? memory) (return (copy_map memory)))
   (var raw (?? (storage_get key) ""))
-  (if_yes (== raw "") (return {}))
+  (if (== raw "") (return {}))
   (try (copy_map ($json/parse raw)) catch Error {}))
 
 (fn persist_pending [ui : UiClient] : Bool
   (storage_set (pending_key ui) ($json/stringify ui/pending)))
 
 (fn field_value [node : UiNode] : Any
-  (if_yes (== (text node/props/type) "checkbox")
-    (var checked : Bool node/element/checked)
-    (return checked))
+  (if (== (text node/props/type) "checkbox")
+    (do (var checked : Bool node/element/checked)
+    (return checked)))
   ($dom/input_value node/element))
 
 (fn sync_controls [ui : UiClient] : Nil
@@ -98,7 +98,7 @@
       (== ui/rendered_revision (text ui/descriptor/revision))))
   (map_for [key raw] in ui/nodes
     (var node : UiNode raw)
-    (if_yes (== node/tag "button")
+    (if (== node/tag "button")
       (set node/element/disabled
         (||
           (&& (! enabled) ($absent? node/props/switch-view))
@@ -117,40 +117,40 @@
   (set dismiss/hidden (|| ($absent? ui/pending) (! (flag ui/pending/unknown))))
   (var owner (text ui/pending/request/component "previous view"))
   ($dom/set_text ($dom/element "ui_pending_owner")
-    (if ($absent? ui/pending) "" $"Pending action · ${owner}")))
+    (if ($absent? ui/pending) "" else $"Pending action · ${owner}")))
 
 (fn clear_saved_drafts [ui : UiClient, pending : Any] : Nil
   (var form (text pending/form))
   # Standalone action buttons have no form or submitted drafts to clear.
-  (if_yes (== form "") (return))
+  (if (== form "") (return))
   (var component (text pending/request/component))
   (var version (text pending/version))
   (var active (&& (== component (text ui/descriptor/name)) (== version ui/version)))
-  (if_yes active (persist_view ui))
+  (if active (persist_view ui))
   (var key (stored_view_key ui component version))
   (var saved (saved_view ui key))
   (var drafts (copy_map saved/drafts))
   (var forms (copy_map saved/forms))
   # Form args capture the original record revision. A newly edited form with
   # another revision must not be cleared by an earlier receipt.
-  (if_yes (!= ($json/stringify (?? forms/%form nil)) ($json/stringify (?? pending/form_context nil))) (return))
+  (if (!= ($json/stringify (?? forms/%form nil)) ($json/stringify (?? pending/form_context nil))) (return))
   (map_for [field_key raw] in drafts
     (var item : Any raw)
-    (if_yes (== (text item/form) form)
-      (var name : Str item/name)
-      (if_yes (== ($json/stringify (?? item/value nil)) ($json/stringify (?? pending/request/named/%name nil)))
-        (drafts .delete field_key))))
+    (if (== (text item/form) form)
+      (do (var name : Str item/name)
+      (if (== ($json/stringify (?? item/value nil)) ($json/stringify (?? pending/request/named/%name nil)))
+        (drafts .delete field_key)))))
   (var still_dirty false)
   (map_for [field_key raw] in drafts
     (var item : Any raw)
-    (if_yes (== (text item/form) form) (set still_dirty true)))
+    (if (== (text item/form) form) (set still_dirty true)))
   (if_not still_dirty (forms .delete form))
   (var state (copy_map saved/state))
   # Close/reset a submitted form only after success. Preserve newer edits and
   # navigation, including when recovering its receipt from another view.
   (if_not still_dirty
     (map_for [name value] in (copy_map pending/success_state)
-      (if_yes (== ($json/stringify (?? state/%name nil)) ($json/stringify (?? pending/view_state/%name nil)))
+      (if (== ($json/stringify (?? state/%name nil)) ($json/stringify (?? pending/view_state/%name nil)))
         (set state/%name value))))
   (set saved/state state)
   (set saved/drafts drafts)
@@ -158,7 +158,7 @@
   (set ui/navigation/snapshots/%key saved)
   (if_not (storage_set key ($json/stringify saved))
     (notice ^key "storage" ^^sticky ^severity "error" ui "Saved, but draft recovery storage could not be updated. Keep this page open."))
-  (if_yes active
-    (set ui/state state)
+  (if active
+    (do (set ui/state state)
     (set ui/drafts drafts)
-    (set ui/forms forms)))
+    (set ui/forms forms))))

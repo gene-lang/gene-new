@@ -509,7 +509,7 @@ suite "native api — roots and trampoline":
     discard run(compileSource(
       "(type Blob ^repr native_wrapper ^props {^handle (C/OwnedPtr Blob)} " &
       "  (ctor [^borrowed : Bool = false] " &
-      "    (set self/handle (if borrowed (borrow_blob) (open_blob)))))"), scope)
+      "    (set self/handle (if borrowed (borrow_blob) else (open_blob)))))"), scope)
     check run(compileSource("($head (new Blob))"), scope).print() ==
       "(type Blob)"
     let releasedAfterOwned = releasedPointers

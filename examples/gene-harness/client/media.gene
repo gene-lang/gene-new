@@ -7,28 +7,28 @@
   ^post (Fn [Str Str (Fn [Int Any] Nil)] Nil) ^changed (Fn [] Nil)})
 
 (fn media_key [session : Str] : Str
-  (var key (if (== session "") "new" session))
+  (var key (if (== session "") "new" else session))
   $"gene-harness/media-draft/${key}")
 
 (fn items_for [media : MediaComposer, session : Str] : (List Any)
   (var existing : Any media/drafts/%session)
   (var saved : (List Any) [])
   (if ($present? existing)
-    (then (set saved existing))
-    (else
+    (set saved existing)
+    else
     (var source (?? (storage_get (media_key session)) ""))
-    (if_yes (!= source "")
+    (if (!= source "")
       (try
         (var parsed : (List Any) ($json/parse source))
         (for record in parsed
-          (if_yes (< ($size saved) 16)
-            (var state : Str record/state)
+          (if (< ($size saved) 16)
+            (do (var state : Str record/state)
             (saved .push {^key record/key ^name record/name ^session session
-              ^state (if (== state "ready") "ready" "error") ^asset record/asset
-              ^error (if (== state "ready") "" "Upload interrupted. Remove it and choose the file again.")
-              ^removed false ^reader nil ^file nil})))
+              ^state (if (== state "ready") "ready" else "error") ^asset record/asset
+              ^error (if (== state "ready") "" else "Upload interrupted. Remove it and choose the file again.")
+              ^removed false ^reader nil ^file nil}))))
       catch Error (set saved [])))
-    (set media/drafts/%session saved)))
+    (set media/drafts/%session saved))
   saved)
 
 (fn persist_media [media : MediaComposer, session : Str] : Nil
@@ -45,7 +45,7 @@
   (var url (media_url id))
   (var kind : Str asset/kind)
   (var view ($dom/render `(div ^class_name "attachment")))
-  (if_yes (== kind "image")
+  (if (== kind "image")
     ($dom/append view ($dom/render `(a ^href %url ^target "_blank" ^rel "noopener"
       (img ^src %url ^alt %name ^loading "lazy")))))
   ($dom/append view ($dom/render `(a ^href %$"${url}?download=1" %name)))
@@ -60,12 +60,12 @@
     (var card ($dom/render `(div ^class_name "attachment_draft")))
     (if (== state "ready")
       ($dom/append card (attachment_view item/asset))
-      ($dom/append card ($dom/render `(span %name))))
+      else ($dom/append card ($dom/render `(span %name))))
     (var status (match state
-      (when "ready" "Ready")
-      (when "queued" "Queued…")
-      (when "error" item/error)
-      (else "Uploading…")))
+      when "ready" "Ready"
+      when "queued" "Queued…"
+      when "error" item/error
+      else "Uploading…"))
     ($dom/append card ($dom/render `(small ^role "status" %status)))
     ($dom/append card ($dom/render `(button ^type "button" ^disabled %(! media/enabled)
       ^aria_label %$"Remove ${name}" ^on_click %(fn [event : Any] : Nil (remove_media media key)) "Remove")))
@@ -73,7 +73,7 @@
 
 (fn media_changed [media : MediaComposer, session : Str] : Nil
   (persist_media media session)
-  (if_yes (== session media/selected) (render_media media))
+  (if (== session media/selected) (render_media media))
   (media/changed))
 
 (fn remove_media [media : MediaComposer, key : Str] : Nil
@@ -87,8 +87,8 @@
     (if (== item_key key)
       (do
         (set item/removed true)
-        (if_yes (== state "reading") (set reader item/reader)))
-      (kept .push item)))
+        (if (== state "reading") (set reader item/reader)))
+      else (kept .push item)))
   (set media/drafts/%session kept)
   (if_not ($absent? reader)
     (var active : EventTarget reader)
@@ -99,9 +99,9 @@
   (var result : (List Str) [])
   (for item in (items_for media media/selected)
     (var state : Str item/state)
-    (if_yes (== state "ready")
-      (var id : Str item/asset/id)
-      (result .push id)))
+    (if (== state "ready")
+      (do (var id : Str item/asset/id)
+      (result .push id))))
   result)
 
 (fn media_has [media : MediaComposer] : Bool
@@ -111,7 +111,7 @@
 (fn media_blocked [media : MediaComposer] : Bool
   (for item in (items_for media media/selected)
     (var state : Str item/state)
-    (if_yes (!= state "ready") (return true)))
+    (if (!= state "ready") (return true)))
   false)
 
 (fn media_select [media : MediaComposer, session : Str] : Nil
@@ -121,7 +121,7 @@
 
 (fn media_move [media : MediaComposer, source : Str, destination : Str] : Nil
   (var items (items_for media source))
-  (if_yes (== items/.size 0) (return))
+  (if (== items/.size 0) (return))
   (for item in items (set item/session destination))
   (set media/drafts/%destination items)
   (var empty : (List Any) [])
@@ -134,37 +134,37 @@
   (for item in (items_for media session)
     (var submitted false)
     (for id in ids
-      (if_yes (== id item/asset/id) (set submitted true)))
+      (if (== id item/asset/id) (set submitted true)))
     (if_not submitted (kept .push item)))
   (set media/drafts/%session kept)
   (media_changed media session))
 
 (fn media_controls [media : MediaComposer, enabled : Bool] : Nil
   (set media/input/disabled (! enabled))
-  (if_yes (!= media/enabled enabled)
-    (set media/enabled enabled)
-    (render_media media)))
+  (if (!= media/enabled enabled)
+    (do (set media/enabled enabled)
+    (render_media media))))
 
 (fn finish_upload [media : MediaComposer, item : Any, code : Int, result : Any] : Nil
   (if (&& (>= code 200) (< code 300))
-    (then (set item/state "ready") (set item/asset result))
-    (else
+    (set item/state "ready") (set item/asset result)
+    else
       (set item/state "error")
-      (set item/error (?? result/message "Upload failed. Remove it and choose the file again."))))
+      (set item/error (?? result/message "Upload failed. Remove it and choose the file again.")))
   (set media/working false)
   (var session : Str item/session)
   (media_changed media session)
   (start_upload media))
 
 (fn start_upload [media : MediaComposer] : Nil
-  (if_yes media/working (return))
+  (if media/working (return))
   (var next : Any nil)
   (map_for [session items] in media/drafts
     (var entries : (List Any) items)
     (for item in entries
       (var state : Str item/state)
-      (if_yes (&& ($absent? next) (== state "queued")) (set next item))))
-  (if_yes ($absent? next) (return))
+      (if (&& ($absent? next) (== state "queued")) (set next item))))
+  (if ($absent? next) (return))
   (var item : Any next)
   (set item/state "reading")
   (set media/working true)
@@ -176,7 +176,7 @@
         (var removed : Bool item/removed)
         (if removed
           (finish_upload media item 499 {^message "Removed from draft."})
-          (do
+          else (do
             (set item/state "uploading")
             (var name : Str item/name)
             (media/post name data (fn [code : Int, result : Any] : Nil
@@ -189,13 +189,13 @@
   (if_not media/enabled (return))
   (var entries (items_for media media/selected))
   (for file in files
-    (if_yes (>= entries/.size 16)
-      ($dom/set_text media/status "A message can contain at most 16 attachments.")
-      (break))
+    (if (>= entries/.size 16)
+      (do ($dom/set_text media/status "A message can contain at most 16 attachments.")
+      (break)))
     (var name ($files/name file))
     (var large (> ($files/size file) 10485760))
     (entries .push {^key ($browser/request_id) ^name name ^session media/selected
-      ^state (if large "error" "queued") ^error (if large "File exceeds the 10 MiB limit." "")
+      ^state (if large "error" else "queued") ^error (if large "File exceeds the 10 MiB limit." else "")
       ^file file ^reader nil ^asset nil ^removed false}))
   (media_changed media media/selected)
   (start_upload media))
@@ -214,8 +214,8 @@
     (add_files media ($files/from_event event))))
   ($dom/add_event_listener ($dom/element "prompt") "paste" (fn [event : Any] : Nil
     (var files ($files/from_event event))
-    (if_yes (> files/.size 0)
-      ($dom/prevent_default event)
-      (add_files media files))))
+    (if (> files/.size 0)
+      (do ($dom/prevent_default event)
+      (add_files media files)))))
   (render_media media)
   media)

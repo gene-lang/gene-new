@@ -161,10 +161,9 @@ suite "net/http server e2e":
 (import $net/http [Server serve text])
 (fn handle [req]
   (if (== req/path "/slow")
-    (then
-      ($sleep 800)
-      (text "slow-done"))
-    (else (text "fast-done"))))
+    ($sleep 800)
+      (text "slow-done")
+    else (text "fast-done")))
 (serve (Server ^host "127.0.0.1" ^port 8181) handle ^max_requests 2)
 """)
     defer: (p.terminate(); p.close())
@@ -207,7 +206,7 @@ suite "net/http server e2e":
   (var total 0)
   (while true
     (let part (await (req/body .AsyncReader:read 4096)))
-    (if ($absent? part) (then (break)))
+    (if ($absent? part) (break))
     (set total (+ total ($binary/size part))))
   (text ($to_str total)))
 (serve (Server ^host "127.0.0.1" ^port 8191) handle
@@ -231,15 +230,15 @@ suite "net/http server e2e":
 (let AsyncReader $io/AsyncReader)
 (fn handle [req]
   (if (== req/path "/fast")
-    (then (text "fast"))
-    (else
+    (text "fast")
+    else
       (do
         (var total 0)
         (while true
           (let part (await (req/body .AsyncReader:read 4096)))
-          (if ($absent? part) (then (break)))
+          (if ($absent? part) (break))
           (set total (+ total ($binary/size part))))
-        (text ($to_str total))))))
+        (text ($to_str total)))))
 (serve (Server ^host "127.0.0.1" ^port 8192) handle
   ^body_mode "stream" ^max_requests 2)
 """)
@@ -263,16 +262,16 @@ suite "net/http server e2e":
 (let AsyncReader $io/AsyncReader)
 (fn handle [req]
   (if (== req/path "/fast")
-    (then (text "fast"))
-    (else
+    (text "fast")
+    else
       (do
         ($sleep 400)
         (var total 0)
         (while true
           (let part (await (req/body .AsyncReader:read 4096)))
-          (if ($absent? part) (then (break)))
+          (if ($absent? part) (break))
           (set total (+ total ($binary/size part))))
-        (text ($to_str total))))))
+        (text ($to_str total)))))
 (serve (Server ^host "127.0.0.1" ^port 8193) handle
   ^body_mode "stream" ^body_idle_ms 100 ^max_requests 2)
 """)
@@ -306,7 +305,7 @@ suite "net/http server e2e":
     (var total 0)
     (while true
       (let part (await (req/body .AsyncReader:read 1024)))
-      (if ($absent? part) (then (break)))
+      (if ($absent? part) (break))
       (set total (+ total ($binary/size part))))
     (text ($to_str total))
    ensure (set cleaned (+ cleaned 1))))
@@ -368,7 +367,7 @@ suite "net/http server e2e":
   (var payload "")
   (while true
     (let part (await (req/body .AsyncReader:read 4096)))
-    (if ($absent? part) (then (break)))
+    (if ($absent? part) (break))
     (set payload ($to_str payload ($binary/to_str part))))
   (text payload))
 (serve (Server ^host "127.0.0.1" ^port 8198) handle
@@ -392,7 +391,7 @@ suite "net/http server e2e":
 (fn handle [req]
   (while true
     (let part (await (req/body .AsyncReader:read 4096)))
-    (if ($absent? part) (then (break))))
+    (if ($absent? part) (break)))
   (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8199) handle
   ^body_mode "stream" ^max_body_bytes 8 ^max_requests 3)
@@ -424,7 +423,7 @@ suite "net/http server e2e":
 (fn handle [req]
   (while true
     (let part (await (req/body .AsyncReader:read 4096)))
-    (if ($absent? part) (then (break))))
+    (if ($absent? part) (break)))
   (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8200) handle
   ^body_mode "stream" ^max_requests 1)
@@ -599,7 +598,7 @@ suite "net/http server e2e":
         (let index (self/index .get))
         (if (>= index ($size self/chunks))
           nil
-          (do
+          else (do
             (self/index .set (+ index 1))
             self/chunks/%index))))))
 (fn handle [req]
@@ -755,6 +754,7 @@ suite "net/http server e2e":
 (fn handle [req]
   (if (== req/path "/fast")
     (text "fast")
+    else
     (do
       (let source (await (open_read """ & geneQuotedPath(path) & """)))
       (stream 200 source ^^own_reader))))
@@ -915,14 +915,14 @@ suite "net/http server e2e":
 (fn handle [req]
   (if (== req/path "/boom")
     (nonexistent-fn)
-    (do
+    else (do
       (var last (access-entries .get))
       (var last-err (error-entries .get))
       (if (== last nil)
         (text "no-log")
-        (text ($to_str "logged:" last/method ":" last/path ":" last/status
+        else (text ($to_str "logged:" last/method ":" last/path ":" last/status
                  ":auth=" last/headers/authorization
-                 ":err=" (if (== last-err nil) "none" last-err/message)))))))
+                 ":err=" (if (== last-err nil) "none" else last-err/message)))))))
 (serve (Server ^host "127.0.0.1" ^port 8193) handle
   ^max_requests 3
   ^access_log on-access
@@ -972,13 +972,13 @@ suite "net/http server e2e":
   (var (RequestMsg ^req req ^reply reply) msg)
   (if (== req/path "/boom")
     (fail (Boom ^_msg "worker boom"))
-    (do
+    else (do
       (var ev (failures .try_recv))
       (match ev ^!exhaustive
-        (when TryRecv/empty
-          (reply .send (text "no-failures")))
-        (when (TryRecv/value failure)
-          (reply .send (text ($to_str "saw:" failure/message)))))
+        when TryRecv/empty
+          (reply .send (text "no-failures"))
+        when (TryRecv/value failure)
+          (reply .send (text ($to_str "saw:" failure/message))))
       ($actor/continue state))))
 (serve (Server ^host "127.0.0.1" ^port 8191)
   ^max_requests 2
@@ -1179,10 +1179,10 @@ suite "net/http server e2e":
   ^tick_ms 60
   ^on_tick (fn []
     (n .set (+ (n .get) 1))
-    (if_yes (== (n .get) 2) (boom_in_tick))
-    (if_yes (>= (n .get) 6)
-      ($println $"ticks=$(n .get)")
-      (stop srv)))
+    (if (== (n .get) 2) (boom_in_tick))
+    (if (>= (n .get) 6)
+      (do ($println $"ticks=$(n .get)")
+      (stop srv))))
   (fn [req] (text "ok")))
 ($println "stopped")
 """)
@@ -1206,7 +1206,7 @@ suite "net/http server e2e":
     (try
       (if (== req/path "/hold")
         (do ($sleep 1000) (text 200 "late"))
-        (do (stop srv) (text 200 "stopping")))
+        else (do (stop srv) (text 200 "stopping")))
      ensure (set cleaned (+ cleaned 1))))
   ^body_mode "stream" ^drain_timeout_ms 100))
 ($println ($json/stringify report))
@@ -1250,7 +1250,7 @@ suite "net/http server e2e":
   (fn [req]
     (if (== req/path "/stop")
       (do (stop srv) (text 200 "stopping"))
-      (stream (NeverClose) ^^own_reader)))
+      else (stream (NeverClose) ^^own_reader)))
   ^drain_timeout_ms 100))
 ($println ($json/stringify report))
 """)

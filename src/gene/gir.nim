@@ -5,7 +5,7 @@
 ## execution.
 
 import std/[math, os, sets, strutils, tables]
-import ./[printer, types]
+import ./[clause_syntax, printer, types]
 
 const
   MaxInferredReturnDepth* = 8

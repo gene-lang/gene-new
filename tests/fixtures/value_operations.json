@@ -23,12 +23,12 @@
     },
     {
       "id": "nominal_order",
-      "source": "(type Ranked ^props {^rank Int}) (impl ValueOrder for Ranked (message compare [other : Ranked] : Int (if (< self/rank other/rank) -1 (if (> self/rank other/rank) 1 0)))) (let a (Ranked ^rank 1)) (let b (Ranked ^rank 2)) [(< a b) (<= a b) (> b a) (>= b a) ($order/compare a b)]",
+      "source": "(type Ranked ^props {^rank Int}) (impl ValueOrder for Ranked (message compare [other : Ranked] : Int (if (< self/rank other/rank) -1 else (if (> self/rank other/rank) 1 else 0)))) (let a (Ranked ^rank 1)) (let b (Ranked ^rank 2)) [(< a b) (<= a b) (> b a) (>= b a) ($order/compare a b)]",
       "text": "[true true true true -1]"
     },
     {
       "id": "stable_sort",
-      "source": "(type Ranked ^props {^rank Int}) (impl ValueOrder for Ranked (message compare [other : Ranked] : Int (if (< self/rank other/rank) -1 (if (> self/rank other/rank) 1 0)))) (let rows [(Ranked ^rank 3) (Ranked ^rank 1) (Ranked ^rank 2)]) (let sorted ($order/sort rows)) [sorted/0/rank sorted/1/rank sorted/2/rank]",
+      "source": "(type Ranked ^props {^rank Int}) (impl ValueOrder for Ranked (message compare [other : Ranked] : Int (if (< self/rank other/rank) -1 else (if (> self/rank other/rank) 1 else 0)))) (let rows [(Ranked ^rank 3) (Ranked ^rank 1) (Ranked ^rank 2)]) (let sorted ($order/sort rows)) [sorted/0/rank sorted/1/rank sorted/2/rank]",
       "text": "[1 2 3]"
     },
     {
@@ -73,7 +73,7 @@
     {
       "id": "equality_guard_recovery",
       "category": "reentry",
-      "source": "(var recurse true) (type Key ^props {}) (impl ValueEq for Key (message equal [other : Key] : Bool (if recurse (== self other) true))) (let k (Key)) (let refused (try (== k k) false catch ValueOperationReentry true)) (set recurse false) [refused (== k k)]",
+      "source": "(var recurse true) (type Key ^props {}) (impl ValueEq for Key (message equal [other : Key] : Bool (if recurse (== self other) else true))) (let k (Key)) (let refused (try (== k k) false catch ValueOperationReentry true)) (set recurse false) [refused (== k k)]",
       "text": "[true true]"
     },
     {

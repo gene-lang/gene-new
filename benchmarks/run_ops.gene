@@ -73,15 +73,14 @@
       (let results (validate_payload payload iterations))
       (if ($absent? reference)
         (set reference results)
-        ($assert (== results reference) "operation benchmark results or row set changed"))
+        else ($assert (== results reference) "operation benchmark results or row set changed"))
       (for row in payload/rows
         (if (== round 0)
-          (then
-            (variant/rows .put row/name {^result row/result ^gross_ns [] ^net_ns []}))
-          (else
+          (variant/rows .put row/name {^result row/result ^gross_ns [] ^net_ns []})
+          else
             (let group (variant/rows .get row/name))
             (group/gross_ns .push row/gross_ns)
-            (group/net_ns .push row/net_ns))))
+            (group/net_ns .push row/net_ns)))
       (if (> round 0) (variant/wall_ms .push wall))
       ($println $"completed executable ${index}, round ${round}, wall ${wall} ms")))
   ($assert

@@ -328,10 +328,10 @@
           (fn [request]
             (let metadata (require_record (/sessions (/workspace current_objects_for_test/.get)) request/session))
             (if (== metadata/kind "child")
-              (then "(Outcome ^^done ^reply session/id)")
-              (elif (== (parent_calls .swap (+ parent_calls/.get 1)) 0)
-                "(delegate \"child\" ^title \"Child\" ^brief \"Report.\")\n(Outcome ^wait \"all\" ^reply \"Waiting.\")")
-              (else "(Outcome ^^done ^reply \"Collected.\")")))
+              "(Outcome ^^done ^reply session/id)"
+              elif (== (parent_calls .swap (+ parent_calls/.get 1)) 0)
+                "(delegate \"child\" ^title \"Child\" ^brief \"Report.\")\n(Outcome ^wait \"all\" ^reply \"Waiting.\")"
+              else "(Outcome ^^done ^reply \"Collected.\")"))
           (fn [service]
             (current_objects_for_test .set service/runtime/h/objects/.get)
             (let seen ($cell {}))

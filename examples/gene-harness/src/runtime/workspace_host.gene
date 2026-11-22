@@ -20,9 +20,9 @@
   (if (== operation "inspect") (return (immutable_view (manager_inspect manager values/id))))
   (let port values/port)
   (let selected_port (if (|| ($absent? port) (== port ""))
-    (then nil)
-    (elif (== ($head port) Int) port)
-    (else ($parse/parse_int port))))
+    nil
+    elif (== ($head port) Int) port
+    else ($parse/parse_int port)))
   (let checked (values .assoc "port" selected_port))
   (immutable_view (manager_operation manager operation checked ^confirmed (== values/confirm_busy true))))
 
@@ -44,8 +44,7 @@
 (fn resolve_browser_target [runtime, target] : Str
   (if (== ($head target) Str) (return target))
   (if (&& (== ($head target) BrowserTarget) (== target/kind "workspace"))
-    (then
-      (if ($absent? runtime/services/values/manager)
+    (do (if ($absent? runtime/services/values/manager)
         (fail (ServiceError ^code "unavailable" ^_msg "Workspace manager is unavailable.")))
       (return (manager_open_link runtime/services/values/manager target/id))))
   (fail (ServiceError ^code "invalid_request" ^_msg "Unknown browser link target.")))

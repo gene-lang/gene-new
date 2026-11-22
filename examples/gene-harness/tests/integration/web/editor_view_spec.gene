@@ -11,14 +11,14 @@
 
 (fn component_named [status : Any, name : Str] : Any
   (var found nil)
-  (var components : (List Any) (if ($absent? status/ui/components) [] status/ui/components))
+  (var components : (List Any) (if ($absent? status/ui/components) [] else status/ui/components))
   (for component in components
     (if (== (text component/name "") name) (set found component)))
   found)
 
 (fn client_named [status : Any, name : Str] : Any
   (var found nil)
-  (var clients : (List Any) (if ($absent? status/browser_clients) [] status/browser_clients))
+  (var clients : (List Any) (if ($absent? status/browser_clients) [] else status/browser_clients))
   (for client in clients
     (if (== (text client/name "") name) (set found client)))
   found)

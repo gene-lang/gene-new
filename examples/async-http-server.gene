@@ -85,7 +85,7 @@
   (while (not done)
     (if (cell .compare_exchange next (+ next 1))
       (set done true)
-      (set next cell/.load))))
+      else (set next cell/.load))))
 
 (fn atomic_dec [cell]
   (var done false)
@@ -93,14 +93,14 @@
   (while (not done)
     (if (cell .compare_exchange next (- next 1))
       (set done true)
-      (set next cell/.load))))
+      else (set next cell/.load))))
 
 (fn new_job_id []
   (var next job_counter/.load)
   (while true
     (if (not (job_counter .compare_exchange next (+ next 1)))
       (set next job_counter/.load)
-      (break)))
+      else (break)))
   ($to_str "job-" next))
 
 (fn set_job_state [id state ms]
@@ -114,7 +114,7 @@
   (var parsed
     (try (parse_int (|| req/params/ms (stringify default)))
       catch ParseError default))
-  (if (< parsed 0) 0 parsed))
+  (if (< parsed 0) 0 else parsed))
 
 (fn run_job [id ms]
   # The async offload pattern: record the job, spawn a detached worker task,
@@ -188,7 +188,7 @@
   (var job (jobs/.load .get req/params/id))
   (if job
     (json (stringify job))
-    (fail (JobNotFound ^id req/params/id))))
+    else (fail (JobNotFound ^id req/params/id))))
 
 (fn job_create [req]
   @route (route ^method "POST" ^path "/job")
@@ -249,10 +249,10 @@
 
 (fn error_to_response [err]
   (match err
-    (when (JobNotFound ^id id)
-      (json 404 (stringify {^error "no such job" ^id id})))
-    (else
-      (json 500 (stringify {^error "internal server error"})))))
+    when (JobNotFound ^id id)
+      (json 404 (stringify {^error "no such job" ^id id}))
+    else
+      (json 500 (stringify {^error "internal server error"}))))
 
 # --- route discovery (§8) + serve ---------------------------------------------
 # Discover every @route-annotated declaration; the manual entry for "/" seeds

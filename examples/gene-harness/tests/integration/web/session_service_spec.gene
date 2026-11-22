@@ -54,8 +54,8 @@
             (update 1)
             (blocked .set false)
             (let old (match pending/.join
-              (when (TaskOutcome/ok value) value)
-              (else (fail (Error ^_msg "status render did not complete")))))
+              when (TaskOutcome/ok value) value
+              else (fail (Error ^_msg "status render did not complete"))))
             (let fresh (host_status ^session a/id service))
             ($assert (== old/status_revision before/status_revision))
             ($assert (!= old/status_revision fresh/status_revision))
@@ -115,7 +115,7 @@
       (fn [workspace]
         (let calls ($cell 0))
         (let service
-          (test_service ^workspace workspace ^provider (fn [request] (let count (calls .swap (+ calls/.get 1))) (if (== count 0) "# Ask\n(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}] ^reply \"I need your confirmation before continuing.\")" "# Finish\n(Outcome ^^done ^reply \"web done\")"))))
+          (test_service ^workspace workspace ^provider (fn [request] (let count (calls .swap (+ calls/.get 1))) (if (== count 0) "# Ask\n(Outcome ^questions [{^id \"ok\" ^prompt \"Continue?\" ^kind \"confirm\"}] ^reply \"I need your confirmation before continuing.\")" else "# Finish\n(Outcome ^^done ^reply \"web done\")"))))
         (let published ($cell []))
         (service/publisher .set (fn [message] (published/.get .push message)))
         (try
@@ -348,10 +348,10 @@
             ($assert (== result/phase "command"))
             ($assert (!= result/text "") "execution output was lost")
             (if ($str/starts_with? text "/run  ") ($assert (== result/text "5")))
-            (if_yes ($str/starts_with? text "/sh ")
-              ($assert (== result/text "shell output"))
-              ($assert (== result/exit 0)))
-            (if_yes (["run" "sh" "repl"] .contains? result/name)
+            (if ($str/starts_with? text "/sh ")
+              (do ($assert (== result/text "shell output"))
+              ($assert (== result/exit 0))))
+            (if (["run" "sh" "repl"] .contains? result/name)
               ($assert (! ($str/starts_with? result/text $"[${submitted/id}.${result/name}] /"))
                 "browser result repeated the command header"))
             (let live_results ($filter messages (fn [message]
@@ -393,7 +393,7 @@
             "display filtering removed the model's budget guidance")
           (if (== request/turn 1)
             "(append_prompt \"first\" 1) ($println \"console now\") (Outcome ^prompt \"continue\" ^reply \"Progress now.\")"
-            (do (entered .set true) (while (! release/.get) ($sleep 1))
+            else (do (entered .set true) (while (! release/.get) ($sleep 1))
               "(Outcome ^^done ^reply \"Finished.\")")))))
         (let messages ($cell []))
         (service/publisher .set (fn [message] (messages/.get .push message)))
@@ -454,9 +454,9 @@
           (var noisy_bytes 0)
           (var truncated false)
           (for event in (events_for service/runtime/events "session" record/id)
-            (if_yes (&& (== event/type "console") (== event/payload/round noisy/id))
-              (set noisy_bytes (+ noisy_bytes ($str/byte_size event/payload/text)))
-              (if ($str/contains? event/payload/text "[console truncated]") (set truncated true))))
+            (if (&& (== event/type "console") (== event/payload/round noisy/id))
+              (do (set noisy_bytes (+ noisy_bytes ($str/byte_size event/payload/text)))
+              (if ($str/contains? event/payload/text "[console truncated]") (set truncated true)))))
           ($assert (<= noisy_bytes 262144) "durable console exceeded its per-turn byte cap")
           ($assert truncated "durable console omitted its truncation marker")
           ($println "live transcript: initial prompt, response, console and progress before completion; custom question validator")
@@ -512,7 +512,7 @@
           (set_test_provider service/runtime (fn [request]
             (if (== request/turn 3)
               ($to_str card_code "\n(Outcome ^questions [{^id \"pick\" ^prompt \"Pick\" ^choices [\"a\" \"b\"] ^view `(div (button ^key \"a\" ^answer \"a\" \"A\") (button ^key \"b\" ^answer \"b\" \"B\"))}])")
-              "(Outcome ^^done ^reply \"picked\")")))
+              else "(Outcome ^^done ^reply \"picked\")")))
           (let asked (submit service id "ask-1" 3 "ask"))
           ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (let waiting (receipt service id asked/id))
@@ -530,7 +530,7 @@
           (set_test_provider service/runtime (fn [request]
             (if (== request/turn 5)
               "(card \"slowcard\" ^title \"Slow\" `(button ^command \"/slow\" \"Slow\"))\n(Outcome ^questions [{^id \"go\" ^prompt \"Go?\"}])"
-              (do (resumed_after_command .set finished/.get) "(Outcome ^^done ^reply \"resumed\")"))))
+              else (do (resumed_after_command .set finished/.get) "(Outcome ^^done ^reply \"resumed\")"))))
           (let slow_round (submit service id "slow-1" 4 "slow"))
           ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (let slow_card (card_record service/runtime id "slowcard"))
@@ -640,7 +640,7 @@ child/.detach
           (set_test_provider service/runtime (fn [request]
             (if (== request/turn 2)
               "(Outcome ^^done ^reply \"unreachable\")\n*** Begin Patch\n*** Update File: added.txt\n@@\n-missing\n+new\n*** End Patch\n"
-              "(Outcome ^^done ^reply \"Failure received.\")")))
+              else "(Outcome ^^done ^reply \"Failure received.\")")))
           (submit service session/id "bad" 2 "edit")
           ((/watcher (service/runtime/services/values/controller/rounds/.get .get session/id)) .join)
           (let failed (snapshot service session/id))
@@ -806,8 +806,7 @@ child/.detach
             (for message in pushed/.get
               (if (&& (== message/type "snapshot")
                        (== message/session session/id))
-                (then
-                  (let component
+                (do (let component
                     (named_component message/data/status/web_components "counter"))
                   (if (&& ($present? component)
                            (== component/view/children/0/children/0 "1"))

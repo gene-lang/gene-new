@@ -9,63 +9,63 @@ template runStr(src: string): Value =
 
 suite "match — scalars and selection":
   test "first matching clause wins":
-    ck "(match 2 (when 1 \"one\") (when 2 \"two\") (else \"other\"))", "\"two\""
+    ck "(match 2 when 1 \"one\" when 2 \"two\" else \"other\")", "\"two\""
   test "else runs when nothing matches":
-    ck "(match 5 (when 1 \"one\") (else \"other\"))", "\"other\""
+    ck "(match 5 when 1 \"one\" else \"other\")", "\"other\""
   test "non-exhaustive match needs an explicit opt-out":
-    expect GeneError: discard compileSource("(match 9 (when 1 \"one\"))")
+    expect GeneError: discard compileSource("(match 9 when 1 \"one\")")
     expect MatchFault:
-      discard runStr("(match 9 ^!exhaustive (when 1 \"one\"))")
-    ck "(match 1 ^!exhaustive (when 1 \"one\"))", "\"one\""
-    ck "(match ^!exhaustive 1 (when 1 \"one\"))", "\"one\""
+      discard runStr("(match 9 ^!exhaustive when 1 \"one\")")
+    ck "(match 1 ^!exhaustive when 1 \"one\")", "\"one\""
+    ck "(match ^!exhaustive 1 when 1 \"one\")", "\"one\""
     expect GeneError:
-      discard compileSource("(match 1 ^exhaustive 1 (when _ 1))")
+      discard compileSource("(match 1 ^exhaustive 1 when _ 1)")
     expect GeneError:
-      discard compileSource("(match 1 ^^unknown (when _ 1))")
+      discard compileSource("(match 1 ^^unknown when _ 1)")
     expect GeneError:
-      discard compileSource("(match 1 (else 1) (when _ 2))")
+      discard compileSource("(match 1 else 1 when _ 2)")
   test "bare name binds the whole value":
-    ck "(match 7 (when x (* x x)))", "49"
+    ck "(match 7 when x (* x x))", "49"
   test "wildcard matches anything":
-    ck "(match 42 (when _ \"yes\"))", "\"yes\""
+    ck "(match 42 when _ \"yes\")", "\"yes\""
   test "%name compares to a lexical value":
-    ck "(var k 3) (match 3 (when %k \"hit\") (else \"miss\"))", "\"hit\""
-    ck "(var k 3) (match 4 (when %k \"hit\") (else \"miss\"))", "\"miss\""
+    ck "(var k 3) (match 3 when %k \"hit\" else \"miss\")", "\"hit\""
+    ck "(var k 3) (match 4 when %k \"hit\" else \"miss\")", "\"miss\""
 
 suite "match — structural patterns":
   test "list pattern binds positionally":
-    ck "(match [1 2 3] ^!exhaustive (when [a b c] (+ a b c)))", "6"
+    ck "(match [1 2 3] ^!exhaustive when [a b c] (+ a b c))", "6"
   test "list arity must match without a rest":
-    ck "(match [1 2] (when [a b c] \"3\") (else \"no\"))", "\"no\""
+    ck "(match [1 2] when [a b c] \"3\" else \"no\")", "\"no\""
   test "rest pattern captures the tail":
-    ck "(match [1 2 3 4] ^!exhaustive (when [head rest...] rest))", "[2 3 4]"
-    ck "(match [1 2 3 4] ^!exhaustive (when [head rest...] head))", "1"
+    ck "(match [1 2 3 4] ^!exhaustive when [head rest...] rest)", "[2 3 4]"
+    ck "(match [1 2 3 4] ^!exhaustive when [head rest...] head)", "1"
   test "map pattern is open and binds fields":
-    ck "(match {^type \"circle\" ^r 5} ^!exhaustive (when {^type \"circle\" ^r r} r))", "5"
+    ck "(match {^type \"circle\" ^r 5} ^!exhaustive when {^type \"circle\" ^r r} r)", "5"
   test "map pattern fails on a missing key":
-    ck "(match {^a 1} (when {^b b} \"yes\") (else \"no\"))", "\"no\""
+    ck "(match {^a 1} when {^b b} \"yes\" else \"no\")", "\"no\""
   test "ordinary node patterns ignore meta":
-    ck "(match (quote (x @line 7 ^a 1)) ^!exhaustive (when (x ^a a) a))", "1"
+    ck "(match (quote (x @line 7 ^a 1)) ^!exhaustive when (x ^a a) a)", "1"
   test "meta patterns match explicit node meta":
     ck "(match (quote (x @line 7 ^name \"Ada\")) ^!exhaustive " &
-       "(when (@ {^line l} (x ^name n)) [l n]))",
+       "when (@ {^line l} (x ^name n)) [l n])",
        "[7 \"Ada\"]"
     ck "(match (quote (x @line 7)) " &
-       "(when (@ {^line 8} x) \"bad\") (else \"ok\"))",
+       "when (@ {^line 8} x) \"bad\" else \"ok\")",
        "\"ok\""
   test "meta patterns treat scalars as empty meta":
-    ck "(match 42 ^!exhaustive (when (@ {} n) n))", "42"
+    ck "(match 42 ^!exhaustive when (@ {} n) n)", "42"
   test "meta patterns require meta and value patterns":
-    expect GeneError: discard runStr("(match 1 (when (@ {}) 1))")
+    expect GeneError: discard runStr("(match 1 when (@ {}) 1)")
 
 suite "match — typed patterns":
   test "typed patterns bind only matching values":
-    ck "(match \"hi\" (when (s : Str) s) (else \"no\"))", "\"hi\""
-    ck "(match 1 (when (s : Str) s) (else \"no\"))", "\"no\""
-    ck "(match \"hi\" (when (_ : Str) \"str\") (else \"no\"))", "\"str\""
+    ck "(match \"hi\" when (s : Str) s else \"no\")", "\"hi\""
+    ck "(match 1 when (s : Str) s else \"no\")", "\"no\""
+    ck "(match \"hi\" when (_ : Str) \"str\" else \"no\")", "\"str\""
   test "typed patterns adapt streams lazily":
     ck "(try (match ($to_stream [\"bad\"]) ^!exhaustive " &
-       "       (when (s : (Stream Int Never)) (s .next))) " &
+       "       when (s : (Stream Int Never)) (s .next)) " &
        "catch TypeFault $err/where)",
        "\"Stream/next item\""
   test "catch clauses match error types":
@@ -73,32 +73,32 @@ suite "match — typed patterns":
        "catch TypeFault $err/where)",
        "\"parameter 'x'\""
   test "typed patterns require exactly one type":
-    expect GeneError: discard runStr("(match 1 (when (x :) x))")
+    expect GeneError: discard runStr("(match 1 when (x :) x)")
 
 suite "match — combinators":
   test "alternation matches any branch":
-    ck "(match 3 (when (| 1 2 3) \"small\") (else \"big\"))", "\"small\""
-    ck "(match 9 (when (| 1 2 3) \"small\") (else \"big\"))", "\"big\""
+    ck "(match 3 when (| 1 2 3) \"small\" else \"big\")", "\"small\""
+    ck "(match 9 when (| 1 2 3) \"small\" else \"big\")", "\"big\""
   test "alternation branches must bind the same names":
-    ck "(match [2 7] ^!exhaustive (when (| [1 a] [2 a]) a))", "7"
-    expect GeneError: discard runStr("(match [1] (when (| [a] [b]) a))")
-    expect GeneError: discard runStr("(match [1] (when (| [a] [_]) a))")
+    ck "(match [2 7] ^!exhaustive when (| [1 a] [2 a]) a)", "7"
+    expect GeneError: discard runStr("(match [1] when (| [a] [b]) a)")
+    expect GeneError: discard runStr("(match [1] when (| [a] [_]) a)")
   test "conjunction requires all and binds":
-    ck "(match 5 ^!exhaustive (when (& x (| 4 5 6)) x))", "5"
+    ck "(match 5 ^!exhaustive when (& x (| 4 5 6)) x)", "5"
   test "negation matches the complement":
-    ck "(match 7 (when (not 0) \"nonzero\") (else \"zero\"))", "\"nonzero\""
+    ck "(match 7 when (not 0) \"nonzero\" else \"zero\")", "\"nonzero\""
   test "negation must not bind names":
-    expect GeneError: discard runStr("(match 1 (when (not x) \"no\") (else \"ok\"))")
-    expect GeneError: discard runStr("(match 1 (when (| _ (not x)) \"no\"))")
+    expect GeneError: discard runStr("(match 1 when (not x) \"no\" else \"ok\")")
+    expect GeneError: discard runStr("(match 1 when (| _ (not x)) \"no\")")
 
 suite "match — branch scope":
   test "pattern bindings are local to the selected branch":
-    expect GeneError: discard runStr("(match [1 2] (when [a b] (+ a b))) a")
+    expect GeneError: discard runStr("(match [1 2] when [a b] (+ a b)) a")
   test "branch body declarations are local":
     expect GeneError:
-      discard runStr("(match 1 (when x (var y x) y)) y")
+      discard runStr("(match 1 when x (var y x) y) y")
   test "branch bodies can update outer bindings":
-    ck "(var total 0) (match [1 2] ^!exhaustive (when [a b] (set total (+ a b)))) total", "3"
+    ck "(var total 0) (match [1 2] ^!exhaustive when [a b] (set total (+ a b))) total", "3"
 
 suite "destructuring — var":
   test "list destructuring":
@@ -123,8 +123,8 @@ suite "loops — while":
     ck "(var i 0) (var s 0) " &
        "(while true " &
        "  (set i (+ i 1)) " &
-       "  (if (== i 2) (then (continue))) " &
-       "  (if (> i 4) (then (break))) " &
+       "  (if (== i 2) (continue)) " &
+       "  (if (> i 4) (break)) " &
        "  (set s (+ s i))) " &
        "[s i]",
        "[8 5]"
@@ -132,8 +132,8 @@ suite "loops — while":
     ck "(var i 0) (var s 0) " &
        "(loop " &
        "  (set i (+ i 1)) " &
-       "  (if (== i 2) (then (continue))) " &
-       "  (if (> i 4) (then (break))) " &
+       "  (if (== i 2) (continue)) " &
+       "  (if (> i 4) (break)) " &
        "  (set s (+ s i))) " &
        "[s i]",
        "[8 5]"
@@ -141,8 +141,8 @@ suite "loops — while":
     ck "(var i 0) (var s 0) " &
        "(repeat 6 " &
        "  (set i (+ i 1)) " &
-       "  (if (== i 2) (then (continue))) " &
-       "  (if (> i 4) (then (break))) " &
+       "  (if (== i 2) (continue)) " &
+       "  (if (> i 4) (break)) " &
        "  (set s (+ s i))) " &
        "[s i]",
        "[8 5]"
@@ -155,8 +155,8 @@ suite "loops — while":
   test "indexed repeat supports break and continue":
     ck "(var s 0) " &
        "(repeat i in 6 " &
-       "  (if (== i 2) (then (continue))) " &
-       "  (if (> i 4) (then (break))) " &
+       "  (if (== i 2) (continue)) " &
+       "  (if (> i 4) (break)) " &
        "  (set s (+ s i))) " &
        "s",
        "8"
@@ -205,8 +205,8 @@ suite "loops — for":
   test "for supports break and continue":
     ck "(var s 0) " &
        "(for x in [1 2 3 4 5] " &
-       "  (if (== x 2) (then (continue))) " &
-       "  (if (> x 4) (then (break))) " &
+       "  (if (== x 2) (continue)) " &
+       "  (if (> x 4) (break)) " &
        "  (set s (+ s x))) " &
        "s",
        "8"

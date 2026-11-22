@@ -41,7 +41,7 @@
       (cached .put ($to_str bucket) entries)
       (map_for [id record_digest] in entries
         (let record (load_record backend "channel/record/" record_digest))
-        (table .put ($to_str id) (if (== manifest/leaf_encoding 1) record/value record))))
+        (table .put ($to_str id) (if (== manifest/leaf_encoding 1) record/value else record))))
     (state .put ($to_str name) table)
     (buckets .put ($to_str name) cached))
   {^state state ^buckets buckets})
@@ -53,18 +53,17 @@
   (let scalars {})
   (map_for [field value] in next
     (let name ($to_str field))
-    (if (!= ($head value) Map) (then (scalars .put name value) (continue)))
+    (if (!= ($head value) Map) (do (scalars .put name value) (continue)))
     (let old (previous .get name))
     (if (&& ($present? changes) (! ($has_key? changes name))
              ($has_key? tables name)) (continue))
-    (let keys (if ($absent? changes) [] (?? (changes .get name) [])))
+    (let keys (if ($absent? changes) [] else (?? (changes .get name) [])))
     # Map iteration below is intentional: avoid relying on map iterator tuple shape.
     (let ids {})
     (if (|| ($absent? changes) ($absent? (changes .get name)))
-      (then
-        (map_for [id ignored] in (?? old {}) (ids .put ($to_str id) true))
-        (map_for [id ignored] in value (ids .put ($to_str id) true)))
-      (else (for id in keys (ids .put id true))))
+      (map_for [id ignored] in (?? old {}) (ids .put ($to_str id) true))
+        (map_for [id ignored] in value (ids .put ($to_str id) true))
+      else (for id in keys (ids .put id true)))
     (let shards (shallow (?? (tables .get name) {})))
     (let cached (shallow (?? (buckets .get name) {})))
     (let dirty {})
@@ -80,14 +79,14 @@
       (let entries (dirty .get bucket))
       (if (! ($has_key? value key))
         (entries .delete key)
-        (entries .put key (stored_record store "channel/record/" {^value current}))))
+        else (entries .put key (stored_record store "channel/record/" {^value current}))))
     (map_for [bucket entries] in dirty
       (let id ($to_str bucket))
       (if (== ($map_size entries) 0)
-        (then (shards .delete id) (cached .delete id))
-        (else
+        (shards .delete id) (cached .delete id)
+        else
           (shards .put id (stored_record store "channel/bucket/" entries))
-          (cached .put id entries))))
+          (cached .put id entries)))
     (tables .put name shards) (buckets .put name cached))
   (let manifest {^format 2 ^leaf_encoding 1 ^kind next/kind ^revision next/revision ^scalars scalars ^tables tables})
   (store/backend .Store:checkpoint next/revision {^channel_manifest manifest})
@@ -119,11 +118,11 @@
   (try
     (let loaded backend/.Store:load_checkpoint)
     (let manifest (?? loaded/records/channel_manifest {^tables {}}))
-    (let restored (if (== manifest/format 2) (load_manifest backend manifest) nil))
+    (let restored (if (== manifest/format 2) (load_manifest backend manifest) else nil))
     (let state (if ($absent? loaded)
-      (then ((copy initial) .assoc "format" 1; .assoc "kind" kind; .assoc "revision" 0))
-      (elif ($absent? restored) loaded/records/channels)
-      (else restored/state)))
+      ((copy initial) .assoc "format" 1; .assoc "kind" kind; .assoc "revision" 0)
+      elif ($absent? restored) loaded/records/channels
+      else restored/state))
     (if (|| (!= state/format 1) (!= state/kind kind) (!= ($head state/revision) Int)
             (&& ($present? loaded) (!= state/revision loaded/generation)))
       (channel_error "unavailable" "Unsupported durable channel state."))
@@ -160,24 +159,24 @@
     (let maintenance (== (// (+ store/state/.get/revision 1) 64) 0))
     (if maintenance (set changes nil))
     (let previous_queues store/state/.get/queues)
-    (let next (if ($absent? changes) (copy store/state/.get) (shallow store/state/.get)))
+    (let next (if ($absent? changes) (copy store/state/.get) else (shallow store/state/.get)))
     (if_not ($absent? changes)
       (map_for [field ids] in changes
         (let name ($to_str field))
         (let table (if ($absent? ids) (copy (?? (next .get name) {}))
-          (shallow (?? (next .get name) {}))))
+          else (shallow (?? (next .get name) {}))))
         (if_not ($absent? ids)
           (for id in ids
             (if ($has_key? table id) (table .put id (copy (table .get id))))))
         (next .put name table)))
     (let result (operation next))
     (if maintenance (prune next ($os/wall_ms)))
-    (if_yes (!= next store/state/.get)
-      (next .put "revision" (+ store/state/.get/revision 1))
+    (if (!= next store/state/.get)
+      (do (next .put "revision" (+ store/state/.get/revision 1))
       # Host-only diagnostic seam, also used to kill qualification processes
       # on either side of the physical checkpoint. Callbacks get detached data.
       (if_not ($absent? store/checkpoint) (store/checkpoint "before" (copy next) (copy result)))
-      (publish_records store next (if (== store/manifest/.get/leaf_encoding 1) changes nil))
+      (publish_records store next (if (== store/manifest/.get/leaf_encoding 1) changes else nil))
       (if_not ($absent? store/checkpoint) (store/checkpoint "after" (copy next) (copy result)))
       (store/state .set next)
       (store/changed/.get .put "revision" next/revision)
@@ -187,7 +186,7 @@
       # Publication is already durable. Failed best-effort GC is retried on a
       # later maintenance pass and must never turn an acknowledged commit into
       # an apparent failure.
-      (if maintenance (try (collect_records store) catch Error nil)))
+      (if maintenance (try (collect_records store) catch Error nil))))
     (copy result))))
 
 (fn close_channel_store [store : ChannelStore]

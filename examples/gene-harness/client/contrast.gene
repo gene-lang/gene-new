@@ -16,8 +16,8 @@
   (var parts ($str/split body " "))
   (var channels : (List F64) [])
   (for part in parts
-    (if_yes (&& (!= part "") (!= part "/")) (channels .push (decimal part))))
-  (if_yes (== channels/.size 3) (channels .push 1.0))
+    (if (&& (!= part "") (!= part "/")) (channels .push (decimal part))))
+  (if (== channels/.size 3) (channels .push 1.0))
   channels)
 
 (fn blend [front : (List F64), back : (List F64)] : (List F64)
@@ -30,8 +30,8 @@
 (fn linear [raw : F64] : F64
   (var value ($math/clamp raw 0.0 1.0))
   (if (<= value 0.04045)
-    (then (/ value 12.92))
-    (else ($math/pow (/ (+ value 0.055) 1.055) 2.4))))
+    (/ value 12.92)
+    else ($math/pow (/ (+ value 0.055) 1.055) 2.4)))
 
 (fn luminance [color : (List F64)] : F64
   (+ (+ (* 0.2126 (linear color/0)) (* 0.7152 (linear color/1))) (* 0.0722 (linear color/2))))

@@ -26,12 +26,12 @@
   ^log_polls Int})
 
 (fn text [value : Any, fallback : Str = ""] : Str
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Str value)
   result)
 
 (fn flag [value : Any] : Bool
-  (if_yes ($absent? value) (return false))
+  (if ($absent? value) (return false))
   (var result : Bool value)
   result)
 
@@ -60,7 +60,7 @@
   editor)
 
 (fn int_or [value : Any, fallback : Int] : Int
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Int value)
   result)
 
@@ -73,14 +73,14 @@
       (if (== sc/log_polls 1)
         (done 200 {^ok true ^state "ok" ^cursor "c1"
                    ^lines ["boot one" "boot two"] ^gap ""})
-        (if (== sc/log_polls 2)
+        else (if (== sc/log_polls 2)
           (done 200 {^ok true ^state "ok" ^cursor "c2"
                      ^lines ["ready"] ^gap ""})
-          (if (== sc/log_polls 3)
+          else (if (== sc/log_polls 3)
             (done 200 {^ok true ^state "gap" ^cursor "c3"
                        ^lines ["after gap"] ^gap "continuity lost"
                        ^message ""})
-            (do
+            else (do
               (var idle : (List Str) [])
               (done 200 {^ok true ^state "ok" ^cursor "c3"
                          ^lines idle ^gap ""})))))
@@ -103,7 +103,7 @@
       (if (== sc/save_mode "conflict")
         (done 409 {^ok false ^conflict true ^revision "rev-disk"
                    ^line_endings "lf" ^bom false ^text "disk text"})
-        (done 200 {^ok true ^revision "rev-2" ^line_endings "lf" ^bom false}))
+        else (done 200 {^ok true ^revision "rev-2" ^line_endings "lf" ^bom false}))
       (return)))
   (if (contains path "/analyze")
     (do
@@ -265,7 +265,7 @@
   (close_editor memory_panel))
 
 (fn int_of [value : Any, fallback : Int] : Int
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Int value)
   result)
 

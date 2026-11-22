@@ -49,7 +49,7 @@
       {^id definition/id ^label definition/label ^doc definition/doc ^context definition/context
        ^default definition/default ^binding (?? override definition/default)
        ^owner (?? (owners .get definition/id) "core")
-       ^source (if ($present? override) "override" "default")}))
+       ^source (if ($present? override) "override" else "default")}))
   (for action in actions
     (let conflicts [])
     (if (!= action/binding "")
@@ -86,8 +86,8 @@
       (change next)
       # Restoring the last override leaves no override, not an empty one.
       (if (== ($map_size next) 0)
-        (then (candidate .delete "keyboard_bindings"))
-        (else (candidate .put "keyboard_bindings" next)))
+        (candidate .delete "keyboard_bindings")
+        else (candidate .put "keyboard_bindings" next))
       (written .set candidate)))
   (keyboard_state_from runtime written/.get))
 

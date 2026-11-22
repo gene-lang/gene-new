@@ -25,7 +25,7 @@
   element/checked)
 
 (fn text [value : Any] : Str
-  (if_yes ($absent? value) (return ""))
+  (if ($absent? value) (return ""))
   (var result : Str value)
   result)
 
@@ -34,35 +34,35 @@
   ($to_str number))
 
 (fn flag [value : Any] : Bool
-  (if_yes ($absent? value) (return false))
+  (if ($absent? value) (return false))
   (var result : Bool value)
   result)
 
 (fn source_label [value : Any] : Str
   (var name (text value))
   (match name
-    (when "built_in" "Built-in")
-    (when "override" "Workspace override")
-    (else "Workspace")))
+    when "built_in" "Built-in"
+    when "override" "Workspace override"
+    else "Workspace"))
 
 (fn state_label [value : Any] : Str
   (var name (text value))
   (match name
-    (when "ready" "Active")
-    (when "error" "Failed")
-    (when "not_loaded" "Not loaded")
-    (when "pending" "Pending")
-    (else "Disabled")))
+    when "ready" "Active"
+    when "error" "Failed"
+    when "not_loaded" "Not loaded"
+    when "pending" "Pending"
+    else "Disabled"))
 
 (fn change_label [change : Any] : Str
   (var kind (text change/kind))
   (match kind
-    (when "set_enabled" (if (flag change/enabled)
+    when "set_enabled" (if (flag change/enabled)
         "Enable"
-        "Disable"))
-    (when "restore" "Restore built-in default")
-    (when "revert" $"Revert to revision ${(number_text change/revision)}")
-    (else "Replace source")))
+        else "Disable")
+    when "restore" "Restore built-in default"
+    when "revert" $"Revert to revision ${(number_text change/revision)}"
+    else "Replace source"))
 
 (fn notice [manager : Manager, value : Str, error : Bool = false] : Nil
   (set manager/notice/text_content value)
@@ -77,7 +77,7 @@
 
 (fn change_for [manager : Manager, id : Str] : Any
   (for change in manager/changes
-    (if_yes (== (text change/id) id) (return change)))
+    (if (== (text change/id) id) (return change)))
   nil)
 
 (fn save_draft [manager : Manager] : Nil
@@ -119,7 +119,7 @@
   (notice manager "Draft changed. Validate again before applying."))
 
 (fn stage [manager : Manager, change : Any] : Nil
-  (if_yes manager/busy (return))
+  (if manager/busy (return))
   (begin_draft manager)
   (var changes : (List Any) [])
   (for previous in manager/changes
@@ -133,18 +133,18 @@
 (fn stage_enabled [manager : Manager, plugin : Any, enabled : Bool] : Nil
   (set manager/selected (text plugin/id))
   (var change : Any (change_for manager (text plugin/id)))
-  (if_yes (&& (|| ($absent? change) (== (text change/kind) "set_enabled")) (== enabled (flag plugin/enabled)))
-    (var kept : (List Any) [])
+  (if (&& (|| ($absent? change) (== (text change/kind) "set_enabled")) (== enabled (flag plugin/enabled)))
+    (do (var kept : (List Any) [])
     (for item in manager/changes
       (if_not (== (text item/id) (text plugin/id)) (kept .push item)))
     (set manager/changes kept)
     (invalidate_draft manager)
     (save_draft manager)
     (render manager)
-    (return))
+    (return)))
   (if ($absent? change)
     (set change {^id plugin/id ^kind "set_enabled" ^enabled enabled})
-    (set change/enabled enabled))
+    else (set change/enabled enabled))
   (stage manager change))
 
 (fn poll [manager : Manager, id : Str, done : (Fn [Any] Nil)] : Nil
@@ -155,14 +155,13 @@
     nil
     (fn [code : Int, data : Any] : Nil
       (if (!= code 200)
-        (then
-          (set manager/busy false)
+        (set manager/busy false)
           (notice manager (text data/message) true)
-          (render manager))
-        (elif (== (text data/state) "running") ($time/after 350.0 (fn [] : Nil (poll manager id done))))
-        (else
+          (render manager)
+        elif (== (text data/state) "running") ($time/after 350.0 (fn [] : Nil (poll manager id done)))
+        else
           (set manager/busy false)
-          (done data/result))))))
+          (done data/result)))))
 
 (fn job [manager : Manager, path : Str, payload : Any, done : (Fn [Any] Nil)] : Nil
   (set manager/busy true)
@@ -175,7 +174,7 @@
     (fn [code : Int, data : Any] : Nil
       (if (== code 202)
         (poll manager (text data/id) done)
-        (do
+        else (do
           (set manager/busy false)
           (notice manager (text data/message) true)
           (render manager))))))
@@ -189,20 +188,20 @@
     $"${(api_root)}/plugins"
     nil
     (fn [code : Int, data : Any] : Nil
-      (if_yes (!= sequence manager/fetch_seq) (return))
-      (if_yes (!= code 200)
-        (notice
+      (if (!= sequence manager/fetch_seq) (return))
+      (if (!= code 200)
+        (do (notice
           manager
           (if (== code 401)
             "Connect using the owner link printed by gene-harness link, then open Plugins."
-            (text data/message))
+            else (text data/message))
           true)
-        (return))
+        (return)))
       (set manager/csrf data/csrf)
       (if_not ($absent? manager/appearance)
         (var appearance : BrowserAppearance manager/appearance)
         (refresh_appearance appearance))
-      (if_yes (&& (!= manager/epoch "") (!= manager/epoch (text data/epoch)))
+      (if (&& (!= manager/epoch "") (!= manager/epoch (text data/epoch)))
         (set manager/plan nil))
       (set manager/epoch data/epoch)
       (set manager/revision data/revision)
@@ -212,32 +211,32 @@
       (set manager/plugins data/plugins)
       (if_not manager/ready
         (var saved : Str (?? (storage_get "gene-harness/plugin-draft") ""))
-        (if_yes (!= saved "")
+        (if (!= saved "")
           (try
             (var draft : Any ($json/parse saved))
-            (if_yes (== (text draft/workspace) manager/workspace)
-              (set manager/base draft/base)
+            (if (== (text draft/workspace) manager/workspace)
+              (do (set manager/base draft/base)
               (var retained_base : (List Any) [])
               (if_not ($absent? draft/base_plugins) (set retained_base draft/base_plugins))
               (set manager/base_plugins retained_base)
               (set manager/changes draft/changes)
               (set manager/restore draft/restore)
-              (set manager/repair draft/repair))
+              (set manager/repair draft/repair)))
           catch Error
             nil)))
       (set manager/ready true)
-      (if_yes (&& (has_draft manager) (!= manager/base manager/revision)) (set manager/plan nil))
+      (if (&& (has_draft manager) (!= manager/base manager/revision)) (set manager/plan nil))
       (if_not (has_draft manager)
         (set manager/base manager/revision)
         (set manager/base_plugins (catalog_entries manager/plugins)))
-      (if_yes (&& (== manager/selected "") (> ($size manager/plugins) 0))
+      (if (&& (== manager/selected "") (> ($size manager/plugins) 0))
         (set manager/selected (text manager/plugins/0/id)))
       (set_text_content
         "manager_context"
         ($to_str
           (if manager/recovery
             "Recovery mode · "
-            "")
+            else "")
           (text data/profile)
           " · revision "
           ($to_str manager/revision)))
@@ -247,41 +246,41 @@
           manager
           "The workspace changed. Review and rebase this draft before validating it."
           true)
-        (notice
+        else (notice
           manager
           (if manager/recovery
             "Workspace plugins are not running. Save repairs, then retry normal startup."
-            "Changes stay in a draft until you validate and apply them.")))
+            else "Changes stay in a draft until you validate and apply them.")))
       (if_not ($absent? data/startup_failure) (notice manager (text data/startup_failure) true))
       (var diagnostics : (List Any) data/diagnostics)
-      (if_yes (> ($size diagnostics) 0)
-        (var messages : (List Str) [])
+      (if (> ($size diagnostics) 0)
+        (do (var messages : (List Str) [])
         (for diagnostic in diagnostics
           (messages .push (text diagnostic/message)))
-        (notice manager (str/join messages " · ") true))
+        (notice manager (str/join messages " · ") true)))
       (render manager)
-      (if_yes (== manager/pending "")
-        (set manager/pending (?? (storage_get "gene-harness/plugin-apply") ""))
-        (if_yes (!= manager/pending "") (check_pending manager))))))
+      (if (== manager/pending "")
+        (do (set manager/pending (?? (storage_get "gene-harness/plugin-apply") ""))
+        (if (!= manager/pending "") (check_pending manager)))))))
 
 (fn check_pending [manager : Manager] : Nil
   (var id manager/pending)
-  (if_yes (== id "") (return))
+  (if (== id "") (return))
   (request
     manager
     "GET"
     $"${(api_root)}/plugins/plans/result?id=${($url/encode_component id)}"
     nil
     (fn [code : Int, data : Any] : Nil
-      (if_yes (!= manager/pending id) (return))
+      (if (!= manager/pending id) (return))
       (var result : Any data/result)
       (var state (text result/state))
-      (if_yes (&& (== code 200) (== state "applying"))
-        (set manager/busy true)
+      (if (&& (== code 200) (== state "applying"))
+        (do (set manager/busy true)
         (notice manager "An earlier apply is still running. It will not be replayed.")
         (render_draft manager)
         ($time/after 1000.0 (fn [] : Nil (check_pending manager)))
-        (return))
+        (return)))
       (set manager/busy false)
       (set manager/pending "")
       (storage_remove "gene-harness/plugin-apply")
@@ -292,12 +291,12 @@
           (set manager/restore nil)
           (save_draft manager)
           (load_catalog manager))
-        (do
+        else (do
           (notice
             manager
             (if ($absent? result)
               "No completed apply is recorded. Inspect the composition and validate the retained draft before trying again."
-              (text result/message))
+              else (text result/message))
             true)
           (render manager))))))
 
@@ -309,12 +308,12 @@
     nil
     (fn [code : Int, data : Any] : Nil
       (if (&& (== code 200) (!= (text data/epoch) manager/epoch))
-        (then (load_catalog manager))
-        (elif (> attempts 0) ($time/after 500.0 (fn [] : Nil (wait_startup manager (- attempts 1)))))
-        (else (notice
+        (load_catalog manager)
+        elif (> attempts 0) ($time/after 500.0 (fn [] : Nil (wait_startup manager (- attempts 1))))
+        else (notice
             manager
             "Startup has not become ready. Use Refresh to inspect its current state."
-            true))))))
+            true)))))
 
 (fn add_line [target : EventTarget, value : Str] : Nil
   ($dom/append target ($dom/render `(div ^class_name "capability" %value))))
@@ -327,7 +326,7 @@
     " · "
     (if ($absent? record/writer)
       "unknown writer"
-      ($to_str
+      else ($to_str
         (text record/writer/digest)
         " · host "
         (text record/writer/host_build_id)
@@ -335,19 +334,19 @@
         (text record/writer/at)))))
 
 (fn entry_label [entry : Any] : Str
-  (if_yes ($absent? entry) (return "Not installed"))
+  (if ($absent? entry) (return "Not installed"))
   ($to_str
     (if (flag entry/disabled)
       "Disabled"
-      "Enabled")
+      else "Enabled")
     " · "
     (if ($absent? entry/module_digest)
       "current built-in default"
-      (text entry/module_digest))))
+      else (text entry/module_digest))))
 
 (fn entry_for [entries : (List Any), id : Str] : Any
   (for entry in entries
-    (if_yes (== (text entry/id) id) (return entry)))
+    (if (== (text entry/id) id) (return entry)))
   nil)
 
 (fn render_entry_change [target : EventTarget, id : Str, before : Any, after : Any] : Nil
@@ -356,28 +355,28 @@
   (var next_closure ($json/stringify (?? after/closure nil)))
   (var old_limits ($json/stringify (?? before/limits nil)))
   (var next_limits ($json/stringify (?? after/limits nil)))
-  (if_yes (!= old_closure next_closure)
+  (if (!= old_closure next_closure)
     (add_line target $"Dependency closure: ${old_closure} → ${next_closure}"))
-  (if_yes (!= old_limits next_limits)
+  (if (!= old_limits next_limits)
     (add_line target $"Execution limits: ${old_limits} → ${next_limits}")))
 
 (fn render_intervening_changes [manager : Manager, target : EventTarget] : Nil
   ($dom/append target ($dom/render `(h3 "Changes since this draft began")))
-  (if_yes (== ($size manager/base_plugins) 0)
-    (add_line
+  (if (== ($size manager/base_plugins) 0)
+    (do (add_line
       target
       "The original inventory was not retained. Inspect history before rebasing this older draft.")
-    (return))
+    (return)))
   (var latest (catalog_entries manager/plugins))
   (var ids : (List Str) [])
   (for entry in manager/base_plugins
     (ids .push (text entry/id)))
   (for entry in latest
-    (if_yes ($absent? (entry_for manager/base_plugins (text entry/id))) (ids .push (text entry/id))))
+    (if ($absent? (entry_for manager/base_plugins (text entry/id))) (ids .push (text entry/id))))
   (for id in ids
     (var before (entry_for manager/base_plugins id))
     (var after (entry_for latest id))
-    (if_yes (!= ($json/stringify before) ($json/stringify after))
+    (if (!= ($json/stringify before) ($json/stringify after))
       (render_entry_change target id before after))))
 
 (fn render_history [manager : Manager, id : Str, target : EventTarget, ^before before : Int = -1, ^append append : Bool = false] : Nil
@@ -390,12 +389,12 @@
       ($url/encode_component id)
       (if (< before 0)
         ""
-        $"&before=${($to_str before)}"))
+        else $"&before=${($to_str before)}"))
     nil
     (fn [code : Int, data : Any] : Nil
-      (if_yes (!= code 200)
-        (add_line target (text data/message))
-        (return))
+      (if (!= code 200)
+        (do (add_line target (text data/message))
+        (return)))
       (var records : (List Any) data/history)
       (for record in records
         (var revision : Int record/revision)
@@ -426,10 +425,10 @@
               (text outcome/result/status)
               (if ($absent? outcome/result/readiness)
                 ""
-                $" · readiness: ${(text outcome/result/readiness)}")
+                else $" · readiness: ${(text outcome/result/readiness)}")
               (if ($absent? outcome/result/message)
                 ""
-                $" · ${(text outcome/result/message)}")))
+                else $" · ${(text outcome/result/message)}")))
           (if_not ($absent? outcome/result/host_build_id)
             (add_line row $"Observed on host: ${(text outcome/result/host_build_id)}"))
           (if_not ($absent? outcome/result/readiness_reason)
@@ -441,7 +440,7 @@
             ($to_str
               (if (== (text attempt/result/stage) "validation")
                 "Validation failed: "
-                "Rejected attempt: ")
+                else "Rejected attempt: ")
               (text attempt/result/message))))
         (if_not ($absent? record/validation/status)
           (add_line
@@ -455,14 +454,14 @@
         ($dom/append
           row
           ($dom/render
-            `(button ^type "button" ^aria_label %($to_str (if pinned "Unpin revision " "Pin revision ") ($to_str revision)) ^on_click %(fn [event : Any] : Nil (var button : EventTarget event/current_target) (set button/disabled true) (request manager "POST" $"${(api_root)}/plugins/history/pin" {^revision revision ^pinned (! pinned)} (fn [code : Int, data : Any] : Nil (set button/disabled false) (if (== code 200) (do (set pinned (flag data/pinned)) (set button/text_content (if pinned "Unpin known-good" "Pin as known-good")) ($dom/set_attribute button "aria-label" ($to_str (if pinned "Unpin revision " "Pin revision ") ($to_str revision)))) (notice manager (text data/message) true)))))
-               %(if pinned "Unpin known-good" "Pin as known-good"))))
+            `(button ^type "button" ^aria_label %($to_str (if pinned "Unpin revision " else "Pin revision ") ($to_str revision)) ^on_click %(fn [event : Any] : Nil (var button : EventTarget event/current_target) (set button/disabled true) (request manager "POST" $"${(api_root)}/plugins/history/pin" {^revision revision ^pinned (! pinned)} (fn [code : Int, data : Any] : Nil (set button/disabled false) (if (== code 200) (do (set pinned (flag data/pinned)) (set button/text_content (if pinned "Unpin known-good" else "Pin as known-good")) ($dom/set_attribute button "aria-label" ($to_str (if pinned "Unpin revision " else "Pin revision ") ($to_str revision)))) else (notice manager (text data/message) true)))))
+               %(if pinned "Unpin known-good" else "Pin as known-good"))))
         (if (== id "")
           ($dom/append
             row
             ($dom/render
-              `(button ^type "button" ^on_click %(fn [event : Any] : Nil (if_yes manager/busy (return)) (begin_draft manager) (set manager/restore revision) (invalidate_draft manager) (save_draft manager) (render manager)) "Stage composition reversion")))
-          (if_not ($absent? record/entry/module_digest)
+              `(button ^type "button" ^on_click %(fn [event : Any] : Nil (if manager/busy (return)) (begin_draft manager) (set manager/restore revision) (invalidate_draft manager) (save_draft manager) (render manager)) "Stage composition reversion")))
+          else (if_not ($absent? record/entry/module_digest)
             ($dom/append
               row
               ($dom/render
@@ -480,19 +479,19 @@
   ($dom/clear target)
   (var selected : Any nil)
   (for plugin in manager/plugins
-    (if_yes (== (text plugin/id) manager/selected) (set selected plugin)))
-  (if_yes ($absent? selected)
-    ($dom/append
+    (if (== (text plugin/id) manager/selected) (set selected plugin)))
+  (if ($absent? selected)
+    (do ($dom/append
       target
       ($dom/render `(p "Select a plugin to inspect its capabilities and history.")))
-    (return))
+    (return)))
   (var id (text selected/id))
   ($dom/append target ($dom/render `(h2 %id)))
   ($dom/append target ($dom/render `(p %(text selected/description))))
   (add_line target $"Runtime: ${(state_label selected/state)} · ${(source_label selected/source)}")
   ($dom/append target ($dom/render
     (plugin_sessions_view selected/development (== (text selected/source) "built_in"))))
-  (if_yes (&& ($present? selected/active_digest) (!= (text selected/active_digest) (if ($absent? selected/digest) "builtin" (text selected/digest))))
+  (if (&& ($present? selected/active_digest) (!= (text selected/active_digest) (if ($absent? selected/digest) "builtin" else (text selected/digest))))
     (add_line target $"Still running the previous code: ${(text selected/active_digest)}"))
   (if_not ($absent? selected/changed_at)
     (add_line target $"Source recorded: ${(text selected/changed_at)}"))
@@ -505,7 +504,7 @@
   (if_not ($absent? selected/digest)
     ($dom/append target ($dom/render `(p ^class_name "muted" (code %(text selected/digest))))))
   (var actions ($dom/render `(div ^class_name "manager_actions")))
-  (if_yes (&& (flag selected/enabled) (|| (== (text selected/state) "error") (== (text selected/state) "pending")))
+  (if (&& (flag selected/enabled) (|| (== (text selected/state) "error") (== (text selected/state) "pending")))
     ($dom/append
       actions
       ($dom/render
@@ -514,7 +513,7 @@
     actions
     ($dom/render
       `(button ^type "button" ^disabled %manager/busy ^on_click %(fn [event : Any] : Nil (set_hidden "plugin_editor" false) ($dom/set_input_value ($dom/element "source_id") id)) "Replace source")))
-  (if_yes selected/builtin
+  (if selected/builtin
     ($dom/append
       actions
       ($dom/render
@@ -523,13 +522,13 @@
     ($dom/append
       actions
       ($dom/render
-        `(button ^type "button" ^disabled %manager/busy ^on_click %(fn [event : Any] : Nil (set manager/busy true) (render_draft manager) (request manager "POST" $"${(api_root)}/plugins/inspect" {^id id} (fn [code : Int, data : Any] : Nil (set manager/busy false) (notice manager (if (flag data/ok) "Restricted descriptor read passed. Activation remains unverified." (text data/message)) (! (flag data/ok))) (render_draft manager)))) "Read descriptor safely"))))
+        `(button ^type "button" ^disabled %manager/busy ^on_click %(fn [event : Any] : Nil (set manager/busy true) (render_draft manager) (request manager "POST" $"${(api_root)}/plugins/inspect" {^id id} (fn [code : Int, data : Any] : Nil (set manager/busy false) (notice manager (if (flag data/ok) "Restricted descriptor read passed. Activation remains unverified." else (text data/message)) (! (flag data/ok))) (render_draft manager)))) "Read descriptor safely"))))
   ($dom/append target actions)
   (var source_details ($dom/render `(details (summary "Source dependencies and limits"))))
   (var closure : (List Any) selected/closure)
   (for digest in closure
     (add_line source_details (text digest)))
-  (if_yes (== ($size closure) 0) (add_line source_details "Bundled with the current host."))
+  (if (== ($size closure) 0) (add_line source_details "Bundled with the current host."))
   (add_line source_details $"Interfaces: ${($json/stringify selected/interfaces)}")
   (if_not ($absent? selected/descriptor_limits)
     (add_line source_details $"Descriptor limits: ${($json/stringify selected/descriptor_limits)}"))
@@ -544,25 +543,25 @@
     (add_line target "Metadata is unknown. A restricted read may recover it."))
   ($dom/append target ($dom/render `(h3 "Observed contributions")))
   (var observed : (List Any) selected/observed)
-  (if_yes (== ($size observed) 0)
-    (set observed selected/last_observed)
+  (if (== ($size observed) 0)
+    (do (set observed selected/last_observed)
     ($dom/append
       target
       ($dom/render
         `(p ^class_name "muted"
            %(if (&& ($present? selected/observed_host) (!= (text selected/observed_host) manager/host))
               "Historical observations from another host build; these contributions are not currently active."
-              "Last recorded observations; these contributions are not currently active.")))))
+              else "Last recorded observations; these contributions are not currently active."))))))
   (for item in observed
     (add_line target $"${(text item/registry)}/${(text item/key)}"))
   ($dom/append target ($dom/render `(h3 "Requires")))
   (var requires : (List Any) selected/requires)
-  (if_yes (== ($size requires) 0)
+  (if (== ($size requires) 0)
     (add_line
       target
       (if (flag selected/metadata_known)
         "No declared requirements."
-        "Requirements are unknown.")))
+        else "Requirements are unknown.")))
   (for item in requires
     (add_line
       target
@@ -573,18 +572,18 @@
         " → "
         (if ($absent? item/provider)
           "missing"
-          (text item/provider)))))
+          else (text item/provider)))))
   ($dom/append target ($dom/render `(h3 "Required by")))
   (var dependents : (List Any) selected/transitive_required_by)
   (for item in dependents
     (add_line target (text item)))
-  (if_yes (&& (== ($size dependents) 0) (! (flag selected/required_by_profile)))
+  (if (&& (== ($size dependents) 0) (! (flag selected/required_by_profile)))
     (add_line target "No active dependents."))
-  (if_yes selected/required_by_profile
+  (if selected/required_by_profile
     (add_line target "The active profile requires this plugin's capabilities."))
   ($dom/append target ($dom/render `(h3 "Managed state")))
   (var writers : (List Any) selected/state_writers)
-  (if_yes (== ($size writers) 0)
+  (if (== ($size writers) 0)
     (add_line target "Last-writer provenance is unknown or no managed state has been saved."))
   (for record in writers
     (add_line
@@ -596,7 +595,7 @@
         " · "
         (if ($absent? record/writer)
           "unknown writer"
-          ($to_str
+          else ($to_str
             (text record/writer/digest)
             " · host "
             (text record/writer/host_build_id)
@@ -625,11 +624,11 @@
     (add_line target $"${(text change/id)}: ${(change_label change)}"))
   (var report ($dom/element "draft_report"))
   ($dom/clear report)
-  (if_yes (!= manager/base manager/revision) (render_intervening_changes manager report))
+  (if (!= manager/base manager/revision) (render_intervening_changes manager report))
   (if_not ($absent? manager/plan)
     ($dom/append report ($dom/render `(h3 "Reviewed composition changes")))
     (var differences : (List Any) manager/plan/diff)
-    (if_yes (== ($size differences) 0) (add_line report "No desired composition changes."))
+    (if (== ($size differences) 0) (add_line report "No desired composition changes."))
     (for difference in differences
       (render_entry_change report (text difference/id) difference/before difference/after))
     (var warnings : (List Any) manager/plan/warnings)
@@ -647,13 +646,13 @@
       (var writers : (List Any) item/state_writers)
       (for record in writers
         (add_line report $"${(text item/id)} retained state: ${(writer_line record)}"))
-      (if_yes (> ($size names) 0)
-        (add_line report ($to_str (text item/id) " affects: " (str/join names ", ")))
+      (if (> ($size names) 0)
+        (do (add_line report ($to_str (text item/id) " affects: " (str/join names ", ")))
         ($dom/append
           report
           ($dom/render
-            `(button ^type "button" ^disabled %manager/busy ^on_click %(fn [event : Any] : Nil (for id in names (for plugin in manager/plugins (if_yes (== (text plugin/id) id) (stage_enabled manager plugin false)))))
-               %$"Stage disabling dependents of ${(text item/id)}")))))
+            `(button ^type "button" ^disabled %manager/busy ^on_click %(fn [event : Any] : Nil (for id in names (for plugin in manager/plugins (if (== (text plugin/id) id) (stage_enabled manager plugin false)))))
+               %$"Stage disabling dependents of ${(text item/id)}"))))))
     (if_not ($absent? manager/plan/conflicts)
       (var conflicts : (List Any) manager/plan/conflicts)
       (for conflict in conflicts
@@ -669,11 +668,11 @@
             (str/join owners ", ")))))
     (if_not ($absent? manager/plan/current_defaults)
       (var defaults : (List Any) manager/plan/current_defaults)
-      (if_yes (> ($size defaults) 0)
-        (var names : (List Str) [])
+      (if (> ($size defaults) 0)
+        (do (var names : (List Str) [])
         (for item in defaults
           (names .push (text item/id)))
-        (add_line report ($to_str "Use current built-in defaults: " (str/join names ", "))))))
+        (add_line report ($to_str "Use current built-in defaults: " (str/join names ", ")))))))
   (set_checked "draft_repair" (|| manager/repair manager/recovery))
   (set_disabled "draft_repair" (|| manager/busy manager/recovery))
   (set_disabled "draft_validate" (|| manager/busy (!= manager/base manager/revision)))
@@ -684,7 +683,7 @@
       ($absent? manager/plan)
       (! (flag manager/plan/valid))
       (!= manager/base manager/revision)))
-  (set_text_content "draft_apply" (if manager/recovery "Save repair" "Apply changes"))
+  (set_text_content "draft_apply" (if manager/recovery "Save repair" else "Apply changes"))
   (set_hidden "draft_rebase" (== manager/base manager/revision))
   (set_disabled "draft_discard" manager/busy))
 
@@ -700,8 +699,8 @@
     (var state (text plugin/state))
     (var haystack
       (str/lower $"${id} ${(text plugin/description)} ${($json/stringify plugin/provides)}"))
-    (if_yes (&& (|| (== query "") (str/contains? haystack query)) (|| (== filter "") (== state filter)))
-      (var row ($dom/render `(div ^class_name "plugin_row")))
+    (if (&& (|| (== query "") (str/contains? haystack query)) (|| (== filter "") (== state filter)))
+      (do (var row ($dom/render `(div ^class_name "plugin_row")))
       ($dom/set_class row "selected" (== id manager/selected))
       (var change : Any (change_for manager id))
       (var checked : Bool plugin/enabled)
@@ -724,12 +723,12 @@
       ($dom/append
         row
         ($dom/render `(span ^class_name %$"plugin_badge ${state}" %(state_label state))))
-      ($dom/append list row)))
+      ($dom/append list row))))
   (render_details manager)
   (render_draft manager))
 
 (fn validate [manager : Manager] : Nil
-  (if_yes manager/busy (return))
+  (if manager/busy (return))
   (set manager/plan nil)
   (notice manager "Validating source and predicted composition…")
   (job
@@ -744,7 +743,7 @@
     (fn [data : Any] : Nil
       (if ($absent? data/id)
         (notice manager (text data/message) true)
-        (do
+        else (do
           (var base : Int data/base_revision)
           (if (|| (!= base manager/revision) (!= (text data/stamp/epoch) manager/epoch))
             (do
@@ -753,19 +752,19 @@
                 manager
                 "The workspace changed during validation. Refresh and validate again."
                 true))
-            (do
+            else (do
               (set manager/plan data)
               (notice
                 manager
                 (if (flag data/valid)
                   "Validation finished. Review the report before applying."
-                  "Resolve the validation errors before applying.")
+                  else "Resolve the validation errors before applying.")
                 (! (flag data/valid)))))))
       (render manager))))
 
 (fn apply [manager : Manager] : Nil
-  (if_yes manager/busy (return))
-  (if_yes ($absent? manager/plan) (return))
+  (if manager/busy (return))
+  (if ($absent? manager/plan) (return))
   (var id (text manager/plan/id))
   (set manager/pending id)
   (storage_set "gene-harness/plugin-apply" id)
@@ -785,12 +784,12 @@
           (set manager/plan nil)
           (save_draft manager)
           (load_catalog manager))
-        (do
+        else (do
           (set manager/plan nil)
           (notice manager (text result/message) true)
           (if (str/starts_with? (text result/code) "stale")
             (load_catalog manager)
-            (render manager)))))))
+            else (render manager)))))))
 
 (fn main [root : EventTarget] : Nil
   (var manager
@@ -808,7 +807,7 @@
   (set manager/appearance appearance)
   ($dom/add_event_listener ($dom/element "theme_toggle") "click"
     (fn [event : Any] : Nil
-      (change_appearance appearance {^mode (if (== (current_appearance) "dark") "light" "dark")})))
+      (change_appearance appearance {^mode (if (== (current_appearance) "dark") "light" else "dark")})))
   ($dom/add_event_listener
     ($dom/element "plugin_query")
     "input"
@@ -895,7 +894,7 @@
         {^action "restart" ^^confirm}
         (fn [code : Int, data : Any] : Nil
           (notice manager (text data/message) (!= code 200))
-          (if_yes (&& (== code 200) (flag data/restart))
+          (if (&& (== code 200) (flag data/restart))
             ($time/after 500.0 (fn [] : Nil (wait_startup manager 60))))))))
   (var token (query_value ($browser/hash) "token"))
   ($browser/replace_url "/plugins")
@@ -908,5 +907,5 @@
       (fn [code : Int, data : Any] : Nil
         (if (== code 200)
           (load_catalog manager)
-          (notice manager (text data/message) true))))
-    (load_catalog manager)))
+          else (notice manager (text data/message) true))))
+    else (load_catalog manager)))

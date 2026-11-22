@@ -106,7 +106,7 @@
       "repairs rejected model data while treating schema implementation failure as a mandatory failure"
       (fn [root]
         (for broken in [false true]
-          (let runtime (open_runtime ($path/join root (if broken "broken" "rejected")) "default" (baseline_profile)))
+          (let runtime (open_runtime ($path/join root (if broken "broken" else "rejected")) "default" (baseline_profile)))
           (let registered (register_plugin runtime/workspace runtime/h "notes" (notes_source ^broken broken)))
           ($assert (== registered/status "ready") ($to_str registered))
           (let calls ($cell 0))
@@ -114,16 +114,16 @@
             (calls .set (+ calls/.get 1))
             (if (== calls/.get 1)
               "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^notes/facts \"wrong type\"})"
-              (do
+              else (do
                 ($assert ($str/contains? ($to_str request/messages) "facts must be a list"))
                 "(Outcome ^^done ^reply \"Repaired.\" ^extensions {^notes/facts [\"valid\"]})")))))
           (try
             (let result (wait_round controller (submit_round controller "default" "data" 1 "Validate data.")))
-            ($assert (== result/state (if broken "failed" "done")) ($to_str result))
-            ($assert (== calls/.get (if broken 1 2)))
+            ($assert (== result/state (if broken "failed" else "done")) ($to_str result))
+            ($assert (== calls/.get (if broken 1 else 2)))
             (if broken
               ($assert ($str/contains? result/message "notes/facts"))
-              ($assert (== (/facts (state runtime)) ["one:valid"])))
+              else ($assert (== (/facts (state runtime)) ["one:valid"])))
           ensure
             (close_round_controller controller)
             (close_runtime runtime))))))
@@ -139,7 +139,7 @@
           (calls .set (+ calls/.get 1))
           (if (== calls/.get 1)
             "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^missing/facts [\"x\"]})"
-            (do
+            else (do
               ($assert ($str/contains? ($to_str request/messages) "Unknown Outcome extension missing/facts"))
               "(Outcome ^^done ^reply \"No notes requested.\")")))))
         (try
@@ -178,7 +178,7 @@
             (let retained (row runtime/h attempt/registry attempt/name))
             (if ($str/starts_with? attempt/name "notes/")
               ($assert (== retained/_owner "notes"))
-              ($assert ($absent? retained) $"Failed declaration left a row: ${attempt/name}")))
+              else ($assert ($absent? retained) $"Failed declaration left a row: ${attempt/name}")))
         ensure (close_runtime runtime)))))
 
   (it "keeps an old participant and schema generation alive for the complete admitted turn" []
@@ -193,10 +193,10 @@
         (let calls ($cell 0))
         (let controller (test_controller runtime (fn [request]
           (calls .set (+ calls/.get 1))
-          (let generation (if (== calls/.get 1) "one" "two"))
-          (if_yes (== calls/.get 1)
-            (entered .set true)
-            (while (! released/.get) ($sleep 1)))
+          (let generation (if (== calls/.get 1) "one" else "two"))
+          (if (== calls/.get 1)
+            (do (entered .set true)
+            (while (! released/.get) ($sleep 1))))
           ($to_str "($assert (== notes/memory/generation \"" generation
             "\")) (Outcome ^^done ^reply \"Saved.\" ^extensions {^notes/facts [\"fact\"]})"))))
         (try
@@ -271,7 +271,7 @@
           (calls .set (+ calls/.get 1))
           (if (== calls/.get 1)
             "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^notes/facts [\"first\"]})"
-            (do
+            else (do
               ($assert ($absent? (state runtime)) "A later participant committed data from a deferred final reply.")
               ($assert ($str/contains? ($to_str request/messages) "Confirm the final work"))
               "(Outcome ^^done ^reply \"Confirmed.\" ^extensions {^notes/facts [\"final\"]})")))))

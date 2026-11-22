@@ -59,17 +59,17 @@
 # ---------------------------------------------------------------------------
 
 (fn string_or [value : Any, fallback : Str = ""] : Str
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Str value)
   result)
 
 (fn int_of [value : Any, fallback : Int] : Int
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Int value)
   result)
 
 (fn flag [value : Any] : Bool
-  (if_yes ($absent? value) (return false))
+  (if ($absent? value) (return false))
   (var result : Bool value)
   result)
 
@@ -128,21 +128,21 @@
       (if (! panel/available)
         (done {^ok false
                ^message "The editor plugin is disabled; saving resumes when it is enabled."})
-        (panel/api "POST" $"${(api_root)}/p/editor/save" request
+        else (panel/api "POST" $"${(api_root)}/p/editor/save" request
           (fn [status : Int, data : Any] : Nil
             (if (|| (== status 200) (&& (>= status 400) (< status 500)))
               (done data)
-              (done {^ok false
+              else (done {^ok false
                      ^message (string_or data/message
                        "The save could not be completed; the draft is kept.")}))))))
     ^analyze (fn [request : Any, done : (Fn [Any] Nil)] : Nil
       (if (! panel/available)
         (done (unavailable_response request
           "The editor plugin is disabled; analysis resumes when it is enabled."))
-        (panel/api "POST" $"${(api_root)}/p/editor/analyze" request
+        else (panel/api "POST" $"${(api_root)}/p/editor/analyze" request
           (fn [status : Int, data : Any] : Nil
             (var response : Any (if ($present? data) data
-              {^ok false ^message "The analysis request failed; try again."}))
+              else {^ok false ^message "The analysis request failed; try again."}))
             (if ($absent? response/version)
               (set response/version request/version))
             (if ($absent? response/ok) (set response/ok false))
@@ -151,10 +151,10 @@
       (if (! panel/available)
         (done {^ok false
                ^message "The editor plugin is disabled; formatting resumes when it is enabled."})
-        (panel/api "POST" $"${(api_root)}/p/editor/format" request
+        else (panel/api "POST" $"${(api_root)}/p/editor/format" request
           (fn [status : Int, data : Any] : Nil
             (var response : Any (if ($present? data) data
-              {^ok false ^message "The format request failed; try again."}))
+              else {^ok false ^message "The format request failed; try again."}))
             (if ($absent? response/version)
               (set response/version request/version))
             (if ($absent? response/ok) (set response/ok false))
@@ -184,7 +184,7 @@
       (say panel
         (if (flag event/stale)
           "Selection is from an older draft; wait for analysis."
-          label))))
+          else label))))
   (if (== kind "dirty")
     (do
       (set panel/dirty (flag event/dirty))
@@ -196,9 +196,9 @@
         (do
           (set panel/selection nil)
           (say panel "Saved."))
-        (if (flag event/conflict)
+        else (if (flag event/conflict)
           (say panel "Save conflict: the file changed. Compare with the saved version.")
-          (say panel "Save failed; the draft is kept and Retry resubmits it."))))))
+          else (say panel "Save failed; the draft is kept and Retry resubmits it."))))))
 
 # ---------------------------------------------------------------------------
 # Opening and closing
@@ -232,7 +232,7 @@
       (if ($absent? editor)
         (set panel/editor (mount_editor panel/editor_root document
                                         (editor_services panel)))
-        (do
+        else (do
           (var target : Editor editor)
           (target/open document)))
       (var observed (editor_of panel))
@@ -250,11 +250,11 @@
       (say panel
         (if (flag payload/readonly)
           (string_or payload/reason "This file is read-only.")
-          shown_revision)))))
+          else shown_revision)))))
 
 (fn open_editor [panel : EditorPanel, path : Str,
                  ^from first : Int = 0, ^to last : Int = 0] : Nil
-  (var chosen (if (== path "") (string_or panel/path "") path))
+  (var chosen (if (== path "") (string_or panel/path "") else path))
   (if (== chosen "")
     (do (say panel "Choose a workspace file to open.") (return)))
   (if (! panel/available)
@@ -309,7 +309,7 @@
   (if (== source "")
     (do (say panel "The selection is not from the analyzed buffer yet; wait for analysis.") (return)))
   (var path (if (== (string_or selection/path "") "") panel/path
-    (string_or panel/path "")))
+    else (string_or panel/path "")))
   (var start (int_of selection/start_byte 0))
   (var finish (int_of selection/end_byte start))
   (var revision (string_or selection/revision ""))
@@ -362,8 +362,8 @@
   (var source (== mode "source"))
   ($dom/set_class panel/tab_source "active" source)
   ($dom/set_class panel/tab_logs "active" (! source))
-  ($dom/set_attribute panel/tab_source "aria-selected" (if source "true" "false"))
-  ($dom/set_attribute panel/tab_logs "aria-selected" (if source "false" "true"))
+  ($dom/set_attribute panel/tab_source "aria-selected" (if source "true" else "false"))
+  ($dom/set_attribute panel/tab_logs "aria-selected" (if source "false" else "true"))
   (set panel/source_view/hidden (! source))
   (set panel/log_root/hidden source)
   (set panel/attach_log/hidden source))
@@ -406,7 +406,7 @@
         (say panel (string_or data/message "No retained host log yet.")))
       (if (== state "unreadable")
         (say panel (string_or data/message "The host log is unreadable.")))
-      ($time/after (if (== state "ok") 800.0 3000.0)
+      ($time/after (if (== state "ok") 800.0 else 3000.0)
         (fn [] : Nil
           (if (== generation panel/log_generation) (poll_log panel)))))))
 
@@ -430,7 +430,7 @@
   (set_tab panel "source")
   (stop_log_polling panel)
   (say panel
-    (if panel/available "Source mode." "Editor unavailable — enable the editor plugin.")))
+    (if panel/available "Source mode." else "Editor unavailable — enable the editor plugin.")))
 
 (fn attach_log [panel : EditorPanel] : Nil
   (if ($absent? panel/log_editor)
@@ -451,7 +451,7 @@
     (var cost (+ ($str/byte_size line) 1))
     (if (|| (>= (- count index) 80) (> (+ total cost) 16384))
       (set done true)
-      (do
+      else (do
         (set total (+ total cost))
         (set first index)
         (set index (- index 1)))))
@@ -494,7 +494,7 @@
             (set panel/log_generation (+ panel/log_generation 1))
             (poll_log panel)))
         (say panel "Editor available."))
-      (do
+      else (do
         (stop_log_polling panel)
         (say panel "Editor unavailable — the editor plugin is disabled. The draft is kept."))))
   changed)

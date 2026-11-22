@@ -12,18 +12,18 @@
 
 (fn model_drafts [client : Client] : ModelDrafts
   (var states (features client))
-  (if_yes ($absent? states/model_drafts)
+  (if ($absent? states/model_drafts)
     (set states/model_drafts (ModelDrafts ^workspace "" ^choices {} ^!loaded ^!required ^!requested
       ^^loading ^!timer_started ^load_epoch 0 ^resume nil ^requested_draft ""
       ^trigger_choice {} ^trigger_target nil ^trigger_sequence 0)))
   (var raw : Any states/model_drafts)
   (var result : ModelDrafts raw)
   (var workspace (text client/status/workspace))
-  (if_yes (!= workspace result/workspace)
-    (set result/workspace workspace) (set result/choices {}) (set result/loaded false)
+  (if (!= workspace result/workspace)
+    (do (set result/workspace workspace) (set result/choices {}) (set result/loaded false)
     (set result/required false) (set result/requested false) (set result/loading true)
     (set result/timer_started false) (set result/load_epoch (+ result/load_epoch 1))
-    (set result/trigger_choice {}) (set result/trigger_target nil))
+    (set result/trigger_choice {}) (set result/trigger_target nil)))
   result)
 
 (fn model_draft_key [drafts : ModelDrafts, session : Str] : Str
@@ -31,16 +31,16 @@
 
 (fn selected_model_draft [client : Client, session : Str] : Any
   (var drafts (model_drafts client))
-  (var key (if (== session "") (then "new") (else session)))
-  (if_yes ($absent? drafts/choices/%key)
-    (var saved (?? (storage_get (model_draft_key drafts key)) ""))
-    (if_yes (!= saved "")
-      (try (set drafts/choices/%key ($json/parse saved)) catch Error nil)))
+  (var key (if (== session "") "new" else session))
+  (if ($absent? drafts/choices/%key)
+    (do (var saved (?? (storage_get (model_draft_key drafts key)) ""))
+    (if (!= saved "")
+      (try (set drafts/choices/%key ($json/parse saved)) catch Error nil))))
   drafts/choices/%key)
 
 (fn choose_model_draft [client : Client, selection : Any] : Nil
   (var drafts (model_drafts client))
-  (var key (if (== client/selected "") (then "new") (else client/selected)))
+  (var key (if (== client/selected "") "new" else client/selected))
   (var value : Any ($json/parse ($json/stringify selection)))
   (set drafts/choices/%key {^value value})
   (storage_set (model_draft_key drafts key) ($json/stringify {^value value}))
@@ -49,7 +49,7 @@
 (fn transfer_model_draft [client : Client, session : Str] : Nil
   (var drafts (model_drafts client))
   (var source : Any (selected_model_draft client ""))
-  (if_yes ($absent? source) (return))
+  (if ($absent? source) (return))
   (set drafts/choices/%session source)
   (set drafts/choices/new nil)
   (storage_set (model_draft_key drafts session) ($json/stringify source))
@@ -57,22 +57,22 @@
 
 (fn attach_model_draft [client : Client, payload : Any, session : Str] : Nil
   (var choice : Any (selected_model_draft client session))
-  (if_yes ($present? choice)
+  (if ($present? choice)
     (set payload/model_settings ($json/parse ($json/stringify choice/value)))))
 
 (fn model_draft_admitted [client : Client, session : Str, payload : Any] : Nil
-  (if_yes ($absent? payload/model_settings) (return))
+  (if ($absent? payload/model_settings) (return))
   (var drafts (model_drafts client))
   (var choice : Any (selected_model_draft client session))
-  (if_yes (&& ($present? choice) (== ($json/stringify choice/value) ($json/stringify payload/model_settings)))
-    (set drafts/choices/%session nil)
+  (if (&& ($present? choice) (== ($json/stringify choice/value) ($json/stringify payload/model_settings)))
+    (do (set drafts/choices/%session nil)
     (storage_remove (model_draft_key drafts session))
-    (browser_event client "model/admitted" session payload/model_settings)))
+    (browser_event client "model/admitted" session payload/model_settings))))
 
 (fn model_picker_expected [client : Client] : Bool
-  (if_yes client/safe_ui (return false))
+  (if client/safe_ui (return false))
   (for descriptor in (items client/status/browser_clients)
-    (if_yes (== (text descriptor/name) "models") (return true)))
+    (if (== (text descriptor/name) "models") (return true)))
   false)
 
 (fn attach_trigger_model [client : Client, payload : Any] : Nil
@@ -80,7 +80,7 @@
   (var choice : PropMap drafts/trigger_choice)
   (var present false)
   (map_for [key value] in choice (set present true))
-  (if_yes present
+  (if present
     (set payload/model_settings ($json/parse ($json/stringify drafts/trigger_choice)))))
 
 (fn choose_trigger_model [client : Client, choice : Any] : Nil
@@ -98,46 +98,46 @@
 
 (fn submission_draft [client : Client] : Str
   (var ids : (List Str) [])
-  (if_yes ($present? client/media)
-    (var media : MediaComposer client/media)
-    (set ids (media_ids media)))
+  (if ($present? client/media)
+    (do (var media : MediaComposer client/media)
+    (set ids (media_ids media))))
   ($json/stringify {^session client/selected ^text ($dom/input_value client/prompt) ^media ids}))
 
 (fn resume_model_submit [client : Client, drafts : ModelDrafts] : Nil
-  (if_yes (|| (! drafts/requested) ($absent? drafts/resume)) (return))
+  (if (|| (! drafts/requested) ($absent? drafts/resume)) (return))
   (set drafts/requested false)
-  (if_yes (!= drafts/requested_draft (submission_draft client))
-    (notice client "Draft changed; press Send to submit the current draft.")
-    (return))
+  (if (!= drafts/requested_draft (submission_draft client))
+    (do (notice client "Draft changed; press Send to submit the current draft.")
+    (return)))
   (var resume : (Fn [] Nil) drafts/resume)
   (resume))
 
 (fn model_allows_submit [client : Client, ^resume resume : Bool = true] : Bool
   (var drafts (model_drafts client))
-  (if_yes (|| (! (model_picker_expected client)) (flag client/browser_clients/mounts/models/failed))
-    (set drafts/requested false) (return true))
-  (if_yes (&& (! drafts/loaded) drafts/loading)
-    (set drafts/requested resume)
+  (if (|| (! (model_picker_expected client)) (flag client/browser_clients/mounts/models/failed))
+    (do (set drafts/requested false) (return true)))
+  (if (&& (! drafts/loaded) drafts/loading)
+    (do (set drafts/requested resume)
     (set drafts/requested_draft (submission_draft client))
-    (if_yes (! drafts/timer_started)
-      (set drafts/timer_started true)
+    (if (! drafts/timer_started)
+      (do (set drafts/timer_started true)
       (var epoch drafts/load_epoch)
       ($time/after 2000.0 (fn [] : Nil
-        (if_yes (!= epoch drafts/load_epoch) (return))
+        (if (!= epoch drafts/load_epoch) (return))
         (set drafts/timer_started false)
         (if (|| (! (model_picker_expected client)) (flag client/browser_clients/mounts/models/failed))
-          (then (set drafts/loaded false) (set drafts/required false))
-          (elif drafts/loaded (return)))
+          (set drafts/loaded false) (set drafts/required false)
+          elif drafts/loaded (return))
         (set drafts/loading false)
-        (resume_model_submit client drafts))))
+        (resume_model_submit client drafts)))))
     (notice client "Loading model choices…")
-    (return false))
-  (if_yes (&& drafts/loaded drafts/required)
-    (set drafts/requested resume)
+    (return false)))
+  (if (&& drafts/loaded drafts/required)
+    (do (set drafts/requested resume)
     (set drafts/requested_draft (submission_draft client))
     (browser_event client "models/choose" client/selected {})
     (notice client "Choose a default model before the first prompt.")
-    (return false))
+    (return false)))
   (set drafts/requested false)
   true)
 
@@ -155,11 +155,11 @@
     ^trigger_target (fn [] : Any (var drafts (model_drafts client)) drafts/trigger_target)
     ^release_trigger (fn [target : Any] : Nil
       (var drafts (model_drafts client))
-      (if_yes (&& ($present? target/id) (== target/id drafts/trigger_target/id)) (set drafts/trigger_target nil)))
+      (if (&& ($present? target/id) (== target/id drafts/trigger_target/id)) (set drafts/trigger_target nil)))
     ^configure (fn [loaded : Bool, required : Bool] : Nil
       (var drafts (model_drafts client)) (set drafts/loaded loaded) (set drafts/required required)
       (set drafts/loading false)
-      (if_yes (! required) (resume_model_submit client drafts)))
+      (if (! required) (resume_model_submit client drafts)))
     ^resume (fn [] : Nil
       (var drafts (model_drafts client))
       (resume_model_submit client drafts))}})

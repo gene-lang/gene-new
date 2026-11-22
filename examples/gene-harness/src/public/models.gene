@@ -35,8 +35,7 @@
   (if (|| ($absent? requested) (== requested "auto"))
     (return (?? model/default_effort nil)))
   (if ($absent? model/efforts)
-    (then
-      (if_not (effort_ladder .contains? requested)
+    (do (if_not (effort_ladder .contains? requested)
         (fail (ProviderError ^_msg $"${requested} is not an effort level for this model")))
       (return requested)))
   (if (model/efforts .contains? requested) (return requested))
@@ -48,8 +47,7 @@
   (for level in effort_ladder
     (if (== level requested) (set passed true))
     (if (model/efforts .contains? level)
-      (then
-        (if ($absent? lowest) (set lowest level))
+      (do (if ($absent? lowest) (set lowest level))
         (if_not passed (set below level)))))
   (?? below lowest))
 
@@ -60,15 +58,15 @@
 
 (fn model_window [model, cap = nil]
   (let window (if ($absent? model/window)
-    (then 128000)
-    (else ($to_int (* model/window (/ (?? model/effective_percent 100) 100.0))))))
-  (if ($absent? cap) (then window) (else ($math/min window cap))))
+    128000
+    else ($to_int (* model/window (/ (?? model/effective_percent 100) 100.0)))))
+  (if ($absent? cap) window else ($math/min window cap)))
 
 (fn model_capabilities [model]
   {^image_input (if ($absent? model/input)
-    (then "unknown")
-    (elif (model/input .contains? "image") "yes")
-    (else "no")) ^image_output "no"})
+    "unknown"
+    elif (model/input .contains? "image") "yes"
+    else "no") ^image_output "no"})
 
 (fn require_model_input [model, messages]
   (if ($absent? model/input) (return nil))

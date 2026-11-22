@@ -201,9 +201,9 @@
 
 (fn ask_handle [ctx : (ActorContext Counter), state : Int, msg : Counter] : (ActorStep Int)
   (match msg ^!exhaustive
-    (when (Counter ^reply reply)
+    when (Counter ^reply reply)
       (reply .send state)
-      ($actor/continue state))))
+      ($actor/continue state)))
 
 (var ask_counter : (ActorRef Counter)
   ($actor/spawn ^init (fn [] 41) ^handle ask_handle))
@@ -233,7 +233,7 @@
       ^handle (fn [ctx state msg]
         (if (== msg 0)
           (fail (Boom ^_msg "bad"))
-          ($actor/continue (+ state msg))))))
+          else ($actor/continue (+ state msg))))))
   ($println "   - feed 1 + 5 + 0 (failure → restart)")
   (spawn (counter .send 1))
   (spawn (counter .send 5))
@@ -260,7 +260,7 @@
       ^handle (fn [ctx state msg]
         (if (== msg 0)
           (fail (Boom ^_msg "bad"))
-          ($actor/continue (+ state msg))))))
+          else ($actor/continue (+ state msg))))))
   (var first_send
     (try
       (stoptest .send 0)

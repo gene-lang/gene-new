@@ -6,21 +6,22 @@ Everything below is probed.
 
 ## Conditionals
 
-Compact `if` for expression-sized branches. Both results at the same indent,
-condition alone on the opening line:
+Each condition is exactly one form; the body starts immediately after it. An
+arm holds one or more expressions and returns the last. The `elif` and `else`
+markers are bare symbols among the form's immediate children, not calls:
 
 ```gene
 (if (< value low)
   low
-  value)
+  else value)
 ```
 
 One-sided conditions omit the else arm — `(if cond value)` yields `nil` on the
-false path already. Guards with a body use `if_yes` / `if_not`, whose tails are
-implicit sequences:
+false path already. Several expressions on the truthy path need no wrapper.
+`if_not` remains the guard whose body runs on a falsy condition:
 
 ```gene
-(if_yes user/active
+(if user/active
   (events .push "activated")
   (events .push "queued"))
 
@@ -30,30 +31,34 @@ implicit sequences:
   value)
 ```
 
+The else-only form `(if cond else c)` runs the fallback when the condition is
+falsy and yields `nil` when it is truthy. Two positional expressions after the
+condition, `(if cond a b)`, are both part of the truthy arm; use `else` for an
+alternative.
+
 Prefer `elif` over an else arm whose sole expression is another `if`. Keep the
-branches at one level, using parenthesized clauses even for single expressions:
+branches at one level, with bare markers:
 
 ```gene
 (if x
-  (then do_x)
-  (elif y do_y)
-  (elif z do_z)
-  (else do_something))
+  do_x
+  elif y do_y
+  elif z do_z
+  else do_something)
 ```
 
-Each clause can also contain several expressions, returning the last:
+Each arm can also contain several expressions, returning the last:
 
 ```gene
 (if ready
-  (then
-    (record "start")
-    "started")
-  (elif retryable
-    (record "retry")
-    "retrying")
-  (else
-    (record "skip")
-    "skipped"))
+  (record "start")
+  "started"
+  elif retryable
+  (record "retry")
+  "retrying"
+  else
+  (record "skip")
+  "skipped")
 ```
 
 `&&`, `||`, `!`, and `??` (absent-default) round out the boolean surface.
@@ -63,13 +68,13 @@ test absence, not truthiness: only `nil` is absent. `false`, zero,
 an empty string and an empty collection are present.
 
 To test a value and use it, bind it with `if_present`. The expression runs
-once; the name is bound to its value for the body only, and the optional
-`(else …)` runs when the value is `nil`:
+once; the name is bound to its value for the body only, and the optional bare
+`else` marker opens the fallback when the value is `nil`:
 
 ```gene
 (if_present subject (options .get "subject")
   (set record (subject_record subject))
-  (else (set record nil)))
+  else (set record nil))
 ```
 
 The name is visible in the body only and shadows an outer one there; a `let`
@@ -83,31 +88,33 @@ early on absence instead, bind with `??`:
 ## Match
 
 Prefer `match` when branches compare the same value against literals, rather
-than nesting `if (== value ...)` tests. The matched value is evaluated once:
+than nesting `if (== value ...)` tests. The matched value is evaluated once.
+Each `when` takes one pattern followed by one or more expressions, and `when`
+and `else` are bare markers, as in `if`:
 
 ```gene
 (match x
-  (when 1 do_1)
-  (when 2 do_2)
-  (else do_3))
+  when 1 do_1
+  when 2 do_2
+  else do_3)
 ```
 
 Use `if`/`elif` for different predicates, such as ranges or unrelated conditions.
 
-`match` may keep an explicit `(else nil)` — unlike `if`, a missing `else` is not
+`match` may keep an explicit `else nil` — unlike `if`, a missing `else` is not
 a nil default. Patterns destructure lists, maps, typed values, and enum payloads:
 
 ```gene
 (match status
-  (when Status/pending "pending")
-  (when (Status/failed message) $"failed: ${message}")
-  (else nil))
+  when Status/pending "pending"
+  when (Status/failed message) $"failed: ${message}"
+  else nil)
 
 (match value
-  (when [a b] (+ a b))
-  (when {^a a} a)
-  (when (User ^name n) n)
-  (else nil))
+  when [a b] (+ a b)
+  when {^a a} a
+  when (User ^name n) n
+  else nil)
 ```
 
 ## Loops
@@ -209,10 +216,10 @@ outcome stays on the task. `join` returns the same outcome as data instead:
 
 ```gene
 (match (task .join)
-  (when (TaskOutcome/ok value) value)
-  (when (TaskOutcome/error error) (handle error))
-  (when (TaskOutcome/fault fault) (report fault/.message))
-  (when TaskOutcome/cancelled nil))
+  when (TaskOutcome/ok value) value
+  when (TaskOutcome/error error) (handle error)
+  when (TaskOutcome/fault fault) (report fault/.message)
+  when TaskOutcome/cancelled nil)
 ```
 
 Cancelling the task performing a join still propagates cancellation normally;

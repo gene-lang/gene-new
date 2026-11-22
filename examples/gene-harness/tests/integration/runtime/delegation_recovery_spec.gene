@@ -52,8 +52,7 @@
                 ($assert (== metadata/kind "child"))
                 ($assert (== metadata/parent/session "default"))))
             (if (== marker/parent_state "running")
-              (then
-                (let owner (owner_receipt controller))
+              (let owner (owner_receipt controller))
                 ($assert (== owner/state "interrupted") $"${point}: ${owner}")
                 ($sleep 75)
                 ($assert (== (model_counts root) before) $"${point}: recovery replayed a model call.")
@@ -61,16 +60,15 @@
                   (for child in blocks/records ($assert child/seen $"${point}: durable response did not consume its result.")))
                 (let rounds (round_state controller "default"))
                 (submit_round controller "default" "explicit-after-crash" rounds/next_seq
-                  "Collect saved child results without starting tasks again."))
-              (else
+                  "Collect saved child results without starting tasks again.")
+              else
                 (if (== point "child_admitted")
-                  (then
-                    ($assert ($present? blocks/recovery) "Interrupted work did not hold the parent.")
+                  ($assert ($present? blocks/recovery) "Interrupted work did not hold the parent.")
                     ($sleep 75)
                     ($assert (== (model_counts root) before) "A recovery hold admitted new model work.")
                     (let owner (owner_receipt controller))
-                    (delegation_recovery runtime/services/values/delegations "default" owner/id "continue"))
-                  (else ($assert ($absent? blocks/recovery) $"${point}: a never-started queue was held.")))))
+                    (delegation_recovery runtime/services/values/delegations "default" owner/id "continue")
+                  else ($assert ($absent? blocks/recovery) $"${point}: a never-started queue was held.")))
             (wait_for (fn [] (let current (owner_receipt controller)) (== current/state "done"))
               $"${point}: parent did not collect results; ${runtime/services/values/delegations/last_error}")
             (let counts (model_counts root))

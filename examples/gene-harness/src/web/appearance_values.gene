@@ -7,8 +7,8 @@
 (fn valid_field? [name : Str, value] : Bool
   (if (!= ($head value) Str) (return false))
   (if (== name "theme")
-    (then (&& (! (["light" "dark"] .contains? value)) ($present? (#"^[a-z][a-z0-9_-]{0,79}$" .match value))))
-    (else (&& ($present? (preference_values .get name)) ((preference_values .get name) .contains? value)))))
+    (&& (! (["light" "dark"] .contains? value)) ($present? (#"^[a-z][a-z0-9_-]{0,79}$" .match value)))
+    else (&& ($present? (preference_values .get name)) ((preference_values .get name) .contains? value))))
 
 (fn validate_fields [fields]
   (if (!= ($head fields) Map)

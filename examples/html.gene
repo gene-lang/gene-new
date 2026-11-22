@@ -11,21 +11,21 @@
         ($map ($body self)
           (fn [child]
             (match child
-              (when (tag : Tag) tag/.render)
-              (when (text : Str) text)
-              (else ""))))
+              when (tag : Tag) tag/.render
+              when (text : Str) text
+              else "")))
         ""))
     $"<${self/name}${self/.attrs_to_html}>${inner}</${self/name}>")
 
   (message attrs_to_html [] : Str
     (if ($map_empty? self/attrs)
-      (then "")
-      (else
+      ""
+      else
         (var s (StrBuilder))
         (map_for [name value] in self/attrs
           (s .append " " ($to_str name) "=\"" value "\"")
         )
-        s/.to_str))))
+        s/.to_str)))
 
 (for name in ["div" "strong"]
   (fn $ns/%name [^attrs... body...]

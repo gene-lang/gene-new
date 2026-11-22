@@ -12,7 +12,7 @@
   (let last (- count 1))
   (let p95 (- (/ (+ (* count 95) 99) 100) 1))
   (let median (if (== (// count 2) 0)
-    (/ (+ sorted/%previous sorted/%middle) 2.0) sorted/%middle))
+    (/ (+ sorted/%previous sorted/%middle) 2.0) else sorted/%middle))
   {^count count ^median median ^p95 sorted/%p95
    ^min sorted/0 ^max sorted/%last ^samples_ns values})
 
@@ -58,9 +58,9 @@
         (let variant variants/%index)
         (let count (if (|| ($str/contains? name "bulk")
           ($str/contains? name "concurrent")) "3"
-          (if (== name "first_line") "5" "40")))
+          else (if (== name "first_line") "5" else "40")))
         (let command (if (== index 0) [fixture count name]
-          [workload fixture count name]))
+          else [workload fixture count name]))
         (let result (capture variant/executable command))
         (let stem $"${output}/${round}-${index}-${name}")
         ($fs/write_text $"${stem}.stdout.jsonl" result/stdout)

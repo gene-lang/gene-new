@@ -20,7 +20,7 @@
     (let state
       (if ($absent? loaded)
         {^format 1 ^revision 0 ^sequence 0 ^opened 0 ^messages []}
-        loaded/records/inbox))
+        else loaded/records/inbox))
     (if (!= state/format 1)
       (notification_error "unavailable" "Unsupported notification inbox format."))
     (Inbox ^backend backend ^state ($cell state) ^gate ($sync/gate) ^observer ($cell nil) ^progress ($cell {}))
@@ -40,13 +40,13 @@
   (inbox/gate (fn []
     (let next (copy inbox/state/.get))
     (let result (body next))
-    (if_yes (!= next inbox/state/.get)
-      (next .put "revision" (+ inbox/state/.get/revision 1))
+    (if (!= next inbox/state/.get)
+      (do (next .put "revision" (+ inbox/state/.get/revision 1))
       (inbox/backend .Store:checkpoint next/revision {^inbox next})
       (inbox/state .set next)
       # Delivery failure cannot change the outcome of a committed publication.
       (let observer inbox/observer/.get)
-      (if_not ($absent? observer) (try (observer "notifications/state" (inbox_snapshot inbox)) catch Error nil)))
+      (if_not ($absent? observer) (try (observer "notifications/state" (inbox_snapshot inbox)) catch Error nil))))
     result)))
 
 (fn visible [message, now : Int] : Bool
@@ -58,7 +58,7 @@
   (var unread 0)
   (let now (now_ms))
   (for message in state/messages
-    (if_yes (visible message now) (if (> message/sequence state/opened) (set unread (+ unread 1))))
+    (if (visible message now) (if (> message/sequence state/opened) (set unread (+ unread 1))))
     (if (|| all (visible message now)) (records .push (copy message))))
   {
     ^revision ($to_str state/revision)
@@ -95,13 +95,13 @@
           (!= previous/actions definition/actions)
           (!= previous/origin definition/origin)
           (!= previous/scope definition/scope)))
-      (let revision (if ($absent? previous) 1 (+ previous/revision 1)))
-      (let sequence (if meaningful (+ state/sequence 1) previous/sequence))
+      (let revision (if ($absent? previous) 1 else (+ previous/revision 1)))
+      (let sequence (if meaningful (+ state/sequence 1) else previous/sequence))
       (let record
         {
           ^id (if ($absent? previous)
                 $"n-${($crypto/random_hex 16)}"
-                previous/id)
+                else previous/id)
           ^revision revision
           ^sequence sequence
           ^source source
@@ -115,17 +115,17 @@
           ^actions definition/actions
           ^created_at (if ($absent? previous)
                         now
-                        previous/created_at)
+                        else previous/created_at)
           ^updated_at now
           ^expires_at (??
                         definition/expires_at
                         (if (|| ($absent? previous) meaningful)
                           (+ now 2592000000)
-                          previous/expires_at))
+                          else previous/expires_at))
           ^cleared_revision (if ($absent? previous)
-            (then 0)
-            (elif (&& (! meaningful) (>= previous/cleared_revision previous/revision)) revision)
-            (else previous/cleared_revision))})
+            0
+            elif (&& (! meaningful) (>= previous/cleared_revision previous/revision)) revision
+            else previous/cleared_revision)})
       (if (&& (! meaningful) (== previous/detail record/detail) (== previous/expires_at record/expires_at))
         (return
           {^^ok ^id previous/id ^revision previous/revision ^sequence previous/sequence ^^unchanged}))

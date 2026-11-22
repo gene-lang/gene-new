@@ -231,7 +231,7 @@ suite "structured logging":
 (scope
   (let generated_logger "caller")
   (log_info logger
-    (if (same? generated_logger logger) "captured" "caller")
+    (if (same? generated_logger logger) "captured" else "caller")
     ^payload {^captured (same? generated_logger logger)})
   [receiver_calls/.get generated_logger])
 """)

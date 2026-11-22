@@ -117,7 +117,7 @@ suite "net/http_client e2e":
     elapsed)))
 (serve server ^handler handle ^drain_timeout_ms 1000)
 (var elapsed (await driver))
-($println (if (< elapsed 2500) "fast" $"slow ${elapsed} ms"))
+($println (if (< elapsed 2500) "fast" else $"slow ${elapsed} ms"))
 """)
     check client.exitCode == 0
     check client.output == "fast"

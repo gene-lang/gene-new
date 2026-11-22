@@ -38,7 +38,7 @@
         (set crlf (+ crlf 1))
         (set crlf_line true)
         (set line ($str/slice_bytes line 0 (- ($str/byte_size line) 1))))
-      (if (&& ends_with_cr last)
+      else (if (&& ends_with_cr last)
         (do
           (set cr (+ cr 1))
           (set line ($str/slice_bytes line 0 (- ($str/byte_size line) 1))))))
@@ -65,22 +65,22 @@
   ($str/join ($str/split with_lf "\r") "\n"))
 
 (fn encode_source [source : Str, line_endings : Str, bom : Bool] : Bytes
-  (let style (if (== line_endings "") "lf" line_endings))
+  (let style (if (== line_endings "") "lf" else line_endings))
   (let text (normalize_newlines source))
   (var encoded text)
   (if (== style "crlf")
     (set encoded ($str/join ($str/split text "\n") "\r\n"))
-    (if (== style "cr")
+    else (if (== style "cr")
       (set encoded ($str/join ($str/split text "\n") "\r"))))
   (let body ($binary/from_str encoded))
-  (if bom ($binary/concat [(bom_bytes) body]) body))
+  (if bom ($binary/concat [(bom_bytes) body]) else body))
 
 (fn decode_source [raw : Bytes] : Any
   # Returns the editable LF text, the byte-encoding metadata, and the digest
   # the caller should use as the revision. Invalid UTF-8 is reported, not
   # replaced: saving a lossy decode would rewrite text the operator never saw.
   (let bom (starts_with_bom raw))
-  (let payload (if bom ($binary/slice raw 3 (- ($binary/size raw) 3)) raw))
+  (let payload (if bom ($binary/slice raw 3 (- ($binary/size raw) 3)) else raw))
   (try
     (let decoded ($binary/decode_utf8 payload))
     (let line_endings (line_endings_of_text decoded))
@@ -91,7 +91,7 @@
      ^revision ($crypto/sha256 raw)
      ^reason (if (== line_endings "mixed")
                "mixed line endings; opened read-only"
-               "")}
+               else "")}
     catch Error
       (let detail ($str/trim $err/.message))
       {^ok false ^message $"invalid UTF-8: ${detail}"}))

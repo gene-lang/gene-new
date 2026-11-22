@@ -94,7 +94,7 @@
                ^send (fn [prepared]
                  (calls .set (+ calls/.get 1)) (sent .set prepared)
                  (if timeout/.get {^^timeout}
-                   {^text "reviewed" ^usage {^cost 0.12}}))}))))
+                   else {^text "reviewed" ^usage {^cost 0.12}}))}))))
         (let runtime (open_runtime workspace "default"
           (Profile ^name "recording" ^provider "recording" ^plugins [provider])))
         (try

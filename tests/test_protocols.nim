@@ -196,13 +196,13 @@ suite "protocols — declarations and dispatch":
     # Nominal subtypes and protocol ancestors follow, as they do for impls.
     ck "(protocol Marker) (protocol Tagged ^inherit [Marker]) " &
        "(type A ^props {} ^impl [Tagged]) (type B : A ^props {}) (type Plain ^props {}) " &
-       "(fn marked? [x] (match x (when (m : Marker) true) (else false))) " &
+       "(fn marked? [x] (match x when (m : Marker) true else false)) " &
        "[(marked? (A)) (marked? (B)) (marked? (Plain))]",
        "[true true false]"
     # Local types are validated at creation; the declaration satisfies it there too.
     ck "(protocol Marker) " &
        "(fn make [] (type Local ^props {} ^impl [Marker]) Local) " &
-       "(match ((make)) (when (m : Marker) true) (else false))",
+       "(match ((make)) when (m : Marker) true else false)",
        "true"
     # Inheriting a messaged protocol makes the closure non-empty.
     expect GeneError:
@@ -440,7 +440,7 @@ suite "protocols — declarations and dispatch":
        "(type Counter ^props {}) " &
        "(impl Count for Counter " &
        "  (message down [self n] " &
-       "    (if (== n 0) 0 (+ 1 (self .Count:down (- n 1)))))) " &
+       "    (if (== n 0) 0 else (+ 1 (self .Count:down (- n 1)))))) " &
        "((Counter) .Count:down 200000)",
        "200000"
 

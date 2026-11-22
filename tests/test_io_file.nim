@@ -52,7 +52,7 @@ when compileOption("threads") and defined(posix):
         (reader .IoResource:close)
         (let before ($runtime/gc_stats))
         (let cancelled (match (reading .join) ^!exhaustive
-          (when TaskOutcome/cancelled true)))
+          when TaskOutcome/cancelled true))
         (await (reader .IoResource:wait_closed))
         (let after ($runtime/gc_stats))
         [cancelled before/io_cleanup_leases after/io_cleanup_leases]
@@ -71,11 +71,11 @@ when compileOption("threads") and defined(posix):
         (var attempts 0)
         (var stats ($runtime/gc_stats))
         (while (< attempts 1000)
-          (if (== stats/io_cleanup_leases 0) (then (break)))
+          (if (== stats/io_cleanup_leases 0) (break))
           ($sleep 1)
           (set attempts (+ attempts 1))
           (set stats ($runtime/gc_stats)))
-        [(match (opening .join) ^!exhaustive (when TaskOutcome/cancelled true))
+        [(match (opening .join) ^!exhaustive when TaskOutcome/cancelled true)
          stats/io_cleanup_leases stats/io_root_cleanup_tasks
          stats/io_file_open_resources]
       """), scope)
@@ -99,7 +99,7 @@ when compileOption("threads") and defined(posix):
           (if (> active/io_retained_bytes peak)
             (set peak active/io_retained_bytes))
           (let chunk (await task))
-          (if ($absent? chunk) (then (break)))
+          (if ($absent? chunk) (break))
           (set total (+ total ($binary/size chunk))))
         (reader .IoResource:close)
         (await (reader .IoResource:wait_closed))
@@ -171,7 +171,7 @@ when compileOption("threads") and defined(posix):
         (writer .IoResource:close)
         (let before ($runtime/gc_stats))
         (let cancelled (match (operation .join) ^!exhaustive
-          (when TaskOutcome/cancelled true)))
+          when TaskOutcome/cancelled true))
         (await (writer .IoResource:wait_closed))
         (let after ($runtime/gc_stats))
         [busy cancelled before/io_cleanup_leases after/io_cleanup_leases]
@@ -264,7 +264,7 @@ when compileOption("threads") and defined(posix):
                         false catch IoBusy true))
         (reader .IoResource:close)
         (let cancelled (match (reading .join) ^!exhaustive
-          (when TaskOutcome/cancelled true)))
+          when TaskOutcome/cancelled true))
         (await (reader .IoResource:wait_closed))
         (writer .IoResource:close)
         (await (writer .IoResource:wait_closed))
@@ -367,13 +367,13 @@ when compileOption("threads") and defined(posix):
         (let first (pipe/0 .AsyncReader:read 1))
         (first .cancel)
         (let cancelled (match (first .join) ^!exhaustive
-          (when TaskOutcome/cancelled true)))
+          when TaskOutcome/cancelled true))
         (var second nil)
         (var attempts 0)
         (while (< attempts 400)
           (try (set second (pipe/0 .AsyncReader:read 1))
             catch IoBusy nil)
-          (if (not ($absent? second)) (then (break)))
+          (if (not ($absent? second)) (break))
           ($sleep 1)
           (set attempts (+ attempts 1)))
         ($assert (not ($absent? second)))
@@ -410,7 +410,7 @@ when compileOption("threads") and defined(posix):
         (while (< attempts 200)
           (let snapshot ($runtime/gc_stats))
           (if (>= snapshot/io_waiting_readiness 16)
-            (then (set parked true) (break)))
+            (do (set parked true) (break)))
           ($sleep 1)
           (set attempts (+ attempts 1)))
         (let rescued ($cell false))
@@ -480,7 +480,7 @@ when compileOption("threads") and defined(posix):
         (var total 0)
         (while true
           (let part (await (reader .AsyncReader:read 4096)))
-          (if ($absent? part) (then (break)))
+          (if ($absent? part) (break))
           (set total (+ total ($binary/size part))))
         (let outcome (await task))
         (await (writer .IoResource:wait_closed))
@@ -507,7 +507,7 @@ when compileOption("threads") and defined(posix):
           "-c" "sleep 2; printf x" ^stdout_pipe writer))
         (spawn ^lane root (do ($sleep 50) (task .cancel)))
         (let cancelled (match (task .join) ^!exhaustive
-          (when TaskOutcome/cancelled true)))
+          when TaskOutcome/cancelled true))
         (let eof (await (reader .AsyncReader:read 16)))
         (await (writer .IoResource:wait_closed))
         (reader .IoResource:close)
@@ -605,7 +605,7 @@ when compileOption("threads") and defined(posix):
           (var total 0)
           (while true
             (let chunk (await (reader .AsyncReader:read 4096)))
-            (if ($absent? chunk) (then (break)))
+            (if ($absent? chunk) (break))
             (set total (+ total ($binary/size chunk))))
           total)
         (let stdout ($io/pipe))
@@ -710,7 +710,7 @@ when compileOption("threads") and defined(posix):
         (var total 0)
         (while true
           (let part (await (output/0 .AsyncReader:read 4096)))
-          (if ($absent? part) (then (break)))
+          (if ($absent? part) (break))
           (set total (+ total ($binary/size part))))
         (await sending)
         (let result (await process))
@@ -749,7 +749,7 @@ when compileOption("threads") and defined(posix):
           "2" ^stdin_pipe input/0))
         (spawn ^lane root (do ($sleep 50) (process .cancel)))
         (let cancelled (match (process .join) ^!exhaustive
-          (when TaskOutcome/cancelled true)))
+          when TaskOutcome/cancelled true))
         (await (input/0 .IoResource:wait_closed))
         (input/1 .IoResource:close)
         (await (input/1 .IoResource:wait_closed))

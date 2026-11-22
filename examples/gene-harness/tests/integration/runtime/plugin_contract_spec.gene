@@ -166,15 +166,14 @@
           (try
             ($assert ($absent? (row restarted/h "functions" "compat_version")))
             (if (== mode "direct")
-              (then
-                (let registered (register_plugin ^^replace restarted/workspace restarted/h "compat" (simple_source "compat")))
-                ($assert (== registered/status "ready") ($to_str registered)))
-              (else
+              (let registered (register_plugin ^^replace restarted/workspace restarted/h "compat" (simple_source "compat")))
+                ($assert (== registered/status "ready") ($to_str registered))
+              else
                 (let plan (validate_plan restarted {^base_revision (composition_revision restarted/workspace)
                   ^changes [{^id "compat" ^kind "replace" ^source (simple_source "compat")}]}))
                 ($assert plan/valid ($to_str plan/errors))
                 (let applied (apply_plan restarted plan/id))
-                ($assert (== applied/state "applied") ($to_str applied))))
+                ($assert (== applied/state "applied") ($to_str applied)))
             ($assert ($present? (row restarted/h "functions" "compat_version")) mode)
             ($assert (== (invoke restarted "compat_version") 3))
             ($assert (== (/interfaces ($first (composition_entries restarted/workspace)))

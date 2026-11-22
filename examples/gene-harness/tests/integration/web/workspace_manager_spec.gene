@@ -17,7 +17,7 @@
       (args .push root)
       (args .push "--root")
       (args .push ($path/join home "shared-models")))
-    (args .push "manager"))
+    else (args .push "manager"))
   (args .push "--port")
   (args .push "0")
   (if recovery (args .push "--recovery"))

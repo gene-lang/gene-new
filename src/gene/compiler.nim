@@ -1,7 +1,8 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
 import std/[algorithm, monotimes, os, sets, strutils, tables]
-import ./[digest, equality, execution_limits, gir, printer, reader, types]
+import ./[clause_syntax, digest, equality, execution_limits, gir, printer,
+          reader, types]
 import ./error_analysis
 export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 
@@ -320,7 +321,7 @@ proc parseImportSpec*(node: Value): ImportSpec
 const MaxMacroExpansionDepth* = 100
 
 const CoreSpecialFormNames* = [
-  "do", "if", "if_yes", "if_not", "if_present", "&&", "||", "??", "!",
+  "do", "if", "if_not", "if_present", "&&", "||", "??", "!",
   "let", "var", "const", "set", "new",
   "fn", "macro", "quote", "quasiquote", "Path", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
@@ -680,28 +681,15 @@ proc exprKnownBareInt(c: Compiler, v: Value): bool =
           not (c.macroPhaseCompilation and c.unitDeclares(v.head.symVal)) and
           c.exprKnownBareInt(v.body[0]) and c.exprKnownBareInt(v.body[1])
       of "if":
-        if v.body.len >= 2 and v.body[1].kind == vkNode and
-            v.body[1].head.kind == vkSymbol and v.body[1].head.symVal == "then":
-          var known = c.formsKnownBareInt(v.body[1].body)
-          var hasDefault = false
-          for i in 2 ..< v.body.len:
-            let clause = v.body[i]
-            if clause.kind != vkNode or clause.head.kind != vkSymbol:
-              continue
-            case clause.head.symVal
-            of "elif":
-              known = known and clause.body.len > 1 and
-                c.formsKnownBareInt(clause.body, 1)
-            of "else":
-              known = known and c.formsKnownBareInt(clause.body)
-              hasDefault = true
-              break
-            else:
-              discard
-          known and hasDefault
+        let split = tryDecodeIf(v)
+        if not split.valid or split.clauses.arms.len == 0 or
+            not split.clauses.hasElse:
+          false
         else:
-          v.body.len >= 3 and c.exprKnownBareInt(v.body[1]) and
-            c.exprKnownBareInt(v.body[2])
+          var known = true
+          for arm in split.clauses.arms:
+            known = known and c.formsKnownBareInt(arm.body)
+          known and c.formsKnownBareInt(split.clauses.elseBody)
       else:
         let sig = c.lexicalFunctionSig(v.head.symVal)
         sig.found and sig.sig.arity == v.body.len and
@@ -745,48 +733,25 @@ proc exprKnownExactResult(c: Compiler, v: Value, typeName: string): bool =
     of "do":
       c.formsKnownExactResult(v.body, typeName)
     of "if":
-      if v.body.len >= 2 and v.body[1].kind == vkNode and
-          v.body[1].head.kind == vkSymbol and
-          v.body[1].head.symVal == "then":
-        var known = c.formsKnownExactResult(v.body[1].body, typeName)
-        var hasDefault = false
-        for i in 2 ..< v.body.len:
-          let clause = v.body[i]
-          if clause.kind != vkNode or clause.head.kind != vkSymbol:
-            continue
-          case clause.head.symVal
-          of "elif":
-            known = known and clause.body.len > 1 and
-              c.formsKnownExactResult(clause.body, typeName, 1)
-          of "else":
-            known = known and
-              c.formsKnownExactResult(clause.body, typeName)
-            hasDefault = true
-            break
-          else:
-            discard
-        known and hasDefault
+      let split = tryDecodeIf(v)
+      if not split.valid or split.clauses.arms.len == 0 or
+          not split.clauses.hasElse:
+        false
       else:
-        v.body.len >= 3 and
-          c.exprKnownExactResult(v.body[1], typeName) and
-          c.exprKnownExactResult(v.body[2], typeName)
+        var known = true
+        for arm in split.clauses.arms:
+          known = known and c.formsKnownExactResult(arm.body, typeName)
+        known and c.formsKnownExactResult(split.clauses.elseBody, typeName)
     of "match":
-      var known = v.body.len > 1
-      var hasDefault = false
-      for i in 1 ..< v.body.len:
-        let clause = v.body[i]
-        if clause.kind != vkNode or clause.head.kind != vkSymbol:
-          return false
-        case clause.head.symVal
-        of "when":
-          known = known and clause.body.len > 1 and
-            c.formsKnownExactResult(clause.body, typeName, 1)
-        of "else":
-          known = known and c.formsKnownExactResult(clause.body, typeName)
-          hasDefault = true
-        else:
-          return false
-      known and hasDefault
+      let split = tryDecodeMatch(v)
+      if not split.valid or split.clauses.arms.len == 0 or
+          not split.clauses.hasElse:
+        false
+      else:
+        var known = true
+        for arm in split.clauses.arms:
+          known = known and c.formsKnownExactResult(arm.body, typeName)
+        known and c.formsKnownExactResult(split.clauses.elseBody, typeName)
     of "&&", "||", "??":
       if v.body.len == 0:
         false
@@ -2949,19 +2914,6 @@ proc markMacroResult(value: Value): Value =
   else:
     newNode(newSym("do"), props, @[value])
 
-proc validateConditionalClauses(node: Value) =
-  if node.body.len < 2 or node.body[1].kind != vkNode or
-      not node.body[1].head.isSymbol("then"):
-    return
-  var sawElse = false
-  for i in 2 ..< node.body.len:
-    let clause = node.body[i]
-    if sawElse or clause.kind != vkNode or clause.head.kind != vkSymbol or
-        clause.head.symVal notin ["elif", "else"]:
-      raise newException(GeneError,
-        "if requires elif/else clauses; macro calls are only expanded in expression positions")
-    sawElse = clause.head.isSymbol("else")
-
 proc compileMacroCall(c: var Compiler, node: Value, def: MacroDef,
                       tail = false) =
   if def.runtime:
@@ -3445,38 +3397,47 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
       locs[result.bits] = loc
       return
     if value.head.isSymbol("if"):
-      validateConditionalClauses(value)
-      if value.body.len > 1 and value.body[1].kind == vkNode and
-          value.body[1].head.isSymbol("then"):
-        var body = @[c.expandMacroTree(unit, value.body[0], loc, locs, provenance)]
-        for i in 1 ..< value.body.len:
-          let clause = value.body[i]
-          var forms: seq[Value]
-          for item in clause.body:
-            forms.add c.expandMacroTree(unit, item, loc, locs, provenance)
-          body.add newNode(clause.head, clause.props, forms, clause.meta, clause.nodeImmutable)
-        result = newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
-        locs[result.bits] = loc
-        return
-    if value.head.isSymbol("match") and value.body.len > 0:
-      var body = @[c.expandMacroTree(unit, value.body[0], loc, locs, provenance)]
-      for i in 1 ..< value.body.len:
-        let clause = value.body[i]
-        if clause.kind != vkNode or clause.head.kind != vkSymbol or
-            clause.head.symVal notin ["when", "else"]:
-          raise newException(GeneError, "match requires when/else clauses; " &
-            "macro calls are only expanded in expression positions")
+      let clauses = decodeIf(value)
+      var expanded = IfClauses(
+        condition: c.expandMacroTree(unit, clauses.condition, loc, locs,
+                                     provenance),
+        hasElse: clauses.hasElse)
+      for arm in clauses.arms:
+        var body: seq[Value]
+        for item in arm.body:
+          body.add c.expandMacroTree(unit, item, loc, locs, provenance)
+        expanded.arms.add ClauseArm(
+          kind: arm.kind,
+          header: if arm.kind == cakElif:
+                    c.expandMacroTree(unit, arm.header, loc, locs, provenance)
+                  else: arm.header,
+          body: body)
+      for item in clauses.elseBody:
+        expanded.elseBody.add c.expandMacroTree(unit, item, loc, locs,
+                                                provenance)
+      result = rebuildIf(value, expanded)
+      locs[result.bits] = loc
+      return
+    if value.head.isSymbol("match"):
+      let clauses = decodeMatch(value)
+      var expanded = MatchClauses(
+        value: c.expandMacroTree(unit, clauses.value, loc, locs, provenance),
+        hasElse: clauses.hasElse)
+      for arm in clauses.arms:
         var inner = c.childCompiler()
-        var forms: seq[Value]
-        var first = 0
-        if clause.head.isSymbol("when") and clause.body.len > 0:
-          forms.add clause.body[0]
-          for name in patternBindingNames(clause.body[0]): discard inner.reserveLocal(name)
-          first = 1
-        for j in first ..< clause.body.len:
-          forms.add inner.expandMacroTree(unit, clause.body[j], loc, locs, provenance)
-        body.add newNode(clause.head, clause.props, forms, clause.meta, clause.nodeImmutable)
-      result = newNode(value.head, value.props, body, value.meta, value.nodeImmutable)
+        for name in patternBindingNames(arm.header):
+          discard inner.reserveLocal(name)
+        var body: seq[Value]
+        for item in arm.body:
+          body.add inner.expandMacroTree(unit, item, loc, locs, provenance)
+        expanded.arms.add ClauseArm(kind: cakWhen, header: arm.header,
+                                    body: body)
+      if clauses.hasElse:
+        var inner = c.childCompiler()
+        for item in clauses.elseBody:
+          expanded.elseBody.add inner.expandMacroTree(unit, item, loc, locs,
+                                                      provenance)
+      result = rebuildMatch(value, expanded)
       locs[result.bits] = loc
       return
     if value.head.isSymbol("do"):
@@ -4174,16 +4135,23 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
                                  ffiFns, locals):
         return true
     return false
-  if expr.head.symVal == "if" and expr.body.len == 3:
+  if expr.head.symVal == "if":
     ## Both arms must produce the result representation: a C ternary has one
-    ## type, and there is no boxing available to reconcile two.
+    ## type, and there is no boxing available to reconcile two. A flat `if`
+    ## with more than one expression in an arm stays out of the native subset.
+    let split = tryDecodeIf(expr)
+    if not split.valid or split.clauses.arms.len != 1 or
+        split.clauses.arms[0].body.len != 1 or
+        not split.clauses.hasElse or split.clauses.elseBody.len != 1:
+      return false
     let condition = AotRepr(kind: arkI64, typeName: "I64")
-    return c.isTypedNativeAotExpr(expr.body[0], params, paramReprs, condition,
-                                  ffiFns, locals) and
-      c.isTypedNativeAotExpr(expr.body[1], params, paramReprs, resultRepr,
-                             ffiFns, locals) and
-      c.isTypedNativeAotExpr(expr.body[2], params, paramReprs, resultRepr,
-                             ffiFns, locals)
+    let conditionOk = c.isTypedNativeAotExpr(split.clauses.condition, params,
+      paramReprs, condition, ffiFns, locals)
+    let yesOk = c.isTypedNativeAotExpr(split.clauses.arms[0].body[0], params,
+      paramReprs, resultRepr, ffiFns, locals)
+    let noOk = c.isTypedNativeAotExpr(split.clauses.elseBody[0], params,
+      paramReprs, resultRepr, ffiFns, locals)
+    return conditionOk and yesOk and noOk
   if expr.head.symVal == "path":
     let resolved = expr.typedNativeField(params, paramReprs, locals)
     if not resolved.found:
@@ -4514,11 +4482,14 @@ proc isAotValueExpr(expr: Value, params: openArray[string], typeName: string,
       return expr.body[0].isAotValueExpr(params, typeName, available) and
         expr.body[1].isAotValueExpr(params, typeName, available)
     if head == "if":
-      if expr.body.len != 3:
+      let split = tryDecodeIf(expr)
+      if not split.valid or split.clauses.arms.len != 1 or
+          split.clauses.arms[0].body.len != 1 or
+          not split.clauses.hasElse or split.clauses.elseBody.len != 1:
         return false
-      return expr.body[0].isAotBoolExpr(params, typeName, available) and
-        expr.body[1].isAotValueExpr(params, typeName, available) and
-        expr.body[2].isAotValueExpr(params, typeName, available)
+      return split.clauses.condition.isAotBoolExpr(params, typeName, available) and
+        split.clauses.arms[0].body[0].isAotValueExpr(params, typeName, available) and
+        split.clauses.elseBody[0].isAotValueExpr(params, typeName, available)
     if available.hasKey(head) and available[head] == expr.body.len:
       for arg in expr.body:
         if not arg.isAotValueExpr(params, typeName, available):
@@ -5195,21 +5166,6 @@ proc nativeEntryMarker(node: Value, fn: FunctionProto): NativeEntryProto =
           " ^native_entry copies its result but its native Type does not " &
           "declare ^release")
 
-proc compileIfThen(c: var Compiler, node: Value, tail = false) =
-  ## (if_yes cond body...) — everything after the condition is the then
-  ## branch (implicit do); the whole form is nil when the condition is falsy.
-  let body = node.body
-  if body.len == 0:
-    c.emitConst NIL
-    return
-  compileExpr(c, body[0])
-  let elseJump = c.emitJump(opJumpIfFalse)
-  compileBodyFrom(c, body, 1, tail = tail)
-  let endJump = c.emitJump(opJump)
-  c.patchJump(elseJump)
-  c.emitConst NIL
-  c.patchJump(endJump)
-
 proc compileIfNot(c: var Compiler, node: Value, tail = false) =
   ## (if_not cond body...) — everything after the condition is the else
   ## branch (implicit do); the whole form is nil when the condition is truthy.
@@ -5226,60 +5182,43 @@ proc compileIfNot(c: var Compiler, node: Value, tail = false) =
   c.patchJump(endJump)
 
 proc compileIf(c: var Compiler, node: Value, tail = false) =
-  validateConditionalClauses(node)
-  let body = node.body
-  if body.len == 0:
+  ## (if cond body... [elif cond body...] [else body...]) — each arm runs its
+  ## whole body in order and yields its last value. `(if cond)` evaluates the
+  ## condition and yields nil; `(if cond else body...)` is the else-only form.
+  let clauses = decodeIf(node)
+  compileExpr(c, clauses.condition)
+  if clauses.arms.len == 0 and not clauses.hasElse:
+    discard c.emit(opPop)
     c.emitConst NIL
     return
+  if clauses.arms.len == 0:
+    # Else-only: the truthy path has no body and yields nil.
+    let bodyJump = c.emitJump(opJumpIfFalse)
+    c.emitConst NIL
+    let endJump = c.emitJump(opJump)
+    c.patchJump(bodyJump)
+    compileBody(c, clauses.elseBody, tail = tail)
+    c.patchJump(endJump)
+    return
 
-  if body.len >= 2 and body[1].kind == vkNode and body[1].head.isSymbol("then"):
-    compileExpr(c, body[0])
-    var nextJump = c.emitJump(opJumpIfFalse)
-    compileBody(c, body[1].body, tail = tail)
-    var endJumps: seq[int]
+  var nextJump = c.emitJump(opJumpIfFalse)
+  compileBody(c, clauses.arms[0].body, tail = tail)
+  var endJumps: seq[int]
+  endJumps.add c.emitJump(opJump)
+  c.patchJump(nextJump)
+  for i in 1 ..< clauses.arms.len:
+    let arm = clauses.arms[i]
+    compileExpr(c, arm.header)
+    nextJump = c.emitJump(opJumpIfFalse)
+    compileBody(c, arm.body, tail = tail)
     endJumps.add c.emitJump(opJump)
     c.patchJump(nextJump)
-
-    var hasDefault = false
-    for i in 2 ..< body.len:
-      let clause = body[i]
-      if clause.kind != vkNode or clause.head.kind != vkSymbol:
-        continue
-      case clause.head.symVal
-      of "elif":
-        if clause.body.len == 0:
-          continue
-        compileExpr(c, clause.body[0])
-        nextJump = c.emitJump(opJumpIfFalse)
-        compileBodyFrom(c, clause.body, 1, tail = tail)
-        endJumps.add c.emitJump(opJump)
-        c.patchJump(nextJump)
-      of "else":
-        compileBody(c, clause.body, tail = tail)
-        hasDefault = true
-        break
-      else:
-        discard
-
-    if not hasDefault:
-      c.emitConst NIL
-    for at in endJumps:
-      c.patchJump(at)
-    return
-
-  compileExpr(c, body[0])
-  let elseJump = c.emitJump(opJumpIfFalse)
-  if body.len >= 2:
-    compileExpr(c, body[1], tail = tail)
+  if clauses.hasElse:
+    compileBody(c, clauses.elseBody, tail = tail)
   else:
     c.emitConst NIL
-  let endJump = c.emitJump(opJump)
-  c.patchJump(elseJump)
-  if body.len >= 3:
-    compileExpr(c, body[2], tail = tail)
-  else:
-    c.emitConst NIL
-  c.patchJump(endJump)
+  for at in endJumps:
+    c.patchJump(at)
 
 # && and || evaluate operands left to right, stop at the first falsy (&&) or
 # truthy (||) operand, and yield the last operand evaluated — not a coerced
@@ -6790,7 +6729,7 @@ proc reserveProtocolBinding(c: var Compiler, value: Value) =
           selection.name in c.importedSyntaxFnSets[spec.importKey]
         discard c.reserveLocal(selection.local,
                                allowFexprName = importsFexpr, importing = true)
-  of "do", "if", "if_yes", "if_not", "&&", "||", "??", "while", "loop",
+  of "do", "if", "if_not", "&&", "||", "??", "while", "loop",
      "repeat":
     c.reserveProtocolBindings(value.body)
   of "try":
@@ -8646,9 +8585,6 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false,
                 messageExpr = resolved, optional = optional, tail = tail)
 
 proc compileMatch(c: var Compiler, node: Value, tail = false) =
-  let body = node.body
-  if body.len < 2:
-    raise newException(GeneError, "match requires a value and at least one arm")
   var requireExhaustive = true
   for key, value in node.props:
     if key != "exhaustive":
@@ -8656,38 +8592,23 @@ proc compileMatch(c: var Compiler, node: Value, tail = false) =
     if value.kind != vkBool:
       raise newException(GeneError, "match ^exhaustive requires a literal Bool")
     requireExhaustive = value.boolVal
-  compileExpr(c, body[0])
+  let clauses = decodeMatch(node)
+  compileExpr(c, clauses.value)
   let mp = MatchProto(clauses: @[], elseBody: nil, tailResult: tail)
   var hasCatchAll = false
-  for i in 1 ..< body.len:
-    let clause = body[i]
-    if clause.kind != vkNode or clause.head.kind != vkSymbol:
-      raise newException(GeneError, "match clauses must be (when ...) or (else ...)")
-    case clause.head.symVal
-    of "when":
-      if clause.body.len == 0:
-        raise newException(GeneError, "when requires a pattern")
-      if clause.body[0].kind == vkSymbol:
-        hasCatchAll = true
-      var branchBody: seq[Value]
-      for j in 1 ..< clause.body.len:
-        branchBody.add clause.body[j]
-      mp.clauses.add MatchClause(pattern: clause.body[0],
-                                  body: c.compileSubBody(branchBody,
-                                                         clause.body[0],
-                                                         scoped = true,
-                                                         tail = tail))
-    of "else":
-      if i != body.high:
-        raise newException(GeneError, "match else must be the final arm")
-      mp.elseBody = c.compileSubBody(clause.body, scoped = true, tail = tail)
-      break
-    else:
-      raise newException(GeneError, "match requires when/else clauses; " &
-        "macro calls are only expanded in expression positions (got " & clause.head.symVal & ")")
+  for arm in clauses.arms:
+    let pattern = arm.header
+    if pattern.kind == vkSymbol:
+      hasCatchAll = true
+    mp.clauses.add MatchClause(pattern: pattern,
+                                body: c.compileSubBody(arm.body, pattern,
+                                                       scoped = true,
+                                                       tail = tail))
+  if clauses.hasElse:
+    mp.elseBody = c.compileSubBody(clauses.elseBody, scoped = true, tail = tail)
   if requireExhaustive and mp.elseBody == nil and not hasCatchAll:
     raise newException(GeneError,
-      "match is not exhaustive; add (else ...), a binding arm, or ^!exhaustive")
+      "match is not exhaustive; add else, a binding arm, or ^!exhaustive")
   discard c.emit(opMatch, c.chunk.addMatch(mp))
 
 proc compileWhile(c: var Compiler, node: Value) =
@@ -9016,7 +8937,7 @@ proc inlineForForm(c: Compiler, form: Value): bool =
         c.inlineForForm(form.body[1])
     of "break", "continue":
       return form.body.len == 0
-    of "do", "if", "then", "elif", "else", "if_yes", "if_not", "&&", "||",
+    of "do", "if", "else", "if_not", "&&", "||",
        "??", "!", "while", "loop", "repeat":
       discard
     of "if_present":
@@ -9342,7 +9263,7 @@ proc compileTry(c: var Compiler, node: Value) =
       else: newNode(newSym("do"), body = unwindForms & @[NIL])
     let onExit = newNode(newSym("do"), body = ensureForms & @[NIL])
     tp.ensureBody = c.compileSubBody(@[newNode(newSym("if"),
-      body = @[newNode(cleanupHead), onFailure, onExit])],
+      body = @[newNode(cleanupHead), onFailure, newSym("else"), onExit])],
       repeatBindings = c.loopDepth > 0 or c.repeatBindings)
   elif hasEnsure:
     tp.ensureBody = c.compileSubBody(ensureForms,
@@ -10511,50 +10432,29 @@ proc compileMacroResult(c: var Compiler, node: Value, tail: bool) =
   else:
     c.compileOwnedBlock(node.body, tail)
 
-proc isClause(value: Value, name: string): bool =
-  value.kind == vkNode and value.head.isSymbol(name)
-
 proc compileIfPresent(c: var Compiler, node: Value, tail = false) =
-  ## (if_present name expr body... (else body...)) — evaluate `expr` once; when
+  ## (if_present name expr body... [else body...]) — evaluate `expr` once; when
   ## its value is present (not nil), bind it to `name` and run the body,
-  ## otherwise run the optional trailing else clause. `name` is visible in the
-  ## body only; other declarations keep the enclosing scope, as in `if`.
+  ## otherwise run the optional else body. `name` is visible in the body only;
+  ## other declarations keep the enclosing scope, as in `if`.
   if node.props.len != 0:
     raise newException(GeneError, "if_present does not accept props")
-  let body = node.body
-  var last = body.len
-  var elseForms: seq[Value]
-  var hasElse = false
-  if body.len > 0 and body[^1].isClause("else"):
-    hasElse = true
-    elseForms = body[^1].body
-    last = body.len - 1
-  if last < 3:
-    raise newException(GeneError,
-      "if_present requires a name, an expression and a body")
-  let binder = body[0]
+  let clauses = decodeIfPresent(node)
+  let binder = clauses.binder
   if binder.kind != vkSymbol or binder.symVal.len == 0 or
       '/' in binder.symVal or binder.symVal[0] in {'$', '.', '~', '^', '@', ':'} or
       binder.symVal == "_" or binder.symVal.endsWith("?") or
       binder.symVal.endsWith("..."):
     raise newException(GeneError,
       "if_present binding must be a plain local name, got " & binder.print())
-  for i in 2 ..< last:
-    let form = body[i]
-    if form.isClause("else"):
-      raise newException(GeneError, "if_present: (else …) must be the last form")
-    if form.isClause("then") or form.isClause("elif"):
-      raise newException(GeneError,
-        "if_present takes body forms and an optional trailing (else …), not (" &
-        form.head.symVal & " …)")
-  compileExpr(c, body[1])
+  compileExpr(c, clauses.tested)
   let absentJump = c.emitJump(opJumpIfAbsent)
-  c.compileBoundBody(binder.symVal, body.toOpenArray(2, last - 1), tail)
+  c.compileBoundBody(binder.symVal, clauses.body, tail)
   let endJump = c.emitJump(opJump)
   c.patchJump(absentJump)
   discard c.emit(opPop)
-  if hasElse and elseForms.len > 0:
-    compileBody(c, elseForms, tail = tail)
+  if clauses.hasElse:
+    compileBody(c, clauses.elseBody, tail = tail)
   else:
     c.emitConst NIL
   c.patchJump(endJump)
@@ -10562,6 +10462,10 @@ proc compileIfPresent(c: var Compiler, node: Value, tail = false) =
 proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
                  tail = false) =
   let h = node.head
+  if h.kind == vkSymbol and h.symVal == "if_yes":
+    raise newException(GeneError,
+      "if_yes was removed; use if, which runs every expression of the" &
+      " selected arm")
   if h.kind == vkSymbol and h.symVal in CoreSpecialFormNames and
       h.symVal notin ["path", "msg", "quasiquote"]:
     let name = h.symVal
@@ -10628,9 +10532,6 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       return
     of "if":
       compileIf(c, node, tail = tail)
-      return
-    of "if_yes":
-      compileIfThen(c, node, tail = tail)
       return
     of "if_present":
       compileIfPresent(c, node, tail = tail)

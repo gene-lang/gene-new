@@ -76,11 +76,11 @@
       (let faults [])
       (let transaction (new_turn_transaction {}
         [{^name "core/data" ^_host true ^bindings (fn [context state value]
-           (if (== conflict "host") {^notes "host data"} {}))}
+           (if (== conflict "host") {^notes "host data"} else {}))}
          {^name "notes/memory" ^bindings (fn [context state value]
            (ParticipantBindings ^owner "notes" ^slot "memory" ^value {}))}]
         ^scope {^snapshot {^registries {^functions
-          (if (== conflict "function") [{^payload {^name "notes"}}] [])}}}
+          (if (== conflict "function") [{^payload {^name "notes"}}] else [])}}}
         ^on_failure (fn [definition phase failure]
           (faults .push {^name definition/name ^phase phase ^failure failure}))))
       (begin_turn_transaction transaction)
@@ -161,7 +161,7 @@
           "terminal-receipt"))
         false
       catch ParticipantFailure
-        (&& (== $err/code "finalization_failed") (== $err/errors/.size (if fail_seal 2 1)))))
+        (&& (== $err/code "finalization_failed") (== $err/errors/.size (if fail_seal 2 else 1)))))
       ($assert (== events ["a/begin" "a/finalize" "core/seal" "a/release"]))
       ($assert (try (finish_turn_transaction transaction {} (fn [completion errors] (events .push "replayed")))
         false catch ParticipantFailure true))
@@ -176,21 +176,21 @@
         (entered .set true)
         ($sleep 1000)))
       (let transaction (new_turn_transaction {} [definition]
-        ^limits {^timeout_ms (if cancel 1000 20) ^max_memory_mb 64}))
+        ^limits {^timeout_ms (if cancel 1000 else 20) ^max_memory_mb 64}))
       (let result (scope
         (let task (spawn ^lane root (try
           (begin_turn_transaction transaction)
           (run_turn_phase transaction "bindings")
         ensure (finish_turn_transaction transaction {^kind "cancelled"}
           (fn [completion errors] (events .push "core/seal") "terminal-receipt")))))
-        (if_yes cancel
-          (while (! entered/.get) ($sleep 1))
-          task/.cancel)
+        (if cancel
+          (do (while (! entered/.get) ($sleep 1))
+          task/.cancel))
         task/.join))
       ($assert (match result ^!exhaustive
-        (when (TaskOutcome/error failure) (== failure/phase "bindings"))
-        (when TaskOutcome/cancelled cancel)
-        (else false)))
+        when (TaskOutcome/error failure) (== failure/phase "bindings")
+        when TaskOutcome/cancelled cancel
+        else false))
       ($assert (== events ["a/begin" "core/seal" "a/release"]))
       ($assert transaction/closed/.get)))
 

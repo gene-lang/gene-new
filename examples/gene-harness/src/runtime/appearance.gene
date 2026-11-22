@@ -23,7 +23,7 @@
   (let state runtime/services/values/appearance)
   (state/gate (fn []
     (let tabs ($thaw ($freeze state/tabs/.get)))
-    (if ($absent? value) (then (tabs .delete id)) (else (tabs .put id value)))
+    (if ($absent? value) (tabs .delete id) else (tabs .put id value))
     (state/tabs .set tabs)))
   nil)
 

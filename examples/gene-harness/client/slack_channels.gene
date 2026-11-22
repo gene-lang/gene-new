@@ -11,9 +11,9 @@
 
 (fn session_share_label [session : Any] : Str
   (var status (text session/slack_share/status))
-  (if_yes (== status "failed") (return "Slack share failed"))
-  (if_yes (== status "uncertain") (return "Slack share needs attention"))
-  (if_yes (session_share_pending? session) (return "Adding to Slack…"))
+  (if (== status "failed") (return "Slack share failed"))
+  (if (== status "uncertain") (return "Slack share needs attention"))
+  (if (session_share_pending? session) (return "Adding to Slack…"))
   "Add to Slack")
 
 (fn session_share_busy? [session : Any] : Bool

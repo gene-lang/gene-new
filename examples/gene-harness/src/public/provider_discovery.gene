@@ -13,9 +13,9 @@
     (let timer (spawn ^lane root (do ($sleep timeout_ms) task/.cancel)))
     (try
       (match task/.join
-        (when (TaskOutcome/ok value) value)
-        (when (TaskOutcome/error error) (fail error))
-        (else (fail (ProviderError ^_msg "Provider probe exceeded its limit"))))
+        when (TaskOutcome/ok value) value
+        when (TaskOutcome/error error) (fail error)
+        else (fail (ProviderError ^_msg "Provider probe exceeded its limit")))
     ensure timer/.cancel timer/.join)))
 
 (fn cli_probe [command : Str, args, ^timeout_ms timeout_ms : Int = 5000]
@@ -46,14 +46,14 @@
     (return {^state "sign_in_required" ^label "Claude Code" ^billing "unknown"
       ^reason "Claude Code is signed out; run claude auth login."}))
   (let billing (match data/authMethod
-    (when "api_key" "metered")
-    (when "api" "metered")
-    (when "claude.ai" "plan")
-    (when "oauth" "plan")
-    (else "unknown")))
+    when "api_key" "metered"
+    when "api" "metered"
+    when "claude.ai" "plan"
+    when "oauth" "plan"
+    else "unknown"))
   (let account (?? (nonempty data/accountId) (nonempty data/account_id) (nonempty data/email)))
   {^state "ready" ^label ($to_str "Claude Code" (if ($present? data/subscriptionType)
-    (then $" · ${data/subscriptionType}") (else "")))
+    $" · ${data/subscriptionType}" else ""))
    ^billing billing ^account account ^reason nil})
 
 (fn api_connection [name : Str, url : Str, credential, ^headers headers = {},
@@ -65,11 +65,11 @@
       ^reason $"${name} credential is unavailable."})))
   (let wire ($thaw ($freeze headers)))
   (if ($present? secret)
-    (wire .put auth_header (if (== scheme "") (then secret) (else $"${scheme} ${secret}"))))
+    (wire .put auth_header (if (== scheme "") secret else $"${scheme} ${secret}")))
   (let remaining (- deadline ($os/monotonic_ms)))
   (let result (if (<= remaining 0)
-    (then {^status 0 ^error "timeout"})
-    (else (probe_json ^headers wire ^timeout_ms remaining url))))
+    {^status 0 ^error "timeout"}
+    else (probe_json ^headers wire ^timeout_ms remaining url)))
   (if ([401 403] .contains? result/status)
     (return {^state "expired" ^label name ^billing "metered"
       ^reason $"${name} credential was rejected; reconnect or update the API key."}))
@@ -98,7 +98,7 @@
     (let remaining (- deadline ($os/monotonic_ms)))
     (if (<= remaining 0) (fail (ProviderError ^status 0 ^_msg "Model-list probe timed out")))
     (let url ($to_str "https://api.anthropic.com/v1/models?limit=1000"
-      (if ($present? cursor) (then $"&after_id=${($url/encode_component cursor)}") (else ""))))
+      (if ($present? cursor) $"&after_id=${($url/encode_component cursor)}" else "")))
     (let data (require_probe_data (probe_json ^credential credential
       ^headers headers ^auth_header "x-api-key" ^scheme ""
       ^timeout_ms remaining url)))

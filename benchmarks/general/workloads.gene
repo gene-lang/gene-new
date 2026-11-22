@@ -44,8 +44,7 @@
   (let groups {})
   (for row in input/records
     (if row/active
-      (then
-        (selected .push row)
+      (do (selected .push row)
         (groups .put row/group (+ (?? (groups .get row/group) 0) row/amount)))))
   (let ordered ($order/sort_by selected /amount))
   (var digest 0)
@@ -77,14 +76,13 @@
   (for event in input/events
     (var account (state .get event/key))
     (if ($absent? account)
-      (then
-        (set account {^balance 0 ^revision 0})
+      (do (set account {^balance 0 ^revision 0})
         (state .put event/key account)))
     (if (== event/kind 0)
-      (then (account .put "balance" (+ account/balance event/amount)))
-      (elif (== event/kind 1)
-        (account .put "balance" (- account/balance event/amount)))
-      (else (account .put "balance" event/amount)))
+      (account .put "balance" (+ account/balance event/amount))
+      elif (== event/kind 1)
+        (account .put "balance" (- account/balance event/amount))
+      else (account .put "balance" event/amount))
     (account .put "revision" (+ account/revision 1)))
   (let result [])
   (map_for [key account] in state
@@ -107,8 +105,7 @@
     (repeat i in repetitions (set result (callable input)))
     (set elapsed (- ($os/monotonic_ms) calibration_started))
     (if (< elapsed target_ms)
-      (then
-        ($assert (< repetitions 1048576) "benchmark calibration exceeded repetition limit")
+      (do ($assert (< repetitions 1048576) "benchmark calibration exceeded repetition limit")
         (set repetitions (* repetitions 2)))))
   (let expected result)
   (let started ($os/monotonic_ms))
@@ -121,7 +118,7 @@
   ($assert (&& (>= ($size args/.body) 1) (<= ($size args/.body) 2))
     "usage: workloads.gene SIZE [TARGET_MS]; TARGET_MS=0 verifies without timing")
   (let size ($parse/parse_int args/.body/0))
-  (let target_ms (if (== ($size args/.body) 2) ($parse/parse_int args/.body/1) 100))
+  (let target_ms (if (== ($size args/.body) 2) ($parse/parse_int args/.body/1) else 100))
   ($assert (&& (>= size 1) (<= size 1000000)) "size must be in 1..1000000")
   ($assert (&& (>= target_ms 0) (<= target_ms 10000)) "target_ms must be in 0..10000")
   (let input (make_input size))
@@ -130,7 +127,7 @@
     (let callable entry/1)
     (rows .push (if (== target_ms 0)
       {^name entry/0 ^result (callable input)}
-      (measure entry/0 callable input target_ms))))
+      else (measure entry/0 callable input target_ms))))
   ($println ($json/stringify {^format 1 ^language "gene" ^size size
     ^target_ms target_ms ^rows rows}))
   0)

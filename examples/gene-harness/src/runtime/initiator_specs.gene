@@ -16,4 +16,4 @@
     ^normalize normalize_user_source}])
 
 (fn initiator_matches? [policy, value : Str]
-  (if (== policy/exact true) (== policy/prefix value) ($str/starts_with? value policy/prefix)))
+  (if (== policy/exact true) (== policy/prefix value) else ($str/starts_with? value policy/prefix)))

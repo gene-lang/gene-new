@@ -4,8 +4,8 @@
 
 (fn normalize_round_input [value, ^channel channel : Bool = false]
   (if ($absent? value) (return nil))
-  (if_yes (== value/kind "channel")
-    (if_not channel
+  (if (== value/kind "channel")
+    (do (if_not channel
       (channel_error "forbidden" "Channel identities require an authenticated channel admission."))
-    (return (normalize_channel_input value)))
+    (return (normalize_channel_input value))))
   (normalize_voice_input value))

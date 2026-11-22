@@ -25,7 +25,7 @@
 
 (fn failing_turn [number : Int, ^patch patch = nil, ^output output = "", ^error error = "test_quoted_keys failed"]
   (recorded_turn number {^kind "error" ^error error ^patch patch
-    ^request_items (if (== output "") [] [{^id $"${number}.tests" ^value output}])}))
+    ^request_items (if (== output "") [] else [{^id $"${number}.tests" ^value output}])}))
 
 (describe "Decision questions and answers"
   (it "accepts the check-in questions and rejects malformed ones" []

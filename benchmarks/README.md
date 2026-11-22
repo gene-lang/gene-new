@@ -213,7 +213,7 @@ The benchmarked Gene program is:
 (var fib (fn [n]
   (if (< n 2)
     n
-    (+ (fib (- n 1)) (fib (- n 2))))))
+    else (+ (fib (- n 1)) (fib (- n 2))))))
 (fib 28)
 ```
 

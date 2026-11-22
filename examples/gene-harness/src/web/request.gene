@@ -14,14 +14,14 @@
   (let value (field ^default "" data key))
   (if (== value "")
     nil
-    value))
+    else value))
 
 (fn field [data, key : Str, ^default fallback = nil] : Str
   (var value (try (data .get key) catch Error nil))
   (if ($absent? value)
     (if ($absent? fallback)
       (fail_request "invalid_request" $"Missing ${key}.")
-      (return fallback)))
+      else (return fallback)))
   (if_not (== ($head value) Str) (fail_request "invalid_request" $"${key} must be text."))
   value)
 
@@ -54,9 +54,9 @@
   (for part in ($str/split header ";")
     (let text ($str/trim part))
     (let prefix $"${name}=")
-    (if_yes ($str/starts_with? text prefix)
-      (let start ($str/byte_size prefix))
-      (return ($str/slice_bytes text start (- ($str/byte_size text) start)))))
+    (if ($str/starts_with? text prefix)
+      (do (let start ($str/byte_size prefix))
+      (return ($str/slice_bytes text start (- ($str/byte_size text) start))))))
   "")
 
 (fn secure_response [result]

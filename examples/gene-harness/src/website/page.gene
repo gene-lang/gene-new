@@ -32,7 +32,7 @@
 
 (fn code_block [id : Str, label : Str, text : Str,
                 ^lang lang : Str = "text", ^wrap wrap : Bool = false] : Node
-  (var classes (if wrap "code_block code_wrap" "code_block"))
+  (var classes (if wrap "code_block code_wrap" else "code_block"))
   (var bar_id $"${id}_bar")
   `(figure ^class %classes
      (figcaption ^id %bar_id ^class "code_bar" (span %label))
@@ -46,13 +46,13 @@
      (p ^class "section_intro" %intro)))
 
 (fn plural [count : Int, singular : Str, many : Str] : Str
-  (if (== count 1) singular many))
+  (if (== count 1) singular else many))
 
 # --- Header and hero ---------------------------------------------------------------
 
 (fn site_header [app_url : Str] : Node
   (var app_link
-    (if (== app_url "") "" `(a ^class "nav_app" ^href %app_url "Open Harness")))
+    (if (== app_url "") "" else `(a ^class "nav_app" ^href %app_url "Open Harness")))
   `(header ^id "site_header" ^class "site_header"
      (div ^class "shell header_inner"
        (a ^class "wordmark" ^href "#overview"
@@ -194,8 +194,8 @@
 (fn view_tab [name : Str, label : Str, selected : Bool] : Node
   (var id $"tab_${name}")
   (var panel $"view_${name}")
-  (var state (if selected "true" "false"))
-  (var index (if selected "0" "-1"))
+  (var state (if selected "true" else "false"))
+  (var index (if selected "0" else "-1"))
   `(button ^id %id ^class "view_tab" ^type "button" ^role "tab"
      ^aria-controls %panel ^aria-selected %state ^tabindex %index %label))
 
@@ -397,11 +397,11 @@
     (fail (WebsiteError ^_msg $"Unknown website mode ${mode}")))
   # Embedded, the app is this server's root. Standalone, a visitor may have no
   # local Harness at all, so the link appears only when one is configured.
-  (var open_app (if (== mode "embedded") "/" app_url))
+  (var open_app (if (== mode "embedded") "/" else app_url))
   (var code_ids ($str/join copyable_ids " "))
   (var highlight_ids ($str/join highlighted_ids " "))
   (let chosen (if (== mode "standalone") (appearance_answer {})
-    (if ($absent? appearance) (appearance_answer {}) (if (== ($head appearance) Str) (appearance_answer {^mode appearance}) appearance))))
+    else (if ($absent? appearance) (appearance_answer {}) else (if (== ($head appearance) Str) (appearance_answer {^mode appearance}) else appearance))))
   (let rendered chosen/rendered)
   (let preloads (appearance_preloads chosen))
   ($to_str "<!doctype html>\n"

@@ -142,15 +142,14 @@
   (if_not self/active/.get (return nil))
   (var pending (self/pending .swap nil))
   (if (&& self/trailing (! ($absent? pending)))
-    (then
-      (scheduled_fire self pending)
+    (scheduled_fire self pending)
       (var task
         (spawn_effect_call self/owner "throttle-window"
           finish_throttle_window [self]))
-      (self/task .set task))
-    (else
+      (self/task .set task)
+    else
       (self/busy .set false)
-      (self/task .set nil)))
+      (self/task .set nil))
   nil)
 
 (fn schedule_throttle ^^private [self, args]
@@ -170,7 +169,7 @@
   (var args (copy_args call/.body))
   (if (== self/kind "debounce")
     (schedule_debounce self args)
-    (schedule_throttle self args)))
+    else (schedule_throttle self args)))
 
 (fn new_scheduled_callable ^^private
   [owner, callback, delay_ms : Int, kind : Str, trailing : Bool]

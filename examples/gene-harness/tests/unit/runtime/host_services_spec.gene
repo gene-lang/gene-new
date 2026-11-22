@@ -24,9 +24,9 @@
       (close_host_services owner)
       (close_host_services owner)
       ($assert (== ctx/opened (if (== mode "normal")
-        ["ownership" "transport" "consumer"] ["ownership" "consumer"])))
+        ["ownership" "transport" "consumer"] else ["ownership" "consumer"])))
       ($assert (== ctx/closed (if (== mode "normal")
-        ["consumer" "transport" "ownership"] ["consumer" "ownership"])))
+        ["consumer" "transport" "ownership"] else ["consumer" "ownership"])))
       ($assert (try (start_host_services owner mode) false catch HostServiceError true))))
 
   (it "unwinds every acquired prefix when failure is injected before or after an open" []
@@ -86,10 +86,10 @@
       (let owner (new_host_services {} definitions))
       (start_host_services owner mode)
       ($assert (== events (match mode
-        (when "normal" ["kernel" "events" "controller" "feature"])
-        (when "doctor" ["kernel" "events"])
-        (else ["metadata"]))))
-      ($assert (== owner/values/kernel (if (== mode "recovery") "metadata" "kernel")))
+        when "normal" ["kernel" "events" "controller" "feature"]
+        when "doctor" ["kernel" "events"]
+        else ["metadata"])))
+      ($assert (== owner/values/kernel (if (== mode "recovery") "metadata" else "kernel")))
       ($assert (== ($absent? owner/values/events) (== mode "recovery")))
       ($assert (== ($absent? owner/values/controller) (!= mode "normal")))
       (close_host_services owner)

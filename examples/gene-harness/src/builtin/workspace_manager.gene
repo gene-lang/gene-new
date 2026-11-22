@@ -19,7 +19,7 @@
     (if (["running" "recovery"] .contains? item/status)
       (controls .push
         `(a ^href %$"${(api_root)}/ui/open?name=workspace_open&id=${($url/encode_component item/id)}" ^target "_blank" "Open"))
-      (controls .push
+      else (controls .push
         `(button ^key %$"start/${item/id}" ^action "manager_workspace_action" ^args %{^operation "start" ^id item/id} "Start")))
     (if (["running" "recovery" "starting" "unavailable"] .contains? item/status)
       (controls .push
@@ -35,9 +35,9 @@
          (button ^key %$"rename-select/${item/id}" ^state "selected" ^value %$"rename/${item/id}" "Rename")
          (button ^key %$"archive-select/${item/id}" ^state "selected" ^value %$"archive/${item/id}" "Archive")
          (button ^key %$"delete-select/${item/id}" ^state "selected" ^value %$"delete/${item/id}" "Delete permanently")))
-    (let port (if (== item/port 0) "Automatic" ($to_str item/port)))
-    (let actual (if ($absent? item/actual_port) "" $" · listening on ${item/actual_port}"))
-    (let pending (if (== item/pending_port true) " · restart to apply" ""))
+    (let port (if (== item/port 0) "Automatic" else ($to_str item/port)))
+    (let actual (if ($absent? item/actual_port) "" else $" · listening on ${item/actual_port}"))
+    (let pending (if (== item/pending_port true) " · restart to apply" else ""))
     (rows .push
       `(tr ^key %$"row/${item/id}"
          (td (strong %item/name))
@@ -115,7 +115,7 @@
   (let archived_block
     (if archived/.empty?
       `(span "")
-      `(details ^key "archived" (summary %$"Archived (${archived/.size})") (ul %archived...))))
+      else `(details ^key "archived" (summary %$"Archived (${archived/.size})") (ul %archived...))))
   `(section ^key "workspace-manager"
      (div ^class "actions"
        (button ^key "create" ^state "selected" ^value "create" "Create workspace")
@@ -126,7 +126,7 @@
      %(if rows/.empty?
         (quote
           (p "Create a workspace to get started, or place a project directory in the workspaces directory."))
-        (quote (span "")))
+        else (quote (span "")))
      %panels...
      %archived_block))
 

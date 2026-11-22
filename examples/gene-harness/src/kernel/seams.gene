@@ -8,8 +8,7 @@
 
 (fn ^^private mutate_seam [h : Harness, owner : Str, seam : Str, change]
   (if (queue_registry_change? h)
-    (then
-      (queue_composition_change h/snapshots {^id owner ^kind "seam"
+    (do (queue_composition_change h/snapshots {^id owner ^kind "seam"
         ^apply (fn [] (mutate_seam h owner seam change))})
       (return true)))
   (if h/composer/.Composer:publishing? (return (change)))
@@ -24,7 +23,7 @@
 (fn provide [h : Harness, id : Str, seam : Str, value] : Str
   # Binding is explicit: a seam already bound is refused rather than shadowed.
   # There is no last-wins, so no registration order decides behaviour.
-  (if_yes (seam_bound h seam)
+  (if (seam_bound h seam)
     (fail (HarnessError ^_msg $"seam ${seam} already bound; replace it explicitly")))
   (mutate_seam h id seam (fn [] (contribute h id "seams" {^name seam ^value value} ^key seam)))
   seam)
@@ -49,7 +48,7 @@
 
 (fn resolve [h : Harness, seam : Str] : Any
   (var found (row h "seams" seam))
-  (if_yes ($absent? found) (fail (HarnessError ^_msg $"no provider for seam ${seam}")))
+  (if ($absent? found) (fail (HarnessError ^_msg $"no provider for seam ${seam}")))
   found/value)
 
 (fn withdraw_seam [h : Harness, owner : Str, seam : Str] : Bool
@@ -76,12 +75,12 @@
   (let chapters
     (if ($absent? snapshot)
       (rows h "docs")
-      ($map (?? (snapshot/registries .get "docs") []) (fn [record] record/payload))))
+      else ($map (?? (snapshot/registries .get "docs") []) (fn [record] record/payload))))
   (let names [])
   (for chapter in chapters
-    (if_yes (== chapter/name name)
-      (if_not ($absent? chapter/text) (return chapter/text))
-      (return ($fs/read_text chapter/path)))
+    (if (== chapter/name name)
+      (do (if_not ($absent? chapter/text) (return chapter/text))
+      (return ($fs/read_text chapter/path))))
     (names .push chapter/name))
   (let listed ($str/join names ", "))
   (fail

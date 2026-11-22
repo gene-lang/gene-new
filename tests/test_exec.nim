@@ -391,7 +391,7 @@ suite "os/exec notifications and monitor":
       (let started ($os/monotonic_ms))
       queued/.cancel
       (let cancelled (match queued/.join ^!exhaustive
-        (when TaskOutcome/cancelled true)))
+        when TaskOutcome/cancelled true))
       (let quick (await ($os/exec_async fixture "--exec-fixture" "print")))
       (let responsive (< (- ($os/monotonic_ms) started) 600))
       [cancelled responsive quick/status (await first)]

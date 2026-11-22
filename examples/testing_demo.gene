@@ -8,7 +8,7 @@
 
 (type InputError : Error)
 (fn positive [n : Int] : Int ^errors [InputError]
-  (if (> n 0) n (fail (InputError ^_msg "expected positive"))))
+  (if (> n 0) n else (fail (InputError ^_msg "expected positive"))))
 
 (describe "arithmetic"
   (it "doubles an integer" []

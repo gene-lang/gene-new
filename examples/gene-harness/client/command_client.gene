@@ -15,12 +15,12 @@
   (set client/pending nil))
 
 (fn forget_command [client : CommandClient] : Bool
-  (if_yes (|| client/resolving ($absent? client/pending)) (return false))
+  (if (|| client/resolving ($absent? client/pending)) (return false))
   # This is an explicit acknowledgement after inspection, not a retry or a
   # claim that the old command did not run. Persist the discard before unlock.
-  (if_yes (! (storage_set (storage_key client) ""))
-    (client/changed "The saved request could not be forgotten. Restore browser storage and try again.")
-    (return false))
+  (if (! (storage_set (storage_key client) ""))
+    (do (client/changed "The saved request could not be forgotten. Restore browser storage and try again.")
+    (return false)))
   (clear_pending client)
   (client/changed "Request forgotten after inspection. Its outcome is still unknown; it was not replayed.")
   true)
@@ -32,15 +32,15 @@
 (fn admitted [client : CommandClient, receipt : Any] : Nil
   (var envelope : Any client/pending)
   (clear_pending client)
-  (if_yes ($present? client/settled)
-    (var settled : (Fn [Any Any] Nil) client/settled)
-    (settled envelope receipt)))
+  (if ($present? client/settled)
+    (do (var settled : (Fn [Any Any] Nil) client/settled)
+    (settled envelope receipt))))
 
 (fn recover_command [client : CommandClient] : Nil
-  (if_yes (|| client/resolving ($absent? client/pending)) (return))
-  (if_yes (flag client/pending/invalid)
-    (client/changed "Saved command recovery data is unreadable. Inspect the host, then explicitly forget the request to allow new commands.")
-    (return))
+  (if (|| client/resolving ($absent? client/pending)) (return))
+  (if (flag client/pending/invalid)
+    (do (client/changed "Saved command recovery data is unreadable. Inspect the host, then explicitly forget the request to allow new commands.")
+    (return)))
   (var envelope : Any client/pending)
   (var workspace client/workspace)
   (set client/resolving true)
@@ -49,59 +49,59 @@
     $"${(api_root)}/sessions/${(text envelope/session)}/requests/${(text envelope/request_id)}?kind=command"
     nil
     (fn [code : Int, data : Any] : Nil
-      (if_yes (!= workspace client/workspace) (return))
+      (if (!= workspace client/workspace) (return))
       (set client/resolving false)
       (if (== code 200)
         (do (admitted client data) (client/changed "Command receipt recovered."))
-        (client/changed "Command acceptance is unknown. Inspect its conversation, then resolve or explicitly forget the retained request. It has not been replayed.")))))
+        else (client/changed "Command acceptance is unknown. Inspect its conversation, then resolve or explicitly forget the retained request. It has not been replayed.")))))
 
 (fn configure_commands [client : CommandClient, workspace : Str] : Nil
-  (if_yes (== client/workspace workspace) (return))
+  (if (== client/workspace workspace) (return))
   (set client/workspace workspace)
   (set client/pending nil)
   (set client/resolving false)
   (var saved (?? (storage_get (storage_key client)) ""))
-  (if_yes (!= saved "")
-    (try
+  (if (!= saved "")
+    (do (try
       (var envelope : Any ($json/parse saved))
       (var valid true)
       (for field in ["session" "request_id" "text" "submission_seq"]
-        (if_yes (== (text envelope/%field) "") (set valid false)))
-      (if valid (set client/pending envelope) (set client/pending {^^invalid}))
+        (if (== (text envelope/%field) "") (set valid false)))
+      (if valid (set client/pending envelope) else (set client/pending {^^invalid}))
     catch Error
       (set client/pending {^^invalid}))
-    (recover_command client)))
+    (recover_command client))))
 
 (fn dispatch_command [client : CommandClient, session : Str, value : Str,
                       expected : Any, done : (Fn [Int Any] Nil), ^card card : Any = nil,
                       ^clear_composer clear_composer : Bool = false] : Nil
-  (if_yes ($present? client/pending)
-    (done 409 (not_sent {^code "pending_command" ^message "Resolve or explicitly forget the pending command after inspection before submitting another command."}))
+  (if ($present? client/pending)
+    (do (done 409 (not_sent {^code "pending_command" ^message "Resolve or explicitly forget the pending command after inspection before submitting another command."}))
     (recover_command client)
-    (return))
-  (if_yes client/resolving
-    (done 409 (not_sent {^code "busy" ^message "A command is being prepared. Try again when it finishes."})) (return))
+    (return)))
+  (if client/resolving
+    (do (done 409 (not_sent {^code "busy" ^message "A command is being prepared. Try again when it finishes."})) (return)))
   (set client/resolving true)
   (client/api "GET" $"${(api_root)}/sessions/${session}/commands" nil
     (fn [code : Int, state : Any] : Nil
-      (if_yes (!= code 200) (set client/resolving false) (done code (not_sent state)) (return))
+      (if (!= code 200) (do (set client/resolving false) (done code (not_sent state)) (return)))
       (var envelope : Any {^session session ^text value ^request_id ($browser/request_id)
         ^submission_seq (text state/next_command_seq) ^expected_command expected ^card card
         ^clear_composer clear_composer})
-      (if_yes (! (storage_set (storage_key client) ($json/stringify envelope)))
-        (set client/resolving false)
+      (if (! (storage_set (storage_key client) ($json/stringify envelope)))
+        (do (set client/resolving false)
         (done 409 (not_sent {^code "storage_unavailable" ^message "Command recovery could not be saved. Restore browser storage before submitting."}))
-        (return))
+        (return)))
       (set client/pending envelope)
       (client/api "POST" $"${(api_root)}/sessions/${session}/commands" envelope
         (fn [accepted : Int, receipt : Any] : Nil
           (set client/resolving false)
           (if (== accepted 202)
-            (then (admitted client receipt))
-            (elif (&& (>= accepted 400) (< accepted 500)) (clear_pending client))
-            (else (client/changed "Command acceptance is unknown. Its request is saved for receipt recovery.")))
+            (admitted client receipt)
+            elif (&& (>= accepted 400) (< accepted 500)) (clear_pending client)
+            else (client/changed "Command acceptance is unknown. Its request is saved for receipt recovery."))
           (done accepted receipt)
-          (if_yes (|| (== accepted 0) (>= accepted 500)) (recover_command client)))))))
+          (if (|| (== accepted 0) (>= accepted 500)) (recover_command client)))))))
 
 (fn create_commands [api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil),
                      changed : (Fn [Str] Nil), ^settled settled : Any = nil] : CommandClient

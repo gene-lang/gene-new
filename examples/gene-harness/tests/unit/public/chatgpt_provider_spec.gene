@@ -12,7 +12,7 @@
         (fail (ProviderError ^code code ^status status ^_msg "Fixture failure")))))
       (let connection (provider/connection))
       ($assert (== connection/stale stale) code)
-      ($assert (== connection/state (if (== status 401) (then "sign_in_required") (else "unavailable"))))))
+      ($assert (== connection/state (if (== status 401) "sign_in_required" else "unavailable")))))
   (it "preserves status, error shape, code, parameter and request id without provider text" []
     (let plain (try (chatgpt_result {^status 403 ^headers {^x-request-id "req_fixture"}
       ^body "{\"detail\":\"SECRET_ACCOUNT_CONTEXT\"}"}) nil catch ProviderError $err))

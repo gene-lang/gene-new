@@ -14,10 +14,10 @@ parenthesized `then`, `elif` and `else` clauses, even for one-expression arms:
 
 ```gene
 (if x
-  (then do_x)
-  (elif y do_y)
-  (elif z do_z)
-  (else do_something))
+  do_x
+  elif y do_y
+  elif z do_z
+  else do_something)
 ```
 
 When the branches compare the same value against literals, prefer `match` with
@@ -25,9 +25,9 @@ When the branches compare the same value against literals, prefer `match` with
 
 ```gene
 (match x
-  (when 1 do_1)
-  (when 2 do_2)
-  (else do_3))
+  when 1 do_1
+  when 2 do_2
+  else do_3)
 ```
 
 Prefer the path spelling for a zero-argument message send on a simple symbol or path receiver: `(a .x)` becomes `a/.x`. This also applies to protocol-qualified messages, such as `resource/.IoResource:close`.

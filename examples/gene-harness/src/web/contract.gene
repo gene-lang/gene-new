@@ -12,7 +12,7 @@
 (fn api_path [segments : (List Str)] : Str
   (let suffix ($str/join segments "/"))
   (let root (api_root))
-  (if (== segments/.size 0) root $"${root}/${suffix}"))
+  (if (== segments/.size 0) root else $"${root}/${suffix}"))
 
 (fn terminal_round [status : Str] : Bool
   (|| (== status "done") (== status "failed") (== status "cancelled")
@@ -20,13 +20,13 @@
 
 (fn error_status [code : Str] : Int
   (if (== code "unauthorized")
-    (then 401)
-    (elif (== code "forbidden") 403)
-    (elif (== code "not_found") 404)
-    (elif (== code "receipt_expired") 410)
-    (elif (== code "too_large") 413)
-    (elif (|| (== code "busy") (== code "session_busy")
+    401
+    elif (== code "forbidden") 403
+    elif (== code "not_found") 404
+    elif (== code "receipt_expired") 410
+    elif (== code "too_large") 413
+    elif (|| (== code "busy") (== code "session_busy")
                     (== code "revision_conflict") (== code "submission_conflict")
-                    (== code "mode_open") (== code "mode_closed") (== code "voice_claim_lost")) 409)
-    (elif (|| (== code "unavailable") (== code "recovery_required")) 503)
-    (else 400)))
+                    (== code "mode_open") (== code "mode_closed") (== code "voice_claim_lost")) 409
+    elif (|| (== code "unavailable") (== code "recovery_required")) 503
+    else 400))

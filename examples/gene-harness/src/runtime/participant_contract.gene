@@ -12,7 +12,7 @@
   (if (!= ($head value) Map) (return (freeze_turn_data value)))
   (let out {})
   (map_for [key item] in value
-    (out .put ($to_str key) (if ($runtime/callable? item) item (freeze_bindings item))))
+    (out .put ($to_str key) (if ($runtime/callable? item) item else (freeze_bindings item))))
   ($freeze_shallow out))
 (type ParticipantCommit ^props {^items Any})
 (type ParticipantValidation ^props {^error Str? ^items Any ^defer_done Bool})
@@ -21,7 +21,7 @@
   (fail (ParticipantFailure ^participant name ^phase phase ^code "invalid_result" ^_msg message)))
 
 (fn public_turn_context [context]
-  (let round (if (== ($head context/round) Str) context/round (?? context/round/id context/round_id)))
+  (let round (if (== ($head context/round) Str) context/round else (?? context/round/id context/round_id)))
   (freeze_turn_data {^workspace_root context/workspace_root
     ^session_id (?? context/session context/session_id) ^round_id round ^turn context/turn
     ^round_turn (?? context/count context/round_turn) ^turn_limit (?? context/limit context/turn_limit)
@@ -48,8 +48,7 @@
 
 (fn public_phase_value [phase : Str, value]
   (if (== phase "release")
-    (then
-      (let errors [])
+    (do (let errors [])
       (for failure in (?? value/finalization_errors [])
         (errors .push {^participant failure/participant ^phase failure/phase
           ^code failure/code ^message failure/.message}))
@@ -91,15 +90,13 @@
 (fn public_phase_result [owner : Str, slot : Str, name : Str, context, phase : Str, value]
   (if (== phase "request_items") (return (public_request_items name context phase value)))
   (if (== phase "bindings")
-    (then
-      (if ($absent? value) (return nil))
+    (do (if ($absent? value) (return nil))
       (if (!= ($head value) Map) (contract_error name phase "Public bindings must be a data map."))
       (return (ParticipantBindings ^owner owner ^slot slot ^value (freeze_bindings value)))))
   (if (== phase "commit")
     (return (ParticipantCommit ^items (public_request_items name context phase value))))
   (if (== phase "validate_outcome")
-    (then
-      (if ($absent? value) (return nil))
+    (do (if ($absent? value) (return nil))
       (if (!= ($head value) Map) (contract_error name phase "Outcome validation must return a verdict map or nil."))
       (map_for [key field] in value
         (if_not (["error" "request_items" "defer_done"] .contains? ($to_str key))

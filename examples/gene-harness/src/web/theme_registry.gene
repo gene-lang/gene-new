@@ -30,12 +30,12 @@
       (if (|| ($absent? (#"^[a-z][a-z0-9_-]*$" .match ($to_str name))) (!= ($head value) Str))
         (theme_error "Theme tokens require valid names and CSS strings."))))
   (map_for [name svg] in (?? candidate/icons {}) (validate_icon {^name (css_name name) ^svg svg}))
-  (if_yes ($present? candidate/fonts)
-    (if (!= ($head candidate/fonts) List) (theme_error "Theme fonts must be a list."))
+  (if ($present? candidate/fonts)
+    (do (if (!= ($head candidate/fonts) List) (theme_error "Theme fonts must be a list."))
     (for face in candidate/fonts
       (if (|| (!= ($head face/family) Str) (!= ($head face/src) Str)
               (! (|| ($str/starts_with? face/src "https:") ($str/starts_with? face/src "/"))))
-        (theme_error "Theme fonts need a family and an HTTPS URL or a URL prepared by $web/font."))))
+        (theme_error "Theme fonts need a family and an HTTPS URL or a URL prepared by $web/font.")))))
   (if ($present? candidate/style) ($css/render candidate/style))
   candidate)
 
@@ -72,8 +72,8 @@
   (if (same? themes builtin_themes) (return builtin_revision))
   (catalog_gate (fn []
     (if (same? themes last_themes)
-      (then last_revision)
-      (else ($pkg/canonical_digest themes))))))
+      last_revision
+      else ($pkg/canonical_digest themes)))))
 
 (fn theme_revision [runtime = nil, safe : Bool = false]
   (themes_revision (installed_themes runtime safe)))

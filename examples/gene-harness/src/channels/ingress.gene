@@ -23,24 +23,24 @@
     (if ($absent? account) (channel_error "not_found" "Channel account not configured."))
     (let digest (key event/content))
     (let previous (state/ingress .get id))
-    (if_yes ($present? previous)
-      (if (!= previous/digest digest)
+    (if ($present? previous)
+      (do (if (!= previous/digest digest)
         (channel_error "submission_conflict" "Channel event ID has different content."))
-      (return previous))
+      (return previous)))
     (state .put "ingress_sequence" (+ (?? state/ingress_sequence 0) 1))
     (let record {^id id ^event_id event_id ^account account_id ^digest digest
       ^sequence state/ingress_sequence ^status "ignored" ^reason (?? event/reason "unsupported_event")
       ^received_at ($os/wall_ms)})
     (let supplied event/message)
-    (if_yes ($present? supplied)
-      (let route_id (route_key account/transport account_id account/team (?? supplied/channel "")))
+    (if ($present? supplied)
+      (do (let route_id (route_key account/transport account_id account/team (?? supplied/channel "")))
       (let decision (authorize_state state route_id (?? supplied/author "") nil))
       (record .put "decision" {^allowed decision/allowed ^owner decision/owner
         ^policy_revision decision/policy_revision ^author decision/author})
       (record .put "status" "denied")
       (record .put "reason" "sender_policy")
-      (if_yes decision/allowed
-        (let message (normalize_message {^transport account/transport ^account account_id ^team account/team
+      (if decision/allowed
+        (do (let message (normalize_message {^transport account/transport ^account account_id ^team account/team
           ^channel supplied/channel ^thread supplied/thread ^message supplied/message
           ^author supplied/author ^text supplied/text ^received_at record/received_at}))
         (record .put "route" (copy decision/route))
@@ -50,7 +50,7 @@
         (record .put "start_allowed" (|| (! decision/route/require_mention) (== event/mentioned true)))
         (record .put "mentioned" (== event/mentioned true))
         (record .put "status" "pending")
-        (record .delete "reason")))
+        (record .delete "reason")))))
     (state/ingress .put id record)
     record) ^changes {^ingress [id]}))
 
@@ -70,7 +70,7 @@
         (pending .push record)
         # A small ordering barrier keeps later replies behind a deferred
         # handoff without copying its payload on every transport tick.
-        (pending .push {^sequence record/sequence ^^deferred
+        else (pending .push {^sequence record/sequence ^^deferred
           ^message {^transport record/message/transport ^account record/message/account
             ^team record/message/team ^channel record/message/channel
             ^thread record/message/thread ^message record/message/message}})))
@@ -86,7 +86,7 @@
     (record .put "handoff_attempts" (+ (?? record/handoff_attempts 0) 1))
     (record .put "handoff_error" code)
     (record .put "next_handoff_at" (if (== code "waiting_root")
-      ($math/min next (+ record/message/received_at 300000)) next))
+      ($math/min next (+ record/message/received_at 300000)) else next))
     nil) ^changes {^ingress [id]}))
 
 (fn root_waiters [state, thread : Str]

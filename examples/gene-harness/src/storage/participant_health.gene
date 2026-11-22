@@ -8,7 +8,7 @@
 (fn participant_quarantine [workspace, id : Str]
   (if ($absent? workspace) (return nil))
   (let key (health_key id))
-  (gate (fn [] (if (workspace/store .Store:has? key) (workspace/store .Store:get key) nil))))
+  (gate (fn [] (if (workspace/store .Store:has? key) (workspace/store .Store:get key) else nil))))
 
 (fn quarantine_participant [workspace, id : Str, record]
   (gate (fn [] (workspace/store .Store:put (health_key id) record)))

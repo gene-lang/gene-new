@@ -37,7 +37,7 @@ body.models_standalone { overflow: auto; height: auto; min-height: 100vh; }
 
 (fn model_page [asset, appearance, workspace : Str, base_styles : Str] : Str
   (let rendered appearance/rendered)
-  (let toggle_label (if (== rendered/mode "dark") "Light" "Dark"))
+  (let toggle_label (if (== rendered/mode "dark") "Light" else "Dark"))
   (let identity ($crypto/sha256 workspace))
   (let preloads [])
   (for src in (?? rendered/preloads [])

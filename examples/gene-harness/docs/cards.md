@@ -95,7 +95,7 @@ data only:
   ^view (fn [state]
     (let rows [])
     (for item in state/items
-      (let label (if item/keep "Keep" "Skip"))
+      (let label (if item/keep "Keep" else "Skip"))
       (rows .push `(li ^key %item/from
         (button ^key %$"toggle-${item/from}" ^update "toggle"
           ^args %{^from item/from} %label)
@@ -107,8 +107,8 @@ data only:
       {^items (state/items .map (fn [item]
         (if (== item/from action/args/from)
           {^from item/from ^to item/to ^keep (! item/keep)}
-          item)))}
-      state)))
+          else item)))}
+      else state)))
 (Outcome ^^done ^reply "Toggle the renames you want, then send them.")
 ```
 

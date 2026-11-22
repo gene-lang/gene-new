@@ -39,19 +39,19 @@
 
 (fn ^^private level_rank [level : Str] : Int
   (match level
-    (when "error" 0)
-    (when "warn" 1)
-    (when "info" 2)
-    (when "debug" 3)
-    (when "trace" 4)
-    (else 2)))
+    when "error" 0
+    when "warn" 1
+    when "info" 2
+    when "debug" 3
+    when "trace" 4
+    else 2))
 
 (fn ^^private level_valid? [level] : Bool
   (&& (== ($head level) Str) (log_levels .contains? level)))
 
 (fn ^^private family [type : Str] : Str
   (let parts ($str/split type "/"))
-  (if parts/.empty? type parts/0))
+  (if parts/.empty? type else parts/0))
 
 (fn ^^private allows? [st, type : Str, level : Str] : Bool
   (let threshold (?? ((?? st/levels {}) .get (family type)) st/level "info"))
@@ -73,7 +73,7 @@
 (fn log_configure [^mode mode = "pending", ^root root = "", ^workspace workspace = "",
                    ^level level = "info", ^levels levels = {}] : Nil
   (let st (current))
-  (st .put "mode" (if (log_modes .contains? mode) mode "pending"))
+  (st .put "mode" (if (log_modes .contains? mode) mode else "pending"))
   (if (!= root st/root)
     (do (st .put "root" root) (st .put "redactions" [])
         (st .put "redactions_root" "")))
@@ -100,7 +100,7 @@
 (fn log_subscribe [^type type : Str = "", ^target target = nil, ^capacity capacity : Int = 256] : Any
   (let st (current))
   (let id ($str/join ["log-" ($to_str (?? st/next_subscriber 0))] ""))
-  (let size (if (< capacity 1) (then 1) (elif (> capacity 4096) 4096) (else capacity)))
+  (let size (if (< capacity 1) 1 elif (> capacity 4096) 4096 else capacity))
   (let channel ($channel ^capacity size))
   (st .put "next_subscriber" (+ (?? st/next_subscriber 0) 1))
   (let subscribers ($into (?? st/subscribers []) []))
@@ -117,7 +117,7 @@
       (do
         (subscriber .put "closed" true)
         (try (subscriber/channel .close) catch Throwable nil))
-      (kept .push subscriber)))
+      else (kept .push subscriber)))
   (st .put "subscribers" kept)
   nil)
 
@@ -151,7 +151,7 @@
   (let context ($runtime/context))
   (if (&& ($present? context) (== ($head context) Map))
     (?? context/log_target nil)
-    nil))
+    else nil))
 
 (fn ^^private map_merge [base, overlay] : Any
   (var merged {})
@@ -160,11 +160,11 @@
   merged)
 
 (fn ^^private effective_target [st, target] : Any
-  (var merged {^workspace (if (== st/workspace "") "unknown" st/workspace)})
+  (var merged {^workspace (if (== st/workspace "") "unknown" else st/workspace)})
   (set merged (map_merge merged (ambient_target)))
   (set merged (map_merge merged target))
   (if ($absent? merged/workspace)
-    (merged .put "workspace" (if (== st/workspace "") "unknown" st/workspace)))
+    (merged .put "workspace" (if (== st/workspace "") "unknown" else st/workspace)))
   merged)
 
 (fn ^^private redact_value [secrets, value] : Any
@@ -209,7 +209,7 @@
       (fn [] : Nil
         (if (|| (== mode "cli") (== mode "pending"))
           ($eprintln text)
-          ($println text))))
+          else ($println text))))
     catch Throwable
       (st .put "write_failures" (+ (?? st/write_failures 0) 1)))
   nil)
@@ -235,7 +235,7 @@
     (let dropped (?? subscriber/dropped 0))
     (let gap (if (> dropped 0)
       {^count dropped ^from (?? subscriber/from 0) ^to (?? subscriber/to 0)}
-      nil))
+      else nil))
     (let envelope ($freeze {^kind "record" ^record record ^gap gap}))
     (if (subscriber/channel .try_send envelope)
       (do
@@ -243,7 +243,7 @@
         (subscriber .put "from" 0)
         (subscriber .put "to" 0)
         (subscriber .put "last" record))
-      (do
+      else (do
         (subscriber .put "dropped" (+ dropped 1))
         (subscriber .put "dropped_total" (+ (?? subscriber/dropped_total 0) 1))
         (if (== (?? subscriber/from 0) 0)
@@ -256,12 +256,12 @@
   (ring_push st bounded)
   (if (== st/mode "host_supervised")
     (write_json st bounded)
-    (write_text st (render_text bounded)))
+    else (write_text st (render_text bounded)))
   (try (deliver_subscribers st bounded) catch Throwable nil)
   nil)
 
 (fn ^^private emit_invalid [st, attempted : Str, target, reason : Str] : Nil
-  (var merged {^workspace (if (== st/workspace "") "unknown" st/workspace)})
+  (var merged {^workspace (if (== st/workspace "") "unknown" else st/workspace)})
   (try (set merged (effective_target st target)) catch Throwable nil)
   (let message ($str/slice_bytes $"invalid log call: ${reason}" 0 512))
   (let record
@@ -296,7 +296,7 @@
       (if st/strict (fail (Error ^_msg attempts)))
       (emit_invalid st type target attempts)
       (return nil)))
-  (let chosen (if (== level "") (default_level type) level))
+  (let chosen (if (== level "") (default_level type) else level))
   (if_not (level_valid? chosen)
     (do
       (if st/strict (fail (Error ^_msg $"unknown log level ${chosen}")))
@@ -322,14 +322,14 @@
     catch Error
       (if st/strict
         (fail $err)
-        (do
+        else (do
           (var reason $err/.message)
           (try (emit_invalid st type target reason) catch Throwable nil)
           nil))
     catch Throwable
       (if st/strict
         (fail $err)
-        (do
+        else (do
           (var reason $err/.message)
           (try (emit_invalid st type target reason) catch Throwable nil)
           nil)))
@@ -363,7 +363,7 @@
   (let ring st/ring)
   (let matched ($filter ring (fn [record]
     (&& (type_matches? record/type type) (target_matches? record target)))))
-  (let start (if (> matched/.size limit) (- matched/.size limit) 0))
+  (let start (if (> matched/.size limit) (- matched/.size limit) else 0))
   (var result [])
   (var index start)
   (while (< index matched/.size)

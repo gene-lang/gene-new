@@ -5,7 +5,7 @@
 
 (fn open_host_log [root : Str, ^limit limit : Int = 1048576]
   (let path $"${root}/.gene-harness/host.log")
-  (HostLog ^path path ^limit limit ^size (if ($fs/exists? path) ((Path "size") ($fs/info path)) 0) ^writer nil))
+  (HostLog ^path path ^limit limit ^size (if ($fs/exists? path) ((Path "size") ($fs/info path)) else 0) ^writer nil))
 
 (fn close_host_log [log]
   (if_not ($absent? log/writer)
@@ -18,13 +18,11 @@
   # A single bounded record is far smaller than the segment, so it is never
   # split across segments.
   (if (> (+ log/size ($str/byte_size text)) log/limit)
-    (then
-      (close_host_log log)
+    (do (close_host_log log)
       ($fs/rename log/path $"${log/path}.1")
       (set log/size 0)))
   (if (>= log/size log/limit)
-    (then
-      (close_host_log log)
+    (do (close_host_log log)
       ($fs/rename log/path $"${log/path}.1")
       (set log/size 0)))
   (if ($absent? log/writer)

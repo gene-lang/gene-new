@@ -42,8 +42,8 @@
       ^commands 40 ^elapsed_ns result/elapsed_ns})))
 
 (repeat cold_round in 21
-  (for which in (if (== (// cold_round 2) 0) ["control" "final"] ["final" "control"])
-    (let exe (if (== which "control") config/control_cli config/final_cli))
+  (for which in (if (== (// cold_round 2) 0) ["control" "final"] else ["final" "control"])
+    (let exe (if (== which "control") config/control_cli else config/final_cli))
     (let result (checked $"cold-${which}-${cold_round}" exe ["eval" "nil"]))
     (if (> cold_round 0)
       (records .push {^host which ^mode "cold_cli" ^elapsed_ns result/elapsed_ns}))))
@@ -51,8 +51,7 @@
 ($fs/write_text $"${output}/summary.json" ($json/stringify records))
 
 (if (&& ($has_key? config "profile") config/profile)
-  (then
-    (let host config/hosts/.last)
+  (do (let host config/hosts/.last)
     (for mode in ["profile_stdin" "profile_output"]
       (let pid_file $"${output}/${mode}.pid")
       (let task ($os/exec_async ^env {^GENE_EXEC_PROFILE_PID_FILE pid_file}

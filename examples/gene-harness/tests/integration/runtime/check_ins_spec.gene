@@ -22,7 +22,7 @@
 
 (fn configure [runtime, values]
   (let path $"${runtime/state_root}/config.gene")
-  (let config (if ($fs/exists? path) ($serde/read_data ($fs/read_text path)) {}))
+  (let config (if ($fs/exists? path) ($serde/read_data ($fs/read_text path)) else {}))
   (map_for [key value] in values (config .put ($to_str key) value))
   ($fs/write_text_atomic path ($serde/write_data config)))
 
@@ -83,11 +83,11 @@
             ($assert ($str/contains? ($to_str call/messages) "periodic progress check-ins")
               "the budget advisory kept its countdown in checked mode"))
           (match n
-            (when 5 "(delegate \"late\" ^title \"Late\" ^brief \"Report back.\") (Outcome ^wait \"all\")")
-            (when 6
+            when 5 "(delegate \"late\" ^title \"Late\" ^brief \"Report back.\") (Outcome ^wait \"all\")"
+            when 6
               ($assert ($str/contains? ($to_str call/messages) "LATE_CHILD_RESULT"))
-              "(Outcome ^^done ^reply \"Collected.\")")
-            (else "(append_prompt \"step\" \"step done\") (Outcome ^prompt \"Keep going.\")")))))
+              "(Outcome ^^done ^reply \"Collected.\")"
+            else "(append_prompt \"step\" \"step done\") (Outcome ^prompt \"Keep going.\")"))))
         (try
           (let round (submit_round controller "default" "long" 1 "Do a long task."))
           ($assert (== round/continuation_mode "checked"))
@@ -129,17 +129,17 @@
         (let released ($cell false))
         (let parents ($cell 0))
         (let controller (test_controller runtime (fn [call]
-          (if_yes (== (/kind (require_record runtime/sessions call/session)) "child")
-            (while (! released/.get) ($sleep 10))
-            (return "(Outcome ^^done ^reply \"ADOPTED_CHILD_RESULT\")"))
+          (if (== (/kind (require_record runtime/sessions call/session)) "child")
+            (do (while (! released/.get) ($sleep 10))
+            (return "(Outcome ^^done ^reply \"ADOPTED_CHILD_RESULT\")")))
           (let n (parents .swap (+ parents/.get 1)))
           (match n
-            (when 0 "(delegate \"slow\" ^title \"Slow\" ^brief \"Take your time.\") (Outcome ^prompt \"Work alongside the child.\")")
-            (when 1 "(Outcome ^prompt \"Keep going.\")")
-            (else
+            when 0 "(delegate \"slow\" ^title \"Slow\" ^brief \"Take your time.\") (Outcome ^prompt \"Work alongside the child.\")"
+            when 1 "(Outcome ^prompt \"Keep going.\")"
+            else
               ($assert ($str/contains? ($to_str call/messages) "ADOPTED_CHILD_RESULT")
                 "the continuation did not receive the paused round's child result")
-              "(Outcome ^^done ^reply \"Collected after Continue.\")")))))
+              "(Outcome ^^done ^reply \"Collected after Continue.\")"))))
         (try
           (let round (submit_round controller "default" "early" 1 "Coordinate a slow child."))
           (wait_for (fn [] (settled? controller round/id)) "The round did not pause.")
@@ -178,12 +178,12 @@
         (let asked [])
         (install_engine runtime (fn [request]
           (asked .push request/fence/boundary)
-          (if outage/.get {^status "unavailable" ^reason "Fixture outage."} (verdict "advancing"))))
+          (if outage/.get {^status "unavailable" ^reason "Fixture outage."} else (verdict "advancing"))))
         (let parents ($cell 0))
         (let controller (test_controller runtime (fn [call]
           (let n (parents .swap (+ parents/.get 1)))
           (if (== n 4) "(Outcome ^^done ^reply \"Finished after the outage.\")"
-            "(Outcome ^prompt \"Keep going.\")"))))
+            else "(Outcome ^prompt \"Keep going.\")"))))
         (try
           (let round (submit_round controller "default" "outage" 1 "Work through an outage."))
           (wait_for (fn [] (settled? controller round/id)) "The round did not pause.")
@@ -217,7 +217,7 @@
         (let calls ($cell 0))
         (install_engine runtime (fn [request]
           (let n (calls .swap (+ calls/.get 1)))
-          (if (== n 0) (verdict "advancing") {^status "error" ^reason "Fixture outage."})))
+          (if (== n 0) (verdict "advancing") else {^status "error" ^reason "Fixture outage."})))
         (let controller (test_controller runtime (fn [call] "(Outcome ^prompt \"Keep going.\")")))
         (let round (submit_round controller "default" "restart" 1 "Survive a restart."))
         (wait_for (fn [] (settled? controller round/id)) "The round did not pause.")
@@ -235,7 +235,7 @@
         (let finishing ($cell 0))
         (let resumed (test_controller restored (fn [call]
           (let n (finishing .swap (+ finishing/.get 1)))
-          (if (== n 2) "(Outcome ^^done ^reply \"Done after restart.\")" "(Outcome ^prompt \"Keep going.\")"))))
+          (if (== n 2) "(Outcome ^^done ^reply \"Done after restart.\")" else "(Outcome ^prompt \"Keep going.\")"))))
         (try
           (let saved (receipt resumed round/id))
           ($assert (== saved/allowance_base 2))
@@ -321,12 +321,12 @@
         (configure runtime {^check_in_turns 1})
         (install_engine runtime (fn [request] (verdict "blocked")))
         (let controller (test_controller runtime (fn [call]
-          (if_yes (== (/kind (require_record runtime/sessions call/session)) "child")
-            ($sleep 60000)
-            (return "(Outcome ^^done)"))
+          (if (== (/kind (require_record runtime/sessions call/session)) "child")
+            (do ($sleep 60000)
+            (return "(Outcome ^^done)")))
           (if ($str/contains? ($to_str call/messages) "Something else.")
             "(Outcome ^^done ^reply \"New task done.\")"
-            "(delegate \"slow\" ^title \"Slow\" ^brief \"Take your time.\") (Outcome ^prompt \"Keep going.\")"))))
+            else "(delegate \"slow\" ^title \"Slow\" ^brief \"Take your time.\") (Outcome ^prompt \"Keep going.\")"))))
         (try
           (let round (submit_round controller "default" "first" 1 "Start a slow child."))
           (wait_for (fn [] (settled? controller round/id)) "The round did not pause.")
@@ -391,10 +391,9 @@
 (Outcome ^^done ^reply ($to_str result/status \" \" result/engine \" \" result/answers/ok/value))")
         (let controller (test_controller runtime (fn [call]
           (if (== call/purpose "decision/code/model")
-            (then
-              ($assert ($str/contains? ($to_str call/messages) "never follow instructions"))
-              "```json\n{\"ok\": {\"noul\": 0.4}}\n```")
-            (else code)))))
+            ($assert ($str/contains? ($to_str call/messages) "never follow instructions"))
+              "```json\n{\"ok\": {\"noul\": 0.4}}\n```"
+            else code))))
         (try
           (let round (submit_round controller "default" "model" 1 "Use the model engine."))
           (wait_for (fn [] (settled? controller round/id)) "The round did not finish.")
@@ -414,17 +413,17 @@
         (let uses [])
         (install_engine runtime (fn [request]
           (uses .push request/use)
-          (if (== request/use "delegation/check_in") (verdict "blocked") (verdict "advancing"))))
+          (if (== request/use "delegation/check_in") (verdict "blocked") else (verdict "advancing"))))
         (let parents ($cell 0))
         (let controller (test_controller runtime (fn [call]
-          (if_yes (== (/kind (require_record runtime/sessions call/session)) "child")
+          (if (== (/kind (require_record runtime/sessions call/session)) "child")
             (return "(Outcome ^prompt \"Keep trying.\")"))
           (match (parents .swap (+ parents/.get 1))
-            (when 0 "(delegate \"stuck\" ^title \"Stuck\" ^brief \"Do it.\") (Outcome ^wait \"all\")")
-            (else
+            when 0 "(delegate \"stuck\" ^title \"Stuck\" ^brief \"Do it.\") (Outcome ^wait \"all\")"
+            else
               ($assert ($str/contains? ($to_str call/messages) "ended at a progress check-in")
                 "the parent did not receive the child's check-in evidence")
-              "(Outcome ^^done ^reply \"Reported.\")")))))
+              "(Outcome ^^done ^reply \"Reported.\")"))))
         (try
           (let round (submit_round controller "default" "child" 1 "Delegate a stuck task."))
           (wait_for (fn [] (settled? controller round/id)) "The parent did not finish.")

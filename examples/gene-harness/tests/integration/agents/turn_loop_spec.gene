@@ -56,8 +56,8 @@ END
 +bad
 *** End Patch
 """)))
-            (if_yes (== number 2)
-              ($assert
+            (if (== number 2)
+              (do ($assert
                 ($str/contains? request/messages/1/content prompt)
                 "initiating task was elided")
               ($assert
@@ -67,9 +67,9 @@ END
                 ($str/contains? request/messages/2/content "*** Add File: /invalid.txt")
                 "failed patch body was lost")
               ($assert (== request/budget/remaining 1) "remaining budget was incorrect")
-              (return "(append_prompt \"docs\" (doc \"gene/stdlib\")) (Outcome ^prompt \"implement\")"))
-            (if_yes (== number 3)
-              ($assert
+              (return "(append_prompt \"docs\" (doc \"gene/stdlib\")) (Outcome ^prompt \"implement\")")))
+            (if (== number 3)
+              (do ($assert
                 ($str/contains? request/messages/1/content prompt)
                 "task did not survive another turn")
               ($assert
@@ -78,7 +78,7 @@ END
               ($assert
                 (== request/budget/remaining 0)
                 "last response did not know the budget was exhausted")
-              (return "(Outcome ^prompt \"RAW_PENDING_REQUEST\")"))
+              (return "(Outcome ^prompt \"RAW_PENDING_REQUEST\")")))
             ($assert (== request/budget/used 1) "continuation did not reset the round budget")
             ($assert ($str/contains? latest/content "RAW_PENDING_REQUEST")
               "continuation lost the retained pending request")
@@ -194,12 +194,12 @@ END
               (if (== count 1)
                 """# Inspect
 (append_prompt "value" (+ 2 3)) (Outcome ^prompt "continue")"""
-                """# Finish
+                else """# Finish
 (Outcome ^^done ^reply "a done")""")
-              (if (== count 1)
+              else (if (== count 1)
                 """# Ask
 (Outcome ^questions [{^id "name" ^prompt "Name?"}])"""
-                """# Finish
+                else """# Finish
 (Outcome ^^done ^reply "b done")"""))))
         (let controller (test_controller runtime provider))
         (try

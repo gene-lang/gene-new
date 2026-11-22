@@ -58,19 +58,19 @@ suite "nil — Present":
 suite "nil — map and filter_map":
   test "map keeps one result per input including nil":
     check nilEval("""
-      (fn f [x] (if (== x -1) nil x))
+      (fn f [x] (if (== x -1) nil else x))
       [($map [-1 nil false 0 ""] f)
        ($into ($map ($to_stream [-1 nil false 0 ""]) f) [])]
     """) == "[[nil nil false 0 \"\"] [nil nil false 0 \"\"]]"
   test "filter_map drops only nil across eager and lazy inputs":
     check nilEval("""
-      (fn f [x] (if (== x -1) nil x))
+      (fn f [x] (if (== x -1) nil else x))
       [($filter_map [-1 nil false 0 ""] f)
        ($into ($filter_map ($to_stream [-1 nil false 0 ""]) f) [])]
     """) == "[[false 0 \"\"] [false 0 \"\"]]"
   test "map preserves keys and filter_map removes nil results":
     check nilEval("""
-      (fn f [x] (if (== x 1) nil x))
+      (fn f [x] (if (== x 1) nil else x))
       [($map_map {^a 1 ^b 2} f) ($map_filter_map {^a 1 ^b 2} f)]
     """) == "[{^a nil ^b 2} {^b 2}]"
   test "a generator yields nil as an item":
@@ -156,8 +156,8 @@ suite "nil — noop callback":
 suite "nil — review regressions":
   test "explicit return nil cannot bypass the declared result boundary":
     for source in [
-        "(fn f [] : Int (if true (then (return nil))) 42) (try (f) catch TypeFault \"type error\")",
-        "(fn f [] : Str (if true (then (return nil))) \"ok\") (try (f) catch TypeFault \"type error\")"]:
+        "(fn f [] : Int (if true (return nil)) 42) (try (f) catch TypeFault \"type error\")",
+        "(fn f [] : Str (if true (return nil)) \"ok\") (try (f) catch TypeFault \"type error\")"]:
       check nilEval(source) == "\"type error\""
 
   test "mapped Path misses are normalized to nil before publication":

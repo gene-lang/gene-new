@@ -59,7 +59,7 @@ positive divisor, adjust the truncated remainder explicitly:
 ```gene runnable
 (fn wrap [a : Int b : Int] : Int
   (let r (// a b))
-  (if (< r 0) (+ r b) r))
+  (if (< r 0) (+ r b) else r))
 (wrap -7 3) # 2
 ```
 
@@ -619,7 +619,7 @@ a Task yielding one row or nil. Close it through `IoResource`. Pass
                         ^^headers ^^own_reader))
 (try
   (let row (await (rows .next)))
-  (if ($absent? row) nil row/name)
+  (if ($absent? row) nil else row/name)
   ensure (rows .IoResource:close))
 ```
 
@@ -797,8 +797,8 @@ Save this as `server.gene` and run it with `gene run server.gene`:
 
 (fn handle [request]
   (match request/path
-    (when "/" (text 200 "Hello from Gene"))
-    (else (text 404 "Not found"))))
+    when "/" (text 200 "Hello from Gene")
+    else (text 404 "Not found")))
 
 (fn main [args]
   (let server (listen ^host "127.0.0.1" ^port 8080))

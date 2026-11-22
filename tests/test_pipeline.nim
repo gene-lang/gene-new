@@ -158,7 +158,7 @@ suite "pipeline — prepared lazy invocation":
 
   test "void becomes nil and nested mapped values do not flatten":
     pipelineCheck """
-      (fn drop [x] (if (== x 1) nil (if (== x 2) nil [x])))
+      (fn drop [x] (if (== x 1) nil else (if (== x 2) nil else [x])))
       (let seen [])
       (fn record [x] (seen .push x) x)
       [([1 2 3] => drop => record -> $into []) seen]
@@ -348,7 +348,7 @@ suite "pipeline — prepared lazy invocation":
         (let closer (spawn ^lane root (do ($sleep 1) (pending .close))))
         (closer .join)
         [(match (consumer .join)
-           (when TaskOutcome/cancelled true) (else false)) events])
+           when TaskOutcome/cancelled true else false) events])
     """, "[true [\"start\" \"cleanup\"]]"
 
   test "cancelling the consumer cancels its active item callback":
@@ -363,7 +363,7 @@ suite "pipeline — prepared lazy invocation":
         (let canceller (spawn ^lane root (do ($sleep 1) (consumer .cancel))))
         (canceller .join)
         [(match (consumer .join)
-           (when TaskOutcome/cancelled true) (else false))
+           when TaskOutcome/cancelled true else false)
          (pending .has_next) events])
     """, "[true false [\"start\" \"cleanup\"]]"
 
@@ -377,7 +377,7 @@ suite "pipeline — prepared lazy invocation":
   test "take detaches before a downstream failure on the limiting item":
     pipelineCheck """
       (let source ($to_stream [1 2 3]))
-      (fn stop [x] (if (== x 2) (fail (RuntimeFault ^_msg "stop")) x))
+      (fn stop [x] (if (== x 2) (fail (RuntimeFault ^_msg "stop")) else x))
       (try (source -> $take 2 => stop -> $into []) catch Fault nil)
       (source .next)
     """, "3"

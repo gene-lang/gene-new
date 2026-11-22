@@ -56,13 +56,13 @@
           ($assert (== request/method "GET") "discovery attempted a paid inference operation")
           ($assert (== request/headers/authorization "Bearer fixture-token"))
           (match request/path
-            (when "/ready" (json 200 "{\"data\":{\"limit_remaining\":25}}"))
-            (when "/rejected" (json 401 "{\"error\":\"SECRET_SENTINEL\"}"))
-            (when "/failed" (json 503 "{\"error\":\"SECRET_SENTINEL\"}"))
-            (else (json 200 "bad JSON SECRET_SENTINEL")))) server)
+            when "/ready" (json 200 "{\"data\":{\"limit_remaining\":25}}")
+            when "/rejected" (json 401 "{\"error\":\"SECRET_SENTINEL\"}")
+            when "/failed" (json 503 "{\"error\":\"SECRET_SENTINEL\"}")
+            else (json 200 "bad JSON SECRET_SENTINEL"))) server)
         (match tester/.join
-          (when (TaskOutcome/ok value) value)
-          (when (TaskOutcome/error error) (fail error))
-          (else ($assert false "discovery probe fixture did not finish")))))))
+          when (TaskOutcome/ok value) value
+          when (TaskOutcome/error error) (fail error)
+          else ($assert false "discovery probe fixture did not finish"))))))
 
 (fn main [args] : Int (run_spec args))

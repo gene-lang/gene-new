@@ -252,8 +252,8 @@ suite "execution expiry":
       (scope
         (let task (spawn ^lane root (invoke)))
         (match task/.join
-          (when (TaskOutcome/error error) [($head error) error/reason])
-          (else false)))
+          when (TaskOutcome/error error) [($head error) error/reason]
+          else false))
     """) == "[(type LimitExceeded) \"timeout\"]"
 
   test "observed task cancellation cannot be suppressed by cleanup exits":
@@ -278,9 +278,9 @@ suite "execution expiry":
       (scope
         (let task (spawn ^lane root (invoke)))
         (match task/.join
-          (when (TaskOutcome/error error)
-            ($str/contains? error/.message "eval timeout exceeded"))
-          (else false)))
+          when (TaskOutcome/error error)
+            ($str/contains? error/.message "eval timeout exceeded")
+          else false))
     """) == "true"
     check watched("""
       (let entered ($cell false))

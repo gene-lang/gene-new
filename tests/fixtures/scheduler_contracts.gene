@@ -33,7 +33,7 @@
       consumer/.cancel consumer/.join))
 
   (it "lets peers progress during loops and recursion" []
-    (fn recurse [n] (if (== n 0) 0 (recurse (- n 1))))
+    (fn recurse [n] (if (== n 0) 0 else (recurse (- n 1))))
     (fn work [] (repeat i in 20000 nil) (recurse 20000))
     (let order [])
     (let slow (spawn ^lane root (do (work) (order .push "slow"))))

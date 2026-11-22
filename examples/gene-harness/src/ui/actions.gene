@@ -19,15 +19,15 @@
 (fn finish_ui_action [manager, id : Str, outcome]
   (let changes
     (match outcome
-      (when (TaskOutcome/ok value)
-        {^status "done" ^display (byte_prefix (if (== ($head value) Str) value ($to_str value)) 16384)})
-      (when (TaskOutcome/error error)
+      when (TaskOutcome/ok value)
+        {^status "done" ^display (byte_prefix (if (== ($head value) Str) value else ($to_str value)) 16384)}
+      when (TaskOutcome/error error)
         {^status "failed" ^display (byte_prefix ($to_str error/.message) 16384)
-         ^error_code (?? error/code "action_failed")})
-      (when (TaskOutcome/fault fault) (let message fault/.message)
+         ^error_code (?? error/code "action_failed")}
+      when (TaskOutcome/fault fault) (let message fault/.message)
         {^status "failed" ^display (byte_prefix message 16384)
-         ^error_code (if (== ($head fault) Panic) "panic" (?? fault/code "action_failed"))})
-      (else {^status "cancelled" ^display "Action stopped. Effects may have occurred."})))
+         ^error_code (if (== ($head fault) Panic) "panic" else (?? fault/code "action_failed"))}
+      else {^status "cancelled" ^display "Action stopped. Effects may have occurred."}))
   # Domain events are buffered independently of the receipt log. A durable
   # "done" receipt must never get ahead of the writes it acknowledges.
   (try (flush_event_store manager/runtime/events)

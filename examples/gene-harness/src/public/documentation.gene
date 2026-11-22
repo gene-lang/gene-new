@@ -8,7 +8,7 @@
   (for [prefix root] in
       [["examples/gene-harness/" this_pkg/root]
        ["tools/gene-lang-skill/" reference/root]]
-    (if_yes ($str/starts_with? relative_path prefix)
+    (if ($str/starts_with? relative_path prefix)
       (return ($path/join root
         ($str/slice_bytes relative_path ($str/byte_size prefix)
           (- ($str/byte_size relative_path) ($str/byte_size prefix)))))))

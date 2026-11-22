@@ -48,38 +48,38 @@
   (if (!= method "POST") (return nil))
   (let body
     (match route ^!exhaustive
-      (when "/channels/owner/accounts" (setup_account service data))
-      (when "/channels/owner/routes" (setup_route service data))
-      (when "/channels/owner/user" (lookup service "user" data))
-      (when "/channels/user" (user_name service data))
-      (when "/channels/owner/channel" (lookup service "channel" data))
-      (when "/channels/channel" (channel_name service data))
-      (when "/channels/owner/thread" (lookup service "thread" data))
-      (when "/channels/thread" (thread_link service data))
-      (when "/channels/owner/authorize"
-        (authorize service/owner data/route data/author ^workspace data/workspace))
-      (when "/channels/owner/authorize-parts"
-        (authorize_parts service/owner data/route data/parts ^workspace data/workspace))
-      (when "/channels/owner/deliver" (accept_output service/owner data))
-      (when "/channels/owner/result" (output_result service/owner data/id))
-      (when "/channels/owner/resolve"
+      when "/channels/owner/accounts" (setup_account service data)
+      when "/channels/owner/routes" (setup_route service data)
+      when "/channels/owner/user" (lookup service "user" data)
+      when "/channels/user" (user_name service data)
+      when "/channels/owner/channel" (lookup service "channel" data)
+      when "/channels/channel" (channel_name service data)
+      when "/channels/owner/thread" (lookup service "thread" data)
+      when "/channels/thread" (thread_link service data)
+      when "/channels/owner/authorize"
+        (authorize service/owner data/route data/author ^workspace data/workspace)
+      when "/channels/owner/authorize-parts"
+        (authorize_parts service/owner data/route data/parts ^workspace data/workspace)
+      when "/channels/owner/deliver" (accept_output service/owner data)
+      when "/channels/owner/result" (output_result service/owner data/id)
+      when "/channels/owner/resolve"
         (resolve_output service/owner data/id data/revision data/part data/decision data/reason
-          ^ts (?? data/ts nil) ^review_revision (?? data/review_revision 0)))
-      (when "/channels/input" (receive_handoff service data))
-      (when "/channels/bind" (bind_workspace service data/owner_root data/route))
-      (when "/channels/settings" (channel_settings service data))
-      (when "/channels/queue/status"
+          ^ts (?? data/ts nil) ^review_revision (?? data/review_revision 0))
+      when "/channels/input" (receive_handoff service data)
+      when "/channels/bind" (bind_workspace service data/owner_root data/route)
+      when "/channels/settings" (channel_settings service data)
+      when "/channels/queue/status"
         ((queue_status service/runtime/services/values/channel_queues data/session) .assoc "parts"
-          (pending_parts service/runtime/services/values/channel_queues data/session)))
-      (when "/channels/queue/discard"
+          (pending_parts service/runtime/services/values/channel_queues data/session))
+      when "/channels/queue/discard"
         (with_session_gate service/runtime/sessions ($to_str "round/" data/session)
-          (fn [] (discard_inputs service/runtime/services/values/channel_queues data/session data/revision data/ids data/reason))))
-      (when "/channels/queue/resume"
+          (fn [] (discard_inputs service/runtime/services/values/channel_queues data/session data/revision data/ids data/reason)))
+      when "/channels/queue/resume"
         (with_session_gate service/runtime/sessions ($to_str "round/" data/session)
-          (fn [] (resume_queue service/runtime/services/values/channel_queues data/session data/revision))))
-      (when "/channels/queue/resolve"
+          (fn [] (resume_queue service/runtime/services/values/channel_queues data/session data/revision)))
+      when "/channels/queue/resolve"
         (with_session_gate service/runtime/sessions ($to_str "round/" data/session)
           (fn [] (resolve_claim service/runtime/services/values/channel_queues data/session data/revision
-            data/batch data/decision data/reason))))
-      (when _ (return nil))))
+            data/batch data/decision data/reason)))
+      when _ (return nil)))
   {^status 200 ^body body})

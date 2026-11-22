@@ -75,17 +75,17 @@
       (question_error $"Question ${name} has type choice, score or noul."))
     (if_not (nonempty_text? question/instructions) (question_error $"Question ${name} needs instructions."))
     (match question/type
-      (when "choice"
+      when "choice"
         (if (|| (!= ($head question/criteria) Map) (< ($map_size question/criteria) 2) (> ($map_size question/criteria) 255))
           (question_error $"Choice ${name} needs 2 to 255 criteria."))
         (map_for [option text] in question/criteria
           (if_not (snake_id? ($to_str option)) (question_error $"Choice ${name} option ${option} must be lowercase snake_case."))
-          (if_not (nonempty_text? text) (question_error $"Choice ${name} option ${option} needs a description."))))
-      (when "score"
+          (if_not (nonempty_text? text) (question_error $"Choice ${name} option ${option} needs a description.")))
+      when "score"
         (if (|| (!= ($head question/criteria) List) (< question/criteria/.size 2) (> question/criteria/.size 10))
-          (question_error $"Score ${name} needs 2 to 10 ordered levels.")))
-      (else
-        (if ($present? question/criteria) (question_error $"Noul ${name} takes no criteria.")))))
+          (question_error $"Score ${name} needs 2 to 10 ordered levels."))
+      else
+        (if ($present? question/criteria) (question_error $"Noul ${name} takes no criteria."))))
   questions)
 
 (fn unit_number? [value] : Bool ^^private
@@ -107,9 +107,9 @@
 
 (fn validate_answer [question, answer] ^^private
   (if (!= ($head answer) Map) (return {^error "the answer is not a map"}))
-  (let confidence (if (unit_number? answer/confidence) answer/confidence nil))
+  (let confidence (if (unit_number? answer/confidence) answer/confidence else nil))
   (match question/type
-    (when "choice"
+    when "choice"
       (let options [])
       (map_for [key text] in question/criteria (options .push ($to_str key)))
       (if_not (&& (== ($head answer/choice) Str) (options .contains? answer/choice))
@@ -118,8 +118,8 @@
       (if ($present? checked/error) (return checked))
       (let result {^choice answer/choice ^probabilities checked/value})
       (if ($present? confidence) (result .put "confidence" confidence))
-      {^value result})
-    (when "score"
+      {^value result}
+    when "score"
       (let options [])
       (var index 0)
       (for level in question/criteria
@@ -132,11 +132,11 @@
       (if ($present? checked/error) (return checked))
       (let result {^score answer/score ^probabilities checked/value})
       (if ($present? confidence) (result .put "confidence" confidence))
-      {^value result})
-    (else
+      {^value result}
+    else
       (let value (?? answer/noul answer/value))
       (if_not (unit_number? value) (return {^error "noul value is not a number in [0, 1]"}))
-      {^value {^value value}})))
+      {^value {^value value}}))
 
 # Central validation makes the closed-answer contract true for every engine.
 (fn validate_answers [questions, answers]
@@ -162,7 +162,7 @@
 
 (fn decision_settings [service] ^^private
   (let value (/decisions (effective_config service/runtime)))
-  (if (== ($head value) Map) value {}))
+  (if (== ($head value) Map) value else {}))
 
 (fn entry_settings [entry] ^^private
   (let settings {})
@@ -173,7 +173,7 @@
 # The use's entry wins, then the default entry. An explicit engine is binding:
 # when it is unavailable the status is unavailable, never another engine.
 (fn engine_entry [config, use : Str] ^^private
-  (let uses (if (== ($head config/uses) Map) config/uses {}))
+  (let uses (if (== ($head config/uses) Map) config/uses else {}))
   (let entry (uses .get use))
   (if (&& (== ($head entry) Map) (nonempty_text? entry/engine))
     (return {^name entry/engine ^settings (entry_settings entry) ^source "use"}))
@@ -185,18 +185,18 @@
   (let result (try (candidate/available settings) catch Error ($to_str "The availability check failed: " $err/.message)))
   (if (|| ($absent? result) (== result true)) (return nil))
   (if (== result false) (return "This decision engine is unavailable."))
-  (if (== ($head result) Str) result "The engine returned an invalid availability result."))
+  (if (== ($head result) Str) result else "The engine returned an invalid availability result."))
 
 (fn choose_engine [service, use : Str] ^^private
   (let h service/runtime/h)
   (let explicit (engine_entry (decision_settings service) use))
-  (if_yes ($present? explicit)
-    (let record (row_record h "decision_engines" explicit/name))
+  (if ($present? explicit)
+    (do (let record (row_record h "decision_engines" explicit/name))
     (if ($absent? record)
       (return {^name explicit/name ^source explicit/source ^settings explicit/settings
         ^reason $"Decision engine ${explicit/name} is not installed."}))
     (return {^name explicit/name ^row record/payload ^row_id record/row_id ^settings explicit/settings
-      ^source explicit/source ^reason (engine_reason record/payload explicit/settings)}))
+      ^source explicit/source ^reason (engine_reason record/payload explicit/settings)})))
   (let jev (row_record h "decision_engines" "jev"))
   (if (&& ($present? jev) ($absent? (engine_reason jev/payload {})))
     (return {^name "jev" ^row jev/payload ^row_id jev/row_id ^settings {} ^source "jev" ^reason nil}))
@@ -216,9 +216,9 @@
 
 (fn engine_limits [choice] ^^private
   (let reported (try (choice/row/limits choice/settings) catch Error nil))
-  (let request (if (== ($head reported/request_tokens) Int) reported/request_tokens 32000))
-  (let question (if (== ($head reported/question_tokens) Int) reported/question_tokens request))
-  (let overhead (if (== ($head reported/overhead_tokens) Int) reported/overhead_tokens 0))
+  (let request (if (== ($head reported/request_tokens) Int) reported/request_tokens else 32000))
+  (let question (if (== ($head reported/question_tokens) Int) reported/question_tokens else request))
+  (let overhead (if (== ($head reported/overhead_tokens) Int) reported/overhead_tokens else 0))
   {^request_tokens request ^question_tokens question ^overhead_tokens overhead})
 
 (fn size_estimate [state, questions, overhead : Int] ^^private
@@ -230,7 +230,7 @@
    ^question_tokens (+ overhead (estimated_tokens (+ state_bytes largest 64)))})
 
 (fn decision_status [service, use : Str]
-  (let choice (choose_engine service (if (== use "") "default" use)))
+  (let choice (choose_engine service (if (== use "") "default" else use)))
   (let result {^use use ^engine choice/name ^source choice/source ^available ($absent? choice/reason)
     ^reason choice/reason})
   (if ($present? choice/row) (result .put "limits" (engine_limits choice)))
@@ -246,7 +246,7 @@
   (for record in (registry_row_records service/runtime/h "decision_engines")
     (let candidate record/payload)
     (let configured (engine_entry config "default"))
-    (let settings (if (== configured/name candidate/name) configured/settings {}))
+    (let settings (if (== configured/name candidate/name) configured/settings else {}))
     (result .push {^name candidate/name ^doc candidate/doc ^summary (?? candidate/summary candidate/doc)
       ^auto (?? candidate/auto nil) ^owner record/owner ^reason (engine_reason candidate settings)}))
   result)
@@ -263,9 +263,9 @@
     (let cached (service/resources/.get .get choice/name))
     (if (&& ($present? cached) (== cached/key key) (! (resource_closed? cached/resource)))
       (return cached/resource))
-    (if_yes ($present? cached)
-      (service/resources/.get .delete choice/name)
-      (try (cached/row/close cached/resource) catch Error nil))
+    (if ($present? cached)
+      (do (service/resources/.get .delete choice/name)
+      (try (cached/row/close cached/resource) catch Error nil)))
     (let resource (choice/row/open choice/settings))
     (service/resources/.get .put choice/name {^key key ^row choice/row ^resource resource})
     resource)))
@@ -273,16 +273,16 @@
 (fn drop_resource [service, choice] ^^private
   (service/gate (fn []
     (let cached (service/resources/.get .get choice/name))
-    (if_yes ($present? cached)
-      (service/resources/.get .delete choice/name)
-      (try (cached/row/close cached/resource) catch Error nil))))
+    (if ($present? cached)
+      (do (service/resources/.get .delete choice/name)
+      (try (cached/row/close cached/resource) catch Error nil)))))
   nil)
 
 (fn decision_session [request] ^^private
   (let supplied (?? request/session request/fence/session))
   (if (nonempty_text? supplied) (return supplied))
   (let current (/session ($runtime/context)))
-  (if (nonempty_text? current) current nil))
+  (if (nonempty_text? current) current else nil))
 
 # The model engine's call: its own selection, the decision purpose, a small
 # output budget and no inner timeout retry, all inside the caller's deadline.
@@ -292,13 +292,13 @@
   (if ($absent? session)
     (fail (ServiceError ^code "unavailable" ^_msg "The model engine records its call in a session; call decide from a session.")))
   (var chosen choice/settings)
-  (if_yes (nonempty_text? chosen/preset)
-    (var found nil)
+  (if (nonempty_text? chosen/preset)
+    (do (var found nil)
     (for preset in (?? (/presets (catalog_snapshot runtime)) [])
       (if (== preset/name chosen/preset) (set found preset)))
     (if ($absent? found)
       (fail (ServiceError ^code "unavailable" ^_msg $"Model preset ${chosen/preset} is not defined in models.gene.")))
-    (set chosen found))
+    (set chosen found)))
   (let provider (nonempty chosen/provider))
   (if ($absent? provider)
     (fail (ServiceError ^code "unavailable" ^_msg "The model engine needs ^provider or ^preset.")))
@@ -323,18 +323,18 @@
 
 (fn safe_reason [value] : Str ^^private
   (let text ($str/trim ($to_str (?? value "The engine failed."))))
-  (byte_prefix (if (== text "") "The engine failed." text) 512))
+  (byte_prefix (if (== text "") "The engine failed." else text) 512))
 
 (fn classify_reply [questions, value] ^^private
   (if (!= ($head value) Map) (return {^status "error" ^reason "The engine returned no result map."}))
   (if (&& ($present? value/status) (!= value/status "ok"))
     (return (if (engine_statuses .contains? value/status)
       {^status value/status ^reason (safe_reason value/reason)}
-      {^status "error" ^reason "The engine returned an unknown status."})))
+      else {^status "error" ^reason "The engine returned an unknown status."})))
   (let checked (validate_answers questions value/answers))
   (if ($present? checked/error)
     (return {^status "error" ^reason (safe_reason $"Invalid engine answer: ${checked/error}.")}))
-  (let result {^status "ok" ^answers checked/value ^model (if (== ($head value/model) Str) value/model nil)})
+  (let result {^status "ok" ^answers checked/value ^model (if (== ($head value/model) Str) value/model else nil)})
   (if (== ($head value/call_id) Str) (result .put "call_id" value/call_id))
   (if (== ($head value/usage) Map) (result .put "usage" value/usage))
   result)
@@ -351,16 +351,16 @@
       (choice/row/decide resource call))
     [] (ExecutionLimits ^timeout_ms remaining ^max_memory_mb 512) ^deadline_ms deadline))
   (match outcome ^!exhaustive
-    (when (TaskOutcome/ok value) (classify_reply request/questions value))
-    (when (TaskOutcome/error failure)
+    when (TaskOutcome/ok value) (classify_reply request/questions value)
+    when (TaskOutcome/error failure)
       (if (>= ($os/monotonic_ms) deadline)
-        (then {^status "timeout" ^reason "The decision deadline passed."})
-        (elif (engine_statuses .contains? failure/code) {^status failure/code ^reason (safe_reason failure/.message)})
-        (else {^status "error" ^reason (safe_reason failure/.message)})))
-    (when (TaskOutcome/fault fault) (let message fault/.message)
+        {^status "timeout" ^reason "The decision deadline passed."}
+        elif (engine_statuses .contains? failure/code) {^status failure/code ^reason (safe_reason failure/.message)}
+        else {^status "error" ^reason (safe_reason failure/.message)})
+    when (TaskOutcome/fault fault) (let message fault/.message)
       (if (== ($head fault) Panic) {^status "error" ^reason "The engine failed."}
-        {^status "error" ^reason (safe_reason message)}))
-    (when TaskOutcome/cancelled {^status "timeout" ^reason "The decision deadline passed."})))
+        else {^status "error" ^reason (safe_reason message)})
+    when TaskOutcome/cancelled {^status "timeout" ^reason "The decision deadline passed."}))
 
 (fn fence_current? [fence] : Bool ^^private
   (if (|| (!= ($head fence) Map) (! ($runtime/callable? fence/active))) (return true))
@@ -373,7 +373,7 @@
   (try
     (if (nonempty_text? session)
       (append_core_event service/runtime/events "session" session payload)
-      (append_core_event service/runtime/events "workspace" "workspace" payload))
+      else (append_core_event service/runtime/events "workspace" "workspace" payload))
   catch Error nil)
   nil)
 
@@ -405,26 +405,25 @@
   (let deadline (+ started timeout))
   (let session (decision_session request))
   (let choice (if service/closed/.get {^name "" ^reason "The decision service is closed."}
-    (choose_engine service request/use)))
+    else (choose_engine service request/use)))
   (var result nil)
   (var attempts 0)
   (if ($present? choice/reason)
-    (then (set result {^status "unavailable" ^reason choice/reason}))
-    (else
+    (set result {^status "unavailable" ^reason choice/reason})
+    else
       (let limits (engine_limits choice))
       (let size (size_estimate request/state request/questions limits/overhead_tokens))
       (if (|| (> size/request_tokens limits/request_tokens) (> size/question_tokens limits/question_tokens))
-        (then
-          (set result {^status "too_large" ^reason "The state and questions exceed the engine's limit."
-            ^estimated_tokens size ^limits limits}))
-        (else
+        (set result {^status "too_large" ^reason "The state and questions exceed the engine's limit."
+            ^estimated_tokens size ^limits limits})
+        else
           (loop
             (set attempts (+ attempts 1))
             (set result (run_attempt service choice request deadline))
             (if (["error" "timeout"] .contains? result/status) (drop_resource service choice))
             (if (|| (>= attempts 2) (! (["rate_limited" "error"] .contains? result/status))
                     (<= (- deadline ($os/monotonic_ms)) 0))
-              (break)))))))
+              (break)))))
   (if (&& (== result/status "ok") (! (fence_current? request/fence)))
     (set result {^status "stale" ^reason "The caller's fence moved before the answer arrived."}))
   (result .put "engine" choice/name)

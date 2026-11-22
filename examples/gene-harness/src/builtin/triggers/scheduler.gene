@@ -30,7 +30,7 @@
 
 (fn ^^private setting [key : Str, fallback]
   (let value (try (/value ((current_workspace) .setting key)) catch Error nil))
-  (if (&& (== ($head value) Int) (> value 0)) value fallback))
+  (if (&& (== ($head value) Int) (> value 0)) value else fallback))
 
 # --- records -----------------------------------------------------------
 
@@ -46,10 +46,10 @@
   (thawed definition))
 (fn ^^private save_occurrence [s, occurrence]
   (s/host .PluginHost:put_record occurrence_kind occurrence/id occurrence)
-  (if_yes (== occurrence/state "finished")
-    (let last (s/host .PluginHost:record last_kind occurrence/trigger))
+  (if (== occurrence/state "finished")
+    (do (let last (s/host .PluginHost:record last_kind occurrence/trigger))
     (if (|| ($absent? last) (> occurrence/at_ms last/at_ms))
-      (s/host .PluginHost:put_record last_kind occurrence/trigger occurrence)))
+      (s/host .PluginHost:put_record last_kind occurrence/trigger occurrence))))
   (thawed occurrence))
 
 # --- validation --------------------------------------------------------
@@ -66,9 +66,9 @@
   true)
 
 (fn at_ms [value]
-  (if_yes (== ($head value) Int)
-    (if (< value 0) (invalid "Scheduled at must be non-negative"))
-    (return value))
+  (if (== ($head value) Int)
+    (do (if (< value 0) (invalid "Scheduled at must be non-negative"))
+    (return value)))
   (if (!= ($head value) Str) (invalid "Scheduled at must be epoch milliseconds or a UTC timestamp"))
   (if_not ($str/ends_with? value "Z") (invalid "Scheduled timestamps require UTC (Z)"))
   (let parts ($str/split ($str/slice_bytes value 0 (- ($str/byte_size value) 1)) "T"))
@@ -76,12 +76,12 @@
   (* (calendar/local_seconds parts/0 parts/1) 1000))
 
 (fn ^^private two_digits [number]
-  (if (< number 10) $"0${number}" ($to_str number)))
+  (if (< number 10) $"0${number}" else ($to_str number)))
 
 (fn local_stamp [definition, at]
   (let second ($to_int (/ at 1000)))
   (let local (if (== definition/kind "cron")
-    (+ second (timezone/offset_at definition/rules second)) second))
+    (+ second (timezone/offset_at definition/rules second)) else second))
   (let day (calendar/floor_div local 86400))
   (let date (calendar/civil day))
   (let daytime (- local (* day 86400)))
@@ -92,9 +92,9 @@
 
 (fn ^^private next_time [definition, after]
   (match definition/kind ^!exhaustive
-    (when "heartbeat" (+ after definition/every_ms))
-    (when "scheduled" nil)
-    (when "cron" (cron/next definition/pattern definition/rules after))))
+    when "heartbeat" (+ after definition/every_ms)
+    when "scheduled" nil
+    when "cron" (cron/next definition/pattern definition/rules after)))
 
 (fn validate_definition [input, now]
   (if (!= ($head input) Map) (invalid "Trigger definition must be an inert map"))
@@ -119,18 +119,18 @@
     (let amount (?? policy/keep policy/days))
     (if (|| (!= ($head amount) Int) (< amount 0)) (invalid "Retention must be non-negative")))
   (definition .put "created_ms" now)
-  (if_yes (== definition/kind "heartbeat")
-    (if (|| (!= ($head definition/every_ms) Int) (<= definition/every_ms 0))
+  (if (== definition/kind "heartbeat")
+    (do (if (|| (!= ($head definition/every_ms) Int) (<= definition/every_ms 0))
       (invalid "Heartbeat every_ms must be positive"))
-    (definition .put "next_ms" (+ now definition/every_ms)))
+    (definition .put "next_ms" (+ now definition/every_ms))))
   (if (== definition/kind "scheduled") (definition .put "next_ms" (at_ms definition/at)))
-  (if_yes (== definition/kind "cron")
-    (let pattern (cron/compile definition/cron))
+  (if (== definition/kind "cron")
+    (do (let pattern (cron/compile definition/cron))
     (let rules (timezone/system_rules (?? definition/timezone "UTC") 2100))
     (definition .put "timezone" rules/name)
     (definition .put "pattern" pattern)
     (definition .put "rules" rules)
-    (definition .put "next_ms" (cron/next pattern rules now)))
+    (definition .put "next_ms" (cron/next pattern rules now))))
   definition)
 
 (fn ^^private check_model [s, definition]
@@ -160,8 +160,8 @@
     (if (|| ($absent? stored) (== stored/deleted true))
       (fail (TriggerError ^code "not_found" ^_msg "Trigger does not exist")))
     (let next (thawed stored))
-    (next .put "model_settings" (if ($absent? changes/model_settings) nil changes/model_settings))
-    (let warnings (if ($absent? next/model_settings) [] (check_model s next)))
+    (next .put "model_settings" (if ($absent? changes/model_settings) nil else changes/model_settings))
+    (let warnings (if ($absent? next/model_settings) [] else (check_model s next)))
     (let result (save_definition s next))
     (if (! warnings/.empty?) (result .put "warnings" warnings))
     result)))
@@ -214,14 +214,14 @@
     (let receipt (s/admission .AdmissionHost:receipt occurrence/session occurrence/id))
     (if ($absent? receipt) (continue))
     (let before ($serde/write_data occurrence))
-    (if_yes (== occurrence/state "due")
-      (occurrence .put "state" "started")
-      (occurrence .put "round" receipt/id))
-    (if_yes (! (["running" "waiting"] .contains? receipt/state))
-      (occurrence .put "state" "finished")
+    (if (== occurrence/state "due")
+      (do (occurrence .put "state" "started")
+      (occurrence .put "round" receipt/id)))
+    (if (! (["running" "waiting"] .contains? receipt/state))
+      (do (occurrence .put "state" "finished")
       (occurrence .put "outcome" receipt/state)
       (if (["failed" "interrupted"] .contains? receipt/state)
-        (s/admission .AdmissionHost:update_session occurrence/session {^^attention})))
+        (s/admission .AdmissionHost:update_session occurrence/session {^^attention}))))
     (if (!= ($serde/write_data occurrence) before) (save_occurrence s occurrence))))
 
 (fn ^^private trigger_busy? [s, trigger]
@@ -236,16 +236,16 @@
   (if (<= at (?? watermark/at_ms -1)) (return nil))
   (var state "due")
   (var reason "")
-  (if_yes (&& missed (== definition/missed "skip")) (set state "skipped") (set reason "missed"))
+  (if (&& missed (== definition/missed "skip")) (do (set state "skipped") (set reason "missed")))
   (var queued false)
   (for previous in (list_occurrences s ^trigger definition/id ^^active)
     (if (== previous/state "due") (set queued true)))
-  (if_yes (== state "due")
+  (if (== state "due")
     (if queued
-      (then (set state "skipped") (set reason "coalesced"))
-      (else
-        (if_yes (&& (trigger_busy? s definition/id) (== definition/overlap "skip"))
-          (set state "skipped") (set reason "overlap")))))
+      (set state "skipped") (set reason "coalesced")
+      else
+        (if (&& (trigger_busy? s definition/id) (== definition/overlap "skip"))
+          (do (set state "skipped") (set reason "overlap")))))
   (let session $"s-trigger-${($str/slice_bytes ($crypto/sha256 id) 0 32)}")
   (let occurrence (save_occurrence s
     {^id id ^trigger definition/id ^at_ms at ^state state ^reason reason ^session session}))
@@ -276,17 +276,17 @@
     (if (>= running cap) (break))
     (if (!= occurrence/state "due") (continue))
     (let definition (s/host .PluginHost:record definition_kind occurrence/trigger))
-    (if_yes (|| ($absent? definition) (! definition/enabled))
-      (occurrence .put "state" "skipped")
+    (if (|| ($absent? definition) (! definition/enabled))
+      (do (occurrence .put "state" "skipped")
       (occurrence .put "reason" "disabled")
       (save_occurrence s occurrence)
-      (continue))
+      (continue)))
     (if (trigger_busy? s definition/id) (continue))
-    (if_yes definition/continue_session
-      (let prior (s/host .PluginHost:record last_kind definition/id))
-      (if_yes (&& ($present? prior) ($present? (s/admission .AdmissionHost:session prior/session)))
-        (occurrence .put "session" prior/session)
-        (save_occurrence s occurrence)))
+    (if definition/continue_session
+      (do (let prior (s/host .PluginHost:record last_kind definition/id))
+      (if (&& ($present? prior) ($present? (s/admission .AdmissionHost:session prior/session)))
+        (do (occurrence .put "session" prior/session)
+        (save_occurrence s occurrence)))))
     (if (s/admission .AdmissionHost:busy? occurrence/session) (continue))
     (if ($absent? (s/admission .AdmissionHost:session occurrence/session))
       (s/admission .AdmissionHost:create_session ^id occurrence/session ^kind definition/kind
@@ -312,13 +312,13 @@
     catch ServiceError
       (if (!= $err/code "not_ready") (fail $err))
       (let reason $err/.message)
-      (if_yes (!= occurrence/waiting_reason reason)
-        (occurrence .put "waiting_reason" reason)
+      (if (!= occurrence/waiting_reason reason)
+        (do (occurrence .put "waiting_reason" reason)
         (save_occurrence s occurrence)
         (try (s/host .PluginHost:notify
           {^key $"trigger-blocked/${definition/id}" ^severity "warning" ^^renew
            ^title $"Trigger ${definition/id} is waiting" ^summary reason})
-          catch Error nil)))))
+          catch Error nil))))))
 
 (fn ^^private prune_occurrences [s]
   (let keep (setting "trigger_occurrence_keep" 256))
@@ -354,19 +354,19 @@
       (if (|| record/pinned record/attention (["running" "waiting"] .contains? record/status)) (continue))
       (candidates .push record))
     (let ordered ($order/sort_by ^compare (fn [a b]
-      (let first (if (empty_heartbeat? a) 0 1))
-      (let second (if (empty_heartbeat? b) 0 1))
+      (let first (if (empty_heartbeat? a) 0 else 1))
+      (let second (if (empty_heartbeat? b) 0 else 1))
       (if (!= first second) ($order/compare first second)
-        ($order/compare (?? a/last_active_ms 0) (?? b/last_active_ms 0))))
+        else ($order/compare (?? a/last_active_ms 0) (?? b/last_active_ms 0))))
       candidates (fn [record] record)))
     (var excess ($math/max 0 (- all/.size (?? definition/retention/keep all/.size))))
     (for record in ordered
       (let expired (&& ($present? definition/retention/days)
         (< (?? record/last_active_ms 0) (- instant (* definition/retention/days 86400000)))))
       (if (&& (<= excess 0) (! expired)) (continue))
-      (if_yes (s/admission .AdmissionHost:delete_session record/id)
-        (removed .push record/id)
-        (set excess (- excess 1)))))
+      (if (s/admission .AdmissionHost:delete_session record/id)
+        (do (removed .push record/id)
+        (set excess (- excess 1))))))
   removed)
 
 (fn ^^private sync_plugin_triggers [s, now]
@@ -379,17 +379,17 @@
     (let previous (stored .get data/id))
     (if (&& ($present? previous) ($absent? previous/plugin_fingerprint))
       (fail (TriggerError ^code "conflict" ^_msg $"Plugin trigger conflicts with operator trigger ${data/id}")))
-    (if_yes (|| ($absent? previous) (!= previous/plugin_fingerprint fingerprint))
-      (let definition (validate_definition data now))
+    (if (|| ($absent? previous) (!= previous/plugin_fingerprint fingerprint))
+      (do (let definition (validate_definition data now))
       (check_model s definition)
       (definition .put "plugin_fingerprint" fingerprint)
-      (save_definition s definition)))
+      (save_definition s definition))))
   (map_for [id definition] in stored
-    (if_yes (&& ($present? definition/plugin_fingerprint) ($absent? (live .get id)) (!= definition/deleted true))
-      (definition .put "deleted" true)
+    (if (&& ($present? definition/plugin_fingerprint) ($absent? (live .get id)) (!= definition/deleted true))
+      (do (definition .put "deleted" true)
       (definition .put "enabled" false)
       (save_definition s definition)
-      (clear_waiting_notice s ($to_str id)))))
+      (clear_waiting_notice s ($to_str id))))))
 
 (fn tick_triggers [s, ^now now = nil, ^boot boot : Bool = false]
   (let instant (?? now ($os/wall_ms)))
@@ -399,9 +399,9 @@
     (schedule_due s instant boot)
     (start_due s)
     (prune_occurrences s)
-    (if_yes (>= (- instant s/last_retention/.get) 3600000)
-      (apply_retention s ^now instant)
-      (s/last_retention .set instant))))
+    (if (>= (- instant s/last_retention/.get) 3600000)
+      (do (apply_retention s ^now instant)
+      (s/last_retention .set instant)))))
   nil)
 
 (fn run_scheduler [s, ^poll_ms poll_ms : Int = 100]

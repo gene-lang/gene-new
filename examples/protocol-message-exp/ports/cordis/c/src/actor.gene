@@ -20,7 +20,7 @@
       (if ($absent? message_type)
         ($actor/spawn ^mailbox mailbox
           ^init (fn [] initial) ^handle handler)
-        ($actor/spawn ^mailbox mailbox ^type message_type
+        else ($actor/spawn ^mailbox mailbox ^type message_type
           ^init (fn [] initial) ^handle handler)))
     (ready .send actor)
     # This supervisor is host-owned. Each handler invocation has its own

@@ -141,14 +141,14 @@ budgets across nested and imported expansions.
 
 **D8, decided 2026-10-02:** expand calls in expression positions, plus the
 already-supported direct pipeline-slot context. A macro call must not stand
-in for a structural `else`, `elif`, or `when` clause. Expressions inside those
-clauses can still contain macro calls. Reject a call in an unsupported
+in for a bare structural `else`, `elif`, or `when` marker. Expressions inside
+those arms can still contain macro calls. Reject a call in an unsupported
 structural position consistently on the VM and web backend; silently ignoring
 it on one backend is not an acceptable alternative.
 
 The review's baseline paths disagreed: the VM gave nil for a macro-generated
-else clause and rejected a macro-generated match clause, while the web frontend
-expanded both. This was reproduced as `nil`/error versus `2`/`"other"`.
+`else` marker and rejected a macro-generated `when` marker, while the web
+frontend expanded both. This was reproduced as `nil`/error versus `2`/`"other"`.
 Use the compiler's expression/structural position distinctions for traversal,
 including executable defaults within signatures. A recursive walk over every
 node is not the contract. Align both backends with D8 when changing result wrapping.
@@ -802,7 +802,7 @@ it does not establish zero overhead or remove the cost of a required scope.
 
 The baseline reader preserved `%` and following forms as flat tokens inside
 vectors. Macro expansion, ordinary quasiquote, and match-pattern pins need
-unquote nodes. The third consumer matters: `(when %a ...)` matched an earlier
+unquote nodes. The third consumer matters: `when %a ...` matched an earlier
 binding, while `[%a b]` failed to do so inside a vector (C6).
 
 Prefer normalizing `%form` into an unquote node in the reader for vectors too,
@@ -1094,11 +1094,11 @@ relying only on literal arguments.
 | Area | Required cases |
 | --- | --- |
 | B1 body visibility | `make_square` returns a function that computes `16` for `4`; direct siblings in fn, branch, loop, for, scope, match, and try bodies resolve consistently; a try handler cannot hide a bad expansion |
-| B2/C6 vectors | `pair` returns `[1 2]`; generated parameter and destructuring vectors; ordinary quasiquote; list splices, nested maps/vectors, immutable vectors, nested quotation depth; `(let a 1) (match [1 2] (when [%a b] b) (when _ "no"))` returns `2`; quoted vector shape is documented |
+| B2/C6 vectors | `pair` returns `[1 2]`; generated parameter and destructuring vectors; ordinary quasiquote; list splices, nested maps/vectors, immutable vectors, nested quotation depth; `(let a 1) (match [1 2] when [%a b] b when _ "no")` returns `2`; quoted vector shape is documented |
 | B3 syntax roles | `rec/key` still returns `7`; `a/a` returns its property; message `size` is unchanged by a local `size`; `(quote x)` stays `x`; quoted match literals retain meaning; vector path roots resolve |
 | Ordinary shadowing, replacing B4 hygiene expectations | The review's generated parameter example gives `6`, its loop example gives `6`, and `first_or` gives `1`; `add_one tmp` gives `2`; outer bindings retain their values after the expansion; destructured names remain local |
 | Result marking | A non-do executable result gets one marked outer do; an existing do gets its boolean property set; preserve other props and metadata; leave quoted inner do data unchanged; do not mutate shared templates or arguments; test absent/true/false/non-boolean handwritten markers under the selected policy |
-| R3 expansion positions | VM/web agree on expression calls inside clauses, defaults, and nested bodies; clause-generating calls are consistently rejected under D8; unknown clauses are not silently discarded; quoted data and direct pipeline slots retain their contracts |
+| R3 expansion positions | VM/web agree on expression calls inside arms, defaults, and nested bodies; marker-generating calls are consistently rejected under D8; unknown markers are not silently discarded; quoted data and direct pipeline slots retain their contracts |
 | C3 pipeline slots | The direct-slot macro still gives `[0 1]`; multiple slots still fail; ordinary nested underscores remain nested; lists/maps containing declarations remain confined |
 | D5/D7 conditional scopes | No declarations or impl registrations means no extra scope; direct, conditional, destructured, imported, and argument-supplied declarations are counted in their owning block; nested scopes own their declarations; set alone adds no scope; impl alone requires scope |
 | D5 scoped declarations | `with_value` returns `84`; its name is absent afterward or leaves a same-named outer binding intact; declarations spliced through body arguments also stay local; nested and repeated expansions obey ordinary scopes; returned closures retain needed locals; declaration-export examples are rejected outside their expansion |
@@ -1156,7 +1156,7 @@ implemented spec when it lands.
 | D5: Marked results and local declarations | Wrap a non-do executable result in `(do ^^macro_result <result>)`, or set the boolean property on an existing do; create a scope for bindings or impl registrations | Core and marker policy decided 2026-10-02. Classify position/slots before wrapping. Handwritten forms behave identically; only literal true enables the rule, and absent/false/non-boolean is unmarked. D7 specifies registration visibility |
 | D6: Fresh names | `$gensym base` returns `<base>_<module hash>_<depth>_<k>`; no `^fresh` | Decided 2026-11-06. Works only while a macro body runs; the context belongs to the running invocation. Distinct by `depth` and `k`; the hash keeps caller syntax from spelling a name by accident. No automatic renaming; free template names still resolve at the call site (D1) |
 | D7: Scope-sensitive registrations | Block-owned impl requires local scope even without variables | Decided 2026-10-02. Registrations are visible inside the marked block, not afterward; returned closures retain their implementation context. Adding an unrelated local changes nothing; top-level impl-producing macros require migration |
-| D8: Supported expansion positions | Expression positions plus existing direct pipeline-slot substitution; no clause-position macros | Decided 2026-10-02. VM/web must share syntax-role traversal and reject unsupported positions consistently; preserve expression macros inside valid clauses and allow a macro to generate an entire enclosing expression |
+| D8: Supported expansion positions | Expression positions plus existing direct pipeline-slot substitution; no marker-position macros | Decided 2026-10-02. VM/web must share syntax-role traversal and reject unsupported positions consistently; preserve expression macros inside valid arms and allow a macro to generate an entire enclosing expression |
 
 The owner-approved direction is ordinary macro-body evaluation followed by
 compilation of the result, with explicit expansion-scope rules. Remaining
@@ -1192,7 +1192,7 @@ defined in section 8, E1 in section 4, and O1 in section 5.
 | C3 | Wrapping a result hides a macro-produced direct pipeline slot |
 | C4 | Whether a macro-generated `impl` escapes depends on how the result scope is implemented |
 | C5 | A macro differs from its unmarked handwritten expansion: declarations stay inside the marked block |
-| C6 | A match pin works as `(when %a …)` and fails inside a vector pattern `[%a b]` |
+| C6 | A match pin works as `when %a …` and fails inside a vector pattern `[%a b]` |
 | C7 | Declaration export through expansion is removed; no in-repository use was found |
 | C8 | A fexpr inside a function cannot read that function's locals through `caller_env` (tracked as E1) |
 | C9 | The existing "avoid … capture" spec tests pass literal arguments and do not exercise capture |
@@ -1221,7 +1221,7 @@ may predate these changes.
 | Template local with the same name as an argument's variable, e.g. `(swap tmp y)` or `(add_one tmp)` | Protected for `do`-level binders: `[2 1]`, `101` | Ordinary shadowing: `swap` fails or leaves values unswapped, `add_one` gives `2` |
 | Macro expanding to `fn`, `type`, or `let` with a caller-supplied name | Name usable after the call | Name confined to the expansion (D5) |
 | Macro expanding to an `impl` at top level | Impl visible after the call | Impl confined to the expansion (D7) |
-| Macro call in a clause position, e.g. generating `else` or `when` | VM: `nil` or unknown-clause error; web: expands | Rejected on both backends (D8) |
+| Macro call that would generate a bare `else`/`when` marker | VM: `nil` or unknown-clause error; web: expands | Rejected on both backends (D8) |
 | Inner parameter or local sharing an outer macro's name | Locally defined macros can cause a conflict error; imported macros behave inconsistently | Ordinary lexical shadowing selects the inner binding; the outer macro remains available outside that scope (D4) |
 | Quoted data `(quote [%x])` | `[% x]`, two flat tokens | A vector containing an unquote node (stage 1) |
 | Macro body without a backtick, such as `(+ x 1)` | Inserted as ordinary caller code | Evaluated during expansion; valid computation succeeds and invalid operations fail normally (D2a) |

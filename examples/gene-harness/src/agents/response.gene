@@ -24,12 +24,12 @@
       lines/%index
       """
 """)
-    lines/%index))
+    else lines/%index))
 
 (fn structural_line [line : Str] : Str
   (if ($str/ends_with? line "\r")
     ($str/slice_bytes line 0 (- ($str/byte_size line) 1))
-    line))
+    else line))
 
 (fn validate_execution_attachments [response]
   (for block in response/blocks
@@ -52,7 +52,7 @@
   (while (< index lines/.size)
     (let line (structural_line lines/%index))
     (if (&& (block_start? line) (complete_code? ($str/join code_parts "")))
-      (then (set start index) (break)))
+      (do (set start index) (break)))
     (code_parts .push (line_text lines index))
     (set index (+ index 1)))
   (let code ($str/join code_parts ""))
@@ -63,10 +63,9 @@
   (while (< index lines/.size)
     (let line (structural_line lines/%index))
     (if (== ($str/trim line) "")
-      (then (set index (+ index 1)) (continue)))
+      (do (set index (+ index 1)) (continue)))
     (if ($str/starts_with? line "<<<")
-      (then
-        (let header ($str/split line " "))
+      (let header ($str/split line " "))
         (if (!= header/.size 2) (read_error (+ index 1) "attachment header must be <<<name terminator"))
         (let name ($str/slice_bytes header/0 3 (- ($str/byte_size header/0) 3)))
         (let terminator header/1)
@@ -85,8 +84,8 @@
         (let body ($str/join body_parts ""))
         (attachments .put name body)
         (blocks .push {^kind "attachment" ^name name ^line opening ^body body ^terminator terminator})
-        (set index (+ index 1)))
-      (elif (== line "*** Begin Patch")
+        (set index (+ index 1))
+      elif (== line "*** Begin Patch")
         (if_not ($absent? patch) (read_error (+ index 1) "a response may contain at most one patch"))
         (let opening (+ index 1))
         (let body_parts [(line_text lines index)])
@@ -98,8 +97,8 @@
         (body_parts .push (line_text lines index))
         (set patch ($str/join body_parts ""))
         (blocks .push {^kind "patch" ^line opening ^body patch})
-        (set index (+ index 1)))
-      (else (read_error (+ index 1) "expected an attachment or patch after response code"))))
+        (set index (+ index 1))
+      else (read_error (+ index 1) "expected an attachment or patch after response code")))
   # Read the code even when there were no blocks. Reading remains inert.
   (let forms (read_response_code code))
   {^text text ^code code ^forms forms ^attachments attachments ^patch patch ^blocks blocks})

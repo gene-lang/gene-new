@@ -8,7 +8,7 @@
   (message read [max_bytes : Int] : (Task Bytes? Error)
     (spawn
       (if (>= self/cursor/.get self/chunks/.size) nil
-        (do (let cursor self/cursor/.get) (self/cursor .set (+ cursor 1)) self/chunks/%cursor)))))
+        else (do (let cursor self/cursor/.get) (self/cursor .set (+ cursor 1)) self/chunks/%cursor)))))
 (impl IoResource for FixtureBody
   (message close [] : Nil (self/closed .set true) nil)
   (message wait_closed [] : (Task Nil Error) (spawn nil)))
@@ -42,7 +42,7 @@
       ($assert ($str/ends_with? requests/.get/0/url "/fixture%20voice/stream?output_format=pcm_24000"))
       (if (== status 200)
         ($assert (== ($binary/concat chunks) ($binary/from_list [0 128 255 127])))
-        ($assert (== chunks/.size 0)))))
+        else ($assert (== chunks/.size 0)))))
   (it "uploads an in-memory WAV to a reused whisper client without text encoding PCM" []
     (let requests ($cell []))
     (let client (FixtureHttp ^requests requests ^body nil ^status 200))

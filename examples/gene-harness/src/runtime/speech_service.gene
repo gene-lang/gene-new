@@ -21,13 +21,13 @@
   (let result (try (candidate/available) catch Error $err/.message))
   (if (|| ($absent? result) (== result true)) (return nil))
   (if (== result false) (return "This speech engine is unavailable."))
-  (if (== ($head result) Str) result "The engine returned an invalid availability result."))
+  (if (== ($head result) Str) result else "The engine returned an invalid availability result."))
 
 (fn choose_speech_engine [runtime, settings, kind : Str, ^environment supplied = nil]
-  (let registry (if (== kind "recognizer") "speech_recognizers" "speech_synthesizers"))
+  (let registry (if (== kind "recognizer") "speech_recognizers" else "speech_synthesizers"))
   (let environment (if ($absent? supplied)
-    ($os/env? (if (== kind "recognizer") "GENE_HARNESS_RECOGNIZER" "GENE_HARNESS_SYNTHESIZER"))
-    (supplied .get kind)))
+    ($os/env? (if (== kind "recognizer") "GENE_HARNESS_RECOGNIZER" else "GENE_HARNESS_SYNTHESIZER"))
+    else (supplied .get kind)))
   (let pinned (?? runtime/profile/voice {}))
   (let name (?? (nonempty (pinned .get kind)) (nonempty environment) (nonempty (settings .get kind))))
   (var selected nil)
@@ -38,14 +38,14 @@
     (if_not ($absent? reason)
       (diagnostics .push {^name candidate/name ^reason ($to_str reason)})
       (continue))
-    (if_yes (|| ($present? name) ($present? candidate/auto))
+    (if (|| ($present? name) ($present? candidate/auto))
       (if (|| ($absent? selected) (< candidate/auto selected/auto)
               (&& (== candidate/auto selected/auto) (< ($order/compare candidate/name selected/name) 0)))
         (set selected candidate))))
   {^name (?? name (?? selected/name "")) ^row selected ^diagnostics diagnostics
    ^reason (if ($absent? selected)
      (if ($absent? name) $"No host ${kind} is configured. Browser speech remains available."
-       $"Speech ${kind} ${name} is unavailable; check its installation and host configuration.") nil)})
+       else $"Speech ${kind} ${name} is unavailable; check its installation and host configuration.") else nil)})
 
 (fn speech_catalog [service : SpeechService]
   (let result {})
@@ -64,25 +64,25 @@
     (if service/closed/.get (voice_error "unavailable" "The speech service is closed."))
     (let choice (choose_speech_engine service/runtime settings kind))
     (if_not ($absent? choice/reason) (voice_error "unavailable" choice/reason))
-    (let registry (if (== kind "recognizer") "speech_recognizers" "speech_synthesizers"))
+    (let registry (if (== kind "recognizer") "speech_recognizers" else "speech_synthesizers"))
     (let record (row_record service/runtime/h registry choice/name))
     (let key ($crypto/sha256 ($serde/write_data [record/row_id settings])))
     (let existing (service/resources/.get .get kind))
-    (if_yes (&& ($present? existing) (== existing/key key)
-      (!= (if ($absent? existing/resource/closed) false existing/resource/closed/.get) true)) (return existing))
+    (if (&& ($present? existing) (== existing/key key)
+      (!= (if ($absent? existing/resource/closed) false else existing/resource/closed/.get) true)) (return existing))
     (if_not ($absent? existing)
       (service/resources/.get .delete kind)
-      (if_not (if ($absent? existing/resource/closed) false existing/resource/closed/.get)
+      (if_not (if ($absent? existing/resource/closed) false else existing/resource/closed/.get)
         (existing/row/close existing/resource)))
     (service/dirty .set true)
     (let resource (bounded_audio_call choice/row/open [settings] 15000))
     (let opened {^key key ^row_id record/row_id ^registry registry ^row choice/row ^resource resource ^settings settings})
-    (if_yes (== kind "synthesizer")
-      (let format (?? resource/format choice/row/format))
-      (if_yes (|| (!= format/encoding "s16le") (!= format/channels 1))
-        (choice/row/close resource) (voice_error "unavailable" "Speech engines must emit mono s16le PCM."))
+    (if (== kind "synthesizer")
+      (do (let format (?? resource/format choice/row/format))
+      (if (|| (!= format/encoding "s16le") (!= format/channels 1))
+        (do (choice/row/close resource) (voice_error "unavailable" "Speech engines must emit mono s16le PCM.")))
       (pcm_format format/rate)
-      (opened .put "format" format))
+      (opened .put "format" format)))
     (service/resources/.get .put kind opened)
     # Start the persistent reader in the host job, after the bounded open call
     # has settled. Starting it inside that invocation would keep its scope and
@@ -124,7 +124,7 @@
   (var found nil)
   (let kept [])
   (for item in service/cache/.get
-    (if (== item/key key) (set found item) (kept .push item)))
+    (if (== item/key key) (set found item) else (kept .push item)))
   (if_not ($absent? found) (kept .push found) (service/cache .set kept))
   found)
 
@@ -152,7 +152,7 @@
     (emit bytes)))
   (if opened/row/streaming
     (opened/row/synthesize opened/resource text opened/settings output)
-    (for part in (speech_segments text)
+    else (for part in (speech_segments text)
       # Non-streaming engines may hold an internal protocol lock. Complete the
       # segment before applying consumer backpressure, including for plugins.
       (let packets []) (var segment_bytes 0)

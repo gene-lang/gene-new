@@ -9,7 +9,7 @@
   (let props ($props value))
   (let base ($web/asset_base))
   (for route in ($web/published_routes)
-    (let url (if (== base "/") $"/${route/file}" $"${base}/${route/file}"))
+    (let url (if (== base "/") $"/${route/file}" else $"${base}/${route/file}"))
     (if (&& (== props/rel "stylesheet") (== props/href url)
             ($str/starts_with? route/content_type "text/css")) (return url)))
   (fail (Error ^_msg "The browser stylesheet is not a published asset.")))

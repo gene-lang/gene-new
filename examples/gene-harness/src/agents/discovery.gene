@@ -11,7 +11,7 @@
     ^has_default parameter/has_default
     ^type (if parameter/type_known
             ($to_str parameter/type)
-            nil)})
+            else nil)})
 
 (fn signature_shape [signature]
   {
@@ -21,10 +21,10 @@
     ^named ($map (?? signature/named []) parameter_shape)
     ^rest (if ($absent? signature/rest)
             nil
-            (parameter_shape signature/rest))
+            else (parameter_shape signature/rest))
     ^result (if signature/result_known
               ($to_str signature/result)
-              nil)})
+              else nil)})
 
 (fn searchable_registries []
   ["docs" "functions" "commands" "input_modes" "providers" "image_generators" "hooks" "web_components" "seams"])
@@ -80,18 +80,18 @@
   (let matches [])
   (var total 0)
   (for registry in kinds
-    (if_yes (|| (== kind "") (== kind registry))
-      (let records
+    (if (|| (== kind "") (== kind registry))
+      (do (let records
         (if ($absent? snapshot)
           (registry_row_records h registry)
-          (?? (snapshot/registries .get registry) [])))
+          else (?? (snapshot/registries .get registry) [])))
       (for record in records
-        (if_yes (&& (|| (== owner "") (== owner record/owner)) (matches_query query registry record))
-          (if (&& (>= total offset) (< matches/.size limit))
+        (if (&& (|| (== owner "") (== owner record/owner)) (matches_query query registry record))
+          (do (if (&& (>= total offset) (< matches/.size limit))
             (matches .push (discovery_entry registry record)))
-          (set total (+ total 1))))))
+          (set total (+ total 1))))))))
   (let next (+ offset matches/.size))
-  {^matches matches ^total total ^next_offset (if (< next total) next nil)})
+  {^matches matches ^total total ^next_offset (if (< next total) next else nil)})
 
 (fn discovery_bindings [h : Harness, snapshot_ref]
   {

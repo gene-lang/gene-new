@@ -586,14 +586,14 @@ suite "native api threaded attachment":
       (try
         (if peek
           (match (pending .join)
-            (when (TaskOutcome/ok value) value)
-            (when (TaskOutcome/fault (_ : TypeFault)) 8)
-            (when (TaskOutcome/fault fault)
-              (if (== fault/.message "original") 9 -999))
-            (else -999))
-          (await pending))
+            when (TaskOutcome/ok value) value
+            when (TaskOutcome/fault (_ : TypeFault)) 8
+            when (TaskOutcome/fault fault)
+              (if (== fault/.message "original") 9 else -999)
+            else -999)
+          else (await pending))
         catch TypeFault 8
-        catch RuntimeFault (if (== $err/.message "original") 9 -999))
+        catch RuntimeFault (if (== $err/.message "original") 9 else -999))
     """
     var arguments: array[sharedErrorWorkers, SharedAwaitArgs]
     var workers: array[sharedErrorWorkers, Thread[SharedAwaitArgs]]

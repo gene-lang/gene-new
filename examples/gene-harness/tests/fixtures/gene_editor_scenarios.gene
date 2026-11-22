@@ -51,17 +51,17 @@
 # ---------------------------------------------------------------------------
 
 (fn text [value : Any, fallback : Str = ""] : Str
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Str value)
   result)
 
 (fn flag [value : Any] : Bool
-  (if_yes ($absent? value) (return false))
+  (if ($absent? value) (return false))
   (var result : Bool value)
   result)
 
 (fn int_of [value : Any, fallback : Int] : Int
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Int value)
   result)
 
@@ -124,7 +124,7 @@
   (var version (int_of request/version 0))
   (var selected (if sc/analyze_found
     {^found true ^start sc/analyze_selected_start ^end sc/analyze_selected_end}
-    {^found false}))
+    else {^found false}))
   (var diagnostics : (List Any) [])
   (if sc/analyze_partial
     (diagnostics .push
@@ -150,7 +150,7 @@
       (sc/analyze_requests .push request)
       (if sc/analyze_hold
         (sc/held .push {^request request ^done done})
-        (do
+        else (do
           (var reply : Any sc/analyze_reply)
           (if ($absent? reply)
             (set reply (response_for sc request)))
@@ -590,7 +590,7 @@
          "debounce: no analysis request arrived after the pause"))
      (set sc/checks (+ sc/checks 1))
      (var editor : Any sc/debounce_editor)
-     (if_yes ($present? editor)
+     (if ($present? editor)
        (do
          (var target : Editor editor)
          (target/dispose)))

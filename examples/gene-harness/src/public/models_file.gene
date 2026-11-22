@@ -39,17 +39,14 @@
   (for key in ["input" "efforts"]
     (let values (value .get key))
     (if ($present? values)
-      (then
-        (require_list values $"Model ${key}")
+      (do (require_list values $"Model ${key}")
         (for item in values (require_text item $"Model ${key} entry")))))
   (if ($present? value/default_effort)
-    (then
-      (require_text value/default_effort "Model default_effort")
+    (do (require_text value/default_effort "Model default_effort")
       (if (&& ($present? value/efforts) (! (value/efforts .contains? value/default_effort)))
         (config_error "Model default_effort must be in efforts"))))
   (if ($present? value/pricing)
-    (then
-      (fields value/pricing ["prompt" "completion" "request" "image" "input_cache_read" "input_cache_write"] "pricing")
+    (do (fields value/pricing ["prompt" "completion" "request" "image" "input_cache_read" "input_cache_write"] "pricing")
       (map_for [key price] in value/pricing
         (if_not (|| (== ($head price) Str) (== ($head price) Int) (== ($head price) Float))
           (config_error "Model prices must be numbers or decimal strings")))))
@@ -60,12 +57,12 @@
   (if (== ($present? value/env) ($present? value/command))
     (config_error "Credential must name one environment variable or command"))
   (if ($present? value/env)
-    (then (require_text value/env "Credential environment variable"))
-    (else
+    (require_text value/env "Credential environment variable")
+    else
       (require_list value/command "Credential command")
       (if (== value/command/.size 0) (config_error "Credential command cannot be empty"))
       (for arg in value/command
-        (if (!= ($head arg) Str) (config_error "Credential command arguments must be strings"))))))
+        (if (!= ($head arg) Str) (config_error "Credential command arguments must be strings")))))
 
 (fn validate_provider [value, reserved]
   (fields value ["name" "adapter" "base_url" "credential" "discover" "models"] "provider")
@@ -118,22 +115,22 @@
     (for entry in entries
       (try
         (match key
-          (when "providers"
+          when "providers"
             (let checked (validate_provider entry names))
             (names .push checked/name)
-            (config/providers .push checked))
-          (when "models"
+            (config/providers .push checked)
+          when "models"
             (let checked (validate_model ^provider true entry))
             (let id ($serde/write_data [checked/provider checked/id]))
             (if (model_ids .contains? id) (config_error "Duplicate provider/model override"))
             (model_ids .push id)
-            (config/models .push checked))
-          (when "presets"
+            (config/models .push checked)
+          when "presets"
             (let checked (validate_preset entry))
             (if (preset_names .contains? checked/name) (config_error "Duplicate preset name"))
             (preset_names .push checked/name)
-            (config/presets .push checked))
-          (else nil))
+            (config/presets .push checked)
+          else nil)
       catch Error
         (let issue {^section key ^index index ^reason $err/.message})
         (if (&& (== key "providers") (== ($head entry/name) Str)) (issue .put "provider" entry/name))

@@ -21,10 +21,10 @@
     (let key ($to_str raw_key))
     (let value (?? (input .get key) fallback))
     (let maximum (if (["timeout_ms" "max_timeout_ms"] .contains? key)
-      (then 86400000)
-      (elif (== key "max_per_round") 16)
-      (elif (["turn_limit" "max_turns"] .contains? key) 24)
-      (else 64)))
+      86400000
+      elif (== key "max_per_round") 16
+      elif (["turn_limit" "max_turns"] .contains? key) 24
+      else 64))
     (if (|| (!= ($head value) Int) (< value 1) (> value maximum))
       (delegation_error "invalid_configuration" $"delegation/${key} must be an integer from 1 through ${maximum}."))
     (limits .put key value))
@@ -36,7 +36,7 @@
   (let id (valid_delegation_id input/id))
   (for key in ["title" "brief"]
     (let value (input .get key))
-    (let maximum (if (== key "title") 256 60000))
+    (let maximum (if (== key "title") 256 else 60000))
     (if (|| (!= ($head value) Str) (== ($str/trim value) "") (> ($str/byte_size value) maximum))
       (delegation_error "invalid_request" $"Delegation ${key} must contain 1–${maximum} bytes.")))
   (let turns (?? input/turns limits/turn_limit))
@@ -71,8 +71,8 @@
   (for admission in admissions
     (if (|| (! (terminal_delegation? admission/state)) (!= admission/seen true))
       (eligible .push admission)))
-  (if_yes (== wait/mode "list")
-    (let selected [])
+  (if (== wait/mode "list")
+    (do (let selected [])
     (for id in wait/ids
       (var chosen nil)
       (for admission in eligible
@@ -81,7 +81,7 @@
       (if ($absent? chosen)
         (delegation_error "invalid_wait" $"Delegation ${id} is not unfinished or unseen in this round."))
       (selected .push chosen))
-    (return ($map selected (fn [admission] admission/source))))
+    (return ($map selected (fn [admission] admission/source)))))
   ($map eligible (fn [admission] admission/source)))
 
 (fn delegation_question_source [admission] : Str
@@ -90,7 +90,7 @@
 (fn delegation_descriptor [record, admission]
   (let started (?? admission/started_at_ms nil))
   (let elapsed (if ($absent? started) 0
-    ($math/max 0 (- (?? admission/finished_at_ms ($os/wall_ms)) started))))
+    else ($math/max 0 (- (?? admission/finished_at_ms ($os/wall_ms)) started))))
   {^id record/id ^title record/title ^session record/session
    ^source admission/source ^admission admission/number ^round admission/owner_round
    ^turn admission/starting_turn ^state admission/state
@@ -112,13 +112,13 @@
     (let admission (by_source .get source))
     (if ($absent? admission) (return false))
     (if (terminal_delegation? admission/state)
-      (then (if (!= admission/seen true) (set any_terminal true)))
-      (else (set all_terminal false)))
+      (if (!= admission/seen true) (set any_terminal true))
+      else (set all_terminal false))
     (if (&& (== admission/state "waiting") ($present? admission/questions)
             (! ((?? admission/seen_questions []) .contains? admission/questions/id)))
       (set question true)))
   (if (&& question (|| (== wait/mode "any") wait/wake_on_questions)) (return true))
-  (if (== wait/mode "any") any_terminal all_terminal))
+  (if (== wait/mode "any") any_terminal else all_terminal))
 
 (fn delegation_result_data [value, ^depth depth : Int = 0]
   (if (> depth 32) (delegation_error "invalid_result" "Delegation result exceeds 32 levels."))
@@ -126,11 +126,11 @@
   (if ([Nil Nil Bool Int Float Str Sym] .contains? kind) (return value))
   (if (== kind List)
     (return ($map value (fn [item] (delegation_result_data item ^depth (+ depth 1))))))
-  (if_yes (== kind Map)
-    (let result {})
+  (if (== kind Map)
+    (do (let result {})
     (map_for [key item] in value
       (if_not ([Str Sym] .contains? ($head key))
         (delegation_error "invalid_result" "Delegation result map keys must be strings or symbols."))
       (result .put key (delegation_result_data item ^depth (+ depth 1))))
-    (return result))
+    (return result)))
   (delegation_error "invalid_result" "Delegation results must be inert scalars, lists or maps; save files for other values."))

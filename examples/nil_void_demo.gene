@@ -5,7 +5,7 @@
 # A parameter may be omitted only when it declares a default. `Int?` says the
 # argument may be nil; `= nil` says it may be left out.
 (fn age_label [age : Int? = nil] : Str
-  (if ($absent? age) "unknown" $"${age}"))
+  (if ($absent? age) "unknown" else $"${age}"))
 (show "Omitted optional argument" (age_label))
 (show "Supplied value" (age_label 25))
 
@@ -17,7 +17,7 @@
   [($has_key? missing_age "age") ($has_key? nil_age "age")])
 
 (fn keep_positive [x : Int] : Int?
-  (if (> x 0) x nil))
+  (if (> x 0) x else nil))
 (show "map keeps one result per input" ($map [-1 2] keep_positive))
 (show "filter_map drops nil results" ($filter_map [-1 2] keep_positive))
 

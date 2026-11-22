@@ -8,22 +8,22 @@
     (let info ($fs/info path))
     (if (== info/kind "directory")
       (for child in (source_files path) (files .push child))
-      (if ($str/ends_with? path ".gene") (files .push path))))
+      else (if ($str/ends_with? path ".gene") (files .push path))))
   files)
 
 (fn visit [value, callback]
   (if (== ($head value) List)
-    (then (for item in value (visit item callback)) (return nil)))
+    (do (for item in value (visit item callback)) (return nil)))
   (if (== ($head value) Map)
-    (then (map_for [key item] in value (visit item callback)) (return nil)))
+    (do (map_for [key item] in value (visit item callback)) (return nil)))
   (match value
-    (when (node : Node)
+    when (node : Node)
       (if (["quote" "quasiquote"] .contains? ($to_str ($head value))) (return nil))
       (callback value)
       (visit ($head value) callback)
       (visit ($props value) callback)
-      (visit ($body value) callback))
-    (else nil)))
+      (visit ($body value) callback)
+    else nil))
 
 (fn registry_reference [form]
   (let head ($to_str ($head form)))
@@ -45,9 +45,9 @@
     (for path in files
       (for form in ($parse/read_all ($fs/read_text path))
         (visit form (fn [node]
-          (if_yes (== ($head node) (quote registry))
-            (let name (registry_reference node))
-            (if_not ($absent? name) (known .put name true)))))))
+          (if (== ($head node) (quote registry))
+            (do (let name (registry_reference node))
+            (if_not ($absent? name) (known .put name true))))))))
     (var checked 0)
     (for path in files
       (for form in ($parse/read_all ($fs/read_text path))

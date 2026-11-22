@@ -60,7 +60,7 @@ Example after implementation:
   (let reader (await (open_read "input.bin")))
   (try
     (let chunk (await (reader .AsyncReader:read 65536)))
-    (if ($nil? chunk) 0 1)
+    (if ($nil? chunk) 0 else 1)
     ensure (reader .IoResource:close)))
 ```
 

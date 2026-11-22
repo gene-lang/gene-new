@@ -67,16 +67,16 @@
     (voice_error "invalid_request" "A voice claim needs a browser client identity."))
   (voice/gate (fn []
     (let previous (voice_snapshot voice))
-    (if_yes (!= token "")
+    (if (!= token "")
       (if (|| (!= previous/owner owner) (!= previous/token token) (!= previous/session session))
         (voice_error "voice_claim_lost" "Another page owns voice. Enable voice explicitly to take it back.")))
     (let claim {^enabled true ^owner owner ^session session ^output output
-      ^token (if (== token "") ($crypto/random_hex 16) token)
-      ^revision (if (== token "") ($crypto/random_hex 12) previous/revision)
-      ^transport (if (== token "") "events" (?? previous/transport "events"))
+      ^token (if (== token "") ($crypto/random_hex 16) else token)
+      ^revision (if (== token "") ($crypto/random_hex 12) else previous/revision)
+      ^transport (if (== token "") "events" else (?? previous/transport "events"))
       ^expires_ms (if (> (?? (voice/connections/.get .get
-        ($to_str (if (== token "") "events" (?? previous/transport "events")) "/" owner)) 0) 0)
-        0 (+ ($os/monotonic_ms) 10000))})
+        ($to_str (if (== token "") "events" else (?? previous/transport "events")) "/" owner)) 0) 0)
+        0 else (+ ($os/monotonic_ms) 10000))})
     (voice/claim .set claim)))
   (voice_changed voice))
 
@@ -98,7 +98,7 @@
       (voice_error "voice_claim_lost" "The voice claim belongs to another page."))
     (let connected (> (?? (voice/connections/.get .get ($to_str "voice/" owner)) 0) 0))
     (voice/claim .set ((claim .assoc "transport" "voice") .assoc "expires_ms"
-      (if connected 0 (+ ($os/monotonic_ms) 10000))))))
+      (if connected 0 else (+ ($os/monotonic_ms) 10000))))))
   (voice_changed voice))
 
 (fn voice_connected [voice, owner : Str, ^transport transport : Str = "events"]
@@ -107,7 +107,7 @@
     (let key ($to_str transport "/" owner))
     (voice/connections/.get .put key (+ (?? (voice/connections/.get .get key) 0) 1))
     (let claim (voice_snapshot voice))
-    (if_yes (&& (== claim/owner owner) (== (?? claim/transport "events") transport))
+    (if (&& (== claim/owner owner) (== (?? claim/transport "events") transport))
       (voice/claim .set (claim .assoc "expires_ms" 0)))))
   nil)
 
@@ -116,9 +116,9 @@
   (voice/gate (fn []
     (let key ($to_str transport "/" owner))
     (let count ($math/max 0 (- (?? (voice/connections/.get .get key) 0) 1)))
-    (if (== count 0) (voice/connections/.get .delete key) (voice/connections/.get .put key count))
+    (if (== count 0) (voice/connections/.get .delete key) else (voice/connections/.get .put key count))
     (let claim (voice_snapshot voice))
-    (if_yes (&& (== count 0) (== claim/owner owner) (== (?? claim/transport "events") transport))
+    (if (&& (== count 0) (== claim/owner owner) (== (?? claim/transport "events") transport))
       (voice/claim .set (claim .assoc "expires_ms" (+ ($os/monotonic_ms) 10000))))))
   nil)
 

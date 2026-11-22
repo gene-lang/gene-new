@@ -136,11 +136,11 @@
   (for key in ["session" "round" "command" "component" "entity" "revision"]
     (if_not ($absent? (origin .get key)) (bounded_text ($to_str (origin .get key)) "origin" 1024)))
   (let key (bounded_text ^^empty (?? input/key "") "key" 128))
-  (if_yes (== input/progress true)
-    (if (== key "") (notification_error "invalid_request" "Progress requires a stable source key."))
+  (if (== input/progress true)
+    (do (if (== key "") (notification_error "invalid_request" "Progress requires a stable source key."))
     (let data {^origin origin ^summary (bounded_text input/summary "progress" 2048)})
-    (return (publish_progress inbox source key data)))
-  (let scope (?? input/scope (if ($absent? origin/session) "workspace" "session")))
+    (return (publish_progress inbox source key data))))
+  (let scope (?? input/scope (if ($absent? origin/session) "workspace" else "session")))
   (if_not (["workspace" "session"] .contains? scope)
     (notification_error "invalid_request" "Scope must be workspace or session."))
   (if (&& (== scope "session") ($absent? origin/session))
@@ -166,7 +166,7 @@
                    source
                    (?? revision (publisher_revision h source))
                    (?? input/actions []))
-                 frozen_actions)
+                 else frozen_actions)
       ^expires_at (?? input/expires_at nil)
       ^renew (== input/renew true)})
   (if (> ($str/byte_size ($json/stringify definition)) 32768)
@@ -201,7 +201,7 @@
       (input .put key (message .get key)))
     (map_for [key value] in changes
       (input .put key value))
-    (safe_publish ^revision revision ^frozen_actions (if ($absent? changes/actions) message/actions nil) ^preserve_origin ($absent? changes/origin)
+    (safe_publish ^revision revision ^frozen_actions (if ($absent? changes/actions) message/actions else nil) ^preserve_origin ($absent? changes/origin)
       h
       inbox
       source

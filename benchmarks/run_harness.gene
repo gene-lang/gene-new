@@ -5,11 +5,11 @@
 
 (fn record_harness_sample [variant result wall round]
   (if (== round 0)
-    (then (variant .put "checksum" result/record_checksum))
-    (else
+    (variant .put "checksum" result/record_checksum)
+    else
       ($assert (== result/record_checksum variant/checksum) "record checksum changed")
       (variant/elapsed_ms .push result/elapsed_ms)
-      (variant/wall_ms .push wall))))
+      (variant/wall_ms .push wall)))
 
 (fn main [args] : Int
   (let arguments args/.body)

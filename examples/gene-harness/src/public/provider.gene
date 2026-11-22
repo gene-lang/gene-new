@@ -12,7 +12,7 @@
 (fn nonempty [value]
   (if ($absent? value) (return nil))
   (let text ($str/trim ($to_str value)))
-  (if (== text "") nil text))
+  (if (== text "") nil else text))
 
 # Secrets are returned only to a transport operation, never to prepare.
 (fn resolve_credential [spec, ^timeout_ms timeout_ms : Int = 5000, ^environment environment = nil]
@@ -25,11 +25,10 @@
   (if (== ($present? spec/env) ($present? spec/command))
     (fail (ProviderError ^_msg "Credential source must name one environment variable or command")))
   (if ($present? spec/env)
-    (then
-      (if (|| (!= ($head spec/env) Str) (== spec/env ""))
+    (do (if (|| (!= ($head spec/env) Str) (== spec/env ""))
         (fail (ProviderError ^_msg "Invalid credential environment variable")))
       (let value (nonempty (if ($absent? environment)
-        (then ($os/env? spec/env)) (else (environment .get spec/env)))))
+        ($os/env? spec/env) else (environment .get spec/env))))
       (if ($absent? value) (fail (ProviderError ^_msg "Credential environment variable is unavailable")))
       (return value)))
   (let command spec/command)
@@ -56,7 +55,7 @@
   (let headers ($thaw ($freeze supplied_headers)))
   (let secret (resolve_credential ^timeout_ms timeout_ms credential))
   (if ($present? secret)
-    (headers .put auth_header (if (== scheme "") (then secret) (else $"${scheme} ${secret}"))))
+    (headers .put auth_header (if (== scheme "") secret else $"${scheme} ${secret}")))
   (let remaining (- deadline ($os/monotonic_ms)))
   (if (<= remaining 0) (return {^status 0 ^error "timeout"}))
   (try
@@ -92,7 +91,7 @@
   catch HttpClientError
     (if ($str/contains? ($str/lower $err/.message) "timeout")
       {^^timeout}
-      (fail $err))))
+      else (fail $err))))
 
 (fn endpoint_url [base : Str, path : Str]
   (var prefix base)
@@ -106,16 +105,15 @@
   (if (|| (== host "localhost") ($str/starts_with? host "localhost:")
     (== host "127.0.0.1") ($str/starts_with? host "127.0.0.1:")
     (== host "[::1]") ($str/starts_with? host "[::1]:"))
-    (then "local") (else "unknown")))
+    "local" else "unknown"))
 
 (fn endpoint_headers [entry, ^timeout_ms timeout_ms : Int = 5000]
   (let headers {^content-type "application/json"})
   (let secret (resolve_credential ^timeout_ms timeout_ms entry/credential))
   (if (== entry/adapter "anthropic_messages")
-    (then
-      (headers .put "anthropic-version" "2023-06-01")
-      (if ($present? secret) (headers .put "x-api-key" secret)))
-    (elif ($present? secret) (headers .put "authorization" $"Bearer ${secret}")))
+    (headers .put "anthropic-version" "2023-06-01")
+      (if ($present? secret) (headers .put "x-api-key" secret))
+    elif ($present? secret) (headers .put "authorization" $"Bearer ${secret}"))
   headers)
 
 (fn endpoint_connection [entry]
@@ -127,21 +125,19 @@
       (return {^state "sign_in_required" ^label entry/name ^billing billing
         ^reason "Credential source is unavailable; configure it and refresh."})))
   (if (!= entry/discover true) (return connection))
-  (let path (if (== entry/adapter "openrouter_chat") "key" "models"))
+  (let path (if (== entry/adapter "openrouter_chat") "key" else "models"))
   (let remaining (- deadline ($os/monotonic_ms)))
   (let found (if (<= remaining 0)
-    (then {^status 0 ^error "timeout"})
-    (else (probe_json ^headers headers ^timeout_ms remaining (endpoint_url entry/base_url path)))))
+    {^status 0 ^error "timeout"}
+    else (probe_json ^headers headers ^timeout_ms remaining (endpoint_url entry/base_url path))))
   (if ([401 403] .contains? found/status)
-    (then
-      (connection .put "state" "expired")
+    (do (connection .put "state" "expired")
       (connection .put "reason" "Provider rejected this credential; reconnect or update its source.")
       (return connection)))
   (if (&& (== found/status 200) ($absent? found/error)) (return connection))
   (connection .put "stale" true)
   (if (! ([404 405] .contains? found/status))
-    (then
-      (connection .put "state" "unavailable")
+    (do (connection .put "state" "unavailable")
       (connection .put "reason" "Connection check could not complete; refresh to retry.")))
   connection)
 
@@ -155,8 +151,8 @@
   (if (|| (!= response/status 200) ($present? response/error))
     (fail (ProviderError ^status response/status ^_msg "Model discovery could not complete")))
   (if (== entry/adapter "deepseek_chat")
-    (then (normalize_deepseek_models response/data))
-    (else (normalize_compatible_models response/data))))
+    (normalize_deepseek_models response/data)
+    else (normalize_compatible_models response/data)))
 
 (fn endpoint_provider [input]
   (let entry (try (validate_provider input [])
@@ -178,27 +174,27 @@
      (configure_model ^catalog models chosen effort timeout chosen))
    ^prepare (fn [call]
      (match adapter
-       (when "openai_chat" (prepare_chat call adapter))
-       (when "openrouter_chat" (prepare_chat call adapter))
-       (when "deepseek_chat" (prepare_chat call adapter))
-       (when "openai_responses" (prepare_responses call))
-       (when "anthropic_messages" (prepare_messages call))
-       (else (fail (ProviderError ^_msg "Unknown endpoint adapter")))))
+       when "openai_chat" (prepare_chat call adapter)
+       when "openrouter_chat" (prepare_chat call adapter)
+       when "deepseek_chat" (prepare_chat call adapter)
+       when "openai_responses" (prepare_responses call)
+       when "anthropic_messages" (prepare_messages call)
+       else (fail (ProviderError ^_msg "Unknown endpoint adapter"))))
    ^send (fn [prepared]
      (let deadline (+ ($os/monotonic_ms) prepared/timeout_ms))
      (let headers (endpoint_headers ^timeout_ms ($math/min 5000 prepared/timeout_ms) entry))
      (let remaining (- deadline ($os/monotonic_ms)))
      (if (<= remaining 0) (return {^^timeout}))
      (let path (match adapter
-       (when "openai_responses" "responses") (when "anthropic_messages" "messages") (else "chat/completions")))
+       when "openai_responses" "responses" when "anthropic_messages" "messages" else "chat/completions"))
      (if (["openai_responses" "anthropic_messages"] .contains? adapter)
        (headers .put "accept" "text/event-stream"))
      (http_json_attempt ^max_bytes 8388608 (endpoint_url entry/base_url path) headers prepared/body remaining
        (fn [response]
          (match adapter
-           (when "openai_responses" (responses_stream_result response entry/name))
-           (when "anthropic_messages" (messages_stream_result response entry/name))
-           (else (chat_result response entry/name))))))})
+           when "openai_responses" (responses_stream_result response entry/name)
+           when "anthropic_messages" (messages_stream_result response entry/name)
+           else (chat_result response entry/name)))))})
 
 (fn openai_chat [entry] (endpoint_provider (entry .assoc "adapter" "openai_chat")))
 (fn openrouter_chat [entry] (endpoint_provider (entry .assoc "adapter" "openrouter_chat")))

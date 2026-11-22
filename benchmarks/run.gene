@@ -16,7 +16,7 @@
   (let median
     (if (== (// count 2) 0)
       (/ (+ ordered/%previous ordered/%middle) 2.0)
-      ordered/%middle))
+      else ordered/%middle))
   {^samples values ^median median ^min ordered/0 ^max ordered/%last ^p95 ordered/%p95})
 
 (fn main [args] : Int
@@ -27,7 +27,7 @@
   (let output arguments/0)
   ($assert (! ($fs/exists? output)) "output directory must be new")
   (let count_text (?? ($os/env? "GENE_BENCH_SAMPLES") ""))
-  (let count (if (== count_text "") 5 ($parse/parse_int count_text)))
+  (let count (if (== count_text "") 5 else ($parse/parse_int count_text)))
   ($assert (&& (>= count 3) (<= count 100)) "samples must be in 3..100")
   (let variants [])
   (var i 1)
@@ -74,26 +74,22 @@
       (var has_header false)
       (for line in ($str/split process/stdout "\n")
         (if (!= ($str/trim line) "")
-          (then
-            (let row ($json/parse line))
+          (do (let row ($json/parse line))
             (if (== row/kind "build")
-              (then
-                ($assert (! has_header) "duplicate benchmark build header")
+              ($assert (! has_header) "duplicate benchmark build header")
                 ($assert (== row/format 1) "unsupported benchmark format")
                 (set has_header true)
                 (if (== round 0)
-                  (then
-                    (variant .put "header" row))
-                  (else
-                    ($assert (== variant/header row) "build header changed between runs"))))
-              (elif (== row/kind "measurement")
+                  (variant .put "header" row)
+                  else
+                    ($assert (== variant/header row) "build header changed between runs"))
+              elif (== row/kind "measurement")
                 ($assert (> row/iterations 0) "benchmark iterations must be positive")
                 ($assert (>= row/nanoseconds 0) "negative benchmark duration")
                 ($assert (! ($has_key? seen row/name)) "duplicate benchmark name")
                 (seen .put row/name true)
                 (if (== round 0)
-                  (then
-                    (variant/names .push row/name)
+                  (do (variant/names .push row/name)
                     (variant/rows .put
                       row/name
                       {^checksum row/checksum ^iterations row/iterations ^samples [] ^raw []})))
@@ -103,11 +99,10 @@
                   (&& (== group/checksum row/checksum) (== group/iterations row/iterations))
                   $"checksum or iteration count changed: ${row/name}")
                 (if (> round 0)
-                  (then
-                    (group/samples .push (/ (* row/nanoseconds 1.0) row/iterations))
-                    (group/raw .push row))))
-              (else
-                ($assert (== row/kind "skip") "unknown benchmark record"))))))
+                  (do (group/samples .push (/ (* row/nanoseconds 1.0) row/iterations))
+                    (group/raw .push row)))
+              else
+                ($assert (== row/kind "skip") "unknown benchmark record")))))
       ($assert has_header "missing benchmark build header")
       ($assert (> ($size variant/names) 0) "no benchmark measurements")
       (for name in variant/names

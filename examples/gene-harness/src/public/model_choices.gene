@@ -17,8 +17,7 @@
   (if (> matches/.size 1) (fail (ProviderError ^_msg "This model is offered by several providers; use provider/model")))
   (let parts ($str/split name "/"))
   (if (&& (> parts/.size 1) (|| ($absent? current_provider) ($has_key? (?? catalog/providers {}) parts/0)))
-    (then
-      (let suffix [])
+    (do (let suffix [])
       (var index 1)
       (while (< index parts/.size) (suffix .push parts/%index) (set index (+ index 1)))
       (let model ($str/join suffix "/"))

@@ -88,7 +88,7 @@
           (calls .set (+ calls/.get 1))
           (if ($str/contains? ($to_str request/messages) "ask a question")
             "(Outcome ^questions [{^id \"pick\" ^prompt \"Which one?\"}] ^reply \"Choose.\")"
-            "(Outcome ^prompt \"Keep checking.\" ^reply \"Checking.\")"))))
+            else "(Outcome ^prompt \"Keep checking.\" ^reply \"Checking.\")"))))
         # Trigger limits apply to every automated round; admit them directly
         # through the core trigger initiator rather than a scheduler.
         (fn automated [id : Str, text : Str]

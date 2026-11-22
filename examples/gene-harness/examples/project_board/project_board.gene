@@ -26,13 +26,12 @@
              (var result nil)
              (for task in current
                (if (== task/id id)
-                 (then
-                   (if (!= revision task/revision) (fail (BoardError ^_msg "Task changed. Reload the task before saving.")))
+                 (if (!= revision task/revision) (fail (BoardError ^_msg "Task changed. Reload the task before saving.")))
                    (set result {^id id ^title (?? title task/title) ^status (?? status task/status) ^notes (?? notes task/notes)
                      ^revision ($to_str (+ ($parse/parse_int revision) 1))})
                    (updated .push result)
-                   (set found true))
-                 (else (updated .push task))))
+                   (set found true)
+                 else (updated .push task)))
              (if_not found
                (if (!= revision "") (fail (BoardError ^_msg "Task no longer exists.")))
                (set result {^id id ^title (?? title "") ^status (?? status "todo") ^notes (?? notes "") ^revision "1"})
@@ -59,7 +58,7 @@
            (let inspector
              (if ($absent? selected)
                (quote (p "Select a task to edit it."))
-               `(form ^key %$"edit-${selected/id}" ^action "board_save"
+               else `(form ^key %$"edit-${selected/id}" ^action "board_save"
                   ^args %{^id selected/id ^revision selected/revision}
                   (h3 "Task details")
                   (label "Title" (input ^key %$"title-${selected/id}" ^field "title" ^value %selected/title ^^required))

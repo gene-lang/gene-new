@@ -15,10 +15,10 @@
 # The profile has no `get` on a typed list that widens away the nil, so these
 # two accessors are what every loop below uses instead of sprinkling guards.
 (fn nth [values : (List Int), index : Int] : Int
-  (if (|| (< index 0) (>= index ($size values))) 0 values/%index))
+  (if (|| (< index 0) (>= index ($size values))) 0 else values/%index))
 
 (fn nth_text [values : (List Str), index : Int] : Str
-  (if (|| (< index 0) (>= index ($size values))) "" values/%index))
+  (if (|| (< index 0) (>= index ($size values))) "" else values/%index))
 
 # ---------------------------------------------------------------------------
 # Lines and offsets
@@ -36,7 +36,7 @@
   (for line in (str/split text "\n")
     (if first
       (set first false)
-      (do (set offset (+ (+ offset ($size previous)) 1))
+      else (do (set offset (+ (+ offset ($size previous)) 1))
           (starts .push offset)))
     (set previous line))
   starts)
@@ -53,7 +53,7 @@
   index)
 
 (fn line_start [starts : (List Int), line : Int] : Int
-  (if (|| (< line 0) (>= line ($size starts))) 0 (nth starts line)))
+  (if (|| (< line 0) (>= line ($size starts))) 0 else (nth starts line)))
 
 (fn line_span [starts : (List Int), line : Int, length : Int] : Any
   # Half-open [start, end) of one line without its newline.
@@ -65,7 +65,7 @@
   (var finish start)
   (if (< (+ index 1) ($size starts))
     (set finish (- (nth starts (+ index 1)) 1))
-    (set finish length))
+    else (set finish length))
   (if (< finish start) (set finish start))
   {^start start ^end finish ^line index})
 
@@ -166,10 +166,10 @@
       (set at (+ (* i stride) column))
       (if (== (nth_text left i) (nth_text right column))
         (set table/%at (+ 1 (nth table (+ (* (+ i 1) stride) (+ column 1)))))
-        (do
+        else (do
           (var down (nth table (+ (* (+ i 1) stride) column)))
           (var across (nth table (+ (* i stride) (+ column 1))))
-          (set table/%at (if (> down across) down across))))
+          (set table/%at (if (> down across) down else across))))
       (set column (- column 1)))
     (set i (- i 1)))
   (var rows : (List Any) [])
@@ -177,17 +177,16 @@
   (var j 0)
   (while (&& (< i n) (< j m))
     (if (== (nth_text left i) (nth_text right j))
-      (then
-        (rows .push (diff_row "same" (nth_text left i) i j))
+      (rows .push (diff_row "same" (nth_text left i) i j))
         (set i (+ i 1))
-        (set j (+ j 1)))
-      (elif (>= (nth table (+ (* (+ i 1) stride) j))
+        (set j (+ j 1))
+      elif (>= (nth table (+ (* (+ i 1) stride) j))
                 (nth table (+ (* i stride) (+ j 1))))
         (rows .push (diff_row "remove" (nth_text left i) i -1))
-        (set i (+ i 1)))
-      (else
+        (set i (+ i 1))
+      else
         (rows .push (diff_row "add" (nth_text right j) -1 j))
-        (set j (+ j 1)))))
+        (set j (+ j 1))))
   (while (< i n)
     (rows .push (diff_row "remove" (nth_text left i) i -1))
     (set i (+ i 1)))
@@ -258,15 +257,15 @@
   $"padding-left: ${units}ch")
 
 (fn kind_glyph [kind : Str] : Str
-  (if (== kind "node") (then "()")
-    (elif (== kind "list") "[]")
-    (elif (== kind "prop_map") "{}")
-    (elif (== kind "map") "{->}")
-    (elif (== kind "quasiquote") "`")
-    (elif (== kind "unquote") "%")
-    (elif (== kind "comment") "#")
-    (elif (== kind "atom") "·")
-    (else "?")))
+  (if (== kind "node") "()"
+    elif (== kind "list") "[]"
+    elif (== kind "prop_map") "{}"
+    elif (== kind "map") "{->}"
+    elif (== kind "quasiquote") "`"
+    elif (== kind "unquote") "%"
+    elif (== kind "comment") "#"
+    elif (== kind "atom") "·"
+    else "?"))
 
 (fn draft [text : Str, base_revision : Str, line_endings : Str, bom : Bool] : Any
   {^text text ^base_revision base_revision ^line_endings line_endings ^bom bom})

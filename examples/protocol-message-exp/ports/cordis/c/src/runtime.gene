@@ -356,8 +356,7 @@
   (for runtime in runtime_records/.get
     (for record in runtime/contexts/.get
       (if (same? record/token context/token)
-        (then
-          (if (|| (! record/alive/.get) (&& (! (absent? record/owner)) (== record/owner/state/.get InstanceState/disposed)))
+        (do (if (|| (! record/alive/.get) (&& (! (absent? record/owner)) (== record/owner/state/.get InstanceState/disposed)))
             (cordis_failure ContextDisposed "context is disposed"))
           (return record)))))
   (var retired (retired_context context/token))
@@ -401,17 +400,16 @@
 
 (fn owner_effect_record [owner] ^^private
   (if (== ($head owner) ActivationContext)
-    (then
-      (var context (context_record owner))
+    (var context (context_record owner))
       (if (absent? context/owner)
         (cordis_failure EffectDisposed "operator context is not an effect owner"))
       (var root context/owner/root_effect/.get)
       (if (absent? root) (cordis_failure EffectDisposed "activation effect scope is unavailable"))
-      root)
-    (else
+      root
+    else
       (if_not (== ($head owner) EffectScope)
         (cordis_failure EffectDisposed "value is not an effect owner"))
-      (effect_record owner))))
+      (effect_record owner)))
 
 (fn require_accepting_scope [owner] ^^private
   (var scope (owner_effect_record owner))
@@ -427,11 +425,10 @@
 
 (fn effect_owner_context [owner, scope] ^^private
   (if (== ($head owner) ActivationContext)
-    (then
-      (context_record owner)
-      owner)
-    (else
-      scope/context)))
+    (context_record owner)
+      owner
+    else
+      scope/context))
 
 (fn canonical_service_key [candidate] ^^private
   (if_not (== ($head candidate) ServiceKey)
@@ -503,8 +500,7 @@
       (if (&& (! (absent? instance))
               (!= call/kind PluginCallKind/cleanup)
               (! (absent? registration_scope)))
-        (then
-          (var owner_scope registration_scope)
+        (do (var owner_scope registration_scope)
           (if owner_scope/accepting/.get
             (owner_scope/entries/.get .push
               {^kind "task" ^label "plugin-invocation" ^task task}))))
@@ -512,22 +508,21 @@
     ensure
       (try
         (if (&& (absent? outcome) (! (absent? task)))
-          (then
-            task/.cancel
+          (do task/.cancel
             task/.join))
       ensure
         # Release the binding's local edge after joining, including failures.
         (set wrapper nil))))
   (match outcome ^!exhaustive
-    (when (TaskOutcome/ok value) value)
-    (when (TaskOutcome/error error) (fail error))
-    (when (TaskOutcome/fault fault) (let message fault/.message)
+    when (TaskOutcome/ok value) value
+    when (TaskOutcome/error error) (fail error)
+    when (TaskOutcome/fault fault) (let message fault/.message)
       (cordis_failure CordisError
         $"plugin panic: ${message}" message
-        nil call/instance_uid call/entry_id))
-    (when TaskOutcome/cancelled
+        nil call/instance_uid call/entry_id)
+    when TaskOutcome/cancelled
       (cordis_failure CordisError "plugin invocation was cancelled"
-        nil nil call/instance_uid call/entry_id))))
+        nil nil call/instance_uid call/entry_id)))
 
 (fn default_invoke [call : PluginCall] ^^private
   (default_invoke_for call nil nil))
@@ -540,7 +535,7 @@
   (var logger (runtime/options/logger .child "cordis"))
   (if (absent? instance)
     (logger .with {^instance_uid 0})
-    (logger .with
+    else (logger .with
       {^plugin instance/plugin/id ^instance_uid instance/uid ^entry_id instance/entry_id})))
 
 (fn invoke_call [runtime, instance, kind, callable, args, registration_scope = nil, owned : Bool = false, call_context = nil] ^^private
@@ -560,10 +555,10 @@
   (var context
     (if (! (absent? call_context))
       (context_record_even_if_closed call_context)
-      (if (absent? instance/context)
+      else (if (absent? instance/context)
         nil
-        (context_record_even_if_closed instance/context/.get))))
-  (var limits (if (absent? context) runtime/default_limits context/limits))
+        else (context_record_even_if_closed instance/context/.get))))
+  (var limits (if (absent? context) runtime/default_limits else context/limits))
   (var call
     ($freeze_shallow
       (PluginCall ^kind kind ^callable callable ^args ($freeze_shallow args) ^instance_uid instance/uid ^entry_id instance/entry_id ^logger (logger_for_instance runtime instance) ^limits limits)))
@@ -571,7 +566,7 @@
     (return
       (if (== ($head runtime/invoker) DefaultPluginInvoker)
         (default_invoke_for call instance registration_scope)
-        (runtime/invoker .PluginInvoker:invoke call))))
+        else (runtime/invoker .PluginInvoker:invoke call))))
   (let invocation ($crypto/random_hex 16))
   # Register before checking acceptance: unload either sees this invocation,
   # or closes admission before it can enter. Native tracking removes the entry
@@ -584,7 +579,7 @@
         (plugin_error InstanceDisposed "plugin instance no longer accepts external invocations" instance))))
     (if (== ($head runtime/invoker) DefaultPluginInvoker)
       (default_invoke_for call instance registration_scope)
-      (runtime/invoker .PluginInvoker:invoke call)))))
+      else (runtime/invoker .PluginInvoker:invoke call)))))
 
 # --- runtime and contexts --------------------------------------------------
 
@@ -599,7 +594,7 @@
 (fn context_handle [record] ^^private
   (if (absent? record/owner)
     (Context ^token record/token)
-    (ActivationContext ^token record/token)))
+    else (ActivationContext ^token record/token)))
 
 (fn finish_host_request [request] ^^private
   (try
@@ -635,7 +630,7 @@
       (for request in pending
         (if (|| request/cancelled/.get (! (host_request_accepting? request)))
           (reject_host_request request)
-          (try
+          else (try
             (scope
               (var task (spawn ^lane root (request/callable request/args...)))
               (if_not (absent? request/scope)
@@ -674,10 +669,10 @@
 (fn create_runtime [options : RuntimeOptions, executor = nil] : Runtime ^^private
   ($runtime/require_root_lane)
   (var limits (require_positive_limits options/default_limits))
-  (var invoker (if (absent? options/invoker) (default_plugin_invoker) options/invoker))
+  (var invoker (if (absent? options/invoker) (default_plugin_invoker) else options/invoker))
   (var token ($cell nil))
   (var record
-    (RuntimeRecord ^token token ^options options ^invoker invoker ^default_limits limits ^state ($cell "open") ^root ($cell nil) ^next_uid ($cell 1) ^next_realm ($cell 1) ^next_context ($cell 1) ^contexts ($cell (fresh_list)) ^instances ($cell (fresh_list)) ^service_keys ($cell (fresh_map)) ^hook_keys ($cell (fresh_map)) ^providers ($cell (fresh_map)) ^reservations ($cell (fresh_map)) ^dependants ($cell (fresh_map)) ^hooks ($cell (fresh_map)) ^binding_cache ($cell (fresh_map)) ^subjects ($cell (fresh_list)) ^resources ($cell (fresh_list)) ^loaders ($cell (fresh_list)) ^diagnostics ($cell (fresh_list)) ^executor (if (absent? executor) (new_host_executor) executor) ^owns_executor (absent? executor)))
+    (RuntimeRecord ^token token ^options options ^invoker invoker ^default_limits limits ^state ($cell "open") ^root ($cell nil) ^next_uid ($cell 1) ^next_realm ($cell 1) ^next_context ($cell 1) ^contexts ($cell (fresh_list)) ^instances ($cell (fresh_list)) ^service_keys ($cell (fresh_map)) ^hook_keys ($cell (fresh_map)) ^providers ($cell (fresh_map)) ^reservations ($cell (fresh_map)) ^dependants ($cell (fresh_map)) ^hooks ($cell (fresh_map)) ^binding_cache ($cell (fresh_map)) ^subjects ($cell (fresh_list)) ^resources ($cell (fresh_list)) ^loaders ($cell (fresh_list)) ^diagnostics ($cell (fresh_list)) ^executor (if (absent? executor) (new_host_executor) else executor) ^owns_executor (absent? executor)))
   (runtime_records/.get .push record)
   (var root_record
     (new_context_record record nil nil true (fresh_map) (fresh_map) (fresh_map) limits))
@@ -743,13 +738,13 @@
       nil
       (if (absent? context/owner)
         nil
-        context/owner/plugin/id)
+        else context/owner/plugin/id)
       (if (absent? context/owner)
         nil
-        context/owner/uid)
+        else context/owner/uid)
       (if (absent? context/owner)
         nil
-        context/owner/entry_id)))
+        else context/owner/entry_id)))
   key)
 
 (fn named_service_key [runtime, id : Str] ^^private
@@ -766,50 +761,47 @@
   (var rows (fresh_list))
   (if (absent? value) (return rows))
   (if (== ($head value) List)
-    (then
-      (for item in value
+    (for item in value
         (if (== ($head item) List)
-          (then
-            (if_not (== item/.size 2)
+          (if_not (== item/.size 2)
               (cordis_failure
                 ConfigValidationError
                 "an isolate pair must contain a key and realm label"))
             (var key (admitted_service_key runtime item/0))
             (if_not (== ($head item/1) Str)
               (cordis_failure ConfigValidationError "an isolate realm label must be Str"))
-            (rows .push [key $"named:${item/1}"]))
-          (else
-            (rows .push [(admitted_service_key runtime item) (fresh_private_realm runtime)])))))
-    (else
+            (rows .push [key $"named:${item/1}"])
+          else
+            (rows .push [(admitted_service_key runtime item) (fresh_private_realm runtime)])))
+    else
       (if_not (== ($head value) Map)
         (cordis_failure ConfigValidationError "derive ^isolate must be a list or map"))
       (for [id choice] in value
         (var key (named_service_key runtime ($to_str id)))
         (if (== choice true)
           (rows .push [key (fresh_private_realm runtime)])
-          (if (== ($head choice) Str)
+          else (if (== ($head choice) Str)
             (rows .push [key $"named:${choice}"])
-            (cordis_failure
+            else (cordis_failure
               ConfigValidationError
-              "isolate values must be true or a named realm string"))))))
+              "isolate values must be true or a named realm string")))))
   rows)
 
 (fn normalize_intercepts [runtime, value] ^^private
   (var rows (fresh_list))
   (if (absent? value) (return rows))
   (if (== ($head value) List)
-    (then
-      (for row in value
+    (for row in value
         (if_not (&& (== ($head row) List) (== row/.size 2))
           (cordis_failure
             ConfigValidationError
             "an intercept row must contain a service key and config"))
-        (rows .push [(admitted_service_key runtime row/0) ($freeze row/1)])))
-    (else
+        (rows .push [(admitted_service_key runtime row/0) ($freeze row/1)]))
+    else
       (if_not (== ($head value) Map)
         (cordis_failure ConfigValidationError "derive ^intercept must be a list or map"))
       (for [id config] in value
-        (rows .push [(named_service_key runtime ($to_str id)) ($freeze config)]))))
+        (rows .push [(named_service_key runtime ($to_str id)) ($freeze config)])))
   rows)
 
 (fn context_derive [handle : Context, options] ^^private
@@ -912,7 +904,7 @@
       (if_not (same? row/token instance/token) (kept .push row)))
     (if (== kept/.size 0)
       (index .delete requirement/key/id)
-      (index .put requirement/key/id kept)))
+      else (index .put requirement/key/id kept)))
   (instance/runtime/dependants .set index))
 
 (fn reserve_instance_providers [instance] ^^private
@@ -1010,19 +1002,18 @@
   (for requirement in instance/plugin/requires
     (var provider (provider_for_requirement instance requirement))
     (if (absent? provider)
-      (then
-        (var context (context_record_even_if_closed instance/context/.get))
-        (var realm (if (absent? context) "disposed" (context_realm context requirement/key)))
+      (var context (context_record_even_if_closed instance/context/.get))
+        (var realm (if (absent? context) "disposed" else (context_realm context requirement/key)))
         (missing .push {^service requirement/key/id ^realm realm})
-        (rows .push $"missing:${requirement/key/id}:${realm}"))
-      (else
-        (rows .push $"${provider/owner/uid}:${provider/generation/.get}"))))
+        (rows .push $"missing:${requirement/key/id}:${realm}")
+      else
+        (rows .push $"${provider/owner/uid}:${provider/generation/.get}")))
   (EpochRecord ^ready (== missing/.size 0) ^text ($str/join rows "|") ^missing missing))
 
 (fn record_diagnostic [runtime, kind : Str, instance, error] ^^private
   (var rows runtime/diagnostics/.get)
   (if (>= rows/.size 256) (rows .delete 0))
-  (var message (if (absent? error) "" error/.message))
+  (var message (if (absent? error) "" else error/.message))
   (rows .push
     {
       ^kind kind
@@ -1068,7 +1059,7 @@
     (provider/active .set visible)
     (if visible
       (providers .put provider/address provider)
-      (if (same? (providers .get provider/address) provider) (providers .delete provider/address)))
+      else (if (same? (providers .get provider/address) provider) (providers .delete provider/address)))
     (notify_service instance/runtime provider/key))
   (instance/runtime/providers .set providers))
 
@@ -1131,8 +1122,7 @@
   (for provider in instance/providers/.get
     (for candidate in (?? (instance/runtime/dependants/.get .get provider/key/id) (fresh_list))
       (if (&& (! (same? candidate/token instance/token)) (!= (seen .get ($to_str candidate/uid)) true))
-        (then
-          (seen .put ($to_str candidate/uid) true)
+        (do (seen .put ($to_str candidate/uid) true)
           (found .push candidate)))))
   found)
 
@@ -1164,17 +1154,16 @@
   (instance/provided .set (fresh_map))
   (instance/active_epoch .set "")
   (if disposing
-    (then
-      (instance/state .set InstanceState/disposed)
+    (instance/state .set InstanceState/disposed)
       (for context in instance/runtime/contexts/.get
         (if (&& (! (absent? context/owner))
                 (same? context/owner instance))
           (context/alive .set false)))
       (release_instance_reservations instance)
-      (unindex_instance_requirements instance))
-    (else
+      (unindex_instance_requirements instance)
+    else
       (instance/gate_open .set true)
-      (instance/state .set InstanceState/pending)))
+      (instance/state .set InstanceState/pending))
   cleanup_failure)
 
 (fn run_instance_transitions [instance] ^^private
@@ -1182,8 +1171,7 @@
     (while instance/dirty/.get
       (instance/dirty .set false)
       (if instance/dispose_requested/.get
-        (then
-          (unload_instance instance true)
+        (do (unload_instance instance true)
           (return nil)))
       (var epoch (compute_instance_epoch instance))
       (instance/desired_epoch .set epoch/text)
@@ -1191,16 +1179,14 @@
       (var retry instance/retry/.get)
       (if retry (instance/retry .set false))
       (if (&& (== state InstanceState/active) (|| retry (!= epoch/text instance/active_epoch/.get)))
-        (then
-          (unload_instance instance false)
+        (do (unload_instance instance false)
           (set state instance/state/.get)))
       (if (== state InstanceState/failed)
         (if retry
-          (then
-            (instance/state .set InstanceState/pending)
-            (set state InstanceState/pending))
-          (else
-            (return nil))))
+          (instance/state .set InstanceState/pending)
+            (set state InstanceState/pending)
+          else
+            (return nil)))
       (if_not epoch/ready
         (if (== state InstanceState/active) (unload_instance instance false))
         (if_not (== instance/state/.get InstanceState/disposed)
@@ -1224,25 +1210,25 @@
   (while (! (absent? instance/transition/.get))
     instance/transition/.get/.join)
   (match instance/state/.get
-    (when InstanceState/active
-      handle)
-    (when InstanceState/pending
+    when InstanceState/active
+      handle
+    when InstanceState/pending
       (var epoch (compute_instance_epoch instance))
       (plugin_error
         DependenciesUnavailable
         $"plugin dependencies are unavailable: ${epoch/missing}"
-        instance))
-    (when InstanceState/failed
+        instance)
+    when InstanceState/failed
       (var error instance/error/.get)
       (plugin_error
         PluginActivationError
         $"plugin activation failed: ${error/.message}"
         instance
-        error))
-    (when InstanceState/disposed
-      (plugin_error InstanceDisposed "plugin instance is disposed" instance))
-    (else
-      (plugin_error PluginActivationError "plugin instance did not settle" instance))))
+        error)
+    when InstanceState/disposed
+      (plugin_error InstanceDisposed "plugin instance is disposed" instance)
+    else
+      (plugin_error PluginActivationError "plugin instance did not settle" instance)))
 
 (fn instance_update [handle : PluginInstance, config] : Nil ^^private
   (var instance (instance_record handle))
@@ -1299,27 +1285,27 @@
     (for record in runtime/resources/.get
       (var matches
         (match kind
-          (when "cleanup"
-            (== ($head record) CleanupRecord))
-          (when "provider"
-            (== ($head record) ProviderRecord))
-          (when "hook"
-            (== ($head record) HookRecord))
-          (else
-            false)))
+          when "cleanup"
+            (== ($head record) CleanupRecord)
+          when "provider"
+            (== ($head record) ProviderRecord)
+          when "hook"
+            (== ($head record) HookRecord)
+          else
+            false))
       (if (&& matches (same? record/token token)) (return record))))
   (for retirement in retirement_records/.get
     (for record in retirement/resources
       (var matches
         (match kind
-          (when "cleanup"
-            (== ($head record) CleanupRecord))
-          (when "provider"
-            (== ($head record) ProviderRecord))
-          (when "hook"
-            (== ($head record) HookRecord))
-          (else
-            false)))
+          when "cleanup"
+            (== ($head record) CleanupRecord)
+          when "provider"
+            (== ($head record) ProviderRecord)
+          when "hook"
+            (== ($head record) HookRecord)
+          else
+            false))
       (if (&& matches (same? record/token token)) (return record))))
   nil)
 
@@ -1374,19 +1360,19 @@
     (if_not (same? record/token hook/token) (kept .push record)))
   (if (== kept/.size 0)
     (table .delete hook/hook/id)
-    (table .put hook/hook/id kept))
+    else (table .put hook/hook/id kept))
   (hook/runtime/hooks .set table)
   (set hook/handler nil)
   nil)
 
 (fn task_outcome_error [outcome] ^^private
   (match outcome
-    (when (TaskOutcome/error error)
-      error)
-    (when (TaskOutcome/fault fault) (let message fault/.message)
-      (PluginCleanupError ^_msg $"effect task panicked: ${message}" ^cause message ^plugin nil ^instance_uid nil ^entry_id nil))
-    (else
-      nil)))
+    when (TaskOutcome/error error)
+      error
+    when (TaskOutcome/fault fault) (let message fault/.message)
+      (PluginCleanupError ^_msg $"effect task panicked: ${message}" ^cause message ^plugin nil ^instance_uid nil ^entry_id nil)
+    else
+      nil))
 
 (fn dispose_owned_instance_record [owned] ^^private
   (var resolved nil)
@@ -1396,7 +1382,7 @@
     nil)
   (if (&& (! (absent? resolved)) (same? resolved owned))
     (instance_dispose (instance_handle owned))
-    (unload_instance owned true)))
+    else (unload_instance owned true)))
 
 (fn dispose_effect_record [scope, explicit : Bool] ^^private
   (if_not scope/active/.get (return nil))
@@ -1410,23 +1396,23 @@
     (set index (- index 1))
     (try
       (match entry/kind
-        (when "cleanup"
-          (invoke_cleanup entry/record))
-        (when "provider"
-          (dispose_provider_record entry/record))
-        (when "hook"
-          (dispose_hook_record entry/record))
-        (when "effect"
+        when "cleanup"
+          (invoke_cleanup entry/record)
+        when "provider"
+          (dispose_provider_record entry/record)
+        when "hook"
+          (dispose_hook_record entry/record)
+        when "effect"
           (var nested (dispose_effect_record entry/record explicit))
-          (if_not (absent? nested) (errors .push nested)))
-        (when "task"
+          (if_not (absent? nested) (errors .push nested))
+        when "task"
           entry/task/.cancel
           (var task_error (task_outcome_error entry/task/.join))
-          (if_not (absent? task_error) (errors .push task_error)))
-        (when "instance"
-          (dispose_owned_instance_record entry/record))
-        (else
-          nil))
+          (if_not (absent? task_error) (errors .push task_error))
+        when "instance"
+          (dispose_owned_instance_record entry/record)
+        else
+          nil)
     catch Throwable
       (errors .push $err)))
   (scope/entries .set (fresh_list))
@@ -1694,13 +1680,12 @@
   (if (absent? left) (return right))
   (if (absent? right) (return left))
   (if (&& (== ($head left) Map) (== ($head right) Map))
-    (then
-      (var out (copy_map left))
+    (var out (copy_map left))
       (for [key value] in right
         (out .put key value))
-      out)
-    (else
-      right)))
+      out
+    else
+      right))
 
 (fn merge_service_config [context, key, head_config] ^^private
   (var configs (fresh_list))
@@ -1715,7 +1700,7 @@
   (for config in configs
     (if (absent? key/merge_config)
       (set merged (shallow_merge merged config))
-      (try
+      else (try
         (set merged
           (invoke_context_call context PluginCallKind/merge_config key/merge_config [merged config]))
       catch Throwable
@@ -1725,13 +1710,13 @@
           $err
           (if (absent? context/owner)
             nil
-            context/owner/plugin/id)
+            else context/owner/plugin/id)
           (if (absent? context/owner)
             nil
-            context/owner/uid)
+            else context/owner/uid)
           (if (absent? context/owner)
             nil
-            context/owner/entry_id)))))
+            else context/owner/entry_id)))))
   (set merged ($freeze merged))
   (if_not (absent? key/config_schema)
     (try
@@ -1745,13 +1730,13 @@
         $err
         (if (absent? context/owner)
           nil
-          context/owner/plugin/id)
+          else context/owner/plugin/id)
         (if (absent? context/owner)
           nil
-          context/owner/uid)
+          else context/owner/uid)
         (if (absent? context/owner)
           nil
-          context/owner/entry_id))))
+          else context/owner/entry_id))))
   merged)
 
 (fn check_bound_service [context, key, value] ^^private
@@ -1764,13 +1749,13 @@
       $err
       (if (absent? context/owner)
         nil
-        context/owner/plugin/id)
+        else context/owner/plugin/id)
       (if (absent? context/owner)
         nil
-        context/owner/uid)
+        else context/owner/uid)
       (if (absent? context/owner)
         nil
-        context/owner/entry_id))))
+        else context/owner/entry_id))))
 
 (fn context_require [handle : Context, candidate, head_config] ^^private
   (var context (context_record handle))
@@ -1785,13 +1770,13 @@
       nil
       (if (absent? context/owner)
         nil
-        context/owner/plugin/id)
+        else context/owner/plugin/id)
       (if (absent? context/owner)
         nil
-        context/owner/uid)
+        else context/owner/uid)
       (if (absent? context/owner)
         nil
-        context/owner/entry_id)))
+        else context/owner/entry_id)))
   (var config (merge_service_config context key head_config))
   (var cache_key
     ($to_str
@@ -1822,13 +1807,13 @@
         $err
         (if (absent? context/owner)
           nil
-          context/owner/plugin/id)
+          else context/owner/plugin/id)
         (if (absent? context/owner)
           nil
-          context/owner/uid)
+          else context/owner/uid)
         (if (absent? context/owner)
           nil
-          context/owner/entry_id))))
+          else context/owner/entry_id))))
   (set bound (check_bound_service context key bound))
   (context/runtime/binding_cache/.get .put cache_key bound)
   bound)
@@ -1882,14 +1867,13 @@
   (var table scope/runtime/hooks/.get)
   (var rows (?? (table .get hook/id) (fresh_list)))
   (if prepend
-    (then
-      (var next (fresh_list))
+    (var next (fresh_list))
       (next .push record)
       (for row in rows
         (next .push row))
-      (set rows next))
-    (else
-      (rows .push record)))
+      (set rows next)
+    else
+      (rows .push record))
   (table .put hook/id rows)
   (scope/runtime/hooks .set table)
   (scope/entries/.get .push {^kind "hook" ^record record})
@@ -1953,14 +1937,14 @@
   (var errors (fresh_list))
   (for task in tasks
     (match task/.join
-      (when (TaskOutcome/error error)
-        (errors .push error))
-      (when (TaskOutcome/fault fault) (let message fault/.message)
-        (errors .push message))
-      (when TaskOutcome/cancelled
-        (errors .push "hook task cancelled"))
-      (else
-        nil)))
+      when (TaskOutcome/error error)
+        (errors .push error)
+      when (TaskOutcome/fault fault) (let message fault/.message)
+        (errors .push message)
+      when TaskOutcome/cancelled
+        (errors .push "hook task cancelled")
+      else
+        nil))
   (if (> errors/.size 0)
     (cordis_failure HookDispatchError $"${errors/.size} parallel hook handler(s) failed" errors))
   nil)
@@ -2008,7 +1992,7 @@
   (if (> call/.body/.size 1)
     (cordis_failure HookDispatchError "waterfall continuation accepts at most one payload"))
   (record/used .set true)
-  (var payload (if (== call/.body/.size 0) record/payload call/.body/0))
+  (var payload (if (== call/.body/.size 0) record/payload else call/.body/0))
   (var context (context_record record/context))
   (try
     (dispatch_waterfall_at context record/hook record/handlers record/index payload record/terminal)
@@ -2036,7 +2020,7 @@
   (if (== hook/mode HookMode/waterfall)
     (if (|| (absent? terminal) (! (callable? terminal)))
       (cordis_failure HookDispatchError "waterfall dispatch requires a callable ^terminal"))
-    (if_not (absent? terminal)
+    else (if_not (absent? terminal)
       (cordis_failure HookDispatchError "^terminal is valid only for waterfall hooks")))
   (var checked ($freeze payload))
   (if_not (absent? hook/payload_schema)
@@ -2048,27 +2032,27 @@
       (cordis_failure HookDispatchError $"hook ${hook/id} payload validation failed" $err)))
   (var handlers (hook_snapshot context hook subject))
   (match hook/mode ^!exhaustive
-    (when HookMode/emit
-      (dispatch_emit handlers checked))
-    (when HookMode/parallel
-      (dispatch_parallel context handlers checked))
-    (when HookMode/serial
-      (dispatch_bail handlers checked))
-    (when HookMode/bail
-      (dispatch_bail handlers checked))
-    (when HookMode/waterfall
-      (dispatch_waterfall_at context hook handlers 0 checked terminal))))
+    when HookMode/emit
+      (dispatch_emit handlers checked)
+    when HookMode/parallel
+      (dispatch_parallel context handlers checked)
+    when HookMode/serial
+      (dispatch_bail handlers checked)
+    when HookMode/bail
+      (dispatch_bail handlers checked)
+    when HookMode/waterfall
+      (dispatch_waterfall_at context hook handlers 0 checked terminal)))
 
 # --- snapshots and shutdown ----------------------------------------------
 
 (fn state_name [state] : Str ^^private
   (match state ^!exhaustive
-    (when InstanceState/pending "pending")
-    (when InstanceState/loading "loading")
-    (when InstanceState/active "active")
-    (when InstanceState/failed "failed")
-    (when InstanceState/unloading "unloading")
-    (when InstanceState/disposed "disposed")))
+    when InstanceState/pending "pending"
+    when InstanceState/loading "loading"
+    when InstanceState/active "active"
+    when InstanceState/failed "failed"
+    when InstanceState/unloading "unloading"
+    when InstanceState/disposed "disposed"))
 
 (fn effect_snapshot [scope] ^^private
   (var children (fresh_list))
@@ -2084,17 +2068,17 @@
 
 (fn requirement_snapshot [instance, requirement] ^^private
   (var context (context_record_even_if_closed instance/context/.get))
-  (var realm (if (absent? context) "disposed" (context_realm context requirement/key)))
+  (var realm (if (absent? context) "disposed" else (context_realm context requirement/key)))
   (var provider (provider_for_requirement instance requirement))
   {
     ^service requirement/key/id
     ^realm realm
     ^provider (if (absent? provider)
                 nil
-                provider/owner/uid)
+                else provider/owner/uid)
     ^status (if (absent? provider)
               "missing"
-              "active")})
+              else "active")})
 
 (fn instance_snapshot [instance] ^^private
   (var requirements (fresh_list))
@@ -2113,7 +2097,7 @@
     ^effects effects
     ^error (if (absent? error)
              nil
-             error/.message)})
+             else error/.message)})
 
 (fn runtime_inspect [handle : Runtime] ^^private
   (var runtime (runtime_record handle))
@@ -2180,9 +2164,9 @@
 (fn runtime_close [handle : Runtime] : Nil ^^private
   (var runtime (runtime_record handle))
   (if (== runtime/state/.get "closed") (return nil))
-  (if_yes (== runtime/state/.get "closing")
-    (runtime_await_settled handle)
-    (return nil))
+  (if (== runtime/state/.get "closing")
+    (do (runtime_await_settled handle)
+    (return nil)))
   (runtime/state .set "closing")
   (for loader in (copy_list runtime/loaders/.get)
     (try
@@ -2195,8 +2179,7 @@
     (var selected nil)
     (for instance in runtime/instances/.get
       (if (!= instance/state/.get InstanceState/disposed)
-        (then
-          (set remaining true)
+        (do (set remaining true)
           (if (&& (absent? selected) (! (live_dependant_of? runtime instance)))
             (set selected instance)))))
     (if (&& remaining (absent? selected))
@@ -2260,7 +2243,7 @@
   (var limits
     (if (absent? options/default_limits)
       runtime/default_limits
-      (narrow_limits options/default_limits runtime/default_limits)))
+      else (narrow_limits options/default_limits runtime/default_limits)))
   (if (&& (! (absent? options/descriptor_factory)) (! (callable? options/descriptor_factory)))
     (cordis_failure CompositionError "descriptor_factory must be a host callable"))
   (if (&& (! (absent? options/retirement)) (! (callable? options/retirement)))
@@ -2272,8 +2255,7 @@
   (var normalized (validate_loader_options runtime options))
   (var current runtime/loaders/.get)
   (if (> current/.size 0)
-    (then
-      (var existing current/0)
+    (do (var existing current/0)
       (if (== existing/options normalized) (return (Loader ^token existing/token)))
       (cordis_failure CompositionError "runtime already owns a loader with incompatible options")))
   (var record
@@ -2286,7 +2268,7 @@
   (var value (entry .get name))
   (if ($absent? value)
     fallback
-    value))
+    else value))
 
 (fn validate_manifest_limit_map [loader, value] ^^private
   (if (absent? value) (return loader/options/default_limits))
@@ -2303,7 +2285,7 @@
   (narrow_limits limits parent))
 
 (fn resolve_manifest_namespaces [loader, value] ^^private
-  (var requested (if (absent? value) (fresh_list) value))
+  (var requested (if (absent? value) (fresh_list) else value))
   (if_not (== ($head requested) List)
     (cordis_failure CompositionError "entry namespaces must be a list"))
   (var out (fresh_list))
@@ -2354,7 +2336,7 @@
     (if (== (siblings .get local_id) true)
       (cordis_failure CompositionError $"duplicate sibling entry id ${local_id}"))
     (siblings .put local_id true)
-    (var id (if (absent? parent_id) local_id $"${parent_id}:${local_id}"))
+    (var id (if (absent? parent_id) local_id else $"${parent_id}:${local_id}"))
     (var group_value (entry .get "group"))
     (if (&& ($present? group_value) (!= ($head group_value) Bool))
       (cordis_failure CompositionError $"entry ${id} ^group must be Bool"))
@@ -2368,16 +2350,15 @@
     (var disabled (|| inherited_disabled (== (manifest_value entry "disabled" false) true)))
     (var children (manifest_value entry "children" #[]))
     (if group
-      (then
-        (if_not (== ($head children) List)
+      (if_not (== ($head children) List)
           (cordis_failure CompositionError $"group ${id} children must be a list"))
         (if_not ($absent? (entry .get "module"))
-          (cordis_failure CompositionError $"group ${id} cannot declare a module")))
-      (else
+          (cordis_failure CompositionError $"group ${id} cannot declare a module"))
+      else
         (if_not (== ($head (entry .get "module")) Str)
           (cordis_failure CompositionError $"plugin entry ${id} requires a module"))
         (if (> children/.size 0)
-          (cordis_failure CompositionError $"plugin entry ${id} cannot contain children"))))
+          (cordis_failure CompositionError $"plugin entry ${id} cannot contain children")))
     (var isolate (validate_service_id_map loader (entry .get "isolate") "isolate"))
     (var intercept (validate_service_id_map loader (entry .get "intercept") "intercept"))
     (var namespaces (resolve_manifest_namespaces loader (entry .get "namespaces")))
@@ -2453,7 +2434,7 @@
           CompositionError
           $"entry ${row/id} module must export one plugin binding"
           $err))
-      (loader/options/descriptor_factory module row generation/.graph)))
+      else (loader/options/descriptor_factory module row generation/.graph)))
   (validate_plugin_spec loader/runtime plugin)
   (if (&& (! (absent? row/plugin_id)) (!= row/plugin_id plugin/id))
     (cordis_failure
@@ -2515,7 +2496,7 @@
   text)
 
 (fn loader_entry_snapshot [entry] ^^private
-  (var state (if (absent? entry/error) "group" "failed"))
+  (var state (if (absent? entry/error) "group" else "failed"))
   (var error entry/error)
   (if_not (absent? entry/instance)
     (var instance (instance_record entry/instance))
@@ -2528,7 +2509,7 @@
     ^module entry/module_path
     ^plugin (if (absent? entry/plugin)
               nil
-              entry/plugin/id)
+              else entry/plugin/id)
     ^state state
     ^error (failure_text error)
     ^graph entry/graph})
@@ -2562,7 +2543,7 @@
     instance))
 
 (fn loader_reconcile_incremental ^^private [loader, manifest, rows, host_plugins = nil]
-  (var admitted (if (absent? host_plugins) (fresh_map) host_plugins))
+  (var admitted (if (absent? host_plugins) (fresh_map) else host_plugins))
   (var old_admitted loader/host_plugins/.get)
   (var old_entries loader/entries/.get)
   (var desired_ids (fresh_map))
@@ -2583,8 +2564,7 @@
           # A host plugin is replaced when its admitted value changes.
           (! (same? (admitted .get id) (old_admitted .get id)))))
     (if remove
-      (then
-        (dispose_loader_entry loader entry)
+      (do (dispose_loader_entry loader entry)
         (old_entries .delete id))))
   (var next_entries (fresh_map))
   (var next_order (fresh_list))
@@ -2595,19 +2575,17 @@
       (next_parent_context loader next_entries row/parent_id))
     (var parent_signature
       (if (absent? row/parent_id) "root"
-        (signatures .get row/parent_id)))
+        else (signatures .get row/parent_id)))
     (var signature (entry_context_signature row parent_signature))
     (signatures .put row/id signature)
     (var existing (old_entries .get row/id))
     (if (&& ($present? existing)
             (!= existing/context_signature signature))
-      (then
-        (dispose_loader_entry loader existing)
+      (do (dispose_loader_entry loader existing)
         (old_entries .delete row/id)
         (set existing nil)))
     (if row/disabled
-      (then
-        (var disabled_context
+      (var disabled_context
           (derive_loader_context loader parent_context row))
         (var disabled_entry
           (LoaderEntryRecord
@@ -2616,11 +2594,10 @@
             ^context_signature signature ^module_path row/module
             ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil))
         (next_entries .put row/id disabled_entry)
-        (next_order .push row/id))
-      (else
+        (next_order .push row/id)
+      else
         (if ($absent? existing)
-          (then
-            (var context (derive_loader_context loader parent_context row))
+          (var context (derive_loader_context loader parent_context row))
             (var host_plugin (admitted .get row/id))
             (var created
               (if row/group
@@ -2631,10 +2608,10 @@
                   ^module nil ^instance nil ^generation nil ^graph nil)
                 # Entries fail individually, as in upstream Cordis: the failure
                 # is recorded on this entry and its siblings still install.
-                (try
+                else (try
                   (if ($absent? host_plugin)
                     (install_loader_entry loader row context)
-                    (install_host_loader_entry loader row context host_plugin))
+                    else (install_host_loader_entry loader row context host_plugin))
                 catch Throwable
                   (LoaderEntryRecord
                     ^id row/id ^parent_id row/parent_id ^data row ^!group
@@ -2645,16 +2622,15 @@
             (set created/context_signature signature)
             (next_entries .put row/id created)
             (next_order .push row/id)
-            (changed .push row/id))
-          (else
+            (changed .push row/id)
+          else
             (if (&& (! existing/group)
                     (!= existing/data/config row/config))
-              (then
-                (instance_update existing/instance row/config)
+              (do (instance_update existing/instance row/config)
                 (changed .push row/id)))
             (set existing/data row)
             (next_entries .put row/id existing)
-            (next_order .push row/id))))))
+            (next_order .push row/id))))
   (loader/entries .set next_entries)
   (loader/order .set next_order)
   (loader/manifest .set ($freeze manifest))
@@ -2752,10 +2728,10 @@
     (var parent_context
       (if (absent? row/parent_id)
         candidate/root/.get
-        (next_parent_context loader entries row/parent_id)))
+        else (next_parent_context loader entries row/parent_id)))
     (var parent_signature
       (if (absent? row/parent_id) "root"
-        (signatures .get row/parent_id)))
+        else (signatures .get row/parent_id)))
     (var signature (entry_context_signature row parent_signature))
     (signatures .put row/id signature)
     (var context (derive_loader_context loader parent_context row))
@@ -2767,14 +2743,13 @@
         "candidate context escaped its prospective runtime"))
     (var entry nil)
     (if (|| row/group row/disabled)
-      (then
-        (set entry
+      (set entry
           (LoaderEntryRecord
             ^id row/id ^parent_id row/parent_id ^data row ^group row/group
             ^disabled row/disabled ^context context
             ^context_signature signature ^module_path row/module
-            ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil)))
-      (else
+            ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil))
+      else
         (var source
           (staged_candidate_source old_entries row transaction loader
                                    force_ids host_plugins))
@@ -2788,7 +2763,7 @@
             ^!disabled ^context context
             ^context_signature signature ^module_path row/module
             ^plugin source/plugin ^module source/module ^instance instance
-            ^generation source/generation ^graph source/graph))))
+            ^generation source/generation ^graph source/graph)))
     (entries .put row/id entry)
     (order .push row/id))
   {^entries entries ^order order ^prepared_generations prepared_generations})
@@ -2882,8 +2857,7 @@
   (for [id staged] in staged_entries
     (var old (old_entries .get id))
     (if (&& ($present? old) (! (absent? old/instance)) (! (absent? staged/instance)))
-      (then
-        (var old_record (instance_record old/instance))
+      (do (var old_record (instance_record old/instance))
         (var staged_record (instance_record staged/instance))
         (set staged_record/token old_record/token)
         (set staged_record/uid old_record/uid)
@@ -2937,8 +2911,7 @@
         (for requirement in candidate/plugin/requires
           (var provider (provider_for_requirement candidate requirement))
           (if (&& (! (absent? provider)) (instance_in_records? closure provider/owner))
-            (then
-              (closure .push candidate)
+            (do (closure .push candidate)
               (set closure (expand_owned_replacements closure))
               (set changed true)))))))
   closure)
@@ -2996,7 +2969,7 @@
     (var limit
       (if (< old_children/.size candidate_children/.size)
         old_children/.size
-        candidate_children/.size))
+        else candidate_children/.size))
     (repeat index in limit
       (if (== old_children/%index/plugin/id candidate_children/%index/plugin/id)
         (preserve_tree old_children/%index candidate_children/%index))))
@@ -3089,10 +3062,10 @@
   (loader/host_plugins .set staged/host_plugins)
   (rebuild_runtime_indexes live)
   (for instance in candidate/instances/.get
-    (if_yes (== instance/state/.get InstanceState/active)
-      (var epoch (compute_instance_epoch instance))
+    (if (== instance/state/.get InstanceState/active)
+      (do (var epoch (compute_instance_epoch instance))
       (instance/desired_epoch .set epoch/text)
-      (instance/active_epoch .set epoch/text)))
+      (instance/active_epoch .set epoch/text))))
   (if_not (absent? loader/options/publication)
     (loader/options/publication .PublicationParticipant:publish staged/publication_ticket))
   (notify_published_provider_keys live closure candidate)
@@ -3100,8 +3073,8 @@
   (runtime_records .set
     (without_token runtime_records/.get candidate/token))
 
-  (if_yes deferred
-    (var old_generations (fresh_list))
+  (if deferred
+    (do (var old_generations (fresh_list))
     (for [id entry] in old_entries
       (if (&& (! (absent? entry/generation))
               (! (generation_reused? staged/entries entry/generation))
@@ -3120,9 +3093,9 @@
         (if_not (generations .contains? entry/generation) (generations .push entry/generation))))
     (loader/generations .set generations)
     (if (|| (> closure/.size 0) (> old_generations/.size 0))
-      (then (loader/options/retirement ticket))
-      (else (loader_retire (Loader ^token loader/token) ticket)))
-    (return nil))
+      (loader/options/retirement ticket)
+      else (loader_retire (Loader ^token loader/token) ticket))
+    (return nil)))
 
   # Visibility has committed. Old closures are now retired from consumers to
   # providers, and only then are their module generations released.
@@ -3133,8 +3106,7 @@
     (set index (- index 1))
     (if (|| (runtime_instance_is_loader_owned? old_instance)
             (instance_in_records? replaced_direct old_instance))
-      (then
-        (var cleanup_error
+      (do (var cleanup_error
           (unload_instance old_instance true))
         (if_not (absent? cleanup_error)
           (retirement_errors .push cleanup_error)))))
@@ -3172,7 +3144,7 @@
 
 (fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[], host_plugins = nil,
   ^strict strict : Bool = false, ^pending pending : Bool = false, ^accept accept = nil, ^commit commit = nil]
-  (var admitted (if (absent? host_plugins) loader/host_plugins/.get host_plugins))
+  (var admitted (if (absent? host_plugins) loader/host_plugins/.get else host_plugins))
   (var old_entries (copy_map loader/entries/.get))
   (var old_order (copy_list loader/order/.get))
   (var retiring (fresh_map))
@@ -3200,8 +3172,8 @@
     (staged .put "direct_revisions"
       (build_direct_candidate_revisions candidate direct_roots))
     (staged .put "direct_replaced" replaced_direct)
-    (require_candidate_active candidate (if strict pending loader/options/allow_pending)
-      (if strict false loader/options/allow_failed))
+    (require_candidate_active candidate (if strict pending else loader/options/allow_pending)
+      (if strict false else loader/options/allow_failed))
     (if_not (absent? accept) (accept))
     transaction/.commit
     (set modules_committed true)
@@ -3214,11 +3186,11 @@
     (if modules_committed
       (for generation in staged/prepared_generations
         (try generation/.release catch Throwable (cleanup_errors .push $err/.message)))
-      (try transaction/.discard catch Throwable (cleanup_errors .push $err/.message)))
+      else (try transaction/.discard catch Throwable (cleanup_errors .push $err/.message)))
     (if prepared (loader/options/publication .PublicationParticipant:abort ticket))
     (cordis_failure CompositionError
       (if cleanup_errors/.empty? "staged composition rejected before publication"
-        $"staged composition rejected; candidate cleanup failed: ${cleanup_errors}") failure))
+        else $"staged composition rejected; candidate cleanup failed: ${cleanup_errors}") failure))
   (var changed (staged_changed_ids old_entries staged/entries))
   # Gene publishes every prepared module graph first; the following Cordis
   # table replacement is a non-yielding turn containing no plugin call.
@@ -3255,7 +3227,7 @@
   (if (&& (! strict) (absent? accept) (absent? commit)
           (absent? loader/options/publication) (absent? loader/options/retirement))
     (loader_reconcile_incremental loader manifest rows admitted)
-    (loader_reconcile_staged ^strict strict ^pending pending ^accept accept ^commit commit
+    else (loader_reconcile_staged ^strict strict ^pending pending ^accept accept ^commit commit
       loader manifest rows #[] admitted)))
 
 (fn loader_reconcile [handle : Loader, manifest, mode] ^^private
@@ -3266,18 +3238,18 @@
     (if (absent? mode)
       (if (absent? loader/options/retirement)
         ReconcileMode/incremental
-        ReconcileMode/staged)
-      mode))
+        else ReconcileMode/staged)
+      else mode))
   (var host_plugins loader/host_plugins/.get)
   (if (&& (|| (! (absent? loader/options/publication)) (!= host_plugins #{})) (!= selected_mode ReconcileMode/staged))
     (cordis_failure CompositionError "a publication participant requires staged reconciliation"))
   (if (&& (! (absent? loader/options/retirement)) (!= selected_mode ReconcileMode/staged))
     (cordis_failure CompositionError "deferred retirement requires staged reconciliation"))
   (match selected_mode ^!exhaustive
-    (when ReconcileMode/incremental
-      (loader_reconcile_incremental loader manifest rows))
-    (when ReconcileMode/staged
-      (loader_reconcile_staged loader manifest rows #[] (fresh_map)))))
+    when ReconcileMode/incremental
+      (loader_reconcile_incremental loader manifest rows)
+    when ReconcileMode/staged
+      (loader_reconcile_staged loader manifest rows #[] (fresh_map))))
 
 (fn affected_uses_stop_start? [loader, affected] : Bool ^^private
   (for id in affected
@@ -3320,8 +3292,7 @@
     (var entry (old_entries .get old_order/%index))
     (set index (- index 1))
     (if (&& ($present? entry) (! (absent? entry/instance)))
-      (then
-        (var cleanup_error
+      (do (var cleanup_error
           (unload_instance (instance_record entry/instance) true))
         (if_not (absent? cleanup_error)
           (teardown_errors .push cleanup_error)))))
@@ -3341,33 +3312,32 @@
         (next_parent_context loader next_entries row/parent_id))
       (var parent_signature
         (if (absent? row/parent_id) "root"
-          (signatures .get row/parent_id)))
+          else (signatures .get row/parent_id)))
       (var signature (entry_context_signature row parent_signature))
       (signatures .put row/id signature)
       (var context (derive_loader_context loader parent_context row))
       (var entry nil)
       (if (|| row/group row/disabled)
-        (then
-          (set entry
+        (set entry
             (LoaderEntryRecord
               ^id row/id ^parent_id row/parent_id ^data row ^group row/group
               ^disabled row/disabled ^context context
               ^context_signature signature ^module_path row/module
-              ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil)))
-        (else
+              ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil))
+        else
           (var source (sources .get row/id))
-          (if_yes ($absent? source)
-            (var old (old_entries .get row/id))
+          (if ($absent? source)
+            (do (var old (old_entries .get row/id))
             (if ($absent? old)
               (cordis_failure RecoveryRequired
                 $"stop_start reload lost source for ${row/id}"))
             (set source
               {^generation old/generation ^module old/module
-               ^plugin old/plugin ^graph old/graph}))
+               ^plugin old/plugin ^graph old/graph})))
           (set entry (loader_entry_from_source loader row context source))
           (set entry/context_signature signature)
           (if_not (generations .contains? source/generation)
-            (generations .push source/generation))))
+            (generations .push source/generation)))
       (next_entries .put row/id entry)
       (next_order .push row/id))
     (loader/entries .set next_entries)
@@ -3405,7 +3375,7 @@
     (var entry (loader/entries/.get .get id))
     (if (&& ($present? entry) (! (absent? entry/graph)))
       (var root_id entry/graph/root)
-      (for node in entry/graph/nodes
+      else (for node in entry/graph/nodes
         (if (== node/identity root_id)
           (out .push
             {
@@ -3437,18 +3407,17 @@
         (for path in changed_paths
           (if (== path "*")
             (if_not (affected .contains? id) (affected .push id))
-            (if (== node/path path)
+            else (if (== node/path path)
               (if node/owned
                 (if_not (affected .contains? id) (affected .push id))
-                (set restart true))))))))
+                else (set restart true))))))))
   (if restart (return ($freeze {^status "restart_required" ^affected affected})))
   (if (== affected/.size 0) (return ($freeze {^status "unchanged" ^affected #[]})))
   (var manifest loader/manifest/.get)
   (var rows (validate_manifest loader manifest))
   (var old_digests (entry_root_digests loader affected))
   (if (affected_uses_stop_start? loader affected)
-    (then
-      (if_not (absent? loader/options/publication)
+    (do (if_not (absent? loader/options/publication)
         (cordis_failure ReloadRejected "a publication participant requires staged reload"))
       (var result (loader_reload_stop_start loader manifest rows affected))
       (emit_hmr_reloaded loader affected old_digests (entry_root_digests loader affected))

@@ -12,14 +12,14 @@
 (fn load [state : Any] : Nil
   (var api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) state/bridge/api)
   (api "GET" (route "") nil (fn [code : Int, data : Any] : Nil
-    (if_yes (!= code 200)
-      ($dom/set_text state/message "Triggers are unavailable.")
-      (return))
+    (if (!= code 200)
+      (do ($dom/set_text state/message "Triggers are unavailable.")
+      (return)))
     ($dom/clear state/list)
     (var definitions : (List Any) data/triggers)
-    (if_yes (== definitions/.size 0)
-      ($dom/set_text state/message "No triggers yet.")
-      (return))
+    (if (== definitions/.size 0)
+      (do ($dom/set_text state/message "No triggers yet.")
+      (return)))
     ($dom/set_text state/message "")
     (for definition in definitions
       (var id : Str definition/id)
@@ -42,14 +42,14 @@
   (var body ($dom/input_value state/request))
   (var definition
     (if (== kind "heartbeat") {^id id ^kind kind ^request body ^every_ms ($json/parse schedule)}
-      (if (== kind "scheduled") {^id id ^kind kind ^request body ^at schedule}
-        {^id id ^kind kind ^request body ^cron schedule})))
+      else (if (== kind "scheduled") {^id id ^kind kind ^request body ^at schedule}
+        else {^id id ^kind kind ^request body ^cron schedule})))
   (api "POST" (route "") definition (fn [code : Int, result : Any] : Nil
     (if (== code 201)
       (load state)
-      (do
+      else (do
         (var problem (text result/message))
-        ($dom/set_text state/message (if (== problem "") "Could not create the trigger." problem)))))))
+        ($dom/set_text state/message (if (== problem "") "Could not create the trigger." else problem)))))))
 
 (fn style_panel [panel : EventTarget] : Nil
   # The contribution's mount root is a div after the app shell, so an
@@ -75,7 +75,7 @@
   ($dom/set_attribute state/panel "hidden" ""))
 
 (fn open_panel [state : Any] : Nil
-  (if_yes state/open (return))
+  (if state/open (return))
   (set state/open true)
   ($dom/remove_attribute state/panel "hidden")
   (load state)
@@ -111,7 +111,7 @@
      ^key (fn [event : Any] : Bool
        (if (&& state/open (== ($event/code event) "Escape"))
          (do (close_panel state) true)
-         false))})
+         else false))})
   ($dom/append root panel)
   ($dom/append panel heading)
   (for element in [list message id kind schedule request submit] ($dom/append panel element))

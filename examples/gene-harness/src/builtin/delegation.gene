@@ -31,6 +31,6 @@
       (host .PluginHost:contribute "prompt"
         {^name "delegation" ^render (fn [runtime metadata]
           (if (== metadata/kind "child") child_prompt
-            "For concrete independent tasks, discover delegation and read harness/delegation. Children have fresh context and share workspace files. Stage them with delegate, then use (Outcome ^wait all), ^wait any or a list of ids. Do not poll in response code. Parent cancellation owns all unfinished children."))})
+            else "For concrete independent tasks, discover delegation and read harness/delegation. Children have fresh context and share workspace files. Stage them with delegate, then use (Outcome ^wait all), ^wait any or a list of ids. Do not poll in response code. Parent cancellation owns all unfinished children."))})
       (contribute_doc host "harness/delegation" "Delegate tasks to durable child sessions and collect their results."
         "examples/gene-harness/docs/sub-agent.md" ^tags ["agent" "delegate" "parallel" "child"])) ))

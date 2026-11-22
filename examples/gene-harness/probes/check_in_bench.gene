@@ -60,14 +60,14 @@
   # A running host has finished its provider connection check by now.
   (let provider (option args "--provider" ""))
   (let catalog (row runtime/h "seams" "models/catalog"))
-  (if_yes ($present? catalog)
-    (catalog/value/refresh)
+  (if ($present? catalog)
+    (do (catalog/value/refresh)
     (let due (+ ($os/monotonic_ms) 45000))
     (loop
       (let state (provider_state catalog provider))
       (if (|| (== state "ready") (>= ($os/monotonic_ms) due)) (break))
       ($sleep 250))
-    ($println ($to_str "provider " provider ": " (?? (provider_state catalog provider) "unknown"))))
+    ($println ($to_str "provider " provider ": " (?? (provider_state catalog provider) "unknown")))))
   {^row (model_row) ^runtime runtime ^service runtime/services/values/decisions})
 
 (fn open_engine [name : Str, args]
@@ -81,7 +81,7 @@
 
 (fn close_engine [engine]
   (if ($absent? engine) (return nil))
-  (if ($present? engine/runtime) (close_runtime engine/runtime) (engine/row/close engine/resource)))
+  (if ($present? engine/runtime) (close_runtime engine/runtime) else (engine/row/close engine/resource)))
 
 (fn judge [engine, request : Str, turns, questions]
   (let rule (unchanged_failure_loop turns))
@@ -94,14 +94,14 @@
     (if ($present? engine/service)
       (decide engine/service {^use "round/check_in" ^state fitted/state ^questions questions
         ^timeout_ms 60000 ^session "default"})
-      (engine/row/decide engine/resource {^settings {} ^state fitted/state ^questions questions ^timeout_ms 10000}))
+      else (engine/row/decide engine/resource {^settings {} ^state fitted/state ^questions questions ^timeout_ms 10000}))
     catch Error {^status "error" ^reason ($to_str $err/.message)}))
   (let latency (- ($os/monotonic_ms) started))
   (let result (if ($present? raw/status) raw
-    (do
+    else (do
       (let checked (validate_answers questions raw/answers))
       (if ($present? checked/error) {^status "error" ^reason checked/error}
-        {^status "ok" ^answers checked/value ^model raw/model ^input_tokens raw/usage/input_tokens}))))
+        else {^status "ok" ^answers checked/value ^model raw/model ^input_tokens raw/usage/input_tokens}))))
   {^rule nil ^verdict (fuse nil result) ^result result ^tokens tokens ^latency_ms latency ^trimmed fitted/trimmed})
 
 # Earlier progress turns in front of a case, up to roughly a real packed size.
@@ -130,7 +130,7 @@
 
 (fn synthetic [args]
   (let engine (open_engine (option args "--engine" "rules") args))
-  (let questions (if (flag? args "--reversed") (reversed_questions) (check_in_questions)))
+  (let questions (if (flag? args "--reversed") (reversed_questions) else (check_in_questions)))
   (let target ($parse/parse_int (option args "--pad" "0")))
   (let rounds ($parse/parse_int (option args "--rounds" "1")))
   (let latencies [])
@@ -149,27 +149,27 @@
         (if (== action case/expect/action) (set agree (+ agree 1)))
         ($println ($to_str case/name ": want " case/expect/action "/" case/expect/verdict
           " got " action "/" judged/verdict/verdict
-          (if ($present? judged/rule) " (rule)" "")
+          (if ($present? judged/rule) " (rule)" else "")
           (if ($present? judged/result) ($to_str " status=" judged/result/status
             " model=" (?? judged/result/model "") " tokens~" judged/tokens
-            (if ($present? judged/result/reason) ($to_str " reason=" judged/result/reason) "")
-            (if ($present? judged/result/input_tokens) ($to_str " reported=" judged/result/input_tokens) "")
+            (if ($present? judged/result/reason) ($to_str " reason=" judged/result/reason) else "")
+            (if ($present? judged/result/input_tokens) ($to_str " reported=" judged/result/input_tokens) else "")
             " " judged/latency_ms " ms"
             " p=" ($json/stringify (?? judged/result/answers/progress/probabilities {}))
-            " now=" (?? judged/result/answers/operator_now/value "")) "")
-          (if matched "" "  MISMATCH")))))
+            " now=" (?? judged/result/answers/operator_now/value "")) else "")
+          (if matched "" else "  MISMATCH")))))
   ensure (close_engine engine))
   ($println ($to_str "agreement " agree "/" total
-    (if latencies/.empty? "" ($to_str "; latency p50 " (percentile latencies 50) " ms, p95 " (percentile latencies 95)
+    (if latencies/.empty? "" else ($to_str "; latency p50 " (percentile latencies 50) " ms, p95 " (percentile latencies 95)
       " ms, max " (percentile latencies 100) " ms over " latencies/.size " requests"))))
   0)
 
 (fn task_roots [records]
   (let roots [])
   (for event in records
-    (if_yes (== event/type "turn/start")
-      (let root (?? event/payload/task_root event/payload/round))
-      (if_not (roots .contains? root) (roots .push root))))
+    (if (== event/type "turn/start")
+      (do (let root (?? event/payload/task_root event/payload/round))
+      (if_not (roots .contains? root) (roots .push root)))))
   roots)
 
 (fn task_request [records, root : Str] : Str
@@ -183,19 +183,18 @@
   (if (>= turns/.size (+ boundary interval)) (return "continued"))
   (let last ($last turns))
   (match (?? last/end_reason "")
-    (when "cancelled" "stopped")
-    (when "done" "finished")
-    (else "ended")))
+    when "cancelled" "stopped"
+    when "done" "finished"
+    else "ended"))
 
 (fn replay [args]
   (let directory (option args "--replay" ""))
   (let engine_name (option args "--engine" "rules"))
   (if (&& (!= engine_name "rules") (! (flag? args "--allow-cloud")))
-    (then
-      ($println "Replaying recorded sessions to a cloud engine sends real transcripts. Pass --allow-cloud once the owner has approved it.")
+    (do ($println "Replaying recorded sessions to a cloud engine sends real transcripts. Pass --allow-cloud once the owner has approved it.")
       (return 2)))
   (let labels_path (option args "--labels" nil))
-  (let labels (if ($absent? labels_path) [] ($serde/read_data ($fs/read_text labels_path))))
+  (let labels (if ($absent? labels_path) [] else ($serde/read_data ($fs/read_text labels_path))))
   (let events (open_event_store directory))
   (let engine (open_engine engine_name args))
   (let rows [])
@@ -214,13 +213,13 @@
         (var boundary interval)
         (while (<= boundary turns/.size)
           (let slice ($take turns boundary))
-          (let recent (if (> slice/.size window) ($drop slice (- slice/.size window)) slice))
+          (let recent (if (> slice/.size window) ($drop slice (- slice/.size window)) else slice))
           (let judged (judge engine request recent (check_in_questions)))
           (var label nil)
           (for item in labels
             (if (&& (== item/session session) (== item/task_root root) (== item/boundary boundary)) (set label item/label)))
           (rows .push {^session session ^task_root root ^boundary boundary ^action judged/verdict/action
-            ^verdict judged/verdict/verdict ^by (if ($present? judged/rule) "rule" (if ($absent? engine) "none" "engine"))
+            ^verdict judged/verdict/verdict ^by (if ($present? judged/rule) "rule" else (if ($absent? engine) "none" else "engine"))
             ^status (?? judged/result/status nil) ^latency_ms judged/latency_ms ^tokens judged/tokens
             ^signal (signal turns boundary) ^label label})
           (if ($present? template_path)
@@ -233,7 +232,7 @@
   ensure (close_engine engine) (close_event_store events))
   (for row in rows
     ($println ($to_str row/session " " row/task_root " @" row/boundary ": " row/action "/" row/verdict
-      " by " row/by " next=" row/signal (if ($present? row/label) ($to_str " label=" row/label) ""))))
+      " by " row/by " next=" row/signal (if ($present? row/label) ($to_str " label=" row/label) else ""))))
   (for source in ["rule" "engine"]
     (var true_pause 0) (var false_pause 0) (var missed 0)
     (for row in rows
@@ -245,9 +244,9 @@
     (if (> (+ true_pause false_pause missed) 0)
       ($println ($to_str source ": " true_pause " correct pauses, " false_pause " false pauses, " missed " missed pauses"))))
   ($println ($to_str rows/.size " boundaries in " directory))
-  (if_yes ($present? template_path)
-    ($fs/write_text template_path ($serde/write_data templates))
-    ($println $"label template: ${templates/.size} boundaries in ${template_path}; set each ^label to \"pause\" or \"continue\", then pass the file as --labels"))
+  (if ($present? template_path)
+    (do ($fs/write_text template_path ($serde/write_data templates))
+    ($println $"label template: ${templates/.size} boundaries in ${template_path}; set each ^label to \"pause\" or \"continue\", then pass the file as --labels")))
   (let out (option args "--out" nil))
   (if ($present? out) ($fs/write_text out ($serde/write_data rows)))
   0)

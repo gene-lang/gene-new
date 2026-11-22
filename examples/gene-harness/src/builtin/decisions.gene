@@ -13,11 +13,11 @@
     (rows .push
       `(tr ^key %$"decision-engine/${engine/name}"
          (td (strong %engine/name) (br) (small ^class_name "web_muted" %engine/summary))
-         (td %(if ($absent? engine/reason) "Available" engine/reason)))))
+         (td %(if ($absent? engine/reason) "Available" else engine/reason)))))
   (let status (service .DecisionHost:status ^use "round/check_in"))
   (let check_ins (if status/available
     $"Round check-ins use ${status/engine}."
-    $"Round check-ins are off: ${status/reason} Rounds pause at the turn limit."))
+    else $"Round check-ins are off: ${status/reason} Rounds pause at the turn limit."))
   `(section ^key "decision-section" ^class_name "web_stack"
      (table ^key "decision-engines" ^class_name "web_table_compact"
        (thead (tr (th "Engine") (th "Availability")))

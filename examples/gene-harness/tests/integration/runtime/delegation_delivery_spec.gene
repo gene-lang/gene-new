@@ -27,17 +27,16 @@
         (let controller (test_controller runtime (fn [call]
           (let metadata (require_record runtime/sessions call/session))
           (if (== metadata/kind "child")
-            (then
-              (started .set true)
+            (started .set true)
               (while (! release/.get) ($sleep 5))
-              "(Outcome ^^done ^reply \"RACE_CONCLUSION\")")
-            (else
+              "(Outcome ^^done ^reply \"RACE_CONCLUSION\")"
+            else
               (let n (calls .swap (+ calls/.get 1)))
               (if (== n 0)
-                (then "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")")
-                (else
+                "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")"
+                else
                   ($assert ($str/contains? ($to_str call/messages) "RACE_CONCLUSION"))
-                  "(Outcome ^^done ^reply \"Settled result retained\")")))))))
+                  "(Outcome ^^done ^reply \"Settled result retained\")")))))
         (try
           (let round (submit_round controller "default" "race" 1 "Run the audit."))
           (let due (+ ($os/monotonic_ms) 15000))
@@ -68,20 +67,19 @@
         (let controller (test_controller runtime (fn [call]
           (let metadata (require_record runtime/sessions call/session))
           (if (== metadata/kind "child")
-            (then
-              (while (! inflight/.get) ($sleep 5))
-              "(Outcome ^^done ^reply \"CHILD_RESULT_AFTER_REQUEST\")")
-            (else
+            (while (! inflight/.get) ($sleep 5))
+              "(Outcome ^^done ^reply \"CHILD_RESULT_AFTER_REQUEST\")"
+            else
               (let n (parent_calls .swap (+ parent_calls/.get 1)))
               (match n
-                (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^prompt \"Work independently\")")
-                (when 1
+                when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^prompt \"Work independently\")"
+                when 1
                   (inflight .set true)
                   ($sleep 150)
-                  "(Outcome ^^done ^reply \"Earlier call tried to finish\")")
-                (else
+                  "(Outcome ^^done ^reply \"Earlier call tried to finish\")"
+                else
                   ($assert ($str/contains? ($to_str call/messages) "CHILD_RESULT_AFTER_REQUEST"))
-                  "(Outcome ^^done ^reply \"Result collected\")")))))))
+                  "(Outcome ^^done ^reply \"Result collected\")")))))
         (try
           (let round (submit_round controller "default" "inflight" 1 "Coordinate the audit."))
           ($assert (== (/state (finish controller round)) "done"))
@@ -99,17 +97,16 @@
         (let controller (test_controller runtime (fn [call]
           (let metadata (require_record runtime/sessions call/session))
           (if (== metadata/kind "child")
-            (then
-              (child_calls .set (+ child_calls/.get 1))
-              "(Outcome ^^done ^reply \"DURABLE_CHILD_CONCLUSION\")")
-            (else
+            (child_calls .set (+ child_calls/.get 1))
+              "(Outcome ^^done ^reply \"DURABLE_CHILD_CONCLUSION\")"
+            else
               (let n (parent_calls .swap (+ parent_calls/.get 1)))
               (match n
-                (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")")
-                (when 1 (fail (DeliveryProbeError ^_msg "Provider failed before producing a response.")))
-                (else
+                when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")"
+                when 1 (fail (DeliveryProbeError ^_msg "Provider failed before producing a response."))
+                else
                   ($assert ($str/contains? ($to_str call/messages) "DURABLE_CHILD_CONCLUSION"))
-                  "(Outcome ^^done ^reply \"Recovered conclusion collected\")")))))))
+                  "(Outcome ^^done ^reply \"Recovered conclusion collected\")")))))
         (try
           (let round (submit_round controller "default" "first" 1 "Coordinate the audit."))
           ($assert (== (/state (finish controller round)) "failed"))
@@ -130,14 +127,14 @@
         (let controller (test_controller runtime (fn [call]
           (let metadata (require_record runtime/sessions call/session))
           (if (== metadata/kind "child")
-            (then "(delegate \"nested\" ^title \"Nested\" ^brief \"Must be refused.\")")
-            (else
+            "(delegate \"nested\" ^title \"Nested\" ^brief \"Must be refused.\")"
+            else
               (let n (parent_calls .swap (+ parent_calls/.get 1)))
               (if (== n 0)
-                (then "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\" ^turns 1) (Outcome ^wait \"all\")")
-                (else
+                "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\" ^turns 1) (Outcome ^wait \"all\")"
+                else
                   ($assert ($str/contains? ($to_str call/messages) "A child cannot delegate"))
-                  "(Outcome ^^done ^reply \"Depth refusal collected\")")))))))
+                  "(Outcome ^^done ^reply \"Depth refusal collected\")")))))
         (try
           (let round (submit_round controller "default" "depth" 1 "Run the audit."))
           ($assert (== (/state (finish controller round)) "done"))

@@ -28,25 +28,25 @@
     (if self/closed/.get (fail (new ArchiveError "codec is closed")))
     (if (< max_bytes 1)
       (fail (new ArchiveError "codec pull size must be positive")))
-    (let capacity (if (> max_bytes 65536) 65536 max_bytes))
+    (let capacity (if (> max_bytes 65536) 65536 else max_bytes))
     (let zero ($buffer U8 capacity))
     (let output ($buffer C/UInt8 zero/.to_list))
     (let count (self/pull_fn self/state output))
     (if (> count 0)
       ($binary/slice ($binary/from_list output/.to_list) 0 count)
-      (if (== count 0) nil
-        (if (== count -1)
+      else (if (== count 0) nil
+        else (if (== count -1)
           (do
             (self/ended .set true)
             nil)
-          (fail (new ArchiveError (self/error_fn self/state)))))))
+          else (fail (new ArchiveError (self/error_fn self/state)))))))
   (message action [kind : Int]
     (if self/closed/.get (fail (new ArchiveError "codec is closed")))
     (if (< (self/action_fn self/state kind) 0)
       (do
         (let detail (self/error_fn self/state))
         (fail (new ArchiveError
-          (if (== detail "") "codec action is invalid or busy" detail)))))
+          (if (== detail "") "codec action is invalid or busy" else detail)))))
     nil)
   (message close []
     (if (not self/closed/.get)
@@ -161,11 +161,11 @@
     (let cleanup self/cleanup/.get)
     (spawn ^lane root
       (match cleanup/.join ^!exhaustive
-        (when (TaskOutcome/ok _) nil)
-        (when (TaskOutcome/error error) (fail error))
-        (when (TaskOutcome/fault fault) (fail fault))
-        (when TaskOutcome/cancelled
-          (fail (new ArchiveError "gzip reader cleanup was cancelled")))))))
+        when (TaskOutcome/ok _) nil
+        when (TaskOutcome/error error) (fail error)
+        when (TaskOutcome/fault fault) (fail fault)
+        when TaskOutcome/cancelled
+          (fail (new ArchiveError "gzip reader cleanup was cancelled"))))))
 
 (fn gzip_reader [source : AsyncReader ^own_reader own_reader : Bool = false]
   (new GzipReader source own_reader (_open_codec 1)))
@@ -237,7 +237,7 @@
         (var position 0)
         (while (< position length)
           (let amount (if (> (- length position) 65536)
-                        65536 (- length position)))
+                        65536 else (- length position)))
           (self/codec .feed ($binary/slice data position amount))
           (set position (+ position amount))
           (var part (self/codec .pull 65536))
@@ -302,11 +302,11 @@
     (let cleanup self/cleanup/.get)
     (spawn ^lane root
       (match cleanup/.join ^!exhaustive
-        (when (TaskOutcome/ok _) nil)
-        (when (TaskOutcome/error error) (fail error))
-        (when (TaskOutcome/fault fault) (fail fault))
-        (when TaskOutcome/cancelled
-          (fail (new ArchiveError "gzip writer cleanup was cancelled")))))))
+        when (TaskOutcome/ok _) nil
+        when (TaskOutcome/error error) (fail error)
+        when (TaskOutcome/fault fault) (fail fault)
+        when TaskOutcome/cancelled
+          (fail (new ArchiveError "gzip writer cleanup was cancelled"))))))
 
 (fn gzip_writer [sink : AsyncWriter ^own_writer own_writer : Bool = false]
   (new GzipWriter sink own_writer (_open_codec 2)))

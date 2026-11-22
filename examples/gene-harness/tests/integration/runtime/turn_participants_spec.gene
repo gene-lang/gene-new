@@ -42,8 +42,7 @@
     ^reviewer {^name "scripted" ^settings {^model "test" ^effort "none"} ^row {}}
     ^record (fn [kind data]
       (if (== kind "turn/response")
-        (then
-          (append_core_event runtime/events "session" ctx/session
+        (do (append_core_event runtime/events "session" ctx/session
             {^type "turn/response" ^round ctx/round/id ^turn ctx/turn ^text source
              ^blobs {} ^patch_files data/patch_files ^reply_hint data/reply_hint})
           (flush_event_store runtime/events)
@@ -53,7 +52,7 @@
 (fn seal [runtime, ctx, result, errors]
   (let ended (append_turn_end_once runtime/events ctx/session
     {^type "turn/end" ^round ctx/round/id ^turn ctx/turn
-     ^reason (if errors/.empty? result/kind "error") ^!synthetic}))
+     ^reason (if errors/.empty? result/kind else "error") ^!synthetic}))
   (flush_event_store runtime/events)
   ended/event)
 
@@ -112,9 +111,9 @@
         (let runtime (open_runtime root "default" (baseline_profile)))
         (let attempts ($cell 0))
         (set runtime/services/values/delegations/checkpoint (fn [point session]
-          (if_yes (== point "admission_intent")
-            (attempts .set (+ attempts/.get 1))
-            (fail (InjectedFailure ^_msg "lost commit result")))))
+          (if (== point "admission_intent")
+            (do (attempts .set (+ attempts/.get 1))
+            (fail (InjectedFailure ^_msg "lost commit result"))))))
         (let lease (acquire_snapshot runtime/h/snapshots))
         (let ctx (context runtime "lost"))
         (let transaction (new_runtime_turn_transaction runtime lease ctx))
@@ -190,8 +189,7 @@
           (let points [])
           (set runtime/services/values/delegations/checkpoint (fn [point session]
             (if (== point "parent_response_recorded")
-              (then
-                ($assert (! runtime/events/dirty/.get) "Response acknowledgment preceded durable flush.")
+              (do ($assert (! runtime/events/dirty/.get) "Response acknowledgment preceded durable flush.")
                 (let responses ($filter (events_for runtime/events "session" session)
                   (fn [event] (&& (== event/type "turn/response") (== event/payload/turn 2)))))
                 ($assert (== responses/.size 1) "Expected exactly one durable response before acknowledgment.")
@@ -328,16 +326,16 @@
               ($size ($filter events (fn [event] (== event/type type))))))
             ($assert (== (count_type "turn/start") 1) $"${target}: missing or duplicate turn/start")
             ($assert (== (count_type "turn/end") 1) $"${target}: missing or duplicate turn/end")
-            (let model_calls (if (["begin" "request_items" "request_admitted"] .contains? target) 0 1))
+            (let model_calls (if (["begin" "request_items" "request_admitted"] .contains? target) 0 else 1))
             ($assert (== calls/.get model_calls) $"${target}: model calls were repeated")
             ($assert (== (count_type "model/request") model_calls))
             ($assert (== (count_type "model/result") model_calls))
-            (let responses (if (["begin" "request_items" "request_admitted" "bindings"] .contains? target) 0 1))
+            (let responses (if (["begin" "request_items" "request_admitted" "bindings"] .contains? target) 0 else 1))
             ($assert (== (count_type "turn/response") responses) $"${target}: response was recorded again")
             (let evaluated (["validate_outcome" "commit" "finalize" "release"] .contains? target))
             ($assert (== ($fs/exists? ($path/join runtime/root "executed")) evaluated))
             (let ends ($filter events (fn [event] (== event/type "turn/end"))))
-            ($assert (== ends/0/payload/reason (if (== target "release") "done" "error")))
+            ($assert (== ends/0/payload/reason (if (== target "release") "done" else "error")))
             (if (== target "release")
               ($assert (> (count_type "trace") 0) "Post-terminal cleanup failure lost its diagnostic."))
           ensure
@@ -361,7 +359,7 @@
         (let controller (test_controller runtime (fn [request]
           (if (== (/kind (require_record runtime/sessions request/session)) "child")
             (do (child_calls .set (+ child_calls/.get 1)) "(Outcome ^^done ^reply \"child\")")
-            "(delegate \"audit\" ^title \"Audit\" ^brief \"Never start before this parent turn seals.\") (Outcome ^wait \"all\")"))))
+            else "(delegate \"audit\" ^title \"Audit\" ^brief \"Never start before this parent turn seals.\") (Outcome ^wait \"all\")"))))
         (try
           (let receipt (submit_round controller "default" "cancel-after-admission" 1 "Stage and cancel."))
           (let due (+ ($os/monotonic_ms) 5000))

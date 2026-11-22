@@ -4,7 +4,8 @@
 ## mutate GIR; unsupported forms fail while building the IR, before emission.
 
 import std/[json, os, sequtils, sets, strutils, tables]
-import ./[compiler, gir, printer, reader, types, type_contracts]
+import ./[clause_syntax, compiler, gir, printer, reader, types,
+          type_contracts]
 
 const webAudioWorklet = staticRead("web_audio_worklet.js")
 proc audioWorkletFile(): string
@@ -4628,38 +4629,23 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     return WebExpr(kind: wekSet, typ: assigned.typ, loc: loc,
       text: emittedBinding(bindingName, bindings[bindingName]), children: @[assigned])
   if name == "if_present":
-    # (if_present name expr body... (else ...)): `expr` once, `name` bound to
-    # its present value in the body only, with the value's type minus Nil.
+    # (if_present name expr body... [else body...]): `expr` once, `name` bound
+    # to its present value in the body only, with the value's type minus Nil.
     # The body and the else clause are blocks, as in the VM.
     if value.props.len != 0:
       raise webError(loc, "if_present does not accept props")
-    var last = value.body.len
-    var elseForms: seq[Value]
-    var hasElse = false
-    if value.body.len > 0 and value.body[^1].kind == vkNode and
-        value.body[^1].head.isSym("else"):
-      hasElse = true
-      elseForms = value.body[^1].body
-      last = value.body.len - 1
-    if last < 3:
-      raise webError(loc, "if_present requires a name, an expression and a body")
-    let binder = value.body[0]
+    let split = tryDecodeIfPresent(value)
+    if not split.valid:
+      raise webError(loc, "web if_present " & split.reason)
+    let clauses = split.clauses
+    let binder = clauses.binder
     if binder.kind != vkSymbol or binder.symVal.len == 0 or
         '/' in binder.symVal or binder.symVal[0] in {'$', '.', '~', '^', '@', ':'} or
         binder.symVal == "_" or binder.symVal.endsWith("?") or
         binder.symVal.endsWith("..."):
       raise webError(loc, "if_present binding must be a plain local name, got " &
         binder.print())
-    var bodyForms: seq[Value]
-    for i in 2 ..< last:
-      let form = value.body[i]
-      if form.kind == vkNode and form.head.isSym("else"):
-        raise webError(loc, "if_present: (else …) must be the last form")
-      if form.kind == vkNode and (form.head.isSym("then") or form.head.isSym("elif")):
-        raise webError(loc, "if_present takes body forms and an optional " &
-          "trailing (else …), not (" & form.head.symVal & " …)")
-      bodyForms.add form
-    let tested = analysis.analyzeExpr(value.body[1], bindings)
+    let tested = analysis.analyzeExpr(clauses.tested, bindings)
     let previousBranchGroup = analysis.branchGroup
     defer: analysis.branchGroup = previousBranchGroup
     let previousBindingScope = analysis.bindingScopeId
@@ -4685,20 +4671,24 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         else:
           blockBindings.del(binderName)
       retainBranchNames(bindings, blockBindings, group)
-    let present = analysis.analyzeBlock(bodyForms, bindings, expected,
+    let present = analysis.analyzeBlock(clauses.body, bindings, expected,
       binder.symVal, withoutAbsent(tested.typ), loc)
     analysis.bindingScopeId = previousBindingScope
     let absent =
-      if hasElse:
-        analysis.analyzeBlock(elseForms, bindings, expected, "", nil, loc).expr
+      if clauses.hasElse:
+        analysis.analyzeBlock(clauses.elseBody, bindings, expected, "", nil, loc).expr
       else:
         WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
     return WebExpr(kind: wekIfPresent, typ: unionType(present.expr.typ, absent.typ),
       loc: loc, text: present.emitted,
       children: @[tested, present.expr, absent])
-  if name in ["if_yes", "if_not"]:
+  if name == "if_yes":
+    raise webError(loc,
+      "if_yes was removed; use if, which runs every expression of the " &
+      "selected arm")
+  if name == "if_not":
     if value.body.len < 2:
-      raise webError(loc, "web " & name & " expects a condition and body")
+      raise webError(loc, "web if_not expects a condition and body")
     let condition = analysis.analyzeExpr(value.body[0], bindings)
     var branchBindings = copyBindings(bindings)
     let branch = analysis.analyzeSequence(value.body.toOpenArray(1,
@@ -4706,10 +4696,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     inc analysis.nextBranchGroup
     retainBranchNames(bindings, branchBindings, analysis.nextBranchGroup)
     let nilExpr = WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
-    let yes = if name == "if_yes": branch else: nilExpr
-    let no = if name == "if_yes": nilExpr else: branch
     return WebExpr(kind: wekIf, typ: unionType(branch.typ, nilExpr.typ),
-      loc: loc, children: @[condition, yes, no])
+      loc: loc, children: @[condition, nilExpr, branch])
   if name == "while":
     if value.body.len < 1:
       raise webError(loc, "web while expects a condition")
@@ -4850,8 +4838,6 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     return WebExpr(kind: if name == "break": wekBreak else: wekContinue,
       typ: webType(wtkNever), loc: loc)
   if name == "match":
-    if value.body.len < 2:
-      raise webError(loc, "web match expects a value and at least one arm")
     var requireExhaustive = true
     for key, prop in value.props:
       if key != "exhaustive":
@@ -4859,40 +4845,25 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       if prop.kind != vkBool:
         raise webError(loc, "web match ^exhaustive requires a literal Bool")
       requireExhaustive = prop.boolVal
-    let matched = analysis.analyzeExpr(value.body[0], bindings)
+    let split = tryDecodeMatch(value)
+    if not split.valid:
+      raise webError(loc, "web match " & split.reason)
+    let clauses = split.clauses
+    let matched = analysis.analyzeExpr(clauses.value, bindings)
     result = WebExpr(kind: wekMatch, loc: loc, children: @[matched])
     var resultType: WebType = nil
-    var hasElse = false
     var hasCatchAll = false
-    for i in 1 ..< value.body.len:
-      let arm = value.body[i]
-      if arm.kind != vkNode or arm.head.kind != vkSymbol:
-        raise webError(loc, "web match arms must be when or else clauses")
+    for arm in clauses.arms:
       var armBindings = copyBindings(bindings)
       let previousBindingScope = analysis.bindingScopeId
       inc analysis.nextBindingScopeId
       analysis.bindingScopeId = analysis.nextBindingScopeId
-      var bodyStart = 0
-      if arm.head.symVal == "when":
-        if arm.body.len < 2:
-          raise webError(loc, "web match when requires a pattern and body")
-        if arm.body[0].kind == vkSymbol:
-          hasCatchAll = true
-        result.patterns.add analysis.normalizeWebPattern(arm.body[0])
-        result.keys.add "when"
-        bindPattern(analysis, arm.body[0], matched.typ, armBindings)
-        bodyStart = 1
-      elif arm.head.symVal == "else":
-        if hasElse or i != value.body.high:
-          raise webError(loc, "web match else must be the final unique arm")
-        hasElse = true
-        result.patterns.add Value()
-        result.keys.add "else"
-      else:
-        raise webError(loc, "web match arms must be when or else clauses")
-      var armForms: seq[Value]
-      for j in bodyStart ..< arm.body.len: armForms.add arm.body[j]
-      let analyzed = analysis.analyzeSequence(armForms, armBindings,
+      if arm.header.kind == vkSymbol:
+        hasCatchAll = true
+      result.patterns.add analysis.normalizeWebPattern(arm.header)
+      result.keys.add "when"
+      bindPattern(analysis, arm.header, matched.typ, armBindings)
+      let analyzed = analysis.analyzeSequence(arm.body, armBindings,
                                                expected, loc)
       result.patternScopes.add WebPatternScope(bindings: webBindingNames(armBindings),
         pins: webBindingNames(bindings))
@@ -4900,9 +4871,24 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       result.children.add analyzed
       resultType = if resultType == nil: analyzed.typ
                    else: unionType(resultType, analyzed.typ)
-    if requireExhaustive and not hasElse and not hasCatchAll:
+    if clauses.hasElse:
+      var armBindings = copyBindings(bindings)
+      let previousBindingScope = analysis.bindingScopeId
+      inc analysis.nextBindingScopeId
+      analysis.bindingScopeId = analysis.nextBindingScopeId
+      result.patterns.add Value()
+      result.keys.add "else"
+      let analyzed = analysis.analyzeSequence(clauses.elseBody, armBindings,
+                                               expected, loc)
+      result.patternScopes.add WebPatternScope(bindings: webBindingNames(armBindings),
+        pins: webBindingNames(bindings))
+      analysis.bindingScopeId = previousBindingScope
+      result.children.add analyzed
+      resultType = if resultType == nil: analyzed.typ
+                   else: unionType(resultType, analyzed.typ)
+    if requireExhaustive and not clauses.hasElse and not hasCatchAll:
       raise webError(loc,
-        "web match is not exhaustive; add (else ...), a binding arm, or ^!exhaustive")
+        "web match is not exhaustive; add else, a binding arm, or ^!exhaustive")
     result.typ = if resultType == nil: webType(wtkNever) else: resultType
     return
   if name == "return":
@@ -4931,70 +4917,44 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     return WebExpr(kind: wekReturn, typ: webType(wtkNever), loc: loc,
       children: @[returned])
   if name == "if":
+    let split = tryDecodeIf(value)
+    if not split.valid:
+      raise webError(loc, "web if " & split.reason)
+    let clauses = split.clauses
     let previousBranchGroup = analysis.branchGroup
     inc analysis.nextBranchGroup
     let group = analysis.nextBranchGroup
     analysis.branchGroup = group
     defer: analysis.branchGroup = previousBranchGroup
-    if value.body.len >= 2 and value.body[1].kind == vkNode and
-        value.body[1].head.isSym("then"):
-      let condition = analysis.analyzeExpr(value.body[0], bindings)
-      var yesBindings = copyBindings(bindings)
-      let yes = analysis.analyzeSequence(value.body[1].body, yesBindings,
-                                          expected, loc)
-      retainBranchNames(bindings, yesBindings, group)
-      var no = WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
-      var elifBranches: seq[tuple[condition, body: WebExpr]]
-      for i in 2 ..< value.body.len:
-        let clause = value.body[i]
-        if clause.kind != vkNode or clause.head.kind != vkSymbol:
-          raise webError(loc, "web if clauses must be elif or else")
-        if clause.head.symVal == "else":
-          if i != value.body.high:
-            raise webError(loc, "web if else must be final")
-          var elseBindings = copyBindings(bindings)
-          no = analysis.analyzeSequence(clause.body, elseBindings,
-                                        expected, loc)
-          retainBranchNames(bindings, elseBindings, group)
-        elif clause.head.symVal == "elif":
-          if clause.body.len < 2:
-            raise webError(loc, "web elif requires condition and body")
-          var elifBindings = copyBindings(bindings)
-          let elifCondition = analysis.analyzeExpr(clause.body[0], elifBindings)
-          var elifForms: seq[Value]
-          for j in 1 ..< clause.body.len: elifForms.add clause.body[j]
-          let elifYes = analysis.analyzeSequence(elifForms, elifBindings,
-                                                 expected, loc)
-          retainBranchNames(bindings, elifBindings, group)
-          elifBranches.add (elifCondition, elifYes)
-        else:
-          raise webError(loc, "web if clauses must be elif or else")
-      for i in countdown(elifBranches.high, 0):
-        let branch = elifBranches[i]
-        no = WebExpr(kind: wekIf, typ: unionType(branch.body.typ, no.typ),
-          loc: loc, children: @[branch.condition, branch.body, no])
-      return WebExpr(kind: wekIf, typ: unionType(yes.typ, no.typ), loc: loc,
-                     children: @[condition, yes, no])
-    if value.body.len notin [2, 3]:
-      raise webError(loc, "web if expects a condition and one or two branches")
-    let condition = analysis.analyzeExpr(value.body[0], bindings)
-    var yesBindings = copyBindings(bindings)
-    let yes = analysis.analyzeExpr(value.body[1], yesBindings, expected)
-    retainBranchNames(bindings, yesBindings, group)
-    let no =
-      if value.body.len == 3:
-        block:
-          var noBindings = copyBindings(bindings)
-          let branch = analysis.analyzeExpr(value.body[2], noBindings, expected)
-          retainBranchNames(bindings, noBindings, group)
-          branch
-      else:
-        WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
-    let joined = unionType(yes.typ, no.typ)
-    if expected != nil and not accepts(analysis, expected, joined):
-      raise webError(loc, "web if branches do not join into " & typeName(expected))
-    return WebExpr(kind: wekIf, typ: joined, loc: loc,
-                   children: @[condition, yes, no])
+    let nilExpr = WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
+    let condition = analysis.analyzeExpr(clauses.condition, bindings)
+    if clauses.arms.len == 0:
+      if not clauses.hasElse:
+        # `(if cond)` only evaluates the condition and yields nil.
+        return WebExpr(kind: wekIf, typ: webType(wtkNil), loc: loc,
+                       children: @[condition, nilExpr, nilExpr])
+      var elseBindings = copyBindings(bindings)
+      let absent = analysis.analyzeSequence(clauses.elseBody, elseBindings,
+                                            expected, loc)
+      retainBranchNames(bindings, elseBindings, group)
+      return WebExpr(kind: wekIf, typ: unionType(nilExpr.typ, absent.typ),
+                     loc: loc, children: @[condition, nilExpr, absent])
+    var no = nilExpr
+    if clauses.hasElse:
+      var elseBindings = copyBindings(bindings)
+      no = analysis.analyzeSequence(clauses.elseBody, elseBindings, expected, loc)
+      retainBranchNames(bindings, elseBindings, group)
+    for i in countdown(clauses.arms.high, 0):
+      let arm = clauses.arms[i]
+      var armBindings = copyBindings(bindings)
+      let armCondition =
+        if i == 0: condition
+        else: analysis.analyzeExpr(arm.header, armBindings)
+      let yes = analysis.analyzeSequence(arm.body, armBindings, expected, loc)
+      retainBranchNames(bindings, armBindings, group)
+      no = WebExpr(kind: wekIf, typ: unionType(yes.typ, no.typ), loc: loc,
+                   children: @[armCondition, yes, no])
+    return no
   if name in ["!", "&&", "||", "??"]:
     if name == "!":
       if value.body.len != 1:

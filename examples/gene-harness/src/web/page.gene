@@ -8,11 +8,11 @@
 (var harness_ui ($web/load $"${($path/parent this_mod/.path)}/../../client/main.gene"))
 
 (fn page [^appearance appearance = nil, ^workspace workspace : Str = ""] : Str
-  (let chosen (if ($absent? appearance) (appearance_answer {}) (if (== ($head appearance) Str) (appearance_answer {^mode appearance}) appearance)))
+  (let chosen (if ($absent? appearance) (appearance_answer {}) else (if (== ($head appearance) Str) (appearance_answer {^mode appearance}) else appearance)))
   (let rendered chosen/rendered)
   (let preloads (appearance_preloads chosen))
   (let mode rendered/mode)
-  (let workspace_id (if (== workspace "") "" ($crypto/sha256 workspace)))
+  (let workspace_id (if (== workspace "") "" else ($crypto/sha256 workspace)))
   ($to_str
     "<!doctype html>"
     (render

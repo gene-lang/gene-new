@@ -37,7 +37,7 @@ what Gene actually wants.
 Ruby silently never fires:
 
 ```gene
-(if_yes (== (trim title) "") (fail …))   # right
+(if (== (trim title) "") (fail …))   # right
 (if_not (trim title) (fail …))            # wrong — "" is truthy, never fails
 ```
 
@@ -128,13 +128,12 @@ Bind the expression first.
 
 
 
-**An `elif` chain starts with a `then` clause.** Every branch is parenthesized,
-including single-expression arms. A compact `if` cannot take an `elif` clause
-as its third argument:
+**An `elif` chain uses bare markers.** `elif` and `else` sit among the `if`
+form's immediate children; a parenthesized marker is read as an ordinary call,
+so `(if a x else (elif b y))` raises `undefined symbol: elif`.
 
 ```gene
-(if a (then x) (elif b y) (else z))   # right
-(if a x (elif b y))                    # Error: undefined symbol: elif
+(if a x elif b y else z)   # right
 ```
 
 **A missing map key is `void`, not an error.** `m/b` on `{^a 1}` yields `void`,
@@ -150,10 +149,12 @@ way is never truthy:
 (if_not true  true false)   # nil
 
 ((xs .to_stream) .filter (fn [t] (if_not t/done true false)) ; .into [])
-# => [] always. Write (fn [t] (! t/done)) or (if t/done false true).
+# => [] always. Write (fn [t] (! t/done)) or (if t/done false else true).
 ```
 
-The same applies to `if_yes`. Both are guards; `(if c a b)` is the conditional.
+`if` takes an `else`; `if_not` does not. A two-expression truthy arm
+`(if c a b)` runs both expressions when `c` is truthy; write `(if c a else b)`
+for the alternative.
 
 **Map iteration yields `Sym` keys, and `==` does not convert.** Comparing an
 iterated key against a string is silently always false, so a filter written that
@@ -171,7 +172,7 @@ way copies everything:
 `1` to `1.0` — so convert explicitly. `Map` `get`/`put`/`delete` take either.
 
 **`match` without `else` is not a nil default** — unlike `if`, it needs the arm.
-Writing `(else nil)` there is idiomatic.
+Writing `else nil` there is idiomatic.
 
 **`nil` and `void` are different.** An unset prop-schema field reads `void`; an
 omitted named parameter binds `nil`. `$absent?` covers both; `$present?` is its
@@ -187,11 +188,12 @@ a truthiness check: `false` is present.
 below also need review.
 The transformations `fmt` will *not* make for you:
 
-- Replacing `(if cond (do …))` with `if_yes`, or `(if cond nil …)` with `if_not`.
-- Introducing `elif` instead of a nested `else (if …)`.
+- Replacing `(if cond (do …))` with a flat multi-expression arm, or
+  `(if cond nil else …)` with `if_not`.
+- Introducing `elif` instead of a nested `if` in an `else` arm.
 - Using `match` instead of repeated equality branches on the same value.
 - Replacing `(! ($absent? x))` with `($present? x)`.
-- Dropping an explicit trailing `nil` arm from a one-sided `if`.
+- Dropping an explicit `else nil` from an `if`.
 - Choosing `receiver/.message` over `(receiver .message)` for an unqualified
   bare send. Qualified zero-argument sends restore the short spelling.
 

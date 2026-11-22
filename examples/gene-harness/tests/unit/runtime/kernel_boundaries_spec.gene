@@ -9,18 +9,18 @@
   (for part in ($body form)
     (if (== ($head part) List)
       (for name in part (parts .push name))
-      (parts .push part)))
+      else (parts .push part)))
   (let names [])
   (var alias false)
   (for part in parts
-    (if (== ($to_str part) ":") (then (set alias true) (continue)))
-    (if alias (then (set alias false) (continue)))
+    (if (== ($to_str part) ":") (do (set alias true) (continue)))
+    (if alias (do (set alias false) (continue)))
     (names .push ($to_str part)))
   names)
 
 (fn without_extension [path : Str]
   (if ($str/ends_with? path ".gene")
-    ($str/slice_bytes path 0 (- ($str/byte_size path) 5)) path))
+    ($str/slice_bytes path 0 (- ($str/byte_size path) 5)) else path))
 
 (fn kernel_root [] ($path/join this_pkg/root "src/kernel"))
 (fn facade_path [] ($path/join this_pkg/root "src/kernel.gene"))
@@ -115,8 +115,7 @@
         (let from (without_extension form/from))
         ($assert (permitted .contains? from) $"${name} imports forbidden layer ${from}.")
         (if (&& (== from "../runtime/cordis_adapter") (!= name "composition_bridge"))
-          (then
-            ($assert (== name "registry"))
+          (do ($assert (== name "registry"))
             (for imported in (imported_names form) (observed .push imported))))))
     ($assert (== ($order/sort observed) ($order/sort (callback_import_exception)))
       "Remove the callback-trio exception in the extraction commit."))

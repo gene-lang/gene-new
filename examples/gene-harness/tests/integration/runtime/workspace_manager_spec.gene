@@ -338,7 +338,7 @@
         (try
           (let due (+ ($os/monotonic_ms) 15000))
           (while (! ($fs/exists? $"${project/dir}/.gene-harness/connection"))
-            ($assert (! process/.done?) ($to_str (if process/.done? (await process) "")))
+            ($assert (! process/.done?) ($to_str (if process/.done? (await process) else "")))
             ($assert (< ($os/monotonic_ms) due))
             ($sleep 25))
           (for operation in ["stop" "restart"]

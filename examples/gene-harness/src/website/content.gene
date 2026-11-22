@@ -52,9 +52,9 @@
   (var start -1)
   (var i 0)
   (while (&& (< i lines/.size) (== start -1))
-    (if_yes ($str/starts_with? ($str/trim lines/%i) opening) (set start i))
+    (if ($str/starts_with? ($str/trim lines/%i) opening) (set start i))
     (set i (+ i 1)))
-  (if_yes (== start -1)
+  (if (== start -1)
     (fail (WebsiteError ^_msg $"No excerpt begins with ${opening}")))
   (var first_line lines/%start)
   (var depth (indent_of first_line))
@@ -64,11 +64,11 @@
   (while (&& (< j lines/.size) (! ended))
     (var line lines/%j)
     (if (&& (> j start) (!= ($str/trim line) "") (<= (indent_of line) depth))
-      (then (set ended true))
-      (else
+      (set ended true)
+      else
         (var width ($str/byte_size line))
-        (picked .push (if (> width depth) ($str/slice_bytes line depth (- width depth)) ""))
-        (set j (+ j 1)))))
+        (picked .push (if (> width depth) ($str/slice_bytes line depth (- width depth)) else ""))
+        (set j (+ j 1))))
   (var result ($str/trim ($str/join picked "\n")))
   (var balance (delimiter_balance result))
   (while (&& (< balance 0)
@@ -80,7 +80,7 @@
 
 (fn source_line [text : Str, prefix : Str] : Str
   (for line in ($str/split text "\n")
-    (if_yes ($str/starts_with? ($str/trim line) prefix) (return ($str/trim line))))
+    (if ($str/starts_with? ($str/trim line) prefix) (return ($str/trim line))))
   (fail (WebsiteError ^_msg $"No source line begins with ${prefix}")))
 
 # --- Links -----------------------------------------------------------------------

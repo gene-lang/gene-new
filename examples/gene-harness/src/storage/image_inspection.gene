@@ -53,8 +53,7 @@
   (let metadata (try (inspect_png data)
     catch PngError (reject "invalid_image" $err/.message)))
   (if (== background "transparent")
-    (then
-      (if ($absent? decoder) (reject "missing_dependency" "Transparent PNG inspection was not prepared."))
+    (do (if ($absent? decoder) (reject "missing_dependency" "Transparent PNG inspection was not prepared."))
       (if (|| (> metadata/width 2048) (> metadata/height 2048))
         (reject "unsupported_dimensions" "Transparent PNG inspection supports at most 2048 pixels on each axis."))
       (if_not metadata/has_alpha
@@ -69,7 +68,7 @@
         catch RasterError
           (if (== $err/timed_out true)
             (reject "decode_timeout" "PNG decoding exceeded the remaining generation-phase time.")
-            (reject "decode_failed" "The generated PNG could not be decoded."))
+            else (reject "decode_failed" "The generated PNG could not be decoded."))
         catch Error (reject "decode_failed" "The generated PNG could not be inspected within the decoding limits.")))
       (if_not transparent
         (reject "opaque_image" "The generated PNG has no transparent pixels."))

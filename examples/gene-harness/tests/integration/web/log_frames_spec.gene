@@ -18,11 +18,10 @@
   (let opcode (&& ($binary/get head 0) 15))
   (var length (&& ($binary/get head 1) 127))
   (if (== length 126)
-    (then
-      (let extended (await (read_exact socket 2)))
-      (set length (+ (* ($binary/get extended 0) 256) ($binary/get extended 1))))
-    (else nil))
-  (let payload (if (> length 0) (await (read_exact socket length)) ($binary/from_list [])))
+    (let extended (await (read_exact socket 2)))
+      (set length (+ (* ($binary/get extended 0) 256) ($binary/get extended 1)))
+    else nil)
+  (let payload (if (> length 0) (await (read_exact socket length)) else ($binary/from_list [])))
   {^opcode opcode ^text ($binary/to_str payload)})
 
 (fn connect_socket [host, client, session : Str] : Any
@@ -53,11 +52,11 @@
     (let frame (read_frame socket))
     (if (== frame/opcode 1)
       (let message ($json/parse frame/text))
-      (if (== message/type "log")
+      else (if (== message/type "log")
         (set found message)
-        (if (== message/type "log/gap")
+        else (if (== message/type "log/gap")
           nil
-          (if ($present? message/sequence) (states .push message))))))
+          else (if ($present? message/sequence) (states .push message))))))
   ($assert ($present? found) "no log frame arrived")
   {^log found ^states states})
 

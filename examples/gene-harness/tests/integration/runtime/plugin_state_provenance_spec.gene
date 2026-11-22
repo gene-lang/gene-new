@@ -34,7 +34,7 @@
           (let writers (saved_state_writers $"${runtime/state_root}/events"))
           ($assert (== writers/.size 2))
           (for record in writers
-            ($assert (== record/writer/digest (if (== record/scope "workspace") first/digest second/digest)))
+            ($assert (== record/writer/digest (if (== record/scope "workspace") first/digest else second/digest)))
             ($assert (== record/writer/host_build_id runtime/workspace/history_build/.get))
             ($assert ($present? record/writer/at)))
           ($assert (== (plugin_state runtime/events "workspace" "workspace" "writer") {^version 1 ^value "leased"}))

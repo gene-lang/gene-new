@@ -11,7 +11,7 @@
   (key [transport account team channel]))
 
 (fn ^^private optional_identifier [value, label : Str]
-  (if ($absent? value) nil (identifier value label)))
+  (if ($absent? value) nil else (identifier value label)))
 
 # The account stores the transport's verified public identity and its opaque
 # `config` (host-owned references such as a credential file), never a copy of
@@ -37,9 +37,9 @@
             (|| (!= previous/transport transport) (!= previous/app record/app)
                 (!= previous/team record/team) (!= previous/bot_user record/bot_user)))
       (channel_error "conflict" "An account's channel identity cannot be replaced in place."))
-    (if_yes (!= previous record)
-      (state/accounts .put id record)
-      (state .put "policy_revision" (+ state/policy_revision 1)))
+    (if (!= previous record)
+      (do (state/accounts .put id record)
+      (state .put "policy_revision" (+ state/policy_revision 1))))
     {^account id ^transport transport ^owner state/id ^policy_revision state/policy_revision})))
 
 (fn configure_route [owner, account : Str, channel : Str, workspace : Str,
@@ -53,7 +53,7 @@
   (mutate owner (fn [state]
     (let selected (state/accounts .get account))
     (if ($absent? selected) (channel_error "not_found" "Channel account not found."))
-    (let users (if ($absent? approved) [selected/operator] approved))
+    (let users (if ($absent? approved) [selected/operator] else approved))
     (if (!= ($head users) List) (channel_error "invalid_request" "Approved channel users must be a list."))
     (let normalized [])
     (for user in users
@@ -68,21 +68,21 @@
         (channel_error "conflict" "The workspace already has an enabled channel binding.")))
     (let record {^id id ^owner state/id ^transport selected/transport ^account account ^team selected/team ^channel channel
       ^workspace canonical ^approved normalized ^require_mention require_mention ^enabled enabled})
-    (if_yes (!= previous record)
-      (state/routes .put id record)
-      (state .put "policy_revision" (+ state/policy_revision 1)))
+    (if (!= previous record)
+      (do (state/routes .put id record)
+      (state .put "policy_revision" (+ state/policy_revision 1))))
     (copy record))))
 
 # One snapshot is one authorization decision. A remote workspace must query
 # this authority again before admitting a queued batch instead of using a cache.
 (fn authorize_state [state, id : Str, user : Str, workspace]
   (let selected (state/routes .get id))
-  (let account (if ($absent? selected) nil (state/accounts .get selected/account)))
+  (let account (if ($absent? selected) nil else (state/accounts .get selected/account)))
   (let allowed (&& ($present? selected) selected/enabled ($present? account) account/enabled
     (|| ($absent? workspace) (== selected/workspace workspace))
     (selected/approved .contains? user)))
   {^allowed allowed ^owner state/id ^policy_revision state/policy_revision
-   ^route (if ($absent? selected) nil (copy selected)) ^author user})
+   ^route (if ($absent? selected) nil else (copy selected)) ^author user})
 
 (fn authorize [owner, id : Str, user : Str, ^workspace workspace = nil]
   (read owner (fn [state] (authorize_state state id user workspace))))

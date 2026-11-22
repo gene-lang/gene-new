@@ -37,11 +37,11 @@
   (let actual ($head value))
   (let matches
     (match expected
-      (when "int" (== actual Int))
-      (when "str" (== actual Str))
-      (when "bool" (== actual Bool))
-      (when "map" (== actual Map))
-      (else true)))
+      when "int" (== actual Int)
+      when "str" (== actual Str)
+      when "bool" (== actual Bool)
+      when "map" (== actual Map)
+      else true))
   (if_not matches (invalid $"Setting ${definition/key} must be a ${expected}."))
   (if (&& (== expected "int") ($present? definition/min) (< value definition/min))
     (invalid $"Setting ${definition/key} must be at least ${definition/min}."))
@@ -65,7 +65,7 @@
   (if ($absent? launch) (return nil))
   (if (model_setting_keys .contains? key)
     (launch .get key)
-    nil))
+    else nil))
 
 # Choice sources
 
@@ -75,16 +75,15 @@
 (fn scope_values [runtime, scope : Str, stored]
   (let definitions (setting_definitions runtime))
   (if (== scope "shared")
-    (then
-      (let values {})
+    (let values {})
       (map_for [key definition] in definitions (values .put ($to_str key) definition/default))
       (map_for [key value] in stored (values .put ($to_str key) value))
-      values)
-    (else (resolve_config ($thaw ($freeze stored)) definitions (shared_settings_root runtime)))))
+      values
+    else (resolve_config ($thaw ($freeze stored)) definitions (shared_settings_root runtime))))
 
 (fn current_scope_values [runtime, scope : Str]
   (scope_values runtime scope
-    (if (== scope "shared") (then (/values (shared_values_for runtime))) (else (read_config runtime)))))
+    (if (== scope "shared") (/values (shared_values_for runtime)) else (read_config runtime))))
 
 # The provider and model the candidate values would select, by the existing
 # selection rules (pins, workspace, shared default, environment, automatic), so
@@ -104,7 +103,7 @@
 (fn setting_choices [runtime, definition, ^values values = nil, ^drafts drafts = {}, ^scope scope : Str = "workspace"]
   (let name definition/choices)
   (if ($absent? name) (return nil))
-  (let complete (if ($present? values) (then values) (else (current_scope_values runtime scope))))
+  (let complete (if ($present? values) values else (current_scope_values runtime scope)))
   (if ($absent? values)
     (map_for [key value] in drafts (complete .put ($to_str key) value)))
   (let source (row runtime/h "setting_choices" name))
@@ -116,7 +115,7 @@
     (context .put "selection" (candidate_selection runtime complete)))
   (try
     (let result (source/choices context))
-    (let shaped (if (== ($head result) List) {^options result} result))
+    (let shaped (if (== ($head result) List) {^options result} else result))
     {^source name ^options (?? shaped/options []) ^complete (?? shaped/complete true)
      ^closed (== source/closed true) ^reason (?? shaped/reason nil)}
   catch Error
@@ -141,29 +140,28 @@
   (let shared_supported (supports_scope? definition "shared"))
   (let shared_here (&& shared_supported ($has_key? shared_values key)))
   (let override (launch_override runtime key))
-  (let inherited (if shared_here (then (shared_values .get key)) (else definition/default)))
+  (let inherited (if shared_here (shared_values .get key) else definition/default))
   (let intended (layered_value definition workspace_values shared_values))
-  (let effective (if ($present? override) override intended))
+  (let effective (if ($present? override) override else intended))
   (let view
     {^key key ^label definition/label ^doc definition/doc ^group definition/group
      ^type definition/type ^applies definition/applies ^owner_scope "workspace"
      ^scopes (definition_scopes definition) ^choices (?? definition/choices nil)
      ^default definition/default ^stored (workspace_values .get key) ^has_stored stored_here
-     ^shared (if shared_here (then (shared_values .get key)) (else nil)) ^has_shared shared_here
-     ^inherited inherited ^inherited_source (if shared_here "shared" "default")
+     ^shared (if shared_here (shared_values .get key) else nil) ^has_shared shared_here
+     ^inherited inherited ^inherited_source (if shared_here "shared" else "default")
      ^override override ^value effective
      ^source (if ($present? override)
-       (then "launch")
-       (elif stored_here "workspace")
-       (elif shared_here "shared")
-       (else "default"))})
+       "launch"
+       elif stored_here "workspace"
+       elif shared_here "shared"
+       else "default")})
   # Restart-applied values report what the running consumer started with.
   (if (== definition/applies "restart")
-    (then
-      (let known ($has_key? active key))
+    (do (let known ($has_key? active key))
       (view .put "active_known" known)
-      (view .put "active" (if known (then (active .get key)) (else nil)))
-      (view .put "pending_restart" (if known (then (!= (active .get key) effective)) (else nil)))))
+      (view .put "active" (if known (active .get key) else nil))
+      (view .put "pending_restart" (if known (!= (active .get key) effective) else nil))))
   view)
 
 (fn shared_view [definition, shared_values]
@@ -173,8 +171,8 @@
    ^type definition/type ^applies definition/applies ^owner_scope "shared"
    ^scopes (definition_scopes definition) ^choices (?? definition/choices nil)
    ^default definition/default ^stored (shared_values .get key) ^has_stored here
-   ^value (if here (then (shared_values .get key)) (else definition/default))
-   ^source (if here "shared" "default")})
+   ^value (if here (shared_values .get key) else definition/default)
+   ^source (if here "shared" else "default")})
 
 (fn shared_values_for [runtime]
   (read_shared_settings (shared_settings_root runtime)))
@@ -262,14 +260,14 @@
       (while (! watch/closed/.get)
         ($sleep interval_ms)
         (let digest (try (/digest (read_shared_settings shared_root)) catch Error state/observed/.get))
-        (if_yes (&& (! watch/closed/.get) (!= digest state/observed/.get))
+        (if (&& (! watch/closed/.get) (!= digest state/observed/.get))
           (announce runtime "shared" digest [])))))))
   watch)
 
 (fn close_shared_observation [watch]
   (if (watch/closed .swap true) (return nil))
   (let worker watch/worker/.get)
-  (if (&& ($present? worker) (! worker/.done?)) (then worker/.cancel worker/.join))
+  (if (&& ($present? worker) (! worker/.done?)) (do worker/.cancel worker/.join))
   nil)
 
 (fn request_keys [changes, reset]
@@ -308,10 +306,10 @@
         (if ($present? mutate) (mutate candidate))
         (let complete (scope_values runtime "workspace" candidate))
         (for key in keys
-          (if_yes ($has_key? candidate key)
-            (let definition (definitions .get key))
+          (if ($has_key? candidate key)
+            (do (let definition (definitions .get key))
             (check_setting_value definition (candidate .get key))
-            (check_choice runtime definition (candidate .get key) complete "workspace")))
+            (check_choice runtime definition (candidate .get key) complete "workspace"))))
         (if (|| (keys .contains? "provider") (keys .contains? "model")) (check_model_pair candidate))
         ($fs/write_text_atomic (config_path runtime) ($serde/write_data candidate))
         {^config candidate ^digest (config_digest candidate)})))

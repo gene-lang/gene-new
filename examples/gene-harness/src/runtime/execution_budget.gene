@@ -15,12 +15,12 @@
 
 (fn earlier [left, right] ^^private
   (if ($absent? left)
-    (then (?? right nil))
-    (elif ($absent? right) left)
-    (else ($math/min left right))))
+    (?? right nil)
+    elif ($absent? right) left
+    else ($math/min left right)))
 
 (fn open_execution_scope [kind : Str, limits, context, ^owner owner = nil]
-  (let source (if ($absent? context) {} context))
+  (let source (if ($absent? context) {} else context))
   (let parent (find_scope source/execution_scope))
   (let native ($runtime/execution_budget))
   (let deadline (earlier (+ native/now_ms limits/timeout_ms) native/deadline_ms))
@@ -32,11 +32,11 @@
      ^reviewer source/reviewer
      ^composition source/composition ^active ($cell true) ^deadline_ms deadline
      ^finalizers ($cell []) ^output source/output}
-    parent/origin))
+    else parent/origin))
   (let scope {^token token ^kind kind ^context nested ^origin origin ^owner owner
-    ^response_deadline_ms (if (== kind "response") deadline parent/response_deadline_ms)
+    ^response_deadline_ms (if (== kind "response") deadline else parent/response_deadline_ms)
     ^callback_deadline_ms (if (== kind "callback")
-      (earlier deadline parent/callback_deadline_ms) parent/callback_deadline_ms)
+      (earlier deadline parent/callback_deadline_ms) else parent/callback_deadline_ms)
     ^deadline_ms (earlier deadline parent/deadline_ms)
     ^limits {^max_memory_mb limits/max_memory_mb
       ^timeout_ms limits/timeout_ms}})
@@ -44,15 +44,15 @@
   scope)
 
 (fn close_execution_scope [scope]
-  (let finalizers (if (== scope/kind "response") scope/origin/finalizers/.get []))
+  (let finalizers (if (== scope/kind "response") scope/origin/finalizers/.get else []))
   (scope_gate (fn []
-    (if_yes (== scope/kind "response")
-      (scope/origin/active .set false)
-      (scope/origin/finalizers .set []))
+    (if (== scope/kind "response")
+      (do (scope/origin/active .set false)
+      (scope/origin/finalizers .set [])))
     (scopes .set ($filter scopes/.get (fn [item]
       (if (== scope/kind "response")
         (! (same? item/origin scope/origin))
-        (! (same? item/token scope/token))))))))
+        else (! (same? item/token scope/token))))))))
   # Response evaluation has already unwound. Do not run these under its
   # exhausted budget or while holding the scope table's gate.
   (for finalize in finalizers
@@ -74,16 +74,16 @@
     (let outcome ($runtime/with_context scope/context (fn []
       (supervised_call operation [] limits ^deadline_ms scope/deadline_ms))))
     (match outcome ^!exhaustive
-      (when (TaskOutcome/ok value) value)
-      (when (TaskOutcome/error error) (fail error))
-      (when (TaskOutcome/fault fault) (let message fault/.message)
+      when (TaskOutcome/ok value) value
+      when (TaskOutcome/error error) (fail error)
+      when (TaskOutcome/fault fault) (let message fault/.message)
         (if (== ($head fault) Panic)
           (fail (CallbackCancelled ^deadline false ^_cause fault ^_msg $"Plugin callback panic: ${message}"))
-          (fail fault)))
-      (when TaskOutcome/cancelled
+          else (fail fault))
+      when TaskOutcome/cancelled
         (let expired (>= ($os/monotonic_ms) scope/deadline_ms))
         (fail (CallbackCancelled ^deadline expired
-          ^_msg (if expired "Plugin callback deadline exceeded." "Plugin callback cancelled.")))))
+          ^_msg (if expired "Plugin callback deadline exceeded." else "Plugin callback cancelled."))))
     ensure (close_execution_scope scope)))
 
 # Only host code receives the authenticated origin. Plugins see the numeric
@@ -91,7 +91,7 @@
 (fn execution_origin []
   (let context ($runtime/context))
   (let scope (find_scope context/execution_scope))
-  (if (|| ($absent? scope/origin) (! scope/origin/active/.get)) nil scope/origin))
+  (if (|| ($absent? scope/origin) (! scope/origin/active/.get)) nil else scope/origin))
 
 (fn execution_owner []
   (let context ($runtime/context))
@@ -107,7 +107,7 @@
     ^response_deadline_ms (?? scope/response_deadline_ms nil)
     ^callback_deadline_ms (?? scope/callback_deadline_ms nil)
     ^effective_deadline_ms effective
-    ^remaining_ms (if ($absent? effective) nil ($math/max 0 (- effective native/now_ms)))
+    ^remaining_ms (if ($absent? effective) nil else ($math/max 0 (- effective native/now_ms)))
     ^memory_limit_bytes native/memory_limit_bytes
     ^memory_remaining_bytes native/memory_remaining_bytes
     ^callback_limits (?? scope/limits nil)}))

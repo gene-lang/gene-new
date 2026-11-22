@@ -64,7 +64,7 @@
   nil)
 
 (fn configuration [ctx]
-  (let settings (if (== ctx/mode "normal") (startup_config ctx/state_root (shared_settings_root ctx)) {}))
+  (let settings (if (== ctx/mode "normal") (startup_config ctx/state_root (shared_settings_root ctx)) else {}))
   (let requested (?? settings/response_budget {}))
   (let base (?? ctx/profile/limits (response_execution_limits)))
   (set ctx/limits (ExecutionLimits ^max_memory_mb (?? requested/max_memory_mb base/max_memory_mb)
@@ -105,7 +105,7 @@
   unwind (close_image_host images)))
 
 (fn activate_services [ctx]
-  (if_yes (&& ctx/activate (! ctx/recovery))
+  (if (&& ctx/activate (! ctx/recovery))
     (activate_workspace_plan ^profile_admissions (profile_admissions ^limits ctx/limits ctx/profile) ctx/prepared ctx/h))
   ctx/h)
 
@@ -114,11 +114,11 @@
     {^name "ownership" ^layer "kernel" ^requires []
      ^open (fn [ctx]
        (let lock (if ctx/owns_ownership
-         (acquire_workspace_lock ^wait_ms ctx/lock_wait_ms ctx/root ctx/entry) ctx/supplied_ownership))
+         (acquire_workspace_lock ^wait_ms ctx/lock_wait_ms ctx/root ctx/entry) else ctx/supplied_ownership))
        (set ctx/ownership lock) lock)
      ^recover (fn [ctx]
        (let lock (if ctx/owns_ownership
-         (acquire_workspace_lock ^wait_ms ctx/lock_wait_ms ctx/root ctx/entry) ctx/supplied_ownership))
+         (acquire_workspace_lock ^wait_ms ctx/lock_wait_ms ctx/root ctx/entry) else ctx/supplied_ownership))
        (set ctx/ownership lock) lock)
      ^close (fn [ctx, lock] (if ctx/owns_ownership (close_workspace_lock lock)))}
     {^name "layout" ^layer "kernel" ^requires ["ownership"]
@@ -132,11 +132,11 @@
      ^recover (fn [ctx] (open_appearance ctx/state_root))}
     {^name "events" ^layer "kernel" ^requires ["configuration"]
      ^open (fn [ctx]
-       (let events (if ctx/owns_events (open_event_store $"${ctx/state_root}/events") ctx/supplied_events))
+       (let events (if ctx/owns_events (open_event_store $"${ctx/state_root}/events") else ctx/supplied_events))
        (set ctx/events events) events)
      ^recover nil
      ^close (fn [ctx, events]
-       (if ctx/owns_events (close_event_store events) (flush_event_store events)))}
+       (if ctx/owns_events (close_event_store events) else (flush_event_store events)))}
     {^name "workspace" ^layer "kernel" ^requires {^normal ["events"] ^recovery ["configuration"]}
      ^open workspace_service ^recover workspace_service
      ^close (fn [ctx, workspace] (close_workspace workspace))}
@@ -182,8 +182,8 @@
      ^open (fn [ctx]
        # Doctor and recovery ignore execution configuration, as with response_budget.
        (let idle (if (== ctx/mode "normal")
-         (then (note_active_setting ctx/runtime "idle_timeout_ms" (effective_setting ctx/runtime "idle_timeout_ms")))
-         (else 600000)))
+         (note_active_setting ctx/runtime "idle_timeout_ms" (effective_setting ctx/runtime "idle_timeout_ms"))
+         else 600000))
        (let sessions (open_session_manager ^idle_timeout_ms idle ctx/runtime ctx/events ctx/state_root ^!recover))
        (set ctx/runtime/sessions sessions)
        (try
@@ -297,9 +297,9 @@
      ^open activate_services ^recover activate_services ^close close_kernel}
     {^name "initial_session" ^layer "loop" ^requires ["plugins" "sessions"]
      ^open (fn [ctx]
-       (if_yes (&& ctx/activate (== ctx/event_scope "session"))
-         (create_session ^id ctx/session ctx/runtime/sessions)
-         (load_session ctx/runtime/sessions ctx/session))
+       (if (&& ctx/activate (== ctx/event_scope "session"))
+         (do (create_session ^id ctx/session ctx/runtime/sessions)
+         (load_session ctx/runtime/sessions ctx/session)))
        (if ctx/activate (record_application_result ^readiness ctx/services/values/readiness ctx/workspace ctx/h {^status "runtime_open"}))
        nil)
      ^recover nil}])

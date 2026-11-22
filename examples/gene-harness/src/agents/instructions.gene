@@ -62,7 +62,7 @@ Session kind: """
       (parts .push
         (if ($absent? section/render)
           section/text
-          (section/render runtime session_record)))))
+          else (section/render runtime session_record)))))
   ($str/join
     parts
     """

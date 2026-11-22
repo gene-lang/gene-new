@@ -18,11 +18,10 @@
     (if (== arg "--") (break))
     (if (== arg "--supervised") (set supervised true))
     (if (&& (== arg "--startup-id") (< (+ index 1) args/.size))
-      (then (set index (+ index 1)) (set id ($to_str args/%index))))
+      (do (set index (+ index 1)) (set id ($to_str args/%index))))
     (set index (+ index 1)))
   (if (&& supervised (!= id "") ($str/ends_with? marker $"/${id}.entered"))
-    (then
-      ($fs/make_dir ($path/parent marker))
+    (do ($fs/make_dir ($path/parent marker))
       ($fs/write_text_atomic ^^owner_only marker "entered")))
   nil)
 
@@ -30,11 +29,11 @@
   (log_start)
   (mark_startup_entry args)
   (let application ($pkg/application))
-  (if_yes ($absent? application/provenance)
-    (let delegated ["run" "--snapshot"
+  (if ($absent? application/provenance)
+    (do (let delegated ["run" "--snapshot"
       ($path/join application/source_root "src/main.gene")])
     (for arg in (argument_values args) (delegated .push ($to_str arg)))
-    (return (await ($os/exec_stdio_async ($os/executable_path) delegated...))))
+    (return (await ($os/exec_stdio_async ($os/executable_path) delegated...)))))
   (var parsed nil)
   (try
     (set parsed (parse_options args))
@@ -42,19 +41,19 @@
       ^mode (if (["web" "manager"] .contains? parsed/command)
               (if (== parsed/options/supervised true)
                 "host_supervised"
-                (if (== parsed/options/recovery true) "recovery" "host_direct"))
-              "cli")
+                else (if (== parsed/options/recovery true) "recovery" else "host_direct"))
+              else "cli")
       ^root (?? parsed/options/workspace (?? parsed/options/root ""))
       ^workspace (?? parsed/options/workspace (?? parsed/options/root "")))
-    (if_yes (|| (== parsed/options/help true) (== parsed/command "help"))
-      ($println (usage))
-      (return 0))
+    (if (|| (== parsed/options/help true) (== parsed/command "help"))
+      (do ($println (usage))
+      (return 0)))
     (if (== parsed/command "manager")
       (do
         (parsed/options .put "workspace" (initialize_manager_workspace ^root parsed/options/root))
         (log_set_workspace parsed/options/workspace parsed/options/workspace)))
-    (if_yes (["web" "manager"] .contains? parsed/command)
-      (if (> parsed/words/.size 1) (problem "web accepts host options, not additional commands."))
+    (if (["web" "manager"] .contains? parsed/command)
+      (do (if (> parsed/words/.size 1) (problem "web accepts host options, not additional commands."))
       (map_for [key value] in parsed/options
         (if_not (["workspace" "root" "port" "restart-port" "startup-id" "script" "offline" "supervised" "recovery" "managed" "provider" "model" "effort"] .contains? ($to_str key))
           (problem $"--${key} requires a client command.")))
@@ -68,7 +67,7 @@
       (if (== parsed/options/offline true) (arguments .push "--offline"))
       (if (== parsed/options/supervised true) (arguments .push "--supervised"))
       (if (== parsed/options/managed true) (arguments .push "--managed"))
-      (return (serve_web arguments)))
+      (return (serve_web arguments))))
     (run_client parsed)
   catch Throwable
     (let error {^code (?? $err/code "error") ^message $err/.message})
@@ -79,5 +78,5 @@
     ($println
       (if (== parsed/options/json true)
         ($json/stringify error)
-        $"${error/code}: ${error/message}"))
+        else $"${error/code}: ${error/message}"))
     1))

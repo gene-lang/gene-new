@@ -50,7 +50,7 @@ are schemas, where a nil-admitting type still permits omission.
 
 ```gene runnable
 (fn age_label [age : Int? = nil] : Str
-  (if ($absent? age) "unknown" $"${age}"))
+  (if ($absent? age) "unknown" else $"${age}"))
 
 [(age_label) (age_label nil) (age_label 25)]
 # ["unknown" "unknown" "25"]
@@ -58,28 +58,28 @@ are schemas, where a nil-admitting type still permits omission.
 
 ## Testing and binding
 
-`(if_present name expr body… (else body…))` evaluates `expr` once. When its
+`(if_present name expr body… [else body…])` evaluates `expr` once. When its
 value is present, `name` is bound to it and the body runs; otherwise the
-optional trailing `else` clause runs, and without one the form is `nil`.
-Presence is the test, so `false`, `0`, `""` and empty collections take the
-body.
+optional bare `else` marker opens the fallback body, and without one the form
+is `nil`. Presence is the test, so `false`, `0`, `""` and empty collections
+take the body. The body and the fallback each hold one or more expressions.
 
 ```gene runnable
 (let options {^subject "Ada"})
-[(if_present s options/subject ($str/upper s) (else "none"))
- (if_present s options/topic ($str/upper s) (else "none"))]
+[(if_present s options/subject ($str/upper s) else "none")
+ (if_present s options/topic ($str/upper s) else "none")]
 # ["ADA" "none"]
 ```
 
 `name` belongs to the form: it is visible in the body only, not in `expr`,
-not in the `else` clause and not after the form, and it shadows an outer
-binding of the same name for the body. Bindings the body or the `else` clause
+not in the `else` body and not after the form, and it shadows an outer
+binding of the same name for the body. Bindings the body or the `else` body
 make with `let` or `var` keep the enclosing scope, as in `if`. Each execution
 binds `name` afresh, so a closure made in the body keeps that execution's
 value. `return`, `break`,
 `continue`, `yield` and `await` act as they do inside `if`, and the last form
-of each clause is in tail position. `(then …)` and `(elif …)` are rejected, and
-`(else …)` must be last.
+of each arm is in tail position. `elif` is not accepted here, and a bare
+`else` marker must come last.
 
 To leave early when a value is absent, bind it with `??` instead:
 

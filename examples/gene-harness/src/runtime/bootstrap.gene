@@ -8,7 +8,7 @@
 (type RuntimeCleanupError : Error)
 
 (fn prepare_workspace_root [^root root : Str = ""] : Str
-  (let chosen (if (== root "") ($os/launch_dir) root))
+  (let chosen (if (== root "") ($os/launch_dir) else root))
   ($fs/make_dir chosen)
   ($fs/real_path chosen))
 
@@ -50,7 +50,7 @@
      ^supplied_events supplied_events ^owns_events (&& (! recovery) ($absent? supplied_events))
      ^events nil ^workspace nil ^h nil ^runtime nil ^inbox nil ^harness_closed false
      ^owns_ownership ($absent? supplied_ownership) ^supplied_ownership supplied_ownership
-     ^entry (if (== entry "") this_mod/.path entry) ^event_scope event_scope ^activate activate
+     ^entry (if (== entry "") this_mod/.path else entry) ^event_scope event_scope ^activate activate
      ^mode mode ^recovery recovery ^managed managed ^lock_wait_ms lock_wait_ms ^objects objects
      ^launch launch})
   (let services (new_host_services context

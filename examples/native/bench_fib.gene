@@ -18,7 +18,7 @@
 (fn vm_fib [n : Int] : Int
   (if (< n 2)
     n
-    (+ (vm_fib (- n 1)) (vm_fib (- n 2)))))
+    else (+ (vm_fib (- n 1)) (vm_fib (- n 2)))))
 
 (fn vm_identity [n : Int] : Int n)
 

@@ -261,7 +261,7 @@
               catch Error ""))
           (let marker (if (== web_secret "")
             "editor-route-marker\n"
-            $"editor-route-marker ${web_secret}\n"))
+            else $"editor-route-marker ${web_secret}\n"))
           (var existing ($binary/from_list []))
           (if ($fs/exists? log_path) (set existing ($fs/read_bytes log_path)))
           ($fs/write_bytes_atomic log_path

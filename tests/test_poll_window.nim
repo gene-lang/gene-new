@@ -42,7 +42,7 @@ suite "poll windows sample where exact polls do":
         (var t 0) (var i 0)
         (let p (P ^x 3 ^y 4)) (let m {^a 1})
         (while (< i n)
-          (if (== (// i 3) 0) (set t (+ t p/x)) (set t (+ t m/a)))
+          (if (== (// i 3) 0) (set t (+ t p/x)) else (set t (+ t m/a)))
           (set t (+ t ($str/byte_size "ab")))
           (set i (+ i 1)))
         t)
@@ -50,10 +50,10 @@ suite "poll windows sample where exact polls do":
 
   test "calls, recursion and tail calls":
     sameSamples("""
-      (fn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+      (fn fib [n] (if (< n 2) n else (+ (fib (- n 1)) (fib (- n 2)))))
       (fn fib_typed [n : Int] : Int
-        (if (< n 2) n (+ (fib_typed (- n 1)) (fib_typed (- n 2)))))
-      (fn down [n] (if (< n 1) n (down (- n 1))))
+        (if (< n 2) n else (+ (fib_typed (- n 1)) (fib_typed (- n 2)))))
+      (fn down [n] (if (< n 1) n else (down (- n 1))))
     """ & underPolicy("[(fib 12) (fib_typed 11) (down 500)]"), "[144 89 0]")
 
   test "a policy inside a policy, and code after it returns":
@@ -79,7 +79,7 @@ suite "poll windows sample where exact polls do":
     sameSamples(underPolicy(
       "(do (var t 0) (repeat i in 60 " &
       "  (try (if (== (// i 2) 0) " &
-      "         (then (fail (Error ^_msg \"x\"))) (else (set t (+ t 1)))) " &
+      "         (fail (Error ^_msg \"x\")) else (set t (+ t 1))) " &
       "   catch Error (set t (+ t 2)))) t)"), "90")
 
   test "generators and spawned tasks":

@@ -8,8 +8,7 @@
     (var found false)
     (for e in entries
       (if (&& (! found) (e/matches node))
-        (then
-          (set found true)
+        (do (set found true)
           (set result (e/handle node each)))))
     ($assert found "no handler for node")
     result))

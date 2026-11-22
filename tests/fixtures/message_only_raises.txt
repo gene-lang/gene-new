@@ -5,7 +5,8 @@
 # 1	src/gene.nim
 # 1	src/gene/aot_checked.nim
 # 1	src/gene/callable_reflection.nim
-# 426	src/gene/compiler.nim
+# 1	src/gene/clause_syntax.nim
+# 417	src/gene/compiler.nim
 # 11	src/gene/error_runtime.nim
 # 22	src/gene/events.nim
 # 1	src/gene/execution_limits.nim
@@ -27,11 +28,12 @@
 # 19	src/gene/testing.nim
 # 2	src/gene/type_contracts.nim
 # 61	src/gene/types.nim
-# 817	src/gene/vm.nim
+# 816	src/gene/vm.nim
 #
 src/gene.nim	--package-root is not a directory: 
 src/gene/aot_checked.nim	typed_native function 
 src/gene/callable_reflection.nim	runtime/bind_shape: 
+src/gene/clause_syntax.nim	<expr form & ": " & reason)>
 src/gene/compiler.nim	! expects exactly one argument
 src/gene/compiler.nim	$err is only available inside a catch body
 src/gene/compiler.nim	$err_msg was removed; read the message with $err/.message
@@ -229,12 +231,9 @@ src/gene/compiler.nim	generator return takes no value
 src/gene/compiler.nim	generic function requires a name
 src/gene/compiler.nim	generic function type parameter requires a name
 src/gene/compiler.nim	generic function type parameters must be names
-src/gene/compiler.nim	if requires elif/else clauses; macro calls are only expanded in expression positions
 src/gene/compiler.nim	if_present binding must be a plain local name, got 
 src/gene/compiler.nim	if_present does not accept props
-src/gene/compiler.nim	if_present requires a name, an expression and a body
-src/gene/compiler.nim	if_present takes body forms and an optional trailing (else …), not (
-src/gene/compiler.nim	if_present: (else …) must be the last form
+src/gene/compiler.nim	if_yes was removed; use if, which runs every expression of the
 src/gene/compiler.nim	impl ^export must be Bool
 src/gene/compiler.nim	impl body requires message declarations; 
 src/gene/compiler.nim	impl got unexpected named argument: 
@@ -295,13 +294,8 @@ src/gene/compiler.nim	macro pattern comparison requires an earlier binding:
 src/gene/compiler.nim	macro requires a name and parameter vector
 src/gene/compiler.nim	macro requires a parameter vector
 src/gene/compiler.nim	match ^exhaustive requires a literal Bool
-src/gene/compiler.nim	match clauses must be (when ...) or (else ...)
-src/gene/compiler.nim	match else must be the final arm
-src/gene/compiler.nim	match is not exhaustive; add (else ...), a binding arm, or ^!exhaustive
+src/gene/compiler.nim	match is not exhaustive; add else, a binding arm, or ^!exhaustive
 src/gene/compiler.nim	match only accepts ^exhaustive
-src/gene/compiler.nim	match requires a value and at least one arm
-src/gene/compiler.nim	match requires when/else clauses; 
-src/gene/compiler.nim	match requires when/else clauses; 
 src/gene/compiler.nim	message names may not contain '/'; qualify a protocol as .ns/Proto:message 
 src/gene/compiler.nim	message names may not end in !; trailing ! is reserved for fexpr calls: 
 src/gene/compiler.nim	message requires a name and parameter vector
@@ -451,7 +445,6 @@ src/gene/compiler.nim	web_module '
 src/gene/compiler.nim	web_module got unexpected named argument: 
 src/gene/compiler.nim	web_module must be an unconditional top-level declaration
 src/gene/compiler.nim	web_module requires a name
-src/gene/compiler.nim	when requires a pattern
 src/gene/compiler.nim	while requires a condition
 src/gene/compiler.nim	wildcard imports require `^from \"path\"`; a namespace-path import 
 src/gene/compiler.nim	wildcard, alias, and re-export imports must be unconditional 

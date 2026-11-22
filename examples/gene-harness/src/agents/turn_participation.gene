@@ -47,8 +47,7 @@
   (for packet in (run_turn_phase transaction "bindings")
     (if ($absent? packet/value) (continue))
     (if (== ($head packet/value) ParticipantBindings)
-      (then
-        (let data packet/value)
+      (do (let data packet/value)
         (if_not (public_sources .has_key? data/owner) (public_sources .put data/owner packet/name))
         (if_not (public .has_key? data/owner) (public .put data/owner {}))
         (let namespace (public .get data/owner))
@@ -76,8 +75,7 @@
   (reduce_turn_phase transaction "commit" result (fn [current packet]
     (if ($absent? packet/value) (return current))
     (if (== ($head packet/value) ParticipantCommit)
-      (then
-        (for item in packet/value/items (current/request_items .push item))
+      (do (for item in packet/value/items (current/request_items .push item))
         (if (&& (! packet/value/items/.empty?) (== current/kind "done")) (current .put "kind" "continue"))
         (return current)))
     (let definition (definition_for transaction packet/name))
@@ -114,16 +112,16 @@
   (if (== result/kind "suspend")
     (fail (ParticipantFailure ^participant result/validated/suspension ^phase "commit"
       ^code "unhandled_suspension" ^_msg "No participant handled the checked Outcome suspension.")))
-  (if_yes (== result/kind "done")
-    (discard_done_items result/turn)
+  (if (== result/kind "done")
+    (do (discard_done_items result/turn)
     (result .put "request_items" [])
-    (return result))
-  (if_yes (&& (== result/kind "continue") result/request_items/.empty?)
-    (let message "continuing Outcome requires a prompt or append_prompt items")
+    (return result)))
+  (if (&& (== result/kind "continue") result/request_items/.empty?)
+    (do (let message "continuing Outcome requires a prompt or append_prompt items")
     (result .put "kind" "error")
     (result .put "validated" nil)
     (result .put "error" message)
-    (result .put "request_items" (request_items result/turn nil ^patch result/patch/text ^error message)))
+    (result .put "request_items" (request_items result/turn nil ^patch result/patch/text ^error message))))
   result)
 
 (fn round_limit_participants [runtime, session : Str, round, turn : Int, count : Int, limit : Int, collection : Bool]

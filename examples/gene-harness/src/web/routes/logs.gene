@@ -14,12 +14,12 @@
 
 (fn level_rank [level : Str] : Int
   (match level
-    (when "error" 0)
-    (when "warn" 1)
-    (when "info" 2)
-    (when "debug" 3)
-    (when "trace" 4)
-    (else 2)))
+    when "error" 0
+    when "warn" 1
+    when "info" 2
+    when "debug" 3
+    when "trace" 4
+    else 2))
 
 (fn type_matches? [actual : Str, wanted : Str] : Bool
   (if (== wanted "") (return true))
@@ -45,7 +45,7 @@
     (return false))
   (if (> filters/since 0)
     (let at (?? record/time_ms 0))
-    (if (|| (!= ($head at) Int) (< at filters/since)) (return false)))
+    else (if (|| (!= ($head at) Int) (< at filters/since)) (return false)))
   (let target (?? record/target {}))
   (map_for [key value] in filters/targets
     (if (!= ($to_str (?? (target .get key) "")) value) (return false)))
@@ -62,9 +62,9 @@
   (let source (field ^default "host" params "source"))
   (if (!= source "host") (return (response 400 {^code "invalid_request" ^message $"unknown log source ${source}"})))
   (let options
-    {^max_bytes (if filtered 1048576 (number ^default "65536" params "max_bytes"))
+    {^max_bytes (if filtered 1048576 else (number ^default "65536" params "max_bytes"))
      ^max_line_bytes (number ^default "8192" params "max_line_bytes")
-     ^initial_lines (if filtered 1000 (number ^default "200" params "lines"))})
+     ^initial_lines (if filtered 1000 else (number ^default "200" params "lines"))})
   (let result
     (read_log source
       ($path/join root ".gene-harness/host.log")
@@ -79,15 +79,14 @@
   (var selected_records [])
   (var index 0)
   (while (< index lines/.size)
-    (let raw (if (< index raws/.size) raws/%index ""))
-    (let record (if (== raw "") nil (try (parse_record (redact_secrets root raw)) catch Error nil)))
+    (let raw (if (< index raws/.size) raws/%index else ""))
+    (let record (if (== raw "") nil else (try (parse_record (redact_secrets root raw)) catch Error nil)))
     (if (|| (! filtered) (&& ($present? record) (matches? record filters)))
-      (then
-        (selected_lines .push lines/%index)
+      (do (selected_lines .push lines/%index)
         (if ($present? record) (selected_records .push record))))
     (set index (+ index 1)))
   (result .put "lines" selected_lines)
   (result .put "records" selected_records)
-  (result .put "filtered" (if filtered (- lines/.size selected_lines/.size) 0))
+  (result .put "filtered" (if filtered (- lines/.size selected_lines/.size) else 0))
   (result .delete "raw_lines")
   (response 200 result))

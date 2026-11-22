@@ -52,7 +52,7 @@ quoted key too: `^^"a b"`, `^!"a b"`.
 
 Int `/` truncates toward zero; `//` is the remainder, with the dividend's sign:
 `(/ -7 2)` is `-3`, and `(// -7 2)` is `-1`. For wrapping with a positive
-divisor, adjust a negative remainder: `(let r (// a b)) (if (< r 0) (+ r b) r)`.
+divisor, adjust a negative remainder: `(let r (// a b)) (if (< r 0) (+ r b) else r)`.
 The web profile requires matching Int or F64 operands. See
 [numbers](stdlib.md#numbers) for floating-point behavior.
 
@@ -327,11 +327,27 @@ Prefer an `elif` chain to nesting another `if` in each else branch:
 ```gene runnable
 (fn sign [n : Int] : Str
   (if (< n 0)
-    (then "negative")
-    (elif (== n 0) "zero")
-    (else "positive")))
+    "negative"
+    elif (== n 0) "zero"
+    else "positive"))
 (sign -3) # "negative"
 ```
+
+An arm holds one or more expressions and returns its last value. A condition
+is exactly one form, so the body starts immediately after it. Each `elif` and
+`else` is a bare symbol among the immediate children of `if`, not a
+parenthesized clause. A body expression whose name would otherwise read as a
+marker is wrapped in `do`, as in `(do else)`.
+
+`(if condition a b)` runs both `a` and `b` when the condition is truthy, and
+yields `nil` when it is falsy. Write an alternative with `else`; the else-only
+form `(if condition else c d)` runs the fallback when the condition is falsy
+and yields `nil` when it is truthy. `(if condition)` evaluates the condition
+once for its effect and yields `nil`. Use `if_not` for a guard whose body runs
+on a falsy condition. Several expressions on the truthy path need no separate
+guard form; the removed `if_yes` was only a workaround for that.
+
+`&&` and `||` short-circuit. `??` tests absence, not general truthiness.
 
 When branches test the same value against literals, prefer `match` over a
 chain of equality tests. The matched value is evaluated once:
@@ -339,24 +355,25 @@ chain of equality tests. The matched value is evaluated once:
 ```gene runnable
 (fn number_label [x : Int] : Str
   (match x
-    (when 1 "one")
-    (when 2 "two")
-    (else "other")))
+    when 1 "one"
+    when 2 "two"
+    else "other"))
 (number_label 2) # "two"
 ```
 
-Use `if_yes` or `if_not` for a condition followed by several expressions.
-`&&` and `||` short-circuit. `??` tests absence, not general truthiness.
+`match` uses the same flat layout: each `when` takes one pattern followed by
+one or more expression forms, and a final bare `else` opens the fallback.
 
-`if_present` tests a value for presence and binds it in one form. The
-expression is evaluated once; the name is visible in the body only, and the
-optional trailing `else` runs when the value is `nil`:
+`if_present` tests a value for presence and binds it in one form. The body and
+the fallback each hold one or more expressions. The expression is evaluated
+once; the name is visible in the body only, and the optional bare `else` marker
+opens the fallback when the value is `nil`:
 
 ```gene runnable
 (fn greeting [options] : Str
   (if_present name options/name
     $"Hello, ${name}!"
-    (else "Hello!")))
+    else "Hello!"))
 [(greeting {^name "Ada"}) (greeting {})]
 # ["Hello, Ada!" "Hello!"]
 ```
@@ -400,21 +417,22 @@ collects remaining list elements.
 ```gene runnable
 (fn first_label [values] : Str
   (match values ^!exhaustive
-    (when [] "empty")
-    (when [first rest...] $"first=${first}")))
+    when [] "empty"
+    when [first rest...] $"first=${first}"))
 (first_label [10 20 30]) # "first=10"
 ```
 
-`match` requires a final `else` or an unconditional binding arm such as
-`(when _ ...)` or `(when value ...)`. The compiler cannot prove coverage from
-literal, typed, structural, or enum-variant arms alone. To deliberately leave
-a match partial, write `^!exhaustive` on `match`; an unmatched value then
-raises `MatchFault` at runtime:
+`match` requires a final `else` arm or an unconditional binding arm such as
+`when _ ...` or `when value ...`. Each `when` takes exactly one pattern,
+followed immediately by one or more body expressions. The compiler cannot
+prove coverage from literal, typed, structural, or enum-variant arms alone.
+To deliberately leave a match partial, write `^!exhaustive` on `match`; an
+unmatched value then raises `MatchFault` at runtime:
 
 ```gene
 (match value ^!exhaustive
-  (when 1 "one")
-  (when 2 "two"))
+  when 1 "one"
+  when 2 "two")
 ```
 
 The formatter places the flag before the matched value:
@@ -443,7 +461,7 @@ the `try` is left by a failure.
 (type InputError : Error)
 
 (fn positive [n : Int] : Int ^errors [InputError]
-  (if (< n 1) (fail (InputError ^_msg "expected positive")) n))
+  (if (< n 1) (fail (InputError ^_msg "expected positive")) else n))
 
 (try (positive 0)
   catch InputError $err/.message)
@@ -530,7 +548,7 @@ still needs its explicit impl.
 ```gene runnable
 (protocol Audited)
 (type Payment ^props {^cents Int} ^impl [Audited])
-(match (Payment ^cents 250) (when (p : Audited) "audited") (else "plain"))
+(match (Payment ^cents 250) when (p : Audited) "audited" else "plain")
 # "audited"
 ```
 
@@ -603,7 +621,7 @@ A Path can be the callback to a list-family operation:
 preserving false, zero, and empty strings:
 
 ```gene runnable
-(fn keep_positive [n] (if (> n 0) n nil))
+(fn keep_positive [n] (if (> n 0) n else nil))
 [($map [-1 2] keep_positive) ($filter_map [-1 2] keep_positive)]
 # [[nil 2] [2]]
 ```
@@ -785,8 +803,8 @@ using; it works only while a macro body runs:
 A local macro compiles its expansion each time its call runs; prefer a
 module-level macro on a hot path.
 A caller parameter or local can also shadow an outer macro name. Macros expand
-in expression positions and direct pipeline slots, not in place of structural
-`else` or `when` clauses. Quoted data stays data.
+in expression positions and direct pipeline slots, not in place of the bare
+`else` or `when` markers. Quoted data stays data.
 
 Handwritten `(do ^^macro_result ...)` uses the same conditional-scope rule.
 Only literal `true` enables the property; false, other values, and an absent

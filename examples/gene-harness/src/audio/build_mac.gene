@@ -10,5 +10,5 @@
     "-target" $"${arch}-apple-macos26.0" "-sdk" sdk
     "-module-cache-path" $"${($os/launch_dir)}/tmp/swift-audio-cache"
     "-O" "-o" output $"${directory}/speech_mac.swift" ^timeout_ms 120000 ^max_bytes 65536))
-  (if (!= result/status 0) ($println result/stderr) ($println output))
+  (if (!= result/status 0) ($println result/stderr) else ($println output))
   result/status)

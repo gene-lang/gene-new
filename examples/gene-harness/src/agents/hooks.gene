@@ -40,16 +40,16 @@
       (let result (listener/run value next))
       (if (&& (== ($head result) Map)
               (== ($head result/items) List))
-        (then result)
-        (else
+        result
+        else
           ($runtime/with_context caller_context
             (fn []
               (hook_failure runtime context/session "request/prepare"
                 listener/name "listener returned no request context")))
           (if (&& called/.get ($present? delegated/.get))
             delegated/.get
-            ($runtime/with_context caller_context
-              (fn [] (run_at (+ index 1) value))))))
+            else ($runtime/with_context caller_context
+              (fn [] (run_at (+ index 1) value)))))
     catch Throwable
       ($runtime/with_context caller_context
         (fn []
@@ -57,7 +57,7 @@
             listener/name ($to_str $err/.message))))
       (if (&& called/.get ($present? delegated/.get))
         delegated/.get
-        ($runtime/with_context caller_context
+        else ($runtime/with_context caller_context
           (fn [] (run_at (+ index 1) value))))))
   (run_at 0 context))
 

@@ -5,7 +5,7 @@
 (import [attempt] ^from "../common/util")
 (let use_plain true)
 (if use_plain
-  (then (import_impl Render for Article ^from "../common/plain"))
-  (else (import_impl Render for Article ^from "../common/compact")))
+  (import_impl Render for Article ^from "../common/plain")
+  else (import_impl Render for Article ^from "../common/compact"))
 (let article (Article ^title "A"))
 ($println $"module after the conditional: ${article/.Render:render}")

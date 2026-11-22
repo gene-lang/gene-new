@@ -11,7 +11,7 @@
 (fn chord_recording? [] : Bool
   (var root ($dom/element "harness_root"))
   (var recorder : Any root/harness_recorder)
-  (if_yes ($absent? recorder) (return false))
+  (if ($absent? recorder) (return false))
   (var element : EventTarget recorder)
   (&& ($dom/connected? element) ($dom/focused? element)))
 
@@ -21,53 +21,53 @@
 
 (fn claim_modal [owner : Str, root : EventTarget, panel : EventTarget,
                  close : (Fn [Bool] Nil), fallback : EventTarget] : Bool
-  (if_yes ($present? root/harness_modal) (return false))
+  (if ($present? root/harness_modal) (return false))
   (var confirmations ($dom/focusables ($dom/element "confirmations")))
-  (if_yes (> confirmations/.size 0) ($dom/focus confirmations/0) (return false))
+  (if (> confirmations/.size 0) (do ($dom/focus confirmations/0) (return false)))
   (var parent_drawer : Any nil)
   (for names in [["notification_center" "close_notifications"]
                  ["status_drawer" "close_status"]]
     (var drawer ($dom/element names/0))
-    (if_yes (! drawer/hidden)
+    (if (! drawer/hidden)
       (if ($dom/contains? drawer fallback)
-        (then (set parent_drawer drawer))
-        (else ($dom/focus ($dom/element names/1)) (return false)))))
+        (set parent_drawer drawer)
+        else ($dom/focus ($dom/element names/1)) (return false))))
   (set root/harness_modal {^owner owner ^root root ^panel panel ^close close
     ^previous ($dom/active_element) ^fallback fallback ^parent_drawer parent_drawer})
-  (if_yes ($present? parent_drawer) (set parent_drawer/hidden true))
+  (if ($present? parent_drawer) (set parent_drawer/hidden true))
   ($dom/set_inert root true)
   true)
 
 (fn focus_available [choices : (List EventTarget), target : EventTarget] : Bool
   (for control in choices
-    (if_yes (== control target) ($dom/focus target) (return true)))
+    (if (== control target) (do ($dom/focus target) (return true))))
   false)
 
 (fn release_modal [owner : Str, restore : Bool] : Nil
   (var host ($dom/element "harness_root"))
   (var active : Any host/harness_modal)
-  (if_yes (|| ($absent? active) (!= (text active/owner) owner)) (return))
+  (if (|| ($absent? active) (!= (text active/owner) owner)) (return))
   (var saved : Any active)
   (set host/harness_modal nil)
   (var root : EventTarget saved/root)
   ($dom/set_inert root false)
-  (if_yes restore
-    (if_yes ($present? saved/parent_drawer) (set saved/parent_drawer/hidden false))
+  (if restore
+    (do (if ($present? saved/parent_drawer) (set saved/parent_drawer/hidden false))
     (var previous : EventTarget saved/previous)
     (var fallback : EventTarget saved/fallback)
     (var choices ($dom/focusables root))
-    (if_yes ($present? saved/parent_drawer)
-      (var drawer : EventTarget saved/parent_drawer)
-      (for control in ($dom/focusables drawer) (choices .push control)))
-    (if_yes (focus_available choices previous) (return))
-    (if_yes (focus_available choices fallback) (return))
-    (if_yes (focus_available choices ($dom/element "ui_view_picker")) (return))
-    (if_yes (> choices/.size 0) ($dom/focus choices/0))))
+    (if ($present? saved/parent_drawer)
+      (do (var drawer : EventTarget saved/parent_drawer)
+      (for control in ($dom/focusables drawer) (choices .push control))))
+    (if (focus_available choices previous) (return))
+    (if (focus_available choices fallback) (return))
+    (if (focus_available choices ($dom/element "ui_view_picker")) (return))
+    (if (> choices/.size 0) ($dom/focus choices/0)))))
 
 (fn handoff_modal [] : Bool
   (var root ($dom/element "harness_root"))
   (var active : Any root/harness_modal)
-  (if_yes ($absent? active) (return false))
+  (if ($absent? active) (return false))
   (var close : (Fn [Bool] Nil) active/close)
   (close false)
   true)
@@ -75,18 +75,18 @@
 (fn trap_modal_tab [event : Any] : Bool
   (var root ($dom/element "harness_root"))
   (var active : Any root/harness_modal)
-  (if_yes (|| ($absent? active) (!= ($event/key event) "Tab")) (return false))
+  (if (|| ($absent? active) (!= ($event/key event) "Tab")) (return false))
   (var panel : EventTarget active/panel)
   (var choices ($dom/focusables panel))
-  (if_yes (== choices/.size 0) (return true))
+  (if (== choices/.size 0) (return true))
   (var current ($dom/active_element))
   (var index -1)
   (var at 0)
   (for target in choices
-    (if_yes (== target current) (set index at))
+    (if (== target current) (set index at))
     (set at (+ at 1)))
-  (var next (+ index (if ($event/shift_key event) -1 1)))
-  (if_yes (< next 0) (set next (- choices/.size 1)))
-  (if_yes (>= next choices/.size) (set next 0))
+  (var next (+ index (if ($event/shift_key event) -1 else 1)))
+  (if (< next 0) (set next (- choices/.size 1)))
+  (if (>= next choices/.size) (set next 0))
   ($dom/focus choices/%next)
   true)

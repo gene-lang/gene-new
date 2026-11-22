@@ -10,9 +10,9 @@
 
 (fn key_source []
   (if ($present? (nonempty ($os/env? "OPENROUTER_API_KEY")))
-    (then {^env "OPENROUTER_API_KEY"})
-    (elif ($present? (nonempty ($os/env? "OPENROUTER_KEY"))) {^env "OPENROUTER_KEY"})
-    (else {^file (openrouter_record_path)})))
+    {^env "OPENROUTER_API_KEY"}
+    elif ($present? (nonempty ($os/env? "OPENROUTER_KEY"))) {^env "OPENROUTER_KEY"}
+    else {^file (openrouter_record_path)}))
 
 (fn api_key []
   (?? (nonempty ($os/env? "OPENROUTER_API_KEY"))
@@ -23,7 +23,7 @@
   (let key (try (api_key) catch Error nil))
   (let source (key_source))
   (let label (if ($present? source/env)
-    (then "OpenRouter · environment key") (else "OpenRouter · Harness sign-in")))
+    "OpenRouter · environment key" else "OpenRouter · Harness sign-in"))
   (if ($absent? key)
     (return {^state "sign_in_required" ^label label ^billing "metered"
       ^reason "Connect OpenRouter in Models, or set OPENROUTER_API_KEY."}))
@@ -69,7 +69,7 @@
          ^models (fn []
            (let key (api_key))
            (openrouter_model_list ^headers (if ($present? key)
-             (then {^authorization $"Bearer ${key}"}) (else {}))))
+             {^authorization $"Bearer ${key}"} else {})))
          ^connection openrouter_connection
          ^capabilities model_capabilities
          ^configure (fn [model, effort, timeout]

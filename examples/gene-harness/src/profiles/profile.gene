@@ -42,11 +42,11 @@
       {^plugin plugin
        ^options (if ($absent? limits)
          {^^host}
-         {^^host ^limits limits})}))
+         else {^^host ^limits limits})}))
   admissions)
 
 (fn boot [p : Profile, ^h supplied = nil] : Harness
-  (var h (if (== supplied nil) (new_harness ^limits p/limits) supplied))
+  (var h (if (== supplied nil) (new_harness ^limits p/limits) else supplied))
   (let admissions (profile_admissions p))
   (put_cordis_plugins h admissions)
   h)

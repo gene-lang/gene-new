@@ -16,14 +16,14 @@
 
 (fn channel_name [channel] : Str
   (let value channel/name)
-  (if (&& (== ($head value) Str) (<= value/.byte_size 512)) value/.trim ""))
+  (if (&& (== ($head value) Str) (<= value/.byte_size 512)) value/.trim else ""))
 
 (fn thread_url [url, channel : Str, thread : Str, ^message message : Str = ""] : Str
   (if (!= ($head url) Str) (return ""))
   (let base (/0 (url .split "?")))
   (let matched (#"^https://[a-z0-9-]+\.slack\.com/archives/([CG][A-Z0-9]+)/p([0-9]+)$" .match base))
   (if (|| ($absent? matched) (!= matched/groups/0 channel)
-          (!= matched/groups/1 ($str/join ((if (== message "") thread message) .split ".") ""))) (return ""))
+          (!= matched/groups/1 ($str/join ((if (== message "") thread else message) .split ".") ""))) (return ""))
   ($to_str base "?thread_ts=" ($url/encode_component thread) "&cid=" channel))
 
 # Display metadata only. Lookups run separately from transcript snapshots and
@@ -31,10 +31,10 @@
 # The host has validated the account and identifiers and chosen the thread's
 # target message; data is {^team ^channel ^author ^thread ^message}.
 (fn lookup_name [users, account, kind : Str, data]
-  (let subject (if (!= kind "user") data/channel data/author))
-  (let thread (if (== kind "thread") data/thread ""))
-  (let target (if (== kind "thread") data/message ""))
-  (let empty (if (== kind "thread") {^url ""} {^name ""}))
+  (let subject (if (!= kind "user") data/channel else data/author))
+  (let thread (if (== kind "thread") data/thread else ""))
+  (let target (if (== kind "thread") data/message else ""))
+  (let empty (if (== kind "thread") {^url ""} else {^name ""}))
   (users/gate (fn []
     (let id (key [kind account/id account/team subject thread target]))
     (let now ($os/monotonic_ms))
@@ -50,15 +50,14 @@
       (let api (open_api credentials/bot ^requester users/requester))
       (try
         (if (== kind "thread")
-          (then
-            (let response (api_call api "chat.getPermalink" {^channel subject ^message_ts target} ^http_method "GET"))
-            (set value {^url (thread_url response/permalink subject thread ^message target)}))
-          (else
-            (let response (api_call api (if (== kind "channel") "conversations.info" "users.info")
-              (if (== kind "channel") {^channel subject} {^user subject}) ^http_method "GET"))
-            (let info (if (== kind "channel") response/channel response/user))
+          (let response (api_call api "chat.getPermalink" {^channel subject ^message_ts target} ^http_method "GET"))
+            (set value {^url (thread_url response/permalink subject thread ^message target)})
+          else
+            (let response (api_call api (if (== kind "channel") "conversations.info" else "users.info")
+              (if (== kind "channel") {^channel subject} else {^user subject}) ^http_method "GET"))
+            (let info (if (== kind "channel") response/channel else response/user))
             (if (!= info/id subject) (slack_error "invalid_response" "Slack returned a different identity."))
-            (set value {^name (if (== kind "channel") (channel_name info) (profile_name info))})))
+            (set value {^name (if (== kind "channel") (channel_name info) else (profile_name info))}))
       ensure (close_api api))
     catch Error
       (set ttl 60000)

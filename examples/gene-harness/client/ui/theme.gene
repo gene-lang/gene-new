@@ -4,6 +4,6 @@
 # A theme selects only the active mode's explicit token map.
 (fn theme_overrides [theme : Any, mode : Str] : Any
   (var empty : Any {})
-  (if_yes ($absent? theme) (return empty))
-  (var selected : Any (if (== mode "dark") theme/dark theme/light))
+  (if ($absent? theme) (return empty))
+  (var selected : Any (if (== mode "dark") theme/dark else theme/light))
   (?? selected empty))

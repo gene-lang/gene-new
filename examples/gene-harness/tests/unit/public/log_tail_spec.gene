@@ -27,7 +27,7 @@
   ($str/join response/lines "\n"))
 
 (fn append [path : Str, text : Str] : Nil
-  (let existing (if ($fs/exists? path) ($fs/read_text path) ""))
+  (let existing (if ($fs/exists? path) ($fs/read_text path) else ""))
   ($fs/write_text path ($to_str existing text)))
 
 (describe "Host log tail"
@@ -287,7 +287,7 @@
       (let response (read active previous cursor ^max_bytes 32))
       (if (== ($size response/lines) 0)
         (set done true)
-        (do
+        else (do
           (for line in response/lines (all .push line))
           (set cursor response/cursor)
           (set polls (+ polls 1)))))
@@ -339,6 +339,6 @@
     ($fs/remove_dir dir)))
 
 (fn text_of [value] : Str
-  (if ($absent? value) "" ($to_str value)))
+  (if ($absent? value) "" else ($to_str value)))
 
 (fn main [args] : Int (run args))

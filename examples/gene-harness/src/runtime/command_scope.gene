@@ -18,9 +18,9 @@
   (let token (/operator_scope ($runtime/context)))
   (let admitted (gate (fn []
     (for record in calls/.get
-      (if_yes (&& (same? record/token token) (command_context_matches? record context))
-        (record/aliases .push alias)
-        (return true)))
+      (if (&& (same? record/token token) (command_context_matches? record context))
+        (do (record/aliases .push alias)
+        (return true))))
     false)))
   (if admitted (return alias))
   (fail (ServiceError ^code "command_required" ^_msg "A public command projection requires an admitted command.")))

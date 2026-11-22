@@ -17,8 +17,8 @@
 # ^row overrides the installed transport row (probes without a full host).
 (fn setup_account [service, data, ^row supplied = nil]
   (let transport (transport_name (if ($present? data/transport) data/transport
-    (if ($present? supplied) supplied/name (sole_transport service/runtime)))))
-  (let row (if ($present? supplied) supplied (transport_row service/runtime transport)))
+    else (if ($present? supplied) supplied/name else (sole_transport service/runtime)))))
+  (let row (if ($present? supplied) supplied else (transport_row service/runtime transport)))
   (let verified (transport_call row "verify_account" {^data data}))
   (let identity (verified/identity .assoc "transport" transport))
   (let result (configure_account service/owner data/id identity ^config (?? verified/config {})))
@@ -34,7 +34,7 @@
     catch Error (channel_error "not_found" "Create the routed workspace directory first.")))
   (let previous (owner/routes .get (route_key account/transport data/account account/team data/channel)))
   (if ($absent? previous)
-    (transport_call (if ($present? supplied) supplied (transport_row service/runtime account/transport))
+    (transport_call (if ($present? supplied) supplied else (transport_row service/runtime account/transport))
       "verify_route" {^account account ^channel data/channel}))
   (let route (configure_route service/owner data/account data/channel workspace
     ^approved (?? data/approved previous/approved) ^require_mention (?? data/require_mention (?? previous/require_mention true))

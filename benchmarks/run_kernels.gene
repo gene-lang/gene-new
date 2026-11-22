@@ -38,7 +38,7 @@
   summary/median)
 
 (fn rounded [value places]
-  (let scale (if (== places 1) 10.0 100.0))
+  (let scale (if (== places 1) 10.0 else 100.0))
   (/ (* ($to_int (+ (* value scale) 0.5)) 1.0) scale))
 
 (fn main [args] : Int
@@ -75,8 +75,8 @@
         (let key $"${variant/label}\t${name}")
         (set raw $"${raw}${round}\t${variant/label}\t${name}\t${row/ms}\t${row/result}\n")
         (if (! ($has_key? results key))
-          (then (results .put key row/result) (times .put key []))
-          (else ($assert (== (results .get key) row/result) $"result changed: ${key}")))
+          (results .put key row/result) (times .put key [])
+          else ($assert (== (results .get key) row/result) $"result changed: ${key}"))
         (if (> round 0) ((times .get key) .push row/ms)))))
   ($fs/write_text ($path/join output "raw.tsv") raw)
   (let with_baseline (== ($size variants) 3))
@@ -95,8 +95,7 @@
     (let ratio (rounded (median_of ratios) 1))
     (var line $"| ${name} | ${gene_ms} | ${python_ms} | ${ratio} |")
     (if with_baseline
-      (then
-        (let baseline (times .get $"baseline\t${name}"))
+      (do (let baseline (times .get $"baseline\t${name}"))
         (let base_ratios [])
         (let change [])
         (repeat i in samples

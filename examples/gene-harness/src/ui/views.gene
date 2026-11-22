@@ -20,12 +20,12 @@
           deadline/.cancel
           deadline/.join)))
   (match outcome
-    (when (TaskOutcome/ok value) value)
-    (when (TaskOutcome/error error) (fail (WebComponentError ^_msg error/.message)))
-    (when (TaskOutcome/fault fault) (let message fault/.message)
+    when (TaskOutcome/ok value) value
+    when (TaskOutcome/error error) (fail (WebComponentError ^_msg error/.message))
+    when (TaskOutcome/fault fault) (let message fault/.message)
       (fail (WebComponentError ^_cause fault
-        ^_msg (if (== ($head fault) Panic) $"component render panicked: ${message}" message))))
-    (else (fail (WebComponentError ^_msg "component render exceeded its budget or was cancelled")))))
+        ^_msg (if (== ($head fault) Panic) $"component render panicked: ${message}" else message)))
+    else (fail (WebComponentError ^_msg "component render exceeded its budget or was cancelled"))))
 
 (fn render_component [h, callback, context, ^interactive interactive : Bool = false, ^sidebar sidebar : Bool = false]
   (bounded_component_view ^interactive interactive ^sidebar sidebar
@@ -103,15 +103,15 @@
 # view can show a failure in place instead of failing whole.
 (fn ui_validate_fragment [runtime, tree, ^view view : Str = ""]
   (let checked (bounded_component_view ^interactive true tree))
-  (if_yes (!= view "")
-    (let snapshot (current_snapshot runtime/h/snapshots))
+  (if (!= view "")
+    (do (let snapshot (current_snapshot runtime/h/snapshots))
     (let record (ui_record snapshot "web_components" view))
     (if ($absent? record) (ui_error "not_found" $"View ${view} not found."))
-    (validate_view_actions checked record/payload snapshot))
+    (validate_view_actions checked record/payload snapshot)))
   nil)
 
 (fn ui_preview [runtime, name : Str, state = {}, ^session session : Str = ""]
-  (let chosen (if (== session "") (?? (/session ($runtime/context)) "") session))
+  (let chosen (if (== session "") (?? (/session ($runtime/context)) "") else session))
   (ui_render runtime chosen name "" state))
 
 (fn ui_publication_preview [runtime, session : Str, changes]
@@ -134,10 +134,10 @@
         (let outline (view_outline preview/view))
         (item .put "outline" outline/nodes)
         (item .put "truncated" outline/truncated))
-      (item .put "error" (outline_text preview/error)))
+      else (item .put "error" (outline_text preview/error)))
     (let size (+ ($str/byte_size ($json/stringify item)) 1))
     (if (> (+ bytes size) 12288)
       (do (summary .put "truncated" true) (break)))
     (set bytes (+ bytes size))
     (results .push item))
-  (if results/.empty? nil ($json/stringify summary)))
+  (if results/.empty? nil else ($json/stringify summary)))

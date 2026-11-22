@@ -11,7 +11,7 @@
   (let sessions
     (if ($fs/exists? $"${root}/web_sessions")
       ($serde/read_data ($fs/read_text $"${root}/web_sessions"))
-      {}))
+      else {}))
   # Generation tags reject stale cookie snapshots after an owner reset.
   (let generation ($crypto/sha256 secret))
   (let retained {})

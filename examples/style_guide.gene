@@ -60,9 +60,7 @@ line two"""
 
 (impl Labelled for User
   (message label [self] : Str
-    (if self/active
-      self/name
-      $"${self/name} (inactive)")))
+    (if self/active self/name else $"${self/name} (inactive)")))
 
 (ns fixtures
   (var default_name "Ada")
@@ -106,38 +104,30 @@ line two"""
 
 # Use the positive presence predicate instead of negating absence.
 (fn value_presence [value] : Str
-  (if ($present? value)
-    "present"
-    "absent"))
+  (if ($present? value) "present" else "absent"))
 
 # Match one value instead of nesting equality tests on that value.
 (fn number_label [value : Int] : Str
-  (match value
-    (when 1 "one")
-    (when 2 "two")
-    (else "other")))
+  (match value when 1 "one" when 2 "two" else "other"))
 
 (fn status_text [status : Status] : Str
   (match ^!exhaustive status
-    (when Status/pending "pending")
-    (when Status/active "active")
-    (when (Status/failed message)
-      $"failed: ${message}")))
+    when Status/pending
+      "pending"
+    when Status/active
+      "active"
+    when (Status/failed message)
+      $"failed: ${message}"))
 
 # Keep alternative conditions at one level instead of nesting else branches.
 (fn clamp [value : Int, low : Int, high : Int] : Int
-  (if (< value low)
-    (then
-      low)
-    (elif (> value high)
-      high)
-    (else
-      value)))
+  (if (< value low) low elif (> value high) high else value))
 
 (fn note_activation [user : User, events]
-  (if_yes user/active
-    (events .push $"activated ${user/name}")
-    (events .push "notification queued"))
+  (if user/active
+    (do
+      (events .push $"activated ${user/name}")
+      (events .push "notification queued")))
   events)
 
 (fn load_if_missing [cached, load, save]
@@ -155,19 +145,19 @@ line two"""
       (var value (build))
       (if value
         value
+      else
         "a deliberately long fallback value keeps this grouped expression readable"))))
 
 (fn describe_attempt [ready, retryable]
   (if ready
-    (then
-      (record "start")
-      "started")
-    (elif retryable
-      (record "retry")
-      "retrying")
-    (else
-      (record "skip")
-      "skipped")))
+    (record "start")
+    "started"
+  elif retryable
+    (record "retry")
+    "retrying"
+  else
+    (record "skip")
+    "skipped"))
 
 # Destructuring, loops, streams, and control transfer.
 

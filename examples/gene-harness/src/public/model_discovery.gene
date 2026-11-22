@@ -34,12 +34,11 @@
     (let reasoning source/reasoning)
     (var efforts [])
     (if (&& ($present? reasoning) ($has_key? reasoning "supported_efforts"))
-      (then
-        (if ($absent? reasoning/supported_efforts)
-          (then (set efforts ($thaw ($freeze effort_ladder))))
-          (elif (== ($head reasoning/supported_efforts) List)
+      (if ($absent? reasoning/supported_efforts)
+          (set efforts ($thaw ($freeze effort_ladder)))
+          elif (== ($head reasoning/supported_efforts) List)
             (for level in reasoning/supported_efforts
-              (if (&& (== ($head level) Str) (!= level "")) (efforts .push level)))))))
+              (if (&& (== ($head level) Str) (!= level "")) (efforts .push level)))))
     (if (== reasoning/mandatory true)
       (set efforts ($filter efforts (fn [level] (!= level "none")))))
     (model .put "efforts" efforts)
@@ -84,10 +83,9 @@
     (let caps source/capabilities)
     (if ($present? caps/image_input/supported)
       (model .put "input" (if (== caps/image_input/supported true)
-        (then ["text" "image"]) (else ["text"]))))
+        ["text" "image"] else ["text"])))
     (if ($present? caps/effort)
-      (then
-        (let efforts [])
+      (do (let efforts [])
         (if ($present? (anthropic_thinking_off source/id))
           (efforts .push "none"))
         (for level in ["low" "medium" "high" "xhigh" "max"]
@@ -101,18 +99,16 @@
   (for source in (catalog_items payload "data")
     (if (|| (!= ($head source/id) Str) (== source/id "")) (continue))
     (let model {^id source/id
-      ^label (if (== ($head source/name) Str) (then source/name) (else source/id))})
+      ^label (if (== ($head source/name) Str) source/name else source/id)})
     (copy_positive model "window" source/context_window)
     (copy_positive model "max_output" source/max_output_tokens)
     (if (== ($head source/input_modalities) List)
-      (then
-        (let inputs [])
+      (do (let inputs [])
         (for kind in ["text" "image"]
           (if (source/input_modalities .contains? kind) (inputs .push kind)))
         (model .put "input" inputs)))
     (if (== ($head source/effort/supported_levels) List)
-      (then
-        (let efforts ["none"])
+      (do (let efforts ["none"])
         (for level in ["low" "high" "max"]
           (if (source/effort/supported_levels .contains? level) (efforts .push level)))
         (model .put "efforts" efforts)

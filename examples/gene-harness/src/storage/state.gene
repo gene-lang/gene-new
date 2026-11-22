@@ -39,10 +39,10 @@
   scope)
 
 (fn event_version [event]
-  (if ($absent? event/version) 1 event/version))
+  (if ($absent? event/version) 1 else event/version))
 
 (fn event_ignorable [event]
-  (if ($absent? event/ignorable) false event/ignorable))
+  (if ($absent? event/ignorable) false else event/ignorable))
 
 (fn mark_stream_dirty [events : EventStore, key : Str]
   (ensure_projections_loaded events key)
@@ -98,7 +98,7 @@
     (for owner in quarantined (seen .put owner true))
     (if ($absent? known)
       (validate_unknown_event quarantined seen envelope)
-      (validate_known_event quarantined seen envelope known)))
+      else (validate_known_event quarantined seen envelope known)))
   nil)
 
 (fn unload_event_stream [events : EventStore, scope : Str, stream : Str]
@@ -119,7 +119,7 @@
 (fn next_sequence [events : EventStore, key : Str] : Int
   (var sequences events/next_sequences/.get)
   (var found (sequences .get key))
-  (if ($absent? found) 1 found))
+  (if ($absent? found) 1 else found))
 
 (fn set_next_sequence [events : EventStore, key : Str, value : Int]
   (var sequences events/next_sequences/.get)
@@ -140,7 +140,7 @@
   (var all events/core_projections/.get)
   (var states (all .get key))
   (if ($absent? states) (set states (fresh_map)))
-  (if ($absent? state) (states .delete name) (states .put name (copy_data state)))
+  (if ($absent? state) (states .delete name) else (states .put name (copy_data state)))
   (all .put key states)
   (events/core_projections .set all))
 
@@ -202,14 +202,14 @@
   (values .push envelope)
   (set_current_events events key values)
   (set_next_sequence events key (+ seq 1))
-  (if_yes (== ($to_str event/type) "plugin/state")
-    (update_projection events key ($to_str event/plugin) envelope/payload/state)
+  (if (== ($to_str event/type) "plugin/state")
+    (do (update_projection events key ($to_str event/plugin) envelope/payload/state)
     (let writers (?? (events/state_writers/.get .get key) {}))
     (writers .put ($to_str event/plugin)
       {^plugin ($to_str event/plugin) ^scope scope ^stream stream ^sequence seq
        ^writer (?? envelope/payload/writer nil)})
-    (events/state_writers/.get .put key writers))
-  (if_yes (&& (== origin "core")
+    (events/state_writers/.get .put key writers)))
+  (if (&& (== origin "core")
               (["session/state" "round/state" "question/asked" "question/answered"
                 "command" "history/summary"
                 "card/state" "card/action" "delegation/state" "feature/record"] .contains? event/type))
@@ -233,7 +233,7 @@
 (fn append_event [events : EventStore, scope : Str, stream : Str, event]
   (if ($absent? event/plugin)
     (append_core_event events scope stream event)
-    (append_plugin_event events scope stream ($to_str event/plugin) event)))
+    else (append_plugin_event events scope stream ($to_str event/plugin) event)))
 
 (fn prepare_plugin_state
   [events : EventStore, scope : Str, stream : Str, plugin : Str, state,
@@ -271,13 +271,13 @@
   (var states (events/core_projections/.get .get (stream_key scope stream)))
   (if ($absent? states) (return nil))
   (var state (states .get key))
-  (if ($absent? state) nil (copy_data state)))
+  (if ($absent? state) nil else (copy_data state)))
 
 (fn core_states [events : EventStore, scope : Str, stream : Str]
   (require_open events)
   (ensure_projections_loaded events (stream_key scope stream))
   (var states (events/core_projections/.get .get (stream_key scope stream)))
-  (if ($absent? states) (fresh_map) (copy_data states)))
+  (if ($absent? states) (fresh_map) else (copy_data states)))
 
 # Projection entries whose key starts with `prefix`. Only matching values are
 # copied, so a feature reading one record kind does not copy the whole stream.
@@ -334,21 +334,20 @@
   (if (== plugin "")
     (fail (HarnessStateError
       ^_msg $"plugin event ${envelope/type} has no projection owner")))
-  (if_yes ($absent? (seen .get plugin))
-    (seen .put plugin true)
-    (quarantined .push plugin)))
+  (if ($absent? (seen .get plugin))
+    (do (seen .put plugin true)
+    (quarantined .push plugin))))
 
 (fn validate_unknown_event [quarantined, seen, envelope]
-  (if_yes (== envelope/ignorable true) (return))
+  (if (== envelope/ignorable true) (return))
   (if (== envelope/origin "core")
-    (then
+    (fail (HarnessStateError
+        ^_msg $"unknown required core event type ${envelope/type}"))
+    elif (== envelope/origin "plugin")
+      (quarantine_projection quarantined seen envelope)
+    else
       (fail (HarnessStateError
-        ^_msg $"unknown required core event type ${envelope/type}")))
-    (elif (== envelope/origin "plugin")
-      (quarantine_projection quarantined seen envelope))
-    (else
-      (fail (HarnessStateError
-        ^_msg $"event ${envelope/type} has invalid origin")))))
+        ^_msg $"event ${envelope/type} has invalid origin"))))
 
 (fn validate_known_event [quarantined, seen, envelope, known]
   (if (|| (!= envelope/origin known/origin)
@@ -356,27 +355,27 @@
     (fail (HarnessStateError
       ^_msg $"event ${envelope/type} origin does not match its catalog row")))
   (var accepted_version (== envelope/version known/version))
-  (if_yes (&& (! accepted_version) ($present? known/versions))
+  (if (&& (! accepted_version) ($present? known/versions))
     (set accepted_version ($present? (known/versions .get $"v${envelope/version}"))))
-  (if_yes (! accepted_version)
-    (if_yes (== envelope/ignorable true) (return))
+  (if (! accepted_version)
+    (do (if (== envelope/ignorable true) (return))
     (if (== envelope/origin "core")
       (fail (HarnessStateError
         ^_msg $"unsupported core event version ${envelope/type}/${envelope/version}"))
-      (then
-        (quarantine_projection quarantined seen envelope)
-        (return))))
+      else
+      (quarantine_projection quarantined seen envelope)
+      (return))))
   (var schema_error nil)
   (if ($absent? known/schema)
     (set schema_error "catalog row has no payload schema")
-    (try
+    else (try
       (var schema_payload
         (if (== known/origin "plugin")
-          envelope/payload/data envelope/payload))
+          envelope/payload/data else envelope/payload))
       (var schema known/schema)
-      (if_yes ($present? known/versions)
-        (var version_schema (known/versions .get $"v${envelope/version}"))
-        (if_not ($absent? version_schema) (set schema version_schema)))
+      (if ($present? known/versions)
+        (do (var version_schema (known/versions .get $"v${envelope/version}"))
+        (if_not ($absent? version_schema) (set schema version_schema))))
       (schema schema_payload)
     catch Throwable
       (set schema_error ($to_str $err/.message))))
@@ -384,7 +383,7 @@
     (if (== envelope/origin "core")
       (fail (HarnessStateError
         ^_msg $"invalid core event ${envelope/type}: ${schema_error}"))
-      (quarantine_projection quarantined seen envelope))))
+      else (quarantine_projection quarantined seen envelope))))
 
 (fn validate_event_catalog [events : EventStore, known_types, ^all_streams all_streams : Bool = false]
   (require_open events)
@@ -394,11 +393,11 @@
     (for envelope in values (validate_loaded_envelope events envelope)))
   # A startup repair must validate cold streams too before it can append to
   # any stream. Newly loaded envelopes use the installed catalog exactly once.
-  (if_yes all_streams
-    (let manifest events/last_manifest/.get)
+  (if all_streams
+    (do (let manifest events/last_manifest/.get)
     (map_for [stream descriptor] in (?? manifest/streams {})
       (if ($absent? (events/streams/.get .get stream))
-        (current_events events ($to_str stream)))))
+        (current_events events ($to_str stream))))))
   (copy_data events/quarantined/.get))
 
 (fn validate_envelope_formats [events : EventStore]
@@ -419,9 +418,9 @@
   (var seen (fresh_map))
   (var out (fresh_list))
   (for value in values
-    (if_yes ($absent? (seen .get value))
-      (seen .put value true)
-      (out .push value)))
+    (if ($absent? (seen .get value))
+      (do (seen .put value true)
+      (out .push value))))
   out)
 
 (fn segment_stream [events : EventStore, values, previous]
@@ -431,10 +430,9 @@
   # Complete segments never change. Only the previous open tail and newly
   # appended events need serialization; older digests are carried forward.
   (if (&& ($present? previous) (== previous/segment_events events/segment_events))
-    (then
-    (var sealed (if ($absent? previous/event_count)
+    (do (var sealed (if ($absent? previous/event_count)
       ($math/max 0 (- previous/segments/.size 1))
-      ($to_int (/ previous/event_count events/segment_events))))
+      else ($to_int (/ previous/event_count events/segment_events))))
     (set sealed ($math/min sealed ($to_int (/ values/.size events/segment_events))))
     (var index 0)
     (while (< index sealed)
@@ -467,11 +465,11 @@
   (for digest in (all_manifest_digests manifest)
     (retained .put digest true))
   (for key in backend/.Store:keys
-    (if_yes (|| (starts_with? key "segment/") (starts_with? key "projection/"))
-      (var prefix (if (starts_with? key "segment/") 8 11))
+    (if (|| (starts_with? key "segment/") (starts_with? key "projection/"))
+      (do (var prefix (if (starts_with? key "segment/") 8 else 11))
       (var digest (slice_bytes key prefix (- (byte_size key) prefix)))
       (if ($absent? (retained .get digest))
-        (backend .Store:delete key)))))
+        (backend .Store:delete key))))))
 
 (fn build_event_manifest [events : EventStore, generation : Int]
   (var descriptors (fresh_map))
@@ -482,11 +480,11 @@
   (var streams events/streams/.get)
   (map_for [key ignored] in events/dirty_streams/.get
     (if (== ignored "deleted")
-      (then (descriptors .delete key) (continue)))
+      (do (descriptors .delete key) (continue)))
     (var values (streams .get key))
     (if ($absent? values)
       (fail (HarnessStateError ^_msg $"Dirty event stream ${key} is not cached")))
-    (var prior (if ($absent? previous) nil (previous/streams .get key)))
+    (var prior (if ($absent? previous) nil else (previous/streams .get key)))
     (var segmented (segment_stream events values prior))
 
     (var projection
@@ -580,10 +578,9 @@
   (var published (publish_event_generation events))
   (var countdown (- events/gc_countdown/.get 1))
   (if (<= countdown 0)
-    (then
-      (garbage_collect_segments events published/manifest)
-      (events/gc_countdown .set events/gc_interval))
-    (else (events/gc_countdown .set countdown)))
+    (garbage_collect_segments events published/manifest)
+      (events/gc_countdown .set events/gc_interval)
+    else (events/gc_countdown .set countdown))
   published)
 
 (fn restore_manifest [events : EventStore, manifest]
@@ -610,22 +607,20 @@
   (var repairs (fresh_list))
   (var interrupted_calls (fresh_list))
   (map_for [key values] in events/streams/.get
-    (if_yes (&& ($present? session) (!= ($to_str key) (stream_key "session" session)))
+    (if (&& ($present? session) (!= ($to_str key) (stream_key "session" session)))
       (continue))
     (var open_turns (fresh_map))
     (var open_calls (fresh_map))
     (var last_attempts (fresh_map))
     (for envelope in values
       (if (== envelope/type "turn/start")
-        (then
-          (open_turns .put ($to_str envelope/payload/turn) envelope))
-        (elif (== envelope/type "turn/end")
-          (open_turns .delete ($to_str envelope/payload/turn))))
+        (open_turns .put ($to_str envelope/payload/turn) envelope)
+        elif (== envelope/type "turn/end")
+          (open_turns .delete ($to_str envelope/payload/turn)))
       (if (== envelope/type "model/request")
         (open_calls .put envelope/payload/call envelope))
       (if (== envelope/type "model/result")
-        (then
-          (let id envelope/payload/call)
+        (do (let id envelope/payload/call)
           (last_attempts .put id
             ($math/max (?? (last_attempts .get id) 0)
               envelope/payload/attempt))
@@ -687,9 +682,9 @@
                 ^max_event_bytes max_event_bytes
                 ^gc_interval gc_interval ^gc_countdown ($cell 1)))
   (var loaded backend/.Store:load_checkpoint)
-  (if_yes ($present? loaded)
-    (var manifest (loaded/records .get "event_manifest"))
-    (restore_manifest events manifest))
+  (if ($present? loaded)
+    (do (var manifest (loaded/records .get "event_manifest"))
+    (restore_manifest events manifest)))
   (validate_envelope_formats events)
   events)
 

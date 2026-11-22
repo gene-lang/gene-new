@@ -6,7 +6,7 @@
 
 (fn step [response : Str, result : Str, ^error error = nil, ^files files = [], ^output output = ""]
   {^response response ^result result
-   ^evidence {^kind (if ($absent? error) "continue" "error") ^files files ^error error
+   ^evidence {^kind (if ($absent? error) "continue" else "error") ^files files ^error error
               ^digest ($crypto/sha256 ($serde/write_data [result error files output]))}})
 
 (fn parser_turn [number : Int, file : Str]

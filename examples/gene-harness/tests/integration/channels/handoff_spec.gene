@@ -211,7 +211,7 @@
             ($assert (== request/params {^channel "C123" ^ts "9.000001"}))
             (if (== calls/.get/.size 2)
               {^status 503 ^headers [] ^body ($binary/from_str "{}")}
-              {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^!ok ^error "message_not_found"}))}))))
+              else {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^!ok ^error "message_not_found"}))}))))
           (try
             (deliver_output f/owner (api_adapter api) working/id)
             (accept_output f/owner (working .assoc "revision" 1; .assoc "remove" true))

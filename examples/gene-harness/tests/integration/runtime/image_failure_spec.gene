@@ -43,12 +43,12 @@
             (let result fixture/captured/.get)
             ($assert (== result/state "finished"))
             ($assert (== result/stop_reason
-              (if ($str/starts_with? mode "review") "review_failed" "generation_failed")))
+              (if ($str/starts_with? mode "review") "review_failed" else "generation_failed")))
             (if (["generation_failed" "generation_usage_error" "invalid_png"] .contains? mode)
-              (then ($assert ($absent? result/image_id)) ($assert evaluated/media/.empty?))
-              (else
+              ($assert ($absent? result/image_id)) ($assert evaluated/media/.empty?)
+              else
                 ($assert ($present? result/image_id))
-                ($assert (== result/score (if (== mode "generation_failed2") 72 nil)))))
+                ($assert (== result/score (if (== mode "generation_failed2") 72 else nil))))
             (if (== mode "generation_usage_error")
               ($assert (== result/usage/0/usage/cost 0.02)))
             ($assert (== (/reservations (media_usage (open_media_store fixture/runtime/state_root))) 0))
@@ -60,16 +60,16 @@
       (fn [workspace]
         (for scenario in ["repaired" "invalid" "timeout"]
           (let fixture (image_fixture ($path/join workspace scenario)
-            ["not JSON" (if (== scenario "repaired") (review 90) "still invalid")]))
+            ["not JSON" (if (== scenario "repaired") (review 90) else "still invalid")]))
           (try
             (if (== scenario "timeout") (fixture/mode .set "review_timeout"))
             (let evaluated (evaluate_image fixture "Draw a Gene logo." ^options {^max_attempts 1}))
             ($assert ($absent? evaluated/error) $"${scenario}: ${evaluated/error}")
             (let result fixture/captured/.get)
             ($assert (== result/attempts_used 1))
-            ($assert (== result/repair_calls (if (== scenario "timeout") 0 1)))
-            ($assert (== fixture/reviewed/.get/.size (if (== scenario "timeout") 1 2)))
-            ($assert (== result/score (if (== scenario "repaired") 90 nil)))
+            ($assert (== result/repair_calls (if (== scenario "timeout") 0 else 1)))
+            ($assert (== fixture/reviewed/.get/.size (if (== scenario "timeout") 1 else 2)))
+            ($assert (== result/score (if (== scenario "repaired") 90 else nil)))
             (if (== scenario "timeout")
               ($assert (== result/usage/1/usage/cost 0.005)))
             (if (== scenario "repaired")
@@ -82,21 +82,20 @@
       (fn [workspace]
         (for scenario in ["reviewer" "generator" "capacity" "deadline"]
           (let fixture (image_fixture ($path/join workspace scenario) []
-            ^config (if (== scenario "deadline") {^run_timeout_ms 100} {})))
+            ^config (if (== scenario "deadline") {^run_timeout_ms 100} else {})))
           (try
             (if (== scenario "reviewer") (fixture/reviewer_caps .set {^image_input "no"}))
             (if (== scenario "generator") (fixture/generator_caps .set {^image_output "no"}))
             (if (== scenario "capacity")
-              (then
-                (let store (open_media_store fixture/runtime/state_root))
+              (do (let store (open_media_store fixture/runtime/state_root))
                 (repeat i in 25 (reserve_media store $"other-${i}" 1 "default" $"other-${i}"))))
             (let evaluated (evaluate_image fixture "An image."))
             ($assert fixture/generated/.get/.empty?)
             ($assert fixture/reviewed/.get/.empty?)
             (if (["reviewer" "generator"] .contains? scenario)
               ($assert ($present? evaluated/error))
-              ($assert (== fixture/captured/.get/stop_reason
-                (if (== scenario "capacity") "storage_limit" "cancelled"))))
+              else ($assert (== fixture/captured/.get/stop_reason
+                (if (== scenario "capacity") "storage_limit" else "cancelled"))))
           ensure (close_runtime fixture/runtime))))))
 
   (it "keeps saved images when phases time out or the enclosing evaluation is cancelled" []
@@ -108,25 +107,25 @@
             ^config {^generation_timeout_ms 120 ^review_timeout_ms 120}))
           (try
             (fixture/mode .set (match scenario
-              (when "cancel" "review_wait")
-              (when "cancel_generation" "generation_wait2")
-              (else scenario)))
+              when "cancel" "review_wait"
+              when "cancel_generation" "generation_wait2"
+              else scenario))
             (if ($str/starts_with? scenario "cancel")
               (scope
                 (let pending (spawn ^lane root
                   (evaluate_image fixture "A logo.")))
                 (if (== scenario "cancel_generation")
                   (while (< fixture/generated/.get/.size 2) ($sleep 1))
-                  (while fixture/reviewed/.get/.empty? ($sleep 1)))
+                  else (while fixture/reviewed/.get/.empty? ($sleep 1)))
                 pending/.cancel pending/.join)
-              (evaluate_image fixture "A logo."))
+              else (evaluate_image fixture "A logo."))
             (let state (run_state fixture))
             ($assert (== state/state "finished") $"Unfinished ${scenario}: ${state}")
             ($assert (== state/stop_reason
               (if ($str/starts_with? scenario "cancel")
-                (then "cancelled")
-                (elif (== scenario "generation_wait2") "generation_failed")
-                (else "review_failed"))))
+                "cancelled"
+                elif (== scenario "generation_wait2") "generation_failed"
+                else "review_failed")))
             ($assert (! ((image_catalog fixture/runtime "default") .empty?)))
             ($assert (== (/reservations (media_usage (open_media_store fixture/runtime/state_root))) 0))
             (let records (events_for fixture/runtime/events "session" "default"))

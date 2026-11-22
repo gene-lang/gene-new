@@ -821,15 +821,15 @@ const patternSource = """
 (fn ingress_handler [bytes]
   (let index (native/record_index bytes))
   (let kind (native/record_kind bytes))
-  (if (== kind 3) (panic "handler panic") nil)
+  (if (== kind 3) (panic "handler panic") else nil)
   (if (== kind 4)
     (do (let sleeper (spawn ($sleep 1000))) (sleeper .cancel) (await sleeper))
-    nil)
+    else nil)
   (try
     (if (== kind 1)
       (native/settle_err index
         (GpuError ^_msg "device" ^detail (native/record_value bytes)))
-      (native/settle_ok index (native/record_value bytes)))
+      else (native/settle_ok index (native/record_value bytes)))
     catch Error
       (native/settle_err index (RuntimeFault ^_msg "malformed record"))))
 (fn open_subscription []
@@ -847,7 +847,7 @@ const patternSource = """
         (native/reenqueue)
         (set current_sub (open_subscription))
         (set reopened (+ reopened 1)))
-      nil)))
+      else nil)))
 (var supervisor ((spawn (supervise)) .detach))
 """
 

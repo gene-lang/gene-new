@@ -62,9 +62,9 @@
     ensure
       (if (! task/.done?) task/.cancel)
       (match task/.join
-        (when (TaskOutcome/ok process)
-          ($fs/write_text $"${build}/browser.stderr.log" process/stderr))
-        (else nil)))
+        when (TaskOutcome/ok process)
+          ($fs/write_text $"${build}/browser.stderr.log" process/stderr)
+        else nil))
   (if (== report nil)
     (set report {^!ok ^error "browser did not complete" ^progress progress}))
   (set report/browser version/stdout)
@@ -72,4 +72,4 @@
   (set report/shutdown shutdown)
   ($fs/write_text report_path ($json/stringify report))
   ($println ($json/stringify report))
-  (if (&& report/ok shutdown/complete) 0 1))
+  (if (&& report/ok shutdown/complete) 0 else 1))

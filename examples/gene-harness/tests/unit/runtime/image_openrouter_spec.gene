@@ -23,8 +23,8 @@
     ($assert ($absent? request/headers/authorization))
     (if ($str/ends_with? request/url "/endpoints")
       (if missing {^status 503 ^body "unavailable"}
-        {^status 200 ^body ($json/stringify {^id model ^endpoints endpoints})})
-      {^status 200 ^body ($json/stringify {^data [{^id model
+        else {^status 200 ^body ($json/stringify {^id model ^endpoints endpoints})})
+      else {^status 200 ^body ($json/stringify {^data [{^id model
         ^architecture {^input_modalities model_input ^output_modalities ["image"]}}]})})))
 
 (fn rejected [code : Str, operation]
@@ -114,7 +114,7 @@
         ^transport (discovery [(endpoint "good")])))
       ($assert (== settings/size_parameters
         (if (== size "2048x1024") {^resolution "2K" ^aspect_ratio "2:1"}
-          {^resolution "1K" ^aspect_ratio "1:1"}))))
+          else {^resolution "1K" ^aspect_ratio "1:1"}))))
     (let direct (endpoint "direct" ^parameters
       {^size {^type "enum" ^values ["1024x1024"]}
        ^output_format {^type "enum" ^values ["png"]}
@@ -181,7 +181,7 @@
     (let prepared {^body {} ^reference_images [] ^run "run" ^timeout_ms 100})
     (let source (fn [run id] (fail (Error ^_msg "No images expected"))))
     (for payload in [{^data []} {^data [{} {}]} {^data [{^b64_json "!secret!"}]}]
-      (rejected (if (== payload/data/.size 1) "invalid_image" "invalid_image_count")
+      (rejected (if (== payload/data/.size 1) "invalid_image" else "invalid_image_count")
         (fn [] (send_openrouter_image prepared source ^key_source (fn [] "fixture")
           ^transport (fn [call] {^status 200 ^body ($json/stringify payload)})))))
     (var huge "0123456789abcdef")

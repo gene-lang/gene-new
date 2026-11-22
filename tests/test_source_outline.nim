@@ -20,7 +20,7 @@ const fixtureSource = """
 
 (fn ^^generator naturals [] 1)
 
-(macro unless [condition body] `(if %condition nil %body))
+(macro unless [condition body] `(if %condition nil else %body))
 
 (type Task
   ^props {^id Int}

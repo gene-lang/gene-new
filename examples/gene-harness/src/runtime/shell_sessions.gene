@@ -15,12 +15,12 @@
     (spawn ^lane root (try (loop (let line channel/.recv) (ctx/output ($to_str line "\n"))) catch ChannelClosed nil)))
   (let result (try (await process) ensure process/.cancel (if_not process/.done? process/.join)))
   output/.join
-  (CommandResult ^display ($str/join [result/stdout result/stderr] "") ^status (if (== result/status 0) "done" "failed") ^exit result/status ^!attached))
+  (CommandResult ^display ($str/join [result/stdout result/stderr] "") ^status (if (== result/status 0) "done" else "failed") ^exit result/status ^!attached))
 
 (fn classify_shell [text : Str]
   (let trimmed ($str/trim text))
   (if (["exit" "quit" ":exit" ":quit"] .contains? trimmed) (return "leave"))
-  (if (== trimmed "") "ignored" "input"))
+  (if (== trimmed "") "ignored" else "input"))
 
 (fn shell_quote [text : Str] : Str
   ($to_str "'" ($str/join ($str/split text "'") "'\"'\"'") "'"))
@@ -52,15 +52,15 @@
 
 (fn evaluate_shell [sessions, ctx]
   (var state (sessions/.get .get ctx/session))
-  (if_yes ($absent? state)
-    (let input ($io/pipe))
+  (if ($absent? state)
+    (do (let input ($io/pipe))
     (let channel ($channel ^capacity 128))
     # A non-interactive POSIX shell keeps cwd and bindings between inputs.
     # Each eval receives EOF on stdin so programs cannot consume the protocol.
     (let process ($os/exec_stream_async "/bin/sh" "-s" ^dir ctx/runtime/root
       ^stdin_pipe input/0 ^stdout_chan channel ^^merge_stderr ^max_bytes 1048576))
     (set state {^input input ^channel channel ^process process})
-    (sessions/.get .put ctx/session state))
+    (sessions/.get .put ctx/session state)))
   (let token ($crypto/random_hex 16))
   (let marker $"__gene_harness_${token}:")
   (let status_name $"__gene_harness_status_${token}")
@@ -77,15 +77,15 @@
     (await ($io/write_all state/input/1 ($binary/from_str packet)))
     (loop
       (let line state/channel/.recv)
-      (if_yes ($str/starts_with? line marker)
-        (let code ($parse/parse_int ($str/slice_bytes line ($str/byte_size marker)
+      (if ($str/starts_with? line marker)
+        (do (let code ($parse/parse_int ($str/slice_bytes line ($str/byte_size marker)
           (- ($str/byte_size line) ($str/byte_size marker)))))
         (set complete true)
         # The protocol contributes the delimiter before its marker. Delimiters
         # between earlier lines belong to the command's output.
         (return (CommandResult ^display (shell_display parts truncated)
-          ^status (if (== code 0) "done" "failed") ^exit code ^!attached)))
-      (let text ($to_str (if first_line "" "\n") line))
+          ^status (if (== code 0) "done" else "failed") ^exit code ^!attached))))
+      (let text ($to_str (if first_line "" else "\n") line))
       (set first_line false)
       (let captured (byte_prefix text ($math/max 0 (- 1048576 bytes))))
       (if (!= captured text) (set truncated true))

@@ -40,7 +40,7 @@
 (fn nonempty [value]
   (if ($absent? value) (return nil))
   (let text ($str/trim ($to_str value)))
-  (if (== text "") nil text))
+  (if (== text "") nil else text))
 
 (fn first_line [value, cap : Int]
   (let text (nonempty value))
@@ -62,28 +62,28 @@
 (fn file_list [files] : Str
   (let shown ($take files 4))
   (let text ($str/join ($map shown (fn [file] ($to_str file))) ", "))
-  (if (> files/.size 4) $"${text} and ${(- files/.size 4)} more" text))
+  (if (> files/.size 4) $"${text} and ${(- files/.size 4)} more" else text))
 
 # One short result line per turn, built from what the loop recorded, never from
 # the assistant's prose. The digest covers the observed results exactly.
 (fn turn_evidence [terminal]
   (let kind ($to_str (?? terminal/kind "error")))
   (let patch terminal/patch)
-  (let files (if (== ($head patch/files) List) patch/files []))
+  (let files (if (== ($head patch/files) List) patch/files else []))
   (let patch_failed (&& ($present? patch) (!= patch/status "applied")))
-  (let error (first_line (?? terminal/error (if patch_failed patch/text nil)) 240))
+  (let error (first_line (?? terminal/error (if patch_failed patch/text else nil)) 240))
   (let output (observed_outputs terminal/request_items))
   (let parts [])
   (if (&& ($present? patch) (! patch_failed) (! files/.empty?))
     (parts .push $"Patched ${(file_list files)}."))
   (if patch_failed (parts .push ($to_str "Patch " (?? (first_line patch/text 200) "failed") ".")))
   (match kind
-    (when "done" (parts .push "Finished the task."))
-    (when "questions" (parts .push "Asked the operator questions."))
-    (when "delegation_wait" (parts .push "Waiting for delegated children."))
-    (when "cancelled" (parts .push "Cancelled."))
-    (when "not_ready" (parts .push "The provider was not ready."))
-    (else nil))
+    when "done" (parts .push "Finished the task.")
+    when "questions" (parts .push "Asked the operator questions.")
+    when "delegation_wait" (parts .push "Waiting for delegated children.")
+    when "cancelled" (parts .push "Cancelled.")
+    when "not_ready" (parts .push "The provider was not ready.")
+    else nil)
   (if (&& ($present? error) (! patch_failed)) (parts .push $"Error: ${error}"))
   (if (!= ($str/trim output) "") (parts .push $"Output: ${(collapsed output 240)}"))
   (if parts/.empty? (parts .push "No output."))
@@ -101,8 +101,8 @@
   (if parts/.empty? (parts .push "No output."))
   (let failed (&& ($present? patch) (! ($str/starts_with? patch "applied"))))
   {^line (byte_prefix ($str/join parts " ") line_cap)
-   ^evidence {^kind (?? entry/end_reason "continue") ^files (if (|| ($absent? patch) failed) [] ["unknown"])
-     ^error (?? error (if failed (first_line patch 240) nil))
+   ^evidence {^kind (?? entry/end_reason "continue") ^files (if (|| ($absent? patch) failed) [] else ["unknown"])
+     ^error (?? error (if failed (first_line patch 240) else nil))
      ^digest ($crypto/sha256 ($serde/write_data [patch error entry/end_reason]))}})
 
 # The task's turns in order, across its continuation rounds and restarts, from
@@ -114,35 +114,35 @@
   (for event in records
     (let payload event/payload)
     (match event/type
-      (when "turn/start"
-        (if_yes (== (?? payload/task_root payload/round) task_root)
-          (rounds .put payload/round true)
+      when "turn/start"
+        (if (== (?? payload/task_root payload/round) task_root)
+          (do (rounds .put payload/round true)
           (let key ($to_str payload/turn))
-          (if_yes ($absent? (turns .get key))
-            (turns .put key {^turn payload/turn ^round payload/round})
-            (order .push key))))
-      (when "turn/response"
-        (if_yes ($present? (rounds .get ($to_str payload/round)))
-          (let entry (turns .get ($to_str payload/turn)))
+          (if ($absent? (turns .get key))
+            (do (turns .put key {^turn payload/turn ^round payload/round})
+            (order .push key)))))
+      when "turn/response"
+        (if ($present? (rounds .get ($to_str payload/round)))
+          (do (let entry (turns .get ($to_str payload/turn)))
           (if ($present? entry) (entry .put "response" payload/text))))
-      (when "turn/patch"
+      when "turn/patch"
         (let entry (turns .get ($to_str payload/turn)))
-        (if (&& ($present? entry) (== entry/round payload/round)) (entry .put "patch_text" payload/text)))
-      (when "turn/end"
+        (if (&& ($present? entry) (== entry/round payload/round)) (entry .put "patch_text" payload/text))
+      when "turn/end"
         (let entry (turns .get ($to_str payload/turn)))
-        (if_yes (&& ($present? entry) (== entry/round payload/round))
-          (entry .put "end_reason" payload/reason)
+        (if (&& ($present? entry) (== entry/round payload/round))
+          (do (entry .put "end_reason" payload/reason)
           (entry .put "end_text" (?? payload/text nil))
           (entry .put "result" (?? payload/result_line nil))
           (entry .put "evidence" (?? payload/evidence nil))))
-      (else nil)))
+      else nil))
   (let result [])
   (for key in order
     (let entry (turns .get key))
-    (if_yes (&& ($absent? entry/result) ($present? entry/end_reason))
-      (let rebuilt (recorded_evidence entry))
+    (if (&& ($absent? entry/result) ($present? entry/end_reason))
+      (do (let rebuilt (recorded_evidence entry))
       (entry .put "result" rebuilt/line)
-      (entry .put "evidence" rebuilt/evidence))
+      (entry .put "evidence" rebuilt/evidence)))
     (result .push entry))
   result)
 
@@ -173,7 +173,7 @@
   (if (== root_id round/id) (return (request_text round)))
   (let saved (core_state runtime/events "session" session "rounds"))
   (let state (if ($absent? saved) nil
-    (if ($absent? saved/digest) saved (try ($serde/read_data (read_body runtime saved/digest)) catch Error nil))))
+    else (if ($absent? saved/digest) saved else (try ($serde/read_data (read_body runtime saved/digest)) catch Error nil))))
   (for receipt in (?? state/receipts [])
     (if (== receipt/id root_id) (return (request_text receipt))))
   (request_text round))
@@ -214,7 +214,7 @@
   (?? (value .get option) 0.0))
 
 (fn criterion_evidence [verdict : Str] : Str
-  (if (== verdict "operator_now") operator_now_text (?? (criteria_text .get verdict) "")))
+  (if (== verdict "operator_now") operator_now_text else (?? (criteria_text .get verdict) "")))
 
 # Provisional bands (docs/decisions.md). They read class probabilities, never
 # an engine's confidence statistic.
@@ -248,10 +248,10 @@
 # the fallback allowance; an unanswered one only moves the next check.
 (fn next_counters [round, record, boundary : Int, interval : Int]
   (let answered (== record/verdict_answered true))
-  (let step (if (== record/verdict "uncertain") ($math/max 1 (/ interval 2)) interval))
+  (let step (if (== record/verdict "uncertain") ($math/max 1 (/ interval 2)) else interval))
   {^next_check_turn (+ boundary step)
-   ^allowance_base (if answered boundary (?? round/allowance_base 0))
-   ^allowance_source (if answered "check_in" (?? round/allowance_source "start"))})
+   ^allowance_base (if answered boundary else (?? round/allowance_base 0))
+   ^allowance_source (if answered "check_in" else (?? round/allowance_source "start"))})
 
 (fn decision_for [runtime, session : Str, round, boundary : Int, window, omitted : Bool, use : Str]
   (let service runtime/services/values/decisions)
@@ -260,7 +260,7 @@
       ^latency_ms 0 ^attempts 0}}))
   (let request (task_request runtime session round))
   (let prompt (nonempty round/prompt))
-  (let latest (if (&& ($present? prompt) (!= (byte_prefix prompt text_cap) request)) (byte_prefix prompt text_cap) nil))
+  (let latest (if (&& ($present? prompt) (!= (byte_prefix prompt text_cap) request)) (byte_prefix prompt text_cap) else nil))
   (let questions (check_in_questions))
   (let status (decision_status service use))
   (let limits (?? status/limits {^request_tokens 32000 ^question_tokens 32000 ^overhead_tokens 0}))
@@ -272,12 +272,12 @@
     ^timeout_ms check_in_timeout_ms ^fence fence ^session session}))
   # An engine's own size rejection: trim further and retry inside the deadline.
   (let left (- check_in_timeout_ms (- ($os/monotonic_ms) started)))
-  (if_yes (&& (== result/status "too_large") (> fitted/turns/.size 1) (> left 1000))
-    (let half ($drop fitted/turns (/ fitted/turns/.size 2)))
+  (if (&& (== result/status "too_large") (> fitted/turns/.size 1) (> left 1000))
+    (do (let half ($drop fitted/turns (/ fitted/turns/.size 2)))
     (set fitted (fit_turns request latest half true questions limits))
     (set fitted (fitted .assoc "trimmed" (- window/.size fitted/turns/.size)))
     (set result (decide service {^use use ^state fitted/state ^questions questions
-      ^timeout_ms left ^fence fence ^session session})))
+      ^timeout_ms left ^fence fence ^session session}))))
   {^result result ^fitted fitted ^questions questions})
 
 # Runs one check at a committed boundary and returns its durable record, or nil
@@ -289,32 +289,32 @@
   (if ($present? committed) (return committed))
   (let task_root (?? round/task_root round/id))
   (let all (task_turns runtime session task_root))
-  (let window (if (> all/.size window_turns) ($drop all (- all/.size window_turns)) all))
+  (let window (if (> all/.size window_turns) ($drop all (- all/.size window_turns)) else all))
   (let omitted (> all/.size window/.size))
   (let rule (unchanged_failure_loop window))
-  (let asked (if ($absent? rule) (decision_for runtime session round boundary window omitted use) nil))
+  (let asked (if ($absent? rule) (decision_for runtime session round boundary window omitted use) else nil))
   (let result (if ($absent? asked)
     {^status "skipped" ^reason "A rule decided this check." ^engine "" ^latency_ms 0 ^attempts 0}
-    asked/result))
+    else asked/result))
   # Stale and cancelled results never update counters.
   (if (|| (== result/status "stale") (! (round_current? runtime session round))) (return nil))
   (let verdict (fuse rule result))
-  (let input_text (if ($absent? asked) nil (decision_input_text asked/fitted/state asked/questions)))
+  (let input_text (if ($absent? asked) nil else (decision_input_text asked/fitted/state asked/questions)))
   (let sent (&& ($present? input_text) (> (?? result/attempts 0) 0)))
   (let record
     {^use use ^round round/id ^task_root task_root ^boundary boundary ^turn (?? round/last_turn 0)
-     ^window {^first (if window/.empty? nil window/0/turn) ^last (if window/.empty? nil (/turn ($last window)))
-              ^turns (if ($absent? asked) window/.size asked/fitted/turns/.size)
-              ^trimmed (if ($absent? asked) 0 asked/fitted/trimmed) ^earlier_omitted omitted}
+     ^window {^first (if window/.empty? nil else window/0/turn) ^last (if window/.empty? nil else (/turn ($last window)))
+              ^turns (if ($absent? asked) window/.size else asked/fitted/turns/.size)
+              ^trimmed (if ($absent? asked) 0 else asked/fitted/trimmed) ^earlier_omitted omitted}
      ^versions {^state state_version ^questions question_version ^fusion fusion_version}
      ^engine (?? result/engine "") ^model (?? result/model nil) ^source (?? result/source nil)
      ^status result/status ^reason (?? result/reason nil) ^answers (?? result/answers nil)
      ^latency_ms (?? result/latency_ms 0) ^rule rule
      ^action verdict/action ^verdict verdict/verdict ^verdict_answered verdict/answered ^evidence verdict/evidence
-     ^input_digest (if ($absent? input_text) nil ($crypto/sha256 input_text))
+     ^input_digest (if ($absent? input_text) nil else ($crypto/sha256 input_text))
      # The model engine's call already records the prepared request.
-     ^model_call (if (== ($head result/call_id) Str) result/call_id nil)
-     ^input_ref (if (&& sent (!= ($head result/call_id) Str)) (write_body runtime input_text) nil)
+     ^model_call (if (== ($head result/call_id) Str) result/call_id else nil)
+     ^input_ref (if (&& sent (!= ($head result/call_id) Str)) (write_body runtime input_text) else nil)
      ^at_ms ($os/wall_ms)})
   (record .put "counters" (next_counters round record boundary interval))
   # Committed before the next model call.
@@ -331,6 +331,6 @@
 
 (fn check_in_notice [record, turn : Int, ^children children : Bool = false] : Str
   ($to_str "Paused after turn " turn ": " record/evidence
-    (if ($str/ends_with? record/evidence ".") " " ". ")
+    (if ($str/ends_with? record/evidence ".") " " else ". ")
     "Continue, or tell it what to change."
-    (if children " Delegated children are still running; their results go to the next round." "")))
+    (if children " Delegated children are still running; their results go to the next round." else "")))

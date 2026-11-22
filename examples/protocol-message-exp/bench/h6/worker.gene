@@ -15,12 +15,12 @@
 
 (fn acquire [variant]
   (match variant
-    (when "f" (f_operation))
-    (when "f_typed" (f_typed_operation))
-    (when "p" (p_operation))
-    (when "p_closure" (p_closure_operation))
-    (when "p_typed" (p_typed_operation))
-    (else (fail (Error ^message $"unknown H6 variant ${variant}")))))
+    when "f" (f_operation)
+    when "f_typed" (f_typed_operation)
+    when "p" (p_operation)
+    when "p_closure" (p_closure_operation)
+    when "p_typed" (p_typed_operation)
+    else (fail (Error ^message $"unknown H6 variant ${variant}"))))
 
 (fn traverse [operation tree reps]
   (var result "")

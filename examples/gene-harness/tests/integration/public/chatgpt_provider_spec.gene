@@ -43,8 +43,7 @@
         (serve server ^handler (fn [incoming]
           ($assert (== incoming/headers/authorization "Bearer SECRET_ACCESS"))
           (if (== incoming/method "GET")
-            (then
-              ($assert (== incoming/path "/v1/models"))
+            (do ($assert (== incoming/path "/v1/models"))
               (if rejected/.get (return (json 401 "SECRET_DIAGNOSTIC")))
               (return (json 200 ($json/stringify {^models [{^slug "fake" ^display_name "Fixture" ^visibility "list"
                 ^context_window 64000 ^supported_reasoning_levels [{^effort "low"} {^effort "high"}]
@@ -57,8 +56,8 @@
             ^body ($to_str "data: " ($json/stringify {^type "response.completed" ^response {^status "completed"
               ^output [{^type "message" ^role "assistant" ^status "completed" ^content [{^type "output_text" ^text "(Outcome ^^done)"}]}]}}) "\n\n"))))
         (match runner/.join
-          (when (TaskOutcome/ok value) value)
-          (when (TaskOutcome/error error) (fail error))
-          (else ($assert false "ChatGPT provider fixture was cancelled")))))))
+          when (TaskOutcome/ok value) value
+          when (TaskOutcome/error error) (fail error)
+          else ($assert false "ChatGPT provider fixture was cancelled"))))))
 
 (fn main [args] : Int (run_spec args))

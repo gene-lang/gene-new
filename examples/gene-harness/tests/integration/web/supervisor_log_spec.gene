@@ -7,7 +7,7 @@
 
 (fn log_lines [root : Str] : Any
   (let path ($path/join root ".gene-harness/host.log"))
-  (if ($fs/exists? path) ($str/split ($str/trim ($fs/read_text path)) "\n") []))
+  (if ($fs/exists? path) ($str/split ($str/trim ($fs/read_text path)) "\n") else []))
 
 (fn records [root : Str] : Any
   (let out [])

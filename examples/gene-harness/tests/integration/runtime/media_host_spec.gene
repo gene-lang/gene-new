@@ -34,7 +34,7 @@
           (if (== calls/.get 2) (imported .set (/id (/0 (/media ($last request/messages))))))
           (if (== calls/.get 1)
             "(media_import \"pixel.png\") (Outcome ^prompt \"Inspect the imported image.\")"
-            "(Outcome ^^done ^reply ($to_str (media_list)))")))
+            else "(Outcome ^^done ^reply ($to_str (media_list)))")))
         (let pixel "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg==")
         (let service (test_service ^workspace root ^provider provider))
         (let session (create_session service))

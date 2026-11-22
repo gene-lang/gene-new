@@ -35,14 +35,14 @@ proc fibSource(n: int, typed: bool): string =
 (var fib (fn [n : Int] : Int
   (if (< n 2)
     n
-    (+ (fib (- n 1)) (fib (- n 2))))))
+    else (+ (fib (- n 1)) (fib (- n 2))))))
 (fib {n})
 """
   fmt"""
 (var fib (fn [n]
   (if (< n 2)
     n
-    (+ (fib (- n 1)) (fib (- n 2))))))
+    else (+ (fib (- n 1)) (fib (- n 2))))))
 (fib {n})
 """
 

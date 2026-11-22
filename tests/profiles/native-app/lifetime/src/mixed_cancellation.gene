@@ -25,15 +25,15 @@
               nested_entered/.recv
               (entered .send true)
               (await nested))
-            (do
+            else (do
               (entered .send true)
-              (if (== mode 0) blocker/.recv ($sleep 60000))))
+              (if (== mode 0) blocker/.recv else ($sleep 60000))))
          ensure (set cleanups (+ cleanups 1))))))
     entered/.recv
     task/.cancel
     task/.join)
   ($assert (== cleanups (+ before 1)))
-  ($assert (== nested_cleanups (+ nested_before (if (== mode 2) 1 0)))))
+  ($assert (== nested_cleanups (+ nested_before (if (== mode 2) 1 else 0)))))
 
 (fn iteration []
   (for mode in [0 1 2] (one mode)))

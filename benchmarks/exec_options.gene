@@ -4,8 +4,8 @@
 (fn execute [mode]
   (let result
     (if (== mode 0) ($os/exec exec_fixture "noop")
-      (if (== mode 1) ($os/exec ^dir "." exec_fixture "noop")
-        ($os/exec ^env {^GENE_EXEC_BENCH "value" ^PATH ""} exec_fixture "noop"))))
+      else (if (== mode 1) ($os/exec ^dir "." exec_fixture "noop")
+        else ($os/exec ^env {^GENE_EXEC_BENCH "value" ^PATH ""} exec_fixture "noop"))))
   ($assert (== result/status 0) "option child failed")
   ($assert (! result/timed_out) "option child timed out")
   0)

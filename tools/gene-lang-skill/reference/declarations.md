@@ -103,9 +103,9 @@ Type-direct messages live in the type body and are sent bare:
 (enum Status pending active (failed Str))
 
 (match status
-  (when Status/pending "pending")
-  (when (Status/failed message) $"failed: ${message}")
-  (else nil))
+  when Status/pending "pending"
+  when (Status/failed message) $"failed: ${message}"
+  else nil)
 ```
 
 ## Protocols and impls
@@ -121,7 +121,7 @@ once an impl exists. Universal conformance is never implicit.
   (message label [self] : Str
     (if self/active
       self/name
-      $"${self/name} (inactive)")))
+      else $"${self/name} (inactive)")))
 
 (u .Labelled:label)
 ```

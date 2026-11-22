@@ -28,7 +28,7 @@
     (fn schema [value : Int] : Int value)
 
     (fn transform_config [candidate, next]
-      (next (if (== candidate 2) 3 candidate)))
+      (next (if (== candidate 2) 3 else candidate)))
 
     (var active_config ($cell nil))
     (var cleanup_count ($cell 0))

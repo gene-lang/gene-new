@@ -182,7 +182,7 @@
           (let front (syntax_luminance tokens role))
           (for background in ["surface" "soft" "message-user-surface"]
             (let back (relative_luminance (color_value tokens background)))
-            (let ratio (if (> front back) (/ (+ front 0.05) (+ back 0.05)) (/ (+ back 0.05) (+ front 0.05))))
+            (let ratio (if (> front back) (/ (+ front 0.05) (+ back 0.05)) else (/ (+ back 0.05) (+ front 0.05))))
             ($assert (>= ratio 4.5) $"${name}/${mode}: ${role} on ${background} is ${ratio}")))
         (for status in ["danger" "success" "warning" "info"]
           ($assert (>= (contrast_ratio (color_value tokens status) (color_value tokens $"${status}-surface")) 4.5)))
@@ -196,11 +196,11 @@
       ($assert (! ($str/contains? text "var(--size-")) "Layout lengths need semantic roles.")
       ($assert ($absent? (#"#[0-9a-fA-F]{3,8}\b|\brgba?[(]|\bhsla?[(]" .match text)))
       (for [name value] in (declarations text)
-        (if_yes (["font" "font-size" "font-family" "font-weight" "line-height" "letter-spacing" "opacity" "row-gap" "column-gap" "padding" "padding-inline" "padding-block" "margin" "margin-inline" "margin-block" "gap" "z-index" "border-radius" "box-shadow" "transition"] .contains? name)
+        (if (["font" "font-size" "font-family" "font-weight" "line-height" "letter-spacing" "opacity" "row-gap" "column-gap" "padding" "padding-inline" "padding-block" "margin" "margin-inline" "margin-block" "gap" "z-index" "border-radius" "box-shadow" "transition"] .contains? name)
           # Root size follows browser settings; the scrim is a geometric backdrop.
-          (if (|| (== value "revert") (== value "100%") ($str/contains? value "100vmax")) (continue))
+          (do (if (|| (== value "revert") (== value "100%") ($str/contains? value "100vmax")) (continue))
           ($assert (|| (== ($regex/replace_all #"\b(auto|inherit|none|0|1)\b|\s+" value "") "") ($str/contains? value "var(--"))
-            $"${name}: ${value} must read a token")))))
+            $"${name}: ${value} must read a token"))))))
 
   (it "keeps user preferences important in the first layer and names shell queries" []
     ($assert ($str/starts_with? base_styles "@layer preferences, reset, base, shell, components, content, utilities;"))
@@ -316,9 +316,9 @@
       ($assert ($str/contains? (page ^appearance answer) "as=\"font\""))
     ensure
       (if ($fs/exists? path) ($fs/remove path))
-      (if_yes ($fs/exists? exported)
-        (for name in ($fs/list_dir exported) ($fs/remove ($path/join exported name)))
-        ($fs/remove_dir exported))))
+      (if ($fs/exists? exported)
+        (do (for name in ($fs/list_dir exported) ($fs/remove ($path/join exported name)))
+        ($fs/remove_dir exported)))))
 
   (it "renders scoped container rules and global font descriptors" []
     (let rendered (render_css (scoped "sample" (css

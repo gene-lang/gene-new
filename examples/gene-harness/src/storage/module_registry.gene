@@ -39,22 +39,22 @@
   (if (== ($head form) List) (return ($map form source_without_locations)))
   (if (== ($head form) Map) (return ($map_map form source_without_locations)))
   (match form
-    (when (node : Node)
+    when (node : Node)
       (let meta ($meta form))
       (for key in ["source" "line" "col"] (meta .delete key))
       ($node/rebuild form
         ^head (source_without_locations ($head form))
         ^body ($map ($body form) source_without_locations)
         ^props ($map_map ($props form) source_without_locations)
-        ^meta ($map_map meta source_without_locations)))
-    (else form)))
+        ^meta ($map_map meta source_without_locations))
+    else form))
 
 (fn canonical_module_source
   [source, ^require_init require_init : Bool = true]
   (if_not (== ($head source) (quote mod))
     (fail (CompositionError
       ^_msg "module source must be a quoted mod node")))
-  (if_yes (&& require_init (!= source/0 (quote plugin)))
+  (if (&& require_init (!= source/0 (quote plugin)))
     (fail (CompositionError
       ^_msg "register_plugin root source must name (mod plugin ...)")))
   # Module top level is structurally inert. The untrusted executable bodies
@@ -70,10 +70,10 @@
     (if_not (allowed .contains? kind)
       (fail (CompositionError
         ^_msg $"generated module top level may not contain ${kind}; read (doc \"harness/plugins\") for inert declarations and imports")))
-    (if_yes (&& (== kind "fn") (== ($to_str form/0) "init"))
+    (if (&& (== kind "fn") (== ($to_str form/0) "init"))
       (set saw_init true))
     (set i (+ i 1)))
-  (if_yes (&& require_init (! saw_init))
+  (if (&& require_init (! saw_init))
     (fail (CompositionError ^_msg "generated module must define init")))
   # Model response readers attach diagnostic locations to quoted nodes.
   # Those locations are not module content and must not change import hashes.
@@ -104,38 +104,38 @@
     # including its reader locations. Keep such explicitly referenced spellings
     # valid while also accepting location-independent canonical imports.
     (let original ($to_str parsed))
-    (if_yes (&& (!= original canonical)
+    (if (&& (!= original canonical)
                 (requested .contains? $"./${(sha256 original)}.gene"))
-      (if (> (byte_size original) 262144)
+      (do (if (> (byte_size original) 262144)
         (fail (CompositionError ^_msg "generated module exceeds 262144 bytes")))
-      (texts .push original)))
+      (texts .push original))))
   texts)
 
 (fn relative_import_digest [path : Str]
-  (if_yes (&& (starts_with? path "./") (ends_with? path ".gene"))
-    (var hex (slice_bytes path 2 (- (byte_size path) 7)))
-    (if_yes (== (byte_size hex) 64) $"sha256:${hex}")))
+  (if (&& (starts_with? path "./") (ends_with? path ".gene"))
+    (do (var hex (slice_bytes path 2 (- (byte_size path) 7)))
+    (if (== (byte_size hex) 64) $"sha256:${hex}"))))
 
 (fn validate_source_imports [source, closure]
   (var i 1)
   (while (< i source/.body/.size)
     (var form source/.body/%i)
     (var kind ($to_str ($head form)))
-    (if_yes (["import" "import_impl"] .contains? kind)
-      (var path form/from)
-      (if_yes (== ($head path) Str)
+    (if (["import" "import_impl"] .contains? kind)
+      (do (var path form/from)
+      (if (== ($head path) Str)
         (if_not (sdk_import? path)
           (var digest (relative_import_digest path))
           (if (|| ($absent? digest) (! (closure .contains? digest)))
             (fail
-              (CompositionError ^_msg $"generated import is outside its dependency closure: ${path}"))))))
+              (CompositionError ^_msg $"generated import is outside its dependency closure: ${path}")))))))
     (set i (+ i 1)))
   source)
 
 (fn materialize_module_blob [workspace : Workspace, digest : Str, source : Str]
   (var path (module_path workspace digest))
   (var present (exists? path))
-  (if_yes present
+  (if present
     (if_not (== (read_text path) source)
       (fail (CompositionError ^_msg $"module blob collision for ${digest}"))))
   (if_not present (write_text_atomic path source))
@@ -196,7 +196,7 @@
 
 (fn validate_descriptor_events [h : Harness, descriptor]
   (var seen (fresh_map))
-  (for event in (if ($absent? descriptor/events) (fresh_list) descriptor/events)
+  (for event in (if ($absent? descriptor/events) (fresh_list) else descriptor/events)
     (if (|| ($absent? event/name) ($absent? event/version) ($absent? event/ignorable) ($absent? event/schema))
       (fail
         (CompositionError ^_msg $"plugin ${descriptor/id} event descriptor requires name version ignorable schema")))
@@ -207,7 +207,7 @@
       (fail (CompositionError ^_msg $"plugin ${descriptor/id} duplicates event type ${name}")))
     (seen .put name true)
     (var existing (row h "event_types" name))
-    (if_yes (&& ($present? existing) (|| (!= existing/origin "plugin") (!= existing/owner descriptor/id)))
+    (if (&& ($present? existing) (|| (!= existing/origin "plugin") (!= existing/owner descriptor/id)))
       (fail (CompositionError ^_msg $"event type ${name} is already owned by ${existing/owner}"))))
   descriptor)
 
@@ -233,7 +233,7 @@
 (fn register_descriptor_events [h : Harness, descriptor]
   (var descriptor_owner $"descriptor:${descriptor/id}")
   (remove_owner h descriptor_owner)
-  (for event in (if ($absent? descriptor/events) (fresh_list) descriptor/events)
+  (for event in (if ($absent? descriptor/events) (fresh_list) else descriptor/events)
     (if (|| ($absent? event/name) ($absent? event/version) ($absent? event/ignorable) ($absent? event/schema))
       (fail
         (CompositionError ^_msg $"plugin ${descriptor/id} event descriptor requires name version ignorable schema")))

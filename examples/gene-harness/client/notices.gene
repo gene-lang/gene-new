@@ -13,7 +13,7 @@
 (fn remove_notice [notices : Notices, source : Str, scope : Str, key : Str] : Nil
   (var identity (notice_identity source scope key))
   (var raw : Any notices/items/%identity)
-  (if_yes ($absent? raw) (return))
+  (if ($absent? raw) (return))
   (var item : Notice raw)
   (set item/version (+ item/version 1))
   ($dom/remove item/element)
@@ -32,15 +32,15 @@
   ($time/after
     6000.0
     (fn [] : Nil
-      (if_yes (|| (!= item/version version) item/sticky) (return))
+      (if (|| (!= item/version version) item/sticky) (return))
       (if (|| item/hovered item/focused item/center_hovered item/center_focused)
         (expire_notice notices item version)
-        (remove_notice notices item/source item/scope item/key)))))
+        else (remove_notice notices item/source item/scope item/key)))))
 
 (fn put_notice [notices : Notices, target : EventTarget, source : Str, scope : Str, key : Str, text : Str, severity : Str, sticky : Bool, origin : Any, ^action action : Any = nil] : Nil
-  (if_yes (== text "")
-    (remove_notice notices source scope key)
-    (return))
+  (if (== text "")
+    (do (remove_notice notices source scope key)
+    (return)))
   (var identity (notice_identity source scope key))
   (var raw : Any notices/items/%identity)
   (var item
@@ -48,9 +48,9 @@
     Notice
     (if ($absent? raw)
       (Notice ^identity identity ^source source ^scope scope ^key key ^text "" ^severity severity ^origin origin ^element ($dom/render `(div ^class_name "notice_item" ^tabindex "0")) ^label ($dom/render `(span)) ^version 0 ^!hovered ^!focused ^!center_hovered ^!center_focused ^sticky sticky ^action action)
-      raw))
-  (if_yes ($absent? raw)
-    (set notices/items/%identity item)
+      else raw))
+  (if ($absent? raw)
+    (do (set notices/items/%identity item)
     ($dom/append item/element item/label)
     ($dom/append item/element ($dom/render `(button ^type "button" ^class_name "notice_dismiss"
       ^aria-label "Dismiss message" ^title "Dismiss message"
@@ -75,16 +75,16 @@
       item/element
       "focusout"
       (fn [event : Any] : Nil
-        (set item/focused false))))
+        (set item/focused false)))))
   (set item/sticky sticky)
   (set item/action action)
   (set item/origin origin)
   (set item/severity severity)
   ($dom/set_attribute item/element "data-notice-key" identity)
   ($dom/set_attribute item/element "data-severity" severity)
-  (if_yes (!= item/text text)
-    (set item/text text)
-    ($dom/set_text item/label text))
+  (if (!= item/text text)
+    (do (set item/text text)
+    ($dom/set_text item/label text)))
   (set item/version (+ item/version 1))
   (if_not sticky (expire_notice notices item item/version))
   (notices/changed))

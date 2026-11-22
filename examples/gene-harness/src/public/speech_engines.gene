@@ -6,7 +6,7 @@
 (fn nonempty [value]
   (if ($absent? value) (return nil))
   (let text ($str/trim ($to_str value)))
-  (if (== text "") nil text))
+  (if (== text "") nil else text))
 
 (fn close_http [resource]
   (if (resource/closed .swap true) (return nil))
@@ -44,7 +44,7 @@
 
 (fn whisper_row []
   {^name "whisper_local" ^auto 20 ^summary "Local, warm whisper.cpp server" ^mode "segments"
-   ^available (fn [] (if ($absent? (whisper_url)) "Set GENE_WHISPER_URL to a warm whisper.cpp /inference endpoint." nil))
+   ^available (fn [] (if ($absent? (whisper_url)) "Set GENE_WHISPER_URL to a warm whisper.cpp /inference endpoint." else nil))
    ^open (fn [settings]
      {^url (local_whisper_url) ^closed ($cell false)
       ^client (await ($net/http_client/open ^max_connections 2 ^max_connections_per_origin 2))})
@@ -75,9 +75,9 @@
       (write_json worker/writer {^text text ^rate (?? settings/rate 1.0) ^speaker_id (?? settings/speaker_id nil)
         ^voice (?? settings/voice "") ^language (?? settings/language "en-US")})
       (let response (read_json worker/reader))
-      (if_yes (!= response/ok true)
+      (if (!= response/ok true)
         # A rejected request has no PCM body and leaves the protocol aligned.
-        (set complete (== response/ok false)) (audio_error (?? response/message "Speech synthesis failed.")))
+        (do (set complete (== response/ok false)) (audio_error (?? response/message "Speech synthesis failed."))))
       (while true
         (let bytes (read_packet worker/reader))
         (if (== ($binary/size bytes) 0) (break))
@@ -97,7 +97,7 @@
   {^name "piper" ^auto 20 ^summary "Local Piper SDK in one warm helper" ^streaming false ^^drain_on_cancel
    ^available (fn []
      (if (|| ($absent? (piper_model)) (! ($fs/exists? (piper_model))))
-       "Set GENE_PIPER_MODEL to an installed .onnx voice; install piper-tts in GENE_PIPER_PYTHON." nil))
+       "Set GENE_PIPER_MODEL to an installed .onnx voice; install piper-tts in GENE_PIPER_PYTHON." else nil))
    ^open piper_open ^close close_worker ^synthesize framed_synthesize})
 
 (fn elevenlabs_synthesize [resource, text : Str, settings, emit]
@@ -122,7 +122,7 @@
 (fn elevenlabs_row []
   {^name "elevenlabs" ^summary "Opt-in cloud streaming PCM synthesis" ^^streaming
    ^format {^rate 24000 ^channels 1 ^encoding "s16le"}
-   ^available (fn [] (if ($absent? (nonempty ($os/env? "ELEVENLABS_API_KEY"))) "ELEVENLABS_API_KEY is unavailable." nil))
+   ^available (fn [] (if ($absent? (nonempty ($os/env? "ELEVENLABS_API_KEY"))) "ELEVENLABS_API_KEY is unavailable." else nil))
    ^open (fn [settings] {^key ($os/get_env "ELEVENLABS_API_KEY")
      ^closed ($cell false)
      ^client (await ($net/http_client/open ^max_stream_body_bytes 16777216))})
@@ -131,7 +131,7 @@
 (fn mac_helper [] (nonempty ($os/env? "GENE_MAC_SPEECH_HELPER")))
 (fn mac_reason []
   (if (|| ($absent? (mac_helper)) (! ($fs/exists? (mac_helper))))
-    "Build src/audio/build_mac.gene on macOS 26+, then set GENE_MAC_SPEECH_HELPER to its executable." nil))
+    "Build src/audio/build_mac.gene on macOS 26+, then set GENE_MAC_SPEECH_HELPER to its executable." else nil))
 
 (fn mac_synthesizer_row []
   {^name "macos" ^auto 30 ^summary "Local macOS system speech voices" ^streaming false ^^drain_on_cancel
@@ -153,10 +153,10 @@
   (var limit 60)
   (for word in ($str/split value " ")
     (if (== word "") (continue))
-    (if_yes (&& (!= current "") (> (+ ($str/byte_size current) ($str/byte_size word) 1) limit))
-      (result .push current) (set current "") (set limit 300))
-    (set current ($to_str current (if (== current "") "" " ") word))
-    (if_yes (|| ($str/ends_with? word ".") ($str/ends_with? word "!") ($str/ends_with? word "?"))
-      (result .push current) (set current "") (set limit 300)))
+    (if (&& (!= current "") (> (+ ($str/byte_size current) ($str/byte_size word) 1) limit))
+      (do (result .push current) (set current "") (set limit 300)))
+    (set current ($to_str current (if (== current "") "" else " ") word))
+    (if (|| ($str/ends_with? word ".") ($str/ends_with? word "!") ($str/ends_with? word "?"))
+      (do (result .push current) (set current "") (set limit 300))))
   (if (!= current "") (result .push current))
   result)

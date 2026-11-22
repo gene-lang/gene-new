@@ -91,7 +91,7 @@
 (fn open_db [path : Str] : Db?
   (var db : Db? nil)
   (let rc : I64 (sqlite3_open path db))
-  (if (== rc 0) db nil))
+  (if (== rc 0) db else nil))
 
 (fn exec [db : Db sql : Str] : I64
   (sqlite3_exec db sql nil nil nil))
@@ -99,7 +99,7 @@
 (fn prepare [db : Db sql : Str] : Stmt?
   (var stmt : Stmt? nil)
   (let rc : I64 (sqlite3_prepare_v2 db sql -1 stmt nil))
-  (if (== rc 0) stmt nil))
+  (if (== rc 0) stmt else nil))
 
 (fn close_db [db : Db] : I64
   (sqlite3_close db))
@@ -120,7 +120,7 @@
                       cap : I64] : I64
   (if (< (row_total stmt amount_column quantity_column) cap)
     (row_total stmt amount_column quantity_column)
-    cap))
+    else cap))
 
 # The whole scan, compiled: `while` and block-scoped locals keep the loop in
 # Gene, so stepping, both column reads, the multiply and the accumulate all

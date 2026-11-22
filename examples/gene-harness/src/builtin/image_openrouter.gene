@@ -27,23 +27,23 @@
   (let descriptor (parameters .get key))
   (if ($absent? descriptor) (return false))
   (match descriptor/type
-    (when "boolean" true)
-    (when "enum" (&& (== ($head descriptor/values) List) (descriptor/values .contains? value)))
-    (when "range" (&& (== ($head value) Int)
-      (>= value (?? descriptor/min 0)) (<= value (?? descriptor/max 9223372036854775807))))
-    (else false)))
+    when "boolean" true
+    when "enum" (&& (== ($head descriptor/values) List) (descriptor/values .contains? value))
+    when "range" (&& (== ($head value) Int)
+      (>= value (?? descriptor/min 0)) (<= value (?? descriptor/max 9223372036854775807)))
+    else false))
 
 (fn size_support [parameters, size : Str]
   (if_not ($absent? parameters/size)
-    (return (if (allows parameters "size" size) "yes" "no")))
+    (return (if (allows parameters "size" size) "yes" else "no")))
   # The API normalizes size into endpoint resolution/aspect controls. It does
   # not require a literal `size` descriptor when those controls are present.
   (let dimensions (normalized_dimensions size))
   (if ($absent? dimensions)
     (return (if ($absent? parameters/resolution)
-      (then "no")
-      (elif (allows parameters "resolution" size) "yes")
-      (else "no"))))
+      "no"
+      elif (allows parameters "resolution" size) "yes"
+      else "no")))
   (var a dimensions/width) (var b dimensions/height)
   (while (> b 0) (let rest (// a b)) (set a b) (set b rest))
   (let ratio $"${(/ dimensions/width a)}:${(/ dimensions/height a)}")
@@ -60,7 +60,7 @@
     (return "no"))
   (if_not (allows parameters "resolution" tier) (return "no"))
   (if (&& (!= dimensions/width dimensions/height) ($absent? parameters/aspect_ratio))
-    "unknown" "yes"))
+    "unknown" else "yes"))
 
 (fn normalized_dimensions [size : Str]
   (let pixels (pixel_dimensions size))
@@ -69,7 +69,7 @@
   # Actual output dimensions are always inspected again by the host.
   (let tiers {^"512" 512 ^"768" 768 ^"1K" 1024 ^"1.5K" 1536 ^"2K" 2048 ^"4K" 4096})
   (let side (tiers .get size))
-  (if ($absent? side) nil {^width side ^height side}))
+  (if ($absent? side) nil else {^width side ^height side}))
 
 (fn normalized_size_parameters [size : Str]
   (let dimensions (normalized_dimensions size))
@@ -93,7 +93,7 @@
   (if (&& (!= input/background "auto") (! (allows parameters "background" input/background)))
     (return false))
   (if (&& ($present? parameters/n) (! (allows parameters "n" 1))) (return false))
-  (let count (+ input/reference_count (if (> input/max_attempts 1) 1 0)))
+  (let count (+ input/reference_count (if (> input/max_attempts 1) 1 else 0)))
   (if (&& (> count 0) (! (allows parameters "input_references" count))) (return false))
   true)
 
@@ -119,9 +119,9 @@
   (let route (routing_options (?? input/options {})))
   (let catalogue (discover transport "images/models"))
   (var model nil)
-  (if_yes (== ($head catalogue/data) List)
-    (for candidate in catalogue/data (if (== candidate/id input/model) (set model candidate)))
-    (if ($absent? model) (image_error "unsupported_model" "The selected model is absent from OpenRouter image discovery.")))
+  (if (== ($head catalogue/data) List)
+    (do (for candidate in catalogue/data (if (== candidate/id input/model) (set model candidate)))
+    (if ($absent? model) (image_error "unsupported_model" "The selected model is absent from OpenRouter image discovery."))))
   (let need_input (|| (> input/reference_count 0) (> input/max_attempts 1)))
   (if_not ($absent? model)
     (if (&& (== ($head model/architecture/output_modalities) List)
@@ -137,13 +137,13 @@
   (let eligible [])
   (let compatible [])
   (let incompatible_tags [])
-  (if_yes known
-    (for endpoint in endpoint_data/endpoints
-      (if_yes (|| route/only/.empty? (route/only .contains? endpoint/provider_tag))
-        (eligible .push endpoint)
+  (if known
+    (do (for endpoint in endpoint_data/endpoints
+      (if (|| route/only/.empty? (route/only .contains? endpoint/provider_tag))
+        (do (eligible .push endpoint)
         (if (endpoint_supports endpoint input)
           (compatible .push endpoint)
-          (incompatible_tags .push endpoint/provider_tag))))
+          else (incompatible_tags .push endpoint/provider_tag)))))
     (if compatible/.empty?
       (image_error "unsupported_endpoint" "No eligible OpenRouter endpoint supports the requested PNG settings and inputs."))
     (let tags [])
@@ -156,7 +156,7 @@
       (if tags/.empty? (image_error "unsupported_routing" "Compatible OpenRouter endpoints cannot be isolated by provider_tag.")))
     (if (&& (! route/only/.empty?) tags/.empty?)
       (image_error "unsupported_routing" "Configured providers have no usable routing identifiers."))
-    (if_not tags/.empty? (route .put "only" tags)))
+    (if_not tags/.empty? (route .put "only" tags))))
   (if_not known
     # Discovery failure never enables retries or clears the operator's routing.
     (route .put "allow_fallbacks" false))
@@ -169,8 +169,8 @@
   (var size_parameters {^size input/size})
   (let normalized_size (normalized_size_parameters input/size))
   (var normalized_supported ($present? normalized_size))
-  (if_yes known
-    (set output_support "yes")
+  (if known
+    (do (set output_support "yes")
     (set input_support "yes")
     (set send_background true)
     (set requested_size_support "yes")
@@ -179,7 +179,7 @@
       (let descriptor endpoint/supported_parameters/input_references)
       (if ($absent? descriptor) (set input_support "no"))
       (if (== ($head descriptor/max) Int)
-        (set max_images (if ($absent? max_images) descriptor/max ($math/min max_images descriptor/max))))
+        (set max_images (if ($absent? max_images) descriptor/max else ($math/min max_images descriptor/max))))
       (if_not (allows endpoint/supported_parameters "background" input/background)
         (set send_background false))
       (if_not (allows endpoint/supported_parameters "output_format" "png")
@@ -191,7 +191,7 @@
         (set normalized_supported false)))
     # Prefer the advertised controls to the API's pixel-size convenience
     # conversion, which some endpoints pass through as an invalid ratio.
-    (if normalized_supported (set size_parameters normalized_size)))
+    (if normalized_supported (set size_parameters normalized_size))))
   (if_not ($absent? model)
     (if (&& (== ($head model/architecture/input_modalities) List)
             (! (model/architecture/input_modalities .contains? "image"))) (set input_support "no")))
@@ -204,13 +204,13 @@
    ^send_output_format send_output_format ^size_support requested_size_support
    ^dimensions (normalized_dimensions input/size) ^size_parameters size_parameters
    ^routing route ^capabilities caps
-   ^endpoint_capabilities (if known compatible [])
+   ^endpoint_capabilities (if known compatible else [])
    ^timeout_ms input/timeout_ms ^max_response_bytes 16777216 ^max_image_bytes 10485760})
 
 (fn prepare_openrouter_image [call]
   (let settings call/settings)
   (let prompt ($to_str call/instructions "\nOriginal requirements:\n" call/prompt
-    (if ($absent? call/candidate) "" ($to_str "\nRefine the final reference image. Revision:\n" call/revision))))
+    (if ($absent? call/candidate) "" else ($to_str "\nRefine the final reference image. Revision:\n" call/revision))))
   (let body {^model settings/model ^prompt prompt ^n 1 ^provider settings/routing})
   (if (!= settings/send_output_format false) (body .put "output_format" "png"))
   (map_for [key value] in (?? settings/size_parameters {^size settings/size})
@@ -240,15 +240,15 @@
       ^headers {^content-type "application/json" ^authorization $"Bearer ${key}"}
       ^body ($json/stringify body) ^timeout_ms prepared/timeout_ms ^max_bytes 16777216})
     catch Error (image_error "transport_failed" "OpenRouter image transport failed; no retry was made.")))
-  (if_yes (!= response/status 200)
-    (let parsed (try ($json/parse response/body) catch Error nil))
-    (let message (if (== ($head parsed/error/message) Str) (nonempty parsed/error/message) nil))
+  (if (!= response/status 200)
+    (do (let parsed (try ($json/parse response/body) catch Error nil))
+    (let message (if (== ($head parsed/error/message) Str) (nonempty parsed/error/message) else nil))
     (let diagnostic (if ($absent? message) nil
-      (safe_error ($str/join ($str/split message key) "[redacted]") inventory)))
+      else (safe_error ($str/join ($str/split message key) "[redacted]") inventory)))
     (fail (ImageError ^code "provider_rejected" ^status response/status
       ^diagnostic (if ($absent? diagnostic) nil
-        $"OpenRouter image request failed (HTTP ${response/status}): ${diagnostic}")
-      ^_msg "OpenRouter rejected the image request.")))
+        else $"OpenRouter image request failed (HTTP ${response/status}): ${diagnostic}")
+      ^_msg "OpenRouter rejected the image request."))))
   (if (> ($str/byte_size response/body) 16777216)
     (image_error "response_too_large" "OpenRouter image response exceeds 16 MiB."))
   (let parsed (try ($json/parse response/body)
@@ -279,7 +279,7 @@
       (host .PluginHost:contribute "image_generators"
         {^name "openrouter" ^doc "Generate and refine one PNG through the OpenRouter Image API."
          ^tags ["image" "openrouter" "png"] ^docs ["image/usage"]
-         ^available (fn [] (if ($absent? (image_api_key)) "OPENROUTER_API_KEY is unavailable" nil))
+         ^available (fn [] (if ($absent? (image_api_key)) "OPENROUTER_API_KEY is unavailable" else nil))
          ^configure (fn [input] (configure_openrouter_images input))
          ^capabilities (fn [settings] settings/capabilities)
          ^prepare prepare_openrouter_image

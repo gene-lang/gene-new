@@ -41,8 +41,8 @@
     ($sleep 30)
     task/.cancel
     (match task/.join
-      (when TaskOutcome/cancelled nil)
-      (else ($assert false "Expected cancellation"))))
+      when TaskOutcome/cancelled nil
+      else ($assert false "Expected cancellation")))
   ($assert (== (native/open_count) 0) "cancelled task leaked its socket"))
 
 (fn main [argv] : Int

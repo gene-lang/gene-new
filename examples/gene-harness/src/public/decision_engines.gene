@@ -10,7 +10,7 @@
 (fn nonempty [value]
   (if ($absent? value) (return nil))
   (let text ($str/trim ($to_str value)))
-  (if (== text "") nil text))
+  (if (== text "") nil else text))
 
 (fn close_http [resource]
   (if (resource/closed .swap true) (return nil))
@@ -32,21 +32,20 @@
 # Maps one Jev HTTP reply onto the decision result shape.
 (fn jev_reply [status : Int, body : Str]
   (if (== status 200)
-    (then
-      (let parsed (try ($json/parse ^^strict ^max_depth 16 body) catch Error nil))
+    (let parsed (try ($json/parse ^^strict ^max_depth 16 body) catch Error nil))
       (if (|| (!= ($head parsed) Map) (!= ($head parsed/answers) Map))
         (return (engine_status "error" "Jev returned a reply without answers.")))
-      {^model (if (== ($head parsed/model) Str) parsed/model nil) ^answers parsed/answers
-       ^usage (if (== ($head parsed/usage) Map) parsed/usage nil)})
-    (elif (|| (== status 429) (== status 529))
-      (engine_status "rate_limited" $"Jev is rate limited or overloaded (HTTP ${status})."))
-    (elif (|| (== status 413) (&& (== status 400) ($str/contains? body "max_tokens_exceeded")))
-      (engine_status "too_large" "The state is larger than Jev's context limit."))
-    (elif (|| (== status 401) (== status 403))
-      (engine_status "unavailable" "TypeSafe rejected TYPESAFE_API_KEY."))
-    (elif (== status 422)
-      (engine_status "error" "Jev rejected the questions (HTTP 422)."))
-    (else (engine_status "error" $"Jev returned HTTP ${status}."))))
+      {^model (if (== ($head parsed/model) Str) parsed/model else nil) ^answers parsed/answers
+       ^usage (if (== ($head parsed/usage) Map) parsed/usage else nil)}
+    elif (|| (== status 429) (== status 529))
+      (engine_status "rate_limited" $"Jev is rate limited or overloaded (HTTP ${status}).")
+    elif (|| (== status 413) (&& (== status 400) ($str/contains? body "max_tokens_exceeded")))
+      (engine_status "too_large" "The state is larger than Jev's context limit.")
+    elif (|| (== status 401) (== status 403))
+      (engine_status "unavailable" "TypeSafe rejected TYPESAFE_API_KEY.")
+    elif (== status 422)
+      (engine_status "error" "Jev rejected the questions (HTTP 422).")
+    else (engine_status "error" $"Jev returned HTTP ${status}.")))
 
 (fn jev_decide [resource, request]
   (let response (await (resource/client .request ^method "POST" ^url jev_url
@@ -58,7 +57,7 @@
 (fn jev_row []
   {^name "jev" ^auto 10 ^summary "TypeSafe Jev, a cloud System One model"
    ^doc "Jev answers choice, score and noul questions in about 0.1 s. The state is sent to TypeSafe. Needs TYPESAFE_API_KEY; ^model pins a version (default jev-1.14.0)."
-   ^available (fn [settings] (if ($absent? (jev_key)) "Set TYPESAFE_API_KEY to use Jev." nil))
+   ^available (fn [settings] (if ($absent? (jev_key)) "Set TYPESAFE_API_KEY to use Jev." else nil))
    ^open (fn [settings]
      {^key (jev_key) ^closed ($cell false)
       ^client (await ($net/http_client/open ^max_connections 2 ^max_connections_per_origin 2))})
@@ -101,7 +100,7 @@
    ^doc "Sends the questions as a JSON-only prompt through call_model with purpose decision/<use>. Choose ^preset from models.gene, or ^provider, ^model and ^effort (default low). A local endpoint keeps the state on this machine. Takes seconds, so it suits check-ins, not voice."
    ^available (fn [settings]
      (if (|| ($present? (nonempty settings/preset)) ($present? (nonempty settings/provider))) nil
-       "Choose ^preset or ^provider for the model decision engine in the decisions setting."))
+       else "Choose ^preset or ^provider for the model decision engine in the decisions setting."))
    ^open (fn [settings] {})
    ^close (fn [resource] nil)
    # The instructions add about 300 tokens to every request.

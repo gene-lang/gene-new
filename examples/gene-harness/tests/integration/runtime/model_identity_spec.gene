@@ -43,7 +43,7 @@
             (let first (submit_round controller "default" "identity" 1 "work"))
             (wait_entered entered)
             (cache .set (if (== changed "billing")
-              (then (connection_cache "metered" "account-a")) (else (connection_cache "plan" "account-b"))))
+              (connection_cache "metered" "account-a") else (connection_cache "plan" "account-b")))
             (released .set true)
             ((/watcher (controller/rounds/.get .get "default")) .join)
             (let receipt (round_receipt controller "default" first/id))
@@ -73,8 +73,8 @@
           (put_cordis_plugin ^^replace runtime/h (identity_provider ^credential credential (fn [call]
             (calls/.get .push {^code "new" ^token (resolve_credential credential) ^transport call/selection/transport})
             (if (== calls/.get/.size 2)
-              (then ($fs/write_text token_path "FAKE_TOKEN_TWO") {^text "(Outcome ^prompt \"continue\")"})
-              (else {^text "(Outcome ^^done ^reply \"done\")"})))) {^^host ^limits runtime/profile/limits})
+              ($fs/write_text token_path "FAKE_TOKEN_TWO") {^text "(Outcome ^prompt \"continue\")"}
+              else {^text "(Outcome ^^done ^reply \"done\")"}))) {^^host ^limits runtime/profile/limits})
           (released .set true)
           ((/watcher (controller/rounds/.get .get "default")) .join)
           (let receipt (round_receipt controller "default" first/id))

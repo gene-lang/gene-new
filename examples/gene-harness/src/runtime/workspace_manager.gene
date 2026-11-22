@@ -33,7 +33,7 @@
   (let handle ($fs/try_lock path))
   (if ($absent? handle)
     true
-    (do
+    else (do
       handle/.close
       false)))
 
@@ -98,15 +98,15 @@
   (let lines [])
   (for line in ($str/split text "\n")
     (let record (try (parse_record line) catch Error nil))
-    (lines .push (if ($present? record) (render_text record) line)))
+    (lines .push (if ($present? record) (render_text record) else line)))
   ($str/join lines "\n"))
 
 (fn manager_diagnostics [root : Str]
   (let parts [])
   (for name in ["startup_failure" "bootstrap.log" "host.log.1" "host.log"]
     (let path $"${root}/.gene-harness/${name}")
-    (if_yes ($fs/exists? path)
-      (let text
+    (if ($fs/exists? path)
+      (do (let text
         (try
           ((Path "text") ($fs/read_text_page ^lines 100000 ^max_bytes 1048576 path))
         catch Error
@@ -117,7 +117,7 @@
             name
             """:
 """
-            (byte_suffix (manager_typed name text) 4096))))))
+            (byte_suffix (manager_typed name text) 4096)))))))
   (manager_redact
     root
     ($str/join
@@ -154,13 +154,13 @@
   (let launching (|| starting (lock_held? $"${entry/dir}/.gene-harness/launcher_lock")))
   (if_not (|| owned launching) (return result))
   (if_not ($fs/exists? $"${entry/dir}/.gene-harness/connection")
-    (result .put "status" (if launching "starting" "unavailable"))
+    (result .put "status" (if launching "starting" else "unavailable"))
     (return result))
   (try
     (let due (+ ($os/monotonic_ms) timeout_ms))
     (let client (connect ^deadline due entry/dir))
     (let status (api ^deadline due client "GET" "/status?ui=default"))
-    (result .put "status" (if (== status/mode "recovery") "recovery" "running"))
+    (result .put "status" (if (== status/mode "recovery") "recovery" else "running"))
     (result .put "actual_port" client/connection/port)
     (result .put "epoch" client/connection/epoch)
     (result .put "pending_port" (&& (!= result/port 0) (!= result/port client/connection/port)))
@@ -182,14 +182,14 @@
     (if (|| manager/closed/.get manager/busy/.get) (return nil))
     (let status (manager_probe manager entry))
     (if (|| manager/busy/.get (!= version manager/revision/.get)) (return nil))
-    (if_yes (!= status (manager/statuses/.get .get entry/id))
-      (manager/statuses/.get .put entry/id status)
-      (set changed true)))
+    (if (!= status (manager/statuses/.get .get entry/id))
+      (do (manager/statuses/.get .put entry/id status)
+      (set changed true))))
   # A directory removed or renamed outside the manager disappears from the list.
   (map_for [id status] in (data_copy manager/statuses/.get)
-    (if_yes ($absent? (present .get ($to_str id)))
-      (manager_forget_status manager ($to_str id))
-      (set changed true)))
+    (if ($absent? (present .get ($to_str id)))
+      (do (manager_forget_status manager ($to_str id))
+      (set changed true))))
   (if changed (manager_changed manager))
   nil)
 
@@ -241,19 +241,18 @@
 
 (fn manager_save_settings [entry, changes, ^expected expected : Str = ""]
   (if (lock_held? $"${entry/dir}/.gene-harness/lock")
-    (then
-      (let due (+ ($os/monotonic_ms) 10000))
+    (let due (+ ($os/monotonic_ms) 10000))
       (api ^deadline due
         (connect ^deadline due entry/dir)
         "POST"
         "/workspace/settings"
-        {^changes changes ^expected expected}))
-    (else
+        {^changes changes ^expected expected})
+    else
       (let lock (acquire_workspace_lock entry/dir "workspace manager settings"))
       (try
         (update_workspace_settings ^expected expected entry/dir changes)
       ensure
-        (close_workspace_lock lock)))))
+        (close_workspace_lock lock))))
 
 (fn manager_create [manager, values]
   (let name (valid_name values/name))
@@ -457,7 +456,7 @@
         (let item entries/%at)
         (if (== item/kind "directory")
           ($fs/remove_dir item/path)
-          ($fs/remove item/path)))
+          else ($fs/remove item/path)))
       ($fs/remove_dir root)))
   (manager_forget_status manager entry/id)
   {^id entry/id ^status "deleted"})
@@ -473,50 +472,50 @@
           (set entry (manager_entry manager values/id)))
         (var result nil)
         (match operation
-          (when "create"
-            (set entry (manager_create manager values)))
-          (when "restore"
-            (set entry (manager_restore manager values)))
-          (when "port"
-            (manager_save_settings entry {^port values/port}))
-          (when "settings"
-            (manager_save_settings ^expected (?? values/expected "") entry {^port values/port}))
-          (when "rename"
-            (set entry (manager_rename manager entry values)))
-          (when "start"
-            (set result (manager_start manager entry)))
-          (when "stop"
-            (set result (manager_stop manager entry confirmed)))
-          (when "restart"
+          when "create"
+            (set entry (manager_create manager values))
+          when "restore"
+            (set entry (manager_restore manager values))
+          when "port"
+            (manager_save_settings entry {^port values/port})
+          when "settings"
+            (manager_save_settings ^expected (?? values/expected "") entry {^port values/port})
+          when "rename"
+            (set entry (manager_rename manager entry values))
+          when "start"
+            (set result (manager_start manager entry))
+          when "stop"
+            (set result (manager_stop manager entry confirmed))
+          when "restart"
             (set result (manager_stop manager entry confirmed))
             (if (!= result/status "confirmation_required")
-              (set result (manager_start manager entry))))
-          (when "archive"
-            (return (manager_archive manager entry)))
-          (when "delete"
+              (set result (manager_start manager entry)))
+          when "archive"
+            (return (manager_archive manager entry))
+          when "delete"
             (set result (manager_delete manager entry values))
-            (if (== result/status "deleted") (return result)))
-          (else
-            (manager_error "invalid_request" "Unknown workspace operation.")))
+            (if (== result/status "deleted") (return result))
+          else
+            (manager_error "invalid_request" "Unknown workspace operation."))
         (let observed (manager_probe manager entry))
         (manager/statuses/.get .put entry/id observed)
         (if (== result/status "confirmation_required")
           (manager/confirmations/.get .put entry/id operation)
-          (manager/confirmations/.get .delete entry/id))
+          else (manager/confirmations/.get .delete entry/id))
         (if (== result/status "confirmation_required")
           result
-          observed)
+          else observed)
       catch Error
         (let error $err)
-        (if_yes (&& ($present? entry) (["unavailable" "control_timeout" "startup_timeout" "startup_failed"] .contains? error/code))
-          (let status
+        (if (&& ($present? entry) (["unavailable" "control_timeout" "startup_timeout" "startup_failed"] .contains? error/code))
+          (do (let status
             (data_copy
               (??
                 (manager/statuses/.get .get entry/id)
                 {^id entry/id ^name entry/name ^dir entry/dir ^port 0})))
-          (status .put "status" (if (== error/code "startup_failed") "error" "unavailable"))
+          (status .put "status" (if (== error/code "startup_failed") "error" else "unavailable"))
           (status .put "message" error/.message)
-          (manager/statuses/.get .put entry/id status))
+          (manager/statuses/.get .put entry/id status)))
         (fail error)
       ensure
         (manager/busy .set false)

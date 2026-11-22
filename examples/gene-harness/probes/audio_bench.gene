@@ -11,10 +11,10 @@
 (fn bench_profile [mode : Str, ^recognizer recognizer : Str = "whisper_local"]
   (let root ($path/parent this_mod/.path))
   (let entry (match mode
-    (when "full" "audio_bench_full.gene")
-    (when "handsfree" "audio_bench_handsfree.gene")
-    (when "processed" "audio_bench_processed.gene")
-    (else "audio_bench_smoke.gene")))
+    when "full" "audio_bench_full.gene"
+    when "handsfree" "audio_bench_handsfree.gene"
+    when "processed" "audio_bench_processed.gene"
+    else "audio_bench_smoke.gene"))
   (let asset ($web/load $"${root}/../tests/fixtures/${entry}"))
   (let probe (Plugin ^id "audio_bench" ^provides [["browser_clients" "audio_bench"]]
     ^activate (fn [host]
@@ -43,12 +43,12 @@
     (if (== timing/kind "input") (input .push timing/elapsed_ms))
     (if (== timing/kind "output") (output .push timing/elapsed_ms))
     (if (== timing/kind "loop")
-      (if (== timing/input_kind "voice") (voice_loop .push timing/elapsed_ms) (typed_loop .push timing/elapsed_ms)))
-    (if_yes (== timing/kind "round")
-      (let key (($str/split timing/identity "/") .first))
+      (if (== timing/input_kind "voice") (voice_loop .push timing/elapsed_ms) else (typed_loop .push timing/elapsed_ms)))
+    (if (== timing/kind "round")
+      (do (let key (($str/split timing/identity "/") .first))
       (let pair (?? (by_pair .get key) {}))
       (pair .put timing/input_kind timing/elapsed_ms)
-      (by_pair .put key pair)))
+      (by_pair .put key pair))))
   (let added [])
   (repeat pair_index in pairs
     (let pair (by_pair .get ($to_str (+ pair_index 1))))
@@ -66,11 +66,11 @@
   (if ($fs/exists? workspace) (audio_error "Use a new workspace for each benchmark run."))
   ($fs/make_dir workspace)
   (let root ($fs/real_path workspace))
-  (let mode (if (> args/.size 3) args/3 "full"))
+  (let mode (if (> args/.size 3) args/3 else "full"))
   (if_not (["smoke" "processed" "handsfree" "full"] .contains? mode) (audio_error "Unknown benchmark mode."))
-  (let recognizer (if (> args/.size 4) args/4 "whisper_local"))
+  (let recognizer (if (> args/.size 4) args/4 else "whisper_local"))
   (if_not (["whisper_local" "macos"] .contains? recognizer) (audio_error "Expected whisper_local or macos recognizer."))
-  (let pairs (if (== mode "full") 20 2))
+  (let pairs (if (== mode "full") 20 else 2))
   (var browser nil) (var client nil)
   (let application ($pkg/application))
   (let entry ($path/join application/source_root "probes" "audio_bench_host.gene"))
@@ -79,9 +79,9 @@
   (try
     (let ready_by (+ ($os/monotonic_ms) 90000))
     (while ($absent? client)
-      (if_yes server/.done?
-        (let result (await server))
-        (audio_error $"Benchmark host exited: ${result/stderr}${result/stdout}"))
+      (if server/.done?
+        (do (let result (await server))
+        (audio_error $"Benchmark host exited: ${result/stderr}${result/stdout}")))
       (if (> ($os/monotonic_ms) ready_by) (audio_error "Benchmark host did not become ready."))
       (set client (try (connect root) catch Error nil))
       (if ($absent? client) ($sleep 20)))
@@ -103,21 +103,20 @@
       (if browser/.done? (audio_error "Chrome exited before the audio fixture completed."))
       (if (> ($os/monotonic_ms) due) (audio_error "Browser audio benchmark timed out."))
       (if (== session "")
-        (then
-          (let sessions (/sessions (api client "GET" "/sessions")))
-          (if (> sessions/.size 0) (set session sessions/0/id)))
-        (else
+        (let sessions (/sessions (api client "GET" "/sessions")))
+          (if (> sessions/.size 0) (set session sessions/0/id))
+        else
           (set timings (/timings (api client "GET" $"/sessions/${session}/voice/latency")))
           (for timing in timings
             (if (== timing/kind "error") (audio_error $"Browser fixture failed at ${timing/identity}.")))
           (let rounds ($size ($filter timings (fn [timing] (== timing/kind "round")))))
-          (if_yes (> rounds completed)
-            (set completed rounds) ($println $"Audio benchmark: ${completed}/${(* pairs 2)} rounds."))
-          (if (>= timings/.size (* pairs 7)) (break))))
+          (if (> rounds completed)
+            (do (set completed rounds) ($println $"Audio benchmark: ${completed}/${(* pairs 2)} rounds.")))
+          (if (>= timings/.size (* pairs 7)) (break)))
       ($sleep 200))
     (let result (summarize timings pairs))
     (result .put "recognizer" recognizer)
-    (result .put "capture_mode" (if (== mode "handsfree") "handsfree" "push_to_talk"))
+    (result .put "capture_mode" (if (== mode "handsfree") "handsfree" else "push_to_talk"))
     (result .put "raw_input" (== mode "smoke"))
     (result .put "fake_input" true) (result .put "muted_output" true)
     ($fs/write_text $"${root}/audio-bench-results.json" ($json/stringify result))

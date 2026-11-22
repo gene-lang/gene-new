@@ -5,12 +5,12 @@
 (fn validate_seam_row [candidate]
   (if (|| ($absent? candidate/name) ($absent? candidate/value))
     (fail (HarnessError ^_msg "a seam row requires ^name and ^value"))
-    candidate))
+    else candidate))
 
 (fn validate_command_row [candidate]
   (if (|| ($absent? candidate/name) ($absent? candidate/doc) ($absent? candidate/run))
     (fail (HarnessError ^_msg "a command row requires name doc run"))
-    candidate))
+    else candidate))
 
 (fn validate_function_row [candidate]
   (if (|| ($absent? candidate/name) (== candidate/name "") ($absent? candidate/doc) (! ($runtime/callable? candidate/fn)))
@@ -38,8 +38,7 @@
   (if (&& ($present? candidate/choices) (|| (!= ($head candidate/choices) Str) (== candidate/choices "")))
     (fail (HarnessError ^_msg "a setting's choices names a setting_choices source")))
   (if ($present? candidate/scopes)
-    (then
-      (if (|| (!= ($head candidate/scopes) List) candidate/scopes/.empty?)
+    (do (if (|| (!= ($head candidate/scopes) List) candidate/scopes/.empty?)
         (fail (HarnessError ^_msg "a setting's scopes is a nonempty list")))
       (for scope in candidate/scopes
         (if_not (["workspace" "shared"] .contains? scope)
@@ -104,7 +103,7 @@
           (&& ($present? candidate/auto) (!= ($head candidate/auto) Int)))
     (fail (HarnessError ^_msg "A speech engine needs a name and optional integer auto rank.")))
   (for field in ["available" "open" "close"
-    (if (== kind "recognizer") (if (== candidate/mode "stream") "stream" "transcribe") "synthesize")]
+    (if (== kind "recognizer") (if (== candidate/mode "stream") "stream" else "transcribe") else "synthesize")]
     (if_not ($runtime/callable? (candidate .get field))
       (fail (HarnessError ^_msg $"A speech ${kind} needs callable ${field}."))))
   (if (&& (== kind "recognizer") (! (["segments" "stream"] .contains? candidate/mode)))
@@ -240,22 +239,21 @@
 (fn validate_event_type_row [candidate]
   (if (|| ($absent? candidate/name) ($absent? candidate/version) ($absent? candidate/ignorable))
     (fail (HarnessError ^_msg "an event type row requires name version ignorable")))
-  (if_yes (&& ($present? candidate/schema) (! ($runtime/callable? candidate/schema)))
+  (if (&& ($present? candidate/schema) (! ($runtime/callable? candidate/schema)))
     (fail (HarnessError ^_msg "event type schema must be callable")))
   candidate)
 
 (fn validate_event_type_owner [owner : Str, candidate]
   (if (== owner "core")
-    (then
-      (if_not (&& (== candidate/origin "core") (== candidate/owner "core"))
-        (fail (HarnessError ^_msg "core event rows must be stamped core/core"))))
-    (else
+    (if_not (&& (== candidate/origin "core") (== candidate/owner "core"))
+        (fail (HarnessError ^_msg "core event rows must be stamped core/core")))
+    else
       (if_not (== candidate/origin "plugin")
         (fail (HarnessError ^_msg "plugins cannot declare core event origin")))
       (var declared_owner ($to_str candidate/owner))
       (if_not (|| (== declared_owner owner) (== owner $"descriptor:${declared_owner}"))
         (fail
-          (HarnessError ^_msg $"event owner ${declared_owner} does not match contributor ${owner}")))))
+          (HarnessError ^_msg $"event owner ${declared_owner} does not match contributor ${owner}"))))
   candidate)
 
 (fn cancel_subscription_row [context, candidate]

@@ -117,13 +117,13 @@ measure("map_take_collect", "(source => step -> $take 10)", 65,
         expectedItems = 10, expectedPulls = 10, collect = true)
 measure("early_take", "(source -> $take 10 => step)", 65,
         expectedItems = 10, expectedPulls = 10)
-measure("filter_map_void_heavy", "(source -> $filter_map (fn [x] (if (< x 901) void x)))", 95050,
+measure("filter_map_void_heavy", "(source -> $filter_map (fn [x] (if (< x 901) void else x)))", 95050,
         expectedItems = 100)
 measure("stateful_factory", "(source => (numberer))", 1001000)
 measure("custom_generator", "(source => step -> running_total => step)", 167668500)
 measure("dynamic_callable", "(source => selected)", 501500)
 measure("heterogeneous_sends", """
-  (source => (fn [x] (if (< x 501) (A ^n x) (B ^n x))) => _ .value)
+  (source => (fn [x] (if (< x 501) (A ^n x) else (B ^n x))) => _ .value)
 """, 500500)
 measure("repeated_lookahead", "(source => step)", 501500, lookahead = true)
 

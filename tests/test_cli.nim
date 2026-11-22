@@ -189,20 +189,20 @@ suite "cli — gene run":
 
   test "main receives command-line arguments":
     let argMain = writeCliProgram("arg_main.gene",
-      "(fn main [args] (if (== args/0 \"ok\") 0 4))")
+      "(fn main [args] (if (== args/0 \"ok\") 0 else 4))")
     let ran = runGene(["run", argMain, "ok"])
     check ran.exitCode == 0
 
   test "main receives raw command-line argument tail":
     let rawMain = writeCliProgram("raw_arg_main.gene",
-      "(fn main [args] (if (== args/raw \"a b, c\") 0 4))")
+      "(fn main [args] (if (== args/raw \"a b, c\") 0 else 4))")
     let ran = runGene(["run", rawMain, "a", "b,", "c"])
     check ran.exitCode == 0
 
   test "run reports tail-call fallback reasons once per source site":
     let program = writeCliProgram("tail_fallback.gene",
       "(fn typed_bounce [f n] : Str " &
-      "  (if (== n 0) \"done\" (f f (- n 1)))) " &
+      "  (if (== n 0) \"done\" else (f f (- n 1)))) " &
       "(fn main [] (typed_bounce typed_bounce 5) nil)")
     let quiet = runGene(["run", program])
     check quiet.exitCode == 0
@@ -967,15 +967,15 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
         (do
           (cancelled .set true)
           (task .cancel))
-        nil))))
+        else nil))))
 (try (done .recv) catch ChannelClosed nil)
 (running .set false)
 (watcher .cancel)
-(if armed (end_interrupt) nil)
+(if armed (end_interrupt) else nil)
 (close screen)
 (if (cancelled .get)
   ($println "turn cancelled; enter steering to continue")
-  nil)
+  else nil)
 ($println "AGENT-ESCAPE-DONE")
 """)
       let outputFile = cliDir / "agent_escape_cancel.out"
@@ -1401,7 +1401,7 @@ suite "cli — gene parse/fmt/compile":
       "\n" &
       "(var x (path a b))\n" &
       "(fn f [t] (if (== (path t done) 0) (quasiquote (li (unquote t))) " &
-      "\"a really really really really really long string to force a wrap\"))\n")
+      "else \"a really really really really really long string to force a wrap\"))\n")
     let ran = runGene(["fmt", path])
     check ran.exitCode == 0
     let outText = ran.output
@@ -1496,35 +1496,31 @@ suite "cli — gene parse/fmt/compile":
       "(fn layout [cond]\n" &
       "    (var value\n" &
       "        (build_value cond))\n" &
-      "    (if_yes cond\n" &
+      "    (if cond\n" &
       "        (record value)\n" &
       "        (publish value))\n" &
       "    (if cond\n" &
-      "      (then\n" &
       "      (record value)\n" &
-      "      (publish value))\n" &
-      "      (else\n" &
-      "      (discard value)))\n" &
+      "      (publish value)\n" &
+      "      else\n" &
+      "      (discard value))\n" &
       "    (if cond (accept value)\n" &
-      "      (reject value))\n" &
+      "      else (reject value))\n" &
       "    #(item ^value value))\n")
     let layout = runGene(["fmt", path])
     check layout.exitCode == 0
     check layout.output ==
       "(fn layout [cond]\n" &
       "  (var value (build_value cond))\n" &
-      "  (if_yes cond\n" &
+      "  (if cond\n" &
       "    (record value)\n" &
       "    (publish value))\n" &
       "  (if cond\n" &
-      "    (then\n" &
-      "      (record value)\n" &
-      "      (publish value))\n" &
-      "    (else\n" &
-      "      (discard value)))\n" &
-      "  (if cond\n" &
-      "    (accept value)\n" &
-      "    (reject value))\n" &
+      "    (record value)\n" &
+      "    (publish value)\n" &
+      "  else\n" &
+      "    (discard value))\n" &
+      "  (if cond (accept value) else (reject value))\n" &
       "  #(item ^value value))\n"
 
   test "compile prints bytecode without executing forms":
@@ -1673,7 +1669,7 @@ suite "cli — gene parse/fmt/compile":
     let path = writeCliProgram("web_slice.gene",
       "(mod web_slice ^profile web)\n" &
       "(fn choose [flag : Bool a : Str b : Str] : Str\n" &
-      "  (if flag a b))\n")
+      "  (if flag a else b))\n")
     let outDir = cliDir / "web_slice_out"
     createDir(outDir)
     let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
@@ -1898,7 +1894,7 @@ suite "cli — gene parse/fmt/compile":
 (import $serde [write read write_data SerdePolicy SerdeError])
 (import $str [contains? join])
 (import [Point Line Shape Result Drawable area Counter Conn Handle Opaque REGISTRY] ^from "./serde_geometry")
-(fn check [label ok] ($println (join [label (if ok "ok" "FAIL")] " ")))
+(fn check [label ok] ($println (join [label (if ok "ok" else "FAIL")] " ")))
 # stage 3: references
 (check "type" (== Point (read (write Point))))
 (check "enum" (== Shape (read (write Shape))))

@@ -47,7 +47,7 @@
   (impl Ord
     (message compare [other : Self] : Int (- self/weight other/weight))
     (message bigger [other : Self] : Self
-      (if (< (self .Comparable:compare other) 0) other self))))
+      (if (< (self .Comparable:compare other) 0) other else self))))
 
 # -----------------------------------------------------------------------------
 # 2. Unrelated same-named messages keep distinct qualified identities.

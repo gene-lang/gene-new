@@ -121,18 +121,19 @@ accept eager collections and streams. Map normalizes void to nil; filter_map
 drops only void. `to_stream` creates a cursor and `into` consumes it.
 
 **One-sided conditions omit the else arm.** `(if cond value)` already yields
-`nil` on the false path. Use `(if_not cond body…)` and `(if_yes cond body…)`
-for guards — their tails are implicit sequences, so a `do` wrapper is
-redundant. Reserve `then`/`elif`/`else` for branches that all do real work.
+`nil` on the false path. An arm holds one or more expressions, so
+`(if cond a b)` runs both on the truthy path with no `do` wrapper. `if_not`
+remains the guard for a falsy condition; `if_yes` is gone. `elif` and `else`
+are bare markers, never parenthesized clauses.
 
 **Prefer direct presence tests.** Write `($present? x)`, not
 `(! ($absent? x))`. Both `nil` and `void` are absent; `false`, zero, empty
 strings and empty collections are present.
 
-**Keep dispatch at one level.** Prefer `elif` to an else branch containing
-another `if`. Use parenthesized `(then ...)`, `(elif ...)` and `(else ...)`
-clauses, even for single expressions. When each branch compares the same value
-with a literal, use `match` with `when` arms and an explicit `else`; it evaluates
+**Keep dispatch at one level.** Prefer `elif` to an else arm containing
+another `if`. Write the `elif` and `else` markers bare, even for
+single-expression arms. When each branch compares the same value with a
+literal, use `match` with flat `when` arms and an explicit `else`; it evaluates
 the value once.
 
 **Only `nil`, `false`, and `void` are falsy.** `""`, `0`, and `[]` are truthy,

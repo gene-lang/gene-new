@@ -37,15 +37,13 @@
              (if (== mode/.get "send_error")
                (fail (Error ^_msg "provider failed")))
              (if (== mode/.get "large_error")
-               (then
-                 (let pieces [])
+               (do (let pieces [])
                  (repeat 400 (pieces .push "x"))
                  (fail (ProviderError ^_msg ($str/join pieces "")))))
              (if (== mode/.get "timeout")
                (return {^^timeout}))
              (if (== mode/.get "cancel")
-               (then
-                 (entered .set true)
+               (do (entered .set true)
                  ($sleep 5000)))
              {^text "(Outcome ^^done ^reply \"ok\")"})}
         )
@@ -217,7 +215,7 @@
             ^activate (fn [host]
               (host .PluginHost:contribute "providers"
                 {^name "first" ^doc "Initially selected provider." ^auto 0
-                 ^connection (fn [] {^state (if unavailable/.get (then "unavailable") (else "ready"))})
+                 ^connection (fn [] {^state (if unavailable/.get "unavailable" else "ready")})
                  ^configure (fn [model, effort, timeout]
                    {^model "first" ^effort "none" ^timeout_ms timeout})
                  ^prepare (fn [call]
@@ -227,7 +225,7 @@
                    (if summary (unavailable .set true))
                    (if summary
                      {^text "Earlier work summarized."}
-                     {^text "(Outcome ^^done ^reply \"done\")"}))})
+                     else {^text "(Outcome ^^done ^reply \"done\")"}))})
               (host .PluginHost:contribute "providers"
                 {^name "second" ^doc "Fallback provider." ^auto 1
                  ^configure (fn [model, effort, timeout]
@@ -239,7 +237,7 @@
         (let runtime (open_runtime workspace "default"
           (Profile ^name "test" ^plugins [provider (history_basic)])))
         (provide runtime/h "core" "models/catalog" {^snapshot (fn []
-          {^providers {^first {^connection {^state (if unavailable/.get (then "unavailable") (else "ready"))}}
+          {^providers {^first {^connection {^state (if unavailable/.get "unavailable" else "ready")}}
                        ^second {^connection {^state "ready"}}}})})
         (let controller (test_controller runtime nil))
         (try
@@ -498,7 +496,7 @@
              (fail (HttpClientError ^_msg "certificate rejected")))
            (if (|| (== mode/.get "timeout") (== calls/.get 1))
              {^^timeout}
-             {^text "complete response"}))})
+             else {^text "complete response"}))})
       (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
         ^provider "retry")})
       (let request {^config {^provider_timeout_ms 1500}
@@ -539,7 +537,7 @@
              ^prepare (fn [call] call/messages)
              ^send (fn [prepared]
                (let number (attempts .swap (+ attempts/.get 1)))
-               (if (== number 0) {^^timeout} {^text "recovered"}))})
+               (if (== number 0) {^^timeout} else {^text "recovered"}))})
           (let runtime {^h h ^profile (Profile ^name "test" ^plugins []
             ^provider "retry")})
           (let completion (call_model runtime

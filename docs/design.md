@@ -86,7 +86,7 @@ number raises. Whether a key is stored is a separate question that
 
 ```gene runnable
 (fn age_label [age : Int? = nil] : Str
-  (if ($absent? age) "unknown" $"${age}"))
+  (if ($absent? age) "unknown" else $"${age}"))
 
 (type Person ^props {^age Int?})
 (let person (Person))

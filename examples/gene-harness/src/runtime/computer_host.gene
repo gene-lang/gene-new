@@ -35,10 +35,10 @@
 
 (fn driver [state]
   (if state/closed/.get (fail (ServiceError ^code "unavailable" ^_msg "Computer host is closed.")))
-  (if_yes ($absent? state/client/.get)
-    (let options (?? (note_active_setting state/runtime "computer" (effective_setting state/runtime "computer")) {}))
+  (if ($absent? state/client/.get)
+    (do (let options (?? (note_active_setting state/runtime "computer" (effective_setting state/runtime "computer")) {}))
     (state/client .set (open_driver $"${state/runtime/state_root}/computer"
-      ^command (?? options/command "cua-driver") ^socket (?? options/socket ""))))
+      ^command (?? options/command "cua-driver") ^socket (?? options/socket "")))))
   state/client/.get)
 
 (fn start_computer [handle]
@@ -109,13 +109,12 @@
   (let content [])
   (for block in (?? raw/content [])
     (if (== block/type "image")
-      (then
-        (let extension (if (== block/mimeType "image/jpeg") "jpg" "png"))
+      (let extension (if (== block/mimeType "image/jpeg") "jpg" else "png"))
         (let item (put_media ^source "screenshot" (open_media_store state/runtime/state_root)
           $"screenshot.${extension}" ($base64/decode block/data)))
         (attach_media state/runtime item/id)
-        (content .push {^type "image" ^media item}))
-      (else (content .push block))))
+        (content .push {^type "image" ^media item})
+      else (content .push block)))
   (let output {^target target ^observation result/observation
     ^state raw/structuredContent ^content content ^isError (== raw/isError true)})
   (append_prompt "computer" output)

@@ -5,14 +5,14 @@
 (import $net/http_client [request])
 
 (fn wire [connection, method : Str, path : Str, data = nil, ^credentials credentials = nil, ^deadline deadline : Int = 0]
-  (let timeout (if (== deadline 0) 30000 (- deadline ($os/monotonic_ms))))
+  (let timeout (if (== deadline 0) 30000 else (- deadline ($os/monotonic_ms))))
   (if (<= timeout 0) (problem ^code "control_timeout" "Workspace control timed out."))
   (let headers {^origin connection/origin ^content-type "application/json"})
   (if_not ($absent? credentials)
     (headers .put "cookie" credentials/cookie)
     (headers .put "x-csrf-token" credentials/csrf))
   (let pending
-    (request ^method method ^url $"${connection/origin}${(api_root)}${path}" ^headers headers ^body (if ($absent? data) "" ($json/stringify data)) ^timeout_ms timeout ^max_bytes 16777216))
+    (request ^method method ^url $"${connection/origin}${(api_root)}${path}" ^headers headers ^body (if ($absent? data) "" else ($json/stringify data)) ^timeout_ms timeout ^max_bytes 16777216))
   (let response (try (await pending) ensure pending/.cancel))
   (let body
     (try
@@ -44,12 +44,12 @@
   (let connection (discover ^deadline deadline root))
   (let cache $"${root}/.gene-harness/cli_cookie")
   (var credentials (try ($serde/read_data ($fs/read_text cache)) catch Error nil))
-  (if_yes (&& (== ($head credentials) Map) (== credentials/origin connection/origin) (== ($head credentials/cookie) Str) (== ($head credentials/csrf) Str))
-    (let cached_response (wire ^deadline deadline ^credentials credentials connection "GET" "/status?ui=default"))
-    (if_yes (== cached_response/status 200)
-      (if (!= cached_response/body/epoch connection/epoch)
+  (if (&& (== ($head credentials) Map) (== credentials/origin connection/origin) (== ($head credentials/cookie) Str) (== ($head credentials/csrf) Str))
+    (do (let cached_response (wire ^deadline deadline ^credentials credentials connection "GET" "/status?ui=default"))
+    (if (== cached_response/status 200)
+      (do (if (!= cached_response/body/epoch connection/epoch)
         (problem ^code "connection_mismatch" "The host restarted during connection. Retry discovery."))
-      (return {^connection connection ^credentials credentials})))
+      (return {^connection connection ^credentials credentials})))))
   (let token ($fs/read_text $"${root}/.gene-harness/web_secret"))
   (let response (wire ^deadline deadline connection "POST" "/auth/exchange" {^token token}))
   (let body (checked response))
@@ -85,20 +85,20 @@
   $"/sessions/${($url/encode_component session)}${suffix}")
 
 (fn execution_receipt [client, session : Str, id : Str, kind : Str, ^deadline deadline : Int = 0]
-  (let section (if (== kind "command") "commands" "rounds"))
+  (let section (if (== kind "command") "commands" else "rounds"))
   (api ^deadline deadline client "GET" (session_path session $"/${section}/${($url/encode_component id)}")))
 
 (fn resolve_wait_receipt [fetch, current : Str, parent : Str]
   (let result (try (fetch current)
     catch CliError
       (if (&& (!= current parent) (== $err/code "not_found")) (fetch parent)
-        (fail $err))))
-  (if_yes (&& (!= current parent) (!= result/id parent)
+        else (fail $err))))
+  (if (&& (!= current parent) (!= result/id parent)
               (!= result/continued_from parent))
-    (let source (fetch parent))
+    (do (let source (fetch parent))
     (source .put "state" "interrupted")
     (source .put "message" "Continuation was superseded.")
-    (return source))
+    (return source)))
   result)
 
 (fn wait_expired [session : Str, id : Str, kind : Str]
@@ -109,7 +109,7 @@
                        session : Str, requested : Str]
   (if (>= ($os/monotonic_ms) due) (wait_expired session requested kind))
   (try
-    (if (== kind "command") (fetch current) (resolve_wait_receipt fetch current parent))
+    (if (== kind "command") (fetch current) else (resolve_wait_receipt fetch current parent))
   catch CliError
     (let failure $err)
     # The same local deadline bounds HTTP polling. Exhausting it is a wait
@@ -127,22 +127,22 @@
   (let fetch (fn [selected] (execution_receipt ^deadline due client session selected kind)))
   (loop
     (let result (poll_wait_receipt fetch current parent kind due session original))
-    (let state (if (== kind "command") result/status result/state))
-    (if_yes (&& (!= kind "command") (== state "paused") (== result/continuation_mode "automatic"))
-      (if_not ($absent? result/continuation_stop)
+    (let state (if (== kind "command") result/status else result/state))
+    (if (&& (!= kind "command") (== state "paused") (== result/continuation_mode "automatic"))
+      (do (if_not ($absent? result/continuation_stop)
         (result .put "state" "interrupted")
         (result .put "message" (if (== result/continuation_stop "failed")
           ($to_str "Continuation failed. " (?? result/continuation_error "")
             " Send a new message in this conversation to resume the remaining work.")
-          $"Continuation ${result/continuation_stop}."))
+          else $"Continuation ${result/continuation_stop}."))
         (result .put "original_round" original)
         (return result))
       (set parent result/id)
-      (set current (?? result/continued_by result/id)))
+      (set current (?? result/continued_by result/id))))
     (let automatic_wait (&& (!= kind "command") (== result/continuation_mode "automatic")
       (|| (== state "paused") (&& (== state "waiting") ($absent? result/questions)))))
-    (if_yes (&& (!= state "running") (! automatic_wait))
-      (result .put "original_round" original) (return result))
+    (if (&& (!= state "running") (! automatic_wait))
+      (do (result .put "original_round" original) (return result)))
     (if (>= ($os/monotonic_ms) due)
       (wait_expired session original kind))
     ($sleep 100)))

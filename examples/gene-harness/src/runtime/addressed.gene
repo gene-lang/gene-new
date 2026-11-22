@@ -30,4 +30,4 @@
   (let people (?? (/probabilities (/audience result/answers)) {}))
   (if (>= (?? (people .get "people") 0.0) people_band)
     {^start false ^verdict "people" ^status "ok"}
-    {^start true ^verdict "assistant" ^status "ok"}))
+    else {^start true ^verdict "assistant" ^status "ok"}))

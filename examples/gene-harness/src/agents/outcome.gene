@@ -27,7 +27,7 @@
 (fn require_turn [turn]
   (if (|| ($absent? turn) (!= turn/state/.get "open"))
     (fail
-      (TurnClosed ^turn (if ($absent? turn) nil turn/turn) ^_msg (if ($absent? turn) "operation requires an open turn" $"turn ${turn/turn} is closed"))))
+      (TurnClosed ^turn (if ($absent? turn) nil else turn/turn) ^_msg (if ($absent? turn) "operation requires an open turn" else $"turn ${turn/turn} is closed"))))
   turn)
 
 (fn next_label [turn, label : Str]
@@ -36,7 +36,7 @@
   (labels .put label count)
   (if (== count 1)
     label
-    $"${label}#${count}"))
+    else $"${label}#${count}"))
 
 (fn add_item [turn, label : Str, value, ^line line = nil, ^form form = nil, ^function function = nil]
   (require_turn turn)
@@ -60,7 +60,7 @@
 
 (fn append_plugin_prompt [label : Str, value]
   (let context ($runtime/context))
-  (let turn (if ($absent? context) nil (?? context/turn nil)))
+  (let turn (if ($absent? context) nil else (?? context/turn nil)))
   (require_turn turn)
   (if ($absent? (#"^[a-z0-9_]+$" .match label))
     (fail (OutcomeError ^_msg "append_prompt label must match [a-z0-9_]+")))
@@ -78,38 +78,37 @@
 (fn value_text [value] : Str
   (if (== ($head value) Str)
     value
-    ($to_str value)))
+    else ($to_str value)))
 
 (fn nonempty_prompt? [value] : Bool
   (if ($absent? value) (return false))
   (if (== ($head value) Str)
     (!= value "")
-    true))
+    else true))
 
 (fn discard_done_items [turn]
-  (if_yes (> ($size turn/items/.get) 0)
-    (if_not ($absent? turn/console) (turn/console "done Outcome dropped appended prompt items\n"))
-    (turn/items .set []))
+  (if (> ($size turn/items/.get) 0)
+    (do (if_not ($absent? turn/console) (turn/console "done Outcome dropped appended prompt items\n"))
+    (turn/items .set [])))
   nil)
 
 (fn validate_outcome [turn, value, ^validators validators = {}, ^renderers renderers = {},
                       ^coordinated coordinated : Bool = false]
   (let checked (== ($head value) CheckedOutcome))
-  (let raw (if checked value/value value))
-  (let candidate (if (== ($head raw) Outcome) raw (Outcome ^prompt raw)))
+  (let raw (if checked value/value else value))
+  (let candidate (if (== ($head raw) Outcome) raw else (Outcome ^prompt raw)))
   (if_not ($absent? candidate/extensions)
     (if (!= ($head candidate/extensions) Map)
       (fail (OutcomeError ^_msg "Outcome extensions must be a map of registered keys.")))
     (if (&& (! checked) (> ($map_size candidate/extensions) 0))
       (fail (OutcomeError ^_msg "Outcome extension data requires leased schema validation."))))
   (let outcome candidate)
-  (if_yes (&& checked ($present? value/suspension))
-    (if (|| outcome/done ($present? outcome/questions))
+  (if (&& checked ($present? value/suspension))
+    (do (if (|| outcome/done ($present? outcome/questions))
       (fail (OutcomeError ^_msg "A suspended Outcome cannot finish or ask questions.")))
-    (return {^kind "suspend" ^suspension value/suspension ^outcome outcome ^questions nil}))
+    (return {^kind "suspend" ^suspension value/suspension ^outcome outcome ^questions nil})))
   (if (== outcome/done true)
-    (then
-      (if (|| ($absent? outcome/reply) (== ($str/trim outcome/reply) ""))
+    (do (if (|| ($absent? outcome/reply) (== ($str/trim outcome/reply) ""))
         (fail (OutcomeError ^_msg "done Outcome requires a non-empty reply")))
       (if (|| ($present? outcome/prompt) ($present? outcome/questions))
         (fail (OutcomeError ^_msg "done Outcome rejects prompt and questions")))
@@ -137,24 +136,24 @@
   (if (== ($head form) List) (return ($map form plain_form)))
   (if (== ($head form) Map) (return ($map_map form plain_form)))
   (match form
-    (when (node : Node)
+    when (node : Node)
       (let body ($map ($node/body form) plain_form))
       (let props ($map_map ($node/props form) plain_form))
       # These symbols are only printed as headers, never evaluated. Restore
       # static reader paths so the next request uses the model's source style.
-      (if_yes (&& (== ($head form) (quote path)) (> body/.size 0) (== ($map_size props) 0))
-        (var static true)
+      (if (&& (== ($head form) (quote path)) (> body/.size 0) (== ($map_size props) 0))
+        (do (var static true)
         (let parts [])
         (for segment in body
           (if_not ([Sym Int] .contains? ($head segment)) (set static false))
           (parts .push ($to_str segment)))
-        (if_yes static
-          (if (&& (== parts/0 "gene") (> parts/.size 1))
+        (if static
+          (do (if (&& (== parts/0 "gene") (> parts/.size 1))
             (return ($to_sym ($to_str "$" ($str/join ($drop parts 1) "/")))))
-          (return ($to_sym ($str/join parts "/")))))
-      ($node/rebuild ^head (plain_form ($head form)) ^body body ^props props ^meta {} form))
-    (else
-      form)))
+          (return ($to_sym ($str/join parts "/")))))))
+      ($node/rebuild ^head (plain_form ($head form)) ^body body ^props props ^meta {} form)
+    else
+      form))
 
 (fn rewrite_prompt_calls [forms]
   ($map forms rewrite_prompt_form))
@@ -163,14 +162,13 @@
   (if (== ($head form) List) (return ($map form rewrite_prompt_form)))
   (if (== ($head form) Map) (return ($map_map form rewrite_prompt_form)))
   (match form
-    (when (node : Node)
+    when (node : Node)
       (let head ($head form))
       (if ([`quote `quasiquote] .contains? head) (return form))
       (let body ($node/body form))
       (if (== head (quote card)) (return (rewrite_card_form form)))
       (if (== head (quote append_prompt))
-        (then
-          (let meta ($node/meta form))
+        (do (let meta ($node/meta form))
           (let line (?? meta/line 1))
           (if (|| (!= body/.size 2) (!= ($head body/0) Str))
             (fail
@@ -184,14 +182,14 @@
           (return
             ($node/rebuild ^head (quote append_prompt_at) ^body [body/0 line quoted value] form))))
       ($node/rebuild ^body ($map body rewrite_prompt_form) ^props ($map_map ($node/props form) rewrite_prompt_form)
-        form))
-    (else
-      form)))
+        form)
+    else
+      form))
 
 (fn fn_form? [form] : Bool
   (match form
-    (when (node : Node) (== ($head node) (quote fn)))
-    (else false)))
+    when (node : Node) (== ($head node) (quote fn))
+    else false))
 
 # A card keeps its ^view and ^update functions as source (docs/cards.md), so
 # they are quoted here and never evaluated in the turn that made the card.
@@ -202,13 +200,12 @@
   (map_for [key value] in ($node/props form)
     (let name ($to_str key))
     (if (["view" "update"] .contains? name)
-      (then
-        (if_not (fn_form? value)
+      (if_not (fn_form? value)
           (fail
             (OutcomeError ^response_line line ^_msg $"card ^${name} must be a literal (fn ...) form")))
-        (props .put key `(quote %value)))
-      (else
-        (props .put key (rewrite_prompt_form value)))))
+        (props .put key `(quote %value))
+      else
+        (props .put key (rewrite_prompt_form value))))
   (let body [line])
   (for item in ($node/body form) (body .push (rewrite_prompt_form item)))
   ($node/rebuild ^head (quote card_at) ^body body ^props props form))
@@ -238,12 +235,12 @@
     (let outcome validated/outcome)
     (if_not ($absent? outcome/prompt)
       (let result_id (implicit_id turn "result"))
-      (let line (if ($absent? result_line) "" $" line ${result_line}: Outcome ^prompt"))
+      (let line (if ($absent? result_line) "" else $" line ${result_line}: Outcome ^prompt"))
       (rendered .push
         {^id result_id ^header $"[${result_id}]${line}" ^value (value_text outcome/prompt)})))
   (if_not ($absent? error)
     (let error_id (implicit_id turn "error"))
-    (let line (if ($absent? error_line) "" $" line ${error_line}:"))
+    (let line (if ($absent? error_line) "" else $" line ${error_line}:"))
     (rendered .push {^id error_id ^header $"[${error_id}]${line}" ^value error}))
   (if_not ($absent? answers)
     (let answers_id (implicit_id turn "answers"))
@@ -252,7 +249,7 @@
 
 (fn implicit_id [turn, label : Str] : Str
   (let count (?? (turn/labels .get; .get label) 0))
-  (let suffix (if (== count 0) label $"${label}#${(+ count 1)}"))
+  (let suffix (if (== count 0) label else $"${label}#${(+ count 1)}"))
   $"${turn/turn}.${suffix}")
 
 (fn render_request [turn, validated, ^patch patch = nil, ^error error = nil, ^error_line error_line = nil, ^answers answers = nil, ^result_line result_line = nil]
@@ -261,7 +258,7 @@
     (rendered .push
       (if (== item/inline true)
         $"${item/header} ${item/value}"
-        ($to_str
+        else ($to_str
           item/header
           """
 """

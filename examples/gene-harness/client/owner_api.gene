@@ -16,5 +16,5 @@
   (var token (query_value ($browser/hash) "token"))
   ($browser/replace_url path)
   (if (== token "")
-    (then (done 200 {}))
-    (else (owner_request "" "POST" $"${(api_root)}/auth/exchange" {^token token} done))))
+    (done 200 {})
+    else (owner_request "" "POST" $"${(api_root)}/auth/exchange" {^token token} done)))

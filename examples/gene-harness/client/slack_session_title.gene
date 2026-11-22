@@ -8,10 +8,10 @@
   (SlackSessionTitle ^text "" ^target target))
 
 (fn paint_title [state : SlackSessionTitle, url : Str] : Nil
-  (if_yes (&& ($present? state/rendered_text)
+  (if (&& ($present? state/rendered_text)
     (== (string_value state/rendered_text) state/text) (== (string_value state/rendered_url) url)) (return))
   (set state/rendered_text state/text) (set state/rendered_url url)
-  (if_yes (== url "") ($dom/set_text state/target state/text) (return))
+  (if (== url "") (do ($dom/set_text state/target state/text) (return)))
   ($dom/clear state/target)
   ($dom/append state/target ($dom/render
     `(a ^href %url ^target "_blank" ^rel "noopener noreferrer"
@@ -21,5 +21,5 @@
   (set state/text text)
   (var transport (string_value shared/transport))
   (var url (if (&& (== transport "slack") (!= session ""))
-    $"${(api_root)}/sessions/${($url/encode_component session)}/slack-thread" ""))
+    $"${(api_root)}/sessions/${($url/encode_component session)}/slack-thread" else ""))
   (paint_title state url))

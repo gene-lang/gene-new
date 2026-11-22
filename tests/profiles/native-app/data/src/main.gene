@@ -20,9 +20,8 @@
       (let group row/group)
       (let previous (?? totals/%group nil))
       (if ($absent? previous)
-        (then
-          (if (>= ($size totals) 100)
-            (then (fail (DataLimitError ^_msg "group limit exceeded"))))))
+        (if (>= ($size totals) 100)
+            (fail (DataLimitError ^_msg "group limit exceeded"))))
       (set totals/%group (+ (?? previous 0) (parse_int row/value)))
       (set row (await rows/.next)))
     (set result (sort_by ($into ($to_pairs_stream totals) [])

@@ -16,10 +16,10 @@
     (var selected (== candidate name))
     (var tab ($dom/element $"tab_${candidate}"))
     (var panel ($dom/element $"view_${candidate}"))
-    (set tab/aria_selected (if selected "true" "false"))
-    (set tab/tab_index (if selected "0" "-1"))
+    (set tab/aria_selected (if selected "true" else "false"))
+    (set tab/tab_index (if selected "0" else "-1"))
     (set panel/hidden (! selected))
-    (if_yes (&& selected focus) ($dom/focus tab))))
+    (if (&& selected focus) ($dom/focus tab))))
 
 (fn view_of [tab : Any] : Str
   (var id : Str tab/id)
@@ -33,13 +33,13 @@
   (var index 0)
   (var i 0)
   (for candidate in names
-    (if_yes (== candidate name) (set index i))
+    (if (== candidate name) (set index i))
     (set i (+ i 1)))
   (var next index)
-  (if_yes (== key "ArrowRight") (set next (if (== index last) 0 (+ index 1))))
-  (if_yes (== key "ArrowLeft") (set next (if (== index 0) last (- index 1))))
-  (if_yes (== key "Home") (set next 0))
-  (if_yes (== key "End") (set next last))
+  (if (== key "ArrowRight") (set next (if (== index last) 0 else (+ index 1))))
+  (if (== key "ArrowLeft") (set next (if (== index 0) last else (- index 1))))
+  (if (== key "Home") (set next 0))
+  (if (== key "End") (set next last))
   names/%next)
 
 (fn on_tab_click [event : Any] : Nil
@@ -47,15 +47,15 @@
 
 (fn on_tab_key [event : Any] : Nil
   (var key ($event/key event))
-  (if_yes (|| (== key "ArrowRight") (== key "ArrowLeft") (== key "Home") (== key "End"))
-    ($dom/prevent_default event)
-    (select_view (next_view (view_of event/current_target) key) true)))
+  (if (|| (== key "ArrowRight") (== key "ArrowLeft") (== key "Home") (== key "End"))
+    (do ($dom/prevent_default event)
+    (select_view (next_view (view_of event/current_target) key) true))))
 
 (fn set_menu [open : Bool] : Nil
   (var toggle ($dom/element "nav_toggle"))
   ($dom/set_class ($dom/element "site_header") "nav_open" open)
-  (set toggle/aria_expanded (if open "true" "false"))
-  (set toggle/text_content (if open "Close" "Menu")))
+  (set toggle/aria_expanded (if open "true" else "false"))
+  (set toggle/text_content (if open "Close" else "Menu")))
 
 (fn menu_open? [] : Bool
   (var toggle ($dom/element "nav_toggle"))
@@ -69,9 +69,9 @@
   (set_menu false))
 
 (fn on_header_key [event : Any] : Nil
-  (if_yes (&& (== ($event/key event) "Escape") (menu_open?))
-    (set_menu false)
-    ($dom/focus ($dom/element "nav_toggle"))))
+  (if (&& (== ($event/key event) "Escape") (menu_open?))
+    (do (set_menu false)
+    ($dom/focus ($dom/element "nav_toggle")))))
 
 # Copy reads the text the server rendered, before any highlighting, so the
 # clipboard receives the source exactly.
@@ -83,7 +83,7 @@
          ^on_click %(fn [event : Any] : Nil
            (var button event/current_target)
            ($browser/copy text (fn [copied : Bool] : Nil
-             (set button/text_content (if copied "Copied" "Copy failed")))))
+             (set button/text_content (if copied "Copied" else "Copy failed")))))
          "Copy"))))
 
 (fn highlight [id : Str] : Nil
@@ -96,7 +96,7 @@
 (fn ids [text : Str] : (List Str)
   (var out : (List Str) [])
   (for id in (str/split text " ")
-    (if_yes (!= id "") (out .push id)))
+    (if (!= id "") (out .push id)))
   out)
 
 (fn main [root : EventTarget] : Nil
@@ -120,6 +120,6 @@
     (var code ($dom/element id))
     (var lang : Str code/dataset/lang)
     (add_copy_button id)
-    (if_yes (== lang "gene") (highlight id)))
+    (if (== lang "gene") (highlight id)))
   (var highlight_ids : Str root/dataset/highlight_ids)
   (for id in (ids highlight_ids) (highlight id)))

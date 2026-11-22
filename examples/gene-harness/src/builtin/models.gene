@@ -18,9 +18,9 @@
     (for model in (?? entry/models [])
       (if (!= model/hidden true)
         (options .push {^value model/id ^label (?? model/label model/id) ^provider provider ^model model/id
-          ^available ready ^reason (if ready nil (?? entry/connection/reason "Not connected."))}))))
+          ^available ready ^reason (if ready nil else (?? entry/connection/reason "Not connected."))}))))
   {^options options ^complete complete
-   ^reason (if complete nil "Some connections are still being checked or are not ready. A model id that is not listed can still be typed; it is saved unverified.")})
+   ^reason (if complete nil else "Some connections are still being checked or are not ready. A model id that is not listed can still be typed; it is saved unverified.")})
 
 (fn catalog_model [snapshot, provider : Str, id : Str]
   (let entry (?? snapshot/providers/%provider {}))
@@ -46,9 +46,9 @@
     (options .push
       {^value level ^available ($absent? resolved/error) ^reason (?? resolved/error nil)
        ^label (if ($present? resolved/error) $"${level} (not available for this model)"
-         (if (== level effective) level $"${level} → ${effective}"))}))
+         else (if (== level effective) level else $"${level} → ${effective}"))}))
   {^options options ^complete ($present? listed)
-   ^reason (if ($present? listed) nil "This model has no catalog metadata, so only the portable levels are listed.")})
+   ^reason (if ($present? listed) nil else "This model has no catalog metadata, so only the portable levels are listed.")})
 
 # Workspace effort is judged against the model the candidate values select, which
 # the host resolves with resets, drafts and provider defaults applied. A shared

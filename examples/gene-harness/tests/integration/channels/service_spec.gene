@@ -46,7 +46,7 @@
 
 (fn receive [f, id : Str, ts : Str, text : Str, ^thread thread = nil, ^author author : Str = "UOWNER"]
   (let incoming (receive_slack f/channels/owner "dobi" (event id ts text ^thread thread ^author author)))
-  (if (== incoming/status "pending") (receive_handoff f/channels incoming) incoming))
+  (if (== incoming/status "pending") (receive_handoff f/channels incoming) else incoming))
 
 (describe "Workspace channel service"
   (it "accepts attributed Slack controls without changing answer JSON or literal prompts" []
@@ -66,7 +66,7 @@
           (let calls ($cell 0))
           (set_test_provider f/harness/runtime (fn [request]
             (calls .set (+ calls/.get 1))
-            (if (== calls/.get 1) "(Outcome ^prompt \"Finish the task.\")" "(Outcome ^^done ^reply \"Done.\")")))
+            (if (== calls/.get 1) "(Outcome ^prompt \"Finish the task.\")" else "(Outcome ^^done ^reply \"Done.\")")))
           (let filename ($path/join workspace ".gene-harness/config.gene"))
           (let config ($serde/read_data ($fs/read_text filename)))
           (config .put "turn_limit" 1) ($fs/write_text filename ($serde/write_data config))
@@ -261,7 +261,7 @@
             (calls .set (+ calls/.get 1))
             (if (== calls/.get 1)
               "(Outcome ^questions [{^id \"color\" ^prompt \"Choose a color\" ^choices [\"blue\" \"red\"]}] ^reply \"Choose a color.\")"
-              "(Outcome ^^done ^reply \"Blue selected.\")")))
+              else "(Outcome ^^done ^reply \"Blue selected.\")")))
           (let root (receive f "Ev1" "1.000001" "<@UBOT> Build it."))
           (drain_session f/channels root/session)
           (wait_round f/harness root/session)
@@ -295,7 +295,7 @@
             (requests/.get .push request)
             (if (== requests/.get/.size 1)
               "(Outcome ^prompt \"OLD_PAUSED_PENDING_TASK\" ^reply \"Paused work.\")"
-              "(Outcome ^^done ^reply \"Queued work complete.\")")))
+              else "(Outcome ^^done ^reply \"Queued work complete.\")")))
           (let filename ($path/join workspace ".gene-harness" "config.gene"))
           (let config ($serde/read_data ($fs/read_text filename)))
           (config .put "turn_limit" 1) ($fs/write_text filename ($serde/write_data config))
@@ -371,7 +371,7 @@
             (calls .set (+ calls/.get 1))
             (if (== calls/.get 1)
               "(Outcome ^questions [{^id \"color\" ^prompt \"Choose a color\"}] ^reply \"Choose a color.\")"
-              "(Outcome ^^done ^reply \"Answer received.\")")))
+              else "(Outcome ^^done ^reply \"Answer received.\")")))
           (let root (receive f "Ev1" "1.000001" "<@UBOT> Ask a question."))
           (drain_session f/channels root/session) (wait_round f/harness root/session)
           (let loaded (f/harness/runtime/sessions/loaded/.get .get root/session))

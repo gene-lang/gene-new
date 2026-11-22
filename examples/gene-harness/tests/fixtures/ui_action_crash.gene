@@ -18,7 +18,7 @@
         ^component "project_board" ^revision view/revision ^function "board_save"
         ^function_revision view/functions/board_save ^args []
         ^named {^id "welcome" ^revision "1" ^title "Durable action"}}))
-    (do
+    else (do
       (put_cordis_plugin h
         (Plugin ^id "crash_probe" ^activate (fn [host]
           (host .PluginHost:contribute "functions"

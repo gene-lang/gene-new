@@ -35,15 +35,14 @@
               (let models (provider/models))
               ($assert (== models/0/id "model"))
               (if (== adapter "deepseek_chat")
-                (then
-                  ($assert (== models/0/label "Flash fixture"))
+                ($assert (== models/0/label "Flash fixture"))
                   ($assert (== models/0/input ["text" "image"]))
                   ($assert (== models/0/efforts ["none" "low" "high" "max"]))
                   ($assert (== models/0/default_effort "high"))
                   ($assert (== models/0/window 1048576))
                   ($assert (== models/0/max_output 393216))
-                  ($assert ($absent? models/0/access_token)))
-                (else ($assert (== models/0/efforts []))))
+                  ($assert ($absent? models/0/access_token))
+                else ($assert (== models/0/efforts [])))
               (let result (provider/send prepared))
               ($assert (== result/text "(Outcome ^^done)"))
               ($assert (== result/usage/output_tokens 12)))
@@ -54,19 +53,16 @@
           (let adapter ($str/split request/path "/"))
           (let name adapter/1)
           (if (== name "anthropic_messages")
-            (then
-              ($assert (== request/headers/x-api-key "fixture-token"))
+            ($assert (== request/headers/x-api-key "fixture-token"))
               ($assert (== request/headers/anthropic-version "2023-06-01"))
-              ($assert ($absent? request/headers/authorization)))
-            (else ($assert (== request/headers/authorization "Bearer fixture-token"))))
+              ($assert ($absent? request/headers/authorization))
+            else ($assert (== request/headers/authorization "Bearer fixture-token")))
           (if (== request/method "GET")
-            (then
-              ($assert (|| ($str/ends_with? request/path "/models")
+            (do ($assert (|| ($str/ends_with? request/path "/models")
                 (&& (== name "openrouter_chat") ($str/ends_with? request/path "/key"))))
               (let model {^id "model" ^access_token "NOT_CATALOG_DATA"})
               (if (== name "deepseek_chat")
-                (then
-                  (model .put "name" "Flash fixture")
+                (do (model .put "name" "Flash fixture")
                   (model .put "input_modalities" ["text" "image"])
                   (model .put "context_window" 1048576)
                   (model .put "max_output_tokens" 393216)
@@ -77,35 +73,35 @@
           (let body ($json/parse request/body))
           ($assert (== body/model "model"))
           (match name
-            (when "openai_chat"
+            when "openai_chat"
               ($assert (== request/path "/openai_chat/v1/chat/completions"))
               ($assert (== body/reasoning_effort "high")) ($assert ($absent? body/reasoning))
               ($assert (== body/max_completion_tokens 20000))
               (json 200 ($json/stringify {^choices [{^finish_reason "stop" ^message {^content "(Outcome ^^done)"}}]
-                ^usage {^output_tokens 12}})))
-            (when "openrouter_chat"
+                ^usage {^output_tokens 12}}))
+            when "openrouter_chat"
               ($assert (== request/path "/openrouter_chat/v1/chat/completions"))
               ($assert (== body/reasoning/effort "high")) ($assert ($absent? body/reasoning_effort))
               ($assert (== body/max_tokens 20000))
               (json 200 ($json/stringify {^choices [{^finish_reason "stop" ^message {^content "(Outcome ^^done)"}}]
-                ^usage {^output_tokens 12}})))
-            (when "deepseek_chat"
+                ^usage {^output_tokens 12}}))
+            when "deepseek_chat"
               ($assert (== request/path "/deepseek_chat/v1/chat/completions"))
               ($assert (== body/reasoning_effort "high"))
               ($assert (== body/max_tokens 20000))
               ($assert ($absent? body/max_completion_tokens))
               (json 200 ($json/stringify {^choices [{^finish_reason "stop"
                 ^message {^role "assistant" ^content "(Outcome ^^done)" ^reasoning_content "not the final answer"}}]
-                ^usage {^output_tokens 12}})))
-            (when "openai_responses"
+                ^usage {^output_tokens 12}}))
+            when "openai_responses"
               ($assert (== request/path "/openai_responses/v1/responses"))
               ($assert (== body/stream true)) ($assert (== body/store false))
               ($assert (== body/reasoning/effort "high")) ($assert (== body/max_output_tokens 20000))
               (stream_response [{^type "response.output_text.delta" ^delta "unexecuted fragment"}
                 {^type "response.completed" ^response {^status "completed" ^usage {^output_tokens 12}
                   ^output [{^type "message" ^status "completed" ^role "assistant"
-                    ^content [{^type "output_text" ^text "(Outcome ^^done)"}]}]}}]))
-            (when "anthropic_messages"
+                    ^content [{^type "output_text" ^text "(Outcome ^^done)"}]}]}}])
+            when "anthropic_messages"
               ($assert (== request/path "/anthropic_messages/v1/messages"))
               ($assert (== body/stream true)) ($assert (== body/thinking/type "adaptive"))
               ($assert (== body/output_config/effort "high")) ($assert (== body/max_tokens 20000))
@@ -114,12 +110,12 @@
                 {^type "content_block_delta" ^index 0 ^delta {^type "text_delta" ^text "(Outcome ^^done)"}}
                 {^type "content_block_stop" ^index 0}
                 {^type "message_delta" ^delta {^stop_reason "end_turn"} ^usage {^output_tokens 12}}
-                {^type "message_stop"}]))
-            (else ($assert false "unexpected adapter route")))) server)
+                {^type "message_stop"}])
+            else ($assert false "unexpected adapter route"))) server)
         (match tester/.join
-          (when (TaskOutcome/ok value) value)
-          (when (TaskOutcome/error error) (fail error))
-          (else ($assert false "adapter fixture did not finish"))))))
+          when (TaskOutcome/ok value) value
+          when (TaskOutcome/error error) (fail error)
+          else ($assert false "adapter fixture did not finish")))))
 
   (it "uses the discovery result table and never includes provider diagnostics in errors" []
     (isolated this_mod/.path "uses the discovery result table and never includes provider diagnostics in errors"
@@ -153,14 +149,14 @@
           (seen .set (+ seen/.get 1))
           (let route ($str/split request/path "/"))
           (match route/1
-            (when "ready" (json 200 "{\"data\":[]}"))
-            (when "rejected" (json 401 "{\"error\":\"SECRET_SENTINEL\"}"))
-            (when "forbidden" (json 403 "{}")) (when "missing" (json 404 "{}"))
-            (when "method" (json 405 "{}")) (when "failed" (json 503 "{}"))
-            (else (json 200 "bad JSON SECRET_SENTINEL")))) server)
+            when "ready" (json 200 "{\"data\":[]}")
+            when "rejected" (json 401 "{\"error\":\"SECRET_SENTINEL\"}")
+            when "forbidden" (json 403 "{}") when "missing" (json 404 "{}")
+            when "method" (json 405 "{}") when "failed" (json 503 "{}")
+            else (json 200 "bad JSON SECRET_SENTINEL"))) server)
         (match tester/.join
-          (when (TaskOutcome/ok value) value)
-          (when (TaskOutcome/error error) (fail error))
-          (else ($assert false "discovery table fixture did not finish")))))))
+          when (TaskOutcome/ok value) value
+          when (TaskOutcome/error error) (fail error)
+          else ($assert false "discovery table fixture did not finish"))))))
 
 (fn main [args] : Int (run_spec args))

@@ -27,11 +27,10 @@
   (let gate (manager/gate_mutex (fn []
     (let previous (manager/gates/.get .get key))
     (if ($absent? previous)
-      (then
-        (let created ($sync/gate))
+      (let created ($sync/gate))
         (manager/gates/.get .put key created)
-        created)
-      (else previous)))))
+        created
+      else previous))))
   (gate thunk))
 
 (fn notify_session [manager, record]
@@ -99,11 +98,11 @@
   (let round (restore_round manager id))
   (if (|| ($absent? round) (!= round/state "waiting") (!= ($head round/questions) Map)) (return nil))
   (let batch (core_state manager/events "session" id $"questions/${round/questions/id}"))
-  (if (|| ($absent? batch) (!= batch/status "answered")) nil batch))
+  (if (|| ($absent? batch) (!= batch/status "answered")) nil else batch))
 
 (fn recover_sessions [manager : SessionManager]
   (let marker $"${manager/state_root}/shutdown.gene")
-  (let cancelled (if ($fs/exists? marker) ($serde/read_data ($fs/read_text marker)) {}))
+  (let cancelled (if ($fs/exists? marker) ($serde/read_data ($fs/read_text marker)) else {}))
   (let interrupted [])
   (let reasons {})
   (let corrections [])
@@ -114,28 +113,28 @@
     (let status (?? saved/state "done"))
     (if (!= record/status status) (corrections .push {^id ($to_str id) ^status status}))
     (if (["running" "cancelled"] .contains? status) (interrupted .push ($to_str id)))
-    (if_yes (== status "waiting")
-      (let batch (answered_waiting_batch manager ($to_str id)))
+    (if (== status "waiting")
+      (do (let batch (answered_waiting_batch manager ($to_str id)))
       (if_not ($absent? batch)
         # Only a recorded continuation resumes, once rounds can run again. A
         # recorded cancellation cancels; an older record without an intended
         # action is interrupted, never resumed.
         (if (== batch/intent "continue")
-          (then (manager/resumes/.get .push ($to_str id)))
-          (else
+          (manager/resumes/.get .push ($to_str id))
+          else
             (interrupted .push ($to_str id))
-            (reasons .put ($to_str id) (if (== batch/intent "cancel") "cancelled" "interrupted")))))))
+            (reasons .put ($to_str id) (if (== batch/intent "cancel") "cancelled" else "interrupted")))))))
   (for correction in corrections
     (if_not (interrupted .contains? correction/id)
       (update_session manager correction/id {^status correction/status})))
   (for id in interrupted
     (let round (restore_round manager id))
     (let reason (?? (reasons .get id) (if (|| (== round/state "cancelled")
-      (&& ($present? round) (== (cancelled .get round/id) true))) "cancelled" "interrupted")))
+      (&& ($present? round) (== (cancelled .get round/id) true))) "cancelled" else "interrupted")))
     (let warnings [])
     (map_for [key patch] in (core_states manager/events "session" id)
-      (if_yes (&& ($str/starts_with? ($to_str key) "patch/") (== patch/state "started"))
-        (let warning (recover_patch_temporaries manager/runtime/root patch/files))
+      (if (&& ($str/starts_with? ($to_str key) "patch/") (== patch/state "started"))
+        (do (let warning (recover_patch_temporaries manager/runtime/root patch/files))
         (warnings .push warning)
         (record_core_state
           manager/events
@@ -151,7 +150,7 @@
           "session/state"
           "recovery"
           {^warnings warnings})
-        (append_core_event manager/events "session" id {^type "trace" ^text warning ^^ignorable})))
+        (append_core_event manager/events "session" id {^type "trace" ^text warning ^^ignorable}))))
     (repair_interrupted_turns ^session id ^reason reason manager/events)
     (if_not ($absent? round)
       (round .put "state" reason)
@@ -170,7 +169,7 @@
         (let receipts
           (if ($absent? receipts_ref/digest)
             receipts_ref
-            ($serde/read_data (read_body manager/runtime receipts_ref/digest))))
+            else ($serde/read_data (read_body manager/runtime receipts_ref/digest))))
         (for old in receipts/receipts
           (if (== old/id round/id) (old .put "state" reason)))
         (record_core_state
@@ -204,9 +203,9 @@
     (if (== key "id")
       (fail (SessionError ^code "invalid_request" ^_msg "session identity cannot change")))
     (record .put key value))
-  (if_yes (== record/kind "child")
-    (let owner (require_record manager record/parent/session))
-    (record .put "pinned" owner/pinned))
+  (if (== record/kind "child")
+    (do (let owner (require_record manager record/parent/session))
+    (record .put "pinned" owner/pinned)))
   (record_core_state manager/events "workspace" "workspace" "session/state" $"session/${id}" record)
   (flush_event_store manager/events)
   (manager/index
@@ -214,18 +213,18 @@
     ; .put id record)
   (write_index manager)
   (notify_session manager record)
-  (if_yes (&& (== record/kind "child") record/attention
+  (if (&& (== record/kind "child") record/attention
               (|| (! previous/attention)
                   (&& (!= previous/status record/status)
                       (["waiting" "failed" "interrupted"] .contains? record/status))))
-    (let parent (manager/index/.get .get record/parent/session))
+    (do (let parent (manager/index/.get .get record/parent/session))
     (if (&& ($present? parent) (! parent/attention))
-      (update_session_unlocked manager parent/id {^^attention})))
-  (if_yes (&& (!= record/kind "child") ($present? changes/pinned))
-    (let children [])
+      (update_session_unlocked manager parent/id {^^attention}))))
+  (if (&& (!= record/kind "child") ($present? changes/pinned))
+    (do (let children [])
     (map_for [child_id child] in manager/index/.get
       (if (== child/parent/session id) (children .push ($to_str child_id))))
-    (for child in children (update_session_unlocked manager child {^pinned record/pinned})))
+    (for child in children (update_session_unlocked manager child {^pinned record/pinned}))))
   (copy_data record))
 
 (fn create_session [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil, ^channel channel = nil, ^origin origin = nil]
@@ -236,7 +235,7 @@
 
 (fn create_session_unlocked [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil, ^channel channel = nil, ^origin origin = nil]
   (require_open manager)
-  (let chosen (if (== id "") $"s-${($crypto/random_hex 12)}" id))
+  (let chosen (if (== id "") $"s-${($crypto/random_hex 12)}" else id))
   (if_not (safe_id? chosen)
     (fail (SessionError ^code "invalid_request" ^_msg "invalid session id")))
   (let previous (manager/index .get; .get chosen))
@@ -251,13 +250,13 @@
     (fail (SessionError ^code "conflict" ^_msg $"session ${chosen} already exists")))
   (if_not (["interactive" "heartbeat" "scheduled" "cron" "child" "automated"] .contains? kind)
     (fail (SessionError ^code "invalid_request" ^_msg "invalid session kind")))
-  (if_yes (== kind "child")
-    (if (|| (!= ($head parent) Map) (!= ($head parent/session) Str)
+  (if (== kind "child")
+    (do (if (|| (!= ($head parent) Map) (!= ($head parent/session) Str)
             (!= ($head parent/round) Str) (!= ($head parent/delegation) Str))
       (fail (SessionError ^code "invalid_request" ^_msg "A child session requires its parent session, round and delegation.")))
     (let owner (require_record manager parent/session))
     (if (== owner/kind "child")
-      (fail (SessionError ^code "depth_limit" ^_msg "Nested child sessions are not supported."))))
+      (fail (SessionError ^code "depth_limit" ^_msg "Nested child sessions are not supported.")))))
   (let name ($str/trim title))
   (if (|| (== name "") (> ($str/byte_size name) 256))
     (fail (SessionError ^code "invalid_request" ^_msg "session title must have 1–256 bytes")))
@@ -279,9 +278,9 @@
       ^first_request first_request
       ^first_request_media []})
   (if_not ($absent? parent) (record .put "parent" (copy_data parent)))
-  (if_yes (== kind "child")
-    (let parent_record (require_record manager parent/session))
-    (record .put "pinned" parent_record/pinned))
+  (if (== kind "child")
+    (do (let parent_record (require_record manager parent/session))
+    (record .put "pinned" parent_record/pinned)))
   (if_not ($absent? model_settings) (record .put "model_settings" (copy_data model_settings)))
   (if_not ($absent? channel) (record .put "channel" (copy_data channel)))
   (if_not ($absent? origin) (record .put "origin" (copy_data origin)))
@@ -401,10 +400,10 @@
 
 (fn delete_session [manager : SessionManager, id : Str, ^explicit explicit : Bool = false, ^revision revision = nil] : Bool
   (let record (require_record manager id))
-  (let root (if (== record/kind "child") record/parent/session id))
+  (let root (if (== record/kind "child") record/parent/session else id))
   (with_session_gate manager $"round/${root}" (fn []
     (let ids [id])
-    (if_yes (== root id)
+    (if (== root id)
       (map_for [child_id child] in manager/index/.get
         (if (== child/parent/session id) (ids .push ($to_str child_id)))))
     (with_delete_gates manager ids 0 root (fn []
@@ -412,7 +411,7 @@
         (if (&& ($present? revision) (!= revision (?? (/revision (require_record manager id)) 0)))
           (fail (SessionError ^code "revision_conflict" ^_msg "Conversation changed; refresh before deleting it.")))
         (delete_session_locked ^explicit explicit manager id ids)))
-      (if ($absent? manager/runtime/services/values/commands) (remove) (manager/runtime/services/values/commands/gate remove)))))))
+      (if ($absent? manager/runtime/services/values/commands) (remove) else (manager/runtime/services/values/commands/gate remove)))))))
 
 (fn with_delete_gates [manager, ids, offset : Int, root : Str, body]
   (if (>= offset ids/.size) (return (body)))
@@ -420,7 +419,7 @@
   (let next (fn []
     (with_session_gate manager $"load/${id}" (fn []
       (with_delete_gates manager ids (+ offset 1) root body)))))
-  (if (== id root) (next) (with_session_gate manager $"round/${id}" next)))
+  (if (== id root) (next) else (with_session_gate manager $"round/${id}" next)))
 
 (fn finish_session_deletion [events, key : Str, intent]
   (for record in intent/records
@@ -442,7 +441,7 @@
               (! (["delivered" "failed"] .contains? record/slack_share/status)))
         (if explicit
           (fail (SessionError ^code "busy" ^_msg "Finish or resolve the Slack share before deleting this conversation."))
-          (return false)))
+          else (return false)))
       (if (|| (["running" "waiting"] .contains? record/status)
               (&& (! explicit) (|| record/pinned record/attention
                 (&& ($present? loaded) (> loaded/viewers/.get 0)))))

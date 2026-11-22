@@ -42,17 +42,16 @@
     (fail (CompositionError ^_msg $"duplicate composition entry ${id}")))
   (ids .put id true)
   (if (== entry/builtin true)
-    (then
-      (if_not (== entry/disabled true)
+    (if_not (== entry/disabled true)
         (fail (CompositionError ^_msg $"built-in record ${id} must be disabled")))
       (if (|| ($present? entry/module_digest) ($present? entry/closure))
-        (fail (CompositionError ^_msg $"built-in record ${id} cannot name a stored module"))))
-    (else
+        (fail (CompositionError ^_msg $"built-in record ${id} cannot name a stored module")))
+    else
       (if (|| ($absent? entry/module_digest) ($absent? entry/closure) ($absent? entry/interfaces))
         (fail
           (CompositionError ^_msg "composition entry requires module_digest closure interfaces")))
       (if_not (entry/closure .contains? entry/module_digest)
-        (fail (CompositionError ^_msg $"composition entry ${id} closure omits its root digest")))))
+        (fail (CompositionError ^_msg $"composition entry ${id} closure omits its root digest"))))
   entry)
 
 (fn validate_entries [entries]
@@ -65,10 +64,9 @@
 (fn load_composition [workspace : Workspace]
   (var loaded workspace/store/.Store:load_checkpoint)
   (if ($absent? loaded)
-    (then
-      (workspace/revision .set 0)
-      (workspace/entries .set (fresh_list)))
-    (else
+    (workspace/revision .set 0)
+      (workspace/entries .set (fresh_list))
+    else
       (var manifest (loaded/records .get "composition"))
       (if ($absent? manifest)
         (fail (CompositionError ^_msg "composition generation has no composition record")))
@@ -80,7 +78,7 @@
       (var checked (validate_entries manifest/entries))
       (workspace/revision .set manifest/revision)
       (workspace/history_head .set (?? manifest/history_head nil))
-      (workspace/entries .set checked)))
+      (workspace/entries .set checked))
   workspace)
 
 (fn harness_package_root [] : Str
@@ -93,33 +91,30 @@
   (var canonical_root (real_path root))
   (var canonical_blob_root
     (if (== blob_root "")
-      (then
-        (var default_blob_root $"${canonical_root}/blobs")
+      (var default_blob_root $"${canonical_root}/blobs")
         (make_dir default_blob_root)
-        (real_path default_blob_root))
-      (else
+        (real_path default_blob_root)
+      else
         (make_dir blob_root)
-        (real_path blob_root))))
+        (real_path blob_root)))
   (var package_root (harness_package_root))
-  (var canonical_state_root (real_path (if (== state_root "") canonical_root state_root)))
-  (var canonical_workspace_root (real_path (if (== workspace_root "") package_root workspace_root)))
+  (var canonical_state_root (real_path (if (== state_root "") canonical_root else state_root)))
+  (var canonical_workspace_root (real_path (if (== workspace_root "") package_root else workspace_root)))
   (var generated
     (if (== generated_dir "")
-      (then
-        (var scoped $"${canonical_blob_root}/source")
+      (var scoped $"${canonical_blob_root}/source")
         (make_dir scoped)
-        (real_path scoped))
-      (else
+        (real_path scoped)
+      else
         (make_dir generated_dir)
-        (real_path generated_dir))))
+        (real_path generated_dir)))
   (var interfaces (current_interfaces))
   (var workspace
     (Workspace ^root canonical_root ^state_root canonical_state_root ^workspace_root canonical_workspace_root ^store (store_open ^root canonical_root) ^blob_store (store_open ^root canonical_blob_root) ^revision ($cell 0) ^entries ($cell (fresh_list)) ^busy ($cell false) ^closed ($cell false) ^generated_dir generated ^shared (sdk_modules) ^interfaces interfaces ^core_interface (/core (latest_interfaces)) ^active_revision ($cell nil) ^errors ($cell (fresh_map)) ^profile_plugins ($cell (fresh_map)) ^history_head ($cell nil) ^history_build ($cell nil) ^history_profile ($cell nil) ^metadata_errors ($cell [])))
   (load_composition workspace)
   (let marker (active_revision_path workspace))
   (if ($fs/exists? marker)
-    (then
-      (let recorded (read_data (read_text marker)))
+    (do (let recorded (read_data (read_text marker)))
       (if (|| (!= ($head recorded) Int) (< recorded 0))
         (fail (CompositionError ^_msg
           "composition ACTIVE marker must hold a non-negative revision")))
@@ -157,7 +152,7 @@
       (archive_baseline workspace/store
         {^revision workspace/revision/.get ^entries workspace/entries/.get}
         identity profile))
-    (do
+    else (do
       (let saved (archived_record workspace/store workspace/history_head/.get))
       (if (|| (!= saved/revision workspace/revision/.get) (!= saved/entries workspace/entries/.get))
         (fail (CompositionError ^_msg "composition checkpoint disagrees with its history record")))))
@@ -226,20 +221,19 @@
   (var found false)
   (for entry in entries
     (if (== entry/id replacement/id)
-      (then
-        (set found true)
+      (set found true)
         (if replace
           (out .push replacement)
-          (fail (CompositionError ^_msg $"composition entry ${replacement/id} already exists"))))
-      (else
-        (out .push entry))))
+          else (fail (CompositionError ^_msg $"composition entry ${replacement/id} already exists")))
+      else
+        (out .push entry)))
   (if_not found (out .push replacement))
   out)
 
 (fn entry_limits [entry]
   (if ($absent? entry/limits)
     (default_limits_data)
-    entry/limits))
+    else entry/limits))
 
 (fn default_limits_data []
   (var limits (default_execution_limits))

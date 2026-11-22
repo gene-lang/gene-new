@@ -17,7 +17,7 @@
       (let h runtime/h)
       (let snapshot (current_snapshot h/snapshots))
       (immutable_view {^plugins (?? snapshot/plugins [])
-        ^readiness (if ($absent? runtime/services/values/readiness) nil (runtime/services/values/readiness))}))
+        ^readiness (if ($absent? runtime/services/values/readiness) nil else (runtime/services/values/readiness))}))
     (message inspect [id : Str] : Any
       (let h (/h (/runtime (require_service self))))
       (let snapshot (current_snapshot h/snapshots))
@@ -34,7 +34,7 @@
       (let runtime (/runtime (require_service self)))
       (immutable_view (if page
         (plugin_history_page runtime/workspace id ^limit limit ^before before)
-        (plugin_history runtime/workspace id ^limit limit ^before before))))
+        else (plugin_history runtime/workspace id ^limit limit ^before before))))
     (message revert [id : Str, revision : Int, ^expected expected = nil] : Any
       (let runtime (/runtime (require_service self)))
       (immutable_view (revert_plugin ^readiness runtime/services/values/readiness runtime/workspace runtime/h id revision ^expected expected)))))

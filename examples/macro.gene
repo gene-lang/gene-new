@@ -80,7 +80,7 @@
 # The boolean is also supplied at expansion time. The selected expression
 # becomes caller code; the other expression is not executed.
 (macro choose [enabled : Bool when_enabled when_disabled]
-  (if enabled when_enabled when_disabled))
+  (if enabled when_enabled else when_disabled))
 
 (show "syntax chosen during expansion"
   (choose true (+ 20 22) (fail (Error ^_msg "unselected"))) 42)

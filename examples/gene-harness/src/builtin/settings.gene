@@ -25,38 +25,38 @@
 
 (fn display [value] : Str
   (if ($absent? value) "none"
-    (if (== ($head value) Str) (if (== value "") "empty" value) (data_text value))))
+    else (if (== ($head value) Str) (if (== value "") "empty" else value) else (data_text value))))
 
 (fn applies_text [applies : Str] : Str
   (match applies
-    (when "immediate" "Applies at once")
-    (when "next_round" "Applies from the next round")
-    (when "restart" "Applies after a restart")
-    (else applies)))
+    when "immediate" "Applies at once"
+    when "next_round" "Applies from the next round"
+    when "restart" "Applies after a restart"
+    else applies))
 
 (fn source_text [source : Str] : Str
   (match source
-    (when "workspace" "Workspace")
-    (when "shared" "Shared")
-    (when "launch" "Launch flag")
-    (else "Default")))
+    when "workspace" "Workspace"
+    when "shared" "Shared"
+    when "launch" "Launch flag"
+    else "Default"))
 
 # Field values arrive as strings, except checkboxes. Parse by the definition type.
 (fn parse_value [definition, value]
   (match definition/type
-    (when "int"
+    when "int"
       (do
         (let text ($str/trim ($to_str value)))
         (let parsed (try ($parse/parse_int text) catch Error nil))
         (if ($absent? parsed) (invalid $"${definition/label} must be a whole number."))
-        parsed))
-    (when "bool" (== value true))
-    (when "str" ($to_str value))
-    (else (read_data_text ($to_str value)))))
+        parsed)
+    when "bool" (== value true)
+    when "str" ($to_str value)
+    else (read_data_text ($to_str value))))
 
 (fn choose_group [groups, wanted : Str] : Str
   (for group in groups (if (== group/name wanted) (return wanted)))
-  (if groups/.empty? "" groups/0/name))
+  (if groups/.empty? "" else groups/0/name))
 
 # Generated editors
 
@@ -76,21 +76,21 @@
   (let names [])
   (for option in choices/options (if (< names/.size 12) (names .push (?? option/label option/value))))
   (let joined ($str/join names ", "))
-  (let listed (if names/.empty? "" $"Suggestions: ${joined}."))
+  (let listed (if names/.empty? "" else $"Suggestions: ${joined}."))
   (let reason (?? choices/reason ""))
-  (if (&& (== listed "") (== reason "")) `(span "") `(small ^class_name "web_muted" %($to_str listed " " reason))))
+  (if (&& (== listed "") (== reason "")) `(span "") else `(small ^class_name "web_muted" %($to_str listed " " reason))))
 
 (fn value_control [definition, view, key : Str]
   (let current view/value)
   (match definition/type
-    (when "bool"
-      `(input ^key %key ^field "value" ^type "checkbox" ^checked %(== current true)))
-    (when "int"
-      `(input ^key %key ^field "value" ^type "number" ^value %(if ($absent? current) "" ($to_str current))))
-    (when "str"
-      `(input ^key %key ^field "value" ^value %(?? current "")))
-    (else
-      `(textarea ^key %key ^field "value" ^rows 3 ^value %(data_text current)))))
+    when "bool"
+      `(input ^key %key ^field "value" ^type "checkbox" ^checked %(== current true))
+    when "int"
+      `(input ^key %key ^field "value" ^type "number" ^value %(if ($absent? current) "" else ($to_str current)))
+    when "str"
+      `(input ^key %key ^field "value" ^value %(?? current ""))
+    else
+      `(textarea ^key %key ^field "value" ^rows 3 ^value %(data_text current))))
 
 (fn restart_note [view]
   (if (!= view/applies "restart") (return `(span "")))
@@ -98,26 +98,26 @@
     (return `(small ^class_name "web_muted" "The running value is not known until its feature starts.")))
   (if (== view/pending_restart true)
     `(small ^class_name "web_danger_text" %$"Pending restart: running with ${(display view/active)}.")
-    `(small ^class_name "web_muted" %$"Running with ${(display view/active)}.")))
+    else `(small ^class_name "web_muted" %$"Running with ${(display view/active)}.")))
 
 (fn inherit_note [view, scope : Str]
   (if (== scope "shared")
     (return `(small ^class_name "web_muted" %$"Definition default: ${(display view/default)}.")))
-  (let from (if (== view/inherited_source "shared") "shared default" "default"))
+  (let from (if (== view/inherited_source "shared") "shared default" else "default"))
   `(small ^class_name "web_muted" %$"Without an override this uses the ${from}: ${(display view/inherited)}."))
 
 (fn setting_form [workspace, view, scope : Str, digest : Str]
   (let id $"${scope}/${view/key}")
   (let stored (== view/has_stored true))
-  (let choices (if ($present? view/choices) (workspace .setting_choices view/key ^scope scope) nil))
+  (let choices (if ($present? view/choices) (workspace .setting_choices view/key ^scope scope) else nil))
   (let select? (&& ($present? choices) (== choices/closed true) (== choices/complete true) (== view/type "str")))
-  (let control (if select? (choice_control choices view $"value/${id}") (value_control view view $"value/${id}")))
-  (let note (if (&& ($present? choices) (! select?)) (choice_note choices) `(span "")))
+  (let control (if select? (choice_control choices view $"value/${id}") else (value_control view view $"value/${id}")))
+  (let note (if (&& ($present? choices) (! select?)) (choice_note choices) else `(span "")))
   `(form ^key %$"setting/${id}" ^class_name "web_card" ^action "settings_save"
      ^args %{^scope scope ^key view/key ^expected digest}
      (div ^class_name "web_spread"
        (strong %view/label)
-       (span ^class_name %(if (== view/source "default") "web_badge" "web_badge web_badge_success")
+       (span ^class_name %(if (== view/source "default") "web_badge" else "web_badge web_badge_success")
          %(source_text view/source)))
      (p ^class_name "web_muted" %view/doc)
      (label %$"Value (${view/type})" %control)
@@ -128,13 +128,13 @@
        %(restart_note view)
        %(if (== view/source "launch")
           (quote (small ^class_name "web_muted" "A launch flag overrides this value until the host restarts."))
-          (quote (span ""))))
+          else (quote (span ""))))
      (div ^class_name "web_actions"
        (button ^key %$"save/${id}" ^type "submit" ^class_name "web_primary" "Save")
        %(if stored
           `(button ^key %$"reset/${id}" ^action "settings_reset" ^class_name "web_secondary"
-             %(if (== scope "shared") "Reset shared default" "Use inherited value"))
-          `(span "")))))
+             %(if (== scope "shared") "Reset shared default" else "Use inherited value"))
+          else `(span "")))))
 
 (fn unavailable_card [view]
   `(section ^key %$"workspace-only/${view/key}" ^class_name "web_card"
@@ -144,8 +144,7 @@
 (fn generic_group [workspace, manager, group : Str, scope : Str]
   (let items [])
   (if (== scope "shared")
-    (then
-      (let shared (manager .settings ^group group))
+    (let shared (manager .settings ^group group))
       (let listed (workspace .settings ^group group))
       (let shared_keys ($map shared/settings (fn [view] view/key)))
       (for error in (?? shared/errors [])
@@ -154,12 +153,12 @@
       (for view in listed/settings
         (if_not (|| (shared_keys .contains? view/key) (model_keys .contains? view/key)
                     (== view/key "keyboard_bindings"))
-          (items .push (unavailable_card view)))))
-    (else
+          (items .push (unavailable_card view))))
+    else
       (let listed (workspace .settings ^group group))
       (for view in listed/settings
         (if_not (|| (model_keys .contains? view/key) (== view/key "keyboard_bindings"))
-          (items .push (setting_form workspace view "workspace" listed/digest))))))
+          (items .push (setting_form workspace view "workspace" listed/digest)))))
   items)
 
 # Models: a composite editor writes provider, model and effort together.
@@ -169,7 +168,7 @@
 (fn selection_value [provider, model] : Str
   (let chosen_provider (?? provider ""))
   (let chosen_model (?? model ""))
-  (if (&& (== chosen_provider "") (== chosen_model "")) "-" $"${chosen_provider}/${chosen_model}"))
+  (if (&& (== chosen_provider "") (== chosen_model "")) "-" else $"${chosen_provider}/${chosen_model}"))
 
 (fn split_selection [value : Str]
   (let parts ($str/split value "/"))
@@ -211,11 +210,11 @@
     (if (== value current) (set in_catalog true))
     (if (>= shown model_option_limit)
       (set omitted (+ omitted 1))
-      (do
+      else (do
         (let why (?? option/reason "not ready"))
         (let label (if (== option/available false)
           $"${option/label} · ${option/provider} (unavailable: ${why})"
-          $"${option/label} · ${option/provider}"))
+          else $"${option/label} · ${option/provider}"))
         (options .push `(option ^value %value %label))
         (if (== value current) (set current_shown true))
         (set shown (+ shown 1)))))
@@ -224,7 +223,7 @@
     (let label (selection_label current))
     (let display (if (&& (! in_catalog) (== label current))
       $"${current} (not in the catalog; unverified)"
-      label))
+      else label))
     (options .push `(option ^value %current %display)))
   (let notes [])
   (if ($present? choices/reason) (notes .push choices/reason))
@@ -233,7 +232,7 @@
   {^options options ^note ($str/join notes " ")})
 
 (fn effort_options [workspace, selection : Str, saved, ^scope scope : Str = "workspace"]
-  (let values (if (== selection "-") {^provider "" ^model ""} (split_selection selection)))
+  (let values (if (== selection "-") {^provider "" ^model ""} else (split_selection selection)))
   (let choices (workspace .setting_choices "effort" ^values values ^scope scope))
   (let options [`(option ^value "" "Use the inherited effort")])
   (var listed (|| ($absent? saved) (== saved "")))
@@ -254,16 +253,15 @@
        (small ^class_name "web_muted" %$"Selected by: ${selection/source}. Sessions and triggers can choose their own model.")
        %(if (== selection/unverified_model true)
           (quote (p ^class_name "web_notice" "This model id is not in the catalog; access has not been checked."))
-          (quote (span "")))
+          else (quote (span "")))
        %(if ($present? selection/reason)
           `(p ^role "status" ^class_name "web_notice web_notice_error" %selection/reason)
-          `(span ""))))
+          else `(span ""))))
   (if (== scope "shared")
-    (then
-      (let catalog manager/.models)
+    (let catalog manager/.models)
       (let default (?? catalog/default {}))
       (let saved (selection_value default/provider default/model))
-      (let current (if (== state/model_draft "") saved state/model_draft))
+      (let current (if (== state/model_draft "") saved else state/model_draft))
       (let models (model_options workspace current))
       (let model_nodes (/options models))
       (let effort_nodes (effort_options ^scope "shared" workspace current default/effort))
@@ -272,7 +270,7 @@
           (h3 "Shared default model")
           (p ^class_name "web_muted" "Used by every workspace without its own model setting. Stored in the manager's models.gene.")
           (label "Model" (select ^key "model_draft_shared" ^state "model_draft" ^value %current %model_nodes...))
-          %(if ($present? models/note) `(small ^class_name "web_muted" %models/note) `(span ""))
+          %(if ($present? models/note) `(small ^class_name "web_muted" %models/note) else `(span ""))
           (form ^key %$"models/shared/${current}" ^action "settings_save_models"
             ^args %{^scope "shared" ^selection current ^saved saved ^expected catalog/digest} ^success_state {^model_draft ""}
             (label "Effort" (select ^key %$"effort/shared/${current}" ^field "effort" ^value %(?? default/effort "")
@@ -282,8 +280,8 @@
               (button ^key "save-models-shared" ^type "submit" ^class_name "web_primary" "Save shared default")
               %(if (== saved "-")
                  `(span "")
-                 `(button ^key "clear-models-shared" ^action "settings_reset_models" ^class_name "web_secondary" "Clear shared default")))))])
-    (else
+                 else `(button ^key "clear-models-shared" ^action "settings_reset_models" ^class_name "web_secondary" "Clear shared default")))))]
+    else
       (let listed (workspace .settings ^group "Models"))
       (let views {})
       (for view in listed/settings (views .put view/key view))
@@ -291,7 +289,7 @@
       (let model (views .get "model"))
       (let effort (views .get "effort"))
       (let saved (selection_value provider/stored model/stored))
-      (let current (if (== state/model_draft "") saved state/model_draft))
+      (let current (if (== state/model_draft "") saved else state/model_draft))
       (let models (model_options workspace current))
       (let model_nodes (/options models))
       (let model_note (/note models))
@@ -302,27 +300,27 @@
            (h3 "Workspace model")
            (p ^class_name "web_muted" "Provider, model and effort are saved together in this workspace's config.gene.")
            (label "Model" (select ^key "model_draft_workspace" ^state "model_draft" ^value %current %model_nodes...))
-           %(if ($present? model_note) `(small ^class_name "web_muted" %model_note) `(span ""))
+           %(if ($present? model_note) `(small ^class_name "web_muted" %model_note) else `(span ""))
            (form ^key %$"models/workspace/${current}" ^action "settings_save_models"
              ^args %{^scope "workspace" ^selection current ^saved saved ^expected listed/digest} ^success_state {^model_draft ""}
              (label "Effort" (select ^key %$"effort/workspace/${current}" ^field "effort"
-               ^value %(if (== effort/has_stored true) effort/stored "")
+               ^value %(if (== effort/has_stored true) effort/stored else "")
                %effort_nodes...))
              (label "Or type provider/model" (input ^key %$"custom/workspace/${current}" ^field "custom" ^placeholder "openrouter/vendor/model"))
              (div ^class_name "web_actions"
                (button ^key "save-models-workspace" ^type "submit" ^class_name "web_primary" "Save model")
                %(if overridden
                   `(button ^key "reset-models-workspace" ^action "settings_reset_models" ^class_name "web_secondary" "Use inherited selection")
-                  `(span ""))))))
+                  else `(span ""))))))
       (let rest [])
       (for view in listed/settings
         (if_not (model_keys .contains? view/key) (rest .push (setting_form workspace view "workspace" listed/digest))))
-      [summary editor rest...])))
+      [summary editor rest...]))
 
 # Keyboard Shortcuts: workspace-only, revision-checked through the same transaction.
 
 (fn chord_code [chord : Str]
-  (if (== chord "") `(em "Unbound") `(code ^chord %chord ^aria_label %chord)))
+  (if (== chord "") `(em "Unbound") else `(code ^chord %chord ^aria_label %chord)))
 
 (fn keyboard_group [workspace, state, scope : Str]
   (if (== scope "shared")
@@ -354,25 +352,25 @@
            (div ^class_name "web_actions"
              (button ^key %$"record-save/${id}" ^type "submit" ^class_name "web_primary" "Save")
              (button ^key %$"record-cancel/${id}" ^type "button" ^state "recording" ^value "" "Cancel")))
-        `(div ^class_name "web_actions"
+        else `(div ^class_name "web_actions"
            (button ^key %$"record-start/${id}" ^state "recording" ^value %id ^class_name "web_secondary" "Record")
            %(if (== action/binding "") `(span "")
-              `(button ^key %$"clear/${id}" ^action "settings_key" ^args %{^operation "clear" ^id id ^expected digest}
+              else `(button ^key %$"clear/${id}" ^action "settings_key" ^args %{^operation "clear" ^id id ^expected digest}
                  ^class_name "web_secondary" "Clear"))
            %(if (== action/source "override")
               `(button ^key %$"restore/${id}" ^action "settings_key" ^args %{^operation "restore" ^id id ^expected digest}
                  ^class_name "web_secondary" "Restore default")
-              `(span "")))))
+              else `(span "")))))
     (rows .push
       `(tr ^key %$"action/${id}"
          (td (strong %action/label) (br) (small ^class_name "web_muted" %action/doc))
          (td %(chord_code action/binding)
            %(if (== action/source "override")
               `(small ^class_name "web_muted" " (default " %(chord_code action/default) ")")
-              `(span "")))
+              else `(span "")))
          (td %action/context (br) (small ^class_name "web_muted" %action/owner))
          (td %editor
-           %(if conflicts/.empty? `(span "") `(ul ^class_name "web_danger_text" %conflicts...))))))
+           %(if conflicts/.empty? `(span "") else `(ul ^class_name "web_danger_text" %conflicts...))))))
   [`(section ^key "keyboard-tools" ^class_name "web_row"
       (label "Search" (input ^key "keyboard-search" ^type "search" ^state "q" ^value %(?? state/q "")))
       (label (input ^key "keyboard-customized" ^type "checkbox" ^state "customized" ^checked %(== state/customized true))
@@ -380,7 +378,7 @@
    `(table ^key "keyboard-table" ^class_name "web_table_compact"
       (thead (tr (th "Action") (th "Shortcut") (th "Context") (th "")))
       (tbody %rows...))
-   (if rows/.empty? `(p ^key "keyboard-empty" ^class_name "web_muted" "No shortcuts match.") `(span ^key "keyboard-empty" ""))
+   (if rows/.empty? `(p ^key "keyboard-empty" ^class_name "web_muted" "No shortcuts match.") else `(span ^key "keyboard-empty" ""))
    `(section ^key "keyboard-reserved" ^class_name "web_notice"
       (p "Some combinations never reach the page, so the recorder cannot capture them and Harness cannot override them.")
       (p "macOS: ⌘Q, ⌘W, ⌘T, ⌘N, ⌘Tab, ⌘Space and Mission Control keys. Windows and Linux: Ctrl+W, Ctrl+T, Ctrl+N, Alt+F4, Alt+Tab and the Windows key. Browsers reserve others, such as Ctrl+L and F5.")
@@ -429,14 +427,14 @@
          (h2 %(?? current/label selected))
          (div ^class_name "web_actions" ^role "group" ^aria_label "Scope"
            (button ^key "scope-workspace" ^state "scope" ^value "workspace"
-             ^class_name %(if (== scope "workspace") "web_primary" "web_secondary") "Workspace")
+             ^class_name %(if (== scope "workspace") "web_primary" else "web_secondary") "Workspace")
            (button ^key "scope-shared" ^state "scope" ^value "shared"
-             ^class_name %(if (== scope "shared") "web_primary" "web_secondary") "Shared")))
+             ^class_name %(if (== scope "shared") "web_primary" else "web_secondary") "Shared")))
        (small ^class_name "web_muted"
          %(if (== scope "shared")
             "Saving changes the default for every workspace under this manager that has no override."
-            "Saving changes this workspace only."))
-       %(if ($present? current/doc) `(p ^class_name "web_muted" %current/doc) `(span ""))
+            else "Saving changes this workspace only."))
+       %(if ($present? current/doc) `(p ^class_name "web_muted" %current/doc) else `(span ""))
        %body...
        %section)))
 
@@ -444,7 +442,7 @@
   (let workspace (current_workspace))
   (let manager (current_manager))
   (let state context/view_state)
-  (let scope (if (== state/scope "shared") "shared" "workspace"))
+  (let scope (if (== state/scope "shared") "shared" else "workspace"))
   (let groups workspace/.settings_groups)
   (let selected (choose_group groups (?? state/group "")))
   (let current ($first ($filter groups (fn [group] (== group/name selected)))))
@@ -452,14 +450,14 @@
   (for group in groups
     (nav .push
       `(button ^key %$"group/${group/name}" ^state "group" ^value %group/name
-         ^class_name %(if (== group/name selected) "web_primary" "web_secondary") %group/label)))
+         ^class_name %(if (== group/name selected) "web_primary" else "web_secondary") %group/label)))
   (let body
     (try
       (match selected
-        (when "Models" (models_group workspace manager state scope))
-        (when "Keyboard Shortcuts" (keyboard_group workspace state scope))
-        (when "Appearance" (appearance_group workspace scope))
-        (else (generic_group workspace manager selected scope)))
+        when "Models" (models_group workspace manager state scope)
+        when "Keyboard Shortcuts" (keyboard_group workspace state scope)
+        when "Appearance" (appearance_group workspace scope)
+        else (generic_group workspace manager selected scope))
       catch Error
         (let reason ($to_str (?? $err/.message $err)))
         [`(p ^key "group-error" ^role "alert" ^class_name "web_notice web_notice_error"
@@ -483,71 +481,69 @@
   (let definition (workspace .setting key))
   (let parsed (parse_value definition value))
   (if (== scope "shared")
-    (then ((current_manager) .set_setting key parsed ^expected expected))
-    (else (workspace .set_setting key parsed ^expected expected)))
+    ((current_manager) .set_setting key parsed ^expected expected)
+    else (workspace .set_setting key parsed ^expected expected))
   $"Saved ${definition/label}.")
 
 (fn reset_setting [^scope scope : Str, ^key key : Str, ^expected expected : Str = "", ^value value = ""]
   (if (== scope "shared")
-    (then ((current_manager) .reset_setting key ^expected expected))
-    (else ((current_workspace) .reset_setting key ^expected expected)))
+    ((current_manager) .reset_setting key ^expected expected)
+    else ((current_workspace) .reset_setting key ^expected expected))
   $"Reset ${key}.")
 
 (fn chosen_selection [selection : Str, custom : Str] : Str
   (let typed ($str/trim custom))
-  (if (!= typed "") typed selection))
+  (if (!= typed "") typed else selection))
 
 (fn save_models [^scope scope : Str, ^selection selection : Str = "-", ^saved saved : Str = "-",
                  ^expected expected : Str = "", ^effort effort : Str = "", ^custom custom : Str = ""]
   (let chosen (chosen_selection selection custom))
   (if (== scope "shared")
-    (then
-      (if (== chosen "-") (invalid "Choose a model for the shared default, or clear it."))
+    (if (== chosen "-") (invalid "Choose a model for the shared default, or clear it."))
       (let pair (split_selection chosen))
       (if (|| (== pair/provider "") (== pair/model ""))
         (invalid "A shared default names both a provider and a model."))
       (let value {^provider pair/provider ^model pair/model})
       (if (!= effort "") (value .put "effort" effort))
       ((current_manager) .set_default_model value expected)
-      $"Saved the shared default ${chosen}.")
-    (else
+      $"Saved the shared default ${chosen}."
+    else
       (let changes {})
       (let reset [])
       # An unchanged selection leaves provider and model exactly as saved, including
       # a provider-only override. Inheriting is only ever an explicit choice.
       (if (!= chosen saved)
         (if (== chosen "-")
-          (then (reset .push "provider") (reset .push "model"))
-          (else
+          (reset .push "provider") (reset .push "model")
+          else
             (let pair (split_selection chosen))
             (if (== pair/provider "") (invalid "Choose a provider for this model."))
             (changes .put "provider" pair/provider)
-            (if (== pair/model "") (reset .push "model") (changes .put "model" pair/model)))))
-      (if (== effort "") (reset .push "effort") (changes .put "effort" effort))
+            (if (== pair/model "") (reset .push "model") else (changes .put "model" pair/model))))
+      (if (== effort "") (reset .push "effort") else (changes .put "effort" effort))
       ((current_workspace) .set_settings changes ^reset reset ^expected expected)
-      "Saved the workspace model.")))
+      "Saved the workspace model."))
 
 (fn reset_models [^scope scope : Str, ^selection selection : Str = "-", ^saved saved : Str = "-",
                   ^expected expected : Str = "", ^effort effort : Str = "", ^custom custom : Str = ""]
   (if (== scope "shared")
-    (then
-      (let manager (current_manager))
+    (let manager (current_manager))
       (let configuration manager/.model_configuration)
       (let config ($thaw ($freeze configuration/config)))
       (config .put "default" {})
       (manager .save_model_configuration config expected)
-      "Cleared the shared default model.")
-    (else
+      "Cleared the shared default model."
+    else
       ((current_workspace) .set_settings {} ^reset model_keys ^expected expected)
-      "The workspace model now follows the selection order.")))
+      "The workspace model now follows the selection order."))
 
 (fn key_action [^operation operation : Str, ^id id : Str, ^expected expected : Str = "", ^chord chord : Str = ""]
   (let workspace (current_workspace))
   (match operation
-    (when "bind" (workspace .bind_key id chord ^expected expected))
-    (when "clear" (workspace .clear_key id ^expected expected))
-    (when "restore" (workspace .restore_key id ^expected expected))
-    (else (invalid $"Unknown shortcut operation ${operation}.")))
+    when "bind" (workspace .bind_key id chord ^expected expected)
+    when "clear" (workspace .clear_key id ^expected expected)
+    when "restore" (workspace .restore_key id ^expected expected)
+    else (invalid $"Unknown shortcut operation ${operation}."))
   $"Updated ${id}.")
 
 (fn settings_style []

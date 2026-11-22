@@ -395,15 +395,14 @@ suite "spec — reader surface from design":
         covered.add name
 
     fixture(["do", "var", "set", "if"],
-      "(do (var x 1) (set x 2) (if true (then x) (else 0)))")
+      "(do (var x 1) (set x 2) (if true x else 0))")
     fixture(["let"], "(let x 1)")
     discard compileSource("(var m {^a 1}) (set m/a 2)")
     fixture(["new"],
       "(type FixtureNew ^props {} (ctor [] nil)) (new FixtureNew)")
     fixture(["const"], "(const K 1)")
-    fixture(["if_yes"], "(if_yes true 1 2)")
     fixture(["if_not"], "(if_not false 1 2)")
-    fixture(["if_present"], "(if_present x 1 x (else 0))")
+    fixture(["if_present"], "(if_present x 1 x else 0)")
     fixture(["&&", "||", "??", "!"],
             "[(&& true 1) (|| nil 2) (?? nil 2) (! false)]")
     discard compileSource("(fn size-of [self] (.size))")
@@ -419,7 +418,7 @@ suite "spec — reader surface from design":
     fixture(["eval"], "(eval (quote 1) ^in (env))")
     fixture(["import"], "(import gene/stream [map])")
     fixture(["mod"], "(mod sample)")
-    fixture(["match"], "(match 1 (when x x))")
+    fixture(["match"], "(match 1 when x x)")
     fixture(["while", "break"], "(while true (break))")
     fixture(["loop", "continue"], "(loop (continue))")
     fixture(["repeat"], "(repeat 0 nil)")
@@ -568,7 +567,7 @@ suite "spec — sequenced value pipelines":
     check run(chunk, newGlobalScope()).print() == "3"
 
   test "the final pipeline stage remains a tail position":
-    check_eval("(fn down [n] (if (== n 0) 0 (n -> - 1 -> down))) " &
+    check_eval("(fn down [n] (if (== n 0) 0 else (n -> - 1 -> down))) " &
                "(down 100000)",
                "0")
 
@@ -635,7 +634,7 @@ suite "spec — sequenced value pipelines":
   test "lazy iterate failures preserve completed per-item effects":
     check_eval("(var log []) " &
                "(fn validate [x] (log .push x) " &
-               "  (if_yes (== x 3) " &
+               "  (if (== x 3) " &
                "    (fail (RuntimeFault ^_msg \"bad row\"))) x) " &
                "(var message (try ([1 2 3 4] => validate -> $into []) " &
                "  catch RuntimeFault $err/.message)) [message log]",
@@ -685,13 +684,13 @@ suite "spec — enums from design":
   test "tuple variants construct payload values and match by tag":
     check_eval("(enum Shape (circle Int) (rect Int Int)) " &
                "(match (Shape/circle 5) ^!exhaustive " &
-               "  (when (Shape/circle r) r) " &
-               "  (when (Shape/rect w h) (* w h)))",
+               "  when (Shape/circle r) r " &
+               "  when (Shape/rect w h) (* w h))",
                "5")
     check_eval("(enum Result (ok Int) (err Str)) " &
                "(match (Result/err \"bad\") ^!exhaustive " &
-               "  (when (Result/ok v) v) " &
-               "  (when (Result/err e) e))",
+               "  when (Result/ok v) v " &
+               "  when (Result/err e) e)",
                "\"bad\"")
 
   test "enums are annotation types and generic arguments erase at runtime":
@@ -701,16 +700,16 @@ suite "spec — enums from design":
                "blue")
     check_eval("(enum Option [T] none (some T)) " &
                "[(Option/some 7) (Option/some \"x\") " &
-               " (match Option/none ^!exhaustive (when Option/none \"none\"))]",
+               " (match Option/none ^!exhaustive when Option/none \"none\")]",
                "[(Option/some 7) (Option/some \"x\") \"none\"]")
     check_eval("(enum Option [T] none (some T)) " &
                "(fn unwrap [o : (Option Int)] " &
-               "  (match o ^!exhaustive (when (Option/some v) v) (when Option/none 0))) " &
+               "  (match o ^!exhaustive when (Option/some v) v when Option/none 0)) " &
                "(unwrap (Option/some 9))",
                "9")
     check_eval("(enum Tree leaf (node Tree Tree)) " &
                "(match (Tree/node Tree/leaf Tree/leaf) ^!exhaustive " &
-               "  (when (Tree/node left right) [left right]))",
+               "  when (Tree/node left right) [left right])",
                "[Tree/leaf Tree/leaf]")
 
   test "backed unit enums round-trip through backing values":
@@ -730,7 +729,7 @@ suite "spec — enums from design":
                "  off on " &
                "  (impl Label " &
                "    (message label [self] : Str " &
-               "      (if (== self Light/on) \"on\" \"off\")))) " &
+               "      (if (== self Light/on) \"on\" else \"off\")))) " &
                "(Light/on .Label:label)",
                "\"on\"")
     check_eval("(protocol Code (message code [self] : Int)) " &
@@ -759,11 +758,11 @@ suite "spec — macros from design":
 
   test "template macros expand before calls":
     check_eval("(macro when [cond, body...] " &
-               "  `(if %cond (then %body...) (else nil))) " &
+               "  `(if %cond %body... else nil)) " &
                "[(when true 1) (when false 2)]",
                "[1 nil]")
     check_eval("(macro when [cond, body...] " &
-               "  `(if %cond (then %body...) (else nil))) " &
+               "  `(if %cond %body... else nil)) " &
                "(when true (var x 1) (+ x 1))",
                "2")
 
@@ -866,14 +865,14 @@ suite "spec — macros from design":
                "[3 100]")
     check_eval("(macro recursive [x] " &
                "  `(do (fn helper [n] " &
-               "          (if (== n 0) 0 (helper (- n 1)))) " &
+               "          (if (== n 0) 0 else (helper (- n 1)))) " &
                "       (helper %x))) " &
                "(fn helper [n] 99) [(recursive 3) (helper 3)]",
                "[0 99]")
 
   test "macro match binders retain their ordinary arm scope":
     check_eval("(macro first_of [x] " &
-               "  `(match %x ^!exhaustive (when [tmp] tmp))) " &
+               "  `(match %x ^!exhaustive when [tmp] tmp)) " &
                "(var tmp 100) [(first_of [1]) tmp]",
                "[1 100]")
 
@@ -890,7 +889,7 @@ suite "spec — macros from design":
       "(var x 10) [((mk (+ x 1)) 5) x]", "[6 10]")
     check_eval("(macro each3 [body] `(for i in [1 2 3] %body)) " &
       "(var i 99) (var total 0) (each3 (set total (+ total i))) [total i]", "[6 99]")
-    check_eval("(macro first_or [x d] `(match %x ^!exhaustive (when [tmp] %d))) " &
+    check_eval("(macro first_or [x d] `(match %x ^!exhaustive when [tmp] %d)) " &
       "(var tmp 100) [(first_or [1] tmp) tmp]", "[1 100]")
     check_eval("(macro swap [a b] `(do (var tmp %a) (set %a %b) (set %b tmp))) " &
       "(fn f [] (var tmp 1) (var y 2) (swap tmp y) [tmp y]) (f)", "[1 2]")
@@ -901,10 +900,10 @@ suite "spec — macros from design":
 
   test "template body siblings use ordinary binding visibility":
     for templateBody in [
-      "((fn [] (let x 7) x))", "(if true (do (let x 7) x) 0)",
+      "((fn [] (let x 7) x))", "(if true (do (let x 7) x) else 0)",
       "(do (var total 0) (loop (let x 7) (set total x) (break)) total)",
       "(do (var total 0) (for i in [1] (let x 7) (set total x)) total)",
-      "(scope (let x 7) x)", "(match 0 (when _ (let x 7) x))",
+      "(scope (let x 7) x)", "(match 0 when _ (let x 7) x)",
       "(try (let x 7) x catch Error 99)"
     ]:
       checkpoint templateBody
@@ -924,7 +923,7 @@ suite "spec — macros from design":
       "(macro pick [k] `(do (let key %k) (path data %(quote (unquote key))))) " &
       "(pick \"a\")", "1")
     check_eval("(macro is_same [x y] `(do (let a %x) " &
-      "(match %y (when %(quote (unquote a)) true) (when _ false)))) " &
+      "(match %y when %(quote (unquote a)) true when _ false))) " &
       "[(is_same 1 1) (is_same 1 2)]", "[true false]")
     check_eval("(macro identity [x] x) (let key \"a\") (let data {^a 1}) " &
       "(identity data/%key)", "1")
@@ -932,10 +931,10 @@ suite "spec — macros from design":
       "(macro pick [k] `(do (let key %k) data/%key)) (pick \"a\")",
       "undefined symbol: key")
     check_compile_error("(macro is_same [x y] " &
-      "`(do (let a %x) (match %y (when %a true) (when _ false)))) (is_same 1 2)",
+      "`(do (let a %x) (match %y when %a true when _ false))) (is_same 1 2)",
       "undefined symbol: a")
     check_compile_error("(let a 1) (macro is_same [x] " &
-      "`(match %x (when %%a true) (when _ false))) (is_same 2)",
+      "`(match %x when %%a true when _ false)) (is_same 2)",
       "undefined symbol: unquote")
 
   test "macro splices use ordinary quasiquote node anatomy":
@@ -1067,7 +1066,7 @@ suite "spec — macro fresh names ($gensym)":
         (var a 1)
         (var b 2)
         (swap a b)
-        (if (> n 0) (f (- n 1)) [a b]))
+        (if (> n 0) (f (- n 1)) else [a b]))
       (f 3)""", "[2 1]")
     # a closure from one expansion, called inside another that spliced it:
     # the nested call sits deeper, so the two temporaries differ
@@ -1187,7 +1186,7 @@ suite "spec — macro fresh names ($gensym)":
         (var total 0)
         (var i 0)
         (while (< i 3) (bump total) (set i (+ i 1)))
-        (if (> n 0) (+ total (walk (- n 1))) total))
+        (if (> n 0) (+ total (walk (- n 1))) else total))
       (walk 3)""", "12")
 
   test "each running macro body keeps its own counter across suspension":
@@ -1306,7 +1305,7 @@ suite "spec — macro fresh names ($gensym)":
         (let t ($gensym "r"))
         (if (> n 0)
           `(do (var %t 1) [(quote %t) (rec %(- n 1))])
-          `(quote %t)))
+          else `(quote %t)))
       (let r (rec 2))
       [($present? (#"_0_1$" .match ($to_str r/0)))
        ($present? (#"_1_1$" .match ($to_str r/1/0)))
@@ -1425,7 +1424,7 @@ suite "spec — module-level macros reject compile-time definitions":
       (var i 0)
       (while (< i 20)
         (if (try (do (eval `(smuggle [%(fn [] 7)]) ^in (env)) false) catch Error true)
-          (then (set rejected (+ rejected 1))))
+          (set rejected (+ rejected 1)))
         (set i (+ i 1)))
       rejected""", "20")
 
@@ -1439,7 +1438,7 @@ suite "spec — module-level macros reject compile-time definitions":
       (macro keep [syntax store]
         (if ($present? (store .get))
           (store .get)
-          (do (store .set syntax) syntax)))
+          else (do (store .set syntax) syntax)))
       (let store ($cell nil))
       (let one (eval `(keep %helper %store) ^in (env)))
       [(same? one helper)
@@ -1451,7 +1450,7 @@ suite "spec — module-level macros reject compile-time definitions":
       (macro keep [syntax store]
         (if ($present? (store .get))
           (store .get)
-          (do (store .set syntax) syntax)))
+          else (do (store .set syntax) syntax)))
       (let store ($cell nil))
       (eval `(keep %helper %store) ^in (env))
       (try (eval `(keep %other %store) ^in (env))
@@ -1769,7 +1768,7 @@ suite "spec — typed native compilation prototype from design":
   test "C minimum I64 literals preserve signed comparisons":
     let source = "(fn minimum [] : I64 -9223372036854775808) " &
       "(fn negative [x : I64] : I64 " &
-      "  (if (< (+ x -9223372036854775808) 0) 1 0))"
+      "  (if (< (+ x -9223372036854775808) 0) 1 else 0))"
     let generated = compileSource(source).emitExperimentalC()
     check_eval(source & " [(minimum) (negative 1)]", "[-9223372036854775808 1]")
     checkCRuns(generated & """
@@ -1785,8 +1784,8 @@ int main(void) {
     let c = compileSource("""
       (fn back [x : I64] : I64 (- (+ x 1) 1))
       (fn add [x : I64 y : I64] : I64 (+ x y))
-      (fn true_zero [x : I64] : I64 (if x 1 2))
-      (fn conditional_kind [x : I64] : I64 (if (< x 0) (== x -1) 1))
+      (fn true_zero [x : I64] : I64 (if x 1 else 2))
+      (fn conditional_kind [x : I64] : I64 (if (< x 0) (== x -1) else 1))
       (fn crossed [n : I64] : I64
         (var x n) (while (< x (+ n 2)) (set x (+ x 1))) (- x n))
       (ffi/fn tick ^symbol "checked_tick" [n : C/Int64] : C/Int64)
@@ -1797,7 +1796,7 @@ int main(void) {
       (type Box ^native {^abi CBox ^lifecycle manual ^^mutable})
       (fn before_store [box : Box?] : I64 (set box/value (tick 3)))
       (fn char_as_int [box : Box] : I64 box/letter)
-      (fn float_cmp [x : F64 y : F64] : I64 (if (< x y) 1 2))
+      (fn float_cmp [x : F64 y : F64] : I64 (if (< x y) 1 else 2))
       (ffi/fn write64 ^symbol "checked_write64" ^out value [value : C/Int64] : C/Int)
       (fn wider_out [box : Box seed : I32] : I64
         (var slot : I32 seed)
@@ -1882,16 +1881,16 @@ int main(void) {
 
   test "checked native comparisons and wide literals agree with the VM":
     let source = """
-      (fn lt ^native_entry {} [x : F64 y : F64] : I64 (if (< x y) 1 0))
-      (fn le ^native_entry {} [x : F64 y : F64] : I64 (if (<= x y) 1 0))
-      (fn gt ^native_entry {} [x : F64 y : F64] : I64 (if (> x y) 1 0))
-      (fn ge ^native_entry {} [x : F64 y : F64] : I64 (if (>= x y) 1 0))
-      (fn eq ^native_entry {} [x : F64 y : F64] : I64 (if (== x y) 1 0))
-      (fn eq_int ^native_entry {} [x : I64 y : I64] : I64 (if (== x y) 1 0))
+      (fn lt ^native_entry {} [x : F64 y : F64] : I64 (if (< x y) 1 else 0))
+      (fn le ^native_entry {} [x : F64 y : F64] : I64 (if (<= x y) 1 else 0))
+      (fn gt ^native_entry {} [x : F64 y : F64] : I64 (if (> x y) 1 else 0))
+      (fn ge ^native_entry {} [x : F64 y : F64] : I64 (if (>= x y) 1 else 0))
+      (fn eq ^native_entry {} [x : F64 y : F64] : I64 (if (== x y) 1 else 0))
+      (fn eq_int ^native_entry {} [x : I64 y : I64] : I64 (if (== x y) 1 else 0))
       (fn wide ^native_entry {} [x : I64] : I64
         (- (+ x 10000000000000000000000000000000000000000)
            10000000000000000000000000000000000000000))
-      (fn wide_cmp ^native_entry {} [x : I64] : I64 (if (< x 9223372036854775808) 1 0))
+      (fn wide_cmp ^native_entry {} [x : I64] : I64 (if (< x 9223372036854775808) 1 else 0))
       (fn negative ^native_entry {} [] : I64
         (- -10000000000000000000000000000000000000000
            -9999999999999999999999999999999999999999))
@@ -1956,7 +1955,7 @@ int main(void) {
 
   test "native equality uses the ordinary Gene operator and never drops FFI props":
     check_runtime_error("(= 1 1)", "undefined symbol: =")
-    check_compile_error("(fn bad ^native_entry {} [x : I64] : I64 (if (= x 0) 1 0))",
+    check_compile_error("(fn bad ^native_entry {} [x : I64] : I64 (if (= x 0) 1 else 0))",
       "requires typed_native lowering")
     check_compile_error("(ffi/fn note ^symbol \"checked_note\" [x : C/Int64] : C/Void) " &
       "(fn bad ^native_entry {} [x : I64] : I64 (note ^level 1 x) x)",
@@ -1964,7 +1963,7 @@ int main(void) {
 
   test "native recursion reaches a checked limit and recovers without corrupting later calls":
     let source = "(fn depth ^native_entry {} [n : I64] : I64 " &
-      "(if (< n 1) 0 (+ 1 (depth (- n 1)))))"
+      "(if (< n 1) 0 else (+ 1 (depth (- n 1)))))"
     check_eval(source & " (depth 100000)", "100000")
     let generated = compileSource(source).emitExperimentalC()
     checkCRuns(generated & """
@@ -2203,7 +2202,7 @@ int main(void) {
       "  (do " &
       "    (var slot : Db? seed) " &
       "    (let rc : I64 (db_clone src slot)) " &
-      "    (if (== rc 0) slot nil)))")
+      "    (if (== rc 0) slot else nil)))")
     let c = chunk.emitExperimentalC()
     check "extern int GENE_FFI_CDECL db_clone(CDb * src, CDb ** dst);" in c
     check "= gene_aot_int((int64_t)(db_clone(" in nativeFunction(c, "clone_it")
@@ -2247,7 +2246,7 @@ int main(void) {
       "    (var first : Db? nil) " &
       "    (var second : Db? nil) " &
       "    (let rc : I64 (db_split src first second)) " &
-      "    (if (== rc 0) second nil)))").emitExperimentalC()
+      "    (if (== rc 0) second else nil)))").emitExperimentalC()
     check "extern int GENE_FFI_CDECL db_split(CDb * src, CDb ** a, CDb ** b);" in c
     check "db_split(" in c
     checkCCompiles(c, "typed_native_multi_out")
@@ -2340,7 +2339,7 @@ int main(void) {
       "(type Point ^native {^abi CPoint ^lifecycle manual}) " &
       "(fn area [p : Point] : I64 (* p/x p/y)) " &
       "(fn shifted [p : Point] : I64 (+ p/x 1)) " &
-      "(fn larger [p : Point] : I64 (if (< p/x p/y) p/y p/x)) " &
+      "(fn larger [p : Point] : I64 (if (< p/x p/y) p/y else p/x)) " &
       "(fn nested [p : Point] : I64 (+ (* p/x p/x) (* p/y p/y)))")
     let c = chunk.emitExperimentalC()
     check "gene_aot_int_mul" in nativeFunction(c, "area")
@@ -2411,7 +2410,7 @@ int main(void) {
     check_compile_error(
       "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]]) " &
       "(type Point ^native {^abi CPoint ^lifecycle manual}) " &
-      "(fn bad [p : Point] : I64 (if (< p/x p/y) p p/x))",
+      "(fn bad [p : Point] : I64 (if (< p/x p/y) p else p/x))",
       "typed_native function bad cannot lower its body statically")
 
   test "typed-native paths reject operations that require runtime dispatch":
@@ -3982,9 +3981,9 @@ int main(void) {
   test "fixed scalar AOT covers branching and direct recursion":
     let chunk = compileSource(
       "(fn clamp64 [x : I64 lo : I64 hi : I64] : I64 " &
-      "  (if (< x lo) lo (if (> x hi) hi x))) " &
+      "  (if (< x lo) lo else (if (> x hi) hi else x))) " &
       "(fn fib64 [n : I64] : I64 " &
-      "  (if (< n 2) n (+ (fib64 (- n 1)) (fib64 (- n 2)))))")
+      "  (if (< n 2) n else (+ (fib64 (- n 1)) (fib64 (- n 2)))))")
     check chunk.functions[0].aotExpr.kind != vkNil
     check chunk.functions[1].aotExpr.kind != vkNil
     check chunk.functions[0].aotFrameKind == afkTypedNative
@@ -3998,9 +3997,9 @@ int main(void) {
       "native_scalar_branch_recursion", "0 10 55")
     check_eval(
       "(fn clamp64 [x : I64 lo : I64 hi : I64] : I64 " &
-      "  (if (< x lo) lo (if (> x hi) hi x))) " &
+      "  (if (< x lo) lo else (if (> x hi) hi else x))) " &
       "(fn fib64 [n : I64] : I64 " &
-      "  (if (< n 2) n (+ (fib64 (- n 1)) (fib64 (- n 2))))) " &
+      "  (if (< n 2) n else (+ (fib64 (- n 1)) (fib64 (- n 2))))) " &
       "[(clamp64 -2 0 10) (clamp64 12 0 10) (fib64 10)]",
       "[0 10 55]")
 
@@ -4709,7 +4708,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "  (ctor [n : Int] ^errors [ValidationError] " &
                "    (if (&& (>= n 0) (<= n 65535)) " &
                "      (self .put `value n) " &
-               "      (fail (ValidationError ^_msg \"invalid port\"))))) " &
+               "      else (fail (ValidationError ^_msg \"invalid port\"))))) " &
                "(var ok (new Port 8080)) " &
                "[(try (new Port 99999) catch ValidationError $err/.message) " &
                " ok/value]",
@@ -5173,7 +5172,7 @@ suite "spec — loop body scoping from design (§9)":
     check_runtime_error("(var y 1) (var y 2) y", "duplicate binding")
   test "branch shadowing and nested functions keep the strict rule":
     # Two `var` forms in mutually exclusive branches are not a redeclaration.
-    check_eval("(fn f [c] (if c (var x 1) (var x 2)) x) [(f true) (f false)]",
+    check_eval("(fn f [c] (if c (var x 1) else (var x 2)) x) [(f true) (f false)]",
                "[1 2]")
     # A function defined inside a loop starts at loop depth zero, so its own
     # body still rejects a real duplicate.
@@ -5361,7 +5360,7 @@ suite "spec — statement return types from design (§7.7)":
                "nil")
     # Early return still cuts the body short.
     check_eval("(var log []) " &
-               "(fn f [x] : Nil (if_yes (< x 0) (return)) (log .push x)) " &
+               "(fn f [x] : Nil (if (< x 0) (return)) (log .push x)) " &
                "(f -1) (f 3) log",
                "[3]")
   test "statement returns are bare Nil and Nil, not any nil-admitting type":
@@ -5435,9 +5434,9 @@ suite "spec — typed variable boundaries from design":
 suite "spec — proper tail calls from design §3.1":
   test "mutual and higher-order tail calls are iteration-safe":
     check_eval(
-      "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
-      "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
-      "(fn bounce [f n] (if (== n 0) 0 (f f (- n 1)))) " &
+      "(fn is_even [n] (if (== n 0) true else (is_odd (- n 1)))) " &
+      "(fn is_odd [n] (if (== n 0) false else (is_even (- n 1)))) " &
+      "(fn bounce [f n] (if (== n 0) 0 else (f f (- n 1)))) " &
       "[(is_even 50000) (bounce bounce 50000)]",
       "[true 0]")
 
@@ -5445,20 +5444,20 @@ suite "spec — proper tail calls from design §3.1":
     check_eval(
       "(fn consume [xs n] " &
       "  (match xs " &
-      "    (when [] (if (== n 0) 0 (consume [n] (- n 1)))) " &
-      "    (else (consume [] n)))) " &
+      "    when [] (if (== n 0) 0 else (consume [n] (- n 1))) " &
+      "    else (consume [] n))) " &
       "(consume [] 50000)",
       "0")
 
   test "exact typed returns and tail sends remain elidable":
     check_eval(
       "(fn count_down [n] : F64 " &
-      "  (if (== n 0) 0.0 (count_down (- n 1)))) " &
+      "  (if (== n 0) 0.0 else (count_down (- n 1)))) " &
       "(type Box ^props {^n Int} " &
       "  (ctor [n] (self .put `n n)) " &
       "  (message down [] " &
       "    (if (== self/n 0) 0 " &
-      "      ((new Box (- self/n 1)) .down)))) " &
+      "      else ((new Box (- self/n 1)) .down)))) " &
       "[(count_down 50000) ((new Box 20000) .down)]",
       "[0.0 0]")
 
@@ -5468,12 +5467,12 @@ suite "spec — proper tail calls from design §3.1":
       "(impl Callable for Bounce " &
       "  (message apply [self call] " &
       "    (var n (/0 call)) " &
-      "    (if (== n 0) 0 (self (- n 1))))) " &
+      "    (if (== n 0) 0 else (self (- n 1))))) " &
       "(protocol Step (message step [n])) " &
       "(type Walker ^props {} " &
       "  (impl Step " &
       "    (message step [n] " &
-      "      (if (== n 0) 0 (next self (- n 1)))))) " &
+      "      (if (== n 0) 0 else (next self (- n 1)))))) " &
       "(var next Step:step) " &
       "[((Bounce) 20000) (next (Walker) 20000)]",
       "[0 0]")
@@ -5616,7 +5615,7 @@ suite "spec — type aliases from design §7.4.1":
     check_eval("($to_str (| Int Str))", "\"(| (type Int) (type Str))\"")
 
   test "pattern and annotation uses of | are untouched by the binding":
-    check_eval("(match 3 (when (| (Str _) (Int _)) \"alt\") (else \"no\"))",
+    check_eval("(match 3 when (| (Str _) (Int _)) \"alt\" else \"no\")",
                "\"alt\"")
     check_eval("(fn f [x : (| Int Str)] x) [(f 1) (f \"a\")]", "[1 \"a\"]")
     # `|` is an operator, so a program may still shadow it.
@@ -5658,7 +5657,7 @@ suite "spec — checked errors from design":
 suite "spec — pattern destructuring from design":
   test "match/for bindings and $err are branch-local":
     expect GeneError:
-      discard run(compileSource("(match [1 2] (when [a b] (+ a b))) a"),
+      discard run(compileSource("(match [1 2] when [a b] (+ a b)) a"),
                   newGlobalScope())
     expect GeneError:
       discard run(compileSource("(type Boom : Error) " &
@@ -5676,9 +5675,9 @@ suite "spec — pattern destructuring from design":
                "36")
     check_eval("(var s 0) " &
                "(match [1 2] " &
-               "  (when [a b] " &
-               "    (do (set s (+ a b)) nil)) " &
-               "  (else nil)) " &
+               "  when [a b] " &
+               "    (do (set s (+ a b)) nil) " &
+               "  else nil) " &
                "s",
                "3")
     check_eval("(var n 0) " &
@@ -5703,20 +5702,20 @@ suite "spec — pattern destructuring from design":
     # false positive the previous compile-time cross-check had was
     # rejecting exactly this case.
     check_eval("(match [1] ^!exhaustive " &
-               "  (when [a] $map) " &
-               "  (when [map] $map))",
+               "  when [a] $map " &
+               "  when [map] $map)",
                "(native-fn map)")
     # Arm 1 doesn't match `[9]` (2-tuple needed, 1-tuple given); arm 2
     # matches and references `map`. Sibling-leak would surface as
     # something else; runtime isolation gives us the global.
     check_eval("(match [9] ^!exhaustive " &
-               "  (when [a b] \"first\") " &
-               "  (when [c] $map))",
+               "  when [a b] \"first\" " &
+               "  when [c] $map)",
                "(native-fn map)")
     # Arm 1 matches `[1]` and returns the literal; arm 2 never runs.
     check_eval("(match [1] ^!exhaustive " &
-               "  (when [a] \"first\") " &
-               "  (when [c] $map))",
+               "  when [a] \"first\" " &
+               "  when [c] $map)",
                "\"first\"")
   test "for iterates streams lazily and closes on pattern failure":
     check_eval("(var hits ($cell 0)) " &
@@ -5750,24 +5749,24 @@ suite "spec — pattern destructuring from design":
     check_eval("(var i 0) (var sum 0) " &
                "(while true " &
                "  (set i (+ i 1)) " &
-               "  (if (== i 2) (then (continue))) " &
-               "  (if (> i 4) (then (break))) " &
+               "  (if (== i 2) (continue)) " &
+               "  (if (> i 4) (break)) " &
                "  (set sum (+ sum i))) " &
                "[sum i]",
                "[8 5]")
     check_eval("(var i 0) (var sum 0) " &
                "(loop " &
                "  (set i (+ i 1)) " &
-               "  (if (== i 2) (then (continue))) " &
-               "  (if (> i 4) (then (break))) " &
+               "  (if (== i 2) (continue)) " &
+               "  (if (> i 4) (break)) " &
                "  (set sum (+ sum i))) " &
                "[sum i]",
                "[8 5]")
     check_eval("(var i 0) (var sum 0) " &
                "(repeat 6 " &
                "  (set i (+ i 1)) " &
-               "  (if (== i 2) (then (continue))) " &
-               "  (if (> i 4) (then (break))) " &
+               "  (if (== i 2) (continue)) " &
+               "  (if (> i 4) (break)) " &
                "  (set sum (+ sum i))) " &
                "[sum i]",
                "[8 5]")
@@ -5778,8 +5777,8 @@ suite "spec — pattern destructuring from design":
                "10")
     check_eval("(var sum 0) " &
                "(repeat i in 6 " &
-               "  (if (== i 2) (then (continue))) " &
-               "  (if (> i 4) (then (break))) " &
+               "  (if (== i 2) (continue)) " &
+               "  (if (> i 4) (break)) " &
                "  (set sum (+ sum i))) " &
                "sum",
                "8")
@@ -5790,8 +5789,8 @@ suite "spec — pattern destructuring from design":
                "0")
     check_eval("(var s 0) " &
                "(for x in [1 2 3 4 5] " &
-               "  (if (== x 2) (then (continue))) " &
-               "  (if (> x 4) (then (break))) " &
+               "  (if (== x 2) (continue)) " &
+               "  (if (> x 4) (break)) " &
                "  (set s (+ s x))) " &
                "s",
                "8")
@@ -5859,24 +5858,24 @@ suite "spec — pattern destructuring from design":
                "[0 nil]")
 
   test "alternation alternatives bind the same names":
-    check_eval("(match [2 7] ^!exhaustive (when (| [1 a] [2 a]) a))", "7")
+    check_eval("(match [2 7] ^!exhaustive when (| [1 a] [2 a]) a)", "7")
     expect GeneError:
-      discard run(compileSource("(match [1] ^!exhaustive (when (| [a] [b]) a))"),
+      discard run(compileSource("(match [1] ^!exhaustive when (| [a] [b]) a)"),
                   newGlobalScope())
     expect GeneError:
-      discard run(compileSource("(match 1 (when (not x) \"no\") (else \"ok\"))"),
+      discard run(compileSource("(match 1 when (not x) \"no\" else \"ok\")"),
                   newGlobalScope())
   test "meta patterns opt into matching meta":
     check_eval("(match (quote (x @line 7 ^name \"Ada\")) ^!exhaustive " &
-               "  (when (@ {^line l} (x ^name n)) [l n]))",
+               "  when (@ {^line l} (x ^name n)) [l n])",
                "[7 \"Ada\"]")
     check_eval("(match (quote (x @line 7 ^name \"Ada\")) ^!exhaustive " &
-               "  (when (x ^name n) n))",
+               "  when (x ^name n) n)",
                "\"Ada\"")
   test "typed patterns bind and require the declared type":
-    check_eval("(match \"Ada\" (when (s : Str) s) (else \"no\"))",
+    check_eval("(match \"Ada\" when (s : Str) s else \"no\")",
                "\"Ada\"")
-    check_eval("(match 7 (when (s : Str) s) (else \"no\"))",
+    check_eval("(match 7 when (s : Str) s else \"no\")",
                "\"no\"")
     check_eval("(try (fn f [x : Int] x) (f \"bad\") " &
                "catch TypeFault $err/where)",
@@ -6236,28 +6235,28 @@ suite "spec — implicit self in message bodies from design §10":
   test "the canonical representation is what the pattern engine matches":
     # design §1.3/§8: a cell `c` holding `v` matches `(Cell p)` and binds `p`
     # to the current value; the bind is a read-only snapshot.
-    check_eval("(match ($cell 5) ^!exhaustive (when (Cell v) (* v 2)))", "10")
-    check_eval("(match ($cell 5) (when (Cell 5) \"five\") (else \"no\"))",
+    check_eval("(match ($cell 5) ^!exhaustive when (Cell v) (* v 2))", "10")
+    check_eval("(match ($cell 5) when (Cell 5) \"five\" else \"no\")",
                "\"five\"")
-    check_eval("(try (match ($cell 5) ^!exhaustive (when (Cell) x)) " &
+    check_eval("(try (match ($cell 5) ^!exhaustive when (Cell) x) " &
                "  catch MatchFault \"arity\")",
                "\"arity\"")
     check_eval("(var c ($cell 1)) " &
-               "(var v (match c ^!exhaustive (when (Cell x) x))) " &
+               "(var v (match c ^!exhaustive when (Cell x) x)) " &
                "(c .set 2) " &
                "[v (c .get)]",
                "[1 2]")
     check_eval("(var cs [($cell 1) ($cell 2)]) " &
-               "(match cs ^!exhaustive (when [(Cell a) (Cell b)] (+ a b)))",
+               "(match cs ^!exhaustive when [(Cell a) (Cell b)] (+ a b))",
                "3")
     # Head-only canonical nodes match arity-zero patterns; a function has no
     # registered type identity and matches no node pattern at all. Rest shapes
     # fall back to the sequence path and still bind.
-    check_eval("(match ($to_stream [1]) (when (Stream) \"s\") (else \"no\"))",
+    check_eval("(match ($to_stream [1]) when (Stream) \"s\" else \"no\")",
                "\"s\"")
-    check_eval("(match (fn [x] x) (when (Fn) \"fn\") (else \"no\"))", "\"no\"")
-    check_eval("(match 42 (when (Int xs...) xs) (else \"no\"))", "[42]")
-    check_eval("(match 42 (when (Int a xs...) (+ a xs/.size)) (else \"no\"))",
+    check_eval("(match (fn [x] x) when (Fn) \"fn\" else \"no\")", "\"no\"")
+    check_eval("(match 42 when (Int xs...) xs else \"no\")", "[42]")
+    check_eval("(match 42 when (Int a xs...) (+ a xs/.size) else \"no\")",
                "42")
     # A Cell is a leaf: content is state, not structure, so walks stop there.
     check_eval("[($leaf? ($cell 1)) ($leaf? [($cell 1)])]", "[true false]")
@@ -6266,19 +6265,19 @@ suite "spec — implicit self in message bodies from design §10":
     # The reader gives `xs...` two shapes: the symbol `xs...` inside a list
     # literal, and the spread node `(... xs)` everywhere else. A pattern has to
     # accept both, or a node-body rest silently takes the exact-arity path.
-    check_eval("[(match (quote (f 1 2 3)) (when (f xs...) xs) (else \"no\")) " &
-               " (match [1 2 3] (when [a xs...] [a xs]) (else \"no\")) " &
-               " (match [1 2 3] (when (List xs...) xs) (else \"no\"))]",
+    check_eval("[(match (quote (f 1 2 3)) when (f xs...) xs else \"no\") " &
+               " (match [1 2 3] when [a xs...] [a xs] else \"no\") " &
+               " (match [1 2 3] when (List xs...) xs else \"no\")]",
                "[[1 2 3] [1 [2 3]] [1 2 3]]")
     # Patterns before and after the rest, and the `_...` discard.
-    check_eval("[(match (quote (f 1 2 3 4)) (when (f a rest... z) [a rest z]) " &
-               "  (else \"no\")) " &
-               " (match (quote (f 1 2 3)) (when (f a _...) a) (else \"no\"))]",
+    check_eval("[(match (quote (f 1 2 3 4)) when (f a rest... z) [a rest z] " &
+               "  else \"no\") " &
+               " (match (quote (f 1 2 3)) when (f a _...) a else \"no\")]",
                "[[1 [2 3] 4] 1]")
     # A typed instance's body destructures the same way.
     check_eval("(type P ^props {^a Int} ^body [Any...]) (var p (P ^a 1)) " &
                "(p .push 7) (p .push 8) " &
-               "(match p (when (P ^a k xs...) [k xs]) (else \"no\"))",
+               "(match p when (P ^a k xs...) [k xs] else \"no\")",
                "[1 [7 8]]")
     # The macro-time matcher is a separate implementation and needs the same
     # rule, or a macro parameter pattern disagrees with a runtime one.
@@ -6289,34 +6288,34 @@ suite "spec — implicit self in message bodies from design §10":
     # literal projects the same anatomy (design §1.3), the same pattern shape
     # reaches every value: `(Int n)` binds `n`, so `(when (Int n) …)` and
     # `(when (Str s) …)` are uniform arms rather than a scalars-only carve-out.
-    check_eval("[(match 42 (when (Int n) n) (else \"no\")) " &
-               " (match \"hi\" (when (Str s) s) (else \"no\")) " &
-               " (match 1.5 (when (Float f) f) (else \"no\")) " &
-               " (match true (when (Bool b) b) (else \"no\")) " &
-               " (match nil (when (Nil n) \"nil\") (else \"no\"))]",
+    check_eval("[(match 42 when (Int n) n else \"no\") " &
+               " (match \"hi\" when (Str s) s else \"no\") " &
+               " (match 1.5 when (Float f) f else \"no\") " &
+               " (match true when (Bool b) b else \"no\") " &
+               " (match nil when (Nil n) \"nil\" else \"no\")]",
                "[42 \"hi\" 1.5 true \"nil\"]")
     # Lists and maps destructure through the same one rule.
-    check_eval("[(match [1 2] (when (List a b) [a b]) (else \"no\")) " &
-               " (match {^a 1} (when (Map ^a x) x) (else \"no\"))]",
+    check_eval("[(match [1 2] when (List a b) [a b] else \"no\") " &
+               " (match {^a 1} when (Map ^a x) x else \"no\")]",
                "[[1 2] 1]")
     # The head still has to match, so arms stay discriminating.
-    check_eval("[(match 42 (when (Str s) s) (else \"no\")) " &
-               " (match [1 2] (when (Map ^a x) x) (else \"no\")) " &
-               " (match \"hi\" (when (Int n) n) (else \"no\"))]",
+    check_eval("[(match 42 when (Str s) s else \"no\") " &
+               " (match [1 2] when (Map ^a x) x else \"no\") " &
+               " (match \"hi\" when (Int n) n else \"no\")]",
                "[\"no\" \"no\" \"no\"]")
     # Body arity is the ordinary node-pattern rule, applied to a body that now
     # holds the literal: `(Int)` has no slot for the 42 and does not match.
-    check_eval("[(match 42 (when (Int) \"none\") (else \"no\")) " &
-               " (match 42 (when (Int _) \"wild\") (else \"no\"))]",
+    check_eval("[(match 42 when (Int) \"none\" else \"no\") " &
+               " (match 42 when (Int _) \"wild\" else \"no\")]",
                "[\"no\" \"wild\"]")
     # A cell matches through its canonical representation (design §1.3/§8):
     # `(Cell c)` binds the current value. Nothing matches a cell *by accident* —
     # the pattern head still has to resolve to the cell's type.
-    check_eval("(match ($cell 1) (when (Cell c) c) (else \"no\"))", "1")
-    check_eval("(match ($cell 1) (when (Str s) s) (else \"no\"))", "\"no\"")
+    check_eval("(match ($cell 1) when (Cell c) c else \"no\")", "1")
+    check_eval("(match ($cell 1) when (Str s) s else \"no\")", "\"no\"")
     # A typed instance is unchanged — it was always read this way.
     check_eval("(type P ^props {^a Int}) " &
-               "(match (P ^a 7) (when (P ^a x) x) (else \"no\"))",
+               "(match (P ^a 7) when (P ^a x) x else \"no\")",
                "7")
 
   test "a gene-root annotation spelling means what the bare name means":
@@ -6380,7 +6379,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("($leaf? ($cell 1))", "true")
     # The guarded idiom terminates on every shape.
     check_eval("(fn walk [n] " &
-               "  (if ($leaf? n) 1 (do ((($body n) .to_stream) .each walk) 1))) " &
+               "  (if ($leaf? n) 1 else (do ((($body n) .to_stream) .each walk) 1))) " &
                "[(walk 42) (walk (quote (f 1 2))) (walk [1 [2 3]])]",
                "[1 1 1]")
 
@@ -6701,7 +6700,7 @@ suite "spec — implicit self in message bodies from design §10":
                "  (message up [] : (Task Str Error) " &
                "    (spawn ^lane root (do (var out \"\") " &
                "      (for x in [1] (try " &
-               "        (match x ^!exhaustive (when 1 (set out (super .m)))) ensure nil)) " &
+               "        (match x ^!exhaustive when 1 (set out (super .m))) ensure nil)) " &
                "      out)))) C) " &
                "(let C1 (make A)) (let C2 (make B)) " &
                "[(await ((C1) .up)) (await ((C2) .up)) (await ((C1) .up))]",
@@ -6742,10 +6741,10 @@ suite "spec — respond_to? (design §3)":
                "(try ((X ^n 1) ?.deinit) catch MessageFault \"raised\")",
                "\"raised\"")
     check_eval(shapes &
-               "(if ($respond_to? (X ^n 1) \"deinit\") \"sent\" \"skipped\")",
+               "(if ($respond_to? (X ^n 1) \"deinit\") \"sent\" else \"skipped\")",
                "\"skipped\"")
     check_eval(shapes & "(if ($respond_to? (X ^n 1) \"init\") " &
-               "  ((X ^n 1) .init) \"skipped\")",
+               "  ((X ^n 1) .init) else \"skipped\")",
                "\"i\"")
 
   test "respond_to? rejects a bad arity or a non-name":
@@ -7170,10 +7169,10 @@ suite "spec — binding forms from design §12.1":
     # and folding then read a value the binding never received —
     #     (if true (const K 2) (const K 1)) (fn f [] K)
     # evaluated `(f)` to 1 while `K` was 2. One name, two values, one program.
-    check_eval_error("(if true (const K 2) (const K 1)) (fn f [] K) [(f) K]",
+    check_eval_error("(if true (const K 2) else (const K 1)) (fn f [] K) [(f) K]",
                      "declared unconditionally")
     check_eval_error("(if true (const K 1)) K", "declared unconditionally")
-    check_eval_error("(match 1 (when 1 (const K 1)) (else nil)) K",
+    check_eval_error("(match 1 when 1 (const K 1) else nil) K",
                      "declared unconditionally")
     # `do` is transparent grouping, not a branch: a const under it really is
     # unconditional, so it stays legal and stays foldable.
@@ -7324,7 +7323,7 @@ suite "spec — binding forms from design §12.1":
 
   test "a match-arm binding shadowing an outer let stays rebindable":
     check_eval("(let z 1) " &
-               "[(match [7] ^!exhaustive (when [z] (do (set z (+ z 1)) z))) z]",
+               "[(match [7] ^!exhaustive when [z] (do (set z (+ z 1)) z)) z]",
                "[8 1]")
 
   test "typed let checks its value at the boundary":
@@ -7559,7 +7558,7 @@ suite "spec — real absences still read as nil":
     check_eval_error(pathReadFixtures & "p/head", "P has no field 'head'")
   test "tests stay total":
     check_eval(pathReadFixtures & "[($has_key? p \"nmae\") p/.props/nmae " &
-               "(match p (when {^nmae v} v) (else \"no\"))]",
+               "(match p when {^nmae v} v else \"no\")]",
                "[false nil \"no\"]")
     check_eval_error(pathReadFixtures & "p/.nmae", "no message 'nmae' on P")
   test "open containers and nil propagate absence":
@@ -7615,30 +7614,30 @@ suite "spec — if_present tests a value and binds it":
     let m = "(let m {^a 1}) "
     check_eval(m & "(if_present x m/a (+ x 1))", "2")
     check_eval(m & "(if_present x m/zz (+ x 1))", "nil")
-    check_eval(m & "(if_present x m/zz (+ x 1) (else \"none\"))", geneString("none"))
-    check_eval("(let f {^a false}) (if_present x f/a x (else \"none\"))", "false")
-    check_eval("(let z {^a 0 ^b \"\"}) [(if_present x z/a \"p\" (else \"a\")) " &
-               "(if_present x z/b \"p\" (else \"a\"))]", "[\"p\" \"p\"]")
+    check_eval(m & "(if_present x m/zz (+ x 1) else \"none\")", geneString("none"))
+    check_eval("(let f {^a false}) (if_present x f/a x else \"none\")", "false")
+    check_eval("(let z {^a 0 ^b \"\"}) [(if_present x z/a \"p\" else \"a\") " &
+               "(if_present x z/b \"p\" else \"a\")]", "[\"p\" \"p\"]")
     check_eval("(var n 0) (fn next [] (set n (+ n 1)) n) [(if_present x (next) x) n]",
                "[1 1]")
   test "the name belongs to the body; other declarations keep the enclosing scope":
     let m = "(let m {^a 1}) "
     check_eval_error(m & "(if_present x m/a x) x", "undefined symbol: x")
     check_eval(m & "(let x \"outer\") [(if_present x m/a x) x]", "[1 \"outer\"]")
-    check_eval_error(m & "(if_present x m/zz 1 (else x))", "undefined symbol: x")
+    check_eval_error(m & "(if_present x m/zz 1 else x)", "undefined symbol: x")
     check_eval(m & "(if_present x m/a (let y 5)) y", "5")
-    check_eval(m & "(if_present x m/zz 1 (else (let e 7))) e", "7")
+    check_eval(m & "(if_present x m/zz 1 else (let e 7)) e", "7")
     # The same holds when the body reaches names at run time.
     check_eval("(fn f [m] (if_present x m/a (let z (try (+ x 1) catch Fault 0))) " &
                "[z (try x catch Fault \"gone\")]) (f {^a 1})", "[2 \"gone\"]")
     check_eval("(fn f [m] (var t 0) (if_present x m/a " &
-               "(match x (when 1 (set t 10)) (else nil)) (let u (+ t x))) [t u]) (f {^a 1})",
+               "(match x when 1 (set t 10) else nil) (let u (+ t x))) [t u]) (f {^a 1})",
                "[10 11]")
     check_eval("(fn f [m] (if_present x m/a (let g (fn [] (+ x 100)))) (g)) (f {^a 1})",
                "101")
     check_eval(m & "(if_present a m/a (if_present b m/a (+ a b)))", "2")
     check_eval(m & "(if_present x m/a (if_present x (+ x 1) x))", "2")
-    check_eval(m & "(let x \"outer\") (if_present x m/zz 1 (else x))", geneString("outer"))
+    check_eval(m & "(let x \"outer\") (if_present x m/zz 1 else x)", geneString("outer"))
     check_eval("(fn f [m] (if_present l m/a (let c [l]) (fn [] c))) " &
                "(let g (f {^a [1]})) ((g) .push 2) (g)", "[[1] 2]")
     check_eval("(fn f [m] (var x 5) [(if_present x m/a (set x 99) x) x]) (f {^a 1})",
@@ -7657,17 +7656,17 @@ suite "spec — if_present tests a value and binds it":
     check_eval("(let m {^a 1}) (let g (if_present v m/a (fn [] v))) (g)", "1")
   test "loop, return, yield and tail position act as in if":
     check_eval("(var out []) (for i in [1 2 3] " &
-               "(if_present v (if (== i 2) nil i) (out .push v) (else (continue)))) out",
+               "(if_present v (if (== i 2) nil else i) (out .push v) else (continue))) out",
                "[1 3]")
     check_eval("(fn f [m] (if_present v m/a (return v)) \"none\") [(f {^a 1}) (f {})]",
                "[1 \"none\"]")
     check_eval("(fn ^^generator g [m] (if_present x m/a (yield x) (yield (+ x 1)))) " &
                "($into (g {^a 1}) [])", "[1 2]")
-    check_eval("(fn count_down [n acc] (if_present k (if (> n 0) n nil) " &
-               "(count_down (- k 1) (+ acc 1)) (else acc))) (count_down 100000 0)",
+    check_eval("(fn count_down [n acc] (if_present k (if (> n 0) n else nil) " &
+               "(count_down (- k 1) (+ acc 1)) else acc)) (count_down 100000 0)",
                "100000")
-    check_eval("(fn count_down [n acc] (if_present k (if (> n 0) n nil) " &
-               "(match k (when 0 acc) (else (count_down (- k 1) (+ acc 1)))) (else acc))) " &
+    check_eval("(fn count_down [n acc] (if_present k (if (> n 0) n else nil) " &
+               "(match k when 0 acc else (count_down (- k 1) (+ acc 1))) else acc)) " &
                "(count_down 100000 0)", "100000")
     check_eval("(scope (if_present v 3 (await (spawn (+ v 1)))))", "4")
     check_eval("(fn f [m] (let x (?? m/a (return \"none\"))) (+ x 1)) " &
@@ -7677,22 +7676,24 @@ suite "spec — if_present tests a value and binds it":
       check_compile_error(source, "requires a name, an expression and a body")
     for source in ["(if_present 5 m/a 1)", "(if_present x? m/a 1)"]:
       check_compile_error(source, "binding must be a plain local name")
-    check_compile_error("(if_present x m/a (else 1) 2)", "must be the last form")
-    check_compile_error("(if_present x m/a (then 1))", "not (then")
+    check_compile_error("(if_present x m/a a else 1 else 2)",
+                        "else must appear once and last")
+    check_compile_error("(if_present x m/a a elif b c)", "not elif")
+    check_compile_error("(if_present x m/a a else)", "else requires a body")
     check_compile_error("(let if_present 1) (if_present x m/a x)",
                         "a binding named if_present is in scope")
 
 suite "spec — field optionality is the type, parameter optionality is a default":
   test "a nil-admitting field type is omissible and nilable":
     check_eval("(type T ^props {^a Str?}) " &
-               "(var t (T)) [(if t/a 1 0) t/a]", "[0 nil]")
+               "(var t (T)) [(if t/a 1 else 0) t/a]", "[0 nil]")
     check_eval("(type T ^props {^a Str?}) (T ^a nil)",
                "((type T) ^a nil)")
     check_eval("(type T ^props {^a (? Str)}) (T)", "((type T))")
     check_eval("(type T ^props {^a (| Str Nil)}) (T)", "((type T))")
   test "present nil and absent stay distinguishable by pattern":
     check_eval("(type T ^props {^a Str?}) " &
-               "(fn has_a [t] (match t (when (T ^a x) true) (else false))) " &
+               "(fn has_a [t] (match t when (T ^a x) true else false)) " &
                "[(has_a (T ^a nil)) (has_a (T))]",
                "[true false]")
   test "Any stays a required field — gradual slack is not optionality":
@@ -7715,14 +7716,14 @@ suite "spec — field optionality is the type, parameter optionality is a defaul
   test "= default makes a parameter omissible":
     check_eval("(fn f [x : Int? = nil] x) [(f) (f nil) (f 1)]", "[nil nil 1]")
     check_eval("(fn f [x : Int? = 18] x) [(f) (f nil) (f 25)]", "[18 nil 25]")
-    check_eval("(fn f [x : Int? = nil, y : Str = \"d\"] (if x \"x\" y)) (f)",
+    check_eval("(fn f [x : Int? = nil, y : Str = \"d\"] (if x \"x\" else y)) (f)",
                geneString("d"))
     expect GeneError:
       discard compileSource("(fn f [a = 1, b : Int] 1)")
   test "a nil-admitting named parameter is required without a default":
     check_eval_error("(fn f [^w : Int?] w) (f)", "missing named argument: w")
     check_eval("(fn f [^w : Int?] w) (f ^w 3)", "3")
-    check_eval("(fn f [^w : Int? = nil] [(if w 1 0) w]) [(f) (f ^w 3)]",
+    check_eval("(fn f [^w : Int? = nil] [(if w 1 else 0) w]) [(f) (f ^w 3)]",
                "[[0 nil] [1 3]]")
   test "messages, ctors and protocol requirements follow the default rule":
     check_eval_error("(type T ^props {^a Int} (message m [x : Int?] x)) " &
@@ -7864,7 +7865,7 @@ suite "spec — streams from design":
     check_eval("(fn ^^generator nums [] : (Stream Int? Never) " &
                "  (var i 0) " &
                "  (while (< i 3) " &
-               "    (yield (if (== i 1) nil i)) " &
+               "    (yield (if (== i 1) nil else i)) " &
                "    (set i (+ i 1)))) " &
                "(var s (nums)) " &
                "[(s .next) " &
@@ -7890,7 +7891,7 @@ suite "spec — streams from design":
                "  (fn [x] (hits .update (fn [n] (+ n 1))) x))) " &
                "(fn ^^generator take-one [s] : (Stream Int Never) " &
                "  (for x in s " &
-               "    (if (== x 2) (then (break))) " &
+               "    (if (== x 2) (break)) " &
                "    (yield x))) " &
                "(var out (take-one source)) " &
                "[(out .next) " &
@@ -7956,7 +7957,7 @@ suite "spec — streams from design":
 
   test "generator return is terminal and close unwinds ensure blocks":
     check_eval("(fn choose [yes] " &
-               "  (if yes (then (return 7))) " &
+               "  (if yes (return 7)) " &
                "  9) " &
                "[(choose true) (choose false)]",
                "[7 9]")
@@ -8029,60 +8030,60 @@ suite "spec — streams from design":
   test "Stream/try_next returns exhausted when empty":
     check_eval("(var s ($to_stream [])) " &
                "(match (s .try_next) ^!exhaustive " &
-               "  (when TryNext/exhausted true) " &
-               "  (when (TryNext/value _) false) " &
-               "  (when (TryNext/error _) false))",
+               "  when TryNext/exhausted true " &
+               "  when (TryNext/value _) false " &
+               "  when (TryNext/error _) false)",
                "true")
 
   test "Stream/try_next returns value for each item then exhausted":
     check_eval("(var s ($to_stream [1 2])) " &
                "[(match (s .try_next) ^!exhaustive " &
-               "    (when (TryNext/value v) v) " &
-               "    (when TryNext/exhausted 0)) " &
+               "    when (TryNext/value v) v " &
+               "    when TryNext/exhausted 0) " &
                " (match (s .try_next) ^!exhaustive " &
-               "    (when (TryNext/value v) v) " &
-               "    (when TryNext/exhausted 0)) " &
+               "    when (TryNext/value v) v " &
+               "    when TryNext/exhausted 0) " &
                " (match (s .try_next) ^!exhaustive " &
-               "    (when (TryNext/value v) v) " &
-               "    (when TryNext/exhausted 0))]",
+               "    when (TryNext/value v) v " &
+               "    when TryNext/exhausted 0)]",
                "[1 2 0]")
 
   test "Stream/try_next preserves nil as a distinct value":
     check_eval("(var s ($to_stream [nil 9])) " &
                "[(match (s .try_next) ^!exhaustive " &
-               "    (when (TryNext/value v) v) " &
-               "    (when TryNext/exhausted `empty)) " &
+               "    when (TryNext/value v) v " &
+               "    when TryNext/exhausted `empty) " &
                " (match (s .try_next) ^!exhaustive " &
-               "    (when (TryNext/value v) v) " &
-               "    (when TryNext/exhausted `empty))]",
+               "    when (TryNext/value v) v " &
+               "    when TryNext/exhausted `empty)]",
                "[nil 9]")
 
   test "Stream/try_next returns error for producer errors":
     check_eval("(var s ($map ($to_stream [1]) (fn [x] (/ x 0)))) " &
                "(match (s .try_next) ^!exhaustive " &
-               "  (when (TryNext/error e) true) " &
-               "  (when (TryNext/value _) false) " &
-               "  (when TryNext/exhausted false))",
+               "  when (TryNext/error e) true " &
+               "  when (TryNext/value _) false " &
+               "  when TryNext/exhausted false)",
                "true")
 
   test "Stream/try_next returns exhausted after a producer error":
     check_eval("(var s ($map ($to_stream [1]) (fn [x] (/ x 0)))) " &
                "[(match (s .try_next) ^!exhaustive " &
-               "    (when (TryNext/error _) true) " &
-               "    (when (TryNext/value _) false) " &
-               "    (when TryNext/exhausted false)) " &
+               "    when (TryNext/error _) true " &
+               "    when (TryNext/value _) false " &
+               "    when TryNext/exhausted false) " &
                " (match (s .try_next) ^!exhaustive " &
-               "    (when TryNext/exhausted true) " &
-               "    (when (TryNext/value _) false) " &
-               "    (when (TryNext/error _) false))]",
+               "    when TryNext/exhausted true " &
+               "    when (TryNext/value _) false " &
+               "    when (TryNext/error _) false)]",
                "[true true]")
 
   test "TryNext can be used as an annotation type":
     check_eval("(fn next_or [s : Stream] : (TryNext Int Error) " &
                "  (s .try_next)) " &
                "(match (next_or ($to_stream [42])) ^!exhaustive " &
-               "  (when (TryNext/value v) v) " &
-               "  (when TryNext/exhausted 0))",
+               "  when (TryNext/value v) v " &
+               "  when TryNext/exhausted 0)",
                "42")
 
   test "selectors read stream items through an explicit $map stage":
@@ -8295,8 +8296,8 @@ suite "spec — generic collection operations from design (§6.2)":
     check_eval("([1 2] .each (fn [x] x))", "nil")
 
   test "map keeps one result per input, including nil":
-    check_eval("([1 2] .map (fn [x] (if (== x 1) x nil)))", "[1 nil]")
-    check_eval("({^a 1 ^b 2} .map_map (fn [v] (if (== v 1) v nil)))", "{^a 1 ^b nil}")
+    check_eval("([1 2] .map (fn [x] (if (== x 1) x else nil)))", "[1 nil]")
+    check_eval("({^a 1 ^b 2} .map_map (fn [v] (if (== v 1) v else nil)))", "{^a 1 ^b nil}")
 
   test "a receiver with no method raises the send's MessageFault":
     check_eval("(try (42 .map (fn [x] x)) catch MessageFault $err/receiver_type)",
@@ -8435,8 +8436,8 @@ suite "spec — structured tasks from design":
     check_eval("(var t (spawn 42)) " &
                "(var first (t .join)) " &
                "(var second (t .join)) " &
-               "[(match first ^!exhaustive (when (TaskOutcome/ok v) v)) " &
-               " (match second ^!exhaustive (when (TaskOutcome/ok v) v)) " &
+               "[(match first ^!exhaustive when (TaskOutcome/ok v) v) " &
+               " (match second ^!exhaustive when (TaskOutcome/ok v) v) " &
                " (await t)]",
                "[42 42 42]")
 
@@ -8453,9 +8454,9 @@ suite "spec — structured tasks from design":
                "(var failed (spawn (fail (Boom ^_msg \"boom\")))) " &
                "(var panicked (spawn (panic \"crash\"))) " &
                "[(match (failed .join) ^!exhaustive " &
-               "   (when (TaskOutcome/error e) e/.message)) " &
+               "   when (TaskOutcome/error e) e/.message) " &
                " (match (panicked .join) ^!exhaustive " &
-               "   (when (TaskOutcome/fault fault) [($head fault) fault/.message fault/value]))]",
+               "   when (TaskOutcome/fault fault) [($head fault) fault/.message fault/value])]",
                "[\"boom\" [(type Panic) \"crash\" \"crash\"]]")
 
   test "Task/join repeats failed, panicked, and cancelled outcomes":
@@ -8475,8 +8476,8 @@ suite "spec — structured tasks from design":
     check_eval("(import $str [byte_size]) " &
                "(var task (spawn (panic \"" & payload & "\"))) " &
                "(match (task .join) ^!exhaustive " &
-               "  (when (TaskOutcome/fault fault) (let message fault/.message) " &
-               "    [(byte_size message) (byte_size fault/value)]))",
+               "  when (TaskOutcome/fault fault) (let message fault/.message) " &
+               "    [(byte_size message) (byte_size fault/value)])",
                "[5000 5000]")
 
   test "Task/join waits for cancellation cleanup and returns cancelled":
@@ -8486,7 +8487,7 @@ suite "spec — structured tasks from design":
                "  (try (ch .recv) ensure (cleaned .set true)))) " &
                "($sleep 0) " &
                "(t .cancel) " &
-               "[(match (t .join) ^!exhaustive (when TaskOutcome/cancelled true)) " &
+               "[(match (t .join) ^!exhaustive when TaskOutcome/cancelled true) " &
                " (cleaned .get)]",
                "[true true]")
 
@@ -8495,7 +8496,7 @@ suite "spec — structured tasks from design":
                "  (var producer (spawn ^lane root (do (ch .recv) 21))) " &
                "  (var joiner (spawn ^lane root " &
                "    (match (producer .join) ^!exhaustive " &
-               "      (when (TaskOutcome/ok value) (* value 2))))) " &
+               "      when (TaskOutcome/ok value) (* value 2)))) " &
                "  (ch .send 1) " &
                "  (await joiner))",
                "42")
@@ -8505,7 +8506,7 @@ suite "spec — structured tasks from design":
                "  (var target (spawn ^lane root (do (ch .recv) 42))) " &
                "  (var joiner (spawn ^lane root (target .join))) " &
                "  ($sleep 0) (joiner .cancel) " &
-               "  (match (joiner .join) ^!exhaustive (when TaskOutcome/cancelled nil)) " &
+               "  (match (joiner .join) ^!exhaustive when TaskOutcome/cancelled nil) " &
                "  (ch .send 1) (await target))",
                "42")
 
@@ -8651,8 +8652,8 @@ suite "spec — bounded channels from design":
                " (ch .try_send 2) " &
                " (ch .recv) " &
                " (match (ch .try_recv) ^!exhaustive " &
-               "   (when TryRecv/empty true) " &
-               "   (when (TryRecv/value _) false))]",
+               "   when TryRecv/empty true " &
+               "   when (TryRecv/value _) false)]",
                "[true false 1 true]")
 
   test "try_recv tags empty and preserves Nil and Nil payloads":
@@ -8661,17 +8662,17 @@ suite "spec — bounded channels from design":
                "(ch .send false) " &
                "(ch .send nil) " &
                "(ch .send 9) " &
-               "[(match empty ^!exhaustive (when TryRecv/empty `empty)) " &
+               "[(match empty ^!exhaustive when TryRecv/empty `empty) " &
                " (match (ch .try_recv) ^!exhaustive " &
-               "   (when (TryRecv/value v) v)) " &
+               "   when (TryRecv/value v) v) " &
                " (match (ch .try_recv) ^!exhaustive " &
-               "   (when (TryRecv/value v) v)) " &
+               "   when (TryRecv/value v) v) " &
                " (match (ch .try_recv) ^!exhaustive " &
-               "   (when (TryRecv/value v) v))]",
+               "   when (TryRecv/value v) v)]",
                "[empty false nil 9]")
     check_eval("(fn poll [ch : (Channel Int)] : (TryRecv Int) " &
                "  (ch .try_recv)) " &
-               "(match (poll ($channel)) ^!exhaustive (when TryRecv/empty true))",
+               "(match (poll ($channel)) ^!exhaustive when TryRecv/empty true)",
                "true")
 
   test "typed channel boundaries check items before enqueue":
@@ -8826,9 +8827,9 @@ suite "spec — actors from design":
                "(impl Send for Get) " &
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (match msg ^!exhaustive " &
-               "    (when (Get ^reply reply) " &
+               "    when (Get ^reply reply) " &
                "      (reply .send state) " &
-               "      ($actor/continue state)))) " &
+               "      ($actor/continue state))) " &
                "(var counter : (ActorRef Get) " &
                "  ($actor/spawn ^init (fn [] 41) ^handle handle)) " &
                "(await (counter .ask (fn [reply] (Get ^reply reply))))",
@@ -8872,9 +8873,9 @@ suite "spec — actors from design":
                "    ($actor/spawn ^init (fn [] 41) " &
                "      ^handle (fn [ctx state msg] " &
                "        (match msg ^!exhaustive " &
-               "          (when (Get ^reply reply) " &
+               "          when (Get ^reply reply) " &
                "            (reply .send state) " &
-               "            ($actor/continue state)))))) " &
+               "            ($actor/continue state))))) " &
                "  (fn (choose result err) [t : (Task result err) fallback : result] " &
                "    fallback) " &
                "  (try (choose (counter .ask (fn [reply] (Get ^reply reply))) \"bad\") " &
@@ -8886,9 +8887,9 @@ suite "spec — actors from design":
                "(fn handle [ctx : (ActorContext Get), state : Int, msg : Get] : (ActorStep Int) " &
                "  (var got (ch .recv)) " &
                "  (match msg ^!exhaustive " &
-               "    (when (Get ^reply reply) " &
+               "    when (Get ^reply reply) " &
                "      (reply .send (+ state got)) " &
-               "      ($actor/continue state)))) " &
+               "      ($actor/continue state))) " &
                "(var counter : (ActorRef Get) " &
                "  ($actor/spawn ^init (fn [] 40) ^handle handle)) " &
                "(var pending (counter .ask (fn [reply] (Get ^reply reply)))) " &
@@ -8939,9 +8940,9 @@ suite "spec — actors from design":
                "  ($actor/spawn ^init (fn [] 0) " &
                "    ^handle (fn [ctx state msg] " &
                "      (match msg ^!exhaustive " &
-               "        (when (Get ^reply reply) " &
+               "        when (Get ^reply reply) " &
                "          (reply .send \"bad\") " &
-               "          ($actor/continue state)))))) " &
+               "          ($actor/continue state))))) " &
                "(try (await (counter .ask (fn [reply] (Get ^reply reply)))) " &
                "catch TypeFault $err/where)",
                "\"ReplyTo/send value\"")
@@ -8955,9 +8956,9 @@ suite "spec — actors from design":
                                 "  (var a ($actor/spawn ^init (fn [] 41) " &
                                 "    ^handle (fn [ctx state msg] " &
                                 "      (match msg ^!exhaustive " &
-                                "        (when (Get ^reply reply) " &
+                                "        when (Get ^reply reply) " &
                                 "          (reply .send state) " &
-                                "          ($actor/continue state)))))) " &
+                                "          ($actor/continue state))))) " &
                                 "  (set pending (a .ask " &
                                 "    (fn [reply] (Get ^reply reply)))) " &
                                 "  nil) " &
@@ -9033,7 +9034,7 @@ suite "spec — actors from design":
                "    ^handle (fn [ctx state msg] " &
                "      (if (== msg 1) " &
                "        (fail (Boom ^_msg \"bad\")) " &
-               "        (do (seen .set state) ($actor/continue state)))))) " &
+               "        else (do (seen .set state) ($actor/continue state)))))) " &
                "  (a .send 1) " &
                "  ($sleep 80) " &          # window expires; budget refills
                "  (a .send 1) " &
@@ -9050,7 +9051,7 @@ suite "spec — actors from design":
                "    ^handle (fn [ctx state msg] " &
                "      (if (== msg 1) " &
                "        (fail (Boom ^_msg \"bad\")) " &
-               "        (do " &
+               "        else (do " &
                "          (seen .set state) " &
                "          ($actor/continue (+ state msg))))))) " &
                "  (a .send 1) " &
@@ -9066,7 +9067,7 @@ suite "spec — actors from design":
                "    ^handle (fn [ctx state msg] " &
                "      (if (== msg 1) " &
                "        (fail (Boom ^_msg \"bad\")) " &
-               "        (do " &
+               "        else (do " &
                "          (seen .set state) " &
                "          ($actor/continue (+ state msg))))))) " &
                "  (spawn (a .send 1)) " &
@@ -9077,13 +9078,13 @@ suite "spec — actors from design":
                "  (while (< tries 100) " &
                "    (if (== seen/.get 0) " &
                "      (do ($sleep 1) (set tries (+ tries 1))) " &
-               "      (set tries 100))) " &
+               "      else (set tries 100))) " &
                "  [seen/.get " &
                "   (match event ^!exhaustive " &
-               "     (when (ActorFailure ^failed_message failed " &
+               "     when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^_msg m) " &
                "                         ^panic p ^strategy s) " &
-               "       [failed m p s]))])",
+               "       [failed m p s])])",
                "[10 [1 \"bad\" false restart]]")
     check_eval("(type Boom : Error) " &
                " " &
@@ -9100,10 +9101,10 @@ suite "spec — actors from design":
                "  (var busy (events .recv)) " &
                "  [busy " &
                "   (match event ^!exhaustive " &
-               "     (when (ActorFailure ^failed_message failed " &
+               "     when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^_msg m) " &
                "                         ^strategy s) " &
-               "       [failed m s]))])",
+               "       [failed m s])])",
                "[\"busy\" [1 \"bad\" restart]]")
     check_eval("(type Boom : Error) " &
                " " &
@@ -9122,10 +9123,10 @@ suite "spec — actors from design":
                "  (var busy (events .recv)) " &
                "  [busy dead-busy " &
                "   (match event ^!exhaustive " &
-               "     (when (ActorFailure ^failed_message failed " &
+               "     when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^_msg m) " &
                "                         ^strategy s) " &
-               "       [failed m s]))])",
+               "       [failed m s])])",
                "[\"busy\" \"dead-busy\" [4 \"bad\" restart]]")
     check_eval("(type Boom : Error) " &
                " " &
@@ -9140,10 +9141,10 @@ suite "spec — actors from design":
                "  ($sleep 1) " &
                "  (var event (dead .recv)) " &
                "  (match event ^!exhaustive " &
-               "    (when (ActorFailure ^failed_message failed " &
+               "    when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^_msg m) " &
                "                        ^strategy s) " &
-               "      [failed m s])))",
+               "      [failed m s]))",
                "[2 \"bad\" restart]")
     check_eval("(type Boom : Error) " &
                " " &
@@ -9157,10 +9158,10 @@ suite "spec — actors from design":
                "  ($sleep 1) " &
                "  (var event (dead .recv)) " &
                "  (match event ^!exhaustive " &
-               "    (when (ActorFailure ^failed_message failed " &
+               "    when (ActorFailure ^failed_message failed " &
                "                        ^error (Boom ^_msg m) " &
                "                        ^strategy s) " &
-               "      [failed m s])))",
+               "      [failed m s]))",
                "[6 \"bad\" restart]")
     check_eval("(type Boom : Error) " &
                " " &
@@ -9174,7 +9175,7 @@ suite "spec — actors from design":
                "    ^handle (fn [ctx state msg] " &
                "      (if (== msg 1) " &
                "        (fail (Boom ^_msg \"bad\")) " &
-               "        (do " &
+               "        else (do " &
                "          (seen .set state) " &
                "          ($actor/continue (+ state msg))))))) " &
                "  (a .send 1) " &
@@ -9216,10 +9217,10 @@ suite "spec — actors from design":
                "(var event (parent-events .recv)) " &
                "[outcome " &
                " (match event ^!exhaustive " &
-               "   (when (ActorFailure ^failed_message failed " &
+               "   when (ActorFailure ^failed_message failed " &
                "                       ^error (Boom ^_msg m) " &
                "                       ^strategy s) " &
-               "     [failed m s]))]",
+               "     [failed m s])]",
                "[\"bad\" [7 \"bad\" escalate]]")
     # A handler's Panic goes through the strategy: the actor stops, the ask
     # fails with the Panic, and the supervisor body carries on.
@@ -9517,7 +9518,7 @@ suite "spec — task context":
     check_eval("(scope (let worker (spawn ^lane root " &
       " [($map_map #{^a 1 ^b 2} (fn [x] ($sleep 1) (+ x 1))) " &
       "  ($filter [1 2 3] (fn [x] ($sleep 1) (> x 1))) " &
-      "  ($filter_map [1 2] (fn [x] ($sleep 1) (if (== x 1) nil x))) " &
+      "  ($filter_map [1 2] (fn [x] ($sleep 1) (if (== x 1) nil else x))) " &
       "  ([1 2] .map (fn [x] ($sleep 1) (* x 2)))])) (await worker))",
       "[#{^a 2 ^b 3} [2 3] [2] [2 4]]")
 
@@ -9628,7 +9629,7 @@ suite "spec — task context":
         " (let input ($os/read_line_async)) " &
         " (let ticker (spawn ^lane root (repeat 20 ($sleep 1) (ticks .set (+ (ticks .get) 1))))) " &
         " ($sleep 5) (input .cancel) " &
-        " [(match (input .join) (when TaskOutcome/cancelled true) (else false)) (> (ticks .get) 0)])",
+        " [(match (input .join) when TaskOutcome/cancelled true else false) (> (ticks .get) 0)])",
         "[true true]")
       check posix.write(endpoints[1], "next\n".cstring, 5) == 5
       check_eval("(await ($os/read_line_async))", "\"next\"")
@@ -10461,7 +10462,7 @@ suite "spec — value ordering and stable sort":
     "(impl ValueOrder for Ranked " &
     " (message compare [other : Ranked] : Int " &
     "   (if (< self/rank other/rank) -1 " &
-    "     (if (> self/rank other/rank) 1 0)))) "
+    "     else (if (> self/rank other/rank) 1 else 0)))) "
 
   test "numeric operators gain same-Type ValueOrder and built-in text order":
     check_eval(rankedDecl &
@@ -10501,7 +10502,7 @@ suite "spec — value ordering and stable sort":
 
   test "an explicit comparator may choose descending order":
     check_eval("($order/sort [1 3 2] ^compare " &
-      "(fn [a b] (if (< a b) 1 (if (> a b) -1 0))))",
+      "(fn [a b] (if (< a b) 1 else (if (> a b) -1 else 0))))",
       "[3 2 1]")
 
   test "invalid comparator results and mixed default keys raise OrderFault":
@@ -10549,8 +10550,8 @@ suite "spec — gene/io qualified contracts":
             (let left (- ($binary/size self/data) offset))
             (if (<= left 0)
               nil
-              (do
-                (let n (if (< left max_bytes) left max_bytes))
+              else (do
+                (let n (if (< left max_bytes) left else max_bytes))
                 (self/offset .set (+ offset n))
                 ($binary/slice self/data offset n)))))))
     (impl IoResource for FakeReader
@@ -10564,7 +10565,7 @@ suite "spec — gene/io qualified contracts":
         (spawn ^lane root
           (do
             (let length ($binary/size data))
-            (let n (if (> length 2) 2 length))
+            (let n (if (> length 2) 2 else length))
             (self/data .set
               ($binary/concat [(self/data .get) ($binary/slice data 0 n)]))
             n)))
@@ -10765,7 +10766,7 @@ suite "spec — native I/O lifecycle adapter":
       "($io/testing/complete_write writer 2) " &
       "(let after ($runtime/gc_stats)) " &
       "[busy (match (operation .join) ^!exhaustive " &
-      "         (when TaskOutcome/cancelled true)) " &
+      "         when TaskOutcome/cancelled true) " &
       " closing/phase before/io_cleanup_leases " &
       " after/io_cleanup_leases after/io_open_resources (await waiter) " &
       " ($binary/to_str ($io/testing/written writer))]",
@@ -10777,7 +10778,7 @@ suite "spec — native I/O lifecycle adapter":
       "(let before ($runtime/gc_stats)) " &
       "($io/testing/complete_read reader ($binary/from_str \"a\")) " &
       "(let after ($runtime/gc_stats)) " &
-      "[(match (operation .join) ^!exhaustive (when TaskOutcome/cancelled true)) " &
+      "[(match (operation .join) ^!exhaustive when TaskOutcome/cancelled true) " &
       " before/io_cleanup_leases after/io_cleanup_leases]",
       "[true 2 0]")
 
@@ -10957,7 +10958,7 @@ suite "spec — net/http_client native client contract":
     check_eval("(import $net/http_client [request HttpClientError]) " &
                "(try (request ^url \"file:///x\") false " &
                " catch HttpClientError " &
-               "   (if (== $err/kind \"unavailable\") \"fallback\" \"surfaced\"))",
+               "   (if (== $err/kind \"unavailable\") \"fallback\" else \"surfaced\"))",
                geneString("surfaced"))
 
 # Disabled here because spec_runner inherits its caller's terminal: the assertion
@@ -11952,7 +11953,7 @@ suite "spec — os and json from ai-agent plan":
         (task .cancel)
         (let premature (task .done?))
         (let cancelled (match (task .join)
-          (when TaskOutcome/cancelled true) (else false)))
+          when TaskOutcome/cancelled true else false))
         [pid premature cancelled]
       """), newGlobalScope())
       check observed.listItems.len == 3
@@ -12121,11 +12122,13 @@ suite "spec — equality and guard sugar (design §1.5/§3)":
     expect GeneError:
       discard run(compileSource("(" & "= 1 1)"), newGlobalScope())
 
-  test "if_yes evaluates its whole tail as the then branch":
-    check_eval("(if_yes true 1 2 3)", "3")
-    check_eval("(if_yes false 1 2 3)", "nil")
-    check_eval("(if_yes true)", "nil")
-    check_eval("(var a 1) (if_yes true (set a 5) (+ a 10))", "15")
+  test "if runs every expression of the selected arm":
+    check_eval("(if true 1 2 3)", "3")
+    check_eval("(if false 1 2 3)", "nil")
+    check_eval("(if true)", "nil")
+    check_eval("(var a 1) (if true (do (set a 5) (+ a 10)))", "15")
+    check_eval("(if false 1 else 2 3)", "3")
+    check_eval("(if true 1 else 2 3)", "1")
 
   test "if_not evaluates its whole tail as the else branch":
     check_eval("(if_not false 1 2 3)", "3")
@@ -12149,6 +12152,65 @@ suite "spec — equality and guard sugar (design §1.5/§3)":
     expect GeneError:
       discard run(compileSource("({^a 1} .contains? \"a\")"),
                   newGlobalScope())
+
+suite "spec — flat clause syntax":
+  test "if arms run every expression and return the last":
+    check_eval("(if true 1 2 3)", "3")
+    check_eval("(if false 1 2 3)", "nil")
+    check_eval("(if false else 1 2 3)", "3")
+    check_eval("(if true else 1 2 3)", "nil")
+    check_eval("(if true)", "nil")
+    check_eval("(if false 1 elif true 2 3 else 4)", "3")
+
+  test "conditions are evaluated once, left to right":
+    check_eval("(var n 0) (fn bump [v] (set n (+ n 1)) v) " &
+               "(fn f [x] (if (bump false) 1 elif (bump x) 2 else 3)) " &
+               "[(f true) n]", "[2 2]")
+    check_eval("(var n 0) [(if (do (set n (+ n 1)) true) else 1 n) n]",
+               "[nil 1]")
+
+  test "if_present tests presence, not truthiness":
+    check_eval("(fn f [v] (if_present x v x else \"none\")) " &
+               "[(f false) (f 0) (f \"\") (f []) (f nil)]",
+               "[false 0 \"\" [] \"none\"]")
+
+  test "if_present binds its name only in the present body":
+    check_eval("(let x 9) (if_present x 1 x else x)", "1")
+    check_eval("(let x 9) (if_present x nil x else x)", "9")
+
+  test "a body symbol that reads as a marker is written (do else)":
+    check_eval("(let else 42) (if true (do else) else 0)", "42")
+
+  test "match arms run their whole body and keep arm scope":
+    check_eval("(match 5 when (n : Int) (* n 2) else 0)", "10")
+    check_eval("(match 1 when 1 20 21 else 3)", "21")
+    check_eval("(match 2 when 1 10 else 20 21)", "21")
+    check_eval("(var v 1) [(match 1 when 1 (var v 2) v else 0) v]",
+               "[2 1]")
+    check_eval_error("(match 1 ^!exhaustive when 2 20)", "no matching pattern")
+
+  test "if_not keeps its flat else-body form":
+    check_eval("(if_not false 1 2)", "2")
+    check_eval("(if_not true 1 2)", "nil")
+
+  test "macro results splice into flat arms":
+    check_eval("(macro choose [c] `(if %c 1 else 2)) (choose false)", "2")
+    check_eval("(macro tail [] `(if true 1 2 3)) (tail)", "3")
+    check_eval("(macro pick [x] `(match %x when 1 \"one\" else \"other\")) " &
+               "(pick 1)", "\"one\"")
+
+  test "removed clause spellings name their replacement":
+    check_compile_error("(if_yes true 1)", "if_yes was removed")
+    check_compile_error("(if true (then 1) (else 2))",
+                        "grouped clause syntax was removed")
+    check_compile_error("(match 1 (when 2 2) (else 3))",
+                        "grouped clause syntax was removed")
+    check_compile_error("(if_present x 1 x (else 2))",
+                        "grouped clause syntax was removed")
+
+  test "flat conditional arms keep tail position":
+    check_eval("(fn recur [n] (if (> n 0) (recur (- n 1)) else 0)) " &
+               "(recur 20000)", "0")
 
 suite "spec — serde data core (docs/stdlib.md stage 1)":
   test "scalars and containers round-trip under structural equality":
@@ -13410,7 +13472,7 @@ suite "spec — runtime fast paths keep ordinary semantics":
                """[true false 1 2 1]""")
 
   test "operators inside a loop match the unlooped results":
-    check_eval("""(var total 0) (repeat i in 50 (set total (+ total (// (* i 37) 11) (/ i 3))) (if (== (// i 7) 0) (then (set total (+ total 1000)))) (if (!= (// i 2) 0) (then (set total (- total 1))))) total""",
+    check_eval("""(var total 0) (repeat i in 50 (set total (+ total (// (* i 37) 11) (/ i 3))) (if (== (// i 7) 0) (set total (+ total 1000))) (if (!= (// i 2) 0) (set total (- total 1)))) total""",
                """8614""")
 
   test "a dynamic one-segment path indexes Lists from either end":
@@ -13430,7 +13492,7 @@ suite "spec — runtime fast paths keep ordinary semantics":
                """[2 3 4]""")
 
   test "one path site serves two namespaces":
-    check_eval("""(ns left (var value "left")) (ns right (var value "right")) (fn pick [space] space/value) (var out []) (repeat i in 4 (out .push (pick (if (== (// i 2) 0) (then left) (else right))))) out""",
+    check_eval("""(ns left (var value "left")) (ns right (var value "right")) (fn pick [space] space/value) (var out []) (repeat i in 4 (out .push (pick (if (== (// i 2) 0) left else right)))) out""",
                """["left" "right" "left" "right"]""")
 
   test "a by-name load sees every rebinding of a module-level name":
@@ -13482,7 +13544,7 @@ suite "spec — runtime fast paths keep ordinary semantics":
                """[[2 4 5 1 3] 1 "failed" [4 2 9 1] [1 3 3 5 9]]""")
 
   test "a literal match clause binds nothing and still selects":
-    check_eval("""(fn m [x] (match x (when 0 "zero") (when 1 "one") (else "many"))) [(m 0) (m 1) (m 5)]""",
+    check_eval("""(fn m [x] (match x when 0 "zero" when 1 "one" else "many")) [(m 0) (m 1) (m 5)]""",
                """["zero" "one" "many"]""")
 
   test "loop iterations keep distinct captured variables":
@@ -13551,7 +13613,7 @@ suite "spec — runtime fast paths keep ordinary semantics":
                """[[3 7 0] [10]]""")
 
   test "a loop inside a recursive function keeps each call separate":
-    check_eval("""(fn depth [n] (var t 0) (for x in [1 2] (if (> n 0) (set t (+ t (depth (- n 1)))) (set t (+ t x)))) t) [(depth 0) (depth 1) (depth 3)]""",
+    check_eval("""(fn depth [n] (var t 0) (for x in [1 2] (if (> n 0) (set t (+ t (depth (- n 1)))) else (set t (+ t x)))) t) [(depth 0) (depth 1) (depth 3)]""",
                """[3 6 24]""")
 
   test "a loop that throws leaves the next call clean":
@@ -13565,14 +13627,14 @@ suite "spec — a scheduler slice ends at a loop iteration or a function entry":
     ## Gene function or loops between the read and the push, so no slice may
     ## end there. When a slice could end between any two instructions, 11 of
     ## these 300 phases pushed onto a List the consumer had already taken.
-    check_eval("""(fn spin [n : Int] (var i 0) (while (< i n) (set i (+ i 1))) i) (fn drain [ex] (while true ex/wake/.recv (var pending (ex/queue .swap [])) (ex/done .set (+ ex/done/.get ($size pending))))) (fn submit [ex, pad : Int, tag] (spin pad) (var q ex/queue/.get) (ex/mark .set 1) (ex/mark .set 2) (ex/mark .set 3) (ex/mark .set 4) (ex/mark .set 5) (ex/mark .set 6) (ex/mark .set 7) (ex/mark .set 8) (q .push tag) (ex/wake .try_send nil) nil) (fn phase [pad : Int] : Int (let ex {^queue ($cell []) ^wake ($channel ^capacity 1) ^done ($cell 0) ^mark ($cell 0)}) (let consumer (spawn ^lane root (drain ex))) (let b (spawn ^lane root (submit ex pad "b"))) (let a (spawn ^lane root (submit ex (+ 1 (// pad 5)) "a"))) (let c (spawn ^lane root (submit ex (+ 9 (* 2 pad)) "c"))) (a .join) (b .join) (c .join) (let seen (+ ex/done/.get ($size ex/queue/.get))) consumer/.cancel (if (== seen 3) 0 1)) (var lost 0) (var pad 0) (while (< pad 300) (set lost (+ lost (phase pad))) (set pad (+ pad 1))) lost""",
+    check_eval("""(fn spin [n : Int] (var i 0) (while (< i n) (set i (+ i 1))) i) (fn drain [ex] (while true ex/wake/.recv (var pending (ex/queue .swap [])) (ex/done .set (+ ex/done/.get ($size pending))))) (fn submit [ex, pad : Int, tag] (spin pad) (var q ex/queue/.get) (ex/mark .set 1) (ex/mark .set 2) (ex/mark .set 3) (ex/mark .set 4) (ex/mark .set 5) (ex/mark .set 6) (ex/mark .set 7) (ex/mark .set 8) (q .push tag) (ex/wake .try_send nil) nil) (fn phase [pad : Int] : Int (let ex {^queue ($cell []) ^wake ($channel ^capacity 1) ^done ($cell 0) ^mark ($cell 0)}) (let consumer (spawn ^lane root (drain ex))) (let b (spawn ^lane root (submit ex pad "b"))) (let a (spawn ^lane root (submit ex (+ 1 (// pad 5)) "a"))) (let c (spawn ^lane root (submit ex (+ 9 (* 2 pad)) "c"))) (a .join) (b .join) (c .join) (let seen (+ ex/done/.get ($size ex/queue/.get))) consumer/.cancel (if (== seen 3) 0 else 1)) (var lost 0) (var pad 0) (while (< pad 300) (set lost (+ lost (phase pad))) (set pad (+ pad 1))) lost""",
                """0""")
 
   test "every loop and recursion form still yields a spent slice to a peer":
     ## A slice that could only end at a suspension point would let a CPU-bound
     ## fiber starve the rest: each kind of repetition has to reach a point
     ## where a spent slice ends. The peer is spawned second and finishes first.
-    check_eval("""(fn rec [n] (if (< n 2) n (+ (rec (- n 1)) (rec (- n 2))))) (fn even_ [n] (if (== n 0) true (odd_ (- n 1)))) (fn odd_ [n] (if (== n 0) false (even_ (- n 1)))) (fn tail_ [n, acc] (if (== n 0) acc (tail_ (- n 1) (+ acc 1)))) (fn w [n] (var i 0) (while (< i n) (set i (+ i 1))) i) (fn l [n] (var i 0) (loop (set i (+ i 1)) (if (< i n) (continue)) (break)) i) (fn r [n] (var t 0) (repeat n (set t (+ t 1))) t) (fn f [xs] (var t 0) (for x in xs (for y in xs (set t (+ t 1)))) t) (fn first_to_finish [work] (let order []) (let a (spawn ^lane root (do (work) (order .push "work")))) (let b (spawn ^lane root (order .push "peer"))) (a .join) (b .join) order/0) (var xs []) (var i 0) (while (< i 200) (xs .push i) (set i (+ i 1))) [(first_to_finish (fn [] (rec 20))) (first_to_finish (fn [] (even_ 3000))) (first_to_finish (fn [] (tail_ 20000 0))) (first_to_finish (fn [] (w 20000))) (first_to_finish (fn [] (l 20000))) (first_to_finish (fn [] (r 20000))) (first_to_finish (fn [] (f xs)))]""",
+    check_eval("""(fn rec [n] (if (< n 2) n else (+ (rec (- n 1)) (rec (- n 2))))) (fn even_ [n] (if (== n 0) true else (odd_ (- n 1)))) (fn odd_ [n] (if (== n 0) false else (even_ (- n 1)))) (fn tail_ [n, acc] (if (== n 0) acc else (tail_ (- n 1) (+ acc 1)))) (fn w [n] (var i 0) (while (< i n) (set i (+ i 1))) i) (fn l [n] (var i 0) (loop (set i (+ i 1)) (if (< i n) (continue)) (break)) i) (fn r [n] (var t 0) (repeat n (set t (+ t 1))) t) (fn f [xs] (var t 0) (for x in xs (for y in xs (set t (+ t 1)))) t) (fn first_to_finish [work] (let order []) (let a (spawn ^lane root (do (work) (order .push "work")))) (let b (spawn ^lane root (order .push "peer"))) (a .join) (b .join) order/0) (var xs []) (var i 0) (while (< i 200) (xs .push i) (set i (+ i 1))) [(first_to_finish (fn [] (rec 20))) (first_to_finish (fn [] (even_ 3000))) (first_to_finish (fn [] (tail_ 20000 0))) (first_to_finish (fn [] (w 20000))) (first_to_finish (fn [] (l 20000))) (first_to_finish (fn [] (r 20000))) (first_to_finish (fn [] (f xs)))]""",
                """["peer" "peer" "peer" "peer" "peer" "peer" "peer"]""")
 
 suite "spec — nil-only absence":

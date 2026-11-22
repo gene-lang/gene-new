@@ -9,8 +9,7 @@
         (let sent ($cell nil))
         (let driver (open_driver ($path/join workspace "driver") ^transport (fn [name args]
           (if (== name "get_browser_state")
-            (then
-              (if_not ($absent? args/pid)
+            (do (if_not ($absent? args/pid)
                 (return (normalize_result {^binding_quality "exact" ^target_id "browser-1"
                   ^tabs [{^tab_id "tab-1" ^^active}]})))
               (return (normalize_result {^snapshot {^id "p5"} ^refs [{^ref "p5:0" ^name "Input"}]

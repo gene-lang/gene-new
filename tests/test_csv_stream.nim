@@ -49,7 +49,7 @@ when compileOption("threads") and defined(posix):
                 (let index (self/offset .get))
                 (if (>= index ($size self/chunks))
                   nil
-                  (do
+                  else (do
                     (self/offset .set (+ index 1))
                     self/chunks/%index))))))
         (let source (ChunkReader ^chunks chunks ^offset ($cell 0)))
@@ -91,7 +91,7 @@ when compileOption("threads") and defined(posix):
         (let busy (try (rows .next) false catch CsvError true))
         (rows .IoResource:close)
         (let cancelled (match (pending .join) ^!exhaustive
-          (when TaskOutcome/cancelled true)))
+          when TaskOutcome/cancelled true))
         (await (rows .IoResource:wait_closed))
         (await (pipe/1 .AsyncWriter:write ($binary/from_str "x")))
         (pipe/0 .IoResource:close)
@@ -112,7 +112,7 @@ when compileOption("threads") and defined(posix):
         (let waiting (rows .IoResource:wait_closed))
         (rows .IoResource:close)
         (let cancelled (match (pending .join) ^!exhaustive
-          (when TaskOutcome/cancelled true)))
+          when TaskOutcome/cancelled true))
         (await waiting)
         (await (rows .IoResource:wait_closed))
         (await (pipe/0 .IoResource:wait_closed))
@@ -137,7 +137,7 @@ when compileOption("threads") and defined(posix):
         (var count 0)
         (while true
           (let row (await (rows .next)))
-          (if ($absent? row) (then (break)))
+          (if ($absent? row) (break))
           (set count (+ count 1)))
         (rows .IoResource:close)
         (await (rows .IoResource:wait_closed))

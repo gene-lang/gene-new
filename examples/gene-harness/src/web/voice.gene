@@ -49,7 +49,7 @@
   (let result {})
   (for key in ["started_ms" "first_frame_ms" "released_ms" "speech_end_ms"]
     (let value (data .get ($to_str "client_" key)))
-    (result .put key (if (&& (== ($head value) Int) (>= value 0) (<= value 1000000000000)) value 0)))
+    (result .put key (if (&& (== ($head value) Int) (>= value 0) (<= value 1000000000000)) value else 0)))
   result)
 
 (fn owns_voice? [hub : VoiceHub, peer] : Bool
@@ -128,9 +128,9 @@
 
 (fn cut_segment [capture]
   (if (== capture/chunks/.size 0) (return nil))
-  (if_yes capture/segment_voiced
-    (capture/segments .push ($binary/concat capture/chunks))
-    (capture .put "last_segment_ms" ($os/monotonic_ms)))
+  (if capture/segment_voiced
+    (do (capture/segments .push ($binary/concat capture/chunks))
+    (capture .put "last_segment_ms" ($os/monotonic_ms))))
   (capture .put "segment_voiced" false)
   (capture .put "chunks" []) (capture .put "segment_bytes" 0) (capture .put "silence_ms" 0)
   nil)
@@ -151,8 +151,8 @@
       (while (< cursor capture/chunks/.size)
         (sink/push capture/chunks/%cursor)
         (set capture/chunks/%cursor nil) (set cursor (+ cursor 1)))
-      (if_yes (&& (! ended) (== capture/state "finalizing"))
-        (set ended true) (sink/finish))
+      (if (&& (! ended) (== capture/state "finalizing"))
+        (do (set ended true) (sink/finish)))
       ($sleep 5))
     (if_not ($absent? failure/.get) (voice_error "unavailable" failure/.get))
     nil
@@ -165,10 +165,9 @@
     (capture .put "recognizer" opened/row/name)
     (if (== opened/row/mode "stream")
       (stream_recognition hub peer capture opened)
-      (while (&& (! capture/cancelled) (owns_voice? hub peer))
+      else (while (&& (! capture/cancelled) (owns_voice? hub peer))
       (if (< capture/cursor capture/segments/.size)
-        (then
-          (let cursor capture/cursor)
+        (let cursor capture/cursor)
           (let segment capture/segments/%cursor)
           (capture .put "cursor" (+ capture/cursor 1))
           (let settings (peer/settings .assoc "context" capture/text))
@@ -177,16 +176,16 @@
           (if (!= text "")
             (capture .put "text" ($str/trim ($to_str capture/text " " text))))
           (if (&& (! capture/cancelled) (owns_voice? hub peer))
-            (control peer {^type "transcript/partial" ^id capture/id ^text capture/text ^recognizer opened/row/name})))
-        (elif (== capture/state "finalizing") (break))
-        (else ($sleep 10)))))
-    (if_yes (&& (! capture/cancelled) (owns_voice? hub peer))
-      (set outcome "done")
+            (control peer {^type "transcript/partial" ^id capture/id ^text capture/text ^recognizer opened/row/name}))
+        elif (== capture/state "finalizing") (break)
+        else ($sleep 10))))
+    (if (&& (! capture/cancelled) (owns_voice? hub peer))
+      (do (set outcome "done")
       (let timing {^clock "host-monotonic" ^started_ms capture/started ^first_frame_ms capture/first_frame_ms
         ^last_segment_ms capture/last_segment_ms ^released_ms capture/released ^final_ms ($os/monotonic_ms) ^client capture/client_points})
       (capture .put "timing" timing)
       (control peer {^type "transcript/final" ^id capture/id ^text capture/text
-        ^recognizer opened/row/name ^audio_ms (/ (* capture/bytes 1000) 32000) ^timing timing}))
+        ^recognizer opened/row/name ^audio_ms (/ (* capture/bytes 1000) 32000) ^timing timing})))
   catch Throwable
     (set outcome "failed")
     (if (&& (! capture/cancelled) (! peer/closed))
@@ -224,18 +223,18 @@
   (let frame (decode_audio_frame bytes))
   (var capture nil)
   (map_for [id item] in peer/captures (if (== item/stream frame/stream) (set capture item)))
-  (if_yes ($absent? capture)
+  (if ($absent? capture)
     # A rejected start can already have microphone frames in flight. Discard
     # that stream without terminating the other accepted utterances.
-    (if ($has_key? peer/discarded ($to_str frame/stream)) (return nil))
-    (voice_error "invalid_request" "Microphone frame has no active utterance."))
+    (do (if ($has_key? peer/discarded ($to_str frame/stream)) (return nil))
+    (voice_error "invalid_request" "Microphone frame has no active utterance.")))
   (if (== capture/next 0) (capture .put "first_frame_ms" ($os/monotonic_ms)))
   (capture_frame capture frame)
   (capture .put "segment_bytes" (+ capture/segment_bytes ($binary/size frame/pcm)))
   (let duration (/ (* ($binary/size frame/pcm) 1000) 32000))
   (let voiced (>= (pcm_level frame/pcm) 500))
   (if voiced (capture .put "segment_voiced" true))
-  (capture .put "silence_ms" (if voiced 0 (+ capture/silence_ms duration)))
+  (capture .put "silence_ms" (if voiced 0 else (+ capture/silence_ms duration)))
   (if (&& (!= capture/mode "stream") (|| (&& (>= capture/silence_ms 300) (>= capture/segment_bytes 9600))
           (>= capture/segment_bytes 320000))) (cut_segment capture))
   nil)
@@ -287,9 +286,9 @@
       (set pending ($binary/concat [pending bytes]))
       (flush false)))
     (flush true)
-    (if_yes (&& (! speak/cancelled) (owns_voice? hub peer))
-      (set outcome "done")
-      (control peer {^type "speak/end" ^id speak/id ^bytes credit/sent}))
+    (if (&& (! speak/cancelled) (owns_voice? hub peer))
+      (do (set outcome "done")
+      (control peer {^type "speak/end" ^id speak/id ^bytes credit/sent})))
   catch Throwable
     (set outcome "failed")
     (if (&& (! speak/cancelled) (! peer/closed))
@@ -303,15 +302,14 @@
 
 (fn announcement_text [data] : Str
   (if (== data/announcement "questions")
-    (then
-      (if (|| (!= ($head data/count) Int) (< data/count 0) (> data/count 1000))
+    (if (|| (!= ($head data/count) Int) (< data/count 0) (> data/count 1000))
         (voice_error "invalid_request" "Invalid question count."))
-      ($to_str data/count " questions are on screen."))
-    (elif (== data/announcement "paused")
-      "Paused at the turn limit. Continue controls are on screen.")
-    (elif (["failed" "cancelled" "interrupted"] .contains? data/announcement)
-      ($to_str "The request " data/announcement ". Details are on screen."))
-    (else (voice_error "invalid_request" "Unknown voice announcement."))))
+      ($to_str data/count " questions are on screen.")
+    elif (== data/announcement "paused")
+      "Paused at the turn limit. Continue controls are on screen."
+    elif (["failed" "cancelled" "interrupted"] .contains? data/announcement)
+      ($to_str "The request " data/announcement ". Details are on screen.")
+    else (voice_error "invalid_request" "Unknown voice announcement.")))
 
 (fn active_speaks [peer] : Int
   (var count 0)
@@ -328,7 +326,7 @@
   (if (> ($map_size peer/used) 4096) (voice_error "unavailable" "Reconnect voice to start a fresh set of streams."))
   (if ($has_key? peer/used key) (voice_error "invalid_request" "Audio stream ids cannot be reused on this socket."))
   (peer/used .put key true)
-  (let text (if (== ($head data/reply) Str) (reply_speech hub peer/session data/reply) (announcement_text data)))
+  (let text (if (== ($head data/reply) Str) (reply_speech hub peer/session data/reply) else (announcement_text data)))
   (let speak {^id data/id ^stream data/stream ^!cancelled ^job "" ^credit nil ^reply (?? data/reply "")
     ^received_ms ($os/monotonic_ms) ^first_engine_ms 0 ^first_chunk_ms 0})
   (peer/speaks .put data/id speak)
@@ -341,10 +339,10 @@
   (try
     (if_not (peer/authorized) (voice_error "unauthorized" "The browser credential was reset."))
     (match payload
-      (when (bytes : Bytes)
+      when (bytes : Bytes)
         (if_not (owns_voice? hub peer) (voice_error "voice_claim_lost" "Claim voice before sending audio."))
-        (microphone_frame hub peer bytes))
-      (when (text : Str)
+        (microphone_frame hub peer bytes)
+      when (text : Str)
         (if (> ($str/byte_size text) 65536) (voice_error "invalid_request" "Voice control frame exceeds 64 KiB."))
         (let data ($json/parse ^^strict ^max_depth 8 text))
         (set request data)
@@ -357,8 +355,8 @@
           (voice_connected ^transport "voice" hub/host/runtime/services/values/voice peer/owner)
           (control peer {^type "ready" ^engines (speech_catalog hub/speech)})
           (return nil))
-        (if_yes (== data/type "claim")
-          (cancel_peer_streams hub peer)
+        (if (== data/type "claim")
+          (do (cancel_peer_streams hub peer)
           (let state (session_voice_claim hub/host data/session
             {^client_id peer/owner ^token data/token ^output (== data/output true)}))
           (peer .put "session" data/session) (peer .put "token" state/token)
@@ -367,24 +365,24 @@
           (control peer {^type "claimed" ^session peer/session ^token peer/token ^engines (speech_catalog hub/speech)})
           (if (== data/input_host true) (warm_for_claim hub peer "recognizer"))
           (if (== data/output_host true) (warm_for_claim hub peer "synthesizer"))
-          (return nil))
+          (return nil)))
         (if_not (owns_voice? hub peer) (voice_error "voice_claim_lost" "The voice claim belongs to another page."))
-        (if (== data/type "capture/start") (then (start_capture hub peer data))
-          (elif (["capture/end" "capture/cancel"] .contains? data/type)
+        (if (== data/type "capture/start") (start_capture hub peer data)
+          elif (["capture/end" "capture/cancel"] .contains? data/type)
             (let capture (peer/captures .get data/id))
             (if ($absent? capture) (return nil))
             (if (== data/type "capture/cancel") (cancel_stream hub capture)
-              (do (if (!= capture/mode "stream") (cut_segment capture)) (capture .put "state" "finalizing")
+              else (do (if (!= capture/mode "stream") (cut_segment capture)) (capture .put "state" "finalizing")
                 (capture .put "client_points" (client_capture_points data))
-                (capture .put "released" ($os/monotonic_ms)))))
-          (elif (== data/type "speak") (start_speech hub peer data))
-          (elif (== data/type "speak/cancel")
+                (capture .put "released" ($os/monotonic_ms))))
+          elif (== data/type "speak") (start_speech hub peer data)
+          elif (== data/type "speak/cancel")
             (map_for [id speak] in peer/speaks
-              (if (|| ($absent? data/id) (== speak/id data/id)) (cancel_stream hub speak))))
-          (elif (== data/type "player")
+              (if (|| ($absent? data/id) (== speak/id data/id)) (cancel_stream hub speak)))
+          elif (== data/type "player")
             (let speak (peer/speaks .get data/id))
-            (if_yes (&& ($present? speak/credit) (== ($head data/played_bytes) Int))
-              (let previous speak/credit/played)
+            (if (&& ($present? speak/credit) (== ($head data/played_bytes) Int))
+              (do (let previous speak/credit/played)
               (let waiting (== data/waiting true))
               (if (&& waiting (!= data/played_bytes 0)) (voice_error "invalid_request" "Queued speech cannot acknowledge playback."))
               (playback_ack speak/credit data/played_bytes)
@@ -394,7 +392,7 @@
               (if (|| waiting speak/waiting (> data/played_bytes previous))
                 (speak .put "ack_ms" (hub/clock)))
               (speak .put "waiting" waiting)))
-          (elif (== data/type "latency")
+          elif (== data/type "latency")
             # Optional telemetry is deliberately narrower than an arbitrary map.
             # Bad telemetry does not cancel otherwise valid speech/capture.
             (if (&& (["capture_final" "output"] .contains? data/kind) (== ($head data/id) Str)
@@ -403,27 +401,26 @@
                     (== ($head data/finished_ms) Int) (>= data/finished_ms 0) (<= data/finished_ms 1000000000000))
               (latency_trace hub peer "client" data/id
                 {^clock "client-monotonic" ^stage data/kind ^elapsed_ms data/elapsed_ms
-                 ^finished_ms data/finished_ms ^points (client_capture_points data)})))
-          (else (voice_error "invalid_request" "Unknown voice control frame."))))
-      (else (voice_error "invalid_request" "Voice frames must be text or bytes.")))
+                 ^finished_ms data/finished_ms ^points (client_capture_points data)}))
+          else (voice_error "invalid_request" "Unknown voice control frame."))
+      else (voice_error "invalid_request" "Voice frames must be text or bytes."))
   catch Throwable
     (let code (?? $err/code "voice_error"))
     (if (&& (== ($head $err) VoiceError) peer/hello (owns_voice? hub peer)
             (["speak" "capture/start"] .contains? request/type)
             (== ($head request/id) Str) (!= request/id "") (<= ($str/byte_size request/id) 128)
             (["not_found" "invalid_request" "unavailable"] .contains? code))
-      (then
-        (if_yes (&& (== request/type "capture/start") (== ($head request/stream) Int)
+      (if (&& (== request/type "capture/start") (== ($head request/stream) Int)
                     (> request/stream 0) (<= request/stream 4294967295)
                     (! ($has_key? peer/used ($to_str request/stream))) (< ($map_size peer/used) 4096))
-          (peer/used .put ($to_str request/stream) true)
-          (peer/discarded .put ($to_str request/stream) true))
-        (control peer {^type (if (== request/type "speak") "speak/error" "capture/error")
-          ^id request/id ^code code ^message ($to_str $err/.message)}))
-      (else
+          (do (peer/used .put ($to_str request/stream) true)
+          (peer/discarded .put ($to_str request/stream) true)))
+        (control peer {^type (if (== request/type "speak") "speak/error" else "capture/error")
+          ^id request/id ^code code ^message ($to_str $err/.message)})
+      else
         (control peer {^type "error" ^code code ^message ($to_str $err/.message)})
         (cancel_peer_streams hub peer)
-        (peer .put "closed" true) (ws_close connection))))
+        (peer .put "closed" true) (ws_close connection)))
   nil)
 
 (fn voice_message [hub : VoiceHub, connection, payload]
@@ -442,16 +439,16 @@
       (cancel_peer_streams hub peer))
     (cool_speech hub/speech))
   (map_for [key peer] in hub/peers/.get
-    (if_yes (|| (! (peer/authorized)) (&& (! peer/hello) (> (- ($os/monotonic_ms) peer/created) 5000))
+    (if (|| (! (peer/authorized)) (&& (! peer/hello) (> (- ($os/monotonic_ms) peer/created) 5000))
                 (&& (!= peer/token "") (! (owns_voice? hub peer))))
-      (control peer {^type "released" ^message "Voice ownership or its engine changed. Enable voice again."})
-      (cancel_peer_streams hub peer) (ws_close peer/connection))
+      (do (control peer {^type "released" ^message "Voice ownership or its engine changed. Enable voice again."})
+      (cancel_peer_streams hub peer) (ws_close peer/connection)))
     (map_for [id capture] in peer/captures
-      (if_yes (|| (&& (== capture/state "capturing") (> (- ($os/monotonic_ms) capture/started) 121000))
+      (if (|| (&& (== capture/state "capturing") (> (- ($os/monotonic_ms) capture/started) 121000))
                   (&& (> capture/released 0) (> (- ($os/monotonic_ms) capture/released)
                     (recognition_timeout_ms (/ (* capture/bytes 1000) 32000)))))
-        (control peer {^type "capture/error" ^id capture/id ^text capture/text ^message "Recording or recognition timed out."})
-        (cancel_stream hub capture))))
+        (do (control peer {^type "capture/error" ^id capture/id ^text capture/text ^message "Recording or recognition timed out."})
+        (cancel_stream hub capture)))))
   (if (!= (/enabled (voice_snapshot hub/host/runtime/services/values/voice)) true) (cool_speech hub/speech))
   nil)
 

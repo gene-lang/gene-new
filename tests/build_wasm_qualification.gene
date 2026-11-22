@@ -10,16 +10,16 @@
   (while (< i ($size raw))
     (let option raw/%i)
     (if (== option "--debug")
-      (then (set debug true))
-      (elif (== option "--production") (set production true))
-      (elif (|| (== option "--build-dir") (== option "--define"))
+      (set debug true)
+      elif (== option "--production") (set production true)
+      elif (|| (== option "--build-dir") (== option "--define"))
         (do
           (set i (+ i 1))
           ($assert (< i ($size raw)) $"${option} requires a value")
           (if (== option "--build-dir")
-            (then (set directory raw/%i))
-            (else (defines .push raw/%i)))))
-      (else ($assert false $"unknown option: ${option}")))
+            (set directory raw/%i)
+            else (defines .push raw/%i)))
+      else ($assert false $"unknown option: ${option}"))
     (set i (+ i 1)))
   ($fs/make_dir directory)
   (let output ($fs/real_path directory))
@@ -37,8 +37,8 @@
   (for define in defines (command .push $"-d:${define}"))
   (if (! production) (command .push "-d:geneRcStats"))
   (if debug
-    (then (command .push "--passC:-g") (command .push "--passL:-g"))
-    (else (command .push "-d:release")))
+    (command .push "--passC:-g") (command .push "--passL:-g")
+    else (command .push "-d:release"))
   (let export_json ($json/stringify exports))
   (for option in ["--os:linux" "--cpu:wasm32" "-d:emscripten" "-d:geneWasm"
     "--mm:orc" "--threads:off" "--noMain" "--cc:clang"

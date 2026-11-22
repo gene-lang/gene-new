@@ -25,7 +25,7 @@
   (let images (message_images message))
   (let parts [])
   (if (|| (!= message/content "") images/.empty?)
-    (parts .push {^type (if (== message/role "assistant") "output_text" "input_text")
+    (parts .push {^type (if (== message/role "assistant") "output_text" else "input_text")
                   ^text message/content}))
   (for image in images
     (parts .push {^type "input_image" ^image_url (image_url image)

@@ -9,14 +9,12 @@
 # their identity. A plugin's mutable state is independent of registry visibility.
 (fn immutable_view [value]
   (if (== ($head value) Map)
-    (then
-      (let copied {})
+    (do (let copied {})
       (map_for [key item] in value
         (copied .put key (immutable_view item)))
       (return ($freeze_shallow copied))))
   (if (== ($head value) List)
-    (then
-      (let copied [])
+    (do (let copied [])
       (for item in value
         (copied .push (immutable_view item)))
       (return ($freeze_shallow copied))))
@@ -89,8 +87,7 @@
     # Publication can occur at any VM safepoint. Recheck after incrementing so
     # a reader never acquires a revision whose retirement already started.
     (if (same? snapshot state/current/.get)
-      (then
-        (let lease (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false) ^label label))
+      (do (let lease (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false) ^label label))
         (state/leases/.get .push lease)
         (return lease)))
     (adjust_count counter -1)
@@ -121,8 +118,7 @@
   (require_open state)
   (let context ($runtime/context))
   (if (&& ($present? context) ($present? context/turn))
-    (then
-      (change .put "origin_turn" context/turn)
+    (do (change .put "origin_turn" context/turn)
       (context/turn/composition_queued .set true)))
   (state/pending
     .get
@@ -135,13 +131,13 @@
   (for change in (state/pending .swap [])
     (let owner change/origin_turn)
     (if ($absent? owner)
-      (then (ready .push change))
-      (elif (&& ($present? origin)
+      (ready .push change)
+      elif (&& ($present? origin)
               (== owner/queue_token origin/queue_token)) (if (== owner/state/.get "cancelled")
-          (then nil)
-          (elif (== owner/state/.get "open") (waiting .push change))
-          (else (ready .push change))))
-      (else (waiting .push change))))
+          nil
+          elif (== owner/state/.get "open") (waiting .push change)
+          else (ready .push change))
+      else (waiting .push change)))
   (for change in waiting (state/pending/.get .push change))
   ready)
 
@@ -170,7 +166,7 @@
 (var ^^private diagnostic_limit 32)
 
 (fn ^^private snapshot_key [revision] : Str
-  ($to_str (if (== ($head revision) CompositionSnapshot) revision/id revision)))
+  ($to_str (if (== ($head revision) CompositionSnapshot) revision/id else revision)))
 
 (fn record_publication_diagnostic [state : CompositionState, revision, diagnostic]
   (let entry {^snapshot (snapshot_key revision)})
@@ -190,7 +186,7 @@
 # One publication's diagnostics, oldest first; without a revision, every
 # recent diagnostic.
 (fn publication_diagnostics [state : CompositionState, revision = nil] : Any
-  (let wanted (if ($absent? revision) nil (snapshot_key revision)))
+  (let wanted (if ($absent? revision) nil else (snapshot_key revision)))
   (let found [])
   (for diagnostic in state/publication_diagnostics/.get
     (if (|| ($absent? wanted) (== diagnostic/snapshot wanted))
@@ -227,8 +223,7 @@
       (if (== live instance) (return true))))
   (map_for [id counter] in state/counts/.get
     (if (> counter/.load 0)
-      (then
-        (let snapshot (state/snapshots .get; .get id))
+      (do (let snapshot (state/snapshots .get; .get id))
         (for live in snapshot/instances
           (if (== live instance) (return true))))))
   false)
@@ -246,7 +241,7 @@
 (fn ^^private error_causes [error] : Any
   # Cordis aggregates keep their failures in `errors`; Harness errors in `cause`.
   (let causes (try (?? error/errors error/cause) catch Throwable nil))
-  (if (&& ($present? causes) (== ($head causes) List)) causes nil))
+  (if (&& ($present? causes) (== ($head causes) List)) causes else nil))
 
 (fn ^^private leaf_messages [error] : Any
   (let causes (error_causes error))
@@ -264,7 +259,7 @@
   (for cause in causes
     (let plugin (try cause/plugin catch Error nil))
     (for message in (leaf_messages cause)
-      (parts .push (if ($absent? plugin) message $"${plugin}: ${message}"))))
+      (parts .push (if ($absent? plugin) message else $"${plugin}: ${message}"))))
   (let detail ($str/join parts "; "))
   $"${error/.message}: ${detail}")
 
@@ -281,7 +276,7 @@
     (var leased false)
     (for instance in retirement/instances
       (if (instance_is_leased? state instance) (set leased true)))
-    (if leased (waiting .push retirement) (ready .push retirement)))
+    (if leased (waiting .push retirement) else (ready .push retirement)))
   # Publish the waiting queue before cleanup, which can run application code.
   (for retirement in waiting (state/retiring/.get .push retirement))
   (let failures [])
@@ -319,8 +314,7 @@
     (set waited (+ waited 10)))
   (map_for [id counter] in state/counts/.get
     (if (> counter/.load 0)
-      (then
-        (let held ($map ($filter state/leases/.get
+      (do (let held ($map ($filter state/leases/.get
           (fn [lease] (== ($to_str lease/snapshot/id) ($to_str id)))) (fn [lease] lease/label)))
         (fail (CompositionClosed ^_msg
           $"composition still has active turn leases at snapshot ${id}: ${counter/.load}; holders ${held}")))))

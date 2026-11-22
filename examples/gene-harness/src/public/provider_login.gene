@@ -101,8 +101,7 @@
     (if (&& (== attempt/status/.get "exchanging") (>= ($os/monotonic_ms) attempt/expires_at))
       (attempt/status .set "timed_out"))
     (if (== attempt/status/.get "exchanging")
-      (then
-        (write_openrouter_record attempt/root key)
+      (do (write_openrouter_record attempt/root key)
         (attempt/status .set "complete"))))))
 
 (fn expire_login [attempt]
@@ -119,8 +118,7 @@
   (if (!= attempt/status/.get "pending")
     (return {^status 409 ^message "This sign-in attempt is no longer pending."}))
   (if ($present? params/error)
-    (then
-      (attempt/status .set "declined")
+    (do (attempt/status .set "declined")
       (return {^status 200 ^message "Sign-in was declined. You can return to Gene Harness."})))
   (let code (nonempty params/code))
   (if ($absent? code) (return {^status 400 ^message "Missing sign-in code"}))
@@ -128,8 +126,8 @@
   (try
     (exchange_openrouter attempt code)
     (if (== attempt/status/.get "complete")
-      (then {^status 200 ^message "OpenRouter is connected. You can return to Gene Harness."})
-      (else {^status 400 ^message "This sign-in attempt has ended."}))
+      {^status 200 ^message "OpenRouter is connected. You can return to Gene Harness."}
+      else {^status 400 ^message "This sign-in attempt has ended."})
   catch Error
     (if (== attempt/status/.get "exchanging") (attempt/status .set "failed"))
     {^status 400 ^message "OpenRouter sign-in could not finish. Return to Gene Harness and try again."}))

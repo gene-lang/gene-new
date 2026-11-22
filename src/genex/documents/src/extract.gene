@@ -13,7 +13,7 @@
   ($fs/make_dir directory)
   ($fs/set_mode directory 448)
   (try
-    (let source ($path/join directory (if (== metadata/mime "application/pdf") "input.pdf" "input.docx")))
+    (let source ($path/join directory (if (== metadata/mime "application/pdf") "input.pdf" else "input.docx")))
     ($fs/write_bytes_atomic source data)
     (operation metadata source directory)
   ensure
@@ -37,8 +37,7 @@
   (let info (converter "pdfinfo" [source] ^max_bytes 32768))
   (for line in ($str/split info/stdout "\n")
     (if ($str/starts_with? line "Pages:")
-      (then
-        (let count ($parse/parse_int ($str/trim ($str/slice_bytes line 6 ($str/byte_size line)))))
+      (do (let count ($parse/parse_int ($str/trim ($str/slice_bytes line 6 ($str/byte_size line)))))
         (if (&& (>= count 1) (<= count 10000)) (return count)))))
   (fail (DocumentError ^_msg "PDF page count is unavailable or exceeds 10000 pages.")))
 
@@ -69,22 +68,21 @@
     (fail (DocumentError ^_msg "PDF preview page count must be in 0..4.")))
   (conversion root name data (fn [metadata source directory]
     (if (== metadata/mime "application/pdf")
-      (then
-        (let count (pdf_pages source))
+      (let count (pdf_pages source))
         (let selected ($math/min count ($math/max 1 preview_pages)))
         (let text (converter "pdftotext" ["-f" "1" "-l" ($to_str selected) "-layout" "-enc" "UTF-8" source "-"] ^max_bytes 131072))
         (let pages [])
         (repeat index in ($math/min count preview_pages)
           (pages .push (render_page source directory (+ index 1))))
         {^text (extracted_text text) ^pages pages ^page_count count ^text_pages selected
-         ^truncated (|| text/stdout_truncated (> count selected))})
-      (elif (== metadata/mime "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+         ^truncated (|| text/stdout_truncated (> count selected))}
+      elif (== metadata/mime "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         # Test every compressed entry and CRC without extracting filesystem
         # paths. Both checks and conversion have process/output deadlines.
         (converter "unzip" ["-t" source] ^max_bytes 32768)
         (let text (converter "textutil" ["-convert" "txt" "-stdout" "-encoding" "UTF-8" source] ^max_bytes 131072))
-        {^text (extracted_text text) ^pages [] ^truncated text/stdout_truncated})
-      (else (fail (DocumentError ^_msg "Extraction expects PDF or DOCX input.")))))))
+        {^text (extracted_text text) ^pages [] ^truncated text/stdout_truncated}
+      else (fail (DocumentError ^_msg "Extraction expects PDF or DOCX input."))))))
 
 (fn extract_pdf_page [root : Str, name : Str, data : Bytes, page : Int]
   (conversion root name data (fn [metadata source directory]

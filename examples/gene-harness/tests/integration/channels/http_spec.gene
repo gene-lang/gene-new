@@ -60,9 +60,9 @@
           (let selected ($cell nil))
           (loop
             (let sessions (api remote "GET" "/sessions"))
-            (if_yes (> sessions/sessions/.size 0)
-              (selected .set sessions/sessions/0)
-              (if (&& (== selected/.get/status "done") (> selected/.get/turns 0)) (break)))
+            (if (> sessions/sessions/.size 0)
+              (do (selected .set sessions/sessions/0)
+              (if (&& (== selected/.get/status "done") (> selected/.get/turns 0)) (break))))
             ($assert (< ($os/monotonic_ms) deadline) "Cross-host channel admission did not complete")
             ($sleep 25))
           ($assert ($fs/exists? ($path/join project_root "proof.txt")))

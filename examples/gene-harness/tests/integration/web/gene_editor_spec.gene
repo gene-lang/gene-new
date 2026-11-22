@@ -127,6 +127,6 @@
             ($assert (== formatted/changed true) "format reports a change")
             ($assert (== formatted/text "(fn f [x]\n  x)\n")
               $"unexpected formatted text: {formatted/text}"))
-          ($println "gene-viewer is not built here; skipping the helper checks"))))))
+          else ($println "gene-viewer is not built here; skipping the helper checks"))))))
 
 (fn main [args] : Int (run_spec args))

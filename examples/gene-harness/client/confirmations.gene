@@ -10,14 +10,14 @@
 (fn create_confirmations [target : EventTarget, notices : Notices, api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)] : Confirmations
   (var controller (Confirmations ^target target ^items {} ^saved {} ^notices notices ^api api))
   (var saved (?? (storage_get "gene-harness/confirmations") ""))
-  (if_yes (!= saved "")
+  (if (!= saved "")
     (try
       (set controller/saved ($json/parse saved))
       (map_for [key record] in controller/saved
         (var session : Str record/session)
         (if (== ($json/stringify record/handled) "true")
           (set controller/items/%key true)
-          (command_confirmation controller session record/command)))
+          else (command_confirmation controller session record/command)))
     catch Error
       nil))
   controller)
@@ -33,7 +33,7 @@
 (fn command_confirmation [controller : Confirmations, session : Str, command : Any] : Nil
   (var code "")
   (if_not ($absent? command/error_code) (set code command/error_code))
-  (if_yes (!= code "confirmation_required") (return))
+  (if (!= code "confirmation_required") (return))
   (var id : Str command/id)
   (var key ($json/stringify [session id]))
   (if_not ($absent? controller/items/%key) (return))
@@ -54,7 +54,7 @@
   ($dom/append target keep)
   ($dom/append target status)
   ($dom/append controller/target target)
-  (if_yes handoff ($dom/focus confirm))
+  (if handoff ($dom/focus confirm))
   (put_notice ^action (fn [] : Nil ($dom/focus confirm))
     controller/notices
     ($dom/element "notice")
@@ -83,10 +83,10 @@
         (fn [code : Int, data : Any] : Nil
           (if (== code 202)
             (finish_confirmation controller key target)
-            (do
+            else (do
               (if (flag data/not_sent)
                 (do
                   ($dom/set_text status "Confirmation was not sent. Resolve the current request, then try again.")
                   (set confirm/disabled false))
-                ($dom/set_text status "Confirmation could not be verified. Check the host before trying again."))
+                else ($dom/set_text status "Confirmation could not be verified. Check the host before trying again."))
               (set keep/disabled false))))))))

@@ -9,10 +9,10 @@
 (import [load_session require_record list_sessions] ^from "./sessions")
 
 (fn ui_context_data [runtime, session : Str, state]
-  (let loaded (if (== session "") nil (load_session runtime/sessions session)))
+  (let loaded (if (== session "") nil else (load_session runtime/sessions session)))
   (let config (effective_config runtime))
-  ($freeze {^session_id session ^session (if ($absent? loaded) nil (require_record runtime/sessions session))
-    ^round (if ($absent? loaded) nil loaded/round/.get) ^workspace runtime/root
+  ($freeze {^session_id session ^session (if ($absent? loaded) nil else (require_record runtime/sessions session))
+    ^round (if ($absent? loaded) nil else loaded/round/.get) ^workspace runtime/root
     ^model {^provider config/provider ^model config/model} ^sessions (list_sessions runtime/sessions)
     ^view_state state}))
 
@@ -24,7 +24,7 @@
   (let merged {})
   (map_for [key value] in (ui_settings service/runtime) (merged .put key value))
   (map_for [key value] in settings (merged .put key value))
-  (let view_name (if (!= (?? merged/default_view "") "") merged/default_view (?? merged/panel "")))
+  (let view_name (if (!= (?? merged/default_view "") "") merged/default_view else (?? merged/panel "")))
   (let record (ui_record service/runtime/h/snapshots/current/.get "web_components" view_name))
   (let declared [])
   (for contribution in (?? service/runtime/h/snapshots/current/.get/registries/web_components [])

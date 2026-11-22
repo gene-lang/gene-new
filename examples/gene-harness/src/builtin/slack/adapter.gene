@@ -53,7 +53,7 @@
   (let users (open_users ^requester requester))
   {^clients clients
    ^row {^name "slack" ^summary "Slack Socket Mode transport." ^pace_ms 1100
-     ^state (if ($absent? state) (fn [] {}) state)
+     ^state (if ($absent? state) (fn [] {}) else state)
      ^render render
      ^send (fn [request] (with_api clients request (fn [api] (send_part api request))))
      ^remove (fn [request] (with_api clients request (fn [api] (remove_part api request))))

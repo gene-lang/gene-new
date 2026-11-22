@@ -55,7 +55,7 @@ suite "runtime bound calls":
 
   test "each invocation receives a fresh deadline after expiry":
     check evalBoundCall("(let busy ($cell true)) " &
-      "(fn value [] (if busy/.get (while true nil) 7)) " &
+      "(fn value [] (if busy/.get (while true nil) else 7)) " &
       "(let f ($runtime/bind_call value [] ^policy {^timeout_ms 20})) " &
       "(let stopped (try (f) false catch Error true)) " &
       "(busy .set false) ($sleep 30) [stopped (f) (f)]").print() == "[true 7 7]"
@@ -115,7 +115,7 @@ suite "runtime bound calls":
       "(var f ($runtime/bind_call work [] ^policy {^timeout_ms 1000})) " &
       "(scope (var task (spawn ^lane root (f))) " &
       "  ($sleep 1) (task .cancel) " &
-      "  [(match (task .join) (when TaskOutcome/cancelled true) (else false)) " &
+      "  [(match (task .join) when TaskOutcome/cancelled true else false) " &
       "   (hits .get)])").print() == "[true 1]"
 
   test "recoverable errors preserve their nominal type and fields":
@@ -129,8 +129,8 @@ suite "runtime bound calls":
     check evalBoundCall("(fn fail_it [] (panic \"bound panic\")) " &
       "(var f ($runtime/bind_call fail_it [])) " &
       "(scope (var task (spawn ^lane root (f))) " &
-      "  (match (task .join) (when (TaskOutcome/fault fault) (let message fault/.message) true) " &
-      "    (else false)))").print() == "true"
+      "  (match (task .join) when (TaskOutcome/fault fault) (let message fault/.message) true " &
+      "    else false))").print() == "true"
 
   test "fexprs and borrowed caller environments cannot become durable bindings":
     check evalBoundCall("(fn syntax! [] nil) " &

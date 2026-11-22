@@ -9,10 +9,10 @@
 
 (fn ^^private status_for [code : Str] : Int
   (match code ^!exhaustive
-    (when "invalid_request" 400)
-    (when "not_found" 404)
-    (when "conflict" 409)
-    (else 503)))
+    when "invalid_request" 400
+    when "not_found" 404
+    when "conflict" 409
+    else 503))
 
 (fn ^^private body_data [request]
   (try ($json/parse request/body)
@@ -20,19 +20,18 @@
 
 (fn ^^private handle [scheduler, request]
   (let parts ($filter ($str/split request/subpath "/") (fn [part] (!= part ""))))
-  (let id (if (> parts/.size 0) ($url/decode_component parts/0) ""))
+  (let id (if (> parts/.size 0) ($url/decode_component parts/0) else ""))
   (if (== parts/.size 0)
-    (then
-      (if (== request/method "GET") (return {^status 200 ^body {^triggers (list_triggers scheduler)}}))
+    (do (if (== request/method "GET") (return {^status 200 ^body {^triggers (list_triggers scheduler)}}))
       (if (== request/method "POST")
         (return {^status 201 ^body (create_trigger scheduler (body_data request))}))))
   (if (&& (== parts/.size 1) (== id "occurrences") (== request/method "GET"))
     (return {^status 200 ^body {^occurrences (list_occurrences scheduler)}}))
-  (if_yes (== parts/.size 1)
-    (if (== request/method "PATCH")
+  (if (== parts/.size 1)
+    (do (if (== request/method "PATCH")
       (return {^status 200 ^body (update_trigger scheduler id (body_data request))}))
     (if (== request/method "DELETE")
-      (return {^status 200 ^body (delete_trigger scheduler id)})))
+      (return {^status 200 ^body (delete_trigger scheduler id)}))))
   (if (&& (== parts/.size 2) (== parts/1 "occurrences") (== request/method "GET"))
     (return {^status 200 ^body {^occurrences (list_occurrences scheduler ^trigger id)}}))
   {^status 404 ^body {^code "not_found" ^message "Unknown trigger route."}})

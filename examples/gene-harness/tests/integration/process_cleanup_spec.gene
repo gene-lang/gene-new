@@ -23,7 +23,7 @@
               (let killed (await ($os/exec_async "/bin/kill" $"-${mode}" $"-${parent}")))
               ($assert (== killed/status 0) "signal could not reach the Gene process group"))
             (let result (await process))
-            ($assert (if (== mode "exit") (== result/status 0) (!= result/status 0)) $"wrong process exit for ${mode}")
+            ($assert (if (== mode "exit") (== result/status 0) else (!= result/status 0)) $"wrong process exit for ${mode}")
             (var alive ($os/exec "/bin/kill" "-0" child))
             (let gone (+ ($os/monotonic_ms) 3000))
             (while (&& (== alive/status 0) (< ($os/monotonic_ms) gone))

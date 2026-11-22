@@ -49,7 +49,7 @@
         (let controller (test_controller runtime (fn [request]
           (calls .set (+ calls/.get 1))
           (if (== calls/.get 1) "(Outcome ^prompt \"Retained work.\")"
-            "(Outcome ^^done ^reply \"Continued.\")"))))
+            else "(Outcome ^^done ^reply \"Continued.\")"))))
         (try
           (let first (submit_round controller "default" "source" 1 "Start custom work."
             ^initiator "toy:first" ^input {^marker "kept"}))
@@ -77,11 +77,11 @@
       "rejects route hijacking and overlapping policies before they can admit work"
       (fn [root]
         (for collision in [false true]
-          (let runtime (open_runtime ($path/join root (if collision "overlap" "unowned"))
+          (let runtime (open_runtime ($path/join root (if collision "overlap" else "unowned"))
             "default" (baseline_profile)))
           (try
             (let result (register_plugin runtime/workspace runtime/h "toy"
-              (source (if collision "toy:" "user") ^overlap collision)))
+              (source (if collision "toy:" else "user") ^overlap collision)))
             ($assert (== result/status "error") ($to_str result))
             ($assert ($absent? (row runtime/h "initiators" "toy/messages")))
             ($assert (== (/kind (row runtime/h "initiators" "core/user")) "user"))

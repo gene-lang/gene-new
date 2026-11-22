@@ -34,7 +34,7 @@
     (let candidate generation/.module)
     (if (== entry "plugin.gene")
       ($assert (== candidate/item/n 7))
-      ($assert (== candidate/answer 42)))
+      else ($assert (== candidate/answer 42)))
     tx/.commit
     generation/.release)
   (repeat 100 (one))

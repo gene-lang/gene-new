@@ -12,7 +12,7 @@
   {^runtime runtime ^shells ($cell {}) ^repls ($cell {}) ^readers {} ^gate ($sync/gate) ^closed ($cell false)})
 
 (fn close_kind [state, mode : Str]
-  (if (== mode "sh") (close_shells state/shells) (close_repls state/repls)))
+  (if (== mode "sh") (close_shells state/shells) else (close_repls state/repls)))
 
 (fn close_operator_host [state]
   (if (state/closed .swap true) (return nil))
@@ -30,9 +30,9 @@
 
 (fn require_mode [record, mode : Str]
   (let expected (match mode
-    (when "sh" "shell")
-    (when "repl" "repl")
-    (else "")))
+    when "sh" "shell"
+    when "repl" "repl"
+    else ""))
   (if (|| (== expected "") (!= record/host/owner expected))
     (fail (ServiceError ^code "forbidden" ^_msg "This input mode belongs to its shell or REPL plugin."))))
 
@@ -62,10 +62,9 @@
   (if (== name "sh")
     (return ($freeze (if (== ($str/trim ctx/raw) "")
       (CommandResult ^display "Shell open. Enter exit or quit to leave." ^!attached ^mode "sh")
-      (shell_command ctx)))))
+      else (shell_command ctx)))))
   (if (== name "repl")
-    (then
-      (if (!= ($str/trim ctx/raw) "")
+    (do (if (!= ($str/trim ctx/raw) "")
         (fail (ServiceError ^code "invalid_request" ^_msg "/repl takes no arguments.")))
       (return ($freeze (CommandResult ^display "REPL open. Enter exit or quit to leave." ^!attached ^mode "repl")))))
   (fail (ServiceError ^code "invalid_request" ^_msg "Unknown operator command operation.")))
@@ -77,18 +76,18 @@
     (message classify [mode : Str, text : Str] : Str
       (let record (operator_service self))
       (require_mode record mode)
-      (if (== mode "sh") (classify_shell text) (classify_repl text)))
+      (if (== mode "sh") (classify_shell text) else (classify_repl text)))
     (message input [mode : Str, context : CommandContext] : Any
       (let record (operator_service self))
       (require_mode record mode)
       (if (!= (record/values/.get .get mode) true)
         (fail (ServiceError ^code "unavailable" ^_msg "Input mode activation has not retained its sessions.")))
       (let ctx (require_command_scope record/runtime context))
-      ($freeze (if (== mode "sh") (evaluate_shell record/config/shells ctx) (evaluate_repl record/config/repls ctx))))
+      ($freeze (if (== mode "sh") (evaluate_shell record/config/shells ctx) else (evaluate_repl record/config/repls ctx))))
     (message close [mode : Str, session : Str] : Any
       (let record (operator_service self))
       (require_mode record mode)
-      (if (== mode "sh") (close_shell record/config/shells session) (close_repl record/config/repls session)))))
+      (if (== mode "sh") (close_shell record/config/shells session) else (close_repl record/config/repls session)))))
 
 (fn operator_host_binding [state]
   (service_binding state/runtime "operator" (fn [token] (HostedOperator ^token token)) ^config state))

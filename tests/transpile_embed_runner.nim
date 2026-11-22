@@ -26,7 +26,7 @@ const clientModule = """
 
 (web_module widget
   (fn label [n : Int] : Str
-    (if (== n 1) "1 item" "many items"))
+    (if (== n 1) "1 item" else "many items"))
 
   (fn on_click [event : Any] : Nil
     (var target event/target)
@@ -375,14 +375,14 @@ const ajaxModule = """
     (var target event/target)
     (var target_class : Str target/class_name)
     ($console/log $"click ${target_class}")
-    (if_yes (== target_class "toggle")
-      ($dom/prevent_default event)
+    (if (== target_class "toggle")
+      (do ($dom/prevent_default event)
       (var id : Str target/dataset/id)
       ($http/post_form "/api/toggle" $"id=${id}"
         (fn [body : Str] : Nil
           ($console/log $"response for ${id}: ${body}")
           (paint target body)
-          nil)))
+          nil))))
     nil)
 
   (fn main [root : EventTarget] : Nil

@@ -74,7 +74,7 @@
   (for field in (callback_fields)
     (let callback (candidate .get field))
     (if_not ($absent? callback)
-      (let admitted (if native callback (public_callback owner slot candidate/name field callback)))
+      (let admitted (if native callback else (public_callback owner slot candidate/name field callback)))
       (prepared .put field (guard_participant_callback candidate/name field admitted))))
   prepared)
 

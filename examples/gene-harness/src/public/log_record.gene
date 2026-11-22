@@ -51,8 +51,8 @@
   (let original_bytes ($str/byte_size (serialize_line record)))
   (let data_bytes
     (if ($present? record/data)
-      (then ($str/byte_size ($json/stringify record/data)))
-      (else 0)))
+      ($str/byte_size ($json/stringify record/data))
+      else 0))
   (let target (?? record/target {}))
   (let workspace (?? target/workspace ""))
   (var shortened
@@ -99,13 +99,13 @@
 # Console presentation. Time is UTC because the runtime has no local-time
 # formatter; it is decoration only, never an ordering source.
 (fn pad2 [value : Int] : Str
-  (if (< value 10) $"0${value}" ($to_str value)))
+  (if (< value 10) $"0${value}" else ($to_str value)))
 
 (fn pad3 [value : Int] : Str
   (if (< value 10)
-    (then $"00${value}")
-    (elif (< value 100) $"0${value}")
-    (else ($to_str value))))
+    $"00${value}"
+    elif (< value 100) $"0${value}"
+    else ($to_str value)))
 
 (fn time_text [time_ms : Int] : Str
   (let hour (// (/ time_ms 3600000) 24))
@@ -116,12 +116,12 @@
 
 (fn level_text [level : Str] : Str
   (match level
-    (when "error" "ERROR")
-    (when "warn" "WARN ")
-    (when "info" "INFO ")
-    (when "debug" "DEBUG")
-    (when "trace" "TRACE")
-    (else "INFO ")))
+    when "error" "ERROR"
+    when "warn" "WARN "
+    when "info" "INFO "
+    when "debug" "DEBUG"
+    when "trace" "TRACE"
+    else "INFO "))
 
 (fn target_text [target] : Str
   (if ($absent? target) (return ""))

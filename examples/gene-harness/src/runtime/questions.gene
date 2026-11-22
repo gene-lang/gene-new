@@ -19,7 +19,7 @@
     (ids .put question/id true)
     (let copy ($thaw ($freeze question)))
     (let choices (?? question/choices nil))
-    (let kind (?? question/kind (if ($absent? choices) "text" "select")))
+    (let kind (?? question/kind (if ($absent? choices) "text" else "select")))
     (copy .put "kind" kind)
     (if (== kind "confirm") (copy .put "choices" [true false]))
     (if_not ($absent? (?? copy/choices nil))
@@ -39,10 +39,10 @@
       (copy .put "view" (question_view question/id question/view (?? copy/choices nil) kind)))
     # A plugin question kind may draw its own view from the question's data.
     (let renderer (renderers .get kind))
-    (if_yes (&& ($absent? (?? question/view nil)) ($present? renderer))
-      (let drawn (try (renderer ($freeze copy))
+    (if (&& ($absent? (?? question/view nil)) ($present? renderer))
+      (do (let drawn (try (renderer ($freeze copy))
         catch Error (fail (QuestionError ^_msg $"question ${question/id} ${kind} render: ${$err/.message}"))))
-      (copy .put "view" (question_view question/id drawn (?? copy/choices nil) kind)))
+      (copy .put "view" (question_view question/id drawn (?? copy/choices nil) kind))))
     # Opt-in single-click answering; the default is select, then Answer.
     (if_not ($absent? question/submit_on_answer)
       (if (!= ($head question/submit_on_answer) Bool)
@@ -95,20 +95,18 @@
       (fail (QuestionError ^_msg $"unknown question ${id}"))))
   (let answers {})
   (for question in questions
-    (let value (if dismiss (quote unanswered) (?? (values .get question/id) (quote unanswered))))
+    (let value (if dismiss (quote unanswered) else (?? (values .get question/id) (quote unanswered))))
     (if (!= value (quote unanswered))
-      (then
-        (if (== question/multi true)
-          (then
-            (if (!= ($head value) List)
+      (do (if (== question/multi true)
+          (if (!= ($head value) List)
               (fail (QuestionError ^_msg $"question ${question/id} expects multiple choices")))
             (for choice in value
               (if_not (question/choices .contains? choice)
-                (fail (QuestionError ^_msg $"invalid choice for ${question/id}")))))
-          (else
+                (fail (QuestionError ^_msg $"invalid choice for ${question/id}"))))
+          else
             (if_not ($absent? (?? question/choices nil))
               (if_not (question/choices .contains? value)
-                (fail (QuestionError ^_msg $"invalid choice for ${question/id}"))))))
+                (fail (QuestionError ^_msg $"invalid choice for ${question/id}")))))
         (if (&& (== question/kind "text") (!= ($head value) Str))
           (fail (QuestionError ^_msg $"question ${question/id} expects text")))
         (let validator (validators .get question/kind))
@@ -120,7 +118,7 @@
                    ^deadline deadline = nil, ^validators validators = {}, ^normalized normalized : Bool = false,
                    ^round round = nil]
   # Response evaluation already normalized the batch under its snapshot lease.
-  (let batch {^id id ^turn turn ^questions (if normalized questions (validate_questions questions ^validators validators))
+  (let batch {^id id ^turn turn ^questions (if normalized questions else (validate_questions questions ^validators validators))
     ^deadline deadline ^status "waiting" ^answers nil ^digest nil ^round round
     ^asked_ms ($os/wall_ms)})
   (record_core_state events "session" session "question/asked" $"questions/${id}" batch)
@@ -138,15 +136,13 @@
   (if ($absent? batch) (fail (QuestionError ^_msg $"unknown question batch ${id}")))
   (let submitted (submitted_digest values dismiss))
   (if (&& (== batch/status "answered") ($present? batch/submitted_digest))
-    (then
-      (if (&& (== batch/submitted_digest submitted) (== (?? batch/intent "continue") intent))
+    (do (if (&& (== batch/submitted_digest submitted) (== (?? batch/intent "continue") intent))
         (return batch))
       (fail (QuestionError ^_msg $"question batch ${id} already has different answers"))))
   (let answers (normalize_answers batch/questions values ^dismiss dismiss ^validators validators))
   (let digest ($crypto/sha256 ($serde/write_data answers)))
   (if (== batch/status "answered")
-    (then
-      (if (!= digest batch/digest)
+    (do (if (!= digest batch/digest)
         (fail (QuestionError ^_msg $"question batch ${id} already has different answers")))
       (return batch)))
   (batch .put "status" "answered")

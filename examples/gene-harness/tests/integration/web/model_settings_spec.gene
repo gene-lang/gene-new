@@ -36,8 +36,7 @@
                    ^send (fn [call]
                      (calls/.get .push call/settings)
                      (if (== calls/.get/.size 1)
-                       (then
-                         (entered .set true)
+                       (do (entered .set true)
                          (while (! released/.get) ($sleep 1))))
                      {^text "(Outcome ^^done ^reply \"done\")"})})))
             {^^host ^limits service/runtime/profile/limits})

@@ -17,7 +17,7 @@
   (let round_index {}) (let started_turns {})
   (for round in rounds (round_index .put round/id round))
   (for record in records
-    (if_yes (== record/phase "turn/start")
+    (if (== record/phase "turn/start")
       (started_turns .put $"${record/round_id}/${record/turn}" true)))
   (for original in records
     (let record ($thaw ($freeze_shallow original)))
@@ -44,8 +44,8 @@
 (fn project_request [record, receiver : Int, prior = nil]
   (let combine (?? record/combine "replace"))
   (let body (if (&& (== combine "append") ($present? prior))
-    $"${prior/text}\n${record/text}" record/text))
-  (let sources (if ($absent? prior) [] ($into prior/source_ids [])))
+    $"${prior/text}\n${record/text}" else record/text))
+  (let sources (if ($absent? prior) [] else ($into prior/source_ids [])))
   (if_not (sources .contains? record/id) (sources .push record/id))
   {^id $"${record/round_id}/request-${receiver}" ^seq record/seq ^round_id record/round_id
       ^turn receiver ^for_turn receiver ^producer_turn record/turn
@@ -70,12 +70,12 @@
     (if (!= visible/%previous/seq visible/%start/seq) (break))
     (set start previous))
   (let page ($drop visible start))
-  (let before_cursor (if page/.empty? "" (/seq ($first page))))
+  (let before_cursor (if page/.empty? "" else (/seq ($first page))))
   (let owners {}) (let present {})
   (for record in page
     (owners .put $"${record/round_id}/${record/turn}" true)
     (present .put record/id true))
-  (let newest (if page/.empty? 0 (/order ($last page))))
+  (let newest (if page/.empty? 0 else (/order ($last page))))
   (for record in structural
     (let seq ($json/parse record/seq))
     (if (|| ($has_key? owners $"${record/round_id}/${record/turn}")

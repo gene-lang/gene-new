@@ -10,9 +10,9 @@
 
 (fn secret_path [filename : Str] : Str
   (if (filename .starts_with? "~/")
-    (then ($path/join ($os/get_env "HOME") ($str/slice_bytes filename 2 (- filename/.byte_size 2))))
-    (elif (filename .starts_with? "/") ($path/normalize filename))
-    (else ($path/join ($os/launch_dir) filename))))
+    ($path/join ($os/get_env "HOME") ($str/slice_bytes filename 2 (- filename/.byte_size 2)))
+    elif (filename .starts_with? "/") ($path/normalize filename)
+    else ($path/join ($os/launch_dir) filename)))
 
 (fn unquote_secret [text : Str] : Str
   (let value text/.trim)
@@ -28,17 +28,17 @@
   (let source (try ($fs/read_text (secret_path path))
     catch Error (slack_error "credentials_unavailable" "The Slack credential file could not be read.")))
   (for line in (source .split "\n")
-    (let delimiter (if (line .contains? ":") ":" "="))
+    (let delimiter (if (line .contains? ":") ":" else "="))
     (let parts (line .split delimiter))
     (if (< parts/.size 2) (continue))
     (let name parts/0/.trim/.lower)
     (let value (unquote_secret ($str/join ($drop parts 1) delimiter)))
-    (if_yes (&& (name .contains? "bot") (name .contains? "token"))
-      (values .put "bot" value) (continue))
-    (if_yes (&& (name .contains? "app") (name .contains? "token"))
-      (values .put "app" value) (continue))
-    (if_yes (&& (name .contains? "user") (name .contains? "token"))
-      (values .put "user" value) (continue))
+    (if (&& (name .contains? "bot") (name .contains? "token"))
+      (do (values .put "bot" value) (continue)))
+    (if (&& (name .contains? "app") (name .contains? "token"))
+      (do (values .put "app" value) (continue)))
+    (if (&& (name .contains? "user") (name .contains? "token"))
+      (do (values .put "user" value) (continue)))
     (if (&& (name .contains? "channel") (name .contains? "id"))
       (values .put "channel" value)))
   (if (|| (! (values/bot .starts_with? "xoxb-")) (! (values/app .starts_with? "xapp-")))
@@ -52,7 +52,7 @@
 (fn open_api [bot : Str, ^requester requester = nil]
   (SlackApi ^bot bot ^closed ($cell false) ^requester requester
     ^client (if ($absent? requester)
-      (await ($net/http_client/open ^max_connections 2 ^max_connections_per_origin 2)) nil)))
+      (await ($net/http_client/open ^max_connections 2 ^max_connections_per_origin 2)) else nil)))
 
 (fn close_api [api : SlackApi]
   (if api/closed/.get (return nil))
@@ -77,18 +77,18 @@
     (slack_error "invalid_method" "Unsupported Slack HTTP method."))
   (let headers {^authorization ($to_str "Bearer " (?? token api/bot)) ^content-type "application/json; charset=utf-8"})
   (var address ($to_str "https://slack.com/api/" method))
-  (let body (if (== http_method "POST") ($json/stringify data) nil))
-  (if_yes (== http_method "GET")
-    (let query [])
+  (let body (if (== http_method "POST") ($json/stringify data) else nil))
+  (if (== http_method "GET")
+    (do (let query [])
     (map_for [key value] in data
       (query .push ($to_str ($url/encode_component ($to_str key)) "=" ($url/encode_component ($to_str value)))))
-    (if_not query/.empty? (set address ($to_str address "?" ($str/join query "&")))))
+    (if_not query/.empty? (set address ($to_str address "?" ($str/join query "&"))))))
   (let request {^method method ^http_method http_method ^url address ^headers headers ^body body ^params data})
   (let response (try
     (if ($absent? api/requester)
       (await (api/client .request ^method http_method ^url address
         ^headers headers ^body body ^timeout_ms 20000 ^max_bytes 1048576))
-      (api/requester request))
+      else (api/requester request))
     catch Error (slack_error "transport_unknown" "The Slack request outcome is unknown; reconcile delivery before retrying.")))
   (if (== response/status 429)
     (fail (SlackError ^code "rate_limited" ^retry_after_ms (retry_delay response/headers)
@@ -97,16 +97,16 @@
     (slack_error "server_unknown" "Slack returned a server error; reconcile delivery before retrying."))
   (let result (try ($json/parse ^^strict ($binary/decode_utf8 response/body))
     catch Error (slack_error "invalid_response" "Slack returned an invalid response.")))
-  (if_yes (|| (< response/status 200) (>= response/status 300) (!= result/ok true))
-    (let candidate (?? result/error "api_error"))
+  (if (|| (< response/status 200) (>= response/status 300) (!= result/ok true))
+    (do (let candidate (?? result/error "api_error"))
     (let code (if (&& (== ($head candidate) Str) (< candidate/.byte_size 81)
-      ($present? (#"^[a-z_]+$" .match candidate))) candidate "api_error"))
-    (slack_error code ($to_str "Slack " method " failed: " code ".")))
+      ($present? (#"^[a-z_]+$" .match candidate))) candidate else "api_error"))
+    (slack_error code ($to_str "Slack " method " failed: " code "."))))
   result)
 
 (fn identify [api : SlackApi, credentials]
   (let bot (api_call api "auth.test"))
-  (let user (if (== credentials/user "") nil (api_call api "auth.test" ^token credentials/user)))
+  (let user (if (== credentials/user "") nil else (api_call api "auth.test" ^token credentials/user)))
   (if (|| ($absent? bot/team_id) ($absent? bot/user_id) ($absent? bot/bot_id))
     (slack_error "invalid_identity" "The configured bot token did not identify a Slack bot."))
   (if (&& ($present? user)

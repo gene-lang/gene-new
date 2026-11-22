@@ -45,8 +45,8 @@
           (let account ($cell "account-a"))
           (let provider {^name "example" ^transport {^adapter "fake" ^base_url "fake://one"}
             ^connection (fn []
-              (let captured {^state (if held/.get (then stale_state) (else "ready")) ^billing "plan" ^account account/.get})
-              (if held/.get (then (entered .set true) (while (! released/.get) ($sleep 1))))
+              (let captured {^state (if held/.get stale_state else "ready") ^billing "plan" ^account account/.get})
+              (if held/.get (do (entered .set true) (while (! released/.get) ($sleep 1))))
               captured)
             ^models (fn [] [{^id account/.get}])})
           (let catalog (open_model_catalog ^start false workspace (fn [] [provider])))
@@ -73,7 +73,7 @@
         (let provider {^name "example" ^transport {^adapter "fake" ^base_url "fake://one"}
           ^connection (fn [] {^state "ready" ^billing "plan" ^account "account"})
           ^models (fn []
-            (if held/.get (then (entered .set true) (while (! released/.get) ($sleep 1))))
+            (if held/.get (do (entered .set true) (while (! released/.get) ($sleep 1))))
             [{^id "one"}])})
         (let catalog (open_model_catalog ^start false workspace (fn [] [provider])))
         (try

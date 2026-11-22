@@ -56,8 +56,7 @@
           (let traces [])
           (for event in (events_for runtime/events "session" "default")
             (if (== event/type "trace")
-              (then
-                (traces .push event/payload/text)
+              (do (traces .push event/payload/text)
                 (if ($str/contains? event/payload/text "hook exploded")
                   (set diagnosed true)))))
           ($assert diagnosed $"hook failure was not logged: ${traces}")
@@ -127,8 +126,7 @@
             (let traces [])
             (for event in (events_for runtime/events "session" "default")
               (if (== event/type "trace")
-                (then
-                  (traces .push event/payload/text)
+                (do (traces .push event/payload/text)
                   (if ($str/contains? event/payload/text "hook request/prepare/slow")
                     (set diagnosed true)))))
             (let hook_list (hook_rows lease/snapshot "request/prepare"))
@@ -182,8 +180,7 @@
             (let traces [])
             (for event in (events_for runtime/events "session" "default")
               (if (== event/type "trace")
-                (then
-                  (traces .push event/payload/text)
+                (do (traces .push event/payload/text)
                   (if ($str/contains? event/payload/text "more than once")
                     (set diagnosed true)))))
             ($assert diagnosed $"duplicate next call was not diagnosed: ${traces}")

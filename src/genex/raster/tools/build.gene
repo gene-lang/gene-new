@@ -4,7 +4,7 @@
 (fn main [argv]
   (let words ($body argv))
   (let root ($path/parent ($path/parent this_mod/.path)))
-  (let out (if (> words/.size 0) words/0 ($path/join root "build")))
+  (let out (if (> words/.size 0) words/0 else ($path/join root "build")))
   ($fs/make_dir out)
   (let pkg (?? ($os/env? "PKG_CONFIG") "pkg-config"))
   (let flags ($filter ($str/split (checked pkg ["--cflags" "--libs" "cairo" "libpng"]) " ")

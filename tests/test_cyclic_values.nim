@@ -25,7 +25,7 @@ const cyclicPrelude = """
     ((nodes .get 99) .put "id" last)
     (var i 0)
     (while (< i 100)
-      ((nodes .get i) .put "next" (nodes .get (if (== i 99) 0 (+ i 1))))
+      ((nodes .get i) .put "next" (nodes .get (if (== i 99) 0 else (+ i 1))))
       (set i (+ i 1)))
     (nodes .get 0))
   (fn nest [depth : Int]

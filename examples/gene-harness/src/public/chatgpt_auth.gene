@@ -49,10 +49,10 @@
     (if (&& ($present? cached) known (< now cached/expires_at)) (return cached/keys))
     (let result (try (fetch ^timeout_ms 5000 jwks_url "GET") catch Error nil))
     (if (|| (!= result/status 200) (!= ($head result/data/keys) List))
-      (then
+
         # Only a known key gets a bounded stale grace on an unavailable JWKS
         # service. Unknown kids and invalid signatures still fail closed.
-        (if (&& known (< now (+ cached/expires_at 3600000))) (return cached/keys))
+        (do (if (&& known (< now (+ cached/expires_at 3600000))) (return cached/keys))
         (auth_error ^code "signing_keys_unavailable" "ChatGPT signing keys are temporarily unavailable; retry shortly")))
     (key_cache/.get .put jwks_url {^keys result/data ^expires_at (+ now 300000)})
     result/data)))
@@ -83,7 +83,7 @@
     (auth_error "ChatGPT sign-in requires the running host's 127.0.0.1 callback"))
   (if ($absent? verifier) (require_signature_backend))
   (let resolved (login_root root))
-  (let existing (if ($present? account) (then (read_chatgpt_record resolved account)) (else nil)))
+  (let existing (if ($present? account) (read_chatgpt_record resolved account) else nil))
   (if (&& ($present? account) ($absent? existing)) (auth_error "ChatGPT account not found"))
   (let host (chatgpt_host_id resolved))
   (let state ($crypto/random_hex 32)) (let nonce ($crypto/random_hex 32)) (let code_verifier ($crypto/random_hex 32))
@@ -92,8 +92,8 @@
     ^scope "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
     ^resource resource ^state state ^nonce nonce ^code_challenge_method "S256" ^code_challenge (pkce_challenge code_verifier)})
   (if (== client "dynamic_agent_client")
-    (then (params .put "agent_name_hint" "Gene Harness"))
-    (elif ($present? (nonempty existing/email)) (params .put "login_hint" existing/email)))
+    (params .put "agent_name_hint" "Gene Harness")
+    elif ($present? (nonempty existing/email)) (params .put "login_hint" existing/email))
   # Reconsent is only for an explicit settings request to enable a missing plan
   # grant. OpenAI's force_reconsent rollout is not assumed for this integration.
   (if (&& ($present? existing) (! (plan_enabled? existing))) (params .put "prompt" "consent"))
@@ -124,13 +124,13 @@
   (if (!= params/state attempt/state) (return {^status 400 ^message "Sign-in state did not match. Return to Gene Harness."}))
   (if (!= attempt/status/.get "pending") (return {^status 409 ^message "This sign-in attempt has ended."}))
   (if ($present? params/error)
-    (then (attempt/status .set "declined") (return {^status 200 ^message "Sign-in was declined. You can return to Gene Harness."})))
+    (do (attempt/status .set "declined") (return {^status 200 ^message "Sign-in was declined. You can return to Gene Harness."})))
   (attempt/status .set "exchanging")
   (try
     (let code (nonempty params/code))
     (if ($absent? code) (auth_error "ChatGPT returned no authorization code"))
     (let client (if (== attempt/client_id "dynamic_agent_client")
-      (then (nonempty params/client_id)) (else attempt/client_id)))
+      (nonempty params/client_id) else attempt/client_id))
     (if (|| ($absent? client) (== client "dynamic_agent_client")
       (&& ($present? params/client_id) (!= params/client_id client)))
       (auth_error "ChatGPT client registration did not match this attempt"))
@@ -151,7 +151,7 @@
     (let record {^version 1 ^issuer issuer ^client_id client ^subject identity/sub
       ^ext_agent_host_id attempt/host_id ^nonce attempt/nonce ^scopes scopes
       ^access_token tokens/access_token ^refresh_token tokens/refresh_token ^id_token tokens/id_token
-      ^expires_at (if permitted (then (+ received tokens/expires_in)) (else identity/exp))
+      ^expires_at (if permitted (+ received tokens/expires_in) else identity/exp)
       ^earliest_refresh_at tokens/earliest_refresh_at})
     (for field in ["email" "name"]
       (let value (identity .get field))
@@ -159,15 +159,14 @@
     (attempt/mutate (fn []
       (expire_login_unlocked attempt)
       (if (== attempt/status/.get "exchanging")
-        (then
-          (let account (save_chatgpt_account attempt/root record))
+        (do (let account (save_chatgpt_account attempt/root record))
           (attempt .put "account" account)
           (attempt/status .set "complete")))))
     (if (== attempt/status/.get "complete")
-      (then {^status 200 ^message (if (plan_enabled? record)
-        (then "ChatGPT is connected. You can return to Gene Harness.")
-        (else "Identity sign-in succeeded, but ChatGPT plan permission was not granted. Return to Models to reconnect."))})
-      (else {^status 400 ^message "This sign-in attempt has ended."}))
+      {^status 200 ^message (if (plan_enabled? record)
+        "ChatGPT is connected. You can return to Gene Harness."
+        else "Identity sign-in succeeded, but ChatGPT plan permission was not granted. Return to Models to reconnect.")}
+      else {^status 400 ^message "This sign-in attempt has ended."})
   catch Error
     (if (== attempt/status/.get "exchanging") (attempt/status .set "failed"))
     {^status 400 ^message "ChatGPT sign-in could not be verified. The existing account was preserved; return to Models and sign in again."}))
@@ -181,8 +180,7 @@
   ^verify verifier = nil, ^dispatch supplied_dispatch = nil]
   (var dispatch supplied_dispatch)
   (if (&& ($absent? dispatch) (> refresh_dispatchers/.get/.size 0))
-    (then
-      (let available refresh_dispatchers/.get)
+    (do (let available refresh_dispatchers/.get)
       (let index (- available/.size 1))
       (set dispatch available/%index/dispatch)))
   (if ($absent? dispatch)
@@ -192,10 +190,10 @@
   # The host owns this task, not the waiting discovery/round scope. In
   # particular, do not cancel it while a rotating exchange may be in flight.
   (match task/.join
-    (when (TaskOutcome/ok value) value)
-    (when (TaskOutcome/error error) (fail error))
-    (when (TaskOutcome/fault fault) (fail fault))
-    (else (auth_error "ChatGPT refresh was interrupted; retry after the host recovers"))))
+    when (TaskOutcome/ok value) value
+    when (TaskOutcome/error error) (fail error)
+    when (TaskOutcome/fault fault) (fail fault)
+    else (auth_error "ChatGPT refresh was interrupted; retry after the host recovers")))
 
 (fn id_token_expired? [token, now : Int]
   # This is an early rejection only. Unverified claims never authorize access.
@@ -222,18 +220,16 @@
   (if (&& (== current/refresh_identity_required true) ($absent? tokens/id_token))
     (return {^record current ^error (ProviderError ^status 401 ^code "identity_verification_required"
       ^_msg "ChatGPT needs a fresh identity token after an interrupted verification; reconnect in Models")}))
-  (let received_at (if (== ($head current/pending_refresh_at) Int) (then current/pending_refresh_at) (else 0)))
+  (let received_at (if (== ($head current/pending_refresh_at) Int) current/pending_refresh_at else 0))
   (let expires_at (+ received_at tokens/expires_in))
   (if (|| (<= expires_at (/ ($os/wall_ms) 1000))
     (id_token_expired? tokens/id_token (/ ($os/wall_ms) 1000)))
-    (then
-      (current .delete "pending_refresh") (current .delete "pending_refresh_at")
+    (do (current .delete "pending_refresh") (current .delete "pending_refresh_at")
       (return {^record current ^error (ProviderError ^code "refresh_response_expired"
         ^_msg "ChatGPT token response expired while identity verification was pending; retry with the saved refresh token")})))
   (try
     (if ($present? tokens/id_token)
-      (then
-        (if ($absent? verifier) (require_signature_backend))
+      (do (if ($absent? verifier) (require_signature_backend))
         (let verify (?? verifier verify_chatgpt_token))
         (let identity (verify ^refresh true tokens current/client_id current/nonce))
         (if (!= identity/sub current/subject)
@@ -271,8 +267,7 @@
     (let existing {^access_token current/access_token ^account id ^public (public_account current)})
     (if (&& ($present? (nonempty current/access_token)) (> current/expires_at (+ now 60))) (return {^result existing}))
     (if (&& (== ($head current/earliest_refresh_at) Int) (< now current/earliest_refresh_at))
-      (then
-        (if (&& ($present? (nonempty current/access_token)) (> current/expires_at now)) (return {^result existing}))
+      (do (if (&& ($present? (nonempty current/access_token)) (> current/expires_at now)) (return {^result existing}))
         (auth_error ^code "refresh_not_available" "ChatGPT token refresh is not available yet; retry shortly")))
     (if ($absent? (nonempty current/refresh_token)) (auth_error "ChatGPT access expired; reconnect in Models" 401))
     (if (! allow_refresh)
@@ -281,13 +276,11 @@
     (let response (auth_http exchange_url "POST" (query_string
       {^grant_type "refresh_token" ^client_id current/client_id ^refresh_token current/refresh_token ^resource resource})))
     (if (!= response/status 200)
-      (then
-        (let code (if (== ($head response/data/error) Str) (then response/data/error) (else response/data/error/code)))
+      (do (let code (if (== ($head response/data/error) Str) response/data/error else response/data/error/code))
         (if (&& ([400 401] .contains? response/status)
           (["invalid_grant" "invalid_refresh_token" "token_expired" "refresh_token_expired"
             "refresh_token_invalidated" "refresh_token_reused"] .contains? code))
-          (then
-            (current .delete "access_token") (current .delete "refresh_token") (current .put "expires_at" 0)
+          (do (current .delete "access_token") (current .delete "refresh_token") (current .put "expires_at" 0)
             (return {^record current ^error (ProviderError ^status 401 ^code code ^_msg "ChatGPT session expired or was revoked; reconnect in Models")})))
         (if (== code "invalid_client")
           (auth_error ^code "invalid_client" "ChatGPT client registration is invalid; check the integration's client configuration"))
@@ -300,7 +293,7 @@
         (if ($present? (tokens .get field)) (pending .put field (tokens .get field)))))
     (for field in ["access_token" "refresh_token"]
       (if (&& (== ($head (pending .get field)) Str) ($present? (nonempty (pending .get field))))
-        (then (updated .put field (pending .get field)))))
+        (updated .put field (pending .get field))))
     # A refresh response may legally omit a replacement. Bad/empty responses
     # must likewise preserve the only credential available for a retry.
     (if ($absent? pending/refresh_token) (pending .put "refresh_token" updated/refresh_token))
@@ -318,31 +311,28 @@
     (if ($absent? current) (auth_error "ChatGPT account not found"))
     (var confirmed (== current/revocation_confirmed true))
     (if ($present? (nonempty current/refresh_token))
-      (then
-        (var endpoint supplied_url)
+      (do (var endpoint supplied_url)
         (if ($absent? endpoint)
-          (then
-            (let configuration (try (auth_http ^timeout_ms 5000
+          (do (let configuration (try (auth_http ^timeout_ms 5000
               "https://auth.openai.com/.well-known/openid-configuration" "GET") catch Error nil))
             (if (&& (== configuration/status 200) (== configuration/data/issuer issuer)
               (== ($head configuration/data/revocation_endpoint) Str)
               ($present? (#"^https://auth[.]openai[.]com/[^?#]*$" .match configuration/data/revocation_endpoint)))
               (set endpoint configuration/data/revocation_endpoint))))
         (if ($present? endpoint)
-          (then
-            (var attempt 0)
+          (do (var attempt 0)
             (while (&& (< attempt 3) (! confirmed))
               (let result (try (auth_http ^timeout_ms 5000 endpoint "POST" (query_string
                 {^token current/refresh_token ^token_type_hint "refresh_token" ^client_id current/client_id})) catch Error nil))
               (if (== result/status 200)
-                (then (set confirmed true))
-                (elif (&& ($present? result/status) (< result/status 500)) (break))
-                (else (if (< attempt 2) ($sleep (* 100 (+ attempt 1))))))
+                (set confirmed true)
+                elif (&& ($present? result/status) (< result/status 500)) (break)
+                else (if (< attempt 2) ($sleep (* 100 (+ attempt 1)))))
               (set attempt (+ attempt 1)))))))
     (for field in ["access_token" "refresh_token" "id_token" "nonce" "pending_refresh" "pending_refresh_at" "refresh_identity_required"] (current .delete field))
     (current .put "signed_out" true) (current .put "expires_at" 0)
     (current .put "revocation_confirmed" confirmed)
     {^record current ^result {^^ok ^account (public_account current) ^remote_revoked confirmed
       ^message (if confirmed
-        (then "ChatGPT session revoked and local credentials cleared.")
-        (else "Local credentials cleared. Remote revocation was not confirmed; disconnect this app in ChatGPT Settings → Usage."))}})))
+        "ChatGPT session revoked and local credentials cleared."
+        else "Local credentials cleared. Remote revocation was not confirmed; disconnect this app in ChatGPT Settings → Usage.")}})))

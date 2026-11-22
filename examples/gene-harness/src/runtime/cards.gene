@@ -75,10 +75,10 @@
 
 (fn fn_source [form, name : Str] : Str
   (match form
-    (when (node : Node)
+    when (node : Node)
       (if (!= ($head node) (quote fn))
-        (card_fail "invalid_request" $"card ^${name} must be a literal (fn ...) form")))
-    (else (card_fail "invalid_request" $"card ^${name} must be a literal (fn ...) form")))
+        (card_fail "invalid_request" $"card ^${name} must be a literal (fn ...) form"))
+    else (card_fail "invalid_request" $"card ^${name} must be a literal (fn ...) form"))
   (let text ($to_str form))
   (if (> ($str/byte_size text) source_limit)
     (card_fail "too_large" $"card ^${name} source exceeds 16 KiB"))
@@ -106,28 +106,28 @@
 # its functions' free names and warns about any the environment cannot
 # resolve. This is a best-effort check: it never refuses a card.
 (const card_special_forms
-  ["fn" "let" "var" "set" "if" "if_yes" "if_not" "then" "else" "elif" "do" "for" "in"
+  ["fn" "let" "var" "set" "if" "if_not" "else" "elif" "do" "for" "in"
    "while" "loop" "repeat" "break" "continue" "return" "match" "when" "try" "catch" "ensure"
    "scope" "quote" "quasiquote" "unquote" "spawn" "await" "path" "gene" "&&" "||" "!" ":"
    "..." "_" "true" "false" "nil" "$err"])
 
 (fn bound_names [form, found]
   (match form
-    (when (node : Node)
+    when (node : Node)
       (let head ($to_str ($head node)))
       (let body ($node/body node))
-      (if_yes (&& (["fn" "let" "var" "for" "when"] .contains? head) (> ($size body) 0))
+      (if (&& (["fn" "let" "var" "for" "when"] .contains? head) (> ($size body) 0))
         (collect_symbols body/0 found))
-      (for item in body (bound_names item found)))
-    (else
+      (for item in body (bound_names item found))
+    else
       (if (== ($head form) List) (for item in form (bound_names item found)))
-      (if (== ($head form) Map) (map_for [key value] in form (bound_names value found)))))
+      (if (== ($head form) Map) (map_for [key value] in form (bound_names value found))))
   found)
 
 (fn collect_symbols [form, found]
   (if (== ($head form) Sym) (found .put ($to_str form) true))
   (if (== ($head form) List) (for item in form (collect_symbols item found)))
-  (match form (when (node : Node) (for item in ($node/body node) (collect_symbols item found))) (else nil))
+  (match form when (node : Node) (for item in ($node/body node) (collect_symbols item found)) else nil)
   found)
 
 (fn free_names [form, quoted : Bool, found]
@@ -135,7 +135,7 @@
   (if (== ($head form) List) (for item in form (free_names item quoted found)))
   (if (== ($head form) Map) (map_for [key value] in form (free_names value quoted found)))
   (match form
-    (when (node : Node)
+    when (node : Node)
       (let head ($to_str ($head node)))
       (if (== head "quote") (return found))
       (if (== head "unquote")
@@ -152,10 +152,10 @@
       (var message false)
       (for item in ($node/body node)
         (if (&& (== ($head item) Sym) (== ($to_str item) "~"))
-          (then (set message true))
-          (else
-            (if message (set message false) (free_names item inner found))))))
-    (else nil))
+          (set message true)
+          else
+            (if message (set message false) else (free_names item inner found))))
+    else nil)
   found)
 
 (fn unresolved_names [form, bindings] : Any
@@ -198,11 +198,11 @@
           deadline/.cancel
           deadline/.join)))
   (match outcome
-    (when (TaskOutcome/ok value) value)
-    (when (TaskOutcome/error error) (card_fail "card_failed" ($to_str error/.message)))
-    (when (TaskOutcome/fault fault) (let message fault/.message)
-      (card_fail "card_failed" (if (== ($head fault) Panic) $"card code panicked: ${message}" message)))
-    (else (card_fail "card_failed" "card code exceeded its time budget or was cancelled"))))
+    when (TaskOutcome/ok value) value
+    when (TaskOutcome/error error) (card_fail "card_failed" ($to_str error/.message))
+    when (TaskOutcome/fault fault) (let message fault/.message)
+      (card_fail "card_failed" (if (== ($head fault) Panic) $"card code panicked: ${message}" else message))
+    else (card_fail "card_failed" "card code exceeded its time budget or was cancelled")))
 
 (fn render_live [runtime, lease, session : Str, source, state]
   (let context (card_context runtime session))
@@ -247,9 +247,9 @@
     (card_fail "invalid_request" "^state and ^update require a ^view function"))
   (let source (if live
     {^view (fn_source spec/view "view")
-     ^update (if ($absent? spec/update) nil (fn_source spec/update "update"))}
-    nil))
-  (let state (if live (checked_state (?? spec/state {})) nil))
+     ^update (if ($absent? spec/update) nil else (fn_source spec/update "update"))}
+    else nil))
+  (let state (if live (checked_state (?? spec/state {})) else nil))
   (let warnings [])
   (let tree
     (if live
@@ -260,7 +260,7 @@
             (warnings .push warning))
           (render_live runtime lease session source state)
           ensure (release_snapshot runtime/h/snapshots lease)))
-      (try (bounded_card_view spec/tree "static")
+      else (try (bounded_card_view spec/tree "static")
         catch WebComponentError (card_fail "invalid_request" $err/.message))))
   (with_card_gate runtime session id (fn []
     (let previous (card_record runtime session id))
@@ -268,7 +268,7 @@
       (card_fail "too_large" $"a session holds at most ${card_limit} cards"))
     (let now ($os/wall_ms))
     (let card
-      {^id id ^title title ^kind (if live "live" "static")
+      {^id id ^title title ^kind (if live "live" else "static")
        ^definition_revision (+ (?? previous/definition_revision 0) 1)
        ^revision (+ (?? previous/revision 0) 1)
        ^round round
@@ -299,8 +299,7 @@
     (if ($absent? card) (card_fail "not_found" $"no card ${id} in this session"))
     (if (!= card/kind "live") (card_fail "invalid_request" $"card ${id} is static; define it again to change it"))
     (if (== card/round round)
-      (then
-        (let key (transient_key session id))
+      (let key (transient_key session id))
         (let pending (runtime/services/values/cards/transient/.get .get key))
         (let lease (acquire_snapshot runtime/h/snapshots))
         (let tree (try (render_live runtime lease session card/source checked)
@@ -314,15 +313,15 @@
         (shown .put "tree" tree)
         (shown .put "revision" revision)
         (card_changed runtime session (shown_card ^^transient runtime session shown) "progress")
-        {^id id ^revision revision ^^live})
-      (else
+        {^id id ^revision revision ^^live}
+      else
         (card .put "state" checked)
         (card .put "revision" (+ card/revision 1))
         (card .put "stale" true)
         (card .put "origin" "model_update")
         (card .put "updated_ms" ($os/wall_ms))
         (store_card runtime session card "stale")
-        {^id id ^revision card/revision ^^stale})))))
+        {^id id ^revision card/revision ^^stale}))))
 
 # Live progress becomes durable at each turn end, round end, wait or cancel.
 (fn flush_card_progress [runtime, session : Str]
@@ -334,13 +333,13 @@
     (with_card_gate runtime session entry/id (fn []
       (drop_transient runtime session entry/id)
       (let card (card_record runtime session entry/id))
-      (if_yes (&& ($present? card) (== card/definition_revision entry/definition_revision))
-        (card .put "state" entry/state)
+      (if (&& ($present? card) (== card/definition_revision entry/definition_revision))
+        (do (card .put "state" entry/state)
         (card .put "tree" entry/tree)
         (card .put "revision" ($math/max entry/revision (+ card/revision 1)))
         (card .put "origin" "progress")
         (card .put "updated_ms" ($os/wall_ms))
-        (store_card runtime session card "progress")))))
+        (store_card runtime session card "progress"))))))
   pending/.size)
 
 (fn model_card_state [runtime, session : Str, id]
@@ -392,15 +391,15 @@
   (var excess (- ordered/.size action_retention))
   (for receipt in ordered
     (if (<= excess 0) (break))
-    (if_yes (!= receipt/status "admitted")
-      (record_core_state runtime/events "session" session "card/action" (action_key receipt/input_id) nil)
+    (if (!= receipt/status "admitted")
+      (do (record_core_state runtime/events "session" session "card/action" (action_key receipt/input_id) nil)
       # The floor always passes a pruned receipt's generation. Pruning one of
       # the current generation (a backlog of admitted clicks) advances the
       # generation first, so its identity can never be admitted again.
       (let pruned (?? receipt/generation 1))
       (if (>= pruned meta/generation) (meta .put "generation" (+ pruned 1)))
       (meta .put "floor" ($math/max meta/floor (+ pruned 1)))
-      (set excess (- excess 1))))
+      (set excess (- excess 1)))))
   (save_action_meta runtime session meta)
   (flush_event_store runtime/events)
   nil)
@@ -412,10 +411,10 @@
     (return receipt))
   (let card (card_record runtime session receipt/card))
   (let committed (&& ($present? card) ((?? card/inputs []) .contains? receipt/input_id)))
-  (receipt .put "status" (if committed "done" "interrupted"))
+  (receipt .put "status" (if committed "done" else "interrupted"))
   (receipt .put "message"
     (if committed "Applied before the host restarted."
-      "Interrupted by a host restart. The card is unchanged; effects of anything update called are unknown."))
+      else "Interrupted by a host restart. The card is unchanged; effects of anything update called are unknown."))
   (if_not ($absent? card) (receipt .put "card" (shown_card runtime session card)))
   (save_receipt runtime session receipt))
 
@@ -530,7 +529,7 @@
     (return (finish_receipt runtime session receipt
       {^status "refused" ^code "revision_conflict"
        ^message "This card changed. It now shows its current state."
-       ^card (if ($absent? card) nil (shown_card runtime session card))})))
+       ^card (if ($absent? card) nil else (shown_card runtime session card))})))
   (if (!= card/kind "live")
     (return (finish_receipt runtime session receipt
       {^status "refused" ^code "invalid_request" ^message "Only live cards run code."
@@ -549,7 +548,7 @@
           (let action ($freeze {^name request/name ^args (?? request/args {}) ^fields (?? request/fields {})}))
           (checked_state (bounded_call runtime lease session (update_policy) false update
             [($freeze card/state) action])))
-        card/state))
+        else card/state))
     (let tree (render_live runtime lease session card/source next_state))
     (let earlier (?? card/inputs []))
     (let inputs [])
@@ -559,10 +558,10 @@
     (card .put "tree" tree)
     (card .put "revision" (+ card/revision 1))
     (card .put "stale" false)
-    (card .put "origin" (if (== request/action "update") "click" "enable"))
+    (card .put "origin" (if (== request/action "update") "click" else "enable"))
     (card .put "updated_ms" ($os/wall_ms))
     (card .put "inputs" inputs)
-    (store_card runtime session card (if (== request/action "update") "updated" "enabled"))
+    (store_card runtime session card (if (== request/action "update") "updated" else "enabled"))
     (finish_receipt runtime session receipt
       {^status "done" ^revision card/revision ^card (shown_card runtime session card)})
   catch CardError

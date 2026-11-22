@@ -9,7 +9,7 @@
 
 (fn review [score : Int]
   ($json/stringify {^score score ^comments ["Check the requested lettering."]
-    ^revision (if (< score 85) "Correct the lettering; preserve the subject and palette." "")}))
+    ^revision (if (< score 85) "Correct the lettering; preserve the subject and palette." else "")}))
 
 (fn image_fixture [workspace : Str, replies, ^config config = {}, ^extra_plugins extra_plugins = [],
                    ^main_reply main_reply = nil]
@@ -46,8 +46,8 @@
              (images .ImageHost:image_input prepared/run prepared/candidate))
            {^images [{^mime "image/png"
               ^bytes (if (== mode/.get "invalid_png") ($binary/from_str "not PNG")
-                (png ^note $"attempt ${prepared/attempt}"
-                  ^samples [0 80 100 120 (if (== prepared/settings/background "transparent") 0 255)]))}]
+                else (png ^note $"attempt ${prepared/attempt}"
+                  ^samples [0 80 100 120 (if (== prepared/settings/background "transparent") 0 else 255)]))}]
             ^usage {^cost 0.01}})}))))
   (let provider (Plugin ^id "vision_main" ^provides [["providers" "vision_main"]]
     ^activate (fn [host]

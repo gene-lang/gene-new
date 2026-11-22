@@ -44,7 +44,7 @@
     (let suffix ($str/join ($str/split name "-") "_"))
     (let value (try (color_value tokens name) catch Error (?? (tokens .get name) "initial")))
     (let ratio (if (&& ($present? (#"^#[0-9a-fA-F]{6}$" .match value)) ($present? (#"^#[0-9a-fA-F]{6}$" .match background)))
-      ($to_str (contrast_ratio value background) ":1 on surface") "measuring"))
+      ($to_str (contrast_ratio value background) ":1 on surface") else "measuring"))
     (items .push `(div ^class_name %$"theme_swatch token_${suffix}"
       (code %name) (small ^class_name %$"theme_ratio contrast_${suffix}" ^title %value %$"${value} · ${ratio}"))))
   `(div ^class_name "web_grid" %items...))
@@ -81,8 +81,8 @@
     (hooks .push `(li (code %token/name) %$" · ${token/fallback} · ${token/doc}")))
   (let content
     (match section
-      (when "palette" (palette_samples theme mode))
-      (when "type" `(div ^class_name "web_stack"
+      when "palette" (palette_samples theme mode)
+      when "type" `(div ^class_name "web_stack"
      (h2 "Typography, fonts and icons")
      (p "Sans: " (code %(theme/tokens/shared .get "font-sans")))
      (p "Display: " (code %(theme/tokens/shared .get "font-display")))
@@ -92,8 +92,8 @@
      (small "Metadata in the small role")
      (pre (code "(fn hello [name] ($to_str \"Hello, \" name))"))
      (div ^class_name "web_row" %icons...)
-))
-      (when "structures" `(div ^class_name "web_stack"
+)
+      when "structures" `(div ^class_name "web_stack"
      (h2 "Shared structures")
      (div ^class_name "web_stack" %buttons...)
      (label ^class_name "web_field" "A field"
@@ -112,8 +112,8 @@
      (div ^class_name "web_dialog"
        (div ^class_name "web_dialog_panel" (h3 "Dialog") (p "Raised surface, border and elevation.")))
      (details (summary "Every shared class") (div %classes...))
-))
-      (when "host" `(div ^class_name "web_stack"
+)
+      when "host" `(div ^class_name "web_stack"
      (h2 "Host structures")
      (div ^class_name "message user" (p "A user message"))
      (div ^class_name "message agent" (p "An agent response with a " (a ^href "#" "link") "."))
@@ -128,10 +128,10 @@
      (div ^class_name "session_menu" (button "Menu item"))
      (div ^class_name "composer" (textarea ^key %$"${prefix}/${theme/name}/${mode}/composer" ^rows "2" ^placeholder "Write a message")
        (button ^class_name "send" "Send"))
-))
-      (when "tokens" `(div ^class_name "web_stack"
-     (h2 "Plugin tokens") (ul %hooks...)))
-      (else (scale_samples theme mode))))
+)
+      when "tokens" `(div ^class_name "web_stack"
+     (h2 "Plugin tokens") (ul %hooks...))
+      else (scale_samples theme mode)))
   `(section ^mode %mode ^class_name "theme_mode web_stack"
      (h2 %mode) %content))
 
@@ -145,7 +145,7 @@
   (let pickers [])
   (for field in ["first" "second"]
     (let wanted (?? (context/view_state .get field) "default"))
-    (let name (if ($present? (themes .get wanted)) wanted "default"))
+    (let name (if ($present? (themes .get wanted)) wanted else "default"))
     (let options [])
     (map_for [key theme] in themes
       (options .push `(option ^value %($to_str key) %(?? theme/title ($to_str key)))))

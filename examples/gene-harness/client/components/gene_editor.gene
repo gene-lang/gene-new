@@ -46,26 +46,26 @@
 # ---------------------------------------------------------------------------
 
 (fn text [value : Any, fallback : Str = ""] : Str
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Str value)
   result)
 
 (fn flag [value : Any] : Bool
-  (if_yes ($absent? value) (return false))
+  (if ($absent? value) (return false))
   (var result : Bool value)
   result)
 
 (fn int_or [value : Any, fallback : Int] : Int
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Int value)
   result)
 
 (fn str_list [value : Any] : (List Str)
   (var out : (List Str) [])
-  (if_yes ($present? value)
-    (var items : (List Any) value)
+  (if ($present? value)
+    (do (var items : (List Any) value)
     (for item in items
-      (out .push (text item ""))))
+      (out .push (text item "")))))
   out)
 
 (fn initial_lines [value : Str] : (List Str)
@@ -83,7 +83,7 @@
 
 (fn first_message [response : Any, fallback : Str] : Str
   (var diagnostics : (List Any) [])
-  (if_yes ($present? response/diagnostics) (set diagnostics response/diagnostics))
+  (if ($present? response/diagnostics) (set diagnostics response/diagnostics))
   (if (== ($size diagnostics) 0) (return fallback))
   (var first : Any (diagnostics .get 0))
   (if ($absent? first) (return fallback))
@@ -354,7 +354,7 @@
 
 (fn selection_event [state : EditorState, row : Any] : Any
   (var document state/document)
-  (if_yes ($absent? row) (return nil))
+  (if ($absent? row) (return nil))
   (var start (int_or row/start 0))
   (var finish (int_or row/finish 0))
   (var start_byte (int_or row/start_byte 0))
@@ -393,7 +393,7 @@
     ($dom/set_attribute state/title "title" document/path))
   (if state/readonly
     ($dom/set_text state/badge "read-only")
-    ($dom/set_text state/badge (if state/dirty "unsaved" "saved")))
+    else ($dom/set_text state/badge (if state/dirty "unsaved" else "saved")))
   ($dom/set_class state/badge "unsaved"
     (&& state/dirty (! state/readonly))))
 
@@ -401,7 +401,7 @@
   (var message state/save_message)
   (if (== message "") (set message state/diagnostic))
   (var label (analysis_label state))
-  (var combined (if (== message "") label $"${label} · ${message}"))
+  (var combined (if (== message "") label else $"${label} · ${message}"))
   ($dom/set_text state/status combined)
   ($dom/set_class state/status "error"
     (&& (! state/stale) (!= state/diagnostic "")))
@@ -414,13 +414,13 @@
 (fn outline_row [item : Any] : EditorRow
   (var name (text item/name "?"))
   (var detail (text item/detail ""))
-  (var summary (if (== detail "") "" detail))
+  (var summary (if (== detail "") "" else detail))
   (EditorRow
     ^id (int_or item/id 0)
     ^depth 0
     ^label name
     ^summary summary
-    ^path (if (== summary "") name $"${name} · ${summary}")
+    ^path (if (== summary "") name else $"${name} · ${summary}")
     ^kind (text item/kindName "declaration")
     ^start_byte (int_or item/startByte 0)
     ^end_byte (int_or item/endByte 0)
@@ -491,12 +491,12 @@
     (if (|| (== kind "same") (>= shown 400)) (continue))
     (set shown (+ shown 1))
     (var body (text row/text ""))
-    (var marker (if (== kind "add") "+" "-"))
+    (var marker (if (== kind "add") "+" else "-"))
     ($dom/append state/diff_lines
       (labelled "div" $"ge-diff-line ${kind}" $"${marker} ${body}")))
   (if (== shown 0)
     ($dom/append state/diff_lines (empty_hint source_when_empty))
-    (if (>= shown 400)
+    else (if (>= shown 400)
       ($dom/append state/diff_lines
         (empty_hint "diff truncated at 400 changed lines"))))
   (show state/diff_box)
@@ -542,7 +542,7 @@
   (var index 0)
   (while (< index ($size entries))
     (var entry : Any (entries .get index))
-    (if_yes ($present? entry)
+    (if ($present? entry)
       (do
         (var node (log_line_node state entry index))
         ($dom/append state/log_lines node)
@@ -599,7 +599,7 @@
           (hide state/format_button)
           (hide state/outline_box)
           (hide state/tree_box))
-        (do
+        else (do
           # A lexical error cannot be indexed. Keep the last usable outline
           # visible, mark it stale, and disable its navigation until a later
           # reply matches this buffer again.
@@ -612,7 +612,7 @@
   (set state/stale false)
   (set state/partial (flag response/partial))
   (set state/diagnostic (if (flag response/parsed)
-    "" (first_message response "Buffer does not parse")))
+    "" else (first_message response "Buffer does not parse")))
   (set state/analyzed_version version)
   (set state/analyzed_text state/text)
   (show state/outline_box)
@@ -623,7 +623,7 @@
   (var caret (int_or response/selected/start state/selected_start))
   (if (flag response/selected/found)
     (select_row_at state caret)
-    (select_row_at state state/selected_start))
+    else (select_row_at state state/selected_start))
   (render_status state))
 
 (fn render_outline [state : EditorState, outline : Any] : Nil
@@ -631,7 +631,7 @@
   (set state/outline [])
   (set state/outline_nodes [])
   (var items : (List Any) [])
-  (if_yes ($present? outline) (set items outline))
+  (if ($present? outline) (set items outline))
   (for item in items
     (var row (outline_row item))
     (var node (row_node state row))
@@ -644,7 +644,7 @@
 (fn flatten_tree [state : EditorState, item : Any, depth : Int] : Nil
   (if (> ($size state/tree) 900) (return))
   (var children : (List Any) [])
-  (if_yes ($present? item/children) (set children item/children))
+  (if ($present? item/children) (set children item/children))
   (for child in children
     (var row (tree_row child depth))
     (var node (row_node state row))
@@ -657,7 +657,7 @@
   ($dom/clear state/tree_box)
   (set state/tree [])
   (set state/tree_nodes [])
-  (if_yes ($present? tree) (flatten_tree state tree 0))
+  (if ($present? tree) (flatten_tree state tree 0))
   (if (== ($size state/tree) 0)
     ($dom/append state/tree_box (empty_hint "no structure"))))
 
@@ -697,7 +697,7 @@
 
 (fn highlight_row [state : EditorState, row : Any] : Nil
   (var selected_index -1)
-  (if_yes ($present? row) (set selected_index (row_index state row)))
+  (if ($present? row) (set selected_index (row_index state row)))
   (var nodes state/tree_nodes)
   (var index 0)
   (while (< index ($size nodes))
@@ -712,7 +712,7 @@
   (var row (find_row state offset))
   (var starts state/starts)
   ($dom/set_text state/position (position_label starts offset))
-  (if_yes ($absent? row)
+  (if ($absent? row)
     (do
       (highlight_row state nil)
       (set state/selected_path "")
@@ -734,7 +734,7 @@
   (scroll_text_to state start)
   (if (== state/analyzed_version state/version)
     (select_row_at state start)
-    (do
+    else (do
       (var starts state/starts)
       ($dom/set_text state/position (position_label starts start)))))
 
@@ -764,7 +764,7 @@
         (do
           (var beyond (line_span starts (- end_line 1) ($size source)))
           (set to (int_or beyond/end from)))
-        (set to (int_or span/end from)))))
+        else (set to (int_or span/end from)))))
   (reveal_offsets state from to))
 
 # ---------------------------------------------------------------------------
@@ -862,15 +862,15 @@
   (var saving (== state/save_state "saving"))
   (if saving
     ($dom/set_attribute state/save_button "disabled" "")
-    ($dom/remove_attribute state/save_button "disabled"))
+    else ($dom/remove_attribute state/save_button "disabled"))
   (if (== state/save_state "failed")
     (show state/retry_button)
-    (hide state/retry_button))
+    else (hide state/retry_button))
   (if (== state/save_state "conflict")
     (show state/compare_button)
-    (if ($present? state/disk_text)
+    else (if ($present? state/disk_text)
       (show state/compare_button)
-      (hide state/compare_button))))
+      else (hide state/compare_button))))
 
 (fn save_document [state : EditorState] : Nil
   (if (|| state/disposed state/readonly) (return))
@@ -898,7 +898,7 @@
     (fn [response : Any] : Nil (accept_save state request response))))
 
 (fn retry_save [state : EditorState] : Nil
-  (if_yes ($absent? state/pending)
+  (if ($absent? state/pending)
     (do (save_document state) (return)))
   # Retry the exact snapshot that was submitted. Edits made since then are a
   # newer draft and must not ride along with the stale one.
@@ -934,13 +934,12 @@
       (return)))
   (var document state/document)
   (if ok
-    (then
-      (var revision (text response/revision (text request/base_revision)))
+    (var revision (text response/revision (text request/base_revision)))
       (var endings (if ($present? response/line_endings)
         (text response/line_endings (text request/line_endings))
-        (text request/line_endings)))
+        else (text request/line_endings)))
       (var bom (if ($present? response/bom)
-        (flag response/bom) (flag request/bom)))
+        (flag response/bom) else (flag request/bom)))
       (var submitted (text request/text ""))
       (var unchanged (== state/text submitted))
       (set state/revision revision)
@@ -950,11 +949,11 @@
       (set state/disk_text nil)
       (set state/save_state "idle")
       (set state/save_message
-        (if unchanged "Saved" "Saved · newer edits kept as a draft"))
+        (if unchanged "Saved" else "Saved · newer edits kept as a draft"))
       (var next_document
         (EditorDocument
           ^id document/id ^name document/name ^path document/path
-          ^text (if unchanged submitted state/text)
+          ^text (if unchanged submitted else state/text)
           ^revision revision ^line_endings endings ^bom bom
           ^readonly document/readonly ^reason document/reason
           ^kind document/kind ^line 0 ^end_line 0 ^cursor document/cursor))
@@ -963,15 +962,15 @@
         (do
           (var latest (stored_draft state))
           (if (draft_matches latest request) (clear_draft state)))
-        (write_draft state))
+        else (write_draft state))
       (set state/dirty (!= state/text state/saved_text))
       (render_title state)
       (render_save_state state)
       (render_status state)
       (emit_dirty state)
       (emit state {^type "save" ^document document/id ^ok true
-                   ^revision revision}))
-    (elif conflict
+                   ^revision revision})
+    elif conflict
       (do
         # Keep the draft and its base revision, and show what the saved file
         # now says. Adopting the returned revision here would let a later Save
@@ -983,8 +982,8 @@
         (render_save_state state)
         (render_status state)
         (emit state {^type "save" ^document document/id ^ok false
-                     ^conflict true})))
-    (else
+                     ^conflict true}))
+    else
       (do
         (set state/save_state "failed")
         (set state/save_message
@@ -992,12 +991,12 @@
         (render_save_state state)
         (render_status state)
         (emit state {^type "save" ^document document/id ^ok false
-                     ^conflict false})))))
+                     ^conflict false}))))
 
 (fn compare_draft [state : EditorState] : Nil
   (var saved state/saved_text)
   (var title "Changes against the saved version")
-  (if_yes ($present? state/disk_text)
+  (if ($present? state/disk_text)
     (do
       (set saved (text state/disk_text ""))
       (set title "Saved file vs. this draft")))
@@ -1007,7 +1006,7 @@
     (do
       (set state/save_message "No changes")
       (render_status state))
-    (do
+    else (do
       (render_diff state title rows "no line changes")
       (show state/discard_button)
       (hide state/apply_button))))
@@ -1053,7 +1052,7 @@
       (show state/discard_button)
       (set state/save_message "Format preview")
       (render_status state))
-    (do
+    else (do
       (set state/save_message
         (first_message response "Format failed"))
       (render_status state))))
@@ -1089,11 +1088,11 @@
 # ---------------------------------------------------------------------------
 
 (fn render_log_status [state : EditorState] : Nil
-  (var label (if state/log_follow "following" "paused"))
+  (var label (if state/log_follow "following" else "paused"))
   (var message state/save_message)
   (if (!= message "")
     ($dom/set_text state/status $"${label} · ${message}")
-    ($dom/set_text state/status label))
+    else ($dom/set_text state/status label))
   ($dom/set_class state/status "warn" (! state/log_follow))
   ($dom/set_class state/status "error" false))
 
@@ -1104,7 +1103,7 @@
     (do
       (set state/log_unread 0)
       ($dom/set_text state/pause_button "Pause"))
-    ($dom/set_text state/pause_button "Resume"))
+    else ($dom/set_text state/pause_button "Resume"))
   (render_log_status state))
 
 (fn pause_log [state : EditorState] : Nil
@@ -1140,7 +1139,7 @@
   (var index start)
   (while (< index ($size entries))
     (var entry : Any (entries .get index))
-    (if_yes ($present? entry)
+    (if ($present? entry)
       (do
         (var node (log_line_node state entry index))
         ($dom/append state/log_lines node)
@@ -1198,7 +1197,7 @@
     (do
       (set state/log_unread 0)
       ($dom/scroll_end state/log_view))
-    (do
+    else (do
       (set state/log_unread (+ state/log_unread added))
       ($dom/set_text state/pause_button "Resume")))
   (render_log_status state))
@@ -1236,11 +1235,11 @@
     (do
       (set state/save_message "Nothing to copy")
       (render_log_status state))
-    (do
+    else (do
       ($browser/copy body
         (fn [ok : Bool] : Nil
           (set state/save_message
-            (if ok $"Copied ${count} line(s)" "Copy failed"))
+            (if ok $"Copied ${count} line(s)" else "Copy failed"))
           (render_log_status state)))
       (var document state/document)
       (emit state {^type "log_selection" ^document document/id ^count count
@@ -1267,7 +1266,7 @@
           (if modifier
             (do
               (var handled (if ($event/shift_key event)
-                (redo_edit state) (undo_edit state)))
+                (redo_edit state) else (undo_edit state)))
               (if handled ($dom/prevent_default event))))))))
   ($dom/add_event_listener state/text_area "keyup"
     (fn [event : Any] : Nil (follow_caret state)))
@@ -1288,7 +1287,7 @@
   (set state/selected_end ($to_int area/selection_end))
   (if (== state/analyzed_version state/version)
     (select_row_at state start)
-    (do
+    else (do
       (var starts state/starts)
       ($dom/set_text state/position (position_label starts start)))))
 
@@ -1317,7 +1316,7 @@
   (set state/pause_button
     (action_button "Pause" "secondary"
       (fn [event : Any] : Nil
-        (if state/log_follow (pause_log state) (resume_log state)))))
+        (if state/log_follow (pause_log state) else (resume_log state)))))
   (set state/latest_button
     (action_button "Latest" "secondary"
       (fn [event : Any] : Nil (resume_log state))))
@@ -1347,7 +1346,7 @@
       ($dom/append actions state/pause_button)
       ($dom/append actions state/latest_button)
       ($dom/append actions state/copy_button))
-    (do
+    else (do
       ($dom/append actions state/changes_button)
       ($dom/append actions state/format_button)
       ($dom/append actions state/compare_button)
@@ -1356,7 +1355,7 @@
       ($dom/append actions state/discard_button)
       (if document/readonly
         (hide state/save_button)
-        ($dom/append actions state/save_button))))
+        else ($dom/append actions state/save_button))))
   ($dom/append toolbar actions)
   toolbar)
 
@@ -1406,7 +1405,7 @@
   (var document state/document)
   (if (== document/kind "log")
     ($dom/append shell (build_log_body state))
-    ($dom/append shell (build_source_body state)))
+    else ($dom/append shell (build_source_body state)))
   ($dom/append shell (build_footer state))
   ($dom/append state/root shell)
   (set state/shell shell)
@@ -1416,7 +1415,7 @@
 
 (fn restore_draft [state : EditorState] : Bool
   (var stored (stored_draft state))
-  (if_yes ($absent? stored) (return false))
+  (if ($absent? stored) (return false))
   (var stored_text (text stored/text ""))
   (if (== stored_text state/text) (return false))
   (var base (text stored/base_revision ""))
@@ -1431,7 +1430,7 @@
   (var document state/document)
   (if (!= base document/revision)
     (set state/save_message "Restored a draft based on an older revision")
-    (set state/disk_text document/text))
+    else (set state/disk_text document/text))
   (render_title state)
   true)
 
@@ -1460,7 +1459,7 @@
   (set state/diff_visible false)
   (set state/format_text nil)
   (set state/save_state "idle")
-  (set state/save_message (if document/readonly document/reason ""))
+  (set state/save_message (if document/readonly document/reason else ""))
   (set state/pending nil)
   (set state/disk_text nil)
   (set state/undo [])
@@ -1487,15 +1486,15 @@
       (build_shell state)
       (render_log state)
       (render_log_status state))
-    (do
+    else (do
       (set state/text_area/value document/text)
       (build_shell state)
       (if (restore_draft state)
         (render_status state)
-        (do
+        else (do
           (if (|| (> document/line 0) (> document/end_line 0))
             (reveal_lines state document/line document/end_line)
-            (request_analysis state))))))
+            else (request_analysis state))))))
   nil)
 
 # ---------------------------------------------------------------------------
@@ -1602,7 +1601,7 @@
       ^reveal (fn [range : Any] : Nil
         (if (|| (> (int_or range/line 0) 0) (> (int_or range/end_line 0) 0))
           (reveal_lines state (int_or range/line 0) (int_or range/end_line 0))
-          (reveal_offsets state (int_or range/start_utf16 0)
+          else (reveal_offsets state (int_or range/start_utf16 0)
                           (int_or range/end_utf16
                             (int_or range/start_utf16 0)))))
       ^replace_saved (fn [snapshot : Any] : Nil
@@ -1672,7 +1671,7 @@
       (clear_draft state)
       (render_title state)
       (schedule_analysis state))
-    (do
+    else (do
       # A dirty draft keeps the operator's text; the newer saved snapshot is
       # available for comparison, not silently adopted.
       (set state/disk_text value)

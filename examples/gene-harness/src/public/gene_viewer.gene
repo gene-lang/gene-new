@@ -15,7 +15,7 @@
 
 (fn helper_path [] : Str
   (let sibling ($path/join ($path/parent ($os/executable_path)) "gene-viewer"))
-  (if ($fs/exists? sibling) sibling "gene-viewer"))
+  (if ($fs/exists? sibling) sibling else "gene-viewer"))
 
 (fn helper_available? [] : Bool
   (let helper (helper_path))
@@ -55,7 +55,7 @@
     (do
       (response .put "version" version)
       response)
-    response))
+    else response))
 
 (fn run_machine [mode : Str, request : Any, temp_dir : Str] : Any
   (if_not (helper_available?) (return (unavailable)))
@@ -91,7 +91,7 @@
       (return (tagged {^ok false
                        ^message (if (== stderr "")
                                   "gene-viewer returned no output"
-                                  $"gene-viewer failed: ${stderr}")}
+                                  else $"gene-viewer failed: ${stderr}")}
                       version))))
   (try
     (tagged (parse result/stdout) version)

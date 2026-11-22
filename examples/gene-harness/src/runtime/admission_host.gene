@@ -32,17 +32,16 @@
   (if ($present? selected/reason) (warnings .push selected/reason))
   (if (&& ($present? choice/effort) (!= choice/effort "auto")
     ($present? selected/selection) (!= choice/effort selected/selection/effective_effort))
-    (then
-      (let effective (?? selected/selection/effective_effort "provider default"))
+    (do (let effective (?? selected/selection/effective_effort "provider default"))
       (warnings .push $"Requested effort ${choice/effort} resolves to ${effective}.")))
-  (if_yes ($present? choice/model)
-    (let catalog (catalog_snapshot runtime))
+  (if ($present? choice/model)
+    (do (let catalog (catalog_snapshot runtime))
     (let provider choice/provider)
     (let candidate (row runtime/h "providers" provider))
     (var listed false)
     (for model in (?? catalog/providers/%provider/models candidate/builtin_models [])
       (if (== model/id choice/model) (set listed true)))
-    (if (! listed) (warnings .push "Model is not in the catalog; access is unverified.")))
+    (if (! listed) (warnings .push "Model is not in the catalog; access is unverified."))))
   {^settings choice ^warnings warnings})
 
 (fn ^^private controller_of [handle]
@@ -59,7 +58,7 @@
     ^submission_seq receipt/submission_seq ^accepted_at receipt/accepted_at}))
 
 (fn ^^private session_view [record]
-  (if ($absent? record) nil (immutable_view record)))
+  (if ($absent? record) nil else (immutable_view record)))
 
 (fn ^^private find_receipt [controller, runtime, session : Str, request_id : Str]
   (if ($absent? (runtime/sessions/index/.get .get session)) (return nil))
@@ -75,8 +74,8 @@
                              ^first_request first_request : Str = "", ^origin origin = nil] : Any
       (let context (controller_of self))
       (session_view (create_session context/runtime/sessions ^id id ^kind kind
-        ^title (if (== title "") "Automated work" title) ^first_request first_request
-        ^origin (if ($absent? origin) nil (copy_data origin)))))
+        ^title (if (== title "") "Automated work" else title) ^first_request first_request
+        ^origin (if ($absent? origin) nil else (copy_data origin)))))
     (message session [session : Str] : Any
       (let context (controller_of self))
       (if ($absent? (context/runtime/sessions/index/.get .get session)) (return nil))

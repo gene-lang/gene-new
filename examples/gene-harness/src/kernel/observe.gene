@@ -23,12 +23,12 @@
 
 (fn log_plugin [h : Harness, id : Str, type : Str, message : Str,
                 ^level level : Str = "info", ^data data = nil, ^event event = nil] : Nil
-  (let plugin (if (== id "") "plugin" id))
+  (let plugin (if (== id "") "plugin" else id))
   (let bytes ($str/byte_size type))
-  (let limit (if (> bytes 64) 64 bytes))
-  (let name (if (== type "") "log" ($str/slice_bytes type 0 limit)))
+  (let limit (if (> bytes 64) 64 else bytes))
+  (let name (if (== type "") "log" else ($str/slice_bytes type 0 limit)))
   (log_event $"plugin/${plugin}/${name}" message ^target {^plugin plugin}
-    ^level (if (== level "") "info" level) ^data data ^event event)
+    ^level (if (== level "") "info" else level) ^data data ^event event)
   nil)
 
 (fn subscribe_log [h : Harness, id : Str, selector, handler] : Any

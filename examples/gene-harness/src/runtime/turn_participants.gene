@@ -105,18 +105,18 @@
       (frame/active .set false)
       (phase_calls .set ($filter phase_calls/.get (fn [item] (! (same? item/token frame/token)))))))))
   (match outcome ^!exhaustive
-    (when (TaskOutcome/ok result) result)
-    (when (TaskOutcome/error error)
+    when (TaskOutcome/ok result) result
+    when (TaskOutcome/error error)
       (fail_turn_participant transaction entry/definition/name phase "callback_error"
-        (if (== ($head error/.message) Str) error/.message "Participant raised an error without a textual message.")
-        ^cause error))
-    (when (TaskOutcome/fault fault) (let message fault/.message)
+        (if (== ($head error/.message) Str) error/.message else "Participant raised an error without a textual message.")
+        ^cause error)
+    when (TaskOutcome/fault fault) (let message fault/.message)
       (fail_turn_participant transaction entry/definition/name phase
-        (if (== ($head fault) Panic) "panic" "callback_error") message ^cause fault))
-    (when TaskOutcome/cancelled
+        (if (== ($head fault) Panic) "panic" else "callback_error") message ^cause fault)
+    when TaskOutcome/cancelled
       (fail_turn_participant transaction entry/definition/name phase
-        (if (>= ($os/monotonic_ms) deadline) "timeout" "cancelled")
-        "Callback cancelled or its budget expired."))))
+        (if (>= ($os/monotonic_ms) deadline) "timeout" else "cancelled")
+        "Callback cancelled or its budget expired.")))
 
 (fn begin_turn_transaction [transaction]
   (if (|| transaction/closed/.get (transaction/started .swap true))
@@ -203,14 +203,14 @@
     (let outcome ($runtime/with_context (transaction_scope transaction)
       (fn [] (supervised_call seal [completion errors] transaction/limits))))
     (match outcome ^!exhaustive
-      (when (TaskOutcome/ok value) (set evidence value) (set sealed true))
-      (when (TaskOutcome/error error)
-        (errors .push (participant_failure "coordinator" "seal" "callback_error" error/.message ^cause error)))
-      (when (TaskOutcome/fault fault) (let message fault/.message)
+      when (TaskOutcome/ok value) (set evidence value) (set sealed true)
+      when (TaskOutcome/error error)
+        (errors .push (participant_failure "coordinator" "seal" "callback_error" error/.message ^cause error))
+      when (TaskOutcome/fault fault) (let message fault/.message)
         (errors .push (participant_failure "coordinator" "seal"
-          (if (== ($head fault) Panic) "panic" "callback_error") message ^cause fault)))
-      (when TaskOutcome/cancelled
-        (errors .push (participant_failure "coordinator" "seal" "cancelled" "Terminal recording was cancelled."))))
+          (if (== ($head fault) Panic) "panic" else "callback_error") message ^cause fault))
+      when TaskOutcome/cancelled
+        (errors .push (participant_failure "coordinator" "seal" "cancelled" "Terminal recording was cancelled.")))
   ensure
     (try (release_turn_transaction transaction
       {^result completion ^turn_end_durable sealed ^finalization_errors errors ^evidence evidence})

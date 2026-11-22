@@ -14,7 +14,7 @@
 
 (fn ^^private function_in [snapshot, name : Str]
   (let found (/0 ($filter (?? (snapshot/registries .get "functions") []) (fn [record] (== record/key name)))))
-  (if ($absent? found) nil found/payload/fn))
+  (if ($absent? found) nil else found/payload/fn))
 
 (fn call [runtime, name : Str, args...]
   (let lease (acquire_snapshot runtime/h/snapshots))

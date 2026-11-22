@@ -43,11 +43,11 @@
         (for mode in ["direct" "supervised" "recovery" "fallback"]
           (let root $"${workspace}/${mode}")
           ($fs/make_dir root)
-          (if_yes (== mode "fallback")
-            ($fs/make_dir $"${root}/.gene-harness")
-            ($fs/write_text $"${root}/.gene-harness/config.gene" "(invalid configuration"))
+          (if (== mode "fallback")
+            (do ($fs/make_dir $"${root}/.gene-harness")
+            ($fs/write_text $"${root}/.gene-harness/config.gene" "(invalid configuration")))
           (let arguments ["run" "--snapshot"
-            (source_path (if (== mode "direct") "src/main.gene" "src/runtime/supervisor.gene"))
+            (source_path (if (== mode "direct") "src/main.gene" else "src/runtime/supervisor.gene"))
             "web" "--workspace" root "--offline"])
           (if (== mode "recovery") (arguments .push "--recovery"))
           (let terminal ($terminal/open ^cmd ($os/executable_path) ^args arguments
@@ -57,13 +57,13 @@
             (let link (connection_link root))
             ($assert ($str/contains? output $"Browser: ${link}") "startup printed the wrong browser link")
             ($assert (! ($str/contains? output "link to connect a browser.")))
-            (if_yes (== mode "fallback")
+            (if (== mode "fallback")
               ($assert ($str/contains? output "host/recovery_ready")))
-            (if_yes (== mode "supervised")
-              (api (connect root) "POST" "/control" {^action "restart" ^^confirm})
+            (if (== mode "supervised")
+              (do (api (connect root) "POST" "/control" {^action "restart" ^^confirm})
               (let restarted (browser_output terminal 2))
               ($assert (== (connection_link root) link))
-              ($assert (== ($size ($str/split restarted $"Browser: ${link}")) 3)))
+              ($assert (== ($size ($str/split restarted $"Browser: ${link}")) 3))))
           ensure
             (stop_terminal_host terminal root))))))
 
@@ -72,7 +72,7 @@
       "omits startup tokens in redirected output while link still works"
       (fn [workspace]
         (for recovery in [false true]
-          (let mode (if recovery "recovery" "normal"))
+          (let mode (if recovery "recovery" else "normal"))
           (let root $"${workspace}/${mode}")
           ($fs/make_dir root)
           (let arguments ["run" "--snapshot" (source_path "src/runtime/supervisor.gene")

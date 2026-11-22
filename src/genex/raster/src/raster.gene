@@ -5,7 +5,7 @@
 (fn checked [command : Str, args, ^dir dir = nil, ^timeout_ms timeout_ms = 30000]
   (let result (if ($absent? dir)
     ($os/exec command args... ^timeout_ms timeout_ms ^max_bytes 1048576)
-    ($os/exec command args... ^timeout_ms timeout_ms ^max_bytes 1048576 ^dir dir)))
+    else ($os/exec command args... ^timeout_ms timeout_ms ^max_bytes 1048576 ^dir dir)))
   (if result/timed_out
     (fail (RasterError ^^timed_out ^_msg $"Raster tool timed out after ${timeout_ms} ms.")))
   (if (|| result/truncated (!= result/status 0))
@@ -15,7 +15,7 @@
 (fn default_worker [^version version = 1] : Str
   (if (== version 2)
     (?? ($os/env? "GENE_RASTER_WORKER_V2") ($path/join root "build" "raster-worker-v2"))
-    (?? ($os/env? "GENE_RASTER_WORKER") ($path/join root "build" "raster-worker"))))
+    else (?? ($os/env? "GENE_RASTER_WORKER") ($path/join root "build" "raster-worker"))))
 
 # Runtime dependency bytes enter profile identity; a version string alone
 # cannot distinguish patched builds. Resolve all Mach-O dependencies, including
@@ -31,23 +31,22 @@
     (if_not ($has_key? seen file)
       (seen .put file true)
       (let mac ($fs/exists? "/usr/bin/otool"))
-      (let output (checked (if mac "/usr/bin/otool" "/usr/bin/ldd") (if mac ["-L" file] [file])))
+      (let output (checked (if mac "/usr/bin/otool" else "/usr/bin/ldd") (if mac ["-L" file] else [file])))
       (for line in ($str/split output "\n")
         (let text ($str/trim line))
         (var path "")
         (if mac
           (set path (($str/split text " ") .first))
-          (then
+          else (then
             (let parts ($str/split text "=> "))
             (if (== parts/.size 2) (set path (($str/split parts/1 " ") .first)))))
         (if (&& ($str/starts_with? path "/") (! ($str/ends_with? path ":")) (! ($has_key? seen path)))
           (if ($fs/exists? path)
-            (then
-              (records .push [path ($crypto/sha256 ($fs/read_bytes path))])
-              (pending .push path))
+            (records .push [path ($crypto/sha256 ($fs/read_bytes path))])
+              (pending .push path)
             # macOS system libraries live in the dyld shared cache; uname's
             # complete OS build pins this part of the profile.
-            (else (records .push [path "system-shared-cache"])))))))
+            else (records .push [path "system-shared-cache"]))))))
   ($order/sort_by records (fn [item] item/0)))
 
 (fn worker_profile [^version version = 1, ^worker override = nil]

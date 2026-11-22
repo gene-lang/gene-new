@@ -26,7 +26,7 @@
 
 (fn describe [name : Str] : Str
   (var entry (defaults .get name))
-  (if_yes ($absent? entry)
+  (if ($absent? entry)
     (return $"${name}: not configured"))
   (var model ($to_str (entry .get "model")))
   $"${name}: ${model}")
@@ -37,7 +37,7 @@
 (var ready false)
 
 (fn ready? [] : Bool
-  (if_yes (! ready)
+  (if (! ready)
     (do (set ready true)
         (configure "default" {})))
   ready)

@@ -12,20 +12,20 @@
   (var count 0)
   (map_for [key raw] in center/cards
     (var card : QuestionCard raw)
-    (if_yes (! card/element/hidden) (set count (+ count 1))))
+    (if (! card/element/hidden) (set count (+ count 1))))
   (var origins : PropMap {})
   (map_for [key raw] in center/notices/items
     (var item : Notice raw)
-    (if_yes item/sticky
-      (var session (qtext item/origin/session))
+    (if item/sticky
+      (do (var session (qtext item/origin/session))
       (var card : Any center/cards/%session)
-      (if_yes (|| (== session "") ($absent? card) card/element/hidden)
-        (var scope (if (== session "") item/identity session))
-        (if_yes ($absent? origins/%scope)
-          (set origins/%scope true)
-          (set count (+ count 1))))))
-  (var message_label (if (== center/new_messages 1) "new message" "new messages"))
-  (var messages (if (== center/new_messages 0) "" $" · ${center/new_messages} ${message_label}"))
+      (if (|| (== session "") ($absent? card) card/element/hidden)
+        (do (var scope (if (== session "") item/identity else session))
+        (if ($absent? origins/%scope)
+          (do (set origins/%scope true)
+          (set count (+ count 1)))))))))
+  (var message_label (if (== center/new_messages 1) "new message" else "new messages"))
+  (var messages (if (== center/new_messages 0) "" else $" · ${center/new_messages} ${message_label}"))
   ($dom/set_text ($dom/element "notifications_button") $"Notifications · ${count}${messages}")
   ($dom/set_text ($dom/element "notifications_count") $"${count} need attention${messages}")
   (var section ($dom/element "attention_section"))
@@ -33,7 +33,7 @@
 
 (fn pending_for [center : NotificationCenter, session : Str] : Bool
   (map_for [key payload] in center/questions/pending
-    (if_yes (&& ($present? payload) (== (qtext payload/session) session)) (return true)))
+    (if (&& ($present? payload) (== (qtext payload/session) session)) (return true)))
   false)
 
 (fn paint_card [center : NotificationCenter, card : QuestionCard] : Nil
@@ -43,20 +43,20 @@
   ($dom/set_text
     card/status
     (if card/loading
-      (then "Checking current questions…")
-      (elif (!= card/error "") card/error)
-      (elif card/stale "Details need checking.")
-      (elif pending "Reply needs confirmation.")
-      (elif card/waiting "Needs response")
-      (else "Needs attention")))
+      "Checking current questions…"
+      elif (!= card/error "") card/error
+      elif card/stale "Details need checking."
+      elif pending "Reply needs confirmation."
+      elif card/waiting "Needs response"
+      else "Needs attention"))
   (set card/details/hidden (! card/expanded))
   (set card/fields/disabled (|| card/stale card/loading (! center/ready)))
-  ($dom/set_text card/toggle (if card/expanded "Collapse details" "Details"))
-  (if_yes (&& (! card/loading) (! card/stale)
+  ($dom/set_text card/toggle (if card/expanded "Collapse details" else "Details"))
+  (if (&& (! card/loading) (! card/stale)
     (== (qtext card/snapshot/round/state) "paused"))
     ($dom/set_text card/status "Turn limit reached"))
-  ($dom/set_attribute card/toggle "aria-expanded" (if card/expanded "true" "false"))
-  (if_yes (&& card/expanded (! card/stale))
+  ($dom/set_attribute card/toggle "aria-expanded" (if card/expanded "true" else "false"))
+  (if (&& card/expanded (! card/stale))
     (mount_question
       center/questions
       card/session
@@ -67,29 +67,29 @@
   (map_for [key view] in center/questions/mounts
     (var slot ($to_str key))
     (var identity (qtext view/key))
-    (if_yes (&& (str/starts_with? slot "pending/") ($absent? center/questions/pending/%identity))
-      (var editor : QuestionEditor center/questions/editors/%identity)
-      (if_yes (== editor/session card/session) (completed .push view))))
+    (if (&& (str/starts_with? slot "pending/") ($absent? center/questions/pending/%identity))
+      (do (var editor : QuestionEditor center/questions/editors/%identity)
+      (if (== editor/session card/session) (completed .push view)))))
   (for view in completed
     (var target : EventTarget view/target)
     (mount_question center/questions card/session nil target (qtext view/slot))
     ($dom/remove target))
-  (if_yes card/expanded
-    (var current_batch (waiting_batch card/snapshot))
+  (if card/expanded
+    (do (var current_batch (waiting_batch card/snapshot))
     (map_for [key payload] in center/questions/pending
-      (if_yes (&& ($present? payload) (== (qtext payload/session) card/session) (!= (qtext payload/batch_id) (qtext current_batch/id)))
-        (var identity ($to_str key))
+      (if (&& ($present? payload) (== (qtext payload/session) card/session) (!= (qtext payload/batch_id) (qtext current_batch/id)))
+        (do (var identity ($to_str key))
         (var editor : QuestionEditor center/questions/editors/%identity)
         (if_not ($absent? editor)
           (var slot $"pending/${identity}")
-          (if_yes ($absent? center/questions/mounts/%slot)
-            (var recovery ($dom/render `(div ^class_name "reply_recovery")))
+          (if ($absent? center/questions/mounts/%slot)
+            (do (var recovery ($dom/render `(div ^class_name "reply_recovery")))
             ($dom/append card/details recovery)
-            (mount_question center/questions card/session editor/batch recovery slot))))))
+            (mount_question center/questions card/session editor/batch recovery slot)))))))))
   (update_center_count center))
 
 (fn fetch_card [center : NotificationCenter, card : QuestionCard] : Nil
-  (if_yes (|| (! center/ready) card/loading (! card/stale) (! card/expanded) (! center/open))
+  (if (|| (! center/ready) card/loading (! card/stale) (! card/expanded) (! center/open))
     (return))
   (var generation card/generation)
   (var epoch center/epoch)
@@ -113,7 +113,7 @@
           (set card/waiting ($present? (waiting_batch data)))
           (set card/stale false)
           (set card/error ""))
-        (set card/error "Details unavailable. Retry details or open the conversation."))
+        else (set card/error "Details unavailable. Retry details or open the conversation."))
       (paint_card center card))))
 
 (fn card_for [center : NotificationCenter, session : Str] : QuestionCard
@@ -153,14 +153,14 @@
   (var generation center/generation)
   (map_for [key raw] in center/cards
     (var card : QuestionCard raw)
-    (if_yes (|| (== session "") (== session card/session))
-      (set card/generation (+ card/generation 1))
+    (if (|| (== session "") (== session card/session))
+      (do (set card/generation (+ card/generation 1))
       (set card/stale true)
-      (paint_card center card)))
+      (paint_card center card))))
   ($time/after
     100.0
     (fn [] : Nil
-      (if_yes (!= generation center/generation) (return))
+      (if (!= generation center/generation) (return))
       (map_for [key raw] in center/cards
         (var card : QuestionCard raw)
         (fetch_card center card)))))
@@ -172,15 +172,15 @@
   (for session in sessions
     (var id (qtext session/id))
     (var waiting (== (qtext session/status) "waiting"))
-    (if_yes (|| waiting ($present? center/cards/%id))
-      (var card (card_for center id))
+    (if (|| waiting ($present? center/cards/%id))
+      (do (var card (card_for center id))
       (set card/title (qtext session/title))
-      (if_yes (|| card/stale ($absent? card/snapshot)) (set card/waiting waiting))))
+      (if (|| card/stale ($absent? card/snapshot)) (set card/waiting waiting)))))
   (for session in attention
     (var card (card_for center (qtext session/id)))
     (set card/title (qtext session/title))
     (set card/attention true)
-    (if_yes (|| card/stale ($absent? card/snapshot))
+    (if (|| card/stale ($absent? card/snapshot))
       (set card/waiting (== (qtext session/status) "waiting"))))
   (map_for [key payload] in center/questions/pending
     (if_not ($absent? payload) (card_for center (qtext payload/session))))
@@ -189,7 +189,7 @@
     (paint_card center card)))
 
 (fn center_snapshot [center : NotificationCenter, session : Str, snapshot : Any] : Nil
-  (if_yes (== session "") (return))
+  (if (== session "") (return))
   (var card (card_for center session))
   (set card/generation (+ card/generation 1))
   (set card/snapshot snapshot)
@@ -202,10 +202,10 @@
 
 (fn center_locals [center : NotificationCenter] : Nil
   (map_for [key raw] in center/locals
-    (if_yes ($absent? center/notices/items/%key)
-      (var element : EventTarget raw/element)
+    (if ($absent? center/notices/items/%key)
+      (do (var element : EventTarget raw/element)
       ($dom/remove element)
-      (center/locals .delete key)))
+      (center/locals .delete key))))
   (map_for [key raw] in center/notices/items
     (var item : Notice raw)
     (var saved : Any center/locals/%key)
@@ -214,11 +214,11 @@
       EventTarget
       (if ($absent? saved)
         ($dom/render `(div ^class_name "notification_local"))
-        saved/element))
+        else saved/element))
     (var open : EventTarget (if ($absent? saved)
-      ($dom/render `(button ^type "button" ^class_name "notification_local_open")) saved/open))
-    (if_yes ($absent? saved)
-      (set center/locals/%key {^element element ^open open})
+      ($dom/render `(button ^type "button" ^class_name "notification_local_open")) else saved/open))
+    (if ($absent? saved)
+      (do (set center/locals/%key {^element element ^open open})
       ($dom/append element open)
       ($dom/append element ($dom/render `(button ^type "button" ^class_name "notice_dismiss"
         ^aria-label "Dismiss message" ^title "Dismiss message"
@@ -230,7 +230,7 @@
         (fn [event : Any] : Nil
           (if ($absent? item/action)
             ($dom/focus item/element)
-            (do
+            else (do
               (var action : (Fn [] Nil) item/action)
               (action)))))
       ($dom/add_event_listener
@@ -252,8 +252,8 @@
         element
         "mouseleave"
         (fn [event : Any] : Nil
-          (set item/center_hovered false))))
-    (var action_label (if ($absent? item/action) "" "Resolve original operation"))
+          (set item/center_hovered false)))))
+    (var action_label (if ($absent? item/action) "" else "Resolve original operation"))
     (var entity
       (qtext
         item/origin/entity
@@ -286,7 +286,7 @@
     "aria-expanded"
     (if open
       "true"
-      "false"))
+      else "false"))
   (if open
     (do
       (center/on_open)
@@ -295,10 +295,10 @@
         (var card : QuestionCard raw)
         (fetch_card center card))
       ($dom/focus ($dom/element "close_notifications")))
-    ($dom/focus ($dom/element "notifications_button"))))
+    else ($dom/focus ($dom/element "notifications_button"))))
 
 (fn center_ready [center : NotificationCenter, ready : Bool] : Nil
-  (if_yes (== ready center/ready) (return))
+  (if (== ready center/ready) (return))
   (set center/ready ready)
   (map_for [key raw] in center/cards
     (var card : QuestionCard raw)
@@ -328,7 +328,7 @@
     ($dom/element "notification_center")
     "keydown"
     (fn [event : Any] : Nil
-      (if_yes (== ($event/key event) "Escape")
-        ($dom/prevent_default event)
-        (toggle_center center false))))
+      (if (== ($event/key event) "Escape")
+        (do ($dom/prevent_default event)
+        (toggle_center center false)))))
   center)

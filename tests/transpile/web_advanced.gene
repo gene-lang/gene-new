@@ -31,9 +31,9 @@
 
 (fn describe [choice : Choice] : Str
   (match choice ^!exhaustive
-    (when Choice/none "none")
-    (when (Choice/some value)
-      ($json/stringify {^value value}))))
+    when Choice/none "none"
+    when (Choice/some value)
+      ($json/stringify {^value value})))
 
 (fn run [] : Str
   (scope

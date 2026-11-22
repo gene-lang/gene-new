@@ -16,8 +16,8 @@
   (let items [])
   (for item in context/items (items .push item))
   (let guidance ($to_str
-    (if spoken "The prompt came from speech recognition and may contain recognition errors; read it charitably. " "")
-    (if output "Replies are read aloud. If the final reply contains code, tables, lists, links, paths or other formatting, add ^audio_reply: one to three plain spoken sentences. " "")
+    (if spoken "The prompt came from speech recognition and may contain recognition errors; read it charitably. " else "")
+    (if output "Replies are read aloud. If the final reply contains code, tables, lists, links, paths or other formatting, add ^audio_reply: one to three plain spoken sentences. " else "")
     "Detailed guidance is in harness/voice."))
   (items .push {^id $"${context/turn}.voice" ^header "[harness_voice]" ^value guidance ^!settled})
   (context .assoc "items" items))
@@ -26,8 +26,8 @@
 # voice id stays a typed value in the voice map.
 (fn voice_choices [synthesizers, values]
   (let configured (?? values/voice {}))
-  (let selected (if (== ($head configured) Map) (?? configured/synthesizer "") ""))
-  (let named (if (== selected "") "The configured synthesizer" $"The ${selected} synthesizer"))
+  (let selected (if (== ($head configured) Map) (?? configured/synthesizer "") else ""))
+  (let named (if (== selected "") "The configured synthesizer" else $"The ${selected} synthesizer"))
   {^options [] ^complete false
    ^reason $"${named} does not list its voices. Type a voice id in the voice map, such as ^voice for an ElevenLabs voice ID."})
 
@@ -38,7 +38,7 @@
       `(tr ^key %$"${kind}/${engine/name}"
          (td (strong %engine/name) (br) (small ^class_name "web_muted" %(?? engine/summary "")))
          (td %label)
-         (td %(if ($absent? reason) "Available" reason)))))
+         (td %(if ($absent? reason) "Available" else reason)))))
   rows)
 
 (fn voice_section [host]

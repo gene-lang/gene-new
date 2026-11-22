@@ -71,7 +71,7 @@
     (do
       (response .put "version" version)
       response)
-    response))
+    else response))
 
 # ---------------------------------------------------------------------------
 # Document reads
@@ -88,7 +88,7 @@
    ^line_endings decoded/line_endings
    ^bom decoded/bom
    ^readonly readonly
-   ^reason (if readonly (as_text decoded/reason "read-only") "")})
+   ^reason (if readonly (as_text decoded/reason "read-only") else "")})
 
 (fn read_document [req] : Any
   (let relative (as_text req/params/path ""))
@@ -115,10 +115,10 @@
   {^status 409
    ^body
    {^ok false ^conflict true
-    ^code (if (== code "") "revision_changed" code)
+    ^code (if (== code "") "revision_changed" else code)
     ^message (if (== message "")
                "the saved file changed since this draft was based on it"
-               message)
+               else message)
     ^revision decoded/revision
     ^line_endings decoded/line_endings
     ^bom decoded/bom
@@ -127,7 +127,7 @@
 (fn write_replacement [physical : Str, path : Str, encoded : Bytes,
                        revision : Str, line_endings : Str, bom : Bool] : Any
   (let info (try ($fs/info path) catch Error nil))
-  (let mode (if ($absent? info) 420 (?? info/mode 420)))
+  (let mode (if ($absent? info) 420 else (?? info/mode 420)))
   (let temporary (temporary_path physical))
   (try
     ($fs/write_bytes temporary encoded)
@@ -164,7 +164,7 @@
           (let resolved (try ($fs/real_path path) catch Error nil))
           (if ($absent? resolved) (return (failure 500 "cannot resolve symbolic link")))
           resolved)
-        path))
+        else path))
       (let raw (try ($fs/read_bytes physical) catch Error nil))
       (if ($absent? raw) (return (failure 500 "cannot read file")))
       (let current_digest ($crypto/sha256 raw))

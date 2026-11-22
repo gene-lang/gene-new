@@ -237,8 +237,8 @@ proc main() =
     checksum = checksum + ord(v.kind == vkNil)
 
   let tailMutualChunk = compileSource(
-    "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
-    "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
+    "(fn is_even [n] (if (== n 0) true else (is_odd (- n 1)))) " &
+    "(fn is_odd [n] (if (== n 0) false else (is_even (- n 1)))) " &
     "(is_even 100000)")
   bench("vm.tail_mutual.100k", 20, i):
     let value = run(tailMutualChunk, newGlobalScope())
@@ -248,8 +248,8 @@ proc main() =
   let tailMatchChunk = compileSource(
     "(fn consume [xs n] " &
     "  (match xs " &
-    "    (when [] (if (== n 0) 0 (consume [n] (- n 1)))) " &
-    "    (else (consume [] n)))) " &
+    "    when [] (if (== n 0) 0 else (consume [n] (- n 1))) " &
+    "    else (consume [] n))) " &
     "(consume [] 100000)")
   bench("vm.tail_match.100k", 20, i):
     let value = run(tailMatchChunk, newGlobalScope())
@@ -514,7 +514,7 @@ proc main() =
 
   let tailRecurScope = newGlobalScope()
   discard run(compileSource(
-    "(var countdown (fn [n] (if (< n 1) n (countdown (- n 1)))))"),
+    "(var countdown (fn [n] (if (< n 1) n else (countdown (- n 1)))))"),
     tailRecurScope)
   let tailRecurChunk = compileSource("(countdown 64)")
   bench("vm.tail_recur_countdown.compiled_chunk", 200_000, i):
@@ -554,7 +554,7 @@ proc main() =
   # ~8360 calls per run. The typical call-heavy workload shape.
   let fibScope = newGlobalScope()
   discard run(compileSource(
-    "(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))"),
+    "(var fib (fn [n] (if (< n 2) n else (+ (fib (- n 1)) (fib (- n 2))))))"),
     fibScope)
   let fibChunk = compileSource("(fib 18)")
   bench("vm.fib_untyped.compiled_chunk", 500, i):
@@ -858,11 +858,11 @@ proc main() =
     "(type Task ^props {^id Int}) " &
     "(fn pick [v] " &
     "  (match v " &
-    "    (when (Task ^id id) id) " &
-    "    (when (Int n) n) " &
-    "    (when (List a b) a) " &
-    "    (when (Map ^k x) x) " &
-    "    (else 0)))"), matchScope)
+    "    when (Task ^id id) id " &
+    "    when (Int n) n " &
+    "    when (List a b) a " &
+    "    when (Map ^k x) x " &
+    "    else 0))"), matchScope)
   let matchChunk = compileSource(
     "(+ (pick (Task ^id 1)) (pick 2) (pick [3 9]) (pick {^k 4}))")
   bench("vm.match_arms.compiled_chunk", 100_000, i):
@@ -887,14 +887,14 @@ proc main() =
   # benches in the same run isolates the projection cost from process noise.
   let scalarScope = newGlobalScope()
   discard run(compileSource(
-    "(fn pick_int [v] (match v (when (Int n) n) (else 0)))"), scalarScope)
+    "(fn pick_int [v] (match v when (Int n) n else 0))"), scalarScope)
   let matchScalarChunk = compileSource("(pick_int 2)")
   bench("vm.match_scalar.compiled_chunk", 200_000, i):
     let v = run(matchScalarChunk, scalarScope)
     checksum = checksum + v.intVal + 1
   let bindScope = newGlobalScope()
   discard run(compileSource(
-    "(fn pick_bind [v] (match v (when v2 v2) (else 0)))"), bindScope)
+    "(fn pick_bind [v] (match v when v2 v2 else 0))"), bindScope)
   let matchBindChunk = compileSource("(pick_bind 2)")
   bench("vm.match_bind.compiled_chunk", 200_000, i):
     let v = run(matchBindChunk, bindScope)

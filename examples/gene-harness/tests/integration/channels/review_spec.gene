@@ -235,7 +235,7 @@
               (deliver_progress f binding api "Progress A")
               (deliver_progress f binding api "Progress B")
               (for side in order
-                (prune_later (if (== side "owner") f/channels/owner f/harness/runtime/services/values/channel_queues)))
+                (prune_later (if (== side "owner") f/channels/owner else f/harness/runtime/services/values/channel_queues)))
               (queue_progress f/channels binding "retained-progress" "round-test" "Progress B")
               ($assert (== calls/.get/.size 2))
               (restored_fixture f root (fn [restored]
@@ -371,7 +371,7 @@
           (let received ($cell false)) (let closed ($cell false))
           (let driver {^load (fn [filename] nil) ^connect (fn [api native app] 1)
             ^receive (fn [native socket]
-              (if (received .swap true) nil {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}))
+              (if (received .swap true) nil else {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}))
             ^idle_ms (fn [native socket] 90001) ^ping (fn [native socket] nil)
             ^close (fn [socket] (closed .set true))})
           (let transport (open_transport (local_channel_host harness/runtime/services/values/channels) ^driver driver ^start false))
@@ -390,4 +390,4 @@
     ($assert ((/text (/0 (render_reply code "Harness session s-1"))) .contains? "&lt; b &amp;&amp; c &gt;"))))
 
 (fn main [args] : Int
-  (run_spec (if ($absent? args/0) [nil "Channel review regressions"] args)))
+  (run_spec (if ($absent? args/0) [nil "Channel review regressions"] else args)))

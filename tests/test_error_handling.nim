@@ -491,7 +491,7 @@ suite "errors — static catch or declare":
     let helpers = """
       (type ConfigError : Error)
       (fn decode ^^private [bad : Bool] : Str
-        (if bad (fail (ConfigError ^_msg "bad")) "ready"))
+        (if bad (fail (ConfigError ^_msg "bad")) else "ready"))
       (fn load_config ^^private [bad : Bool] : Str (decode bad))
     """
     try:
@@ -575,7 +575,7 @@ suite "errors — static catch or declare":
   test "recursive inference converges without hiding an error":
     let source = """
       (fn left ^^private [n : Int]
-        (if (== n 0) (fail (Probe)) (right (- n 1))))
+        (if (== n 0) (fail (Probe)) else (right (- n 1))))
       (fn right ^^private [n : Int] (left n))
     """
     expect GeneError:
@@ -741,7 +741,7 @@ suite "errors — module summaries":
   test "initialization summaries do not depend on a warm runtime module cache":
     let root = errorModuleRoot()
     writeFile(root / "fallible.gene", """
-      (if ($runtime/callable? 1) (fail (Probe)) nil)
+      (if ($runtime/callable? 1) (fail (Probe)) else nil)
       (fn value [] 1)
     """)
     writeFile(root / "initialization.gene", """
@@ -1298,7 +1298,7 @@ suite "errors — retained strict assumptions":
     discard run(strictErrorCompile("""
       (fn first ^^private [] ^errors [] 1)
       (fn second ^^private [] ^errors [] 2)
-      (fn factory ^^private [flag : Bool] (if flag first second))
+      (fn factory ^^private [flag : Bool] (if flag first else second))
       (fn client [flag : Bool] ^errors [] ((factory flag)))
     """), scope)
     let replacement = run(probeCompile("(fn [] ^errors [Probe] (fail (Probe)))"),
@@ -1311,13 +1311,13 @@ suite "errors — retained strict assumptions":
     let scope = newGlobalScope(app)
     discard run(strictErrorCompile("""
       (fn factory ^^private [flag : Bool]
-        (if flag (fn [] ^errors [] 1) (fn [] ^errors [] 2)))
+        (if flag (fn [] ^errors [] 1) else (fn [] ^errors [] 2)))
       (fn client [flag : Bool] ^errors [] ((factory flag)))
     """), scope)
     let replacement = run(strictErrorCompile("""
       (fn [flag : Bool]
         (if flag (fn [] ^errors [] 1)
-          (fn [] ^errors [Probe] (fail (Probe)))))
+          else (fn [] ^errors [Probe] (fail (Probe)))))
     """), newGlobalScope(app))
     expect GeneError: scope.assign("factory", replacement)
     check run(compileSource("[(client true) (client false)]"), scope).print() == "[1 2]"
@@ -1726,7 +1726,7 @@ suite "errors — retained strict assumptions":
     errorContractCheck """
       (mod recursive ^errors_mode strict)
       (fn left ^^private [n : Int] ^errors [Probe]
-        (if (== n 0) (fail (Probe)) (right (- n 1))))
+        (if (== n 0) (fail (Probe)) else (right (- n 1))))
       (fn right ^^private [n : Int] ^errors [Probe] (left n))
       (fn main [] ^errors [] (try (left 3) catch Probe 7))
       (main)
@@ -1749,7 +1749,7 @@ suite "errors — panics at runtime boundaries":
         (var a ($actor/spawn ^init (fn [] 10)
           ^handle (fn [ctx state msg]
             (if (== msg 1) (panic "bad")
-              (do (seen .set state) ($actor/continue (+ state msg)))))))
+              else (do (seen .set state) ($actor/continue (+ state msg)))))))
         (a .send 1)
         (a .send 5)
         (seen .get))

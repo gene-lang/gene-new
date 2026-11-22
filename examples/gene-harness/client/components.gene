@@ -1,21 +1,21 @@
 (mod harness_web_components ^profile web)
 
 (fn render_element [tree : Any, on_command : (Fn [Str] Nil), on_prompt : (Fn [Str] Nil), on_navigate : (Fn [Str Str] Nil), enabled : Bool, buttons : (List Any), ^widgets widgets : Any = nil] : EventTarget
-  (if_yes ($absent? tree) (return ($dom/create_text "")))
-  (if_yes ($leaf? tree)
-    (var text : Str tree)
-    (return ($dom/create_text text)))
+  (if ($absent? tree) (return ($dom/create_text "")))
+  (if ($leaf? tree)
+    (do (var text : Str tree)
+    (return ($dom/create_text text))))
   (var tag : Str tree/tag)
-  (if_yes (== tag "host_widget")
-    (if_yes ($absent? widgets) (return ($dom/create_text "")))
+  (if (== tag "host_widget")
+    (do (if ($absent? widgets) (return ($dom/create_text "")))
     (var resolve : (Fn [Str] EventTarget) widgets)
     (var name : Str tree/props/name)
-    (return (resolve name)))
+    (return (resolve name))))
   (var element ($dom/create_element tag))
   (var props : PropMap tree/props)
   (map_for [key value] in props
     (var name : Str ($to_str key))
-    (if_yes (|| (== name "command") (== name "prompt") (== name "switch-view") (== name "presentation") ($absent? value)) (continue))
+    (if (|| (== name "command") (== name "prompt") (== name "switch-view") (== name "presentation") ($absent? value)) (continue))
     (var text : Str value)
     ($dom/set_attribute element name text))
   (var children : (List Any) tree/children)
@@ -29,7 +29,7 @@
     ($dom/add_event_listener element "click"
       (fn [event : Any] : Nil
         ($dom/prevent_default event)
-        (if_yes ($absent? props/disabled) (on_navigate destination presentation)))))
+        (if ($absent? props/disabled) (on_navigate destination presentation)))))
   (if_not ($absent? props/command)
     (buttons .push {^element element ^disabled ($present? props/disabled)})
     (var command : Str props/command)
@@ -39,7 +39,7 @@
       element
       "click"
       (fn [event : Any] : Nil
-        (if_yes ($absent? props/disabled) (on_command command)))))
+        (if ($absent? props/disabled) (on_command command)))))
   (if_not ($absent? props/prompt)
     (buttons .push {^element element ^disabled ($present? props/disabled)})
     (var prompt : Str props/prompt)
@@ -49,19 +49,19 @@
       element
       "click"
       (fn [event : Any] : Nil
-        (if_yes ($absent? props/disabled) (on_prompt prompt)))))
+        (if ($absent? props/disabled) (on_prompt prompt)))))
   element)
 
 (fn render_slot [target : EventTarget, components : (List Any), slot : Str, on_command : (Fn [Str] Nil), on_prompt : (Fn [Str] Nil), on_navigate : (Fn [Str Str] Nil), enabled : Bool, buttons : (List Any)] : Bool
   (var rendered false)
   (for component in components
     (var selected : Str component/slot)
-    (if_yes (|| (!= selected slot) ($absent? component/view)) (continue))
+    (if (|| (!= selected slot) ($absent? component/view)) (continue))
     (var wrapper ($dom/create_element "div"))
     # A style contribution is scoped to the component's class.
     (var style_class : Str "")
     (if_not ($absent? component/style_class) (set style_class component/style_class))
-    ($dom/set_attribute wrapper "class" (if (== style_class "") "plugin_component" $"plugin_component ${style_class}"))
+    ($dom/set_attribute wrapper "class" (if (== style_class "") "plugin_component" else $"plugin_component ${style_class}"))
     (var name : Str component/name)
     ($dom/set_attribute wrapper "data-component" name)
     ($dom/append wrapper (render_element component/view on_command on_prompt on_navigate enabled buttons))

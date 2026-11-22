@@ -22,12 +22,12 @@
           (let host holder/.get)
           (let metadata (require_record host/runtime/sessions call/session))
           (if (== metadata/kind "child")
-            (then ($sleep 10000) "(Outcome ^^done ^reply \"finished\")")
-            (else
+            ($sleep 10000) "(Outcome ^^done ^reply \"finished\")"
+            else
               (let n (calls .swap (+ calls/.get 1)))
               (if (== n 0)
                 "(delegate \"audit\" ^title \"Audit\" ^brief \"Inspect the module.\") (Outcome ^wait \"all\")"
-                "(Outcome ^^done ^reply \"Cancellation collected\")"))))))
+                else "(Outcome ^^done ^reply \"Cancellation collected\")")))))
         (holder .set service)
         (create_session service/runtime/sessions ^id "default")
         (service/publisher .set (fn [message] (messages/.get .push message)))

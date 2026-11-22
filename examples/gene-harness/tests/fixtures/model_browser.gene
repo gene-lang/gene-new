@@ -14,11 +14,11 @@
   (Plugin ^id "demo_models" ^provides [["providers" "demo_plan"] ["providers" "demo_metered"]]
     ^activate (fn [host]
       (for name in ["demo_plan" "demo_metered"]
-        (let billing (if (== name "demo_plan") "plan" "metered"))
+        (let billing (if (== name "demo_plan") "plan" else "metered"))
         (host .PluginHost:contribute "providers"
           {^name name ^doc "Fixed local browser fixture; no inference or charges." ^auto 0
            ^builtin_models models ^models (fn [] models)
-           ^connection (fn [] {^state "ready" ^label (if (== billing "plan") "Demo plan" "Demo API")
+           ^connection (fn [] {^state "ready" ^label (if (== billing "plan") "Demo plan" else "Demo API")
              ^billing billing ^account "Example account"})
            ^transport {^adapter "fixture" ^base_url name ^billing billing}
            ^capabilities model_capabilities

@@ -98,7 +98,7 @@ Substitution uses ordinary shadowing without automatic renaming. An introduced
 local may capture a caller argument's same-named reference. A parameter or
 value binding also hides an outer macro in call and value positions. Quoted
 data remains data. Expression positions and direct pipeline slots support
-expansion; structural clause/member positions reject it.
+expansion; structural marker and member positions reject it.
 
 Quote, quasiquote, unquote, and splicing have their ordinary runtime meanings
 when the macro body executes. To emit a pin or computed-path unquote literally,
@@ -457,7 +457,7 @@ MVP compiler-dispatched heads:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not if_present && || ?? ! let var const set new fn macro quote quasiquote
+do if if_not if_present && || ?? ! let var const set new fn macro quote quasiquote
 Path path msg ns env eval import import_impl mod match while loop repeat for map_for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
 protocol impl derive web_module
@@ -495,16 +495,18 @@ rule, applied to the receiver only:
   callables (`(/name x)`), not message descriptors; use `??` for an
   absent-valued projection.
 
-Clause/declaration heads (`then`, `elif`, `else`, `when`, `catch`, `ensure`,
-`ctor`, and `message`) are meaningful only inside their owner. `new` is a core
+Clause heads (`elif`, `else`, `when`, `catch`, `ensure`) are bare symbols
+recognized only among an owner form's immediate children. Declaration heads
+(`ctor`, `message`) are meaningful only inside their owner. `new` is a core
 form that invokes the nearest constructor in a type's ancestry.
 
 ## Tail-call contract
 
 The last expression of a function or message body is a tail position. The
-position propagates to selected `if` branches, `if_yes`/`if_not` bodies,
-the last form of an `if_present` body or `else` clause, `match` arms, `do`,
-the last `&&`/`||`/`??` operand, and an explicit `return` value. It does not propagate into arguments, conditions, initializers, loops,
+position propagates to the selected `if`, `elif`, or `else` arm, `if_not`
+bodies, the selected `if_present` body or `else` arm, `match` arms and their
+`else` arm, `do`, the last `&&`/`||`/`??` operand, and an explicit `return`
+value. It does not propagate into arguments, conditions, initializers, loops,
 structured cleanup bodies, constructors, namespaces/modules, `new`,
 or fexpr calls.
 

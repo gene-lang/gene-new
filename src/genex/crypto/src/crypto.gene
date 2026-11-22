@@ -12,8 +12,8 @@
   (if (|| (> ($str/byte_size value) 1398104) ($absent? (#"^[A-Za-z0-9_-]*$" .match value)))
     (fail (CryptoError ^_msg "Invalid base64url data")))
   (let padding (match (// ($str/byte_size value) 4)
-    (when 0 "") (when 2 "==") (when 3 "=")
-    (else (fail (CryptoError ^_msg "Invalid base64url length")))))
+    when 0 "" when 2 "==" when 3 "="
+    else (fail (CryptoError ^_msg "Invalid base64url length"))))
   (let plus ($str/join ($str/split value "-") "+"))
   (let slash ($str/join ($str/split plus "_") "/"))
   (try ($base64/decode ($to_str slash padding))
@@ -69,7 +69,7 @@
     (var key nil) (var matches 0)
     (for candidate in jwks/keys
       (if (== candidate/kid header/kid)
-        (then (set key candidate) (set matches (+ matches 1)))))
+        (do (set key candidate) (set matches (+ matches 1)))))
     (if (|| (!= matches 1) (!= key/kty "RSA")
       (&& ($present? key/alg) (!= key/alg "RS256"))
       (&& ($present? key/use) (!= key/use "sig"))
@@ -86,8 +86,7 @@
       (fail (CryptoError ^_msg "Invalid ID token claims")))
     (var expected_audience (== claims/aud audience))
     (if (== ($head claims/aud) List)
-      (then
-        (set expected_audience (claims/aud .contains? audience))
+      (do (set expected_audience (claims/aud .contains? audience))
         (for item in claims/aud
           (if (!= ($head item) Str) (set expected_audience false)))
         (if (&& (> claims/aud/.size 1) (!= claims/azp audience))
@@ -97,9 +96,8 @@
       (&& ($present? claims/nbf) (|| (!= ($head claims/nbf) Int) (> claims/nbf (+ now 5)))))
       (fail (CryptoError ^_msg "Invalid ID token validity")))
     (if ($present? claims/at_hash)
-      (then
-        (if (|| (!= ($head access_token) Str) (== access_token "")
+      (if (|| (!= ($head access_token) Str) (== access_token "")
           (!= claims/at_hash (encode_url ($binary/slice (sha256_bytes access_token) 0 16))))
-          (fail (CryptoError ^_msg "ID token access-token binding failed")))))
+          (fail (CryptoError ^_msg "ID token access-token binding failed"))))
     claims
   catch Error (fail (CryptoError ^_msg "ID token verification failed"))))

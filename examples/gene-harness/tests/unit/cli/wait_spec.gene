@@ -8,13 +8,13 @@
     (let parent {^id "parent" ^state "paused" ^continuation_mode "automatic" ^continuation_stop "failed"})
     (let result (resolve_wait_receipt (fn [id]
       (calls .push id)
-      (if (== id "future") (fail (CliError ^code "not_found" ^_msg "Not admitted.")) parent)) "future" "parent"))
+      (if (== id "future") (fail (CliError ^code "not_found" ^_msg "Not admitted.")) else parent)) "future" "parent"))
     ($assert (== calls ["future" "parent"]))
     ($assert (== result/continuation_stop "failed")))
   (it "never follows a newer user round occupying the reserved successor id" []
     (let user {^id "future" ^state "done" ^initiator "user" ^reply "A different task."})
     (let parent {^id "parent" ^state "paused" ^continuation_mode "automatic"})
-    (let result (resolve_wait_receipt (fn [id] (if (== id "future") user parent)) "future" "parent"))
+    (let result (resolve_wait_receipt (fn [id] (if (== id "future") user else parent)) "future" "parent"))
     ($assert (== result/id "parent"))
     ($assert (== result/state "interrupted"))
     ($assert (== user/state "done")))
@@ -44,7 +44,7 @@
           (fail (CliError ^code code ^_msg "poll failed")))
           "current" "current" "command" due "session" "requested")
         false
-      catch CliError (== $err/code (if (== code "not_found") "not_found" "wait_timeout"))))))
+      catch CliError (== $err/code (if (== code "not_found") "not_found" else "wait_timeout"))))))
 
   (it "preserves a connection error before the deadline instead of hiding it as a timeout" []
     ($assert (try

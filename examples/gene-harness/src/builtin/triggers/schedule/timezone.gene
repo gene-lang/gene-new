@@ -23,9 +23,9 @@
   (let value ($str/slice_bytes text 1 ($str/byte_size text)))
   (if_not ([2 4 6] .contains? ($str/byte_size value)) (problem "Unsupported timezone offset"))
   (let seconds (+ (* (calendar/decimal ($str/slice_bytes value 0 2)) 3600)
-    (if (>= ($str/byte_size value) 4) (* (calendar/decimal ($str/slice_bytes value 2 2)) 60) 0)
-    (if (== ($str/byte_size value) 6) (calendar/decimal ($str/slice_bytes value 4 2)) 0)))
-  (if (== sign "-") (- 0 seconds) seconds))
+    (if (>= ($str/byte_size value) 4) (* (calendar/decimal ($str/slice_bytes value 2 2)) 60) else 0)
+    (if (== ($str/byte_size value) 6) (calendar/decimal ($str/slice_bytes value 4 2)) else 0)))
+  (if (== sign "-") (- 0 seconds) else seconds))
 
 (fn parse_intervals [name, text, through_year]
   (let transitions [])
@@ -39,12 +39,12 @@
     (let offset (offset_seconds fields/2))
     (if_not (offsets .contains? offset) (offsets .push offset))
     (if (== fields/0 "-")
-      (then (set initial offset))
-      (else
+      (set initial offset)
+      else
         (let at (- (calendar/local_seconds fields/0 fields/1) offset))
         (if (<= at prior) (problem "Timezone transitions must be strictly ordered"))
         (transitions .push [at offset])
-        (set prior at))))
+        (set prior at)))
   (if ($absent? initial) (problem "Timezone has no initial interval"))
   {^name name ^from 0 ^until (* (calendar/day_number (+ through_year 1) 1 1) 86400)
    ^initial initial ^offsets offsets ^transitions transitions ^format "zdump-intervals@1"})
@@ -63,9 +63,9 @@
     # supported horizon while keeping this configuration-time probe bounded.
     (let response (try ($os/exec executable "-i" "-c" range name
       ^timeout_ms 30000 ^max_bytes 262144) catch Error nil))
-    (if_yes (&& ($present? response) (== response/status 0) (! response/timed_out))
-      (set text response/stdout)
-      (break)))
+    (if (&& ($present? response) (== response/status 0) (! response/timed_out))
+      (do (set text response/stdout)
+      (break))))
   (if ($absent? text) (problem "The timezone adapter requires zdump with interval output"))
   (parse_intervals name text through_year))
 
@@ -76,7 +76,7 @@
   (while (< low high)
     (let middle (calendar/floor_div (+ low high) 2))
     (let transition rules/transitions/%middle)
-    (if (<= transition/0 second) (set low (+ middle 1)) (set high middle)))
+    (if (<= transition/0 second) (set low (+ middle 1)) else (set high middle)))
   (if (== low 0) (return rules/initial))
   (let index (- low 1))
   rules/transitions/%index/1)
@@ -86,7 +86,7 @@
   (var found nil)
   (for offset in rules/offsets
     (let candidate (- local offset))
-    (if_yes (&& (>= candidate rules/from) (< candidate rules/until))
-      (if_yes (== (offset_at rules candidate) offset)
+    (if (&& (>= candidate rules/from) (< candidate rules/until))
+      (if (== (offset_at rules candidate) offset)
         (if (|| ($absent? found) (< candidate found)) (set found candidate)))))
   found)

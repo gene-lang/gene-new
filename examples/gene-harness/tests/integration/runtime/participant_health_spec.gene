@@ -32,7 +32,7 @@
             {^name "faulty_marker" ^doc "Unaffected capabilities remain usable." ^fn (fn [] %mode)})
           (host .PluginHost:contribute "turn_participants" {^name "faulty/memory"
             ^begin (fn [context state value]
-              (if_yes (["blocked" "waiting"] .contains? %mode)
+              (if (["blocked" "waiting"] .contains? %mode)
                 ($fs/write_text %entered "entered")
                 (while (! ($fs/exists? %release)) ($sleep 5)))
               (if (== %mode "timeout") ($sleep 1500))
@@ -89,7 +89,7 @@
             (let saved (participant_quarantine runtime/workspace "faulty"))
             ($assert (== saved/participant "faulty/memory") ($to_str saved))
             ($assert (== saved/phase "bindings"))
-            ($assert ($str/contains? saved/message (if (== conflict "host") "host binding" "selected function")))
+            ($assert ($str/contains? saved/message (if (== conflict "host") "host binding" else "selected function")))
             (let next (wait_round controller (submit_round controller "default" "recover" 2 "Continue.")))
             ($assert (== next/state "done") ($to_str next))
             ($assert (== next/reply "available"))
@@ -114,12 +114,11 @@
         (let controller (test_controller runtime (fn [request]
           (calls .set (+ calls/.get 1))
           (if (== calls/.get 1)
-            (then
-              ($assert ($str/contains? ($to_str request/messages) ".plugins]"))
+            ($assert ($str/contains? ($to_str request/messages) ".plugins]"))
               ($assert ($str/contains? ($to_str request/messages) "faulty: turn participants quarantined after begin"))
               ($to_str "(register_plugin ^^replace \"faulty\" (quote " (fault_source "healthy")
-                ")) (Outcome ^prompt \"Verify the repaired plugin.\")"))
-            (else "(Outcome ^^done ^reply (faulty_marker))")))))
+                ")) (Outcome ^prompt \"Verify the repaired plugin.\")")
+            else "(Outcome ^^done ^reply (faulty_marker))"))))
         (try
           (let failed (wait_round controller (submit_round controller "default" "first" 1 "Start.")))
           ($assert (== failed/state "failed") ($to_str failed))

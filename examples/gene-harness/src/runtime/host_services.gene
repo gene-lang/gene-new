@@ -7,14 +7,14 @@
 
 (fn service_dependencies [spec, mode : Str]
   (if (== ($head spec/requires) Map)
-    (?? (spec/requires .get mode) (if (== mode "doctor") (?? spec/requires/normal []) []))
-    (?? spec/requires [])))
+    (?? (spec/requires .get mode) (if (== mode "doctor") (?? spec/requires/normal []) else []))
+    else (?? spec/requires [])))
 
 (fn service_operation [spec, mode : Str]
   (if (== mode "recovery") (return spec/recover))
-  (if_yes (== mode "doctor")
-    (if (!= (?? spec/layer "kernel") "kernel") (return nil))
-    (return (if (spec .has_key? "doctor") spec/doctor spec/open)))
+  (if (== mode "doctor")
+    (do (if (!= (?? spec/layer "kernel") "kernel") (return nil))
+    (return (if (spec .has_key? "doctor") spec/doctor else spec/open))))
   spec/open)
 
 (fn service_order [specs, mode : Str]
@@ -38,10 +38,10 @@
       (var ready true)
       (for dependency in (service_dependencies spec mode)
         (if_not (complete .has_key? dependency) (set ready false)))
-      (if_yes ready
-        (ordered .push spec)
+      (if ready
+        (do (ordered .push spec)
         (complete .put spec/name true)
-        (set changed true)))
+        (set changed true))))
     (if_not changed (fail (HostServiceError ^_msg "Host service dependencies contain a cycle."))))
   ordered)
 
@@ -120,7 +120,7 @@
       (if (== spec/borrowed true)
         (if_not (same? (owner/values .get spec/name) value)
           (fail (HostServiceError ^_msg $"Host service ${spec/name} does not match its supplied dependency.")))
-        (owner/values .put spec/name value))
+        else (owner/values .put spec/name value))
       (available .put spec/name true)
       (service_event owner "after" spec/name))
     owner

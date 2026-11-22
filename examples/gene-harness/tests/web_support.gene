@@ -5,7 +5,7 @@
 (fn launch_host [root : Str, ^script responses = nil, ^port port = nil, ^restart_port restart_port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true, ^recovery recovery : Bool = false, ^managed managed : Bool = false]
   ($fs/make_dir root)
   (let canonical ($fs/real_path root))
-  (let entry (if supervised "src/runtime/supervisor.gene" "src/main.gene"))
+  (let entry (if supervised "src/runtime/supervisor.gene" else "src/main.gene"))
   (let arguments ["run" "--snapshot" (package_path entry) "web" "--workspace" canonical])
   (if_not ($absent? port)
     (arguments .push "--port")
@@ -27,9 +27,9 @@
 (fn ready_host [host, ^previous previous : Str = "", ^timeout_ms timeout_ms : Int = 20000]
   (let due (+ ($os/monotonic_ms) timeout_ms))
   (loop
-    (if_yes host/process/.done?
-      (let result (await host/process))
-      ($assert false $"Host exited before ready: ${result/stdout}${result/stderr}"))
+    (if host/process/.done?
+      (do (let result (await host/process))
+      ($assert false $"Host exited before ready: ${result/stdout}${result/stderr}")))
     (let connection (try (discover host/root) catch Error nil))
     (if (&& ($present? connection) (!= connection/epoch previous)) (return connection))
     ($assert (< ($os/monotonic_ms) due) "Host did not publish a ready connection")

@@ -10,7 +10,7 @@
 (fn load_config [missing : Bool] : Str ^errors [ConfigError]
   (if missing
     (fail (ConfigError ^_msg "Configuration is missing"))
-    "ready"))
+    else "ready"))
 
 # The known error is useful documentation; Error permits other failures too.
 (fn call_plugin [callback : Callable] : Any ^errors [ConfigError Error]

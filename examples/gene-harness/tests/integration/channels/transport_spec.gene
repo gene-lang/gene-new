@@ -15,7 +15,7 @@
 (import [receive_slack slack_row] ^from "../../channel_support")
 
 (fn fixture [workspace, body, ^builtin builtin : Bool = false]
-  (let harness (test_service ^workspace workspace ^channel_options (if builtin nil {^start false})
+  (let harness (test_service ^workspace workspace ^channel_options (if builtin nil else {^start false})
     ^provider (fn [request] "(Outcome ^^done ^reply \"Done.\")")))
   (try
     (let filename ($path/join workspace "fake-slack-credentials"))
@@ -91,9 +91,9 @@
             ^receive (fn [native socket]
               (let at reads/.get) (reads .set (+ at 1))
               (if (== at 0)
-                (then {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1})
-                (elif (&& (== socket 1) (== at 1)) {^type "disconnect" ^reason "refresh_requested"})
-                (else nil)))
+                {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}
+                elif (&& (== socket 1) (== at 1)) {^type "disconnect" ^reason "refresh_requested"}
+                else nil))
             ^ack (fn [native socket id] nil)
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})
           (let transport (open_transport (local_channel_host harness/runtime/services/values/channels) ^driver driver
@@ -119,7 +119,7 @@
             (calls/.get .push {^text request/params/text ^at ($os/monotonic_ms)})
             (if limited/.get
               {^status 429 ^headers [["Retry-After" "60"]] ^body ($binary/from_str "{}")}
-              {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify
+              else {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify
                 {^^ok ^ts ($to_str calls/.get/.size ".000002")}))})))
           (let channels harness/runtime/services/values/channels)
           (let deliver (fn [] (deliver_pending channels ^adapter (slack_row requester))))
@@ -201,9 +201,9 @@
               (clients/.get .push api) (opened .set (+ opened/.get 1)) opened/.get)
             ^receive (fn [native socket]
               (let id ($to_str socket))
-              (if_yes (! ($has_key? seen/.get id))
-                (seen/.get .put id true)
-                (return {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1}))
+              (if (! ($has_key? seen/.get id))
+                (do (seen/.get .put id true)
+                (return {^type "hello" ^connection_info {^app_id "A123"} ^num_connections 1})))
               nil)
             ^ack (fn [native socket id] nil)
             ^close (fn [socket] (closed .set (+ closed/.get 1)))})

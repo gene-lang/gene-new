@@ -15,26 +15,26 @@
 # ---------------------------------------------------------------------------
 
 (fn text [value : Any, fallback : Str = ""] : Str
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Str value)
   result)
 
 (fn flag [value : Any] : Bool
-  (if_yes ($absent? value) (return false))
+  (if ($absent? value) (return false))
   (var result : Bool value)
   result)
 
 (fn int_of [value : Any, fallback : Int] : Int
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var result : Int value)
   result)
 
 (fn str_list [value : Any] : (List Str)
   (var out : (List Str) [])
-  (if_yes ($present? value)
-    (var items : (List Any) value)
+  (if ($present? value)
+    (do (var items : (List Any) value)
     (for item in items
-      (out .push (text item ""))))
+      (out .push (text item "")))))
   out)
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@
     (var id (text document/id ""))
     (var name (text document/name id))
     (var readonly (flag document/readonly))
-    (var label (if readonly $"${name} (read-only)" name))
+    (var label (if readonly $"${name} (read-only)" else name))
     (var node (doc_button id label (== id current)))
     ($dom/add_event_listener node "click"
       (fn [event : Any] : Nil (on_pick id)))
@@ -134,7 +134,7 @@
       (say status_node
         (if (flag payload/readonly)
           $"${name}: ${reason}"
-          $"${name} · ${revision}")))))
+          else $"${name} · ${revision}")))))
 
 (fn open_logs [editor : Editor, page : PropMap, status_node : EventTarget] : Nil
   (set page/mode "log")
@@ -153,13 +153,13 @@
 (fn pick_document [editor : Editor, page : PropMap, status_node : EventTarget,
                    id : Str] : Nil
   (var rows : (List Any) [])
-  (if_yes ($present? page/rows) (set rows page/rows))
+  (if ($present? page/rows) (set rows page/rows))
   (mark_active rows id)
   (if (== id "__logs__")
     (do
       (set page/current "__logs__")
       (open_logs editor page status_node))
-    (do
+    else (do
       (set page/current id)
       (open_document editor page status_node id))))
 
@@ -178,7 +178,7 @@
       (set page/rows rows)
       (if (!= current "")
         nil
-        (do
+        else (do
           (var first : Any (documents .get 0))
           (if ($present? first)
             (pick_document editor page status_node (text first/id ""))))))))
@@ -199,13 +199,13 @@
           (fn [status : Int, body : Str] : Nil
             (if (== status 200)
               (done ($json/parse body))
-              (done {^ok false ^message $"save request failed (${status})"})))))
+              else (done {^ok false ^message $"save request failed (${status})"})))))
       ^analyze (fn [request : Any, done : (Fn [Any] Nil)] : Nil
         ($http/request "POST" "/api/analyze" ($json/stringify request) {}
           (fn [status : Int, body : Str] : Nil
             (if (!= status 200)
               (done {^ok false ^message $"analysis request failed (${status})"})
-              (do
+              else (do
                 (var response ($json/parse body))
                 (if ($absent? response/version)
                   (set response/version request/version))
@@ -215,7 +215,7 @@
           (fn [status : Int, body : Str] : Nil
             (if (!= status 200)
               (done {^ok false ^message $"format request failed (${status})"})
-              (do
+              else (do
                 (var response ($json/parse body))
                 (if ($absent? response/version)
                   (set response/version request/version))

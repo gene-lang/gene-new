@@ -29,7 +29,7 @@
     (Response ^status result/status
       ^headers {^content-type (?? result/content_type "text/plain; charset=utf-8") ^cache-control "no-store"}
       ^body body)
-    (response result/status body)))
+    else (response result/status body)))
 
 (fn plugin_route [h, request, kind : Str]
   (let lease (acquire_snapshot h/snapshots ^label "plugin route"))

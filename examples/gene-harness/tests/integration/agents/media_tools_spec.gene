@@ -14,7 +14,7 @@
           (calls/.get .push request/messages)
           (if (== calls/.get/.size 1)
             $"(media_show \"${image/.get/id}\") (Outcome ^^done ^reply \"Premature.\")"
-            "(Outcome ^^done ^reply \"Image inspected.\")")))
+            else "(Outcome ^^done ^reply \"Image inspected.\")")))
         (let service (test_service ^workspace workspace ^provider provider))
         (try
           (let encoded "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AFBkeP8EYAIs1SXmQwAAAABJRU5ErkJggg==")
@@ -44,7 +44,7 @@
           (calls/.get .push request/messages)
           (if (== calls/.get/.size 1)
             $"(media_show \"${image/.get/id}\") (Outcome ^questions [{^id \"ok\" ^kind \"confirm\" ^prompt \"Inspect this image?\"}])"
-            "(Outcome ^^done ^reply \"Image inspected after your answer.\")")))
+            else "(Outcome ^^done ^reply \"Image inspected after your answer.\")")))
         (var service (test_service ^workspace workspace ^provider provider))
         (let session (create_session service))
         (var round nil)

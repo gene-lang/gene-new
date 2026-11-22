@@ -15,7 +15,7 @@
 
 (fn option_value [args, index : Int, name : Str] : Str
   (var next (+ index 1))
-  (if_yes (>= next args/.size)
+  (if (>= next args/.size)
     (fail (WebsiteError ^_msg $"${name} needs a value.")))
   args/%next)
 
@@ -31,8 +31,8 @@
 (fn write_route [assets : Str, route]
   (let path $"${assets}/${route/file}")
   (if ($str/starts_with? route/content_type "font/")
-    (then ($fs/write_bytes path route/body))
-    (else (write_text path route/body))))
+    ($fs/write_bytes path route/body)
+    else (write_text path route/body)))
 
 (fn main [argv]
   (var args [])
@@ -45,19 +45,19 @@
   (while (< i args/.size)
     (var arg args/%i)
     (match arg
-      (when "--out" (set out (option_value args i arg)) (set i (+ i 1)))
-      (when "--base"
-        (set base (option_value args i arg)) (set i (+ i 1)))
-      (when "--app_url"
-        (set app_url (option_value args i arg)) (set i (+ i 1)))
-      (else
-        (fail (WebsiteError ^_msg $"Unknown option ${arg}. Use --out, --base, or --app_url."))))
+      when "--out" (set out (option_value args i arg)) (set i (+ i 1))
+      when "--base"
+        (set base (option_value args i arg)) (set i (+ i 1))
+      when "--app_url"
+        (set app_url (option_value args i arg)) (set i (+ i 1))
+      else
+        (fail (WebsiteError ^_msg $"Unknown option ${arg}. Use --out, --base, or --app_url.")))
     (set i (+ i 1)))
   (set base (url_base base))
   # Asset URLs are resolved when the page renders, so the base is set first.
   ($web/set_asset_base $"${base}assets")
   (var page (website_page ^mode "standalone" ^app_url app_url))
-  (if_yes (== out default_out) (ensure_dir $"${package_dir}/tmp"))
+  (if (== out default_out) (ensure_dir $"${package_dir}/tmp"))
   (ensure_dir out)
   (var assets $"${out}/assets")
   (ensure_dir assets)

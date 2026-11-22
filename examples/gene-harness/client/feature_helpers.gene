@@ -8,7 +8,7 @@
   (var result : FeatureHost raw)
   result)
 (fn features [client : Client] : PropMap
-  (if_yes ($absent? client/features) (set client/features {}))
+  (if ($absent? client/features) (set client/features {}))
   (var raw : Any client/features)
   (var result : PropMap raw) result)
 (fn api [client : Client, method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
@@ -38,9 +38,9 @@
 (fn set_hidden [id : Str, hidden : Bool] : Nil
   (var element ($dom/element id)) (set element/hidden hidden))
 (fn string_or [value : Any, fallback : Str] : Str
-  (if_yes ($absent? value) (return fallback))
+  (if ($absent? value) (return fallback))
   (var text : Str value) text)
 
 (fn client_events [client : Client] : FeatureEvents
-  (if_yes ($absent? client/feature_events) (set client/feature_events (create_feature_events)))
+  (if ($absent? client/feature_events) (set client/feature_events (create_feature_events)))
   (var raw : Any client/feature_events) (var result : FeatureEvents raw) result)

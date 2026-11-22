@@ -270,7 +270,7 @@ directly, and acquisition happens in Gene:
 (fn open_db [path : Str] : Db?
   (var db : Db? nil)
   (let rc : I64 (sqlite3_open path db))
-  (if (== rc 0) db nil))
+  (if (== rc 0) db else nil))
 ```
 
 The `while` loop still lives in `main.c` only because the driver is a C

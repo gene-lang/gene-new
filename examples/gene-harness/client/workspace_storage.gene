@@ -3,16 +3,16 @@
 (mod workspace_storage ^profile web)
 
 (fn workspace_storage_key [workspace : Str, key : Str] : Str
-  (if_yes (== workspace "") (return ""))
+  (if (== workspace "") (return ""))
   (var suffix key)
-  (if_yes ($str/starts_with? key "gene-harness/")
+  (if ($str/starts_with? key "gene-harness/")
     (set suffix ($str/slice_bytes key 13 (- ($str/byte_size key) 13))))
   $"gene-harness/${workspace}/${suffix}")
 
 (fn scoped_key [key : Str] : Str
   (var workspace : Str (try
     (var document ($dom/element "harness_document"))
-    (if_yes ($absent? document/dataset/workspaceId) (return ""))
+    (if ($absent? document/dataset/workspaceId) (return ""))
     (var identity : Str document/dataset/workspaceId)
     identity
     # Outside the Harness page (no document, or no such element) the key is
@@ -22,15 +22,15 @@
 
 (fn storage_get [key : Str] : Str
   (var scoped (scoped_key key))
-  (if_yes (== scoped "") (return ""))
+  (if (== scoped "") (return ""))
   (?? ($session_storage/get scoped) ""))
 
 (fn storage_set [key : Str, value : Str] : Bool
   (var scoped (scoped_key key))
-  (if_yes (== scoped "") (return false))
+  (if (== scoped "") (return false))
   ($session_storage/set scoped value))
 
 (fn storage_remove [key : Str] : Nil
   (var scoped (scoped_key key))
-  (if_yes (!= scoped "") ($session_storage/remove scoped))
+  (if (!= scoped "") ($session_storage/remove scoped))
   nil)

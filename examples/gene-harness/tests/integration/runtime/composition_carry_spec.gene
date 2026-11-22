@@ -28,7 +28,7 @@
 (fn stored_activations [runtime, id : Str]
   (let found (/0 ($filter (runtime/services/values/plugin_services/records "probe")
     (fn [item] (== item/key id)))))
-  (if ($absent? found) 0 found/value))
+  (if ($absent? found) 0 else found/value))
 
 (describe "Carried composition"
   (it "does not reactivate unchanged host plugins across unrelated registrations" []

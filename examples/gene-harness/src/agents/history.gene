@@ -35,8 +35,7 @@
 
 (fn mark_body_references [runtime, value, live]
   (if (== ($head value) Str)
-    (then
-      (if (|| (!= ($str/byte_size value) 64) ($present? (live .get value))) (return nil))
+    (do (if (|| (!= ($str/byte_size value) 64) ($present? (live .get value))) (return nil))
       (let path $"${runtime/state_root}/blobs/${value}")
       (if_not ($fs/exists? path) (return nil))
       (live .put value true)
@@ -44,13 +43,11 @@
       (if_not ($absent? nested) (mark_body_references runtime nested live))
       (return nil)))
   (if (== ($head value) Map)
-    (then
-      (map_for [key item] in value
-        (mark_body_references runtime item live))))
+    (map_for [key item] in value
+        (mark_body_references runtime item live)))
   (if (== ($head value) List)
-    (then
-      (for item in value
-        (mark_body_references runtime item live))))
+    (for item in value
+        (mark_body_references runtime item live)))
   nil)
 
 (fn collect_unreferenced_bodies [runtime]
@@ -63,11 +60,11 @@
       (mark_body_references runtime (core_states runtime/events "session" ($to_str id)) live)
       (for event in (events_for runtime/events "session" ($to_str id))
         (if (== event/type "model/request")
-          (then (mark_body_references runtime event/payload/prepared live))
-          (elif (== event/type "model/result")
+          (mark_body_references runtime event/payload/prepared live)
+          elif (== event/type "model/result")
             (mark_body_references runtime event/payload/output live)
             (mark_body_references runtime event/payload/usage live)
-            (mark_body_references runtime event/payload/error live)))))
+            (mark_body_references runtime event/payload/error live))))
     # Retained event generations can still be selected after a damaged newest
     # checkpoint. Their projection blobs must remain readable too.
     (let manifest runtime/events/last_manifest/.get)
@@ -77,8 +74,7 @@
         (for digest in generation
           (let key $"projection/${digest}")
           (if (&& ($absent? (seen .get key)) (runtime/events/backend .Store:has? key))
-            (then
-              (seen .put key true)
+            (do (seen .put key true)
               (mark_body_references runtime (runtime/events/backend .Store:get key) live))))))
     (for path in ($fs/list_dir $"${runtime/state_root}/blobs")
       (let parts ($str/split path "/"))
@@ -180,7 +176,7 @@
 (fn item_text [item, body : Str] : Str
   (if (== item/inline true)
     $"${item/header} ${body}"
-    ($to_str
+    else ($to_str
       item/header
       """
 """
@@ -202,21 +198,21 @@
   (for entry in entries
     (let item entry/item)
     (set remaining_stub_bytes (- remaining_stub_bytes (+ ($str/byte_size entry/stub) 1)))
-    (var body (if (== item/saved true) item/value (shorten_item item/id item/value)))
+    (var body (if (== item/saved true) item/value else (shorten_item item/id item/value)))
     (var rendered (item_text item body))
-    (let separator (if full/.empty? 0 1))
+    (let separator (if full/.empty? 0 else 1))
     (let overflow (> (+ bytes (+ separator (+ ($str/byte_size rendered) remaining_stub_bytes))) 65536))
-    (if_yes overflow (set body (output_stub item/id entry/size)) (set rendered entry/stub))
+    (if overflow (do (set body (output_stub item/id entry/size)) (set rendered entry/stub)))
     (if (&& (!= item/saved true) (|| overflow (> entry/size 2048)))
       (store_body runtime session item/id item/value))
     (if (> (+ bytes (+ separator ($str/byte_size rendered))) 65536)
       (fail (HistoryError ^_msg "output headers exceed the request byte limit")))
     (full .push rendered)
     (if_not (== item/settled false)
-      (settled .push (if (> entry/size 16384) entry/stub rendered)))
+      (settled .push (if (> entry/size 16384) entry/stub else rendered)))
     (let saved {^id item/id ^header item/header ^value body
       ^original_bytes entry/size ^inline (== item/inline true)
-      ^settled (if (== item/settled false) false true) ^^saved})
+      ^settled (if (== item/settled false) false else true) ^^saved})
     (if_not ($absent? item/delegation_source)
       (saved .put "delegation_source" item/delegation_source))
     (if_not ($absent? item/source)
@@ -235,8 +231,7 @@
     (let body block/body)
     (let id $"${turn}.attachment.${name}")
     (if (> ($str/byte_size body) 1024)
-      (then
-        (refs .put id (store_body runtime session id body))
+      (refs .put id (store_body runtime session id body))
         (parts .push
           ($to_str
             "<<<"
@@ -246,8 +241,8 @@
             (output_stub id ($str/byte_size body))
             """]
 ELIDED
-""")))
-      (else
+"""))
+      else
         (parts .push
           ($to_str
             "<<<"
@@ -259,7 +254,7 @@ ELIDED
             body
             block/terminator
             """
-""")))))
+"""))))
   (if_not ($absent? parsed/patch)
     (let id $"${turn}.patch_body")
     (refs .put id (store_body runtime session id parsed/patch))
@@ -331,7 +326,7 @@ ELIDED
   (for item in media
     (set bytes (+ bytes 512
       (if (== item/kind "text") ($math/min 131072 item/size)
-        (if (== item/kind "document") 196608 32768)))))
+        else (if (== item/kind "document") 196608 else 32768)))))
   bytes)
 
 (fn context_bytes [state, instructions : Str]
@@ -350,10 +345,9 @@ ELIDED
   (for message in messages
     (for field in ["media" "media_refs"]
       (for reference in (?? (message .get field) [])
-        (let id (if (== ($head reference) Str) reference reference/id))
+        (let id (if (== ($head reference) Str) reference else reference/id))
         (if ($absent? (seen .get id))
-          (then
-            (seen .put id true)
+          (do (seen .put id true)
             (refs .push reference))))))
   refs)
 
@@ -381,15 +375,13 @@ ELIDED
     (if (< (context_bytes state instructions) target) (break))
     (if (&& policy/elide_assistant (< index last) (== message/role "assistant")
             (!= message/compacted true) (! (policy/retain_rounds .contains? message/round)))
-      (then
-        (let shortened (compact_assistant message/content))
+      (do (let shortened (compact_assistant message/content))
         (message .put "content" shortened)
         (message .put "settled" shortened)
         (message .put "compacted" true)))
     (set index (+ index 1)))
   (if (>= (context_bytes state instructions) target)
-    (then
-      (let selected []) (let retained []) (let rounds [])
+    (do (let selected []) (let retained []) (let rounds [])
       (let last_index (- state/messages/.size 1))
       (let latest state/messages/%last_index/round)
       (var removed 0)
@@ -398,22 +390,21 @@ ELIDED
       (for message in state/messages
         (if (&& (!= message/round latest) (< removed excess)
                 (! (policy/retain_rounds .contains? message/round)))
-          (then
-            (selected .push message)
+          (selected .push message)
             (if_not (rounds .contains? message/round) (rounds .push message/round))
             (set removed (+ removed ($str/byte_size message/content)
-              (media_context_bytes (?? message/media [])))))
-          (else (retained .push message))))
+              (media_context_bytes (?? message/media []))))
+          else (retained .push message)))
       # Summarize whole rounds: extend selection to all messages belonging to
       # a chosen round, even when the byte threshold landed in its middle.
       (var tail [])
       (for message in retained
-        (if (rounds .contains? message/round) (selected .push message) (tail .push message)))
-      (if_yes (|| selected/.empty? (>= (context_bytes {^messages tail} instructions) (- target 160)))
+        (if (rounds .contains? message/round) (selected .push message) else (tail .push message)))
+      (if (|| selected/.empty? (>= (context_bytes {^messages tail} instructions) (- target 160)))
         # A long active round may be the only round. Summarize its completed
         # prefix too when older rounds alone cannot make enough room. Keep its
         # initiating task and latest assistant/request pair intact.
-        (let pending tail)
+        (do (let pending tail)
         (set tail [])
         (var position 0)
         (for message in pending
@@ -421,9 +412,9 @@ ELIDED
                    (! (policy/retain_rounds .contains? message/round))
                    (! (&& (== message/round latest) (== message/role "user") (== message/turn 0))))
             (selected .push message)
-            (tail .push message))
+            else (tail .push message))
           (set position (+ position 1)))
-        (if_not selected/.empty? (rounds .push latest)))
+        (if_not selected/.empty? (rounds .push latest))))
       (if_not selected/.empty?
         (let tail_state {^messages tail})
         (let media_refs (history_media_refs selected))
@@ -443,8 +434,7 @@ ELIDED
             {^role "user" ^content ($serde/write_data selected)}]}))
         (var bounded summary)
         (if (>= ($str/byte_size summary) available)
-          (then
-            (let id $"summary.${($crypto/sha256 summary)}")
+          (do (let id $"summary.${($crypto/sha256 summary)}")
             (store_body runtime session id summary)
             (let stub $"\n… (recall \"${id}\")")
             (set bounded ($to_str (byte_prefix summary ($to_int (- (- available ($str/byte_size stub)) 1))) stub))))

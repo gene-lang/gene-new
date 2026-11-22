@@ -1165,7 +1165,7 @@ Conceptual client API, proposed for illustration:
       ($net/http_client/describe_operation request)))
   (if decision/allowed
     (await ($net/http_client/send request))
-    "offline"))
+    else "offline"))
 ```
 
 `prepare` and `describe_operation` here are proposed pure preparation/inspection operations. They must not connect or send. `send` revalidates the immutable prepared request, constructs trusted facts, guards, and then executes. The example illustrates boundary behavior, not existing library signatures.

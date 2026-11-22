@@ -26,7 +26,7 @@
   (stack .set frame/parent)
   ($assert (>= frame/remaining 0) "sample children exceed their parent; unsupported tree layout")
   (let group_index frame/group)
-  (let bucket (if (< group_index ($size groups)) groups/%group_index/0 "unattributed"))
+  (let bucket (if (< group_index ($size groups)) groups/%group_index/0 else "unattributed"))
   (buckets .put bucket (+ (?? (buckets .get bucket) 0) frame/remaining))
   (leaves .put frame/name (+ (?? (leaves .get frame/name) 0) frame/remaining)))
 
@@ -53,8 +53,7 @@
     (let count ($parse/parse_int parts/0))
     (let name parts/1)
     (if ($str/starts_with? name "Thread_")
-      (then
-        (if main_thread (break))
+      (do (if main_thread (break))
         (if (! ($str/contains? line "com.apple.main-thread")) (continue))
         (set main_thread true)
         (set total count)))
@@ -65,8 +64,7 @@
       (finish_frame stack buckets leaves))
     (var group (own_group name))
     (if (! ($absent? stack/.get))
-      (then
-        (let parent stack/.get)
+      (do (let parent stack/.get)
         (parent .put "remaining" (- parent/remaining count))
         (if (< parent/group group) (set group parent/group))))
     (stack .set {^depth start ^count count ^remaining count ^name name ^group group ^parent stack/.get}))

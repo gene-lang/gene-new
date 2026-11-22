@@ -13,15 +13,15 @@
   (let h runtime/h)
   # Match the Workspace UI plugin's persisted identity across source renames.
   (let saved (if ($absent? h/event_store) nil
-    (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
+    else (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
   (var defaults nil)
-  (if_yes ($present? h/snapshots)
-    (let snapshot (current_snapshot h/snapshots))
+  (if ($present? h/snapshots)
+    (do (let snapshot (current_snapshot h/snapshots))
     (for record in (?? (snapshot/registries .get "ui_defaults") [])
-      (if_yes (== record/key "default")
-        (set defaults {})
+      (if (== record/key "default")
+        (do (set defaults {})
         (map_for [key value] in record/payload
-          (if (!= ($to_str key) "name") (defaults .put ($to_str key) value))))))
+          (if (!= ($to_str key) "name") (defaults .put ($to_str key) value))))))))
   (?? saved defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^tokens {}}))
 
 (fn validate_theme_colors [colors, declared = []]
@@ -91,15 +91,15 @@
   (let h runtime/h)
   (let manager runtime/services/values/manager)
   ($to_str snapshot/id ":" (if ($absent? h/event_store) 0
-    (next_sequence h/event_store (stream_key "workspace" "workspace")))
-    (if ($absent? manager) "" ($to_str ":manager:" manager/revision/.get))
+    else (next_sequence h/event_store (stream_key "workspace" "workspace")))
+    (if ($absent? manager) "" else ($to_str ":manager:" manager/revision/.get))
     ":settings:" (settings_revision runtime)))
 
 # Bumped by every committed settings write and observed shared change, so open
 # Settings screens refresh. Read inline: ui state must not import the resolver.
 (fn settings_revision [runtime] : Int
-  (let state (if ($absent? runtime/services) nil runtime/services/values/settings))
-  (if ($absent? state) 0 state/revision/.get))
+  (let state (if ($absent? runtime/services) nil else runtime/services/values/settings))
+  (if ($absent? state) 0 else state/revision/.get))
 
 (fn ui_descriptor [runtime, snapshot, record]
   (let h runtime/h)
@@ -123,9 +123,9 @@
   (for record in (?? (snapshot/registries .get "web_components") [])
     (if (&& ($present? record/payload/view_state) (view_listed? settings record))
       (components .push (ui_descriptor runtime snapshot record))))
-  (let actions (if ($absent? runtime/services/values/actions) nil runtime/services/values/actions/log/state/.get))
+  (let actions (if ($absent? runtime/services/values/actions) nil else runtime/services/values/actions/log/state/.get))
   {^settings settings ^components ($order/sort_by components (fn [item] item/name))
    ^data_revision (ui_data_revision runtime snapshot) ^theme_revision (theme_revision runtime) ^epoch h/ui_epoch
    ^actions (if ($absent? actions) nil
-     {^generation actions/generation ^floor actions/floor ^revision ($to_str actions/revision)})
+     else {^generation actions/generation ^floor actions/floor ^revision ($to_str actions/revision)})
    ^workspace (?? h/workspace/workspace_root "")})

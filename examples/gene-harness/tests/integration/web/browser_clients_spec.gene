@@ -43,7 +43,7 @@
         (let broken (spotlight_from $"${workspace}/missing-client.gene"))
         (let plugins [])
         (for plugin in base/plugins
-          (plugins .push (if (== plugin/id "spotlight") broken plugin)))
+          (plugins .push (if (== plugin/id "spotlight") broken else plugin)))
         (set base/plugins plugins)
         (let runtime (open_runtime workspace "default" base))
         (try

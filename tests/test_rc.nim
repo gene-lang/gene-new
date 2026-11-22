@@ -463,7 +463,7 @@ when defined(geneRcStats):
           (impl ValueOrder for WitnessKey
             (message compare [other : WitnessKey] : Int
               (if (< self/text other/text) -1
-                (if (> self/text other/text) 1 0))))
+                else (if (> self/text other/text) 1 else 0))))
           WitnessKey
         """), scope)
         scope = nil
@@ -772,7 +772,7 @@ when defined(geneRcStats):
     test "scope-owned named functions are reclaimed":
       check leakedManaged("(fn f [] 1)") == 0
       check leakedManaged("(fn make [] (var x 1) (fn [] x)) (make)") == 0
-      check leakedManaged("(fn fac [n] (if (== n 0) 1 (* n (fac (- n 1))))) (fac 5)") == 0
+      check leakedManaged("(fn fac [n] (if (== n 0) 1 else (* n (fac (- n 1))))) (fac 5)") == 0
 
     test "escaped named functions release their scope once only it holds them":
       # A returned container also kept in a local, and a named function stored
@@ -843,14 +843,14 @@ when defined(geneRcStats):
 
     test "proper tail transfers reclaim frames scopes and trace windows":
       check leakedManaged(
-        "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
-        "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
+        "(fn is_even [n] (if (== n 0) true else (is_odd (- n 1)))) " &
+        "(fn is_odd [n] (if (== n 0) false else (is_even (- n 1)))) " &
         "(is_even 10000)") == 0
       check leakedManaged(
         "(fn consume [xs n] " &
         "  (match xs " &
-        "    (when [] (if (== n 0) 0 (consume [n] (- n 1)))) " &
-        "    (else (consume [] n)))) " &
+        "    when [] (if (== n 0) 0 else (consume [n] (- n 1))) " &
+        "    else (consume [] n))) " &
         "(consume [] 5000)") == 0
 
     test "tail fallback retains no more than the equivalent non-tail closure":
@@ -1195,7 +1195,7 @@ when defined(geneRcStats):
         check repeatedBodyLeak("(fn body [] (var hs []) " &
           "(for x in [1 2 3] (hs .push (fn [] x))) (hs/0))") == 0
         check repeatedBodyLeak("(fn body [] (var f nil) " &
-          "(match [3] ^!exhaustive (when [x] (set f (fn [] x)))) (f))") == 0
+          "(match [3] ^!exhaustive when [x] (set f (fn [] x))) (f))") == 0
         check repeatedBodyLeak("(fn other [a] (var b a) b) " &
           "(fn body [] (var f nil) (for x in [2] (set f (fn [] x))) (other 1))") == 0
         # The Int fast return, an explicit return from inside the loop, and an
@@ -1215,7 +1215,7 @@ when defined(geneRcStats):
         # Loop iterations whose own scope closes the cycle, and closures over
         # the scope itself inside a container or Cell it binds.
         check repeatedBodyLeak("(fn body [] (for x in [1 2] (var f nil) " &
-          "(for y in [2] (set f (fn [] y))) (if (== x 1) (continue) (break))) nil)") == 0
+          "(for y in [2] (set f (fn [] y))) (if (== x 1) (continue) else (break))) nil)") == 0
         check repeatedBodyLeak(
           "(fn body [] (for x in [1] (var hs [(fn [] x)])) nil)") == 0
         check repeatedBodyLeak("(fn body [] (var hs [(fn [] 1)]) nil)") == 0
@@ -1228,13 +1228,13 @@ when defined(geneRcStats):
         # cycle. That activation ends unpooled, through the VM, a native
         # callback, and a tail call.
         check repeatedBodyLeak(
-          "(fn body [] (if false (var x 1) nil) (var hs [(fn [] x)]) nil)") == 0
-        check repeatedBodyLeak("(fn mk [c] (if c (var x 1) nil) " &
+          "(fn body [] (if false (var x 1) else nil) (var hs [(fn [] x)]) nil)") == 0
+        check repeatedBodyLeak("(fn mk [c] (if c (var x 1) else nil) " &
           "(var hs [(fn [] x)]) nil) (fn body [] (mk false))") == 0
         check repeatedBodyLeak("(fn body [] ([0 1] .map (fn [n] " &
-          "(if (== n 0) (var x 1) nil) (var hs [(fn [] x)]) nil)) nil)") == 0
+          "(if (== n 0) (var x 1) else nil) (var hs [(fn [] x)]) nil)) nil)") == 0
         check repeatedBodyLeak("(fn other [a] a) (fn body [] " &
-          "(if false (var x 1) nil) (var hs [(fn [] x)]) (other 1))") == 0
+          "(if false (var x 1) else nil) (var hs [(fn [] x)]) (other 1))") == 0
 
       test "a returned value closing a closure cycle retires once released":
         # The return check cannot retire a scope whose cycle the returned value
@@ -1274,7 +1274,7 @@ when defined(geneRcStats):
         # Each level's scope retires at its tail transfer; the final call into
         # the closure keeps its frame so the last scope is checked on return.
         check leakedManaged("(fn walk [n] (var f nil) " &
-          "(for x in [n] (set f (fn [] x))) (if (== n 0) (f) (walk (- n 1)))) " &
+          "(for x in [n] (set f (fn [] x))) (if (== n 0) (f) else (walk (- n 1)))) " &
           "(walk 2000)") == 0
 
       test "released sandbox generations retire their module cycles":
@@ -1394,7 +1394,7 @@ when defined(geneRcStats):
       check leakedManaged("(fn mk [] (fn [x] (> x 1))) " &
                           "($into ($filter ($to_stream [1 2 3]) (mk)) [])") == 0
       check leakedManaged("(var items [1 2 3]) " &
-                          "(fn mk [k] (match k (else (fn [x] true)))) " &
+                          "(fn mk [k] (match k else (fn [x] true))) " &
                           "(fn go [k] ($into ($filter ($to_stream items) (mk k)) [])) " &
                           "(go \"a\")") == 0
       check leakedManaged("($freeze [1 {^a [2]}])") == 0

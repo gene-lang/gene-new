@@ -64,18 +64,17 @@
         (let controller (test_controller runtime (fn [call]
           (let metadata (require_record runtime/sessions call/session))
           (if (== metadata/kind "child")
-            (then
-              (child_calls/.get .push call/session)
+            (child_calls/.get .push call/session)
               ($sleep 40)
-              "(Outcome ^^done ^reply \"Audit complete\" ^result {^count 3})")
-            (else
+              "(Outcome ^^done ^reply \"Audit complete\" ^result {^count 3})"
+            else
               (let n (parent_calls .swap (+ parent_calls/.get 1)))
               (if (== n 0)
-                (then "(delegate \"auth\" ^title \"Audit auth\" ^brief \"Find auth routes.\") (delegate \"queries\" ^title \"Audit queries\" ^brief \"Find slow queries.\") (Outcome ^wait \"all\" ^reply \"Two audits running.\")")
-                (else
+                "(delegate \"auth\" ^title \"Audit auth\" ^brief \"Find auth routes.\") (delegate \"queries\" ^title \"Audit queries\" ^brief \"Find slow queries.\") (Outcome ^wait \"all\" ^reply \"Two audits running.\")"
+                else
                   ($assert ($str/contains? ($to_str call/messages) "Audit complete"))
                   ($assert ($str/contains? ($to_str call/messages) "count"))
-                  "(Outcome ^^done ^reply \"Both audits collected.\")")))))))
+                  "(Outcome ^^done ^reply \"Both audits collected.\")")))))
         (try
           (let admitted (submit_round controller "default" "parent-1" 1 "Run two independent audits."))
           (let result (await_round controller "default" admitted/id))
@@ -104,21 +103,20 @@
             (set_test_provider runtime (fn [call]
               (let metadata (require_record runtime/sessions call/session))
               (if (== metadata/kind "child")
-                (then
-                  (children .set (+ children/.get 1))
-                  "(Outcome ^^done ^reply \"unexpected child\")")
-                (else
+                (children .set (+ children/.get 1))
+                  "(Outcome ^^done ^reply \"unexpected child\")"
+                else
                   (let n (calls .swap (+ calls/.get 1)))
                   (if (> n 0) (return "(Outcome ^^done ^reply \"staging recovered\")"))
                   ($to_str "(delegate \"pending\" ^title \"Pending\" ^brief \"Must not start.\") "
                     "($fs/write_text \"staged.marker\" \"ready\") "
-                    (if (== mode "cancel") "($sleep 5000)" "(/ 1 0)"))))))
+                    (if (== mode "cancel") "($sleep 5000)" else "(/ 1 0)")))))
             (let receipt (submit_round controller "default" "staged" 1 "Stage a child."))
-            (if_yes (== mode "cancel")
-              (wait_for (fn [] ($fs/exists? $"${runtime/root}/staged.marker")) "Response never staged the child.")
-              (cancel_round controller "default" receipt/id))
+            (if (== mode "cancel")
+              (do (wait_for (fn [] ($fs/exists? $"${runtime/root}/staged.marker")) "Response never staged the child.")
+              (cancel_round controller "default" receipt/id)))
             (let final (await_round controller "default" receipt/id))
-            ($assert (== final/state (if (== mode "cancel") "cancelled" "done")))
+            ($assert (== final/state (if (== mode "cancel") "cancelled" else "done")))
             ($assert (== children/.get 0))
             (let blocks (delegation_blocks runtime/services/values/delegations "default"))
             ($assert (== blocks/records/.size 0))))))))
@@ -131,22 +129,21 @@
           (set_test_provider runtime (fn [call]
             (let metadata (require_record runtime/sessions call/session))
             (if (== metadata/kind "child")
-              (then
-                (if (== metadata/parent/delegation "a")
-                  (then ($sleep 20) "(Outcome ^^done ^reply \"Alpha result\")")
-                  (else ($sleep 700) "(Outcome ^^done ^reply \"Beta result\")")))
-              (else
+              (if (== metadata/parent/delegation "a")
+                  ($sleep 20) "(Outcome ^^done ^reply \"Alpha result\")"
+                  else ($sleep 700) "(Outcome ^^done ^reply \"Beta result\")")
+              else
                 (let n (calls .swap (+ calls/.get 1)))
                 (let last ($last call/messages))
                 (match n
-                  (when 0 "(delegate \"a\" ^title \"Alpha\" ^brief \"Return Alpha result.\") (delegate \"b\" ^title \"Beta\" ^brief \"Return Beta result.\") (Outcome ^wait \"any\")")
-                  (when 1
+                  when 0 "(delegate \"a\" ^title \"Alpha\" ^brief \"Return Alpha result.\") (delegate \"b\" ^title \"Beta\" ^brief \"Return Beta result.\") (Outcome ^wait \"any\")"
+                  when 1
                     ($assert ($str/contains? last/content "Alpha result"))
-                    "(Outcome ^wait \"any\")")
-                  (else
+                    "(Outcome ^wait \"any\")"
+                  else
                     ($assert ($str/contains? last/content "Beta result"))
                     ($assert (! ($str/contains? last/content "Alpha result")))
-                    "(Outcome ^^done ^reply \"collected once\")"))))))
+                    "(Outcome ^^done ^reply \"collected once\")"))))
           (let receipt (submit_round controller "default" "any" 1 "Run both tasks."))
           (let final (await_round controller "default" receipt/id))
           ($assert (== final/state "done") $"${final}")
@@ -161,16 +158,15 @@
           (set_test_provider runtime (fn [call]
             (let metadata (require_record runtime/sessions call/session))
             (if (== metadata/kind "child")
-              (then
-                (started/.get .push metadata/parent/session)
+              (started/.get .push metadata/parent/session)
                 (if (== metadata/parent/session "default") ($sleep 5000))
-                "(Outcome ^^done ^reply \"child done\")")
-              (elif (== call/session "default")
-                "(delegate \"a\" ^title \"A\" ^brief \"Wait.\") (delegate \"b\" ^title \"B\" ^brief \"Wait.\") (delegate \"c\" ^title \"C\" ^brief \"Wait.\") (Outcome ^wait \"all\")")
-              (else
+                "(Outcome ^^done ^reply \"child done\")"
+              elif (== call/session "default")
+                "(delegate \"a\" ^title \"A\" ^brief \"Wait.\") (delegate \"b\" ^title \"B\" ^brief \"Wait.\") (delegate \"c\" ^title \"C\" ^brief \"Wait.\") (Outcome ^wait \"all\")"
+              else
                 (let history ($to_str call/messages))
                 (if ($str/contains? history "child done") "(Outcome ^^done ^reply \"second parent finished\")"
-                  "(delegate \"other\" ^title \"Other\" ^brief \"Finish.\") (Outcome ^wait \"all\")")))))
+                  else "(delegate \"other\" ^title \"Other\" ^brief \"Finish.\") (Outcome ^wait \"all\")"))))
           (let first (submit_round controller "default" "cap-first" 1 "Start queued tasks."))
           (wait_for (fn [] (== started/.get/.size 1)) "First child did not start.")
           (create_session runtime/sessions ^id "second")
@@ -199,20 +195,19 @@
             (set_test_provider runtime (fn [call]
               (let metadata (require_record runtime/sessions call/session))
               (if (== metadata/kind "child")
-                (then
-                  ($sleep (if (== mode "unfinished") 400 20))
-                  "(Outcome ^^done ^reply \"Final child result\")")
-                (else
+                ($sleep (if (== mode "unfinished") 400 else 20))
+                  "(Outcome ^^done ^reply \"Final child result\")"
+                else
                   (let n (calls .swap (+ calls/.get 1)))
                   (match n
-                    (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Finish the audit.\") (Outcome ^prompt \"Continue coordinating.\")")
-                    (when 1
+                    when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Finish the audit.\") (Outcome ^prompt \"Continue coordinating.\")"
+                    when 1
                       (if (== mode "unseen") ($sleep 300))
-                      "(Outcome ^^done ^reply \"premature\")")
-                    (else
+                      "(Outcome ^^done ^reply \"premature\")"
+                    else
                       ($assert ($str/contains? ($to_str call/messages) "Final child result"))
                       ($assert ($str/contains? ($to_str call/messages) "final collection turn"))
-                      "(Outcome ^^done ^reply \"collected within budget\")"))))))
+                      "(Outcome ^^done ^reply \"collected within budget\")"))))
             (let receipt (submit_round controller "default" "drain" 1 "Coordinate the audit."))
             (let final (await_round controller "default" receipt/id))
             ($assert (== final/state "done") $"${final}")
@@ -233,8 +228,7 @@
             runtime (fn [call]
             (let metadata (require_record runtime/sessions call/session))
             (if (== metadata/kind "child")
-              (then
-                ($assert (== call/settings/model "cheap-test"))
+              ($assert (== call/settings/model "cheap-test"))
                 ($assert (== call/settings/effort "high"))
                 ($assert (== call/settings/window 64000))
                 ($assert (== call/settings/max_output 8192))
@@ -243,11 +237,11 @@
                 (child_sessions/.get .push call/session)
                 (let n (child_calls .swap (+ child_calls/.get 1)))
                 (if (== n 0)
-                  (then "(Outcome ^^done ^reply \"First audit complete\" ^result {^version 1})")
-                  (else
+                  "(Outcome ^^done ^reply \"First audit complete\" ^result {^version 1})"
+                  else
                     ($assert ($str/contains? ($to_str call/messages) "First audit complete"))
-                    "(Outcome ^^done ^reply \"Follow-up complete\" ^result {^version 2})")))
-              (else
+                    "(Outcome ^^done ^reply \"Follow-up complete\" ^result {^version 2})")
+              else
                 (if ($absent? parent_model/.get) (parent_model .set call/settings/model))
                 ($assert (== call/settings/model parent_model/.get))
                 ($assert (== call/settings/effort "low"))
@@ -255,11 +249,11 @@
                 ($assert (== call/settings/window 1000000))
                 (let n (parent_calls .swap (+ parent_calls/.get 1)))
                 (match n
-                  (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Audit auth routes.\" ^model \"cheap-test\") (Outcome ^wait \"all\")")
-                  (when 1 "(continue_delegation \"audit\" \"Also inspect websocket routes.\") (Outcome ^wait \"all\")")
-                  (else
+                  when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Audit auth routes.\" ^model \"cheap-test\") (Outcome ^wait \"all\")"
+                  when 1 "(continue_delegation \"audit\" \"Also inspect websocket routes.\") (Outcome ^wait \"all\")"
+                  else
                     ($assert ($str/contains? ($to_str call/messages) "Follow-up complete"))
-                    "(Outcome ^^done ^reply \"Both admissions collected\")"))))))
+                    "(Outcome ^^done ^reply \"Both admissions collected\")"))))
           (let receipt (submit_round controller "default" "continue" 1 "private-parent-marker: coordinate the audit."))
           (let final (await_round controller "default" receipt/id))
           ($assert (== final/state "done") $"${final}")
@@ -283,21 +277,20 @@
           (set_test_provider runtime (fn [call]
             (let metadata (require_record runtime/sessions call/session))
             (if (== metadata/kind "child")
-              (then
-                (let n (children .swap (+ children/.get 1)))
+              (let n (children .swap (+ children/.get 1)))
                 (if (== n 0)
-                  (then "(Outcome ^questions [{^id \"scope\" ^prompt \"Choose scope\" ^choices [\"web\" \"all\"]}])")
-                  (else
+                  "(Outcome ^questions [{^id \"scope\" ^prompt \"Choose scope\" ^choices [\"web\" \"all\"]}])"
+                  else
                     ($assert ($str/contains? ($to_str call/messages) "web"))
-                    "(Outcome ^^done ^reply \"Scope web complete\" ^result {^scope \"web\"})")))
-              (else
+                    "(Outcome ^^done ^reply \"Scope web complete\" ^result {^scope \"web\"})")
+              else
                 (let n (parents .swap (+ parents/.get 1)))
                 (match n
-                  (when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Ask which scope to inspect.\") (Outcome ^wait \"any\")")
-                  (when 1
+                  when 0 "(delegate \"audit\" ^title \"Audit\" ^brief \"Ask which scope to inspect.\") (Outcome ^wait \"any\")"
+                  when 1
                     ($assert ($str/contains? ($to_str call/messages) "Choose scope"))
-                    "(append_prompt \"answer\" (answer_delegation \"audit\" {^scope \"web\"})) (Outcome ^wait \"all\")")
-                  (else "(Outcome ^^done ^reply \"Question and result collected\")"))))))
+                    "(append_prompt \"answer\" (answer_delegation \"audit\" {^scope \"web\"})) (Outcome ^wait \"all\")"
+                  else "(Outcome ^^done ^reply \"Question and result collected\")"))))
           (let receipt (submit_round controller "default" "question" 1 "Coordinate a scoped audit."))
           (let final (await_round controller "default" receipt/id))
           ($assert (== final/state "done") $"${final}")
@@ -320,24 +313,22 @@
           (set_test_provider runtime (fn [call]
             (let metadata (require_record runtime/sessions call/session))
             (if (== metadata/kind "child")
-              (then
-                (if (== metadata/parent/session "blocker")
-                  (then
-                    (blocker .set true)
+              (if (== metadata/parent/session "blocker")
+                  (blocker .set true)
                     ($sleep 5000)
-                    "(Outcome ^^done ^reply \"blocker ended\")")
-                  (else
+                    "(Outcome ^^done ^reply \"blocker ended\")"
+                  else
                     (let n (children .swap (+ children/.get 1)))
                     (if (== n 0)
                       "(Outcome ^questions [{^id \"scope\" ^prompt \"Choose scope\"}])"
-                      "(Outcome ^^done ^reply \"Answered child completed\")"))))
-              (elif (== call/session "blocker")
-                "(delegate \"block\" ^title \"Block\" ^brief \"Hold a slot.\" ^timeout_ms 5000) (Outcome ^wait \"all\")")
-              (else
+                      else "(Outcome ^^done ^reply \"Answered child completed\")"))
+              elif (== call/session "blocker")
+                "(delegate \"block\" ^title \"Block\" ^brief \"Hold a slot.\" ^timeout_ms 5000) (Outcome ^wait \"all\")"
+              else
                 (let n (parents .swap (+ parents/.get 1)))
                 (if (== n 0)
                   "(delegate \"audit\" ^title \"Audit\" ^brief \"Ask which scope to inspect.\") (Outcome ^wait \"all\")"
-                  "(Outcome ^^done ^reply \"Child budget survived queueing\")")))))
+                  else "(Outcome ^^done ^reply \"Child budget survived queueing\")"))))
           (let receipt (submit_round controller "default" "queued-answer" 1 "Coordinate an audit."))
           (wait_for (fn []
             (let blocks (delegation_blocks runtime/services/values/delegations "default"))

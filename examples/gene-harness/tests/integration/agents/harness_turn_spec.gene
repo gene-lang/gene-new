@@ -23,7 +23,7 @@
                (quote (section (h3 "Preview ready"))))})))))))
 
 (fn publish_source [version]
-  ($to_str "(register_plugin " (if (> version 1) "^^replace " "")
+  ($to_str "(register_plugin " (if (> version 1) "^^replace " else "")
     "\"preview_probe\" " ($repl/format (source version)) ") (Outcome ^prompt \"inspect\")"))
 
 (describe "Harness UI publication feedback"
@@ -35,16 +35,16 @@
           (calls .set (+ calls/.get 1))
           (let latest ($last request/messages))
           (if (== calls/.get 1) (return (publish_source 1)))
-          (if_yes (== calls/.get 2)
-            ($assert ($str/contains? latest/content "render-broken") latest/content)
+          (if (== calls/.get 2)
+            (do ($assert ($str/contains? latest/content "render-broken") latest/content)
             ($assert ($str/contains? latest/content ".ui]") latest/content)
-            (return (publish_source 2)))
-          (if_yes (== calls/.get 3)
-            ($assert ($str/contains? latest/content "Preview ready") latest/content)
-            (return "(probe_save \"test\") (Outcome ^done true)"))
-          (if_yes (== calls/.get 4)
-            ($assert ($str/contains? latest/content "save-broken") latest/content)
-            (return (publish_source 3)))
+            (return (publish_source 2))))
+          (if (== calls/.get 3)
+            (do ($assert ($str/contains? latest/content "Preview ready") latest/content)
+            (return "(probe_save \"test\") (Outcome ^done true)")))
+          (if (== calls/.get 4)
+            (do ($assert ($str/contains? latest/content "save-broken") latest/content)
+            (return (publish_source 3))))
           "(Outcome ^done true ^reply (probe_save \"test\"))")))
         (try
           (let configure (/fn (row service/runtime/h "functions" "ui_configure")))

@@ -16,7 +16,7 @@
     (let provider (?? (model .get "provider") "Unavailable"))
     (let model_name (?? (model .get "model") "Unavailable"))
     (let selected (if (== context/session_id "") "No conversation selected"
-                    (?? context/session/status "unknown")))
+                    else (?? context/session/status "unknown")))
     `(section ^class_name "web_card" ^aria_label "Workspace pulse"
        (h3 "Workspace pulse")
        (small ^class_name "web_muted" "WORKSPACE")

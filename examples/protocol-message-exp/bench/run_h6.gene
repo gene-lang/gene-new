@@ -22,7 +22,7 @@
   (let median
     (if (== (// count 2) 0)
       (/ (+ ordered/%previous ordered/%middle) 2.0)
-      ordered/%middle))
+      else ordered/%middle))
   {^samples values ^median median ^min ordered/0 ^max ordered/%last})
 
 (let variants ["f" "f_typed" "p" "p_closure" "p_typed"])
@@ -32,7 +32,7 @@
   (let parts ((uptime/stdout .trim) .split "load averages:"))
   (if (> parts/.size 1)
     (($str/join ((parts .get 1) .split ",") " ") .trim)
-    (uptime/stdout .trim)))
+    else (uptime/stdout .trim)))
 
 (fn first_load [text]
   ($parse/parse_float ((text .split " ") .get 0)))
@@ -94,11 +94,11 @@
         ($assert (== row/result_sha256 reference) $"H6 result checksum changed for ${variant}")
         ($assert (== row/nodes 1000) "H6 traversal count changed")
         (if (== round 0)
-          (then (entry/rows .put variant {^per_traversal_us [] ^elapsed_ms []}))
-          (else
+          (entry/rows .put variant {^per_traversal_us [] ^elapsed_ms []})
+          else
             (let group (entry/rows .get variant))
             (group/per_traversal_us .push row/per_traversal_us)
-            (group/elapsed_ms .push row/elapsed_ms))))
+            (group/elapsed_ms .push row/elapsed_ms)))
       ($println $"round ${round} executable ${eindex} done (load ${load})")))
   # summaries: per executable, per variant, and paired ratios to F within a round
   (let summary [])

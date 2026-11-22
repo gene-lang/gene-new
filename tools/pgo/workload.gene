@@ -10,33 +10,33 @@
 (fn build_tree [depth : Int] : Any
   (if (== depth 0)
     nil
-    (Node ^value depth ^left (build_tree (- depth 1))
+    else (Node ^value depth ^left (build_tree (- depth 1))
           ^right (build_tree (- depth 1)))))
 
 (fn tree_sum [node]
   (if ($absent? node)
     0
-    (+ node/value (+ (tree_sum node/left) (tree_sum node/right)))))
+    else (+ node/value (+ (tree_sum node/left) (tree_sum node/right)))))
 
 (fn ackermann [m n]
   (if (== m 0)
     (+ n 1)
-    (if (== n 0)
+    else (if (== n 0)
       (ackermann (- m 1) 1)
-      (ackermann (- m 1) (ackermann m (- n 1))))))
+      else (ackermann (- m 1) (ackermann m (- n 1))))))
 
 # The shape the compiler fuses into its recursion instructions.
 (fn stair_ways [n : Int] : Int
-  (if (< n 2) 1 (+ (stair_ways (- n 1)) (stair_ways (- n 2)))))
+  (if (< n 2) 1 else (+ (stair_ways (- n 1)) (stair_ways (- n 2)))))
 
 (fn count_down [n : Int] : Int
-  (if (< n 1) 0 (+ 1 (count_down (- n 1)))))
+  (if (< n 1) 0 else (+ 1 (count_down (- n 1)))))
 
 (fn collatz_steps [start : Int] : Int
   (var n start)
   (var steps 0)
   (while (> n 1)
-    (if (== (// n 2) 0) (set n (/ n 2)) (set n (+ (* 3 n) 1)))
+    (if (== (// n 2) 0) (set n (/ n 2)) else (set n (+ (* 3 n) 1)))
     (set steps (+ steps 1)))
   steps)
 
@@ -51,7 +51,7 @@
 (fn render_rows [n]
   (let rows [])
   (repeat i in n
-    (let parity (if (== (// i 2) 0) "even" "odd"))
+    (let parity (if (== (// i 2) 0) "even" else "odd"))
     (rows .push $"row ${i}: $(* i i) ${parity}"))
   ($str/byte_size ($str/join rows "\n")))
 
@@ -67,7 +67,7 @@
   (message message [] : Str ^errors [] ^^override "overdrawn"))
 
 (fn withdraw [balance amount]
-  (if (> amount balance) (fail (Overdrawn ^amount amount)) (- balance amount)))
+  (if (> amount balance) (fail (Overdrawn ^amount amount)) else (- balance amount)))
 
 (fn ledger [n]
   (var balance 0)
@@ -111,7 +111,7 @@
              ^timeout_ms 600000}))
 
 (fn main [args] : Nil
-  (let scale (if (> ($size args/.body) 0) ($parse/parse_int args/.body/0) 4))
+  (let scale (if (> ($size args/.body) 0) ($parse/parse_int args/.body/0) else 4))
   (repeat round in 3
     (let plain (workload scale))
     (let limited ((budgeted (fn [] (workload scale)))))

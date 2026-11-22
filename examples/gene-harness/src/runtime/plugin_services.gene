@@ -48,7 +48,7 @@
           ^event {^stream stream ^seq envelope/seq}))
       envelope)
     ^state (fn [owner, scope, stream]
-      (if ($absent? events) nil (plugin_state events scope stream owner)))
+      (if ($absent? events) nil else (plugin_state events scope stream owner)))
     ^update_state (fn [owner, scope, stream, state_writer, value]
       (require_events events)
       (let writer ($thaw state_writer))
@@ -73,16 +73,16 @@
       (require_events events)
       (validate_record_name kind key)
       (let existed ($present? (core_state events "workspace" "workspace" (record_storage_key kind key))))
-      (if_yes existed
-        (record_core_state events "workspace" "workspace" "feature/record"
+      (if existed
+        (do (record_core_state events "workspace" "workspace" "feature/record"
           (record_storage_key kind key) nil)
-        (flush_event_store events))
+        (flush_event_store events)))
       existed)
     ^record (fn [kind, key]
       (validate_record_name kind key)
       (if ($absent? events) (return nil))
       (let stored (core_state events "workspace" "workspace" (record_storage_key kind key)))
-      (if ($absent? stored) nil stored/value))
+      (if ($absent? stored) nil else stored/value))
     ^records (fn [kind]
       (validate_record_name kind "-")
       (if ($absent? events) (return []))

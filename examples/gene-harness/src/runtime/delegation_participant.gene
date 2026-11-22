@@ -10,7 +10,7 @@
 (fn sourced_items [items]
   ($map items (fn [item]
     (if ($absent? item/delegation_source) item
-      (item .assoc "source" item/delegation_source)))))
+      else (item .assoc "source" item/delegation_source)))))
 
 (fn waiting_result [context, result]
   {^state "waiting" ^questions nil ^delegation_wait result/delegation_wait
@@ -86,10 +86,10 @@
   {^name "core/delegation" ^events ["round/saved" "round/closed" "round/answered" "round/outstanding" "host/stopping"]
    ^handle (fn [event]
      (match event/event ^!exhaustive
-       (when "round/saved" (note_delegation_round service event/session event/receipt) nil)
-       (when "round/closed" (close_delegation_owner service event/session event/round event/reason) nil)
-       (when "round/answered" (queue_delegation_answer service event/session event/receipt event/batch))
-       (when "round/outstanding" (> (/running (owned_delegation_counts service event/session event/round)) 0))
-       (when "host/stopping" (prepare_delegations_stop service []) nil)
-       (else nil)))})
+       when "round/saved" (note_delegation_round service event/session event/receipt) nil
+       when "round/closed" (close_delegation_owner service event/session event/round event/reason) nil
+       when "round/answered" (queue_delegation_answer service event/session event/receipt event/batch)
+       when "round/outstanding" (> (/running (owned_delegation_counts service event/session event/round)) 0)
+       when "host/stopping" (prepare_delegations_stop service []) nil
+       else nil))})
 

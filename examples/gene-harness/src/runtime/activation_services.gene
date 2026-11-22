@@ -36,10 +36,10 @@
   (let owners [])
   (let takeovers [])
   (for row in rows
-    (if_yes (== row/payload/name slot)
-      (if_not (owners .contains? row/owner) (owners .push row/owner))
+    (if (== row/payload/name slot)
+      (do (if_not (owners .contains? row/owner) (owners .push row/owner))
       (if (&& (== row/payload/takeover true) (! (takeovers .contains? row/owner)))
-        (takeovers .push row/owner))))
+        (takeovers .push row/owner)))))
   {^owners owners ^takeovers takeovers})
 
 # The holder of every claimed slot in `snapshot`, or nil for a conflict.
@@ -53,9 +53,9 @@
     (let prior (previous .get name))
     (holders .put name
       (if (== claims/takeovers/.size 1) claims/takeovers/0
-        (if (> claims/takeovers/.size 1) nil
-          (if (== claims/owners/.size 1) claims/owners/0
-            (if (&& ($present? prior) (claims/owners .contains? prior)) prior nil))))))
+        else (if (> claims/takeovers/.size 1) nil
+          else (if (== claims/owners/.size 1) claims/owners/0
+            else (if (&& ($present? prior) (claims/owners .contains? prior)) prior else nil))))))
   holders)
 
 (fn ^^private service_error [message : Str]
@@ -81,8 +81,7 @@
   # Only a waiting or quiesced service starts; a stopped one has retired.
   (let previous (record/state .swap "running"))
   (if (! (["waiting" "quiesced"] .contains? previous))
-    (then
-      (record/state .set previous)
+    (do (record/state .set previous)
       (return nil)))
   (try
     (record/task .set (spawn_effect_call record/effects $"service ${record/name}" record/thunk []))
@@ -94,15 +93,14 @@
 (fn ^^private quiesce_record [record]
   (let previous (record/state .swap "quiesced"))
   (if (!= previous "running")
-    (then
-      (record/state .set previous)
+    (do (record/state .set previous)
       (return nil)))
-  (if_yes ($present? record/quiesce)
+  (if ($present? record/quiesce)
     (match (supervised_call record/quiesce [] (default_execution_limits)) ^!exhaustive
-      (when (TaskOutcome/error error) (record/error .set ($to_str error)))
-      (when (TaskOutcome/fault fault) (let message fault/.message) (record/error .set ($to_str message)))
-      (when TaskOutcome/cancelled (record/error .set "quiesce exceeded its budget"))
-      (else nil)))
+      when (TaskOutcome/error error) (record/error .set ($to_str error))
+      when (TaskOutcome/fault fault) (let message fault/.message) (record/error .set ($to_str message))
+      when TaskOutcome/cancelled (record/error .set "quiesce exceeded its budget")
+      else nil))
   (let task record/task/.get)
   (if_not ($absent? task) task/.cancel)
   nil)
@@ -180,9 +178,9 @@
   (for record in (all_records services)
     (let item {^owner record/owner ^name record/name ^slot record/slot
       ^state record/state/.get ^error record/error/.get})
-    (if_yes ($present? record/slot)
-      (item .put "holder" (holders .get record/slot))
-      (item .put "conflict" (&& (holders .has_key? record/slot) ($absent? (holders .get record/slot)))))
+    (if ($present? record/slot)
+      (do (item .put "holder" (holders .get record/slot))
+      (item .put "conflict" (&& (holders .has_key? record/slot) ($absent? (holders .get record/slot))))))
     (out .push item))
   ($order/sort_by out (fn [item] $"${item/owner}/${item/name}")))
 

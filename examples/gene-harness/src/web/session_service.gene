@@ -106,9 +106,9 @@
 (type WorkspaceService ^props {^runtime Any ^epoch Str ^publisher Any ^revision Any ^closed Any ^offline Bool ^snapshot_jobs Any ^snapshot_versions Any ^browser_requests Any ^ui_audience Any? ^snapshot_audience Any? ^lifecycle Any? ^clients Any? ^client_requests Any?})
 
 (fn current_model_info [service, session : Str = ""]
-  (let metadata (if (== session "") (then nil) (else (require_record service/runtime/sessions session))))
-  (let loaded (if (== session "") (then nil) (else (load_session service/runtime/sessions session))))
-  (let round (if ($present? loaded) (then loaded/round/.get) (else nil)))
+  (let metadata (if (== session "") nil else (require_record service/runtime/sessions session)))
+  (let loaded (if (== session "") nil else (load_session service/runtime/sessions session)))
+  (let round (if ($present? loaded) loaded/round/.get else nil))
   (selection_view ^metadata metadata ^round round service/runtime (effective_config service/runtime)))
 
 (fn model_catalog [service]
@@ -141,18 +141,18 @@
   (if ($absent? contribution)
     (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (match action
-    (when "connect" (contribution/value/connect value account))
-    (when "status" (contribution/value/login_status value))
-    (when "cancel" (contribution/value/cancel_login value))
-    (else (fail (ServiceError ^code "invalid_request" ^_msg "Unknown sign-in action.")))))
+    when "connect" (contribution/value/connect value account)
+    when "status" (contribution/value/login_status value)
+    when "cancel" (contribution/value/cancel_login value)
+    else (fail (ServiceError ^code "invalid_request" ^_msg "Unknown sign-in action."))))
 
 (fn model_accounts [service, ^action action = nil, ^id id = nil]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
   (if ($absent? contribution)
     (fail (ServiceError ^code "unavailable" ^_msg "The Models contribution is disabled or unavailable.")))
   (if ($absent? action)
-    (then (contribution/value/accounts))
-    (else (contribution/value/account_action id action))))
+    (contribution/value/accounts)
+    else (contribution/value/account_action id action)))
 
 (fn model_login_callback [service, params]
   (let contribution (row service/runtime/h "seams" "models/catalog"))
@@ -239,18 +239,18 @@
     ^round_id (?? payload/round "")
     ^turn (?? payload/turn 0)
     ^role (if (== payload/initial true)
-      (then "user")
-      (elif (== event/type "console") "log")
-      (else "assistant"))
+      "user"
+      elif (== event/type "console") "log"
+      else "assistant")
     ^kind event/type
     ^phase (if (== event/type "turn/response")
-      (then "code")
-      (elif (&& (== event/type "turn/end") ($present? payload/text)) "turn/error")
-      (else event/type))
+      "code"
+      elif (&& (== event/type "turn/end") ($present? payload/text)) "turn/error"
+      else event/type)
     ^order (?? payload/at_ms event/seq)
-    ^text (if (== payload/initial true) (?? payload/settled text) text)
+    ^text (if (== payload/initial true) (?? payload/settled text) else text)
     ^audio_reply (?? payload/audio_reply nil)
-    ^speech (if (== event/type "reply") (?? payload/audio_reply (speech_text text)) "")
+    ^speech (if (== event/type "reply") (?? payload/audio_reply (speech_text text)) else "")
     ^media (?? payload/media [])
     ^late (== payload/late true)
     ^final (== payload/final true)
@@ -274,26 +274,26 @@
   (let record (event_record session event))
   (let cache service/browser_requests/.get)
   (let prior (cache .get session))
-  (if_yes (&& (== record/role "user")
+  (if (&& (== record/role "user")
     (> (?? record/for_turn 0) 0) ($present? record/initiator)
     (! ($str/starts_with? (?? record/initiator "") "continue:")))
-    (record .put "speaker" (initiating_label nil record))
+    (do (record .put "speaker" (initiating_label nil record))
     (cache .put session record)
-    (return record))
+    (return record)))
   (let receiver (?? record/for_turn 0))
-  (if_yes (> receiver 0)
-    (if (== record/at_limit true) (return nil))
+  (if (> receiver 0)
+    (do (if (== record/at_limit true) (return nil))
     (let same_owner (&& (== prior/round_id record/round_id) (== prior/turn receiver)
       (== prior/role "assistant")))
     # Current writers declare their receiving turn and combination. Keep only
     # the latest live request per active session; cold appends rebuild
     # provenance once from the durable stream.
-    (if_yes (&& ($present? prior) (== prior/round_id record/round_id)
+    (if (&& ($present? prior) (== prior/round_id record/round_id)
       (> event/seq ($parse/parse_int prior/seq))
       (|| (== record/combine "replace") (&& (== record/combine "append") same_owner)))
-      (let projected (project_request record receiver (if same_owner prior nil)))
+      (do (let projected (project_request record receiver (if same_owner prior else nil)))
       (cache .put session projected)
-      (return projected)))
+      (return projected)))))
   (let records [])
   (for source in (events_for service/runtime/events "session" session)
     (if (["turn/request" "turn/start" "turn/end"] .contains? source/type)
@@ -302,21 +302,21 @@
   (let projected (project_conversation records rounds/receipts))
   (let id $"${session}/${event/seq}")
   (for record in projected
-    (if_yes (|| (== record/id id)
+    (if (|| (== record/id id)
       (&& ($present? record/source_ids) (record/source_ids .contains? id)))
-      (cache .put session record) (return record)))
+      (do (cache .put session record) (return record))))
   nil)
 
 (fn publish_transcript [service, session : Str, event]
   (let kind event/type)
   (if (&& (== kind "reply") (== event/payload/synthetic true))
     (do (queue_snapshot service session) (return nil)))
-  (if_yes (== kind "delegation/state")
-    (let data event/payload/state/record)
+  (if (== kind "delegation/state")
+    (do (let data event/payload/state/record)
     (if_not ($absent? data)
       (if (== data/created_seq 0) (data .put "created_seq" event/seq))
       (publish_message service "delegation" session (delegation_block session data)))
-    (queue_snapshot service session))
+    (queue_snapshot service session)))
   (if (== kind "turn/request")
     (do (let request (browser_request service session event))
       (if_not ($absent? request) (publish_message service "turn" session request))))
@@ -324,7 +324,7 @@
     (publish_message service "turn" session (event_record session event)))
   (if (["reply" "console"] .contains? kind)
     (publish_message service kind session (event_record session event)))
-  (if_yes (&& (== kind "reply") (== event/payload/final true)
+  (if (&& (== kind "reply") (== event/payload/final true)
               ($absent? event/payload/audio_reply)
               (voice_output? service/runtime/services/values/voice session)
               (speech_needs_audio_reply? (?? event/payload/text "")))
@@ -338,8 +338,8 @@
 (fn command_input_record [session : Str, record]
   # Older receipts retain the parsed command, but not its original spelling.
   (let mode_input ($present? record/mode_instance))
-  (let text (if mode_input record/raw (?? record/input_text
-    ($to_str "/" record/name (if (== record/raw "") "" ($to_str " " record/raw))))))
+  (let text (if mode_input record/raw else (?? record/input_text
+    ($to_str "/" record/name (if (== record/raw "") "" else ($to_str " " record/raw))))))
   {^id $"${session}/${record/id}/input"
    ^seq ($to_str (?? record/start_seq 0)) ^round_id "" ^turn 0
    ^role "user" ^phase "prompt" ^kind "command/input"
@@ -381,7 +381,7 @@
       (try
         (if (snapshot_job_current? service session version)
           ($runtime/with_context {^log_target {^session session}} (fn []
-            (let safe (if ($absent? service/ui_audience) false (! (service/ui_audience))))
+            (let safe (if ($absent? service/ui_audience) false else (! (service/ui_audience))))
             (let data (snapshot ^!console ^safe safe service session))
             (if (snapshot_job_current? service session version)
               (publish_message service "snapshot" session data)))))
@@ -394,49 +394,48 @@
 
 (fn handle_harness_event [service, event]
   (match ^!exhaustive event
-    (when (changed : VoiceChanged)
-      (publish_message service "voice/state" "" (public_voice_state changed/state)))
-    (when (changed : ModelCatalogChanged)
+    when (changed : VoiceChanged)
+      (publish_message service "voice/state" "" (public_voice_state changed/state))
+    when (changed : ModelCatalogChanged)
       (try
         (let active (model_catalog service))
         (if (== active/id changed/revision)
           (publish_message service "models/catalog" "" {^revision changed/revision}))
-      catch Error nil))
-    (when (changed : ModeChanged)
-      (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode))
-    (when (changed : CompositionChanged)
-      (publish_message service "ui/state" "" (ui_status service/runtime)))
-    (when (changed : CardChanged)
-      (publish_message service "card" changed/session {^card changed/card ^event changed/event}))
-    (when (changed : WorkspaceManagerChanged)
-      (publish_message service "ui/state" "" (ui_status service/runtime)))
-    (when (request : AppearanceRequest)
-      (publish_message service "appearance_request" "" request/fields))
-    (when (changed : AppearanceChanged)
-      (publish_message service "appearance_changed" "" {}))
-    (when (changed : SettingsChanged)
+      catch Error nil)
+    when (changed : ModeChanged)
+      (publish_message ^reason changed/reason service "mode/state" changed/session changed/mode)
+    when (changed : CompositionChanged)
+      (publish_message service "ui/state" "" (ui_status service/runtime))
+    when (changed : CardChanged)
+      (publish_message service "card" changed/session {^card changed/card ^event changed/event})
+    when (changed : WorkspaceManagerChanged)
+      (publish_message service "ui/state" "" (ui_status service/runtime))
+    when (request : AppearanceRequest)
+      (publish_message service "appearance_request" "" request/fields)
+    when (changed : AppearanceChanged)
+      (publish_message service "appearance_changed" "" {})
+    when (changed : SettingsChanged)
       (apply_log_settings service/runtime)
       (publish_message service "settings/changed" ""
         {^scope changed/scope ^digest changed/digest ^keys changed/keys})
-      (publish_message service "ui/state" "" (ui_status service/runtime)))
-    (when (record : DurableRecord)
+      (publish_message service "ui/state" "" (ui_status service/runtime))
+    when (record : DurableRecord)
       (if (&& (== record/name "trace") (== record/envelope/payload/kind "channel/status"))
         (queue_snapshot service record/stream))
       (if (&& (== record/scope "workspace")
               (|| (== record/name "plugin/state") (== record/envelope/origin "plugin")))
         (publish_message service "ui/state" "" (ui_status service/runtime)))
-      (if (== record/scope "session") (publish_transcript service record/stream record/envelope)))
-    (when (changed : RoundChanged)
+      (if (== record/scope "session") (publish_transcript service record/stream record/envelope))
+    when (changed : RoundChanged)
       (if (["done" "failed" "paused" "cancelled" "interrupted" "recovery_required"] .contains? changed/receipt/state)
         (service/browser_requests/.get .delete changed/session))
       (publish_message service "round/state" changed/session (public_round service changed/session changed/receipt))
       (if (== changed/receipt/state "waiting")
         (publish_message service "questions" changed/session changed/receipt/questions))
-      (queue_snapshot service changed/session))
-    (when (changed : SessionChanged)
+      (queue_snapshot service changed/session)
+    when (changed : SessionChanged)
       (if (== changed/record/deleted true)
-        (then
-          (let versions service/snapshot_versions/.get)
+        (do (let versions service/snapshot_versions/.get)
           (versions .put changed/record/id (+ (?? (versions .get changed/record/id) 0) 1))
           (publish_message service "session/deleted" "" {^id changed/record/id})))
       (publish_message service "session/list" "" (list_sessions service))
@@ -444,13 +443,13 @@
         service
         "attention"
         ""
-        {^sessions (session_records ^^attention service/runtime/sessions)}))
-    (when (changed : CommandChanged)
+        {^sessions (session_records ^^attention service/runtime/sessions)})
+    when (changed : CommandChanged)
       (let record changed/record)
       (let session changed/session)
-      (if_yes (== record/ui_action true)
-        (publish_message service "ui/action" "" {^session session ^record record})
-        (return nil))
+      (if (== record/ui_action true)
+        (do (publish_message service "ui/action" "" {^session session ^record record})
+        (return nil)))
       (if ($present? record/raw)
         (publish_message service "turn" session (command_input_record session record)))
       (if ($present? record/text)
@@ -470,16 +469,16 @@
             ^text record/output
             ^!late
             ^!durable})
-        (publish_message service "command" session (public_command record)))
-      (if ($absent? record/text) (queue_snapshot service session))))
+        else (publish_message service "command" session (public_command record)))
+      (if ($absent? record/text) (queue_snapshot service session)))
   nil)
 
 (fn apply_log_settings [runtime] : Nil
   (try
     (let level (read_setting runtime "log_level"))
     (let levels (read_setting runtime "log_levels"))
-    (log_set_levels (if (== ($head level/value) Str) level/value "info")
-      (if (== ($head levels/value) Map) levels/value {}))
+    (log_set_levels (if (== ($head level/value) Str) level/value else "info")
+      (if (== ($head levels/value) Map) levels/value else {}))
     (log_refresh_redactions)
     catch Error nil))
 
@@ -513,7 +512,7 @@
     (if_not ($absent? service) (service/closed .set true))
     (if (|| ($absent? service) ($absent? service/lifecycle))
       (close_runtime runtime)
-      (close_session_lifecycle service/lifecycle))
+      else (close_session_lifecycle service/lifecycle))
     (fail original)))
 
 (fn row_voice [service]
@@ -547,7 +546,7 @@
   (let claim (claim_voice ^token (?? request/token "") service/runtime/services/values/voice session
     request/client_id (!= request/output false)))
   (if (&& (== claim/owner request/client_id) (== claim/session session))
-    claim (public_voice_state claim)))
+    claim else (public_voice_state claim)))
 
 (fn public_session_index [record]
   (let result ($thaw ($freeze_shallow record)))
@@ -562,12 +561,12 @@
     (if (>= results/.size limit) (break))
     (let shown (public_session_index record))
     (shown .put "slack_available" slack_available)
-    (if_yes (&& (== q "") ($absent? kind) ($absent? status) ($absent? attention)
+    (if (&& (== q "") ($absent? kind) ($absent? status) ($absent? attention)
                 ($absent? trigger) (== since "") (== until ""))
-      (let children [])
+      (do (let children [])
       (for child in (session_records ^kind "child" service/runtime/sessions)
         (if (== child/parent/session record/id) (children .push (public_session_index child))))
-      (shown .put "children" children))
+      (shown .put "children" children)))
     (results .push shown))
   {^sessions results ^needs_attention ($map (session_records ^^attention service/runtime/sessions) public_session_index) ^next ""})
 
@@ -624,7 +623,7 @@
     (fail (RoundError ^code "invalid_request" ^_msg "Attachments accompany chat messages, not slash commands.")))
   (if (== parsed/kind "command")
     (submit_command service/runtime/services/values/commands session text)
-    (submit_round ^model_settings model_settings ^media media service/runtime/services/values/controller session request_id sequence parsed/text)))
+    else (submit_round ^model_settings model_settings ^media media service/runtime/services/values/controller session request_id sequence parsed/text)))
 (fn command [service, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil, ^expected expected = nil, ^card card = nil]
   (if ($absent? card)
     (return (submit_command ^request_id request_id ^sequence sequence ^expected expected service/runtime/services/values/commands session text)))
@@ -679,9 +678,9 @@
 
 (fn request_receipt [service, session : Str, request_id : Str, kind : Str]
   (require_record service/runtime/sessions session)
-  (if_yes (== kind "command")
-    (let result (command_request_receipt service/runtime/services/values/commands session request_id))
-    (if_not ($absent? result) (return result)))
+  (if (== kind "command")
+    (do (let result (command_request_receipt service/runtime/services/values/commands session request_id))
+    (if_not ($absent? result) (return result))))
   (if (== kind "round")
     (for record in ((Path "receipts") (round_state service/runtime/services/values/controller session))
       (if (== record/request_id request_id) (return (public_round service session record)))))
@@ -692,22 +691,22 @@
 (fn public_round [service, session : Str, source]
   (if ($absent? source) (return nil))
   (let result ($thaw ($freeze source)))
-  (if_yes (continuable_round? result)
-    (let current (/round (load_session service/runtime/sessions session)))
+  (if (continuable_round? result)
+    (do (let current (/round (load_session service/runtime/sessions session)))
     (let successor (if ($present? source/continued_by)
-      (then (round_receipt service/runtime/services/values/controller session source/continued_by))
-      (else nil)))
+      (round_receipt service/runtime/services/values/controller session source/continued_by)
+      else nil))
     (var available (&& (== (/id current/.get) source/id)
       (|| ($absent? source/continued_by)
           (&& (== source/continuation_stop "failed") ($absent? successor)))
       (|| ($absent? source/continuation_stop) (== source/continuation_stop "failed"))))
-    (if_yes available
-      (let tail (pending_request service/runtime session))
+    (if available
+      (do (let tail (pending_request service/runtime session))
       (let reference (?? source/continuation/items_ref source/request_items_ref))
       (set available (&& ($present? reference) (== tail/round source/id)
         (== tail/turn source/last_turn)
-        (try (== ($head ($serde/read_data (read_body service/runtime reference))) List) catch Error false))))
-    (result .put "resumable" available))
+        (try (== ($head ($serde/read_data (read_body service/runtime reference))) List) catch Error false)))))
+    (result .put "resumable" available)))
   result)
 
 (fn receipt [service, session : Str, id : Str]
@@ -747,27 +746,27 @@
     (set cursor event/seq)
     (if (&& console (>= after 0) (<= event/seq after)) (continue))
     (if (&& console (>= before 0) (>= event/seq before)) (continue))
-    (if_yes (&& (== event/type "delegation/state") ($present? event/payload/state/summary))
-      (let state event/payload/state)
+    (if (&& (== event/type "delegation/state") ($present? event/payload/state/summary))
+      (do (let state event/payload/state)
       (records .push
         {^id $"${id}/delegation-update/${event/seq}" ^seq ($to_str event/seq)
          ^round_id state/round ^turn state/turn ^role "assistant"
          ^phase "delegation/update" ^kind "delegation/update" ^text state/summary
-         ^order state/at_ms ^^durable}))
+         ^order state/at_ms ^^durable})))
     (if (|| (["turn/response" "turn/request" "turn/patch" "reply"] .contains? event/type) (&& console (== event/type "console")) (&& (! console) (["turn/start" "turn/end"] .contains? event/type)) (&& (== event/type "turn/end") ($present? event/payload/text)))
       (records .push (event_record id event)))
     # A later definition of a card shows a short line where it happened.
-    (if_yes (== event/type "card/state")
-      (let card event/payload/state)
+    (if (== event/type "card/state")
+      (do (let card event/payload/state)
       (if (&& ($present? card) (== card/origin "model") (!= card/updated_turn card/turn))
         (records .push
           {^id $"${id}/card-update/${card/id}/${card/definition_revision}" ^seq ($to_str event/seq)
            ^round_id (?? card/round "") ^turn card/updated_turn ^role "assistant"
            ^phase "card/update" ^kind "card/update" ^text card/title ^card_id card/id
-           ^order (?? card/updated_ms event/seq) ^^durable})))
+           ^order (?? card/updated_ms event/seq) ^^durable}))))
     # Answered questions with views stay in the transcript, read-only.
-    (if_yes (== event/type "question/answered")
-      (let batch event/payload/state)
+    (if (== event/type "question/answered")
+      (do (let batch event/payload/state)
       (if (&& ($present? batch) (question_view? batch))
         (records .push
           {^id $"${id}/questions/${batch/id}" ^seq ($to_str event/seq)
@@ -776,7 +775,7 @@
            ^batch {^id batch/id ^questions batch/questions ^answers batch/answers
                    ^answer_source (?? batch/answer_source nil)
                    ^intent (?? batch/intent "continue")}
-           ^order (?? batch/answered_ms event/seq) ^^durable}))))
+           ^order (?? batch/answered_ms event/seq) ^^durable})))))
   (for card in (card_records service/runtime id)
     (let seq (?? card/created_seq 0))
     (if (&& (>= after 0) (<= seq after)) (continue))
@@ -795,7 +794,7 @@
     (if (&& (>= after 0) (<= seq after)) (continue))
     (if (&& (>= before 0) (>= seq before)) (continue))
     (records .push (command_input_record id record))
-    (if_yes (&& console (!= record/name "sh") (!= (?? record/output "") ""))
+    (if (&& console (!= record/name "sh") (!= (?? record/output "") ""))
       (records .push
         {
           ^id $"${id}/${record/id}/console"
@@ -844,12 +843,12 @@
     (if (>= i start) (page .push record))
     (set i (+ i 1)))
   (let browser (if console {^records page ^has_older (> start 0)}
-    (conversation_page (project_conversation ordered rounds/receipts) after before history_page_limit)))
+    else (conversation_page (project_conversation ordered rounds/receipts) after before history_page_limit)))
   {
     ^protocol protocol_version
     ^session (public_session service metadata)
     ^records browser/records
-    ^before_cursor (?? browser/before_cursor (if page/.empty? "" (/seq ($first page))))
+    ^before_cursor (?? browser/before_cursor (if page/.empty? "" else (/seq ($first page))))
     ^cursor ($to_str cursor)
     ^preview []
     ^has_older browser/has_older
@@ -863,11 +862,11 @@
     ^status (host_status ^session id ^safe safe service)
     ^questions (if (== metadata/status "waiting")
                  ((Path "questions") loaded/round/.get)
-                 nil)})
+                 else nil)})
 
 (fn web_components [service, session : Str]
-  (let metadata (if (== session "") nil (require_record service/runtime/sessions session)))
-  (let loaded (if (== session "") nil (load_session service/runtime/sessions session)))
+  (let metadata (if (== session "") nil else (require_record service/runtime/sessions session)))
+  (let loaded (if (== session "") nil else (load_session service/runtime/sessions session)))
   (let context
     ($freeze
       {
@@ -875,7 +874,7 @@
         ^session metadata
         ^round (if ($absent? loaded)
                  nil
-                 loaded/round/.get)
+                 else loaded/round/.get)
         ^workspace service/runtime/root
         ^model (current_model_info service session)
         ^sessions (session_records service/runtime/sessions)}))
@@ -890,7 +889,7 @@
       (let view
         (if ($absent? candidate/render)
           candidate/view
-          (render_component ^sidebar (== candidate/slot "conversation_sidebar")
+          else (render_component ^sidebar (== candidate/slot "conversation_sidebar")
             service/runtime/h candidate/render context)))
       (item .put "view" view)
     catch Error
@@ -927,11 +926,11 @@
   (let plugins [])
   (for plugin in composition/plugins
     (plugins .push {^id plugin/id ^state plugin/status}))
-  (let metadata (if (== session "") nil (require_record service/runtime/sessions session)))
+  (let metadata (if (== session "") nil else (require_record service/runtime/sessions session)))
   (let config (effective_config service/runtime))
-  (let current (if (== session "") (then nil) (else (load_session service/runtime/sessions session))))
-  (let round (if ($present? current) (then current/round/.get) (else nil)))
-  (let selection (if (["running" "waiting"] .contains? round/state) (then round/selection) (else nil)))
+  (let current (if (== session "") nil else (load_session service/runtime/sessions session)))
+  (let round (if ($present? current) current/round/.get else nil))
+  (let selection (if (["running" "waiting"] .contains? round/state) round/selection else nil))
   {
     ^protocol protocol_version
     ^epoch service/epoch
@@ -944,9 +943,9 @@
     ^keyboard (keyboard_bindings service/runtime)
     ^readiness (readiness_report ^selection selection service/runtime (session_settings metadata config))
     ^plugins plugins
-    ^web_components (if safe [] (web_components service session))
-    ^browser_clients (if safe [] (browser_client_descriptors service/runtime/h composition))
-    ^ui (if safe nil (ui_status service/runtime))
+    ^web_components (if safe [] else (web_components service session))
+    ^browser_clients (if safe [] else (browser_client_descriptors service/runtime/h composition))
+    ^ui (if safe nil else (ui_status service/runtime))
     ^commands commands
     ^offline service/offline
     ^workspace service/runtime/root
@@ -1073,8 +1072,8 @@
   (message workspaces [] : Any
     @doc "The workspaces under the manager root. The manager host adds live status; other hosts read the directory."
     (if ($present? self/service)
-      (then (manager_list self/service))
-      (else (workspace_directory_list self/workspaces_dir self/archive_dir))))
+      (manager_list self/service)
+      else (workspace_directory_list self/workspaces_dir self/archive_dir)))
   (message workspace [id : Str] : Any
     @doc "Inspect one workspace with startup diagnostics. Needs the manager host."
     (manager_inspect (require_live_manager self) id))
@@ -1381,8 +1380,8 @@
 (fn workspace_directory_list [workspaces_dir : Str, archive_dir : Str]
   (let names (fn [dir : Str]
     (if ($fs/exists? dir)
-      (then ($filter ($fs/list_dir dir) (fn [name] (!= name ".DS_Store"))))
-      (else []))))
+      ($filter ($fs/list_dir dir) (fn [name] (!= name ".DS_Store")))
+      else [])))
   {^workspaces ($map (names workspaces_dir)
      (fn [name] {^id name ^name name ^dir ($path/join workspaces_dir name) ^status "unknown"}))
    ^archived (names archive_dir)
@@ -1402,11 +1401,11 @@
 
 (fn install_host_objects [runtime, launch]
   (let live runtime/services/values/manager)
-  (let root (if ($present? live) (then runtime/root)
-    (else (try (manager_root_path ^explicit (?? launch/root nil)) catch Error ""))))
+  (let root (if ($present? live) runtime/root
+    else (try (manager_root_path ^explicit (?? launch/root nil)) catch Error "")))
   (let manager (HarnessManager ^runtime runtime ^root root
-    ^workspaces_dir (if (== root "") "" ($path/join root "workspaces"))
-    ^archive_dir (if (== root "") "" ($path/join root "archive"))
+    ^workspaces_dir (if (== root "") "" else ($path/join root "workspaces"))
+    ^archive_dir (if (== root "") "" else ($path/join root "archive"))
     ^service live))
   (let workspace (HarnessWorkspace ^runtime runtime ^root runtime/root ^state_root runtime/state_root
     ^service ($cell nil) ^h runtime/h ^workspace runtime/workspace ^profile runtime/profile

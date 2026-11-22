@@ -13,12 +13,12 @@
   # Operator evaluations also own a turn-shaped execution scope for media and
   # queued publication. That scope does not make their source model-authored.
   (let command ($present? context/command))
-  (let turn (if command nil context/turn))
+  (let turn (if command nil else context/turn))
   (let result
     {^kind (if command
-      (then "command")
-      (elif ($absent? turn) "direct")
-      (else "model"))})
+      "command"
+      elif ($absent? turn) "direct"
+      else "model")})
   (if (&& (== ($head context/session) Str) (!= context/session ""))
     (result .put "session" context/session))
   (if_not ($absent? turn/turn) (result .put "turn" ($to_str turn/turn)))
@@ -28,7 +28,7 @@
   (if ($absent? entry/module_digest)
     (return {^created_in nil ^source_origin nil}))
   {^created_in (session_reference entry/created_in)
-   ^source_origin (if (== ($head entry/source_origin) Map) entry/source_origin nil)})
+   ^source_origin (if (== ($head entry/source_origin) Map) entry/source_origin else nil)})
 
 # Called with the entry that actually exists at publication (or at a plan's
 # validated base). A later replacement must not become the original creation.
@@ -37,7 +37,7 @@
   (let creation
     (if ($absent? previous/module_digest)
       (session_reference entry/source_origin)
-      (session_reference previous/created_in)))
+      else (session_reference previous/created_in)))
   (if_not ($absent? creation) (entry .put "created_in" creation))
   entry)
 

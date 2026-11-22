@@ -63,16 +63,16 @@
 
 (fn default_level [type : Str] : Str
   (let entry (core_entry type))
-  (if ($present? entry) (?? entry/level "info") "info"))
+  (if ($present? entry) (?? entry/level "info") else "info"))
 
 (fn ^^private required_targets [type : Str] : (List Str)
   (if (plugin_type? type) (return ["plugin"]))
   (let entry (core_entry type))
-  (if ($present? entry) (?? entry/target []) []))
+  (if ($present? entry) (?? entry/target []) else []))
 
 (fn ^^private one_of_targets [type : Str] : (List Str)
   (let entry (core_entry type))
-  (if ($present? entry) (?? entry/one_of []) []))
+  (if ($present? entry) (?? entry/one_of []) else []))
 
 # The first missing required key, or a description of the missing alternative.
 (fn missing_target [type : Str, target] : Str

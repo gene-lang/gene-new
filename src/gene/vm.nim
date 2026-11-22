@@ -10506,7 +10506,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     """, "<builtin collection callback>").functions[0]
   app.sortCallbackTemplate = compileSource("""
     (fn sort [source key_fn prepare next_pair compare choose finish]
-      (for value in source (prepare (if key_fn (key_fn value) value)))
+      (for value in source (prepare (if key_fn (key_fn value) else value)))
       (var pair (next_pair))
       (while pair
         (choose (compare pair/0 pair/1))
