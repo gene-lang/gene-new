@@ -37,9 +37,9 @@
         (var path "")
         (if mac
           (set path (($str/split text " ") .first))
-          else (then
-            (let parts ($str/split text "=> "))
-            (if (== parts/.size 2) (set path (($str/split parts/1 " ") .first)))))
+        else
+          (let parts ($str/split text "=> "))
+          (if (== parts/.size 2) (set path (($str/split parts/1 " ") .first))))
         (if (&& ($str/starts_with? path "/") (! ($str/ends_with? path ":")) (! ($has_key? seen path)))
           (if ($fs/exists? path)
             (records .push [path ($crypto/sha256 ($fs/read_bytes path))])
