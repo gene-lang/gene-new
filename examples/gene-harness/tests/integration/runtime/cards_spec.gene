@@ -173,8 +173,9 @@
         (let controller (test_controller runtime (fn [request]
           (let response (base request))
           (if (== request/turn 2)
-            (do (entered .set true)
-            (while (! release/.get) ($sleep 10))))
+            (entered .set true)
+            (while (! release/.get)
+              ($sleep 10)))
           response)))
         (try
           (let admitted (submit_round controller "default" "r1" 1 "make a card"))
@@ -360,8 +361,9 @@
         (let controller (test_controller runtime (fn [request]
           (if (== request/turn 1)
             "(Outcome ^questions [{^id \"q\" ^kind \"slow_kind\" ^prompt \"Pick\" ^choices [\"a\"]}])"
-            else (do (seen .set ($to_str (/content ($last request/messages))))
-              "(Outcome ^^done ^reply \"done\")")))))
+          else
+            (seen .set ($to_str ((Path "content") ($last request/messages))))
+            "(Outcome ^^done ^reply \"done\")"))))
         (try
           (let admitted (submit_round controller "default" "r1" 1 "ask"))
           (finish controller admitted/id)

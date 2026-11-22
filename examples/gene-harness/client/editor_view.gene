@@ -96,18 +96,15 @@
   (set view/drafts/%id value)
   (var encoded ($json/stringify value))
   (if (> ($str/byte_size encoded) 262144)
-    (do
-      (storage_remove (draft_key view id))
-      (if (! view/storage_warned)
-        (do
-          (set view/storage_warned true)
-          (say view "This draft is too large to recover after a reload; it is kept in this tab only.")))
-      (return)))
+    (storage_remove (draft_key view id))
+    (if (! view/storage_warned)
+      (set view/storage_warned true)
+      (say view "This draft is too large to recover after a reload; it is kept in this tab only."))
+    (return))
   (if (! (storage_set (draft_key view id) encoded))
     (if (! view/storage_warned)
-      (do
-        (set view/storage_warned true)
-        (say view "This tab cannot store drafts; the draft is kept in memory until the page closes.")))))
+      (set view/storage_warned true)
+      (say view "This tab cannot store drafts; the draft is kept in memory until the page closes."))))
 
 (fn draft_delete [view : EditorView, id : Str] : Nil
   (set view/drafts/%id nil)
@@ -150,27 +147,28 @@
 (fn editor_event [view : EditorView, event : Any] : Nil
   (var kind (text_of event/type ""))
   (if (== kind "selection")
-    (do
-      (set view/selection event)
-      (var shown_path (text_of event/path ""))
-      (say view
-        (if (flag_of event/stale)
-          "Selection is from an older draft; wait for analysis."
-          else $"Selected ${shown_path} @${($to_str (int_of event/start_utf16))}."))
-      (update_attach view))
-    else (if (== kind "dirty")
-      (do
-        (set view/dirty (flag_of event/dirty))
-        (update_attach view))
-      else (if (== kind "save")
-        (do
-          (set view/dirty (! (flag_of event/ok)))
-          (if (flag_of event/ok)
-            (do
-              (var revision (text_of event/revision ""))
-              (say view $"Saved revision ${revision}."))
-            else (say view (text_of event/message "The save did not complete.")))
-          (update_attach view))))))
+    (set view/selection event)
+    (var shown_path (text_of event/path ""))
+    (say
+      view
+      (if (flag_of event/stale)
+        "Selection is from an older draft; wait for analysis."
+      else
+        $"Selected ${shown_path} @${($to_str (int_of event/start_utf16))}."))
+    (update_attach view)
+  else
+    (if (== kind "dirty")
+      (set view/dirty (flag_of event/dirty))
+      (update_attach view)
+    else
+      (if (== kind "save")
+        (set view/dirty (! (flag_of event/ok)))
+        (if (flag_of event/ok)
+          (var revision (text_of event/revision ""))
+          (say view $"Saved revision ${revision}.")
+        else
+          (say view (text_of event/message "The save did not complete.")))
+        (update_attach view)))))
 
 # ---------------------------------------------------------------------------
 # Source document
@@ -218,9 +216,12 @@
   editor)
 
 (fn open_path [view : EditorView, path : Str] : Nil
-  (if (== path "") (do (say view "Choose a workspace file to open.") (return)))
+  (if (== path "")
+    (say view "Choose a workspace file to open.")
+    (return))
   (if (! view/available)
-    (do (say view "Editor unavailable — enable the editor plugin to open files.") (return)))
+    (say view "Editor unavailable — enable the editor plugin to open files.")
+    (return))
   (set view/path path)
   ($dom/set_input_value view/path_input path)
   (say view "Opening…")
@@ -229,7 +230,8 @@
     (fn [status : Int, data : Any] : Nil
       (if view/disposed (return))
       (if (!= status 200)
-        (do (say view (text_of data/message "The file could not be opened.")) (return)))
+        (say view (text_of data/message "The file could not be opened."))
+        (return))
       (var payload : Any data/document)
       (var document
         (editor_document (text_of payload/id path) (text_of payload/name path)
@@ -242,7 +244,9 @@
       (set document/reason (text_of payload/reason ""))
       (if ($absent? view/source)
         (set view/source (mount_editor view/source_root document (services view)))
-        else (do (var target : Editor (editor_of view)) (target/open document)))
+      else
+        (var target : Editor (editor_of view))
+        (target/open document))
       ($dom/set_text view/title $"Gene editor · ${(text_of payload/name path)}")
       (set view/selection nil)
       (if (flag_of payload/readonly)
@@ -279,12 +283,9 @@
               ($absent? view/log_view))
         (return))
       (if (!= status 200)
-        (do
-          (say view (text_of data/message "The host log could not be read."))
-          ($time/after 3000.0
-            (fn [] : Nil
-              (if (== generation view/generation) (poll_log view))))
-          (return)))
+        (say view (text_of data/message "The host log could not be read."))
+        ($time/after 3000.0 (fn [] : Nil (if (== generation view/generation) (poll_log view))))
+        (return))
       (var lines : (List Str) [])
       (var raw_lines : Any data/lines)
       (if ($present? raw_lines) (set lines raw_lines))
@@ -292,11 +293,11 @@
       (var state (text_of data/state "ok"))
       (var cursor (text_of data/cursor ""))
       (if (|| (> ($size lines) 0) (!= gap ""))
-        (do
-          (var log_target (log_editor_of view))
-          (log_target/append_log {^lines lines ^gap gap ^reset false})))
+        (var log_target (log_editor_of view))
+        (log_target/append_log {^lines lines ^gap gap ^!reset}))
       (if (!= cursor "")
-        (do (set view/cursor cursor) (persist_state view)))
+        (set view/cursor cursor)
+        (persist_state view))
       (if (!= gap "") (say view $"host log: ${gap}"))
       (if (== state "absent") (say view (text_of data/message "No retained host log yet.")))
       (if (== state "unreadable") (say view (text_of data/message "The host log is unreadable.")))
@@ -309,10 +310,9 @@
   (set view/generation (+ view/generation 1))
   (set view/cursor "")
   (if ($present? view/log_view)
-    (do
-      (var editor (log_editor_of view))
-      (let no_lines : (List Str) [])
-      (editor/append_log {^lines no_lines ^gap "" ^reset true})))
+    (var editor (log_editor_of view))
+    (let no_lines : (List Str) [])
+    (editor/append_log {^lines no_lines ^gap "" ^^reset}))
   (persist_state view)
   (if (== view/tab "logs") (poll_log view))
   nil)
@@ -326,14 +326,13 @@
   (set view/log_root/hidden false)
   (set view/generation (+ view/generation 1))
   (if (! view/available)
-    (do (say view "Editor unavailable — enable the editor plugin to read logs.")
-        (update_attach view)
-        (return)))
+    (say view "Editor unavailable — enable the editor plugin to read logs.")
+    (update_attach view)
+    (return))
   (if ($absent? view/log_view)
-    (do
-      (var document (editor_document "host.log" "Host log" ""))
-      (set document/kind "log")
-      (set view/log_view (mount_editor view/log_root document (services view)))))
+    (var document (editor_document "host.log" "Host log" ""))
+    (set document/kind "log")
+    (set view/log_view (mount_editor view/log_root document (services view))))
   (say view "Reading Harness host log…")
   (persist_state view)
   (poll_log view))
@@ -356,60 +355,77 @@
 
 (fn attach [view : EditorView] : Nil
   (if ($absent? view/bridge/attach)
-    (do (say view "This host cannot stage attachments from a view.") (return)))
+    (say view "This host cannot stage attachments from a view.")
+    (return))
   (var stage : (Fn [Str] Bool) view/bridge/attach)
   (if (== view/tab "source")
-    (do
-      (var selection : Any view/selection)
-      (if ($absent? selection)
-        (do (say view "Select a form in the editor first.") (return)))
-      (var path (text_of selection/path view/path))
-      (var revision (text_of selection/revision ""))
-      (var start (int_of selection/start_byte))
-      (var finish (int_of selection/end_byte start))
-      (bridge_call view "POST" $"${(api_root)}/p/editor/selection"
-        {^path path ^revision revision ^start_byte start ^end_byte finish}
-        (fn [status : Int, data : Any] : Nil
-          (if view/disposed (return))
-          (if (!= status 200)
-            (do (say view (text_of data/message "The selection could not be verified.")) (return)))
-          (if (flag_of data/changed)
-            (do (say view "The saved file changed since this selection; reopen and select again.") (return)))
-          (if (stage (selection_prompt path (text_of data/revision revision)
-                       start finish (text_of data/text "")))
-            (say view "Saved selection attached to the composer.")
-            else (say view "The composer is not accepting attachments right now.")))))
-    else (do
-      (if ($absent? view/log_view)
-        (do (say view "Open the Logs tab first.") (return)))
-      (var log_target (log_editor_of view))
-      (var body (log_target/log_text))
-      (if (== body "")
-        (do (say view "No log lines are loaded yet.") (return)))
-      (var lines (str/split body "\n"))
-      (var count ($size lines))
-      (var kept : (List Str) [])
-      (var total 0)
-      (var first count)
-      (var index (- count 1))
-      (var done false)
-      (while (&& (>= index 0) (! done))
-        (var line lines/%index)
-        (var cost (+ ($str/byte_size line) 1))
-        (if (|| (>= (- count index) 80) (> (+ total cost) 16384))
-          (set done true)
-          else (do
-            (set total (+ total cost))
-            (set first index)
-            (set index (- index 1)))))
-      (set index first)
-      (while (< index count)
-        (kept .push lines/%index)
-        (set index (+ index 1)))
-      (var body_text (str/join kept "\n"))
-      (if (stage $"[Harness host log: last ${($size kept)} line(s), redacted]\n```\n${body_text}\n```")
-        (say view $"Attached ${($size kept)} redacted log line(s).")
-        else (say view "The composer is not accepting attachments right now.")))))
+    (var selection : Any view/selection)
+    (if ($absent? selection)
+      (say view "Select a form in the editor first.")
+      (return))
+    (var path (text_of selection/path view/path))
+    (var revision (text_of selection/revision ""))
+    (var start (int_of selection/start_byte))
+    (var finish (int_of selection/end_byte start))
+    (bridge_call
+      view
+      "POST"
+      $"${(api_root)}/p/editor/selection"
+      {^path path ^revision revision ^start_byte start ^end_byte finish}
+      (fn [status : Int, data : Any] : Nil
+        (if view/disposed (return))
+        (if (!= status 200)
+          (say view (text_of data/message "The selection could not be verified."))
+          (return))
+        (if (flag_of data/changed)
+          (say view "The saved file changed since this selection; reopen and select again.")
+          (return))
+        (if (stage (selection_prompt path (text_of data/revision revision) start finish (text_of data/text "")))
+          (say view "Saved selection attached to the composer.")
+        else
+          (say view "The composer is not accepting attachments right now."))))
+  else
+    (if ($absent? view/log_view)
+      (say view "Open the Logs tab first.")
+      (return))
+    (var log_target (log_editor_of view))
+    (var body (log_target/log_text))
+    (if (== body "")
+      (say view "No log lines are loaded yet.")
+      (return))
+    (var lines
+      (str/split
+        body
+        """
+"""))
+    (var count ($size lines))
+    (var kept : (List Str) [])
+    (var total 0)
+    (var first count)
+    (var index (- count 1))
+    (var done false)
+    (while (&& (>= index 0) (! done))
+      (var line lines/%index)
+      (var cost (+ ($str/byte_size line) 1))
+      (if (|| (>= (- count index) 80) (> (+ total cost) 16384))
+        (set done true)
+      else
+        (set total (+ total cost))
+        (set first index)
+        (set index (- index 1))))
+    (set index first)
+    (while (< index count)
+      (kept .push lines/%index)
+      (set index (+ index 1)))
+    (var body_text
+      (str/join
+        kept
+        """
+"""))
+    (if (stage ($to_str "[Harness host log: last " ($size kept) " line(s), redacted]\n```\n" body_text "\n```"))
+      (say view $"Attached ${($size kept)} redacted log line(s).")
+    else
+      (say view "The composer is not accepting attachments right now."))))
 
 # ---------------------------------------------------------------------------
 # Availability, keys, mount
@@ -420,17 +436,14 @@
   (var now (available_plugins? status))
   (set view/available now)
   (if (&& was (! now))
-    (do
-      (say view "Editor unavailable — the editor plugin is disabled. Drafts are kept.")
-      (set view/generation (+ view/generation 1))))
+    (say view "Editor unavailable — the editor plugin is disabled. Drafts are kept.")
+    (set view/generation (+ view/generation 1)))
   (if (&& (! was) now)
-    (do
-      (say view "Editor available.")
-      (if ($present? view/source)
-        (do
-          (var target (editor_of view))
-          (target/refresh)))
-      (if (== view/tab "logs") (poll_log view))))
+    (say view "Editor available.")
+    (if ($present? view/source)
+      (var target (editor_of view))
+      (target/refresh))
+    (if (== view/tab "logs") (poll_log view)))
   (update_attach view))
 
 (fn view_key [view : EditorView, event : Any] : Bool
@@ -450,10 +463,12 @@
   (set view/generation (+ view/generation 1))
   (var source : Any view/source)
   (if ($present? source)
-    (do (var target : Editor source) (target/dispose)))
+    (var target : Editor source)
+    (target/dispose))
   (var logs : Any view/log_view)
   (if ($present? logs)
-    (do (var log_target : Editor logs) (log_target/dispose)))
+    (var log_target : Editor logs)
+    (log_target/dispose))
   (persist_state view))
 
 (fn bridge_call_state [bridge : Any] : Any
@@ -564,13 +579,15 @@
   ($dom/set_input_value log_level (text_of saved/log_level ""))
   ($dom/set_input_value log_session (text_of saved/log_session ""))
   (if (!= view/path "")
-    (do ($dom/set_text view/title $"Gene editor · ${view/path}") (open_path view view/path)))
+    ($dom/set_text view/title $"Gene editor · ${view/path}")
+    (open_path view view/path))
   ($dom/add_event_listener open_button "click"
     (fn [event : Any] : Nil (open_path view ($dom/input_value path_input))))
   ($dom/add_event_listener path_input "keydown"
     (fn [event : Any] : Nil
       (if (== ($event/key event) "Enter")
-        (do ($dom/prevent_default event) (open_path view ($dom/input_value path_input))))))
+        ($dom/prevent_default event)
+        (open_path view ($dom/input_value path_input)))))
   ($dom/add_event_listener attach_button "click"
     (fn [event : Any] : Nil (attach view)))
   ($dom/add_event_listener tab_source "click"

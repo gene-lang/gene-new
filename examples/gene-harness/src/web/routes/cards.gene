@@ -6,10 +6,9 @@
 (fn cards_request [context, request, parts]
   (let host context/host)
   (if (session_path? parts)
-    (do (let id parts/4)
+    (let id parts/4)
     (if (&& (== parts/.size 8) (== parts/5 "cards") (== parts/7 "actions") (== request/method "POST"))
       (return (response 200 (session_card_action host id parts/6 (request_data request)))))
     (if (&& (== parts/.size 7) (== parts/5 "card-actions") (== request/method "GET"))
       (return (response 200 (session_card_receipt host id parts/6)))))
-  )
   nil)

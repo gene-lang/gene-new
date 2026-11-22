@@ -80,53 +80,79 @@
         # "missing helper" browser scenario, so this drops to the build checks.
         (let viewer ($path/join ($path/parent ($os/executable_path)) "gene-viewer"))
         (if ($fs/exists? viewer)
-          (do
-            (let draft ($path/join workspace "draft.gene"))
-            ($fs/write_text draft "(fn 🙂 [x] x")
-            (let analysis (await ($os/exec_async ^timeout_ms 20000 ^max_bytes 4194304
-              viewer "--machine" "analyze" "--name" "draft.gene" "--version" "3"
-              "--text-file" draft "--select-utf16" "4")))
-            ($assert (== analysis/status 0)
-              $"gene-viewer analyze failed: {analysis/stderr}")
-            (let reply (parse analysis/stdout))
-            ($assert (== reply/version 3) "the helper echoes the draft version")
-            ($assert (== reply/ok true) "an unfinished buffer still indexes")
-            ($assert (== reply/parsed false) "the unfinished buffer does not parse")
-            ($assert (== reply/partial true) "the unfinished buffer is partial")
-            ($assert (> ($size reply/outline) 0) "the outline keeps the declaration")
-            ($assert (== reply/outline/0/closed false) "the declaration is marked open")
-            ($assert (== reply/selected/found true) "the caret selects a form")
-            ($assert (== reply/selected/startByte 0) "the selection starts at byte zero")
-            ($assert (== reply/selected/endByte 14) "the selection ends after the emoji form")
-            ($assert (== reply/selected/startUtf16 0) "UTF-16 start matches")
-            ($assert (== reply/selected/endUtf16 12)
-              "UTF-16 offsets count the supplementary character as two units")
-            # A lexical error is the stale-view signal: no outline for the text.
-            (let broken ($path/join workspace "broken.gene"))
-            ($fs/write_text broken "(fn broken [] \"unterminated)")
-            (let broken_run
-              (await ($os/exec_async ^timeout_ms 20000 ^max_bytes 4194304
-                viewer "--machine" "analyze" "--text-file" broken)))
-            ($assert (== broken_run/status 0)
-              $"broken analyze failed: {broken_run/stdout}{broken_run/stderr}")
-            (let broken_reply (parse broken_run/stdout))
-            ($assert (== broken_reply/ok false)
-              "a lexical error reports ok false")
-            ($assert (== ($size broken_reply/outline) 0)
-              "a lexical error reports no outline")
-            # Formatting goes through the same tool and the existing formatter.
-            (let unformatted ($path/join workspace "unformatted.gene"))
-            ($fs/write_text unformatted "(fn  f[x]x)")
-            (let format_run
-              (await ($os/exec_async ^timeout_ms 20000 ^max_bytes 4194304
-                viewer "--machine" "format" "--text-file" unformatted)))
-            ($assert (== format_run/status 0)
-              $"format failed: {format_run/stdout}{format_run/stderr}")
-            (let formatted (parse format_run/stdout))
-            ($assert (== formatted/ok true) "format succeeds")
-            ($assert (== formatted/changed true) "format reports a change")
-            ($assert (== formatted/text "(fn f [x]\n  x)\n")
-              $"unexpected formatted text: {formatted/text}"))
-          else ($println "gene-viewer is not built here; skipping the helper checks"))))))
+          (let draft ($path/join workspace "draft.gene"))
+          ($fs/write_text draft "(fn 🙂 [x] x")
+          (let analysis
+            (await
+              ($os/exec_async ^timeout_ms 20000 ^max_bytes 4194304
+                viewer
+                "--machine"
+                "analyze"
+                "--name"
+                "draft.gene"
+                "--version"
+                "3"
+                "--text-file"
+                draft
+                "--select-utf16"
+                "4")))
+          ($assert (== analysis/status 0) $"gene-viewer analyze failed: {analysis/stderr}")
+          (let reply (parse analysis/stdout))
+          ($assert (== reply/version 3) "the helper echoes the draft version")
+          ($assert (== reply/ok true) "an unfinished buffer still indexes")
+          ($assert (== reply/parsed false) "the unfinished buffer does not parse")
+          ($assert (== reply/partial true) "the unfinished buffer is partial")
+          ($assert (> ($size reply/outline) 0) "the outline keeps the declaration")
+          ($assert (== reply/outline/0/closed false) "the declaration is marked open")
+          ($assert (== reply/selected/found true) "the caret selects a form")
+          ($assert (== reply/selected/startByte 0) "the selection starts at byte zero")
+          ($assert (== reply/selected/endByte 14) "the selection ends after the emoji form")
+          ($assert (== reply/selected/startUtf16 0) "UTF-16 start matches")
+          ($assert
+            (== reply/selected/endUtf16 12)
+            "UTF-16 offsets count the supplementary character as two units")
+          # A lexical error is the stale-view signal: no outline for the text.
+          (let broken ($path/join workspace "broken.gene"))
+          ($fs/write_text broken "(fn broken [] \"unterminated)")
+          (let broken_run
+            (await
+              ($os/exec_async ^timeout_ms 20000 ^max_bytes 4194304
+                viewer
+                "--machine"
+                "analyze"
+                "--text-file"
+                broken)))
+          ($assert
+            (== broken_run/status 0)
+            $"broken analyze failed: {broken_run/stdout}{broken_run/stderr}")
+          (let broken_reply (parse broken_run/stdout))
+          ($assert (== broken_reply/ok false) "a lexical error reports ok false")
+          ($assert (== ($size broken_reply/outline) 0) "a lexical error reports no outline")
+          # Formatting goes through the same tool and the existing formatter.
+          (let unformatted ($path/join workspace "unformatted.gene"))
+          ($fs/write_text unformatted "(fn  f[x]x)")
+          (let format_run
+            (await
+              ($os/exec_async ^timeout_ms 20000 ^max_bytes 4194304
+                viewer
+                "--machine"
+                "format"
+                "--text-file"
+                unformatted)))
+          ($assert
+            (== format_run/status 0)
+            $"format failed: {format_run/stdout}{format_run/stderr}")
+          (let formatted (parse format_run/stdout))
+          ($assert (== formatted/ok true) "format succeeds")
+          ($assert (== formatted/changed true) "format reports a change")
+          ($assert
+            (==
+              formatted/text
+              """(fn f [x]
+  x)
+""")
+            $"unexpected formatted text: {formatted/text}")
+        else
+          ($println "gene-viewer is not built here; skipping the helper checks"))))))
 
 (fn main [args] : Int (run_spec args))

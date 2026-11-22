@@ -82,11 +82,11 @@ Use --file FILE for send/run text, --no-wait for operator commands,
     (return $"${record/card/title}: ${(tree_text record/card/tree)} (interactive in the browser)"))
   (if (== record/kind "card/update") (return $"Updated card: ${record/text}"))
   (if (== record/kind "questions")
-    (do (let lines [])
+    (let lines [])
     (for question in record/batch/questions
       (let answer (record/batch/answers .get question/id))
       (lines .push $"${question/prompt} -> ${($to_str answer)}"))
-    (return ($str/join lines "; "))))
+    (return ($str/join lines "; ")))
   (?? record/text ""))
 
 (fn print_result [result, json : Bool]
@@ -98,10 +98,10 @@ Use --file FILE for send/run text, --no-wait for operator commands,
       (present_message message false))
     (return nil))
   (if (&& ($present? result/plugins) ($present? result/revision))
-    (do ($println $"Composition ${result/revision}")
+    ($println $"Composition ${result/revision}")
     (for plugin in result/plugins
       ($println $"${plugin/id}  ${plugin/state}  ${plugin/source}"))
-    (return nil)))
+    (return nil))
   (if_not ($absent? result/history)
     ($println $"Current composition: ${result/revision}")
     (for item in result/history
@@ -144,8 +144,8 @@ Profile: """
   (for key in ["reply" "display" "message" "notice"]
     (let value (result .get key))
     (if (&& ($present? value) (!= value ""))
-      (do ($println value)
-      (set displayed true))))
+      ($println value)
+      (set displayed true)))
   (if_not ($absent? result/questions)
     ($println ($serde/write_data result/questions))
     (set displayed true))
@@ -200,22 +200,22 @@ Profile: """
     (problem "--offline is available for plugins, history and revert, or for the web host."))
   (let selected (?? options/workspace ($os/launch_dir)))
   (if (== action "plugins")
-    (do (if (!= words/.size 1) (problem "Use plugins [--q TEXT] [--status STATE]."))
+    (if (!= words/.size 1) (problem "Use plugins [--q TEXT] [--status STATE]."))
     (if (== options/offline true)
-      (return (repair ^query (?? options/q "") ^state (?? options/status "") selected "plugins")))))
+      (return (repair ^query (?? options/q "") ^state (?? options/status "") selected "plugins"))))
   (if (["history" "revert"] .contains? action)
-    (do (if (> words/.size 2) (problem $"${action} accepts one plugin id."))
+    (if (> words/.size 2) (problem $"${action} accepts one plugin id."))
     (if (&& (== action "revert") (|| ($absent? words/1) ($absent? options/revision)))
       (problem "Use revert ID --revision N."))
     (if (== options/offline true)
-      (return (repair ^revision (if ($absent? options/revision) nil else ($parse/parse_int options/revision))
-        ^expected (if ($absent? (options .get "expected-revision")) nil
-          else ($parse/parse_int (options .get "expected-revision")))
-        ^before (if ($absent? options/before) nil else ($parse/parse_int options/before))
-        ^limit ($parse/parse_int (?? options/limit "50")) selected action (?? words/1 ""))))))
+      (return
+        (repair ^revision (if ($absent? options/revision) nil else ($parse/parse_int options/revision)) ^expected (if ($absent? (options .get "expected-revision")) nil else ($parse/parse_int (options .get "expected-revision"))) ^before (if ($absent? options/before) nil else ($parse/parse_int options/before)) ^limit ($parse/parse_int (?? options/limit "50"))
+          selected
+          action
+          (?? words/1 "")))))
   (if (["doctor" "enable" "disable" "restore"] .contains? action)
-    (do (if (&& (!= action "doctor") ($absent? words/1)) (problem $"${action} needs a plugin id."))
-    (return (repair selected action (?? words/1 "")))))
+    (if (&& (!= action "doctor") ($absent? words/1)) (problem $"${action} needs a plugin id."))
+    (return (repair selected action (?? words/1 ""))))
   (if (&& (== action "auth") (== words/1 "reset"))
     (try
       (return (reset_offline selected))
@@ -233,20 +233,30 @@ Profile: """
       ($url/encode_component (?? options/q "")) "&state="
       ($url/encode_component (?? options/status ""))))))
   (if (["history" "revert"] .contains? action)
-    (do (let query ($to_str "/plugins/history?id=" ($url/encode_component (?? words/1 ""))
-      (option_query options ["before" "limit"])))
+    (let query
+      ($to_str
+        "/plugins/history?id="
+        ($url/encode_component (?? words/1 ""))
+        (option_query options ["before" "limit"])))
     (let history (api client "GET" query))
     (if (== action "history") (return history))
-    (let expected (if ($absent? (options .get "expected-revision")) history/revision
-      else ($parse/parse_int (options .get "expected-revision"))))
-    (return (api client "POST" "/plugins/revert"
-      {^id words/1 ^revision ($parse/parse_int options/revision) ^expected expected}))))
+    (let expected
+      (if ($absent? (options .get "expected-revision"))
+        history/revision
+      else
+        ($parse/parse_int (options .get "expected-revision"))))
+    (return
+      (api
+        client
+        "POST"
+        "/plugins/revert"
+        {^id words/1 ^revision ($parse/parse_int options/revision) ^expected expected})))
   (let session (?? options/session ""))
   (let timeout ($parse/parse_int (?? (options .get "timeout-ms") "600000")))
   (if (<= timeout 0) (problem "--timeout-ms must be positive."))
   (if (== action "notifications") (return (notification_command client words options timeout)))
   (if (== action "status")
-    (do (if (== session "") (return (api client "GET" "/status?ui=default")))
+    (if (== session "") (return (api client "GET" "/status?ui=default")))
     (let state (api client "GET" (session_path session "/snapshot?ui=default")))
     (return
       {
@@ -257,10 +267,10 @@ Profile: """
         ^questions state/questions
         ^mode state/mode
         ^next_submission_seq state/next_submission_seq
-        ^next_command_seq state/next_command_seq})))
+        ^next_command_seq state/next_command_seq}))
   (if (== action "auth")
-    (do (if (!= words/1 "reset") (problem "Use auth reset."))
-    (return (api client "POST" "/auth/reset" {}))))
+    (if (!= words/1 "reset") (problem "Use auth reset."))
+    (return (api client "POST" "/auth/reset" {})))
   (if (["stop" "restart"] .contains? action)
     (return
       (api
@@ -269,7 +279,7 @@ Profile: """
         "/control"
         {^action action ^session session ^confirm (== options/confirm true)})))
   (if (== action "sessions")
-    (do (if (|| ($absent? words/1) (== words/1 "list"))
+    (if (|| ($absent? words/1) (== words/1 "list"))
       (return
         (api
           client
@@ -281,19 +291,25 @@ Profile: """
               ["kind" "status" "attention" "trigger" "q" "since" "until" "after"])))))
     (if (== words/1 "create")
       (return (api client "POST" "/sessions" {^title (?? options/title "New conversation")})))
-    (problem "Use sessions [list|create --title TITLE].")))
+    (problem "Use sessions [list|create --title TITLE]."))
   (if (== action "triggers")
-    (do (let sub (?? words/1 "list"))
+    (let sub (?? words/1 "list"))
     (if (== sub "list") (return (api client "GET" "/p/triggers")))
     (if (== sub "create")
-      (do (if ($absent? words/2) (problem "triggers create needs a definition file."))
-      (return (api client "POST" "/p/triggers" (read_data_file words/2)))))
+      (if ($absent? words/2) (problem "triggers create needs a definition file."))
+      (return (api client "POST" "/p/triggers" (read_data_file words/2))))
     (if (== sub "update")
-      (do (if (|| ($absent? words/2) ($absent? words/3)) (problem "triggers update needs an id and a changes file."))
-      (return (api client "PATCH" $"/p/triggers/${($url/encode_component words/2)}" (read_data_file words/3)))))
+      (if (|| ($absent? words/2) ($absent? words/3))
+        (problem "triggers update needs an id and a changes file."))
+      (return
+        (api
+          client
+          "PATCH"
+          $"/p/triggers/${($url/encode_component words/2)}"
+          (read_data_file words/3))))
     (if (== sub "delete")
-      (do (if ($absent? words/2) (problem "triggers delete needs an id."))
-      (return (api client "DELETE" $"/p/triggers/${($url/encode_component words/2)}"))))
+      (if ($absent? words/2) (problem "triggers delete needs an id."))
+      (return (api client "DELETE" $"/p/triggers/${($url/encode_component words/2)}")))
     (if (== sub "occurrences")
       (return
         (api
@@ -301,8 +317,9 @@ Profile: """
           "GET"
           (if ($absent? words/2)
             "/p/triggers/occurrences"
-            else $"/p/triggers/${($url/encode_component words/2)}/occurrences"))))
-    (problem "Use triggers list|create|update|delete|occurrences.")))
+          else
+            $"/p/triggers/${($url/encode_component words/2)}/occurrences"))))
+    (problem "Use triggers list|create|update|delete|occurrences."))
   (if (== action "transcript")
     (return
       (api
@@ -312,7 +329,7 @@ Profile: """
           (session_path session "/snapshot?ui=default&console=1")
           (option_query options ["before" "after"])))))
   (if (["receipt" "wait"] .contains? action)
-    (do (let kind (receipt_kind options))
+    (let kind (receipt_kind options))
     (var id (?? options/command (?? words/1 options/round)))
     (let request_id (options .get "request-id"))
     (if_not ($absent? request_id)
@@ -327,23 +344,27 @@ Profile: """
     (return
       (if (== action "wait")
         (wait_for client session id kind timeout)
-        else (execution_receipt client session id kind)))))
+      else
+        (execution_receipt client session id kind))))
   (if (["answer" "dismiss"] .contains? action)
-    (do (if ($absent? options/batch) (problem "Answering requires --batch ID."))
+    (if ($absent? options/batch) (problem "Answering requires --batch ID."))
     (let values
       (if (== action "dismiss")
         {}
-        elif ($present? options/file) (read_data_file options/file)
-        elif ($absent? options/answers) (problem "Use --answers JSON or --file FILE.")
-        else ($json/parse options/answers)))
+      elif ($present? options/file)
+        (read_data_file options/file)
+      elif ($absent? options/answers)
+        (problem "Use --answers JSON or --file FILE.")
+      else
+        ($json/parse options/answers)))
     (return
       (api
         client
         "POST"
         (session_path session "/answers")
-        {^batch_id options/batch ^answers values ^dismiss (== action "dismiss")}))))
+        {^batch_id options/batch ^answers values ^dismiss (== action "dismiss")})))
   (if (== action "cancel")
-    (do (if_not ($absent? options/command)
+    (if_not ($absent? options/command)
       (let result
         (api
           client
@@ -355,35 +376,52 @@ Profile: """
     (if ($absent? options/round) (problem "Use cancel --round ID or --command ID."))
     (let result (api client "POST" (session_path session "/cancel") {^round_id options/round}))
     (result .put "ok" true)
-    (return result)))
+    (return result))
   (if (["send" "run" "sh" "view" "command"] .contains? action)
-    (do (var text (if ($absent? options/file) (joined_words words 1) else ($fs/read_text options/file)))
+    (var text (if ($absent? options/file) (joined_words words 1) else ($fs/read_text options/file)))
     (if (== text "") (problem $"${action} needs text or --file FILE."))
     (let kind (if (== action "send") "round" else "command"))
-    (let model_options (|| ($present? options/model) ($present? options/effort) ($present? options/provider)))
+    (let model_options
+      (|| ($present? options/model) ($present? options/effort) ($present? options/provider)))
     (if (&& model_options (!= kind "round"))
       (problem "Model options apply to send. Use command /model or /effort to change the session selection."))
     (if (["run" "sh" "view"] .contains? action) (set text $"/${action} ${text}"))
     (let state (api client "GET" (session_path session "/snapshot?ui=default")))
     (let payload {^text text ^^literal})
     (if model_options
-      (do (let info state/status/model)
-        (let choice (if ($present? options/model)
+      (let info state/status/model)
+      (let choice
+        (if ($present? options/model)
           (if ($present? options/provider)
-              {^provider options/provider ^model options/model ^effort (?? info/requested_effort "auto")}
-              else
-                (let catalog (try (api client "GET" "/models")
-                  catch CliError
-                    (if (!= $err/code "unavailable") (fail $err)) {}))
-                (try (named_model_choice ^current_provider info/provider catalog options/model (?? info/requested_effort "auto"))
-                  catch Error (problem $err/.message)))
-          elif ($present? options/provider) {^provider options/provider}
-          else ($thaw ($freeze (?? state/session/model_settings {})))))
-        (if ($present? options/effort) (choice .put "effort" ($str/lower ($str/trim options/effort))))
-        (payload .put "model_settings" choice)))
+            {
+              ^provider options/provider
+              ^model options/model
+              ^effort (?? info/requested_effort "auto")}
+          else
+            (let catalog
+              (try
+                (api client "GET" "/models")
+              catch CliError
+                (if (!= $err/code "unavailable") (fail $err))
+                {}))
+            (try
+              (named_model_choice ^current_provider info/provider
+                catalog
+                options/model
+                (?? info/requested_effort "auto"))
+            catch Error
+              (problem $err/.message)))
+        elif ($present? options/provider)
+          {^provider options/provider}
+        else
+          ($thaw ($freeze (?? state/session/model_settings {})))))
+      (if ($present? options/effort) (choice .put "effort" ($str/lower ($str/trim options/effort))))
+      (payload .put "model_settings" choice))
     (let request_id (?? (options .get "request-id") $"cli-${($crypto/random_hex 16)}"))
     (let sequence
-      (?? options/sequence (if (== kind "round") state/next_submission_seq else state/next_command_seq)))
+      (??
+        options/sequence
+        (if (== kind "round") state/next_submission_seq else state/next_command_seq)))
     (if (&& ($present? (options .get "request-id")) ($absent? options/sequence))
       (problem "An explicit --request-id requires its original --sequence. Use receipt --request-id to resolve an uncertain submission."))
     (payload .put "request_id" request_id)
@@ -400,7 +438,7 @@ Profile: """
           (CliError ^code (?? $err/code "request_failed") ^_msg $"${$err/.message} Request ${request_id}, sequence ${sequence}, kind ${kind}." ^request_id request_id ^submission_seq sequence ^kind kind ^session session))))
     (if (|| (== options/wait true) (&& (== kind "command") (!= (options .get "no-wait") true)))
       (return (wait_for client session result/id kind timeout)))
-    (return result)))
+    (return result))
   (problem $"Unknown command ${action}. Use --help for usage."))
 
 (fn run_client [parsed] : Int

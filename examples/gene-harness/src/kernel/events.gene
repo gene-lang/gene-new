@@ -49,8 +49,8 @@
 (fn ^^private log_event_payload [record]
   (var payload {^type record/kind ^text record/text})
   (if (== record/truncated true)
-    (do (payload .put "truncated" true)
-    (payload .put "original_bytes" record/original_bytes)))
+    (payload .put "truncated" true)
+    (payload .put "original_bytes" record/original_bytes))
   payload)
 
 (fn ^^private text_prefix [text : Str, maximum : Int] : Str
@@ -68,11 +68,17 @@
   (var limit 65536)
   (while true
     (if (> size limit)
-      (do (var marker $"\n[truncated; original ${size} bytes]")
-      (record .put "text"
-        $"${(text_prefix original ($math/max 0 (- limit ($str/byte_size marker))))}${marker}")
+      (var marker
+        ($to_str
+          """
+[truncated; original """
+          size
+          " bytes]"))
+      (record .put
+        "text"
+        ($to_str (text_prefix original ($math/max 0 (- limit ($str/byte_size marker)))) marker))
       (record .put "truncated" true)
-      (record .put "original_bytes" size)))
+      (record .put "original_bytes" size))
     # Check the serialized envelope too: escaping can exceed the byte cap.
     (if (|| ($absent? h/event_store)
             (<= (core_event_size h/event_scope h/event_stream (log_event_payload record))

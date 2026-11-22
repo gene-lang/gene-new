@@ -34,14 +34,13 @@
     (var ends_with_cr ($str/ends_with? line "\r"))
     (var crlf_line false)
     (if (&& ends_with_cr (! last))
-      (do
-        (set crlf (+ crlf 1))
-        (set crlf_line true)
-        (set line ($str/slice_bytes line 0 (- ($str/byte_size line) 1))))
-      else (if (&& ends_with_cr last)
-        (do
-          (set cr (+ cr 1))
-          (set line ($str/slice_bytes line 0 (- ($str/byte_size line) 1))))))
+      (set crlf (+ crlf 1))
+      (set crlf_line true)
+      (set line ($str/slice_bytes line 0 (- ($str/byte_size line) 1)))
+    else
+      (if (&& ends_with_cr last)
+        (set cr (+ cr 1))
+        (set line ($str/slice_bytes line 0 (- ($str/byte_size line) 1)))))
     # Any CR left inside the line is a lone-CR separator.
     (let parts ($str/split line "\r"))
     (if (> ($size parts) 1)

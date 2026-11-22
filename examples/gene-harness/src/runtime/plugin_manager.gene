@@ -54,9 +54,13 @@
 
 (fn requirement_status [snapshot, pair]
   (if (== pair/0 "$registries")
-    (do (let definition ((?? snapshot/registry_owners {}) .get pair/1))
-    (return {^registry pair/0 ^key pair/1 ^provider (?? definition/owner nil)
-      ^satisfied ($present? definition)})))
+    (let definition ((?? snapshot/registry_owners {}) .get pair/1))
+    (return
+      {
+        ^registry pair/0
+        ^key pair/1
+        ^provider (?? definition/owner nil)
+        ^satisfied ($present? definition)}))
   (let records (?? (snapshot/registries .get pair/0) []))
   (for record in records
     (if (== record/key pair/1)
@@ -128,8 +132,8 @@
       (?? metadata/contributions (?? metadata/historical_observation/contributions [])))
     (for item in (if observed/.empty? historical else observed)
       (if (== item/registry "docs")
-        (do (documentation .push {^name item/key ^summary item/summary})
-        (if (== description "") (set description item/summary)))))
+        (documentation .push {^name item/key ^summary item/summary})
+        (if (== description "") (set description item/summary))))
     (let error (?? (workspace/errors/.get .get id) (plugin_error runtime/h id) nil))
     (let status
       (if (! enabled)
@@ -180,9 +184,12 @@
         ^!required_by_profile
         ^error error})
     (if (&& ($present? health) (== health/digest active_digest))
-      (do (row .put "participant_quarantine" health)
-      (diagnostics .push {^id id ^kind "participant_quarantine"
-        ^message $"Turn participants quarantined after ${health/phase}: ${health/message}"})))
+      (row .put "participant_quarantine" health)
+      (diagnostics .push
+        {
+          ^id id
+          ^kind "participant_quarantine"
+          ^message $"Turn participants quarantined after ${health/phase}: ${health/message}"}))
     (let state_records [])
     (for record in writers
       (if (== record/plugin id) (state_records .push record)))

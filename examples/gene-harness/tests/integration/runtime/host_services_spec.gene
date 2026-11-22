@@ -28,10 +28,10 @@
             ^mode mode ^service_event (fn [phase, name]
               (if (== phase "after") (names .push name)))))
           (if is_recovery
-            (do ($assert ($absent? baseline/events))
-              ($assert ($absent? baseline/sessions))
-              ($assert ($absent? baseline/services/values/voice))
-              ($assert ($absent? baseline/services/values/inbox))))
+            ($assert ($absent? baseline/events))
+            ($assert ($absent? baseline/sessions))
+            ($assert ($absent? baseline/services/values/voice))
+            ($assert ($absent? baseline/services/values/inbox)))
           (close_runtime baseline)
           (close_runtime baseline)
           (if_not is_recovery
@@ -48,14 +48,17 @@
               (open_runtime workspace "default" profile ^mode mode
                 ^service_event (fn [phase, name]
                   (if (== phase "close")
-                    (do (closed .push name)
-                      (let available (try
+                    (closed .push name)
+                    (let available
+                      (try
                         (let lock (acquire_workspace_lock workspace "service-audit"))
                         (close_workspace_lock lock)
                         true
-                      catch WorkspaceInUse false))
-                      ($assert (== available (== name "ownership"))
-                        $"Ownership was released before ${name} finished.")))
+                      catch WorkspaceInUse
+                        false))
+                    ($assert
+                      (== available (== name "ownership"))
+                      $"Ownership was released before ${name} finished."))
                   (if (&& (== phase "after") (== name target))
                     (fail (HostServiceError ^_msg $"injected after ${target}")))))
               false

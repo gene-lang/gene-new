@@ -100,41 +100,72 @@
       (let share {^id intent/id ^status status})
       (let changes {^slack_share share})
       (if (&& (== root/status "sent") ($present? root/ts))
-        (do (let destination {^transport source_transport ^account intent/account ^team intent/team
-          ^channel intent/channel ^thread root/ts})
+        (let destination
+          {
+            ^transport source_transport
+            ^account intent/account
+            ^team intent/team
+            ^channel intent/channel
+            ^thread root/ts})
         (let id (binding_key destination))
-        (let binding (destination .assoc "id" id; .assoc "session" session; .assoc "status" "active"
-          ; .assoc "archived_rounds" (?? intent/archived_rounds [])))
+        (let binding
+          (destination
+            .assoc "id" id
+            ; .assoc "session" session
+            ; .assoc "status" "active"
+            ; .assoc "archived_rounds" (?? intent/archived_rounds [])))
         (for part in outgoing/result/parts
           (if (== part/status "sent") (remember_message binding part/ts)))
-        (mutate service/runtime/services/values/channel_queues (fn [state]
-          (let existing (state/queues .get session))
-          (if ($absent? existing)
-            (state/bindings .put id binding)
-              (state/queues .put session {^session session ^binding id ^revision 0
-                ^holds {} ^order [] ^batch nil ^observed {}})
+        (mutate ^changes {^bindings [id] ^queues [session] ^cursors [session]}
+          service/runtime/services/values/channel_queues
+          (fn [state]
+            (let existing (state/queues .get session))
+            (if ($absent? existing)
+              (state/bindings .put id binding)
+              (state/queues .put
+                session
+                {
+                  ^session session
+                  ^binding id
+                  ^revision 0
+                  ^holds {}
+                  ^order []
+                  ^batch nil
+                  ^observed {}})
               (if ($absent? state/cursors) (state .put "cursors" {}))
               (state/cursors .put session intent/through)
             else
-              (if (!= existing/binding id) (channel_error "conflict" "The session has another channel thread."))
+              (if (!= existing/binding id)
+                (channel_error "conflict" "The session has another channel thread."))
               (let current (state/bindings .get id))
               (for part in outgoing/result/parts
                 (if (== part/status "sent") (remember_message current part/ts))))
-          nil) ^changes {^bindings [id] ^queues [session] ^cursors [session]})
-        (changes .put "channel" (destination .assoc "binding" id; .assoc "owner" intent/owner; .assoc "route" intent/route))))
-      (if (|| (!= record/slack_share share)
-              (&& ($present? changes/channel) (!= record/channel changes/channel)))
-        (do (changes .put "revision" (+ (?? record/revision 0) 1))
-          (update_session service/runtime/sessions session changes)
-          (let envelope
-            (append_core_event service/runtime/events "session" session
-              {^type "trace" ^kind "channel/status" ^text "Channel conversation sharing status changed."
-               ^delivery intent/id ^status status ^^ignorable}))
-          (log_event "channel/status" "Channel conversation sharing status changed"
-            ^target {^channel (?? intent/channel "")}
-            ^data {^delivery intent/id ^status status}
-            ^event {^stream session ^seq envelope/seq})
-          (flush_event_store service/runtime/events)))
+            nil))
+        (changes .put
+          "channel"
+          (destination
+            .assoc "binding" id
+            ; .assoc "owner" intent/owner
+            ; .assoc "route" intent/route)))
+      (if (|| (!= record/slack_share share) (&& ($present? changes/channel) (!= record/channel changes/channel)))
+        (changes .put "revision" (+ (?? record/revision 0) 1))
+        (update_session service/runtime/sessions session changes)
+        (let envelope
+          (append_core_event
+            service/runtime/events
+            "session"
+            session
+            {
+              ^type "trace"
+              ^kind "channel/status"
+              ^text "Channel conversation sharing status changed."
+              ^delivery intent/id
+              ^status status
+              ^^ignorable}))
+        (log_event ^target {^channel (?? intent/channel "")} ^data {^delivery intent/id ^status status} ^event {^stream session ^seq envelope/seq}
+          "channel/status"
+          "Channel conversation sharing status changed")
+        (flush_event_store service/runtime/events))
       (mutate service/runtime/services/values/channel_queues (fn [state]
         (let current (state/outbox .get intent/id))
         (current .put "share_observed" outgoing/signature)

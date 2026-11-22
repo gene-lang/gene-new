@@ -120,8 +120,12 @@
   (let catalogue (discover transport "images/models"))
   (var model nil)
   (if (== ($head catalogue/data) List)
-    (do (for candidate in catalogue/data (if (== candidate/id input/model) (set model candidate)))
-    (if ($absent? model) (image_error "unsupported_model" "The selected model is absent from OpenRouter image discovery."))))
+    (for candidate in catalogue/data
+      (if (== candidate/id input/model) (set model candidate)))
+    (if ($absent? model)
+      (image_error
+        "unsupported_model"
+        "The selected model is absent from OpenRouter image discovery.")))
   (let need_input (|| (> input/reference_count 0) (> input/max_attempts 1)))
   (if_not ($absent? model)
     (if (&& (== ($head model/architecture/output_modalities) List)
@@ -138,25 +142,30 @@
   (let compatible [])
   (let incompatible_tags [])
   (if known
-    (do (for endpoint in endpoint_data/endpoints
+    (for endpoint in endpoint_data/endpoints
       (if (|| route/only/.empty? (route/only .contains? endpoint/provider_tag))
-        (do (eligible .push endpoint)
+        (eligible .push endpoint)
         (if (endpoint_supports endpoint input)
           (compatible .push endpoint)
-          else (incompatible_tags .push endpoint/provider_tag)))))
+        else
+          (incompatible_tags .push endpoint/provider_tag))))
     (if compatible/.empty?
-      (image_error "unsupported_endpoint" "No eligible OpenRouter endpoint supports the requested PNG settings and inputs."))
+      (image_error
+        "unsupported_endpoint"
+        "No eligible OpenRouter endpoint supports the requested PNG settings and inputs."))
     (let tags [])
     (for endpoint in compatible
       # A shared tag must not also permit an incompatible endpoint.
-      (if (&& ($present? endpoint/provider_tag)
-              (! (incompatible_tags .contains? endpoint/provider_tag)))
+      (if (&& ($present? endpoint/provider_tag) (! (incompatible_tags .contains? endpoint/provider_tag)))
         (if_not (tags .contains? endpoint/provider_tag) (tags .push endpoint/provider_tag))))
     (if (< compatible/.size eligible/.size)
-      (if tags/.empty? (image_error "unsupported_routing" "Compatible OpenRouter endpoints cannot be isolated by provider_tag.")))
+      (if tags/.empty?
+        (image_error
+          "unsupported_routing"
+          "Compatible OpenRouter endpoints cannot be isolated by provider_tag.")))
     (if (&& (! route/only/.empty?) tags/.empty?)
       (image_error "unsupported_routing" "Configured providers have no usable routing identifiers."))
-    (if_not tags/.empty? (route .put "only" tags))))
+    (if_not tags/.empty? (route .put "only" tags)))
   (if_not known
     # Discovery failure never enables retries or clears the operator's routing.
     (route .put "allow_fallbacks" false))
@@ -170,7 +179,7 @@
   (let normalized_size (normalized_size_parameters input/size))
   (var normalized_supported ($present? normalized_size))
   (if known
-    (do (set output_support "yes")
+    (set output_support "yes")
     (set input_support "yes")
     (set send_background true)
     (set requested_size_support "yes")
@@ -179,19 +188,19 @@
       (let descriptor endpoint/supported_parameters/input_references)
       (if ($absent? descriptor) (set input_support "no"))
       (if (== ($head descriptor/max) Int)
-        (set max_images (if ($absent? max_images) descriptor/max else ($math/min max_images descriptor/max))))
+        (set max_images
+          (if ($absent? max_images) descriptor/max else ($math/min max_images descriptor/max))))
       (if_not (allows endpoint/supported_parameters "background" input/background)
         (set send_background false))
       (if_not (allows endpoint/supported_parameters "output_format" "png")
         (set send_output_format false))
       (if (!= (size_support endpoint/supported_parameters input/size) "yes")
         (set requested_size_support "unknown"))
-      (if_not (&& (allows endpoint/supported_parameters "resolution" normalized_size/resolution)
-                  (allows endpoint/supported_parameters "aspect_ratio" normalized_size/aspect_ratio))
+      (if_not (&& (allows endpoint/supported_parameters "resolution" normalized_size/resolution) (allows endpoint/supported_parameters "aspect_ratio" normalized_size/aspect_ratio))
         (set normalized_supported false)))
     # Prefer the advertised controls to the API's pixel-size convenience
     # conversion, which some endpoints pass through as an invalid ratio.
-    (if normalized_supported (set size_parameters normalized_size))))
+    (if normalized_supported (set size_parameters normalized_size)))
   (if_not ($absent? model)
     (if (&& (== ($head model/architecture/input_modalities) List)
             (! (model/architecture/input_modalities .contains? "image"))) (set input_support "no")))
@@ -241,14 +250,16 @@
       ^body ($json/stringify body) ^timeout_ms prepared/timeout_ms ^max_bytes 16777216})
     catch Error (image_error "transport_failed" "OpenRouter image transport failed; no retry was made.")))
   (if (!= response/status 200)
-    (do (let parsed (try ($json/parse response/body) catch Error nil))
-    (let message (if (== ($head parsed/error/message) Str) (nonempty parsed/error/message) else nil))
-    (let diagnostic (if ($absent? message) nil
-      else (safe_error ($str/join ($str/split message key) "[redacted]") inventory)))
-    (fail (ImageError ^code "provider_rejected" ^status response/status
-      ^diagnostic (if ($absent? diagnostic) nil
-        else $"OpenRouter image request failed (HTTP ${response/status}): ${diagnostic}")
-      ^_msg "OpenRouter rejected the image request."))))
+    (let parsed (try ($json/parse response/body) catch Error nil))
+    (let message
+      (if (== ($head parsed/error/message) Str) (nonempty parsed/error/message) else nil))
+    (let diagnostic
+      (if ($absent? message)
+        nil
+      else
+        (safe_error ($str/join ($str/split message key) "[redacted]") inventory)))
+    (fail
+      (ImageError ^code "provider_rejected" ^status response/status ^diagnostic (if ($absent? diagnostic) nil else $"OpenRouter image request failed (HTTP ${response/status}): ${diagnostic}") ^_msg "OpenRouter rejected the image request.")))
   (if (> ($str/byte_size response/body) 16777216)
     (image_error "response_too_large" "OpenRouter image response exceeds 16 MiB."))
   (let parsed (try ($json/parse response/body)

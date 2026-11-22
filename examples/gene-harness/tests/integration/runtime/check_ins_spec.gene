@@ -129,9 +129,10 @@
         (let released ($cell false))
         (let parents ($cell 0))
         (let controller (test_controller runtime (fn [call]
-          (if (== (/kind (require_record runtime/sessions call/session)) "child")
-            (do (while (! released/.get) ($sleep 10))
-            (return "(Outcome ^^done ^reply \"ADOPTED_CHILD_RESULT\")")))
+          (if (== ((Path "kind") (require_record runtime/sessions call/session)) "child")
+            (while (! released/.get)
+              ($sleep 10))
+            (return "(Outcome ^^done ^reply \"ADOPTED_CHILD_RESULT\")"))
           (let n (parents .swap (+ parents/.get 1)))
           (match n
             when 0 "(delegate \"slow\" ^title \"Slow\" ^brief \"Take your time.\") (Outcome ^prompt \"Work alongside the child.\")"
@@ -321,9 +322,9 @@
         (configure runtime {^check_in_turns 1})
         (install_engine runtime (fn [request] (verdict "blocked")))
         (let controller (test_controller runtime (fn [call]
-          (if (== (/kind (require_record runtime/sessions call/session)) "child")
-            (do ($sleep 60000)
-            (return "(Outcome ^^done)")))
+          (if (== ((Path "kind") (require_record runtime/sessions call/session)) "child")
+            ($sleep 60000)
+            (return "(Outcome ^^done)"))
           (if ($str/contains? ($to_str call/messages) "Something else.")
             "(Outcome ^^done ^reply \"New task done.\")"
             else "(delegate \"slow\" ^title \"Slow\" ^brief \"Take your time.\") (Outcome ^prompt \"Keep going.\")"))))

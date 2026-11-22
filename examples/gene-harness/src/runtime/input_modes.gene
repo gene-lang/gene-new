@@ -121,13 +121,13 @@
       (problem manager session "invalid_request" "An input needs an id of at most 128 bytes."))
     (for record in (manager/records session)
       (if (&& (== record/mode_instance instance) (== record/input_id input_id))
-        (do (if (!= record/raw text)
+        (if (!= record/raw text)
           (problem manager session "submission_conflict" "Input identity has different content."))
-        (return record))))
+        (return record)))
     (let kind (state/row/payload/classify text))
     (if (== kind "leave")
-      (do (close_mode_locked manager session "left")
-      (return {^^closed})))
+      (close_mode_locked manager session "left")
+      (return {^^closed}))
     (if (== kind "incomplete") (return {^^incomplete}))
     (if (== kind "ignored") (return {^^ignored}))
     (if (!= kind "input")
@@ -153,12 +153,10 @@
     (if (&& (same? current state) (== state/running record/id))
       # A failed input may have exhausted its budget before Gene ensure ran.
       # The owner resets opted-in native state using its own cleanup context.
-      (do (if (&& (== state/row/payload/reset_on_interrupt true)
-        (|| (== record/status "cancelled")
-          (&& (== record/status "failed") ($absent? record/exit))))
+      (if (&& (== state/row/payload/reset_on_interrupt true) (|| (== record/status "cancelled") (&& (== record/status "failed") ($absent? record/exit))))
         (close_mode_resources state session "interrupted"))
       (state .put "running" nil)
-      (changed manager session "finished")))))
+      (changed manager session "finished"))))
   nil)
 
 (fn expire_modes [manager, ^now now = nil]

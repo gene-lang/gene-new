@@ -349,8 +349,8 @@
             ($assert (!= result/text "") "execution output was lost")
             (if ($str/starts_with? text "/run  ") ($assert (== result/text "5")))
             (if ($str/starts_with? text "/sh ")
-              (do ($assert (== result/text "shell output"))
-              ($assert (== result/exit 0))))
+              ($assert (== result/text "shell output"))
+              ($assert (== result/exit 0)))
             (if (["run" "sh" "repl"] .contains? result/name)
               ($assert (! ($str/starts_with? result/text $"[${submitted/id}.${result/name}] /"))
                 "browser result repeated the command header"))
@@ -393,8 +393,11 @@
             "display filtering removed the model's budget guidance")
           (if (== request/turn 1)
             "(append_prompt \"first\" 1) ($println \"console now\") (Outcome ^prompt \"continue\" ^reply \"Progress now.\")"
-            else (do (entered .set true) (while (! release/.get) ($sleep 1))
-              "(Outcome ^^done ^reply \"Finished.\")")))))
+          else
+            (entered .set true)
+            (while (! release/.get)
+              ($sleep 1))
+            "(Outcome ^^done ^reply \"Finished.\")"))))
         (let messages ($cell []))
         (service/publisher .set (fn [message] (messages/.get .push message)))
         (try
@@ -455,8 +458,8 @@
           (var truncated false)
           (for event in (events_for service/runtime/events "session" record/id)
             (if (&& (== event/type "console") (== event/payload/round noisy/id))
-              (do (set noisy_bytes (+ noisy_bytes ($str/byte_size event/payload/text)))
-              (if ($str/contains? event/payload/text "[console truncated]") (set truncated true)))))
+              (set noisy_bytes (+ noisy_bytes ($str/byte_size event/payload/text)))
+              (if ($str/contains? event/payload/text "[console truncated]") (set truncated true))))
           ($assert (<= noisy_bytes 262144) "durable console exceeded its per-turn byte cap")
           ($assert truncated "durable console omitted its truncation marker")
           ($println "live transcript: initial prompt, response, console and progress before completion; custom question validator")
@@ -529,8 +532,11 @@
              ^run (fn [ctx] ($sleep 800) (finished .set true) "slow done")})
           (set_test_provider service/runtime (fn [request]
             (if (== request/turn 5)
-              "(card \"slowcard\" ^title \"Slow\" `(button ^command \"/slow\" \"Slow\"))\n(Outcome ^questions [{^id \"go\" ^prompt \"Go?\"}])"
-              else (do (resumed_after_command .set finished/.get) "(Outcome ^^done ^reply \"resumed\")"))))
+              """(card "slowcard" ^title "Slow" `(button ^command "/slow" "Slow"))
+(Outcome ^questions [{^id "go" ^prompt "Go?"}])"""
+            else
+              (resumed_after_command .set finished/.get)
+              "(Outcome ^^done ^reply \"resumed\")")))
           (let slow_round (submit service id "slow-1" 4 "slow"))
           ((/watcher (service/runtime/services/values/controller/rounds/.get .get id)) .join)
           (let slow_card (card_record service/runtime id "slowcard"))
@@ -804,13 +810,10 @@ child/.detach
           (let refresh_deadline (+ ($os/monotonic_ms) 5000))
           (while (&& (! refreshed/.get) (< ($os/monotonic_ms) refresh_deadline))
             (for message in pushed/.get
-              (if (&& (== message/type "snapshot")
-                       (== message/session session/id))
-                (do (let component
-                    (named_component message/data/status/web_components "counter"))
-                  (if (&& ($present? component)
-                           (== component/view/children/0/children/0 "1"))
-                    (refreshed .set true)))))
+              (if (&& (== message/type "snapshot") (== message/session session/id))
+                (let component (named_component message/data/status/web_components "counter"))
+                (if (&& ($present? component) (== component/view/children/0/children/0 "1"))
+                  (refreshed .set true))))
             (if_not refreshed/.get ($sleep 1)))
           ($assert refreshed/.get
             "finished command did not push a refreshed plugin snapshot")

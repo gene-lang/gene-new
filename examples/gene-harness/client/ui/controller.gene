@@ -55,16 +55,19 @@
     (var node : UiNode raw)
     (var classes (text node/props/class))
     (if ($str/starts_with? classes "theme_ratio contrast_")
-      (do (var role ($str/join ($str/split ($str/slice_bytes classes 21 (- ($str/byte_size classes) 21)) "_") "-"))
-      (update_ratio node/element role (text node/props/title))))))
+      (var role
+        ($str/join
+          ($str/split ($str/slice_bytes classes 21 (- ($str/byte_size classes) 21)) "_")
+          "-"))
+      (update_ratio node/element role (text node/props/title)))))
 
 (fn appearance_controls [ui : UiClient] : Nil
   (if ($present? ui/browser_appearance)
-    (do (var appearance : BrowserAppearance ui/browser_appearance)
+    (var appearance : BrowserAppearance ui/browser_appearance)
     (map_for [key raw] in ui/nodes
       (var node : UiNode raw)
       (if ($present? node/props/data-appearance)
-        (appearance_control appearance node/element node/props/data-appearance))))))
+        (appearance_control appearance node/element node/props/data-appearance)))))
 
 (fn action_notice [ui : UiClient, pending : Any, message : Str, severity : Str = "info", sticky : Bool = true] : Nil
   (notice ^key (text pending/request/input_id) ^severity severity ^sticky sticky ^action (if (&& sticky (! (flag pending/settled)) ($present? ui/pending)) (fn [] : Nil (if (== (text ui/pending/request/input_id) (text pending/request/input_id)) (resolve_action ui true))) else nil) ^origin {^workspace ui/workspace ^component pending/request/component ^instance pending/request/instance ^arguments pending/request/named ^view_state pending/view_state ^action_id pending/request/input_id}
@@ -90,22 +93,22 @@
   (set pending/command_id (text record/id))
   (var status (text record/status))
   (if (|| (== status "accepted") (== status "running"))
-    (do (set pending/uncertain false)
-    (set pending/unknown false)))
+    (set pending/uncertain false)
+    (set pending/unknown false))
   (persist_pending ui)
   (if (|| (== status "accepted") (== status "running"))
     (action_progress ui pending)
-    else (do
-      (set pending/settled true)
-      (if (== status "done")
-        (do
-          (clear_saved_drafts ui pending)
-          (action_notice ui pending ""))
-        else (action_notice ui pending (text record/display status) "error"))
-      (storage_remove (pending_key ui))
-      (set ui/pending nil)
-      (set ui/last_data "")
-      (refresh ui)))
+  else
+    (set pending/settled true)
+    (if (== status "done")
+      (clear_saved_drafts ui pending)
+      (action_notice ui pending "")
+    else
+      (action_notice ui pending (text record/display status) "error"))
+    (storage_remove (pending_key ui))
+    (set ui/pending nil)
+    (set ui/last_data "")
+    (refresh ui))
   (sync_controls ui))
 
 (fn post_action [ui : UiClient] : Nil
@@ -182,17 +185,17 @@
   (var form (if (== node/tag "form") node/key else node/form))
   (var owner : UiNode node)
   (if (&& (!= node/tag "form") ($present? ui/nodes/%form))
-    (do (var parent_form : UiNode ui/nodes/%form)
-    (set owner parent_form)))
+    (var parent_form : UiNode ui/nodes/%form)
+    (set owner parent_form))
   (var named (copy_map owner/props/args))
   (var args (body_args owner/props/positional))
   (if_not ($absent? ui/forms/%form)
     (var saved : Any ui/forms/%form)
     (if ($absent? saved/named)
       (set named (copy_map saved))
-      else (do
-        (set named (copy_map saved/named))
-        (set args (body_args saved/positional)))))
+    else
+      (set named (copy_map saved/named))
+      (set args (body_args saved/positional))))
   # Keep the form's captured revision while retaining the clicked button's
   # action arguments. Current field values are collected last below.
   (if_not (== node/tag "form")
@@ -203,8 +206,8 @@
   (map_for [key raw] in ui/nodes
     (var input : UiNode raw)
     (if (&& (== input/form form) ($present? input/props/field))
-      (do (var field : Str input/props/field)
-      (set named/%field (field_value input)))))
+      (var field : Str input/props/field)
+      (set named/%field (field_value input))))
   (var request
     {
       ^component ui/descriptor/name
@@ -225,19 +228,19 @@
 
 (fn changed_control [ui : UiClient, node : UiNode] : Nil
   (if ($present? node/props/data-appearance)
-    (do (var appearance : BrowserAppearance ui/browser_appearance)
+    (var appearance : BrowserAppearance ui/browser_appearance)
     (var field : Str node/props/data-appearance)
     (var changes : Any {})
     (set changes/%field ($dom/input_value node/element))
     (change_appearance appearance changes)
-    (return)))
+    (return))
   (set ui/navigation/focus node/key)
   (if_not ($absent? node/props/field)
     (var form node/form)
     (if ($absent? ui/forms/%form)
-      (do (var owner : UiNode ui/nodes/%form)
+      (var owner : UiNode ui/nodes/%form)
       (set ui/forms/%form
-        {^named (copy_map owner/props/args) ^positional (body_args owner/props/positional)})))
+        {^named (copy_map owner/props/args) ^positional (body_args owner/props/positional)}))
     (var key node/key)
     (set ui/drafts/%key {^name node/props/field ^form form ^value (field_value node)})
     (persist_view ui))
@@ -254,8 +257,8 @@
         else 150.0)
       (fn [] : Nil
         (if (== wanted ui/debounce)
-          (do (set ui/last_data "")
-          (refresh ui)))))))
+          (set ui/last_data "")
+          (refresh ui))))))
 
 (fn refresh [ui : UiClient] : Nil
   (if (|| ui/safe (! ui/ready) ($absent? ui/descriptor)) (return))
@@ -302,11 +305,11 @@
           (notice ^key "render" ^^sticky ^severity "error"
             ui
             "The view could not be displayed. Restore the default UI to recover."))
-        else (do
-          (set ui/render_error true)
-          (notice ^key "render" ^^sticky ^severity "error"
-            ui
-            (text data/error (text data/message "View rendering failed.")))))
+      else
+        (set ui/render_error true)
+        (notice ^key "render" ^^sticky ^severity "error"
+          ui
+          (text data/error (text data/message "View rendering failed."))))
       (sync_controls ui))))
 
 (fn restore_view [ui : UiClient, descriptor : Any] : Nil
@@ -349,13 +352,14 @@
   (set ui/workspace workspace)
   (var saved (?? (storage_get (pending_key ui)) ""))
   (if (!= saved "")
-    (do (set ui/pending (try ($json/parse saved) catch Error nil))
+    (set ui/pending (try ($json/parse saved) catch Error nil))
     (if_not ($absent? ui/pending)
       (if (== (text ui/pending/format) "2")
-        (do
-          (set ui/pending/uncertain true)
-          (action_notice ui ui/pending "A saved action needs receipt recovery." "error"))
-        else (do (storage_remove (pending_key ui)) (set ui/pending nil))))))
+        (set ui/pending/uncertain true)
+        (action_notice ui ui/pending "A saved action needs receipt recovery." "error")
+      else
+        (storage_remove (pending_key ui))
+        (set ui/pending nil))))
   (sync_controls ui))
 
 (fn action_metadata [ui : UiClient, data : Any] : Nil
@@ -395,8 +399,8 @@
     $"/?session=${($url/encode_component session)}")
   (if reconnect (resolve_action ui false))
   (if (|| reconnect changed_session)
-    (do (set ui/sequence (+ ui/sequence 1))
-    (set ui/last_data "")))
+    (set ui/sequence (+ ui/sequence 1))
+    (set ui/last_data ""))
   ($dom/set_text ($dom/element "ui_connection") (if ready "Connected" else "Disconnected · reconnecting…"))
   (refresh ui)
   (sync_controls ui))
@@ -406,8 +410,8 @@
   (if (&& ui/safe (!= kind "ui/action")) (return))
   (if (== kind "ui/state") (update ui data))
   (if (== kind "ui/action")
-    (do (action_metadata ui data/actions)
-    (accept_receipt ui data/record))))
+    (action_metadata ui data/actions)
+    (accept_receipt ui data/record)))
 
 (fn open_reference [ui : UiClient, reference : Any] : Nil
   (if (|| ui/safe ($absent? reference/component)) (return))

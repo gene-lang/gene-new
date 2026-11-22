@@ -18,9 +18,9 @@
        ^on_toggle %(fn [event : Any] : Nil
          (var opened : Bool event/current_target/open)
          (if (&& opened is_gene (! colored))
-           (do ($dom/clear pre)
+           ($dom/clear pre)
            ($dom/append pre (code_view text true))
-           (set colored true)))
+           (set colored true))
          (on_toggle opened))
        (summary %summary)
        (button ^type "button" ^class_name "copy"
@@ -59,7 +59,7 @@
          (div ^class_name "speaker" %label
            %(if (&& provisional (!= role "user")) " · in progress" else "")))))
   (if (&& (== role "user") ($present? block/input) (== (status_text block/input/kind) "channel"))
-    (do (set content ($dom/render `(div ^class_name "channel_inputs")))
+    (set content ($dom/render `(div ^class_name "channel_inputs")))
     (var messages : (List Any) block/input/messages)
     (for part in messages
       (var message : Str part/message)
@@ -67,7 +67,7 @@
       (var incoming ($dom/render `(div)))
       ($dom/append incoming (author_line "Slack · " part $" · ${message}" resolve_author))
       ($dom/append incoming ($dom/render `(div ^class_name "message_text" %body)))
-      ($dom/append content incoming))))
+      ($dom/append content incoming)))
   ($dom/append article content)
   (if (== (status_text block/answer_source/transport) "slack")
     ($dom/append article (author_line "User · Slack " block/answer_source
@@ -118,17 +118,18 @@
     (var phase : Str block/phase)
     (if (== phase "delegation") (set delegated true))
     (if (== phase "code")
-      (do (set has_code true) (set hint (status_text block/reply_hint))))
+      (set has_code true)
+      (set hint (status_text block/reply_hint)))
     (if (|| (== phase "turn/end") (== phase "turn/error"))
-      (do (set ended true)
+      (set ended true)
       (if (|| (== (status_text block/reason) "error") (== (status_text block/reason) "cancelled"))
-        (set failed true))))
+        (set failed true)))
     (if (== phase "questions") (set answered true))
     (if (&& (== phase "turn/patch") (== (status_text block/patch_result/status) "failed")) (set failed true))
     (if (== phase "reply")
-      (do (if (status_flag block/final) (set final_reply true))
+      (if (status_flag block/final) (set final_reply true))
       (var text : Str (str/trim block/text))
-      (if (!= text "") (set reply text)))))
+      (if (!= text "") (set reply text))))
   (if final_reply (set reply "")
     else (if (&& (== reply "") (! failed)) (set reply hint)))
   (set reply (reply_summary reply))
@@ -176,16 +177,26 @@
     (var phase : Str block/phase)
     (if (|| (== phase "turn/request") (== phase "code") (== phase "turn/start") (== phase "turn/end")) (continue))
     (if (== phase "reply")
-      (do (if (status_flag block/final) (continue))
+      (if (status_flag block/final) (continue))
       (var media : (List Any) [])
       (if_not ($absent? block/media) (set media block/media))
       (if (&& (> media/.size 0) ($present? render_extra))
-        (do (var media_render : (Fn [EventTarget Any] Nil) render_extra) (media_render content block)))
-      (continue)))
+        (var media_render : (Fn [EventTarget Any] Nil) render_extra)
+        (media_render content block))
+      (continue))
     (if ($absent? render_extra)
-      ($dom/append content (block_view block (not_durable block) on_copy (is_open id)
-        (fn [open : Bool] : Nil (on_toggle id open))))
-      else (do (var render : (Fn [EventTarget Any] Nil) render_extra) (render content block))))
+      ($dom/append
+        content
+        (block_view
+          block
+          (not_durable block)
+          on_copy
+          (is_open id)
+          (fn [open : Bool] : Nil
+            (on_toggle id open))))
+    else
+      (var render : (Fn [EventTarget Any] Nil) render_extra)
+      (render content block)))
   ($dom/append details content)
   details)
 
@@ -208,20 +219,27 @@
     ($dom/append root ($dom/render `(span ^class_name "outcome_message" %(status_text run/notice)))))
   (if_not ($absent? run/continuation_error)
     ($dom/append root ($dom/render `(span ^class_name "outcome_message" %(status_text run/continuation_error)))))
-  (if (&& limited resumable ($present? on_continue)
-              ($absent? run/continued_by)
-              (|| ($absent? run/continuation_stop) (== (status_text run/continuation_stop) "failed")))
-    (do (if ($present? run/selection/model)
-      (do (var selection ($to_str (status_text run/selection/provider) "/" (status_text run/selection/model)))
+  (if (&& limited resumable ($present? on_continue) ($absent? run/continued_by) (|| ($absent? run/continuation_stop) (== (status_text run/continuation_stop) "failed")))
+    (if ($present? run/selection/model)
+      (var selection
+        $"${(status_text run/selection/provider)}/${(status_text run/selection/model)}")
       (if ($present? run/selection/requested_effort)
-        (set selection ($to_str selection " · " (status_text run/selection/requested_effort))))
-      ($dom/append root ($dom/render `(span ^class_name "outcome_message"
-        %($to_str "Continue keeps " selection ", unless you make a new picker choice. Session /model and /effort changes apply to new prompts."))))))
+        (set selection $"${selection} · ${(status_text run/selection/requested_effort)}"))
+      ($dom/append
+        root
+        ($dom/render
+          `(span ^class_name "outcome_message"
+             %($to_str
+                "Continue keeps "
+                selection
+                ", unless you make a new picker choice. Session /model and /effort changes apply to new prompts.")))))
     (var resume : (Fn [Str] Nil) on_continue)
     (for mode in ["manual" "automatic"]
-      ($dom/append root ($dom/render `(button ^type "button"
-        ^on_click %(fn [event : Any] : Nil (set event/current_target/disabled true) (resume mode))
-        %(if (== mode "manual") "Continue" else "Continue until finished")))))))
+      ($dom/append
+        root
+        ($dom/render
+          `(button ^type "button" ^on_click %(fn [event : Any] : Nil (set event/current_target/disabled true) (resume mode))
+             %(if (== mode "manual") "Continue" else "Continue until finished"))))))
   (if (&& limited (|| (!= status "paused")
     (== (status_text run/continuation_stop) "failed")
     (&& (! resumable) ($absent? run/continued_by) ($absent? run/continuation_stop))))

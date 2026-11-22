@@ -35,9 +35,9 @@
   (if (|| ($absent? requested) (== requested "auto"))
     (return (?? model/default_effort nil)))
   (if ($absent? model/efforts)
-    (do (if_not (effort_ladder .contains? requested)
-        (fail (ProviderError ^_msg $"${requested} is not an effort level for this model")))
-      (return requested)))
+    (if_not (effort_ladder .contains? requested)
+      (fail (ProviderError ^_msg $"${requested} is not an effort level for this model")))
+    (return requested))
   (if (model/efforts .contains? requested) (return requested))
   (if_not (effort_ladder .contains? requested)
     (fail (ProviderError ^_msg $"${requested} is not an effort level for this model")))
@@ -47,8 +47,8 @@
   (for level in effort_ladder
     (if (== level requested) (set passed true))
     (if (model/efforts .contains? level)
-      (do (if ($absent? lowest) (set lowest level))
-        (if_not passed (set below level)))))
+      (if ($absent? lowest) (set lowest level))
+      (if_not passed (set below level))))
   (?? below lowest))
 
 (fn model_entry [models, id]

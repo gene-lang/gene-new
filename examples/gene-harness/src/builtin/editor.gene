@@ -68,10 +68,10 @@
 
 (fn tagged [response : Any, version : Int] : Any
   (if (== ($head response) Map)
-    (do
-      (response .put "version" version)
-      response)
-    else response))
+    (response .put "version" version)
+    response
+  else
+    response))
 
 # ---------------------------------------------------------------------------
 # Document reads
@@ -160,11 +160,11 @@
       (if (!= info/kind "file") (return (failure 400 "the editor saves files, not directories")))
       (let link (try ($fs/info path ^!follow) catch Error nil))
       (let physical (if (&& ($present? link) (== link/symlink true))
-        (do
-          (let resolved (try ($fs/real_path path) catch Error nil))
-          (if ($absent? resolved) (return (failure 500 "cannot resolve symbolic link")))
-          resolved)
-        else path))
+                      (let resolved (try ($fs/real_path path) catch Error nil))
+                      (if ($absent? resolved) (return (failure 500 "cannot resolve symbolic link")))
+                      resolved
+                    else
+                      path))
       (let raw (try ($fs/read_bytes physical) catch Error nil))
       (if ($absent? raw) (return (failure 500 "cannot read file")))
       (let current_digest ($crypto/sha256 raw))

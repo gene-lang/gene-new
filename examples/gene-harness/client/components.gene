@@ -3,14 +3,14 @@
 (fn render_element [tree : Any, on_command : (Fn [Str] Nil), on_prompt : (Fn [Str] Nil), on_navigate : (Fn [Str Str] Nil), enabled : Bool, buttons : (List Any), ^widgets widgets : Any = nil] : EventTarget
   (if ($absent? tree) (return ($dom/create_text "")))
   (if ($leaf? tree)
-    (do (var text : Str tree)
-    (return ($dom/create_text text))))
+    (var text : Str tree)
+    (return ($dom/create_text text)))
   (var tag : Str tree/tag)
   (if (== tag "host_widget")
-    (do (if ($absent? widgets) (return ($dom/create_text "")))
+    (if ($absent? widgets) (return ($dom/create_text "")))
     (var resolve : (Fn [Str] EventTarget) widgets)
     (var name : Str tree/props/name)
-    (return (resolve name))))
+    (return (resolve name)))
   (var element ($dom/create_element tag))
   (var props : PropMap tree/props)
   (map_for [key value] in props

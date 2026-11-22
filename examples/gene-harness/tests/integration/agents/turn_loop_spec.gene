@@ -57,7 +57,7 @@ END
 *** End Patch
 """)))
             (if (== number 2)
-              (do ($assert
+              ($assert
                 ($str/contains? request/messages/1/content prompt)
                 "initiating task was elided")
               ($assert
@@ -67,9 +67,9 @@ END
                 ($str/contains? request/messages/2/content "*** Add File: /invalid.txt")
                 "failed patch body was lost")
               ($assert (== request/budget/remaining 1) "remaining budget was incorrect")
-              (return "(append_prompt \"docs\" (doc \"gene/stdlib\")) (Outcome ^prompt \"implement\")")))
+              (return "(append_prompt \"docs\" (doc \"gene/stdlib\")) (Outcome ^prompt \"implement\")"))
             (if (== number 3)
-              (do ($assert
+              ($assert
                 ($str/contains? request/messages/1/content prompt)
                 "task did not survive another turn")
               ($assert
@@ -78,7 +78,7 @@ END
               ($assert
                 (== request/budget/remaining 0)
                 "last response did not know the budget was exhausted")
-              (return "(Outcome ^prompt \"RAW_PENDING_REQUEST\")")))
+              (return "(Outcome ^prompt \"RAW_PENDING_REQUEST\")"))
             ($assert (== request/budget/used 1) "continuation did not reset the round budget")
             ($assert ($str/contains? latest/content "RAW_PENDING_REQUEST")
               "continuation lost the retained pending request")

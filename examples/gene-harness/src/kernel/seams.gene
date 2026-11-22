@@ -8,9 +8,10 @@
 
 (fn ^^private mutate_seam [h : Harness, owner : Str, seam : Str, change]
   (if (queue_registry_change? h)
-    (do (queue_composition_change h/snapshots {^id owner ^kind "seam"
-        ^apply (fn [] (mutate_seam h owner seam change))})
-      (return true)))
+    (queue_composition_change
+      h/snapshots
+      {^id owner ^kind "seam" ^apply (fn [] (mutate_seam h owner seam change))})
+    (return true))
   (if h/composer/.Composer:publishing? (return (change)))
   # Dependency projections belong to a staged generation. Disposing an old
   # projection under the direct registry gate can deadlock its cleanup and
@@ -79,8 +80,8 @@
   (let names [])
   (for chapter in chapters
     (if (== chapter/name name)
-      (do (if_not ($absent? chapter/text) (return chapter/text))
-      (return ($fs/read_text chapter/path))))
+      (if_not ($absent? chapter/text) (return chapter/text))
+      (return ($fs/read_text chapter/path)))
     (names .push chapter/name))
   (let listed ($str/join names ", "))
   (fail

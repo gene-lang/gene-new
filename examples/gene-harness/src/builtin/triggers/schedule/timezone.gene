@@ -64,8 +64,8 @@
     (let response (try ($os/exec executable "-i" "-c" range name
       ^timeout_ms 30000 ^max_bytes 262144) catch Error nil))
     (if (&& ($present? response) (== response/status 0) (! response/timed_out))
-      (do (set text response/stdout)
-      (break))))
+      (set text response/stdout)
+      (break)))
   (if ($absent? text) (problem "The timezone adapter requires zdump with interval output"))
   (parse_intervals name text through_year))
 

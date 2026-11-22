@@ -61,6 +61,7 @@
       (set kind "text"))
   (let metadata {^name leaf ^mime mime ^kind kind ^size size})
   (if (== mime "image/png")
-    (do (let image (try (inspect_png data) catch PngError (invalid $err/.message)))
-    (map_for [key value] in image (metadata .put key value))))
+    (let image (try (inspect_png data) catch PngError (invalid $err/.message)))
+    (map_for [key value] in image
+      (metadata .put key value)))
   metadata)

@@ -63,7 +63,8 @@
             (calls .set 0) (mode .set shape)
             (let initial (expired_record))
             (if (== shape "omitted")
-              (do (initial .delete "access_token") (initial .put "expires_at" (+ (/ ($os/wall_ms) 1000) 3600))))
+              (initial .delete "access_token")
+              (initial .put "expires_at" (+ (/ ($os/wall_ms) 1000) 3600)))
             (let account (save_chatgpt_account root initial))
             (let listed (list_chatgpt_accounts root))
             (if (== shape "omitted")
@@ -151,42 +152,65 @@
               nil catch Error $err))
             ($assert ($present? first) mode)
             (if (== mode "verification")
-              (do (let pending (read_chatgpt_record root account/id))
-                ($assert (== pending/refresh_token "SECRET_NEW_REFRESH") "rotation was not durable before verification retried")
-                ($assert ($present? pending/pending_refresh))
-                (let public (list_chatgpt_accounts root))
-                ($assert (== public/accounts/0/state "unavailable"))
-                ($assert (! ($str/contains? ($json/stringify public) "SECRET")))))
+              (let pending (read_chatgpt_record root account/id))
+              ($assert
+                (== pending/refresh_token "SECRET_NEW_REFRESH")
+                "rotation was not durable before verification retried")
+              ($assert ($present? pending/pending_refresh))
+              (let public (list_chatgpt_accounts root))
+              ($assert (== public/accounts/0/state "unavailable"))
+              ($assert (! ($str/contains? ($json/stringify public) "SECRET"))))
             (if (["identity" "signature"] .contains? mode)
-              (do (let refused (read_chatgpt_record root account/id))
-                (if (== mode "identity")
-                  ($assert (== first/status 401))
-                    ($assert ($absent? refused/access_token))
-                    ($assert ($absent? refused/refresh_token))
-                    ($assert ($absent? refused/pending_refresh))
-                  else
-                    ($assert (== first/code "invalid_id_token"))
-                    ($assert (== refused/refresh_token "SECRET_NEW_REFRESH"))
-                    ($assert ($present? refused/pending_refresh))
-                    ($assert (try (chatgpt_access ^root root ^exchange_url url ^verify verify) false catch Error true))
-                    ($assert (== calls/.get 1) "an unverified identity caused another token exchange"))
-                (continue)))
+              (let refused (read_chatgpt_record root account/id))
+              (if (== mode "identity")
+                ($assert (== first/status 401))
+                ($assert ($absent? refused/access_token))
+                ($assert ($absent? refused/refresh_token))
+                ($assert ($absent? refused/pending_refresh))
+              else
+                ($assert (== first/code "invalid_id_token"))
+                ($assert (== refused/refresh_token "SECRET_NEW_REFRESH"))
+                ($assert ($present? refused/pending_refresh))
+                ($assert
+                  (try
+                    (chatgpt_access ^root root ^exchange_url url ^verify verify)
+                    false
+                  catch Error
+                    true))
+                ($assert (== calls/.get 1) "an unverified identity caused another token exchange"))
+              (continue))
             (if (== mode "shutdown") (close_runtime runtime))
             (if (["delayed" "delayed_without_identity" "expired_identity"] .contains? mode)
-              (do (with_chatgpt_account root account/id (fn [record]
+              (with_chatgpt_account
+                root
+                account/id
+                (fn [record]
                   (if (== mode "expired_identity")
-                    (record/pending_refresh .put "id_token" (expiry_token (- (/ ($os/wall_ms) 1000) 60)))
-                    else (record .put "pending_refresh_at" (- (/ ($os/wall_ms) 1000) 7200)))
+                    (record/pending_refresh .put
+                      "id_token"
+                      (expiry_token (- (/ ($os/wall_ms) 1000) 60)))
+                  else
+                    (record .put "pending_refresh_at" (- (/ ($os/wall_ms) 1000) 7200)))
                   {^record record}))
-                ($assert (try (chatgpt_access ^root root ^exchange_url url ^verify verify) false
-                  catch ProviderError (== $err/code "refresh_response_expired")))
-                ($assert (== calls/.get 1))))
+              ($assert
+                (try
+                  (chatgpt_access ^root root ^exchange_url url ^verify verify)
+                  false
+                catch ProviderError
+                  (== $err/code "refresh_response_expired")))
+              ($assert (== calls/.get 1)))
             (if (== mode "delayed_without_identity")
-              (do (repeat 2
-                  ($assert (try (chatgpt_access ^root root ^exchange_url url ^verify verify) false
-                    catch ProviderError (== $err/code "identity_verification_required"))))
-                ($assert (== calls/.get 2) "missing identity repeatedly spent the saved refresh token")
-                (continue)))
+              (repeat 2
+                ($assert
+                  (try
+                    (chatgpt_access ^root root ^exchange_url url ^verify verify)
+                    false
+                  catch ProviderError
+                    (== $err/code "identity_verification_required"))))
+              ($assert
+                (== calls/.get 2)
+                "missing identity repeatedly spent the saved refresh token")
+              (continue))
             (let result (chatgpt_access ^root root ^exchange_url url ^verify verify))
             ($assert (== result/access_token "SECRET_NEW_ACCESS") mode)
             ($assert (== (/refresh_token (read_chatgpt_record root account/id)) "SECRET_NEW_REFRESH") mode)
@@ -282,7 +306,8 @@
         ensure (stop server))))
         (serve server ^handler (fn [incoming]
           (if (== incoming/path "/auth/callback")
-            (do (let result (complete_chatgpt_login pending/.get incoming/params)) (return (text result/status result/message))))
+            (let result (complete_chatgpt_login pending/.get incoming/params))
+            (return (text result/status result/message)))
           (exchanges .set (+ exchanges/.get 1))
           ($assert (== incoming/path "/token"))
           ($assert ($str/contains? incoming/headers/content-type "application/x-www-form-urlencoded"))

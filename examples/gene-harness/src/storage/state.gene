@@ -203,12 +203,17 @@
   (set_current_events events key values)
   (set_next_sequence events key (+ seq 1))
   (if (== ($to_str event/type) "plugin/state")
-    (do (update_projection events key ($to_str event/plugin) envelope/payload/state)
+    (update_projection events key ($to_str event/plugin) envelope/payload/state)
     (let writers (?? (events/state_writers/.get .get key) {}))
-    (writers .put ($to_str event/plugin)
-      {^plugin ($to_str event/plugin) ^scope scope ^stream stream ^sequence seq
-       ^writer (?? envelope/payload/writer nil)})
-    (events/state_writers/.get .put key writers)))
+    (writers .put
+      ($to_str event/plugin)
+      {
+        ^plugin ($to_str event/plugin)
+        ^scope scope
+        ^stream stream
+        ^sequence seq
+        ^writer (?? envelope/payload/writer nil)})
+    (events/state_writers/.get .put key writers))
   (if (&& (== origin "core")
               (["session/state" "round/state" "question/asked" "question/answered"
                 "command" "history/summary"
@@ -335,8 +340,8 @@
     (fail (HarnessStateError
       ^_msg $"plugin event ${envelope/type} has no projection owner")))
   (if ($absent? (seen .get plugin))
-    (do (seen .put plugin true)
-    (quarantined .push plugin))))
+    (seen .put plugin true)
+    (quarantined .push plugin)))
 
 (fn validate_unknown_event [quarantined, seen, envelope]
   (if (== envelope/ignorable true) (return))
@@ -358,13 +363,13 @@
   (if (&& (! accepted_version) ($present? known/versions))
     (set accepted_version ($present? (known/versions .get $"v${envelope/version}"))))
   (if (! accepted_version)
-    (do (if (== envelope/ignorable true) (return))
+    (if (== envelope/ignorable true) (return))
     (if (== envelope/origin "core")
-      (fail (HarnessStateError
-        ^_msg $"unsupported core event version ${envelope/type}/${envelope/version}"))
-      else
+      (fail
+        (HarnessStateError ^_msg $"unsupported core event version ${envelope/type}/${envelope/version}"))
+    else
       (quarantine_projection quarantined seen envelope)
-      (return))))
+      (return)))
   (var schema_error nil)
   (if ($absent? known/schema)
     (set schema_error "catalog row has no payload schema")
@@ -374,8 +379,8 @@
           envelope/payload/data else envelope/payload))
       (var schema known/schema)
       (if ($present? known/versions)
-        (do (var version_schema (known/versions .get $"v${envelope/version}"))
-        (if_not ($absent? version_schema) (set schema version_schema))))
+        (var version_schema (known/versions .get $"v${envelope/version}"))
+        (if_not ($absent? version_schema) (set schema version_schema)))
       (schema schema_payload)
     catch Throwable
       (set schema_error ($to_str $err/.message))))
@@ -394,10 +399,9 @@
   # A startup repair must validate cold streams too before it can append to
   # any stream. Newly loaded envelopes use the installed catalog exactly once.
   (if all_streams
-    (do (let manifest events/last_manifest/.get)
+    (let manifest events/last_manifest/.get)
     (map_for [stream descriptor] in (?? manifest/streams {})
-      (if ($absent? (events/streams/.get .get stream))
-        (current_events events ($to_str stream))))))
+      (if ($absent? (events/streams/.get .get stream)) (current_events events ($to_str stream)))))
   (copy_data events/quarantined/.get))
 
 (fn validate_envelope_formats [events : EventStore]
@@ -419,8 +423,8 @@
   (var out (fresh_list))
   (for value in values
     (if ($absent? (seen .get value))
-      (do (seen .put value true)
-      (out .push value))))
+      (seen .put value true)
+      (out .push value)))
   out)
 
 (fn segment_stream [events : EventStore, values, previous]
@@ -430,15 +434,17 @@
   # Complete segments never change. Only the previous open tail and newly
   # appended events need serialization; older digests are carried forward.
   (if (&& ($present? previous) (== previous/segment_events events/segment_events))
-    (do (var sealed (if ($absent? previous/event_count)
-      ($math/max 0 (- previous/segments/.size 1))
-      else ($to_int (/ previous/event_count events/segment_events))))
+    (var sealed
+      (if ($absent? previous/event_count)
+        ($math/max 0 (- previous/segments/.size 1))
+      else
+        ($to_int (/ previous/event_count events/segment_events))))
     (set sealed ($math/min sealed ($to_int (/ values/.size events/segment_events))))
     (var index 0)
     (while (< index sealed)
       (all_digests .push previous/segments/%index)
       (set index (+ index 1)))
-    (set start (* sealed events/segment_events))))
+    (set start (* sealed events/segment_events)))
   (while (< start values/.size)
     (var segment
       (slice_events values start (+ start events/segment_events)))
@@ -466,10 +472,9 @@
     (retained .put digest true))
   (for key in backend/.Store:keys
     (if (|| (starts_with? key "segment/") (starts_with? key "projection/"))
-      (do (var prefix (if (starts_with? key "segment/") 8 else 11))
+      (var prefix (if (starts_with? key "segment/") 8 else 11))
       (var digest (slice_bytes key prefix (- (byte_size key) prefix)))
-      (if ($absent? (retained .get digest))
-        (backend .Store:delete key))))))
+      (if ($absent? (retained .get digest)) (backend .Store:delete key)))))
 
 (fn build_event_manifest [events : EventStore, generation : Int]
   (var descriptors (fresh_map))
@@ -480,7 +485,8 @@
   (var streams events/streams/.get)
   (map_for [key ignored] in events/dirty_streams/.get
     (if (== ignored "deleted")
-      (do (descriptors .delete key) (continue)))
+      (descriptors .delete key)
+      (continue))
     (var values (streams .get key))
     (if ($absent? values)
       (fail (HarnessStateError ^_msg $"Dirty event stream ${key} is not cached")))
@@ -620,12 +626,9 @@
       (if (== envelope/type "model/request")
         (open_calls .put envelope/payload/call envelope))
       (if (== envelope/type "model/result")
-        (do (let id envelope/payload/call)
-          (last_attempts .put id
-            ($math/max (?? (last_attempts .get id) 0)
-              envelope/payload/attempt))
-          (if (== envelope/payload/final true)
-            (open_calls .delete id)))))
+        (let id envelope/payload/call)
+        (last_attempts .put id ($math/max (?? (last_attempts .get id) 0) envelope/payload/attempt))
+        (if (== envelope/payload/final true) (open_calls .delete id))))
     (map_for [id requested] in open_calls
       (interrupted_calls .push
         {^request requested
@@ -683,8 +686,8 @@
                 ^gc_interval gc_interval ^gc_countdown ($cell 1)))
   (var loaded backend/.Store:load_checkpoint)
   (if ($present? loaded)
-    (do (var manifest (loaded/records .get "event_manifest"))
-    (restore_manifest events manifest)))
+    (var manifest (loaded/records .get "event_manifest"))
+    (restore_manifest events manifest))
   (validate_envelope_formats events)
   events)
 

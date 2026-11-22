@@ -158,10 +158,10 @@
        else "default")})
   # Restart-applied values report what the running consumer started with.
   (if (== definition/applies "restart")
-    (do (let known ($has_key? active key))
-      (view .put "active_known" known)
-      (view .put "active" (if known (active .get key) else nil))
-      (view .put "pending_restart" (if known (!= (active .get key) effective) else nil))))
+    (let known ($has_key? active key))
+    (view .put "active_known" known)
+    (view .put "active" (if known (active .get key) else nil))
+    (view .put "pending_restart" (if known (!= (active .get key) effective) else nil)))
   view)
 
 (fn shared_view [definition, shared_values]
@@ -267,7 +267,9 @@
 (fn close_shared_observation [watch]
   (if (watch/closed .swap true) (return nil))
   (let worker watch/worker/.get)
-  (if (&& ($present? worker) (! worker/.done?)) (do worker/.cancel worker/.join))
+  (if (&& ($present? worker) (! worker/.done?))
+    worker/.cancel
+    worker/.join)
   nil)
 
 (fn request_keys [changes, reset]
@@ -307,9 +309,9 @@
         (let complete (scope_values runtime "workspace" candidate))
         (for key in keys
           (if ($has_key? candidate key)
-            (do (let definition (definitions .get key))
+            (let definition (definitions .get key))
             (check_setting_value definition (candidate .get key))
-            (check_choice runtime definition (candidate .get key) complete "workspace"))))
+            (check_choice runtime definition (candidate .get key) complete "workspace")))
         (if (|| (keys .contains? "provider") (keys .contains? "model")) (check_model_pair candidate))
         ($fs/write_text_atomic (config_path runtime) ($serde/write_data candidate))
         {^config candidate ^digest (config_digest candidate)})))

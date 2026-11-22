@@ -91,16 +91,16 @@
   (if_not ($absent? reference/command)
     (set path $"${(api_root)}/sessions/${session}/commands/${(qtext reference/command)}"))
   (if (== path "")
-    (do ($dom/set_text
+    ($dom/set_text
       target
       ($to_str
-        (if (== session "") "Workspace view" else ($to_str "Conversation " session))
+        (if (== session "") "Workspace view" else $"Conversation ${session}")
         """
 """
         (qtext reference/component)
         " "
         (qtext reference/entity)))
-    (return)))
+    (return))
   ($dom/set_text target "Loading original receipt…")
   (inbox/api
     "GET"
@@ -127,8 +127,8 @@
   (storage_set "gene-harness/notification-actions" (qjson inbox/pending))
   (var status (qtext record/status))
   (if (== status "running")
-    (do ($time/after 500.0 (fn [] : Nil (recover_action inbox key false)))
-    (return)))
+    ($time/after 500.0 (fn [] : Nil (recover_action inbox key false)))
+    (return))
   (inbox/pending .delete key)
   (storage_set "gene-harness/notification-actions" (qjson inbox/pending))
   (remove_notice inbox/notices "notification-action" (qtext pending/request/session) key)
@@ -160,14 +160,14 @@
         when 200 (do
             (remove_notice inbox/notices "notification-action" (qtext request/session) key)
             (if (== (qtext data/kind) "reference")
-              (do (open_evidence inbox data/reference)
-              (inbox/navigate data/reference)))
+              (open_evidence inbox data/reference)
+              (inbox/navigate data/reference))
             (if (== (qtext data/kind) "prompt")
               (inbox/draft (qtext data/session) (qtext data/text))))
         else
           (if (|| (== code 400) (== code 404) (== code 409) (== code 410))
-            (do (inbox/pending .delete key)
-            (storage_set "gene-harness/notification-actions" (qjson inbox/pending))))
+            (inbox/pending .delete key)
+            (storage_set "gene-harness/notification-actions" (qjson inbox/pending)))
           (put_notice ^action (if ($absent? inbox/pending/%key) nil else (fn [] : Nil (recover_action inbox key true)))
             inbox/notices
             ($dom/element "notice")
@@ -212,17 +212,17 @@
   (var request
     {^notification message/id ^revision message/revision ^action action/id ^session session})
   (if (&& ($absent? action/function) ($absent? action/command))
-    (do (post_action inbox request)
-    (return)))
+    (post_action inbox request)
+    (return))
   (map_for [key pending] in inbox/pending
     (if (&& (== (qtext pending/request/notification) (qtext message/id)) (== (qtext pending/request/action) (qtext action/id)))
-      (do (recover_action inbox ($to_str key) true)
-      (return))))
+      (recover_action inbox ($to_str key) true)
+      (return)))
   (var admission ($json/stringify [message/id action/id]))
   (if_not ($absent? inbox/sending/%admission) (return))
   (if (== session "")
-    (do (producer_problem inbox "Open or create a conversation before running this action.")
-    (return)))
+    (producer_problem inbox "Open or create a conversation before running this action.")
+    (return))
   (set inbox/sending/%admission true)
   (inbox/api
     "GET"
@@ -231,8 +231,8 @@
     (fn [code : Int, data : Any] : Nil
       (inbox/sending .delete admission)
       (if (!= code 200)
-        (do (producer_problem inbox (qtext data/message))
-        (return)))
+        (producer_problem inbox (qtext data/message))
+        (return))
       (var key ($browser/request_id))
       (set request/request_id key)
       (var sequence : Int ($json/parse (qtext data/next_command_seq)))
@@ -264,7 +264,7 @@
       else found))
   (set card/element/hidden false)
   (if ($absent? found)
-    (do (set inbox/cards/%id card)
+    (set inbox/cards/%id card)
     ($dom/append card/element card/heading)
     ($dom/append card/element card/source)
     ($dom/append card/element card/summary)
@@ -284,7 +284,7 @@
       "click"
       (fn [event : Any] : Nil
         (clear_producers inbox [{^id card/message/id ^revision card/message/revision}])))
-    ($dom/append ($dom/element "notification_messages") card/element)))
+    ($dom/append ($dom/element "notification_messages") card/element))
   (var revision : Int message/revision)
   (if (== revision card/revision) (return))
   (set card/revision revision)
@@ -320,9 +320,9 @@
     (set action_ids/%key true)
     (var saved : Any card/buttons/%key)
     (if (&& ($present? saved) (!= (qjson saved/action) (qjson action)))
-      (do (var old : EventTarget saved/element)
+      (var old : EventTarget saved/element)
       ($dom/remove old)
-      (set saved nil)))
+      (set saved nil))
     (var button
       :
       EventTarget
@@ -330,18 +330,18 @@
         ($dom/render `(button ^type "button" %(qtext action/label)))
         else saved/element))
     (if ($absent? saved)
-      (do (set card/buttons/%key {^element button ^action action})
+      (set card/buttons/%key {^element button ^action action})
       ($dom/add_event_listener
         button
         "click"
         (fn [event : Any] : Nil
           (activate_action inbox card/message action)))
-      ($dom/append card/actions button)))
+      ($dom/append card/actions button))
     (set button/hidden false))
   (map_for [key saved] in card/buttons
     (if ($absent? action_ids/%key)
-      (do (var button : EventTarget saved/element)
-      (set button/hidden true))))
+      (var button : EventTarget saved/element)
+      (set button/hidden true)))
   (set card/reference/hidden ($absent? message/origin/session)))
 
 (fn apply_inbox [inbox : ProducerInbox, data : Any] : Nil
@@ -367,12 +367,12 @@
 
 (fn producer_event [inbox : ProducerInbox, kind : Str, epoch : Str, data : Any] : Nil
   (if (!= epoch inbox/epoch)
-    (do (set inbox/epoch epoch)
+    (set inbox/epoch epoch)
     (set inbox/clearing false)
     (set inbox/revision -1)
     (map_for [key raw] in inbox/cards
       (var card : ProducerCard raw)
-      (set card/revision 0))))
+      (set card/revision 0)))
   (if (== kind "notifications/state") (apply_inbox inbox data))
   (if (== kind "notifications/progress")
     (put_notice
@@ -392,9 +392,9 @@
   (set inbox/selected selected)
   (message_controls inbox)
   (if reconnect
-    (do (refresh_inbox inbox)
+    (refresh_inbox inbox)
     (map_for [key pending] in inbox/pending
-      (recover_action inbox ($to_str key) false)))))
+      (recover_action inbox ($to_str key) false))))
 
 (fn create_producer_inbox [notices : Notices, safe : Bool, api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil), changed : (Fn [Int] Nil), navigate : (Fn [Any] Nil), draft : (Fn [Str Str] Nil)] : ProducerInbox
   (var inbox

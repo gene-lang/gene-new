@@ -873,3 +873,13 @@ proc formatSource*(src: string, sourceName = "<fmt>"): string =
   if sb.len == 0 or sb[^1] != '\n':
     sb.add "\n"
   sb
+
+proc formatForm*(value: Value, indent = 0): string =
+  ## Render one form at `indent` without touching the surrounding source.
+  ## Migration tooling uses this to canonicalize only the forms it rewrites.
+  fmtValue(value, indent)
+
+proc formatForm*(value: Value, wraps: Table[uint64, WrapSyntax],
+                 indent = 0): string =
+  ## Render one form while restoring reader sugar recorded in `wraps`.
+  fmtValue(formattingView(value, wraps), indent)

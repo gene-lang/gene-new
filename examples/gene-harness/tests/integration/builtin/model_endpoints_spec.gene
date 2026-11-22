@@ -112,7 +112,9 @@
             ($assert ($absent? payload/reasoning_effort))
             else ($assert (== payload/reasoning_effort "high")))
           (if (== destination "one")
-            (do (entered .set true) (while (! released/.get) ($sleep 1))))
+            (entered .set true)
+            (while (! released/.get)
+              ($sleep 1)))
           (json 200 ($json/stringify {^choices [{^finish_reason "stop" ^message
             {^role "assistant" ^content (if (== destination "one")
               "(Outcome ^prompt \"continue\")" else "(Outcome ^^done ^reply \"done\")")}}]}))) server)
@@ -164,13 +166,16 @@
             (stop server))))
         (serve ^handler (fn [request]
           (if (== request/method "GET")
-            (do (while block_discovery/.get ($sleep 1))
-              (return (json 200 "{\"data\":[{\"id\":\"model\"}]}"))))
+            (while block_discovery/.get
+              ($sleep 1))
+            (return (json 200 "{\"data\":[{\"id\":\"model\"}]}")))
           (count .set (+ count/.get 1))
           (let payload ($json/parse request/body))
           ($assert (== payload/reasoning_effort (if (<= count/.get 2) "high" else "low")))
           (if (== count/.get 1)
-            (do (entered .set true) (while (! released/.get) ($sleep 1))))
+            (entered .set true)
+            (while (! released/.get)
+              ($sleep 1)))
           (json 200 ($json/stringify {^choices [{^finish_reason "stop" ^message {^role "assistant"
             ^content (if (== count/.get 1) "(Outcome ^prompt \"again\")" else "(Outcome ^^done ^reply \"done\")")}}]}))) server)
         (match tester/.join

@@ -11,13 +11,13 @@
   (let root $"${home}/.gene-harness-root")
   (let args ["run" "--snapshot" (source_path "src/runtime/supervisor.gene")])
   (if direct
-    (do
-      (args .push "web")
-      (args .push "--workspace")
-      (args .push root)
-      (args .push "--root")
-      (args .push ($path/join home "shared-models")))
-    else (args .push "manager"))
+    (args .push "web")
+    (args .push "--workspace")
+    (args .push root)
+    (args .push "--root")
+    (args .push ($path/join home "shared-models"))
+  else
+    (args .push "manager"))
   (args .push "--port")
   (args .push "0")
   (if recovery (args .push "--recovery"))

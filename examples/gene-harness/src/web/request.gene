@@ -55,8 +55,8 @@
     (let text ($str/trim part))
     (let prefix $"${name}=")
     (if ($str/starts_with? text prefix)
-      (do (let start ($str/byte_size prefix))
-      (return ($str/slice_bytes text start (- ($str/byte_size text) start))))))
+      (let start ($str/byte_size prefix))
+      (return ($str/slice_bytes text start (- ($str/byte_size text) start)))))
   "")
 
 (fn secure_response [result]

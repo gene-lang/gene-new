@@ -41,12 +41,16 @@
     (let next (copy inbox/state/.get))
     (let result (body next))
     (if (!= next inbox/state/.get)
-      (do (next .put "revision" (+ inbox/state/.get/revision 1))
+      (next .put "revision" (+ inbox/state/.get/revision 1))
       (inbox/backend .Store:checkpoint next/revision {^inbox next})
       (inbox/state .set next)
       # Delivery failure cannot change the outcome of a committed publication.
       (let observer inbox/observer/.get)
-      (if_not ($absent? observer) (try (observer "notifications/state" (inbox_snapshot inbox)) catch Error nil))))
+      (if_not ($absent? observer)
+        (try
+          (observer "notifications/state" (inbox_snapshot inbox))
+        catch Error
+          nil)))
     result)))
 
 (fn visible [message, now : Int] : Bool

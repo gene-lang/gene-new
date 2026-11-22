@@ -114,16 +114,16 @@
     (if (!= record/status status) (corrections .push {^id ($to_str id) ^status status}))
     (if (["running" "cancelled"] .contains? status) (interrupted .push ($to_str id)))
     (if (== status "waiting")
-      (do (let batch (answered_waiting_batch manager ($to_str id)))
+      (let batch (answered_waiting_batch manager ($to_str id)))
       (if_not ($absent? batch)
         # Only a recorded continuation resumes, once rounds can run again. A
         # recorded cancellation cancels; an older record without an intended
         # action is interrupted, never resumed.
         (if (== batch/intent "continue")
           (manager/resumes/.get .push ($to_str id))
-          else
-            (interrupted .push ($to_str id))
-            (reasons .put ($to_str id) (if (== batch/intent "cancel") "cancelled" else "interrupted")))))))
+        else
+          (interrupted .push ($to_str id))
+          (reasons .put ($to_str id) (if (== batch/intent "cancel") "cancelled" else "interrupted"))))))
   (for correction in corrections
     (if_not (interrupted .contains? correction/id)
       (update_session manager correction/id {^status correction/status})))
@@ -134,7 +134,7 @@
     (let warnings [])
     (map_for [key patch] in (core_states manager/events "session" id)
       (if (&& ($str/starts_with? ($to_str key) "patch/") (== patch/state "started"))
-        (do (let warning (recover_patch_temporaries manager/runtime/root patch/files))
+        (let warning (recover_patch_temporaries manager/runtime/root patch/files))
         (warnings .push warning)
         (record_core_state
           manager/events
@@ -150,7 +150,7 @@
           "session/state"
           "recovery"
           {^warnings warnings})
-        (append_core_event manager/events "session" id {^type "trace" ^text warning ^^ignorable}))))
+        (append_core_event manager/events "session" id {^type "trace" ^text warning ^^ignorable})))
     (repair_interrupted_turns ^session id ^reason reason manager/events)
     (if_not ($absent? round)
       (round .put "state" reason)
@@ -204,8 +204,8 @@
       (fail (SessionError ^code "invalid_request" ^_msg "session identity cannot change")))
     (record .put key value))
   (if (== record/kind "child")
-    (do (let owner (require_record manager record/parent/session))
-    (record .put "pinned" owner/pinned)))
+    (let owner (require_record manager record/parent/session))
+    (record .put "pinned" owner/pinned))
   (record_core_state manager/events "workspace" "workspace" "session/state" $"session/${id}" record)
   (flush_event_store manager/events)
   (manager/index
@@ -213,18 +213,16 @@
     ; .put id record)
   (write_index manager)
   (notify_session manager record)
-  (if (&& (== record/kind "child") record/attention
-              (|| (! previous/attention)
-                  (&& (!= previous/status record/status)
-                      (["waiting" "failed" "interrupted"] .contains? record/status))))
-    (do (let parent (manager/index/.get .get record/parent/session))
+  (if (&& (== record/kind "child") record/attention (|| (! previous/attention) (&& (!= previous/status record/status) (["waiting" "failed" "interrupted"] .contains? record/status))))
+    (let parent (manager/index/.get .get record/parent/session))
     (if (&& ($present? parent) (! parent/attention))
-      (update_session_unlocked manager parent/id {^^attention}))))
+      (update_session_unlocked manager parent/id {^^attention})))
   (if (&& (!= record/kind "child") ($present? changes/pinned))
-    (do (let children [])
+    (let children [])
     (map_for [child_id child] in manager/index/.get
       (if (== child/parent/session id) (children .push ($to_str child_id))))
-    (for child in children (update_session_unlocked manager child {^pinned record/pinned}))))
+    (for child in children
+      (update_session_unlocked manager child {^pinned record/pinned})))
   (copy_data record))
 
 (fn create_session [manager : SessionManager, ^id id : Str = "", ^kind kind : Str = "interactive", ^title title : Str = "New conversation", ^trigger trigger = nil, ^occurrence occurrence = nil, ^first_request first_request : Str = "", ^pinned pinned : Bool = false, ^parent parent = nil, ^model_settings model_settings = nil, ^channel channel = nil, ^origin origin = nil]
@@ -251,12 +249,12 @@
   (if_not (["interactive" "heartbeat" "scheduled" "cron" "child" "automated"] .contains? kind)
     (fail (SessionError ^code "invalid_request" ^_msg "invalid session kind")))
   (if (== kind "child")
-    (do (if (|| (!= ($head parent) Map) (!= ($head parent/session) Str)
-            (!= ($head parent/round) Str) (!= ($head parent/delegation) Str))
-      (fail (SessionError ^code "invalid_request" ^_msg "A child session requires its parent session, round and delegation.")))
+    (if (|| (!= ($head parent) Map) (!= ($head parent/session) Str) (!= ($head parent/round) Str) (!= ($head parent/delegation) Str))
+      (fail
+        (SessionError ^code "invalid_request" ^_msg "A child session requires its parent session, round and delegation.")))
     (let owner (require_record manager parent/session))
     (if (== owner/kind "child")
-      (fail (SessionError ^code "depth_limit" ^_msg "Nested child sessions are not supported.")))))
+      (fail (SessionError ^code "depth_limit" ^_msg "Nested child sessions are not supported."))))
   (let name ($str/trim title))
   (if (|| (== name "") (> ($str/byte_size name) 256))
     (fail (SessionError ^code "invalid_request" ^_msg "session title must have 1–256 bytes")))
@@ -279,8 +277,8 @@
       ^first_request_media []})
   (if_not ($absent? parent) (record .put "parent" (copy_data parent)))
   (if (== kind "child")
-    (do (let parent_record (require_record manager parent/session))
-    (record .put "pinned" parent_record/pinned)))
+    (let parent_record (require_record manager parent/session))
+    (record .put "pinned" parent_record/pinned))
   (if_not ($absent? model_settings) (record .put "model_settings" (copy_data model_settings)))
   (if_not ($absent? channel) (record .put "channel" (copy_data channel)))
   (if_not ($absent? origin) (record .put "origin" (copy_data origin)))

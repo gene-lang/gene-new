@@ -39,12 +39,14 @@
   (var chosen : Any nil)
   (for component in components
     (var slot : Str component/slot)
-    (if (== slot "conversation_sidebar") (do (set chosen component) (break))))
+    (if (== slot "conversation_sidebar")
+      (set chosen component)
+      (break)))
   (var signature ($json/stringify chosen))
   (if (!= signature state/signature)
     # Keep real host nodes (and their handlers, filter values and list state)
     # across plugin layouts. Never reconstruct them from plugin-provided HTML.
-    (do (var focused : Str "")
+    (var focused : Str "")
     (for id in ["session_filter" "kind_filter" "status_filter" "trigger_filter" "since_filter" "until_filter"]
       (if ($dom/focused? ($dom/element id)) (set focused id)))
     (map_for [name raw] in state/widgets
@@ -57,25 +59,34 @@
     (var style_class : Str "")
     (if (&& state/available ($present? chosen/style_class)) (set style_class chosen/style_class))
     ($dom/set_attribute state/target "data-component" "conversation_sidebar")
-    ($dom/set_attribute state/target "class" (if (== style_class "") "sidebar_content" else $"sidebar_content ${style_class}"))
+    ($dom/set_attribute
+      state/target
+      "class"
+      (if (== style_class "") "sidebar_content" else $"sidebar_content ${style_class}"))
     (if state/available
       (if ($absent? chosen/view)
-        (do
-          (var raw_error : Any (?? chosen/error "No sidebar view was returned."))
-          (var error : Str raw_error)
-          ($dom/append state/target
-            ($dom/render `(p ^class_name "sidebar_empty"
-              "Sidebar could not render: " %error
-              " Open Recovery UI to repair its plugin."))))
-        else ($dom/append state/target
-          (render_element ^widgets (fn [name : Str] : EventTarget
-              (var widget : EventTarget state/widgets/%name)
-              widget)
-            chosen/view on_command on_prompt on_navigate enabled state/buttons))))
+        (var raw_error : Any (?? chosen/error "No sidebar view was returned."))
+        (var error : Str raw_error)
+        ($dom/append
+          state/target
+          ($dom/render
+            `(p ^class_name "sidebar_empty"
+               "Sidebar could not render: "
+               %error
+               " Open Recovery UI to repair its plugin.")))
+      else
+        ($dom/append
+          state/target
+          (render_element ^widgets (fn [name : Str] : EventTarget (var widget : EventTarget state/widgets/%name) widget)
+            chosen/view
+            on_command
+            on_prompt
+            on_navigate
+            enabled
+            state/buttons))))
     (set state/signature signature)
     (render_sidebar state)
-    (if (&& state/available (!= focused ""))
-      ($dom/focus ($dom/element focused)))))
+    (if (&& state/available (!= focused "")) ($dom/focus ($dom/element focused))))
   (for item in state/buttons
     (var element : EventTarget item/element)
     (var disabled : Bool item/disabled)
@@ -104,9 +115,9 @@
     (fn [event : Any] : Nil
       (if (narrow_sidebar?)
         (set state/mobile_open (! state/mobile_open))
-        else (do
-          (set state/desktop_open (! state/desktop_open))
-          (storage_set "gene-harness/sidebar" (if state/desktop_open "open" else "closed"))))
+      else
+        (set state/desktop_open (! state/desktop_open))
+        (storage_set "gene-harness/sidebar" (if state/desktop_open "open" else "closed")))
       (render_sidebar state)))
   ($dom/add_event_listener
     ($dom/element "close_menu")
@@ -125,8 +136,8 @@
     "keydown"
     (fn [event : Any] : Nil
       (if (&& state/mobile_open (== ($event/key event) "Escape"))
-        (do ($dom/prevent_default event)
+        ($dom/prevent_default event)
         (close_mobile_sidebar state)
-        ($dom/focus ($dom/element "menu"))))))
+        ($dom/focus ($dom/element "menu")))))
   (render_sidebar state)
   state)

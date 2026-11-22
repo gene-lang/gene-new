@@ -142,13 +142,13 @@
   (let id (binding_id registry name))
   (let keys record/keys/.get)
   (if ($absent? (keys .get id))
-    (do (let key (service_key $"harness/entry/${id}" EntrySelection ^check check_selection))
+    (let key (service_key ^check check_selection $"harness/entry/${id}" EntrySelection))
     (record/runtime .admit_service_key key)
     (keys .put id {^registry registry ^name name ^key key})
     # The bindings entry projected the keys known when it activated. A key
     # admitted later is projected now, before any plugin requiring it installs.
     (if (&& (! record/defer_selection) (! ($absent? record/base_owner/.get)))
-      (selection_changed record registry name))))
+      (selection_changed record registry name)))
   (let binding (keys .get id))
   (Requirement ^key binding/key ^config nil))
 
@@ -156,8 +156,8 @@
   (let id (binding_id registry key))
   (if ($absent? (record/keys .get; .get id)) (return nil))
   (if (== (record/updating .get id) true)
-    (do (record/dirty .put id true)
-    (return nil)))
+    (record/dirty .put id true)
+    (return nil))
   (record/updating .put id true)
   (try
     (var again true)
@@ -176,41 +176,38 @@
   (if ($absent? binding) (return nil))
   (let selected (record/host .RegistryHost:selected registry key))
   (var prior (record/projections/.get .get id))
-  (if (&& ($present? prior)
-              (== prior/instance/.state InstanceState/disposed))
-    (do (record/projections/.get .delete id)
-    (set prior nil)))
+  (if (&& ($present? prior) (== prior/instance/.state InstanceState/disposed))
+    (record/projections/.get .delete id)
+    (set prior nil))
   (if (&& ($present? prior) ($present? selected)
               (== prior/row_id selected/row_id))
     (return nil))
   (let installer record/projection_installer)
   (if ($present? installer)
-    (do
-      # A carried reconciliation stages changed selections in the candidate.
-      # The old live projection keeps serving its leases until publication and
-      # is disposed only after the candidate commits.
-      (if ($present? prior)
-        (do
-          (record/dispose_projections/.get .push prior/instance)
-          (record/projections/.get .delete id)))
-      (if ($absent? selected)
-        (do
-          # The candidate inherited the old projection's provider. Withdraw it
-          # so its carried consumers are invalidated and retire with a ticket.
-          (if ($present? prior) (installer binding/key nil))
-          (return nil)))
-      (let value (EntrySelection ^row_id selected/row_id ^payload selected/payload))
-      (let instance (installer binding/key value))
-      (record/projections/.get .put id {^row_id selected/row_id ^instance instance})
-      (return nil)))
+    # A carried reconciliation stages changed selections in the candidate.
+    # The old live projection keeps serving its leases until publication and
+    # is disposed only after the candidate commits.
+    (if ($present? prior)
+      (record/dispose_projections/.get .push prior/instance)
+      (record/projections/.get .delete id))
+    (if ($absent? selected)
+      # The candidate inherited the old projection's provider. Withdraw it
+      # so its carried consumers are invalidated and retire with a ticket.
+      (if ($present? prior) (installer binding/key nil))
+      (return nil))
+    (let value (EntrySelection ^row_id selected/row_id ^payload selected/payload))
+    (let instance (installer binding/key value))
+    (record/projections/.get .put id {^row_id selected/row_id ^instance instance})
+    (return nil))
   # Without a candidate installer the selection belongs to a staged activation
   # owned by the bindings effect, so replacement happens in place.
   (if ($present? prior)
-    (do prior/instance/.dispose
+    prior/instance/.dispose
     # dispose queues retirement while a provider validation is admitted. Wait
     # for Cordis to release that reservation before installing its successor.
-    (while (!= prior/instance/.state InstanceState/disposed) ($sleep 1))
-    (record/projections/.get .delete id)))
+    (while (!= prior/instance/.state InstanceState/disposed)
+      ($sleep 1))
+    (record/projections/.get .delete id))
   (if ($absent? selected) (return nil))
   (let owner (if ($absent? selected/effects) record/base_owner/.get else selected/effects))
   (if ($absent? owner) (return nil))
@@ -291,11 +288,10 @@
     (fail (CompositionError ^_msg $"source ${row/id} requires a verified digest and closure")))
   (for node in graph/nodes
     (if node/owned
-      (do (if_not (policy/closure .contains? node/source_digest)
-        (fail
-          (CompositionError ^_msg $"source ${row/id} escaped its verified dependency closure")))
+      (if_not (policy/closure .contains? node/source_digest)
+        (fail (CompositionError ^_msg $"source ${row/id} escaped its verified dependency closure")))
       (if (&& (== node/identity graph/root) (!= node/source_digest policy/digest))
-        (fail (CompositionError ^_msg $"source ${row/id} changed after preflight"))))))
+        (fail (CompositionError ^_msg $"source ${row/id} changed after preflight")))))
   (let plugin (record/host .RegistryHost:describe module row/id policy/init_limits policy/limits policy/core_interface))
   (var expected nil)
   (for descriptor in record/pending/.get
@@ -369,8 +365,8 @@
     (if (failed_ids .contains? plugin/id)
       (let previous (record/current .get; .get plugin/id))
         (if ($present? previous)
-          (do (selected .push previous/plugin)
-          (options .put plugin/id previous/options)))
+          (selected .push previous/plugin)
+          (options .put plugin/id previous/options))
       else
         (selected .push plugin)
         (options .put plugin/id (?? (entries .get plugin/id) #{}))))
@@ -391,11 +387,11 @@
   # A newly failed plugin returns to its last active revision, or leaves the
   # composition when it has none. Its siblings activated regardless.
   (if (&& restore_previous (> rollback/.size failed_ids/.size))
-    (do (let second (select_revisions record plugins entries rollback))
+    (let second (select_revisions record plugins entries rollback))
     (set snapshot (reconcile_composition handle second/plugins second/options))
     (let reported (failure_ids failures))
     (for failure in (failed_entries snapshot)
-      (if_not (reported .contains? failure/id) (failures .push failure)))))
+      (if_not (reported .contains? failure/id) (failures .push failure))))
   {^snapshot snapshot ^failures failures})
 
 (fn entry_policy_changed? ^^private [old, new] : Bool
@@ -417,13 +413,12 @@
     (var policy (metadata .get id))
     (if ($absent? old)
       (out .push id)
-      else (do
-        (if (entry_policy_changed? old policy)
-          (out .push id)
-          else (do
-            (let prior (current .get id))
-            (if (&& policy/host (|| ($absent? prior) (! (same? prior/plugin plugin))))
-              (out .push id)))))))
+    else
+      (if (entry_policy_changed? old policy)
+        (out .push id)
+      else
+        (let prior (current .get id))
+        (if (&& policy/host (|| ($absent? prior) (! (same? prior/plugin plugin)))) (out .push id)))))
   out)
 
 (fn bindings_active? ^^private [record] : Bool
@@ -487,19 +482,18 @@
   # runs after entry identities are known and before any activation contributes.
   (var carried ($thaw #{}))
   (if carry
-    (do
-      (let states ($thaw #{}))
-      (for entry in record/loader/.inspect/entries
-        (states .put entry/id entry/state))
-      (let changed_set ($thaw #{}))
-      (for id in changed (changed_set .put ($to_str id) true))
-      (let wanted ($thaw #{}))
-      (for plugin in plugins (wanted .put plugin/id true))
-      (map_for [id revision] in record/current/.get
-        (if (&& ($present? (wanted .get ($to_str id)))
-                ($absent? (changed_set .get ($to_str id)))
-                (== (states .get ($to_str id)) "active"))
-          (carried .put ($to_str id) true)))))
+    (let states ($thaw #{}))
+    (for entry in record/loader/.inspect/entries
+      (states .put entry/id entry/state))
+    (let changed_set ($thaw #{}))
+    (for id in changed
+      (changed_set .put ($to_str id) true))
+    (let wanted ($thaw #{}))
+    (for plugin in plugins
+      (wanted .put plugin/id true))
+    (map_for [id revision] in record/current/.get
+      (if (&& ($present? (wanted .get ($to_str id))) ($absent? (changed_set .get ($to_str id))) (== (states .get ($to_str id)) "active"))
+        (carried .put ($to_str id) true))))
   (if_not ($absent? record/prepare_owners) (record/prepare_owners carried))
   (record/policies .set ($freeze metadata))
   (record/busy .set true)

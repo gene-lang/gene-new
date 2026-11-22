@@ -52,10 +52,10 @@
   # own. Tagging here is what lets the browser discard a reply to a draft it has
   # already replaced.
   (if (== ($head response) Map)
-    (do
-      (response .put "version" version)
-      response)
-    else response))
+    (response .put "version" version)
+    response
+  else
+    response))
 
 (fn run_machine [mode : Str, request : Any, temp_dir : Str] : Any
   (if_not (helper_available?) (return (unavailable)))
@@ -72,11 +72,10 @@
     "--version" ($to_str version)
     "--text-file" path])
   (if (&& (== mode "analyze") ($present? request/select_utf16_start))
-    (do
-      (args .push "--select-utf16-start")
-      (args .push ($to_str (as_int request/select_utf16_start 0)))
-      (args .push "--select-utf16-end")
-      (args .push ($to_str (as_int request/select_utf16_end 0)))))
+    (args .push "--select-utf16-start")
+    (args .push ($to_str (as_int request/select_utf16_start 0)))
+    (args .push "--select-utf16-end")
+    (args .push ($to_str (as_int request/select_utf16_end 0))))
   (let result (try
     ($os/exec ^timeout_ms 10000 ^max_bytes 4194304 (helper_path) args...)
     catch Error nil))
@@ -86,13 +85,16 @@
                      ^message "gene-viewer could not be started; build it with `nimble tools`"}
                     version)))
   (if (|| (!= result/status 0) (== (as_text result/stdout "") ""))
-    (do
-      (let stderr ($str/trim (as_text result/stderr "")))
-      (return (tagged {^ok false
-                       ^message (if (== stderr "")
-                                  "gene-viewer returned no output"
-                                  else $"gene-viewer failed: ${stderr}")}
-                      version))))
+    (let stderr ($str/trim (as_text result/stderr "")))
+    (return
+      (tagged
+        {
+          ^!ok
+          ^message (if (== stderr "")
+                     "gene-viewer returned no output"
+                   else
+                     $"gene-viewer failed: ${stderr}")}
+        version)))
   (try
     (tagged (parse result/stdout) version)
     catch Error

@@ -22,11 +22,13 @@
             ($assert (== (/status (ui_action service/runtime/services/values/actions request)) record/status))
             ($assert (== (list_sessions service/runtime/sessions) []))
             (if (== phase "saved")
-              (do
-                (let tasks ((/fn (row service/runtime/h "functions" "board_tasks"))))
-                ($assert (== tasks/0/title "Durable action") "receipt survived but its domain write was lost")
-                ($assert (== tasks/0/revision "2") "saved action was replayed"))
-              else ($assert (== ($fs/read_text $"${root}/effect.txt") "once")))
+              (let tasks (((Path "fn") (row service/runtime/h "functions" "board_tasks"))))
+              ($assert
+                (== tasks/0/title "Durable action")
+                "receipt survived but its domain write was lost")
+              ($assert (== tasks/0/revision "2") "saved action was replayed")
+            else
+              ($assert (== ($fs/read_text $"${root}/effect.txt") "once")))
             ensure (close_session_service service)))))))
 
 (fn main [args] : Int (run_spec args))

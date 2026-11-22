@@ -114,11 +114,10 @@
   (load_composition workspace)
   (let marker (active_revision_path workspace))
   (if ($fs/exists? marker)
-    (do (let recorded (read_data (read_text marker)))
-      (if (|| (!= ($head recorded) Int) (< recorded 0))
-        (fail (CompositionError ^_msg
-          "composition ACTIVE marker must hold a non-negative revision")))
-      (workspace/active_revision .set recorded)))
+    (let recorded (read_data (read_text marker)))
+    (if (|| (!= ($head recorded) Int) (< recorded 0))
+      (fail (CompositionError ^_msg "composition ACTIVE marker must hold a non-negative revision")))
+    (workspace/active_revision .set recorded))
   workspace)
 
 (fn set_profile_plugins [workspace : Workspace, admissions]
@@ -149,13 +148,15 @@
       catch Error (workspace/metadata_errors/.get .push {^id builtin/id ^message $err/.message})))
   (if ($absent? workspace/history_head/.get)
     (workspace/history_head .set
-      (archive_baseline workspace/store
+      (archive_baseline
+        workspace/store
         {^revision workspace/revision/.get ^entries workspace/entries/.get}
-        identity profile))
-    else (do
-      (let saved (archived_record workspace/store workspace/history_head/.get))
-      (if (|| (!= saved/revision workspace/revision/.get) (!= saved/entries workspace/entries/.get))
-        (fail (CompositionError ^_msg "composition checkpoint disagrees with its history record")))))
+        identity
+        profile))
+  else
+    (let saved (archived_record workspace/store workspace/history_head/.get))
+    (if (|| (!= saved/revision workspace/revision/.get) (!= saved/entries workspace/entries/.get))
+      (fail (CompositionError ^_msg "composition checkpoint disagrees with its history record"))))
   identity)
 
 (fn composition_history [workspace : Workspace, ^limit limit : Int = 100, ^before before = nil]

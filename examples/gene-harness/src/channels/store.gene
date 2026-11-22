@@ -53,7 +53,9 @@
   (let scalars {})
   (map_for [field value] in next
     (let name ($to_str field))
-    (if (!= ($head value) Map) (do (scalars .put name value) (continue)))
+    (if (!= ($head value) Map)
+      (scalars .put name value)
+      (continue))
     (let old (previous .get name))
     (if (&& ($present? changes) (! ($has_key? changes name))
              ($has_key? tables name)) (continue))
@@ -172,7 +174,7 @@
     (let result (operation next))
     (if maintenance (prune next ($os/wall_ms)))
     (if (!= next store/state/.get)
-      (do (next .put "revision" (+ store/state/.get/revision 1))
+      (next .put "revision" (+ store/state/.get/revision 1))
       # Host-only diagnostic seam, also used to kill qualification processes
       # on either side of the physical checkpoint. Callbacks get detached data.
       (if_not ($absent? store/checkpoint) (store/checkpoint "before" (copy next) (copy result)))
@@ -186,7 +188,7 @@
       # Publication is already durable. Failed best-effort GC is retried on a
       # later maintenance pass and must never turn an acknowledged commit into
       # an apparent failure.
-      (if maintenance (try (collect_records store) catch Error nil))))
+      (if maintenance (try (collect_records store) catch Error nil)))
     (copy result))))
 
 (fn close_channel_store [store : ChannelStore]

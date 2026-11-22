@@ -150,11 +150,10 @@
       (sc/analyze_requests .push request)
       (if sc/analyze_hold
         (sc/held .push {^request request ^done done})
-        else (do
-          (var reply : Any sc/analyze_reply)
-          (if ($absent? reply)
-            (set reply (response_for sc request)))
-          (done reply))))
+      else
+        (var reply : Any sc/analyze_reply)
+        (if ($absent? reply) (set reply (response_for sc request)))
+        (done reply)))
     ^format (fn [request : Any, done : (Fn [Any] Nil)] : Nil
       (var reply : Any sc/format_reply)
       (if ($absent? reply)
@@ -591,7 +590,6 @@
      (set sc/checks (+ sc/checks 1))
      (var editor : Any sc/debounce_editor)
      (if ($present? editor)
-       (do
-         (var target : Editor editor)
-         (target/dispose)))
+       (var target : Editor editor)
+       (target/dispose))
      (result sc "timers"))})

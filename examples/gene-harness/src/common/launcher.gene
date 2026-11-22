@@ -62,10 +62,10 @@
   (var bytes ($str/to_utf8 q))
   (var size bytes/.len)
   (if (&& (>= size 3) (<= size 64))
-    (do (var tolerance (if (< size 5) 1 else 2))
+    (var tolerance (if (< size 5) 1 else 2))
     (if (<= (distance q label) tolerance) (return 4))
     (for word in words
-      (if (&& (!= word "") (<= (distance q word) tolerance)) (return 4)))))
+      (if (&& (!= word "") (<= (distance q word) tolerance)) (return 4))))
   -1)
 
 (fn lexical_before? [left : Str, right : Str] : Bool
@@ -100,7 +100,8 @@
   (var inserted false)
   (for previous in items
     (if (&& (! inserted) (before? item previous))
-      (do (result .push item) (set inserted true)))
+      (result .push item)
+      (set inserted true))
     (if (< result/.size maximum) (result .push previous)))
   (if (&& (! inserted) (< result/.size maximum)) (result .push item))
   result)

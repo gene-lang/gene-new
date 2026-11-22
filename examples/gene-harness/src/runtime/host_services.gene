@@ -13,8 +13,8 @@
 (fn service_operation [spec, mode : Str]
   (if (== mode "recovery") (return spec/recover))
   (if (== mode "doctor")
-    (do (if (!= (?? spec/layer "kernel") "kernel") (return nil))
-    (return (if (spec .has_key? "doctor") spec/doctor else spec/open))))
+    (if (!= (?? spec/layer "kernel") "kernel") (return nil))
+    (return (if (spec .has_key? "doctor") spec/doctor else spec/open)))
   spec/open)
 
 (fn service_order [specs, mode : Str]
@@ -39,9 +39,9 @@
       (for dependency in (service_dependencies spec mode)
         (if_not (complete .has_key? dependency) (set ready false)))
       (if ready
-        (do (ordered .push spec)
+        (ordered .push spec)
         (complete .put spec/name true)
-        (set changed true))))
+        (set changed true)))
     (if_not changed (fail (HostServiceError ^_msg "Host service dependencies contain a cycle."))))
   ordered)
 

@@ -36,8 +36,9 @@
   (for line in (str/split text "\n")
     (if first
       (set first false)
-      else (do (set offset (+ (+ offset ($size previous)) 1))
-          (starts .push offset)))
+    else
+      (set offset (+ (+ offset ($size previous)) 1))
+      (starts .push offset))
     (set previous line))
   starts)
 
@@ -166,10 +167,10 @@
       (set at (+ (* i stride) column))
       (if (== (nth_text left i) (nth_text right column))
         (set table/%at (+ 1 (nth table (+ (* (+ i 1) stride) (+ column 1)))))
-        else (do
-          (var down (nth table (+ (* (+ i 1) stride) column)))
-          (var across (nth table (+ (* i stride) (+ column 1))))
-          (set table/%at (if (> down across) down else across))))
+      else
+        (var down (nth table (+ (* (+ i 1) stride) column)))
+        (var across (nth table (+ (* i stride) (+ column 1))))
+        (set table/%at (if (> down across) down else across)))
       (set column (- column 1)))
     (set i (- i 1)))
   (var rows : (List Any) [])

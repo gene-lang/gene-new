@@ -80,9 +80,10 @@
           (invalid "PNG palette is invalid or misplaced."))
         (set palette (/ length 3))
         (if (== metadata/color_type 3)
-          (do (var colors 1)
-          (repeat bit in metadata/bit_depth (set colors (* colors 2)))
-          (if (> palette colors) (invalid "PNG palette exceeds its bit depth."))))
+          (var colors 1)
+          (repeat bit in metadata/bit_depth
+            (set colors (* colors 2)))
+          (if (> palette colors) (invalid "PNG palette exceeds its bit depth.")))
       elif (== kind "tRNS")
         (if (|| transparency image_data metadata/has_alpha)
           (invalid "PNG transparency chunk is invalid or misplaced."))

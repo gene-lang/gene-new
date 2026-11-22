@@ -38,13 +38,13 @@
   (if (&& ($present? candidate/choices) (|| (!= ($head candidate/choices) Str) (== candidate/choices "")))
     (fail (HarnessError ^_msg "a setting's choices names a setting_choices source")))
   (if ($present? candidate/scopes)
-    (do (if (|| (!= ($head candidate/scopes) List) candidate/scopes/.empty?)
-        (fail (HarnessError ^_msg "a setting's scopes is a nonempty list")))
-      (for scope in candidate/scopes
-        (if_not (["workspace" "shared"] .contains? scope)
-          (fail (HarnessError ^_msg "a setting scope is workspace or shared"))))
-      (if_not (candidate/scopes .contains? "workspace")
-        (fail (HarnessError ^_msg "every setting has a workspace scope")))))
+    (if (|| (!= ($head candidate/scopes) List) candidate/scopes/.empty?)
+      (fail (HarnessError ^_msg "a setting's scopes is a nonempty list")))
+    (for scope in candidate/scopes
+      (if_not (["workspace" "shared"] .contains? scope)
+        (fail (HarnessError ^_msg "a setting scope is workspace or shared"))))
+    (if_not (candidate/scopes .contains? "workspace")
+      (fail (HarnessError ^_msg "every setting has a workspace scope"))))
   candidate)
 
 # A Settings sidebar destination. Settings name their group; a row adds a label,

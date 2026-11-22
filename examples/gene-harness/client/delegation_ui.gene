@@ -21,14 +21,13 @@
     (fn [kind : Str, session : Str, data : Any] : Nil
       (if (!= kind "delegation") (return))
       (if (== session client/selected)
-        (do
-          (set client/records (merge_delegation client/records data))
-          (render_transcript client))
-        else (do
-          (var tab : Any (session_tab client session))
-          (var cache : Any tab/cache)
-          (var records : (List Any) cache/records)
-          (set cache/records (merge_delegation records data)))))
+        (set client/records (merge_delegation client/records data))
+        (render_transcript client)
+      else
+        (var tab : Any (session_tab client session))
+        (var cache : Any tab/cache)
+        (var records : (List Any) cache/records)
+        (set cache/records (merge_delegation records data))))
     ^owner "host/delegation")
   (return))
 

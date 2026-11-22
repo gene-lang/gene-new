@@ -9,15 +9,15 @@
 # their identity. A plugin's mutable state is independent of registry visibility.
 (fn immutable_view [value]
   (if (== ($head value) Map)
-    (do (let copied {})
-      (map_for [key item] in value
-        (copied .put key (immutable_view item)))
-      (return ($freeze_shallow copied))))
+    (let copied {})
+    (map_for [key item] in value
+      (copied .put key (immutable_view item)))
+    (return ($freeze_shallow copied)))
   (if (== ($head value) List)
-    (do (let copied [])
-      (for item in value
-        (copied .push (immutable_view item)))
-      (return ($freeze_shallow copied))))
+    (let copied [])
+    (for item in value
+      (copied .push (immutable_view item)))
+    (return ($freeze_shallow copied)))
   value)
 
 (fn require_open [state : CompositionState]
@@ -87,9 +87,10 @@
     # Publication can occur at any VM safepoint. Recheck after incrementing so
     # a reader never acquires a revision whose retirement already started.
     (if (same? snapshot state/current/.get)
-      (do (let lease (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false) ^label label))
-        (state/leases/.get .push lease)
-        (return lease)))
+      (let lease
+        (SnapshotLease ^snapshot snapshot ^counter counter ^closed ($cell false) ^label label))
+      (state/leases/.get .push lease)
+      (return lease))
     (adjust_count counter -1)
     (drain_retirements state))
   nil)
@@ -118,8 +119,8 @@
   (require_open state)
   (let context ($runtime/context))
   (if (&& ($present? context) ($present? context/turn))
-    (do (change .put "origin_turn" context/turn)
-      (context/turn/composition_queued .set true)))
+    (change .put "origin_turn" context/turn)
+    (context/turn/composition_queued .set true))
   (state/pending
     .get
     ; .push change)
@@ -174,13 +175,12 @@
   (let entries state/publication_diagnostics/.get)
   (entries .push entry)
   (if (> entries/.size diagnostic_limit)
-    (do
-      (let kept [])
-      (var at (- entries/.size diagnostic_limit))
-      (while (< at entries/.size)
-        (kept .push entries/%at)
-        (set at (+ at 1)))
-      (state/publication_diagnostics .set kept)))
+    (let kept [])
+    (var at (- entries/.size diagnostic_limit))
+    (while (< at entries/.size)
+      (kept .push entries/%at)
+      (set at (+ at 1)))
+    (state/publication_diagnostics .set kept))
   nil)
 
 # One publication's diagnostics, oldest first; without a revision, every
@@ -223,9 +223,9 @@
       (if (== live instance) (return true))))
   (map_for [id counter] in state/counts/.get
     (if (> counter/.load 0)
-      (do (let snapshot (state/snapshots .get; .get id))
-        (for live in snapshot/instances
-          (if (== live instance) (return true))))))
+      (let snapshot (state/snapshots .get; .get id))
+      (for live in snapshot/instances
+        (if (== live instance) (return true)))))
   false)
 
 (fn queue_retirement [state : CompositionState, ticket, instances]
@@ -314,10 +314,13 @@
     (set waited (+ waited 10)))
   (map_for [id counter] in state/counts/.get
     (if (> counter/.load 0)
-      (do (let held ($map ($filter state/leases/.get
-          (fn [lease] (== ($to_str lease/snapshot/id) ($to_str id)))) (fn [lease] lease/label)))
-        (fail (CompositionClosed ^_msg
-          $"composition still has active turn leases at snapshot ${id}: ${counter/.load}; holders ${held}")))))
+      (let held
+        ($map
+          ($filter state/leases/.get (fn [lease] (== ($to_str lease/snapshot/id) ($to_str id))))
+          (fn [lease]
+            lease/label)))
+      (fail
+        (CompositionClosed ^_msg $"composition still has active turn leases at snapshot ${id}: ${counter/.load}; holders ${held}"))))
   (state/closing .set true)
   (drain_retirements state))
 

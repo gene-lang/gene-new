@@ -39,8 +39,8 @@
 
 (fn put_notice [notices : Notices, target : EventTarget, source : Str, scope : Str, key : Str, text : Str, severity : Str, sticky : Bool, origin : Any, ^action action : Any = nil] : Nil
   (if (== text "")
-    (do (remove_notice notices source scope key)
-    (return)))
+    (remove_notice notices source scope key)
+    (return))
   (var identity (notice_identity source scope key))
   (var raw : Any notices/items/%identity)
   (var item
@@ -50,11 +50,13 @@
       (Notice ^identity identity ^source source ^scope scope ^key key ^text "" ^severity severity ^origin origin ^element ($dom/render `(div ^class_name "notice_item" ^tabindex "0")) ^label ($dom/render `(span)) ^version 0 ^!hovered ^!focused ^!center_hovered ^!center_focused ^sticky sticky ^action action)
       else raw))
   (if ($absent? raw)
-    (do (set notices/items/%identity item)
+    (set notices/items/%identity item)
     ($dom/append item/element item/label)
-    ($dom/append item/element ($dom/render `(button ^type "button" ^class_name "notice_dismiss"
-      ^aria-label "Dismiss message" ^title "Dismiss message"
-      ^on_click %(fn [event : Any] : Nil (remove_notice notices item/source item/scope item/key)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))
+    ($dom/append
+      item/element
+      ($dom/render
+        `(button ^type "button" ^class_name "notice_dismiss" ^aria-label "Dismiss message" ^title "Dismiss message" ^on_click %(fn [event : Any] : Nil (remove_notice notices item/source item/scope item/key))
+           (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))
     ($dom/append target item/element)
     ($dom/add_event_listener
       item/element
@@ -75,7 +77,7 @@
       item/element
       "focusout"
       (fn [event : Any] : Nil
-        (set item/focused false)))))
+        (set item/focused false))))
   (set item/sticky sticky)
   (set item/action action)
   (set item/origin origin)
@@ -83,8 +85,8 @@
   ($dom/set_attribute item/element "data-notice-key" identity)
   ($dom/set_attribute item/element "data-severity" severity)
   (if (!= item/text text)
-    (do (set item/text text)
-    ($dom/set_text item/label text)))
+    (set item/text text)
+    ($dom/set_text item/label text))
   (set item/version (+ item/version 1))
   (if_not sticky (expire_notice notices item item/version))
   (notices/changed))

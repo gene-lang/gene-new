@@ -36,9 +36,9 @@
   (let parts [])
   (for block in parsed/content
     (if (== block/type "text")
-      (do (if_not (== ($head block/text) Str)
+      (if_not (== ($head block/text) Str)
         (fail (ProviderError ^_msg "anthropic returned invalid text content")))
-      (parts .push block/text))))
+      (parts .push block/text)))
   (let text ($str/join parts ""))
   (if (== ($str/trim text) "")
     (fail (ProviderError ^_msg "anthropic returned no output text")))

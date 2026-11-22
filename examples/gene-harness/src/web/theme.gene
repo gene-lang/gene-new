@@ -60,9 +60,11 @@
         (if ($present? (result/tokens/%mode .get name)) (result/tokens/%mode .put name value))))
     (merge_tokens result/tokens/%mode source/tokens/%mode))
   (if ($present? parent)
-    (do (merge_tokens result/icons parent/icons)
-    (for face in parent/fonts (result/fonts .push face))
-    (for style in parent/styles (result/styles .push style))))
+    (merge_tokens result/icons parent/icons)
+    (for face in parent/fonts
+      (result/fonts .push face))
+    (for style in parent/styles
+      (result/styles .push style)))
   (merge_tokens result/icons source/icons)
   (for face in (?? source/fonts [])
     (let prepared {})
@@ -144,8 +146,11 @@
         (let token ($to_str target))
         (if (density_owned? token) (continue))
         (if (|| ($str/contains? value $"var(--${token})") ($str/contains? value $"var(--${token},"))
-          (do (set dependent true) (break))))
-      (if dependent (do (selected .put name true) (set changed true)))))
+          (set dependent true)
+          (break)))
+      (if dependent
+        (selected .put name true)
+        (set changed true))))
   (let tokens {})
   (map_for [key ignored] in selected
     (let name ($to_str key))

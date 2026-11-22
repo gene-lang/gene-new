@@ -106,20 +106,16 @@
   (var decoded (try ($binary/decode_utf8 raw) catch Error nil))
   (var skip 0)
   (if ($absent? decoded)
-    (do
-      (set skip (leading_partial raw))
-      (let boundary (last_newline raw))
-      (if (< boundary 0)
-        (if (== skip 0)
-          (return {^ok false ^present true
-                   ^message "the log segment is not valid UTF-8"})
-          else (return {^ok true ^present true ^size size ^lines [] ^starts []
-                   ^incomplete 0})))
-      (let prefix ($binary/slice raw skip (- (+ boundary 1) skip)))
-      (set decoded (try ($binary/decode_utf8 prefix) catch Error nil))
-      (if ($absent? decoded)
-        (return {^ok false ^present true
-                 ^message "the log segment is not valid UTF-8"}))))
+    (set skip (leading_partial raw))
+    (let boundary (last_newline raw))
+    (if (< boundary 0)
+      (if (== skip 0)
+        (return {^!ok ^^present ^message "the log segment is not valid UTF-8"})
+      else
+        (return {^^ok ^^present ^size size ^lines [] ^starts [] ^incomplete 0})))
+    (let prefix ($binary/slice raw skip (- (+ boundary 1) skip)))
+    (set decoded (try ($binary/decode_utf8 prefix) catch Error nil))
+    (if ($absent? decoded) (return {^!ok ^^present ^message "the log segment is not valid UTF-8"})))
   (let parts ($str/split decoded "\n"))
   (let count ($size parts))
   (var lines : (List Str) [])
@@ -179,8 +175,10 @@
   (var count ($size starts))
   (while (< index count)
     (if (== starts/%index start)
-      (do (set found index) (set index count))
-      else (set index (+ index 1))))
+      (set found index)
+      (set index count)
+    else
+      (set index (+ index 1))))
   (if (< found 0)
     (return {^ok false ^message "the log cursor is not on a line boundary"}))
   (var lines : (List Str) [])
@@ -198,23 +196,24 @@
     (let cost (+ ($str/byte_size rendered/text) 1))
     (let source_bytes (+ ($str/byte_size safe) 1))
     (if (&& (> ($size lines) 0) (> (+ bytes cost) max_bytes))
-      (do (set full true) (set at line_count))
-      else (do
-        (if rendered/truncated
-          (do
-            (set truncated (+ truncated 1))
-            (set skipped (+ skipped (- ($str/byte_size safe) ($str/byte_size
-              ($str/slice_bytes rendered/text 0 max_line)))))))
-        (lines .push rendered/text)
-        (raws .push safe)
-        (set bytes (+ bytes cost))
-        (set at (+ at 1)))))
+      (set full true)
+      (set at line_count)
+    else
+      (if rendered/truncated
+        (set truncated (+ truncated 1))
+        (set skipped
+          (+
+            skipped
+            (- ($str/byte_size safe) ($str/byte_size ($str/slice_bytes rendered/text 0 max_line))))))
+      (lines .push rendered/text)
+      (raws .push safe)
+      (set bytes (+ bytes cost))
+      (set at (+ at 1))))
   # Derive the exact end from the last consumed line instead of the render size.
   (if (> ($size lines) 0)
-    (do
-      (let last (+ found (- ($size lines) 1)))
-      (let line_end (+ segment/starts/%last (+ ($str/byte_size segment/lines/%last) 1)))
-      (set end line_end)))
+    (let last (+ found (- ($size lines) 1)))
+    (let line_end (+ segment/starts/%last (+ ($str/byte_size segment/lines/%last) 1)))
+    (set end line_end))
   {^ok true ^lines lines ^raw_lines raws ^bytes bytes ^end end
    ^consumed (== (+ found ($size lines)) line_count)
    ^truncated truncated ^skipped skipped})
@@ -234,14 +233,12 @@
     (let line lines/%index)
     (let rendered (render_line (redact line) max_line))
     (let cost (+ ($str/byte_size rendered/text) 1))
-    (if (&& (< first count)
-             (|| (>= (- count first) initial_lines)
-                 (> (+ bytes cost) max_bytes)))
+    (if (&& (< first count) (|| (>= (- count first) initial_lines) (> (+ bytes cost) max_bytes)))
       (set full true)
-      else (do
-        (set bytes (+ bytes cost))
-        (set first index)
-        (set index (- index 1)))))
+    else
+      (set bytes (+ bytes cost))
+      (set first index)
+      (set index (- index 1))))
   (if (== first count) (return segment/size))
   starts/%first)
 
@@ -308,16 +305,24 @@
   (var parsed active)
   (var raw active_raw)
   (if ($absent? active_raw)
-    (do (set segment_name "previous") (set parsed previous) (set raw previous_raw)))
+    (set segment_name "previous")
+    (set parsed previous)
+    (set raw previous_raw))
 
   (if ($absent? cursor)
-    (do
-      (let start (tail_start parsed initial_lines max_bytes max_line redact))
-      (let payload (collect raw parsed start max_bytes max_line redact))
-      (if (! payload/ok)
-        (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
-      (return (finish source segment_name raw parsed payload "" redact
-                      ^note (if (== segment_name "previous") "host log rotated" else "")))))
+    (let start (tail_start parsed initial_lines max_bytes max_line redact))
+    (let payload (collect raw parsed start max_bytes max_line redact))
+    (if (! payload/ok)
+      (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
+    (return
+      (finish ^note (if (== segment_name "previous") "host log rotated" else "")
+        source
+        segment_name
+        raw
+        parsed
+        payload
+        ""
+        redact)))
 
   # Resume from the cursor's segment; rotation moves the old active segment
   # aside, so a prefix that now matches `previous` continues there first.
@@ -397,22 +402,26 @@
     (let cost (+ ($str/byte_size rendered_line/text) 1))
     (if (> (+ used cost) max_bytes)
       (set full true)
-      else (do
-        (lines .push rendered_line/text)
-        (raws .push (redact active/lines/%at))
-        (set used (+ used cost))
-        (set kept (+ kept 1))
-        (if rendered_line/truncated
-          (do
-            (set truncated (+ truncated 1))
-            (set skipped (+ skipped (max_int 0 (- ($str/byte_size active/lines/%at)
-              ($str/byte_size ($str/slice_bytes rendered_line/text 0 max_line))))))))
-        (set at (+ at 1)))))
+    else
+      (lines .push rendered_line/text)
+      (raws .push (redact active/lines/%at))
+      (set used (+ used cost))
+      (set kept (+ kept 1))
+      (if rendered_line/truncated
+        (set truncated (+ truncated 1))
+        (set skipped
+          (+
+            skipped
+            (max_int
+              0
+              (-
+                ($str/byte_size active/lines/%at)
+                ($str/byte_size ($str/slice_bytes rendered_line/text 0 max_line)))))))
+      (set at (+ at 1))))
   (var end first_end)
   (if (> kept 1)
-    (do
-      (let last (- kept 1))
-      (set end (+ active/starts/%last (+ ($str/byte_size active/lines/%last) 1)))))
+    (let last (- kept 1))
+    (set end (+ active/starts/%last (+ ($str/byte_size active/lines/%last) 1))))
   (let payload
     {^lines lines ^raw_lines raws ^bytes used ^end end ^consumed (== kept line_count)
      ^truncated truncated ^skipped skipped})
@@ -432,14 +441,18 @@
     (return (join_rotation source first previous_raw previous
               active_raw active max_bytes max_line redact)))
   (if (&& ($present? active_raw) active/ok)
-    (do
-      (let second (collect active_raw active 0
-        (remaining_budget max_bytes first/bytes) max_line redact))
-      (if (! second/ok)
-        (return (empty_response "unreadable"
-          (text_or second/message "the host log is unreadable"))))
-      (return (combined_finish source first second active_raw active redact
-                ^note "finished the previous host log segment"))))
+    (let second
+      (collect active_raw active 0 (remaining_budget max_bytes first/bytes) max_line redact))
+    (if (! second/ok)
+      (return (empty_response "unreadable" (text_or second/message "the host log is unreadable"))))
+    (return
+      (combined_finish ^note "finished the previous host log segment"
+        source
+        first
+        second
+        active_raw
+        active
+        redact)))
   (finish source "previous" previous_raw previous first "" redact
           ^note "host log rotated"))
 
@@ -459,11 +472,10 @@
                    max_bytes : Int, max_line : Int,
                    redact : (Fn [Str] Str)] : Any
   (if (prefix_matches active_raw active cursor/offset cursor/prefix)
-    (do
-      (let payload (collect active_raw active cursor/offset max_bytes max_line redact))
-      (if (! payload/ok)
-        (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
-      (return (finish source "active" active_raw active payload "" redact))))
+    (let payload (collect active_raw active cursor/offset max_bytes max_line redact))
+    (if (! payload/ok)
+      (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
+    (return (finish source "active" active_raw active payload "" redact)))
   (if (&& ($present? previous_raw) previous/ok
           (prefix_matches previous_raw previous cursor/offset cursor/prefix))
     (return (resume_previous_segment source previous_raw previous
@@ -491,7 +503,9 @@
   (var raw active_raw)
   (var parsed active)
   (if ($absent? active_raw)
-    (do (set segment_name "previous") (set raw previous_raw) (set parsed previous)))
+    (set segment_name "previous")
+    (set raw previous_raw)
+    (set parsed previous))
   (let start (tail_start parsed initial_lines max_bytes max_line redact))
   (let payload (collect raw parsed start max_bytes max_line redact))
   (if (! payload/ok)

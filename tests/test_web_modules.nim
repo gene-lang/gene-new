@@ -227,8 +227,13 @@ suite "web catch types":
         (try
           (if (== kind "error") (fail (Probe ^_msg "probe"))
             else (if (== kind "fault") (fail (Invariant ^code 7 ^_msg "broken"))
-              else (if (== kind "zero") (do (// 1 0) "")
-                else (do (let v : Any kind) (typed v) ""))))
+              else (if (== kind "zero")
+                     (// 1 0)
+                     ""
+                   else
+                     (let v : Any kind)
+                     (typed v)
+                     "")))
           catch Error $"error ${$err/.message}"
           catch Invariant $"invariant ${$err/.message}"
           catch RuntimeFault $"runtime ${$err/.message}"

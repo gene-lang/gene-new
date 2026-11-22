@@ -31,11 +31,10 @@
         (theme_error "Theme tokens require valid names and CSS strings."))))
   (map_for [name svg] in (?? candidate/icons {}) (validate_icon {^name (css_name name) ^svg svg}))
   (if ($present? candidate/fonts)
-    (do (if (!= ($head candidate/fonts) List) (theme_error "Theme fonts must be a list."))
+    (if (!= ($head candidate/fonts) List) (theme_error "Theme fonts must be a list."))
     (for face in candidate/fonts
-      (if (|| (!= ($head face/family) Str) (!= ($head face/src) Str)
-              (! (|| ($str/starts_with? face/src "https:") ($str/starts_with? face/src "/"))))
-        (theme_error "Theme fonts need a family and an HTTPS URL or a URL prepared by $web/font.")))))
+      (if (|| (!= ($head face/family) Str) (!= ($head face/src) Str) (! (|| ($str/starts_with? face/src "https:") ($str/starts_with? face/src "/"))))
+        (theme_error "Theme fonts need a family and an HTTPS URL or a URL prepared by $web/font."))))
   (if ($present? candidate/style) ($css/render candidate/style))
   candidate)
 

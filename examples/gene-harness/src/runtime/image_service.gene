@@ -119,8 +119,8 @@
 
 (fn finish_run [service, live, reason : Str, ^detail detail = nil, ^publish publish : Bool = true] ^^private
   (if (== live/state/state "finished")
-    (do (if publish (publish_result service live))
-      (return (image_result service live/state))))
+    (if publish (publish_result service live))
+    (return (image_result service live/state)))
   (reconcile_image_candidates service/store live/state)
   (settle_open_calls service live)
   (reconcile_image_calls service/runtime live/state)
@@ -222,10 +222,12 @@
     (if (|| ($absent? latest/review) (< latest/review/score 85))
       (image_error "invalid_stop" "The latest image has not reached the target score.")))
   (if (== reason "attempt_limit")
-    (do (if (< live/state/attempts/.size live/state/request/max_attempts)
-        (image_error "invalid_stop" "Image attempts remain."))
-      (if ($absent? latest/review)
-        (image_error "review_required" "Review the last candidate before finishing at the attempt limit."))))
+    (if (< live/state/attempts/.size live/state/request/max_attempts)
+      (image_error "invalid_stop" "Image attempts remain."))
+    (if ($absent? latest/review)
+      (image_error
+        "review_required"
+        "Review the last candidate before finishing at the attempt limit.")))
   (if_not (["target_reached" "attempt_limit" "cancelled"] .contains? reason)
     (image_error "invalid_stop" "The workflow can finish at its target, limit or cancellation."))
   (finish_run service live reason))

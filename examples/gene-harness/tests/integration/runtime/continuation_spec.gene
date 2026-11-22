@@ -250,7 +250,9 @@
         (let calls ($cell 0)) (let entered ($cell false))
         (let service (test_service ^workspace workspace ^provider (fn [request]
           (calls .set (+ calls/.get 1))
-          (if (> calls/.get 1) (do (entered .set true) ($sleep 1000)))
+          (if (> calls/.get 1)
+            (entered .set true)
+            ($sleep 1000))
           "(Outcome ^prompt \"Keep working.\" ^reply \"Working.\")")))
         (try
           (one_turn_rounds service)

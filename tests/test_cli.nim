@@ -964,10 +964,10 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     (while (running .get)
       ($sleep 25)
       (if (|| (take_interrupt) (escape_pressed? screen))
-        (do
-          (cancelled .set true)
-          (task .cancel))
-        else nil))))
+        (cancelled .set true)
+        (task .cancel)
+      else
+        nil))))
 (try (done .recv) catch ChannelClosed nil)
 (running .set false)
 (watcher .cancel)

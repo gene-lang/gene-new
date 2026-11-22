@@ -36,9 +36,13 @@
 (fn driver [state]
   (if state/closed/.get (fail (ServiceError ^code "unavailable" ^_msg "Computer host is closed.")))
   (if ($absent? state/client/.get)
-    (do (let options (?? (note_active_setting state/runtime "computer" (effective_setting state/runtime "computer")) {}))
-    (state/client .set (open_driver $"${state/runtime/state_root}/computer"
-      ^command (?? options/command "cua-driver") ^socket (?? options/socket "")))))
+    (let options
+      (??
+        (note_active_setting state/runtime "computer" (effective_setting state/runtime "computer"))
+        {}))
+    (state/client .set
+      (open_driver ^command (?? options/command "cua-driver") ^socket (?? options/socket "")
+        $"${state/runtime/state_root}/computer")))
   state/client/.get)
 
 (fn start_computer [handle]

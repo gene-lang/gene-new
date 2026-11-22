@@ -64,9 +64,11 @@
       (CommandResult ^display "Shell open. Enter exit or quit to leave." ^!attached ^mode "sh")
       else (shell_command ctx)))))
   (if (== name "repl")
-    (do (if (!= ($str/trim ctx/raw) "")
-        (fail (ServiceError ^code "invalid_request" ^_msg "/repl takes no arguments.")))
-      (return ($freeze (CommandResult ^display "REPL open. Enter exit or quit to leave." ^!attached ^mode "repl")))))
+    (if (!= ($str/trim ctx/raw) "")
+      (fail (ServiceError ^code "invalid_request" ^_msg "/repl takes no arguments.")))
+    (return
+      ($freeze
+        (CommandResult ^display "REPL open. Enter exit or quit to leave." ^!attached ^mode "repl"))))
   (fail (ServiceError ^code "invalid_request" ^_msg "Unknown operator command operation.")))
 
 (type HostedOperator ^^private ^props {^token Any}

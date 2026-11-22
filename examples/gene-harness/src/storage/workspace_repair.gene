@@ -147,20 +147,22 @@
     (if_not ($absent? record/origin/plan)
       (let key $"plugin_plan/${record/origin/plan}")
       (if (workspace/store .Store:has? key)
-        (do (let plan (workspace/store .Store:get key))
+        (let plan (workspace/store .Store:get key))
         (if (!= ($pkg/canonical_digest plan) record/origin/plan)
           (fail (CompositionError ^_msg "archived validation plan digest mismatch")))
-        (record .put "validation" {^plan record/origin/plan ^warnings plan/warnings ^errors plan/errors})))))
+        (record .put
+          "validation"
+          {^plan record/origin/plan ^warnings plan/warnings ^errors plan/errors}))))
   (if (== id "") (return records))
   (let selected [])
   (for record in records
     (for item in record/entries
       (if (== item/id id)
-        (do (let row (data_copy record))
+        (let row (data_copy record))
         (row .put "entry" item)
         (row .delete "entries")
         (selected .push row)
-        (break)))))
+        (break))))
   selected)
 
 (fn plugin_history_page [workspace : Workspace, id : Str = "", ^limit limit : Int = 50, ^before before = nil]
@@ -168,9 +170,9 @@
   (let history (plugin_history ^limit limit ^before before workspace id))
   (var next nil)
   (if (&& (== records/.size limit) (> records/.size 0))
-    (do (let index (- records/.size 1))
+    (let index (- records/.size 1))
     (let last records/%index)
-    (if (> last/revision 0) (set next last/revision))))
+    (if (> last/revision 0) (set next last/revision)))
   {^revision (composition_revision workspace) ^history history ^next_before next})
 
 (fn verify_stored_entry [workspace : Workspace, saved]
@@ -242,15 +244,15 @@
       (var status "disabled")
       (try
         (if (entry_enabled? saved)
-          (do
-            (register_descriptor_events h descriptor)
-            (set status (activate_descriptor ^^fresh workspace h descriptor saved))
-            (if (== status "error")
-              (record_quarantine workspace id (plugin_error h id))
-              else (workspace/errors/.get .delete id)))
-          else (do
-            (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
-            (workspace/errors/.get .delete id)))
+          (register_descriptor_events h descriptor)
+          (set status (activate_descriptor ^^fresh workspace h descriptor saved))
+          (if (== status "error")
+            (record_quarantine workspace id (plugin_error h id))
+          else
+            (workspace/errors/.get .delete id))
+        else
+          (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
+          (workspace/errors/.get .delete id))
       catch Error
         (set status "error")
         (record_quarantine workspace id $err/.message))
@@ -263,7 +265,7 @@
         {^plugin id ^status status ^message (?? (workspace/errors/.get .get id) nil)})
       {^id id ^boundary "immediate" ^revision committed ^source_revision revision ^digest saved/module_digest ^status status}))))
   (if (&& ($present? context/turn) (== context/turn/state/.get "open"))
-    (do
-      (queue_composition_change h/snapshots {^id id ^kind "revert" ^apply apply})
-      {^id id ^source_revision revision ^status "queued" ^boundary "turn"})
-    else (apply)))
+    (queue_composition_change h/snapshots {^id id ^kind "revert" ^apply apply})
+    {^id id ^source_revision revision ^status "queued" ^boundary "turn"}
+  else
+    (apply)))

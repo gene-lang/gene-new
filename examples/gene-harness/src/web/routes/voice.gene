@@ -19,37 +19,42 @@
   (let origin context/origin)
   (let request_origin context/request_origin)
   (if (&& (== request/method "GET") (== request/path $"${(api_root)}/voice/status"))
-    (do (if safe (fail_request "unavailable" "Voice is off in the recovery UI."))
-    (return (response 200 (speech_catalog voice_hub/speech)))))
+    (if safe (fail_request "unavailable" "Voice is off in the recovery UI."))
+    (return (response 200 (speech_catalog voice_hub/speech))))
   (if (&& (== request/method "GET") (== request/path $"${(api_root)}/voice"))
-    (do (if (|| safe (!= request_origin origin) ($absent? (row host/runtime/h "browser_clients" "voice")))
+    (if (|| safe (!= request_origin origin) ($absent? (row host/runtime/h "browser_clients" "voice")))
       (fail_request "forbidden" "The active voice plugin and a same-origin socket are required."))
-    (return (ws_accept request ^subprotocol voice_subprotocol
-      ^on_open (fn [connection]
-        (add_voice_peer voice_hub connection browser/csrf
-          (fn [] (== browser/generation ($crypto/sha256 auth/secret)))))
-      ^on_message (fn [connection payload] (voice_message voice_hub connection payload))
-      ^on_close (fn [connection] (remove_voice_peer voice_hub connection))))))
+    (return
+      (ws_accept ^subprotocol voice_subprotocol ^on_open (fn [connection] (add_voice_peer voice_hub connection browser/csrf (fn [] (== browser/generation ($crypto/sha256 auth/secret))))) ^on_message (fn [connection payload] (voice_message voice_hub connection payload)) ^on_close (fn [connection] (remove_voice_peer voice_hub connection))
+        request)))
   (if (session_path? parts)
-    (do (let id parts/4)
+    (let id parts/4)
     (if (&& (== parts/.size 6) (== parts/5 "voice"))
-      (do (if safe (fail_request "unavailable" "Voice is unavailable in the recovery UI."))
+      (if safe (fail_request "unavailable" "Voice is unavailable in the recovery UI."))
       (if (== request/method "GET") (return (response 200 (session_voice_state host id))))
-      (if (== request/method "POST") (return (response 200 (session_voice_claim host id (request_data request)))))))
+      (if (== request/method "POST")
+        (return (response 200 (session_voice_claim host id (request_data request))))))
     (if (&& (== parts/.size 7) (== parts/5 "voice") (== parts/6 "latency") (== request/method "POST"))
-      (do (let data (request_data request))
-      (let identity (field data "identity" ^default ""))
-      (let input_kind (field data "input_kind" ^default ""))
-      (if (|| (! (["input" "output" "loop" "round" "error"] .contains? data/kind)) (!= ($head data/elapsed_ms) Int)
-              (> ($str/byte_size identity) 256) (! (["" "typed" "voice"] .contains? input_kind))
-              (< data/elapsed_ms 0) (> data/elapsed_ms 3600000))
+      (let data (request_data request))
+      (let identity (field ^default "" data "identity"))
+      (let input_kind (field ^default "" data "input_kind"))
+      (if (|| (! (["input" "output" "loop" "round" "error"] .contains? data/kind)) (!= ($head data/elapsed_ms) Int) (> ($str/byte_size identity) 256) (! (["" "typed" "voice"] .contains? input_kind)) (< data/elapsed_ms 0) (> data/elapsed_ms 3600000))
         (fail_request "invalid_request" "Invalid voice timing."))
-      (append_core_event host/runtime/events "session" id
-        {^type "trace" ^kind "voice/latency" ^text "voice/latency"
-         ^timing (record_voice_timing ^identity identity ^input_kind input_kind
-           host/runtime/services/values/voice id data/kind data/elapsed_ms) ^^ignorable})
-      (return (response 200 {^^ok}))))
+      (append_core_event
+        host/runtime/events
+        "session"
+        id
+        {
+          ^type "trace"
+          ^kind "voice/latency"
+          ^text "voice/latency"
+          ^timing (record_voice_timing ^identity identity ^input_kind input_kind
+                    host/runtime/services/values/voice
+                    id
+                    data/kind
+                    data/elapsed_ms)
+          ^^ignorable})
+      (return (response 200 {^^ok})))
     (if (&& (== parts/.size 7) (== parts/5 "voice") (== parts/6 "latency") (== request/method "GET"))
       (return (response 200 {^timings (voice_timings host/runtime/services/values/voice id)}))))
-  )
   nil)

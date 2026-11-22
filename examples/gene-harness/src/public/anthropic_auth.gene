@@ -14,7 +14,9 @@
   (let command (?? (nonempty (auth_env "GENE_HARNESS_ANT_COMMAND" environment)) "ant"))
   (let profile (nonempty (auth_env "ANTHROPIC_PROFILE" environment)))
   (let args [command])
-  (if ($present? profile) (do (args .push "--profile") (args .push profile)))
+  (if ($present? profile)
+    (args .push "--profile")
+    (args .push profile))
   (for arg in ["auth" "print-credentials" "--access-token"] (args .push arg))
   {^kind "ant" ^label "Anthropic · ant Console OAuth" ^credential {^command args}
    ^command command ^profile profile})
@@ -36,15 +38,15 @@
   (for raw in ($str/split stdout "\n")
     (let line ($str/trim raw))
     (if ($str/starts_with? line "Active profile:")
-      (do (let name ($str/trim ($str/slice_bytes line 15 (- ($str/byte_size line) 15))))
-        # ant may append parenthesized profile-selection provenance. Retain
-        # only the identifier, never its diagnostic suffix.
-        (let selected (#"^([A-Za-z0-9_.-]{1,128})(?:[ ]+[(][^()]*[)])?$" .match name))
-        (if ($present? selected) (set profile selected/groups/0))))
+      (let name ($str/trim ($str/slice_bytes line 15 (- ($str/byte_size line) 15))))
+      # ant may append parenthesized profile-selection provenance. Retain
+      # only the identifier, never its diagnostic suffix.
+      (let selected (#"^([A-Za-z0-9_.-]{1,128})(?:[ ]+[(][^()]*[)])?$" .match name))
+      (if ($present? selected) (set profile selected/groups/0)))
     (if ($str/contains? line "(active)")
-      (do (if ($str/contains? line "Profile (user_oauth)") (set oauth true))
-        (let match (#"Workspace[ ]+(wrkspc_[A-Za-z0-9]+)" .match line))
-        (if ($present? match) (set workspace match/groups/0)))))
+      (if ($str/contains? line "Profile (user_oauth)") (set oauth true))
+      (let match (#"Workspace[ ]+(wrkspc_[A-Za-z0-9]+)" .match line))
+      (if ($present? match) (set workspace match/groups/0))))
   (if (|| (! oauth) ($absent? profile) ($absent? workspace))
     (return {^state "sign_in_required" ^label "Anthropic · ant Console OAuth" ^billing "metered"
       ^reason "No supported ant Console OAuth login was reported; run ant auth login, then refresh."}))
@@ -56,16 +58,27 @@
   (let deadline (+ ($os/monotonic_ms) 5000))
   (var account nil) (var label source/label)
   (if (== source/kind "ant")
-    (do (let args [])
-      (if ($present? source/profile) (do (args .push "--profile") (args .push source/profile)))
-      (args .push "auth") (args .push "status")
-      (let status (try (cli_probe source/command args)
-        catch Error (return {^state "sign_in_required" ^label label ^billing "metered"
-          ^reason "Install ant and run ant auth login, or set ANTHROPIC_API_KEY."})))
-      # ant documents status as diagnostic output, not an exit-status health check.
-      (let metadata (ant_status_metadata status/stdout))
-      (if (!= metadata/state "ready") (return metadata))
-      (set account metadata/account) (set label metadata/label)))
+    (let args [])
+    (if ($present? source/profile)
+      (args .push "--profile")
+      (args .push source/profile))
+    (args .push "auth")
+    (args .push "status")
+    (let status
+      (try
+        (cli_probe source/command args)
+      catch Error
+        (return
+          {
+            ^state "sign_in_required"
+            ^label label
+            ^billing "metered"
+            ^reason "Install ant and run ant auth login, or set ANTHROPIC_API_KEY."})))
+    # ant documents status as diagnostic output, not an exit-status health check.
+    (let metadata (ant_status_metadata status/stdout))
+    (if (!= metadata/state "ready") (return metadata))
+    (set account metadata/account)
+    (set label metadata/label))
   (let remaining (- deadline ($os/monotonic_ms)))
   (if (<= remaining 0) (fail (ProviderError ^_msg "Anthropic connection check timed out")))
   (let headers (try (anthropic_headers ^timeout_ms remaining source)

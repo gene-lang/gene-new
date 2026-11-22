@@ -24,33 +24,49 @@
     (let digest (key event/content))
     (let previous (state/ingress .get id))
     (if ($present? previous)
-      (do (if (!= previous/digest digest)
+      (if (!= previous/digest digest)
         (channel_error "submission_conflict" "Channel event ID has different content."))
-      (return previous)))
+      (return previous))
     (state .put "ingress_sequence" (+ (?? state/ingress_sequence 0) 1))
     (let record {^id id ^event_id event_id ^account account_id ^digest digest
       ^sequence state/ingress_sequence ^status "ignored" ^reason (?? event/reason "unsupported_event")
       ^received_at ($os/wall_ms)})
     (let supplied event/message)
     (if ($present? supplied)
-      (do (let route_id (route_key account/transport account_id account/team (?? supplied/channel "")))
+      (let route_id (route_key account/transport account_id account/team (?? supplied/channel "")))
       (let decision (authorize_state state route_id (?? supplied/author "") nil))
-      (record .put "decision" {^allowed decision/allowed ^owner decision/owner
-        ^policy_revision decision/policy_revision ^author decision/author})
+      (record .put
+        "decision"
+        {
+          ^allowed decision/allowed
+          ^owner decision/owner
+          ^policy_revision decision/policy_revision
+          ^author decision/author})
       (record .put "status" "denied")
       (record .put "reason" "sender_policy")
       (if decision/allowed
-        (do (let message (normalize_message {^transport account/transport ^account account_id ^team account/team
-          ^channel supplied/channel ^thread supplied/thread ^message supplied/message
-          ^author supplied/author ^text supplied/text ^received_at record/received_at}))
+        (let message
+          (normalize_message
+            {
+              ^transport account/transport
+              ^account account_id
+              ^team account/team
+              ^channel supplied/channel
+              ^thread supplied/thread
+              ^message supplied/message
+              ^author supplied/author
+              ^text supplied/text
+              ^received_at record/received_at}))
         (record .put "route" (copy decision/route))
         (record .put "workspace" decision/route/workspace)
         (record .put "payload" (copy (?? event/raw {})))
         (record .put "message" message)
-        (record .put "start_allowed" (|| (! decision/route/require_mention) (== event/mentioned true)))
+        (record .put
+          "start_allowed"
+          (|| (! decision/route/require_mention) (== event/mentioned true)))
         (record .put "mentioned" (== event/mentioned true))
         (record .put "status" "pending")
-        (record .delete "reason")))))
+        (record .delete "reason")))
     (state/ingress .put id record)
     record) ^changes {^ingress [id]}))
 

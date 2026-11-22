@@ -68,62 +68,93 @@
          done : (Fn [Int Any] Nil)] : Nil
   (sc/requests .push {^method method ^path path})
   (if (|| (contains path "/logs") (contains path "/p/editor/log"))
-    (do
-      (set sc/log_polls (+ sc/log_polls 1))
-      (if (== sc/log_polls 1)
-        (done 200 {^ok true ^state "ok" ^cursor "c1"
-                   ^lines ["boot one" "boot two"] ^gap ""})
-        else (if (== sc/log_polls 2)
-          (done 200 {^ok true ^state "ok" ^cursor "c2"
-                     ^lines ["ready"] ^gap ""})
-          else (if (== sc/log_polls 3)
-            (done 200 {^ok true ^state "gap" ^cursor "c3"
-                       ^lines ["after gap"] ^gap "continuity lost"
-                       ^message ""})
-            else (do
-              (var idle : (List Str) [])
-              (done 200 {^ok true ^state "ok" ^cursor "c3"
-                         ^lines idle ^gap ""})))))
-      (return)))
+    (set sc/log_polls (+ sc/log_polls 1))
+    (if (== sc/log_polls 1)
+      (done 200 {^^ok ^state "ok" ^cursor "c1" ^lines ["boot one" "boot two"] ^gap ""})
+    else
+      (if (== sc/log_polls 2)
+        (done 200 {^^ok ^state "ok" ^cursor "c2" ^lines ["ready"] ^gap ""})
+      else
+        (if (== sc/log_polls 3)
+          (done
+            200
+            {^^ok ^state "gap" ^cursor "c3" ^lines ["after gap"] ^gap "continuity lost" ^message ""})
+        else
+          (var idle : (List Str) [])
+          (done 200 {^^ok ^state "ok" ^cursor "c3" ^lines idle ^gap ""}))))
+    (return))
   (if (== method "GET")
-    (do
-      (done 200 {^ok true
-                 ^document {^id "demo.gene" ^name "demo.gene" ^path "demo.gene"
-                            ^kind "source" ^text sc/text ^revision "rev-1"
-                            ^line_endings "lf" ^bom false ^readonly false
-                            ^reason ""}})
-      (return)))
+    (done
+      200
+      {
+        ^^ok
+        ^document {
+                    ^id "demo.gene"
+                    ^name "demo.gene"
+                    ^path "demo.gene"
+                    ^kind "source"
+                    ^text sc/text
+                    ^revision "rev-1"
+                    ^line_endings "lf"
+                    ^!bom
+                    ^!readonly
+                    ^reason ""}})
+    (return))
   (if (contains path "/selection")
-    (do
-      (done 200 {^ok true ^revision "rev-1" ^text sc/selection_text
-                 ^line_endings "lf" ^bom false})
-      (return)))
+    (done 200 {^^ok ^revision "rev-1" ^text sc/selection_text ^line_endings "lf" ^!bom})
+    (return))
   (if (contains path "/save")
-    (do
-      (if (== sc/save_mode "conflict")
-        (done 409 {^ok false ^conflict true ^revision "rev-disk"
-                   ^line_endings "lf" ^bom false ^text "disk text"})
-        else (done 200 {^ok true ^revision "rev-2" ^line_endings "lf" ^bom false}))
-      (return)))
+    (if (== sc/save_mode "conflict")
+      (done 409 {^!ok ^^conflict ^revision "rev-disk" ^line_endings "lf" ^!bom ^text "disk text"})
+    else
+      (done 200 {^^ok ^revision "rev-2" ^line_endings "lf" ^!bom}))
+    (return))
   (if (contains path "/analyze")
-    (do
-      (var version (int_or payload/version 0))
-      (var no_outline : (List Any) [])
-      (var no_children : (List Any) [])
-      (var rows : (List Any) [
-        {^id 0 ^label "0" ^summary "" ^path "0" ^kind "node" ^closed true
-         ^startByte 0 ^endByte 10 ^startUtf16 0 ^endUtf16 10
-         ^children no_children ^more 0}
-        {^id 1 ^label "1" ^summary "" ^path "1" ^kind "node" ^closed true
-         ^startByte 11 ^endByte 33 ^startUtf16 11 ^endUtf16 33
-         ^children no_children ^more 0}])
-      (done 200
-        {^ok true ^parsed true ^partial false ^version version
-         ^outline no_outline
-         ^tree {^children rows}
-         ^selected {^found false}
-         ^diagnostics no_outline})
-      (return)))
+    (var version (int_or payload/version 0))
+    (var no_outline : (List Any) [])
+    (var no_children : (List Any) [])
+    (var rows
+      :
+      (List Any)
+      [
+        {
+          ^id 0
+          ^label "0"
+          ^summary ""
+          ^path "0"
+          ^kind "node"
+          ^^closed
+          ^startByte 0
+          ^endByte 10
+          ^startUtf16 0
+          ^endUtf16 10
+          ^children no_children
+          ^more 0}
+        {
+          ^id 1
+          ^label "1"
+          ^summary ""
+          ^path "1"
+          ^kind "node"
+          ^^closed
+          ^startByte 11
+          ^endByte 33
+          ^startUtf16 11
+          ^endUtf16 33
+          ^children no_children
+          ^more 0}])
+    (done
+      200
+      {
+        ^^ok
+        ^^parsed
+        ^!partial
+        ^version version
+        ^outline no_outline
+        ^tree {^children rows}
+        ^selected {^!found}
+        ^diagnostics no_outline})
+    (return))
   (done 200 {^ok true}))
 
 (fn stage [sc : Scenario, text_value : Str] : Nil
@@ -174,14 +205,16 @@
   (expect sc "attach: a saved selection reaches the composer"
     (== ($size sc/staged) 1))
   (if (> ($size sc/staged) 0)
-    (do
-      (var staged (text sc/staged/-1 ""))
-      (expect sc "attach: the attachment names the range"
-        (contains staged "demo.gene (UTF-8 bytes 11-33"))
-      (expect sc "attach: the attachment names the revision"
-        (contains staged "revision rev-1"))
-      (expect sc "attach: the attachment carries the exact source"
-        (contains staged "(fn greet [name] name)"))))
+    (var staged (text sc/staged/-1 ""))
+    (expect
+      sc
+      "attach: the attachment names the range"
+      (contains staged "demo.gene (UTF-8 bytes 11-33"))
+    (expect sc "attach: the attachment names the revision" (contains staged "revision rev-1"))
+    (expect
+      sc
+      "attach: the attachment carries the exact source"
+      (contains staged "(fn greet [name] name)")))
 
   # A draft edit keeps its own preview path.
   (var editor_edit (panel_editor panel))
@@ -305,12 +338,12 @@
   (var staged_count ($size sc/staged))
   (expect sc "logs: attach stages a message" (> staged_count 0))
   (if (> staged_count 0)
-    (do
-      (var staged (text sc/staged/-1 ""))
-      (expect sc "logs: the attachment identifies the host log"
-        ($str/contains? staged "Harness host log"))
-      (expect sc "logs: the attachment includes boot output"
-        ($str/contains? staged "boot one"))))
+    (var staged (text sc/staged/-1 ""))
+    (expect
+      sc
+      "logs: the attachment identifies the host log"
+      ($str/contains? staged "Harness host log"))
+    (expect sc "logs: the attachment includes boot output" ($str/contains? staged "boot one")))
 
   # Source and log surfaces stay mounted with their own state.
   (show_source panel)

@@ -54,7 +54,7 @@
       (if (&& (== request/method "GET") (== request/path $"${(api_root)}/connection"))
         (return (response 200 connection)))
       (if (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/exchange"))
-        (do (let data (request_data request))
+        (let data (request_data request))
         (let session
           (exchange ^cookie (cookie_value (?? request/headers/cookie "") cookie)
             auth
@@ -63,7 +63,7 @@
         (result/headers .put
           "set-cookie"
           $"${cookie}=${session/cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
-        (return result)))
+        (return result))
       (let browser (authenticate auth (cookie_value (?? request/headers/cookie "") cookie)))
       (if (&& (!= request/method "GET") (!= request/headers/x-csrf-token browser/csrf))
         (return (response 403 {^code "forbidden" ^message "Refresh before making a change."})))
@@ -72,12 +72,16 @@
       (let managed (plugin_control_request control request))
       (if_not ($absent? managed) (return (response managed/status managed/body)))
       (if (== request/path $"${(api_root)}/workspace/settings")
-        (do (if (== request/method "GET")
+        (if (== request/method "GET")
           (return (response 200 (read_workspace_settings runtime/root))))
         (if (== request/method "POST")
-          (do (let data (request_data request))
-          (return (response 200 (update_workspace_settings ^expected (?? data/expected "")
-            runtime/root (?? data/changes data))))))))
+          (let data (request_data request))
+          (return
+            (response
+              200
+              (update_workspace_settings ^expected (?? data/expected "")
+                runtime/root
+                (?? data/changes data))))))
       (if (&& (== request/method "GET") (== request/path $"${(api_root)}/status"))
         (return
           (response
@@ -93,14 +97,14 @@
               ^mode "recovery"
               ^readiness "Recovery mode; normal execution is disabled."})))
       (if (&& (== request/method "GET") (== request/path $"${(api_root)}/plugins"))
-        (do (let result
+        (let result
           (plugin_catalog ^query (field ^default "" request/params "q") ^state (field ^default "" request/params "state")
             runtime))
         (result .put "csrf" browser/csrf)
         (result .put "epoch" runtime/epoch)
         (let failure_path $"${runtime/state_root}/startup_failure")
         (if ($fs/exists? failure_path) (result .put "startup_failure" ($fs/read_text failure_path)))
-        (return (response 200 result))))
+        (return (response 200 result)))
       (if (&& (== request/method "GET") (== request/path $"${(api_root)}/plugins/history"))
         (return
           (response
@@ -109,13 +113,13 @@
               runtime
               (field ^default "" request/params "id")))))
       (if (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/inspect"))
-        (do (let data (request_data request))
+        (let data (request_data request))
         (return
           (response
             200
-            (inspect_descriptor ^revision (?? data/revision nil) runtime (field data "id"))))))
+            (inspect_descriptor ^revision (?? data/revision nil) runtime (field data "id")))))
       (if (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/history/pin"))
-        (do (let data (request_data request))
+        (let data (request_data request))
         (if (|| (!= ($head data/revision) Int) (!= ($head data/pinned) Bool))
           (return
             (response
@@ -128,28 +132,28 @@
               runtime/workspace/store
               runtime/workspace/history_head/.get
               data/revision
-              data/pinned)))))
+              data/pinned))))
       (if (&& (== request/method "POST") (== request/path $"${(api_root)}/plugins/revert"))
-        (do (let data (request_data request))
+        (let data (request_data request))
         (if (|| (!= ($head data/revision) Int) (!= ($head data/expected) Int))
           (return
             (response 400 {^code "invalid_request" ^message "Integer revisions are required."})))
         (return
           (response
             200
-            (revert_entry ^expected data/expected runtime/workspace (field data "id") data/revision)))))
+            (revert_entry ^expected data/expected runtime/workspace (field data "id") data/revision))))
       (if (&& (== request/method "GET") (== request/path $"${(api_root)}/appearance/preview"))
         (return (appearance_preview_request request runtime true)))
       (if (&& (["GET" "POST"] .contains? request/method) (== request/path $"${(api_root)}/appearance"))
         (return (appearance_request request runtime true)))
       (if (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/reset"))
-        (do (reset_auth auth)
+        (reset_auth auth)
         (log_refresh_redactions)
-        (log_event "host/auth_reset" "owner credentials rotated" ^target {^workspace runtime/root})
+        (log_event ^target {^workspace runtime/root} "host/auth_reset" "owner credentials rotated")
         (publish_link runtime/state_root origin auth/secret)
-        (return (response 200 {^^ok ^message "Owner credential reset. Use the new owner link."}))))
+        (return (response 200 {^^ok ^message "Owner credential reset. Use the new owner link."})))
       (if (&& (== request/method "POST") (== request/path $"${(api_root)}/control"))
-        (do (let data (request_data request))
+        (let data (request_data request))
         (if_not (["stop" "restart"] .contains? data/action)
           (return (response 400 {^code "invalid_request" ^message "Use stop or restart."})))
         (let restart (&& (== data/action "restart") (== options/supervised true)))
@@ -167,7 +171,8 @@
               ^restart restart
               ^message (if restart
                          "Retrying normal startup."
-                         else "Stopped. Start the normal host from the terminal.")}))))
+                       else
+                         "Stopped. Start the normal host from the terminal.")})))
       (response
         503
         {

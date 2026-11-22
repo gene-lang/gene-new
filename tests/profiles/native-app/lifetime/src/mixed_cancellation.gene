@@ -17,17 +17,14 @@
           (if (== mode 2)
             (scope
               (let nested_entered ($channel ^capacity 1))
-              (let nested (spawn ^lane root
-                (try
-                  (nested_entered .send true)
-                  blocker/.recv
-                 ensure (set nested_cleanups (+ nested_cleanups 1)))))
+              (let nested
+                (spawn ^lane root (try (nested_entered .send true) blocker/.recv ensure (set nested_cleanups (+ nested_cleanups 1)))))
               nested_entered/.recv
               (entered .send true)
               (await nested))
-            else (do
-              (entered .send true)
-              (if (== mode 0) blocker/.recv else ($sleep 60000))))
+          else
+            (entered .send true)
+            (if (== mode 0) blocker/.recv else ($sleep 60000)))
          ensure (set cleanups (+ cleanups 1))))))
     entered/.recv
     task/.cancel

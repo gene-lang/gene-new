@@ -81,15 +81,16 @@
   (var total 0)
   (for registry in kinds
     (if (|| (== kind "") (== kind registry))
-      (do (let records
+      (let records
         (if ($absent? snapshot)
           (registry_row_records h registry)
-          else (?? (snapshot/registries .get registry) [])))
+        else
+          (?? (snapshot/registries .get registry) [])))
       (for record in records
         (if (&& (|| (== owner "") (== owner record/owner)) (matches_query query registry record))
-          (do (if (&& (>= total offset) (< matches/.size limit))
+          (if (&& (>= total offset) (< matches/.size limit))
             (matches .push (discovery_entry registry record)))
-          (set total (+ total 1))))))))
+          (set total (+ total 1))))))
   (let next (+ offset matches/.size))
   {^matches matches ^total total ^next_offset (if (< next total) next else nil)})
 

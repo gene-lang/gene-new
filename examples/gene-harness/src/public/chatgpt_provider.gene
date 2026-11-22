@@ -10,12 +10,11 @@
 
 (fn chatgpt_result [response]
   (if (!= response/status 200)
-    (do (let data (try ($json/parse response/body) catch Error nil))
-      (let shape (if (== ($head data/error) Map) "error"
-        elif ($present? data/detail) "detail" else "other"))
-      (chatgpt_failure ^status response/status ^shape shape
-        ^param data/error/param ^request_id (?? response/headers/x-request-id response/headers/openai-request-id)
-        data/error/code)))
+    (let data (try ($json/parse response/body) catch Error nil))
+    (let shape
+      (if (== ($head data/error) Map) "error" elif ($present? data/detail) "detail" else "other"))
+    (chatgpt_failure ^status response/status ^shape shape ^param data/error/param ^request_id (?? response/headers/x-request-id response/headers/openai-request-id)
+      data/error/code))
   (responses_stream_result response "chatgpt"))
 
 (fn chatgpt_metadata [data]

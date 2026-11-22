@@ -25,11 +25,11 @@
     $"notification-action/${session}"
     (fn []
       (if (&& (!= session "") (!= request_id ""))
-        (do (let previous (command_request_receipt runtime/services/values/commands session request_id))
+        (let previous (command_request_receipt runtime/services/values/commands session request_id))
         (if_not ($absent? previous)
           (if (!= previous/request_digest digest)
             (notification_error "submission_conflict" "Action retry changed its original payload."))
-          (return {^kind "command" ^session session ^receipt previous}))))
+          (return {^kind "command" ^session session ^receipt previous})))
       (let message (message_detail runtime/services/values/inbox request/notification))
       (if (!= message/revision request/revision)
         (notification_error
@@ -88,34 +88,31 @@
           (notification_error "invalid_request" "This action belongs to its original conversation."))
         (var parsed nil)
         (if ($absent? action/function)
-          (do
-            (let command (ui_record lease/snapshot "commands" action/command_name))
-            (if (|| ($absent? command) (!= action/command_revision (ui_revision h command)))
-              (notification_error
-                "revision_conflict"
-                "The notification command was replaced or disabled."))
-            (set parsed
-              ($runtime/with_context
-                {^composition h/snapshots ^snapshot lease/snapshot}
-                (fn []
-                  (parse_submission h action/command)))))
-          else (do
-            (let function (ui_record lease/snapshot "functions" action/function))
-            (if (|| ($absent? function) (!= action/function_revision (ui_revision h function)))
-              (notification_error
-                "revision_conflict"
-                "The notification function was replaced or disabled."))
-            (set parsed
-              {
-                ^kind "command"
-                ^name action/function
-                ^raw ""
-                ^handler (fn [ctx]
-                           (let call
-                             ($runtime/bind_call ^named action/named
-                               function/payload/fn
-                               action/args))
-                           (CommandResult ^display ($to_str (call)) ^!attached))})))
+          (let command (ui_record lease/snapshot "commands" action/command_name))
+          (if (|| ($absent? command) (!= action/command_revision (ui_revision h command)))
+            (notification_error
+              "revision_conflict"
+              "The notification command was replaced or disabled."))
+          (set parsed
+            ($runtime/with_context
+              {^composition h/snapshots ^snapshot lease/snapshot}
+              (fn []
+                (parse_submission h action/command))))
+        else
+          (let function (ui_record lease/snapshot "functions" action/function))
+          (if (|| ($absent? function) (!= action/function_revision (ui_revision h function)))
+            (notification_error
+              "revision_conflict"
+              "The notification function was replaced or disabled."))
+          (set parsed
+            {
+              ^kind "command"
+              ^name action/function
+              ^raw ""
+              ^handler (fn [ctx]
+                         (let call
+                           ($runtime/bind_call ^named action/named function/payload/fn action/args))
+                         (CommandResult ^display ($to_str (call)) ^!attached))}))
         (parsed .put "request_id" request_id)
         (parsed .put "request_seq" request/sequence)
         (parsed .put "request_digest" digest)

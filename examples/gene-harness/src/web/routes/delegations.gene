@@ -6,13 +6,14 @@
 (fn delegations_request [context, request, parts]
   (let host context/host)
   (if (session_path? parts)
-    (do (let id parts/4)
+    (let id parts/4)
     (if (&& (== parts/.size 7) (== parts/5 "delegations") (== parts/6 "recovery") (== request/method "POST"))
-      (do (let data (request_data request))
-      (return (response 200 (recover_children host id (field data "round_id") (field data "action"))))))
+      (let data (request_data request))
+      (return
+        (response 200 (recover_children host id (field data "round_id") (field data "action")))))
     (if (&& (== parts/.size 8) (== parts/5 "delegations") (== parts/7 "cancel") (== request/method "POST"))
-      (do (let data (request_data request))
-      (let admission (if (== ($head data/admission) Int) data/admission else (number data "admission")))
-      (return (response 200 (cancel_child host id parts/6 admission))))))
-  )
+      (let data (request_data request))
+      (let admission
+        (if (== ($head data/admission) Int) data/admission else (number data "admission")))
+      (return (response 200 (cancel_child host id parts/6 admission)))))
   nil)

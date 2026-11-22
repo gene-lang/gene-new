@@ -94,8 +94,12 @@
       (var id (qtext field/id))
       (var kind (qtext field/kind))
       (if (== kind "view")
-        (do (render_question_view controller editor field (&& controller/ready (! editor/sending) (! pending)))
-        (continue)))
+        (render_question_view
+          controller
+          editor
+          field
+          (&& controller/ready (! editor/sending) (! pending)))
+        (continue))
       (set element/disabled (|| editor/sending pending))
       (match kind
         when "skip" (set element/checked (== (qjson editor/skips/%id) "true"))
@@ -109,11 +113,11 @@
         else
           (var value (if (== kind "text") (qtext editor/answers/%id) else "-1"))
           (if (== kind "select")
-            (do (var choices : (List Any) field/choices)
+            (var choices : (List Any) field/choices)
             (var index 0)
             (for choice in choices
               (if (== (qjson choice) (qjson editor/answers/%id)) (set value ($to_str index)))
-              (set index (+ index 1)))))
+              (set index (+ index 1))))
           (if (!= ($dom/input_value element) value) ($dom/set_input_value element value))))))
 
 # A question view's answer buttons select draft values; Answer still submits
@@ -132,22 +136,22 @@
         (var value_json (qjson value))
         (if (== current_json value_json) (return true))
         (if (&& multi (str/starts_with? current_json "["))
-          (do (var picked : (List Any) editor/answers/%id)
+          (var picked : (List Any) editor/answers/%id)
           (for item in picked
-            (if (== (qjson item) value_json) (return true)))))
+            (if (== (qjson item) value_json) (return true))))
         false)
       (fn [value : Any] : Nil
         (if multi
-          (do
-            (var next : (List Any) [])
-            (var removed false)
-            (if_not ($absent? editor/answers/%id)
-              (var saved : (List Any) editor/answers/%id)
-              (for item in saved
-                (if (== (qjson item) (qjson value)) (set removed true) else (next .push item))))
-            (if_not removed (next .push value))
-            (set editor/answers/%id next))
-          else (set editor/answers/%id value))
+          (var next : (List Any) [])
+          (var removed false)
+          (if_not ($absent? editor/answers/%id)
+            (var saved : (List Any) editor/answers/%id)
+            (for item in saved
+              (if (== (qjson item) (qjson value)) (set removed true) else (next .push item))))
+          (if_not removed (next .push value))
+          (set editor/answers/%id next)
+        else
+          (set editor/answers/%id value))
         (store_draft controller editor)
         # An opt-in single-click question submits its one answer at once.
         (var batch_questions : (List Any) editor/batch/questions)
@@ -168,7 +172,7 @@
   (var key editor/key)
   (var payload : Any controller/pending/%key)
   (if ($absent? payload)
-    (do (var answers : PropMap {})
+    (var answers : PropMap {})
     (if_not dismiss
       (map_for [raw_id value] in editor/answers
         (var id ($to_str raw_id))
@@ -183,7 +187,7 @@
             ^round_id editor/batch/round_id
             ^answers answers
             ^dismiss dismiss})))
-    (set controller/pending/%key payload)))
+    (set controller/pending/%key payload))
   (if_not (storage_set "gene-harness/question-replies" (qjson controller/pending))
     (set editor/error "Browser storage is required before answering. Resolve will retry this exact reply.")
     (sync_question controller editor)
@@ -199,17 +203,17 @@
     (fn [code : Int, data : Any] : Nil
       (set editor/sending false)
       (if (definitive_reply code)
-        (do
-          (controller/pending .delete key)
-          (storage_set "gene-harness/question-replies" (qjson controller/pending))
-          (if (< code 300)
-            (do
-              (set editor/error "Answer accepted.")
-              (controller/drafts .delete key)
-              (storage_set "gene-harness/question-drafts" (qjson controller/drafts)))
-            else (set editor/error (qtext data/message "This batch cannot accept the reply.")))
-          (remove_notice controller/notices "questions" session key))
-        else (put_notice
+        (controller/pending .delete key)
+        (storage_set "gene-harness/question-replies" (qjson controller/pending))
+        (if (< code 300)
+          (set editor/error "Answer accepted.")
+          (controller/drafts .delete key)
+          (storage_set "gene-harness/question-drafts" (qjson controller/drafts))
+        else
+          (set editor/error (qtext data/message "This batch cannot accept the reply.")))
+        (remove_notice controller/notices "questions" session key)
+      else
+        (put_notice
           controller/notices
           ($dom/element "notice")
           "questions"
@@ -243,10 +247,10 @@
           (set editor/sending false)
           (if (== code 200)
             (send_reply controller editor false)
-            else (do
-              (set editor/error "The original conversation could not be checked. The reply is still pending.")
-              (sync_question controller editor)
-              (controller/changed session))))))))
+          else
+            (set editor/error "The original conversation could not be checked. The reply is still pending.")
+            (sync_question controller editor)
+            (controller/changed session)))))))
 
 (fn question_ready [controller : QuestionEditors, ready : Bool] : Nil
   (set controller/ready ready)
@@ -267,13 +271,13 @@
     (fn [code : Int, data : Any] : Nil
       (set editor/sending false)
       (if (&& (>= code 200) (< code 300))
-        (do
-          (var key editor/key)
-          (controller/pending .delete key)
-          (storage_set "gene-harness/question-replies" (qjson controller/pending))
-          (remove_notice controller/notices "questions" session key)
-          (set editor/error "Cancellation requested."))
-        else (set editor/error "Cancellation was not confirmed. The original question remains available."))
+        (var key editor/key)
+        (controller/pending .delete key)
+        (storage_set "gene-harness/question-replies" (qjson controller/pending))
+        (remove_notice controller/notices "questions" session key)
+        (set editor/error "Cancellation requested.")
+      else
+        (set editor/error "Cancellation was not confirmed. The original question remains available."))
       (sync_question controller editor)
       (controller/changed session))))
 
@@ -301,9 +305,9 @@
     (var group ($dom/render `(fieldset (legend %(qtext question/prompt)))))
     (var choices : Any question/choices)
     (if ($present? question/view)
-      (do (var view_container ($dom/render `(div ^class_name "question_view")))
+      (var view_container ($dom/render `(div ^class_name "question_view")))
       (fields .push {^element view_container ^kind "view" ^id id ^question question})
-      ($dom/append group view_container)))
+      ($dom/append group view_container))
     (if ($present? question/view)
       nil
       elif ($absent? choices)

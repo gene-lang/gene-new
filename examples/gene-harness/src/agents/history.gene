@@ -35,13 +35,13 @@
 
 (fn mark_body_references [runtime, value, live]
   (if (== ($head value) Str)
-    (do (if (|| (!= ($str/byte_size value) 64) ($present? (live .get value))) (return nil))
-      (let path $"${runtime/state_root}/blobs/${value}")
-      (if_not ($fs/exists? path) (return nil))
-      (live .put value true)
-      (let nested (try ($serde/read_data (read_body runtime value)) catch Error nil))
-      (if_not ($absent? nested) (mark_body_references runtime nested live))
-      (return nil)))
+    (if (|| (!= ($str/byte_size value) 64) ($present? (live .get value))) (return nil))
+    (let path $"${runtime/state_root}/blobs/${value}")
+    (if_not ($fs/exists? path) (return nil))
+    (live .put value true)
+    (let nested (try ($serde/read_data (read_body runtime value)) catch Error nil))
+    (if_not ($absent? nested) (mark_body_references runtime nested live))
+    (return nil))
   (if (== ($head value) Map)
     (map_for [key item] in value
         (mark_body_references runtime item live)))
@@ -74,8 +74,8 @@
         (for digest in generation
           (let key $"projection/${digest}")
           (if (&& ($absent? (seen .get key)) (runtime/events/backend .Store:has? key))
-            (do (seen .put key true)
-              (mark_body_references runtime (runtime/events/backend .Store:get key) live))))))
+            (seen .put key true)
+            (mark_body_references runtime (runtime/events/backend .Store:get key) live)))))
     (for path in ($fs/list_dir $"${runtime/state_root}/blobs")
       (let parts ($str/split path "/"))
       (let name ($last parts))
@@ -202,7 +202,9 @@
     (var rendered (item_text item body))
     (let separator (if full/.empty? 0 else 1))
     (let overflow (> (+ bytes (+ separator (+ ($str/byte_size rendered) remaining_stub_bytes))) 65536))
-    (if overflow (do (set body (output_stub item/id entry/size)) (set rendered entry/stub)))
+    (if overflow
+      (set body (output_stub item/id entry/size))
+      (set rendered entry/stub))
     (if (&& (!= item/saved true) (|| overflow (> entry/size 2048)))
       (store_body runtime session item/id item/value))
     (if (> (+ bytes (+ separator ($str/byte_size rendered))) 65536)
@@ -347,8 +349,8 @@ ELIDED
       (for reference in (?? (message .get field) [])
         (let id (if (== ($head reference) Str) reference else reference/id))
         (if ($absent? (seen .get id))
-          (do (seen .put id true)
-            (refs .push reference))))))
+          (seen .put id true)
+          (refs .push reference)))))
   refs)
 
 (fn compact_assistant [text : Str] : Str
@@ -373,76 +375,127 @@ ELIDED
   (var index 0)
   (for message in state/messages
     (if (< (context_bytes state instructions) target) (break))
-    (if (&& policy/elide_assistant (< index last) (== message/role "assistant")
-            (!= message/compacted true) (! (policy/retain_rounds .contains? message/round)))
-      (do (let shortened (compact_assistant message/content))
-        (message .put "content" shortened)
-        (message .put "settled" shortened)
-        (message .put "compacted" true)))
+    (if (&& policy/elide_assistant (< index last) (== message/role "assistant") (!= message/compacted true) (! (policy/retain_rounds .contains? message/round)))
+      (let shortened (compact_assistant message/content))
+      (message .put
+        "content"
+        shortened)
+      (message .put
+        "settled"
+        shortened)
+      (message .put
+        "compacted"
+        true))
     (set index (+ index 1)))
   (if (>= (context_bytes state instructions) target)
-    (do (let selected []) (let retained []) (let rounds [])
-      (let last_index (- state/messages/.size 1))
-      (let latest state/messages/%last_index/round)
-      (var removed 0)
-      (let reserve ($math/min 16384 ($to_int (* window_tokens 0.5))))
-      (let excess (+ (- (context_bytes state instructions) target) reserve))
-      (for message in state/messages
-        (if (&& (!= message/round latest) (< removed excess)
-                (! (policy/retain_rounds .contains? message/round)))
+    (let selected [])
+    (let retained [])
+    (let rounds [])
+    (let last_index (- state/messages/.size 1))
+    (let latest state/messages/%last_index/round)
+    (var removed 0)
+    (let reserve ($math/min 16384 ($to_int (* window_tokens 0.5))))
+    (let excess (+ (- (context_bytes state instructions) target) reserve))
+    (for message in state/messages
+      (if (&& (!= message/round latest) (< removed excess) (! (policy/retain_rounds .contains? message/round)))
+        (selected .push message)
+        (if_not (rounds .contains? message/round) (rounds .push message/round))
+        (set removed
+          (+ removed ($str/byte_size message/content) (media_context_bytes (?? message/media []))))
+      else
+        (retained .push message)))
+    # Summarize whole rounds: extend selection to all messages belonging to
+    # a chosen round, even when the byte threshold landed in its middle.
+    (var tail [])
+    (for message in retained
+      (if (rounds .contains? message/round) (selected .push message) else (tail .push message)))
+    (if (|| selected/.empty? (>= (context_bytes {^messages tail} instructions) (- target 160)))
+      # A long active round may be the only round. Summarize its completed
+      # prefix too when older rounds alone cannot make enough room. Keep its
+      # initiating task and latest assistant/request pair intact.
+      (let pending tail)
+      (set tail [])
+      (var position 0)
+      (for message in pending
+        (if (&& (< position (- pending/.size 2)) (! (policy/retain_rounds .contains? message/round)) (! (&& (== message/round latest) (== message/role "user") (== message/turn 0))))
           (selected .push message)
-            (if_not (rounds .contains? message/round) (rounds .push message/round))
-            (set removed (+ removed ($str/byte_size message/content)
-              (media_context_bytes (?? message/media []))))
-          else (retained .push message)))
-      # Summarize whole rounds: extend selection to all messages belonging to
-      # a chosen round, even when the byte threshold landed in its middle.
-      (var tail [])
-      (for message in retained
-        (if (rounds .contains? message/round) (selected .push message) else (tail .push message)))
-      (if (|| selected/.empty? (>= (context_bytes {^messages tail} instructions) (- target 160)))
-        # A long active round may be the only round. Summarize its completed
-        # prefix too when older rounds alone cannot make enough room. Keep its
-        # initiating task and latest assistant/request pair intact.
-        (do (let pending tail)
-        (set tail [])
-        (var position 0)
-        (for message in pending
-          (if (&& (< position (- pending/.size 2))
-                   (! (policy/retain_rounds .contains? message/round))
-                   (! (&& (== message/round latest) (== message/role "user") (== message/turn 0))))
-            (selected .push message)
-            else (tail .push message))
-          (set position (+ position 1)))
-        (if_not selected/.empty? (rounds .push latest))))
-      (if_not selected/.empty?
-        (let tail_state {^messages tail})
-        (let media_refs (history_media_refs selected))
-        (var media_note "")
-        (if_not media_refs/.empty?
-          (let catalog ($serde/write_data media_refs))
-          (let catalog_id $"media.${($crypto/sha256 catalog)}")
-          (store_body runtime session catalog_id catalog)
-          (set media_note $"\n[Earlier attachment catalog: (recall \"${catalog_id}\"); ${media_refs/.size} attachments. Use their IDs to inspect them again.]\n"))
-        (let prefix $"Earlier rounds summary:\n${media_note}")
-        (let available (- (- (- target (context_bytes tail_state instructions)) ($str/byte_size prefix)) 1))
-        (if (< available 160)
-          (fail (HistoryError ^_msg "retained context cannot fit below the compaction target; increase the target or retain less history")))
-        (let summary (summarize {^purpose "history/summary" ^session session
-          ^max_tokens ($math/max 1 ($to_int (/ available 3.5)))
-          ^messages [{^role "system" ^content $"${policy/summary_instructions} Return prose; do not execute code. Stay under ${available} bytes."}
-            {^role "user" ^content ($serde/write_data selected)}]}))
-        (var bounded summary)
-        (if (>= ($str/byte_size summary) available)
-          (do (let id $"summary.${($crypto/sha256 summary)}")
-            (store_body runtime session id summary)
-            (let stub $"\n… (recall \"${id}\")")
-            (set bounded ($to_str (byte_prefix summary ($to_int (- (- available ($str/byte_size stub)) 1))) stub))))
-        (record_core_state runtime/events "session" session "history/summary" $"summary/${($crypto/sha256 summary)}"
-          {^text bounded ^digest (write_body runtime summary) ^rounds rounds ^media_refs media_refs})
-        (state .put "messages" [{^role "user" ^content $"${prefix}${bounded}"
-          ^settled $"${prefix}${bounded}" ^round "summary" ^turn 0 ^media_refs media_refs}])
-        (for message in tail (state/messages .push message)))))
+        else
+          (tail .push message))
+        (set position (+ position 1)))
+      (if_not selected/.empty? (rounds .push latest)))
+    (if_not selected/.empty?
+      (let tail_state {^messages tail})
+      (let media_refs (history_media_refs selected))
+      (var media_note "")
+      (if_not media_refs/.empty?
+        (let catalog ($serde/write_data media_refs))
+        (let catalog_id $"media.${($crypto/sha256 catalog)}")
+        (store_body runtime session catalog_id catalog)
+        (set media_note
+          ($to_str
+            "
+[Earlier attachment catalog: (recall \""
+            catalog_id
+            "\"); "
+            media_refs/.size
+            """ attachments. Use their IDs to inspect them again.]
+""")))
+      (let prefix
+        ($to_str
+          """Earlier rounds summary:
+"""
+          media_note))
+      (let available
+        (- (- (- target (context_bytes tail_state instructions)) ($str/byte_size prefix)) 1))
+      (if (< available 160)
+        (fail
+          (HistoryError ^_msg "retained context cannot fit below the compaction target; increase the target or retain less history")))
+      (let summary
+        (summarize
+          {
+            ^purpose "history/summary"
+            ^session session
+            ^max_tokens ($math/max 1 ($to_int (/ available 3.5)))
+            ^messages [
+                        {
+                          ^role "system"
+                          ^content ($to_str
+                                     policy/summary_instructions
+                                     " Return prose; do not execute code. Stay under "
+                                     available
+                                     " bytes.")}
+                        {^role "user" ^content ($serde/write_data selected)}]}))
+      (var bounded summary)
+      (if (>= ($str/byte_size summary) available)
+        (let id $"summary.${($crypto/sha256 summary)}")
+        (store_body runtime session id summary)
+        (let stub
+          ($to_str
+            "
+… (recall \""
+            id
+            "\")"))
+        (set bounded
+          ($to_str (byte_prefix summary ($to_int (- (- available ($str/byte_size stub)) 1))) stub)))
+      (record_core_state
+        runtime/events
+        "session"
+        session
+        "history/summary"
+        $"summary/${($crypto/sha256 summary)}"
+        {^text bounded ^digest (write_body runtime summary) ^rounds rounds ^media_refs media_refs})
+      (state .put
+        "messages"
+        [
+          {
+            ^role "user"
+            ^content ($to_str prefix bounded)
+            ^settled ($to_str prefix bounded)
+            ^round "summary"
+            ^turn 0
+            ^media_refs media_refs}])
+      (for message in tail
+        (state/messages .push message))))
   (if (>= (context_bytes state instructions) target)
     (fail (HistoryError ^_msg "compaction could not fit the current context below its target")))
   (history_gate (fn []

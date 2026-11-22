@@ -900,7 +900,7 @@ suite "spec — macros from design":
 
   test "template body siblings use ordinary binding visibility":
     for templateBody in [
-      "((fn [] (let x 7) x))", "(if true (do (let x 7) x) else 0)",
+      "((fn [] (let x 7) x))", "(if true (let x 7) x else 0)",
       "(do (var total 0) (loop (let x 7) (set total x) (break)) total)",
       "(do (var total 0) (for i in [1] (let x 7) (set total x)) total)",
       "(scope (let x 7) x)", "(match 0 when _ (let x 7) x)",
@@ -1438,7 +1438,9 @@ suite "spec — module-level macros reject compile-time definitions":
       (macro keep [syntax store]
         (if ($present? (store .get))
           (store .get)
-          else (do (store .set syntax) syntax)))
+        else
+          (store .set syntax)
+          syntax))
       (let store ($cell nil))
       (let one (eval `(keep %helper %store) ^in (env)))
       [(same? one helper)
@@ -1450,7 +1452,9 @@ suite "spec — module-level macros reject compile-time definitions":
       (macro keep [syntax store]
         (if ($present? (store .get))
           (store .get)
-          else (do (store .set syntax) syntax)))
+        else
+          (store .set syntax)
+          syntax))
       (let store ($cell nil))
       (eval `(keep %helper %store) ^in (env))
       (try (eval `(keep %other %store) ^in (env))
@@ -9077,7 +9081,7 @@ suite "spec — actors from design":
                "  (var tries 0) " &
                "  (while (< tries 100) " &
                "    (if (== seen/.get 0) " &
-               "      (do ($sleep 1) (set tries (+ tries 1))) " &
+               "      ($sleep 1) (set tries (+ tries 1)) " &
                "      else (set tries 100))) " &
                "  [seen/.get " &
                "   (match event ^!exhaustive " &
@@ -10550,10 +10554,10 @@ suite "spec — gene/io qualified contracts":
             (let left (- ($binary/size self/data) offset))
             (if (<= left 0)
               nil
-              else (do
-                (let n (if (< left max_bytes) left else max_bytes))
-                (self/offset .set (+ offset n))
-                ($binary/slice self/data offset n)))))))
+            else
+              (let n (if (< left max_bytes) left else max_bytes))
+              (self/offset .set (+ offset n))
+              ($binary/slice self/data offset n))))))
     (impl IoResource for FakeReader
       (message close [] : Nil (self/closed .set true) nil)
       (message wait_closed [] : (Task Nil Error) (spawn ^lane root nil)))

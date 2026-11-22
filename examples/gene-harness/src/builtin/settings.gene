@@ -201,7 +201,8 @@
   (for provider in providers
     (let value $"${provider}/")
     (if (== value current)
-      (do (set current_shown true) (set in_catalog true)))
+      (set current_shown true)
+      (set in_catalog true))
     (options .push `(option ^value %value %(selection_label value))))
   (var shown 0)
   (var omitted 0)
@@ -210,14 +211,16 @@
     (if (== value current) (set in_catalog true))
     (if (>= shown model_option_limit)
       (set omitted (+ omitted 1))
-      else (do
-        (let why (?? option/reason "not ready"))
-        (let label (if (== option/available false)
+    else
+      (let why (?? option/reason "not ready"))
+      (let label
+        (if (== option/available false)
           $"${option/label} · ${option/provider} (unavailable: ${why})"
-          else $"${option/label} · ${option/provider}"))
-        (options .push `(option ^value %value %label))
-        (if (== value current) (set current_shown true))
-        (set shown (+ shown 1)))))
+        else
+          $"${option/label} · ${option/provider}"))
+      (options .push `(option ^value %value %label))
+      (if (== value current) (set current_shown true))
+      (set shown (+ shown 1))))
   # A saved choice stays visible when the catalog omits or truncates it.
   (if_not current_shown
     (let label (selection_label current))

@@ -48,8 +48,8 @@
 (fn on_tab_key [event : Any] : Nil
   (var key ($event/key event))
   (if (|| (== key "ArrowRight") (== key "ArrowLeft") (== key "Home") (== key "End"))
-    (do ($dom/prevent_default event)
-    (select_view (next_view (view_of event/current_target) key) true))))
+    ($dom/prevent_default event)
+    (select_view (next_view (view_of event/current_target) key) true)))
 
 (fn set_menu [open : Bool] : Nil
   (var toggle ($dom/element "nav_toggle"))
@@ -70,8 +70,8 @@
 
 (fn on_header_key [event : Any] : Nil
   (if (&& (== ($event/key event) "Escape") (menu_open?))
-    (do (set_menu false)
-    ($dom/focus ($dom/element "nav_toggle")))))
+    (set_menu false)
+    ($dom/focus ($dom/element "nav_toggle"))))
 
 # Copy reads the text the server rendered, before any highlighting, so the
 # clipboard receives the source exactly.

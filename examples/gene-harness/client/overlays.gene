@@ -23,7 +23,9 @@
                  close : (Fn [Bool] Nil), fallback : EventTarget] : Bool
   (if ($present? root/harness_modal) (return false))
   (var confirmations ($dom/focusables ($dom/element "confirmations")))
-  (if (> confirmations/.size 0) (do ($dom/focus confirmations/0) (return false)))
+  (if (> confirmations/.size 0)
+    ($dom/focus confirmations/0)
+    (return false))
   (var parent_drawer : Any nil)
   (for names in [["notification_center" "close_notifications"]
                  ["status_drawer" "close_status"]]
@@ -40,7 +42,9 @@
 
 (fn focus_available [choices : (List EventTarget), target : EventTarget] : Bool
   (for control in choices
-    (if (== control target) (do ($dom/focus target) (return true))))
+    (if (== control target)
+      ($dom/focus target)
+      (return true)))
   false)
 
 (fn release_modal [owner : Str, restore : Bool] : Nil
@@ -52,17 +56,18 @@
   (var root : EventTarget saved/root)
   ($dom/set_inert root false)
   (if restore
-    (do (if ($present? saved/parent_drawer) (set saved/parent_drawer/hidden false))
+    (if ($present? saved/parent_drawer) (set saved/parent_drawer/hidden false))
     (var previous : EventTarget saved/previous)
     (var fallback : EventTarget saved/fallback)
     (var choices ($dom/focusables root))
     (if ($present? saved/parent_drawer)
-      (do (var drawer : EventTarget saved/parent_drawer)
-      (for control in ($dom/focusables drawer) (choices .push control))))
+      (var drawer : EventTarget saved/parent_drawer)
+      (for control in ($dom/focusables drawer)
+        (choices .push control)))
     (if (focus_available choices previous) (return))
     (if (focus_available choices fallback) (return))
     (if (focus_available choices ($dom/element "ui_view_picker")) (return))
-    (if (> choices/.size 0) ($dom/focus choices/0)))))
+    (if (> choices/.size 0) ($dom/focus choices/0))))
 
 (fn handoff_modal [] : Bool
   (var root ($dom/element "harness_root"))

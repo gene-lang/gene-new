@@ -88,7 +88,7 @@ suite "locals on the scopeless calling convention":
   const locals = """
     (fn chain [x] (let y (* x 2)) (let z (+ y 1)) (+ y z))
     (fn reassign [x] (var y 1) (set y (+ y x)) y)
-    (fn cond [x] (if (> x 0) (do (let y 1) (+ x y)) else x))
+    (fn cond [x] (if (> x 0) (let y 1) (+ x y) else x))
     (fn pair [x] (let y [x x]) (let z {^a y}) z/a)
     (fn bad [x] (let y (+ x "s")) y)
     (fn outer [x] (chain x))

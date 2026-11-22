@@ -14,19 +14,25 @@
 ## Nothing is written unless `--write` is passed; the default previews the
 ## changed lines.
 ##
+## `--strip-if-do` removes redundant `(do …)` wrappers from `if` arms and
+## re-renders only those forms in the canonical flat layout, preserving
+## comments, quoted data, and the surrounding source.
+##
 ## Run the flat target on a clean legacy checkout. After phase 3 a positional
 ## `(if c a b)` is an intentional two-expression truthy arm, which the legacy
 ## decoder cannot distinguish from the old two-arm form; do not rerun the flat
 ## target as a formatter.
 
-import std/[algorithm, os, osproc, strutils]
+import std/[algorithm, os, osproc, strutils, tables]
 import ../src/gene/[clause_syntax, reader, types]
+import ../src/tools/fmt
 import ../src/tools/source_index
 
 type
   MigrationMode* = enum
     mmGrouped
     mmFlat
+    mmStripIfDo
 
   MigrationIssue* = object
     path*: string
@@ -544,6 +550,8 @@ proc rewriteUnquotes(form: Form, text: string, mode: MigrationMode,
 proc rewriteForm(form: Form, text: string, mode: MigrationMode,
                  edits: var seq[Edit], issues: var seq[MigrationIssue],
                  path: string) =
+  if mode == mmStripIfDo:
+    return
   if form.kind != fkGroup:
     return
   if not form.closed:
@@ -788,6 +796,271 @@ proc validateFlatSource*(text: string, path: string, issues: var seq[MigrationIs
         "rewritten source does not decode: " & error)
       return
 
+proc onlyLocationMeta(value: Value): bool =
+  for key, _ in value.meta:
+    if key notin ["source", "line", "col"]:
+      return false
+  true
+
+const CommentSentinelPrefix = "@@GENE_COMMENT_"
+
+proc isCommentSentinel(value: Value): bool =
+  value.kind == vkString and value.strVal.startsWith(CommentSentinelPrefix)
+
+proc spliceDoBody(forms: seq[Value], changed: var bool): seq[Value] =
+  ## Sentinels stand in for comments; they do not make an arm multi-expression.
+  var meaningful = 0
+  var doNode = NIL
+  for form in forms:
+    if isCommentSentinel(form):
+      continue
+    inc meaningful
+    if form.kind == vkNode and form.head.kind == vkSymbol and
+        form.head.symVal == "do" and form.props.len == 0 and
+        onlyLocationMeta(form) and form.body.len > 0:
+      doNode = form
+    else:
+      return forms
+  if meaningful != 1 or doNode.kind == vkNil:
+    return forms
+  var body: seq[Value]
+  for form in forms:
+    if isCommentSentinel(form):
+      body.add form
+    else:
+      for item in doNode.body:
+        body.add item
+  changed = true
+  body
+
+proc stripIfDoValue(value: Value): tuple[value: Value, changed: bool] =
+  ## Remove a `do` that is the whole body of an `if` arm. The arm already runs
+  ## its forms in order, so the wrapper is redundant; nested `if` forms in the
+  ## spliced body are cleaned in the same pass.
+  case value.kind
+  of vkNode:
+    if value.head.kind == vkSymbol and
+        value.head.symVal in ["quote", "quasiquote"]:
+      return (value, false)
+    var changed = false
+    var head = value.head
+    let headResult = stripIfDoValue(value.head)
+    if headResult.changed:
+      head = headResult.value
+      changed = true
+    var props = value.props
+    for key, item in value.props:
+      let itemResult = stripIfDoValue(item)
+      if itemResult.changed:
+        props[key] = itemResult.value
+        changed = true
+    var body: seq[Value]
+    for item in value.body:
+      let itemResult = stripIfDoValue(item)
+      body.add itemResult.value
+      changed = changed or itemResult.changed
+    var node =
+      if changed:
+        newNode(head, props, body, value.meta, value.nodeImmutable)
+      else:
+        value
+    if node.head.kind == vkSymbol and node.head.symVal == "if":
+      let split = tryDecodeIf(node)
+      if split.valid:
+        var clauses = split.clauses
+        var spliced = false
+        for i in 0 ..< clauses.arms.len:
+          clauses.arms[i].body = spliceDoBody(clauses.arms[i].body, spliced)
+        clauses.elseBody = spliceDoBody(clauses.elseBody, spliced)
+        if spliced:
+          node = rebuildIf(node, clauses)
+          changed = true
+    (node, changed)
+  of vkList:
+    var items: seq[Value]
+    var changed = false
+    for item in value.listItems:
+      let itemResult = stripIfDoValue(item)
+      items.add itemResult.value
+      changed = changed or itemResult.changed
+    if changed: (newList(items, value.listImmutable), true) else: (value, false)
+  of vkMap:
+    var entries = initPropTable()
+    var changed = false
+    for key, item in value.mapEntries:
+      let itemResult = stripIfDoValue(item)
+      entries[key] = itemResult.value
+      changed = changed or itemResult.changed
+    if changed: (newMap(entries, value.mapImmutable), true) else: (value, false)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    var changed = false
+    for entry in value.hashMapEntries:
+      let keyResult = stripIfDoValue(entry.key)
+      let valueResult = stripIfDoValue(entry.val)
+      entries.add HashMapEntry(key: keyResult.value, val: valueResult.value)
+      changed = changed or keyResult.changed or valueResult.changed
+    if changed: (newHashMap(entries), true) else: (value, false)
+  of vkSet:
+    var items: seq[Value]
+    var changed = false
+    for item in value.setItems:
+      let itemResult = stripIfDoValue(item)
+      items.add itemResult.value
+      changed = changed or itemResult.changed
+    if changed: (newSet(items), true) else: (value, false)
+  else:
+    (value, false)
+
+proc hasLoneDoArm(form: Form, text: string): bool =
+  let body = form.body
+  var i = 1
+  var armBody: seq[Form]
+  var found = false
+  template closeArm() =
+    if armBody.len == 1 and armBody[0].hasHead("do"):
+      found = true
+  while i < body.len:
+    if body[i].isBareMarker(text, ["elif"]):
+      closeArm()
+      armBody = @[]
+      i += 2
+    elif body[i].isBareMarker(text, ["else"]):
+      closeArm()
+      armBody = @[]
+      inc i
+    else:
+      armBody.add body[i]
+      inc i
+  closeArm()
+  found
+
+proc renderIfForm(form: Form, raw: string, text: string,
+                  path: string, issues: var seq[MigrationIssue]): string =
+  ## Format one if form after splicing its do arms. Comments are swapped for
+  ## unique string sentinels before reading, then restored as comments. This
+  ## keeps comments at their original arm/argument positions while still
+  ## letting the formatter lay the form out canonically.
+  var comments: seq[tuple[startByte, endByte: int, text: string]]
+  try:
+    for token in lexAllSpanned(raw, includeTrivia = true):
+      if token.kind in {tkLineComment, tkBlockComment}:
+        comments.add (token.startByte, token.endByte,
+                      raw[token.startByte ..< token.endByte])
+  except CatchableError:
+    return ""
+  var sentinelled = raw
+  var sentinels: seq[tuple[token, comment: string]]
+  for i in countdown(comments.high, 0):
+    let token = "\"@@GENE_COMMENT_" & $form.startByte & "_" & $i & "@@\""
+    sentinels.add (token, comments[i].text)
+    sentinelled = sentinelled[0 ..< comments[i].startByte] & token &
+      sentinelled[comments[i].endByte .. ^1]
+  var stripped: tuple[value: Value, changed: bool]
+  var wraps: Table[uint64, WrapSyntax]
+  try:
+    let read = readAllWithLocs(sentinelled, path)
+    if read.forms.len != 1 or read.forms[0].kind != vkNode:
+      return ""
+    wraps = read.wraps
+    stripped = stripIfDoValue(read.forms[0])
+  except CatchableError as error:
+    issues.add MigrationIssue(path: path, line: lineOf(text, form.startByte),
+      message: "cannot re-read if form: " & error.msg)
+    return ""
+  if not stripped.changed:
+    return ""
+  let lineStart = text.rfind('\n', 0, form.startByte) + 1
+  let column = form.startByte - lineStart
+  var rendered = formatForm(stripped.value, wraps, column)
+  for (token, comment) in sentinels:
+    var replacement = comment
+    if comment.startsWith("#") and not comment.startsWith("#<"):
+      let at = rendered.find(token)
+      if at >= 0:
+        let lineBegin = rendered.rfind('\n', 0, at) + 1
+        var lineEnd = rendered.find('\n', at + token.len)
+        if lineEnd < 0: lineEnd = rendered.len
+        var indentLen = 0
+        while lineBegin + indentLen < at and
+            rendered[lineBegin + indentLen] == ' ':
+          inc indentLen
+        # A line comment swallows the rest of its line. If formatter output
+        # put code after the sentinel, move that code to the next line.
+        if rendered[at + token.len ..< lineEnd].strip().len > 0:
+          replacement = comment & "\n" & repeat(' ', indentLen + 2)
+    rendered = rendered.replace(token, replacement)
+  rendered
+
+proc hasCommentToken(raw: string): bool =
+  try:
+    for token in lexAllSpanned(raw, includeTrivia = true):
+      if token.kind in {tkLineComment, tkBlockComment}:
+        return true
+  except CatchableError:
+    return false
+  false
+
+proc stripIfDoForms(forms: seq[Form], text: string, edits: var seq[Edit],
+                    issues: var seq[MigrationIssue], path: string)
+
+proc stripIfDoUnquotes(form: Form, text: string, edits: var seq[Edit],
+                       issues: var seq[MigrationIssue], path: string) =
+  ## Quoted structure stays data, but `%(…)` inside a template is code.
+  if form.kind != fkGroup:
+    return
+  if form.headText == "quote":
+    return
+  if form.headText == "unquote":
+    stripIfDoForms(form.body, text, edits, issues, path)
+    return
+  if form.headForm != nil:
+    stripIfDoUnquotes(form.headForm, text, edits, issues, path)
+  for item in form.props:
+    stripIfDoUnquotes(item, text, edits, issues, path)
+  for item in form.body:
+    stripIfDoUnquotes(item, text, edits, issues, path)
+
+proc stripIfDoForms(forms: seq[Form], text: string, edits: var seq[Edit],
+                    issues: var seq[MigrationIssue], path: string) =
+  for form in forms:
+    if form.kind != fkGroup:
+      continue
+    if form.headText == "quote":
+      continue
+    if form.headText == "quasiquote":
+      stripIfDoUnquotes(form, text, edits, issues, path)
+      continue
+    if form.headText == "unquote":
+      stripIfDoForms(form.body, text, edits, issues, path)
+      continue
+    if form.headText == "if":
+      let raw = text[form.startByte ..< form.endByte]
+      if getEnv("MIG_DEBUG") == "1":
+        stderr.writeLine("if at " & $lineOf(text, form.startByte) &
+          " lone=" & $hasLoneDoArm(form, text) & " comments=" &
+          $hasCommentToken(raw))
+      try:
+        let values = readAll(raw, path)
+        if values.len == 1 and values[0].kind == vkNode:
+          let stripped = stripIfDoValue(values[0])
+          if stripped.changed and hasLoneDoArm(form, text):
+            let rendered = renderIfForm(form, raw, text, path, issues)
+            if rendered.len > 0:
+              edits.add Edit(startByte: form.startByte, endByte: form.endByte,
+                             text: rendered)
+              continue
+      except CatchableError as error:
+        issues.add MigrationIssue(path: path,
+          line: lineOf(text, form.startByte),
+          message: "cannot re-read if form: " & error.msg)
+        continue
+    # Recurse into children; a changed `if` was replaced as a whole.
+    if form.headForm != nil:
+      stripIfDoForms(@[form.headForm], text, edits, issues, path)
+    stripIfDoForms(form.props, text, edits, issues, path)
+    stripIfDoForms(form.body, text, edits, issues, path)
+
 proc rewriteGeneSource*(text: string, mode: MigrationMode,
                         path = "<source>"): RewriteResult =
   var issues: seq[MigrationIssue]
@@ -798,8 +1071,11 @@ proc rewriteGeneSource*(text: string, mode: MigrationMode,
   except ValueError as e:
     issues.add MigrationIssue(path: path, message: e.msg)
     return RewriteResult(text: text, issues: issues)
-  for form in forms:
-    rewriteForm(form, text, mode, edits, issues, path)
+  if mode == mmStripIfDo:
+    stripIfDoForms(forms, text, edits, issues, path)
+  else:
+    for form in forms:
+      rewriteForm(form, text, mode, edits, issues, path)
   result.text = applyEdits(text, edits)
   result.changes = edits.len
   result.edits = edits
@@ -1288,11 +1564,18 @@ proc rewriteNimSource*(text: string, mode: MigrationMode,
       continue
     var localEdits: seq[Edit]
     let issueStart = issues.len
-    if debug and "(match" in combined:
+    if mode == mmStripIfDo:
+      # Triple-quoted literals hold plain Gene source. Single-quoted literals
+      # are escaped and stay for the caller to review.
+      if literals[first].kind != 't':
+        continue
+      stripIfDoForms(forms, combined, localEdits, issues, path)
+    else:
+      if debug and "(match" in combined:
+        for form in forms:
+          dumpForm(form, combined)
       for form in forms:
-        dumpForm(form, combined)
-    for form in forms:
-      rewriteForm(form, combined, mode, localEdits, issues, path)
+        rewriteForm(form, combined, mode, localEdits, issues, path)
     let firstLine = lineOf(text, literals[first].contentStart)
     for i in issueStart ..< issues.len:
       issues[i].line = firstLine + issues[i].line - 1
@@ -1390,6 +1673,8 @@ proc main(): int =
       write = true
     of "--check", "--summary":
       if argument == "--summary": summary = true
+    of "--strip-if-do", "--remove-if-do":
+      mode = mmStripIfDo
     else:
       if argument.startsWith("--to="):
         mode = if argument.endsWith("grouped"): mmGrouped else: mmFlat

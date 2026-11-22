@@ -40,14 +40,16 @@
    ^revision revision ^mode mode ^parts (copy parts)})
   (if (== supplied/remove true) (intent .put "remove" true))
   (if (== mode "thread")
-    (do (if (|| (!= ($head supplied/through) Int) (< supplied/through 0))
+    (if (|| (!= ($head supplied/through) Int) (< supplied/through 0))
       (channel_error "invalid_request" "A new channel thread needs its conversation boundary."))
     (intent .put "through" supplied/through)
     (if_not ($absent? supplied/archived_rounds)
       (let archived supplied/archived_rounds)
-      (if (!= ($head archived) List) (channel_error "invalid_request" "Invalid archived round IDs."))
-      (for id in archived (required_text id "archived round ID"))
-      (intent .put "archived_rounds" (copy archived)))))
+      (if (!= ($head archived) List)
+        (channel_error "invalid_request" "Invalid archived round IDs."))
+      (for id in archived
+        (required_text id "archived round ID"))
+      (intent .put "archived_rounds" (copy archived))))
   intent)
 
 (fn intent_digest [intent] (key intent))
@@ -80,15 +82,15 @@
       (channel_error "forbidden" "Output does not match the session's shared destination."))
     (let previous (state/outbox .get intent/id))
     (if ($present? previous)
-      (do (if (!= (delivery_identity previous/intent) (delivery_identity intent))
+      (if (!= (delivery_identity previous/intent) (delivery_identity intent))
         (channel_error "submission_conflict" "Delivery destination changed."))
       (if (< intent/revision previous/intent/revision) (return previous))
       (if (== intent/revision previous/intent/revision)
-        (do (if (!= previous/digest (intent_digest intent))
+        (if (!= previous/digest (intent_digest intent))
           (channel_error "submission_conflict" "Delivery ID/revision has different content."))
-        (return previous)))
+        (return previous))
       (if (!= intent/mode "progress")
-        (channel_error "submission_conflict" "Final output cannot be revised in place."))))
+        (channel_error "submission_conflict" "Final output cannot be revised in place.")))
     (state .put "outbox_sequence" (+ (?? state/outbox_sequence 0) 1))
     (let record {^intent intent ^digest (intent_digest intent) ^status "pending"
       ^sequence (?? previous/sequence state/outbox_sequence)})
@@ -133,18 +135,18 @@
             (|| (!= route/enabled true) (!= (/enabled (state/accounts .get intent/account)) true)))
       (channel_error "unavailable" "The channel connection is disabled."))
     (if ($present? previous)
-      (do (if (!= (delivery_identity previous/intent) (delivery_identity intent))
+      (if (!= (delivery_identity previous/intent) (delivery_identity intent))
         (channel_error "submission_conflict" "Delivery destination changed."))
       (if (< intent/revision previous/intent/revision) (return previous))
       (if (== intent/revision previous/intent/revision)
-        (do (if (!= previous/digest (intent_digest intent))
+        (if (!= previous/digest (intent_digest intent))
           (channel_error "submission_conflict" "Delivery ID/revision has different content."))
-        (return previous)))
+        (return previous))
       (if (!= intent/mode "progress")
         (channel_error "submission_conflict" "Final output cannot be revised in place."))
       (for part in previous/parts
         (if (["sending" "uncertain"] .contains? part/status)
-          (channel_error "uncertain" "Reconcile the earlier progress update before replacing it.")))))
+          (channel_error "uncertain" "Reconcile the earlier progress update before replacing it."))))
     (let parts [])
     (var index 0)
     (for rendered in intent/parts
@@ -186,13 +188,12 @@
     (record .put "next_check_at" (+ ($os/wall_ms) delay))
     (record .put "check_delay" (if (== status "uncertain") delay else 500))
     (if (== result/intent/mode "post")
-      (do (let queue (state/queues .get result/intent/session))
+      (let queue (state/queues .get result/intent/session))
       (let binding (state/bindings .get queue/binding))
       (if ($absent? binding/last_message)
         (binding .put "last_message" (last_thread_message state binding)))
       (for part in result/parts
-        (if (&& (== part/status "sent") ($present? part/ts))
-          (remember_message binding part/ts)))))
+        (if (&& (== part/status "sent") ($present? part/ts)) (remember_message binding part/ts))))
     record) ^changes (fn [state]
       (let queue (state/queues .get result/intent/session))
       {^outbox [result/intent/id] ^bindings (if ($absent? queue) [] else [queue/binding])})))
@@ -298,30 +299,51 @@
   (while (< index original/parts/.size)
     (let claimed (begin_part owner id revision index))
     (if ($present? claimed)
-      (do (let intent claimed/intent)
+      (let intent claimed/intent)
       (if (== intent/remove true)
         # The ID comes only from this owner's earlier progress delivery. A
         # status that was never posted needs no external call, and a transport
         # that cannot delete messages leaves its last status in place.
-        (do (let removed (if (|| ($absent? claimed/part/ts) (! ($runtime/callable? adapter/remove)))
-          {^status "sent" ^ts claimed/part/ts}
-          else (transport_outcome adapter "remove"
-            {^account account ^intent intent ^delivery id ^part claimed/part}
-            {^status "pending" ^error "unconfirmed_removal" ^retry_at (+ ($os/wall_ms) 1000)})))
+        (let removed
+          (if (|| ($absent? claimed/part/ts) (! ($runtime/callable? adapter/remove)))
+            {^status "sent" ^ts claimed/part/ts}
+          else
+            (transport_outcome
+              adapter
+              "remove"
+              {^account account ^intent intent ^delivery id ^part claimed/part}
+              {^status "pending" ^error "unconfirmed_removal" ^retry_at (+ ($os/wall_ms) 1000)})))
         (finish_part owner id revision index removed)
-        (break)))
+        (break))
       (let update ($present? claimed/part/ts))
-      (let thread (if update nil
-        else (if (== intent/mode "thread")
-          (if (== index 0) nil else (/ts (/0 (/parts (output_result owner id)))))
-          else intent/thread)))
-      (let outcome (transport_outcome adapter "send"
-        {^account account ^intent intent ^delivery id ^revision revision ^index index
-         ^part intent/parts/%index ^ts claimed/part/ts ^thread thread}
-        {^status "uncertain" ^error "unconfirmed_response"}))
+      (let thread
+        (if update
+          nil
+        else
+          (if (== intent/mode "thread")
+            (if (== index 0)
+              nil
+            else
+              ((Path "ts") ((Path 0) ((Path "parts") (output_result owner id)))))
+          else
+            intent/thread)))
+      (let outcome
+        (transport_outcome
+          adapter
+          "send"
+          {
+            ^account account
+            ^intent intent
+            ^delivery id
+            ^revision revision
+            ^index index
+            ^part intent/parts/%index
+            ^ts claimed/part/ts
+            ^thread thread}
+          {^status "uncertain" ^error "unconfirmed_response"}))
       (finish_part owner id revision index outcome)
       (set sent (+ sent 1))
-      (if (|| (!= outcome/status "sent") (>= sent maximum)) (break))))
+      (if (|| (!= outcome/status "sent") (>= sent maximum)) (break)))
     (set index (+ index 1)))
   (output_result owner id))
 
@@ -337,9 +359,9 @@
   (mutate owner (fn [state]
     (let record (state/deliveries .get id))
     (if (== record/intent/revision original/intent/revision)
-      (do (record .put "reconcile_at" ($os/wall_ms))
-        (record .put "reconcile_after" (+ ($os/wall_ms) 30000))
-        (record .put "reconcile_error" nil)))
+      (record .put "reconcile_at" ($os/wall_ms))
+      (record .put "reconcile_after" (+ ($os/wall_ms) 30000))
+      (record .put "reconcile_error" nil))
     nil) ^changes {^deliveries [id]})
   (let account (/accounts (snapshot owner); .get original/intent/account))
   (let new_root (&& (== original/intent/mode "thread") (!= original/parts/0/status "sent")))
@@ -350,9 +372,9 @@
         (mutate owner (fn [state]
           (let record (state/deliveries .get id))
           (if (== record/intent/revision original/intent/revision)
-            (do (record .put "reconcile_error" "rate_limited")
-              (record .put "reconcile_after" (+ ($os/wall_ms) (?? failure/retry_after_ms 1000)))
-              (record_quota state record/intent/account "read" record/reconcile_after)))
+            (record .put "reconcile_error" "rate_limited")
+            (record .put "reconcile_after" (+ ($os/wall_ms) (?? failure/retry_after_ms 1000)))
+            (record_quota state record/intent/account "read" record/reconcile_after))
           nil) ^changes {^deliveries [id] ^rate_limits nil}))
       (fail failure)))
   (for found in (?? response/matches [])
@@ -416,31 +438,32 @@
     (var adapter nil)
     (try (set adapter (delivery_adapter service account supplied))
       catch ChannelError (health service delivery/intent/account $err/code))
-    (if ($absent? adapter) (do (blocked .put thread true) (continue)))
+    (if ($absent? adapter)
+      (blocked .put thread true)
+      (continue))
     (let pace (?? adapter/pace_ms 1100))
     (if (== delivery/status "uncertain")
-      (do (blocked .put thread true)
-      (if (&& (>= ($os/wall_ms) (?? delivery/reconcile_after (+ (?? delivery/reconcile_at 0) 30000)))
-              (>= ($os/monotonic_ms) (?? (service/next_send/.get .get ($to_str "read/" group)) 0)))
+      (blocked .put thread true)
+      (if (&& (>= ($os/wall_ms) (?? delivery/reconcile_after (+ (?? delivery/reconcile_at 0) 30000))) (>= ($os/monotonic_ms) (?? (service/next_send/.get .get $"read/${group}") 0)))
         (try
           (reconcile_remote owner adapter id)
-          (service/next_send/.get .put ($to_str "read/" group) (+ ($os/monotonic_ms) pace))
+          (service/next_send/.get .put $"read/${group}" (+ ($os/monotonic_ms) pace))
         catch Error
-          (backoff_until service ($to_str "read/" group) (+ ($os/wall_ms) (?? $err/retry_after_ms 30000)))
+          (backoff_until service $"read/${group}" (+ ($os/wall_ms) (?? $err/retry_after_ms 30000)))
           (health service delivery/intent/account (?? $err/code "reconcile_unavailable"))))
-      (continue)))
+      (continue))
     (if (!= delivery/status "accepted") (continue))
     (let channel ($to_str delivery/intent/team "/" delivery/intent/channel))
-    (if (> ($math/max (?? (service/next_send/.get .get channel) 0)
-                     (?? (service/next_send/.get .get ($to_str "write/" group)) 0)) ($os/monotonic_ms))
-      (do (blocked .put thread true) (continue)))
+    (if (> ($math/max (?? (service/next_send/.get .get channel) 0) (?? (service/next_send/.get .get $"write/${group}") 0)) ($os/monotonic_ms))
+      (blocked .put thread true)
+      (continue))
     (try
       (let result (deliver_output owner adapter id ^max_parts 1))
       (var delay pace)
       (for part in result/parts
         (if (== part/error "rate_limited")
-          (do (set delay ($math/max delay (- (?? part/retry_at 0) ($os/wall_ms))))
-            (backoff_until service ($to_str "write/" group) (?? part/retry_at 0)))))
+          (set delay ($math/max delay (- (?? part/retry_at 0) ($os/wall_ms))))
+          (backoff_until service $"write/${group}" (?? part/retry_at 0))))
       (service/next_send/.get .put channel (+ ($os/monotonic_ms) delay))
       (if (!= result/status "delivered") (blocked .put thread true))
     catch Error

@@ -17,32 +17,30 @@
   (let graph (make_graph))
   (try
     (if (== req/path "/hold")
-      (do
-        (hold_entered .send true)
-        hold_release/.recv
-        (return (text 200 "held"))))
+      (hold_entered .send true)
+      hold_release/.recv
+      (return (text 200 "held")))
     (if (== req/path "/sink")
-      (do
-        # A catch body declaring inside a repeating loop (the ledger's loop
-        # catch scope case), run by every handler the server later cancels.
-        (for attempt in [1 2]
-          (try (fail (AssertionFault ^_msg "retry"))
-           catch Error
-             (var noted attempt)
-             nil))
-        # The server cancels this handler while it waits for the rest of the
-        # body the client aborted; it never reaches EOF.
-        (var total 0)
-        (var signalled false)
-        (while true
-          (let part (await (req/body .AsyncReader:read 65536)))
-          (if ($absent? part) (break))
-          (set total (+ total ($binary/size part)))
-          (if (! signalled)
-            (do
-              (set signalled true)
-              (sink_entered .send true))))
-        (return (text 200 ($to_str total)))))
+      # A catch body declaring inside a repeating loop (the ledger's loop
+      # catch scope case), run by every handler the server later cancels.
+      (for attempt in [1 2]
+        (try
+          (fail (AssertionFault ^_msg "retry"))
+        catch Error
+          (var noted attempt)
+          nil))
+      # The server cancels this handler while it waits for the rest of the
+      # body the client aborted; it never reaches EOF.
+      (var total 0)
+      (var signalled false)
+      (while true
+        (let part (await (req/body .AsyncReader:read 65536)))
+        (if ($absent? part) (break))
+        (set total (+ total ($binary/size part)))
+        (if (! signalled)
+          (set signalled true)
+          (sink_entered .send true)))
+      (return (text 200 ($to_str total))))
     (text 404 "not found")
    ensure
      ($assert (graph_ok graph))

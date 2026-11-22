@@ -41,13 +41,13 @@
     (set next (+ next 1))
     (repeat _ in width
       (if (< made node_count)
-        (do (set made (+ made 1))
-          (let child_kids [])
-          (let child (make_node made (+ level 1) child_kids))
-          (kids .push child)
-          (if (is_section child)
-            (do (pending_kids .push child_kids)
-              (pending_levels .push (+ level 1))))))))
+        (set made (+ made 1))
+        (let child_kids [])
+        (let child (make_node made (+ level 1) child_kids))
+        (kids .push child)
+        (if (is_section child)
+          (pending_kids .push child_kids)
+          (pending_levels .push (+ level 1))))))
   root)
 
 # Preorder serialization, used only to hash the fixture and count its kinds.

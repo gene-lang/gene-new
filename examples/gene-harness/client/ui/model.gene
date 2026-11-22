@@ -60,16 +60,22 @@
 
 (fn persist_view [ui : UiClient] : Nil
   (if (&& (!= ui/workspace "") ($present? ui/descriptor))
-    (do (var origin {^session "" ^component ui/descriptor/name ^workspace ui/workspace})
+    (var origin {^session "" ^component ui/descriptor/name ^workspace ui/workspace})
     (var key (state_key ui))
-    (var saved {^state ui/state ^drafts ui/drafts ^forms ui/forms
-      ^focus ui/navigation/focus ^scroll ($to_int ui/navigation/scroll)})
+    (var saved
+      {
+        ^state ui/state
+        ^drafts ui/drafts
+        ^forms ui/forms
+        ^focus ui/navigation/focus
+        ^scroll ($to_int ui/navigation/scroll)})
     (set ui/navigation/snapshots/%key (copy_map saved))
     (if (storage_set key ($json/stringify saved))
       (notice ^key "storage" ^origin origin ui "")
-      else (notice ^key "storage" ^origin origin ^^sticky ^severity "error"
+    else
+      (notice ^key "storage" ^origin origin ^^sticky ^severity "error"
         ui
-        "Panel drafts could not be saved in browser storage. Keep this page open.")))))
+        "Panel drafts could not be saved in browser storage. Keep this page open."))))
 
 (fn saved_view [ui : UiClient, key : Str] : PropMap
   (var memory : Any ui/navigation/snapshots/%key)
@@ -83,8 +89,8 @@
 
 (fn field_value [node : UiNode] : Any
   (if (== (text node/props/type) "checkbox")
-    (do (var checked : Bool node/element/checked)
-    (return checked)))
+    (var checked : Bool node/element/checked)
+    (return checked))
   ($dom/input_value node/element))
 
 (fn sync_controls [ui : UiClient] : Nil
@@ -137,9 +143,9 @@
   (map_for [field_key raw] in drafts
     (var item : Any raw)
     (if (== (text item/form) form)
-      (do (var name : Str item/name)
+      (var name : Str item/name)
       (if (== ($json/stringify (?? item/value nil)) ($json/stringify (?? pending/request/named/%name nil)))
-        (drafts .delete field_key)))))
+        (drafts .delete field_key))))
   (var still_dirty false)
   (map_for [field_key raw] in drafts
     (var item : Any raw)
@@ -159,6 +165,6 @@
   (if_not (storage_set key ($json/stringify saved))
     (notice ^key "storage" ^^sticky ^severity "error" ui "Saved, but draft recovery storage could not be updated. Keep this page open."))
   (if active
-    (do (set ui/state state)
+    (set ui/state state)
     (set ui/drafts drafts)
-    (set ui/forms forms))))
+    (set ui/forms forms)))

@@ -22,7 +22,8 @@
     "--no-chrome" "--disable-slash-commands" "--no-session-persistence"
     "--max-turns" "1" "--model" config/model "--system-prompt" system])
   (if (&& ($present? config/effort) (!= config/effort "none"))
-    (do (args .push "--effort") (args .push config/effort)))
+    (args .push "--effort")
+    (args .push config/effort))
   (args .push "--") (args .push user)
   {^cmd config/claude_command ^args args})
 

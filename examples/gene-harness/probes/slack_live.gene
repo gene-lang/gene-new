@@ -63,13 +63,12 @@
                (== output/result/status "delivered")
                (output/intent/parts/0/text .contains? "Gene Harness live test succeeded."))
         (set delivered true)))
-    (if (&& (== receipt/state "done") outgoing/.empty? delivered
-             ($fs/exists? ($path/join root "slack-live-proof.txt")))
-      (do ($assert ($absent? receipt/deadline_ms))
-        ($assert (== receipt/initiator "channel:slack/qualification"))
-        ($assert (== receipt/input/messages/0/message thread))
-        ($assert (== ($fs/read_text ($path/join root "slack-live-proof.txt")) "executed"))
-        (return {^session binding/session ^round receipt/id ^thread binding/thread}))))
+    (if (&& (== receipt/state "done") outgoing/.empty? delivered ($fs/exists? ($path/join root "slack-live-proof.txt")))
+      ($assert ($absent? receipt/deadline_ms))
+      ($assert (== receipt/initiator "channel:slack/qualification"))
+      ($assert (== receipt/input/messages/0/message thread))
+      ($assert (== ($fs/read_text ($path/join root "slack-live-proof.txt")) "executed"))
+      (return {^session binding/session ^round receipt/id ^thread binding/thread})))
   nil)
 
 (fn retire_qualification [service, native = nil]

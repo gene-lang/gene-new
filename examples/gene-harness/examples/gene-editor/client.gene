@@ -32,9 +32,9 @@
 (fn str_list [value : Any] : (List Str)
   (var out : (List Str) [])
   (if ($present? value)
-    (do (var items : (List Any) value)
+    (var items : (List Any) value)
     (for item in items
-      (out .push (text item "")))))
+      (out .push (text item ""))))
   out)
 
 # ---------------------------------------------------------------------------
@@ -114,8 +114,8 @@
     (fn [body : Str] : Nil
       (var data ($json/parse body))
       (if (! (flag data/ok))
-        (do (say status_node (text data/message "could not open document"))
-            (return)))
+        (say status_node (text data/message "could not open document"))
+        (return))
       (var payload : Any data/document)
       (var name (text payload/name id))
       (var document (editor_document (text payload/id id) name
@@ -156,12 +156,11 @@
   (if ($present? page/rows) (set rows page/rows))
   (mark_active rows id)
   (if (== id "__logs__")
-    (do
-      (set page/current "__logs__")
-      (open_logs editor page status_node))
-    else (do
-      (set page/current id)
-      (open_document editor page status_node id))))
+    (set page/current "__logs__")
+    (open_logs editor page status_node)
+  else
+    (set page/current id)
+    (open_document editor page status_node id)))
 
 (fn load_listing [editor : Editor, page : PropMap, list_node : EventTarget,
                   status_node : EventTarget] : Nil
@@ -178,10 +177,9 @@
       (set page/rows rows)
       (if (!= current "")
         nil
-        else (do
-          (var first : Any (documents .get 0))
-          (if ($present? first)
-            (pick_document editor page status_node (text first/id ""))))))))
+      else
+        (var first : Any (documents .get 0))
+        (if ($present? first) (pick_document editor page status_node (text first/id "")))))))
 
 # ---------------------------------------------------------------------------
 # Entry
@@ -204,22 +202,20 @@
         ($http/request "POST" "/api/analyze" ($json/stringify request) {}
           (fn [status : Int, body : Str] : Nil
             (if (!= status 200)
-              (done {^ok false ^message $"analysis request failed (${status})"})
-              else (do
-                (var response ($json/parse body))
-                (if ($absent? response/version)
-                  (set response/version request/version))
-                (done response))))))
+              (done {^!ok ^message $"analysis request failed (${status})"})
+            else
+              (var response ($json/parse body))
+              (if ($absent? response/version) (set response/version request/version))
+              (done response)))))
       ^format (fn [request : Any, done : (Fn [Any] Nil)] : Nil
         ($http/request "POST" "/api/format" ($json/stringify request) {}
           (fn [status : Int, body : Str] : Nil
             (if (!= status 200)
-              (done {^ok false ^message $"format request failed (${status})"})
-              else (do
-                (var response ($json/parse body))
-                (if ($absent? response/version)
-                  (set response/version request/version))
-                (done response))))))
+              (done {^!ok ^message $"format request failed (${status})"})
+            else
+              (var response ($json/parse body))
+              (if ($absent? response/version) (set response/version request/version))
+              (done response)))))
       ^store_get (fn [id : Str] : Any
         (var value : Any drafts/%id)
         value)
@@ -230,11 +226,9 @@
       ^emit (fn [event : Any] : Nil
         (var kind (text event/type ""))
         (if (== kind "selection")
-          (do
-            (var path (text event/path ""))
-            (var start (text event/start_utf16 "0"))
-            (if (!= path "")
-              (say status_node $"selected ${path} @ ${start}")))))))
+          (var path (text event/path ""))
+          (var start (text event/start_utf16 "0"))
+          (if (!= path "") (say status_node $"selected ${path} @ ${start}"))))))
 
   (var page {^generation 0 ^cursor "0" ^mode "source" ^current ""})
   (var no_documents : (List Any) [])

@@ -5,7 +5,7 @@
 (import [Render] ^from "../common/contracts")
 (import [attempt] ^from "../common/util")
 (fn show [flag article]
-  (do (if flag (do (import_impl Render for Article ^from "../common/plain"))))
+  (do (if flag (import_impl ^from "../common/plain" Render for Article)))
   (attempt (fn [] article/.Render:render)))
 (let article (Article ^title "A"))
 ($println $"flag true: ${(show true article)}")

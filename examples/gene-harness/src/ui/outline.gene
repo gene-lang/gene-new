@@ -15,41 +15,39 @@
   (var item_tag nil)
   (if (== ($head tree) Str)
     (node .put "text" (outline_text tree))
-    else (do
-      (node .put "tag" tree/tag)
-      (for key in ["key" "field" "state" "action" "type" "value" "aria-label" "placeholder"]
-        (let value (tree/props .get key))
-        (if_not ($absent? value) (node .put key (outline_text value))))
-      (if (["button" "input" "textarea" "select" "form" "a"] .contains? tree/tag)
-        (node .put "enabled" ($absent? tree/props/disabled)))
-      (if_not ($absent? tree/props/checked) (node .put "checked" true))
-      (if (&& (== tree/children/.size 1) (== ($head tree/children/0) Str))
-        (do (node .put "text" (outline_text tree/children/0)) (set folded true)))
-      (set item_tag (if (== tree/tag "tbody")
-        "tr"
-        elif (["ul" "ol"] .contains? tree/tag) "li"
-        else nil))
-      (if_not ($absent? item_tag)
-        (let count ($size ($filter tree/children (fn [child] (== child/tag item_tag)))))
-        (if (> count 3)
-          (do
-            (node .put "omitted" (- count 3))
-            (node .put "item_tag" item_tag)
-            (outline .put "truncated" true))))))
+  else
+    (node .put "tag" tree/tag)
+    (for key in ["key" "field" "state" "action" "type" "value" "aria-label" "placeholder"]
+      (let value (tree/props .get key))
+      (if_not ($absent? value) (node .put key (outline_text value))))
+    (if (["button" "input" "textarea" "select" "form" "a"] .contains? tree/tag)
+      (node .put "enabled" ($absent? tree/props/disabled)))
+    (if_not ($absent? tree/props/checked) (node .put "checked" true))
+    (if (&& (== tree/children/.size 1) (== ($head tree/children/0) Str))
+      (node .put "text" (outline_text tree/children/0))
+      (set folded true))
+    (set item_tag
+      (if (== tree/tag "tbody") "tr" elif (["ul" "ol"] .contains? tree/tag) "li" else nil))
+    (if_not ($absent? item_tag)
+      (let count ($size ($filter tree/children (fn [child] (== child/tag item_tag)))))
+      (if (> count 3)
+        (node .put "omitted" (- count 3))
+        (node .put "item_tag" item_tag)
+        (outline .put "truncated" true))))
   (let size ($str/byte_size ($json/stringify node)))
   (if (> (+ outline/bytes size 1) 3072)
-    (do (outline .put "truncated" true) (outline .put "full" true) (return nil)))
+    (outline .put "truncated" true)
+    (outline .put "full" true)
+    (return nil))
   (outline/nodes .push node)
   (outline .put "bytes" (+ outline/bytes size 1))
   (if (&& (!= ($head tree) Str) (! folded))
-    (do
-      (var kept 0)
-      (for child in tree/children
-        (if (&& ($present? item_tag) (== child/tag item_tag))
-          (do
-            (if (>= kept 3) (continue))
-            (set kept (+ kept 1))))
-        (outline_node child (+ depth 1) outline))))
+    (var kept 0)
+    (for child in tree/children
+      (if (&& ($present? item_tag) (== child/tag item_tag))
+        (if (>= kept 3) (continue))
+        (set kept (+ kept 1)))
+      (outline_node child (+ depth 1) outline)))
   nil)
 
 (fn view_outline [tree]

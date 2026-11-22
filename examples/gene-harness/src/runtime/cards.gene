@@ -139,12 +139,14 @@
       (let head ($to_str ($head node)))
       (if (== head "quote") (return found))
       (if (== head "unquote")
-        (do (for item in ($node/body node) (free_names item false found)) (return found)))
+        (for item in ($node/body node)
+          (free_names item false found))
+        (return found))
       (let inner (|| quoted (== head "quasiquote")))
       (if (&& (== head "path") (! inner))
-        (do (let body ($node/body node))
-          (if (> ($size body) 0) (free_names body/0 false found))
-          (return found)))
+        (let body ($node/body node))
+        (if (> ($size body) 0) (free_names body/0 false found))
+        (return found))
       (free_names ($head node) inner found)
       (map_for [key value] in ($node/props node) (free_names value inner found))
       # A method call reads as (receiver ~ method args...); the method name
@@ -253,15 +255,18 @@
   (let warnings [])
   (let tree
     (if live
-      (do
-        (let lease (acquire_snapshot runtime/h/snapshots))
-        (try
-          (for warning in (try (source_warnings runtime lease/snapshot session source) catch Error [])
-            (warnings .push warning))
-          (render_live runtime lease session source state)
-          ensure (release_snapshot runtime/h/snapshots lease)))
-      else (try (bounded_card_view spec/tree "static")
-        catch WebComponentError (card_fail "invalid_request" $err/.message))))
+      (let lease (acquire_snapshot runtime/h/snapshots))
+      (try
+        (for warning in (try (source_warnings runtime lease/snapshot session source) catch Error [])
+          (warnings .push warning))
+        (render_live runtime lease session source state)
+      ensure
+        (release_snapshot runtime/h/snapshots lease))
+    else
+      (try
+        (bounded_card_view spec/tree "static")
+      catch WebComponentError
+        (card_fail "invalid_request" $err/.message))))
   (with_card_gate runtime session id (fn []
     (let previous (card_record runtime session id))
     (if (&& ($absent? previous) (>= ($size (card_records runtime session)) card_limit))
@@ -334,12 +339,12 @@
       (drop_transient runtime session entry/id)
       (let card (card_record runtime session entry/id))
       (if (&& ($present? card) (== card/definition_revision entry/definition_revision))
-        (do (card .put "state" entry/state)
+        (card .put "state" entry/state)
         (card .put "tree" entry/tree)
         (card .put "revision" ($math/max entry/revision (+ card/revision 1)))
         (card .put "origin" "progress")
         (card .put "updated_ms" ($os/wall_ms))
-        (store_card runtime session card "progress"))))))
+        (store_card runtime session card "progress")))))
   pending/.size)
 
 (fn model_card_state [runtime, session : Str, id]
@@ -392,14 +397,20 @@
   (for receipt in ordered
     (if (<= excess 0) (break))
     (if (!= receipt/status "admitted")
-      (do (record_core_state runtime/events "session" session "card/action" (action_key receipt/input_id) nil)
+      (record_core_state
+        runtime/events
+        "session"
+        session
+        "card/action"
+        (action_key receipt/input_id)
+        nil)
       # The floor always passes a pruned receipt's generation. Pruning one of
       # the current generation (a backlog of admitted clicks) advances the
       # generation first, so its identity can never be admitted again.
       (let pruned (?? receipt/generation 1))
       (if (>= pruned meta/generation) (meta .put "generation" (+ pruned 1)))
       (meta .put "floor" ($math/max meta/floor (+ pruned 1)))
-      (set excess (- excess 1)))))
+      (set excess (- excess 1))))
   (save_action_meta runtime session meta)
   (flush_event_store runtime/events)
   nil)
@@ -542,13 +553,21 @@
   (try
     (let next_state
       (if (== request/action "update")
-        (do
-          (let context (card_context runtime session))
-          (let update (card_function runtime lease/snapshot session card/source/update context))
-          (let action ($freeze {^name request/name ^args (?? request/args {}) ^fields (?? request/fields {})}))
-          (checked_state (bounded_call runtime lease session (update_policy) false update
-            [($freeze card/state) action])))
-        else card/state))
+        (let context (card_context runtime session))
+        (let update (card_function runtime lease/snapshot session card/source/update context))
+        (let action
+          ($freeze {^name request/name ^args (?? request/args {}) ^fields (?? request/fields {})}))
+        (checked_state
+          (bounded_call
+            runtime
+            lease
+            session
+            (update_policy)
+            false
+            update
+            [($freeze card/state) action]))
+      else
+        card/state))
     (let tree (render_live runtime lease session card/source next_state))
     (let earlier (?? card/inputs []))
     (let inputs [])

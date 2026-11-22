@@ -74,9 +74,14 @@
       (validate_record_name kind key)
       (let existed ($present? (core_state events "workspace" "workspace" (record_storage_key kind key))))
       (if existed
-        (do (record_core_state events "workspace" "workspace" "feature/record"
-          (record_storage_key kind key) nil)
-        (flush_event_store events)))
+        (record_core_state
+          events
+          "workspace"
+          "workspace"
+          "feature/record"
+          (record_storage_key kind key)
+          nil)
+        (flush_event_store events))
       existed)
     ^record (fn [kind, key]
       (validate_record_name kind key)

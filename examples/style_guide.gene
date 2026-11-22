@@ -125,9 +125,8 @@ line two"""
 
 (fn note_activation [user : User, events]
   (if user/active
-    (do
-      (events .push $"activated ${user/name}")
-      (events .push "notification queued")))
+    (events .push $"activated ${user/name}")
+    (events .push "notification queued"))
   events)
 
 (fn load_if_missing [cached, load, save]

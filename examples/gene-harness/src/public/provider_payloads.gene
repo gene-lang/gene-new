@@ -220,10 +220,9 @@
         (set completed (responses_result event/response label))
       when "error"
         (if (== label "chatgpt")
-          (do (let error (if (== ($head event/error) Map) event/error else event))
-            (chatgpt_failure ^shape "error"
-              ^request_id (?? response/headers/x-request-id response/headers/openai-request-id event/request_id error/request_id)
-              ^param error/param error/code)))
+          (let error (if (== ($head event/error) Map) event/error else event))
+          (chatgpt_failure ^shape "error" ^request_id (?? response/headers/x-request-id response/headers/openai-request-id event/request_id error/request_id) ^param error/param
+            error/code))
         (fail (ProviderError ^_msg $"${label} stream reported an error; output was not executed"))
       when "response.failed"
         (if (== label "chatgpt") (chatgpt_failure ^shape "error"

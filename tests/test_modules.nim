@@ -848,7 +848,7 @@ suite "modules — file imports":
         "(fn run [seed] (let t seed) {I} {U}) (let inside (run 1))"),
       ("lambda", true, "(let run (fn [] {I} {U})) (let inside (run))"),
       ("nested blocks in a fn", true,
-        "(fn run [flag] (do (if flag (do {I}))) {U}) (let inside (run true))"),
+        "(fn run [flag] (do (if flag {I})) {U}) (let inside (run true))"),
       ("type message", true,
         "(type Holder ^props {} (message run [] {I} {U})) " &
         "(let inside ((Holder) .run))"),
@@ -871,7 +871,7 @@ suite "modules — file imports":
       ("scope body", true, "(let inside (scope {I} {U}))"),
       ("supervisor body", true, "(let inside (supervisor ^strategy stop {I} {U}))"),
       ("ns body", true, "(ns box {I} (fn get [] {U})) (let inside (box/get))"),
-      ("top-level conditional", false, "(let inside (if true (do {I} {U})))"),
+      ("top-level conditional", false, "(let inside (if true {I} {U}))"),
       ("top-level try", false, "(let inside (try {I} {U} catch Fault nil))"),
       ("top-level do", false, "(do {I}) (let inside {U})"),
       ("after code", false, "(let x 1) {I} (let inside {U})")

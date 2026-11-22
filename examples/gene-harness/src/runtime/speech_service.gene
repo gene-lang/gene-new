@@ -78,11 +78,12 @@
     (let resource (bounded_audio_call choice/row/open [settings] 15000))
     (let opened {^key key ^row_id record/row_id ^registry registry ^row choice/row ^resource resource ^settings settings})
     (if (== kind "synthesizer")
-      (do (let format (?? resource/format choice/row/format))
+      (let format (?? resource/format choice/row/format))
       (if (|| (!= format/encoding "s16le") (!= format/channels 1))
-        (do (choice/row/close resource) (voice_error "unavailable" "Speech engines must emit mono s16le PCM.")))
+        (choice/row/close resource)
+        (voice_error "unavailable" "Speech engines must emit mono s16le PCM."))
       (pcm_format format/rate)
-      (opened .put "format" format)))
+      (opened .put "format" format))
     (service/resources/.get .put kind opened)
     # Start the persistent reader in the host job, after the bounded open call
     # has settled. Starting it inside that invocation would keep its scope and

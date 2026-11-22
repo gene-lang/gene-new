@@ -83,10 +83,14 @@
         (fn [code : Int, data : Any] : Nil
           (if (== code 202)
             (finish_confirmation controller key target)
-            else (do
-              (if (flag data/not_sent)
-                (do
-                  ($dom/set_text status "Confirmation was not sent. Resolve the current request, then try again.")
-                  (set confirm/disabled false))
-                else ($dom/set_text status "Confirmation could not be verified. Check the host before trying again."))
-              (set keep/disabled false))))))))
+          else
+            (if (flag data/not_sent)
+              ($dom/set_text
+                status
+                "Confirmation was not sent. Resolve the current request, then try again.")
+              (set confirm/disabled false)
+            else
+              ($dom/set_text
+                status
+                "Confirmation could not be verified. Check the host before trying again."))
+            (set keep/disabled false)))))))

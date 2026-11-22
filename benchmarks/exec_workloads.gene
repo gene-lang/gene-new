@@ -128,16 +128,21 @@
       ^max_bytes 16777217)) 16777216))
 
 (if (|| (== exec_case "profile_stdin") (== exec_case "profile_output"))
-  (do (let action (if (== exec_case "profile_stdin") profile_stdin_action else profile_output_action))
-    (let started (exec_clock_ns))
-    (let deadline (+ started 6000000000))
-    (var iterations 0)
-    (while (< (exec_clock_ns) deadline)
-      (action)
-      (set iterations (+ iterations 1)))
-    ($println ($json/stringify {^name exec_case ^iterations iterations
-      ^bytes_per_iteration 16777216 ^elapsed_ns (- (exec_clock_ns) started)}))
-    ($io/flush_stdout)))
+  (let action (if (== exec_case "profile_stdin") profile_stdin_action else profile_output_action))
+  (let started (exec_clock_ns))
+  (let deadline (+ started 6000000000))
+  (var iterations 0)
+  (while (< (exec_clock_ns) deadline)
+    (action)
+    (set iterations (+ iterations 1)))
+  ($println
+    ($json/stringify
+      {
+        ^name exec_case
+        ^iterations iterations
+        ^bytes_per_iteration 16777216
+        ^elapsed_ns (- (exec_clock_ns) started)}))
+  ($io/flush_stdout))
 (measure "stdin_pipe_bulk" 3
   (fn []
     (let input ($io/pipe))
@@ -176,20 +181,21 @@
   (measure ($to_str "concurrent_" count) 3 (fn [] (concurrent count))))
 
 (if (|| (== exec_case "all") (== exec_case "first_line"))
-  (do (let samples [])
+  (let samples [])
   (let completions [])
   (repeat round in 6
     (let channel ($channel ^capacity 8))
     (let started (exec_clock_ns))
-    (let task ($os/exec_stream_async exec_fixture "lines" ^stdout_chan channel))
+    (let task ($os/exec_stream_async ^stdout_chan channel exec_fixture "lines"))
     ($assert (== channel/.recv "first") "first line changed")
     (let first (- (exec_clock_ns) started))
     ($assert (== channel/.recv "last") "last line changed")
-    ($assert (== (/status (await task)) 0) "line child failed")
+    ($assert (== ((Path "status") (await task)) 0) "line child failed")
     (let completed (- (exec_clock_ns) started))
     (if (> round 0)
-      (do (samples .push first)
-        (completions .push completed))))
-  ($println ($json/stringify {^name "first_line" ^iterations 5 ^result 2
-    ^samples_ns samples ^completion_ns completions}))
-  ($io/flush_stdout)))
+      (samples .push first)
+      (completions .push completed)))
+  ($println
+    ($json/stringify
+      {^name "first_line" ^iterations 5 ^result 2 ^samples_ns samples ^completion_ns completions}))
+  ($io/flush_stdout))

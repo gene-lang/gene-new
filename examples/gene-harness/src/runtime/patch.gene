@@ -41,11 +41,11 @@
   (while (< index lines/.size)
     (let line lines/%index)
     (if (== line "*** End Patch")
-      (do (set index (+ index 1))
-        (while (< index lines/.size)
-          (if (!= lines/%index "") (patch_error "unexpected text after patch"))
-          (set index (+ index 1)))
-        (return operations)))
+      (set index (+ index 1))
+      (while (< index lines/.size)
+        (if (!= lines/%index "") (patch_error "unexpected text after patch"))
+        (set index (+ index 1)))
+      (return operations))
     (if_not (file_header? line) (patch_error $"expected file header at patch line ${(+ index 1)}"))
     (let kind (if ($str/starts_with? line "*** Add File: ")
       "add"
@@ -58,10 +58,9 @@
     (let path (checked_path (suffix line prefix)))
     (let operation {^kind kind ^path path ^target path ^hunks [] ^lines [] ^added 0 ^removed 0})
     (set index (+ index 1))
-    (if (&& (== kind "update") (< index lines/.size)
-            ($str/starts_with? lines/%index "*** Move to: "))
-      (do (operation .put "target" (checked_path (suffix lines/%index "*** Move to: ")))
-        (set index (+ index 1))))
+    (if (&& (== kind "update") (< index lines/.size) ($str/starts_with? lines/%index "*** Move to: "))
+      (operation .put "target" (checked_path (suffix lines/%index "*** Move to: ")))
+      (set index (+ index 1)))
     (var hunk nil)
     (while (&& (< index lines/.size) (! (file_header? lines/%index)) (!= lines/%index "*** End Patch"))
       (let content lines/%index)
@@ -79,8 +78,8 @@
           (hunk .put "eof" true)
         else
           (if ($absent? hunk)
-            (do (set hunk {^old [] ^new [] ^anchor "" ^!eof})
-            (operation/hunks .push hunk)))
+            (set hunk {^old [] ^new [] ^anchor "" ^!eof})
+            (operation/hunks .push hunk))
           (if (== content "")
             (hunk/old .push "") (hunk/new .push "")
             elif ($str/starts_with? content " ")
@@ -114,14 +113,14 @@
 (fn hunk_position [path : Str, number : Int, lines, hunk, start : Int]
   (var lower start)
   (if (!= hunk/anchor "")
-    (do (let anchors [])
-      (var position start)
-      (while (< position lines/.size)
-        (if ($str/starts_with? ($str/trim lines/%position) ($str/trim hunk/anchor))
-          (anchors .push position))
-        (set position (+ position 1)))
-      (if (!= anchors/.size 1) (patch_error $"${path} hunk ${number}: anchor not unique"))
-      (set lower anchors/0)))
+    (let anchors [])
+    (var position start)
+    (while (< position lines/.size)
+      (if ($str/starts_with? ($str/trim lines/%position) ($str/trim hunk/anchor))
+        (anchors .push position))
+      (set position (+ position 1)))
+    (if (!= anchors/.size 1) (patch_error $"${path} hunk ${number}: anchor not unique"))
+    (set lower anchors/0))
   (if hunk/old/.empty?
     (return (if (!= hunk/anchor "")
       (+ lower 1)
@@ -181,21 +180,27 @@
   (for operation in operations
     (for relative in [operation/path operation/target]
       (if ($absent? (originals .get relative))
-        (do (let path ($path/join root relative))
-          (let exists ($fs/exists? path))
-          (let info (if exists ($fs/info path ^!follow) else nil))
-          (let linked (== info/symlink true))
-          (if (&& exists (! linked) (!= info/kind "file"))
-            (patch_error $"${relative}: patch requires a file"))
-          (let physical (if linked ($fs/real_path path) else path))
-          (let target (if linked (try ($fs/info physical) catch Error nil) else info))
-          (let content (if exists (try ($fs/read_text physical) catch Error nil) else nil))
-          (if (&& exists (! linked) ($absent? content))
-            (patch_error $"${relative}: cannot read original file"))
-          (originals .put relative {^exists exists ^symlink linked ^link_target info/link_target
-            ^physical physical ^mode target/mode
+        (let path ($path/join root relative))
+        (let exists ($fs/exists? path))
+        (let info (if exists ($fs/info ^!follow path) else nil))
+        (let linked (== info/symlink true))
+        (if (&& exists (! linked) (!= info/kind "file"))
+          (patch_error $"${relative}: patch requires a file"))
+        (let physical (if linked ($fs/real_path path) else path))
+        (let target (if linked (try ($fs/info physical) catch Error nil) else info))
+        (let content (if exists (try ($fs/read_text physical) catch Error nil) else nil))
+        (if (&& exists (! linked) ($absent? content))
+          (patch_error $"${relative}: cannot read original file"))
+        (originals .put
+          relative
+          {
+            ^exists exists
+            ^symlink linked
+            ^link_target info/link_target
+            ^physical physical
+            ^mode target/mode
             ^text content})
-          (files .push relative))))
+        (files .push relative)))
     (if_not ($absent? (targets .get operation/target))
       (patch_error $"multiple patch operations target ${operation/target}"))
     (targets .put operation/target true)
@@ -207,14 +212,18 @@
       else
         (if_not original/exists (patch_error $"${operation/path}: file does not exist"))
         (if (== operation/kind "update")
-          (do (if ($absent? original/text) (patch_error $"${operation/path}: file contents are unreadable"))
-            (operation .put "result" (apply_hunks operation original/text)))))
+          (if ($absent? original/text)
+            (patch_error $"${operation/path}: file contents are unreadable"))
+          (operation .put "result" (apply_hunks operation original/text))))
     (if (!= operation/kind "delete")
-      (do (let physical ($fs/real_path (if original/symlink original/physical else ($path/join root operation/target))))
-        (if_not ($absent? (physical_targets .get physical)) (patch_error "multiple patch operations target the same physical file"))
-        (physical_targets .put physical true)
-        (operation .put "physical" physical)
-        (operation .put "temporary" (temporary_path physical)))))
+      (let physical
+        ($fs/real_path
+          (if original/symlink original/physical else ($path/join root operation/target))))
+      (if_not ($absent? (physical_targets .get physical))
+        (patch_error "multiple patch operations target the same physical file"))
+      (physical_targets .put physical true)
+      (operation .put "physical" physical)
+      (operation .put "temporary" (temporary_path physical))))
   {^root root ^operations operations ^originals originals ^files files})
 
 (fn cleanup_temporaries [plan]
@@ -241,30 +250,35 @@
   (try
     (for operation in plan/operations
       (if (!= operation/kind "delete")
-        (do (set current operation/target)
-          ($fs/make_dir ($path/parent operation/temporary))
-          ($fs/write_text operation/temporary operation/result)
-          (let original (plan/originals .get operation/path))
-          (if_not ($absent? original/mode) ($fs/set_mode operation/temporary original/mode)))))
+        (set current operation/target)
+        ($fs/make_dir ($path/parent operation/temporary))
+        ($fs/write_text operation/temporary operation/result)
+        (let original (plan/originals .get operation/path))
+        (if_not ($absent? original/mode) ($fs/set_mode operation/temporary original/mode))))
     (for operation in plan/operations
       (if (!= operation/kind "delete")
-        (do (set current operation/target)
-          (if (&& (>= fail_after_renames 0) (>= renames fail_after_renames))
-            (patch_error "injected rename failure"))
-          ($fs/rename operation/temporary operation/physical)
-          (let original (plan/originals .get operation/path))
-          (changed .push {^relative (if original/symlink operation/path else operation/target) ^physical operation/physical})
-          (set renames (+ renames 1))
-          (if_not ($absent? after_rename) (after_rename renames)))))
+        (set current operation/target)
+        (if (&& (>= fail_after_renames 0) (>= renames fail_after_renames))
+          (patch_error "injected rename failure"))
+        ($fs/rename operation/temporary operation/physical)
+        (let original (plan/originals .get operation/path))
+        (changed .push
+          {
+            ^relative (if original/symlink operation/path else operation/target)
+            ^physical operation/physical})
+        (set renames (+ renames 1))
+        (if_not ($absent? after_rename) (after_rename renames))))
     (for operation in plan/operations
       (if (|| (== operation/kind "delete") (!= operation/path operation/target))
-        (do (set current operation/path)
-          (let original (plan/originals .get operation/path))
-          (if (&& original/symlink (!= operation/kind "delete"))
-            ($fs/rename ($path/join plan/root operation/path) ($path/join plan/root operation/target))
-              (changed .push {^relative operation/target ^physical ($path/join plan/root operation/target)})
-            else ($fs/remove ($path/join plan/root operation/path)))
-          (changed .push {^relative operation/path ^physical ($path/join plan/root operation/path)}))))
+        (set current operation/path)
+        (let original (plan/originals .get operation/path))
+        (if (&& original/symlink (!= operation/kind "delete"))
+          ($fs/rename ($path/join plan/root operation/path) ($path/join plan/root operation/target))
+          (changed .push
+            {^relative operation/target ^physical ($path/join plan/root operation/target)})
+        else
+          ($fs/remove ($path/join plan/root operation/path)))
+        (changed .push {^relative operation/path ^physical ($path/join plan/root operation/path)})))
     (cleanup_temporaries plan)
     {^status "applied" ^text $"applied: ${(patch_summary plan)}" ^files plan/files ^!attention}
     catch Error
@@ -307,8 +321,8 @@
   (for relative in files
     (let path ($path/join root relative))
     (if ($fs/exists? path)
-      (do (let physical ($fs/real_path path))
+      (let physical ($fs/real_path path))
       (let temporary (temporary_path physical))
-      (if ($fs/exists? temporary) ($fs/remove temporary)))))
+      (if ($fs/exists? temporary) ($fs/remove temporary))))
   (let names ($str/join files ", "))
   $"patch may be partially applied: ${names}; re-read them")

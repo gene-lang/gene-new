@@ -13,7 +13,8 @@
   (let q ($str/lower ($str/trim query)))
   (map_for [id record] in manager/index/.get
     (if (|| (>= inspected 20000) (> ($os/monotonic_ms) deadline))
-      (do (set partial true) (break)))
+      (set partial true)
+      (break))
     (set inspected (+ inspected 1))
     (let session ($to_str id))
     (let title (byte_prefix record/title 512))

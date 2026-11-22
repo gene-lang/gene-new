@@ -13,13 +13,17 @@
   (if ($absent? answer/rendered) (return))
   (var signature ($json/stringify answer))
   (if (== signature state/signature)
-    (do (if state/report_pending (do (state/report answer) (set state/report_pending false)))
-    (return)))
+    (if state/report_pending
+      (state/report answer)
+      (set state/report_pending false))
+    (return))
   (var revision (text answer/rendered/theme_revision))
   (if (!= revision state/registry_revision)
-    (do (for link in state/preview_links ($dom/remove link))
+    (for link in state/preview_links
+      ($dom/remove link))
     (set state/preview_links [])
-    (set state/preview_pending {}) (set state/preview_ready {})))
+    (set state/preview_pending {})
+    (set state/preview_ready {}))
   (set state/registry_revision revision)
   (set state/observed_revision revision)
   (var previous : Any state/answer)
@@ -50,7 +54,9 @@
 (fn refresh_appearance [state : BrowserAppearance, report : Bool = false] : Nil
   (if report (set state/report_pending true))
   (set state/sequence (+ state/sequence 1))
-  (if state/refreshing (do (set state/refresh_again true) (return)))
+  (if state/refreshing
+    (set state/refresh_again true)
+    (return))
   (set state/refreshing true)
   (var sequence state/sequence)
   (state/api "GET" (appearance_path state) nil
@@ -70,8 +76,8 @@
     when "ui/state"
       (var revision (text data/theme_revision))
       (if (&& (!= revision "") (!= revision state/observed_revision))
-        (do (set state/observed_revision revision)
-        (refresh_appearance state)))
+        (set state/observed_revision revision)
+        (refresh_appearance state))
     else (return)))
 
 (fn queued_changes? [state : BrowserAppearance] : Bool
@@ -88,9 +94,9 @@
     (fn [code : Int, answer : Any] : Nil
       (set state/posting false)
       (if (!= code 200)
-        (do (state/error answer)
+        (state/error answer)
         # Roll controls back even if the follow-up GET cannot authenticate.
-        (if ($present? state/answer) (state/changed state/answer))))
+        (if ($present? state/answer) (state/changed state/answer)))
       (if (queued_changes? state)
         (write_appearance state)
         else (refresh_appearance state)))))
@@ -130,20 +136,24 @@
     (fn [code : Int, answer : Any] : Nil
       (if (!= revision state/registry_revision) (return))
       (if (!= code 200)
-        (do (set state/preview_pending/%name false) (state/error answer) (return)))
+        (set state/preview_pending/%name false)
+        (state/error answer)
+        (return))
       (if (!= (text answer/revision) revision)
-        (do (set state/preview_pending/%name false) (refresh_appearance state) (return)))
+        (set state/preview_pending/%name false)
+        (refresh_appearance state)
+        (return))
       (var link ($dom/create_element "link"))
       ($dom/set_attribute link "rel" "stylesheet")
       ($dom/set_attribute link "href" answer/stylesheet)
       ($dom/add_event_listener link "load" (fn [event : Any] : Nil
         (if (== revision state/registry_revision)
-          (do (set state/preview_ready/%name true)
-          (loaded)))))
+          (set state/preview_ready/%name true)
+          (loaded))))
       ($dom/add_event_listener link "error" (fn [event : Any] : Nil
         (if (== revision state/registry_revision)
-          (do (set state/preview_pending/%name false)
-          (state/error {^message "The theme preview could not be loaded. Refresh to try again."})))))
+          (set state/preview_pending/%name false)
+          (state/error {^message "The theme preview could not be loaded. Refresh to try again."}))))
       (state/preview_links .push link)
       ($dom/append ($dom/element "theme_preview_styles") link)))
   false)
@@ -153,21 +163,27 @@
   (var saved : Any state/answer/saved)
   (var rendered : Any state/answer/rendered)
   (if (== field "preview")
-    (do (var preview_name : Str rendered/theme)
+    (var preview_name : Str rendered/theme)
     ($dom/set_attribute element "data-preview-theme" preview_name)
     ($dom/clear element)
-    ($dom/append element ($dom/render
-      `(div ^class_name "theme_modes"
-        (section ^data-mode "light" ^class_name "theme_mode web_card"
-          (h4 "Light") (p "Text, surfaces and emphasis.") (span ^class_name "web_badge" "Sample"))
-        (section ^data-mode "dark" ^class_name "theme_mode web_card"
-          (h4 "Dark") (p "Text, surfaces and emphasis.") (span ^class_name "web_badge" "Sample")))))
+    ($dom/append
+      element
+      ($dom/render
+        `(div ^class_name "theme_modes"
+           (section ^data-mode "light" ^class_name "theme_mode web_card"
+             (h4 "Light")
+             (p "Text, surfaces and emphasis.")
+             (span ^class_name "web_badge" "Sample"))
+           (section ^data-mode "dark" ^class_name "theme_mode web_card"
+             (h4 "Dark")
+             (p "Text, surfaces and emphasis.")
+             (span ^class_name "web_badge" "Sample")))))
     (load_preview state preview_name (fn [] : Nil (return)))
-    (return)))
+    (return))
   (var current : Any (?? saved/%field rendered/%field))
   (var value : Str current)
   (if (== field "theme")
-    (do ($dom/clear element)
+    ($dom/clear element)
     (var found false)
     (var themes : (List Any) state/answer/themes)
     (for theme in themes
@@ -175,5 +191,5 @@
       (if (== name value) (set found true))
       ($dom/append element ($dom/render `(option ^value %name %theme/title))))
     (if_not found
-      ($dom/append element ($dom/render `(option ^value %value %$"${value} (not installed here)"))))))
+      ($dom/append element ($dom/render `(option ^value %value %$"${value} (not installed here)")))))
   ($dom/set_input_value element value))

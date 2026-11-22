@@ -113,8 +113,11 @@
                     (if (== mode "cancel") "($sleep 5000)" else "(/ 1 0)")))))
             (let receipt (submit_round controller "default" "staged" 1 "Stage a child."))
             (if (== mode "cancel")
-              (do (wait_for (fn [] ($fs/exists? $"${runtime/root}/staged.marker")) "Response never staged the child.")
-              (cancel_round controller "default" receipt/id)))
+              (wait_for
+                (fn []
+                  ($fs/exists? $"${runtime/root}/staged.marker"))
+                "Response never staged the child.")
+              (cancel_round controller "default" receipt/id))
             (let final (await_round controller "default" receipt/id))
             ($assert (== final/state (if (== mode "cancel") "cancelled" else "done")))
             ($assert (== children/.get 0))

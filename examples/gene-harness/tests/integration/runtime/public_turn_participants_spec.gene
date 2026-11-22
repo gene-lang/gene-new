@@ -114,9 +114,9 @@
             (calls .set (+ calls/.get 1))
             (if (== calls/.get 1)
               "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^notes/facts \"wrong type\"})"
-              else (do
-                ($assert ($str/contains? ($to_str request/messages) "facts must be a list"))
-                "(Outcome ^^done ^reply \"Repaired.\" ^extensions {^notes/facts [\"valid\"]})")))))
+            else
+              ($assert ($str/contains? ($to_str request/messages) "facts must be a list"))
+              "(Outcome ^^done ^reply \"Repaired.\" ^extensions {^notes/facts [\"valid\"]})"))))
           (try
             (let result (wait_round controller (submit_round controller "default" "data" 1 "Validate data.")))
             ($assert (== result/state (if broken "failed" else "done")) ($to_str result))
@@ -139,9 +139,10 @@
           (calls .set (+ calls/.get 1))
           (if (== calls/.get 1)
             "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^missing/facts [\"x\"]})"
-            else (do
-              ($assert ($str/contains? ($to_str request/messages) "Unknown Outcome extension missing/facts"))
-              "(Outcome ^^done ^reply \"No notes requested.\")")))))
+          else
+            ($assert
+              ($str/contains? ($to_str request/messages) "Unknown Outcome extension missing/facts"))
+            "(Outcome ^^done ^reply \"No notes requested.\")"))))
         (try
           (let result (wait_round controller (submit_round controller "default" "optional" 1 "Just answer.")))
           ($assert (== result/state "done") ($to_str result))
@@ -195,8 +196,9 @@
           (calls .set (+ calls/.get 1))
           (let generation (if (== calls/.get 1) "one" else "two"))
           (if (== calls/.get 1)
-            (do (entered .set true)
-            (while (! released/.get) ($sleep 1))))
+            (entered .set true)
+            (while (! released/.get)
+              ($sleep 1)))
           ($to_str "($assert (== notes/memory/generation \"" generation
             "\")) (Outcome ^^done ^reply \"Saved.\" ^extensions {^notes/facts [\"fact\"]})"))))
         (try
@@ -271,10 +273,12 @@
           (calls .set (+ calls/.get 1))
           (if (== calls/.get 1)
             "(Outcome ^^done ^reply \"Candidate.\" ^extensions {^notes/facts [\"first\"]})"
-            else (do
-              ($assert ($absent? (state runtime)) "A later participant committed data from a deferred final reply.")
-              ($assert ($str/contains? ($to_str request/messages) "Confirm the final work"))
-              "(Outcome ^^done ^reply \"Confirmed.\" ^extensions {^notes/facts [\"final\"]})")))))
+          else
+            ($assert
+              ($absent? (state runtime))
+              "A later participant committed data from a deferred final reply.")
+            ($assert ($str/contains? ($to_str request/messages) "Confirm the final work"))
+            "(Outcome ^^done ^reply \"Confirmed.\" ^extensions {^notes/facts [\"final\"]})"))))
         (try
           (let result (wait_round controller (submit_round controller "default" "ordered" 1 "Check finalization ordering.")))
           ($assert (== result/state "done") ($to_str result))

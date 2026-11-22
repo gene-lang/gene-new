@@ -63,7 +63,9 @@
 (fn close_file_watch [watch]
   (if (watch/closed .swap true) (return nil))
   (let worker watch/worker/.get)
-  (if (&& ($present? worker) (! worker/.done?)) (do worker/.cancel worker/.join))
+  (if (&& ($present? worker) (! worker/.done?))
+    worker/.cancel
+    worker/.join)
   nil)
 
 (fn close_models_host [state]
@@ -81,7 +83,9 @@
   (for task in state/refresh_tasks/.get task/.join)
   (state/refresh_tasks .set [])
   (let publisher state/publisher/.get)
-  (if (&& ($present? publisher) (! publisher/.done?)) (do publisher/.cancel publisher/.join))
+  (if (&& ($present? publisher) (! publisher/.done?))
+    publisher/.cancel
+    publisher/.join)
   (for job in state/publications/.get (job/done .set true))
   (state/publications .set [])
   nil)
@@ -126,11 +130,15 @@
     (let file (read_endpoint_file runtime root))
     (var changed false)
     (if (&& (endpoint_source_enabled? runtime) (! (endpoints_match? runtime file/config/providers)))
-      (do (let status (put_cordis_plugin ^^replace runtime/h (endpoint_plugin file/config/providers)
+      (let status
+        (put_cordis_plugin ^^replace
+          runtime/h
+          (endpoint_plugin file/config/providers)
           {^^host ^limits runtime/profile/limits ^digest "builtin"}))
-        (if (|| (!= status "ready") (! (endpoints_match? runtime file/config/providers)))
-          (fail (ServiceError ^code "unavailable" ^_msg "Endpoint configuration is not ready; inspect the model_endpoints plugin.")))
-        (set changed true)))
+      (if (|| (!= status "ready") (! (endpoints_match? runtime file/config/providers)))
+        (fail
+          (ServiceError ^code "unavailable" ^_msg "Endpoint configuration is not ready; inspect the model_endpoints plugin.")))
+      (set changed true))
     (let catalog (active_model_catalog runtime))
     (if (&& ($present? catalog) (! catalog/closed/.get) (== catalog/root root)
       (|| changed (!= catalog/file/.get/digest file/digest)))
@@ -249,8 +257,8 @@
   ($runtime/with_context {^log_target {^workspace service/runtime/root}} (fn []
     (let current (active_model_catalog service/runtime))
     (if (&& ($present? current) (== current/root root) (! current/closed/.get))
-      (do (adopt_catalog_file current (read_endpoint_file service/runtime root))
-        (return (catalog_snapshot current))))
+      (adopt_catalog_file current (read_endpoint_file service/runtime root))
+      (return (catalog_snapshot current)))
     {^digest saved/digest ^default saved/config/default})))
 
 (fn save_model_default [handle, selection, expected : Str] ^^private
@@ -304,9 +312,13 @@
               (!= (choice .get key) (pins .get key)))
         (fail (ServiceError ^code "invalid_request" ^_msg $"${key} is fixed by this host's launch or profile settings"))))
     (if (> ($map_size choice) 0)
-      (do (let base (effective_config service/runtime))
-        (try (select_provider ^allow_unready true service/runtime (session_settings {^model_settings choice} base))
-          catch Error (fail (ServiceError ^code "invalid_request" ^_msg $err/.message)))))
+      (let base (effective_config service/runtime))
+      (try
+        (select_provider ^^allow_unready
+          service/runtime
+          (session_settings {^model_settings choice} base))
+      catch Error
+        (fail (ServiceError ^code "invalid_request" ^_msg $err/.message))))
     (update_session service/runtime/sessions session {^model_settings (if (== ($map_size choice) 0)
       nil else choice)})
     (choice_preview handle session choice))))
@@ -449,8 +461,8 @@
   (if ($absent? attempt) (fail (ServiceError ^code "not_found" ^_msg "Sign-in attempt not found.")))
   (if cancel (close_login attempt))
   (if (== attempt/status/.get "complete")
-    (do (let catalog (require_catalog handle))
-      (request_catalog_refresh catalog)))
+    (let catalog (require_catalog handle))
+    (request_catalog_refresh catalog))
   (login_status attempt))
 
 (fn model_login_callback [handle, params] ^^private
@@ -460,10 +472,14 @@
     (let callback_state (if (== attempt/provider "openrouter")
       (?? params/state params/openrouter_state) else params/state))
     (if (== callback_state attempt/state)
-      (do (let result (if (== attempt/provider "chatgpt")
-          (complete_chatgpt_login attempt params) else (complete_openrouter_login attempt params)))
-        (if (&& (== attempt/provider "chatgpt") (== attempt/status/.get "complete")) (publish_chatgpt_account service))
-        (return result))))
+      (let result
+        (if (== attempt/provider "chatgpt")
+          (complete_chatgpt_login attempt params)
+        else
+          (complete_openrouter_login attempt params)))
+      (if (&& (== attempt/provider "chatgpt") (== attempt/status/.get "complete"))
+        (publish_chatgpt_account service))
+      (return result)))
   {^status 400 ^message "Sign-in state did not match. Return to Gene Harness and connect again."})
 
 (type HostedModels ^^private ^props {^token Any}

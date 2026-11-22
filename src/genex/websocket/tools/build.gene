@@ -29,8 +29,8 @@
       (for entry in ($fs/list_dir directory)
         (let name (if (== ($head entry) Str) entry else entry/name))
         (if (&& ($str/starts_with? name "MacOSX") ($str/ends_with? name ".sdk"))
-          (do (environment .put "SDKROOT" ($path/join directory name))
-          (if (probe) (return nil))))))
+          (environment .put "SDKROOT" ($path/join directory name))
+          (if (probe) (return nil)))))
     (fail (BuildError ^_msg "No compatible macOS SDK linked. Set CC and SDKROOT explicitly."))
   ensure
     (if ($fs/exists? source) ($fs/remove source))
@@ -46,7 +46,9 @@
   (let environment {})
   (if ($absent? ($os/env? "PKG_CONFIG_PATH"))
     (for directory in ["/opt/homebrew/opt/curl/lib/pkgconfig" "/usr/local/opt/curl/lib/pkgconfig"]
-      (if ($fs/exists? directory) (do (environment .put "PKG_CONFIG_PATH" directory) (break)))))
+      (if ($fs/exists? directory)
+        (environment .put "PKG_CONFIG_PATH" directory)
+        (break))))
   (let pkg (?? ($os/env? "PKG_CONFIG") "pkg-config"))
   (checked pkg ["--atleast-version=8.11.0" "libcurl"] ^environment environment)
   (let flags (words (checked pkg ["--cflags" "libcurl"] ^environment environment)))

@@ -12,6 +12,9 @@ proc flat(source: string): string =
 proc grouped(source: string): string =
   rewriteGeneSource(source, mmGrouped).text
 
+proc stripDo(source: string): string =
+  rewriteGeneSource(source, mmStripIfDo).text
+
 suite "migration — flat clause rewrite":
   test "positional two-arm if gains a flat else":
     check flat("(if c a b)") == "(if c a else b)"
@@ -51,6 +54,30 @@ suite "migration — flat clause rewrite":
       "(match x when 1 (do else) else (do when))"
     check flat("(if_present x e a (else else))") ==
       "(if_present x e a else (do else))"
+
+  test "if do wrappers are removed and arms reindented":
+    check stripDo("(if c (do a b))") == "(if c\n  a\n  b)"
+    check stripDo("(if c (do a b) else (do c d))") ==
+      "(if c\n  a\n  b\nelse\n  c\n  d)"
+    check stripDo("(if c a)") == "(if c a)"
+
+  test "nested if do wrappers are removed":
+    let nested = stripDo("(if c (do (if d (do x y))))")
+    check "(do" notin nested
+    check "x" in nested and "y" in nested
+
+  test "comments between arm expressions survive do removal":
+    let source = "(if c\n  (do\n    (a)\n    # keep this\n    (b)))"
+    let stripped = stripDo(source)
+    check "# keep this" in stripped
+    check "(do" notin stripped
+    check "  (a)\n  # keep this\n  (b))" in stripped
+
+  test "triple-quoted nim literals lose if do wrappers":
+    let source = "let x = \"\"\"(if c (do a b))\"\"\"\n"
+    let result = rewriteNimSource(source, mmStripIfDo)
+    check "(do" notin result.text
+    check "  a\n  b)" in result.text
 
   test "extra positional operands are reported, not guessed":
     let result = rewriteGeneSource("(if c a b d)", mmFlat)

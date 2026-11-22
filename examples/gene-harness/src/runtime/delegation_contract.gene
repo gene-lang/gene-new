@@ -72,16 +72,18 @@
     (if (|| (! (terminal_delegation? admission/state)) (!= admission/seen true))
       (eligible .push admission)))
   (if (== wait/mode "list")
-    (do (let selected [])
+    (let selected [])
     (for id in wait/ids
       (var chosen nil)
       (for admission in eligible
         (if (== admission/id id)
           (if (|| ($absent? chosen) (> admission/number chosen/number)) (set chosen admission))))
       (if ($absent? chosen)
-        (delegation_error "invalid_wait" $"Delegation ${id} is not unfinished or unseen in this round."))
+        (delegation_error
+          "invalid_wait"
+          $"Delegation ${id} is not unfinished or unseen in this round."))
       (selected .push chosen))
-    (return ($map selected (fn [admission] admission/source)))))
+    (return ($map selected (fn [admission] admission/source))))
   ($map eligible (fn [admission] admission/source)))
 
 (fn delegation_question_source [admission] : Str
@@ -127,10 +129,10 @@
   (if (== kind List)
     (return ($map value (fn [item] (delegation_result_data item ^depth (+ depth 1))))))
   (if (== kind Map)
-    (do (let result {})
+    (let result {})
     (map_for [key item] in value
       (if_not ([Str Sym] .contains? ($head key))
         (delegation_error "invalid_result" "Delegation result map keys must be strings or symbols."))
-      (result .put key (delegation_result_data item ^depth (+ depth 1))))
-    (return result)))
+      (result .put key (delegation_result_data ^depth (+ depth 1) item)))
+    (return result))
   (delegation_error "invalid_result" "Delegation results must be inert scalars, lists or maps; save files for other values."))

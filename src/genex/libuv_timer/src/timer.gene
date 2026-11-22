@@ -20,12 +20,10 @@
       (try
         (await self/subscription/.IoResource:wait_closed)
         ensure
-          (if (&& (not self/released/.get)
-                  (== (/state self/subscription/.status) "closed"))
-            (do
-              (self/released .set true)
-              ($ffi/Library/close self/library)
-              self/lease/.close))))))
+          (if (&& (not self/released/.get) (== ((Path "state") self/subscription/.status) "closed"))
+            (self/released .set true)
+            ($ffi/Library/close self/library)
+            self/lease/.close)))))
 
 (fn open [handler]
   (let lease ($pkg/native_binary this_pkg "native"))

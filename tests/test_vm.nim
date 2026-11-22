@@ -1680,7 +1680,7 @@ suite "gir — disassembly":
     ck "(fn f [] (var t 0) " &
        "  (for x in [1 2] (if (== x 1) (let y 10)) (set t (+ t y))) t) " &
        "(fn g [] (var t 0) " &
-       "  (for x in [1 2 3] (if (== x 1) (do (let y 10) (continue))) " &
+       "  (for x in [1 2 3] (if (== x 1) (let y 10) (continue)) " &
        "    (set t (+ t y))) t) " &
        "(fn h [] (var y 1) (var t 0) " &
        "  (for x in [1 2] (if (== x 1) (let y 10)) (set t (+ t y))) t) " &
@@ -5581,7 +5581,7 @@ suite "vm — actors":
        "  (var tries 0) " &
        "  (while (< tries 100) " &
        "    (if (== (seen .get) 0) " &
-       "      (do ($sleep 1) (set tries (+ tries 1))) " &
+       "      ($sleep 1) (set tries (+ tries 1)) " &
        "      else (set tries 100))) " &
        "  [(seen .get) " &
        "   (match event ^!exhaustive " &

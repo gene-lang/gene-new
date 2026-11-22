@@ -88,8 +88,10 @@
 
 (fn discard_done_items [turn]
   (if (> ($size turn/items/.get) 0)
-    (do (if_not ($absent? turn/console) (turn/console "done Outcome dropped appended prompt items\n"))
-    (turn/items .set [])))
+    (if_not ($absent? turn/console)
+      (turn/console """done Outcome dropped appended prompt items
+"""))
+    (turn/items .set []))
   nil)
 
 (fn validate_outcome [turn, value, ^validators validators = {}, ^renderers renderers = {},
@@ -104,24 +106,32 @@
       (fail (OutcomeError ^_msg "Outcome extension data requires leased schema validation."))))
   (let outcome candidate)
   (if (&& checked ($present? value/suspension))
-    (do (if (|| outcome/done ($present? outcome/questions))
+    (if (|| outcome/done ($present? outcome/questions))
       (fail (OutcomeError ^_msg "A suspended Outcome cannot finish or ask questions.")))
-    (return {^kind "suspend" ^suspension value/suspension ^outcome outcome ^questions nil})))
+    (return {^kind "suspend" ^suspension value/suspension ^outcome outcome ^questions nil}))
   (if (== outcome/done true)
-    (do (if (|| ($absent? outcome/reply) (== ($str/trim outcome/reply) ""))
-        (fail (OutcomeError ^_msg "done Outcome requires a non-empty reply")))
-      (if (|| ($present? outcome/prompt) ($present? outcome/questions))
-        (fail (OutcomeError ^_msg "done Outcome rejects prompt and questions")))
-      (if turn/composition_queued/.get
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^extensions outcome/extensions)
-          ^questions nil ^^rejected_done}))
-      (if_not turn/media/.get/.empty?
-        (return {^kind "continue" ^outcome (Outcome ^reply outcome/reply ^extensions outcome/extensions)
-          ^questions nil ^^rejected_done}))
-      # The coordinator decides completion after its participants. Preserve
-      # appended context until they have had their chance to defer done.
-      (if_not coordinated (discard_done_items turn))
-      (return {^kind "done" ^outcome outcome ^questions nil})))
+    (if (|| ($absent? outcome/reply) (== ($str/trim outcome/reply) ""))
+      (fail (OutcomeError ^_msg "done Outcome requires a non-empty reply")))
+    (if (|| ($present? outcome/prompt) ($present? outcome/questions))
+      (fail (OutcomeError ^_msg "done Outcome rejects prompt and questions")))
+    (if turn/composition_queued/.get
+      (return
+        {
+          ^kind "continue"
+          ^outcome (Outcome ^reply outcome/reply ^extensions outcome/extensions)
+          ^questions nil
+          ^^rejected_done}))
+    (if_not turn/media/.get/.empty?
+      (return
+        {
+          ^kind "continue"
+          ^outcome (Outcome ^reply outcome/reply ^extensions outcome/extensions)
+          ^questions nil
+          ^^rejected_done}))
+    # The coordinator decides completion after its participants. Preserve
+    # appended context until they have had their chance to defer done.
+    (if_not coordinated (discard_done_items turn))
+    (return {^kind "done" ^outcome outcome ^questions nil}))
   (if_not ($absent? outcome/questions)
     (return
       {
@@ -142,15 +152,15 @@
       # These symbols are only printed as headers, never evaluated. Restore
       # static reader paths so the next request uses the model's source style.
       (if (&& (== ($head form) (quote path)) (> body/.size 0) (== ($map_size props) 0))
-        (do (var static true)
+        (var static true)
         (let parts [])
         (for segment in body
           (if_not ([Sym Int] .contains? ($head segment)) (set static false))
           (parts .push ($to_str segment)))
         (if static
-          (do (if (&& (== parts/0 "gene") (> parts/.size 1))
+          (if (&& (== parts/0 "gene") (> parts/.size 1))
             (return ($to_sym ($to_str "$" ($str/join ($drop parts 1) "/")))))
-          (return ($to_sym ($str/join parts "/")))))))
+          (return ($to_sym ($str/join parts "/")))))
       ($node/rebuild ^head (plain_form ($head form)) ^body body ^props props ^meta {} form)
     else
       form))
@@ -168,19 +178,19 @@
       (let body ($node/body form))
       (if (== head (quote card)) (return (rewrite_card_form form)))
       (if (== head (quote append_prompt))
-        (do (let meta ($node/meta form))
-          (let line (?? meta/line 1))
-          (if (|| (!= body/.size 2) (!= ($head body/0) Str))
-            (fail
-              (OutcomeError ^response_line line ^_msg "append_prompt requires a literal label and a value")))
-          (if ($absent? (#"^[a-z0-9_]+$" .match body/0))
-            (fail
-              (OutcomeError ^response_line line ^_msg "append_prompt label must match [a-z0-9_]+")))
-          (let value_form body/1)
-          (let value (rewrite_prompt_form value_form))
-          (let quoted `(quote %value_form))
-          (return
-            ($node/rebuild ^head (quote append_prompt_at) ^body [body/0 line quoted value] form))))
+        (let meta ($node/meta form))
+        (let line (?? meta/line 1))
+        (if (|| (!= body/.size 2) (!= ($head body/0) Str))
+          (fail
+            (OutcomeError ^response_line line ^_msg "append_prompt requires a literal label and a value")))
+        (if ($absent? (#"^[a-z0-9_]+$" .match body/0))
+          (fail
+            (OutcomeError ^response_line line ^_msg "append_prompt label must match [a-z0-9_]+")))
+        (let value_form body/1)
+        (let value (rewrite_prompt_form value_form))
+        (let quoted `(quote %value_form))
+        (return
+          ($node/rebuild ^head (quote append_prompt_at) ^body [body/0 line quoted value] form)))
       ($node/rebuild ^body ($map body rewrite_prompt_form) ^props ($map_map ($node/props form) rewrite_prompt_form)
         form)
     else

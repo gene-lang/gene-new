@@ -13,10 +13,10 @@
       (request_data request) else {})))
   (if_not ($absent? channel_result) (return (response channel_result/status channel_result/body)))
   (if (session_path? parts)
-    (do (let id parts/4)
+    (let id parts/4)
     (if (&& (== parts/.size 6) (== parts/5 "slack-thread") (== request/method "GET"))
       (return (redirect (session_slack_thread host id))))
     (if (&& (== parts/.size 6) (== parts/5 "slack") (== request/method "POST"))
-      (return (response 202 (session_add_to_slack host id (number (request_data request) "revision"))))))
-  )
+      (return
+        (response 202 (session_add_to_slack host id (number (request_data request) "revision"))))))
   nil)

@@ -49,9 +49,9 @@ when compileOption("threads") and defined(posix):
                 (let index (self/offset .get))
                 (if (>= index ($size self/chunks))
                   nil
-                  else (do
-                    (self/offset .set (+ index 1))
-                    self/chunks/%index))))))
+                else
+                  (self/offset .set (+ index 1))
+                  self/chunks/%index)))))
         (let source (ChunkReader ^chunks chunks ^offset ($cell 0)))
         (let rows ($csv/reader source))
         (let row (await (rows .next)))

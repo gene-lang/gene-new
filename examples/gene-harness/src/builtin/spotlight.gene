@@ -38,8 +38,8 @@
   # quarantined without preventing the profile or host from starting.
   (let preparation_error (try
     (if (|| ($absent? asset/.get) (!= asset_path/.get path))
-      (do (asset .set ($web/load path))
-      (asset_path .set path)))
+      (asset .set ($web/load path))
+      (asset_path .set path))
     (if ($absent? stylesheet/.get)
       (stylesheet .set ($web/stylesheet "spotlight" style)))
     nil

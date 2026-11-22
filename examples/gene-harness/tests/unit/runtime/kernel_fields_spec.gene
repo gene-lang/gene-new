@@ -17,23 +17,24 @@
   (if (== head Sym) (return (private_segments? ($str/split ($to_str value) "/") fields)))
   (if ([Str Int Float Bool] .contains? head) (return false))
   (if (== head List)
-    (do (for child in value (if (private_harness_path? child fields) (return true)))
-      (return false)))
+    (for child in value
+      (if (private_harness_path? child fields) (return true)))
+    (return false))
   (if (== head Map)
-    (do (map_for [name child] in value (if (private_harness_path? child fields) (return true)))
-      (return false)))
+    (map_for [name child] in value
+      (if (private_harness_path? child fields) (return true)))
+    (return false))
   (if (== ($to_str head) "path")
     (if (private_segments? ($body value) fields) (return true)))
   (if (same? head value)
-
-      # PipelineSyntax has no public child accessor yet. Its canonical spelling
-      # can be parsed as ordinary data by replacing the arrow with a tag. This
-      # never executes code or rewrites source; quoted strings remain strings.
-      (do (let text ($to_str value))
-      (if ($str/contains? text " -> ")
-        (for form in ($parse/read_all ($str/join ($str/split text " -> ") " __pipeline__ "))
-          (if (private_harness_path? form fields) (return true))))
-      (return false)))
+    # PipelineSyntax has no public child accessor yet. Its canonical spelling
+    # can be parsed as ordinary data by replacing the arrow with a tag. This
+    # never executes code or rewrites source; quoted strings remain strings.
+    (let text ($to_str value))
+    (if ($str/contains? text " -> ")
+      (for form in ($parse/read_all ($str/join ($str/split text " -> ") " __pipeline__ "))
+        (if (private_harness_path? form fields) (return true))))
+    (return false))
   (if (private_harness_path? head fields) (return true))
   (for child in ($body value)
     (if (&& (! (same? child value)) (private_harness_path? child fields)) (return true)))

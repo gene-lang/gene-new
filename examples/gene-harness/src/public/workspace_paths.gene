@@ -6,10 +6,10 @@
   (var selected (if (&& ($present? explicit) (!= explicit ""))
     explicit else configured))
   (if (== selected "")
-    (do (let home ($os/get_env "HOME" ""))
-      (if (== home "")
-        (fail (ServiceError ^code "invalid_workspace_settings"
-          ^_msg "HOME is required to locate the manager root; use --root DIR.")))
-      (set selected ($path/join home ".gene-harness-root"))))
+    (let home ($os/get_env "HOME" ""))
+    (if (== home "")
+      (fail
+        (ServiceError ^code "invalid_workspace_settings" ^_msg "HOME is required to locate the manager root; use --root DIR.")))
+    (set selected ($path/join home ".gene-harness-root")))
   (if ($str/starts_with? selected "/")
     selected else ($path/join ($os/launch_dir) selected)))

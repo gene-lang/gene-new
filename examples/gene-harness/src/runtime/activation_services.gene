@@ -37,9 +37,9 @@
   (let takeovers [])
   (for row in rows
     (if (== row/payload/name slot)
-      (do (if_not (owners .contains? row/owner) (owners .push row/owner))
+      (if_not (owners .contains? row/owner) (owners .push row/owner))
       (if (&& (== row/payload/takeover true) (! (takeovers .contains? row/owner)))
-        (takeovers .push row/owner)))))
+        (takeovers .push row/owner))))
   {^owners owners ^takeovers takeovers})
 
 # The holder of every claimed slot in `snapshot`, or nil for a conflict.
@@ -81,8 +81,8 @@
   # Only a waiting or quiesced service starts; a stopped one has retired.
   (let previous (record/state .swap "running"))
   (if (! (["waiting" "quiesced"] .contains? previous))
-    (do (record/state .set previous)
-      (return nil)))
+    (record/state .set previous)
+    (return nil))
   (try
     (record/task .set (spawn_effect_call record/effects $"service ${record/name}" record/thunk []))
   catch Error
@@ -93,8 +93,8 @@
 (fn ^^private quiesce_record [record]
   (let previous (record/state .swap "quiesced"))
   (if (!= previous "running")
-    (do (record/state .set previous)
-      (return nil)))
+    (record/state .set previous)
+    (return nil))
   (if ($present? record/quiesce)
     (match (supervised_call record/quiesce [] (default_execution_limits)) ^!exhaustive
       when (TaskOutcome/error error) (record/error .set ($to_str error))
@@ -179,8 +179,10 @@
     (let item {^owner record/owner ^name record/name ^slot record/slot
       ^state record/state/.get ^error record/error/.get})
     (if ($present? record/slot)
-      (do (item .put "holder" (holders .get record/slot))
-      (item .put "conflict" (&& (holders .has_key? record/slot) ($absent? (holders .get record/slot))))))
+      (item .put "holder" (holders .get record/slot))
+      (item .put
+        "conflict"
+        (&& (holders .has_key? record/slot) ($absent? (holders .get record/slot)))))
     (out .push item))
   ($order/sort_by out (fn [item] $"${item/owner}/${item/name}")))
 

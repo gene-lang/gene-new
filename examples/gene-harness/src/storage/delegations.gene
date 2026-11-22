@@ -38,8 +38,8 @@
        ^at_ms ($os/wall_ms)
        ^record descriptor})
     (if (!= latest/reported_state latest/state)
-      (do (projection .put "summary" $"${id}: ${latest/state} · ${record/title} · ${record/session}")
-      (latest .put "reported_state" latest/state)))
+      (projection .put "summary" $"${id}: ${latest/state} · ${record/title} · ${record/session}")
+      (latest .put "reported_state" latest/state))
     (projection .put "digest" (write_body runtime ($serde/write_data record)))
     (let event (record_core_state runtime/events "session" parent/session "delegation/state"
       $"delegation/${id}" projection))

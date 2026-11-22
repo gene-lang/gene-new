@@ -60,8 +60,8 @@
   (providers .put key id)
   (var claim (claims .get key))
   (if ($absent? claim)
-    (do (set claim {^registry pair/0 ^key pair/1 ^owners []})
-    (claims .put key claim)))
+    (set claim {^registry pair/0 ^key pair/1 ^owners []})
+    (claims .put key claim))
   (if_not (claim/owners .contains? id) (claim/owners .push id)))
 
 (fn drop_entry [entries, id]
@@ -87,41 +87,39 @@
     (if (! (["set_enabled" "restore" "revert" "replace"] .contains? kind))
       (plan_error $"unknown plugin change ${kind}"))
     (if (== kind "set_enabled")
-      (do (if (!= ($head operation/enabled) Bool) (plan_error "enabled must be a boolean"))
+      (if (!= ($head operation/enabled) Bool) (plan_error "enabled must be a boolean"))
       (if (&& ($absent? existing) (! builtin)) (plan_error $"unknown plugin ${id}"))
       (if (|| ($absent? existing) (== existing/builtin true))
-        (do
-          (set next (drop_entry next id))
-          (if_not operation/enabled (next .push {^id id ^^builtin ^^disabled})))
-        else (do
-          (let updated (data_copy existing))
-          (updated .put "disabled" (! operation/enabled))
-          (set next (entries_with next updated true))))
-      (continue)))
+        (set next (drop_entry next id))
+        (if_not operation/enabled (next .push {^id id ^^builtin ^^disabled}))
+      else
+        (let updated (data_copy existing))
+        (updated .put "disabled" (! operation/enabled))
+        (set next (entries_with next updated true)))
+      (continue))
     (if (== kind "restore")
-      (do (if_not builtin (plan_error $"plugin ${id} has no current profile default"))
+      (if_not builtin (plan_error $"plugin ${id} has no current profile default"))
       (set next (drop_entry next id))
       (if (== operation/enabled false) (next .push {^id id ^^builtin ^^disabled}))
-      (continue)))
+      (continue))
     (var updated nil)
     (if (== kind "revert")
-      (do
-        (if (!= ($head operation/revision) Int)
-          (plan_error "revert requires a historical revision"))
-        (let old (history_revision workspace/store workspace/history_head/.get operation/revision))
-        (let found (find_entry_index old/entries id))
-        (if (|| (== found -1) ($absent? old/entries/%found/module_digest))
-          (plan_error "no stored plugin version in that revision; restore defaults separately"))
-        (set updated (data_copy old/entries/%found))
-        (preserve_creation_on_revert updated existing))
-      else (do
-        (let dependencies
-          (if (&& (== ($head operation/dependency_source) Str) (!= ($str/trim operation/dependency_source) ""))
-            ($into ($parse/read_all operation/dependency_source) [])
-            else (?? operation/dependencies [])))
-        (set updated (stage_plugin_entry ^dependencies dependencies workspace id operation/source))
-        (updated .put "source_origin" {^kind "operator"})
-        (assign_creation updated existing)))
+      (if (!= ($head operation/revision) Int) (plan_error "revert requires a historical revision"))
+      (let old (history_revision workspace/store workspace/history_head/.get operation/revision))
+      (let found (find_entry_index old/entries id))
+      (if (|| (== found -1) ($absent? old/entries/%found/module_digest))
+        (plan_error "no stored plugin version in that revision; restore defaults separately"))
+      (set updated (data_copy old/entries/%found))
+      (preserve_creation_on_revert updated existing)
+    else
+      (let dependencies
+        (if (&& (== ($head operation/dependency_source) Str) (!= ($str/trim operation/dependency_source) ""))
+          ($into ($parse/read_all operation/dependency_source) [])
+        else
+          (?? operation/dependencies [])))
+      (set updated (stage_plugin_entry ^dependencies dependencies workspace id operation/source))
+      (updated .put "source_origin" {^kind "operator"})
+      (assign_creation updated existing))
     (if (&& ($present? operation/enabled) (!= ($head operation/enabled) Bool))
       (plan_error "enabled must be a boolean"))
     (updated .put "disabled" (! (?? operation/enabled enabled)))
@@ -191,26 +189,34 @@
       (if (== entry/disabled true) (continue))
       (var data nil)
       (if ($absent? entry/module_digest)
-        (do
-          (if (&& ($present? historical_build) (!= historical_build stamp/host_build_id))
-            (current_defaults .push {^id id ^host_build_id stamp/host_build_id ^historical_host_build_id historical_build}))
-          (let default (workspace/profile_plugins/.get .get id))
-          (if ($absent? default) (errors .push $"profile default ${id} is unavailable")
-            else (set data (descriptor_data default/plugin))))
-        else (try
+        (if (&& ($present? historical_build) (!= historical_build stamp/host_build_id))
+          (current_defaults .push
+            {^id id ^host_build_id stamp/host_build_id ^historical_host_build_id historical_build}))
+        (let default (workspace/profile_plugins/.get .get id))
+        (if ($absent? default)
+          (errors .push $"profile default ${id} is unavailable")
+        else
+          (set data (descriptor_data default/plugin)))
+      else
+        (try
           (verify_stored_entry workspace entry)
           (let inspected (inspect_descriptor ^candidate entry runtime id))
           (if inspected/ok
-            (set data inspected/descriptor) (checked .put id inspected/descriptor)
-            elif (== inspected/code "unsupported_interface") (errors .push $"${id}: ${inspected/message}")
-            else (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}"))
+            (set data inspected/descriptor)
+            (checked .put id inspected/descriptor)
+          elif (== inspected/code "unsupported_interface")
+            (errors .push $"${id}: ${inspected/message}")
+          else
+            (warnings .push $"${id}: restricted inspection unavailable: ${inspected/message}"))
         catch Error
           (if repair
             (warnings .push $"${id}: unavailable during repair: ${$err/.message}")
-            else (errors .push $"${id}: ${$err/.message}"))))
+          else
+            (errors .push $"${id}: ${$err/.message}"))))
       (if ($absent? data)
-        (do (let saved (saved_metadata workspace/store id (?? entry/module_digest "builtin") stamp/host_build_id))
-        (set data saved/declared)))
+        (let saved
+          (saved_metadata workspace/store id (?? entry/module_digest "builtin") stamp/host_build_id))
+        (set data saved/declared))
       (if_not ($absent? data)
         (descriptors .put id data)
         (for pair in data/provides (claim_capability providers claims pair id)))
@@ -335,8 +341,8 @@
           (CompositionConflict ^code "stale_plan" ^expected plan/base_revision ^actual (composition_revision workspace) ^_msg "Host, profile, or configuration changed; validate this draft again.")))
       (if_not plan/errors/.empty? (plan_error "plan has validation errors"))
       (if (&& plan/diff/.empty? (!= plan/retry true))
-        (do (reset_plan_participants workspace plan)
-        (return {^id id ^state "applied" ^revision plan/base_revision ^^no_change})))
+        (reset_plan_participants workspace plan)
+        (return {^id id ^state "applied" ^revision plan/base_revision ^^no_change}))
       (let origin
         {
           ^kind "operator"
@@ -348,10 +354,10 @@
       (let before_head workspace/history_head/.get)
       (try
         (if (== runtime/recovery true)
-          (do (let revision (commit_composition ^origin origin workspace plan/entries))
+          (let revision (commit_composition ^origin origin workspace plan/entries))
           (reset_plan_participants workspace plan)
           (composition_history_result workspace {^plan id ^status "unverified" ^operation "repair"})
-          (return {^id id ^revision revision ^state "saved" ^activation "unverified"})))
+          (return {^id id ^revision revision ^state "saved" ^activation "unverified"}))
         (let admissions [])
         (let effective (effective_entries workspace plan/entries))
         (map_for [name entry] in effective
@@ -359,15 +365,15 @@
           (if (== entry/disabled true) (continue))
           (if ($absent? entry/module_digest)
             (admissions .push (workspace/profile_plugins/.get .get plugin_id))
-            else (do
-              (verify_stored_entry workspace entry)
-              (let descriptor (load_entry_descriptor ^!events workspace runtime/h entry))
-              (let expected (plan/checked .get plugin_id))
-              (if (&& ($present? expected) (!= expected (descriptor_data descriptor)))
-                (plan_error
-                  $"${plugin_id}: full-grant descriptor differs from the reviewed descriptor"))
-              (admissions .push
-                {^plugin descriptor ^options (descriptor_entry_options workspace entry)}))))
+          else
+            (verify_stored_entry workspace entry)
+            (let descriptor (load_entry_descriptor ^!events workspace runtime/h entry))
+            (let expected (plan/checked .get plugin_id))
+            (if (&& ($present? expected) (!= expected (descriptor_data descriptor)))
+              (plan_error
+                $"${plugin_id}: full-grant descriptor differs from the reviewed descriptor"))
+            (admissions .push
+              {^plugin descriptor ^options (descriptor_entry_options workspace entry)})))
         (let outcome
           (apply_plugin_set ^pending plan/repair ^prepare (fn [] (for entry in (composition_entries workspace) (hide_owner_rows runtime/h $"descriptor:${entry/id}")) (for admission in admissions (validate_descriptor_events runtime/h admission/plugin) (register_descriptor_events runtime/h admission/plugin)))
             runtime/h

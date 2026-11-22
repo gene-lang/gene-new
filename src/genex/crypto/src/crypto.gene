@@ -69,7 +69,8 @@
     (var key nil) (var matches 0)
     (for candidate in jwks/keys
       (if (== candidate/kid header/kid)
-        (do (set key candidate) (set matches (+ matches 1)))))
+        (set key candidate)
+        (set matches (+ matches 1))))
     (if (|| (!= matches 1) (!= key/kty "RSA")
       (&& ($present? key/alg) (!= key/alg "RS256"))
       (&& ($present? key/use) (!= key/use "sig"))
@@ -86,11 +87,10 @@
       (fail (CryptoError ^_msg "Invalid ID token claims")))
     (var expected_audience (== claims/aud audience))
     (if (== ($head claims/aud) List)
-      (do (set expected_audience (claims/aud .contains? audience))
-        (for item in claims/aud
-          (if (!= ($head item) Str) (set expected_audience false)))
-        (if (&& (> claims/aud/.size 1) (!= claims/azp audience))
-          (set expected_audience false))))
+      (set expected_audience (claims/aud .contains? audience))
+      (for item in claims/aud
+        (if (!= ($head item) Str) (set expected_audience false)))
+      (if (&& (> claims/aud/.size 1) (!= claims/azp audience)) (set expected_audience false)))
     (if (|| (! expected_audience) (&& ($present? claims/azp) (!= claims/azp audience))
       (<= claims/exp (- now 5)) (> claims/iat (+ now 5)) (<= claims/exp claims/iat)
       (&& ($present? claims/nbf) (|| (!= ($head claims/nbf) Int) (> claims/nbf (+ now 5)))))

@@ -21,13 +21,13 @@
   (var name : Any `(span %title))
   (var suffix "")
   (if (flag reference/available)
-    (do
-      (var href $"/?session=${($url/encode_component id)}&view=harness")
-      (set name `(a ^href %href ^title %id %title))
-      (var kind (text reference/kind))
-      (if (&& (!= kind "") (!= kind "interactive")) (set suffix $" · ${kind}")))
-    else (set suffix (if (flag reference/recovery)
-      " · Open after normal startup" else " · Session unavailable")))
+    (var href $"/?session=${($url/encode_component id)}&view=harness")
+    (set name `(a ^href %href ^title %id %title))
+    (var kind (text reference/kind))
+    (if (&& (!= kind "") (!= kind "interactive")) (set suffix $" · ${kind}"))
+  else
+    (set suffix
+      (if (flag reference/recovery) " · Open after normal startup" else " · Session unavailable")))
   `(p ^class_name "plugin_meta" %label ": " %name %suffix))
 
 (fn plugin_sessions_view [development : Any, builtin : Bool = false] : Any

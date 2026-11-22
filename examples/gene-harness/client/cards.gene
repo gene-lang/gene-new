@@ -45,8 +45,8 @@
 # the card must leave this page disabled until its own click.
 (fn card_observed [host : CardHost, session : Str, card : Any] : Nil
   (if (cflag card/stale)
-    (do (var key (card_key session (ctext card/id)))
-    (host/enabled .delete key))))
+    (var key (card_key session (ctext card/id)))
+    (host/enabled .delete key)))
 
 (fn card_enabled [host : CardHost, session : Str, card : Any] : Bool
   (if (! (needs_enable card)) (return true))
@@ -70,8 +70,8 @@
     (var current : Any data/card)
     (if (== status "done")
       (if (== (ctext data/action) "enable")
-        (do (var defined_revision : Int current/definition_revision)
-        (set host/enabled/%key defined_revision))))
+        (var defined_revision : Int current/definition_revision)
+        (set host/enabled/%key defined_revision)))
     (host/update session current))
   (if ($absent? data/card) (host/update session card)))
 
@@ -115,9 +115,9 @@
 (fn enable_card [host : CardHost, session : Str, card : Any] : Nil
   (if (!= (ctext card/kind) "live")
     # A static card's Enable runs nothing; it only turns its buttons back on.
-    (do (card_defined host session card)
+    (card_defined host session card)
     (host/update session card)
-    (return)))
+    (return))
   (post_action host session card
     {^input_id ($browser/request_id) ^action "enable"
      ^definition_revision card/definition_revision ^revision card/revision
@@ -132,8 +132,8 @@
   fields : (List Any)] : EventTarget
   (if ($absent? tree) (return ($dom/create_text "")))
   (if ($leaf? tree)
-    (do (var text : Str tree)
-    (return ($dom/create_text text))))
+    (var text : Str tree)
+    (return ($dom/create_text text)))
   (var tag : Str tree/tag)
   (var element ($dom/create_element tag))
   (var props : PropMap tree/props)
@@ -165,49 +165,61 @@
     (if_not enabled ($dom/set_attribute element "disabled" ""))
     (fields .push {^name field_name ^element element ^type (ctext props/type)}))
   (if (&& (== tag "form") ($present? props/update))
-    (do (var form_action : Str props/update)
+    (var form_action : Str props/update)
     (var form_args : Any {})
     (if_not ($absent? props/args) (set form_args props/args))
-    ($dom/add_event_listener element "submit"
+    ($dom/add_event_listener
+      element
+      "submit"
       (fn [event : Any] : Nil
         ($dom/prevent_default event)
         (if enabled
-          (do (var values : PropMap {})
+          (var values : PropMap {})
           (for field in form_fields
             (var field_element : EventTarget field/element)
             (var submitted_name : Str field/name)
             (if (== (ctext field/type) "checkbox")
               (set values/%submitted_name field_element/checked)
-              else (set values/%submitted_name ($dom/input_value field_element))))
-          (update_action host session card form_action form_args values)))))))
+            else
+              (set values/%submitted_name ($dom/input_value field_element))))
+          (update_action host session card form_action form_args values)))))
   (if (== tag "button")
-    (do (var has_action (|| ($present? props/update) ($present? props/send)
-                        ($present? props/command) ($present? props/prompt)))
+    (var has_action
+      (||
+        ($present? props/update)
+        ($present? props/send)
+        ($present? props/command)
+        ($present? props/prompt)))
     (if (&& has_action (! (== (ctext props/type) "submit")))
       ($dom/set_attribute element "type" "button"))
     (if (&& (|| has_action (== (ctext props/type) "submit")) (! enabled) ($absent? props/prompt))
       ($dom/set_attribute element "disabled" ""))
     (if (&& ($present? props/update) (!= (ctext props/type) "submit"))
-      (do (var button_action : Str props/update)
+      (var button_action : Str props/update)
       (var button_args : Any {})
       (if_not ($absent? props/args) (set button_args props/args))
-      ($dom/add_event_listener element "click"
+      ($dom/add_event_listener
+        element
+        "click"
         (fn [event : Any] : Nil
-          (if enabled (update_action host session card button_action button_args {}))))))
+          (if enabled (update_action host session card button_action button_args {})))))
     (if_not ($absent? props/send)
       (var send_text : Str props/send)
-      ($dom/add_event_listener element "click"
+      ($dom/add_event_listener
+        element
+        "click"
         (fn [event : Any] : Nil
           (if enabled (host/send session send_text (card_ref card))))))
     (if_not ($absent? props/command)
       (var command_text : Str props/command)
-      ($dom/add_event_listener element "click"
+      ($dom/add_event_listener
+        element
+        "click"
         (fn [event : Any] : Nil
           (if enabled (host/command session command_text (card_ref card))))))
     (if_not ($absent? props/prompt)
       (var prompt_text : Str props/prompt)
-      ($dom/add_event_listener element "click"
-        (fn [event : Any] : Nil (host/prompt prompt_text))))))
+      ($dom/add_event_listener element "click" (fn [event : Any] : Nil (host/prompt prompt_text)))))
   element)
 
 # owned: the card's round is running. safe: the recovery page.
@@ -263,8 +275,8 @@
   on_prompt : (Fn [Str] Nil), enabled : Bool] : EventTarget
   (if ($absent? tree) (return ($dom/create_text "")))
   (if ($leaf? tree)
-    (do (var text : Str tree)
-    (return ($dom/create_text text))))
+    (var text : Str tree)
+    (return ($dom/create_text text)))
   (var tag : Str tree/tag)
   (var element ($dom/create_element tag))
   (var props : PropMap tree/props)
@@ -277,20 +289,19 @@
   (for child in children
     ($dom/append element (question_tree child selected on_answer on_prompt enabled)))
   (if (== tag "button")
-    (do ($dom/set_attribute element "type" "button")
+    ($dom/set_attribute element "type" "button")
     (if_not ($absent? props/answer)
       (var answer_value : Any props/answer)
       (var chosen (selected answer_value))
       ($dom/set_attribute element "aria-pressed" (if chosen "true" else "false"))
-      (if chosen ($dom/set_attribute element "class" ($to_str (ctext props/class) " card_selected")))
+      (if chosen ($dom/set_attribute element "class" $"${(ctext props/class)} card_selected"))
       (if enabled
-        ($dom/add_event_listener element "click"
-          (fn [event : Any] : Nil (on_answer answer_value)))
-        else ($dom/set_attribute element "disabled" "")))
+        ($dom/add_event_listener element "click" (fn [event : Any] : Nil (on_answer answer_value)))
+      else
+        ($dom/set_attribute element "disabled" "")))
     (if_not ($absent? props/prompt)
       (var question_prompt : Str props/prompt)
-      ($dom/add_event_listener element "click"
-        (fn [event : Any] : Nil (on_prompt question_prompt))))))
+      ($dom/add_event_listener element "click" (fn [event : Any] : Nil (on_prompt question_prompt)))))
   element)
 
 (fn answer_label [value : Any] : Str

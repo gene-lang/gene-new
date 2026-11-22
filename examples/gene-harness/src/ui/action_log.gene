@@ -98,9 +98,9 @@
     (state .put "sequence" record/sequence)
     (state .put "admissions" (+ state/admissions 1))
     (if (>= state/admissions 128)
-      (do (state .put "admissions" 0)
+      (state .put "admissions" 0)
       (state .put "generation" (+ state/generation 1))
-      (state .put "floor" ($math/max 1 (- state/generation 3)))))
+      (state .put "floor" ($math/max 1 (- state/generation 3))))
     # Floor and deletions are committed in one atomic checkpoint. No identity
     # can disappear while the durable state still permits its admission.
     (prune_actions state)
@@ -115,8 +115,8 @@
       (let record (find_action state id))
       (if ($absent? record) (ui_error "receipt_expired" "Action receipt is no longer retained."))
       (if (action_terminal? record/status)
-        (do (set changed false)
-        (return (copy_data record))))
+        (set changed false)
+        (return (copy_data record)))
       (map_for [key value] in changes
         (if (== ($to_str key) "append_output")
           (record .put "output" (byte_prefix ($to_str record/output value) 16384))
@@ -155,8 +155,8 @@
       ^display (byte_prefix record/display 4096) ^output (byte_prefix record/output 4096)})
     (let size ($str/byte_size ($json/stringify item)))
     (if (|| (>= out/.size limit) (> (+ bytes size) 60000))
-      (do (set next (+ record/sequence 1))
-      (break)))
+      (set next (+ record/sequence 1))
+      (break))
     (out .push item)
     (set bytes (+ bytes size)))
   {^records out ^before next ^metadata (action_metadata log)})

@@ -75,8 +75,9 @@
   (let st (current))
   (st .put "mode" (if (log_modes .contains? mode) mode else "pending"))
   (if (!= root st/root)
-    (do (st .put "root" root) (st .put "redactions" [])
-        (st .put "redactions_root" "")))
+    (st .put "root" root)
+    (st .put "redactions" [])
+    (st .put "redactions_root" ""))
   (st .put "workspace" workspace)
   (if (level_valid? level) (st .put "level" level))
   (if (== ($head levels) Map) (st .put "levels" levels))
@@ -114,10 +115,13 @@
   (var kept [])
   (for subscriber in (?? st/subscribers [])
     (if (== subscriber/id id)
-      (do
-        (subscriber .put "closed" true)
-        (try (subscriber/channel .close) catch Throwable nil))
-      else (kept .push subscriber)))
+      (subscriber .put "closed" true)
+      (try
+        (subscriber/channel .close)
+      catch Throwable
+        nil)
+    else
+      (kept .push subscriber)))
   (st .put "subscribers" kept)
   nil)
 
@@ -172,10 +176,10 @@
   (if (== kind Str)
     (return (redact_text value secrets)))
   (if (== kind Map)
-    (do
-      (var copy {})
-      (map_for [key item] in value (copy .put key (redact_value secrets item)))
-      (return copy)))
+    (var copy {})
+    (map_for [key item] in value
+      (copy .put key (redact_value secrets item)))
+    (return copy))
   (if (== kind List)
     (return ($map value (fn [item] (redact_value secrets item)))))
   value)
@@ -183,8 +187,8 @@
 (fn ^^private redact_record [st, record] : Any
   (if (== st/root "") (return record))
   (if (|| (st/redactions .empty?) (!= st/redactions_root st/root))
-    (do (log_refresh_redactions)
-        (if (st/redactions .empty?) (return record))))
+    (log_refresh_redactions)
+    (if (st/redactions .empty?) (return record)))
   (var copy {})
   (map_for [key value] in record (copy .put key (redact_value st/redactions value)))
   copy)
@@ -193,13 +197,12 @@
   (let ring st/ring)
   (ring .push record)
   (if (> ring/.size ring_limit)
-    (do
-      (var kept [])
-      (var index (- ring/.size ring_limit))
-      (while (< index ring/.size)
-        (kept .push ring/%index)
-        (set index (+ index 1)))
-      (st .put "ring" kept))))
+    (var kept [])
+    (var index (- ring/.size ring_limit))
+    (while (< index ring/.size)
+      (kept .push ring/%index)
+      (set index (+ index 1)))
+    (st .put "ring" kept)))
 
 (fn ^^private write_text [st, text : Str] : Nil
   (if (|| st/quiet (== st/mode "silent")) (return nil))
@@ -238,17 +241,15 @@
       else nil))
     (let envelope ($freeze {^kind "record" ^record record ^gap gap}))
     (if (subscriber/channel .try_send envelope)
-      (do
-        (subscriber .put "dropped" 0)
-        (subscriber .put "from" 0)
-        (subscriber .put "to" 0)
-        (subscriber .put "last" record))
-      else (do
-        (subscriber .put "dropped" (+ dropped 1))
-        (subscriber .put "dropped_total" (+ (?? subscriber/dropped_total 0) 1))
-        (if (== (?? subscriber/from 0) 0)
-          (subscriber .put "from" (?? record/seq 0)))
-        (subscriber .put "to" (?? record/seq 0)))))
+      (subscriber .put "dropped" 0)
+      (subscriber .put "from" 0)
+      (subscriber .put "to" 0)
+      (subscriber .put "last" record)
+    else
+      (subscriber .put "dropped" (+ dropped 1))
+      (subscriber .put "dropped_total" (+ (?? subscriber/dropped_total 0) 1))
+      (if (== (?? subscriber/from 0) 0) (subscriber .put "from" (?? record/seq 0)))
+      (subscriber .put "to" (?? record/seq 0))))
   nil)
 
 (fn ^^private emit_record [st, record] : Nil
@@ -292,10 +293,9 @@
       nil)
     catch Error $err/.message))
   (if ($present? attempts)
-    (do
-      (if st/strict (fail (Error ^_msg attempts)))
-      (emit_invalid st type target attempts)
-      (return nil)))
+    (if st/strict (fail (Error ^_msg attempts)))
+    (emit_invalid st type target attempts)
+    (return nil))
   (let chosen (if (== level "") (default_level type) else level))
   (if_not (level_valid? chosen)
     (do
@@ -322,17 +322,23 @@
     catch Error
       (if st/strict
         (fail $err)
-        else (do
-          (var reason $err/.message)
-          (try (emit_invalid st type target reason) catch Throwable nil)
-          nil))
+      else
+        (var reason $err/.message)
+        (try
+          (emit_invalid st type target reason)
+        catch Throwable
+          nil)
+        nil)
     catch Throwable
       (if st/strict
         (fail $err)
-        else (do
-          (var reason $err/.message)
-          (try (emit_invalid st type target reason) catch Throwable nil)
-          nil)))
+      else
+        (var reason $err/.message)
+        (try
+          (emit_invalid st type target reason)
+        catch Throwable
+          nil)
+        nil))
   nil)
 
 (fn log_scope [target, body] : Any

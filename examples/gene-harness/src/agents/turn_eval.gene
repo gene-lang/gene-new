@@ -98,67 +98,82 @@
       (prepare_and_commit)
       else (with_patch_gate workspace_root prepare_and_commit))
     (if (|| ($absent? patch_result) (== patch_result/status "applied"))
-
-        # Bindings hold live objects, so copy the map without copying its values.
-        (do (let values {})
-        (map_for [name value] in bindings (values .put name value))
-        (values .put "Outcome" (?? outcome_binding Outcome))
-        (if ($absent? (values .get "workspace"))
-          (values .put "workspace" {^root workspace_root}))
-        (values .put "append_prompt_at" (fn [label line form value]
+      # Bindings hold live objects, so copy the map without copying its values.
+      (let values {})
+      (map_for [name value] in bindings
+        (values .put name value))
+      (values .put "Outcome" (?? outcome_binding Outcome))
+      (if ($absent? (values .get "workspace")) (values .put "workspace" {^root workspace_root}))
+      (values .put
+        "append_prompt_at"
+        (fn [label line form value]
           (append_prompt_at turn label line form value)))
-        (values .put "attachment" (fn [name] (attachment turn name)))
-        (values .put "recall" (fn [id] (recall turn id)))
-        (let environment (env ^bindings values
-          ^policy {^timeout_ms timeout_ms ^max_memory_mb max_memory_mb}))
-        (let forms (rewrite_prompt_calls response/forms))
-        (if (> forms/.size 0)
-          (let last_index (- forms/.size 1))
-            (let meta ($node/meta forms/%last_index))
-            (set last_line (?? meta/line nil))
-            (let expired ($cell false))
-            (let execution (open_execution_scope "response"
-              {^timeout_ms timeout_ms ^max_memory_mb max_memory_mb} context))
-            (let outcome (try (scope
+      (values .put "attachment" (fn [name] (attachment turn name)))
+      (values .put "recall" (fn [id] (recall turn id)))
+      (let environment
+        (env ^bindings values ^policy {^timeout_ms timeout_ms ^max_memory_mb max_memory_mb}))
+      (let forms (rewrite_prompt_calls response/forms))
+      (if (> forms/.size 0)
+        (let last_index (- forms/.size 1))
+        (let meta ($node/meta forms/%last_index))
+        (set last_line (?? meta/line nil))
+        (let expired ($cell false))
+        (let execution
+          (open_execution_scope
+            "response"
+            {^timeout_ms timeout_ms ^max_memory_mb max_memory_mb}
+            context))
+        (let outcome
+          (try
+            (scope
               # The evaluation task itself is a child of the turn, as well as
               # owning the ordinary children created by response code.
-              (let task (spawn ^lane root
-                ($runtime/with_context execution/context (fn []
-                  (evaluate_response `(scope %forms...) environment)))))
-              (let deadline (spawn ^lane root
-                (do ($sleep ($math/max 0 (- execution/deadline_ms ($os/monotonic_ms))))
-                  (expired .set true) task/.cancel)))
-              (try task/.join
-                ensure deadline/.cancel deadline/.join))
-              ensure (close_execution_scope execution)))
-            (match outcome ^!exhaustive
-              when (TaskOutcome/ok value) (set validated (validate_value value))
-              when (TaskOutcome/error failure)
-                (set error ($to_str failure/.message))
-                (set error_line (response_error_line failure))
-              when (TaskOutcome/fault fault) (let message fault/.message)
-                (if (== ($head fault) Panic) (set error $"panic: ${message}")
-                  else (do (set error ($to_str message)) (set error_line (response_error_line fault))))
-              when TaskOutcome/cancelled
-                (if expired/.get (set error "response budget timed out") else (set cancelled true)))
-          else
-            (set validated (validate_value (if ($absent? patch_result) nil else patch_result/text))))))
+              (let task
+                (spawn ^lane root ($runtime/with_context execution/context (fn [] (evaluate_response `(scope %forms...) environment)))))
+              (let deadline
+                (spawn ^lane root (do ($sleep ($math/max 0 (- execution/deadline_ms ($os/monotonic_ms)))) (expired .set true) task/.cancel)))
+              (try
+                task/.join
+              ensure
+                deadline/.cancel
+                deadline/.join))
+          ensure
+            (close_execution_scope execution)))
+        (match ^!exhaustive outcome
+          when (TaskOutcome/ok value)
+            (set validated (validate_value value))
+          when (TaskOutcome/error failure)
+            (set error ($to_str failure/.message))
+            (set error_line (response_error_line failure))
+          when (TaskOutcome/fault fault)
+            (let message fault/.message)
+            (if (== ($head fault) Panic)
+              (set error $"panic: ${message}")
+            else
+              (set error ($to_str message))
+              (set error_line (response_error_line fault)))
+          when TaskOutcome/cancelled
+            (if expired/.get (set error "response budget timed out") else (set cancelled true)))
+      else
+        (set validated (validate_value (if ($absent? patch_result) nil else patch_result/text)))))
     catch ParticipantFailure (fail $err)
     catch Throwable
       (set error ($to_str $err/.message))
       (set error_line (response_error_line $err))
     ensure (turn/state .set (if cancelled "cancelled" else "closed")))
-  (if (&& ($present? response) (> response/forms/.size 0)
-           (== ($head response/forms/0) Sym)
-           (== error $"undefined symbol: ${response/forms/0}"))
-    (do (var line 0)
+  (if (&& ($present? response) (> response/forms/.size 0) (== ($head response/forms/0) Sym) (== error $"undefined symbol: ${response/forms/0}"))
+    (var line 0)
     (for source_line in ($str/split response/code "\n")
       (set line (+ line 1))
       (let stripped ($str/trim source_line))
       (if (|| (== stripped "") ($str/starts_with? stripped "#")) (continue))
       (set error_line line)
       (break))
-    (set error ($to_str error "\nReturn executable Gene code only. Put any prose preamble in # comments; evaluation stopped at this symbol."))))
+    (set error
+      ($to_str
+        error
+        """
+Return executable Gene code only. Put any prose preamble in # comments; evaluation stopped at this symbol.""")))
   (let patch_text (if ($absent? patch_result) nil else patch_result/text))
   (let request (if (|| cancelled (&& ($present? validated) (== validated/kind "done"))) ""
     else (render_request turn validated ^patch patch_text ^error error ^error_line error_line ^result_line last_line)))

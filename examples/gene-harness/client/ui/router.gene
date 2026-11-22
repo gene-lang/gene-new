@@ -45,9 +45,9 @@
   (var raw : Any ui/nodes/%key)
   (if ($absent? raw)
     ($dom/focus ($dom/element "ui_view_title"))
-    else (do
-      (var node : UiNode raw)
-      ($dom/focus node/element)))
+  else
+    (var node : UiNode raw)
+    ($dom/focus node/element))
   ($dom/set_scroll_top ($dom/element "ui_panel") ui/navigation/scroll))
 
 (fn layout [ui : UiClient] : Nil
@@ -124,8 +124,8 @@
   (var nav ui/navigation)
   (var view (find_view nav/views target))
   (if (&& (!= target "harness") ($absent? view))
-    (do (navigation_notice ui $"View ${target} is unavailable.")
-    (return false)))
+    (navigation_notice ui $"View ${target} is unavailable.")
+    (return false))
   (if push (navigation_notice ui ""))
   (var chosen (if (== target "harness") "classic"
     else (presentation_for view ui/settings nav/remembered presentation)))
@@ -135,32 +135,32 @@
   (set nav/active target)
   (set nav/presentation chosen)
   (if (== target "harness")
-    (do
-      (set ui/sequence (+ ui/sequence 1))
-      (set ui/debounce (+ ui/debounce 1))
-      (set ui/instance ($browser/request_id))
-      (set ui/descriptor nil)
-      (set ui/nodes {})
-      (set ui/loading false)
-      (set ui/render_error false)
-      ($dom/clear ui/target)
-      (var no_outlets : (List Any) [])
-      (ui/outlet_sync no_outlets))
-    else (do
-      (set nav/last_view target)
-      (set nav/remembered/%target chosen)
-      (if (|| (!= (text ui/descriptor/name) target) (!= ui/version (text view/state_version "1")))
-        (nav/restore view)
-        else (set ui/descriptor view))
-      (set nav/focus_pending true)))
+    (set ui/sequence (+ ui/sequence 1))
+    (set ui/debounce (+ ui/debounce 1))
+    (set ui/instance ($browser/request_id))
+    (set ui/descriptor nil)
+    (set ui/nodes {})
+    (set ui/loading false)
+    (set ui/render_error false)
+    ($dom/clear ui/target)
+    (var no_outlets : (List Any) [])
+    (ui/outlet_sync no_outlets)
+  else
+    (set nav/last_view target)
+    (set nav/remembered/%target chosen)
+    (if (|| (!= (text ui/descriptor/name) target) (!= ui/version (text view/state_version "1")))
+      (nav/restore view)
+    else
+      (set ui/descriptor view))
+    (set nav/focus_pending true))
   (layout ui)
   (persist_navigation ui)
   (update_url ui (&& push changed))
   (if (== target "harness")
     ($dom/focus ($dom/element "prompt"))
-    else (do
-      (set ui/last_data "")
-      (nav/refresh)))
+  else
+    (set ui/last_data "")
+    (nav/refresh))
   true)
 
 (fn toggle [ui : UiClient] : Bool
@@ -183,8 +183,14 @@
   (set nav/views components)
   (var fresh (!= nav/workspace ui/workspace))
   (if fresh
-    (do (set nav/workspace ui/workspace)
-    (var saved : Any (try ($json/parse (?? (storage_get (navigation_key ui)) "{}")) catch Error nil))
+    (set nav/workspace ui/workspace)
+    (var saved
+      :
+      Any
+      (try
+        ($json/parse (?? (storage_get (navigation_key ui)) "{}"))
+      catch Error
+        nil))
     (set nav/remembered (copy_map saved/presentations))
     (set nav/versions (copy_map saved/versions))
     (set nav/last_view (text saved/last_view))
@@ -194,28 +200,32 @@
     (var raw_width : Any (?? saved/width (?? ui/settings/width 50)))
     (var width : Int raw_width)
     (set nav/width (if (|| (< width 25) (> width 70)) 50 else width))
-    (var target (if ui/safe "harness"
-      else (initial_view components ui/settings saved (query_value ($browser/search) "view"))))
+    (var target
+      (if ui/safe
+        "harness"
+      else
+        (initial_view components ui/settings saved (query_value ($browser/search) "view"))))
     (if (&& (!= target "harness") ($absent? (find_view components target)))
-      (do (navigation_notice ui $"View ${target} is unavailable. Opened Classic Harness.")
-      (set target "harness")))
+      (navigation_notice ui $"View ${target} is unavailable. Opened Classic Harness.")
+      (set target "harness"))
     (navigate ui target (query_value ($browser/search) "presentation") false)
-    (return)))
+    (return))
   (if (== nav/active "harness")
     (layout ui)
-    else (do
-      (var current (find_view components nav/active))
-      (if ($absent? current)
-        (do
-          (navigation_notice ui "The selected view is unavailable. Opened Classic Harness.")
-          (navigate ui "harness" "" false))
-        else (do
-          (if (!= ui/version (text current/state_version "1"))
-            (do (capture_view ui) (nav/restore current))
-            else (set ui/descriptor current))
-          (layout ui)
-          (persist_navigation ui)
-          (nav/refresh))))))
+  else
+    (var current (find_view components nav/active))
+    (if ($absent? current)
+      (navigation_notice ui "The selected view is unavailable. Opened Classic Harness.")
+      (navigate ui "harness" "" false)
+    else
+      (if (!= ui/version (text current/state_version "1"))
+        (capture_view ui)
+        (nav/restore current)
+      else
+        (set ui/descriptor current))
+      (layout ui)
+      (persist_navigation ui)
+      (nav/refresh))))
 
 (fn install_router [ui : UiClient] : Nil
   ($dom/add_event_listener ($dom/element "ui_view_picker") "change"

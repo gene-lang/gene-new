@@ -44,9 +44,10 @@
   (var kept : (List Any) [])
   (for entry in store/entries
     (if (== (text entry/session) session)
-      (do (set store/bytes (- store/bytes (integer entry/bytes)))
-          (set store/chunks (- store/chunks (integer entry/chunks))))
-      else (kept .push entry)))
+      (set store/bytes (- store/bytes (integer entry/bytes)))
+      (set store/chunks (- store/chunks (integer entry/chunks)))
+    else
+      (kept .push entry)))
   (set store/entries kept) (index_output store))
 
 (fn output_epoch [store : LiveOutput, epoch : Str] : Bool
@@ -54,9 +55,12 @@
   (for previous in store/retired (if (== previous epoch) (return false)))
   (if (!= store/epoch "") (store/retired .push store/epoch))
   (if (> store/retired/.size 32)
-    (do (var kept : (List Str) []) (var index 0)
-    (for previous in store/retired (if (> index 0) (kept .push previous)) (set index (+ index 1)))
-    (set store/retired kept)))
+    (var kept : (List Str) [])
+    (var index 0)
+    (for previous in store/retired
+      (if (> index 0) (kept .push previous))
+      (set index (+ index 1)))
+    (set store/retired kept))
   (set store/epoch epoch) (set store/entries []) (set store/index {}) (set store/bytes 0) (set store/chunks 0) (set store/notify_session "")
   true)
 
@@ -69,10 +73,14 @@
 # It cannot repair an earlier gap in a stream of deltas.
 (fn observe_output [store : LiveOutput, session : Str, kind : Str, data : Any] : Nil
   (if (== kind "snapshot")
-    (do (var records : (List Any) data/records)
+    (var records : (List Any) data/records)
     (for record in records
-      (observe_output store session (if (== (text record/phase) "command") "command" else "turn") record))
-    (return)))
+      (observe_output
+        store
+        session
+        (if (== (text record/phase) "command") "command" else "turn")
+        record))
+    (return))
   (var key "")
   (if (&& (== kind "turn")
     (|| (== (text data/phase) "turn/end") (== (text data/phase) "turn/error")))
@@ -110,35 +118,52 @@
   (var key (if (== command "") (turn_output_key session round turn) else (command_output_key session command)))
   (var entry : Any (output_entry store key))
   (if ($absent? entry)
-    (do (set entry {^key key ^session session ^text "" ^bytes 0 ^chunks 0 ^seen {}
-      ^!late ^!truncated ^!evicted ^!incomplete ^terminal (flag data/late)})
-    (store/entries .push entry) (set store/index/%key entry)))
+    (set entry
+      {
+        ^key key
+        ^session session
+        ^text ""
+        ^bytes 0
+        ^chunks 0
+        ^seen {}
+        ^!late
+        ^!truncated
+        ^!evicted
+        ^!incomplete
+        ^terminal (flag data/late)})
+    (store/entries .push entry)
+    (set store/index/%key entry))
   (if (flag entry/evicted) (return false))
   (var seen : PropMap entry/seen)
   (var replace (&& (!= command "") (flag data/cumulative)))
   (if (&& (! replace) (flag seen/%id)) (return false))
   (if (&& replace (== value (text entry/text)))
-    (do (if (&& (flag entry/incomplete) (! (flag entry/truncated)))
-      (do (set entry/incomplete false) (return true)))
-    (return false)))
+    (if (&& (flag entry/incomplete) (! (flag entry/truncated)))
+      (set entry/incomplete false)
+      (return true))
+    (return false))
   (if (flag entry/truncated) (return false))
   (set store/bytes (- store/bytes (integer entry/bytes)))
   (set store/chunks (- store/chunks (integer entry/chunks)))
   (if replace
-    (do (set entry/text "") (set entry/bytes 0) (set entry/chunks 0)
-    (set entry/seen {}) (set seen entry/seen) (set entry/incomplete false)))
+    (set entry/text "")
+    (set entry/bytes 0)
+    (set entry/chunks 0)
+    (set entry/seen {})
+    (set seen entry/seen)
+    (set entry/incomplete false))
   (var room (- (- 262144 (integer entry/bytes)) (byte_size id)))
   (var addition (if (&& (flag data/late) (! (flag entry/late))) ($to_str "\n[Late output]\n" value) else value))
   (var kept (byte_prefix addition room))
   (if (|| (<= room 0) (>= (integer entry/chunks) 8192))
     (set entry/truncated true)
-    else (do
-      (set entry/text ($to_str (text entry/text) kept))
-      (set entry/bytes (+ (+ (integer entry/bytes) (byte_size kept)) (byte_size id)))
-      (set entry/chunks (+ (integer entry/chunks) 1))
-      (set seen/%id true)
-      (if (!= kept addition) (set entry/truncated true))
-      (if (flag data/late) (set entry/late true))))
+  else
+    (set entry/text ($to_str (text entry/text) kept))
+    (set entry/bytes (+ (+ (integer entry/bytes) (byte_size kept)) (byte_size id)))
+    (set entry/chunks (+ (integer entry/chunks) 1))
+    (set seen/%id true)
+    (if (!= kept addition) (set entry/truncated true))
+    (if (flag data/late) (set entry/late true)))
   (set store/bytes (+ store/bytes (integer entry/bytes)))
   (set store/chunks (+ store/chunks (integer entry/chunks)))
   (evict_output store)
@@ -159,10 +184,18 @@
   # A shell's returned value is its captured stream. Gene expressions have
   # an independent return value, even when it happens to equal printed text.
   (if (&& (== (text command/name) "sh") ($present? command/exit))
-    (do (if_not ($absent? entry) (set result ""))
+    (if_not ($absent? entry) (set result ""))
     (var code : Int command/exit)
     (if (!= code 0)
-      (set result ($to_str result (if (== result "") "" else "\n") $"[Process exited with code ${code}.]")))))
+      (set result
+        ($to_str
+          result
+          (if (== result "")
+            ""
+          else
+            """
+""")
+          $"[Process exited with code ${code}.]"))))
   (if (== printed "") (return result))
   (if (== result "") (return printed))
   ($to_str printed (if (str/ends_with? printed "\n") "" else "\n") result))

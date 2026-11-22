@@ -823,8 +823,11 @@ const patternSource = """
   (let kind (native/record_kind bytes))
   (if (== kind 3) (panic "handler panic") else nil)
   (if (== kind 4)
-    (do (let sleeper (spawn ($sleep 1000))) (sleeper .cancel) (await sleeper))
-    else nil)
+    (let sleeper (spawn ($sleep 1000)))
+    (sleeper .cancel)
+    (await sleeper)
+  else
+    nil)
   (try
     (if (== kind 1)
       (native/settle_err index
@@ -843,11 +846,11 @@ const patternSource = """
     # outcome; await would raise it here and end the supervisor.
     ((current_sub .IoResource:wait_closed) .join)
     (if (== stopping false)
-      (do
-        (native/reenqueue)
-        (set current_sub (open_subscription))
-        (set reopened (+ reopened 1)))
-      else nil)))
+      (native/reenqueue)
+      (set current_sub (open_subscription))
+      (set reopened (+ reopened 1))
+    else
+      nil)))
 (var supervisor ((spawn (supervise)) .detach))
 """
 

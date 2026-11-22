@@ -56,8 +56,8 @@
             runtime
             (fn [request]
               (if (== request/session "slow")
-                (do (entered .set true)
-                ($sleep 5000)))
+                (entered .set true)
+                ($sleep 5000))
               "(Outcome ^^done ^reply \"done\")")))
         (try
           (create_session ^id "slow" runtime/sessions)

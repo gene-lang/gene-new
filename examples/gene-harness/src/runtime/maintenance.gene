@@ -27,8 +27,9 @@
       (return (plugin_history_page ^limit limit ^before before runtime/workspace id)))
     (if (== id "") (fail (Error ^_msg "A plugin id is required.")))
     (if (== action "revert")
-      (do (if (!= ($head revision) Int) (fail (Error ^_msg "revert requires a historical composition revision")))
-      (return (revert_entry ^expected expected runtime/workspace id revision))))
+      (if (!= ($head revision) Int)
+        (fail (Error ^_msg "revert requires a historical composition revision")))
+      (return (revert_entry ^expected expected runtime/workspace id revision)))
     (let base (composition_revision runtime/workspace))
     (let committed_revision
       (match action

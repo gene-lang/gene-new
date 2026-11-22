@@ -415,7 +415,7 @@
 
 (fn main [args] : Int
   (if (== args/1 "crash_apply")
-    (do
-      (crash_apply args/0)
-      1)
-    else (run_spec args)))
+    (crash_apply args/0)
+    1
+  else
+    (run_spec args)))

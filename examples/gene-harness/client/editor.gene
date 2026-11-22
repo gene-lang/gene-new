@@ -96,18 +96,15 @@
   (set panel/drafts/%id value)
   (var encoded ($json/stringify value))
   (if (> ($str/byte_size encoded) 262144)
-    (do
-      (storage_remove (draft_key panel id))
-      (if (! panel/storage_warned)
-        (do
-          (set panel/storage_warned true)
-          (say panel "This draft is too large to recover after a reload; it is kept in this tab only.")))
-      (return)))
+    (storage_remove (draft_key panel id))
+    (if (! panel/storage_warned)
+      (set panel/storage_warned true)
+      (say panel "This draft is too large to recover after a reload; it is kept in this tab only."))
+    (return))
   (if (! (storage_set (draft_key panel id) encoded))
     (if (! panel/storage_warned)
-      (do
-        (set panel/storage_warned true)
-        (say panel "This tab cannot store drafts; the draft is kept in memory until the page closes.")))))
+      (set panel/storage_warned true)
+      (say panel "This tab cannot store drafts; the draft is kept in memory until the page closes."))))
 
 (fn draft_delete [panel : EditorPanel, id : Str] : Nil
   (set panel/drafts/%id nil)
@@ -167,38 +164,34 @@
 (fn refresh_snapshot [panel : EditorPanel] : Nil
   (var editor : Any panel/editor)
   (if ($present? editor)
-    (do
-      (var target : Editor editor)
-      (var snap : Any (target/snapshot))
-      (set panel/snapshot snap)
-      (set panel/dirty (flag snap/dirty)))))
+    (var target : Editor editor)
+    (var snap : Any (target/snapshot))
+    (set panel/snapshot snap)
+    (set panel/dirty (flag snap/dirty))))
 
 (fn editor_event [panel : EditorPanel, event : Any] : Nil
   (var kind (string_or event/type ""))
   (if (== kind "selection")
-    (do
-      (set panel/selection event)
-      (var path (string_or event/path ""))
-      (var start (int_of event/start_utf16 0))
-      (var label ($str/join ["Selected " path " @" ($to_str start) ". Attach saved or draft."] ""))
-      (say panel
-        (if (flag event/stale)
-          "Selection is from an older draft; wait for analysis."
-          else label))))
+    (set panel/selection event)
+    (var path (string_or event/path ""))
+    (var start (int_of event/start_utf16 0))
+    (var label ($str/join ["Selected " path " @" ($to_str start) ". Attach saved or draft."] ""))
+    (say
+      panel
+      (if (flag event/stale) "Selection is from an older draft; wait for analysis." else label)))
   (if (== kind "dirty")
-    (do
-      (set panel/dirty (flag event/dirty))
-      (refresh_snapshot panel)))
+    (set panel/dirty (flag event/dirty))
+    (refresh_snapshot panel))
   (if (== kind "save")
-    (do
-      (refresh_snapshot panel)
-      (if (flag event/ok)
-        (do
-          (set panel/selection nil)
-          (say panel "Saved."))
-        else (if (flag event/conflict)
-          (say panel "Save conflict: the file changed. Compare with the saved version.")
-          else (say panel "Save failed; the draft is kept and Retry resubmits it."))))))
+    (refresh_snapshot panel)
+    (if (flag event/ok)
+      (set panel/selection nil)
+      (say panel "Saved.")
+    else
+      (if (flag event/conflict)
+        (say panel "Save conflict: the file changed. Compare with the saved version.")
+      else
+        (say panel "Save failed; the draft is kept and Retry resubmits it.")))))
 
 # ---------------------------------------------------------------------------
 # Opening and closing
@@ -214,9 +207,8 @@
   (panel/api "GET" url nil
     (fn [status : Int, data : Any] : Nil
       (if (!= status 200)
-        (do
-          (say panel (string_or data/message "The file could not be opened."))
-          (return)))
+        (say panel (string_or data/message "The file could not be opened."))
+        (return))
       (var payload : Any data/document)
       (var document
         (editor_document (string_or payload/id path)
@@ -230,11 +222,10 @@
       (set document/reason (string_or payload/reason ""))
       (var editor : Any panel/editor)
       (if ($absent? editor)
-        (set panel/editor (mount_editor panel/editor_root document
-                                        (editor_services panel)))
-        else (do
-          (var target : Editor editor)
-          (target/open document)))
+        (set panel/editor (mount_editor panel/editor_root document (editor_services panel)))
+      else
+        (var target : Editor editor)
+        (target/open document))
       (var observed (editor_of panel))
       (var snap : Any (observed/snapshot))
       (set panel/snapshot snap)
@@ -243,9 +234,8 @@
       (var shown_name (string_or payload/name path))
       ($dom/set_text panel/title $"Gene editor · ${shown_name}")
       (if (> first 0)
-        (do
-          (var shown (editor_of panel))
-          (shown/reveal {^line first ^end_line last})))
+        (var shown (editor_of panel))
+        (shown/reveal {^line first ^end_line last}))
       (var shown_revision (string_or payload/revision ""))
       (say panel
         (if (flag payload/readonly)
@@ -256,12 +246,12 @@
                  ^from first : Int = 0, ^to last : Int = 0] : Nil
   (var chosen (if (== path "") (string_or panel/path "") else path))
   (if (== chosen "")
-    (do (say panel "Choose a workspace file to open.") (return)))
+    (say panel "Choose a workspace file to open.")
+    (return))
   (if (! panel/available)
-    (do
-      (set panel/panel/hidden false)
-      (say panel "Editor unavailable — enable the editor plugin to open files.")
-      (return)))
+    (set panel/panel/hidden false)
+    (say panel "Editor unavailable — enable the editor plugin to open files.")
+    (return))
   (set panel/panel/hidden false)
   (set_tab panel "source")
   (stop_log_polling panel)
@@ -274,15 +264,13 @@
 (fn close_editor [panel : EditorPanel] : Nil
   (var editor : Any panel/editor)
   (if ($present? editor)
-    (do
-      (var target : Editor editor)
-      (target/dispose)))
+    (var target : Editor editor)
+    (target/dispose))
   (set panel/editor nil)
   (var log_editor : Any panel/log_editor)
   (if ($present? log_editor)
-    (do
-      (var log_target : Editor log_editor)
-      (log_target/dispose)))
+    (var log_target : Editor log_editor)
+    (log_target/dispose))
   (set panel/log_editor nil)
   (stop_log_polling panel)
   (set panel/log_cursor "")
@@ -304,10 +292,12 @@
 (fn attach_draft [panel : EditorPanel] : Nil
   (var selection : Any panel/selection)
   (if ($absent? selection)
-    (do (say panel "Select a form in the editor first.") (return)))
+    (say panel "Select a form in the editor first.")
+    (return))
   (var source (selection_text selection))
   (if (== source "")
-    (do (say panel "The selection is not from the analyzed buffer yet; wait for analysis.") (return)))
+    (say panel "The selection is not from the analyzed buffer yet; wait for analysis.")
+    (return))
   (var path (if (== (string_or selection/path "") "") panel/path
     else (string_or panel/path "")))
   (var start (int_of selection/start_byte 0))
@@ -320,28 +310,27 @@
 (fn attach_saved [panel : EditorPanel] : Nil
   (var selection : Any panel/selection)
   (if ($absent? selection)
-    (do (say panel "Select a form in the editor first.") (return)))
+    (say panel "Select a form in the editor first.")
+    (return))
   (if panel/dirty
-    (do
-      (say panel "The buffer has unsaved edits; use Attach draft to share exactly what is on screen.")
-      (return)))
+    (say panel "The buffer has unsaved edits; use Attach draft to share exactly what is on screen.")
+    (return))
   (var path (string_or panel/path ""))
   (var revision (string_or selection/revision ""))
   (var start (int_of selection/start_byte 0))
   (var finish (int_of selection/end_byte start))
   (if (== path "")
-    (do (say panel "Open a file first.") (return)))
+    (say panel "Open a file first.")
+    (return))
   (panel/api "POST" $"${(api_root)}/p/editor/selection"
     {^path path ^revision revision ^start_byte start ^end_byte finish}
     (fn [status : Int, data : Any] : Nil
       (if (!= status 200)
-        (do
-          (say panel (string_or data/message "The selection could not be verified."))
-          (return)))
+        (say panel (string_or data/message "The selection could not be verified."))
+        (return))
       (if (flag data/changed)
-        (do
-          (say panel "The saved file changed since this selection; reopen it and select again.")
-          (return)))
+        (say panel "The saved file changed since this selection; reopen it and select again.")
+        (return))
       (var source (string_or data/text ""))
       (panel/stage
         (selection_prompt path (string_or data/revision revision) start finish
@@ -384,12 +373,12 @@
               ($absent? panel/log_editor))
         (return))
       (if (!= status 200)
-        (do
-          (say panel (string_or data/message "The host log could not be read."))
-          ($time/after 3000.0
-            (fn [] : Nil
-              (if (== generation panel/log_generation) (poll_log panel))))
-          (return)))
+        (say panel (string_or data/message "The host log could not be read."))
+        ($time/after
+          3000.0
+          (fn [] : Nil
+            (if (== generation panel/log_generation) (poll_log panel))))
+        (return))
       (var lines : (List Str) [])
       (var raw_lines : Any data/lines)
       (if ($present? raw_lines) (set lines raw_lines))
@@ -413,15 +402,13 @@
 (fn show_logs [panel : EditorPanel] : Nil
   (set_tab panel "logs")
   (if (! panel/available)
-    (do (say panel "Editor unavailable — enable the editor plugin to read logs.")
-        (stop_log_polling panel)
-        (return)))
+    (say panel "Editor unavailable — enable the editor plugin to read logs.")
+    (stop_log_polling panel)
+    (return))
   (if ($absent? panel/log_editor)
-    (do
-      (var document (editor_document "host.log" "Host log" ""))
-      (set document/kind "log")
-      (set panel/log_editor
-        (mount_editor panel/log_root document (editor_services panel)))))
+    (var document (editor_document "host.log" "Host log" ""))
+    (set document/kind "log")
+    (set panel/log_editor (mount_editor panel/log_root document (editor_services panel))))
   (set panel/log_generation (+ panel/log_generation 1))
   (say panel "Reading Harness host log…")
   (poll_log panel))
@@ -434,11 +421,13 @@
 
 (fn attach_log [panel : EditorPanel] : Nil
   (if ($absent? panel/log_editor)
-    (do (say panel "Open the Logs tab first.") (return)))
+    (say panel "Open the Logs tab first.")
+    (return))
   (var log_target (log_editor_of panel))
   (var body (log_target/log_text))
   (if (== body "")
-    (do (say panel "No log lines are loaded yet.") (return)))
+    (say panel "No log lines are loaded yet.")
+    (return))
   (var lines (str/split body "\n"))
   (var count ($size lines))
   (var kept : (List Str) [])
@@ -451,10 +440,10 @@
     (var cost (+ ($str/byte_size line) 1))
     (if (|| (>= (- count index) 80) (> (+ total cost) 16384))
       (set done true)
-      else (do
-        (set total (+ total cost))
-        (set first index)
-        (set index (- index 1)))))
+    else
+      (set total (+ total cost))
+      (set first index)
+      (set index (- index 1))))
   (var selected : (List Str) [])
   (set index first)
   (while (< index count)
@@ -483,20 +472,17 @@
   (set panel/state state)
   (if changed
     (if available
-      (do
-        (var editor : Any panel/editor)
-        (if ($present? editor)
-          (do
-            (var target : Editor editor)
-            (target/refresh)))
-        (if (== panel/mode "logs")
-          (do
-            (set panel/log_generation (+ panel/log_generation 1))
-            (poll_log panel)))
-        (say panel "Editor available."))
-      else (do
-        (stop_log_polling panel)
-        (say panel "Editor unavailable — the editor plugin is disabled. The draft is kept."))))
+      (var editor : Any panel/editor)
+      (if ($present? editor)
+        (var target : Editor editor)
+        (target/refresh))
+      (if (== panel/mode "logs")
+        (set panel/log_generation (+ panel/log_generation 1))
+        (poll_log panel))
+      (say panel "Editor available.")
+    else
+      (stop_log_polling panel)
+      (say panel "Editor unavailable — the editor plugin is disabled. The draft is kept.")))
   changed)
 
 (fn editor_available? [panel : EditorPanel] : Bool
@@ -554,9 +540,8 @@
   ($dom/add_event_listener panel/path_input "keydown"
     (fn [event : Any] : Nil
       (if (== (string_or ($event/key event) "") "Enter")
-        (do
-          ($dom/prevent_default event)
-          (open_editor panel (string_or ($dom/input_value panel/path_input) ""))))))
+        ($dom/prevent_default event)
+        (open_editor panel (string_or ($dom/input_value panel/path_input) "")))))
   ($dom/add_event_listener panel/close_button "click"
     (fn [event : Any] : Nil (close_editor panel)))
   ($dom/add_event_listener panel/attach "click"

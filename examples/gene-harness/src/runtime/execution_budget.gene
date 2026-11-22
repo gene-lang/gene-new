@@ -47,8 +47,8 @@
   (let finalizers (if (== scope/kind "response") scope/origin/finalizers/.get else []))
   (scope_gate (fn []
     (if (== scope/kind "response")
-      (do (scope/origin/active .set false)
-      (scope/origin/finalizers .set [])))
+      (scope/origin/active .set false)
+      (scope/origin/finalizers .set []))
     (scopes .set ($filter scopes/.get (fn [item]
       (if (== scope/kind "response")
         (! (same? item/origin scope/origin))

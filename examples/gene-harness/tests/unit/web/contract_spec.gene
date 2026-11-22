@@ -9,12 +9,15 @@
     (if (== info/kind "directory")
       (check_wire_literals path)
       else (if (&& ($str/ends_with? name ".gene") (!= path ($path/join this_pkg/root "src/web/contract.gene")))
-        (do (let source ($fs/read_text path))
-          (for version in ($regex/find_all #"(?:https?://[^/\" ]+)?/api/v[0-9]+" source)
-            (let url version/text)
-            ($assert (|| ($str/starts_with? url "https://") ($str/starts_with? url "http://"))
-              $"API version literal outside contract: ${path}"))
-          ($assert (! ($str/contains? source "gene-harness-voice.")) $"Voice protocol literal outside contract: ${path}"))))))
+             (let source ($fs/read_text path))
+             (for version in ($regex/find_all #"(?:https?://[^/\" ]+)?/api/v[0-9]+" source)
+               (let url version/text)
+               ($assert
+                 (|| ($str/starts_with? url "https://") ($str/starts_with? url "http://"))
+                 $"API version literal outside contract: ${path}"))
+             ($assert
+               (! ($str/contains? source "gene-harness-voice."))
+               $"Voice protocol literal outside contract: ${path}")))))
 
 (describe "Shared wire contract"
   (it "keeps paths and protocol spellings together across both module graphs" []

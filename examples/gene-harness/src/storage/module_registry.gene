@@ -104,17 +104,16 @@
     # including its reader locations. Keep such explicitly referenced spellings
     # valid while also accepting location-independent canonical imports.
     (let original ($to_str parsed))
-    (if (&& (!= original canonical)
-                (requested .contains? $"./${(sha256 original)}.gene"))
-      (do (if (> (byte_size original) 262144)
+    (if (&& (!= original canonical) (requested .contains? $"./${(sha256 original)}.gene"))
+      (if (> (byte_size original) 262144)
         (fail (CompositionError ^_msg "generated module exceeds 262144 bytes")))
-      (texts .push original))))
+      (texts .push original)))
   texts)
 
 (fn relative_import_digest [path : Str]
   (if (&& (starts_with? path "./") (ends_with? path ".gene"))
-    (do (var hex (slice_bytes path 2 (- (byte_size path) 7)))
-    (if (== (byte_size hex) 64) $"sha256:${hex}"))))
+    (var hex (slice_bytes path 2 (- (byte_size path) 7)))
+    (if (== (byte_size hex) 64) $"sha256:${hex}")))
 
 (fn validate_source_imports [source, closure]
   (var i 1)
@@ -122,13 +121,13 @@
     (var form source/.body/%i)
     (var kind ($to_str ($head form)))
     (if (["import" "import_impl"] .contains? kind)
-      (do (var path form/from)
+      (var path form/from)
       (if (== ($head path) Str)
         (if_not (sdk_import? path)
           (var digest (relative_import_digest path))
           (if (|| ($absent? digest) (! (closure .contains? digest)))
             (fail
-              (CompositionError ^_msg $"generated import is outside its dependency closure: ${path}")))))))
+              (CompositionError ^_msg $"generated import is outside its dependency closure: ${path}"))))))
     (set i (+ i 1)))
   source)
 

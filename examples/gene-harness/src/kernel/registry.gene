@@ -49,19 +49,18 @@
 (fn registry [h : Harness, name : Str, ^unique unique : Bool = false, ^ordered ordered : Bool = false,
   ^schema schema = nil, ^on_remove on_remove = nil, ^owner owner : Str = "core", ^spec spec = nil] : Registry
   (if (queue_registry_change? h)
-    (do (let placeholder
-        (Registry ^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove
-          ^owner owner ^rows ($cell []) ^spec (?? spec {}) ^revision "queued"))
-      (queue_composition_change
-        h/snapshots
-        {
-          ^id owner
-          ^kind "registry"
-          ^apply (fn []
-                   (registry ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner ^spec spec
-                     h
-                     name))})
-      (return placeholder)))
+    (let placeholder
+      (Registry ^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner ^rows ($cell []) ^spec (?? spec {}) ^revision "queued"))
+    (queue_composition_change
+      h/snapshots
+      {
+        ^id owner
+        ^kind "registry"
+        ^apply (fn []
+                 (registry ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove ^owner owner ^spec spec
+                   h
+                   name))})
+    (return placeholder))
   (if (serialize_registry_change? h)
     (return
       (registry_change
@@ -209,8 +208,8 @@
     (var inserted false)
     (for current in r/rows/.get
       (if (&& (! inserted) (registry_row_before? record current))
-        (do (next .push record)
-        (set inserted true)))
+        (next .push record)
+        (set inserted true))
       (next .push current))
     (if_not inserted (next .push record))
     (r/rows .set next))))
@@ -224,8 +223,8 @@
       ($present? context/publication)
       context/publication/.get))
   (if (&& ($present? h/snapshots) (! candidate))
-    (do (let snapshot (current_snapshot h/snapshots))
-      (return snapshot/registries)))
+    (let snapshot (current_snapshot h/snapshots))
+    (return snapshot/registries))
   nil)
 
 (fn registry_row_records [h : Harness, registry_name : Str]
@@ -298,14 +297,14 @@
   (var record (row_index .get row_id))
   (if ($absent? record) (return false))
   (if (queue_registry_change? h)
-    (do (queue_composition_change
-        h/snapshots
-        {
-          ^id record/owner
-          ^kind "removal"
-          ^apply (fn []
-                   (remove_registry_row ^cleanup cleanup h row_id))})
-      (return true)))
+    (queue_composition_change
+      h/snapshots
+      {
+        ^id record/owner
+        ^kind "removal"
+        ^apply (fn []
+                 (remove_registry_row ^cleanup cleanup h row_id))})
+    (return true))
   (if (serialize_registry_change? h)
     (return (registry_change h (fn [] (remove_registry_row ^cleanup cleanup h row_id)))))
   (var r (registry_named h record/registry))
@@ -319,9 +318,8 @@
   (ledger_forget h record/owner row_id)
   (if_not ($absent? h/registry_observer) (h/registry_observer record/registry record/key))
   (if cleanup
-    (do (if_not ($absent? record/cleanup_state) (record/cleanup_state .set false))
-    (if_not ($absent? r/on_remove)
-      (r/on_remove r/owner_context record/payload))))
+    (if_not ($absent? record/cleanup_state) (record/cleanup_state .set false))
+    (if_not ($absent? r/on_remove) (r/on_remove r/owner_context record/payload)))
   (publish_direct_registry_change h)
   true)
 
@@ -332,9 +330,18 @@
    ^config_order config_order : Int = 0,
    ^replace replace : Bool = false] : Str
   (if (queue_registry_change? h)
-    (do (queue_composition_change h/snapshots {^id owner ^kind "contribution"
-        ^apply (fn [] (contribute h owner registry_name payload ^key key ^priority priority ^config_order config_order ^replace replace))})
-      (return $"queued:${owner}:${registry_name}")))
+    (queue_composition_change
+      h/snapshots
+      {
+        ^id owner
+        ^kind "contribution"
+        ^apply (fn []
+                 (contribute ^key key ^priority priority ^config_order config_order ^replace replace
+                   h
+                   owner
+                   registry_name
+                   payload))})
+    (return $"queued:${owner}:${registry_name}"))
   (if (serialize_registry_change? h)
     (return (registry_change h (fn [] (contribute h owner registry_name payload ^key key ^priority priority ^config_order config_order ^replace replace)))))
 
@@ -467,10 +474,10 @@
 
 (fn remove_owner [h : Harness, owner : Str]
   (if (queue_registry_change? h)
-    (do (queue_composition_change
-        h/snapshots
-        {^id owner ^kind "removal" ^apply (fn [] (remove_owner h owner))})
-      (return [])))
+    (queue_composition_change
+      h/snapshots
+      {^id owner ^kind "removal" ^apply (fn [] (remove_owner h owner))})
+    (return []))
   (if (serialize_registry_change? h) (return (registry_change h (fn [] (remove_owner h owner)))))
   (var ledger h/ledger/.get)
   (var owned (?? (ledger .get owner) (fresh_list)))
@@ -496,10 +503,10 @@
   (var r (registry_named h name))
   (if (== r/owner "core") (fail (HarnessError ^_msg $"core registry ${name} cannot be removed")))
   (if (queue_registry_change? h)
-    (do (queue_composition_change
-        h/snapshots
-        {^id r/owner ^kind "removal" ^apply (fn [] (remove_registry h name))})
-      (return [])))
+    (queue_composition_change
+      h/snapshots
+      {^id r/owner ^kind "removal" ^apply (fn [] (remove_registry h name))})
+    (return []))
   (if (serialize_registry_change? h) (return (registry_change h (fn [] (remove_registry h name)))))
   (var errors (fresh_list))
   (var records (copy_list r/rows/.get))
@@ -524,12 +531,13 @@
 # need no registry draft and an unchanged plugin stays live across them.
 (fn cleanup_registry_context [h : Harness, thunk]
   (if h/composer/.Composer:publishing?
-    (do
-      (let publication ($cell true))
-      (try
-        ($runtime/with_context {^composition h/snapshots ^publication publication} thunk)
-      ensure (publication .set false)))
-    else (registry_change h thunk)))
+    (let publication ($cell true))
+    (try
+      ($runtime/with_context {^composition h/snapshots ^publication publication} thunk)
+    ensure
+      (publication .set false))
+  else
+    (registry_change h thunk)))
 
 (fn ^^private policy_for_owner [h : Harness, owner : Str]
   (var policy (h/plugin_policies .get; .get owner))

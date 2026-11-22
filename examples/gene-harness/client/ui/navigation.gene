@@ -18,9 +18,9 @@
   (var explicit (nav_text settings/default_view))
   (if (!= explicit "") (return explicit))
   (if (== (nav_text settings/layout) "panel")
-    (do (var panel (nav_text settings/panel))
+    (var panel (nav_text settings/panel))
     (if (!= panel "") (return panel))
-    (if (> views/.size 0) (return (nav_text views/0/name)))))
+    (if (> views/.size 0) (return (nav_text views/0/name))))
   "harness")
 
 (fn initial_view [views : (List Any), settings : Any, saved : Any, url_view : Str] : Str

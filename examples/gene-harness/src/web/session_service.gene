@@ -274,26 +274,22 @@
   (let record (event_record session event))
   (let cache service/browser_requests/.get)
   (let prior (cache .get session))
-  (if (&& (== record/role "user")
-    (> (?? record/for_turn 0) 0) ($present? record/initiator)
-    (! ($str/starts_with? (?? record/initiator "") "continue:")))
-    (do (record .put "speaker" (initiating_label nil record))
+  (if (&& (== record/role "user") (> (?? record/for_turn 0) 0) ($present? record/initiator) (! ($str/starts_with? (?? record/initiator "") "continue:")))
+    (record .put "speaker" (initiating_label nil record))
     (cache .put session record)
-    (return record)))
+    (return record))
   (let receiver (?? record/for_turn 0))
   (if (> receiver 0)
-    (do (if (== record/at_limit true) (return nil))
-    (let same_owner (&& (== prior/round_id record/round_id) (== prior/turn receiver)
-      (== prior/role "assistant")))
+    (if (== record/at_limit true) (return nil))
+    (let same_owner
+      (&& (== prior/round_id record/round_id) (== prior/turn receiver) (== prior/role "assistant")))
     # Current writers declare their receiving turn and combination. Keep only
     # the latest live request per active session; cold appends rebuild
     # provenance once from the durable stream.
-    (if (&& ($present? prior) (== prior/round_id record/round_id)
-      (> event/seq ($parse/parse_int prior/seq))
-      (|| (== record/combine "replace") (&& (== record/combine "append") same_owner)))
-      (do (let projected (project_request record receiver (if same_owner prior else nil)))
+    (if (&& ($present? prior) (== prior/round_id record/round_id) (> event/seq ($parse/parse_int prior/seq)) (|| (== record/combine "replace") (&& (== record/combine "append") same_owner)))
+      (let projected (project_request record receiver (if same_owner prior else nil)))
       (cache .put session projected)
-      (return projected)))))
+      (return projected)))
   (let records [])
   (for source in (events_for service/runtime/events "session" session)
     (if (["turn/request" "turn/start" "turn/end"] .contains? source/type)
@@ -302,24 +298,25 @@
   (let projected (project_conversation records rounds/receipts))
   (let id $"${session}/${event/seq}")
   (for record in projected
-    (if (|| (== record/id id)
-      (&& ($present? record/source_ids) (record/source_ids .contains? id)))
-      (do (cache .put session record) (return record))))
+    (if (|| (== record/id id) (&& ($present? record/source_ids) (record/source_ids .contains? id)))
+      (cache .put session record)
+      (return record)))
   nil)
 
 (fn publish_transcript [service, session : Str, event]
   (let kind event/type)
   (if (&& (== kind "reply") (== event/payload/synthetic true))
-    (do (queue_snapshot service session) (return nil)))
+    (queue_snapshot service session)
+    (return nil))
   (if (== kind "delegation/state")
-    (do (let data event/payload/state/record)
+    (let data event/payload/state/record)
     (if_not ($absent? data)
       (if (== data/created_seq 0) (data .put "created_seq" event/seq))
       (publish_message service "delegation" session (delegation_block session data)))
-    (queue_snapshot service session)))
+    (queue_snapshot service session))
   (if (== kind "turn/request")
-    (do (let request (browser_request service session event))
-      (if_not ($absent? request) (publish_message service "turn" session request))))
+    (let request (browser_request service session event))
+    (if_not ($absent? request) (publish_message service "turn" session request)))
   (if (["turn/response" "turn/start" "turn/end" "turn/patch"] .contains? kind)
     (publish_message service "turn" session (event_record session event)))
   (if (["reply" "console"] .contains? kind)
@@ -435,9 +432,9 @@
       (queue_snapshot service changed/session)
     when (changed : SessionChanged)
       (if (== changed/record/deleted true)
-        (do (let versions service/snapshot_versions/.get)
-          (versions .put changed/record/id (+ (?? (versions .get changed/record/id) 0) 1))
-          (publish_message service "session/deleted" "" {^id changed/record/id})))
+        (let versions service/snapshot_versions/.get)
+        (versions .put changed/record/id (+ (?? (versions .get changed/record/id) 0) 1))
+        (publish_message service "session/deleted" "" {^id changed/record/id}))
       (publish_message service "session/list" "" (list_sessions service))
       (publish_message
         service
@@ -448,8 +445,8 @@
       (let record changed/record)
       (let session changed/session)
       (if (== record/ui_action true)
-        (do (publish_message service "ui/action" "" {^session session ^record record})
-        (return nil)))
+        (publish_message service "ui/action" "" {^session session ^record record})
+        (return nil))
       (if ($present? record/raw)
         (publish_message service "turn" session (command_input_record session record)))
       (if ($present? record/text)
@@ -561,12 +558,11 @@
     (if (>= results/.size limit) (break))
     (let shown (public_session_index record))
     (shown .put "slack_available" slack_available)
-    (if (&& (== q "") ($absent? kind) ($absent? status) ($absent? attention)
-                ($absent? trigger) (== since "") (== until ""))
-      (do (let children [])
+    (if (&& (== q "") ($absent? kind) ($absent? status) ($absent? attention) ($absent? trigger) (== since "") (== until ""))
+      (let children [])
       (for child in (session_records ^kind "child" service/runtime/sessions)
         (if (== child/parent/session record/id) (children .push (public_session_index child))))
-      (shown .put "children" children)))
+      (shown .put "children" children))
     (results .push shown))
   {^sessions results ^needs_attention ($map (session_records ^^attention service/runtime/sessions) public_session_index) ^next ""})
 
@@ -679,8 +675,9 @@
 (fn request_receipt [service, session : Str, request_id : Str, kind : Str]
   (require_record service/runtime/sessions session)
   (if (== kind "command")
-    (do (let result (command_request_receipt service/runtime/services/values/commands session request_id))
-    (if_not ($absent? result) (return result))))
+    (let result
+      (command_request_receipt service/runtime/services/values/commands session request_id))
+    (if_not ($absent? result) (return result)))
   (if (== kind "round")
     (for record in ((Path "receipts") (round_state service/runtime/services/values/controller session))
       (if (== record/request_id request_id) (return (public_round service session record)))))
@@ -692,21 +689,32 @@
   (if ($absent? source) (return nil))
   (let result ($thaw ($freeze source)))
   (if (continuable_round? result)
-    (do (let current (/round (load_session service/runtime/sessions session)))
-    (let successor (if ($present? source/continued_by)
-      (round_receipt service/runtime/services/values/controller session source/continued_by)
-      else nil))
-    (var available (&& (== (/id current/.get) source/id)
-      (|| ($absent? source/continued_by)
+    (let current ((Path "round") (load_session service/runtime/sessions session)))
+    (let successor
+      (if ($present? source/continued_by)
+        (round_receipt service/runtime/services/values/controller session source/continued_by)
+      else
+        nil))
+    (var available
+      (&&
+        (== ((Path "id") current/.get) source/id)
+        (||
+          ($absent? source/continued_by)
           (&& (== source/continuation_stop "failed") ($absent? successor)))
-      (|| ($absent? source/continuation_stop) (== source/continuation_stop "failed"))))
+        (|| ($absent? source/continuation_stop) (== source/continuation_stop "failed"))))
     (if available
-      (do (let tail (pending_request service/runtime session))
+      (let tail (pending_request service/runtime session))
       (let reference (?? source/continuation/items_ref source/request_items_ref))
-      (set available (&& ($present? reference) (== tail/round source/id)
-        (== tail/turn source/last_turn)
-        (try (== ($head ($serde/read_data (read_body service/runtime reference))) List) catch Error false)))))
-    (result .put "resumable" available)))
+      (set available
+        (&&
+          ($present? reference)
+          (== tail/round source/id)
+          (== tail/turn source/last_turn)
+          (try
+            (== ($head ($serde/read_data (read_body service/runtime reference))) List)
+          catch Error
+            false))))
+    (result .put "resumable" available))
   result)
 
 (fn receipt [service, session : Str, id : Str]
@@ -747,35 +755,60 @@
     (if (&& console (>= after 0) (<= event/seq after)) (continue))
     (if (&& console (>= before 0) (>= event/seq before)) (continue))
     (if (&& (== event/type "delegation/state") ($present? event/payload/state/summary))
-      (do (let state event/payload/state)
+      (let state event/payload/state)
       (records .push
-        {^id $"${id}/delegation-update/${event/seq}" ^seq ($to_str event/seq)
-         ^round_id state/round ^turn state/turn ^role "assistant"
-         ^phase "delegation/update" ^kind "delegation/update" ^text state/summary
-         ^order state/at_ms ^^durable})))
+        {
+          ^id $"${id}/delegation-update/${event/seq}"
+          ^seq ($to_str event/seq)
+          ^round_id state/round
+          ^turn state/turn
+          ^role "assistant"
+          ^phase "delegation/update"
+          ^kind "delegation/update"
+          ^text state/summary
+          ^order state/at_ms
+          ^^durable}))
     (if (|| (["turn/response" "turn/request" "turn/patch" "reply"] .contains? event/type) (&& console (== event/type "console")) (&& (! console) (["turn/start" "turn/end"] .contains? event/type)) (&& (== event/type "turn/end") ($present? event/payload/text)))
       (records .push (event_record id event)))
     # A later definition of a card shows a short line where it happened.
     (if (== event/type "card/state")
-      (do (let card event/payload/state)
+      (let card event/payload/state)
       (if (&& ($present? card) (== card/origin "model") (!= card/updated_turn card/turn))
         (records .push
-          {^id $"${id}/card-update/${card/id}/${card/definition_revision}" ^seq ($to_str event/seq)
-           ^round_id (?? card/round "") ^turn card/updated_turn ^role "assistant"
-           ^phase "card/update" ^kind "card/update" ^text card/title ^card_id card/id
-           ^order (?? card/updated_ms event/seq) ^^durable}))))
+          {
+            ^id $"${id}/card-update/${card/id}/${card/definition_revision}"
+            ^seq ($to_str event/seq)
+            ^round_id (?? card/round "")
+            ^turn card/updated_turn
+            ^role "assistant"
+            ^phase "card/update"
+            ^kind "card/update"
+            ^text card/title
+            ^card_id card/id
+            ^order (?? card/updated_ms event/seq)
+            ^^durable})))
     # Answered questions with views stay in the transcript, read-only.
     (if (== event/type "question/answered")
-      (do (let batch event/payload/state)
+      (let batch event/payload/state)
       (if (&& ($present? batch) (question_view? batch))
         (records .push
-          {^id $"${id}/questions/${batch/id}" ^seq ($to_str event/seq)
-           ^round_id (?? batch/round "") ^turn (?? batch/turn 0) ^role "assistant"
-           ^phase "questions" ^kind "questions" ^text ""
-           ^batch {^id batch/id ^questions batch/questions ^answers batch/answers
-                   ^answer_source (?? batch/answer_source nil)
-                   ^intent (?? batch/intent "continue")}
-           ^order (?? batch/answered_ms event/seq) ^^durable})))))
+          {
+            ^id $"${id}/questions/${batch/id}"
+            ^seq ($to_str event/seq)
+            ^round_id (?? batch/round "")
+            ^turn (?? batch/turn 0)
+            ^role "assistant"
+            ^phase "questions"
+            ^kind "questions"
+            ^text ""
+            ^batch {
+                     ^id batch/id
+                     ^questions batch/questions
+                     ^answers batch/answers
+                     ^answer_source (?? batch/answer_source nil)
+                     ^intent (?? batch/intent "continue")}
+            ^order (?? batch/answered_ms event/seq)
+            ^^durable}))))
   (for card in (card_records service/runtime id)
     (let seq (?? card/created_seq 0))
     (if (&& (>= after 0) (<= seq after)) (continue))

@@ -47,18 +47,21 @@
     (fn [code : Int, data : Any] : Nil
       (set menu/pending false)
       (if (== code accepted)
-        (do
-          (if (== method "DELETE")
-            (do
-              (if (== generation menu/generation) (close_session_menu menu))
-              (var ids : (List Any) data/deleted) (menu/deleted ids))
-            else (do (menu/updated data)
-              (if (== generation menu/generation) (close_session_menu menu true)))))
-        else (do
-          (if (== generation menu/generation)
-            (do (for control in controls (set control/disabled false))
-            (if (== menu/phase "menu") (update_share_action menu menu/session))
-            ($dom/set_text menu/error (text data/message "The conversation could not be updated. Try again.")))))))))
+        (if (== method "DELETE")
+          (if (== generation menu/generation) (close_session_menu menu))
+          (var ids : (List Any) data/deleted)
+          (menu/deleted ids)
+        else
+          (menu/updated data)
+          (if (== generation menu/generation) (close_session_menu menu true)))
+      else
+        (if (== generation menu/generation)
+          (for control in controls
+            (set control/disabled false))
+          (if (== menu/phase "menu") (update_share_action menu menu/session))
+          ($dom/set_text
+            menu/error
+            (text data/message "The conversation could not be updated. Try again.")))))))
 
 (fn update_share_action [menu : SessionMenu, session : Any] : Nil
   (var share : EventTarget menu/share)
@@ -100,7 +103,8 @@
 (fn open_session_menu [menu : SessionMenu, anchor : EventTarget, session : Any] : Nil
   (if menu/pending (return))
   (if (&& (! menu/panel/hidden) (== (text menu/session/id) (text session/id)))
-    (do (close_session_menu menu) (return)))
+    (close_session_menu menu)
+    (return))
   (close_session_menu menu)
   (set menu/generation (+ menu/generation 1))
   (set menu/session session) (set menu/anchor anchor) (set menu/phase "menu")
@@ -131,13 +135,13 @@
 
 (fn bind_session_menu [menu : SessionMenu, anchor : EventTarget, session : Any] : Nil
   (if (&& (! menu/panel/hidden) (== (text menu/session/id) (text session/id)))
-    (do (set menu/anchor anchor)
+    (set menu/anchor anchor)
     (if (!= menu/phase "delete") (set menu/session session))
     (if (== menu/phase "menu")
-      (do (update_share_action menu session)
+      (update_share_action menu session)
       (var pin : EventTarget menu/pin)
-      ($dom/set_text pin (if (flag session/pinned) "Unpin" else "Pin"))))
-    ($dom/set_attribute anchor "aria-expanded" "true"))))
+      ($dom/set_text pin (if (flag session/pinned) "Unpin" else "Pin")))
+    ($dom/set_attribute anchor "aria-expanded" "true")))
 
 (fn finish_session_menu_render [menu : SessionMenu] : Nil
   (if ($absent? menu/anchor) (close_session_menu menu) else (position_session_menu menu)))
@@ -153,7 +157,9 @@
   (var dismiss : (Fn [Any] Nil) (fn [event : Any] : Nil
     (if panel/hidden (return))
     (var target : EventTarget event/target)
-    (if (== target ($dom/window)) (do (close_session_menu menu) (return)))
+    (if (== target ($dom/window))
+      (close_session_menu menu)
+      (return))
     (var anchor : EventTarget menu/anchor)
     (if (&& (! ($dom/contains? panel target)) (! ($dom/contains? anchor target)))
       (close_session_menu menu))))
@@ -163,18 +169,24 @@
     (if panel/hidden (return))
     (var key ($event/key event))
     (if (== key "Escape")
-      (do ($dom/prevent_default event) (close_session_menu menu true) (return)))
+      ($dom/prevent_default event)
+      (close_session_menu menu true)
+      (return))
     (if (&& (== key "Tab") (== menu/phase "menu"))
-      (do (close_session_menu menu true) (return)))
+      (close_session_menu menu true)
+      (return))
     (if (&& (== menu/phase "menu") (|| (== key "ArrowDown") (== key "ArrowUp")))
-      (do ($dom/prevent_default event)
-      (var choices ($dom/focusables panel)) (var index -1) (var at 0)
+      ($dom/prevent_default event)
+      (var choices ($dom/focusables panel))
+      (var index -1)
+      (var at 0)
       (for control in choices
-        (if (== control ($dom/active_element)) (set index at)) (set at (+ at 1)))
+        (if (== control ($dom/active_element)) (set index at))
+        (set at (+ at 1)))
       (var next (+ index (if (== key "ArrowDown") 1 else -1)))
       (if (< next 0) (set next (- choices/.size 1)))
       (if (>= next choices/.size) (set next 0))
-      (if (> choices/.size 0) ($dom/focus choices/%next))))))
+      (if (> choices/.size 0) ($dom/focus choices/%next)))))
   ($dom/add_event_listener ($dom/window) "resize" (fn [event : Any] : Nil (position_session_menu menu)))
   ($dom/add_event_listener ^^capture ($dom/window) "scroll" (fn [event : Any] : Nil (position_session_menu menu)))
   menu)

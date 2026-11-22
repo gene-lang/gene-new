@@ -53,14 +53,16 @@
 (fn evaluate_shell [sessions, ctx]
   (var state (sessions/.get .get ctx/session))
   (if ($absent? state)
-    (do (let input ($io/pipe))
+    (let input ($io/pipe))
     (let channel ($channel ^capacity 128))
     # A non-interactive POSIX shell keeps cwd and bindings between inputs.
     # Each eval receives EOF on stdin so programs cannot consume the protocol.
-    (let process ($os/exec_stream_async "/bin/sh" "-s" ^dir ctx/runtime/root
-      ^stdin_pipe input/0 ^stdout_chan channel ^^merge_stderr ^max_bytes 1048576))
+    (let process
+      ($os/exec_stream_async ^dir ctx/runtime/root ^stdin_pipe input/0 ^stdout_chan channel ^^merge_stderr ^max_bytes 1048576
+        "/bin/sh"
+        "-s"))
     (set state {^input input ^channel channel ^process process})
-    (sessions/.get .put ctx/session state)))
+    (sessions/.get .put ctx/session state))
   (let token ($crypto/random_hex 16))
   (let marker $"__gene_harness_${token}:")
   (let status_name $"__gene_harness_status_${token}")
@@ -78,13 +80,17 @@
     (loop
       (let line state/channel/.recv)
       (if ($str/starts_with? line marker)
-        (do (let code ($parse/parse_int ($str/slice_bytes line ($str/byte_size marker)
-          (- ($str/byte_size line) ($str/byte_size marker)))))
+        (let code
+          ($parse/parse_int
+            ($str/slice_bytes
+              line
+              ($str/byte_size marker)
+              (- ($str/byte_size line) ($str/byte_size marker)))))
         (set complete true)
         # The protocol contributes the delimiter before its marker. Delimiters
         # between earlier lines belong to the command's output.
-        (return (CommandResult ^display (shell_display parts truncated)
-          ^status (if (== code 0) "done" else "failed") ^exit code ^!attached))))
+        (return
+          (CommandResult ^display (shell_display parts truncated) ^status (if (== code 0) "done" else "failed") ^exit code ^!attached)))
       (let text ($to_str (if first_line "" else "\n") line))
       (set first_line false)
       (let captured (byte_prefix text ($math/max 0 (- 1048576 bytes))))

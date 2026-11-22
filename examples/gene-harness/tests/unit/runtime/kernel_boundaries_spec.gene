@@ -13,8 +13,12 @@
   (let names [])
   (var alias false)
   (for part in parts
-    (if (== ($to_str part) ":") (do (set alias true) (continue)))
-    (if alias (do (set alias false) (continue)))
+    (if (== ($to_str part) ":")
+      (set alias true)
+      (continue))
+    (if alias
+      (set alias false)
+      (continue))
     (names .push ($to_str part)))
   names)
 
@@ -115,8 +119,9 @@
         (let from (without_extension form/from))
         ($assert (permitted .contains? from) $"${name} imports forbidden layer ${from}.")
         (if (&& (== from "../runtime/cordis_adapter") (!= name "composition_bridge"))
-          (do ($assert (== name "registry"))
-            (for imported in (imported_names form) (observed .push imported))))))
+          ($assert (== name "registry"))
+          (for imported in (imported_names form)
+            (observed .push imported)))))
     ($assert (== ($order/sort observed) ($order/sort (callback_import_exception)))
       "Remove the callback-trio exception in the extraction commit."))
 

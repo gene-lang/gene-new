@@ -134,19 +134,21 @@
     (var target_class : Str target/class_name)
     ($console/log $"todo_client: click on class=${target_class}")
     (if (== target_class "text")
-      (do (var row target/parent_element)
+      (var row target/parent_element)
       (if row
-        (do (var row_class : Str row/class_name)
-        (set row/class_name (toggled row_class))))))
+        (var row_class : Str row/class_name)
+        (set row/class_name (toggled row_class))))
     (if (== target_class "toggle")
       # Stop the form POST *before* the request goes out: after an await the
       # browser has already navigated and nothing this handler does can matter.
-      (do ($dom/prevent_default event)
+      ($dom/prevent_default event)
       (var id : Str target/dataset/id)
       (var row (row_for target))
       (if row
-        (do ($console/log $"todo_client: toggling todo ${id}")
-        ($http/post_form "/api/todos/toggle" $"id=${id}"
+        ($console/log $"todo_client: toggling todo ${id}")
+        ($http/post_form
+          "/api/todos/toggle"
+          $"id=${id}"
           (fn [body : Str] : Nil
             # The response is the authoritative list, so the row is painted
             # from what the server stored rather than from a guess about what
@@ -154,10 +156,10 @@
             (var todos : (List Any) ($json/parse body))
             (for todo in todos
               (var todo_id : Int todo/id)
-              (if (== $"${todo_id}" id)
-                (do (var done : Bool todo/done)
+              (if (== ($to_str todo_id) id)
+                (var done : Bool todo/done)
                 ($console/log $"todo_client: todo ${id} is now done=${done}")
-                (paint_row row target done)))))))))))
+                (paint_row row target done))))))))
 
   (fn main [root : EventTarget] : Nil
     ($console/log "todo_client: mounted, delegating clicks from the root")

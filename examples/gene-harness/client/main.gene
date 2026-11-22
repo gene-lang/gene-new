@@ -127,15 +127,18 @@
     (var pre : EventTarget mount/pre)
     (var value (if ($absent? command) (output_text entry) else (command_output_text entry command)))
     (if (!= value (string_or mount/text ""))
-      (do ($dom/set_text pre value) (set mount/text value)))
+      ($dom/set_text pre value)
+      (set mount/text value))
     (if ($present? command) (continue))
     (var panel : EventTarget mount/panel) (var summary : EventTarget mount/summary)
     (if (! (same? entry mount/entry))
-      (do (set panel/open (output_open entry (launcher_flag mount/default_open))) (set mount/entry entry)))
+      (set panel/open (output_open entry (launcher_flag mount/default_open)))
+      (set mount/entry entry))
     (set panel/hidden ($absent? entry))
     (var label (if (launcher_flag entry/late) "Output · live · Late output" else "Output · live"))
     (if (!= label (string_or mount/label ""))
-      (do ($dom/set_text summary label) (set mount/label label)))))
+      ($dom/set_text summary label)
+      (set mount/label label))))
 
 (fn schedule_live_output [client : Client] : Nil
   (var store (live_store client))
@@ -149,13 +152,15 @@
     (if notify
       (if (&& (! client/viewing_history) client/autoscroll)
         ($dom/scroll_end client/transcript)
-        else (do ($dom/set_text ($dom/element "new_output_label") "New output") (set_hidden "new_output" false)))))))
+      else
+        ($dom/set_text ($dom/element "new_output_label") "New output")
+        (set_hidden "new_output" false))))))
 
 (fn live_console [client : Client, session : Str, data : Any] : Nil
   (var store (live_store client))
   (if (receive_output store session data)
-    (do (if (== session client/selected) (set store/notify_session session))
-    (schedule_live_output client))))
+    (if (== session client/selected) (set store/notify_session session))
+    (schedule_live_output client)))
 
 (fn begin_output_render [client : Client] : Nil
   (var store (live_store client))
@@ -163,7 +168,8 @@
     (if ($present? mount/command) (continue))
     (var entry : Any (output_entry store (string_or mount/key "")))
     (if (&& ($present? entry) (same? entry mount/entry))
-      (do (var panel : EventTarget mount/panel) (set entry/open panel/open))))
+      (var panel : EventTarget mount/panel)
+      (set entry/open panel/open)))
   (set store/mounts []))
 
 (fn live_output_view [client : Client, key : Str, ^default_open default_open : Bool = false,
@@ -171,11 +177,11 @@
   (var store (live_store client))
   (var entry : Any (output_entry store key))
   (if ($present? command)
-    (do (var combined_pre ($dom/render `(pre ^class_name "command_output")))
+    (var combined_pre ($dom/render `(pre ^class_name "command_output")))
     (var value (command_output_text entry command))
     ($dom/set_text combined_pre value)
     (store/mounts .push {^key key ^pre combined_pre ^text value ^command command})
-    (return combined_pre)))
+    (return combined_pre))
   (var pre ($dom/render `(pre)))
   (var label "Output · live")
   (var summary ($dom/render `(summary %label)))
@@ -231,10 +237,15 @@
 
 (fn request_session [client : Client, title : Str, done : (Fn [Int Any] Nil)] : Nil
   (if client/sending
-    (do (done 409 {^^not_sent ^message "Wait for the current submission to resolve."}) (return)))
+    (done 409 {^^not_sent ^message "Wait for the current submission to resolve."})
+    (return))
   (if (launcher_flag client/creation_unknown)
-    (do (done 409 {^^not_sent ^message "Inspect your conversations and acknowledge the unresolved creation in the host controls first."})
-    (return)))
+    (done
+      409
+      {
+        ^^not_sent
+        ^message "Inspect your conversations and acknowledge the unresolved creation in the host controls first."})
+    (return))
   (set client/sending true) (update_controls client)
   (api client "POST" $"${(api_root)}/sessions" {^title title}
     (fn [code : Int, data : Any] : Nil
@@ -247,19 +258,23 @@
 (fn launcher_command [client : Client, session : Str, text : Str, expected : Any,
                       done : (Fn [Int Any] Nil)] : Nil
   (if (|| (! client/ready) client/sending)
-    (do (done 409 {^message "Wait for the current submission to resolve."}) (return)))
+    (done 409 {^message "Wait for the current submission to resolve."})
+    (return))
   (if (== session "")
-    (do (var draft ($dom/input_value client/prompt))
-    (request_session client "Plugin tools"
+    (var draft ($dom/input_value client/prompt))
+    (request_session
+      client
+      "Plugin tools"
       (fn [code : Int, data : Any] : Nil
         (if (== code 201)
-          (do
-            (var target : Str data/id)
-            (select_session client target)
-            ($dom/set_input_value client/prompt draft) (remember_draft client)
-            (launcher_command client target text expected done))
-          else (done code data))))
-    (return)))
+          (var target : Str data/id)
+          (select_session client target)
+          ($dom/set_input_value client/prompt draft)
+          (remember_draft client)
+          (launcher_command client target text expected done)
+        else
+          (done code data))))
+    (return))
   (set client/sending true) (update_controls client)
   (var commands : CommandClient client/command_client)
   (dispatch_command commands session text expected
@@ -269,42 +284,57 @@
       (if (== code 202) ($dom/focus client/prompt)))))
 
 (fn launcher_navigate [client : Client, item : Any, done : (Fn [Int Any] Nil)] : Nil
-  (if client/sending (do (done 409 {^message "Resolving your submission…"}) (return)))
+  (if client/sending
+    (done 409 {^message "Resolving your submission…"})
+    (return))
   (var kind (string_or item/kind ""))
   (var ui : UiClient client/ui)
   (if (== kind "view")
-    (do (if (navigate ui (string_or item/view ""))
-      (do (done 200 {}) ($dom/focus ($dom/element "ui_view_picker")))
-      else (done 409 {^message "This view is unavailable."}))
-    (return)))
+    (if (navigate ui (string_or item/view ""))
+      (done 200 {})
+      ($dom/focus ($dom/element "ui_view_picker"))
+    else
+      (done 409 {^message "This view is unavailable."}))
+    (return))
   (if (== kind "conversation")
-    (do (var target (string_or item/session ""))
-    (api client "GET" $"${(api_root)}/sessions/${target}/snapshot" nil
+    (var target (string_or item/session ""))
+    (api
+      client
+      "GET"
+      $"${(api_root)}/sessions/${target}/snapshot"
+      nil
       (fn [code : Int, data : Any] : Nil
         (if (|| (!= code 200) client/sending)
-          (do (done 409 {^message "This conversation is unavailable or a submission is resolving."}) (return)))
-        (select_session ^snapshot data client target) (navigate ui "harness")
-        (done 200 data) ($dom/focus client/prompt)))
-    (return)))
+          (done 409 {^message "This conversation is unavailable or a submission is resolving."})
+          (return))
+        (select_session ^snapshot data client target)
+        (navigate ui "harness")
+        (done 200 data)
+        ($dom/focus client/prompt)))
+    (return))
   (if (== (string_or item/action "") "attention")
-    (do (done 200 {})
+    (done 200 {})
     (var center : NotificationCenter client/center)
     (toggle_center center true)
-    (return)))
+    (return))
   (var draft (if (== client/selected "") ($dom/input_value client/prompt)
     else (?? (storage_get (draft_key "new")) "")))
   (request_session client "New conversation"
     (fn [code : Int, data : Any] : Nil
       (if (== code 201)
-        (do
-          (var target : Str data/id)
-          (var attachments : MediaComposer client/media)
-          (media_move attachments "" target)
-          (select_session client target) (navigate ui "harness")
-          (if (!= draft "") (do ($dom/set_input_value client/prompt draft) (remember_draft client)))
-          (storage_remove (draft_key "new"))
-          (done code data) ($dom/focus client/prompt))
-        else (done code data)))))
+        (var target : Str data/id)
+        (var attachments : MediaComposer client/media)
+        (media_move attachments "" target)
+        (select_session client target)
+        (navigate ui "harness")
+        (if (!= draft "")
+          ($dom/set_input_value client/prompt draft)
+          (remember_draft client))
+        (storage_remove (draft_key "new"))
+        (done code data)
+        ($dom/focus client/prompt)
+      else
+        (done code data)))))
 
 (fn view_state_save [client : Client, changes : Any] : Nil
   # Browser-owned views keep selection and display preferences in the same
@@ -362,8 +392,10 @@
      (launcher_command client session text expected done))
    ^attach (fn [text : Str] : Bool
      (if (&& client/ready client/connected (! client/sending))
-       (do (stage_prompt client text) true)
-       else false))
+       (stage_prompt client text)
+       true
+     else
+       false))
    ^navigate (fn [item : Any, done : (Fn [Int Any] Nil)] : Nil (launcher_navigate client item done))
    ^keyboard_owned (fn [] : Bool (keyboard_owned?))
    ^ensure_session (fn [done : (Fn [Int Any] Nil)] : Nil
@@ -505,7 +537,7 @@
   ($dom/clear target)
   (for tab in client/tabs
     (if (&& (! tab/closed) (!= tab/id ""))
-      (do (var id tab/id)
+      (var id tab/id)
       (var title tab/title)
       (var state : Str "")
       (var cache : Any tab/cache)
@@ -518,7 +550,8 @@
              (button ^type "button" ^on_click %(fn [event : Any] : Nil (select_session client id))
                %title
                (small %state))
-             (button ^type "button" ^aria-label %$"Close ${title}" ^on_click %(fn [event : Any] : Nil (close_tab client id)) (span ^class "icon" ^data-icon "close" ^aria-hidden "true")))))))))
+             (button ^type "button" ^aria-label %$"Close ${title}" ^on_click %(fn [event : Any] : Nil (close_tab client id))
+               (span ^class "icon" ^data-icon "close" ^aria-hidden "true"))))))))
 
 (fn close_tab [client : Client, id : Str, ^navigate navigate : Bool = true] : Nil
   (clear_session_output (live_store client) id)
@@ -530,12 +563,12 @@
     (var socket : EventTarget tab/socket)
     ($ws/close socket))
   (if (&& navigate (== id client/selected))
-    (do (var next "")
+    (var next "")
     (for candidate in client/tabs
       (if (&& (! candidate/closed) (!= candidate/id ""))
-        (do (set next candidate/id)
-        (break))))
-    (select_session client next)))
+        (set next candidate/id)
+        (break)))
+    (select_session client next))
   (render_tabs client))
 
 (fn remember_draft [client : Client] : Nil
@@ -566,8 +599,8 @@
   (media_controls attachments (&& client/ready client/connected (! client/sending)
     ($absent? client/pending) (! in_mode)))
   (if (&& client/was_executing (! executing))
-    (do (set client/action_cooldown true)
-    ($time/after 250.0 (fn [] : Nil (set client/action_cooldown false) (update_controls client)))))
+    (set client/action_cooldown true)
+    ($time/after 250.0 (fn [] : Nil (set client/action_cooldown false) (update_controls client))))
   (set client/was_executing executing)
   ($dom/set_class client/root "working" client/busy)
   ($dom/set_class client/root "sending" client/sending)
@@ -626,8 +659,8 @@
     (var provider : Str client/status/model/provider)
     (set mode (if client/status/offline "Command demo · no model" else $"${model} · ${provider}"))
     (if (&& (! client/status/offline) ($present? client/status/model/effort))
-      (do (var effort : Str client/status/model/effort)
-      (set mode $"${mode} · ${effort}"))))
+      (var effort : Str client/status/model/effort)
+      (set mode $"${mode} · ${effort}")))
   (set_hidden "offline_notice" (|| ($absent? client/status) (! client/status/offline)))
   ($dom/set_text ($dom/element "mode") mode)
   (render_extensions client)
@@ -676,8 +709,8 @@
   (var status : Str session/status)
   (var metadata $"${kind} · ${status}")
   (if (== (string_or session/channel/transport "") "slack")
-    (do (var destination : Str session/channel/channel)
-    (set metadata $"Slack ${destination} · ${metadata}")))
+    (var destination : Str session/channel/channel)
+    (set metadata $"Slack ${destination} · ${metadata}"))
   (var cls (if (== id client/selected) "session selected" else "session"))
   (var row ($dom/render `(div ^class_name %(if (== id client/selected) "session_row selected" else "session_row"))))
   ($dom/append
@@ -715,28 +748,32 @@
   (var received_revision : Int ($json/parse (string_or record/revision "0")))
   (for tab in client/tabs
     (if (== tab/id id)
-      (do (var cached_revision : Int ($json/parse (string_or tab/cache/session/revision "0")))
-      (if (< received_revision cached_revision) (return)))))
+      (var cached_revision : Int ($json/parse (string_or tab/cache/session/revision "0")))
+      (if (< received_revision cached_revision) (return))))
   (var roots : (List Any) [])
   (for existing in client/sessions
     (if (== (string_or existing/id "") id)
-      (do
-        (if (&& ($absent? record/children) ($present? existing/children))
-          (set record/children existing/children))
-        (roots .push record))
-      else (do
-        (var children (dlist existing/children))
-        (for child in children
-          (if (== (string_or child/id "") id) (set existing/children (merge_blocks children [record]))))
-        (roots .push existing))))
+      (if (&& ($absent? record/children) ($present? existing/children))
+        (set record/children existing/children))
+      (roots .push record)
+    else
+      (var children (dlist existing/children))
+      (for child in children
+        (if (== (string_or child/id "") id)
+          (set existing/children (merge_blocks children [record]))))
+      (roots .push existing)))
   (set client/sessions roots)
   (for tab in client/tabs
     (if (== tab/id id)
-      (do (set tab/title record/title) (var cache : Any tab/cache) (set cache/session record))))
+      (set tab/title record/title)
+      (var cache : Any tab/cache)
+      (set cache/session record)))
   (if (== id client/selected)
-    (do (set client/session_revision record/revision)
+    (set client/session_revision record/revision)
     (render_session_title client (string_or record/title "") record/channel)
-    ($dom/set_text ($dom/element "pin_session") (if (launcher_flag record/pinned) "Unpin" else "Pin"))))
+    ($dom/set_text
+      ($dom/element "pin_session")
+      (if (launcher_flag record/pinned) "Unpin" else "Pin")))
   (render_sessions client) (render_tabs client) (refresh_sessions client) (update_controls client))
 
 (fn forget_session [client : Client, id : Str] : Nil
@@ -756,10 +793,12 @@
     (set record/children children) (kept .push record))
   (set client/sessions kept)
   (if selected
-    (do (var next "")
+    (var next "")
     (for candidate in client/tabs
-      (if (&& (! candidate/closed) (!= candidate/id "")) (do (set next candidate/id) (break))))
-    (select_session ^force true client next)))
+      (if (&& (! candidate/closed) (!= candidate/id ""))
+        (set next candidate/id)
+        (break)))
+    (select_session ^^force client next))
   (for removed in ids
     (storage_remove (draft_key removed))
     (storage_remove (mode_pending_key removed)))
@@ -809,8 +848,8 @@
 
 (fn edit_prompt [client : Client, text : Str] : Nil
   (if ($present? client/pending)
-    (do (notice client "Resolve the pending submission before editing another prompt.")
-    (return)))
+    (notice client "Resolve the pending submission before editing another prompt.")
+    (return))
   ($dom/set_input_value client/prompt text)
   (remember_draft client)
   (render_commands client)
@@ -820,7 +859,9 @@
   (var ui : UiClient client/ui)
   (navigate ui "harness")
   (var draft ($dom/input_value client/prompt))
-  (if (|| (== draft "") (== draft text)) (do (edit_prompt client text) (return)))
+  (if (|| (== draft "") (== draft text))
+    (edit_prompt client text)
+    (return))
   (var offer ($dom/element "prompt_offer"))
   ($dom/clear offer)
   (set offer/hidden false)
@@ -847,72 +888,82 @@
   (var block_phase : Str block/phase)
   (if (render_delegation client target block) (return))
   (if (== block_phase "card")
-    (do (var host : CardHost client/cards)
-    ($dom/append target (card_view host client/selected block/card (card_owned client block/card) client/safe_ui))
-    (return)))
+    (var host : CardHost client/cards)
+    ($dom/append
+      target
+      (card_view host client/selected block/card (card_owned client block/card) client/safe_ui))
+    (return))
   (if (== block_phase "card/update")
-    (do ($dom/append target (card_update_line block))
-    (return)))
+    ($dom/append target (card_update_line block))
+    (return))
   (if (== block_phase "questions")
-    (do ($dom/append target (answered_view block (fn [text : Str] : Nil (stage_prompt client text))
-      ^resolve_author (fn [source : Any, target : EventTarget] : Nil (resolve_slack_author client source target))))
-    (return)))
+    ($dom/append
+      target
+      (answered_view ^resolve_author (fn [source : Any, target : EventTarget] : Nil (resolve_slack_author client source target))
+        block
+        (fn [text : Str] : Nil
+          (stage_prompt client text))))
+    (return))
   (var id : Str block/id)
   (var generation client/generation)
   (var combined (&& (== block_phase "command") (execution_command block)))
   (if combined
-    (do
-      (var article ($dom/render `(article ^class_name "message agent" (div ^class_name "speaker" "Agent"))))
-      ($dom/append article (live_output_view ^command block client
+    (var article
+      ($dom/render `(article ^class_name "message agent" (div ^class_name "speaker" "Agent"))))
+    ($dom/append
+      article
+      (live_output_view ^command block
+        client
         (command_output_key client/selected (string_or block/command_id ""))))
-      ($dom/append target article))
-    else ($dom/append
-    target
-    (block_view
-      ^resolve_author (fn [source : Any, target : EventTarget] : Nil (resolve_slack_author client source target))
-      ^on_speak (voice_replay_handler client)
-      block
-      (not_durable block)
-      (fn [text : Str] : Nil
-        (copy_text client text))
-      (expanded_block client id)
-      (fn [opened : Bool] : Nil
-        (if (== generation client/generation) (toggle_block client id opened))))))
+    ($dom/append target article)
+  else
+    ($dom/append
+      target
+      (block_view ^resolve_author (fn [source : Any, target : EventTarget] : Nil (resolve_slack_author client source target)) ^on_speak (voice_replay_handler client)
+        block
+        (not_durable block)
+        (fn [text : Str] : Nil
+          (copy_text client text))
+        (expanded_block client id)
+        (fn [opened : Bool] : Nil
+          (if (== generation client/generation) (toggle_block client id opened))))))
   (var phase : Str block/phase)
   (if (&& (== phase "command") (! combined) ($absent? block/mode_instance))
-    (do (var output_parts : (List Str) (str/split id "/"))
-    ($dom/append target (live_output_view client (command_output_key client/selected (string_or block/command_id output_parts/1))))))
+    (var output_parts : (List Str) (str/split id "/"))
+    ($dom/append
+      target
+      (live_output_view
+        client
+        (command_output_key client/selected (string_or block/command_id output_parts/1)))))
   (var status (string_or block/status ""))
   (if (&& (== phase "command") (== status "running") ($absent? block/mode_instance))
-    (do (var parts : (List Str) (str/split id "/"))
+    (var parts : (List Str) (str/split id "/"))
     (var command_id : Str parts/1)
     ($dom/append
       target
       ($dom/render
-        `(button ^type "button" ^on_click %(fn [event : Any] : Nil (api client "POST" $"${(api_root)}/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Nil (if (!= code 200) (show_error client data))))) "Cancel command")))))
+        `(button ^type "button" ^on_click %(fn [event : Any] : Nil (api client "POST" $"${(api_root)}/sessions/${client/selected}/commands/${command_id}/cancel" {} (fn [code : Int, data : Any] : Nil (if (!= code 200) (show_error client data))))) "Cancel command"))))
   (var view : Any block/view)
   (if ($present? view)
-    (do (var next : Any view/next)
+    (var next : Any view/next)
     (if ($present? next)
-      (do (var path : Str view/path)
+      (var path : Str view/path)
       (var first : Int next)
       ($dom/append
         target
         ($dom/render
-          `(button ^type "button" ^on_click %(fn [event : Any] : Nil (send_command client $"/view ${path}:${first}")) "Next page")))))))
+          `(button ^type "button" ^on_click %(fn [event : Any] : Nil (send_command client $"/view ${path}:${first}")) "Next page")))))
   (if (&& (== (string_or view/kind "") "gene") ($present? client/editor))
-    (do
-      (var raw_panel : Any client/editor)
-      (var panel : EditorPanel raw_panel)
-      (if (editor_available? panel)
-        (do
-          (var editor_path : Str view/path)
-          (var editor_from (int_or view/from 1))
-          (var editor_to (int_or view/to editor_from))
-          ($dom/append
-            target
-            ($dom/render
-              `(button ^type "button" ^on_click %(fn [event : Any] : Nil (open_editor panel editor_path ^from editor_from ^to editor_to)) "Open in Gene editor"))))))))
+    (var raw_panel : Any client/editor)
+    (var panel : EditorPanel raw_panel)
+    (if (editor_available? panel)
+      (var editor_path : Str view/path)
+      (var editor_from (int_or view/from 1))
+      (var editor_to (int_or view/to editor_from))
+      ($dom/append
+        target
+        ($dom/render
+          `(button ^type "button" ^on_click %(fn [event : Any] : Nil (open_editor ^from editor_from ^to editor_to panel editor_path)) "Open in Gene editor"))))))
 
 (fn render_run [client : Client, blocks : (List Any), run : Any] : Nil
   (var target ($dom/render `(section ^class_name "run")))
@@ -939,19 +990,33 @@
             ^output_view (live_output_view client (turn_output_key client/selected (string_or block/round_id "") (dint block/turn)))
             ^render_extra (fn [content : EventTarget, item : Any] : Nil (render_block client content item))))))
   (if (&& ($present? run) (!= (run_label run) "Completed"))
-    (do (var on_continue : Any nil)
+    (var on_continue : Any nil)
     (if (== (string_or run/id "") (string_or client/round/id ""))
-      (do (var session client/selected) (var source : Str run/id)
-      (set on_continue (fn [mode : Str] : Nil
-        (var payload : Any {^mode mode})
-        (attach_model_draft client payload session)
-        (api client "POST" $"${(api_root)}/sessions/${session}/rounds/${source}/continue" payload
-          (fn [code : Int, data : Any] : Nil
-            (if (== code 202)
-              (model_draft_admitted client session payload) (apply_run client session data)
-              else (show_error ^session session client data)
-                (if (== session client/selected) (render_transcript client)))))))))
-    ($dom/append target (run_status_view run prompt (fn [text : Str] : Nil (edit_prompt client text)) ^on_continue on_continue))))
+      (var session client/selected)
+      (var source : Str run/id)
+      (set on_continue
+        (fn [mode : Str] : Nil
+          (var payload : Any {^mode mode})
+          (attach_model_draft client payload session)
+          (api
+            client
+            "POST"
+            $"${(api_root)}/sessions/${session}/rounds/${source}/continue"
+            payload
+            (fn [code : Int, data : Any] : Nil
+              (if (== code 202)
+                (model_draft_admitted client session payload)
+                (apply_run client session data)
+              else
+                (show_error ^session session client data)
+                (if (== session client/selected) (render_transcript client))))))))
+    ($dom/append
+      target
+      (run_status_view ^on_continue on_continue
+        run
+        prompt
+        (fn [text : Str] : Nil
+          (edit_prompt client text)))))
   ($dom/append client/transcript target))
 
 (fn render_transcript [client : Client, ^prepend prepend : Bool = false] : Nil
@@ -1040,11 +1105,13 @@
       (if (== receipt_id id) (set run receipt)))
     (if_not ($absent? client/round)
       (var current_id : Str client/round/id)
-      (if (== current_id id) (do (set run client/round) (set current_shown true))))
+      (if (== current_id id)
+        (set run client/round)
+        (set current_shown true)))
     (render_run client blocks run))
   (if (&& ($present? client/round) (! current_shown))
-    (do (var status : Str client/round/state)
-    (if_not (terminal status) (render_run client [] client/round))))
+    (var status : Str client/round/state)
+    (if_not (terminal status) (render_run client [] client/round)))
   (render_delegation_recovery client client/transcript)
   (refresh_live_output client)
   (if follow
@@ -1078,8 +1145,8 @@
   (if ($absent? run) (return))
   (var request_id (string_or run/request_id ""))
   (if (&& (== session client/awaiting_session) (== request_id client/awaiting))
-    (do (set client/awaiting "")
-    (set client/awaiting_session ""))))
+    (set client/awaiting "")
+    (set client/awaiting_session "")))
 
 (fn refresh_status [client : Client] : Nil
   (if_not client/ready (return))
@@ -1205,8 +1272,8 @@
 (fn render_commands [client : Client] : Nil
   (var picker ($dom/element "commands"))
   (if ($present? client/mode)
-    (do (set picker/hidden true)
-    (return)))
+    (set picker/hidden true)
+    (return))
   ($dom/clear picker)
   (var text ($dom/input_value client/prompt))
   (var parts : (List Str) (str/split text " "))
@@ -1228,13 +1295,13 @@
     (var name : Str command/name)
     (var doc : Str command/doc)
     (if (str/starts_with? $"/${name}" (str/lower text))
-      (do (set matched true)
+      (set matched true)
       ($dom/append
         picker
         ($dom/render
           `(button ^type "button" ^class_name "command" ^on_click %(fn [event : Any] : Nil ($dom/set_input_value client/prompt $"/${name} ") (remember_draft client) ($dom/focus client/prompt) (set picker/hidden true))
              (strong %$"/${name}")
-             (span %doc)))))))
+             (span %doc))))))
   (if_not matched
     ($dom/append
       picker
@@ -1301,16 +1368,16 @@
 
 (fn apply_snapshot [client : Client, data : Any] : Nil
   (if (== (string_or data/status/epoch client/epoch) client/epoch)
-    (do (var before_sequence : Int 0) (var next_sequence : Int 0)
-    (if_not ($absent? client/round/submission_seq) (set before_sequence client/round/submission_seq))
+    (var before_sequence : Int 0)
+    (var next_sequence : Int 0)
+    (if_not ($absent? client/round/submission_seq)
+      (set before_sequence client/round/submission_seq))
     (if_not ($absent? data/round/submission_seq) (set next_sequence data/round/submission_seq))
-    (if (|| (> before_sequence next_sequence)
-      (&& (== before_sequence next_sequence) ($present? client/round)
-        (terminal (string_or client/round/state "")) (== (string_or data/round/state "") "running")))
-      (set data/round client/round))))
+    (if (|| (> before_sequence next_sequence) (&& (== before_sequence next_sequence) ($present? client/round) (terminal (string_or client/round/state "")) (== (string_or data/round/state "") "running")))
+      (set data/round client/round)))
   (if client/viewing_history
-    (do (var current_tab (session_tab client client/selected))
-    (set data/before_cursor current_tab/cache/before_cursor)))
+    (var current_tab (session_tab client client/selected))
+    (set data/before_cursor current_tab/cache/before_cursor))
   (output_epoch (live_store client) (string_or data/status/epoch ""))
   (observe_output (live_store client) client/selected "snapshot" data)
   (set data/records (historical_records data/records))
@@ -1322,12 +1389,15 @@
     (for previous in [client/records client/preview]
       (for record in previous
         (if (> (record_sequence record) cursor)
-          (do (var incoming : (List Any) data/records)
+          (var incoming : (List Any) data/records)
           (var present false)
-          (for item in incoming (if (== item/id record/id) (set present true)))
-          (if present (set data/records (merge_blocks incoming [record]))
-            else (do (var preview : (List Any) data/preview)
-              (set data/preview (merge_blocks preview [record])))))))))
+          (for item in incoming
+            (if (== item/id record/id) (set present true)))
+          (if present
+            (set data/records (merge_blocks incoming [record]))
+          else
+            (var preview : (List Any) data/preview)
+            (set data/preview (merge_blocks preview [record])))))))
   (if_not ($absent? data/status) (apply_status client data/status))
   (if_not client/viewing_history
     (var records : (List Any) (historical_records data/records))
@@ -1401,23 +1471,24 @@
     (var found false)
     (for saved in client/records
       (if (== saved/id record/id)
-        (do (set found true)
+        (set found true)
         (var incoming_seq : Int ($json/parse (string_or record/seq "0")))
         (var saved_seq : Int ($json/parse (string_or saved/seq "0")))
-        (if (>= incoming_seq saved_seq)
-          (set client/records (merge_blocks client/records [record]))))))
+        (if (>= incoming_seq saved_seq) (set client/records (merge_blocks client/records [record])))))
     (if_not found (set client/preview (bounded_blocks (merge_blocks client/preview [record]) true))))
   (render_transcript client))
 
 (fn apply_run [client : Client, session : Str, data : Any] : Nil
   (acknowledge_run client data session)
   (if (== session client/selected)
-    (do (var current_sequence : Int 0) (var incoming_sequence : Int 0)
-    (if_not ($absent? client/round/submission_seq) (set current_sequence client/round/submission_seq))
+    (var current_sequence : Int 0)
+    (var incoming_sequence : Int 0)
+    (if_not ($absent? client/round/submission_seq)
+      (set current_sequence client/round/submission_seq))
     (if_not ($absent? data/submission_seq) (set incoming_sequence data/submission_seq))
     (if (>= incoming_sequence current_sequence) (set client/round data))
     (set client/rounds (bounded_blocks (merge_blocks client/rounds [data]) true))
-    (render_transcript client)))
+    (render_transcript client))
   (update_controls client))
 
 # Existing caches may contain frames delivered after a navigation snapshot was
@@ -1429,8 +1500,8 @@
 
 (fn select_session [client : Client, id : Str, ^snapshot snapshot : Any = nil, ^force force : Bool = false] : Nil
   (if (&& client/sending (! force))
-    (do (notice client "Resolving your submission…")
-    (return)))
+    (notice client "Resolving your submission…")
+    (return))
   (remember_draft client)
   # Supplied snapshots seed new tabs; connection state cannot prove freshness.
   (var initial : Any (if (has_tab? client id) nil else snapshot))
@@ -1514,8 +1585,8 @@
       (if (== code 200)
         (set cache/session data)
           (if (== id client/selected)
-            (do (set client/session_revision data/revision)
-            ($dom/set_text ($dom/element "pin_session") (if pinned "Pin" else "Unpin"))))
+            (set client/session_revision data/revision)
+            ($dom/set_text ($dom/element "pin_session") (if pinned "Pin" else "Unpin")))
         else
           (show_error client data)))))
 
@@ -1532,8 +1603,8 @@
           (media_move attachments "" id)
           (select_session client id)
           (if (!= draft "")
-            (do ($dom/set_input_value client/prompt draft)
-            (remember_draft client)))
+            ($dom/set_input_value client/prompt draft)
+            (remember_draft client))
           (storage_remove (draft_key "new"))
         else
           (show_error client data)))))
@@ -1561,12 +1632,12 @@
           (var status : Str data/state)
           (if (terminal status) (acknowledge_run client data session))
           (if (== session client/selected)
-            (do (var install ($absent? client/round))
+            (var install ($absent? client/round))
             (if_not install
               (var current_seq : Int client/round/submission_seq)
               (var accepted_seq : Int data/submission_seq)
               (set install (< current_seq accepted_seq)))
-            (if install (apply_run client session data))))
+            (if install (apply_run client session data)))
           (storage_remove "gene-harness/pending")
           (model_draft_admitted client session pending)
           (var submitted : Str pending/text)
@@ -1587,13 +1658,12 @@
           (notice client "")
         else
           (if (&& (== client/awaiting_session session) (== client/awaiting request_id))
-            (do (set client/awaiting "") (set client/awaiting_session "")))
+            (set client/awaiting "")
+            (set client/awaiting_session ""))
           (var error_code (string_or data/code ""))
-          (if (|| (== code 400) (== code 404) (== code 409) (== code 410) (== code 413)
-                      (&& (== code 503)
-                        (|| (== error_code "recovery_required") (== error_code "unavailable"))))
-            (do (storage_remove "gene-harness/pending")
-            (set client/pending nil)))
+          (if (|| (== code 400) (== code 404) (== code 409) (== code 410) (== code 413) (&& (== code 503) (|| (== error_code "recovery_required") (== error_code "unavailable"))))
+            (storage_remove "gene-harness/pending")
+            (set client/pending nil))
           (show_error client data)
           (if (== code 401)
             (set client/ready false)
@@ -1613,7 +1683,8 @@
 
 (fn stage_submission [client : Client, text : Str] : Nil
   (if (voice_pending? client)
-    (do (notice client "Resolve the pending voice submission before sending another prompt.") (return)))
+    (notice client "Resolve the pending voice submission before sending another prompt.")
+    (return))
   (var attachments : MediaComposer client/media)
   (set client/pending
     {
@@ -1635,8 +1706,8 @@
 # the host attaches that exact state, or refuses a changed card.
 (fn stage_card_send [client : Client, text : Str, card : Any] : Nil
   (if (|| ($present? client/pending) client/sending)
-    (do (notice client "Resolve the pending submission before sending a card.")
-    (return)))
+    (notice client "Resolve the pending submission before sending a card.")
+    (return))
   (var no_media : (List Any) [])
   (set client/pending
     {
@@ -1670,18 +1741,18 @@
   (for record in client/records
     (var record_id : Str record/id)
     (if (== record_id $"${session}/card/${id}")
-      (do
-        (set found true)
-        (var previous : Any record/card)
-        (var previous_definition : Int previous/definition_revision)
-        (var previous_revision : Int previous/revision)
-        (var next_definition : Int card/definition_revision)
-        (var next_revision : Int card/revision)
-        (if (|| (> next_definition previous_definition)
-                (&& (== next_definition previous_definition) (>= next_revision previous_revision)))
-          (records .push block)
-          else (records .push record)))
-      else (records .push record)))
+      (set found true)
+      (var previous : Any record/card)
+      (var previous_definition : Int previous/definition_revision)
+      (var previous_revision : Int previous/revision)
+      (var next_definition : Int card/definition_revision)
+      (var next_revision : Int card/revision)
+      (if (|| (> next_definition previous_definition) (&& (== next_definition previous_definition) (>= next_revision previous_revision)))
+        (records .push block)
+      else
+        (records .push record))
+    else
+      (records .push record)))
   (if_not found (records .push block))
   (set client/records records)
   (render_transcript client))
@@ -1696,14 +1767,24 @@
   (var turn : Int card/turn)
   (var updated_turn : Int card/updated_turn)
   (if (&& (== event "defined") (!= turn updated_turn))
-    (do (var card_id (string_or card/id ""))
+    (var card_id (string_or card/id ""))
     (var definition : Int card/definition_revision)
     (set client/records
-      (merge_blocks client/records
-        [{^id $"${session}/card-update/${card_id}/${definition}" ^seq "0"
-          ^round_id (string_or card/round "") ^turn updated_turn ^role "assistant"
-          ^phase "card/update" ^kind "card/update" ^text (string_or card/title "")
-          ^card_id card_id ^order card/updated_ms ^^durable}]))))
+      (merge_blocks
+        client/records
+        [
+          {
+            ^id $"${session}/card-update/${card_id}/${definition}"
+            ^seq "0"
+            ^round_id (string_or card/round "")
+            ^turn updated_turn
+            ^role "assistant"
+            ^phase "card/update"
+            ^kind "card/update"
+            ^text (string_or card/title "")
+            ^card_id card_id
+            ^order card/updated_ms
+            ^^durable}])))
   (apply_card client session card))
 
 (fn send_command [client : Client, text : Str, ^clear clear : Bool = true, ^card card : Any = nil] : Nil
@@ -1718,10 +1799,10 @@
       (update_controls client))))
 
 (fn command_settled [client : Client, envelope : Any, receipt : Any] : Nil
-  (if (&& (launcher_flag envelope/clear_composer)
-              (== (string_or envelope/session "") client/selected)
-              (== (string_or envelope/text "") ($dom/input_value client/prompt)))
-    (do ($dom/set_input_value client/prompt "") (remember_draft client) (render_commands client))))
+  (if (&& (launcher_flag envelope/clear_composer) (== (string_or envelope/session "") client/selected) (== (string_or envelope/text "") ($dom/input_value client/prompt)))
+    ($dom/set_input_value client/prompt "")
+    (remember_draft client)
+    (render_commands client)))
 
 (fn execution_command [data : Any] : Bool
   (var name (string_or data/name ""))
@@ -1734,15 +1815,15 @@
   (var block_id $"${session}/${id}")
   (var text : Str (string_or data/display (string_or data/text "")))
   (if (&& (! (execution_command data)) (== text "") ($present? data/raw))
-    (do (var command_name : Str (string_or data/name "command"))
+    (var command_name : Str (string_or data/name "command"))
     (var command_raw : Str (string_or data/raw ""))
-    (set text $"/${command_name} ${command_raw}")))
+    (set text $"/${command_name} ${command_raw}"))
   (if (&& (== status "running") (! (execution_command data)))
     (for previous in client/preview
       (var previous_id : Str previous/id)
       (if (== previous_id block_id)
-        (do (var prior : Str previous/text)
-        (set text ($to_str prior text))))))
+        (var prior : Str previous/text)
+        (set text ($to_str prior text)))))
   (apply_record
     client
     {
@@ -1768,20 +1849,20 @@
 (fn resolve_mode_receipt [client : Client, records : (List Any)] : Nil
   (if (== client/selected "") (return))
   (if ($absent? client/mode_pending)
-    (do (var saved : Str (?? (storage_get (mode_pending_key client/selected)) ""))
-    (if (!= saved "") (set client/mode_pending (try ($json/parse saved) catch Error nil)))))
+    (var saved : Str (?? (storage_get (mode_pending_key client/selected)) ""))
+    (if (!= saved "") (set client/mode_pending (try ($json/parse saved) catch Error nil))))
   (if ($absent? client/mode_pending) (return))
   (var pending : Any client/mode_pending)
   (for record in records
     (if (&& (== record/input_id pending/input_id) (== record/mode_instance pending/instance))
-      (do (storage_remove (mode_pending_key client/selected))
+      (storage_remove (mode_pending_key client/selected))
       (if (== ($dom/input_value client/prompt) (string_or pending/text ""))
-        (do ($dom/set_input_value client/prompt "")
-        (remember_draft client)))
+        ($dom/set_input_value client/prompt "")
+        (remember_draft client))
       (set client/mode_pending nil)
       (notice ^key "mode-input" ^scope client/selected client "")
       (notice client "Input receipt recovered.")
-      (return))))
+      (return)))
   (notice ^key "mode-input" ^scope client/selected ^^sticky
     client
     "Input outcome is unknown. Check the transcript; submit again to resolve the same input id."))
@@ -1802,8 +1883,8 @@
     else
       (var previous_text : Str pending/text)
       (if (!= previous_text text)
-        (do (notice client "Resolve the pending input before submitting another one.")
-        (return))))
+        (notice client "Resolve the pending input before submitting another one.")
+        (return)))
   (if_not (storage_set (mode_pending_key client/selected) ($json/stringify pending))
     (notice client "Browser storage is required to recover an input receipt.")
     (return))
@@ -1828,18 +1909,17 @@
           (set client/mode_pending nil)
           (if incomplete
             (notice client "Incomplete form. Add the remaining code.")
-            else (do
-              (if (== ($dom/input_value client/prompt) (string_or pending/text ""))
-                (do ($dom/set_input_value client/prompt "")
-                (remember_draft client)))
-              (if closed (set client/mode nil))
-              (notice client "")))
+          else
+            (if (== ($dom/input_value client/prompt) (string_or pending/text ""))
+              ($dom/set_input_value client/prompt "")
+              (remember_draft client))
+            (if closed (set client/mode nil))
+            (notice client ""))
         else
           (if (&& (>= code 400) (< code 500))
-            (do (storage_remove (mode_pending_key session))
+            (storage_remove (mode_pending_key session))
             (set client/mode_pending nil)
-            (if (== (string_or data/code "") "mode_closed")
-              (set client/mode (?? data/mode nil)))))
+            (if (== (string_or data/code "") "mode_closed") (set client/mode (?? data/mode nil))))
           (show_error client data))
       (update_controls client))))
 
@@ -1857,10 +1937,10 @@
     (fn [code : Int, data : Any] : Nil
       (set client/sending false)
       (if (== code 200)
-        (do
-          (set client/mode nil)
-          (notice client ""))
-        else (show_error client data))
+        (set client/mode nil)
+        (notice client "")
+      else
+        (show_error client data))
       (update_controls client))))
 
 (fn action [client : Client] : Nil
@@ -1873,66 +1953,76 @@
 (fn send [client : Client] : Nil
   (if (|| (! client/ready) (! client/connected) client/sending) (return))
   (if (voice_pending? client)
-    (do (notice client "Resolve the pending voice submission before sending another prompt.") (return)))
+    (notice client "Resolve the pending voice submission before sending another prompt.")
+    (return))
   (if ($present? client/mode)
-    (do (send_mode_input client)
-    (return)))
+    (send_mode_input client)
+    (return))
   (var raw ($dom/input_value client/prompt))
   (var input : Any (reviewed_voice_input client client/selected raw))
   (if (&& ($present? input) (!= (str/trim raw) ""))
-    (do (var session client/selected)
-    (voice_submit client session raw input
+    (var session client/selected)
+    (voice_submit
+      client
+      session
+      raw
+      input
       (fn [code : Int, data : Any] : Nil
         (if (== code 202)
-          (do
-            (storage_remove (voice_review_key client session))
-            (if (&& (== session client/selected) (== raw ($dom/input_value client/prompt)))
-              (do ($dom/set_input_value client/prompt "") (remember_draft client))))
-          else (show_error client data))))
-    (return)))
+          (storage_remove (voice_review_key client session))
+          (if (&& (== session client/selected) (== raw ($dom/input_value client/prompt)))
+            ($dom/set_input_value client/prompt "")
+            (remember_draft client))
+        else
+          (show_error client data))))
+    (return))
   (var attachments : MediaComposer client/media)
   (if (&& (!= client/selected "") (str/starts_with? raw "/") (! (str/starts_with? raw "//")))
-    (do (if (media_has attachments)
-      (do (notice client "Remove attachments before running a slash command.")
-      (return)))
+    (if (media_has attachments)
+      (notice client "Remove attachments before running a slash command.")
+      (return))
     (send_command client raw)
-    (return)))
+    (return))
   (if (!= client/input_id "")
-    (do (notice client "Answer or cancel the pending question first.")
-    (return)))
+    (notice client "Answer or cancel the pending question first.")
+    (return))
   (if (|| (! client/ready) (! client/connected) client/sending client/busy) (return))
   (if ($present? client/pending)
-    (do (send_pending client)
-    (return)))
+    (send_pending client)
+    (return))
   (var text ($dom/input_value client/prompt))
   (if (media_blocked attachments)
-    (do (notice client "Wait for uploads to finish, or remove any failed attachment.")
-    (return)))
+    (notice client "Wait for uploads to finish, or remove any failed attachment.")
+    (return))
   (if (&& (== (str/trim text) "") (! (media_has attachments))) (return))
   (if (! (model_allows_submit client)) (return))
   (remember_draft client)
   (if (== client/selected "")
-    (do (request_session client "New conversation"
+    (request_session
+      client
+      "New conversation"
       (fn [code : Int, data : Any] : Nil
         (if (== code 201)
           (var id : Str data/id)
-            (media_move attachments "" id)
-            (select_session client id)
-            ($dom/set_input_value client/prompt text)
-            (remember_draft client)
-            (storage_remove (draft_key "new"))
-            (if (&& (str/starts_with? text "/") (! (str/starts_with? text "//")))
-              (do (set client/queued_prompt text) (set client/queued_submit true))
-              else (stage_submission client text))
+          (media_move attachments "" id)
+          (select_session client id)
+          ($dom/set_input_value client/prompt text)
+          (remember_draft client)
+          (storage_remove (draft_key "new"))
+          (if (&& (str/starts_with? text "/") (! (str/starts_with? text "//")))
+            (set client/queued_prompt text)
+            (set client/queued_submit true)
           else
-            (show_error client data))
+            (stage_submission client text))
+        else
+          (show_error client data))
         (update_controls client)))
-    (return)))
+    (return))
   (stage_submission client text))
 
 (fn stop [client : Client] : Nil
   (if ($present? client/mode)
-    (do (if ($absent? client/mode/running) (return))
+    (if ($absent? client/mode/running) (return))
     (var command_id : Str client/mode/running)
     (api
       client
@@ -1940,10 +2030,8 @@
       $"${(api_root)}/sessions/${client/selected}/commands/${command_id}/cancel"
       {}
       (fn [code : Int, data : Any] : Nil
-        (if (== code 200)
-          (notice client "Stop requested.")
-          else (show_error client data))))
-    (return)))
+        (if (== code 200) (notice client "Stop requested.") else (show_error client data))))
+    (return))
   (if ($absent? client/round) (return))
   (var id : Str client/round/id)
   (api
@@ -1966,14 +2054,14 @@
   (if (== operation "view/navigate")
     (return {^ok (navigate ui (string_or args/view "") (string_or args/presentation ""))}))
   (if (== operation "action/invoke")
-    (do (var id (string_or args/id ""))
+    (var id (string_or args/id ""))
     (if (== id "composer/send")
-      (do (send client)
-      (return {^^ok})))
+      (send client)
+      (return {^^ok}))
     (if (== id "composer/close_commands")
-      (do (set_hidden "commands" true)
-      (return {^^ok})))
-    (return {^ok (run_action ui id)})))
+      (set_hidden "commands" true)
+      (return {^^ok}))
+    (return {^ok (run_action ui id)}))
   nil)
 
 (fn answer_client_request [client : Client, data : Any] : Nil
@@ -1995,18 +2083,18 @@
     (var message : Any ($json/parse text))
     (var version : Int message/protocol)
     (if (!= version protocol_version)
-      (do (set client/ready false)
+      (set client/ready false)
       (set client/connected false)
       (update_controls client)
       (notice ^key "connection" ^^sticky
         client
         "Reload the page to use the current server version.")
-      (return)))
+      (return))
     (var sequence_text : Str message/sequence)
     (var sequence : Int ($json/parse sequence_text))
     (if (!= sequence (+ client/message_sequence 1))
-      (do (connect_socket client)
-      (return)))
+      (connect_socket client)
+      (return))
     (set client/message_sequence sequence)
     (set client/epoch message/epoch)
     (var kind : Str message/type)
@@ -2015,8 +2103,8 @@
     (if (== kind "models/catalog")
       (invalidate_status client client/epoch ""))
     (if (== kind "keyboard/changed")
-      (do (var keyboard_ui : UiClient client/ui)
-      (set keyboard_ui/keyboard (copy_map data/bindings))))
+      (var keyboard_ui : UiClient client/ui)
+      (set keyboard_ui/keyboard (copy_map data/bindings)))
     (if (== kind "client/request")
       (answer_client_request client data))
     (if (== kind "status")
@@ -2031,26 +2119,26 @@
       elif (== kind "session")
         (upsert_session client data)
         (if (== session client/selected)
-          (do (set client/session_revision data/revision)
+          (set client/session_revision data/revision)
           (var title : Str data/title)
           (render_session_title client title data/channel)
           (var selected_tab (session_tab client session))
           (set selected_tab/cache/session data)
-          (update_controls client)))
+          (update_controls client))
       elif (== kind "snapshot")
         (if (== session client/selected) (apply_snapshot client data))
       elif (== kind "mode/state")
         (if (== session client/selected)
-          (do (set client/mode data)
+          (set client/mode data)
           (render_tabs client)
-          (update_controls client)))
+          (update_controls client))
       elif (|| (== kind "turn") (== kind "reply"))
         (if (== session client/selected) (apply_record client data))
       elif (== kind "records")
         (if (== session client/selected)
-          (do (var records : (List Any) data/records)
+          (var records : (List Any) data/records)
           (var cursor : Str data/cursor)
-          (apply_records client records cursor)))
+          (apply_records client records cursor))
       elif (== kind "round/state")
         (apply_run client session data)
       elif (== kind "card")
@@ -2079,12 +2167,13 @@
         (resume_replies questions)
         (if_not ($absent? client/pending) (send_pending client))
         (if (|| client/queued_submit (!= client/queued_prompt ""))
-          (do (var queued client/queued_prompt)
+          (var queued client/queued_prompt)
           (set client/queued_prompt "")
           (set client/queued_submit false)
           (if (&& (str/starts_with? queued "/") (! (str/starts_with? queued "//")))
             (send_command client queued)
-            else (stage_submission client queued)))))
+          else
+            (stage_submission client queued))))
   catch Error
     (notice ^key "connection" ^^sticky client "Refreshing the live connection…")
     (connect_socket client)))
@@ -2119,8 +2208,8 @@
     (var old : EventTarget tab/socket)
     ($ws/close old))
   (if (== tab/id client/selected)
-    (do (set client/connected false)
-    (update_controls client)))
+    (set client/connected false)
+    (update_controls client))
   (var origin ($browser/origin))
   (var parts : (List Str) (str/split origin "://"))
   (var scheme (if (== parts/0 "https") "wss" else "ws"))
@@ -2133,8 +2222,8 @@
           else ""))))
   (set tab/socket socket)
   (if (== tab/id client/selected)
-    (do (set client/socket socket)
-    (set client/socket_epoch epoch)))
+    (set client/socket socket)
+    (set client/socket_epoch epoch))
   ($time/after
     10000.0
     (fn [] : Nil
@@ -2150,10 +2239,10 @@
       (interrupt_output (live_store client) tab/id) (schedule_live_output client)
       (set tab/connected false)
       (if (== tab/id client/selected)
-        (do (set client/connected false)
+        (set client/connected false)
         (update_controls client)
         (if client/ready
-          (notice ^key "connection" ^^sticky client "Reconnecting… Your draft is saved."))))
+          (notice ^key "connection" ^^sticky client "Reconnecting… Your draft is saved.")))
       (if client/ready (reconnect_stream client tab epoch)))))
 
 (fn reconnect_stream [client : Client, tab : SessionTab, epoch : Int] : Nil
@@ -2193,14 +2282,16 @@
     (var message : Any ($json/parse text))
     (let frame_kind : Str message/type)
     (if (|| (== frame_kind "log") (== frame_kind "log/gap"))
-      (do (handle_log_frame client message) (return)))
+      (handle_log_frame client message)
+      (return))
     (var version : Int message/protocol)
     (var sequence_text : Str message/sequence)
     (var sequence : Int ($json/parse sequence_text))
     (if (|| (!= version protocol_version) (!= sequence (+ tab/sequence 1)))
-      (do (interrupt_output (live_store client) tab/id) (schedule_live_output client)
+      (interrupt_output (live_store client) tab/id)
+      (schedule_live_output client)
       (connect_stream client tab)
-      (return)))
+      (return))
     (ensure_feature_host client)
     (set tab/sequence sequence)
     (var server_epoch : Str message/epoch)
@@ -2215,42 +2306,42 @@
     (var session : Str message/session)
     (var data : Any message/data)
     (if (== kind "console")
-      (do (if (== session tab/id) (live_console client session data))
+      (if (== session tab/id) (live_console client session data))
       (if (== tab/id client/selected) (set client/message_sequence sequence))
       (if (== session tab/id) (browser_event client kind session data))
-      (return)))
+      (return))
     (if (== kind "session/deleted")
-      (do (var observed_here (|| (== session tab/id) (== tab/id client/selected)))
+      (var observed_here (|| (== session tab/id) (== tab/id client/selected)))
       (forget_session client (string_or data/id ""))
       (if observed_here (browser_event client kind session data))
-      (return)))
+      (return))
     (if (== session tab/id) (observe_output output_store session kind data))
     (var ui : UiClient client/ui)
     (if (|| (== session tab/id) (&& (== session "") (== tab/id client/selected)))
       (browser_event client kind session data))
     (var center : NotificationCenter client/center)
     (if (!= center/epoch server_epoch)
-      (do (set center/epoch server_epoch)
-      (invalidate_questions center)))
+      (set center/epoch server_epoch)
+      (invalidate_questions center))
     (var inbox : ProducerInbox client/inbox)
     (producer_event inbox kind server_epoch data)
     (if (== kind "snapshot") (center_snapshot center session data))
     (if (== kind "round/state") (invalidate_questions center session))
     (if (== kind "command")
-      (do (var confirmations : Confirmations client/confirmations)
-      (command_confirmation confirmations session data)))
+      (var confirmations : Confirmations client/confirmations)
+      (command_confirmation confirmations session data))
     (ui_event ui kind data)
     (if (== kind "ui/state") (sync_plugin_styles client))
     (if ($present? client/browser_appearance)
-      (do (var appearance : BrowserAppearance client/browser_appearance)
-      (appearance_event appearance kind data (== tab/id client/selected))))
+      (var appearance : BrowserAppearance client/browser_appearance)
+      (appearance_event appearance kind data (== tab/id client/selected)))
     (if (&& (== tab/id client/selected) (== kind "ui/state"))
       (invalidate_status client server_epoch (string_or data/data_revision "")))
     (if (== kind "ready") (set tab/connected true))
     (if (&& (== kind "card") (!= tab/id client/selected))
-      (do (var other_host : CardHost client/cards)
+      (var other_host : CardHost client/cards)
       (card_observed other_host session data/card)
-      (if (== (string_or data/event "") "defined") (card_defined other_host session data/card))))
+      (if (== (string_or data/event "") "defined") (card_defined other_host session data/card)))
     (if (== tab/id client/selected)
       (set client/message_sequence (- sequence 1))
         (socket_message client text)
@@ -2258,23 +2349,23 @@
       else
         (var cache : Any tab/cache)
         (if (&& (== kind "snapshot") (== session tab/id))
-          (do (var incoming : (List Any) data/records)
-            (var previous : (List Any) cache/records)
-            (set data/records (historical_records (delegation_snapshot incoming previous)))
-            (set data/preview (historical_records data/preview))
-            (set tab/cache data)
-            (set tab/title data/session/title)))
+          (var incoming : (List Any) data/records)
+          (var previous : (List Any) cache/records)
+          (set data/records (historical_records (delegation_snapshot incoming previous)))
+          (set data/preview (historical_records data/preview))
+          (set tab/cache data)
+          (set tab/title data/session/title))
         (if (&& (== session tab/id) (|| (== kind "turn") (== kind "reply")))
-          (do (var preview : (List Any) cache/preview)
-          (set cache/preview (bounded_blocks (merge_blocks preview [data]) true))))
+          (var preview : (List Any) cache/preview)
+          (set cache/preview (bounded_blocks (merge_blocks preview [data]) true)))
         (if (&& (== session tab/id) (== kind "round/state"))
-          (do (set cache/round data)
+          (set cache/round data)
           (var rounds : (List Any) cache/rounds)
           (set cache/rounds (merge_blocks rounds [data]))
-          (acknowledge_run client data session)))
+          (acknowledge_run client data session))
         (if (&& (== session tab/id) (== kind "mode/state")) (set cache/mode data))
         (if (&& (== session tab/id) (== kind "command"))
-          (do (var id : Str data/id)
+          (var id : Str data/id)
           (var output (string_or data/display (string_or data/text "")))
           (var command_preview : (List Any) cache/preview)
           (set cache/preview
@@ -2288,14 +2379,18 @@
                     ^turn 0
                     ^role "assistant"
                     ^phase "command"
-                    ^name data/name ^raw data/raw ^command_id id
-                    ^mode_instance data/mode_instance ^input_id data/input_id
-                    ^exit data/exit ^seq ($to_str (dint data/start_seq))
+                    ^name data/name
+                    ^raw data/raw
+                    ^command_id id
+                    ^mode_instance data/mode_instance
+                    ^input_id data/input_id
+                    ^exit data/exit
+                    ^seq ($to_str (dint data/start_seq))
                     ^text output
                     ^status data/status
                     ^view data/view
                     ^!durable}])
-              true)))))
+              true))))
     (render_tabs client)
   catch Error
     (connect_stream client tab)))
@@ -2314,9 +2409,9 @@
   (media_select attachments client/selected)
   # A direct conversation URL needs the same draft initialization as navigation.
   (if (== client/generation 0)
-    (do (set client/generation 1)
+    (set client/generation 1)
     (var key (draft_key (if (== client/selected "") "new" else client/selected)))
-    ($dom/set_input_value client/prompt (?? (storage_get key) ""))))
+    ($dom/set_input_value client/prompt (?? (storage_get key) "")))
   (connect_socket client))
 
 (fn authenticate [client : Client] : Nil
@@ -2364,13 +2459,14 @@
         (set_hidden "command_receipt_recover" ($absent? commands/pending))
         (set_hidden "command_receipt_discard" ($absent? commands/pending))
         (if ($absent? commands/pending)
-          (do (var discard ($dom/element "command_receipt_discard")) (set discard/open false)))
+          (var discard ($dom/element "command_receipt_discard"))
+          (set discard/open false))
         (var forget ($dom/element "command_receipt_forget"))
         (set forget/disabled commands/resolving)
         (notice ^key "command-recovery" ^sticky ($present? commands/pending) client message)
         (if (&& ($present? client/browser_clients) ($present? client/status))
-          (do (var browsers : BrowserClients client/browser_clients)
-          (update_clients browsers (launcher_items client/status/browser_clients) client/status))))))
+          (var browsers : BrowserClients client/browser_clients)
+          (update_clients browsers (launcher_items client/status/browser_clients) client/status)))))
   (ensure_feature_host client)
   (initialize_voice_feature client)
   (set client/browser_clients (create_clients root client/safe_ui (browser_bridge client)))
@@ -2453,9 +2549,14 @@
       (fn [method : Str, path : Str, payload : Any, done : (Fn [Int Any] Nil)] : Nil
         (var parts ($str/split path "/"))
         (if (&& (== method "POST") (== parts/.size 6) (== parts/5 "commands"))
-          (do (var commands : CommandClient client/command_client)
-          (dispatch_command commands parts/4 (string_or payload/text "") payload/expected_command done)
-          (return)))
+          (var commands : CommandClient client/command_client)
+          (dispatch_command
+            commands
+            parts/4
+            (string_or payload/text "")
+            payload/expected_command
+            done)
+          (return))
         (api client method path payload done))))
   (set client/ui
     (create_ui
@@ -2529,8 +2630,8 @@
       (if (== chord (action_chord composer_ui "composer/close_commands" "Escape"))
         (set_hidden "commands" true))
       (if (&& (== chord (action_chord composer_ui "composer/send" "Enter")) (! ($event/is_composing event)))
-        (do ($dom/prevent_default event)
-        (send client)))))
+        ($dom/prevent_default event)
+        (send client))))
   ($dom/add_event_listener
     client/prompt
     "input"
@@ -2569,9 +2670,9 @@
     (fn [event : Any] : Nil
       (if client/viewing_history
         (select_session client client/selected)
-        else (do
-          ($dom/scroll_end client/transcript)
-          (set_hidden "new_output" true)))))
+      else
+        ($dom/scroll_end client/transcript)
+        (set_hidden "new_output" true))))
   ($dom/add_event_listener
     client/transcript
     "scroll"

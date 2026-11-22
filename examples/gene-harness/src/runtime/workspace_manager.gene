@@ -33,9 +33,9 @@
   (let handle ($fs/try_lock path))
   (if ($absent? handle)
     true
-    else (do
-      handle/.close
-      false)))
+  else
+    handle/.close
+    false))
 
 (fn workspace_busy? [root : Str]
   (||
@@ -106,7 +106,7 @@
   (for name in ["startup_failure" "bootstrap.log" "host.log.1" "host.log"]
     (let path $"${root}/.gene-harness/${name}")
     (if ($fs/exists? path)
-      (do (let text
+      (let text
         (try
           ((Path "text") ($fs/read_text_page ^lines 100000 ^max_bytes 1048576 path))
         catch Error
@@ -117,7 +117,7 @@
             name
             """:
 """
-            (byte_suffix (manager_typed name text) 4096)))))))
+            (byte_suffix (manager_typed name text) 4096))))))
   (manager_redact
     root
     ($str/join
@@ -183,13 +183,13 @@
     (let status (manager_probe manager entry))
     (if (|| manager/busy/.get (!= version manager/revision/.get)) (return nil))
     (if (!= status (manager/statuses/.get .get entry/id))
-      (do (manager/statuses/.get .put entry/id status)
-      (set changed true))))
+      (manager/statuses/.get .put entry/id status)
+      (set changed true)))
   # A directory removed or renamed outside the manager disappears from the list.
   (map_for [id status] in (data_copy manager/statuses/.get)
     (if ($absent? (present .get ($to_str id)))
-      (do (manager_forget_status manager ($to_str id))
-      (set changed true))))
+      (manager_forget_status manager ($to_str id))
+      (set changed true)))
   (if changed (manager_changed manager))
   nil)
 
@@ -508,14 +508,14 @@
       catch Error
         (let error $err)
         (if (&& ($present? entry) (["unavailable" "control_timeout" "startup_timeout" "startup_failed"] .contains? error/code))
-          (do (let status
+          (let status
             (data_copy
               (??
                 (manager/statuses/.get .get entry/id)
                 {^id entry/id ^name entry/name ^dir entry/dir ^port 0})))
           (status .put "status" (if (== error/code "startup_failed") "error" else "unavailable"))
           (status .put "message" error/.message)
-          (manager/statuses/.get .put entry/id status)))
+          (manager/statuses/.get .put entry/id status))
         (fail error)
       ensure
         (manager/busy .set false)

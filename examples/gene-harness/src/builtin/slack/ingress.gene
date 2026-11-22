@@ -61,7 +61,9 @@
      ^author (slack_id event/user "UW" "author ID")
      ^text (if (== text/.trim "") event/text else text/.trim)}
     catch SlackError nil))
-  (if ($absent? message) (do (result .put "reason" "invalid_event") (return result)))
+  (if ($absent? message)
+    (result .put "reason" "invalid_event")
+    (return result))
   (result .put "message" message)
   (result .put "mentioned" (event/text .contains? mention))
   (result .delete "reason")
@@ -72,10 +74,10 @@
 (fn receive_envelope [channels, supplied, envelope]
   (var account supplied)
   (if (== ($head supplied) Str)
-    (do (set account nil)
+    (set account nil)
     (for candidate in (channels .ChannelHost:accounts "slack")
       (if (== candidate/id supplied) (set account candidate)))
-    (if ($absent? account) (slack_error "not_found" "Slack account not configured."))))
+    (if ($absent? account) (slack_error "not_found" "Slack account not configured.")))
   (let event (normalize_envelope account envelope))
   (if ($absent? event) (return {^status "ignored" ^reason "unsupported_envelope"}))
   (channels .ChannelHost:receive account/id event))

@@ -26,16 +26,17 @@
         {^name "channels/slack" ^summary "The Slack Socket Mode receiver."})
       # ^start false (tests, offline hosts) leaves the loop to the caller.
       (if (!= options/start false)
-        (do (let current ($cell nil))
-        (host .PluginHost:service "socket_mode" ^slot "channels/slack"
-          ^quiesce (fn []
-            (let transport current/.get)
-            (if ($present? transport) (close_transport transport)))
+        (let current ($cell nil))
+        (host ^slot "channels/slack" ^quiesce (fn [] (let transport current/.get) (if ($present? transport) (close_transport transport))) .PluginHost:service
+          "socket_mode"
           (fn []
-            (let transport (open_transport channels ^start false
-              ^driver options/driver ^requester options/requester))
+            (let transport
+              (open_transport ^!start ^driver options/driver ^requester options/requester channels))
             (current .set transport)
-            (try (transport_loop transport) ensure (close_transport transport))))))
+            (try
+              (transport_loop transport)
+            ensure
+              (close_transport transport)))))
       (contribute_doc host "harness/channels"
         "Slack accounts, thread sessions, operator trust and queue controls."
         "examples/gene-harness/docs/channels.md" ^tags ["slack" "channels" "sessions"]))))

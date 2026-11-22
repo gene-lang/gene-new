@@ -44,8 +44,8 @@
   (let groups {})
   (for row in input/records
     (if row/active
-      (do (selected .push row)
-        (groups .put row/group (+ (?? (groups .get row/group) 0) row/amount)))))
+      (selected .push row)
+      (groups .put row/group (+ (?? (groups .get row/group) 0) row/amount))))
   (let ordered ($order/sort_by selected /amount))
   (var digest 0)
   (for row in ordered (set digest (// (+ (* digest 31) row/id) 1000000007)))
@@ -76,8 +76,8 @@
   (for event in input/events
     (var account (state .get event/key))
     (if ($absent? account)
-      (do (set account {^balance 0 ^revision 0})
-        (state .put event/key account)))
+      (set account {^balance 0 ^revision 0})
+      (state .put event/key account))
     (if (== event/kind 0)
       (account .put "balance" (+ account/balance event/amount))
       elif (== event/kind 1)
@@ -105,8 +105,8 @@
     (repeat i in repetitions (set result (callable input)))
     (set elapsed (- ($os/monotonic_ms) calibration_started))
     (if (< elapsed target_ms)
-      (do ($assert (< repetitions 1048576) "benchmark calibration exceeded repetition limit")
-        (set repetitions (* repetitions 2)))))
+      ($assert (< repetitions 1048576) "benchmark calibration exceeded repetition limit")
+      (set repetitions (* repetitions 2))))
   (let expected result)
   (let started ($os/monotonic_ms))
   (repeat measured_index in repetitions (set result (callable input)))

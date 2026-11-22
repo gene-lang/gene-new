@@ -36,25 +36,22 @@
       ($binary/slice ($binary/from_list output/.to_list) 0 count)
       else (if (== count 0) nil
         else (if (== count -1)
-          (do
-            (self/ended .set true)
-            nil)
-          else (fail (new ArchiveError (self/error_fn self/state)))))))
+               (self/ended .set true)
+               nil
+             else
+               (fail (new ArchiveError (self/error_fn self/state)))))))
   (message action [kind : Int]
     (if self/closed/.get (fail (new ArchiveError "codec is closed")))
     (if (< (self/action_fn self/state kind) 0)
-      (do
-        (let detail (self/error_fn self/state))
-        (fail (new ArchiveError
-          (if (== detail "") "codec action is invalid or busy" else detail)))))
+      (let detail (self/error_fn self/state))
+      (fail (new ArchiveError (if (== detail "") "codec action is invalid or busy" else detail))))
     nil)
   (message close []
     (if (not self/closed/.get)
-      (do
-        (self/closed .set true)
-        ($C/close self/state)
-        ($ffi/Library/close self/library)
-        self/lease/.close))
+      (self/closed .set true)
+      ($C/close self/state)
+      ($ffi/Library/close self/library)
+      self/lease/.close)
     nil))
 
 (fn _open_codec [mode : Int]
@@ -119,15 +116,13 @@
           (let output (self/codec .pull max_bytes))
           (if ($present? output) (return output))
           (if self/codec/ended/.get
-            (do
-              (self/eof .set true)
-              (return nil)))
+            (self/eof .set true)
+            (return nil))
           (let input (await (self/source .AsyncReader:read 65536)))
           (if (== input nil)
-            (do
-              (self/codec .action 2)
-              (self/eof .set true)
-              (return nil)))
+            (self/codec .action 2)
+            (self/eof .set true)
+            (return nil))
           (if (== ($binary/size input) 0)
             (fail (new ArchiveError "gzip source made zero progress")))
           (self/codec .feed input))
@@ -139,22 +134,20 @@
 (impl IoResource for GzipReader
   (message close [] : Nil
     (if (not self/closed/.get)
-      (do
-        (self/closed .set true)
-        (let pending self/pending/.get)
-        (if (!= pending nil) pending/.cancel)
-        (let operation (fn []
-          (if (!= pending nil)
-            (while (not pending/.done?) ($sleep 10)))
-          (try self/codec/.close
-            ensure
-              (if self/own_source
-                (do
-                  self/source/.IoResource:close
-                  (await self/source/.IoResource:wait_closed))))
+      (self/closed .set true)
+      (let pending self/pending/.get)
+      (if (!= pending nil) pending/.cancel)
+      (let operation
+        (fn []
+          (if (!= pending nil) (while (not pending/.done?) ($sleep 10)))
+          (try
+            self/codec/.close
+          ensure
+            (if self/own_source
+              self/source/.IoResource:close
+              (await self/source/.IoResource:wait_closed)))
           nil))
-        (self/cleanup .set
-          ($io/_retain_cleanup (spawn ^lane root (operation))))))
+      (self/cleanup .set ($io/_retain_cleanup (spawn ^lane root (operation)))))
     nil)
   (message wait_closed [] : (Task Nil Error)
     self/.IoResource:close
@@ -280,22 +273,20 @@
 (impl IoResource for GzipWriter
   (message close [] : Nil
     (if (not self/closed/.get)
-      (do
-        (self/closed .set true)
-        (let pending self/pending/.get)
-        (if (!= pending nil) pending/.cancel)
-        (let operation (fn []
-          (if (!= pending nil)
-            (while (not pending/.done?) ($sleep 10)))
-          (try self/codec/.close
-            ensure
-              (if self/own_sink
-                (do
-                  self/sink/.IoResource:close
-                  (await self/sink/.IoResource:wait_closed))))
+      (self/closed .set true)
+      (let pending self/pending/.get)
+      (if (!= pending nil) pending/.cancel)
+      (let operation
+        (fn []
+          (if (!= pending nil) (while (not pending/.done?) ($sleep 10)))
+          (try
+            self/codec/.close
+          ensure
+            (if self/own_sink
+              self/sink/.IoResource:close
+              (await self/sink/.IoResource:wait_closed)))
           nil))
-        (self/cleanup .set
-          ($io/_retain_cleanup (spawn ^lane root (operation))))))
+      (self/cleanup .set ($io/_retain_cleanup (spawn ^lane root (operation)))))
     nil)
   (message wait_closed [] : (Task Nil Error)
     self/.IoResource:close
@@ -392,14 +383,13 @@
       (- status 1)
       ensure
         (if (!= job nil)
-          (do
-            (cancel_job job)
-            (while (== (poll job) 0) ($sleep 10))
-            (set final_status (poll job))
-            (let message (job_error job))
-            (if ($str/contains? message "cleanup remains:")
-              (set cleanup_issue message))
-            ($C/close job)))
+          (cancel_job job)
+          (while (== (poll job) 0)
+            ($sleep 10))
+          (set final_status (poll job))
+          (let message (job_error job))
+          (if ($str/contains? message "cleanup remains:") (set cleanup_issue message))
+          ($C/close job))
         (if (!= library nil) ($ffi/Library/close library))
         lease/.close
         (if (!= cleanup_issue nil)

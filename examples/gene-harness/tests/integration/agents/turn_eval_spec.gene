@@ -17,8 +17,8 @@
             "(Outcome ^^done ^reply \"left\")\n*** Begin Patch\n*** Update File: shared.txt\n@@\n-left0\n+left1\n*** End Patch\n"
             ^record (fn [kind data]
               (if (== kind "turn/response")
-                (do (prepared .send true)
-                ($sleep 100)))))))
+                (prepared .send true)
+                ($sleep 100))))))
         prepared/.recv
         (let second (spawn ^lane root
           (evaluate_turn 2 root

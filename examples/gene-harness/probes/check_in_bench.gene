@@ -61,13 +61,13 @@
   (let provider (option args "--provider" ""))
   (let catalog (row runtime/h "seams" "models/catalog"))
   (if ($present? catalog)
-    (do (catalog/value/refresh)
+    (catalog/value/refresh)
     (let due (+ ($os/monotonic_ms) 45000))
     (loop
       (let state (provider_state catalog provider))
       (if (|| (== state "ready") (>= ($os/monotonic_ms) due)) (break))
       ($sleep 250))
-    ($println ($to_str "provider " provider ": " (?? (provider_state catalog provider) "unknown")))))
+    ($println ($to_str "provider " provider ": " (?? (provider_state catalog provider) "unknown"))))
   {^row (model_row) ^runtime runtime ^service runtime/services/values/decisions})
 
 (fn open_engine [name : Str, args]
@@ -97,11 +97,18 @@
       else (engine/row/decide engine/resource {^settings {} ^state fitted/state ^questions questions ^timeout_ms 10000}))
     catch Error {^status "error" ^reason ($to_str $err/.message)}))
   (let latency (- ($os/monotonic_ms) started))
-  (let result (if ($present? raw/status) raw
-    else (do
-      (let checked (validate_answers questions raw/answers))
-      (if ($present? checked/error) {^status "error" ^reason checked/error}
-        else {^status "ok" ^answers checked/value ^model raw/model ^input_tokens raw/usage/input_tokens}))))
+  (let result (if ($present? raw/status)
+                raw
+              else
+                (let checked (validate_answers questions raw/answers))
+                (if ($present? checked/error)
+                  {^status "error" ^reason checked/error}
+                else
+                  {
+                    ^status "ok"
+                    ^answers checked/value
+                    ^model raw/model
+                    ^input_tokens raw/usage/input_tokens})))
   {^rule nil ^verdict (fuse nil result) ^result result ^tokens tokens ^latency_ms latency ^trimmed fitted/trimmed})
 
 # Earlier progress turns in front of a case, up to roughly a real packed size.
@@ -168,8 +175,8 @@
   (let roots [])
   (for event in records
     (if (== event/type "turn/start")
-      (do (let root (?? event/payload/task_root event/payload/round))
-      (if_not (roots .contains? root) (roots .push root)))))
+      (let root (?? event/payload/task_root event/payload/round))
+      (if_not (roots .contains? root) (roots .push root))))
   roots)
 
 (fn task_request [records, root : Str] : Str
@@ -191,8 +198,8 @@
   (let directory (option args "--replay" ""))
   (let engine_name (option args "--engine" "rules"))
   (if (&& (!= engine_name "rules") (! (flag? args "--allow-cloud")))
-    (do ($println "Replaying recorded sessions to a cloud engine sends real transcripts. Pass --allow-cloud once the owner has approved it.")
-      (return 2)))
+    ($println "Replaying recorded sessions to a cloud engine sends real transcripts. Pass --allow-cloud once the owner has approved it.")
+    (return 2))
   (let labels_path (option args "--labels" nil))
   (let labels (if ($absent? labels_path) [] else ($serde/read_data ($fs/read_text labels_path))))
   (let events (open_event_store directory))
@@ -245,8 +252,14 @@
       ($println ($to_str source ": " true_pause " correct pauses, " false_pause " false pauses, " missed " missed pauses"))))
   ($println ($to_str rows/.size " boundaries in " directory))
   (if ($present? template_path)
-    (do ($fs/write_text template_path ($serde/write_data templates))
-    ($println $"label template: ${templates/.size} boundaries in ${template_path}; set each ^label to \"pause\" or \"continue\", then pass the file as --labels")))
+    ($fs/write_text template_path ($serde/write_data templates))
+    ($println
+      ($to_str
+        "label template: "
+        templates/.size
+        " boundaries in "
+        template_path
+        "; set each ^label to \"pause\" or \"continue\", then pass the file as --labels")))
   (let out (option args "--out" nil))
   (if ($present? out) ($fs/write_text out ($serde/write_data rows)))
   0)

@@ -116,33 +116,33 @@
     (match event/type
       when "turn/start"
         (if (== (?? payload/task_root payload/round) task_root)
-          (do (rounds .put payload/round true)
+          (rounds .put payload/round true)
           (let key ($to_str payload/turn))
           (if ($absent? (turns .get key))
-            (do (turns .put key {^turn payload/turn ^round payload/round})
-            (order .push key)))))
+            (turns .put key {^turn payload/turn ^round payload/round})
+            (order .push key)))
       when "turn/response"
         (if ($present? (rounds .get ($to_str payload/round)))
-          (do (let entry (turns .get ($to_str payload/turn)))
-          (if ($present? entry) (entry .put "response" payload/text))))
+          (let entry (turns .get ($to_str payload/turn)))
+          (if ($present? entry) (entry .put "response" payload/text)))
       when "turn/patch"
         (let entry (turns .get ($to_str payload/turn)))
         (if (&& ($present? entry) (== entry/round payload/round)) (entry .put "patch_text" payload/text))
       when "turn/end"
         (let entry (turns .get ($to_str payload/turn)))
         (if (&& ($present? entry) (== entry/round payload/round))
-          (do (entry .put "end_reason" payload/reason)
+          (entry .put "end_reason" payload/reason)
           (entry .put "end_text" (?? payload/text nil))
           (entry .put "result" (?? payload/result_line nil))
-          (entry .put "evidence" (?? payload/evidence nil))))
+          (entry .put "evidence" (?? payload/evidence nil)))
       else nil))
   (let result [])
   (for key in order
     (let entry (turns .get key))
     (if (&& ($absent? entry/result) ($present? entry/end_reason))
-      (do (let rebuilt (recorded_evidence entry))
+      (let rebuilt (recorded_evidence entry))
       (entry .put "result" rebuilt/line)
-      (entry .put "evidence" rebuilt/evidence)))
+      (entry .put "evidence" rebuilt/evidence))
     (result .push entry))
   result)
 
@@ -273,11 +273,19 @@
   # An engine's own size rejection: trim further and retry inside the deadline.
   (let left (- check_in_timeout_ms (- ($os/monotonic_ms) started)))
   (if (&& (== result/status "too_large") (> fitted/turns/.size 1) (> left 1000))
-    (do (let half ($drop fitted/turns (/ fitted/turns/.size 2)))
+    (let half ($drop fitted/turns (/ fitted/turns/.size 2)))
     (set fitted (fit_turns request latest half true questions limits))
     (set fitted (fitted .assoc "trimmed" (- window/.size fitted/turns/.size)))
-    (set result (decide service {^use use ^state fitted/state ^questions questions
-      ^timeout_ms left ^fence fence ^session session}))))
+    (set result
+      (decide
+        service
+        {
+          ^use use
+          ^state fitted/state
+          ^questions questions
+          ^timeout_ms left
+          ^fence fence
+          ^session session})))
   {^result result ^fitted fitted ^questions questions})
 
 # Runs one check at a committed boundary and returns its durable record, or nil

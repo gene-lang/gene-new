@@ -8,5 +8,5 @@
   ($fs/write_text_atomic ($path/join root "response.gene") ($serde/write_data {^files plan/files}))
   (commit_patch plan ^after_rename (fn [number]
     (if (== number 1)
-      (do ($fs/write_text ($path/join root "owner-pid") ($to_str ($os/process_id)))
-        ($sleep 60000))))))
+      ($fs/write_text ($path/join root "owner-pid") ($to_str ($os/process_id)))
+      ($sleep 60000)))))

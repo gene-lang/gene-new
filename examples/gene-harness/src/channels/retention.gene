@@ -7,14 +7,14 @@
   # Retain its identity, revision, digest and known external message ID on
   # both sides, so asymmetric maintenance cannot reset or repost the message.
   (if (== table_name "outbox")
-    (do (let progress ((?? state/progress {}) .get id))
-      (if_not ($absent? progress)
-        (progress .put "revision" ($math/max (?? progress/revision -1) record/intent/revision))
-        # A newer intent may have been saved just before a crash, before it
-        # reached the outbox. Retiring the old delivery must not discard it.
-        (if (<= (?? progress/intent/revision progress/revision) record/intent/revision)
-          (do (progress .put "retired" true)
-            (progress .delete "intent"))))))
+    (let progress ((?? state/progress {}) .get id))
+    (if_not ($absent? progress)
+      (progress .put "revision" ($math/max (?? progress/revision -1) record/intent/revision))
+      # A newer intent may have been saved just before a crash, before it
+      # reached the outbox. Retiring the old delivery must not discard it.
+      (if (<= (?? progress/intent/revision progress/revision) record/intent/revision)
+        (progress .put "retired" true)
+        (progress .delete "intent"))))
   (record/intent .delete "parts")
   (if_not ($absent? record/result/intent) (record/result/intent .delete "parts"))
   (record .put "compacted" true))

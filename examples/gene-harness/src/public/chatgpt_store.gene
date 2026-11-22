@@ -164,11 +164,11 @@
   (with_store_lock root "host.lock" (fn []
     (let path ($path/join (chatgpt_root root) "host.json"))
     (if ($fs/exists? path)
-      (do (let stored (try ($json/parse ($fs/read_text path)) catch Error nil))
-        (if (|| (!= ($head stored/id) Str)
-          ($absent? (#"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" .match stored/id)))
-          (fail (ProviderError ^_msg "ChatGPT host identity is unreadable; repair the local host record before signing in")))
-        (return stored/id)))
+      (let stored (try ($json/parse ($fs/read_text path)) catch Error nil))
+      (if (|| (!= ($head stored/id) Str) ($absent? (#"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" .match stored/id)))
+        (fail
+          (ProviderError ^_msg "ChatGPT host identity is unreadable; repair the local host record before signing in")))
+      (return stored/id))
     (let id (uuid_host_id))
     ($fs/write_text_atomic ^^owner_only path ($json/stringify {^id id}))
     id)))

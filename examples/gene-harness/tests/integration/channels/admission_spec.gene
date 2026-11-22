@@ -89,11 +89,15 @@
                 (try
                   {^kind "admitted" ^receipt (submit_round f/service/runtime/services/values/controller f/session "browser-forced" 1 "Unsent browser draft"
                     ^on_admit (fn [receipt]
-                      (if blocked (do (entered .set true) (admission .recv)))))}
+                      (if blocked
+                        (entered .set true)
+                        (admission .recv))))}
                 catch RoundError {^kind $err/code})))
               (let channel (fn [blocked]
                 (admit_channel_queue f/service/runtime/services/values/controller f/session (fn [parts]
-                  (if blocked (do (entered .set true) (admission .recv)))
+                  (if blocked
+                    (entered .set true)
+                    (admission .recv))
                   (authorize_parts f/owner f/route/id parts ^workspace root)))))
               (scope
                 (let first (spawn ^lane root (if (== winner "browser") (browser true) else (channel true))))
@@ -112,8 +116,9 @@
               ($assert (== (/pending (queue_status f/queues f/session)) (if (== winner "browser") 1 else 0)))
               (model .send nil) (wait_round f/service f/session)
               (if (== winner "browser")
-                (do ($assert (== (/kind (drain f)) "admitted"))
-                (model .send nil) (wait_round f/service f/session)))
+                ($assert (== ((Path "kind") (drain f)) "admitted"))
+                (model .send nil)
+                (wait_round f/service f/session))
               ($assert (== (/pending (queue_status f/queues f/session)) 0))))))))
 
   (it "leaves arrivals during authorization for the next drain" []

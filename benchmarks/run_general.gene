@@ -15,9 +15,13 @@
     ($assert (! ($absent? row/result)) "missing workload result")
     (results .put row/name row/result)
     (if (> target_ms 0)
-      (do ($assert (&& (> row/repetitions 0) (<= row/repetitions 1048576)
-          (== row/repetitions ($to_int row/repetitions))) "invalid repetition count")
-        ($assert (> row/elapsed_ms 0) "timer resolution too low; increase GENE_BENCH_TARGET_MS"))))
+      ($assert
+        (&&
+          (> row/repetitions 0)
+          (<= row/repetitions 1048576)
+          (== row/repetitions ($to_int row/repetitions)))
+        "invalid repetition count")
+      ($assert (> row/elapsed_ms 0) "timer resolution too low; increase GENE_BENCH_TARGET_MS")))
   (for entry in (cases)
     ($assert ($has_key? results entry/0) $"missing workload: ${entry/0}"))
   results)
@@ -67,9 +71,9 @@
   (let directory ($path/parent this_mod/.path))
   (let variants [(new_variant "gene") (new_variant "python")])
   (if (== ($size args/.body) 5)
-    (do (let baseline (new_variant "gene"))
-      (baseline .put "label" "baseline")
-      (variants .push baseline)))
+    (let baseline (new_variant "gene"))
+    (baseline .put "label" "baseline")
+    (variants .push baseline))
   (repeat index in ($size variants)
     (let variant variants/%index)
     (let argument_index (if (== index 2) 4 else (+ index 1)))
@@ -152,20 +156,30 @@
     (let comparison {^name name ^gene_ms_per_batch gene_stats ^python_ms_per_batch python_stats
       ^gene_over_python ratio ^result gene_group/result})
     (if (== ($size variants) 3)
-      (do (let baseline_group (variants/2/rows .get name))
-        (let baseline_stats (distribution baseline_group/batch_ms))
-        (comparison .put "baseline_ms_per_batch" baseline_stats)
-        (comparison .put "baseline_over_gene" (/ baseline_stats/median gene_stats/median))))
+      (let baseline_group (variants/2/rows .get name))
+      (let baseline_stats (distribution baseline_group/batch_ms))
+      (comparison .put "baseline_ms_per_batch" baseline_stats)
+      (comparison .put "baseline_over_gene" (/ baseline_stats/median gene_stats/median)))
     (comparisons .push comparison)
     (report .push $"| ${name} | ${(rounded gene_stats/median)} | ${(rounded python_stats/median)} | ${(rounded ratio)} |"))
   (if (== ($size variants) 3)
-    (do (report .push "")
-      (report .push "Baseline / current Gene ratio: greater than 1 means current Gene is faster.")
-      (report .push "")
-      (report .push "| Workload | Baseline ms/batch | Current ms/batch | Speedup |")
-      (report .push "| --- | ---: | ---: | ---: |")
-      (for comparison in comparisons
-        (report .push $"| ${comparison/name} | ${(rounded comparison/baseline_ms_per_batch/median)} | ${(rounded comparison/gene_ms_per_batch/median)} | ${(rounded comparison/baseline_over_gene)} |"))))
+    (report .push "")
+    (report .push "Baseline / current Gene ratio: greater than 1 means current Gene is faster.")
+    (report .push "")
+    (report .push "| Workload | Baseline ms/batch | Current ms/batch | Speedup |")
+    (report .push "| --- | ---: | ---: | ---: |")
+    (for comparison in comparisons
+      (report .push
+        ($to_str
+          "| "
+          comparison/name
+          " | "
+          (rounded comparison/baseline_ms_per_batch/median)
+          " | "
+          (rounded comparison/gene_ms_per_batch/median)
+          " | "
+          (rounded comparison/baseline_over_gene)
+          " |"))))
   (report .push "")
   (report .push "Process wall times include startup, input construction, calibration and reporting; they are not kernel speed ratios.")
   (let processes [])

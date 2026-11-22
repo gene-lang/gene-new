@@ -38,8 +38,8 @@
                 (!= previous/team record/team) (!= previous/bot_user record/bot_user)))
       (channel_error "conflict" "An account's channel identity cannot be replaced in place."))
     (if (!= previous record)
-      (do (state/accounts .put id record)
-      (state .put "policy_revision" (+ state/policy_revision 1))))
+      (state/accounts .put id record)
+      (state .put "policy_revision" (+ state/policy_revision 1)))
     {^account id ^transport transport ^owner state/id ^policy_revision state/policy_revision})))
 
 (fn configure_route [owner, account : Str, channel : Str, workspace : Str,
@@ -69,8 +69,8 @@
     (let record {^id id ^owner state/id ^transport selected/transport ^account account ^team selected/team ^channel channel
       ^workspace canonical ^approved normalized ^require_mention require_mention ^enabled enabled})
     (if (!= previous record)
-      (do (state/routes .put id record)
-      (state .put "policy_revision" (+ state/policy_revision 1))))
+      (state/routes .put id record)
+      (state .put "policy_revision" (+ state/policy_revision 1)))
     (copy record))))
 
 # One snapshot is one authorization decision. A remote workspace must query

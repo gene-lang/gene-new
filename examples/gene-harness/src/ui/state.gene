@@ -16,12 +16,12 @@
     else (plugin_state h/event_store "workspace" "workspace" "ui_experiment")))
   (var defaults nil)
   (if ($present? h/snapshots)
-    (do (let snapshot (current_snapshot h/snapshots))
+    (let snapshot (current_snapshot h/snapshots))
     (for record in (?? (snapshot/registries .get "ui_defaults") [])
       (if (== record/key "default")
-        (do (set defaults {})
+        (set defaults {})
         (map_for [key value] in record/payload
-          (if (!= ($to_str key) "name") (defaults .put ($to_str key) value))))))))
+          (if (!= ($to_str key) "name") (defaults .put ($to_str key) value))))))
   (?? saved defaults {^enabled false ^layout "chat" ^panel "" ^side "left" ^width 50 ^tokens {}}))
 
 (fn validate_theme_colors [colors, declared = []]

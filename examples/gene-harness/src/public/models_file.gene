@@ -39,17 +39,21 @@
   (for key in ["input" "efforts"]
     (let values (value .get key))
     (if ($present? values)
-      (do (require_list values $"Model ${key}")
-        (for item in values (require_text item $"Model ${key} entry")))))
+      (require_list values $"Model ${key}")
+      (for item in values
+        (require_text item $"Model ${key} entry"))))
   (if ($present? value/default_effort)
-    (do (require_text value/default_effort "Model default_effort")
-      (if (&& ($present? value/efforts) (! (value/efforts .contains? value/default_effort)))
-        (config_error "Model default_effort must be in efforts"))))
+    (require_text value/default_effort "Model default_effort")
+    (if (&& ($present? value/efforts) (! (value/efforts .contains? value/default_effort)))
+      (config_error "Model default_effort must be in efforts")))
   (if ($present? value/pricing)
-    (do (fields value/pricing ["prompt" "completion" "request" "image" "input_cache_read" "input_cache_write"] "pricing")
-      (map_for [key price] in value/pricing
-        (if_not (|| (== ($head price) Str) (== ($head price) Int) (== ($head price) Float))
-          (config_error "Model prices must be numbers or decimal strings")))))
+    (fields
+      value/pricing
+      ["prompt" "completion" "request" "image" "input_cache_read" "input_cache_write"]
+      "pricing")
+    (map_for [key price] in value/pricing
+      (if_not (|| (== ($head price) Str) (== ($head price) Int) (== ($head price) Float))
+        (config_error "Model prices must be numbers or decimal strings"))))
   ($thaw ($freeze value)))
 
 (fn validate_credential [value]

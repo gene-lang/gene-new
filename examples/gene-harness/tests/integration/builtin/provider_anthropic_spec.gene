@@ -16,10 +16,10 @@
 
 (fn content_request [value]
   (if (== ($head value) Map)
-    (do (let copied {})
-      (map_for [key item] in value
-        (if (!= ($to_str key) "cache_control") (copied .put key (content_request item))))
-      (return copied)))
+    (let copied {})
+    (map_for [key item] in value
+      (if (!= ($to_str key) "cache_control") (copied .put key (content_request item))))
+    (return copied))
   (if (== ($head value) List) (return ($map value content_request)))
   value)
 

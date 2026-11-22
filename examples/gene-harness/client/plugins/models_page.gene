@@ -29,10 +29,12 @@
 
 (fn editable [page : ModelsPage] : Bool
   (if (|| (! page/ready) page/busy page/loading)
-    (do (notice page "Wait for the current settings request to finish." true) (return false)))
+    (notice page "Wait for the current settings request to finish." true)
+    (return false))
   (var errors (items page/file/errors))
   (if (> errors/.size 0)
-    (do (notice page "Correct the reported data-file errors before saving." true) (return false)))
+    (notice page "Correct the reported data-file errors before saving." true)
+    (return false))
   true)
 
 (fn copy_config [page : ModelsPage] : Any
@@ -64,11 +66,12 @@
   (var found false)
   (for model in (items config/models)
     (if (&& (== (text model/provider) provider) (== (text model/id) id))
-      (do (set model/hidden hidden) (set found true))))
+      (set model/hidden hidden)
+      (set found true)))
   (if (! found)
-    (do (var overrides (items config/models))
+    (var overrides (items config/models))
     (overrides .push {^provider provider ^id id ^hidden hidden})
-    (set config/models overrides)))
+    (set config/models overrides))
   (save page config))
 
 (fn remove_endpoint [page : ModelsPage, provider : Str] : Nil
@@ -143,9 +146,10 @@
 
 (fn connect_provider [page : ModelsPage, provider : Str, account : Str = ""] : Nil
   (if ($present? page/login)
-    (do (var state (text page/login/state))
+    (var state (text page/login/state))
     (if (|| (== state "pending") (== state "exchanging"))
-      (do (notice page "Finish or cancel the pending sign-in first." true) (return)))))
+      (notice page "Finish or cancel the pending sign-in first." true)
+      (return)))
   (set page/login_serial (+ page/login_serial 1))
   (var serial page/login_serial)
   (var body : Any {^provider provider})
@@ -173,7 +177,10 @@
   (for account in (items page/accounts/accounts)
     (if (&& (== (text account/id) (text page/accounts/active)) (flag account/welcome_pending))
       (set selected account)))
-  (if ($absent? selected) (do (set host/hidden true) ($dom/clear host) (return)))
+  (if ($absent? selected)
+    (set host/hidden true)
+    ($dom/clear host)
+    (return))
   ($dom/clear host) (set host/hidden false)
   (var id (text selected/id))
   (var confirm ($dom/render `(button ^type "button"
@@ -183,8 +190,12 @@
     (p "Eligible requests in Gene Harness use your ChatGPT plan or credits. Manage app access and limits in ChatGPT Settings → Usage."))))
   ($dom/append card confirm)
   ($dom/add_event_listener card "keydown" (fn [event : Any] : Nil
-    (if (== (text event/key) "Tab") (do ($dom/prevent_default event) ($dom/focus confirm)))
-    (if (== (text event/key) "Escape") (do ($dom/prevent_default event) (account_action page id "acknowledge")))))
+    (if (== (text event/key) "Tab")
+      ($dom/prevent_default event)
+      ($dom/focus confirm))
+    (if (== (text event/key) "Escape")
+      ($dom/prevent_default event)
+      (account_action page id "acknowledge"))))
   ($dom/append host card) ($dom/focus confirm))
 
 (fn render_accounts [page : ModelsPage] : Nil
@@ -263,9 +274,11 @@
       ($dom/append card ($dom/render `(button ^type "button" ^data-oai-siwc-button ""
         ^on_click %(fn [event : Any] : Nil (connect_provider page provider)) "Continue with ChatGPT"))))
     (if ($present? configured)
-      (do ($dom/append card ($dom/render `(p (code %(text configured/base_url)))))
-      ($dom/append card ($dom/render `(button ^type "button" ^disabled %mutations_disabled
-        ^on_click %(fn [event : Any] : Nil (remove_endpoint page provider)) "Remove endpoint")))))
+      ($dom/append card ($dom/render `(p (code %(text configured/base_url)))))
+      ($dom/append
+        card
+        ($dom/render
+          `(button ^type "button" ^disabled %mutations_disabled ^on_click %(fn [event : Any] : Nil (remove_endpoint page provider)) "Remove endpoint"))))
     (var body ($dom/render `(tbody)))
     (var count 0)
     (for model in (items entry/models)
@@ -276,8 +289,8 @@
       (var row ($dom/render `(tr)))
       (var description ($dom/render `(td ^class_name "model_id" (strong %title) (small %id))))
       (if ($present? model/input)
-        (do (var input_types : (List Str) model/input)
-        ($dom/append description ($dom/render `(small %($str/join input_types " · "))))))
+        (var input_types : (List Str) model/input)
+        ($dom/append description ($dom/render `(small %($str/join input_types " · ")))))
       (if ($present? model/max_output)
         ($dom/append description ($dom/render `(small %($to_str "Output cap " (scalar model/max_output) " tokens")))))
       (if (== provider "claude")
@@ -356,15 +369,21 @@
   (set page/loading true) (controls page)
   (request page "GET" "/status" nil (fn [code : Int, status : Any] : Nil
     (if (!= serial page/serial) (return))
-    (if (!= code 200) (do (failed_load page code status) (return)))
+    (if (!= code 200)
+      (failed_load page code status)
+      (return))
     (set page/csrf (text status/csrf))
     ($dom/set_text ($dom/element "models_workspace") (text status/workspace))
     (request page "GET" "/models/settings" nil (fn [loaded : Int, file : Any] : Nil
       (if (!= serial page/serial) (return))
-      (if (!= loaded 200) (do (failed_load page loaded file) (return)))
+      (if (!= loaded 200)
+        (failed_load page loaded file)
+        (return))
       (request page "GET" "/models" nil (fn [ready : Int, catalog : Any] : Nil
         (if (!= serial page/serial) (return))
-        (if (!= ready 200) (do (failed_load page ready catalog) (return)))
+        (if (!= ready 200)
+          (failed_load page ready catalog)
+          (return))
         (if (!= (text file/digest) (text catalog/digest))
           (set page/loading false) (controls page)
             (notice page "Settings changed while loading. Refresh to review the current file." true)
@@ -400,16 +419,20 @@
     (var entries (items config/models)) (var found false)
     (for existing in entries
       (if (&& (== (text existing/provider) provider) (== (text existing/id) id))
-        (do (set model existing) (set found true))))
+        (set model existing)
+        (set found true)))
     (var label ($str/trim ($dom/input_value ($dom/element "model_label"))))
     (if (!= label "") (set model/label label))
     (var window ($str/trim ($dom/input_value ($dom/element "model_window"))))
-    (if (!= window "") (do (var number : Int ($json/parse window)) (set model/window number)))
+    (if (!= window "")
+      (var number : Int ($json/parse window))
+      (set model/window number))
     (var effort_text ($str/trim ($dom/input_value ($dom/element "model_efforts"))))
     (if (!= effort_text "")
-      (do (var efforts : (List Str) [])
-      (for level in ($str/split effort_text " ") (if (!= level "") (efforts .push level)))
-      (set model/efforts efforts)))
+      (var efforts : (List Str) [])
+      (for level in ($str/split effort_text " ")
+        (if (!= level "") (efforts .push level)))
+      (set model/efforts efforts))
     (var default_effort ($str/trim ($dom/input_value ($dom/element "model_default_effort"))))
     (if (!= default_effort "") (set model/default_effort default_effort))
     (if (! found) (entries .push model))

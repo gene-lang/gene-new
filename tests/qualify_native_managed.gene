@@ -17,15 +17,13 @@
     (if (!= mode "disabled")
       (command .push "-d:geneAtomicGenerationRetirementProbe"))
     (if (== mode "asan")
-      (do
-        (command .push "--passC:-fsanitize=address")
-        (command .push "--passC:-fno-omit-frame-pointer")
-        (command .push "--passL:-fsanitize=address")))
+      (command .push "--passC:-fsanitize=address")
+      (command .push "--passC:-fno-omit-frame-pointer")
+      (command .push "--passL:-fsanitize=address"))
     (if (== mode "tsan")
-      (do
-        (command .push "--passC:-fsanitize=thread")
-        (command .push "--passC:-fno-omit-frame-pointer")
-        (command .push "--passL:-fsanitize=thread")))
+      (command .push "--passC:-fsanitize=thread")
+      (command .push "--passC:-fno-omit-frame-pointer")
+      (command .push "--passL:-fsanitize=thread"))
     (command .push (if (== mode "disabled")
       "tests/test_native_managed_disabled.nim" else "tests/test_native_managed.nim"))
     (let build (await ($os/exec_async "nim" command...

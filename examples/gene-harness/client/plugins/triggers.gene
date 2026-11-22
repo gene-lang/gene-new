@@ -13,13 +13,13 @@
   (var api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) state/bridge/api)
   (api "GET" (route "") nil (fn [code : Int, data : Any] : Nil
     (if (!= code 200)
-      (do ($dom/set_text state/message "Triggers are unavailable.")
-      (return)))
+      ($dom/set_text state/message "Triggers are unavailable.")
+      (return))
     ($dom/clear state/list)
     (var definitions : (List Any) data/triggers)
     (if (== definitions/.size 0)
-      (do ($dom/set_text state/message "No triggers yet.")
-      (return)))
+      ($dom/set_text state/message "No triggers yet.")
+      (return))
     ($dom/set_text state/message "")
     (for definition in definitions
       (var id : Str definition/id)
@@ -47,9 +47,11 @@
   (api "POST" (route "") definition (fn [code : Int, result : Any] : Nil
     (if (== code 201)
       (load state)
-      else (do
-        (var problem (text result/message))
-        ($dom/set_text state/message (if (== problem "") "Could not create the trigger." else problem)))))))
+    else
+      (var problem (text result/message))
+      ($dom/set_text
+        state/message
+        (if (== problem "") "Could not create the trigger." else problem))))))
 
 (fn style_panel [panel : EventTarget] : Nil
   # The contribution's mount root is a div after the app shell, so an
@@ -110,8 +112,10 @@
      ^update (fn [status : Any] : Nil nil)
      ^key (fn [event : Any] : Bool
        (if (&& state/open (== ($event/code event) "Escape"))
-         (do (close_panel state) true)
-         else false))})
+         (close_panel state)
+         true
+       else
+         false))})
   ($dom/append root panel)
   ($dom/append panel heading)
   (for element in [list message id kind schedule request submit] ($dom/append panel element))

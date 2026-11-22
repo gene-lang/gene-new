@@ -12,8 +12,8 @@
       (let context ($runtime/context))
       (for record in (?? (context/snapshot/registries .get "functions") [])
         (if (== record/payload/name self/name)
-          (do (let invoke ($runtime/bind_call ^named call/named record/payload/fn call/.body))
-          (return (invoke)))))
+          (let invoke ($runtime/bind_call ^named call/named record/payload/fn call/.body))
+          (return (invoke))))
       (fail (Error ^_msg $"Plugin function ${self/name} is no longer available.")))))
 
 (fn classify_repl [text : Str]
@@ -25,24 +25,25 @@
 (fn evaluate_repl [sessions, ctx]
   (var state (sessions/.get .get ctx/session))
   (if ($absent? state)
-    (do (let h ctx/runtime/h)
+    (let h ctx/runtime/h)
     (let snapshot_ref ($cell ctx/snapshot))
     (let bindings (discovery_bindings h snapshot_ref))
     # Bound once: later inputs may shadow these names with their own variables.
-    (map_for [name value] in (host_object_bindings h ctx/session ctx/runtime/root) (bindings .put name value))
-    (bindings .put "doc" (fn [name : Str] (doc h name ^snapshot snapshot_ref/.get)))
+    (map_for [name value] in (host_object_bindings h ctx/session ctx/runtime/root)
+      (bindings .put name value))
+    (bindings .put "doc" (fn [name : Str] (doc ^snapshot snapshot_ref/.get h name)))
     (let environment (env ^bindings bindings))
     (set state {^handle ($repl/open environment) ^names {} ^snapshot snapshot_ref})
-    (sessions/.get .put ctx/session state)))
+    (sessions/.get .put ctx/session state))
   (state/snapshot .set ctx/snapshot)
   (for record in (?? (ctx/snapshot/registries .get "functions") [])
     (let name record/payload/name)
     (if ($absent? (state/names .get name))
       # Carry the Callable witness into the closed Env; it exposes bindings
       # without importing this helper module's private implementation scope.
-      (do (let forwarder : Callable (LiveReplFunction ^name name))
+      (let forwarder : Callable (LiveReplFunction ^name name))
       ($repl/bind state/handle name forwarder)
-      (state/names .put name true))))
+      (state/names .put name true)))
   (let turn (operator_turn ctx))
   (let helper_bindings (operator_bindings {} turn ctx/snapshot))
   (map_for [name value] in helper_bindings ($repl/bind state/handle ($to_str name) value))

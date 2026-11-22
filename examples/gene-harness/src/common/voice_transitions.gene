@@ -33,8 +33,8 @@
   (if ($absent? raw) (return))
   (var item : Utterance raw)
   (if (== item/state "capturing")
-    (do (set item/state "finalizing")
-    (set item/audio_ms duration))))
+    (set item/state "finalizing")
+    (set item/audio_ms duration)))
 
 (fn partial_utterance [state : VoiceDrafts, id : Str, value : Str] : Nil
   (var raw : Any (find_utterance state id))
@@ -48,7 +48,7 @@
     (if (< item/order state/commit) (continue))
     (if (|| (== item/state "capturing") (== item/state "finalizing")) (break))
     (if (&& (|| (== item/state "done") (== item/state "review")) (!= ($str/trim item/text) ""))
-      (do (var session item/session)
+      (var session item/session)
       (var previous : Any state/drafts/%session)
       (var before (text previous/text))
       (var previous_ms : Int 0)
@@ -56,10 +56,12 @@
         (var duration : Int previous/audio_ms)
         (set previous_ms duration))
       (set state/drafts/%session
-        {^text ($to_str before (if (== before "") "" else " ") ($str/trim item/text))
-         ^audio_ms (+ previous_ms item/audio_ms) ^recognizer (text previous/recognizer)
-         ^review_required (|| (flag previous/review_required) (== item/state "review"))
-         ^held (|| (flag previous/held) (== item/state "review"))})))
+        {
+          ^text ($to_str before (if (== before "") "" else " ") ($str/trim item/text))
+          ^audio_ms (+ previous_ms item/audio_ms)
+          ^recognizer (text previous/recognizer)
+          ^review_required (|| (flag previous/review_required) (== item/state "review"))
+          ^held (|| (flag previous/held) (== item/state "review"))}))
     (set state/commit (+ item/order 1)))
   (var remaining : (List Utterance) [])
   (for item in state/utterances
@@ -72,8 +74,11 @@
   (var item : Utterance raw)
   (if (! (|| (== item/state "capturing") (== item/state "finalizing"))) (return))
   (if (&& (== result "failed") (!= ($str/trim ($to_str item/text value)) ""))
-    (do (set item/state "review") (if (!= value "") (set item/text value)))
-    else (do (set item/state result) (set item/text value)))
+    (set item/state "review")
+    (if (!= value "") (set item/text value))
+  else
+    (set item/state result)
+    (set item/text value))
   (drain_utterances state))
 
 (fn dispose_drafts [state : VoiceDrafts] : Nil

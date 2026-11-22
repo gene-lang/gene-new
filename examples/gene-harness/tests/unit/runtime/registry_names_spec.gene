@@ -13,9 +13,13 @@
 
 (fn visit [value, callback]
   (if (== ($head value) List)
-    (do (for item in value (visit item callback)) (return nil)))
+    (for item in value
+      (visit item callback))
+    (return nil))
   (if (== ($head value) Map)
-    (do (map_for [key item] in value (visit item callback)) (return nil)))
+    (map_for [key item] in value
+      (visit item callback))
+    (return nil))
   (match value
     when (node : Node)
       (if (["quote" "quasiquote"] .contains? ($to_str ($head value))) (return nil))
@@ -46,8 +50,8 @@
       (for form in ($parse/read_all ($fs/read_text path))
         (visit form (fn [node]
           (if (== ($head node) (quote registry))
-            (do (let name (registry_reference node))
-            (if_not ($absent? name) (known .put name true))))))))
+            (let name (registry_reference node))
+            (if_not ($absent? name) (known .put name true)))))))
     (var checked 0)
     (for path in files
       (for form in ($parse/read_all ($fs/read_text path))

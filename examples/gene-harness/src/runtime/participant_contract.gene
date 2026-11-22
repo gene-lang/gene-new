@@ -48,12 +48,20 @@
 
 (fn public_phase_value [phase : Str, value]
   (if (== phase "release")
-    (do (let errors [])
-      (for failure in (?? value/finalization_errors [])
-        (errors .push {^participant failure/participant ^phase failure/phase
-          ^code failure/code ^message failure/.message}))
-      (return (freeze_turn_data {^result (public_turn_result value/result)
-        ^turn_end_durable (== value/turn_end_durable true) ^errors errors}))))
+    (let errors [])
+    (for failure in (?? value/finalization_errors [])
+      (errors .push
+        {
+          ^participant failure/participant
+          ^phase failure/phase
+          ^code failure/code
+          ^message failure/.message}))
+    (return
+      (freeze_turn_data
+        {
+          ^result (public_turn_result value/result)
+          ^turn_end_durable (== value/turn_end_durable true)
+          ^errors errors})))
   (if (== phase "response_recorded")
     (return (freeze_turn_data {^patch_files (?? value/patch_files []) ^reply_hint value/reply_hint})))
   (if (["validate_outcome" "commit" "finalize"] .contains? phase)
@@ -90,26 +98,26 @@
 (fn public_phase_result [owner : Str, slot : Str, name : Str, context, phase : Str, value]
   (if (== phase "request_items") (return (public_request_items name context phase value)))
   (if (== phase "bindings")
-    (do (if ($absent? value) (return nil))
-      (if (!= ($head value) Map) (contract_error name phase "Public bindings must be a data map."))
-      (return (ParticipantBindings ^owner owner ^slot slot ^value (freeze_bindings value)))))
+    (if ($absent? value) (return nil))
+    (if (!= ($head value) Map) (contract_error name phase "Public bindings must be a data map."))
+    (return (ParticipantBindings ^owner owner ^slot slot ^value (freeze_bindings value))))
   (if (== phase "commit")
     (return (ParticipantCommit ^items (public_request_items name context phase value))))
   (if (== phase "validate_outcome")
-    (do (if ($absent? value) (return nil))
-      (if (!= ($head value) Map) (contract_error name phase "Outcome validation must return a verdict map or nil."))
-      (map_for [key field] in value
-        (if_not (["error" "request_items" "defer_done"] .contains? ($to_str key))
-          (contract_error name phase $"Unknown validation verdict field ${key}.")))
-      (if (&& ($present? value/error)
-               (|| (!= ($head value/error) Str) (== ($str/trim value/error) "")))
-        (contract_error name phase "A validation error must be nonempty text."))
-      (if (&& ($present? value/defer_done) (!= ($head value/defer_done) Bool))
-        (contract_error name phase "defer_done must be a boolean."))
-      (let items (public_request_items name context phase value/request_items))
-      (if (&& (== value/defer_done true) items/.empty?)
-        (contract_error name phase "Deferring completion requires owned request context."))
-      (return (ParticipantValidation ^error (?? value/error nil) ^items items
-        ^defer_done (== value/defer_done true)))))
+    (if ($absent? value) (return nil))
+    (if (!= ($head value) Map)
+      (contract_error name phase "Outcome validation must return a verdict map or nil."))
+    (map_for [key field] in value
+      (if_not (["error" "request_items" "defer_done"] .contains? ($to_str key))
+        (contract_error name phase $"Unknown validation verdict field ${key}.")))
+    (if (&& ($present? value/error) (|| (!= ($head value/error) Str) (== ($str/trim value/error) "")))
+      (contract_error name phase "A validation error must be nonempty text."))
+    (if (&& ($present? value/defer_done) (!= ($head value/defer_done) Bool))
+      (contract_error name phase "defer_done must be a boolean."))
+    (let items (public_request_items name context phase value/request_items))
+    (if (&& (== value/defer_done true) items/.empty?)
+      (contract_error name phase "Deferring completion requires owned request context."))
+    (return
+      (ParticipantValidation ^error (?? value/error nil) ^items items ^defer_done (== value/defer_done true))))
   # Notification/acquisition/cleanup return values are intentionally ignored.
   nil)

@@ -13,8 +13,11 @@
 (import [transport_name] ^from "./model")
 
 (fn channel_service [view]
-  (let service (if ($present? view/service) view/service
-    else (do (let record (require_service view)) record/runtime/services/values/channels)))
+  (let service (if ($present? view/service)
+                 view/service
+               else
+                 (let record (require_service view))
+                 record/runtime/services/values/channels))
   (if (|| ($absent? service) service/closed/.get)
     (fail (ServiceError ^code "unavailable" ^_msg "The channel service is unavailable.")))
   service)

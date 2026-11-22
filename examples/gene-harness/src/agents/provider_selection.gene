@@ -40,11 +40,9 @@
     (if (&& ($present? candidate/connection) ($absent? connection/state)) (continue))
     (if ($present? (provider_reason ^connection connection candidate)) (continue))
     (let billing (billing_rank connection candidate))
-    (if (|| ($absent? selected) (< billing rank)
-            (&& (== billing rank) (< candidate/auto selected/auto))
-            (&& (== billing rank) (== candidate/auto selected/auto)
-              (< ($order/compare candidate/name selected/name) 0)))
-      (do (set selected candidate) (set rank billing))))
+    (if (|| ($absent? selected) (< billing rank) (&& (== billing rank) (< candidate/auto selected/auto)) (&& (== billing rank) (== candidate/auto selected/auto) (< ($order/compare candidate/name selected/name) 0)))
+      (set selected candidate)
+      (set rank billing)))
   selected)
 
 (fn environment_values [supplied]

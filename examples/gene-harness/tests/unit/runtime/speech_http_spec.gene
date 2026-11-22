@@ -7,8 +7,12 @@
 (impl AsyncReader for FixtureBody
   (message read [max_bytes : Int] : (Task Bytes? Error)
     (spawn
-      (if (>= self/cursor/.get self/chunks/.size) nil
-        else (do (let cursor self/cursor/.get) (self/cursor .set (+ cursor 1)) self/chunks/%cursor)))))
+      (if (>= self/cursor/.get self/chunks/.size)
+        nil
+      else
+        (let cursor self/cursor/.get)
+        (self/cursor .set (+ cursor 1))
+        self/chunks/%cursor))))
 (impl IoResource for FixtureBody
   (message close [] : Nil (self/closed .set true) nil)
   (message wait_closed [] : (Task Nil Error) (spawn nil)))

@@ -15,15 +15,13 @@
       "--path:src" "--hints:off" $"--nimcache:${root}/cache-${mode}" $"-o:${output}"])
     (if (!= mode "disabled") (command .push "-d:geneAtomicGenerationRetirementProbe"))
     (if (== mode "asan")
-      (do
-        (command .push "--passC:-fsanitize=address")
-        (command .push "--passC:-fno-omit-frame-pointer")
-        (command .push "--passL:-fsanitize=address")))
+      (command .push "--passC:-fsanitize=address")
+      (command .push "--passC:-fno-omit-frame-pointer")
+      (command .push "--passL:-fsanitize=address"))
     (if (== mode "tsan")
-      (do
-        (command .push "--passC:-fsanitize=thread")
-        (command .push "--passC:-fno-omit-frame-pointer")
-        (command .push "--passL:-fsanitize=thread")))
+      (command .push "--passC:-fsanitize=thread")
+      (command .push "--passC:-fno-omit-frame-pointer")
+      (command .push "--passL:-fsanitize=thread"))
     (command .push "tests/test_atomic_generation_retirement.nim")
     (let build (await ($os/exec_async "nim" command...
       ^timeout_ms 600000 ^max_bytes 1048576)))

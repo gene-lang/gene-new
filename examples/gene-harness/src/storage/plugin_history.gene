@@ -41,11 +41,11 @@
   (let seed ($pkg/canonical_digest {^revision manifest/revision ^entries manifest/entries}))
   (let key $"plugin_history/baseline/${seed}")
   (if (store .Store:has? key)
-    (do (let saved (store .Store:get key))
+    (let saved (store .Store:get key))
     (let record (archived_record store saved))
     (if (|| (!= record/revision manifest/revision) (!= record/entries manifest/entries))
       (history_error "history baseline does not match the imported checkpoint"))
-    (return saved)))
+    (return saved))
   (let head
     (store_object
       store
@@ -107,11 +107,11 @@
     (if (&& ($present? expected) (!= record/revision expected))
       (history_error "broken composition history parent chain"))
     (if (|| ($absent? before) (< record/revision before))
-      (do (record .put "id" current)
+      (record .put "id" current)
       (let pin_key $"plugin_history/pin/${current}")
       (record .put "pinned" (store .Store:has? pin_key))
       (items .push record)
-      (if (>= items/.size limit) (break))))
+      (if (>= items/.size limit) (break)))
     (set expected (- record/revision 1))
     (set current record/parent))
   items)

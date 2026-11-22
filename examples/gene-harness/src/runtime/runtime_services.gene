@@ -298,8 +298,8 @@
     {^name "initial_session" ^layer "loop" ^requires ["plugins" "sessions"]
      ^open (fn [ctx]
        (if (&& ctx/activate (== ctx/event_scope "session"))
-         (do (create_session ^id ctx/session ctx/runtime/sessions)
-         (load_session ctx/runtime/sessions ctx/session)))
+         (create_session ^id ctx/session ctx/runtime/sessions)
+         (load_session ctx/runtime/sessions ctx/session))
        (if ctx/activate (record_application_result ^readiness ctx/services/values/readiness ctx/workspace ctx/h {^status "runtime_open"}))
        nil)
      ^recover nil}])

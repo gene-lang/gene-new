@@ -38,6 +38,6 @@
 
 (fn ready? [] : Bool
   (if (! ready)
-    (do (set ready true)
-        (configure "default" {})))
+    (set ready true)
+    (configure "default" {}))
   ready)

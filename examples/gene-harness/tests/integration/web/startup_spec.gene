@@ -44,8 +44,8 @@
           (let root $"${workspace}/${mode}")
           ($fs/make_dir root)
           (if (== mode "fallback")
-            (do ($fs/make_dir $"${root}/.gene-harness")
-            ($fs/write_text $"${root}/.gene-harness/config.gene" "(invalid configuration")))
+            ($fs/make_dir $"${root}/.gene-harness")
+            ($fs/write_text $"${root}/.gene-harness/config.gene" "(invalid configuration"))
           (let arguments ["run" "--snapshot"
             (source_path (if (== mode "direct") "src/main.gene" else "src/runtime/supervisor.gene"))
             "web" "--workspace" root "--offline"])
@@ -60,10 +60,10 @@
             (if (== mode "fallback")
               ($assert ($str/contains? output "host/recovery_ready")))
             (if (== mode "supervised")
-              (do (api (connect root) "POST" "/control" {^action "restart" ^^confirm})
+              (api (connect root) "POST" "/control" {^action "restart" ^^confirm})
               (let restarted (browser_output terminal 2))
               ($assert (== (connection_link root) link))
-              ($assert (== ($size ($str/split restarted $"Browser: ${link}")) 3))))
+              ($assert (== ($size ($str/split restarted $"Browser: ${link}")) 3)))
           ensure
             (stop_terminal_host terminal root))))))
 

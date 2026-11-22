@@ -44,9 +44,8 @@
   (var expected (patch .get "expected_module"))
   (var target (patch .get "entry"))
   (if (&& ($present? expected) (!= expected (entry .get "module")))
-    (do (warnings .push
-        $"patch for ${target} skipped: expected module ${expected}")
-      (return false)))
+    (warnings .push $"patch for ${target} skipped: expected module ${expected}")
+    (return false))
   (for field in ["config" "disabled" "isolate" "intercept"]
     (var value (patch .get field))
     (if_not ($absent? value) (entry .put field value)))
@@ -67,8 +66,8 @@
     (var local_id (entry .get "id"))
     (var full_id (if ($absent? prefix) local_id else $"${prefix}:${local_id}"))
     (if (== full_id target)
-      (do (patch_entry entry patch warnings)
-        (return true)))
+      (patch_entry entry patch warnings)
+      (return true))
     (if (== (entry .get "group") true)
       (if (apply_patch_in_entries
             (?? (entry .get "children") #[]) target full_id patch warnings)

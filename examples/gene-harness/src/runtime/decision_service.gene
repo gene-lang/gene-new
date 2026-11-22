@@ -191,12 +191,22 @@
   (let h service/runtime/h)
   (let explicit (engine_entry (decision_settings service) use))
   (if ($present? explicit)
-    (do (let record (row_record h "decision_engines" explicit/name))
+    (let record (row_record h "decision_engines" explicit/name))
     (if ($absent? record)
-      (return {^name explicit/name ^source explicit/source ^settings explicit/settings
-        ^reason $"Decision engine ${explicit/name} is not installed."}))
-    (return {^name explicit/name ^row record/payload ^row_id record/row_id ^settings explicit/settings
-      ^source explicit/source ^reason (engine_reason record/payload explicit/settings)})))
+      (return
+        {
+          ^name explicit/name
+          ^source explicit/source
+          ^settings explicit/settings
+          ^reason $"Decision engine ${explicit/name} is not installed."}))
+    (return
+      {
+        ^name explicit/name
+        ^row record/payload
+        ^row_id record/row_id
+        ^settings explicit/settings
+        ^source explicit/source
+        ^reason (engine_reason record/payload explicit/settings)}))
   (let jev (row_record h "decision_engines" "jev"))
   (if (&& ($present? jev) ($absent? (engine_reason jev/payload {})))
     (return {^name "jev" ^row jev/payload ^row_id jev/row_id ^settings {} ^source "jev" ^reason nil}))
@@ -264,8 +274,11 @@
     (if (&& ($present? cached) (== cached/key key) (! (resource_closed? cached/resource)))
       (return cached/resource))
     (if ($present? cached)
-      (do (service/resources/.get .delete choice/name)
-      (try (cached/row/close cached/resource) catch Error nil)))
+      (service/resources/.get .delete choice/name)
+      (try
+        (cached/row/close cached/resource)
+      catch Error
+        nil))
     (let resource (choice/row/open choice/settings))
     (service/resources/.get .put choice/name {^key key ^row choice/row ^resource resource})
     resource)))
@@ -274,8 +287,11 @@
   (service/gate (fn []
     (let cached (service/resources/.get .get choice/name))
     (if ($present? cached)
-      (do (service/resources/.get .delete choice/name)
-      (try (cached/row/close cached/resource) catch Error nil)))))
+      (service/resources/.get .delete choice/name)
+      (try
+        (cached/row/close cached/resource)
+      catch Error
+        nil))))
   nil)
 
 (fn decision_session [request] ^^private
@@ -293,12 +309,13 @@
     (fail (ServiceError ^code "unavailable" ^_msg "The model engine records its call in a session; call decide from a session.")))
   (var chosen choice/settings)
   (if (nonempty_text? chosen/preset)
-    (do (var found nil)
-    (for preset in (?? (/presets (catalog_snapshot runtime)) [])
+    (var found nil)
+    (for preset in (?? ((Path "presets") (catalog_snapshot runtime)) [])
       (if (== preset/name chosen/preset) (set found preset)))
     (if ($absent? found)
-      (fail (ServiceError ^code "unavailable" ^_msg $"Model preset ${chosen/preset} is not defined in models.gene.")))
-    (set chosen found)))
+      (fail
+        (ServiceError ^code "unavailable" ^_msg $"Model preset ${chosen/preset} is not defined in models.gene.")))
+    (set chosen found))
   (let provider (nonempty chosen/provider))
   (if ($absent? provider)
     (fail (ServiceError ^code "unavailable" ^_msg "The model engine needs ^provider or ^preset.")))

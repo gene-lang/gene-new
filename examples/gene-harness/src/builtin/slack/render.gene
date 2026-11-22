@@ -65,19 +65,25 @@
   (for line in (text .split "\n")
     (let marker (#"^[ \t]*(`{3,}|~{3,})([^`~]*)$" .match line))
     (if ($present? marker)
-      (do (let selected ($str/slice_bytes marker/groups/0 0 1))
+      (let selected ($str/slice_bytes marker/groups/0 0 1))
       (if ($absent? fence)
-        (set fence selected) (output .push "```")
-        else (if (== fence selected) (set fence nil) (output .push "```")
-          else (output .push (escape_slack line))))
-      (continue)))
+        (set fence selected)
+        (output .push "```")
+      else
+        (if (== fence selected)
+          (set fence nil)
+          (output .push "```")
+        else
+          (output .push (escape_slack line))))
+      (continue))
     (if ($present? fence)
-      (do (output .push (if (== surface "markdown") line else (escape_slack line))) (continue)))
+      (output .push (if (== surface "markdown") line else (escape_slack line)))
+      (continue))
     (var rendered (inline_code line surface reference))
     (if (== surface "mrkdwn")
-      (do (let heading (#"^#{1,6}[ \t]+(.+)$" .match rendered))
-      (if_not ($absent? heading) (set rendered ($to_str "*" heading/groups/0 "*")))
-      (set rendered ($regex/replace #"^[ \t]*[-+][ \t]+" rendered "• "))))
+      (let heading (#"^#{1,6}[ \t]+(.+)$" .match rendered))
+      (if_not ($absent? heading) (set rendered $"*${heading/groups/0}*"))
+      (set rendered ($regex/replace #"^[ \t]*[-+][ \t]+" rendered "• ")))
     (output .push rendered))
   (if_not ($absent? fence) (output .push "```"))
   output)
@@ -91,10 +97,18 @@
     (set current (if fenced "```\n" else ""))))
   (for line in lines
     (if (== line "```")
-      (do (if (> (+ current/.byte_size 8) maximum) (emit))
-      (set current ($to_str current (if (== current "") "" else "\n") "```"))
+      (if (> (+ current/.byte_size 8) maximum) (emit))
+      (set current
+        ($to_str
+          current
+          (if (== current "")
+            ""
+          else
+            """
+""")
+          "```"))
       (set fenced (! fenced))
-      (continue)))
+      (continue))
     (let tokens (if fenced [line]
       else ($map ($into ($regex/find_all #"<https?://[^>]+>|\[[^]\n]*\]\(https?://[^)\n]+\)|[^\s]+|[ \t]+" line) []) /text)))
     (var first true)

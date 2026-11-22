@@ -376,13 +376,15 @@ const ajaxModule = """
     (var target_class : Str target/class_name)
     ($console/log $"click ${target_class}")
     (if (== target_class "toggle")
-      (do ($dom/prevent_default event)
+      ($dom/prevent_default event)
       (var id : Str target/dataset/id)
-      ($http/post_form "/api/toggle" $"id=${id}"
+      ($http/post_form
+        "/api/toggle"
+        $"id=${id}"
         (fn [body : Str] : Nil
           ($console/log $"response for ${id}: ${body}")
           (paint target body)
-          nil))))
+          nil)))
     nil)
 
   (fn main [root : EventTarget] : Nil

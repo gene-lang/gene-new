@@ -41,15 +41,14 @@
     (if (|| (>= ($os/monotonic_ms) deadline) task/.done?) (stop server)))
   (fn handle [request]
     (if (== request/method "POST")
-      (do
-        (if (== request/path "/progress")
-          (do (set progress request/body) (return (text 200 ""))))
-        (if (== request/path "/report")
-          (do
-            (set report ($json/parse request/body))
-            (stop server)
-            (return (text 200 ""))))
-        (return (text 404 "not found"))))
+      (if (== request/path "/progress")
+        (set progress request/body)
+        (return (text 200 "")))
+      (if (== request/path "/report")
+        (set report ($json/parse request/body))
+        (stop server)
+        (return (text 200 "")))
+      (return (text 404 "not found")))
     (if (!= request/method "GET") (return (text 405 "method not allowed")))
     (let asset (assets .get request/path))
     (if ($absent? asset) (return (text 404 "not found")))

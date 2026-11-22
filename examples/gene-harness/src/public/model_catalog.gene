@@ -77,8 +77,9 @@
   (for key in ["label" "reason" "account" "transport"]
     (let field (value .get key))
     (if ($present? field)
-      (do (if (!= ($head field) Str) (fail (ProviderError ^_msg "Invalid provider connection metadata")))
-        (result .put key field))))
+      (if (!= ($head field) Str)
+        (fail (ProviderError ^_msg "Invalid provider connection metadata")))
+      (result .put key field)))
   (if (|| (== ($head value/limit_remaining) Int) (== ($head value/limit_remaining) Float))
     (result .put "limit_remaining" value/limit_remaining))
   result)
@@ -228,9 +229,11 @@
           catch Error
             (set stale true)
             (if ([401 403] .contains? $err/status)
-              (do (set connection ($thaw ($freeze connection)))
-                (connection .put "state" "expired")
-                (connection .put "reason" "Provider rejected this connection; reconnect or update its credential.")))
+              (set connection ($thaw ($freeze connection)))
+              (connection .put "state" "expired")
+              (connection .put
+                "reason"
+                "Provider rejected this connection; reconnect or update its credential."))
             (if ([404 405] .contains? $err/status) (set models []))))
     else (set stale true))
   {^connection connection ^models models ^transport (transport_identity candidate connection)
@@ -259,14 +262,14 @@
             (found .put "retry_ms" retry)
             (found .put "next_probe_ms" (+ ($os/monotonic_ms) (if (> retry 0) retry else 86400000)))
             (if (! catalog/closed/.get)
-              (do (catalog/publishing (fn []
+              (catalog/publishing
+                (fn []
                   (let key ($serde/write_data [candidate/name found/transport]))
                   (let rejected (?? (catalog/failures .get key) 0))
                   # A probe begun before a 401 must not erase that newer fact.
-                  (if (&& (== observed_connection (?? (catalog/connection_versions .get candidate/name) 0))
-                    (|| (!= found/connection/state "ready") (<= rejected observed)))
+                  (if (&& (== observed_connection (?? (catalog/connection_versions .get candidate/name) 0)) (|| (!= found/connection/state "ready") (<= rejected observed)))
                     (catalog/discovered/.get .put candidate/name found))))
-                (publish_catalog catalog)))))))
+              (publish_catalog catalog))))))
       (try
         (for task in tasks
           (match task/.join
@@ -291,22 +294,30 @@
 (fn close_model_catalog [catalog]
   (if (catalog/closed .swap true) (return nil))
   (let worker catalog/worker/.get)
-  (if (&& ($present? worker) (! worker/.done?)) (do worker/.cancel worker/.join))
+  (if (&& ($present? worker) (! worker/.done?))
+    worker/.cancel
+    worker/.join)
   nil)
 
 (fn run_model_catalog [catalog]
   ($runtime/with_context nil (fn []
     (while (! catalog/closed/.get)
       (if (|| catalog/requested/.get (>= ($os/monotonic_ms) catalog/next_refresh/.get))
-        (do (let due_only (! catalog/requested/.get))
-          (catalog/requested .set false)
-          (try (refresh_catalog ^due_only due_only catalog) catch Error nil)))
+        (let due_only (! catalog/requested/.get))
+        (catalog/requested .set false)
+        (try
+          (refresh_catalog ^due_only due_only catalog)
+        catch Error
+          nil))
       (if (>= ($os/monotonic_ms) catalog/next_file_check/.get)
-        (do (let file (read_file catalog))
-          (if (!= file/digest catalog/file/.get/digest)
-            (try (accept_file catalog file) (publish_catalog catalog)
-                catch Error (request_catalog_refresh catalog)))
-          (catalog/next_file_check .set (+ ($os/monotonic_ms) 1000))))
+        (let file (read_file catalog))
+        (if (!= file/digest catalog/file/.get/digest)
+          (try
+            (accept_file catalog file)
+            (publish_catalog catalog)
+          catch Error
+            (request_catalog_refresh catalog)))
+        (catalog/next_file_check .set (+ ($os/monotonic_ms) 1000)))
       ($sleep 100)))))
 
 (fn open_model_catalog [root : Str, providers : Fn, ^start start : Bool = true, ^on_change on_change = nil,

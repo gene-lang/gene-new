@@ -356,9 +356,9 @@
   (for runtime in runtime_records/.get
     (for record in runtime/contexts/.get
       (if (same? record/token context/token)
-        (do (if (|| (! record/alive/.get) (&& (! (absent? record/owner)) (== record/owner/state/.get InstanceState/disposed)))
-            (cordis_failure ContextDisposed "context is disposed"))
-          (return record)))))
+        (if (|| (! record/alive/.get) (&& (! (absent? record/owner)) (== record/owner/state/.get InstanceState/disposed)))
+          (cordis_failure ContextDisposed "context is disposed"))
+        (return record))))
   (var retired (retired_context context/token))
   (if_not (absent? retired)
     (if (|| (! retired/alive/.get) (&& (! (absent? retired/owner)) (== retired/owner/state/.get InstanceState/disposed)))
@@ -497,19 +497,16 @@
     # expires during the Gene cleanup below. Joining alone does not own a task.
     (try
       (set task (spawn ^lane root (wrapper)))
-      (if (&& (! (absent? instance))
-              (!= call/kind PluginCallKind/cleanup)
-              (! (absent? registration_scope)))
-        (do (var owner_scope registration_scope)
-          (if owner_scope/accepting/.get
-            (owner_scope/entries/.get .push
-              {^kind "task" ^label "plugin-invocation" ^task task}))))
+      (if (&& (! (absent? instance)) (!= call/kind PluginCallKind/cleanup) (! (absent? registration_scope)))
+        (var owner_scope registration_scope)
+        (if owner_scope/accepting/.get
+          (owner_scope/entries/.get .push {^kind "task" ^label "plugin-invocation" ^task task})))
       (set outcome task/.join)
     ensure
       (try
         (if (&& (absent? outcome) (! (absent? task)))
-          (do task/.cancel
-            task/.join))
+          task/.cancel
+          task/.join)
       ensure
         # Release the binding's local edge after joining, including failures.
         (set wrapper nil))))
@@ -1122,8 +1119,8 @@
   (for provider in instance/providers/.get
     (for candidate in (?? (instance/runtime/dependants/.get .get provider/key/id) (fresh_list))
       (if (&& (! (same? candidate/token instance/token)) (!= (seen .get ($to_str candidate/uid)) true))
-        (do (seen .put ($to_str candidate/uid) true)
-          (found .push candidate)))))
+        (seen .put ($to_str candidate/uid) true)
+        (found .push candidate))))
   found)
 
 (fn unload_instance ^^private [instance, disposing : Bool]
@@ -1171,16 +1168,16 @@
     (while instance/dirty/.get
       (instance/dirty .set false)
       (if instance/dispose_requested/.get
-        (do (unload_instance instance true)
-          (return nil)))
+        (unload_instance instance true)
+        (return nil))
       (var epoch (compute_instance_epoch instance))
       (instance/desired_epoch .set epoch/text)
       (var state instance/state/.get)
       (var retry instance/retry/.get)
       (if retry (instance/retry .set false))
       (if (&& (== state InstanceState/active) (|| retry (!= epoch/text instance/active_epoch/.get)))
-        (do (unload_instance instance false)
-          (set state instance/state/.get)))
+        (unload_instance instance false)
+        (set state instance/state/.get))
       (if (== state InstanceState/failed)
         (if retry
           (instance/state .set InstanceState/pending)
@@ -2165,8 +2162,8 @@
   (var runtime (runtime_record handle))
   (if (== runtime/state/.get "closed") (return nil))
   (if (== runtime/state/.get "closing")
-    (do (runtime_await_settled handle)
-    (return nil)))
+    (runtime_await_settled handle)
+    (return nil))
   (runtime/state .set "closing")
   (for loader in (copy_list runtime/loaders/.get)
     (try
@@ -2179,9 +2176,9 @@
     (var selected nil)
     (for instance in runtime/instances/.get
       (if (!= instance/state/.get InstanceState/disposed)
-        (do (set remaining true)
-          (if (&& (absent? selected) (! (live_dependant_of? runtime instance)))
-            (set selected instance)))))
+        (set remaining true)
+        (if (&& (absent? selected) (! (live_dependant_of? runtime instance)))
+          (set selected instance))))
     (if (&& remaining (absent? selected))
       (for instance in runtime/instances/.get
         (if (&& (absent? selected) (!= instance/state/.get InstanceState/disposed))
@@ -2255,9 +2252,9 @@
   (var normalized (validate_loader_options runtime options))
   (var current runtime/loaders/.get)
   (if (> current/.size 0)
-    (do (var existing current/0)
-      (if (== existing/options normalized) (return (Loader ^token existing/token)))
-      (cordis_failure CompositionError "runtime already owns a loader with incompatible options")))
+    (var existing current/0)
+    (if (== existing/options normalized) (return (Loader ^token existing/token)))
+    (cordis_failure CompositionError "runtime already owns a loader with incompatible options"))
   (var record
     (LoaderRecord ^token ($cell nil) ^runtime runtime ^options normalized ^entries ($cell (fresh_map)) ^order ($cell (fresh_list)) ^manifest ($cell nil) ^state ($cell "open") ^generations ($cell (fresh_list)) ^host_plugins ($cell (fresh_map)) ^retirements ($cell (fresh_list)) ^watchers ($cell (fresh_list))))
   (current .push record)
@@ -2564,8 +2561,8 @@
           # A host plugin is replaced when its admitted value changes.
           (! (same? (admitted .get id) (old_admitted .get id)))))
     (if remove
-      (do (dispose_loader_entry loader entry)
-        (old_entries .delete id))))
+      (dispose_loader_entry loader entry)
+      (old_entries .delete id)))
   (var next_entries (fresh_map))
   (var next_order (fresh_list))
   (var signatures (fresh_map))
@@ -2579,11 +2576,10 @@
     (var signature (entry_context_signature row parent_signature))
     (signatures .put row/id signature)
     (var existing (old_entries .get row/id))
-    (if (&& ($present? existing)
-            (!= existing/context_signature signature))
-      (do (dispose_loader_entry loader existing)
-        (old_entries .delete row/id)
-        (set existing nil)))
+    (if (&& ($present? existing) (!= existing/context_signature signature))
+      (dispose_loader_entry loader existing)
+      (old_entries .delete row/id)
+      (set existing nil))
     (if row/disabled
       (var disabled_context
           (derive_loader_context loader parent_context row))
@@ -2624,10 +2620,9 @@
             (next_order .push row/id)
             (changed .push row/id)
           else
-            (if (&& (! existing/group)
-                    (!= existing/data/config row/config))
-              (do (instance_update existing/instance row/config)
-                (changed .push row/id)))
+            (if (&& (! existing/group) (!= existing/data/config row/config))
+              (instance_update existing/instance row/config)
+              (changed .push row/id))
             (set existing/data row)
             (next_entries .put row/id existing)
             (next_order .push row/id))))
@@ -2857,15 +2852,15 @@
   (for [id staged] in staged_entries
     (var old (old_entries .get id))
     (if (&& ($present? old) (! (absent? old/instance)) (! (absent? staged/instance)))
-      (do (var old_record (instance_record old/instance))
-        (var staged_record (instance_record staged/instance))
-        (set staged_record/token old_record/token)
-        (set staged_record/uid old_record/uid)
-        (for staged_provider in staged_record/providers/.get
-          (for old_provider in old_record/providers/.get
-            (if (== staged_provider/address old_provider/address)
-              (staged_provider/generation .set (+ old_provider/generation/.get 1)))))
-        (set staged/instance (PluginInstance ^token old_record/token))))))
+      (var old_record (instance_record old/instance))
+      (var staged_record (instance_record staged/instance))
+      (set staged_record/token old_record/token)
+      (set staged_record/uid old_record/uid)
+      (for staged_provider in staged_record/providers/.get
+        (for old_provider in old_record/providers/.get
+          (if (== staged_provider/address old_provider/address)
+            (staged_provider/generation .set (+ old_provider/generation/.get 1)))))
+      (set staged/instance (PluginInstance ^token old_record/token)))))
 
 (fn move_candidate_state [candidate, live] ^^private
   (var candidate_root (context_record_even_if_closed candidate/root/.get))
@@ -2911,9 +2906,9 @@
         (for requirement in candidate/plugin/requires
           (var provider (provider_for_requirement candidate requirement))
           (if (&& (! (absent? provider)) (instance_in_records? closure provider/owner))
-            (do (closure .push candidate)
-              (set closure (expand_owned_replacements closure))
-              (set changed true)))))))
+            (closure .push candidate)
+            (set closure (expand_owned_replacements closure))
+            (set changed true))))))
   closure)
 
 (fn stageable_direct_closure [closure] ^^private
@@ -3063,9 +3058,9 @@
   (rebuild_runtime_indexes live)
   (for instance in candidate/instances/.get
     (if (== instance/state/.get InstanceState/active)
-      (do (var epoch (compute_instance_epoch instance))
+      (var epoch (compute_instance_epoch instance))
       (instance/desired_epoch .set epoch/text)
-      (instance/active_epoch .set epoch/text))))
+      (instance/active_epoch .set epoch/text)))
   (if_not (absent? loader/options/publication)
     (loader/options/publication .PublicationParticipant:publish staged/publication_ticket))
   (notify_published_provider_keys live closure candidate)
@@ -3074,16 +3069,13 @@
     (without_token runtime_records/.get candidate/token))
 
   (if deferred
-    (do (var old_generations (fresh_list))
+    (var old_generations (fresh_list))
     (for [id entry] in old_entries
-      (if (&& (! (absent? entry/generation))
-              (! (generation_reused? staged/entries entry/generation))
-              (! (old_generations .contains? entry/generation)))
+      (if (&& (! (absent? entry/generation)) (! (generation_reused? staged/entries entry/generation)) (! (old_generations .contains? entry/generation)))
         (old_generations .push entry/generation)))
     (var ticket (RetirementTicket ^token ($cell nil)))
-    (var record (RetirementRecord ^ticket ticket ^loader loader ^runtime live
-      ^instances closure ^resources old_resources ^contexts retiring_contexts
-      ^generations old_generations ^closed ($cell false)))
+    (var record
+      (RetirementRecord ^ticket ticket ^loader loader ^runtime live ^instances closure ^resources old_resources ^contexts retiring_contexts ^generations old_generations ^closed ($cell false)))
     (retirement_records/.get .push record)
     (loader/retirements/.get .push record)
     (live/contexts .set contexts)
@@ -3094,8 +3086,9 @@
     (loader/generations .set generations)
     (if (|| (> closure/.size 0) (> old_generations/.size 0))
       (loader/options/retirement ticket)
-      else (loader_retire (Loader ^token loader/token) ticket))
-    (return nil)))
+    else
+      (loader_retire (Loader ^token loader/token) ticket))
+    (return nil))
 
   # Visibility has committed. Old closures are now retired from consumers to
   # providers, and only then are their module generations released.
@@ -3104,12 +3097,9 @@
   (while (>= index 0)
     (var old_instance closure/%index)
     (set index (- index 1))
-    (if (|| (runtime_instance_is_loader_owned? old_instance)
-            (instance_in_records? replaced_direct old_instance))
-      (do (var cleanup_error
-          (unload_instance old_instance true))
-        (if_not (absent? cleanup_error)
-          (retirement_errors .push cleanup_error)))))
+    (if (|| (runtime_instance_is_loader_owned? old_instance) (instance_in_records? replaced_direct old_instance))
+      (var cleanup_error (unload_instance old_instance true))
+      (if_not (absent? cleanup_error) (retirement_errors .push cleanup_error))))
   (for [id entry] in old_entries
     (if (&& (! (absent? entry/generation))
             (! (generation_reused? staged/entries entry/generation)))
@@ -3292,10 +3282,8 @@
     (var entry (old_entries .get old_order/%index))
     (set index (- index 1))
     (if (&& ($present? entry) (! (absent? entry/instance)))
-      (do (var cleanup_error
-          (unload_instance (instance_record entry/instance) true))
-        (if_not (absent? cleanup_error)
-          (teardown_errors .push cleanup_error)))))
+      (var cleanup_error (unload_instance (instance_record entry/instance) true))
+      (if_not (absent? cleanup_error) (teardown_errors .push cleanup_error))))
   (var live loader/runtime)
   (live/instances .set (direct_instances live))
   (live/contexts .set (direct_contexts live old_entries))
@@ -3327,13 +3315,11 @@
         else
           (var source (sources .get row/id))
           (if ($absent? source)
-            (do (var old (old_entries .get row/id))
+            (var old (old_entries .get row/id))
             (if ($absent? old)
-              (cordis_failure RecoveryRequired
-                $"stop_start reload lost source for ${row/id}"))
+              (cordis_failure RecoveryRequired $"stop_start reload lost source for ${row/id}"))
             (set source
-              {^generation old/generation ^module old/module
-               ^plugin old/plugin ^graph old/graph})))
+              {^generation old/generation ^module old/module ^plugin old/plugin ^graph old/graph}))
           (set entry (loader_entry_from_source loader row context source))
           (set entry/context_signature signature)
           (if_not (generations .contains? source/generation)
@@ -3417,11 +3403,11 @@
   (var rows (validate_manifest loader manifest))
   (var old_digests (entry_root_digests loader affected))
   (if (affected_uses_stop_start? loader affected)
-    (do (if_not (absent? loader/options/publication)
-        (cordis_failure ReloadRejected "a publication participant requires staged reload"))
-      (var result (loader_reload_stop_start loader manifest rows affected))
-      (emit_hmr_reloaded loader affected old_digests (entry_root_digests loader affected))
-      (return result)))
+    (if_not (absent? loader/options/publication)
+      (cordis_failure ReloadRejected "a publication participant requires staged reload"))
+    (var result (loader_reload_stop_start loader manifest rows affected))
+    (emit_hmr_reloaded loader affected old_digests (entry_root_digests loader affected))
+    (return result))
   (var snapshot nil)
   (try
     (set snapshot (loader_reconcile_staged loader manifest rows affected))

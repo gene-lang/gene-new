@@ -12,17 +12,16 @@
   (let result [])
   (for item in values
     (if (&& registry_requirements (== ($head item) Map))
-      (do (if_not (&& (== ($map_size item) 1) (== ($head item/registry) Str) (!= item/registry ""))
+      (if_not (&& (== ($map_size item) 1) (== ($head item/registry) Str) (!= item/registry ""))
         (fail (PluginMetadataError ^_msg "registry requirement must be {^registry NAME}")))
       (result .push ["$registries" item/registry])
-      (continue)))
+      (continue))
     (if (== ($head item) Str)
       (result .push ["seams" item])
-      else (do
-        (if (|| (!= ($head item) List) (!= item/.size 2) (!= ($head item/0) Str) (!= ($head item/1) Str))
-          (fail
-            (PluginMetadataError ^_msg "plugin capability must be a seam name or [registry key]")))
-        (result .push [item/0 item/1]))))
+    else
+      (if (|| (!= ($head item) List) (!= item/.size 2) (!= ($head item/0) Str) (!= ($head item/1) Str))
+        (fail (PluginMetadataError ^_msg "plugin capability must be a seam name or [registry key]")))
+      (result .push [item/0 item/1])))
   result)
 
 (fn descriptor_data [plugin]
@@ -63,24 +62,24 @@
   (var record nil)
   (if (store .Store:has? exact)
     (set record (store .Store:get exact))
-    else (do
-      (let latest (metadata_latest_key id digest))
-      (if_not (store .Store:has? latest) (return nil))
-      (let key (store .Store:get latest))
-      (if (store .Store:has? key) (set record (store .Store:get key)))))
+  else
+    (let latest (metadata_latest_key id digest))
+    (if_not (store .Store:has? latest) (return nil))
+    (let key (store .Store:get latest))
+    (if (store .Store:has? key) (set record (store .Store:get key))))
   (if ($absent? record) (return nil))
   (if (|| (!= ($head record) Map) (!= record/format 1) (!= record/id id) (!= record/digest digest))
     (fail (PluginMetadataError ^_msg "stored plugin metadata identity is invalid")))
   ($pkg/canonical_digest record)
   (let observed (observation_key id digest))
   (if (&& ($absent? record/contributions) (store .Store:has? observed))
-    (do (let previous (store .Store:get (store .Store:get observed)))
+    (let previous (store .Store:get (store .Store:get observed)))
     (record .put
       "historical_observation"
       {
         ^host_build_id previous/host_build_id
         ^contributions previous/contributions
-        ^at previous/observed_at})))
+        ^at previous/observed_at}))
   record)
 
 (fn store_metadata [store, record]
@@ -103,8 +102,8 @@
         ^observed_at nil
         ^contributions nil}))
   (if (== mode "restricted")
-    (do (record .put "restricted" {^declared data ^at ($to_str ($now))})
-    (if (["full" "host"] .contains? record/read_mode) (return (store_metadata store record)))))
+    (record .put "restricted" {^declared data ^at ($to_str ($now))})
+    (if (["full" "host"] .contains? record/read_mode) (return (store_metadata store record))))
   (if (&& (== record/declared data) (== record/read_mode mode)) (return record))
   (record .put "declared" data)
   (record .put "read_mode" mode)
@@ -114,9 +113,9 @@
 (fn remember_observation [store, build : Str, digest : Str, plugin, contributions]
   (let record (remember_descriptor store build digest plugin))
   (if (!= record/contributions contributions)
-    (do (record .put "contributions" contributions)
+    (record .put "contributions" contributions)
     (record .put "observed_at" ($to_str ($now)))
-    (store_metadata store record)))
+    (store_metadata store record))
   (store .Store:put (observation_key plugin/id digest) (metadata_key plugin/id digest build))
   record)
 

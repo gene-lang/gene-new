@@ -46,9 +46,10 @@
   (if (== ($head value) List)
     (return ($map value (fn [item] (replace_media item inventory matched)))))
   (if (== ($head value) Map)
-    (do (let result {})
-    (map_for [key item] in value (result .put key (replace_media item inventory matched)))
-    (return result)))
+    (let result {})
+    (map_for [key item] in value
+      (result .put key (replace_media item inventory matched)))
+    (return result))
   value)
 
 (fn store_part [runtime, value]
@@ -64,12 +65,12 @@
   (if (== ($head value) List)
     (return ($map value (fn [part] (store_part runtime part)))))
   (if (== ($head value) Map)
-    (do (let result {})
-    (map_for [key item] in value (result .put key (store_part runtime item)))
-    (if (&& (== ($map_size value) 1)
-            (|| ($has_key? value "harness_blob") ($has_key? value "harness_literal")))
+    (let result {})
+    (map_for [key item] in value
+      (result .put key (store_part runtime item)))
+    (if (&& (== ($map_size value) 1) (|| ($has_key? value "harness_blob") ($has_key? value "harness_literal")))
       (return {^harness_literal result}))
-    (return result)))
+    (return result))
   value)
 
 (fn restore_media [runtime, reference]
@@ -87,23 +88,24 @@
 
 (fn load_part [runtime, value]
   (if (== ($head value) Map)
-    (do (if (== ($map_size value) 1)
-      (do (if_not ($absent? value/harness_blob)
-          (if (== ($head value/harness_blob) Str)
-            (return (read_body runtime value/harness_blob)))
-          (if (== value/harness_blob/kind "media")
-            (return (restore_media runtime value/harness_blob)))
-          (if (== value/harness_blob/kind "image_text")
-            (return ($str/join ($map value/harness_blob/parts
-              (fn [part] (load_part runtime part))) "")))
-          (fail (Error ^_msg "Unsupported recorded payload marker.")))
-        (if_not ($absent? value/harness_literal)
-          (let result {})
-          (map_for [key item] in value/harness_literal (result .put key (load_part runtime item)))
-          (return result))))
+    (if (== ($map_size value) 1)
+      (if_not ($absent? value/harness_blob)
+        (if (== ($head value/harness_blob) Str) (return (read_body runtime value/harness_blob)))
+        (if (== value/harness_blob/kind "media")
+          (return (restore_media runtime value/harness_blob)))
+        (if (== value/harness_blob/kind "image_text")
+          (return
+            ($str/join ($map value/harness_blob/parts (fn [part] (load_part runtime part))) "")))
+        (fail (Error ^_msg "Unsupported recorded payload marker.")))
+      (if_not ($absent? value/harness_literal)
+        (let result {})
+        (map_for [key item] in value/harness_literal
+          (result .put key (load_part runtime item)))
+        (return result)))
     (let result {})
-    (map_for [key item] in value (result .put key (load_part runtime item)))
-    (return result)))
+    (map_for [key item] in value
+      (result .put key (load_part runtime item)))
+    (return result))
   (if (== ($head value) List)
     (return ($map value (fn [part] (load_part runtime part)))))
   value)
@@ -117,13 +119,13 @@
   (if (== ($head value) Str)
     (return ($str/contains? value "data:image/")))
   (if (== ($head value) List)
-    (do (for item in value (if (opaque_value? item) (return true)))
-    (return false)))
+    (for item in value
+      (if (opaque_value? item) (return true)))
+    (return false))
   (if (== ($head value) Map)
-    (do (map_for [key item] in value
-      (if (|| ($str/contains? ($to_str key) "data:image/") (opaque_value? item))
-        (return true)))
-    (return false)))
+    (map_for [key item] in value
+      (if (|| ($str/contains? ($to_str key) "data:image/") (opaque_value? item)) (return true)))
+    (return false))
   (! ([Int Float Bool Nil Nil] .contains? ($head value))))
 
 # Opaque/custom preparation stays compatible with send. It simply cannot be

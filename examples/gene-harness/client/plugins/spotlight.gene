@@ -34,7 +34,7 @@
     ($dom/set_attribute option "aria-selected" (if (== at spot/active) "true" else "false"))
     ($dom/set_class option "active" (== at spot/active))
     (if (== at spot/active)
-      (do ($dom/set_attribute spot/input "aria-activedescendant" $"${spot/owner}-option-${at}")
+      ($dom/set_attribute spot/input "aria-activedescendant" $"${spot/owner}-option-${at}")
       (var top ($dom/rect_top option))
       (var bottom (+ top ($dom/rect_height option)))
       (var list_top ($dom/rect_top spot/list))
@@ -42,7 +42,7 @@
       (if (< top list_top)
         ($dom/set_scroll_top spot/list (+ ($dom/scroll_top spot/list) (- top list_top))))
       (if (> bottom list_bottom)
-        ($dom/set_scroll_top spot/list (+ ($dom/scroll_top spot/list) (- bottom list_bottom))))))
+        ($dom/set_scroll_top spot/list (+ ($dom/scroll_top spot/list) (- bottom list_bottom)))))
     (set at (+ at 1)))
   (if (< spot/active 0) ($dom/remove_attribute spot/input "aria-activedescendant")))
 
@@ -51,19 +51,20 @@
   (var current (state spot))
   (var kind (text item/kind))
   (if (|| (== kind "command") (== kind "theme_choice"))
-    (do (var expected : Any (if (== kind "theme_choice") spot/command else item/command))
+    (var expected : Any (if (== kind "theme_choice") spot/command else item/command))
     (var commands (items current/commands))
     (for candidate in commands
-      (if (&& (== (text candidate/name) (text expected/name)) (== (text candidate/owner) (text expected/owner))
-                  (== (text candidate/revision) (text expected/revision)))
-        (do (if ($present? current/pending_command) (return "Resolve the pending command receipt first."))
-        (return ""))))
-    (return "This command was replaced or disabled. Refresh and select it again.")))
+      (if (&& (== (text candidate/name) (text expected/name)) (== (text candidate/owner) (text expected/owner)) (== (text candidate/revision) (text expected/revision)))
+        (if ($present? current/pending_command)
+          (return "Resolve the pending command receipt first."))
+        (return "")))
+    (return "This command was replaced or disabled. Refresh and select it again."))
   (if (&& (== kind "view") (!= (text item/view) "harness"))
-    (do (var views (items current/views))
+    (var views (items current/views))
     (for candidate in views
-      (if (&& (== (text candidate/name) (text item/view)) (== (text candidate/revision) (text item/revision))) (return "")))
-    (return "This view is unavailable. Refresh the results.")))
+      (if (&& (== (text candidate/name) (text item/view)) (== (text candidate/revision) (text item/revision)))
+        (return "")))
+    (return "This view is unavailable. Refresh the results."))
   "")
 
 (fn activate_action [spot : Spotlight, item : Any] : Nil
@@ -72,74 +73,86 @@
   (var action (text item/action))
   (if (|| (== action "restart") (== action "stop"))
     (if (!= spot/confirm action)
-      (do
-        (set spot/confirm action)
-        (set spot/busy false)
-        (set spot/feedback (if (== action "stop")
+      (set spot/confirm action)
+      (set spot/busy false)
+      (set spot/feedback
+        (if (== action "stop")
           "Select Stop Harness again to stop the host."
-          else "Select Restart Harness again to restart the host."))
-        ($dom/set_text spot/message spot/feedback))
-      else (do
-        (set spot/confirm "")
-        (var api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) spot/bridge/api)
-        (api "POST" $"${(api_root)}/control" {^action action ^^confirm}
-          (fn [code : Int, data : Any] : Nil
-            (if (== code 200)
-              (do (set spot/busy false) (close spot false))
-              else (do
-                (set spot/busy false)
-                (set spot/feedback (text data/message "The host did not accept the request."))
-                ($dom/set_text spot/message spot/feedback)))))))
-    else (do
+        else
+          "Select Restart Harness again to restart the host."))
+      ($dom/set_text spot/message spot/feedback)
+    else
       (set spot/confirm "")
-      (if (== action "triggers")
-        (do
-          (var shared : Any spot/bridge/shared)
-          (var open : Any shared/open_triggers)
-          (if ($present? open)
-            (do
-              (var open_triggers : (Fn [] Nil) open)
-              (open_triggers)
-              (set spot/busy false)
-              (close spot false))
-            else (do
-              (set spot/busy false)
-              (set spot/feedback "The triggers plugin is not available.")
-              ($dom/set_text spot/message spot/feedback))))
-        else (do
-          (go "/plugins")
-          (set spot/busy false)
-          (close spot false))))))
+      (var api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) spot/bridge/api)
+      (api
+        "POST"
+        $"${(api_root)}/control"
+        {^action action ^^confirm}
+        (fn [code : Int, data : Any] : Nil
+          (if (== code 200)
+            (set spot/busy false)
+            (close spot false)
+          else
+            (set spot/busy false)
+            (set spot/feedback (text data/message "The host did not accept the request."))
+            ($dom/set_text spot/message spot/feedback)))))
+  else
+    (set spot/confirm "")
+    (if (== action "triggers")
+      (var shared : Any spot/bridge/shared)
+      (var open : Any shared/open_triggers)
+      (if ($present? open)
+        (var open_triggers : (Fn [] Nil) open)
+        (open_triggers)
+        (set spot/busy false)
+        (close spot false)
+      else
+        (set spot/busy false)
+        (set spot/feedback "The triggers plugin is not available.")
+        ($dom/set_text spot/message spot/feedback))
+    else
+      (go "/plugins")
+      (set spot/busy false)
+      (close spot false))))
 
 (fn activate [spot : Spotlight, index : Int] : Nil
   (if (|| (! spot/open) spot/disposed spot/busy (< index 0) (>= index spot/items/.size)) (return))
   (var item : Any spot/items/%index)
   (var reason (unavailable spot item))
   (if (!= reason "")
-    (do (set spot/feedback reason) ($dom/set_text spot/message reason) (return)))
+    (set spot/feedback reason)
+    ($dom/set_text spot/message reason)
+    (return))
   (var kind (text item/kind))
   (var action (if (== kind "action") (text item/action) else ""))
   (if (|| (!= kind "action") (&& (!= action "restart") (!= action "stop")))
     (set spot/confirm "")
     else nil)
-  (if (&& (== kind "action")
-          (|| (== action "triggers") (== action "plugins")
-              (== action "restart") (== action "stop")))
-    (do (activate_action spot item) (return))
-    else nil)
+  (if (&& (== kind "action") (|| (== action "triggers") (== action "plugins") (== action "restart") (== action "stop")))
+    (activate_action spot item)
+    (return)
+  else
+    nil)
   (if (&& (== (text item/kind) "command") (== (text item/command/name) "theme"))
-    (do (set spot/parent {^query spot/query ^items spot/items ^active index ^partial spot/partial})
+    (set spot/parent {^query spot/query ^items spot/items ^active index ^partial spot/partial})
     (set spot/step "theme")
     (set spot/step_generation (+ spot/step_generation 1))
     (var step_key (text item/id))
     (set spot/step_key step_key)
     (var saved : Any spot/steps/%step_key)
     (if (|| ($absent? saved) (!= (text saved/command/revision) (text item/command/revision)))
-      (do (var context (state spot))
+      (var context (state spot))
       (var captured_target (text context/session))
-      (set saved {^command item/command ^session captured_target ^query ""
-        ^title (if (== captured_target "") "New tools conversation on submit" else (text context/title))})
-      (set spot/steps/%step_key saved)))
+      (set saved
+        {
+          ^command item/command
+          ^session captured_target
+          ^query ""
+          ^title (if (== captured_target "")
+                   "New tools conversation on submit"
+                 else
+                   (text context/title))})
+      (set spot/steps/%step_key saved))
     (set spot/command saved/command)
     (set spot/target (text saved/session))
     (var target_title (text saved/title))
@@ -147,29 +160,34 @@
     (set spot/input/placeholder "Choose light or dark…")
     ($dom/set_input_value spot/input (text saved/query))
     (search spot (text saved/query))
-    (return)))
+    (return))
   (set spot/busy true)
   (var opening spot/opening)
   (var done (fn [code : Int, result : Any] : Nil
     (if (|| spot/disposed (! spot/open) (!= opening spot/opening)) (return))
     (if (|| (== code 200) (== code 201) (== code 202))
       (close spot false)
-      else (do
-        (set spot/awaiting_receipt (&& (|| (== code 0) (>= code 500))
-          ($present? (/pending_command (state spot)))))
-        (set spot/busy spot/awaiting_receipt)
-        (set spot/feedback (text result/message "The action could not be verified. Inspect its conversation."))
-        ($dom/set_text spot/message spot/feedback)))))
+    else
+      (set spot/awaiting_receipt
+        (&& (|| (== code 0) (>= code 500)) ($present? ((Path "pending_command") (state spot)))))
+      (set spot/busy spot/awaiting_receipt)
+      (set spot/feedback
+        (text result/message "The action could not be verified. Inspect its conversation."))
+      ($dom/set_text spot/message spot/feedback))))
   (if (|| (== (text item/kind) "command") (== (text item/kind) "theme_choice"))
-    (do
-      (var expected : Any (if (== (text item/kind) "theme_choice") spot/command else item/command))
-      (var target (if (== (text item/kind) "theme_choice") spot/target else (text (/session (state spot)))))
-      (var command_text (if (== (text item/kind) "theme_choice") $"/theme ${(text item/value)}" else "/help"))
-      (var send : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) spot/bridge/command)
-      (send target command_text expected done))
-    else (do
-      (var navigate : (Fn [Any (Fn [Int Any] Nil)] Nil) spot/bridge/navigate)
-      (navigate item done))))
+    (var expected : Any (if (== (text item/kind) "theme_choice") spot/command else item/command))
+    (var target
+      (if (== (text item/kind) "theme_choice")
+        spot/target
+      else
+        (text ((Path "session") (state spot)))))
+    (var command_text
+      (if (== (text item/kind) "theme_choice") $"/theme ${(text item/value)}" else "/help"))
+    (var send : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) spot/bridge/command)
+    (send target command_text expected done)
+  else
+    (var navigate : (Fn [Any (Fn [Int Any] Nil)] Nil) spot/bridge/navigate)
+    (navigate item done)))
 
 (fn availability [spot : Spotlight] : Str
   (var reasons : (List Any) [])
@@ -236,8 +254,8 @@
   (for item in entries
     (var rank (match_rank (text item/title) (text item/aliases) query))
     (if (>= rank 0)
-      (do (set item/rank (if (== ($str/trim query) "") 5 else rank))
-      (set result (insert_ranked result item 50)))))
+      (set item/rank (if (== ($str/trim query) "") 5 else rank))
+      (set result (insert_ranked result item 50))))
   result)
 
 (fn publish_results [spot : Spotlight, opening : Int, generation : Int, step_generation : Int,
@@ -264,16 +282,26 @@
   (var generation spot/query_generation)
   (var step_generation spot/step_generation)
   (if (== spot/step "theme")
-    (do (var step_key spot/step_key)
+    (var step_key spot/step_key)
     (var saved : Any spot/steps/%step_key)
     (if ($present? saved) (set saved/query query))
     (var options : (List Any) [])
     (for value in ["light" "dark"]
       (var rank (match_rank value "theme" query))
       (if (>= rank 0)
-        (set options (insert_ranked options {^id $"theme:${value}" ^kind "theme_choice"
-          ^title (if (== value "light") "Light" else "Dark") ^subtitle "Change theme" ^value value ^rank rank} 50))))
-    (publish_results spot opening generation step_generation options false) (return)))
+        (set options
+          (insert_ranked
+            options
+            {
+              ^id $"theme:${value}"
+              ^kind "theme_choice"
+              ^title (if (== value "light") "Light" else "Dark")
+              ^subtitle "Change theme"
+              ^value value
+              ^rank rank}
+            50))))
+    (publish_results spot opening generation step_generation options false)
+    (return))
   (var local (local_results spot query))
   ($dom/set_text spot/message (if (== spot/feedback "") "Searching…" else spot/feedback))
   (var api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) spot/bridge/api)
@@ -285,7 +313,9 @@
 
 (fn open [spot : Spotlight] : Nil
   (if spot/disposed (return))
-  (if spot/open (do ($dom/focus spot/input) (return)))
+  (if spot/open
+    ($dom/focus spot/input)
+    (return))
   (var claim : (Fn [Str EventTarget (Fn [Bool] Nil) EventTarget] Bool) spot/bridge/claim)
   (if (! (claim spot/owner spot/panel (fn [restore : Bool] : Nil (close spot restore)) spot/button)) (return))
   (set spot/open true) (set spot/busy false) (set spot/awaiting_receipt false) (set spot/step "")
@@ -302,37 +332,43 @@
 (fn key [spot : Spotlight, event : Any] : Bool
   (if (|| spot/disposed ($event/is_composing event)) (return false))
   (var code ($event/code event))
-  (if (&& ($event/meta_key event) (! ($event/alt_key event))
-              (! ($event/ctrl_key event)) (! ($event/shift_key event)) (== code "KeyK"))
-    (do (if (! ($event/repeat event)) (open spot)) (return true)))
+  (if (&& ($event/meta_key event) (! ($event/alt_key event)) (! ($event/ctrl_key event)) (! ($event/shift_key event)) (== code "KeyK"))
+    (if (! ($event/repeat event)) (open spot))
+    (return true))
   (if (! spot/open) (return false))
   (if (|| (== code "ArrowDown") (== code "ArrowUp"))
-    (do (if (! ($dom/focused? spot/input)) (return false))
+    (if (! ($dom/focused? spot/input)) (return false))
     (set spot/active (moved spot/active (if (== code "ArrowDown") 1 else -1) spot/items/.size))
-    (paint_selection spot) (return true)))
+    (paint_selection spot)
+    (return true))
   (if (== code "Escape")
-    (do (if ($event/repeat event) (return true))
+    (if ($event/repeat event) (return true))
     (if (== spot/step "theme")
-      (do
-        (set spot/step "") (set spot/step_generation (+ spot/step_generation 1))
-        (set spot/query_generation (+ spot/query_generation 1))
-        (set spot/query (text spot/parent/query)) (set spot/items spot/parent/items)
-        (set spot/active spot/parent/active) (set spot/partial spot/parent/partial)
-        ($dom/set_input_value spot/input spot/query)
-        (set spot/input/placeholder "Search Harness…") ($dom/set_text spot/crumb "")
-        (render_results spot))
-      else (close spot))
-    (return true)))
+      (set spot/step "")
+      (set spot/step_generation (+ spot/step_generation 1))
+      (set spot/query_generation (+ spot/query_generation 1))
+      (set spot/query (text spot/parent/query))
+      (set spot/items spot/parent/items)
+      (set spot/active spot/parent/active)
+      (set spot/partial spot/parent/partial)
+      ($dom/set_input_value spot/input spot/query)
+      (set spot/input/placeholder "Search Harness…")
+      ($dom/set_text spot/crumb "")
+      (render_results spot)
+    else
+      (close spot))
+    (return true))
   (if (== code "Enter")
-    (do (if (! ($dom/focused? spot/input)) (return false))
-    (if (! ($event/repeat event)) (activate spot spot/active)) (return true)))
-  (if (&& ($event/meta_key event) ($event/alt_key event)
-              (! ($event/ctrl_key event)) (! ($event/shift_key event)))
-    (do (var index 1)
+    (if (! ($dom/focused? spot/input)) (return false))
+    (if (! ($event/repeat event)) (activate spot spot/active))
+    (return true))
+  (if (&& ($event/meta_key event) ($event/alt_key event) (! ($event/ctrl_key event)) (! ($event/shift_key event)))
+    (var index 1)
     (while (<= index 9)
       (if (== code $"Digit${index}")
-        (do (if (! ($event/repeat event)) (activate spot (- index 1))) (return true)))
-      (set index (+ index 1)))))
+        (if (! ($event/repeat event)) (activate spot (- index 1)))
+        (return true))
+      (set index (+ index 1))))
   false)
 
 (fn main [root : EventTarget] : Nil
@@ -357,11 +393,14 @@
     {^dispose (fn [] : Nil (set spot/disposed true) ($dom/remove button) (close spot true))
      ^update (fn [status : Any] : Nil
        (set spot/status status)
-       (if (&& spot/open spot/awaiting_receipt ($absent? (/pending_command (state spot))))
-         (do (close spot true) (return)))
+       (if (&& spot/open spot/awaiting_receipt ($absent? ((Path "pending_command") (state spot))))
+         (close spot true)
+         (return))
        (if (&& spot/open (> spot/items/.size 0) (!= spot/availability (availability spot)))
-         (do (var active spot/active)
-         (render_results spot) (set spot/active active) (paint_selection spot))))
+         (var active spot/active)
+         (render_results spot)
+         (set spot/active active)
+         (paint_selection spot)))
      ^key (fn [event : Any] : Bool (key spot event))})
   ($dom/append root panel) ($dom/append panel dialog)
   ($dom/append dialog crumb)

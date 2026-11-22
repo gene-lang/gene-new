@@ -287,10 +287,11 @@
       (let response (read active previous cursor ^max_bytes 32))
       (if (== ($size response/lines) 0)
         (set done true)
-        else (do
-          (for line in response/lines (all .push line))
-          (set cursor response/cursor)
-          (set polls (+ polls 1)))))
+      else
+        (for line in response/lines
+          (all .push line))
+        (set cursor response/cursor)
+        (set polls (+ polls 1))))
     ($assert (== ($size all) 60) ($to_str ($size all)))
     ($assert (== all/0 "entry-0"))
     ($assert (== all/59 "entry-59"))

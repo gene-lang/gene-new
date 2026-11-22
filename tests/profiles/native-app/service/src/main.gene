@@ -32,45 +32,38 @@
 (fn heartbeat []
   (let now ($os/monotonic_ms))
   (if (> last_tick_ms 0)
-    (do
-      (let gap (- now last_tick_ms))
-      (if (> gap max_tick_gap_ms)
-        (do
-          (set max_tick_gap_ms gap)
-          (set max_tick_at_ms now)
-          (let snapshot (status server))
-          (set max_tick_active_connections snapshot/active_connections)
-          (set max_tick_in_flight snapshot/in_flight_requests)
-          (set max_tick_loop_work_ms snapshot/loop_work_ms)
-          (set max_tick_loop_work_cpu_ms snapshot/loop_work_cpu_ms)
-          (set max_tick_wait_overrun_ms snapshot/wait_overrun_ms)))))
+    (let gap (- now last_tick_ms))
+    (if (> gap max_tick_gap_ms)
+      (set max_tick_gap_ms gap)
+      (set max_tick_at_ms now)
+      (let snapshot (status server))
+      (set max_tick_active_connections snapshot/active_connections)
+      (set max_tick_in_flight snapshot/in_flight_requests)
+      (set max_tick_loop_work_ms snapshot/loop_work_ms)
+      (set max_tick_loop_work_cpu_ms snapshot/loop_work_cpu_ms)
+      (set max_tick_wait_overrun_ms snapshot/wait_overrun_ms)))
   (set last_tick_ms now)
   (set tick_count (+ tick_count 1))
   (if (>= now next_sample_ms)
-    (do
-      (set next_sample_ms (+ now 5000))
-      (let stats ($runtime/gc_stats))
-      (if stats/rc_stats?
-        (managed_samples .push stats/live_managed)))))
+    (set next_sample_ms (+ now 5000))
+    (let stats ($runtime/gc_stats))
+    (if stats/rc_stats? (managed_samples .push stats/live_managed))))
 
 (fn handle [request]
   (if (== request/path "/health")
     (return (text 200 "ready")))
   (if (== request/path "/slow")
-    (do
-      ($sleep 650)
-      (return (text 200 "slow"))))
+    ($sleep 650)
+    (return (text 200 "slow")))
   (if (== request/path "/db")
-    (do
-      (let started ($os/monotonic_ms))
-      (db .Db:execute "insert into hits(v) values (?)" 1)
-      (let row (db .Db:query_one "select count(*) as n from hits"))
-      (let spent (- ($os/monotonic_ms) started))
-      (if (> spent max_db_ms)
-        (do
-          (set max_db_ms spent)
-          (set max_db_at_ms started)))
-      (return (text 200 ($to_str row/n)))))
+    (let started ($os/monotonic_ms))
+    (db .Db:execute "insert into hits(v) values (?)" 1)
+    (let row (db .Db:query_one "select count(*) as n from hits"))
+    (let spent (- ($os/monotonic_ms) started))
+    (if (> spent max_db_ms)
+      (set max_db_ms spent)
+      (set max_db_at_ms started))
+    (return (text 200 ($to_str row/n))))
   (if (== request/path "/meta")
     (return (text 200 ($json/stringify
       {^path request/path
@@ -78,25 +71,21 @@
        ^forwarded_proto (?? request/headers/x-forwarded-proto "")
        ^forwarded_host (?? request/headers/x-forwarded-host "")}))))
   (if (== request/path "/upload")
-    (do
-      (var total 0)
-      (while true
-        (let part (await (request/body .AsyncReader:read 65536)))
-        (if ($absent? part) (break))
-        (set total (+ total ($binary/size part))))
-      (return (text 200 ($to_str total)))))
+    (var total 0)
+    (while true
+      (let part (await (request/body .AsyncReader:read 65536)))
+      (if ($absent? part) (break))
+      (set total (+ total ($binary/size part))))
+    (return (text 200 ($to_str total))))
   (if (== request/path "/stream")
-    (do
-      (let endpoints ($io/pipe))
-      (await (endpoints/1 .AsyncWriter:write
-        ($binary/from_str "stream-ok")))
-      endpoints/1/.IoResource:close
-      (await endpoints/1/.IoResource:wait_closed)
-      (return (stream endpoints/0 ^content_length 9 ^^own_reader))))
+    (let endpoints ($io/pipe))
+    (await (endpoints/1 .AsyncWriter:write ($binary/from_str "stream-ok")))
+    endpoints/1/.IoResource:close
+    (await endpoints/1/.IoResource:wait_closed)
+    (return (stream ^content_length 9 ^^own_reader endpoints/0)))
   (if (== request/path "/stop")
-    (do
-      (stop server)
-      (return (text 200 "stopping"))))
+    (stop server)
+    (return (text 200 "stopping")))
   (text 404 "not found"))
 
 (fn main [args] : Int

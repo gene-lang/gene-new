@@ -45,8 +45,8 @@
     (set selected (valid_port restart_port))
     (set strict true))
   (if (&& (! strict) ($present? requested))
-    (do (set selected (valid_port ^^zero requested))
-    (set strict (!= selected 0))))
+    (set selected (valid_port ^^zero requested))
+    (set strict (!= selected 0)))
   (if (&& ($absent? requested) ($absent? restart_port) ($fs/exists? $"${state_root}/web_port"))
     (set selected (valid_port ($serde/read_data ($fs/read_text $"${state_root}/web_port")))))
   (try

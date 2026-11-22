@@ -40,9 +40,12 @@
     # A plugin question kind may draw its own view from the question's data.
     (let renderer (renderers .get kind))
     (if (&& ($absent? (?? question/view nil)) ($present? renderer))
-      (do (let drawn (try (renderer ($freeze copy))
-        catch Error (fail (QuestionError ^_msg $"question ${question/id} ${kind} render: ${$err/.message}"))))
-      (copy .put "view" (question_view question/id drawn (?? copy/choices nil) kind))))
+      (let drawn
+        (try
+          (renderer ($freeze copy))
+        catch Error
+          (fail (QuestionError ^_msg $"question ${question/id} ${kind} render: ${$err/.message}"))))
+      (copy .put "view" (question_view question/id drawn (?? copy/choices nil) kind)))
     # Opt-in single-click answering; the default is select, then Answer.
     (if_not ($absent? question/submit_on_answer)
       (if (!= ($head question/submit_on_answer) Bool)
@@ -97,20 +100,20 @@
   (for question in questions
     (let value (if dismiss (quote unanswered) else (?? (values .get question/id) (quote unanswered))))
     (if (!= value (quote unanswered))
-      (do (if (== question/multi true)
-          (if (!= ($head value) List)
-              (fail (QuestionError ^_msg $"question ${question/id} expects multiple choices")))
-            (for choice in value
-              (if_not (question/choices .contains? choice)
-                (fail (QuestionError ^_msg $"invalid choice for ${question/id}"))))
-          else
-            (if_not ($absent? (?? question/choices nil))
-              (if_not (question/choices .contains? value)
-                (fail (QuestionError ^_msg $"invalid choice for ${question/id}")))))
-        (if (&& (== question/kind "text") (!= ($head value) Str))
-          (fail (QuestionError ^_msg $"question ${question/id} expects text")))
-        (let validator (validators .get question/kind))
-        (if_not ($absent? validator) (validator value))))
+      (if (== question/multi true)
+        (if (!= ($head value) List)
+          (fail (QuestionError ^_msg $"question ${question/id} expects multiple choices")))
+        (for choice in value
+          (if_not (question/choices .contains? choice)
+            (fail (QuestionError ^_msg $"invalid choice for ${question/id}"))))
+      else
+        (if_not ($absent? (?? question/choices nil))
+          (if_not (question/choices .contains? value)
+            (fail (QuestionError ^_msg $"invalid choice for ${question/id}")))))
+      (if (&& (== question/kind "text") (!= ($head value) Str))
+        (fail (QuestionError ^_msg $"question ${question/id} expects text")))
+      (let validator (validators .get question/kind))
+      (if_not ($absent? validator) (validator value)))
     (answers .put question/id value))
   ($freeze answers))
 
@@ -136,15 +139,15 @@
   (if ($absent? batch) (fail (QuestionError ^_msg $"unknown question batch ${id}")))
   (let submitted (submitted_digest values dismiss))
   (if (&& (== batch/status "answered") ($present? batch/submitted_digest))
-    (do (if (&& (== batch/submitted_digest submitted) (== (?? batch/intent "continue") intent))
-        (return batch))
-      (fail (QuestionError ^_msg $"question batch ${id} already has different answers"))))
+    (if (&& (== batch/submitted_digest submitted) (== (?? batch/intent "continue") intent))
+      (return batch))
+    (fail (QuestionError ^_msg $"question batch ${id} already has different answers")))
   (let answers (normalize_answers batch/questions values ^dismiss dismiss ^validators validators))
   (let digest ($crypto/sha256 ($serde/write_data answers)))
   (if (== batch/status "answered")
-    (do (if (!= digest batch/digest)
-        (fail (QuestionError ^_msg $"question batch ${id} already has different answers")))
-      (return batch)))
+    (if (!= digest batch/digest)
+      (fail (QuestionError ^_msg $"question batch ${id} already has different answers")))
+    (return batch))
   (batch .put "status" "answered")
   (batch .put "answers" answers)
   (batch .put "digest" digest)

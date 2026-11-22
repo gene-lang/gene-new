@@ -9,10 +9,10 @@
   (if (== kind List)
     (return ($freeze_shallow ($map value (fn [item] (freeze_turn_data item ^depth (+ depth 1)))))))
   (if (== kind Map)
-    (do (let result {})
+    (let result {})
     (map_for [key item] in value
       (if_not ([Str Sym] .contains? ($head key))
         (fail (TurnDataError ^_msg "Turn extension data keys must be strings or symbols.")))
-      (result .put key (freeze_turn_data item ^depth (+ depth 1))))
-    (return ($freeze_shallow result))))
+      (result .put key (freeze_turn_data ^depth (+ depth 1) item)))
+    (return ($freeze_shallow result)))
   (fail (TurnDataError ^_msg "Turn extensions accept inert scalars, lists and maps, not live values.")))

@@ -117,10 +117,13 @@
             (handoff_outputs service/runtime/services/values/channels ^^force)
             (let before (output_result service/runtime/services/values/channels/owner "test-reply"))
             (if (== point "remote_unknown")
-              (do ($assert (== before/parts/0/status "sent"))
+              ($assert (== before/parts/0/status "sent"))
               ($assert (== before/parts/1/status "uncertain"))
               ($assert (== before/parts/2/status "pending"))
-              (reconcile_remote service/runtime/services/values/channels/owner (api_adapter api) "test-reply")))
+              (reconcile_remote
+                service/runtime/services/values/channels/owner
+                (api_adapter api)
+                "test-reply"))
             (let delivered (deliver_output service/runtime/services/values/channels/owner (api_adapter api) "test-reply"))
             ($assert (== delivered/status "delivered"))
             (handoff_outputs service/runtime/services/values/channels ^^force)
@@ -201,21 +204,42 @@
             ($assert (/held (queue_status service/runtime/services/values/channel_queues session)))
             ($assert (== (/kind (drain_session service/runtime/services/values/channels session)) "held"))
             (if (== point "stop_hold")
-              (do (handoff_inputs service/runtime/services/values/channels)
+              (handoff_inputs service/runtime/services/values/channels)
               (let saved (snapshot service/runtime/services/values/channel_queues))
               (map_for [id control] in saved/controls
                 (if (== control/command/name "stop")
-                  ($assert (== control/result/code "ok") "A recorded Stop replayed against later browser work")))
-              ($assert (/held (queue_status service/runtime/services/values/channel_queues session)))))
+                  ($assert
+                    (== control/result/code "ok")
+                    "A recorded Stop replayed against later browser work")))
+              ($assert
+                ((Path "held")
+                  (queue_status service/runtime/services/values/channel_queues session))))
             (if (== point "oversized_hold")
-              (do (let parts (pending_parts service/runtime/services/values/channel_queues session))
+              (let parts (pending_parts service/runtime/services/values/channel_queues session))
               (let held (queue_status service/runtime/services/values/channel_queues session))
-              (let discarded (discard_inputs service/runtime/services/values/channel_queues session held/revision [parts/2/id] "Reviewed after restart."))
-              ($assert (/held (queue_status service/runtime/services/values/channel_queues session)))
-              (resume_queue service/runtime/services/values/channel_queues session discarded/revision)
-              ($assert (== (/kind (drain_session service/runtime/services/values/channels session)) "admitted"))
+              (let discarded
+                (discard_inputs
+                  service/runtime/services/values/channel_queues
+                  session
+                  held/revision
+                  [parts/2/id]
+                  "Reviewed after restart."))
+              ($assert
+                ((Path "held")
+                  (queue_status service/runtime/services/values/channel_queues session)))
+              (resume_queue
+                service/runtime/services/values/channel_queues
+                session
+                discarded/revision)
+              ($assert
+                (==
+                  ((Path "kind") (drain_session service/runtime/services/values/channels session))
+                  "admitted"))
               (wait_round service session)
-              ($assert (! (/held (queue_status service/runtime/services/values/channel_queues session))))))
+              ($assert
+                (!
+                  ((Path "held")
+                    (queue_status service/runtime/services/values/channel_queues session)))))
           ensure (close_session_service service))))))
 )
 

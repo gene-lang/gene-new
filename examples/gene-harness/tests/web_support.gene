@@ -28,8 +28,8 @@
   (let due (+ ($os/monotonic_ms) timeout_ms))
   (loop
     (if host/process/.done?
-      (do (let result (await host/process))
-      ($assert false $"Host exited before ready: ${result/stdout}${result/stderr}")))
+      (let result (await host/process))
+      ($assert false $"Host exited before ready: ${result/stdout}${result/stderr}"))
     (let connection (try (discover host/root) catch Error nil))
     (if (&& ($present? connection) (!= connection/epoch previous)) (return connection))
     ($assert (< ($os/monotonic_ms) due) "Host did not publish a ready connection")

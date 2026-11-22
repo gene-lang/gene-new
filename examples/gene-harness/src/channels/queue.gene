@@ -9,8 +9,8 @@
     {^workspace ($path/normalize workspace) ^source nil ^sequence 0
      ^bindings {} ^messages {} ^queues {} ^batches {} ^outbox {}}))
   (if (!= store/state/.get/workspace ($path/normalize workspace))
-    (do (close_channel_store store)
-    (channel_error "forbidden" "The channel store belongs to another workspace.")))
+    (close_channel_store store)
+    (channel_error "forbidden" "The channel store belongs to another workspace."))
   store)
 
 (fn configure_queues [store, route, ^owner_root owner_root = nil]
@@ -39,11 +39,9 @@
           (!= decision/author message/author) (!= ($head decision/policy_revision) Int))
     (channel_error "unavailable" "A current decision from the configured channel authority is required."))
   (if (== decision/allowed true)
-    (do (let route decision/route)
-    (if (|| (!= route/id state/source/id) (!= route/workspace state/workspace)
-            (!= route/account message/account) (!= route/team message/team)
-            (!= route/channel message/channel) (!= route/owner state/source/owner))
-      (channel_error "forbidden" "The authorization decision does not match the channel route."))))
+    (let route decision/route)
+    (if (|| (!= route/id state/source/id) (!= route/workspace state/workspace) (!= route/account message/account) (!= route/team message/team) (!= route/channel message/channel) (!= route/owner state/source/owner))
+      (channel_error "forbidden" "The authorization decision does not match the channel route.")))
   nil)
 
 (fn audit_decision [decision]
@@ -77,43 +75,49 @@
     (check_decision state message decision)
     (let existing (state/messages .get id))
     (if ($present? existing)
-      (do (if (!= existing/digest digest)
+      (if (!= existing/digest digest)
         (channel_error "submission_conflict" "The external message identity has different content."))
-      (return existing)))
+      (return existing))
     (let record {^id id ^digest digest ^author message/author
       ^decision (audit_decision decision) ^received_at message/received_at ^status "denied"})
     (if (!= decision/allowed true)
-      (do (state/messages .put id record)
-      (return record)))
+      (state/messages .put id record)
+      (return record))
     (let thread (binding_key message))
     (var binding (state/bindings .get thread))
     (if (&& ($present? binding) (== binding/root_input id))
       (return {^id id ^status "ignored" ^reason "existing_root" ^session binding/session}))
-    (if (&& ($absent? binding)
-                (|| (! start_allowed) (!= message/thread message/message)))
-      (do (let root_id (message_key (message .assoc "message" message/thread)))
+    (if (&& ($absent? binding) (|| (! start_allowed) (!= message/thread message/message)))
+      (let root_id (message_key (message .assoc "message" message/thread)))
       (let root (state/messages .get root_id))
-      (if (&& (!= message/thread message/message)
-              (! (["ignored" "denied" "deleted" "discarded" "consumed"] .contains? root/status))
-              (< ($os/wall_ms) (+ message/received_at 300000)))
+      (if (&& (!= message/thread message/message) (! (["ignored" "denied" "deleted" "discarded" "consumed"] .contains? root/status)) (< ($os/wall_ms) (+ message/received_at 300000)))
         (return {^status "waiting_root" ^reason "waiting_for_root"}))
       (record .put "status" "ignored")
       (record .put "reason" "unbound_thread")
       (state/messages .put id record)
-      (return record)))
+      (return record))
     (if (&& ($present? binding) (== binding/status "deleted"))
-      (do (record .put "status" "deleted")
+      (record .put "status" "deleted")
       (record .put "session" binding/session)
       (state/messages .put id record)
-      (return record)))
+      (return record))
     (if ($absent? binding)
-      (do (let session new_session)
-      (set binding {^id thread ^session session ^status "pending" ^root_input id
-        ^transport message/transport ^account message/account ^team message/team
-        ^channel message/channel ^thread message/thread})
+      (let session new_session)
+      (set binding
+        {
+          ^id thread
+          ^session session
+          ^status "pending"
+          ^root_input id
+          ^transport message/transport
+          ^account message/account
+          ^team message/team
+          ^channel message/channel
+          ^thread message/thread})
       (state/bindings .put thread binding)
-      (state/queues .put session {^session session ^binding thread ^revision 0
-        ^holds {} ^order [] ^batch nil ^observed {}})))
+      (state/queues .put
+        session
+        {^session session ^binding thread ^revision 0 ^holds {} ^order [] ^batch nil ^observed {}}))
     (let queue (require_queue state binding/session))
     (if ($absent? binding/last_message)
       (binding .put "last_message" (last_thread_message state binding)))
@@ -262,12 +266,13 @@
                 (== prior [receipt/state (?? receipt/continuation_mode "manual") source]))) (return nil))
     (queue/observed .put receipt/id observed)
     (if ($absent? prior)
-      (do (let order (?? queue/observed_order []))
-        (order .push receipt/id)
-        (if (> order/.size 256)
-          (queue/observed .delete ($first order))
-            (queue .put "observed_order" ($drop order 1))
-          else (queue .put "observed_order" order))))
+      (let order (?? queue/observed_order []))
+      (order .push receipt/id)
+      (if (> order/.size 256)
+        (queue/observed .delete ($first order))
+        (queue .put "observed_order" ($drop order 1))
+      else
+        (queue .put "observed_order" order)))
     (if (["running" "waiting"] .contains? receipt/state)
       (add_hold queue "temporary" "work" source))
     (if (== receipt/state "paused")
@@ -306,14 +311,18 @@
       (return {^kind "recover" ^batch (state/batches .get queue/batch)}))
     (if (> ($map_size queue/holds) 0) (return {^kind "held"}))
     (if ($present? members)
-      (do (if (!= ($head members) List) (channel_error "invalid_request" "Batch members must be an ordered ID list."))
+      (if (!= ($head members) List)
+        (channel_error "invalid_request" "Batch members must be an ordered ID list."))
       (let seen {})
       (for id in members
-        (if ($has_key? seen id) (channel_error "invalid_request" "The batch snapshot repeats a message ID."))
+        (if ($has_key? seen id)
+          (channel_error "invalid_request" "The batch snapshot repeats a message ID."))
         (seen .put id true)
         (let entry (state/messages .get id))
         (if (|| ($absent? entry) (!= entry/session session) (!= entry/status "queued"))
-          (channel_error "stale" "The batch snapshot no longer identifies pending messages in this queue.")))))
+          (channel_error
+            "stale"
+            "The batch snapshot no longer identifies pending messages in this queue."))))
     (let ids [])
     (let parts [])
     (let authorizations {})
@@ -324,10 +333,10 @@
       (let decision (decisions .get id))
       (check_decision state entry/message decision)
       (if (!= decision/allowed true)
-        (do (entry .put "status" "denied")
+        (entry .put "status" "denied")
         (entry .put "decision" (audit_decision decision))
         (queue_changed queue)
-        (continue)))
+        (continue))
       (ids .push id)
       (parts .push entry/message)
       (authorizations .put id (audit_decision decision)))
@@ -336,8 +345,8 @@
     (if ids/.empty? (return {^kind "empty"}))
     (let text (render_parts parts))
     (if (|| (> parts/.size 1024) (> text/.byte_size 65536))
-      (do (add_hold queue "operator" "oversized" (key ids))
-      (return {^kind "held" ^reason "oversized"})))
+      (add_hold queue "operator" "oversized" (key ids))
+      (return {^kind "held" ^reason "oversized"}))
     (let id proposed)
     (let first parts/0)
     (let input (normalize_channel_input {^kind "channel" ^transport first/transport

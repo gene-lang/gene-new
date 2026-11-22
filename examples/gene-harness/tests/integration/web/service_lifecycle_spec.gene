@@ -20,9 +20,12 @@
           ($assert (try
             (open_session_service ^^offline ^workspace workspace ^service_event (fn [phase, name]
               (if (== phase "close")
-                (do (closed .push name)
-                ($assert (== (lock_held? ($path/join workspace ".gene-harness" "lock")) (!= name "runtime"))
-                  $"Runtime ownership was released before ${name}.")))
+                (closed .push name)
+                ($assert
+                  (==
+                    (lock_held? ($path/join workspace ".gene-harness" "lock"))
+                    (!= name "runtime"))
+                  $"Runtime ownership was released before ${name}."))
               (if (&& (== phase "after") (== name target))
                 (fail (HostServiceError ^_msg $"injected session failure after ${target}")))))
             false

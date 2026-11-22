@@ -61,9 +61,10 @@
   (if (== root "/") (settings_error "The manager root cannot be the filesystem root."))
   (let path $"${root}/.gene-harness/workspace.gene")
   (if ($fs/exists? path)
-    (do (if (== ((Path "role") (read_workspace_settings root)) "manager")
-      (do ($fs/make_dir $"${root}/workspaces") (return root)))
-    (settings_error $"${root} is an ordinary Harness workspace; choose another manager root.")))
+    (if (== ((Path "role") (read_workspace_settings root)) "manager")
+      ($fs/make_dir $"${root}/workspaces")
+      (return root))
+    (settings_error $"${root} is an ordinary Harness workspace; choose another manager root."))
   # Started workspaces always have a config. Without workspace.gene this is
   # still someone's workspace, not an interrupted manager initialization.
   (if ($fs/exists? $"${root}/.gene-harness/config.gene")

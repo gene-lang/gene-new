@@ -43,10 +43,10 @@
   (var recovered false)
   (for record in state/records
     (if (&& (== record/status "running") (!= record/runtime_epoch runtime/epoch))
-      (do (record .put "status" "interrupted")
+      (record .put "status" "interrupted")
       (record .put "display" "Command interrupted by host restart; it was not replayed.")
       (record .put "finished" ($to_str ($now)))
-      (set recovered true))))
+      (set recovered true)))
   (if recovered (save_command_state runtime session state))
   state)
 
@@ -99,15 +99,14 @@
   (let name ($str/slice_bytes token 1 (- ($str/byte_size token) 1)))
   (let selected (row h "commands" name))
   (if ($absent? selected)
-    (do (var closest "help")
-      (var distance 1000000)
-      (for command in (rows h "commands")
-        (let score (edit_distance name command/name))
-        (if (< score distance)
-          (do (set closest command/name)
-          (set distance score))))
-      (fail
-        (CommandError ^code "unknown_command" ^_msg $"unknown command /${name}; try /${closest}"))))
+    (var closest "help")
+    (var distance 1000000)
+    (for command in (rows h "commands")
+      (let score (edit_distance name command/name))
+      (if (< score distance)
+        (set closest command/name)
+        (set distance score)))
+    (fail (CommandError ^code "unknown_command" ^_msg $"unknown command /${name}; try /${closest}")))
   (let offset (+ ($str/byte_size token) 1))
   (let raw
     (if (>= offset ($str/byte_size text))
@@ -118,11 +117,11 @@
 (fn help_command [ctx]
   (let name ($str/trim ctx/raw))
   (if (!= name "")
-    (do (let command (row ctx/runtime/h "commands" name))
-      (if ($absent? command)
-        (fail (CommandError ^code "unknown_command" ^_msg $"unknown command /${name}")))
-      (return
-        (CommandResult ^display ($to_str command/usage "\n" command/doc)))))
+    (let command (row ctx/runtime/h "commands" name))
+    (if ($absent? command)
+      (fail (CommandError ^code "unknown_command" ^_msg $"unknown command /${name}")))
+    (return
+      (CommandResult ^display ($to_str command/usage "\n" command/doc))))
   (let lines [])
   (for command in (rows ctx/runtime/h "commands")
     (lines .push $"${command/usage} — ${command/doc}"))
@@ -167,7 +166,7 @@
   (var first 1)
   (var last 400)
   (if (&& (> pieces/.size 1) (! ($fs/exists? ($path/join ctx/runtime/root specification))))
-    (do (let suffix ($last pieces))
+    (let suffix ($last pieces))
     (if_not ($absent? (#"^[0-9]+(-[0-9]+)?$" .match suffix))
       (let range ($str/split suffix "-"))
       (set first ($parse/parse_int range/0))
@@ -176,7 +175,7 @@
         ($str/slice_bytes
           specification
           0
-          (- ($str/byte_size specification) (+ ($str/byte_size suffix) 1)))))))
+          (- ($str/byte_size specification) (+ ($str/byte_size suffix) 1))))))
   (if (|| ($str/starts_with? relative "/") (($str/split relative "/") .contains? ".."))
     (fail (CommandError ^code "invalid_path" ^_msg "view needs a workspace-relative path")))
   (let path ($path/join ctx/runtime/root relative))
@@ -224,17 +223,36 @@
         (fn [ctx]
           (let requested ($str/trim ctx/raw))
           (if (== requested "")
-            (do (let browsers [])
+            (let browsers [])
             (for tab in (appearance_tabs ctx/runtime)
               (let saved_theme (?? tab/saved/theme "default"))
               (let saved_mode (?? tab/saved/mode "light"))
               (let rendered_theme (?? tab/rendered/theme "default"))
               (let rendered_mode (?? tab/rendered/mode "light"))
-              (browsers .push $"${tab/tab}: saved ${saved_theme}/${saved_mode}; rendered ${rendered_theme}/${rendered_mode}"))
-            (let shown (if browsers/.empty? "No connected browsers." else ($str/join browsers "\n")))
-            (let names ($map (theme_catalog (installed_themes ctx/runtime)) (fn [theme] theme/name)))
+              (browsers .push
+                ($to_str
+                  tab/tab
+                  ": saved "
+                  saved_theme
+                  "/"
+                  saved_mode
+                  "; rendered "
+                  rendered_theme
+                  "/"
+                  rendered_mode)))
+            (let shown
+              (if browsers/.empty?
+                "No connected browsers."
+              else
+                ($str/join
+                  browsers
+                  """
+""")))
+            (let names
+              ($map (theme_catalog (installed_themes ctx/runtime)) (fn [theme] theme/name)))
             (let listed ($str/join names ", "))
-            (return (CommandResult ^display $"Appearance: ${shown}\nInstalled themes: ${listed}" ^!attached))))
+            (return
+              (CommandResult ^display ($to_str "Appearance: " shown "\nInstalled themes: " listed) ^!attached)))
           (set_appearance ctx/runtime (if (theme_modes .contains? requested) {^mode requested} else {^theme requested}))
           (let missing (&& (! (theme_modes .contains? requested)) ($absent? ((installed_themes ctx/runtime) .get requested))))
           (let suffix (if missing " This theme is not installed here; browsers will render default and keep the saved name." else ""))
@@ -376,15 +394,29 @@
             """
 Stopped.""")))
     (if (&& (== record/ui_action true) (== record/status "failed"))
-      (do (let diagnostic $"UI action ${record/name} (${record/id}, view ${record/ui_request/component}, revision ${record/ui_request/revision}) failed: ${record/display}")
-      (let bounded (bounded_request manager/runtime session
-        [{^id record/id ^header $"[${record/id}.ui-error]" ^value diagnostic}]))
+      (let diagnostic
+        ($to_str
+          "UI action "
+          record/name
+          " ("
+          record/id
+          ", view "
+          record/ui_request/component
+          ", revision "
+          record/ui_request/revision
+          ") failed: "
+          record/display))
+      (let bounded
+        (bounded_request
+          manager/runtime
+          session
+          [{^id record/id ^header $"[${record/id}.ui-error]" ^value diagnostic}]))
       (record .put "attached" true)
-      (record .put "item" bounded/items/0)))
+      (record .put "item" bounded/items/0))
     (let output (?? record/output ""))
     (if (!= output "")
-      (do (record .put "output_ref" (write_body manager/runtime output))
-        (record .put "output" (byte_prefix output 16384))))
+      (record .put "output_ref" (write_body manager/runtime output))
+      (record .put "output" (byte_prefix output 16384)))
     (record .put "finished" ($to_str ($now)))
     (let updated (update_command manager session record))
     (log_event "command/end" $"command ${record/id} ${record/status}"
@@ -421,13 +453,15 @@ Stopped.""")))
       (if (|| (!= ($head value) Str) (== value "") (> ($str/byte_size value) 256))
         (fail (CommandError ^code "invalid_request" ^_msg "Invalid expected command identity.")))))
   (if (!= request_id "")
-    (do (if (|| (> ($str/byte_size request_id) 256) (!= ($head sequence) Int) (< sequence 1))
-      (fail (CommandError ^code "invalid_request" ^_msg "A command request id requires a positive submission sequence.")))
+    (if (|| (> ($str/byte_size request_id) 256) (!= ($head sequence) Int) (< sequence 1))
+      (fail
+        (CommandError ^code "invalid_request" ^_msg "A command request id requires a positive submission sequence.")))
     (let old (command_request_receipt manager session request_id))
     (if_not ($absent? old)
-      (if (&& (== old/request_digest digest) (== old/request_seq sequence)
-              (same_command_identity? old/expected_command expected)) (return old))
-      (fail (CommandError ^code "submission_conflict" ^_msg "Command request identity has different content.")))))
+      (if (&& (== old/request_digest digest) (== old/request_seq sequence) (same_command_identity? old/expected_command expected))
+        (return old))
+      (fail
+        (CommandError ^code "submission_conflict" ^_msg "Command request identity has different content."))))
   # Defer revision-bound resolution until after duplicate detection under the
   # admission gate. The same lease selects the handler and owns its execution.
   (let lease (if ($absent? expected) nil else (acquire_snapshot manager/runtime/h/snapshots)))
@@ -437,9 +471,9 @@ Stopped.""")))
   (if_not ($absent? on_admit) (parsed .put "on_admit" on_admit))
   (if_not ($absent? on_finish) (parsed .put "on_finish" on_finish))
   (if (!= request_id "")
-    (do (parsed .put "request_id" request_id)
+    (parsed .put "request_id" request_id)
     (parsed .put "request_seq" sequence)
-    (parsed .put "request_digest" digest)))
+    (parsed .put "request_digest" digest))
   (try
     (submit_routed_command ^lease lease manager session parsed)
   ensure
@@ -460,12 +494,11 @@ Stopped.""")))
       (if_not ($absent? parsed/request_id)
         (for previous in state/records
           (if (== previous/request_id parsed/request_id)
-            (do (if (&& (== previous/request_digest parsed/request_digest)
-                    (== previous/request_seq parsed/request_seq)
-                    (same_command_identity? previous/expected_command parsed/expected_command))
-              (do (set duplicate true)
-              (return previous)))
-            (fail (CommandError ^code "submission_conflict" ^_msg "Command request identity has different content.")))))
+            (if (&& (== previous/request_digest parsed/request_digest) (== previous/request_seq parsed/request_seq) (same_command_identity? previous/expected_command parsed/expected_command))
+              (set duplicate true)
+              (return previous))
+            (fail
+              (CommandError ^code "submission_conflict" ^_msg "Command request identity has different content."))))
         (if (!= parsed/request_seq state/next_id)
           (fail (CommandError ^code "submission_conflict" ^_msg "Unexpected command sequence; refresh or look up the previous receipt."))))
       (if_not ($absent? parsed/expected_command)
@@ -549,10 +582,9 @@ Stopped.""")))
   ensure
     (if (! watched)
       # The watcher owns the lease once it exists; before that, release it here.
-      (do (if (&& ($absent? supplied_lease) ($present? lease))
+      (if (&& ($absent? supplied_lease) ($present? lease))
         (release_snapshot manager/runtime/h/snapshots lease))
-      (if_not ($absent? parsed/on_finish)
-        (try (parsed/on_finish) catch Error nil))))))
+      (if_not ($absent? parsed/on_finish) (try (parsed/on_finish) catch Error nil)))))
 
 (fn command_receipt [manager, session : Str, id : Str]
   (let state (command_state manager/runtime session))

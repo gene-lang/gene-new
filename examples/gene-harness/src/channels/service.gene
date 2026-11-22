@@ -97,11 +97,22 @@
   (if (== kind "user") (request .put "author" (identifier data/author "author ID"))
     else (request .put "channel" (identifier data/channel "channel ID")))
   (if (== kind "thread")
-    (do (request .put "thread" (message_id data/thread))
+    (request .put "thread" (message_id data/thread))
     # The latest message either side observed; never a progress message.
-    (request .put "message" (read service/owner (fn [state]
-      (last_thread_message state {^account account_name ^team team ^channel request/channel
-        ^thread request/thread ^message (?? data/message nil) ^last_message (?? data/last_message nil)}))))))
+    (request .put
+      "message"
+      (read
+        service/owner
+        (fn [state]
+          (last_thread_message
+            state
+            {
+              ^account account_name
+              ^team team
+              ^channel request/channel
+              ^thread request/thread
+              ^message (?? data/message nil)
+              ^last_message (?? data/last_message nil)})))))
   (let account (read service/owner (fn [state] (state/accounts .get account_name))))
   (if (|| ($absent? account) (!= account/team team))
     (channel_error "forbidden" "The channel identity belongs to another configured account."))
@@ -170,15 +181,20 @@
     (if (== binding/status "deleted") (return nil))
     (let existing (manager/index/.get .get session))
     (if ($absent? existing)
-      (do (if (|| (== binding/status "active")
-              ($present? (core_state service/runtime/events "workspace" "workspace" ($to_str "session_delete/" session))))
-        (do (tombstone_session service/runtime/services/values/channel_queues session) (return nil)))
+      (if (|| (== binding/status "active") ($present? (core_state service/runtime/events "workspace" "workspace" $"session_delete/${session}")))
+        (tombstone_session service/runtime/services/values/channel_queues session)
+        (return nil))
       (let root (state/messages .get binding/root_input))
-      (let title (byte_prefix ($str/join (root/message/text .split "\n") " ") 160))
-      (create_session_unlocked manager ^id session ^title title ^first_request root/message/text
-        ^channel {^transport binding/transport ^account binding/account ^team binding/team
-          ^channel binding/channel ^thread binding/thread ^binding binding/id
-          ^owner state/source/owner ^route state/source/id})))
+      (let title
+        (byte_prefix
+          ($str/join
+            (root/message/text .split
+              """
+""")
+            " ")
+          160))
+      (create_session_unlocked ^id session ^title title ^first_request root/message/text ^channel {^transport binding/transport ^account binding/account ^team binding/team ^channel binding/channel ^thread binding/thread ^binding binding/id ^owner state/source/owner ^route state/source/id}
+        manager))
     (activate_binding service/runtime/services/values/channel_queues binding/id))))
 
 (fn deleted_notice [service, disposition, message]
@@ -200,15 +216,24 @@
       (channel_error "forbidden" "The forwarded event has a different configured route."))
     (let decision (authorize_input service supplied/message/author))
     (if (&& decision/allowed ($present? (parse_control supplied/message/text)))
-      (do (let result (apply_control service supplied/message
-        (fn [] (authorize_input service supplied/message/author))))
+      (let result
+        (apply_control
+          service
+          supplied/message
+          (fn []
+            (authorize_input service supplied/message/author))))
       (if (== result/status "control")
-        (do (let status (queue_status service/runtime/services/values/channel_queues result/session))
-        (queue_output service/runtime/services/values/channel_queues
-          (output_intent service status/binding ($to_str "control-" result/id)
-            (?? result/result/round (?? result/target "channel-control")) result/result/text))))
+        (let status (queue_status service/runtime/services/values/channel_queues result/session))
+        (queue_output
+          service/runtime/services/values/channel_queues
+          (output_intent
+            service
+            status/binding
+            $"control-${result/id}"
+            (?? result/result/round (?? result/target "channel-control"))
+            result/result/text)))
       (deleted_notice service result supplied/message)
-      (return result)))
+      (return result))
     # A message that starts work without mentioning the assistant gets a quick
     # decision on whom it is for; only a confident "other people" holds it back.
     (var start_allowed (== supplied/start_allowed true))
@@ -249,19 +274,45 @@
     (let payload event/payload)
     (let id ($to_str "event-" (key [session event/seq])))
     (if (! (read service/runtime/services/values/channel_queues (fn [state] ($has_key? state/outbox id))))
-      (do (if (&& (== event/type "reply") (== payload/final true) (!= payload/synthetic true))
-        (queue_output service/runtime/services/values/channel_queues
-          (output_intent service binding id payload/round
-            ($to_str "Agent:\n" (?? payload/text "(Empty reply)")))))
+      (if (&& (== event/type "reply") (== payload/final true) (!= payload/synthetic true))
+        (queue_output
+          service/runtime/services/values/channel_queues
+          (output_intent
+            service
+            binding
+            id
+            payload/round
+            ($to_str
+              """Agent:
+"""
+              (?? payload/text "(Empty reply)")))))
       (if (&& (== event/type "turn/request") (== payload/initial true) (== payload/initiator "user"))
-        (queue_output service/runtime/services/values/channel_queues (output_intent service binding id payload/round
-          ($to_str "User (Harness browser):\n" (?? payload/text payload/settled)))))
+        (queue_output
+          service/runtime/services/values/channel_queues
+          (output_intent
+            service
+            binding
+            id
+            payload/round
+            ($to_str
+              """User (Harness browser):
+"""
+              (?? payload/text payload/settled)))))
       (if (&& (== event/type "question/answered") (== payload/state/answer_source/kind "harness"))
-        (do (let lines ["User (Harness) answered questions:"])
+        (let lines ["User (Harness) answered questions:"])
         (for question in payload/state/questions
-          (lines .push ($to_str question/prompt ": " (payload/state/answers .get question/id))))
-        (queue_output service/runtime/services/values/channel_queues (output_intent service binding id payload/state/round
-          ($str/join lines "\n")))))))
+          (lines .push $"${question/prompt}: ${(payload/state/answers .get question/id)}"))
+        (queue_output
+          service/runtime/services/values/channel_queues
+          (output_intent
+            service
+            binding
+            id
+            payload/state/round
+            ($str/join
+              lines
+              """
+""")))))
     (set through event/seq))
   (if (> through cursor)
     (mutate service/runtime/services/values/channel_queues (fn [latest]
@@ -328,8 +379,8 @@
     (if (&& (! active) ($absent? prior)
              (! (["failed" "interrupted" "cancelled"] .contains? display_state))) (continue))
     (if (== display_state "done")
-      (do (queue_progress service binding id receipt/id "Agent status" ^^remove)
-      (continue)))
+      (queue_progress ^^remove service binding id receipt/id "Agent status")
+      (continue))
     (let text ($to_str "Agent: " display_state "."
       (if (== display_state "running") ($to_str " Stop: !stop " receipt/id) else "")
       (if (== display_state "paused")
@@ -340,19 +391,34 @@
         ($to_str "\n" (byte_prefix (?? receipt/continuation_error (?? receipt/message "Work did not finish.")) 256)) else "")))
     (queue_progress service binding id receipt/id text)
     (if (&& (== receipt/state "waiting") ($present? receipt/questions))
-      (do (let question_id ($to_str "questions-" (key [session receipt/questions/id])))
+      (let question_id $"questions-${(key [session receipt/questions/id])}")
       (if_not (read service/runtime/services/values/channel_queues (fn [state] ($has_key? state/outbox question_id)))
         (let lines ["Agent needs answers:"])
         (let example {})
         (for question in receipt/questions/questions
-          (lines .push ($to_str question/id ": " question/prompt))
+          (lines .push $"${question/id}: ${question/prompt}")
           (if_not ($absent? question/choices)
-            (lines .push ($to_str "Choices: " ($json/stringify question/choices))))
-          (example .put question/id (if (== question/multi true) []
-            else (?? question/recommended (if ($absent? question/choices) "your answer" else question/choices/0)))))
-        (lines .push ($to_str "Reply using !answer " receipt/questions/id " " ($json/stringify example)))
-        (queue_output service/runtime/services/values/channel_queues
-          (output_intent service binding question_id receipt/id ($str/join lines "\n")))))))
+            (lines .push $"Choices: ${($json/stringify question/choices)}"))
+          (example .put
+            question/id
+            (if (== question/multi true)
+              []
+            else
+              (??
+                question/recommended
+                (if ($absent? question/choices) "your answer" else question/choices/0)))))
+        (lines .push $"Reply using !answer ${receipt/questions/id} ${($json/stringify example)}")
+        (queue_output
+          service/runtime/services/values/channel_queues
+          (output_intent
+            service
+            binding
+            question_id
+            receipt/id
+            ($str/join
+              lines
+              """
+"""))))))
   nil)
 
 (fn handoff_inputs [service]
@@ -361,7 +427,9 @@
     (let thread (binding_key incoming/message))
     (let root (== incoming/message/thread incoming/message/message))
     (if (&& (! root) ($has_key? blocked thread)) (continue))
-    (if (== incoming/deferred true) (do (blocked .put thread true) (continue)))
+    (if (== incoming/deferred true)
+      (blocked .put thread true)
+      (continue))
     (try
       (let result (if (== incoming/workspace service/runtime/root)
         (receive_handoff service incoming)
@@ -392,30 +460,43 @@
         else (owner_call service "POST" "result" {^id outgoing/intent/id})))
       (reconcile_output service/runtime/services/values/channel_queues result)
       (if (== result/intent/mode "thread") (finish_shares service))
-      (if (&& (!= outgoing/result/status result/status)
-              (["uncertain" "failed" "delivered"] .contains? result/status))
-        (do (let envelope
-            (append_core_event service/runtime/events "session" outgoing/intent/session
-              {^type "trace" ^kind "channel/status" ^text "Channel delivery status changed."
-               ^delivery outgoing/intent/id ^status result/status ^^ignorable}))
-          (log_event "channel/status" "Channel delivery status changed"
-            ^target {^channel (?? outgoing/intent/channel "")}
-            ^data {^delivery outgoing/intent/id ^status result/status}
-            ^event {^stream outgoing/intent/session ^seq envelope/seq})
-          (flush_event_store service/runtime/events)))
+      (if (&& (!= outgoing/result/status result/status) (["uncertain" "failed" "delivered"] .contains? result/status))
+        (let envelope
+          (append_core_event
+            service/runtime/events
+            "session"
+            outgoing/intent/session
+            {
+              ^type "trace"
+              ^kind "channel/status"
+              ^text "Channel delivery status changed."
+              ^delivery outgoing/intent/id
+              ^status result/status
+              ^^ignorable}))
+        (log_event ^target {^channel (?? outgoing/intent/channel "")} ^data {^delivery outgoing/intent/id ^status result/status} ^event {^stream outgoing/intent/session ^seq envelope/seq}
+          "channel/status"
+          "Channel delivery status changed")
+        (flush_event_store service/runtime/events))
       (service/health/.get .delete outgoing/intent/id)
     catch Error
       (defer_output service/runtime/services/values/channel_queues outgoing/intent/id ^error (?? $err/code "handoff_unavailable"))
       (if (&& (== $err/code "uncertain") (!= outgoing/last_error "uncertain"))
-        (do (let envelope
-            (append_core_event service/runtime/events "session" outgoing/intent/session
-              {^type "trace" ^kind "channel/status" ^text "Channel delivery needs owner review."
-               ^delivery outgoing/intent/id ^status "uncertain" ^^ignorable}))
-          (log_event "channel/status" "Channel delivery needs owner review"
-            ^target {^channel (?? outgoing/intent/channel "")}
-            ^data {^delivery outgoing/intent/id ^status "uncertain"}
-            ^event {^stream outgoing/intent/session ^seq envelope/seq})
-          (flush_event_store service/runtime/events)))
+        (let envelope
+          (append_core_event
+            service/runtime/events
+            "session"
+            outgoing/intent/session
+            {
+              ^type "trace"
+              ^kind "channel/status"
+              ^text "Channel delivery needs owner review."
+              ^delivery outgoing/intent/id
+              ^status "uncertain"
+              ^^ignorable}))
+        (log_event ^target {^channel (?? outgoing/intent/channel "")} ^data {^delivery outgoing/intent/id ^status "uncertain"} ^event {^stream outgoing/intent/session ^seq envelope/seq}
+          "channel/status"
+          "Channel delivery needs owner review")
+        (flush_event_store service/runtime/events))
       (service/health/.get .put outgoing/intent/id {^code (?? $err/code "handoff_unavailable") ^at ($os/wall_ms)})))
   nil)
 

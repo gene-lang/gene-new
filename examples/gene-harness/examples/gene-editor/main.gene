@@ -89,12 +89,14 @@
   (while (< index ($size values))
     (var byte values/%index)
     (if (== byte 13)
-      (do
-        (var next (+ index 1))
-        (if (&& (< next ($size values)) (== values/%next 10))
-          (do (set crlf (+ crlf 1)) (set index next))
-          else (set cr (+ cr 1))))
-      else (if (== byte 10) (set lf (+ lf 1))))
+      (var next (+ index 1))
+      (if (&& (< next ($size values)) (== values/%next 10))
+        (set crlf (+ crlf 1))
+        (set index next)
+      else
+        (set cr (+ cr 1)))
+    else
+      (if (== byte 10) (set lf (+ lf 1))))
     (set index (+ index 1)))
   (var styles 0)
   (if (> crlf 0) (set styles (+ styles 1)))
@@ -118,10 +120,10 @@
       (set encoded ($str/join ($str/split source "\n") "\r"))))
   (var values : (List Int) ($binary/to_list ($binary/from_str encoded)))
   (if bom
-    (do
-      (var prefixed : (List Int) [239 187 191])
-      (for value in values (prefixed .push value))
-      (set values prefixed)))
+    (var prefixed : (List Int) [239 187 191])
+    (for value in values
+      (prefixed .push value))
+    (set values prefixed))
   ($binary/from_list values))
 
 (fn decode_raw [raw : Bytes] : Any
@@ -172,10 +174,9 @@
 (fn add_document [id : Str, name : Str, raw : Bytes, origin : Str] : Nil
   (var decoded (decode_raw raw))
   (if (! (flag decoded/ok))
-    (do
-      (var detail (text decoded/message ""))
-      ($println $"skip fixture ${id}: ${detail}")
-      (return)))
+    (var detail (text decoded/message ""))
+    ($println $"skip fixture ${id}: ${detail}")
+    (return))
   (var endings (text decoded/line_endings "lf"))
   (var readonly (== endings "mixed"))
   (var document
@@ -262,11 +263,10 @@
                         "--version" ($to_str version)
                         "--text-file" path])
   (if (&& (== mode "analyze") ($present? request/select_utf16_start))
-    (do
-      (args .push "--select-utf16-start")
-      (args .push ($to_str (int_of request/select_utf16_start 0)))
-      (args .push "--select-utf16-end")
-      (args .push ($to_str (int_of request/select_utf16_end 0)))))
+    (args .push "--select-utf16-start")
+    (args .push ($to_str (int_of request/select_utf16_start 0)))
+    (args .push "--select-utf16-end")
+    (args .push ($to_str (int_of request/select_utf16_end 0))))
   (var result
     (try
       ($os/exec ^timeout_ms 10000 ^max_bytes 4194304 helper args...)
@@ -277,13 +277,14 @@
       {^ok false ^unavailable true
        ^message "gene-viewer could not be started; build it with `nimble tools`"}))
   (if (|| (!= result/status 0) (== (text result/stdout "") ""))
-    (do
-      (var stderr ($str/trim (text result/stderr "")))
-      (return
-        {^ok false
-         ^message (if (== stderr "")
-                    "gene-viewer returned no output"
-                    else $"gene-viewer failed: ${stderr}")})))
+    (var stderr ($str/trim (text result/stderr "")))
+    (return
+      {
+        ^!ok
+        ^message (if (== stderr "")
+                   "gene-viewer returned no output"
+                 else
+                   $"gene-viewer failed: ${stderr}")}))
   (try
     (var response (parse result/stdout))
     response
@@ -315,14 +316,22 @@
     (lines .push (log_line (+ cursor index)))
     (set index (+ index 1)))
   (if (== log_polls 12)
-    (do
-      (set log_polls 0)
-      {^ok true ^reset true ^gap "" ^cursor "0"
-       ^lines ["2026-11-20T10:59:59Z INFO log rotated; following the new segment"]})
-    else (if (== (// log_polls 5) 0)
-      {^ok true ^gap $"simulated rotation at poll ${log_polls}"
-       ^cursor ($to_str (+ cursor count)) ^lines lines}
-      else {^ok true ^gap "" ^cursor ($to_str (+ cursor count)) ^lines lines})))
+    (set log_polls 0)
+    {
+      ^^ok
+      ^^reset
+      ^gap ""
+      ^cursor "0"
+      ^lines ["2026-11-20T10:59:59Z INFO log rotated; following the new segment"]}
+  else
+    (if (== (// log_polls 5) 0)
+      {
+        ^^ok
+        ^gap $"simulated rotation at poll ${log_polls}"
+        ^cursor ($to_str (+ cursor count))
+        ^lines lines}
+    else
+      {^^ok ^gap "" ^cursor ($to_str (+ cursor count)) ^lines lines})))
 
 # ---------------------------------------------------------------------------
 # Page
@@ -380,12 +389,16 @@
     (return {^ok true ^revision document/revision ^line_endings endings
              ^bom bom ^text submitted}))
   (if (!= base document/revision)
-    (do
-      (var current (decode_raw document/raw))
-      (return {^ok false ^conflict true ^revision document/revision
-               ^line_endings document/line_endings ^bom document/bom
-               ^text (text current/text "")
-               ^message "the saved document changed since this draft was based on it"})))
+    (var current (decode_raw document/raw))
+    (return
+      {
+        ^!ok
+        ^^conflict
+        ^revision document/revision
+        ^line_endings document/line_endings
+        ^bom document/bom
+        ^text (text current/text "")
+        ^message "the saved document changed since this draft was based on it"}))
   (set document/raw encoded)
   (set document/revision digest)
   (set document/line_endings endings)
@@ -425,11 +438,12 @@
       (var body (body_json req))
       (if ($absent? body)
         (failure 400 "invalid JSON body")
-        else (do
-          (var document (stored (text body/id "")))
-          (if ($absent? document)
-            (failure 404 "no such document")
-            else (as_json (save_document document body)))))
+      else
+        (var document (stored (text body/id "")))
+        (if ($absent? document)
+          (failure 404 "no such document")
+        else
+          (as_json (save_document document body))))
     when ["POST" "/api/analyze"]
       (var body (body_json req))
       (if ($absent? body)

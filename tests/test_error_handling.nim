@@ -1748,8 +1748,11 @@ suite "errors — panics at runtime boundaries":
       (supervisor ^strategy restart
         (var a ($actor/spawn ^init (fn [] 10)
           ^handle (fn [ctx state msg]
-            (if (== msg 1) (panic "bad")
-              else (do (seen .set state) ($actor/continue (+ state msg)))))))
+            (if (== msg 1)
+              (panic "bad")
+            else
+              (seen .set state)
+              ($actor/continue (+ state msg))))))
         (a .send 1)
         (a .send 5)
         (seen .get))

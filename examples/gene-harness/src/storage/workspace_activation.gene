@@ -50,8 +50,8 @@
 (fn activate_descriptor [workspace : Workspace, h : Harness, descriptor, entry, ^fresh fresh : Bool = false]
   (var activation nil)
   (if fresh
-    (do (activation_requests .set (+ activation_requests/.get 1))
-    (set activation activation_requests/.get)))
+    (activation_requests .set (+ activation_requests/.get 1))
+    (set activation activation_requests/.get))
   (put_cordis_plugin ^^replace h descriptor
     (descriptor_entry_options workspace entry ^activation activation)))
 
@@ -60,13 +60,13 @@
   (var snapshot h/composition/.inspect)
   (for desired in (composition_entries workspace)
     (if (entry_enabled? desired)
-      (do (var matched false)
+      (var matched false)
       (for live in snapshot/entries
         (if (&& (== live/id desired/id) ($present? live/graph) (["active" "pending"] .contains? live/state))
           (for node in live/graph/nodes
             (if (&& (== node/identity live/graph/root) (== node/source_digest desired/module_digest))
               (set matched true)))))
-      (if_not matched (return nil)))))
+      (if_not matched (return nil))))
   # Desired state is committed before admission. Advance ACTIVE only after
   # reconciliation accepts the desired set, including valid pending entries.
   (let desired (composition_revision workspace))
@@ -152,10 +152,9 @@
   (for dependency_text in (dependency_module_texts source dependency_sources)
     (var dependency_digest $"sha256:${(sha256 dependency_text)}")
     (if (! (closure .contains? dependency_digest))
-      (do (closure .push dependency_digest)
-      (dependency_blobs .push
-        {^digest dependency_digest ^source dependency_text})
-      (materialize_module_blob workspace dependency_digest dependency_text))))
+      (closure .push dependency_digest)
+      (dependency_blobs .push {^digest dependency_digest ^source dependency_text})
+      (materialize_module_blob workspace dependency_digest dependency_text)))
   (validate_source_imports source closure)
   (for dependency in dependency_sources
     (validate_source_imports (parse_plugin_source dependency) closure))
@@ -187,10 +186,20 @@
   (write_module_blob workspace digest text)
   (let context ($runtime/context))
   (if (&& ($present? context) ($present? context/turn))
-    (do (queue_composition_change h/snapshots
-      {^kind "registration" ^id id
-       ^apply (fn [] (publish_registration ^readiness readiness workspace h descriptor entry replace authenticated_turn))})
-    (return {^id id ^digest digest ^status "queued" ^boundary "turn"})))
+    (queue_composition_change
+      h/snapshots
+      {
+        ^kind "registration"
+        ^id id
+        ^apply (fn []
+                 (publish_registration ^readiness readiness
+                   workspace
+                   h
+                   descriptor
+                   entry
+                   replace
+                   authenticated_turn))})
+    (return {^id id ^digest digest ^status "queued" ^boundary "turn"}))
   (publish_registration ^readiness readiness workspace h descriptor entry replace authenticated_turn))
 
 (fn publish_registration [workspace : Workspace, h : Harness, descriptor, entry, replace : Bool, authenticated_turn : Int, ^readiness readiness = nil]

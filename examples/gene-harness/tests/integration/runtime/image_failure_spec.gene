@@ -87,8 +87,9 @@
             (if (== scenario "reviewer") (fixture/reviewer_caps .set {^image_input "no"}))
             (if (== scenario "generator") (fixture/generator_caps .set {^image_output "no"}))
             (if (== scenario "capacity")
-              (do (let store (open_media_store fixture/runtime/state_root))
-                (repeat i in 25 (reserve_media store $"other-${i}" 1 "default" $"other-${i}"))))
+              (let store (open_media_store fixture/runtime/state_root))
+              (repeat i in 25
+                (reserve_media store $"other-${i}" 1 "default" $"other-${i}")))
             (let evaluated (evaluate_image fixture "An image."))
             ($assert fixture/generated/.get/.empty?)
             ($assert fixture/reviewed/.get/.empty?)

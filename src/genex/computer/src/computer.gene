@@ -28,11 +28,15 @@
   (let encoded ($json/stringify args))
   (if (> ($str/byte_size encoded) 131072) (refuse "Computer request exceeds 128 KiB."))
   (let argv ["call" tool encoded])
-  (if (!= driver/socket "") (do (argv .push "--socket") (argv .push driver/socket)))
+  (if (!= driver/socket "")
+    (argv .push "--socket")
+    (argv .push driver/socket))
   (let capture (&& (["get_window_state" "get_browser_state"] .contains? tool)
     (== args/include_screenshot true)))
   (let image_path ($path/join driver/root $"capture-${($crypto/random_hex 16)}.png"))
-  (if capture (do (argv .push "--screenshot-out-file") (argv .push image_path)))
+  (if capture
+    (argv .push "--screenshot-out-file")
+    (argv .push image_path))
   (try
   (let result (await ($os/exec_async driver/command argv... ^timeout_ms 30000 ^max_bytes 16777216)))
   (if (|| result/timed_out result/truncated (!= result/status 0))
@@ -41,11 +45,12 @@
     (fail (ComputerError ^code "transport" ^_msg "Cua Driver returned invalid JSON."))))
   (var image nil)
   (if capture
-    (do (if_not ($fs/exists? image_path)
-        (fail (ComputerError ^code "capture" ^_msg "Cua Driver did not produce the requested screenshot.")))
-      (let info ($fs/info image_path))
-      (if (> info/size 10485760) (refuse "Driver screenshot exceeds 10 MiB."))
-      (set image ($fs/read_bytes image_path))))
+    (if_not ($fs/exists? image_path)
+      (fail
+        (ComputerError ^code "capture" ^_msg "Cua Driver did not produce the requested screenshot.")))
+    (let info ($fs/info image_path))
+    (if (> info/size 10485760) (refuse "Driver screenshot exceeds 10 MiB."))
+    (set image ($fs/read_bytes image_path)))
   (normalize_result ^image image parsed)
   ensure ($fs/remove image_path)))
 
@@ -102,7 +107,9 @@
   (let browser (== target/kind "browser"))
   (if browser
     (args .put "snapshot_format" "semantic_v2")
-    else (do (args .put "max_dimension" 1600) (args .put "max_elements" 500)))
+  else
+    (args .put "max_dimension" 1600)
+    (args .put "max_elements" 500))
   (let result (driver_call driver (if browser "get_browser_state" else "get_window_state") args))
   (if (== result/isError true) (return result))
   (let observation ($crypto/random_hex 16))
@@ -129,9 +136,9 @@
   (try
     # Check replay before target liveness so a receipt is usable after restart.
     (if ($fs/exists? path)
-      (do (let previous ($serde/read_data ($fs/read_text path)))
-        (if (!= previous/digest digest) (refuse "Action request ID was reused for different input."))
-        (return previous)))
+      (let previous ($serde/read_data ($fs/read_text path)))
+      (if (!= previous/digest digest) (refuse "Action request ID was reused for different input."))
+      (return previous))
     (let target (require_target driver owner id))
     (let observed (driver/observations/.get .get id))
     (if (|| ($absent? observed) (!= observed/id observation))
@@ -167,14 +174,13 @@
           (refuse "Browser typing and scrolling require an observed ref."))
         (if (== name "scroll") (args .put "action" "scroll"))
         (if (|| (! ($absent? params/x)) (! ($absent? params/y)))
-          (do (let shot state/screenshot)
-            (if (|| ($absent? params/x) ($absent? params/y)
-                    ($absent? shot/pixel_to_css_scale_x) ($absent? shot/pixel_to_css_scale_y))
-              (refuse "Browser coordinates require the observed screenshot transform."))
-            (if (|| (< params/x 0) (< params/y 0) (>= params/x shot/width) (>= params/y shot/height))
-              (refuse "Browser coordinates are outside the observed screenshot."))
-            (args .put "x" (* params/x shot/pixel_to_css_scale_x))
-            (args .put "y" (* params/y shot/pixel_to_css_scale_y))))
+          (let shot state/screenshot)
+          (if (|| ($absent? params/x) ($absent? params/y) ($absent? shot/pixel_to_css_scale_x) ($absent? shot/pixel_to_css_scale_y))
+            (refuse "Browser coordinates require the observed screenshot transform."))
+          (if (|| (< params/x 0) (< params/y 0) (>= params/x shot/width) (>= params/y shot/height))
+            (refuse "Browser coordinates are outside the observed screenshot."))
+          (args .put "x" (* params/x shot/pixel_to_css_scale_x))
+          (args .put "y" (* params/y shot/pixel_to_css_scale_y)))
       else
         (let snapshot observed/result/structuredContent)
         (if_not ($absent? params/element_token)
@@ -182,12 +188,12 @@
                   (! ($str/starts_with? params/element_token $"${snapshot/snapshot_id}:")))
             (refuse "Element token does not belong to this observation.")))
         (if (|| (! ($absent? params/x)) (! ($absent? params/y)))
-          (do (if (|| ($absent? snapshot/capture_id) ($absent? params/x) ($absent? params/y))
-              (refuse "Coordinates require both x/y and a captured screenshot."))
-            # Cua click atomically consumes this exact capture; scroll's schema
-            # lacks capture_id, so allow only an AX token for native scrolling.
-            (if (!= name "click") (refuse "Native scrolling requires an element token."))
-            (args .put "capture_id" snapshot/capture_id))))
+          (if (|| ($absent? snapshot/capture_id) ($absent? params/x) ($absent? params/y))
+            (refuse "Coordinates require both x/y and a captured screenshot."))
+          # Cua click atomically consumes this exact capture; scroll's schema
+          # lacks capture_id, so allow only an AX token for native scrolling.
+          (if (!= name "click") (refuse "Native scrolling requires an element token."))
+          (args .put "capture_id" snapshot/capture_id)))
     (let receipt {^request request ^digest digest ^state "unknown" ^target id ^action name
       ^message "Dispatch may have occurred. Observe the target; do not replay this action."})
     ($fs/write_text_atomic ^^owner_only path ($serde/write_data receipt))

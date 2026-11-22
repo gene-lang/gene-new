@@ -116,24 +116,35 @@
   (let key $"continuation/prepared/${round/id}")
   (var rendered (core_state runtime/events "session" session key))
   (if ($absent? rendered)
-    (do (let saved ($serde/read_data (read_body runtime round/continuation/items_ref)))
-      (let items ($filter saved (fn [item] (!= item/settled false))))
-      (let sources (?? round/continuation/request_sources []))
-      (for item in incoming/items
-        (let source (request_source item))
-        (if_not (sources .contains? source)
-          (items .push item)
-          (if_not ($absent? source) (sources .push source))))
-      (let prepared ($runtime/with_context
+    (let saved ($serde/read_data (read_body runtime round/continuation/items_ref)))
+    (let items ($filter saved (fn [item] (!= item/settled false))))
+    (let sources (?? round/continuation/request_sources []))
+    (for item in incoming/items
+      (let source (request_source item))
+      (if_not (sources .contains? source)
+        (items .push item)
+        (if_not ($absent? source) (sources .push source))))
+    (let prepared
+      ($runtime/with_context
         {^composition runtime/h/snapshots ^snapshot lease/snapshot}
-        (fn [] (request_prepare runtime lease/snapshot
-          {^session session ^round round/id ^turn number ^round_turn 1 ^limit limit
-           ^continuation_mode round/continuation_mode ^task_root round/task_root ^items items}))))
-      (set rendered (bounded_request runtime session prepared/items))
-      (rendered .put "media" (?? round/continuation/media []))
-      (rendered .put "sources" (request_sources rendered/items))
-      (record_core_state runtime/events "session" session "session/state" key rendered)
-      (flush_event_store runtime/events)))
+        (fn []
+          (request_prepare
+            runtime
+            lease/snapshot
+            {
+              ^session session
+              ^round round/id
+              ^turn number
+              ^round_turn 1
+              ^limit limit
+              ^continuation_mode round/continuation_mode
+              ^task_root round/task_root
+              ^items items}))))
+    (set rendered (bounded_request runtime session prepared/items))
+    (rendered .put "media" (?? round/continuation/media []))
+    (rendered .put "sources" (request_sources rendered/items))
+    (record_core_state runtime/events "session" session "session/state" key rendered)
+    (flush_event_store runtime/events))
   (replace_pending_request runtime session round/continuation/history rendered)
   (round .put "request" rendered/full)
   (round .put "request_settled" rendered/settled)
@@ -215,7 +226,7 @@
   (if_not resume
     (let recovery (core_state runtime/events "session" session "recovery"))
     (if (&& ($present? recovery) (!= recovery/delivered true))
-      (do (let warning_text
+      (let warning_text
         ($str/join
           recovery/warnings
           """
@@ -229,7 +240,7 @@
 """
           last_request))
       (recovery .put "delivered" true)
-      (record_core_state runtime/events "session" session "session/state" "recovery" recovery))))
+      (record_core_state runtime/events "session" session "session/state" "recovery" recovery)))
   (while (< count ceiling)
     (let current (require_record runtime/sessions session))
     (let number (+ current/turns 1))
@@ -270,8 +281,8 @@
       # A short result line per turn, for check-ins and their repetition rule.
       (let evidence (try (turn_evidence (if failed (terminal .assoc "error" ended/text) else terminal)) catch Error nil))
       (if ($present? evidence)
-        (do (ended .put "result_line" evidence/line)
-        (ended .put "evidence" (evidence .assoc "line" nil))))
+        (ended .put "result_line" evidence/line)
+        (ended .put "evidence" (evidence .assoc "line" nil)))
       (if (== reason "error") (ended .put "stage" stage))
       (let record (finish_turn runtime session ended))
       (let error_text (if failed ($to_str (?? ended/text "")) else ""))
@@ -297,34 +308,74 @@
       (set stage "request/prepare")
       (if continuing (set last_request (prepare_continuation runtime session round number limit lease incoming)))
       (if (! continuing)
-        (do (let packet (attach_participant_inputs runtime session round number last_request
-          (&& (! resume) (== count 1)) incoming))
-        (set last_request packet/request)))
+        (let packet
+          (attach_participant_inputs
+            runtime
+            session
+            round
+            number
+            last_request
+            (&& (! resume) (== count 1))
+            incoming))
+        (set last_request packet/request))
       (if (&& (! resume) (== count 1) (! continuing))
-        (do (let source_request last_request)
-          (let prepared
-            ($runtime/with_context
-              {^composition runtime/h/snapshots ^snapshot lease/snapshot}
-              (fn []
-                (request_prepare runtime lease/snapshot
-                  {^session session ^round round/id ^turn number
-                   ^round_turn count ^limit limit ^continuation_mode (?? round/continuation_mode "manual")
-                   ^task_root (?? round/task_root round/id) ^items []}))))
-          (let rendered (bounded_request runtime session prepared/items))
-          (let settled
-            (if (== rendered/settled "") source_request
-              else $"${source_request}\n${rendered/settled}"))
-          (if_not (== rendered/full "")
-            (set last_request $"${source_request}\n${rendered/full}"))
-          (round .put "request" last_request)
-          (round .put "request_settled" settled)
-          (append_message ^settled settled ^round round/id ^media (?? round/media []) runtime session
-            "user" last_request)
-          (transcript runtime session
-            {^type "turn/request" ^round round/id ^turn 0
-             ^for_turn number ^combine "replace" ^initiator round/initiator ^card (?? round/card nil)
-             ^input (?? round/input nil)
-             ^full last_request ^settled settled ^media (?? round/media []) ^^initial})))
+        (let source_request last_request)
+        (let prepared
+          ($runtime/with_context
+            {^composition runtime/h/snapshots ^snapshot lease/snapshot}
+            (fn []
+              (request_prepare
+                runtime
+                lease/snapshot
+                {
+                  ^session session
+                  ^round round/id
+                  ^turn number
+                  ^round_turn count
+                  ^limit limit
+                  ^continuation_mode (?? round/continuation_mode "manual")
+                  ^task_root (?? round/task_root round/id)
+                  ^items []}))))
+        (let rendered (bounded_request runtime session prepared/items))
+        (let settled
+          (if (== rendered/settled "")
+            source_request
+          else
+            ($to_str
+              source_request
+              """
+"""
+              rendered/settled)))
+        (if_not (== rendered/full "")
+          (set last_request
+            ($to_str
+              source_request
+              """
+"""
+              rendered/full)))
+        (round .put "request" last_request)
+        (round .put "request_settled" settled)
+        (append_message ^settled settled ^round round/id ^media (?? round/media [])
+          runtime
+          session
+          "user"
+          last_request)
+        (transcript
+          runtime
+          session
+          {
+            ^type "turn/request"
+            ^round round/id
+            ^turn 0
+            ^for_turn number
+            ^combine "replace"
+            ^initiator round/initiator
+            ^card (?? round/card nil)
+            ^input (?? round/input nil)
+            ^full last_request
+            ^settled settled
+            ^media (?? round/media [])
+            ^^initial}))
       (start_record)
       (flush_event_store runtime/events)
       (set stage "readiness")
@@ -434,7 +485,47 @@
           (fn [] (evaluate_harness_turn ^session session ^round round/id ^reviewer selected ^lease lease ^^coordinated
           ^publication_preview (fn [session changes] (ui_publication_preview runtime session changes))
           ^turn_context {^count count ^limit limit ^collection collection}
-          ^bindings bindings ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response ^hint data/reply_hint data/patch_files) else (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
+          ^bindings bindings ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response")
+                                                                                                                                                                                                                                                                                                                           (record_response ^hint data/reply_hint
+                                                                                                                                                                                                                                                                                                                             (path
+                                                                                                                                                                                                                                                                                                                               data
+                                                                                                                                                                                                                                                                                                                               patch_files))
+                                                                                                                                                                                                                                                                                                                         else
+                                                                                                                                                                                                                                                                                                                           (record_core_state
+                                                                                                                                                                                                                                                                                                                             (path
+                                                                                                                                                                                                                                                                                                                               runtime
+                                                                                                                                                                                                                                                                                                                               events)
+                                                                                                                                                                                                                                                                                                                             "session"
+                                                                                                                                                                                                                                                                                                                             session
+                                                                                                                                                                                                                                                                                                                             "session/state"
+                                                                                                                                                                                                                                                                                                                             ($to_str
+                                                                                                                                                                                                                                                                                                                               "patch/"
+                                                                                                                                                                                                                                                                                                                               number)
+                                                                                                                                                                                                                                                                                                                             {
+                                                                                                                                                                                                                                                                                                                               ^state "completed"
+                                                                                                                                                                                                                                                                                                                               ^result (path
+                                                                                                                                                                                                                                                                                                                                         data
+                                                                                                                                                                                                                                                                                                                                         result)
+                                                                                                                                                                                                                                                                                                                               ^round (path
+                                                                                                                                                                                                                                                                                                                                        round
+                                                                                                                                                                                                                                                                                                                                        id)
+                                                                                                                                                                                                                                                                                                                               ^turn number})
+                                                                                                                                                                                                                                                                                                                           (transcript
+                                                                                                                                                                                                                                                                                                                             runtime
+                                                                                                                                                                                                                                                                                                                             session
+                                                                                                                                                                                                                                                                                                                             {
+                                                                                                                                                                                                                                                                                                                               ^type "turn/patch"
+                                                                                                                                                                                                                                                                                                                               ^round (path
+                                                                                                                                                                                                                                                                                                                                        round
+                                                                                                                                                                                                                                                                                                                                        id)
+                                                                                                                                                                                                                                                                                                                               ^turn number
+                                                                                                                                                                                                                                                                                                                               ^result (path
+                                                                                                                                                                                                                                                                                                                                         data
+                                                                                                                                                                                                                                                                                                                                         result)
+                                                                                                                                                                                                                                                                                                                               ^text (path
+                                                                                                                                                                                                                                                                                                                                       data
+                                                                                                                                                                                                                                                                                                                                       result
+                                                                                                                                                                                                                                                                                                                                       text)})))
           runtime/h
           number
           runtime/root
@@ -480,9 +571,9 @@
           else (finish_turn_transaction transaction terminal seal_turn))
       catch Throwable
         (if ($absent? failure)
-          (do (set failure $err)
+          (set failure $err)
           (let failed_phase (?? $err/errors/0/phase (?? $err/phase "finish")))
-          (set stage $"participants/${failed_phase}")))
+          (set stage $"participants/${failed_phase}"))
         # A core record may have committed before its caller lost the result.
         # End-once is idempotent; no participant or seal callback is replayed.
         (start_record)
@@ -497,112 +588,171 @@
         (flush_event_store runtime/events)
       ensure (release_snapshot runtime/h/snapshots lease)))
     (if ($present? failure)
-      (do (let failed {^state "failed" ^message failure/.message ^stage stage
-          ^turn_count count ^last_turn number})
-        # A transport refusal happened before a model call. Preserve its
-        # pending input for deliberate resumption; never replay uncertain work.
-        (if (&& (operator_round? round) (== failure/code "connection_changed")
-                (["readiness" "provider/select"] .contains? stage)
-                ($present? round/request_items_ref))
-          (do (failed .put "reason" "connection_changed")
-            (failed .put "continuation_mode" "manual")
-            (failed .put "continuation" {^items_ref (?? round/logical_items_ref round/request_items_ref)
-              ^history (pending_request runtime session) ^media (?? round/request_media [])
-              ^request_sources (?? round/request_sources []) ^task_root (?? round/task_root round/id)
-              ^task_turns (+ (?? round/task_turns_base 0) count) ^source_round round/id ^source_turn number})))
-        (return failed)))
+      (let failed
+        {^state "failed" ^message failure/.message ^stage stage ^turn_count count ^last_turn number})
+      # A transport refusal happened before a model call. Preserve its
+      # pending input for deliberate resumption; never replay uncertain work.
+      (if (&& (operator_round? round) (== failure/code "connection_changed") (["readiness" "provider/select"] .contains? stage) ($present? round/request_items_ref))
+        (failed .put "reason" "connection_changed")
+        (failed .put "continuation_mode" "manual")
+        (failed .put
+          "continuation"
+          {
+            ^items_ref (?? round/logical_items_ref round/request_items_ref)
+            ^history (pending_request runtime session)
+            ^media (?? round/request_media [])
+            ^request_sources (?? round/request_sources [])
+            ^task_root (?? round/task_root round/id)
+            ^task_turns (+ (?? round/task_turns_base 0) count)
+            ^source_round round/id
+            ^source_turn number}))
+      (return failed))
     (let outcome (?? result/validated/outcome nil))
     (if (== result/kind "done")
-      (do (flush_event_store runtime/events)
-        (return {^state "done" ^reply outcome/reply ^result (?? result/result nil) ^turn_count count ^last_turn number})))
+      (flush_event_store runtime/events)
+      (return
+        {
+          ^state "done"
+          ^reply outcome/reply
+          ^result (?? result/result nil)
+          ^turn_count count
+          ^last_turn number}))
     (if (== result/kind "cancelled")
-      (do (flush_event_store runtime/events)
-        (return {^state "cancelled" ^turn_count count ^last_turn number})))
+      (flush_event_store runtime/events)
+      (return {^state "cancelled" ^turn_count count ^last_turn number}))
     # The check runs once this turn's result is final and before the next
     # request is recorded, so the unsent marker reflects its verdict.
-    (if (&& checked (! collection) ($absent? result/suspension) (!= result/kind "questions")
-                (>= (+ (?? round/task_turns_base 0) count) round/next_check_turn))
-      (do (let record (run_check_in runtime session round (+ (?? round/task_turns_base 0) count) ^interval interval))
+    (if (&& checked (! collection) ($absent? result/suspension) (!= result/kind "questions") (>= (+ (?? round/task_turns_base 0) count) round/next_check_turn))
+      (let record
+        (run_check_in ^interval interval
+          runtime
+          session
+          round
+          (+ (?? round/task_turns_base 0) count)))
       (if ($present? record)
-        (do (map_for [key value] in record/counters (round .put ($to_str key) value))
+        (map_for [key value] in record/counters
+          (round .put ($to_str key) value))
         (round .put "last_check_in" (check_in_summary record))
         (if (== record/action "pause") (set pause record))
         (set limit (checked_limit round configured_limit))
-        (set ceiling (+ limit extra_turns))))))
+        (set ceiling (+ limit extra_turns))))
     (if (&& early (>= count next_early) (!= result/kind "questions") ($absent? result/suspension))
-      (do (let early_record (run_check_in ^use early_use runtime session round count ^interval interval))
+      (let early_record
+        (run_check_in ^use early_use ^interval interval runtime session round count))
       (if ($present? early_record)
-        (do (set next_early (+ count (if (== early_record/verdict "uncertain") ($math/max 1 (/ interval 2)) else interval)))
+        (set next_early
+          (+
+            count
+            (if (== early_record/verdict "uncertain") ($math/max 1 (/ interval 2)) else interval)))
         (round .put "last_check_in" (check_in_summary early_record))
         (if (== early_record/action "pause")
-          (do (flush_event_store runtime/events)
-          (return {^state "failed" ^reason "check_in" ^check_in (check_in_summary early_record)
-            ^message $"ended at a progress check-in (${early_record/verdict}): ${early_record/evidence}"
-            ^request last_request ^turn_count count ^last_turn number})))))))
+          (flush_event_store runtime/events)
+          (return
+            {
+              ^state "failed"
+              ^reason "check_in"
+              ^check_in (check_in_summary early_record)
+              ^message ($to_str
+                         "ended at a progress check-in ("
+                         early_record/verdict
+                         "): "
+                         early_record/evidence)
+              ^request last_request
+              ^turn_count count
+              ^last_turn number}))))
     (let requests (next_request runtime session round result/prepared_request_items
       ^logical result/request_items ^media (?? result/media [])
       ^record_fields {^at_limit (|| ($present? pause) (>= count ceiling))} ^!admit))
     (set last_request requests/full)
     (if ($present? result/suspension)
-      (do (flush_event_store runtime/events)
-      (return (suspension_result result/suspension round last_request count number))))
+      (flush_event_store runtime/events)
+      (return (suspension_result result/suspension round last_request count number)))
     (if (== result/kind "questions")
-      (do (let id $"${round/id}-q-${number}")
-        (let deadline
-          (if (== metadata/kind "interactive")
-            nil
-            else (+ ($os/wall_ms) config/question_timeout_ms)))
-        (let batch
-          (ask_questions ^deadline deadline ^^normalized ^round round/id
-            runtime/events
-            session
-            id
-            number
-            result/validated/questions))
-        (return
-          {
-            ^state "waiting"
-            ^questions batch ^delegation_wait nil
-            ^request last_request
-            ^turn_count count
-            ^last_turn number})))
+      (let id $"${round/id}-q-${number}")
+      (let deadline
+        (if (== metadata/kind "interactive") nil else (+ ($os/wall_ms) config/question_timeout_ms)))
+      (let batch
+        (ask_questions ^deadline deadline ^^normalized ^round round/id
+          runtime/events
+          session
+          id
+          number
+          result/validated/questions))
+      (return
+        {
+          ^state "waiting"
+          ^questions batch
+          ^delegation_wait nil
+          ^request last_request
+          ^turn_count count
+          ^last_turn number}))
     (admit_next_request runtime session round)
     (flush_event_store runtime/events)
     (if ($present? pause) (break)))
   (if ($present? pause)
     # pause_requested: no further parent model call and no collection turn.
     # Running children keep going and belong to the continuation round.
-    (do (let turns (+ (?? round/task_turns_base 0) count))
+    (let turns (+ (?? round/task_turns_base 0) count))
     (let children (owned_children? runtime session round))
-    (return {^state "paused" ^reason "check_in" ^message "paused at a progress check-in"
-      ^notice (check_in_notice pause (?? round/last_turn 0) ^children children)
-      ^check_in (check_in_summary pause) ^children_running children
-      ^request last_request ^turn_count count ^last_turn (?? round/last_turn 0)
-      ^task_turns turns ^continuation_mode "checked"
-      ^continuation {^items_ref (?? round/logical_items_ref round/request_items_ref)
-        ^history (pending_request runtime session) ^media (?? round/request_media [])
-        ^request_sources (?? round/request_sources []) ^task_root (?? round/task_root round/id)
-        ^task_turns turns ^source_round round/id ^source_turn (?? round/last_turn 0)}})))
+    (return
+      {
+        ^state "paused"
+        ^reason "check_in"
+        ^message "paused at a progress check-in"
+        ^notice (check_in_notice ^children children pause (?? round/last_turn 0))
+        ^check_in (check_in_summary pause)
+        ^children_running children
+        ^request last_request
+        ^turn_count count
+        ^last_turn (?? round/last_turn 0)
+        ^task_turns turns
+        ^continuation_mode "checked"
+        ^continuation {
+                        ^items_ref (?? round/logical_items_ref round/request_items_ref)
+                        ^history (pending_request runtime session)
+                        ^media (?? round/request_media [])
+                        ^request_sources (?? round/request_sources [])
+                        ^task_root (?? round/task_root round/id)
+                        ^task_turns turns
+                        ^source_round round/id
+                        ^source_turn (?? round/last_turn 0)}}))
   (let boundary_turn (?? round/last_turn metadata/turns))
   (let parked (round_limit_participants runtime session round boundary_turn count limit collection))
   (if_not ($absent? parked)
     (return (suspension_result parked round (?? round/request last_request) count boundary_turn)))
   (if (operator_round? round)
-    (do (let turns (+ (?? round/task_turns_base 0) count))
+    (let turns (+ (?? round/task_turns_base 0) count))
     # In checked mode this is the fallback: no check-in answered within
     # turn_limit turns. The last check-in's status is the evidence.
     (if (&& checked ($present? round/last_check_in))
-      (do (round .put "check_in" round/last_check_in)
-      (round .put "notice" ($to_str "Paused after turn " (?? round/last_turn 0)
-        ": no progress check-in answered within the turn limit (last status: "
-        round/last_check_in/status "). Continue, or tell it what to change."))))
-    (return {^state "paused" ^reason "turn_limit" ^message "turn limit reached"
-      ^request last_request ^turn_count count ^last_turn (?? round/last_turn 0)
-      ^task_turns turns ^continuation_mode (?? round/continuation_mode "manual")
-      ^continuation {^items_ref (?? round/logical_items_ref round/request_items_ref)
-        ^history (pending_request runtime session) ^media (?? round/request_media [])
-        ^request_sources (?? round/request_sources []) ^task_root (?? round/task_root round/id)
-        ^task_turns turns ^source_round round/id ^source_turn (?? round/last_turn 0)}})))
+      (round .put "check_in" round/last_check_in)
+      (round .put
+        "notice"
+        ($to_str
+          "Paused after turn "
+          (?? round/last_turn 0)
+          ": no progress check-in answered within the turn limit (last status: "
+          round/last_check_in/status
+          "). Continue, or tell it what to change.")))
+    (return
+      {
+        ^state "paused"
+        ^reason "turn_limit"
+        ^message "turn limit reached"
+        ^request last_request
+        ^turn_count count
+        ^last_turn (?? round/last_turn 0)
+        ^task_turns turns
+        ^continuation_mode (?? round/continuation_mode "manual")
+        ^continuation {
+                        ^items_ref (?? round/logical_items_ref round/request_items_ref)
+                        ^history (pending_request runtime session)
+                        ^media (?? round/request_media [])
+                        ^request_sources (?? round/request_sources [])
+                        ^task_root (?? round/task_root round/id)
+                        ^task_turns turns
+                        ^source_round round/id
+                        ^source_turn (?? round/last_turn 0)}}))
   (transcript
     runtime
     session

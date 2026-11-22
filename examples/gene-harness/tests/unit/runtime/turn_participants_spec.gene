@@ -184,8 +184,9 @@
         ensure (finish_turn_transaction transaction {^kind "cancelled"}
           (fn [completion errors] (events .push "core/seal") "terminal-receipt")))))
         (if cancel
-          (do (while (! entered/.get) ($sleep 1))
-          task/.cancel))
+          (while (! entered/.get)
+            ($sleep 1))
+          task/.cancel)
         task/.join))
       ($assert (match result ^!exhaustive
         when (TaskOutcome/error failure) (== failure/phase "bindings")

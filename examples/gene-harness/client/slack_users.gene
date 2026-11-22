@@ -14,7 +14,9 @@
   (if_not ($absent? cached)
     (if cached/ready
       ($dom/set_text target cached/text)
-      else (do (var cached_nodes : (List Any) cached/nodes) (cached_nodes .push target)))
+    else
+      (var cached_nodes : (List Any) cached/nodes)
+      (cached_nodes .push target))
     (return))
   (var nodes : (List Any) [target])
   (var entry : Any {^!ready ^text author ^nodes nodes})

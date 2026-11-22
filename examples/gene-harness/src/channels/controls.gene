@@ -29,9 +29,11 @@
     (let queue (state/queues .get session))
     (let control (state/controls .get id))
     (if ($present? control/replacement)
-      (do (if (!= queue/holds control/replacement/holds)
-        (channel_error "stale" "Queue holds changed after the replacement choice; review them again."))
-      (return control)))
+      (if (!= queue/holds control/replacement/holds)
+        (channel_error
+          "stale"
+          "Queue holds changed after the replacement choice; review them again."))
+      (return control))
     (if (!= queue/revision expected)
       (channel_error "stale" "The queue changed; inspect its current state before replacing paused work."))
     (if_not ($absent? queue/batch)
@@ -76,9 +78,9 @@
         (if ($absent? state/controls) (state .put "controls" {}))
         (let previous (state/controls .get id))
         (if ($present? previous)
-          (do (if (!= previous/digest digest)
+          (if (!= previous/digest digest)
             (channel_error "submission_conflict" "Control message has different content."))
-          (return previous)))
+          (return previous))
         (let record {^id id ^status "control" ^state "prepared" ^session binding/session
           ^command command ^digest digest ^decision decision
           ^target (if (&& (["stop" "continue" "continue-until-finished"] .contains? command/name)
@@ -91,63 +93,103 @@
         (var text "")
         (var responding_round control/target)
         (if (== name "status")
-          (do (let status (queue_status queues binding/session))
-          (set text ($to_str "Agent: " (?? current/state "idle")
-            ". Queued requests: " status/pending ". Queue revision: " status/revision
-            (if status/held ". Queue held." else ". Queue enabled.")))))
+          (let status (queue_status queues binding/session))
+          (set text
+            ($to_str
+              "Agent: "
+              (?? current/state "idle")
+              ". Queued requests: "
+              status/pending
+              ". Queue revision: "
+              status/revision
+              (if status/held ". Queue held." else ". Queue enabled."))))
         (if (== name "stop")
-          (do (var recorded (== control/stop_recorded true))
-          (for hold in (/holds (queue_status queues binding/session))
+          (var recorded (== control/stop_recorded true))
+          (for hold in ((Path "holds") (queue_status queues binding/session))
             (if (&& (== hold/reason "stop") (== hold/source id)) (set recorded true)))
           (if recorded
             (set responding_round (?? control/responding_round control/target))
-            else
-              (if_not ($absent? control/target)
-                (let stopped (cancel_round_locked service/controller binding/session control/target))
-                (set responding_round stopped/id))
-              (mutate queues (fn [state]
+          else
+            (if_not ($absent? control/target)
+              (let stopped (cancel_round_locked service/controller binding/session control/target))
+              (set responding_round stopped/id))
+            (mutate
+              queues
+              (fn [state]
                 (add_hold (state/queues .get binding/session) "operator" "stop" id)
                 (let saved (state/controls .get id))
                 (saved .put "stop_recorded" true)
                 (saved .put "responding_round" responding_round)
                 nil)))
-          (set text "Stop requested. Queued requests remain held until explicitly resumed.")))
+          (set text "Stop requested. Queued requests remain held until explicitly resumed."))
         (if (["continue" "continue-until-finished"] .contains? name)
-          (do (if ($absent? control/target) (channel_error "stale" "There is no paused task to continue."))
-          (let continued (continue_round_locked service/controller binding/session control/target
-            (if (== name "continue") "manual" else "automatic")))
-          (set text ($to_str "Continuing current work in " continued/id ". Queued requests keep their existing holds."))))
+          (if ($absent? control/target)
+            (channel_error "stale" "There is no paused task to continue."))
+          (let continued
+            (continue_round_locked
+              service/controller
+              binding/session
+              control/target
+              (if (== name "continue") "manual" else "automatic")))
+          (set text
+            ($to_str
+              "Continuing current work in "
+              continued/id
+              ". Queued requests keep their existing holds.")))
         (if (== name "answer")
-          (do (let supplied (#"^([^ \t]+)[ \t]+(.+)$" .match control/command/args))
+          (let supplied (#"^([^ \t]+)[ \t]+(.+)$" .match control/command/args))
           (if ($absent? supplied)
-            (channel_error "invalid_request" "Use !answer BATCH_ID followed by a JSON object of answers."))
-          (let values (try ($json/parse ^^strict supplied/groups/1)
-            catch Error (channel_error "invalid_request" "Answers must be a JSON object.")))
-          (answer_round_impl service/controller binding/session supplied/groups/0 values ^channel_input message)
-          (set text "Answers accepted.")))
+            (channel_error
+              "invalid_request"
+              "Use !answer BATCH_ID followed by a JSON object of answers."))
+          (let values
+            (try
+              ($json/parse ^^strict supplied/groups/1)
+            catch Error
+              (channel_error "invalid_request" "Answers must be a JSON object.")))
+          (answer_round_impl ^channel_input message
+            service/controller
+            binding/session
+            supplied/groups/0
+            values)
+          (set text "Answers accepted."))
         (if (== name "replace-paused")
-          (do (let supplied (#"^([^ \t]+)[ \t]+([0-9]{1,16})$" .match control/command/args))
+          (let supplied (#"^([^ \t]+)[ \t]+([0-9]{1,16})$" .match control/command/args))
           (if ($absent? supplied)
-            (channel_error "invalid_request" "Use !replace-paused ROUND_ID QUEUE_REVISION after reviewing !status."))
+            (channel_error
+              "invalid_request"
+              "Use !replace-paused ROUND_ID QUEUE_REVISION after reviewing !status."))
           (let prior (round_receipt service/controller binding/session supplied/groups/0))
           (if (&& (== prior/queue_replacement id) (!= current/id supplied/groups/0))
-            (return (complete_control queues id {^code "replaced"
-              ^text "The replacement was recorded before recovery. Later work and queue holds were preserved."})))
+            (return
+              (complete_control
+                queues
+                id
+                {
+                  ^code "replaced"
+                  ^text "The replacement was recorded before recovery. Later work and queue holds were preserved."})))
           (claim_replacement queues binding/session id ($parse/parse_int supplied/groups/1))
           (replace_paused_round_locked service/controller binding/session supplied/groups/0 id)
-          (return (finish_replacement queues binding/session id))))
+          (return (finish_replacement queues binding/session id)))
         (if (== name "resume-queue")
-          (do (if ($absent? (#"^[0-9]{1,16}$" .match control/command/args))
+          (if ($absent? (#"^[0-9]{1,16}$" .match control/command/args))
             (channel_error "invalid_request" "Use !status, then !resume-queue QUEUE_REVISION."))
           (let expected ($parse/parse_int control/command/args))
           # Resume admission is recorded in the same checkpoint as the hold
           # changes. A lost response cannot turn an identical retry into stale.
-          (return (mutate queues (fn [state]
-            (resume_queue_state state binding/session expected)
-            (let record (state/controls .get id))
-            (record .put "state" "done")
-            (record .put "result" {^code "resumed" ^text "Queue holds cleared. Unresolved pauses and active work still block admission."})
-            record)))))
+          (return
+            (mutate
+              queues
+              (fn [state]
+                (resume_queue_state state binding/session expected)
+                (let record (state/controls .get id))
+                (record .put "state" "done")
+                (record .put
+                  "result"
+                  {
+                    ^code "resumed"
+                    ^text "Queue holds cleared. Unresolved pauses and active work still block admission."})
+                record))))
         {^code "ok" ^text text ^round responding_round}
       catch Error {^code (?? $err/code "control_error") ^text (?? $err/.message "The control failed.")}))
       (complete_control queues id result))))))

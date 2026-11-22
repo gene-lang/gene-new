@@ -37,8 +37,8 @@
   (let info (converter "pdfinfo" [source] ^max_bytes 32768))
   (for line in ($str/split info/stdout "\n")
     (if ($str/starts_with? line "Pages:")
-      (do (let count ($parse/parse_int ($str/trim ($str/slice_bytes line 6 ($str/byte_size line)))))
-        (if (&& (>= count 1) (<= count 10000)) (return count)))))
+      (let count ($parse/parse_int ($str/trim ($str/slice_bytes line 6 ($str/byte_size line)))))
+      (if (&& (>= count 1) (<= count 10000)) (return count))))
   (fail (DocumentError ^_msg "PDF page count is unavailable or exceeds 10000 pages.")))
 
 (fn render_page [source : Str, directory : Str, page : Int]

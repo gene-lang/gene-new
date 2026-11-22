@@ -42,7 +42,9 @@
       {^type "console" ^text "Private stdout." ^round "old"}
       {^type "reply" ^^final ^^synthetic ^text "Private synthetic reply." ^round "old"}]
     (event .put "turn" 1)
-    (if (== event/type "turn/request") (do (event .put "full" event/text) (event .put "settled" event/text)))
+    (if (== event/type "turn/request")
+      (event .put "full" event/text)
+      (event .put "settled" event/text))
     (if (== event/type "console") (event .put "late" false))
     (append_core_event f/harness/runtime/events "session" f/session/id event))
   (flush_event_store f/harness/runtime/events))
@@ -140,14 +142,36 @@
           (let api (open_api "test-token" ^requester (fn [request]
             (calls/.get .push request/method)
             (if (== request/method "conversations.history")
-              {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok
-                ^response_metadata {^next_cursor "history-page-2"} ^messages [
-                {^user "UBOT" ^ts "9.000001" ^metadata {^event_type "gene_harness_delivery"
-                  ^event_payload {^delivery outgoing/intent/id ^part 0 ^revision 0
-                    ^body_digest (key outgoing/intent/parts/0)}}}]}))}
-              else (do
-                ($assert (== request/params/thread_ts "9.000001"))
-                {^status 200 ^headers [] ^body ($binary/from_str ($json/stringify {^^ok ^ts "10.000001"}))})))))
+              {
+                ^status 200
+                ^headers []
+                ^body ($binary/from_str
+                        ($json/stringify
+                          {
+                            ^^ok
+                            ^response_metadata {^next_cursor "history-page-2"}
+                            ^messages [
+                                        {
+                                          ^user "UBOT"
+                                          ^ts "9.000001"
+                                          ^metadata {
+                                                      ^event_type "gene_harness_delivery"
+                                                      ^event_payload {
+                                                                       ^delivery outgoing/intent/id
+                                                                       ^part 0
+                                                                       ^revision 0
+                                                                       ^body_digest (key
+                                                                                      (path
+                                                                                        outgoing
+                                                                                        intent
+                                                                                        parts
+                                                                                        0))}}}]}))}
+            else
+              ($assert (== request/params/thread_ts "9.000001"))
+              {
+                ^status 200
+                ^headers []
+                ^body ($binary/from_str ($json/stringify {^^ok ^ts "10.000001"}))}))))
           (try
             (reconcile_remote f/channels/owner (api_adapter api) outgoing/intent/id)
             ($assert ($absent? (/reconcile_cursor (output_result f/channels/owner outgoing/intent/id))))

@@ -71,6 +71,12 @@
   (map_for [name value] in changes (merged .put name value))
   (let result (response 200 (appearance_answer merged (installed_themes runtime safe))))
   (if (!= saved merged)
-    (do (result/headers .put "set-cookie" $"${cookie_name}=${(encode_saved merged)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
-    (publish runtime/h (AppearanceChanged ^saved merged))))
+    (result/headers .put
+      "set-cookie"
+      ($to_str
+        cookie_name
+        "="
+        (encode_saved merged)
+        "; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000"))
+    (publish runtime/h (AppearanceChanged ^saved merged)))
   result)

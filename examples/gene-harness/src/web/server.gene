@@ -120,9 +120,8 @@
     (set i (+ i 1)))
   (var selected_profile supplied_profile)
   (if (!= script_file "")
-    (do (set selected_profile
-      (scripted_profile (($parse/read_all ($fs/read_text script_file)) .next)))
-    (set offline true)))
+    (set selected_profile (scripted_profile (($parse/read_all ($fs/read_text script_file)) .next)))
+    (set offline true))
   (if (&& offline ($absent? selected_profile))
     (set selected_profile (offline_profile)))
   (let root (prepare_workspace_root ^root workspace))
@@ -165,14 +164,14 @@
     # External callbacks carry no browser Origin or owner cookie; a plugin's
     # callback route verifies its own protocol before browser admission.
     (if ($str/starts_with? request/path "/callback/")
-      (do (let callback (plugin_route host/runtime/h request "callback"))
-      (if_not ($absent? callback) (return callback))))
+      (let callback (plugin_route host/runtime/h request "callback"))
+      (if_not ($absent? callback) (return callback)))
     # OAuth authenticates its own one-shot state. This loopback GET must work
     # even when the vendor opens a browser without the Harness owner cookie.
     (if (&& (== request/method "GET") (== request/path "/auth/callback"))
-      (do (let result (model_login_callback host request/params))
-        (return (Response ^status result/status ^headers {^content-type "text/plain; charset=utf-8"
-          ^cache-control "no-store" ^referrer-policy "no-referrer"} ^body result/message))))
+      (let result (model_login_callback host request/params))
+      (return
+        (Response ^status result/status ^headers {^content-type "text/plain; charset=utf-8" ^cache-control "no-store" ^referrer-policy "no-referrer"} ^body result/message)))
     (var request_origin (?? request/headers/origin ""))
     (if (&& (!= request_origin "") (!= request_origin origin))
       (fail_request "forbidden" "This origin is not allowed."))
@@ -180,8 +179,8 @@
       (fail_request "forbidden" "A same-origin request is required."))
     (let safe (== (?? request/params/ui "") "default"))
     (if (&& (== request/method "GET") (== request/path "/ui/default"))
-      (do (let session (field request/params "session" ^default ""))
-      (return (redirect ($to_str "/?ui=default&session=" ($url/encode_component session))))))
+      (let session (field ^default "" request/params "session"))
+      (return (redirect $"/?ui=default&session=${($url/encode_component session)}")))
     (if (&& (== request/method "GET") (== request/path "/"))
       (return (html (page ^appearance (request_appearance request host/runtime safe) ^workspace host/runtime/root))))
     (if (&& (== request/method "GET") (["/plugins" "/plugins/"] .contains? request/path))
@@ -197,16 +196,17 @@
     (if (&& (== request/method "GET") (== request/path $"${(api_root)}/connection"))
       (return (response 200 connection)))
     (if (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/exchange"))
-      (do (var data (request_data request))
+      (var data (request_data request))
       (var token (field data "token"))
-      (let browser (exchange auth token
-        ^cookie (cookie_value (?? request/headers/cookie "") cookie_name)))
+      (let browser
+        (exchange ^cookie (cookie_value (?? request/headers/cookie "") cookie_name) auth token))
       (let cookie browser/cookie)
       (let csrf browser/csrf)
       (var result (response 200 {^csrf csrf}))
-      (result/headers .put "set-cookie"
+      (result/headers .put
+        "set-cookie"
         $"${cookie_name}=${cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
-      (return result)))
+      (return result))
     (var browser (authorized request))
     (if (!= request/method "GET")
       (if (!= (?? request/headers/x-csrf-token "") browser/csrf)
@@ -222,21 +222,30 @@
       request parts))
     (if_not ($absent? feature) (return feature))
     (if (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/reset"))
-      (do (reset_auth auth)
+      (reset_auth auth)
       (log_refresh_redactions)
-      (log_event "host/auth_reset" "owner credentials rotated" ^target {^workspace root})
+      (log_event ^target {^workspace root} "host/auth_reset" "owner credentials rotated")
       (disconnect_peers push)
       (publish_link host/runtime/state_root origin auth/secret)
-      (return (response 200 {^^ok ^message "Owner credential reset. Use gene-harness link to reconnect."}))))
+      (return
+        (response 200 {^^ok ^message "Owner credential reset. Use gene-harness link to reconnect."})))
     (if (&& (== request/method "POST") (== request/path $"${(api_root)}/control"))
-      (do (let data (request_data request))
+      (let data (request_data request))
       (let action (field data "action"))
       (if_not (["stop" "restart"] .contains? action)
         (fail_request "invalid_request" "Expected stop or restart."))
-      (request_stop host/runtime/services/values/controller (field data "session" ^default "")
-        (if (== action "restart") 75 else 0) (== data/confirm true))
-      (return (response 200 {^^ok ^restart (== host/runtime/exit_code/.get 75)
-        ^message (if (== host/runtime/exit_code/.get 75) "Restarting." else "Stopped.")}))))
+      (request_stop
+        host/runtime/services/values/controller
+        (field ^default "" data "session")
+        (if (== action "restart") 75 else 0)
+        (== data/confirm true))
+      (return
+        (response
+          200
+          {
+            ^^ok
+            ^restart (== host/runtime/exit_code/.get 75)
+            ^message (if (== host/runtime/exit_code/.get 75) "Restarting." else "Stopped.")})))
     (if (&& (== request/method "POST") (== request/path $"${(api_root)}/clients/reply"))
       (return (response 200 (client_reply host (request_data request)))))
     (if (&& (== request/method "GET") (== request/path $"${(api_root)}/appearance/preview"))
@@ -244,150 +253,197 @@
     (if (&& (["GET" "POST"] .contains? request/method) (== request/path $"${(api_root)}/appearance"))
       (return (appearance_request request host/runtime safe)))
     (if (== request/path $"${(api_root)}/workspace/settings")
-      (do (if (== request/method "GET") (return (response 200 (read_workspace_settings root))))
+      (if (== request/method "GET") (return (response 200 (read_workspace_settings root))))
       (if (== request/method "POST")
-        (do (let data (request_data request))
-        (return (response 200 (update_workspace_settings ^expected (?? data/expected "")
-          root (?? data/changes data))))))))
+        (let data (request_data request))
+        (return
+          (response
+            200
+            (update_workspace_settings ^expected (?? data/expected "") root (?? data/changes data))))))
     (if (&& (== request/method "GET") (== request/path $"${(api_root)}/status"))
-      (do (var result (host_status ^safe safe ^session (field request/params "session" ^default "") host))
+      (var result
+        (host_status ^safe safe ^session (field ^default "" request/params "session") host))
       (result .put "csrf" browser/csrf)
-      (return (response 200 result))))
+      (return (response 200 result)))
     (if (&& (== request/method "GET") (== request/path $"${(api_root)}/models"))
       (return (response 200 (model_catalog host))))
     (if (&& (== request/method "POST") (== request/path $"${(api_root)}/models/refresh"))
       (return (response 202 (refresh_models host))))
     (if (&& (== request/method "POST") (== request/path $"${(api_root)}/models/connect"))
-      (do (let data (request_data request))
-        (let account (field data "account" ^default ""))
-        (return (response 202 (model_login ^account (if (== account "") nil else account)
-          host "connect" (field data "provider"))))))
+      (let data (request_data request))
+      (let account (field ^default "" data "account"))
+      (return
+        (response
+          202
+          (model_login ^account (if (== account "") nil else account)
+            host
+            "connect"
+            (field data "provider")))))
     (if (== request/path $"${(api_root)}/models/accounts")
-      (do (if (== request/method "GET") (return (response 200 (model_accounts host))))
-        (if (== request/method "POST")
-          (do (let data (request_data request))
-            (return (response 200 (model_accounts ^action (field data "action") ^id (field data "id") host)))))))
+      (if (== request/method "GET") (return (response 200 (model_accounts host))))
+      (if (== request/method "POST")
+        (let data (request_data request))
+        (return
+          (response 200 (model_accounts ^action (field data "action") ^id (field data "id") host)))))
     (if (== request/path $"${(api_root)}/models/login")
-      (do (if (== request/method "GET")
-          (return (response 200 (model_login host "status" (field request/params "id")))))
-        (if (== request/method "DELETE")
-          (return (response 200 (model_login host "cancel" (field request/params "id")))))))
+      (if (== request/method "GET")
+        (return (response 200 (model_login host "status" (field request/params "id")))))
+      (if (== request/method "DELETE")
+        (return (response 200 (model_login host "cancel" (field request/params "id"))))))
     (if (== request/path $"${(api_root)}/models/settings")
-      (do (if (== request/method "GET") (return (response 200 (model_configuration host))))
+      (if (== request/method "GET") (return (response 200 (model_configuration host))))
       (if (== request/method "POST")
-        (do (let data (request_data request))
-          (return (response 200 (save_model_configuration host data/config (field data "expected_digest"))))))))
+        (let data (request_data request))
+        (return
+          (response 200 (save_model_configuration host data/config (field data "expected_digest"))))))
     (if (&& (== request/method "POST") (== request/path $"${(api_root)}/models/preview"))
-      (do (let data (request_data request))
-        (return (response 200 (preview_model_settings host (field data "session" ^default "") (?? data/model_settings {}))))))
+      (let data (request_data request))
+      (return
+        (response
+          200
+          (preview_model_settings
+            host
+            (field ^default "" data "session")
+            (?? data/model_settings {})))))
     (if (&& (== request/method "POST") (== request/path $"${(api_root)}/models/default"))
-      (do (let data (request_data request))
-        (return (response 200 (set_model_default host data/model_settings (field data "expected_digest"))))))
+      (let data (request_data request))
+      (return
+        (response 200 (set_model_default host data/model_settings (field data "expected_digest")))))
     (if (&& (== request/method "GET") (== request/path $"${(api_root)}/search/sessions"))
-      (do (let q (field request/params "q" ^default ""))
-      (if (> ($str/byte_size q) 256) (fail_request "invalid_request" "Search query exceeds 256 bytes."))
-      (return (response 200 (search_sessions ^limit (number request/params "limit" ^default "50") host/runtime/sessions q)))))
+      (let q (field ^default "" request/params "q"))
+      (if (> ($str/byte_size q) 256)
+        (fail_request "invalid_request" "Search query exceeds 256 bytes."))
+      (return
+        (response
+          200
+          (search_sessions ^limit (number ^default "50" request/params "limit")
+            host/runtime/sessions
+            q))))
     (if (&& (== request/method "GET") (== request/path $"${(api_root)}/events"))
-      (do (if (!= request_origin origin) (fail_request "forbidden" "A same-origin socket is required."))
-      (var watched (field request/params "session" ^default ""))
-      (let client_id (field request/params "client_id" ^default ""))
-      (if (> ($str/byte_size client_id) 128) (fail_request "invalid_request" "Invalid browser client identity."))
+      (if (!= request_origin origin) (fail_request "forbidden" "A same-origin socket is required."))
+      (var watched (field ^default "" request/params "session"))
+      (let client_id (field ^default "" request/params "client_id"))
+      (if (> ($str/byte_size client_id) 128)
+        (fail_request "invalid_request" "Invalid browser client identity."))
       (if (> ($str/byte_size watched) 128) (fail_request "invalid_request" "Invalid session."))
-      (return (ws_accept request
-        ^on_open (fn [connection]
-          (if (== browser/generation ($crypto/sha256 auth/secret))
-            (add_peer ^safe safe ^client_id client_id push connection watched 0)
-            else (ws_close connection)))
-        ^on_message (fn [connection, text]
-          (if (|| (== client_id "") (> ($str/byte_size text) 16384)) (return nil))
-          (try
-            (let report ($json/parse text))
-            (if (&& (== report/type "appearance_report") (== ($head report/saved) Map) (== ($head report/rendered) Map))
-              (report_appearance host/runtime client_id {^saved report/saved ^rendered report/rendered}))
-          catch Error nil))
-        ^on_close (fn [connection] (remove_peer push connection))))))
+      (return
+        (ws_accept ^on_open (fn [connection] (if (== browser/generation ($crypto/sha256 auth/secret)) (add_peer ^safe safe ^client_id client_id push connection watched 0) else (ws_close connection))) ^on_message (fn [connection, text] (if (|| (== client_id "") (> ($str/byte_size text) 16384)) (return nil)) (try (let report ($json/parse text)) (if (&& (== report/type "appearance_report") (== ($head report/saved) Map) (== ($head report/rendered) Map)) (report_appearance host/runtime client_id {^saved report/saved ^rendered report/rendered})) catch Error nil)) ^on_close (fn [connection] (remove_peer push connection))
+          request)))
     (if (== request/path $"${(api_root)}/sessions")
-      (do (if (== request/method "GET")
-        (return (response 200 (list_sessions host
-          ^after (field request/params "after" ^default "")
-          ^kind (optional_field request/params "kind")
-          ^status (optional_field request/params "status")
-          ^attention (if ($absent? (optional_field request/params "attention")) nil
-            else (== (field request/params "attention") "true"))
-          ^trigger (optional_field request/params "trigger")
-          ^q (field request/params "q" ^default "")
-          ^since (field request/params "since" ^default "")
-          ^until (field request/params "until" ^default "")))))
+      (if (== request/method "GET")
+        (return
+          (response
+            200
+            (list_sessions ^after (field ^default "" request/params "after") ^kind (optional_field request/params "kind") ^status (optional_field request/params "status") ^attention (if ($absent? (optional_field request/params "attention")) nil else (== (field request/params "attention") "true")) ^trigger (optional_field request/params "trigger") ^q (field ^default "" request/params "q") ^since (field ^default "" request/params "since") ^until (field ^default "" request/params "until")
+              host))))
       (if (== request/method "POST")
-        (return (response 201 (create_session host
-          ^title (field (request_data request) "title" ^default "New conversation")))))))
-    (if (&& (>= parts/.size 5) (== parts/1 "api")
-                (== parts/2 (api_version)) (== parts/3 "sessions"))
-      (do (var id parts/4)
+        (return
+          (response
+            201
+            (create_session ^title (field ^default "New conversation" (request_data request) "title")
+              host)))))
+    (if (&& (>= parts/.size 5) (== parts/1 "api") (== parts/2 (api_version)) (== parts/3 "sessions"))
+      (var id parts/4)
       (if (&& (== parts/.size 5) (== request/method "DELETE"))
         (return (response 200 (remove_session host id (number (request_data request) "revision")))))
       (if (&& (== parts/.size 5) (== request/method "PATCH"))
-        (do (var data (request_data request))
-        (return (response 200 (edit_session host id data
-          (number data "revision"))))))
+        (var data (request_data request))
+        (return (response 200 (edit_session host id data (number data "revision")))))
       (if (&& (== parts/.size 6) (== parts/5 "open") (== request/method "POST"))
         (return (response 200 (acknowledge_attention host id))))
       (if (&& (== parts/.size 6) (== parts/5 "snapshot") (== request/method "GET"))
-        (return (response 200 (snapshot ^safe safe host id
-          ^console (== (field request/params "console" ^default "0") "1")
-          ^after (number request/params "after" ^default "-1")
-          ^before (number request/params "before" ^default "-1")))))
+        (return
+          (response
+            200
+            (snapshot ^safe safe ^console (== (field ^default "0" request/params "console") "1") ^after (number ^default "-1" request/params "after") ^before (number ^default "-1" request/params "before")
+              host
+              id))))
       (if (&& (== parts/.size 6) (== parts/5 "rounds") (== request/method "POST"))
-        (do (var data (request_data request))
+        (var data (request_data request))
         (if (== data/literal true)
-          (return (response 202 (submit_round ^model_settings (?? data/model_settings nil) ^media (?? data/media []) ^input (?? data/input nil) host/runtime/services/values/controller id (field data "request_id")
-            (number data "submission_seq") (field data "text")))))
+          (return
+            (response
+              202
+              (submit_round ^model_settings (?? data/model_settings nil) ^media (?? data/media []) ^input (?? data/input nil)
+                host/runtime/services/values/controller
+                id
+                (field data "request_id")
+                (number data "submission_seq")
+                (field data "text")))))
         (if_not ($absent? data/input)
           (fail_request "invalid_request" "Voice input must be submitted literally."))
-        (return (response 202 (submit ^model_settings (?? data/model_settings nil) ^media (?? data/media []) ^card (?? data/card nil) host id (field data "request_id")
-          (number data "submission_seq") (field data "text"))))))
+        (return
+          (response
+            202
+            (submit ^model_settings (?? data/model_settings nil) ^media (?? data/media []) ^card (?? data/card nil)
+              host
+              id
+              (field data "request_id")
+              (number data "submission_seq")
+              (field data "text")))))
       (if (&& (== parts/.size 6) (["questions" "answers"] .contains? parts/5) (== request/method "POST"))
-        (do (var data (request_data request))
-        (return (response 202 (answer host id (field data "batch_id")
-          data/answers ^dismiss (== data/dismiss true))))))
+        (var data (request_data request))
+        (return
+          (response
+            202
+            (answer ^dismiss (== data/dismiss true) host id (field data "batch_id") data/answers))))
       (if (&& (== parts/.size 6) (== parts/5 "commands") (== request/method "POST"))
-        (do (var data (request_data request))
-        (let request_id (field data "request_id" ^default ""))
-        (return (response 202 (command host id (field data "text") ^request_id request_id
-          ^expected (?? data/expected_command nil)
-          ^card (?? data/card nil)
-          ^sequence (if (== request_id "") nil else (number data "submission_seq")))))))
+        (var data (request_data request))
+        (let request_id (field ^default "" data "request_id"))
+        (return
+          (response
+            202
+            (command ^request_id request_id ^expected (?? data/expected_command nil) ^card (?? data/card nil) ^sequence (if (== request_id "") nil else (number data "submission_seq"))
+              host
+              id
+              (field data "text")))))
       (if (&& (== parts/.size 6) (== parts/5 "commands") (== request/method "GET"))
         (return (response 200 (command_sequence host id))))
       (if (&& (== parts/.size 7) (== parts/5 "commands") (== request/method "GET"))
         (return (response 200 (operator_receipt host id parts/6))))
       (if (&& (== parts/.size 7) (== parts/5 "requests") (== request/method "GET"))
-        (return (response 200 (request_receipt host id parts/6
-          (field request/params "kind" ^default "round")))))
-      (if (&& (== parts/.size 7) (== parts/5 "mode")
-                   (== parts/6 "input") (== request/method "POST"))
-        (do (let data (request_data request))
-        (let result (submit_mode_input host/runtime/services/values/commands/modes id
-          (field data "instance") (field data "input_id") (field data "text")))
-        (return (response (if ($absent? result/id) 200 else 202) result))))
-      (if (&& (== parts/.size 7) (== parts/5 "mode")
-                   (== parts/6 "leave") (== request/method "POST"))
-        (do (let data (request_data request))
-        (return (response 200 (close_mode ^instance (field data "instance")
-          host/runtime/services/values/commands/modes id "left")))))
+        (return
+          (response
+            200
+            (request_receipt host id parts/6 (field ^default "round" request/params "kind")))))
+      (if (&& (== parts/.size 7) (== parts/5 "mode") (== parts/6 "input") (== request/method "POST"))
+        (let data (request_data request))
+        (let result
+          (submit_mode_input
+            host/runtime/services/values/commands/modes
+            id
+            (field data "instance")
+            (field data "input_id")
+            (field data "text")))
+        (return (response (if ($absent? result/id) 200 else 202) result)))
+      (if (&& (== parts/.size 7) (== parts/5 "mode") (== parts/6 "leave") (== request/method "POST"))
+        (let data (request_data request))
+        (return
+          (response
+            200
+            (close_mode ^instance (field data "instance")
+              host/runtime/services/values/commands/modes
+              id
+              "left"))))
       (if (&& (== parts/.size 8) (== parts/5 "commands") (== parts/7 "cancel") (== request/method "POST"))
         (return (response 200 (cancel_operator_command host id parts/6))))
       (if (&& (== parts/.size 6) (== parts/5 "cancel") (== request/method "POST"))
-        (do (let data (request_data request))
-        (return (response 200 (cancel host id (field data "round_id"))))))
+        (let data (request_data request))
+        (return (response 200 (cancel host id (field data "round_id")))))
       (if (&& (== parts/.size 7) (== parts/5 "rounds") (== request/method "GET"))
         (return (response 200 (receipt host id parts/6))))
       (if (&& (== parts/.size 8) (== parts/5 "rounds") (== parts/7 "continue") (== request/method "POST"))
-        (do (let data (request_data request))
-        (return (response 202 (continue_round ^model_settings (?? data/model_settings nil) host/runtime/services/values/controller id parts/6 (field data "mode" ^default "manual"))))))
-      (if (&& (== parts/.size 8) (== parts/5 "rounds") (== parts/7 "cancel")
-                  (== request/method "POST"))
-        (return (response 200 (cancel host id parts/6))))))
+        (let data (request_data request))
+        (return
+          (response
+            202
+            (continue_round ^model_settings (?? data/model_settings nil)
+              host/runtime/services/values/controller
+              id
+              parts/6
+              (field ^default "manual" data "mode")))))
+      (if (&& (== parts/.size 8) (== parts/5 "rounds") (== parts/7 "cancel") (== request/method "POST"))
+        (return (response 200 (cancel host id parts/6)))))
     (response 404 {^code "not_found" ^message "This route is not available."}))
 
   (fn safe_handle [request]
@@ -439,10 +495,19 @@
         (tick_voice voice_hub)
         (expire_peers push) (expire_modes host/runtime/services/values/commands/modes) (unload_idle_sessions host/runtime/sessions)
         (if host/runtime/stopping/.get
-          (do (let restarting (== host/runtime/exit_code/.get 75))
-            (broadcast push {^type "stopped" ^session "" ^data {^restart restarting
-              ^message (if restarting "Harness restarting…" else "Harness stopped. Restart it from a terminal.")}})
-            (stop server)))))
+          (let restarting (== host/runtime/exit_code/.get 75))
+          (broadcast
+            push
+            {
+              ^type "stopped"
+              ^session ""
+              ^data {
+                      ^restart restarting
+                      ^message (if restarting
+                                 "Harness restarting…"
+                               else
+                                 "Harness stopped. Restart it from a terminal.")}})
+          (stop server))))
   host/runtime/exit_code/.get
   ensure
     (if_not ($absent? voice_hub) (close_voice_hub voice_hub))

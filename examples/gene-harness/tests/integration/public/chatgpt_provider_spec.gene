@@ -43,11 +43,22 @@
         (serve server ^handler (fn [incoming]
           ($assert (== incoming/headers/authorization "Bearer SECRET_ACCESS"))
           (if (== incoming/method "GET")
-            (do ($assert (== incoming/path "/v1/models"))
-              (if rejected/.get (return (json 401 "SECRET_DIAGNOSTIC")))
-              (return (json 200 ($json/stringify {^models [{^slug "fake" ^display_name "Fixture" ^visibility "list"
-                ^context_window 64000 ^supported_reasoning_levels [{^effort "low"} {^effort "high"}]
-                ^default_reasoning_level "low" ^instructions "SECRET_PROMPT"}]})))))
+            ($assert (== incoming/path "/v1/models"))
+            (if rejected/.get (return (json 401 "SECRET_DIAGNOSTIC")))
+            (return
+              (json
+                200
+                ($json/stringify
+                  {
+                    ^models [
+                              {
+                                ^slug "fake"
+                                ^display_name "Fixture"
+                                ^visibility "list"
+                                ^context_window 64000
+                                ^supported_reasoning_levels [{^effort "low"} {^effort "high"}]
+                                ^default_reasoning_level "low"
+                                ^instructions "SECRET_PROMPT"}]}))))
           ($assert (== incoming/path "/v1/responses")) (calls .set (+ calls/.get 1))
           (let body ($json/parse incoming/body))
           ($assert ($absent? body/max_output_tokens)) ($assert ($absent? body/temperature))

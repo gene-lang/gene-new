@@ -11,7 +11,9 @@
   (if (&& ($present? state/rendered_text)
     (== (string_value state/rendered_text) state/text) (== (string_value state/rendered_url) url)) (return))
   (set state/rendered_text state/text) (set state/rendered_url url)
-  (if (== url "") (do ($dom/set_text state/target state/text) (return)))
+  (if (== url "")
+    ($dom/set_text state/target state/text)
+    (return))
   ($dom/clear state/target)
   ($dom/append state/target ($dom/render
     `(a ^href %url ^target "_blank" ^rel "noopener noreferrer"

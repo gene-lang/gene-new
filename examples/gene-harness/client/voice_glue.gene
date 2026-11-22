@@ -54,9 +54,11 @@
 (fn voice_submit [client : Client, session : Str, value : Str, input : Any,
                   done : (Fn [Int Any] Nil)] : Nil
   (if (|| (! client/ready) client/sending ($present? client/pending))
-    (do (done 409 {^^not_sent ^message "Resolve the current submission before sending voice."}) (return)))
-  (if (! (model_allows_submit ^resume false client))
-    (do (done 409 {^^not_sent ^message "Choose a default model, then review and send the voice draft."}) (return)))
+    (done 409 {^^not_sent ^message "Resolve the current submission before sending voice."})
+    (return))
+  (if (! (model_allows_submit ^!resume client))
+    (done 409 {^^not_sent ^message "Choose a default model, then review and send the voice draft."})
+    (return))
   (var choice : Any {})
   (attach_model_draft client choice session)
   (set client/sending true) (update_controls client)
@@ -91,9 +93,11 @@
     ($json/stringify {^text value ^input input}))) (return false))
   (if (! (storage_set (draft_key session) combined)) (return false))
   (if (== session client/selected)
-    (do ($dom/set_input_value client/prompt combined)
-    (notice client "Voice text appended for review. Edit freely; Enter sends text only. Clear the composer to return to typed input. Attachments stay in your draft.")
-    ($dom/focus client/prompt)))
+    ($dom/set_input_value client/prompt combined)
+    (notice
+      client
+      "Voice text appended for review. Edit freely; Enter sends text only. Clear the composer to return to typed input. Attachments stay in your draft.")
+    ($dom/focus client/prompt))
   true)
 
 (fn initialize_voice [client : Client] : Nil
@@ -117,12 +121,14 @@
         (apply_run client session receipt)
         (var key (voice_review_key client session))
         (if (!= (?? (storage_get key) "") "")
-          (do (storage_remove key)
+          (storage_remove key)
           (if (== session client/selected)
             (if (== (string_or envelope/text "") ($dom/input_value client/prompt))
-              (do ($dom/set_input_value client/prompt "") (remember_draft client)))
-            else (if (== (?? (storage_get (draft_key session)) "") (string_or envelope/text ""))
-              (storage_remove (draft_key session))))))
+              ($dom/set_input_value client/prompt "")
+              (remember_draft client))
+          else
+            (if (== (?? (storage_get (draft_key session)) "") (string_or envelope/text ""))
+              (storage_remove (draft_key session)))))
         (browser_event client "voice/admitted" session receipt))))
   ($dom/add_event_listener ($dom/element "voice_receipt_recover") "click"
     (fn [event : Any] : Nil

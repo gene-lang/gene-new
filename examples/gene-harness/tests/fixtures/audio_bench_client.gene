@@ -64,7 +64,9 @@
   (var send : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) bench/bridge/voice_submit)
   (send bench/session content input (fn [code : Int, receipt : Any] : Nil
     (if (|| bench/failed bench/done) (return))
-    (if (!= code 202) (do (bench_error bench ($to_str "admission-" code)) (return)))
+    (if (!= code 202)
+      (bench_error bench $"admission-${code}")
+      (return))
     (set bench/current/receipt receipt)
     (if (== bench/phase "voice")
       (report bench "input" ($to_int (- ($time/now) bench/released)) (text receipt/id)))
@@ -75,7 +77,9 @@
   (api bench "POST" $"/api/v9/sessions/${bench/session}/voice"
     {^client_id bench/owner ^token bench/token ^output output}
     (fn [code : Int, data : Any] : Nil
-      (if (!= code 200) (do (bench_error bench "claim-output") (return)))
+      (if (!= code 200)
+        (bench_error bench "claim-output")
+        (return))
       (next))))
 
 (fn voice_round [bench : AudioBench] : Nil
@@ -90,7 +94,8 @@
     (var captured (if bench/handsfree (start_handsfree (host bench) "half" level)
       else (start_host_capture (host bench) id level)))
     (if (! captured)
-      (do (bench_error bench "capture-start") (return)))
+      (bench_error bench "capture-start")
+      (return))
     ($time/after 10000.0 (fn [] : Nil
       (if (&& (== pair bench/pair) (! bench/capture_ready) (! bench/failed) (! bench/done))
         (bench_error bench "capture-no-frames"))))
@@ -101,58 +106,81 @@
 (fn speech_event [bench : AudioBench, kind : Str, data : Any] : Nil
   (if (|| bench/failed bench/done) (return))
   (if (== kind "host/ready")
-    (do (var audio (host bench)) (set audio/raw_input bench/raw_input)
-    (voice_round bench) (return)))
-  (if (== kind "vad/start") (do (set bench/capture_id (text data/id)) (return)))
+    (var audio (host bench))
+    (set audio/raw_input bench/raw_input)
+    (voice_round bench)
+    (return))
+  (if (== kind "vad/start")
+    (set bench/capture_id (text data/id))
+    (return))
   (if (== kind "vad/end")
-    (do (set bench/released ($time/now)) (stop_handsfree (host bench)) (return)))
+    (set bench/released ($time/now))
+    (stop_handsfree (host bench))
+    (return))
   (if (== kind "capture/started")
-    (do (var id (text data/id))
+    (var id (text data/id))
     (if (|| bench/capture_ready (!= id bench/capture_id)) (return))
     (set bench/capture_ready true)
     (if bench/handsfree (return))
-    ($time/after 2600.0 (fn [] : Nil
-      (if (|| bench/failed bench/done (!= id bench/capture_id)) (return))
-      (set bench/released ($time/now)) (finish_host_capture (host bench))))
-    (return)))
-  (if (|| (== kind "error") (== kind "engine/error") (== kind "host/reconnecting")
-              (== kind "engines/changed") (== kind "capture/error") (== kind "speak/error"))
-    (do (bench_error bench ($to_str kind "/" (text data/code))) (return)))
+    ($time/after
+      2600.0
+      (fn [] : Nil
+        (if (|| bench/failed bench/done (!= id bench/capture_id)) (return))
+        (set bench/released ($time/now))
+        (finish_host_capture (host bench))))
+    (return))
+  (if (|| (== kind "error") (== kind "engine/error") (== kind "host/reconnecting") (== kind "engines/changed") (== kind "capture/error") (== kind "speak/error"))
+    (bench_error bench $"${kind}/${(text data/code)}")
+    (return))
   (if (== kind "transcript/final")
-    (do (if (!= (text data/id) bench/capture_id) (return))
+    (if (!= (text data/id) bench/capture_id) (return))
     (var content (str/trim (text data/text)))
     (if (== content "")
-      (do (bench_error bench ($to_str "empty-transcript/" (integer data/audio_ms) "/peak-" ($to_int (* bench/peak 1000.0)))) (return)))
+      (bench_error
+        bench
+        $"empty-transcript/${(integer data/audio_ms)}/peak-${($to_int (* bench/peak 1000.0))}")
+      (return))
     (set bench/prompt content)
-    (submit bench content {^kind "voice" ^recognizer (text data/recognizer) ^audio_ms (integer data/audio_ms)})
-    (return)))
+    (submit
+      bench
+      content
+      {^kind "voice" ^recognizer (text data/recognizer) ^audio_ms (integer data/audio_ms)})
+    (return))
   (if (== kind "speak/started")
-    (do (report bench "output" ($to_int (- ($time/now) (number bench/current/reply_at))) (text bench/current/reply/id))
+    (report
+      bench
+      "output"
+      ($to_int (- ($time/now) (number bench/current/reply_at)))
+      (text bench/current/reply/id))
     (var begin : F64 bench/current/sent_at)
     (if (== bench/phase "voice") (set begin bench/released))
     (set bench/current/total_ms ($to_int (- ($time/now) begin)))
-    (return)))
+    (return))
   (if (== kind "speak/end")
-    (do (report bench "round" (integer bench/current/total_ms) (text bench/current/receipt/id))
+    (report bench "round" (integer bench/current/total_ms) (text bench/current/receipt/id))
     (if (== bench/phase "voice")
-      (do
-        (set bench/phase "typed")
-        (claim_output bench false (fn [] : Nil (submit bench bench/prompt nil))))
-      else (do
-        (set bench/pair (+ bench/pair 1))
-        ($dom/set_text bench/root ($to_str "Completed " bench/pair " paired audio checks."))
-        (if (>= bench/pair bench/pairs) (finish bench)
-          else ($time/after 100.0 (fn [] : Nil (voice_round bench)))))))))
+      (set bench/phase "typed")
+      (claim_output bench false (fn [] : Nil (submit bench bench/prompt nil)))
+    else
+      (set bench/pair (+ bench/pair 1))
+      ($dom/set_text bench/root $"Completed ${bench/pair} paired audio checks.")
+      (if (>= bench/pair bench/pairs)
+        (finish bench)
+      else
+        ($time/after 100.0 (fn [] : Nil (voice_round bench)))))))
 
 (fn wait_for_session [bench : AudioBench] : Nil
   (if (|| bench/failed bench/done) (return))
   (var current (state bench))
   (if (! (flag current/connected))
-    (do ($time/after 20.0 (fn [] : Nil (wait_for_session bench))) (return)))
+    ($time/after 20.0 (fn [] : Nil (wait_for_session bench)))
+    (return))
   (set bench/owner (text current/client_id))
   (api bench "POST" $"/api/v9/sessions/${bench/session}/voice" {^client_id bench/owner ^output true}
     (fn [code : Int, claim : Any] : Nil
-      (if (!= code 200) (do (bench_error bench "initial-claim") (return)))
+      (if (!= code 200)
+        (bench_error bench "initial-claim")
+        (return))
       (set bench/token (text claim/token))
       (var context ($audio/context)) (set bench/context context) ($audio/resume context)
       (set bench/host (open_host_audio context bench/session bench/owner (text current/csrf) bench/token true true true
@@ -165,7 +193,9 @@
   (set bench/started true)
   (var ensure : (Fn [(Fn [Int Any] Nil)] Nil) bench/bridge/ensure_session)
   (ensure (fn [code : Int, data : Any] : Nil
-    (if (&& (!= code 200) (!= code 201)) (do (bench_error bench "create-session") (return)))
+    (if (&& (!= code 200) (!= code 201))
+      (bench_error bench "create-session")
+      (return))
     (set bench/session (text data/id)) (wait_for_session bench))))
 
 (fn run_benchmark [root : EventTarget, pairs : Int, ^raw_input raw_input : Bool = true, ^handsfree handsfree : Bool = false] : Nil
@@ -178,7 +208,9 @@
   (set bench/unsubscribe (subscribe (fn [kind : Str, session : Str, data : Any] : Nil
     (if (|| bench/failed bench/done (!= session bench/session)) (return))
     (if (&& (== kind "reply") (flag data/final))
-      (do (set bench/current/reply data) (set bench/current/reply_at ($time/now)) (maybe_speak bench)))
+      (set bench/current/reply data)
+      (set bench/current/reply_at ($time/now))
+      (maybe_speak bench))
     (if (&& (== kind "round/state") (== (text data/state) "failed")) (bench_error bench "round-failed")))))
   (set root/harness_controller {^update (fn [status : Any] : Nil (start bench))
     ^dispose (fn [] : Nil
