@@ -1,6 +1,7 @@
 # Recovery serves only host-owned management APIs. It never opens event or
 # application-state streams and never constructs normal execution controllers.
 (mod recovery_server)
+(import [log_event] ^from "../kernel/log")
 (import [api_root] ^from "./contract.gene")
 (import $net/http [serve stop html])
 (import ^from "./request" [response secure_response cookie_value field number request_data])
@@ -10,7 +11,7 @@
 (import ^from "../runtime/appearance" [set_appearance])
 (import ^from "./appearance" [request_appearance appearance_request appearance_preview_request])
 (import ^from "./plugin_control" [new_plugin_control plugin_control_request close_plugin_control])
-(import ^from "./startup" [mark_ready browser_connection_message])
+(import ^from "./startup" [mark_ready print_browser_link])
 (import ^from "./contract" [protocol_version])
 (import ^from "../runtime/bootstrap" [open_runtime close_runtime])
 (import ^from "../profiles/baseline" [baseline_profile])
@@ -176,14 +177,11 @@
         catch Error
           (response 400 {^code (?? $err/code "recovery_error") ^message $err/.message}))))
     (mark_ready runtime/state_root (?? (options .get "startup-id") "") runtime/epoch port true)
-    ($println
-      ($to_str
-        """Gene Harness recovery is ready.
-Host: """
-        origin
-        """
-Workspace plugins are not running."""))
-    ($println (browser_connection_message ^supervised (== options/supervised true) runtime/root))
+    (log_event "host/recovery_ready"
+      $"Harness recovery is ready at ${origin}; workspace plugins are not running."
+      ^target {^workspace runtime/root}
+      ^data {^origin origin})
+    (print_browser_link ^supervised (== options/supervised true) runtime/root)
     ($io/flush_stdout)
     (serve ^handler safe_handle ^max_body_bytes 16777216 ^request_timeout_ms 10000 ^tick_ms 250 ^on_tick (fn [] (if runtime/stopping/.get (stop server)))
       server)

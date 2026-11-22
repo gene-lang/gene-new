@@ -11,8 +11,11 @@ The [memory proposal](proposals/memory.md) is planned work.
 
 - The model acts by writing Gene code. An apply-patch block is its file-edit
   operation. The final value, an `Outcome`, steers the loop.
-- Printing goes to the operator's console. Only explicit request items enter
-  model context.
+- Every diagnostic output is a structured log record. The console, the
+  in-process ring and the launcher's `host.log` are sinks of the same bounded
+  record with a type and target ([logging](logging.md)). CLI results and the
+  browser link are presenters outside that rule. Only explicit request items
+  enter model context.
 - There is no authority code. Plugins and response code receive the standard
   library. Process isolation belongs to an OS sandbox. Opaque plugin receivers
   enforce contracts and lifetimes, rather than a security boundary.

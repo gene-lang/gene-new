@@ -58,7 +58,7 @@
             ($assert ($str/contains? output $"Browser: ${link}") "startup printed the wrong browser link")
             ($assert (! ($str/contains? output "link to connect a browser.")))
             (if_yes (== mode "fallback")
-              ($assert ($str/contains? output "Gene Harness recovery is ready.")))
+              ($assert ($str/contains? output "host/recovery_ready")))
             (if_yes (== mode "supervised")
               (api (connect root) "POST" "/control" {^action "restart" ^^confirm})
               (let restarted (browser_output terminal 2))

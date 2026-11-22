@@ -1,0 +1,87 @@
+# The closed catalog of core Harness log types.
+#
+# A type names what happened (`turn/start`, `web/request_failed`). The family
+# is its first segment. Core types carry a default level and the target keys
+# they require; `log.gene` validates against this table and reports an invalid
+# call as `log/invalid`. Plugin types live under `plugin/<id>/...` and are not
+# registered here, but they still carry the contributing plugin in their target.
+
+(mod log_catalog)
+
+(const log_levels ["error" "warn" "info" "debug" "trace"])
+
+(const core_types
+  {^"host/start" {^level "info" ^target ["workspace"]}
+   ^"host/ready" {^level "info" ^target ["workspace"]}
+   ^"host/recovery_ready" {^level "info" ^target ["workspace"]}
+   ^"host/port_changed" {^level "warn" ^target ["workspace"]}
+   ^"host/restart_unsupported" {^level "info" ^target ["workspace"]}
+   ^"host/stopping" {^level "info" ^target ["workspace"]}
+   ^"supervisor/child_started" {^level "info" ^target ["workspace"]}
+   ^"supervisor/child_exited" {^level "info" ^target ["workspace"]}
+   ^"supervisor/child_output" {^level "info" ^target ["workspace"]}
+   ^"supervisor/output_discarded" {^level "warn" ^target ["workspace"]}
+   ^"supervisor/startup_failed" {^level "error" ^target ["workspace"]}
+   ^"supervisor/restart" {^level "info" ^target ["workspace"]}
+   ^"web/request_failed" {^level "error" ^target ["request"]}
+   ^"web/connection_failed" {^level "warn" ^target ["client" "session"]}
+   ^"turn/start" {^level "info" ^target ["session" "round" "turn"]}
+   ^"turn/end" {^level "info" ^target ["session" "round" "turn"]}
+   ^"turn/failed" {^level "error" ^target ["session" "round" "turn"]}
+   ^"model/call" {^level "debug" ^target ["session" "round" "turn" "call"]}
+   ^"model/result" {^level "info" ^target ["session" "round" "turn" "call"]}
+   ^"model/error" {^level "warn" ^target ["session" "round" "turn" "call"]}
+   ^"command/start" {^level "info" ^target ["session" "command"]}
+   ^"command/end" {^level "info" ^target ["session" "command"]}
+   ^"ui_action/finished" {^level "info" ^target ["input" "view"]}
+   ^"composition/changed" {^level "info" ^target ["revision"]}
+   ^"plugin/state" {^level "info" ^target ["plugin"]}
+   ^"plugin/output" {^level "info" ^target ["plugin" "revision"]}
+   ^"plugin/error" {^level "warn" ^target ["plugin"]}
+   ^"output/print" {^level "info" ^target ["session"] ^one_of ["turn" "command"]}
+   ^"mode/cleanup_failed" {^level "error" ^target ["session"]}
+   ^"housekeeping/failed" {^level "error" ^target ["workspace"]}
+   ^"trigger/fired" {^level "info" ^target ["trigger"]}
+   ^"trigger/tick_failed" {^level "error" ^target ["trigger"]}
+   ^"channel/status" {^level "info" ^target ["channel"]}
+   ^"log/dropped" {^level "warn" ^target ["workspace"]}
+   ^"log/invalid" {^level "error" ^target ["workspace"]}})
+
+(fn ^^private level? [value] : Bool
+  (&& (== ($head value) Str) (log_levels .contains? value)))
+
+(fn ^^private plugin_type? [type : Str] : Bool
+  (&& ($str/starts_with? type "plugin/")
+      (> (($str/split type "/") .size) 2)))
+
+(fn ^^private core_entry [type : Str] : Any
+  (core_types .get type))
+
+(fn known_type? [type : Str] : Bool
+  (|| ($present? (core_entry type)) (plugin_type? type)))
+
+(fn default_level [type : Str] : Str
+  (let entry (core_entry type))
+  (if ($present? entry) (?? entry/level "info") "info"))
+
+(fn ^^private required_targets [type : Str] : (List Str)
+  (if (plugin_type? type) (return ["plugin"]))
+  (let entry (core_entry type))
+  (if ($present? entry) (?? entry/target []) []))
+
+(fn ^^private one_of_targets [type : Str] : (List Str)
+  (let entry (core_entry type))
+  (if ($present? entry) (?? entry/one_of []) []))
+
+# The first missing required key, or a description of the missing alternative.
+(fn missing_target [type : Str, target] : Str
+  (if ($absent? target) (return "workspace"))
+  (for key in (required_targets type)
+    (if ($absent? (target .get key)) (return key)))
+  (let alternatives (one_of_targets type))
+  (var found false)
+  (for key in alternatives
+    (if ($present? (target .get key)) (set found true)))
+  (if (&& (! alternatives/.empty?) (! found))
+    (return ($str/join alternatives " or ")))
+  "")

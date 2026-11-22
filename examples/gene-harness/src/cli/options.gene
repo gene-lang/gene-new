@@ -53,8 +53,12 @@
       "q"
       "since"
       "until"
+      "type"
+      "level"
+      "lines"
+      "cursor"
       "timeout-ms"])
-  (let flags ["json" "wait" "no-wait" "confirm" "offline" "help" "attention" "supervised" "all" "recovery" "managed"])
+  (let flags ["json" "wait" "no-wait" "confirm" "offline" "help" "attention" "supervised" "all" "recovery" "managed" "follow"])
   (while (< i argv/.size)
     (let arg ($to_str argv/%i))
     (if (&& (! literal) (== arg "--"))

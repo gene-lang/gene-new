@@ -1,6 +1,7 @@
 # Workspace-local discovery and listener selection. Call mutations only while
 # holding the workspace lock; the live descriptor is not an ownership lock.
 (mod connection)
+(import [log_event] ^from "../kernel/log")
 (import ^from "./contract" [protocol_version])
 (import ^from "../runtime/workspace_settings" [read_workspace_settings])
 (import $net/http [listen])
@@ -53,13 +54,10 @@
   catch HttpError
     (if (|| strict (== selected 0) (!= $err/code "address_in_use")) (fail $err))
     (let server (listen ^host "127.0.0.1" ^port 0))
-    ($println
-      ($to_str
-        "Remembered port "
-        selected
-        " is occupied; Harness address changed to http://127.0.0.1:"
-        server/port
-        "."))
+    (log_event "host/port_changed"
+      $"Remembered port ${selected} is occupied; Harness address changed to http://127.0.0.1:${server/port}."
+      ^target {^workspace ($path/parent state_root)}
+      ^data {^requested selected ^port server/port})
     server))
 
 (fn publish_link [state_root : Str, origin : Str, secret : Str]

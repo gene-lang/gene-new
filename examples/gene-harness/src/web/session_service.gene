@@ -83,6 +83,7 @@
 (import [list_settings read_setting set_setting reset_setting set_settings list_settings_groups setting_choices
   list_shared_settings read_shared_setting set_shared_setting reset_shared_setting commit_shared
   require_definition SettingsChanged] ^from "../runtime/workspace_config")
+(import [log_recent log_refresh_redactions log_set_levels] ^from "../kernel/log")
 (import [keyboard_state keyboard_bindings bind_key clear_key restore_key] ^from "../runtime/keyboard")
 (import ^from "../runtime/cards" ^^export
   [card_records shown_card card_action card_action_receipt check_card_command
@@ -379,7 +380,7 @@
     (spawn ^lane root
       (try
         (if (snapshot_job_current? service session version)
-          ($runtime/with_context nil (fn []
+          ($runtime/with_context {^log_target {^session session}} (fn []
             (let safe (if ($absent? service/ui_audience) false (! (service/ui_audience))))
             (let data (snapshot ^!console ^safe safe service session))
             (if (snapshot_job_current? service session version)
@@ -414,6 +415,7 @@
     (when (changed : AppearanceChanged)
       (publish_message service "appearance_changed" "" {}))
     (when (changed : SettingsChanged)
+      (apply_log_settings service/runtime)
       (publish_message service "settings/changed" ""
         {^scope changed/scope ^digest changed/digest ^keys changed/keys})
       (publish_message service "ui/state" "" (ui_status service/runtime)))
@@ -472,6 +474,15 @@
       (if ($absent? record/text) (queue_snapshot service session))))
   nil)
 
+(fn apply_log_settings [runtime] : Nil
+  (try
+    (let level (read_setting runtime "log_level"))
+    (let levels (read_setting runtime "log_levels"))
+    (log_set_levels (if (== ($head level/value) Str) level/value "info")
+      (if (== ($head levels/value) Map) levels/value {}))
+    (log_refresh_redactions)
+    catch Error nil))
+
 (fn open_session_service [^workspace workspace : Str = "", ^offline offline : Bool = false, ^profile supplied_profile = nil, ^ownership ownership = nil, ^managed managed : Bool = false, ^channel_options channel_options = nil, ^service_event service_event = nil, ^launch launch = nil]
   (let canonical (prepare_workspace_root ^root workspace))
   (let profile (workspace_profile ^base supplied_profile ^offline offline ^models_root launch/root canonical))
@@ -495,6 +506,7 @@
   (runtime/h/objects/.get/workspace/service .set service)
   (set service/lifecycle (open_session_lifecycle service publish_message handle_harness_event
     ^channel_options channel_options ^observe service_event))
+  (apply_log_settings runtime)
   service
   catch Error
     (let original $err)
@@ -1116,6 +1128,7 @@
     (model_accounts ^action action ^id id self)))
 
 (type HarnessWorkspace ^props {^runtime Any ^service Any ^root Str ^state_root Str ^h Any ^workspace Any ^profile Any
+  ^logs Any?
                                ^events Any ^sessions Any ^services Any ^manager Any}
   (message sessions [^q q : Str = "", ^kind kind = nil, ^status status = nil, ^attention attention = nil,
                      ^trigger trigger = nil, ^since since : Str = "", ^until until : Str = "",
@@ -1397,6 +1410,8 @@
     ^service live))
   (let workspace (HarnessWorkspace ^runtime runtime ^root runtime/root ^state_root runtime/state_root
     ^service ($cell nil) ^h runtime/h ^workspace runtime/workspace ^profile runtime/profile
+    ^logs (fn [^type type : Str = "", ^target target = nil, ^limit limit : Int = 50] : Any
+      (log_recent ^type type ^target target ^limit limit))
     ^events runtime/events ^sessions runtime/sessions ^services runtime/services ^manager manager))
   (let objects {^workspace workspace ^manager manager
     ^session (fn [id : Str] (HarnessSession ^id id ^runtime runtime ^workspace workspace))})

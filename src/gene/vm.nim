@@ -9413,6 +9413,27 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
     stdout.write "\n"
   NIL
 
+# Diagnostic output stays on the process standard error and never enters the
+# task's `^output` sink: that sink is a turn or command's result channel.
+proc biEprint(args: openArray[Value]): Value {.nimcall.} =
+  var parts: seq[string]
+  for a in args: parts.add displayStr(a)
+  when defined(geneWasm): discard
+  else:
+    stderr.write parts.join(" ")
+    stderr.flushFile()
+  NIL
+
+proc biEprintln(args: openArray[Value]): Value {.nimcall.} =
+  var parts: seq[string]
+  for a in args: parts.add displayStr(a)
+  when defined(geneWasm): discard
+  else:
+    stderr.write parts.join(" ")
+    stderr.write "\n"
+    stderr.flushFile()
+  NIL
+
 proc timerDeadline(milliseconds: int64): MonoTime =
   getMonoTime() + initDuration(milliseconds = milliseconds)
 
@@ -11374,6 +11395,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                                           acceptsNamed = false))
   result.define("print", builtinNativeFn("print", biPrint))
   result.define("println", builtinNativeFn("println", biPrintln))
+  result.define("eprint", builtinNativeFn("eprint", biEprint))
+  result.define("eprintln", builtinNativeFn("eprintln", biEprintln))
   registerStdlibNamespaces(result)
   # `Stream` registers after the stdlib namespaces because `each` is the one
   # pipeline op with no bare root binding — it lives only in the `stream`

@@ -9,6 +9,12 @@
     (else
       $"Use gene-harness --workspace ${workspace} link to connect a browser.")))
 
+(fn print_browser_link [workspace : Str, ^supervised supervised : Bool = false] : Nil
+  # A supervised child's stdout is relayed; the launcher presents the link from
+  # the readiness marker and its own actual terminal.
+  (if supervised (return nil))
+  ($println (browser_connection_message ^supervised supervised workspace)))
+
 (fn mark_ready [state_root : Str, id : Str, epoch : Str, port : Int, recovery : Bool]
   (if (== id "") (return nil))
   (if ($absent? (#"^[0-9a-f]{32}$" .match id)) (fail (Error ^_msg "invalid startup handoff id")))

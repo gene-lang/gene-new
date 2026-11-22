@@ -155,6 +155,27 @@ handle. Subscription-row inspection omits the underlying bus object. A public
 receiver remains valid through leased callbacks, deactivation and deferred
 cleanup, and is revoked when that activation finishes retiring.
 
+`(host .PluginHost:subscribe_log {^type "model/*" ^target {^session "s"} ^capacity 256} handler)`
+delivers matching Harness log records to `handler`. The queue is bounded;
+publishing never waits for the handler. A slow handler loses records and
+receives a synthetic `log/dropped` record with the count and sequence range
+before the next record. The subscription belongs to the activation and closes
+when it retires.
+
+Use the bound logger from the shared API rather than printing:
+
+```gene
+(import [plugin_log] ^from "src/plugin_api.gene")
+(let log (plugin_log host))
+(log "retrying the upstream call" ^level "warn" ^type "upstream/retry"
+  ^data {^attempt 2})
+```
+
+The host writes `plugin/<plugin-id>/<type>` with `plugin` in the target, so a
+logger cannot impersonate another plugin. The message is the positional text;
+`^level` defaults to `info`, `^type` to `log`, and `^event` may carry a durable
+event link.
+
 Version 2 is retired. Stored entries and historical revisions requiring it
 fail admission; archived entries and source blobs are not rewritten. Re-register
 current source to use version 3. Unknown requirements remain errors.

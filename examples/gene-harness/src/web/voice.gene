@@ -97,7 +97,7 @@
   (let job ($crypto/random_hex 12))
   (stream .put "job" job)
   (hub/jobs/.get .put job nil)
-  (let task (spawn ^lane root ($runtime/with_context nil (fn []
+  (let task (spawn ^lane root ($runtime/with_context {^log_target {^session (?? stream/session "")}} (fn []
     (try (run)
       ensure (hub/jobs/.get .delete job))))))
   (if ($has_key? hub/jobs/.get job) (hub/jobs/.get .put job task))

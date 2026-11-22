@@ -16,5 +16,5 @@
   ^media Any ^notices Notices ^confirmations Any ^questions Any ^center Any ^inbox Any ^safe_ui Bool
   ^root EventTarget ^list EventTarget ^transcript EventTarget ^prompt EventTarget ^notice EventTarget
   ^browser_appearance Any ^title EventTarget ^appearance Str ^style_signature Str ^cards Any
-  ^browser_clients Any ^command_client Any ^creation_unknown Bool?
+  ^browser_clients Any ^command_client Any ^creation_unknown Bool? ^log_sink (Fn [Any] Nil)
   ^feature_events Any? ^page_id Str? ^live_output Any? ^session_menu Any? ^services Any? ^features Any? ^editor Any?})

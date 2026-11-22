@@ -372,7 +372,7 @@
   (set panel/log_generation (+ panel/log_generation 1)))
 
 (fn log_url [panel : EditorPanel] : Str
-  $"${(api_root)}/p/editor/log?source=host&cursor=${(url/encode_component panel/log_cursor)}")
+  $"${(api_root)}/logs?source=host&cursor=${(url/encode_component panel/log_cursor)}")
 
 (fn poll_log [panel : EditorPanel] : Nil
   (if (|| (! panel/available) (!= panel/mode "logs")) (return))

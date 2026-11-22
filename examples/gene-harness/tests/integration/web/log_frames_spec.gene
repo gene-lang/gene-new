@@ -1,0 +1,87 @@
+# M5: diagnostics ride the existing browser stream on their own sequence and
+# do not disturb state-frame sequencing.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [start_host stop_host cli] ^from "../../web_support")
+(import [connect api] ^from "../../../src/cli/client")
+
+(fn read_exact [socket : Any, count : Int] : Any
+  (var data ($binary/from_list []))
+  (while (< ($binary/size data) count)
+    (let chunk (await (socket .AsyncReader:read (- count ($binary/size data)))))
+    ($assert ($present? chunk) "websocket closed early")
+    (set data ($binary/concat [data chunk])))
+  data)
+
+(fn read_frame [socket : Any] : Any
+  (let head (await (read_exact socket 2)))
+  (let opcode (&& ($binary/get head 0) 15))
+  (var length (&& ($binary/get head 1) 127))
+  (if (== length 126)
+    (then
+      (let extended (await (read_exact socket 2)))
+      (set length (+ (* ($binary/get extended 0) 256) ($binary/get extended 1))))
+    (else nil))
+  (let payload (if (> length 0) (await (read_exact socket length)) ($binary/from_list [])))
+  {^opcode opcode ^text ($binary/to_str payload)})
+
+(fn connect_socket [host, client, session : Str] : Any
+  (let socket (await (tcp_connect "127.0.0.1" host/connection/port)))
+  (let header
+    ($str/join
+      [$"GET /api/v9/events?session=${session} HTTP/1.1"
+       $"Host: 127.0.0.1:${host/connection/port}"
+       $"Origin: ${host/connection/origin}"
+       $"Cookie: ${client/credentials/cookie}"
+       "Upgrade: websocket" "Connection: Upgrade" "Sec-WebSocket-Version: 13"
+       "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" "" ""]
+      "\r\n"))
+  (await (write_all socket ($binary/from_str header)))
+  (var response "")
+  (while (! ($str/ends_with? response "\r\n\r\n"))
+    (let byte (await (socket .AsyncReader:read 1)))
+    ($assert ($present? byte) "socket closed before upgrade")
+    (set response ($to_str response ($binary/to_str byte))))
+  ($assert ($str/starts_with? response "HTTP/1.1 101") "browser socket did not upgrade")
+  socket)
+
+(fn read_until_log [socket] : Any
+  (let due (+ ($os/monotonic_ms) 10000))
+  (var states [])
+  (var found nil)
+  (while (&& ($absent? found) (< ($os/monotonic_ms) due))
+    (let frame (read_frame socket))
+    (if (== frame/opcode 1)
+      (let message ($json/parse frame/text))
+      (if (== message/type "log")
+        (set found message)
+        (if (== message/type "log/gap")
+          nil
+          (if ($present? message/sequence) (states .push message))))))
+  ($assert ($present? found) "no log frame arrived")
+  {^log found ^states states})
+
+(describe "Browser log frames"
+  (it "uses a separate log sequence and leaves state frames contiguous" []
+    (isolated ^timeout_ms 60000 this_mod/.path "uses a separate log sequence and leaves state frames contiguous"
+      (fn [workspace]
+        (let host (start_host workspace))
+        (var socket nil)
+        (try
+          (let client (connect host/root))
+          (let session ((Path "id") (api client "POST" "/sessions" {})))
+          (set socket (await (connect_socket host client session)))
+          (cli host/root ["run" "1" "--session" session])
+          (let result (read_until_log socket))
+          ($assert (== result/log/data/type "command/start") ($to_str result/log))
+          ($assert ($present? result/log/log_sequence) ($to_str result/log))
+          ($assert ($absent? result/log/sequence) "log frame consumed the state sequence")
+          (var expected 1)
+          (for frame in result/states
+            ($assert (== (($parse/parse_int ($to_str frame/sequence))) expected)
+              $"state sequence jumped before ${expected}: {$to_str frame}")
+            (set expected (+ expected 1)))
+          ($assert (> expected 1) "no state frames arrived")
+        ensure
+          (if_not ($absent? socket) socket/.IoResource:close)
+          (stop_host host))))))

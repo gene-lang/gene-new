@@ -9,6 +9,7 @@
 (import [ui_request] ^from "./ui")
 (import [delegations_request] ^from "./delegations")
 (import [cards_request] ^from "./cards")
+(import [logs_request] ^from "./logs")
 
 (fn feature_routes []
   [{^name "channels" ^request channels_request}
@@ -18,7 +19,8 @@
    {^name "notifications" ^request notifications_request}
    {^name "ui" ^request ui_request}
    {^name "delegations" ^request delegations_request}
-   {^name "cards" ^request cards_request}])
+   {^name "cards" ^request cards_request}
+   {^name "logs" ^request logs_request}])
 
 (fn feature_request [context, request, parts]
   (for feature in (feature_routes)

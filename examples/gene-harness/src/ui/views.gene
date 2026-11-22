@@ -85,7 +85,8 @@
     # Only callback/validation failures become a view's inline error.
     (let context (ui_context h session view_state))
     (try
-      (let view ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^^ui_render}
+      (let view ($runtime/with_context {^composition h/snapshots ^snapshot lease/snapshot ^session session
+        ^log_target {^session session ^view name ^revision (ui_revision h record)} ^^ui_render}
         (fn [] (render_component ^^interactive h record/payload/render context))))
       (validate_view_actions view record/payload lease/snapshot)
       (for outlet in (component_outlets view)

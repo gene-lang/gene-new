@@ -1,4 +1,5 @@
 (mod input_modes)
+(import [log_event] ^from "../kernel/log")
 (import [ModeChanged publish] ^from "../kernel")
 (import [retain_snapshot release_snapshot subscribe_publications] ^from "./composition")
 (import [with_session_gate require_record] ^from "./sessions")
@@ -71,10 +72,17 @@
     (let cleanup (spawn ^lane root (scope (state/row/payload/close session reason))))
     (match cleanup/.join
       (when (TaskOutcome/ok value) nil)
-      (when (TaskOutcome/error error) ($println $"Input mode cleanup: ${error/.message}"))
-      (when (TaskOutcome/fault fault) (let message fault/.message)
-        ($println (if (== ($head fault) Panic) $"Input mode cleanup panic: ${message}" $"Input mode cleanup: ${message}")))
-      (else ($println "Input mode cleanup was cancelled."))))
+      (when (TaskOutcome/error error)
+        (log_event "mode/cleanup_failed" $"Input mode cleanup: ${error/.message}"
+          ^target {^session session} ^data {^error error/.message}))
+      (when (TaskOutcome/fault fault)
+        (let message fault/.message)
+        (log_event "mode/cleanup_failed"
+          (if (== ($head fault) Panic) $"Input mode cleanup panic: ${message}" $"Input mode cleanup: ${message}")
+          ^target {^session session} ^data {^panic (== ($head fault) Panic) ^error message}))
+      (else
+        (log_event "mode/cleanup_failed" "Input mode cleanup was cancelled."
+          ^target {^session session} ^data {^cancelled true}))))
   nil)
 
 # Called with round/ID held, including by session removal. The command watcher

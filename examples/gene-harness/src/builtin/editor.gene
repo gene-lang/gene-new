@@ -256,12 +256,15 @@
     {^max_bytes (as_int req/params/max_bytes 65536)
      ^max_line_bytes 8192
      ^initial_lines (as_int req/params/lines 200)})
-  (ok (read_log source
-        ($path/join root ".gene-harness/host.log")
-        ($path/join root ".gene-harness/host.log.1")
-        (as_text req/params/cursor "")
-        options
-        (fn [text : Str] : Str (redact_secrets root text)))))
+  (let result
+    (read_log source
+      ($path/join root ".gene-harness/host.log")
+      ($path/join root ".gene-harness/host.log.1")
+      (as_text req/params/cursor "")
+      options
+      (fn [text : Str] : Str (redact_secrets root text))))
+  (result .delete "raw_lines")
+  (ok result))
 
 # ---------------------------------------------------------------------------
 # Plugin
@@ -296,7 +299,7 @@
       (host .PluginHost:contribute "web_components"
         {^name "editor_view" ^title "Gene editor" ^slot "view"
          ^default_presentation "docked"
-         ^view_state {^path "" ^tab "source" ^log_cursor ""}
+         ^view_state {^path "" ^tab "source" ^log_cursor "" ^log_type "" ^log_level "" ^log_session ""}
          ^state_version "1"
          ^render (fn [context]
            `(div ^class "editor_view_outlet" ^data-outlet "editor_view"

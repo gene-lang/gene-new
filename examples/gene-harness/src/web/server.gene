@@ -1,4 +1,5 @@
 (mod harness_web_server)
+(import [log_event] ^from "../kernel/log")
 (import [api_root api_version] ^from "./contract.gene")
 (import [ServiceError DelegationError] ^from "../plugin_api")
 
@@ -37,7 +38,7 @@
 (import ^from "./page" [page])
 (import [styles] ^from "./style")
 (import ^from "./plugin_page" [plugin_page manager_client])
-(import ^from "./startup" [mark_ready browser_connection_message])
+(import ^from "./startup" [mark_ready print_browser_link])
 (import ^from "../ui/images" [WorkspaceImageError])
 (import [search_sessions] ^from "../runtime/launcher_search")
 (import ^from "../ui/state" [UiError])
@@ -417,19 +418,23 @@
         catch CompositionError (response 400 {^code "composition_error" ^message $err/.message})
         catch PluginHistoryError (response 400 {^code "history_error" ^message $err/.message})
         catch Throwable
-          ($println $"Harness ${request/method} ${request/path} failed: ${$err/.message}")
+          (log_event "web/request_failed"
+            $"Harness ${request/method} ${request/path} failed: ${$err/.message}"
+            ^target {^request (?? request/id "")}
+            ^data {^method request/method ^path request/path ^error $err/.message})
           (response 500 {^code "internal_error" ^message "The Harness could not complete this request. See the server output."}))))
 
   (record_application_result ^readiness host/runtime/services/values/readiness host/runtime/workspace host/runtime/h {^status "startup"})
   (set connection (publish_connection root host/epoch port auth/secret))
   (mark_ready host/runtime/state_root startup_id host/epoch port false)
-  ($println "Gene Harness is ready.")
-  ($println $"Host: ${origin}")
-  ($println (browser_connection_message ^supervised supervised root))
+  (log_event "host/ready"
+    (if offline
+      $"Harness is ready at ${origin} in command demo mode; no model is connected."
+      $"Harness is ready at ${origin}. Ask anything; use /help for commands.")
+    ^target {^workspace root}
+    ^data {^origin origin ^offline offline})
+  (print_browser_link ^supervised supervised root)
   ($io/flush_stdout)
-  ($println (if offline
-    "Command demo mode: no model connected. Restart without --offline or GENE_HARNESS_OFFLINE=1 to chat."
-    "Ask anything. Use /help for commands. Model replies are available in the transcript."))
   (serve server ^handler safe_handle ^max_connections 64 ^max_in_flight 16
       ^max_body_bytes 16777216 ^request_timeout_ms 10000
       ^tick_ms 1000

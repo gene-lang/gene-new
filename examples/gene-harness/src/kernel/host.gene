@@ -4,7 +4,7 @@
   registry contribute row_record invoke_owned_callable cleanup_registry_context fresh_list]
   ^from "./registry")
 (import [resolve provide replace] ^from "./seams")
-(import [subscribe] ^from "./observe")
+(import [subscribe subscribe_log log_plugin] ^from "./observe")
 (import [invoke_bounded] ^from "./invoke")
 (import [Plugin PluginHost DescriptorContext default_execution_limits] ^from "../plugin_api")
 (import [HarnessError] ^from "../errors")
@@ -105,6 +105,12 @@
   (message subscribe [selector, handler] : Any
     (var record self)
     (subscribe record/h record/owner selector handler))
+  (message subscribe_log [selector, handler] : Any
+    (var record self)
+    (subscribe_log record/h record/owner selector handler))
+  (message log [type : Str, message : Str, ^level level : Str = "info", ^data data = nil, ^event event = nil] : Nil
+    (var record self)
+    (log_plugin record/h record/owner type message ^level level ^data data ^event event))
   (message emit_event [name : Str, payload] : Any
     (var record self)
     (let services (require_plugin_services record/h))

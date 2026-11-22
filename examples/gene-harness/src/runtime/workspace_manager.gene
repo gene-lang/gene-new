@@ -10,6 +10,7 @@
 (import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock WorkspaceInUse])
 (import ^from "../cli/client" [connect api connection_link])
 (import ^from "../public/text" [byte_prefix byte_suffix])
+(import [parse_record render_text] ^from "../public/log_record")
 (import ^from "../public/log_redaction" [redact_secrets])
 (import ^from "../plugin_api" [HarnessEvent])
 (import ^from "../kernel" [publish])
@@ -92,6 +93,14 @@
   # belongs to the manager's bounded diagnostics.
   (byte_suffix (redact_secrets root text) 16384))
 
+(fn manager_typed [name : Str, text : Str] : Str
+  (if_not ($str/starts_with? name "host.log") (return text))
+  (let lines [])
+  (for line in ($str/split text "\n")
+    (let record (try (parse_record line) catch Error nil))
+    (lines .push (if ($present? record) (render_text record) line)))
+  ($str/join lines "\n"))
+
 (fn manager_diagnostics [root : Str]
   (let parts [])
   (for name in ["startup_failure" "bootstrap.log" "host.log.1" "host.log"]
@@ -108,7 +117,7 @@
             name
             """:
 """
-            (byte_suffix text 4096))))))
+            (byte_suffix (manager_typed name text) 4096))))))
   (manager_redact
     root
     ($str/join

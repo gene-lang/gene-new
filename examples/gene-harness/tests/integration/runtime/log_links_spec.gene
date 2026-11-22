@@ -1,0 +1,53 @@
+# M2: operational records beside durable turn, model and console events.
+(import $test [describe it])
+(import [isolated run_spec test_controller] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [submit_round close_round_controller] ^from "../../../src/runtime/round_controller")
+(import [log_reset log_recent] ^from "../../../src/kernel/log")
+
+(fn records_of [records, type : Str] : Any
+  ($filter records (fn [record] (== record/type type))))
+
+(describe "Harness log links"
+  (it "links turn, model and console records to their durable events" []
+    (isolated this_mod/.path "links turn, model and console records to their durable events"
+      (fn [workspace]
+        (log_reset ^strict true ^quiet true)
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let controller
+          (test_controller runtime
+            (fn [request] "(do ($println \"hello from the turn\") (Outcome ^reply \"ok\"))")))
+        (try
+          (let admitted (submit_round controller "default" "log-links" 1 "hello"))
+          ((/watcher (controller/rounds/.get .get "default")) .join)
+          (let records (log_recent ^limit 200))
+          (let starts (records_of records "turn/start"))
+          (let ends (records_of records "turn/end"))
+          (let results (records_of records "model/result"))
+          (let prints (records_of records "output/print"))
+          ($assert (! starts/.empty?) "turn/start record missing")
+          ($assert (! ends/.empty?) "turn/end record missing")
+          ($assert (! results/.empty?) "model/result record missing")
+          ($assert (! prints/.empty?) "output/print record missing")
+          (let start starts/0)
+          ($assert (== start/target/session "default") ($to_str start))
+          ($assert (== start/target/round admitted/round) ($to_str start))
+          ($assert (== start/target/turn 1) ($to_str start))
+          ($assert (== start/event/stream "default") ($to_str start))
+          ($assert ($present? start/event/seq) ($to_str start))
+          (let ended ends/0)
+          ($assert (== ended/event/stream "default") ($to_str ended))
+          ($assert ($present? ended/event/seq) ($to_str ended))
+          (let result results/0)
+          ($assert ($present? result/target/call) ($to_str result))
+          ($assert (== result/event/stream "default") ($to_str result))
+          ($assert ($present? result/event/seq) ($to_str result))
+          (let printed prints/0)
+          ($assert (== printed/target/session "default") ($to_str printed))
+          ($assert (== printed/target/turn 1) ($to_str printed))
+          ($assert (== printed/data/late false) ($to_str printed))
+          ($assert ($present? printed/event/seq) ($to_str printed)))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))

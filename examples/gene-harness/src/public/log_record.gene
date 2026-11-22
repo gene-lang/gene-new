@@ -1,0 +1,155 @@
+# The Harness log record, as plain data.
+#
+# Pure functions only: the launcher, the host and the Logs route all import
+# this module without opening a workspace. `log.gene` adds the process state
+# (run, sequence, levels, writers, ring); `log_redaction.gene` supplies secret
+# replacement. Keeping the wire format here means every reader validates the
+# same schema and applies the same bound.
+
+(mod log_record)
+
+# A serialized relay line, including its newline, is at most this many bytes.
+(const log_line_budget 8192)
+
+(const log_levels ["error" "warn" "info" "debug" "trace"])
+
+(fn map_copy [source] : Any
+  (var copy {})
+  (if ($present? source)
+    (map_for [key value] in source (copy .put key value)))
+  copy)
+
+(fn map_merge [base, overlay] : Any
+  (var merged (map_copy base))
+  (if ($present? overlay)
+    (map_for [key value] in overlay (merged .put key value)))
+  merged)
+
+(fn make_record [run : Str, seq : Int, time_ms : Int, level : Str, type : Str,
+                 target, message : Str, ^data data = nil, ^event event = nil] : Any
+  (var record
+    {^schema "harness.log.v1" ^run run ^seq seq ^time_ms time_ms
+     ^level level ^type type ^target (?? target {}) ^message message})
+  (if ($present? data) (record .put "data" data))
+  (if ($present? event) (record .put "event" event))
+  record)
+
+(fn serialize_record [record] : Str
+  ($json/stringify record))
+
+(fn serialize_line [record] : Str
+  ($str/join [($json/stringify record) "\n"] ""))
+
+(fn fits? [record] : Bool
+  (<= ($str/byte_size (serialize_line record)) log_line_budget))
+
+# A wire record is bounded before it reaches any sink. The first attempt keeps
+# the identity and a shortened message; only data is summarized. If even that
+# is too big, the record becomes a `log/invalid` notice that still fits.
+(fn bound_record [record] : Any
+  (if (fits? record) (return record))
+  (let original_bytes ($str/byte_size (serialize_line record)))
+  (let data_bytes
+    (if ($present? record/data)
+      (then ($str/byte_size ($json/stringify record/data)))
+      (else 0)))
+  (let target (?? record/target {}))
+  (let workspace (?? target/workspace ""))
+  (var shortened
+    (make_record record/run record/seq record/time_ms record/level record/type
+      target
+      ($str/slice_bytes ($to_str record/message) 0 512)
+      ^data {^truncated true ^data_bytes data_bytes}))
+  (if (fits? shortened) (return shortened))
+  (var invalid
+    (make_record record/run record/seq record/time_ms "error" "log/invalid"
+      {^workspace ($str/slice_bytes ($to_str workspace) 0 256)}
+      $"log record exceeded ${log_line_budget} bytes"
+      ^data {^bytes original_bytes}))
+  (if (fits? invalid) (return invalid))
+  (make_record record/run record/seq record/time_ms "error" "log/invalid"
+    {^workspace "unknown"} "log record could not be bounded"
+    ^data {^bytes original_bytes}))
+
+(fn level? [value] : Bool
+  (&& (== ($head value) Str) (log_levels .contains? value)))
+
+(fn parse_record [line : Str] : Any
+  # A line is a record only when it fits, parses as JSON and carries the
+  # schema's required fields. Raw child output and partial writes return nil.
+  (var text line)
+  (if ($str/ends_with? text "\n")
+    (set text ($str/slice_bytes text 0 (- ($str/byte_size text) 1))))
+  (if ($str/ends_with? text "\r")
+    (set text ($str/slice_bytes text 0 (- ($str/byte_size text) 1))))
+  (if (> ($str/byte_size text) log_line_budget) (return nil))
+  (let parsed (try ($json/parse text) catch Error nil))
+  (if ($absent? parsed) (return nil))
+  (if (!= ($head parsed) Map) (return nil))
+  (if (!= (?? parsed/schema "") "harness.log.v1") (return nil))
+  (if (!= ($head parsed/run) Str) (return nil))
+  (if (!= ($head parsed/seq) Int) (return nil))
+  (if (!= ($head parsed/time_ms) Int) (return nil))
+  (if_not (level? parsed/level) (return nil))
+  (if (|| (!= ($head parsed/type) Str) (! ($str/contains? parsed/type "/"))) (return nil))
+  (if (!= ($head parsed/target) Map) (return nil))
+  (if (!= ($head parsed/message) Str) (return nil))
+  parsed)
+
+# Console presentation. Time is UTC because the runtime has no local-time
+# formatter; it is decoration only, never an ordering source.
+(fn pad2 [value : Int] : Str
+  (if (< value 10) $"0${value}" ($to_str value)))
+
+(fn pad3 [value : Int] : Str
+  (if (< value 10)
+    (then $"00${value}")
+    (elif (< value 100) $"0${value}")
+    (else ($to_str value))))
+
+(fn time_text [time_ms : Int] : Str
+  (let hour (// (/ time_ms 3600000) 24))
+  (let minute (// (/ time_ms 60000) 60))
+  (let second (// (/ time_ms 1000) 60))
+  (let millis (// time_ms 1000))
+  ($str/join [(pad2 hour) ":" (pad2 minute) ":" (pad2 second) "." (pad3 millis)] ""))
+
+(fn level_text [level : Str] : Str
+  (match level
+    (when "error" "ERROR")
+    (when "warn" "WARN ")
+    (when "info" "INFO ")
+    (when "debug" "DEBUG")
+    (when "trace" "TRACE")
+    (else "INFO ")))
+
+(fn target_text [target] : Str
+  (if ($absent? target) (return ""))
+  (let parts [])
+  (let session (?? target/session nil))
+  (if ($present? session) (parts .push ($to_str session)))
+  (let round (?? target/round nil))
+  (if ($present? round) (parts .push ($to_str round)))
+  (let turn (?? target/turn nil))
+  (if ($present? turn) (parts .push $"t${turn}"))
+  (let call (?? target/call nil))
+  (if ($present? call) (parts .push $"call ${call}"))
+  (let command (?? target/command nil))
+  (if ($present? command) (parts .push $"cmd ${command}"))
+  (let plugin (?? target/plugin nil))
+  (if ($present? plugin) (parts .push $"plugin ${plugin}"))
+  (let trigger (?? target/trigger nil))
+  (if ($present? trigger) (parts .push $"trigger ${trigger}"))
+  (let request (?? target/request nil))
+  (if ($present? request) (parts .push $"req ${request}"))
+  (let client (?? target/client nil))
+  (if ($present? client) (parts .push $"client ${client}"))
+  ($str/join parts " "))
+
+(fn render_text [record] : Str
+  (let parts [$"${(time_text record/time_ms)} ${(level_text record/level)}"
+              ($to_str record/type)])
+  (let target (target_text record/target))
+  (if (!= target "") (parts .push target))
+  (if (!= ($to_str record/message) "") (parts .push ($to_str record/message)))
+  ($str/join parts "  "))

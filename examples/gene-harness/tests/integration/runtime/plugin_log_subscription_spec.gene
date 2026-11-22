@@ -1,0 +1,41 @@
+# M5: a plugin gets bounded log subscriptions owned by its activation.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [Profile] ^from "../../../src/profiles/profile")
+(import [Plugin plugin_log] ^from "../../../src/plugin_api")
+(import [install uninstall] ^from "../../../src/kernel")
+(import [log_reset log_configure log_event log_recent] ^from "../../../src/kernel/log")
+
+(describe "Plugin log subscriptions"
+  (it "delivers matching records to an activation-owned handler" []
+    (isolated ^timeout_ms 60000 this_mod/.path "delivers matching records to an activation-owned handler"
+      (fn [root]
+        (log_reset ^quiet true)
+        (log_configure ^mode "silent" ^workspace root)
+        (let runtime (open_runtime root "default" (Profile ^name "seed" ^plugins [])))
+        (let received ($cell []))
+        (try
+          (install runtime/h
+            (Plugin ^id "log_reader" ^activate (fn [host]
+              (host .PluginHost:subscribe_log {^type "turn/*" ^capacity 8}
+                (fn [record] (received .get; .push record)))))
+          (log_event "turn/start" "one"
+            ^target {^session "s1" ^round "r" ^turn 1})
+          (log_event "model/result" "ignored"
+            ^target {^session "s1" ^round "r" ^turn 1 ^call "c"})
+          (let due (+ ($os/monotonic_ms) 5000))
+          (while (&& (== ((received .get) .size) 0) (< ($os/monotonic_ms) due))
+            ($sleep 10))
+          (let records (received .get))
+          ($assert (== (records .size) 1) ($to_str records))
+          ($assert (== records/0/type "turn/start") ($to_str records))
+          ($assert (== records/0/target/session "s1") ($to_str records))
+          (let logged (log_recent ^type "plugin/log_reader/boot"))
+          ($assert (== (logged .size) 1) ($to_str logged))
+          ($assert (== logged/0/target/plugin "log_reader") ($to_str logged))
+          ($assert (== logged/0/message "bound logger ready") ($to_str logged))
+          ($assert (== logged/0/data/value 2) ($to_str logged))
+          (uninstall runtime/h "log_reader"))
+        ensure
+          (close_runtime runtime))))))

@@ -59,7 +59,7 @@ the existing same-origin, owner-cookie, and CSRF checks.
 | `POST /selection` | `{path, revision, start_byte, end_byte}`; returns the exact text for a saved selection, or `{changed true}`. |
 | `POST /analyze` | `gene-viewer --machine analyze` for a draft; response is tagged with the draft version. |
 | `POST /format` | `gene-viewer --machine format` for a draft. |
-| `GET /log?source=host&cursor=…` | A bounded increment of the retained Harness host log. |
+| `GET /logs?source=host&cursor=…` | A bounded, filtered increment of the retained Harness host log. |
 
 ### Saving
 
@@ -126,10 +126,15 @@ draft, caret, undo history, and each surface's scroll position. Logs are
 polled only while the tab is visible; hiding it stops the timer chain, and a
 delayed reply for a previous tab or plugin state is discarded.
 
-`GET /api/v9/p/editor/log` reads the retained `.gene-harness/host.log` and its
-`host.log.1` predecessor. The cursor is opaque: a segment name, a byte offset
-at a line boundary, and a SHA-256 digest of that segment's prefix through the
-offset. Each poll compares the prefix:
+The Logs tab reads the core `GET /api/v9/logs` route, which reads the retained
+`.gene-harness/host.log` and its `host.log.1` predecessor. Its filter row sends
+`type` (exact or `family/*`), `level` (minimum), `session` and `since` (epoch
+ms); an Apply clears the loaded tail and cursor before polling again. A line
+that parses as a Harness log record is rendered as console text; any other line
+is shown as raw text. Redaction runs on the complete line before the display budget truncates it, so
+a credential at the cut boundary cannot leak a prefix. The cursor is opaque: a
+segment name, a byte offset at a line boundary, and a SHA-256 digest of that
+segment's prefix through the offset. Each poll compares the prefix:
 
 - matching active segment: deliver only the new complete lines;
 - matching previous segment: the log rotated; finish the previous segment,

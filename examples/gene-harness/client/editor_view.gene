@@ -23,6 +23,10 @@
   ^status EventTarget
   ^source_root EventTarget
   ^log_root EventTarget
+  ^log_filters EventTarget
+  ^log_type EventTarget
+  ^log_level EventTarget
+  ^log_session EventTarget
   ^tab_source EventTarget
   ^tab_logs EventTarget
   ^open_button EventTarget
@@ -116,7 +120,10 @@
 (fn persist_state [view : EditorView] : Nil
   (if ($absent? view/bridge/save_view_state) (return))
   (var save : (Fn [Any] Nil) view/bridge/save_view_state)
-  (save {^path view/path ^tab view/tab ^log_cursor view/cursor}))
+  (save {^path view/path ^tab view/tab ^log_cursor view/cursor
+           ^log_type ($dom/input_value view/log_type)
+           ^log_level ($dom/input_value view/log_level)
+           ^log_session ($dom/input_value view/log_session)}))
 
 # ---------------------------------------------------------------------------
 # Services
@@ -253,7 +260,14 @@
   editor)
 
 (fn log_url [view : EditorView] : Str
-  $"${(api_root)}/p/editor/log?source=host&cursor=${(url/encode_component view/cursor)}")
+  (var query $"?source=host&cursor=${(url/encode_component view/cursor)}")
+  (let type_value ($str/trim ($dom/input_value view/log_type)))
+  (if (!= type_value "") (set query ($to_str query "&type=" ($url/encode_component type_value))))
+  (let level_value ($str/trim ($dom/input_value view/log_level)))
+  (if (!= level_value "") (set query ($to_str query "&level=" ($url/encode_component level_value))))
+  (let session_value ($str/trim ($dom/input_value view/log_session)))
+  (if (!= session_value "") (set query ($to_str query "&session=" ($url/encode_component session_value))))
+  $"${(api_root)}/logs${query}")
 
 (fn poll_log [view : EditorView] : Nil
   (if (|| view/disposed (! view/available) (!= view/tab "logs") ($absent? view/log_view))
@@ -290,11 +304,23 @@
         (fn [] : Nil
           (if (== generation view/generation) (poll_log view)))))))
 
+(fn apply_log_filters [view : EditorView] : Nil
+  (set view/cursor "")
+  (if ($present? view/log_view)
+    (do
+      (var editor (log_editor_of view))
+      (let no_lines : (List Str) [])
+      (editor/append_log {^lines no_lines ^gap "" ^reset true})))
+  (persist_state view)
+  (if (== view/tab "logs") (poll_log view))
+  nil)
+
 (fn show_logs [view : EditorView] : Nil
   (set view/tab "logs")
   ($dom/set_class view/tab_source "active" false)
   ($dom/set_class view/tab_logs "active" true)
   (set view/source_root/hidden true)
+  (set view/log_filters/hidden false)
   (set view/log_root/hidden false)
   (set view/generation (+ view/generation 1))
   (if (! view/available)
@@ -315,6 +341,7 @@
   ($dom/set_class view/tab_source "active" true)
   ($dom/set_class view/tab_logs "active" false)
   (set view/source_root/hidden false)
+  (set view/log_filters/hidden true)
   (set view/log_root/hidden true)
   (set view/generation (+ view/generation 1))
   (say view (if view/available "Source mode." "Editor unavailable — enable the editor plugin."))
@@ -485,18 +512,45 @@
   (var source_root ($dom/create_element "div"))
   ($dom/set_style source_root "flex" "1")
   ($dom/set_style source_root "min-height" "0")
+  (var log_filters ($dom/create_element "div"))
+  ($dom/set_style log_filters "display" "flex")
+  ($dom/set_style log_filters "gap" "4px")
+  ($dom/set_style log_filters "padding" "4px 0")
+  (var log_type ($dom/create_element "input"))
+  ($dom/set_attribute log_type "type" "text")
+  ($dom/set_attribute log_type "placeholder" "type, model/*")
+  ($dom/set_attribute log_type "aria-label" "Log type filter")
+  ($dom/set_style log_type "flex" "1")
+  (var log_level ($dom/create_element "input"))
+  ($dom/set_attribute log_level "type" "text")
+  ($dom/set_attribute log_level "placeholder" "level")
+  ($dom/set_attribute log_level "aria-label" "Log level filter")
+  ($dom/set_style log_level "width" "70px")
+  (var log_session ($dom/create_element "input"))
+  ($dom/set_attribute log_session "type" "text")
+  ($dom/set_attribute log_session "placeholder" "session")
+  ($dom/set_attribute log_session "aria-label" "Log session filter")
+  ($dom/set_style log_session "width" "120px")
+  (var log_apply (button "Filter" false))
+  ($dom/append log_filters log_type)
+  ($dom/append log_filters log_level)
+  ($dom/append log_filters log_session)
+  ($dom/append log_filters log_apply)
+  (set log_filters/hidden true)
   (var log_root ($dom/create_element "div"))
   ($dom/set_style log_root "flex" "1")
   ($dom/set_style log_root "min-height" "0")
   (set log_root/hidden true)
   ($dom/append shell head)
+  ($dom/append shell log_filters)
   ($dom/append shell source_root)
   ($dom/append shell log_root)
   ($dom/append root shell)
   (var saved : Any bridge/view/view_state)
   (var view
     (EditorView ^root root ^bridge bridge ^title title ^path_input path_input
-      ^status status ^source_root source_root ^log_root log_root
+      ^status status ^source_root source_root ^log_root log_root ^log_filters log_filters
+      ^log_type log_type ^log_level log_level ^log_session log_session
       ^tab_source tab_source ^tab_logs tab_logs ^open_button open_button
       ^attach_button attach_button ^source nil ^log_view nil
       ^available (available_plugins? (bridge_call_state bridge)) ^dirty false
@@ -504,6 +558,9 @@
       ^cursor (text_of saved/log_cursor "") ^generation 0 ^disposed false
       ^selection nil ^drafts {} ^storage_warned false ^mode "source"))
   ($dom/set_input_value path_input view/path)
+  ($dom/set_input_value log_type (text_of saved/log_type ""))
+  ($dom/set_input_value log_level (text_of saved/log_level ""))
+  ($dom/set_input_value log_session (text_of saved/log_session ""))
   (if (!= view/path "")
     (do ($dom/set_text view/title $"Gene editor · ${view/path}") (open_path view view/path)))
   ($dom/add_event_listener open_button "click"
@@ -518,6 +575,8 @@
     (fn [event : Any] : Nil (show_source view)))
   ($dom/add_event_listener tab_logs "click"
     (fn [event : Any] : Nil (show_logs view)))
+  ($dom/add_event_listener log_apply "click"
+    (fn [event : Any] : Nil (apply_log_filters view)))
   (set view/attach_button/disabled true)
   (if (== view/tab "logs") (show_logs view) (show_source view))
   view)

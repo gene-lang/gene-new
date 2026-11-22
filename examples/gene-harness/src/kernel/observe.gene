@@ -1,6 +1,7 @@
 # Activation-owned, supervised event subscriptions.
 (mod kernel_observe)
 (import [Harness contribute invoke_owned_callable] ^from "./registry")
+(import [log_subscribe log_unsubscribe log_gap_record log_event] ^from "./log")
 
 (type GuardedHandler ^^private ^props {^h Harness ^owner Str ^handler Any})
 
@@ -18,3 +19,44 @@
   (var sub (h/bus .subscribe selector guarded))
   (contribute h id "subscriptions" {^name "" ^sub sub})
   sub)
+
+
+(fn log_plugin [h : Harness, id : Str, type : Str, message : Str,
+                ^level level : Str = "info", ^data data = nil, ^event event = nil] : Nil
+  (let plugin (if (== id "") "plugin" id))
+  (let bytes ($str/byte_size type))
+  (let limit (if (> bytes 64) 64 bytes))
+  (let name (if (== type "") "log" ($str/slice_bytes type 0 limit)))
+  (log_event $"plugin/${plugin}/${name}" message ^target {^plugin plugin}
+    ^level (if (== level "") "info" level) ^data data ^event event)
+  nil)
+
+(fn subscribe_log [h : Harness, id : Str, selector, handler] : Any
+  # A bounded log subscription owned by the same activation. The queue never
+  # waits on the plugin; a slow handler loses records and receives a synthetic
+  # log/dropped gap before the next record.
+  (if (|| ($absent? selector) (!= ($head selector) Map))
+    (fail (Error ^_msg "log subscription selector must be a map")))
+  (let type (?? selector/type ""))
+  (let target (?? selector/target nil))
+  (let capacity (?? selector/capacity 256))
+  (if (!= ($head type) Str)
+    (fail (Error ^_msg "log subscription type must be text")))
+  (let subscription (log_subscribe ^type type ^target target ^capacity capacity))
+  (let task
+    (spawn ^lane root
+      (try
+        (loop
+          (let message subscription/channel/.recv)
+          (let gap (log_gap_record message))
+          (if ($present? gap)
+            (try (invoke_owned_callable h id handler [gap]) catch Throwable nil))
+          (let record (?? message/record nil))
+          (if ($present? record)
+            (try (invoke_owned_callable h id handler [record]) catch Throwable nil)))
+        catch ChannelClosed nil)))
+  (let closer {^cancel (fn [] : Nil
+    (log_unsubscribe subscription/id)
+    (try (task .cancel) catch Throwable nil))})
+  (contribute h id "subscriptions" {^name "" ^sub closer})
+  ($freeze_shallow {^kind "log" ^id subscription/id}))

@@ -1,4 +1,5 @@
 (mod channel_sharing)
+(import [log_event] ^from "../kernel/log")
 (import [read mutate] ^from "./store")
 (import [channel_error key binding_key remember_message] ^from "./model")
 (import [normalize_intent intent_digest] ^from "./delivery")
@@ -127,9 +128,14 @@
         (then
           (changes .put "revision" (+ (?? record/revision 0) 1))
           (update_session service/runtime/sessions session changes)
-          (append_core_event service/runtime/events "session" session
-            {^type "trace" ^kind "channel/status" ^text "Channel conversation sharing status changed."
-             ^delivery intent/id ^status status ^^ignorable})
+          (let envelope
+            (append_core_event service/runtime/events "session" session
+              {^type "trace" ^kind "channel/status" ^text "Channel conversation sharing status changed."
+               ^delivery intent/id ^status status ^^ignorable}))
+          (log_event "channel/status" "Channel conversation sharing status changed"
+            ^target {^channel (?? intent/channel "")}
+            ^data {^delivery intent/id ^status status}
+            ^event {^stream session ^seq envelope/seq})
           (flush_event_store service/runtime/events)))
       (mutate service/runtime/services/values/channel_queues (fn [state]
         (let current (state/outbox .get intent/id))

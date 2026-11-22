@@ -36,6 +36,13 @@
 (fn current_manager []
   (/manager (current_objects)))
 
+# A bound logger under plugin/<id>/… with `plugin` in the target. The host
+# stamps the contributing plugin, so a logger cannot impersonate another one.
+(fn plugin_log [host] : Any
+  (fn [message : Str, ^level level : Str = "info", ^type type : Str = "log",
+       ^data data = nil, ^event event = nil] : Nil
+    (host .PluginHost:log type message ^level level ^data data ^event event)))
+
 # nil when the calling code is not running as part of a session.
 (fn current_session []
   (let id (/session ($runtime/context)))
@@ -205,6 +212,8 @@
   (message contribute [registry : Str, payload] : Str)
   (message replace_contribution [registry : Str, payload] : Str)
   (message subscribe [selector, handler] : Any)
+  (message subscribe_log [selector, handler] : Any)
+  (message log [type : Str, message : Str, ^level level : Str = "info", ^data data = nil, ^event event = nil] : Nil)
   (message emit_event [name : Str, payload] : Any)
   (message state [^session session = nil] : Any)
   (message update_state [value, ^session session = nil] : Any)

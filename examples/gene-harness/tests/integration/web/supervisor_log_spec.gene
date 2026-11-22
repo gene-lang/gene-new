@@ -1,0 +1,83 @@
+# M3: supervised hosts relay JSONL, the launcher owns host.log, and a restart
+# starts a new child while the log remains record-oriented.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [launch_host ready_host stop_host] ^from "../../web_support")
+(import [connect api] ^from "../../../src/cli/client")
+
+(fn log_lines [root : Str] : Any
+  (let path ($path/join root ".gene-harness/host.log"))
+  (if ($fs/exists? path) ($str/split ($str/trim ($fs/read_text path)) "\n") []))
+
+(fn records [root : Str] : Any
+  (let out [])
+  (for line in (log_lines root)
+    (if (== line "") (continue))
+    (let parsed (try ($json/parse line) catch Error nil))
+    ($assert ($present? parsed) $"host.log has a non-record line: ${line}")
+    (out .push parsed))
+  out)
+
+(fn types [rows] : Any
+  ($map rows (fn [row] row/type)))
+
+(fn wait_type [root : Str, type : Str] : Any
+  (let due (+ ($os/monotonic_ms) 15000))
+  (loop
+    (for row in (records root)
+      (if (== row/type type) (return row)))
+    ($assert (< ($os/monotonic_ms) due) $"host.log never recorded ${type}")
+    ($sleep 20)))
+
+(describe "Supervised host log"
+  (it "writes JSONL records across restart and stays record-safe" []
+    (isolated ^timeout_ms 120000 this_mod/.path "writes JSONL records across restart and stays record-safe"
+      (fn [workspace]
+        (let host (launch_host ^supervised true ^managed true workspace))
+        (try
+          (let first (ready_host host))
+          (let first_ready (wait_type workspace "host/ready"))
+          (wait_type workspace "supervisor/child_started")
+          (let rows (records workspace))
+          ($assert (> rows/.size 0) "host.log stayed empty")
+          (for row in rows
+            (if_not ($str/starts_with? ($to_str row/type) "supervisor/")
+              ($assert (== row/run first_ready/run) $"child run changed before restart: {$to_str row}")))
+          ($assert (! ($str/contains? ($str/trim ($fs/read_text ($path/join workspace ".gene-harness/host.log"))) "#token="))
+            "host.log leaked an owner token")
+          (api (connect workspace) "POST" "/control" {^action "restart" ^^confirm})
+          (let second (ready_host ^previous first/epoch host))
+          ($assert (!= second/epoch first/epoch) "restart did not start a new child")
+          (wait_type workspace "supervisor/restart")
+          (let after (records workspace))
+          (let ready_rows ($filter after (fn [row] (== row/type "host/ready"))))
+          ($assert (>= ($size ready_rows) 2) "restart did not record a second ready")
+          (var last_ready (- ($size ready_rows) 1))
+          (let latest ready_rows/%last_ready)
+          ($assert (!= latest/run first_ready/run)
+            "replacement child reused the previous run")
+          ($assert (>= ($size ($filter after (fn [row] (== row/type "supervisor/child_started")))) 2)
+            "restart did not record a second child")
+        ensure
+          (let stopped (stop_host host))
+          ($assert (== stopped/status 0) stopped/stderr)))))
+
+  (it "wraps non-record child output and retains a sanitized startup tail" []
+    (isolated ^timeout_ms 120000 this_mod/.path "wraps non-record child output and retains a sanitized startup tail"
+      (fn [workspace]
+        ($fs/make_dir $"${workspace}/.gene-harness")
+        ($fs/write_text $"${workspace}/.gene-harness/config.gene" "(invalid configuration")
+        (let host (launch_host ^supervised true ^managed true workspace))
+        (try
+          (ready_host host)
+          (wait_type workspace "host/recovery_ready")
+          (let raw (wait_type workspace "supervisor/child_output"))
+          ($assert (== raw/data/stream "stdout") ($to_str raw))
+          ($assert (> raw/data/bytes 0) ($to_str raw))
+          ($assert ($fs/exists? ($path/join workspace ".gene-harness/startup_failure"))
+            "startup_failure was not retained")
+          (let tail ($fs/read_text ($path/join workspace ".gene-harness/startup_failure")))
+          ($assert ($str/contains? tail "unexpected EOF") tail))
+        ensure
+          (let stopped (stop_host host))
+          ($assert (== stopped/status 0) stopped/stderr)))))

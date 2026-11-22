@@ -21,6 +21,7 @@ HOME/.gene-harness-root. Managed workspaces live in ROOT/workspaces.
 
 Workspace commands:
   status | link | auth reset | stop [--confirm] | restart [--confirm]
+  logs [--type T] [--level L] [--session ID] [--since MS] [--lines N] [--follow]
   sessions [create --title TITLE]
   triggers [list | create FILE | update ID FILE | delete ID | occurrences [ID]]
   channels [status | account NAME --file FILE | route ACCOUNT --file FILE]
@@ -161,13 +162,37 @@ Profile: """
     (elif (["failed" "error" "stale" "quarantined" "cancelled" "interrupted" "recovery_required"] .contains? state) 1)
     (else 0)))
 
+(fn logs_query [options, cursor : Str] : Str
+  (var query $"/logs?source=host&cursor=${($url/encode_component cursor)}")
+  (for key in ["type" "level" "session" "since"]
+    (let value (options .get key))
+    (if_not ($absent? value)
+      (set query ($to_str query "&" key "=" ($url/encode_component ($to_str value))))))
+  (set query ($to_str query "&lines=" ($url/encode_component (?? options/lines "200"))))
+  query)
+
+(fn logs_command [client, options] : Any
+  (let follow (== options/follow true))
+  (if (&& follow (== options/json true))
+    (problem "--follow cannot be combined with --json."))
+  (var cursor (?? options/cursor ""))
+  (loop
+    (let result (api client "GET" (logs_query options cursor)))
+    (if (== options/json true) (return result))
+    (for line in (?? result/lines []) ($println line))
+    (if (&& (! follow) (== result/state "unreadable"))
+      (problem (?? result/message "The host log is unreadable.")))
+    (if_not follow (return nil))
+    (set cursor (?? result/cursor cursor))
+    ($sleep 500)))
+
 (fn execute [parsed]
   (let options parsed/options)
   (let words parsed/words)
   (let action parsed/command)
   (if (["chat" "scripted"] .contains? action)
     (problem "Standalone terminal chat is retired. Start gene-harness web, then use sessions create and send --session ID."))
-  (if_not (["doctor" "enable" "disable" "restore" "plugins" "history" "revert" "status" "link" "auth" "stop" "restart" "sessions" "triggers" "channels" "notifications" "transcript" "receipt" "wait" "answer" "dismiss" "cancel" "send" "run" "sh" "view" "command"] .contains? action)
+  (if_not (["doctor" "enable" "disable" "restore" "plugins" "history" "revert" "status" "link" "auth" "stop" "restart" "logs" "sessions" "triggers" "channels" "notifications" "transcript" "receipt" "wait" "answer" "dismiss" "cancel" "send" "run" "sh" "view" "command"] .contains? action)
     (problem $"Unknown command ${action}. Use --help for usage."))
   (for key in ["port" "restart-port" "startup-id" "script" "supervised" "recovery" "managed"]
     (if_not ($absent? (options .get key)) (problem $"--${key} is a web-host option.")))
@@ -201,6 +226,7 @@ Profile: """
   (let root ($fs/real_path selected))
   (if (== action "link") (return (connection_link root)))
   (let client (connect root))
+  (if (== action "logs") (return (logs_command client options)))
   (if (== action "channels") (return (channel_command client words options)))
   (if (== action "plugins")
     (return (api client "GET" ($to_str "/plugins?q="

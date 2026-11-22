@@ -258,7 +258,7 @@
   (if (|| (== shared_root "") ($absent? state)) (return watch))
   (state/observed .set (/digest (read_shared_settings shared_root)))
   (watch/worker .set (spawn ^lane root
-    ($runtime/with_context nil (fn []
+    ($runtime/with_context {^log_target {^workspace runtime/root}} (fn []
       (while (! watch/closed/.get)
         ($sleep interval_ms)
         (let digest (try (/digest (read_shared_settings shared_root)) catch Error state/observed/.get))

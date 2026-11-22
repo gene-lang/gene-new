@@ -123,7 +123,9 @@
         ^outcome_binding (outcome_constructor lease/snapshot) ^coordinated coordinated
         ^normalize_outcome (fn [turn value]
           (normalize_harness_outcome h lease/snapshot session round turn turn_context value))
-        ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round ^reviewer pinned_reviewer ^cards (?? (extra_bindings .get "card_api") nil) ^delegations (?? (extra_bindings .get "delegation_context") nil)}
+        ^context {^composition h/snapshots ^snapshot lease/snapshot ^session session ^round round
+          ^reviewer pinned_reviewer ^cards (?? (extra_bindings .get "card_api") nil)
+          ^delegations (?? (extra_bindings .get "delegation_context") nil)}
         number
         workspace_root
         text))

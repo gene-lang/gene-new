@@ -1,0 +1,41 @@
+# M2: command records and links to their durable command state events.
+(import $test [describe it])
+(import [isolated run_spec] ^from "../../support")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [baseline_profile] ^from "../../../src/profiles/baseline")
+(import [submit_command command_receipt] ^from "../../../src/runtime/commands")
+(import [log_reset log_recent] ^from "../../../src/kernel/log")
+
+(fn records_of [records, type : Str] : Any
+  ($filter records (fn [record] (== record/type type))))
+
+(describe "Harness command log links"
+  (it "links command start and end to their durable state events" []
+    (isolated this_mod/.path "links command start and end to their durable state events"
+      (fn [workspace]
+        (log_reset ^strict true ^quiet true)
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (try
+          (let manager runtime/services/values/commands)
+          (let admitted (submit_command manager "default" "/run (+ 1 2)"))
+          (manager/watchers .get; .get $"default:${admitted/id}"; .join)
+          (let receipt (command_receipt manager "default" admitted/id))
+          (let records (log_recent ^limit 200))
+          (let starts (records_of records "command/start"))
+          (let ends (records_of records "command/end"))
+          (let prints (records_of records "output/print"))
+          ($assert (! starts/.empty?) "command/start record missing")
+          ($assert (! ends/.empty?) "command/end record missing")
+          ($assert (! prints/.empty?) "command output record missing")
+          (let start starts/0)
+          ($assert (== start/target/session "default") ($to_str start))
+          ($assert (== start/target/command admitted/id) ($to_str start))
+          ($assert (== start/event/stream "default") ($to_str start))
+          ($assert ($present? start/event/seq) ($to_str start))
+          (let ended ends/0)
+          ($assert (== ended/target/command admitted/id) ($to_str ended))
+          ($assert (== ended/data/status receipt/status) ($to_str ended))
+          ($assert ($present? ended/event/seq) ($to_str ended))
+          (let printed prints/0)
+          ($assert (== printed/target/command admitted/id) ($to_str printed)))
+        ensure (close_runtime runtime)))))

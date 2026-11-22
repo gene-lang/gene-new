@@ -67,7 +67,7 @@
 (fn api [sc : Scenario, method : Str, path : Str, payload : Any,
          done : (Fn [Int Any] Nil)] : Nil
   (sc/requests .push {^method method ^path path})
-  (if (contains path "/p/editor/log")
+  (if (|| (contains path "/logs") (contains path "/p/editor/log"))
     (do
       (set sc/log_polls (+ sc/log_polls 1))
       (if (== sc/log_polls 1)

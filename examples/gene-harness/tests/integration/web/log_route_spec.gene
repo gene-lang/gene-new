@@ -1,0 +1,53 @@
+# M4: the core Logs route filters parsed records while advancing the same
+# byte cursor and leaves raw lines out of a filtered response.
+(import $test [describe it])
+(import [isolated run_spec source_path] ^from "../../support")
+(import [start_host stop_host] ^from "../../web_support")
+(import [connect api] ^from "../../../src/cli/client")
+(import [make_record serialize_record] ^from "../../../src/public/log_record")
+(import $url [encode_component])
+
+(fn record_line [type : Str, level : Str, target, message : Str] : Str
+  (serialize_record
+    (make_record "run" 1 1000 level type target message)))
+
+(describe "Core Logs route"
+  (it "filters records by type, target, level and since" []
+    (isolated ^timeout_ms 120000 this_mod/.path "filters records by type, target, level and since"
+      (fn [workspace]
+        (let host (start_host workspace))
+        (try
+          (let client (connect workspace))
+          (let path ($path/join workspace ".gene-harness/host.log"))
+          ($fs/write_text path
+            ($str/join
+              [(record_line "turn/start" "info" {^workspace workspace ^session "s1" ^round "r" ^turn 1} "start")
+               (record_line "model/result" "warn" {^workspace workspace ^session "s1" ^round "r" ^turn 1 ^call "c"} "model")
+               (record_line "host/ready" "info" {^workspace workspace} "ready")
+               "not a record"
+               ""] "\n"))
+          (let all (api client "GET" "/logs?lines=20"))
+          ($assert (== ($size all/lines) 4) ($to_str all))
+          ($assert (== ($size all/records) 3) ($to_str all))
+          (let typed (api client "GET" "/logs?lines=20&type=model%2F%2A&session=s1"))
+          ($assert (== ($size typed/lines) 1) ($to_str typed))
+          ($assert (== typed/records/0/type "model/result") ($to_str typed))
+          ($assert (== typed/filtered 3) ($to_str typed))
+          (let warned (api client "GET" "/logs?lines=20&level=warn"))
+          ($assert (== ($size warned/lines) 1) ($to_str warned))
+          ($assert (== warned/records/0/level "warn") ($to_str warned))
+          (let since (api client "GET" "/logs?lines=20&since=2000"))
+          ($assert (== ($size since/lines) 0) ($to_str since))
+          ($assert ($present? since/cursor) ($to_str since))
+          (let printed (await ($os/exec_async ^timeout_ms 30000 ^max_bytes 1048576
+            ($os/executable_path) "run" "--snapshot" (source_path "src/main.gene")
+            "--workspace" workspace "logs" "--type" "model/*")))
+          ($assert (== printed/status 0) ($to_str printed))
+          ($assert ($str/contains? printed/stdout "model/result") ($to_str printed))
+          ($assert (! ($str/contains? printed/stdout "turn/start")) ($to_str printed))
+          (let as_json (await ($os/exec_async ^timeout_ms 30000 ^max_bytes 1048576
+            ($os/executable_path) "run" "--snapshot" (source_path "src/main.gene")
+            "--workspace" workspace "--json" "logs" "--type" "model/*")))
+          (let parsed ($json/parse ($str/trim as_json/stdout)))
+          ($assert (== ($size parsed/records) 1) ($to_str parsed))
+        ensure (stop_host host))))))

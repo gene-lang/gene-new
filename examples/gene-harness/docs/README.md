@@ -17,6 +17,7 @@ and measurement records are available in Git history.
 - [Voice](audio.md), [computer use](computer.md), [Slack channels](channels.md) and [sub-agents](sub-agent.md)
 - [Triggers](triggers.md), [discovery](discovery.md), [sidebar](sidebar.md), [themes](theming.md) and [Claude providers](claude.md)
 - [Providers, models and effort](models.md), [Spotlight](spotlight.md)
+- [Logging](logging.md): record schema, types and targets, levels and sinks
 - [Quick decisions and round check-ins](decisions.md)
 - [UI recipes](recipes/ui.md) and [notification recipes](recipes/notifications.md)
 - [Project board example](../examples/project_board/README.md)

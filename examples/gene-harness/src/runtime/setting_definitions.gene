@@ -10,6 +10,24 @@
 # values through untouched and never injects their defaults.
 (const model_setting_keys ["provider" "model" "effort"])
 
+(const valid_log_levels ["error" "warn" "info" "debug" "trace"])
+
+(fn check_log_level [value]
+  (if (&& (== ($head value) Str) (valid_log_levels .contains? value))
+    (return value))
+  (fail (ServiceError ^code "invalid_request"
+    ^_msg "Log level must be error, warn, info, debug or trace.")))
+
+(fn check_log_levels [value]
+  (if ($absent? value) (return value))
+  (if (!= ($head value) Map)
+    (fail (ServiceError ^code "invalid_request" ^_msg "Log levels must be a map from family to level.")))
+  (map_for [family level] in value
+    (if (!= ($head family) Str)
+      (fail (ServiceError ^code "invalid_request" ^_msg "A log level family must be a string.")))
+    (check_log_level level))
+  value)
+
 # Portable levels always pass; a native level such as ultra passes here and is then
 # checked against the selected model's advertised efforts by the efforts choices.
 (fn check_effort [value]
@@ -51,6 +69,12 @@
     ^doc "Optional cap on the selected model's window in tokens."}
    {^key "provider_timeout_ms" ^label "Provider timeout" ^group group ^type "int" ^default 600000 ^min 1 ^applies "next_round"
     ^doc "Timeout per provider attempt in milliseconds."}
+   {^key "log_level" ^label "Log level" ^group group ^type "str" ^default "info" ^applies "immediate"
+    ^validate check_log_level
+    ^doc "Minimum level written to the host console and relay: error, warn, info, debug or trace."}
+   {^key "log_levels" ^label "Log levels by family" ^group group ^type "map" ^default {} ^applies "immediate"
+    ^validate check_log_levels
+    ^doc "Per-family overrides such as {^model \"debug\"}; a family is the first segment of a log type."}
    {^key "response_budget" ^label "Response budget" ^group group ^type "map"
     ^default {^timeout_ms 600000 ^max_memory_mb 1024} ^applies "next_round"
     ^doc "Runaway limit for each response evaluation and command. Plugin admission limits take it at startup."}

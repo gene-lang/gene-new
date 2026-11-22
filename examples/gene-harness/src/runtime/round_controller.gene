@@ -1,4 +1,5 @@
 (mod round_controller)
+(import [log_event] ^from "../kernel/log")
 (import [effective_config] ^from "./settings_resolver")
 (import [operator_round? continuable_round?] ^from "./round_policy")
 (import [normalize_message transport_label] ^from "../channels/model")
@@ -902,7 +903,9 @@
   (var exit_code code)
   (if (&& (== code 75) (!= runtime/supervised true) (!= ($os/env? "GENE_HARNESS_SUPERVISED") "1"))
     (then
-      ($println "Direct gene run: restart stops this process; start it again from the terminal.")
+      (log_event "host/restart_unsupported"
+        "Direct gene run: restart stops this process; start it again from the terminal."
+        ^target {^workspace runtime/root})
       (set exit_code 0)))
   (runtime/exit_code .set exit_code)
   (if ($absent? runtime/shutdown_watchdog/.get)

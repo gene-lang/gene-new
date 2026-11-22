@@ -1,4 +1,5 @@
 (mod commands)
+(import [log_event] ^from "../kernel/log")
 (import [effective_config] ^from "./settings_resolver")
 (import [with_command_scope] ^from "./command_scope")
 (import [byte_prefix] ^from "../public/text")
@@ -49,15 +50,20 @@
   (if recovered (save_command_state runtime session state))
   state)
 
-(fn save_command_state [runtime, session : Str, state]
-  (record_core_state
-    runtime/events
-    "session"
-    session
-    "command"
-    "commands"
-    {^digest (write_body runtime ($serde/write_data state))})
+(fn save_command_state_event [runtime, session : Str, state] : Any
+  (let envelope
+    (record_core_state
+      runtime/events
+      "session"
+      session
+      "command"
+      "commands"
+      {^digest (write_body runtime ($serde/write_data state))}))
   (flush_event_store runtime/events)
+  {^state state ^event envelope})
+
+(fn save_command_state [runtime, session : Str, state]
+  (save_command_state_event runtime session state)
   state)
 
 (fn edit_distance [a : Str, b : Str]
@@ -294,8 +300,8 @@
         (then (set excess (- excess 1)))
         (else (retained .push candidate))))
     (state .put "records" retained)
-    (save_command_state manager/runtime session state)))
-  record)
+    (let saved (save_command_state_event manager/runtime session state))
+    {^record record ^event saved/event})))
 
 (fn append_command_output [manager, session : Str, record, text : Str]
   (let original (?? record/output ""))
@@ -307,6 +313,9 @@
     {^id record/id ^name record/name ^status "running" ^text text ^output record/output
      ^mode_instance (?? record/mode_instance nil)
      ^ui_action (== record/ui_action true)})
+  (log_event "output/print" "command output"
+    ^target {^session session ^command record/id}
+    ^data {^bytes ($str/byte_size text) ^name record/name})
   nil)
 
 (fn finish_command [manager, session : Str, record, lease, outcome]
@@ -381,7 +390,11 @@ Stopped."""))))
         (record .put "output_ref" (write_body manager/runtime output))
         (record .put "output" (byte_prefix output 16384))))
     (record .put "finished" ($to_str ($now)))
-    (update_command manager session record)
+    (let updated (update_command manager session record))
+    (log_event "command/end" $"command ${record/id} ${record/status}"
+      ^target {^session session ^command record/id}
+      ^data {^status record/status ^name record/name ^error (?? record/error_code "")}
+      ^event {^stream session ^seq updated/event/seq})
     (if (== record/attached true)
       (then
         (manager/gate (fn []
@@ -490,7 +503,11 @@ Stopped."""))))
         (let value (parsed .get key))
         (if_not ($absent? value) (allocated .put key value)))
       (state/records .push allocated)
-      (save_command_state manager/runtime session state)
+      (let saved (save_command_state_event manager/runtime session state))
+      (log_event "command/start" $"command ${id} started"
+        ^target {^session session ^command id}
+        ^data {^name parsed/name ^raw parsed/raw}
+        ^event {^stream session ^seq saved/event/seq})
       allocated)))
   (if duplicate (return record))
   (if_not ($absent? parsed/on_admit) (parsed/on_admit record))
@@ -510,7 +527,8 @@ Stopped."""))))
         parsed/handler
         [ctx]))
     (let task
-      (spawn ^lane root ($runtime/with_context {^session session ^composition manager/runtime/h/snapshots ^snapshot lease/snapshot ^output sink ^command record/id}
+      (spawn ^lane root ($runtime/with_context {^session session ^composition manager/runtime/h/snapshots ^snapshot lease/snapshot ^output sink ^command record/id
+        ^log_target {^session session ^command record/id}}
         (fn [] (with_command_scope manager/runtime ctx (fn [] (scope (invoke))))))))
     (acquire_body_use manager/runtime)
     (manager/active

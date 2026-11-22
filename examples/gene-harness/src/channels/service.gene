@@ -1,4 +1,5 @@
 (mod channel_service)
+(import [log_event] ^from "../kernel/log")
 (import [open_authority authorize authorize_parts public_authority] ^from "./authority")
 (import [snapshot mutate close_channel_store read has_queue? take_changes] ^from "./store")
 (import [channel_error key binding_key required_text message_id account_id identifier] ^from "./model")
@@ -394,18 +395,28 @@
       (if (&& (!= outgoing/result/status result/status)
               (["uncertain" "failed" "delivered"] .contains? result/status))
         (then
-          (append_core_event service/runtime/events "session" outgoing/intent/session
-            {^type "trace" ^kind "channel/status" ^text "Channel delivery status changed."
-             ^delivery outgoing/intent/id ^status result/status ^^ignorable})
+          (let envelope
+            (append_core_event service/runtime/events "session" outgoing/intent/session
+              {^type "trace" ^kind "channel/status" ^text "Channel delivery status changed."
+               ^delivery outgoing/intent/id ^status result/status ^^ignorable}))
+          (log_event "channel/status" "Channel delivery status changed"
+            ^target {^channel (?? outgoing/intent/channel "")}
+            ^data {^delivery outgoing/intent/id ^status result/status}
+            ^event {^stream outgoing/intent/session ^seq envelope/seq})
           (flush_event_store service/runtime/events)))
       (service/health/.get .delete outgoing/intent/id)
     catch Error
       (defer_output service/runtime/services/values/channel_queues outgoing/intent/id ^error (?? $err/code "handoff_unavailable"))
       (if (&& (== $err/code "uncertain") (!= outgoing/last_error "uncertain"))
         (then
-          (append_core_event service/runtime/events "session" outgoing/intent/session
-            {^type "trace" ^kind "channel/status" ^text "Channel delivery needs owner review."
-             ^delivery outgoing/intent/id ^status "uncertain" ^^ignorable})
+          (let envelope
+            (append_core_event service/runtime/events "session" outgoing/intent/session
+              {^type "trace" ^kind "channel/status" ^text "Channel delivery needs owner review."
+               ^delivery outgoing/intent/id ^status "uncertain" ^^ignorable}))
+          (log_event "channel/status" "Channel delivery needs owner review"
+            ^target {^channel (?? outgoing/intent/channel "")}
+            ^data {^delivery outgoing/intent/id ^status "uncertain"}
+            ^event {^stream outgoing/intent/session ^seq envelope/seq})
           (flush_event_store service/runtime/events)))
       (service/health/.get .put outgoing/intent/id {^code (?? $err/code "handoff_unavailable") ^at ($os/wall_ms)})))
   nil)

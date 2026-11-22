@@ -1,5 +1,6 @@
 # Cordis reconciliation, snapshot publication and desired plugin state.
 (mod kernel_composition_bridge)
+(import [log_event] ^from "./log")
 (import [Harness Registry Composer registry contribute row row_record rows registry_names
   registry_named registry_exists? copy_list fresh_list fresh_map remove_registry_row
   cleanup_registry_context release_activation_resources enter_plugin_execution leave_plugin_execution]
@@ -145,7 +146,8 @@
             (if_not ($absent? self/h/event_store)
               (append_core_event self/h/event_store "workspace" "workspace"
                 {^type "console" ^turn 0 ^text text ^!late ^^ignorable}))
-            ($runtime/with_context nil (fn [] ($print text))))} thunk)
+            (log_event "plugin/output" text
+              ^target {^plugin "composition" ^revision ($to_str (?? self/h/workspace/revision/.get 0))}))} thunk)
       ensure (publication .set false)))
     (message withdraw_owner [owner : Str] : Nil
       # Can run inside a candidate activation, on a Cordis transition task. That

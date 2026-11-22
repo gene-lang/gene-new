@@ -1,5 +1,6 @@
 # Ordered, bounded server-to-browser delivery. Commands stay on HTTP POST.
 (mod harness_web_push)
+(import [log_event log_subscribe log_unsubscribe log_gap_record] ^from "../kernel/log")
 
 (import ^from "./session_service" [host_status list_sessions snapshot RoundError])
 (import ^from "../runtime/appearance" [report_appearance appearance_tabs])
@@ -7,7 +8,7 @@
 (import ^from "../notifications/inbox" [inbox_snapshot])
 (import ^from "../runtime/sessions" [view_session leave_session])
 (import [voice_connected voice_disconnected voice_snapshot public_voice_state] ^from "../runtime/voice_state")
-(import $net/http [ws_send ws_close])
+(import $net/http [ws_send ws_try_send ws_queued ws_close])
 (import $os [monotonic_ms])
 
 (type PushHub ^props {^host Any ^peers Any})
@@ -70,9 +71,78 @@
       false))
   hub)
 
+(fn log_frame_text [hub : PushHub, peer, type : Str, data, sequence : Int] : Str
+  (let frame {^protocol protocol_version ^epoch hub/host/epoch
+    ^type type ^session peer/session ^log_sequence ($to_str sequence)
+    ^data data})
+  ($json/stringify frame))
+
+(fn send_log_frame [hub : PushHub, peer, type : Str, data] : Str
+  # Nonblocking diagnostics: drop instead of closing/evicting the state stream.
+  (if (|| peer/closed peer/safe) (return "closed"))
+  (if (> (ws_queued peer/connection) 65536) (return "full"))
+  (let sequence (+ (?? peer/log_sequence 0) 1))
+  (let accepted
+    (try
+      (ws_try_send ^max_bytes 65536 peer/connection
+        (log_frame_text hub peer type data sequence))
+    catch Throwable -1))
+  (if (== accepted 1)
+    (do (peer .put "log_sequence" sequence) (return "ok"))
+    (if (== accepted 0) (return "full") (return "closed"))))
+
+(fn log_drop_gap [peer, record] : Any
+  (if (== (?? peer/log_dropped 0) 0) (return nil))
+  {^count peer/log_dropped ^from (?? peer/log_drop_from 0) ^to (?? peer/log_drop_to 0)})
+
+(fn note_log_drop [peer, record] : Nil
+  (let at (?? record/seq 0))
+  (if (== (?? peer/log_dropped 0) 0) (peer .put "log_drop_from" at))
+  (peer .put "log_drop_to" at)
+  (peer .put "log_dropped" (+ (?? peer/log_dropped 0) 1)))
+
+(fn flush_log_gap [hub : PushHub, peer, record] : Bool
+  (let gap (log_drop_gap peer record))
+  (if ($absent? gap) (return true))
+  (if (== (send_log_frame hub peer "log/gap" gap) "ok")
+    (do
+      (peer .put "log_dropped" 0)
+      (peer .put "log_drop_from" 0)
+      (peer .put "log_drop_to" 0)
+      (return true)))
+  false)
+
+(fn send_record_log [hub : PushHub, peer, record] : Nil
+  (if (|| peer/closed peer/safe) (return))
+  (if_not (flush_log_gap hub peer record)
+    (do (note_log_drop peer record) (return)))
+  (let outcome (send_log_frame hub peer "log" record))
+  (if (== outcome "closed")
+    (peer .put "closed" true)
+    (if (== outcome "full") (note_log_drop peer record))))
+
+(fn drain_peer_logs [hub : PushHub, peer, subscription] : Nil
+  (try
+    (loop
+      (let message subscription/channel/.recv)
+      (if peer/closed (return))
+      (let gap (log_gap_record message))
+      (if ($present? gap) (send_record_log hub peer gap))
+      (send_record_log hub peer message/record))
+    catch ChannelClosed nil)
+  nil)
+
 (fn add_peer [hub : PushHub, connection, session : Str, expires : Int, ^safe safe : Bool = false, ^client_id client_id : Str = ""]
   (var peer {^connection connection ^session session ^expires expires
     ^sequence 0 ^!closed ^!viewing ^safe safe ^client_id client_id})
+  (let filter (if (== session "") nil {^session session}))
+  (let subscription (log_subscribe ^type "" ^target filter ^capacity 128))
+  (peer .put "log_subscription" subscription)
+  (peer .put "log_sequence" 0)
+  (peer .put "log_dropped" 0)
+  (peer .put "log_drop_from" 0)
+  (peer .put "log_drop_to" 0)
+  (peer .put "log_task" (spawn ^lane root (drain_peer_logs hub peer subscription)))
   (hub/peers/.get .push peer)
   (voice_connected hub/host/runtime/services/values/voice client_id)
   (try
@@ -101,7 +171,9 @@
           ^data {^code $err/code ^message $err/.message}})))
     (send_frame hub peer {^type "ready" ^session session ^data nil})
   catch Error
-    ($runtime/with_context nil (fn [] ($println $"Browser connection failed: ${$err/.message}")))
+    (log_event "web/connection_failed" $"Browser connection failed: ${$err/.message}"
+      ^target {^client (?? peer/client_id "") ^session session}
+      ^data {^error $err/.message})
     (peer .put "closed" true)
     (ws_close connection)))
 
@@ -112,6 +184,8 @@
       (then
         (voice_disconnected hub/host/runtime/services/values/voice (?? peer/client_id ""))
         (peer .put "closed" true)
+        (let subscription (?? peer/log_subscription nil))
+        (if ($present? subscription) (log_unsubscribe subscription/id))
         (if_yes peer/viewing
           (leave_session hub/host/runtime/sessions peer/session)
           (peer .put "viewing" false)))

@@ -1,0 +1,76 @@
+# M3 framing: byte pipes become complete lines, over-budget raw lines are
+# discarded whole, and an invalid UTF-8 line stays routable as raw output.
+(import $test [describe it])
+(import [frame_stream] ^from "../../../src/runtime/supervisor")
+(import $io [AsyncReader IoResource])
+
+(fn new_channel [] ($channel ^capacity 16))
+
+(fn complete [reader, text : Str]
+  ($sleep 1)
+  ($io/testing/complete_read reader ($binary/from_str text)))
+
+(describe "supervisor framing"
+  (it "reassembles a line split across pipe reads" []
+    (let reader ($io/testing/new))
+    (let channel (new_channel))
+    (let task (spawn ^lane root (frame_stream reader "stdout" channel)))
+    (complete reader "hel")
+    (complete reader "lo\n")
+    (let line channel/.recv)
+    ($assert (== line/kind "line") ($to_str line))
+    ($assert (== line/text "hello") ($to_str line))
+    ($sleep 20) ($io/testing/complete_read reader nil)
+    (let eof channel/.recv)
+    ($assert (== eof/kind "eof") ($to_str eof))
+    (await task))
+
+  (it "discards an over-budget raw line without text" []
+    (let reader ($io/testing/new))
+    (let channel (new_channel))
+    (let task (spawn ^lane root (frame_stream reader "stderr" channel)))
+    (var long "")
+    (var index 0)
+    (while (< index 8193)
+      (set long ($to_str long "x"))
+      (set index (+ index 1)))
+    (complete reader ($to_str long "\n"))
+    (let discarded channel/.recv)
+    ($assert (== discarded/kind "discarded") ($to_str discarded))
+    ($assert (== discarded/bytes 8194) ($to_str discarded))
+    ($sleep 20) ($io/testing/complete_read reader nil)
+    (let eof channel/.recv)
+    ($assert (== eof/kind "eof") ($to_str eof))
+    (await task))
+
+  (it "never exposes the cut prefix of a secret" []
+    (let reader ($io/testing/new))
+    (let channel (new_channel))
+    (let task (spawn ^lane root (frame_stream reader "stderr" channel)))
+    (var long "")
+    (var index 0)
+    (while (< index 8189)
+      (set long ($to_str long "x"))
+      (set index (+ index 1)))
+    (complete reader ($to_str long "SECRET\n"))
+    (let discarded channel/.recv)
+    ($assert (== discarded/kind "discarded") ($to_str discarded))
+    ($assert (! ($str/contains? ($to_str discarded) "SEC")) ($to_str discarded))
+    ($sleep 20) ($io/testing/complete_read reader nil)
+    (let eof channel/.recv)
+    (await task))
+
+  (it "keeps an invalid UTF-8 line as explicit raw text" []
+    (let reader ($io/testing/new))
+    (let channel (new_channel))
+    (let task (spawn ^lane root (frame_stream reader "stdout" channel)))
+    ($sleep 1)
+    ($io/testing/complete_read reader ($binary/from_list [255 10]))
+    (let line channel/.recv)
+    ($assert (== line/kind "line") ($to_str line))
+    ($assert ($str/contains? line/text "invalid UTF-8") ($to_str line))
+    ($sleep 1)
+    ($io/testing/complete_read reader nil)
+    (let eof channel/.recv)
+    ($assert (== eof/kind "eof") ($to_str eof))
+    (await task)))

@@ -119,6 +119,11 @@ definition allows it, then the definition default. Presence decides, so `false`,
 (manager .reset_setting "turn_limit")
 ```
 
+`log_level` (default `info`) and `log_levels` (a map from type family to level)
+are immediate workspace settings. They filter the structured log facade; a
+family override wins for its types, and a filtered record is never created. See
+[logging](logging.md).
+
 Each save writes exactly one store and checks that store's digest. A batch with one
 invalid value, a stale digest, or a key that belongs to another store saves nothing.
 `set_settings` is the only workspace write path: single writes, resets, the

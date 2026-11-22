@@ -140,7 +140,7 @@
   nil)
 
 (fn run_endpoint_publications [state]
-  ($runtime/with_context nil (fn []
+  ($runtime/with_context {^log_target {^workspace (?? state/root/.get "")}} (fn []
     (while state/accepting/.get
       (let jobs (state/publications .swap []))
       (for job in jobs
@@ -170,7 +170,7 @@
   nil)
 
 (fn run_file_watch [state, watch]
-  ($runtime/with_context nil (fn []
+  ($runtime/with_context {^log_target {^workspace (?? state/root/.get "")}} (fn []
     (while (&& state/accepting/.get (! watch/closed/.get))
       (try
         (let root state/root/.get)
@@ -247,7 +247,7 @@
   (sync_endpoint_file service/config/state root saved)
   # Provider publication may replace the Models activation and its handles.
   # Acknowledge through current cached data rather than invoking a retired one.
-  ($runtime/with_context nil (fn []
+  ($runtime/with_context {^log_target {^workspace service/runtime/root}} (fn []
     (let current (active_model_catalog service/runtime))
     (if (&& ($present? current) (== current/root root) (! current/closed/.get))
       (then
@@ -272,7 +272,7 @@
   (let service (require_service handle))
   (let origin (require_catalog handle))
   (let expected (?? transport (/transport (origin/discovered/.get .get provider))))
-  ($runtime/with_context nil (fn []
+  ($runtime/with_context {^log_target {^workspace service/runtime/root}} (fn []
     (run_composition_change service/runtime/h/snapshots (fn []
       (let catalogs [])
       (map_for [revision catalog] in service/config/state/catalogs (catalogs .push catalog))
@@ -421,7 +421,7 @@
     ^label (if ($present? chosen) (then ($to_str "ChatGPT · " chosen/label)) (else "ChatGPT"))
     ^billing "plan" ^account chosen/id
     ^reason (?? chosen/reason (if ($absent? chosen) (then "Continue with ChatGPT in Models to connect an account.") (else nil)))})
-  ($runtime/with_context nil (fn []
+  ($runtime/with_context {^log_target {^workspace service/runtime/root}} (fn []
     (run_composition_change service/runtime/h/snapshots (fn []
       (let catalogs [])
       (map_for [revision catalog] in service/config/state/catalogs (catalogs .push catalog))

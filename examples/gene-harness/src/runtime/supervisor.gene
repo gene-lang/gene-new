@@ -1,9 +1,149 @@
 (mod supervisor)
 (import ^from "../cli/options" [argument_values parse_options])
 (import ^from "../public/text" [byte_suffix])
+(import ^from "../public/log_record" [make_record bound_record parse_record render_text serialize_record serialize_line log_line_budget])
+(import ^from "../public/log_redaction" [read_secrets redact_text])
+(import [log_start log_configure log_run] ^from "../kernel/log")
 (import ^from "./workspace_settings" [initialize_manager_workspace])
 (import ^from "./workspace_lock" [try_lock_wait])
 (import ^from "./host_log" [open_host_log write_host_log close_host_log])
+(import $io [AsyncReader IoResource pipe])
+(import $binary [concat decode_utf8 from_str get size slice to_str])
+
+(const tail_limit 16384)
+
+(fn ^^private map_merge [base, overlay] : Any
+  (var merged {})
+  (if ($present? base) (map_for [key value] in base (merged .put key value)))
+  (if ($present? overlay) (map_for [key value] in overlay (merged .put key value)))
+  merged)
+
+(fn ^^private next_seq [counter] : Int
+  (counter .set (+ (counter .get) 1))
+  (counter .get))
+
+(fn ^^private find_byte [bytes, wanted : Int] : Int
+  (var index 0)
+  (let count ($binary/size bytes))
+  (while (< index count)
+    (if (== ($binary/get bytes index) wanted) (return index))
+    (set index (+ index 1)))
+  -1)
+
+(fn ^^private without_cr [bytes] : Any
+  (let count ($binary/size bytes))
+  (if (&& (> count 0) (== ($binary/get bytes (- count 1)) 13))
+    ($binary/slice bytes 0 (- count 1))
+    bytes))
+
+(fn ^^private line_text [bytes] : Str
+  (let decoded (try ($binary/decode_utf8 (without_cr bytes)) catch Throwable nil))
+  (if ($present? decoded) decoded
+    ($str/join ["[invalid UTF-8 line: " ($to_str ($binary/size bytes)) " bytes]"] "")))
+
+(fn ^^private redact_value [secrets, value] : Any
+  (let kind ($head value))
+  (if (== kind Str) (return (redact_text value secrets)))
+  (if (== kind Map)
+    (do
+      (var copy {})
+      (map_for [key item] in value (copy .put key (redact_value secrets item)))
+      (return copy)))
+  (if (== kind List)
+    (return ($map value (fn [item] (redact_value secrets item)))))
+  value)
+
+(fn ^^private redact_record [secrets, record] : Any
+  (var copy {})
+  (map_for [key value] in record (copy .put key (redact_value secrets value)))
+  copy)
+
+(var ^^private wire_seq ($cell 0))
+(var ^^private processed ($cell 0))
+
+(fn ^^private send_frame [channel, message] : Bool
+  (message .put "wire_seq" (next_seq wire_seq))
+  (try (channel .send ($freeze message)) true catch ChannelClosed false))
+
+# Frame one child stream into line/discard/eof messages. The buffer is bytes so
+# a UTF-8 sequence or a secret may cross a pipe read; an over-budget line is
+# discarded whole, never clipped.
+(fn frame_stream [reader, stream : Str, channel] : Nil
+  (let buffer ($cell ($binary/from_str "")))
+  (let discarding ($cell false))
+  (let discarded ($cell 0))
+  (let stopped ($cell false))
+  (fn send_discard [count : Int]
+    (if_not (send_frame channel {^kind "discarded" ^stream stream ^bytes count})
+      (stopped .set true)))
+  (fn send_line [bytes]
+    (if_not (send_frame channel {^kind "line" ^stream stream
+                                  ^text (line_text bytes) ^bytes ($binary/size bytes)})
+      (stopped .set true)))
+  (try
+    (loop
+      (let chunk (try (await (reader .AsyncReader:read 65536)) catch Throwable nil))
+      (if ($absent? chunk) (break))
+      (if discarding/.get
+        (do
+          (let at (find_byte chunk 10))
+          (if (< at 0)
+            (discarded .set (+ (discarded .get) ($binary/size chunk)))
+            (do
+              (discarded .set (+ (discarded .get) at 1))
+              (send_discard (discarded .get))
+              (discarding .set false)
+              (discarded .set 0)
+              (buffer .set ($binary/slice chunk (+ at 1) (- ($binary/size chunk) (+ at 1)))))))
+        (do
+          (buffer .set ($binary/concat [(buffer .get) chunk]))
+          (loop
+            (let at (find_byte (buffer .get) 10))
+            (if (< at 0)
+              (do
+                (if (> ($binary/size (buffer .get)) log_line_budget)
+                  (do
+                    (discarded .set ($binary/size (buffer .get)))
+                    (discarding .set true)
+                    (buffer .set ($binary/from_str ""))))
+                (break))
+              (do
+                (let line ($binary/slice (buffer .get) 0 at))
+                (buffer .set ($binary/slice (buffer .get) (+ at 1)
+                              (- ($binary/size (buffer .get)) (+ at 1))))
+                (if (> ($binary/size line) log_line_budget)
+                  (send_discard (+ ($binary/size line) 1))
+                  (send_line line)))))
+          (if stopped/.get (break))))
+      (if stopped/.get (break)))
+    catch Error
+      (send_frame channel {^kind "reader_error" ^stream stream ^message $err/.message})
+    ensure
+      (try (reader .IoResource:close) catch Throwable nil))
+  (if (&& discarding/.get (! stopped/.get))
+    (send_discard (discarded .get)))
+  (let remaining (buffer .get))
+  (if (&& (> ($binary/size remaining) 0) (! stopped/.get))
+    (if (> ($binary/size remaining) log_line_budget)
+      (send_discard ($binary/size remaining))
+      (send_line remaining)))
+  (send_frame channel {^kind "eof" ^stream stream})
+  nil)
+
+# CLI commands keep their exact stdout and stderr; only hosting relays records.
+(fn ^^private drain_raw [reader, ^stderr stderr : Bool = false] : Nil
+  (try
+    (loop
+      (let chunk (await (reader .AsyncReader:read 65536)))
+      (if ($absent? chunk) (break))
+      (let text ($binary/to_str chunk))
+      (if stderr
+        (do ($eprint text) ($io/flush_stdout))
+        (do ($print text) ($io/flush_stdout))))
+    catch Throwable nil
+    ensure
+      (try (reader .IoResource:close) catch Throwable nil))
+  nil)
 
 (fn child_entry [source_root : Str, hosting : Bool, offline : Bool, scripted : Bool, recovery : Bool,
   ^source_only source_only : Bool = false]
@@ -12,14 +152,14 @@
     (else ["run" "--snapshot" ($path/join source_root "src" "main.gene")])))
 
 (fn main [args]
+  (log_start)
   (let parsed (parse_options args))
   (let hosting (&& (["web" "manager"] .contains? parsed/command) (!= parsed/options/help true)))
   (let application ($pkg/application))
   (let root ($path/join application/source_root "src"))
-  # Capturing the child's diagnostics hides our terminal from it. Forward the
-  # actual output destination, including false when our stdout is redirected.
-  (let child_environment
-    {^GENE_HARNESS_STDOUT_TTY (if ($os/stdout_tty?) "1" "0")})
+  # The child inherits our actual output destination, never a stale variable.
+  (let tty ($os/stdout_tty?))
+  (let child_environment {^GENE_HARNESS_STDOUT_TTY (if tty "1" "0")})
   (var restart_port nil)
   (var recovery (== parsed/options/recovery true))
   (var source_only false)
@@ -36,17 +176,143 @@
     (set launch_lock (try_lock_wait $"${workspace}/.gene-harness/launcher_lock" 250))
     (if ($absent? launch_lock) (fail (Error ^_msg "A launcher is already running for this workspace.")))
     (if (== parsed/options/managed true) (set logger (open_host_log workspace))))
-  (fn emit [line : Str]
-    (if ($absent? logger)
-      (do ($println line) ($io/flush_stdout))
-      (write_host_log logger ($to_str line "\n"))))
+  (log_configure ^mode "launcher" ^workspace workspace)
+
+  (let run (log_run))
+  (let seq ($cell 0))
+  (let tail ($cell ""))
+  (let drops ($cell 0))
+  (let writer_failed ($cell false))
+  (let secrets ($cell []))
+  (let secrets_checked ($cell false))
+  (let channel ($channel ^capacity 128))
+  (let terminal tty)
+
+  (fn current_secrets [] : Any
+    (let current (secrets .get))
+    (if (&& current/.empty? (! secrets_checked/.get))
+      (do (secrets .set (read_secrets workspace)) (secrets_checked .set true)))
+    (secrets .get))
+
+  (fn make_launcher [type : Str, message : Str, target, data, level : Str] : Any
+    (make_record run (next_seq seq) ($os/wall_ms) level type
+      (map_merge {^workspace workspace} target)
+      (redact_text message (current_secrets))
+      ^data data))
+
+  (fn write_record [record, ^line line = nil, ^raw raw = nil] : Nil
+    (let bounded (bound_record record))
+    (let serialized (if ($present? line) line (serialize_record bounded)))
+    (let shown (if ($present? raw) raw (render_text bounded)))
+    (tail .set (byte_suffix ($str/join [(tail .get) shown "\n"] "") tail_limit))
+    (try
+      (if ($present? logger)
+        (then (write_host_log logger ($str/join [serialized "\n"] "")))
+        (elif terminal
+          (do
+            (if ($present? raw) ($println raw) ($println (render_text bounded)))
+            ($io/flush_stdout)))
+        (else
+          (do
+            ($print ($str/join [serialized "\n"] ""))
+            ($io/flush_stdout))))
+      catch Throwable
+        (drops .set (+ (drops .get) 1)))
+    nil)
+
+  (fn send_launcher [type : Str, message : Str, target, data, level : Str] : Nil
+    (send_frame channel {^kind "launcher" ^type type ^message message
+                         ^target target ^data data ^level level})
+    nil)
+
+  (fn child_output [stream : Str, text : Str, bytes : Int] : Nil
+    (let safe (redact_text text (current_secrets)))
+    (write_record
+      (make_launcher "supervisor/child_output" safe
+        {^workspace workspace}
+        {^stream stream ^bytes bytes}
+        (if (== stream "stderr") "warn" "info"))
+      ^raw safe)
+    nil)
+
+  (fn writer_loop [] : Nil
+    (let stopping ($cell false))
+    (try
+      (loop
+        (let message channel/.recv)
+        (match ($to_str message/kind)
+          (when "line"
+            (let record (parse_record ($to_str message/text)))
+            (if ($present? record)
+              (write_record (redact_record (current_secrets) record))
+              (child_output ($to_str message/stream) ($to_str message/text) message/bytes)))
+          (when "discarded"
+            (write_record
+              (make_launcher "supervisor/output_discarded"
+                $"discarded ${message/bytes} bytes from ${message/stream}"
+                {^workspace workspace}
+                {^stream message/stream ^bytes message/bytes} "warn")))
+          (when "reader_error"
+            (write_record
+              (make_launcher "supervisor/startup_failed"
+                $"could not read ${message/stream}: ${message/message}"
+                {^workspace workspace}
+                {^stream message/stream ^error message/message} "error")))
+          (when "launcher"
+            (write_record
+              (make_launcher ($to_str message/type) ($to_str message/message)
+                message/target message/data ($to_str message/level))))
+          (when "barrier" nil)
+          (when "stop"
+            (if (> (drops .get) 0)
+              (write_record
+                (make_launcher "log/dropped"
+                  $"the launcher dropped ${drops/.get} output records"
+                  {^workspace workspace} {^count drops/.get} "warn")))
+            (stopping .set true))
+          (else nil))
+        (processed .set message/wire_seq)
+        (if stopping/.get (break)))
+    catch ChannelClosed nil
+    catch Throwable
+      (writer_failed .set true)
+      ($eprintln $"supervisor writer failed: ${$err/.message}"))
+    nil)
+
+  (fn present_browser_link [startup_id : Str, child_task] : Nil
+    (loop
+      (if child_task/.done? (return nil))
+      (let marker $"${workspace}/.gene-harness/startup/${startup_id}")
+      (if ($fs/exists? marker)
+        (do
+          (secrets .set (read_secrets workspace))
+          (secrets_checked .set true)
+          (if ($os/stdout_tty?)
+            (then
+              (let link (try ($str/trim ($fs/read_text $"${workspace}/.gene-harness/link")) catch Error ""))
+              (if (!= link "")
+                ($println $"Browser: ${link}")
+                ($println $"Use gene-harness --workspace ${workspace} link to connect a browser.")))
+            (else
+              ($println $"Use gene-harness --workspace ${workspace} link to connect a browser.")))
+          ($io/flush_stdout)
+          (return nil))
+        ($sleep 50))))
+
+  (fn barrier [] : Nil
+    (if (send_frame channel {^kind "barrier"})
+      (do
+        (let target (wire_seq .get))
+        (while (&& (< (processed .get) target) (! writer_failed/.get))
+          ($sleep 1))))
+    nil)
+
+  (let writer (if hosting (spawn ^lane root (writer_loop)) nil))
   (try
   (loop
     (let startup_id ($crypto/random_hex 16))
     (child_environment .put "GENE_HARNESS_ENTRY_MARKER"
       $"${workspace}/.gene-harness/startup/${startup_id}.entered")
-    # Native resources enable optional provider features. A build failure must
-    # not prevent the ordinary host from using CLI or HTTP providers.
     (let child_args (child_entry ^source_only source_only application/source_root hosting
       (|| (== parsed/options/offline true) (== ($os/env? "GENE_HARNESS_OFFLINE") "1"))
       ($present? parsed/options/script) recovery))
@@ -60,20 +326,42 @@
     (if_not ($absent? restart_port)
       (child_args .push "--restart-port")
       (child_args .push ($to_str restart_port)))
-    (let lines ($channel ^capacity 128))
-    (let tail ($cell ""))
+
+    (if_not hosting
+      (do
+        (let out ($io/pipe))
+        (let err ($io/pipe))
+        (let task ($os/exec_stream_async ^env child_environment
+          (?? ($os/env? "GENE_BINARY") ($os/executable_path))
+          child_args... ^stdout_pipe out/1 ^stderr_pipe err/1))
+        (let stdout_drain (spawn ^lane root (drain_raw out/0)))
+        (let stderr_drain (spawn ^lane root (drain_raw err/0 ^stderr true)))
+        (let result (try (await task) ensure (if_not task/.done? task/.cancel task/.join)))
+        (await stdout_drain)
+        (await stderr_drain)
+        (return result/status)))
+
+    (send_launcher "supervisor/child_started" "host child started"
+      {^workspace workspace} {^supervised true ^recovery recovery} "info")
+    (let out ($io/pipe))
+    (let err ($io/pipe))
     (let task ($os/exec_stream_async ^env child_environment
       (?? ($os/env? "GENE_BINARY") ($os/executable_path))
-      child_args... ^^merge_stderr ^stdout_chan lines ^max_bytes 65536))
-    (let printer (spawn ^lane root (try
-      (loop (let line lines/.recv)
-        (emit line)
-        (tail .set (byte_suffix ($to_str tail/.get line "\n") 16384)))
-      catch ChannelClosed nil)))
+      child_args... ^stdout_pipe out/1 ^stderr_pipe err/1))
+    (let stdout_reader (spawn ^lane root (frame_stream out/0 "stdout" channel)))
+    (let stderr_reader (spawn ^lane root (frame_stream err/0 "stderr" channel)))
+    (let link_task (spawn ^lane root (present_browser_link startup_id task)))
     (let result (try (await task) ensure (if_not task/.done? task/.cancel task/.join)))
-    printer/.join
+    (await stdout_reader)
+    (await stderr_reader)
+    (send_launcher "supervisor/child_exited" $"host child exited with status ${result/status}"
+      {^workspace workspace}
+      {^status result/status ^recovery recovery}
+      (if (== result/status 0) "info" "warn"))
+    (barrier)
+    (await link_task)
+
     (let status result/status)
-    (if_not hosting (return status))
     (let marker $"${workspace}/.gene-harness/startup/${startup_id}")
     (let ready ($fs/exists? marker))
     (if ready ($fs/remove marker))
@@ -88,19 +376,31 @@
       (if (== notice/normal true) (set recovery false))
       (if (|| (!= ($head restart_port) Int) (< restart_port 1024) (> restart_port 65535))
         (fail (Error ^_msg "Restart handoff did not retain a valid listening port.")))
+      (send_launcher "supervisor/restart" "host is restarting" {^workspace workspace} {} "info")
+      (barrier)
       (continue))
     (if (|| recovery ready ([130 143 -2 -15] .contains? status)) (return status))
     (if (&& packaged (! entered))
       (then
-        (emit "Packaged startup failed before main. Starting the normal source host; optional native features may be unavailable.")
+        (send_launcher "supervisor/startup_failed"
+          "packaged startup failed before main; starting the normal source host"
+          {^workspace workspace} {^source_only true} "error")
+        (barrier)
         (set source_only true)
         (continue)))
+    (secrets .set (read_secrets workspace))
+    (secrets_checked .set true)
     ($fs/make_dir $"${workspace}/.gene-harness")
     ($fs/write_text_atomic ^^owner_only $"${workspace}/.gene-harness/startup_failure"
-      ($to_str "Normal startup exited before readiness (status " status ").\n" tail/.get))
-    (emit "Normal startup failed. Starting the plugin recovery interface.")
+      ($str/join ["Normal startup exited before readiness (status " ($to_str status) ").\n" (tail .get)] ""))
+    (send_launcher "supervisor/startup_failed"
+      "Normal startup failed. Starting the plugin recovery interface."
+      {^workspace workspace} {^status status} "error")
+    (barrier)
     (set recovery true))
   0
   ensure
+    (if_not ($absent? writer)
+      (do (send_frame channel {^kind "stop"}) (await writer)))
     (if_not ($absent? logger) (close_host_log logger))
     (if_not ($absent? launch_lock) launch_lock/.close)))

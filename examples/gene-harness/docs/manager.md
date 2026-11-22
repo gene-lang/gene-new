@@ -340,13 +340,24 @@ that the intended workspace is healthy or still owns that PID; use the
 workspace lock and matching live connection/status for ownership and readiness.
 
 Once initialized, the detached launcher writes its own diagnostics and the
-host output received on its channel directly to `.gene-harness/host.log` using
-file APIs. Keep a 1 MiB segment limit and one previous segment; oversized
-output must also respect this limit. The launcher closes the active log before
-rotation and opens the new file afterward. It does not forward routine output
-to its inherited stdout/stderr or use those descriptors for `host.log`.
-Foreground workspace launches, including `gene-harness manager` itself, keep
-their existing terminal output behavior.
+host output it relays to `.gene-harness/host.log` as JSONL records, one per
+line. It rotates before a record that would cross the 1 MiB segment limit,
+keeps one previous segment, and never splits a record across segments. A raw
+child line over the 8 KiB record budget is discarded whole and recorded as
+`supervisor/output_discarded` with its stream and byte count. The launcher
+closes the active log before rotation and opens the new file afterward. It does
+not forward routine output to its inherited stdout/stderr or use those
+descriptors for `host.log`. The last 16 KiB of sanitized output is retained for
+`startup_failure`.
+
+The manager's diagnostics render `host.log` records as typed console lines
+(time, level, type and target) and leave `startup_failure`/`bootstrap.log` as
+raw sanitized text. The launcher also presents the browser link from the
+readiness marker: a
+terminal shows `Browser: <link>`, while redirected output gets the
+`gene-harness --workspace W link` hint. A supervised child does not print its
+own banner. Foreground workspace launches, including `gene-harness manager`
+itself, keep their existing terminal output behavior.
 
 This separates startup redirection from steady-state logging: renaming a file
 does not redirect an already-open stdout descriptor. Logging and rotation

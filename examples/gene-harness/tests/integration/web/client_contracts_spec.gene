@@ -56,6 +56,17 @@
       ($assert (! ($str/contains? source "\"/p/editor/"))
         $"{entry} hard-codes a plugin route without api_root")))
 
+  (it "moves the Logs tab onto the core filtered route" []
+    (let view ($fs/read_text (package_path "client/editor_view.gene")))
+    (let panel ($fs/read_text (package_path "client/editor.gene")))
+    ($assert ($str/contains? view "${(api_root)}/logs") "editor view does not use the core Logs route")
+    ($assert (! ($str/contains? view "/p/editor/log")) "editor view still uses the plugin Logs route")
+    ($assert (! ($str/contains? panel "/p/editor/log")) "editor panel still uses the plugin Logs route")
+    ($assert ($str/contains? view "Log type filter") "editor view has no type filter")
+    (let plugin ($fs/read_text (package_path "src/builtin/editor.gene")))
+    (for field in ["log_type" "log_level" "log_session"]
+      ($assert ($str/contains? plugin ($str/join ["^" field] "")) $"editor view state lacks ${field}")))
+
   (it "offers host actions in Search Harness" []
     (let spotlight ($fs/read_text (package_path "client/plugins/spotlight.gene")))
     (for action in ["action:triggers" "action:plugins" "action:restart" "action:stop"]

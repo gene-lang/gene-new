@@ -14,20 +14,21 @@
     (set log/writer nil)))
 
 (fn write_host_log [log, text : Str]
-  (var pending text)
-  (while (!= pending "")
-    (if_yes (>= log/size log/limit)
+  # One record per line, rotated before the line that would cross the bound.
+  # A single bounded record is far smaller than the segment, so it is never
+  # split across segments.
+  (if (> (+ log/size ($str/byte_size text)) log/limit)
+    (then
       (close_host_log log)
       ($fs/rename log/path $"${log/path}.1")
-      (set log/size 0))
-    (let part (byte_prefix pending (- log/limit log/size)))
-    (if (== part "")
-      (then
-        (set log/size log/limit))
-      (else
-        (if ($absent? log/writer) (set log/writer (await ($io/open_write ^mode "append" log/path))))
-        (await ($io/write_all log/writer ($binary/from_str part)))
-        (let size ($str/byte_size part))
-        (set log/size (+ log/size size))
-        (set pending ($str/slice_bytes pending size (- ($str/byte_size pending) size))))))
+      (set log/size 0)))
+  (if (>= log/size log/limit)
+    (then
+      (close_host_log log)
+      ($fs/rename log/path $"${log/path}.1")
+      (set log/size 0)))
+  (if ($absent? log/writer)
+    (set log/writer (await ($io/open_write ^mode "append" log/path))))
+  (await ($io/write_all log/writer ($binary/from_str text)))
+  (set log/size (+ log/size ($str/byte_size text)))
   nil)

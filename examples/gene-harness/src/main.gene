@@ -1,3 +1,4 @@
+(import [log_start log_configure] ^from "./kernel/log")
 (import ^from "./cli/options" [argument_values parse_options problem])
 (import ^from "./cli/main" [run_client usage])
 (import ^from "./web/server" [main : serve_web])
@@ -26,6 +27,7 @@
   nil)
 
 (fn main [args] : Int
+  (log_start)
   (mark_startup_entry args)
   (let application ($pkg/application))
   (if_yes ($absent? application/provenance)
@@ -36,6 +38,14 @@
   (var parsed nil)
   (try
     (set parsed (parse_options args))
+    (log_configure
+      ^mode (if (["web" "manager"] .contains? parsed/command)
+              (if (== parsed/options/supervised true)
+                "host_supervised"
+                (if (== parsed/options/recovery true) "recovery" "host_direct"))
+              "cli")
+      ^root (?? parsed/options/workspace (?? parsed/options/root ""))
+      ^workspace (?? parsed/options/workspace (?? parsed/options/root "")))
     (if_yes (|| (== parsed/options/help true) (== parsed/command "help"))
       ($println (usage))
       (return 0))

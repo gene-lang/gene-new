@@ -31,19 +31,26 @@
 (fn callback_import_exception [] [])
 (fn named_test_imports []
   (let cases {})
-  (cases .put "tests/unit/runtime/kernel_status_spec.gene" ["plugin_states" "retry"])
+  (cases .put "tests/unit/runtime/kernel_status_spec.gene"
+    {^target "composition_bridge" ^names ["plugin_states" "retry"]})
+  (cases .put "tests/unit/runtime/logging_spec.gene"
+    {^target "log"
+     ^names ["log_start" "log_reset" "log_configure" "log_set_levels" "log_refresh_redactions" "log_event"
+             "log_scope" "log_recent" "log_run" "log_subscribe" "log_unsubscribe" "log_subscription" "log_gap_record"]})
   cases)
 
 (fn allowed_imports []
   {^invoke ["../runtime/call_supervision" "../plugin_api" "../errors"]
    ^registry ["./invoke" "../runtime/composition" "../runtime/retained_callbacks"
      "../runtime/execution_budget" "../registries/contracts" "../storage/state" "../plugin_api" "../errors"]
-   ^events ["./registry" "../storage/state" "../plugin_api" "../errors"]
+   ^events ["./registry" "./log" "../storage/state" "../plugin_api" "../errors"]
    ^seams ["./registry" "../runtime/composition" "../errors"]
-   ^observe ["./registry"]
+   ^observe ["./registry" "./log"]
    ^host ["./registry" "./seams" "./observe" "./events" "./invoke" "../runtime/composition"
      "../runtime/execution_budget" "../runtime/service_binding" "../plugin_api" "../errors"]
-   ^composition_bridge ["./registry" "./host" "./events" "./invoke" "../runtime/cordis_adapter"
+   ^log_catalog []
+   ^log ["./log_catalog" "../public/log_record" "../public/log_redaction"]
+   ^composition_bridge ["./registry" "./host" "./events" "./invoke" "./log" "../runtime/cordis_adapter"
      "../runtime/composition" "../storage/plugin_metadata" "../runtime/plugin_receiver"
      "../runtime/plugin_sdk" "../registries/builtins" "../storage/event_catalog"
      "../storage/state" "../plugin_api" "../errors"]})
@@ -53,7 +60,9 @@
   (let consumers ($into (module_files) [(facade_path)]))
   # Explicit acceptance-test consumers do not expand the stable facade. The
   # exception is exact and stale-checked, just like the callback migration.
-  (map_for [relative expected] in (named_test_imports)
+  (map_for [relative spec] in (named_test_imports)
+    (let expected spec/names)
+    (let expected_target ($path/join (kernel_root) $"${spec/target}.gene"))
     (let path ($path/join this_pkg/root ($to_str relative)))
     (let observed [])
     (for form in (imports (parsed path))
@@ -61,7 +70,7 @@
       (let target ($path/normalize ($path/join ($path/parent path)
         ($to_str (without_extension form/from) ".gene"))))
       (if_not ($str/starts_with? target ($to_str (kernel_root) "/")) (continue))
-      ($assert (== target ($path/join (kernel_root) "composition_bridge.gene")))
+      ($assert (== target expected_target) $"${target} != ${expected_target}")
       (for name in (imported_names form) (observed .push name)))
     ($assert (== ($order/sort observed) ($order/sort expected))
       "Remove or update the named test-import exception when its consumer changes.")

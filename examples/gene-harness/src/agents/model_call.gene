@@ -1,4 +1,5 @@
 (mod model_call)
+(import [log_event] ^from "../kernel/log")
 (import ^from "./provider_selection" [select_provider])
 (import ^from "./model_recording"
   [store_part : store_record_part load_part : load_record_part
@@ -34,16 +35,22 @@
                    ^output output = nil, ^usage usage = nil, ^error error = nil,
                    ^inventory inventory = []]
   (if ($absent? runtime/events) (return nil))
-  (append_core_event runtime/events "session" request/session
-    {^type "model/result" ^call call_id ^attempt attempt
-     ^at_ms ($os/wall_ms)
-     ^turn (?? request/turn 0) ^round (?? request/round "")
-     ^purpose (?? request/purpose "turn")
-     ^image (?? request/image nil)
-     ^outcome outcome ^final final ^timing_ms elapsed
-     ^output (result_record runtime output inventory)
-     ^usage (result_record runtime usage inventory)
-     ^error (result_record runtime error inventory)})
+  (let envelope
+    (append_core_event runtime/events "session" request/session
+      {^type "model/result" ^call call_id ^attempt attempt
+       ^at_ms ($os/wall_ms)
+       ^turn (?? request/turn 0) ^round (?? request/round "")
+       ^purpose (?? request/purpose "turn")
+       ^image (?? request/image nil)
+       ^outcome outcome ^final final ^timing_ms elapsed
+       ^output (result_record runtime output inventory)
+       ^usage (result_record runtime usage inventory)
+       ^error (result_record runtime error inventory)}))
+  (log_event "model/result" $"model call ${call_id} ${outcome}"
+    ^target {^session request/session ^round (?? request/round "") ^turn (?? request/turn 0) ^call call_id}
+    ^data {^outcome outcome ^final final ^attempt attempt ^timing_ms elapsed ^error (?? error "")
+           ^output_bytes (if ($present? output) ($str/byte_size ($to_str output)) 0)}
+    ^event {^stream request/session ^seq envelope/seq})
   (flush_event_store runtime/events)
   nil)
 

@@ -1,5 +1,6 @@
 # Typed observations and durable Harness log records.
 (mod kernel_events)
+(import [log_event] ^from "./log")
 (import [Harness] ^from "./registry")
 (import [HarnessEvent] ^from "../plugin_api")
 (import [HarnessError] ^from "../errors")
@@ -108,20 +109,27 @@
 
 (fn record_composition_change [h : Harness, id : Str, previous_digest, new_digest, revision : Int, turn : Int, operation : Str]
   (append_log_only h "composition" $"${operation} ${id} at revision ${revision}")
+  (var envelope nil)
   (if_not ($absent? h/event_store)
-    (append_core_event
-      h/event_store
-      h/event_scope
-      h/event_stream
-      {
-        ^type "composition/changed"
-        ^entry id
-        ^operation operation
-        ^previous_digest (?? previous_digest "")
-        ^new_digest (?? new_digest "")
-        ^revision revision
-        ^session h/event_stream
-        ^turn turn}))
+    (set envelope
+      (append_core_event
+        h/event_store
+        h/event_scope
+        h/event_stream
+        {
+          ^type "composition/changed"
+          ^entry id
+          ^operation operation
+          ^previous_digest (?? previous_digest "")
+          ^new_digest (?? new_digest "")
+          ^revision revision
+          ^session h/event_stream
+          ^turn turn})))
+  (log_event "composition/changed" $"${operation} ${id} at revision ${revision}"
+    ^target {^revision revision}
+    ^data {^entry id ^operation operation ^previous_digest (?? previous_digest "")
+           ^new_digest (?? new_digest "") ^turn turn}
+    ^event (if ($present? envelope) {^stream h/event_stream ^seq envelope/seq} nil))
   nil)
 
 (fn log_append [h : Harness, kind : Str, text : Str] : Any

@@ -1,6 +1,7 @@
 # Runtime-owned persistence and publisher adapters. The kernel retains only
 # callbacks; it neither imports these subsystems nor holds their live objects.
 (mod plugin_services)
+(import [log_event] ^from "../kernel/log")
 (import [append_plugin_event prepare_plugin_state plugin_state append_core_event
   record_core_state core_state core_states_with_prefix flush_event_store] ^from "../storage/state")
 (import [new_activation_services register_service] ^from "./activation_services")
@@ -39,7 +40,13 @@
     ^notification_clear (fn [owner, id, revision] (clear_source_message inbox owner id revision))
     ^emit_event (fn [owner, scope, stream, event]
       (require_events events)
-      (append_plugin_event events scope stream owner event))
+      (let envelope (append_plugin_event events scope stream owner event))
+      (if (== ($to_str event/type) "plugin/state")
+        (log_event "plugin/state" $"plugin ${owner} state changed"
+          ^target {^plugin owner}
+          ^data {^scope scope ^stream stream}
+          ^event {^stream stream ^seq envelope/seq}))
+      envelope)
     ^state (fn [owner, scope, stream]
       (if ($absent? events) nil (plugin_state events scope stream owner)))
     ^update_state (fn [owner, scope, stream, state_writer, value]
@@ -47,7 +54,11 @@
       (let writer ($thaw state_writer))
       (writer .put "at" ($to_str ($now)))
       (let event (prepare_plugin_state ^writer writer events scope stream owner value))
-      (append_core_event ^projection owner events scope stream event)
+      (let envelope (append_core_event ^projection owner events scope stream event))
+      (log_event "plugin/state" $"plugin ${owner} state changed"
+        ^target {^plugin owner}
+        ^data {^scope scope ^stream stream}
+        ^event {^stream stream ^seq envelope/seq})
       value)
     ^put_record (fn [owner, kind, key, value]
       (require_events events)

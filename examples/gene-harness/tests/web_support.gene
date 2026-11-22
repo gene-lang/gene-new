@@ -2,7 +2,7 @@
 (import ^from "./support" [source_path : package_path])
 (import ^from "../src/cli/client" [connect api discover])
 
-(fn launch_host [root : Str, ^script responses = nil, ^port port = nil, ^restart_port restart_port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true, ^recovery recovery : Bool = false]
+(fn launch_host [root : Str, ^script responses = nil, ^port port = nil, ^restart_port restart_port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true, ^recovery recovery : Bool = false, ^managed managed : Bool = false]
   ($fs/make_dir root)
   (let canonical ($fs/real_path root))
   (let entry (if supervised "src/runtime/supervisor.gene" "src/main.gene"))
@@ -19,6 +19,7 @@
     (arguments .push $"${canonical}/responses.gene"))
   (if (&& offline ($absent? responses)) (arguments .push "--offline"))
   (if recovery (arguments .push "--recovery"))
+  (if managed (arguments .push "--managed"))
   (let process
     ($os/exec_async ^timeout_ms 120000 ^max_bytes 1048576 ($os/executable_path) arguments...))
   {^root canonical ^process process})

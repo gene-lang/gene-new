@@ -1,0 +1,47 @@
+# Rule 1 of the logging design: all Harness output is a log record. The only
+# raw prints are the console writer, the CLI result presenter, the browser-link
+# presenter, the launcher's terminal/CLI presenters, and the standalone audio
+# build tool.
+(import $test [describe it])
+
+(const allowed
+  ["src/kernel/log.gene"
+   "src/main.gene"
+   "src/cli/main.gene"
+   "src/cli/notification_presenter.gene"
+   "src/website/export.gene"
+   "src/web/startup.gene"
+   "src/runtime/supervisor.gene"
+   "src/audio/build_mac.gene"])
+
+(const tokens ["$println" "$print" "$eprintln"])
+
+(fn source_files [] : Any
+  (let stream ($fs/walk ($path/join this_pkg/root "src") ^max_depth 20))
+  (var files [])
+  (try
+    (for entry in stream
+      (if (&& (== entry/kind "file") ($str/ends_with? entry/relative_path ".gene"))
+        (files .push {^path entry/path ^relative $"src/${entry/relative_path}"})))
+    ensure (stream .close))
+  files)
+
+(fn violations [] : Any
+  (let found [])
+  (for file in (source_files)
+    (let relative file/relative)
+    (if (allowed .contains? relative) (continue))
+    (let lines ($str/split ($fs/read_text file/path) "\n"))
+    (var number 0)
+    (for line in lines
+      (set number (+ number 1))
+      (if ($str/starts_with? ($str/trim line) "#") (continue))
+      (for token in tokens
+        (if ($str/contains? line token)
+          (found .push $"${relative}:${number}: ${token}")))))
+  found)
+
+(describe "raw Harness prints"
+  (it "are confined to the log writer and the presenters" []
+    (let found (violations))
+    ($assert (found .empty?) ($str/join found ", "))))

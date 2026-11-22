@@ -1,4 +1,5 @@
 (mod turn_loop)
+(import [log_event log_scope] ^from "../kernel/log")
 (import [effective_config] ^from "../runtime/settings_resolver")
 (import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
 (import ^from "./harness_turn" [evaluate_harness_turn])
@@ -79,10 +80,18 @@
         ^^ignorable})
     (if (&& item/late ($absent? loaded))
       (then
-        (append_core_event runtime/events "workspace" "workspace" payload))
+        (let envelope (append_core_event runtime/events "workspace" "workspace" payload))
+        (log_event "output/print" "console output"
+          ^target {^session session ^round round ^turn turn}
+          ^data {^bytes ($str/byte_size chunk) ^late true}
+          ^event {^stream "workspace" ^seq envelope/seq}))
       (else
         (if_not ($absent? loaded) (loaded/console/.get .push payload))
-        (transcript runtime session payload))))
+        (let envelope (transcript runtime session payload))
+        (log_event "output/print" "console output"
+          ^target {^session session ^round round ^turn turn}
+          ^data {^bytes ($str/byte_size chunk) ^late false}
+          ^event {^stream session ^seq envelope/seq}))))
   (if item/late (flush_event_store runtime/events))
   nil)
 
@@ -240,10 +249,15 @@
     (let started ($cell false))
     (fn start_record []
       (if (started .swap true) (return nil))
-      (transcript runtime session
-        {^type "turn/start" ^turn number ^round round/id ^initiator round/initiator ^card (?? round/card nil)
-         ^task_turns (+ (?? round/task_turns_base 0) count) ^task_root (?? round/task_root round/id)
-         ^continuation_mode (?? round/continuation_mode "manual")})
+      (let envelope
+        (transcript runtime session
+          {^type "turn/start" ^turn number ^round round/id ^initiator round/initiator ^card (?? round/card nil)
+           ^task_turns (+ (?? round/task_turns_base 0) count) ^task_root (?? round/task_root round/id)
+           ^continuation_mode (?? round/continuation_mode "manual")}))
+      (log_event "turn/start" $"turn ${number} started"
+        ^target {^session session ^round round/id ^turn number}
+        ^data {^initiator (?? round/initiator "") ^task_turns (+ (?? round/task_turns_base 0) count)}
+        ^event {^stream session ^seq envelope/seq})
       (round .put "task_turns" (+ (?? round/task_turns_base 0) count))
       nil)
     (fn seal_turn [terminal, errors]
@@ -262,6 +276,15 @@
         (ended .put "evidence" (evidence .assoc "line" nil)))
       (if (== reason "error") (ended .put "stage" stage))
       (let record (finish_turn runtime session ended))
+      (let error_text (if failed ($to_str (?? ended/text "")) ""))
+      (log_event "turn/end"
+        (if failed
+          $"turn ${number} ended (${reason}): ${error_text}"
+          $"turn ${number} ended (${reason})")
+        ^target {^session session ^round round/id ^turn number}
+        ^data {^reason reason ^failed failed ^stage (if failed stage "finish")
+               ^error (?? ended/text "")}
+        ^event {^stream session ^seq record/seq})
       (flush_event_store runtime/events)
       record)
     (try
@@ -410,14 +433,15 @@
       (let bindings (participant_bindings transaction))
       (set stage "response/evaluate")
       (set result
-        (evaluate_harness_turn ^session session ^round round/id ^reviewer selected ^lease lease ^^coordinated
+        (log_scope {^session session ^round round/id ^turn number}
+          (fn [] (evaluate_harness_turn ^session session ^round round/id ^reviewer selected ^lease lease ^^coordinated
           ^publication_preview (fn [session changes] (ui_publication_preview runtime session changes))
           ^turn_context {^count count ^limit limit ^collection collection}
           ^bindings bindings ^timeout_ms (?? config/response_budget/timeout_ms 600000) ^max_memory_mb (?? config/response_budget/max_memory_mb 1024) ^recall (fn [id] (recall_model_context runtime session id)) ^console_sink (fn [item] (console_output runtime session round/id number item)) ^record (fn [kind data] (if (== kind "turn/response") (record_response ^hint data/reply_hint data/patch_files) (do (record_core_state runtime/events "session" session "session/state" $"patch/${number}" {^state "completed" ^result data/result ^round round/id ^turn number}) (transcript runtime session {^type "turn/patch" ^round round/id ^turn number ^result data/result ^text data/result/text}))))
           runtime/h
           number
           runtime/root
-          text))
+          text))))
       (record_response [])
       (set stage "participants/validate_outcome")
       (set result (validate_participants transaction result))
@@ -465,8 +489,12 @@
         # A core record may have committed before its caller lost the result.
         # End-once is idempotent; no participant or seal callback is replayed.
         (start_record)
-        (finish_turn runtime session {^type "turn/end" ^turn number ^round round/id
-          ^reason "error" ^stage "participants/finish" ^text $err/.message ^!synthetic})
+        (let envelope (finish_turn runtime session {^type "turn/end" ^turn number ^round round/id
+          ^reason "error" ^stage "participants/finish" ^text $err/.message ^!synthetic}))
+        (log_event "turn/end" $"turn ${number} ended (error finalizing participants)"
+          ^target {^session session ^round round/id ^turn number}
+          ^data {^reason "error" ^stage "participants/finish"}
+          ^event {^stream session ^seq envelope/seq})
         (transcript runtime session {^type "trace" ^^ignorable
           ^text $"Turn finalization failed: ${$err/.message}"})
         (flush_event_store runtime/events)

@@ -6,17 +6,28 @@
 
 (mod log_redaction)
 
-(fn redact_secrets [root : Str, text : Str] : Str
-  (var result text)
+(fn read_secrets [root : Str] : (List Str)
+  # Read once at host setup, then reuse. A turn task must not perform file I/O
+  # just to log a line.
+  (let secrets [])
   (let secret
     (try ($str/trim ($fs/read_text $"${root}/.gene-harness/web_secret")) catch Error ""))
-  (if (!= secret "") (set result ($str/join ($str/split result secret) "[redacted]")))
+  (if (!= secret "") (secrets .push secret))
   (let credentials
     (try
       ($serde/read_data ($fs/read_text $"${root}/.gene-harness/cli_cookie"))
     catch Error
       nil))
   (for value in [(?? credentials/cookie nil) (?? credentials/csrf nil)]
-    (if (&& (== ($head value) Str) (!= value ""))
-      (set result ($str/join ($str/split result value) "[redacted]"))))
+    (if (&& (== ($head value) Str) (!= value "")) (secrets .push value)))
+  secrets)
+
+(fn redact_text [text : Str, secrets] : Str
+  (var result text)
+  (for secret in (?? secrets [])
+    (if (&& (== ($head secret) Str) (!= secret ""))
+      (set result ($str/join ($str/split result secret) "[redacted]"))))
   result)
+
+(fn redact_secrets [root : Str, text : Str] : Str
+  (redact_text text (read_secrets root)))

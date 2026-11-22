@@ -1,0 +1,368 @@
+# The Harness log facade.
+#
+# One process-global state holds the run id, sequence, level table, bounded
+# ring and console writer. It exists before a Harness, workspace or plugin
+# registry does, because startup diagnostics happen first. `log_start` runs at
+# process entry; `log_configure` selects the writer once options are parsed.
+#
+# A log call never throws into its caller. An unknown core type, a missing
+# required target key or an unbounded record becomes a `log/invalid` record
+# instead. Specs reset the facade in strict mode, where the same conditions
+# raise so a broken call fails the test rather than disappearing.
+
+(mod log)
+
+(import [make_record bound_record serialize_record serialize_line log_line_budget render_text]
+  ^from "../public/log_record")
+(import [read_secrets redact_text] ^from "../public/log_redaction")
+(import [known_type? default_level missing_target log_levels]
+  ^from "./log_catalog")
+
+(const ring_limit 2048)
+
+(const log_modes ["pending" "host_supervised" "host_direct" "recovery" "cli" "launcher" "silent"])
+
+(var ^^private state ($cell nil))
+
+(fn ^^private new_run [] : Str
+  (try ($crypto/random_hex 4) catch Throwable "00000000"))
+
+(fn ^^private fresh_state [^strict strict : Bool = false, ^quiet quiet : Bool = false] : Any
+  {^run (new_run) ^seq 0 ^mode "pending" ^level "info" ^levels {}
+   ^root "" ^workspace "" ^ring [] ^strict strict ^quiet quiet
+   ^subscribers [] ^next_subscriber 0
+   ^redactions [] ^redactions_root "" ^write_failures 0})
+
+(fn ^^private current [] : Any
+  (if ($absent? (state .get)) (state .set (fresh_state)))
+  (state .get))
+
+(fn ^^private level_rank [level : Str] : Int
+  (match level
+    (when "error" 0)
+    (when "warn" 1)
+    (when "info" 2)
+    (when "debug" 3)
+    (when "trace" 4)
+    (else 2)))
+
+(fn ^^private level_valid? [level] : Bool
+  (&& (== ($head level) Str) (log_levels .contains? level)))
+
+(fn ^^private family [type : Str] : Str
+  (let parts ($str/split type "/"))
+  (if parts/.empty? type parts/0))
+
+(fn ^^private allows? [st, type : Str, level : Str] : Bool
+  (let threshold (?? ((?? st/levels {}) .get (family type)) st/level "info"))
+  (<= (level_rank level) (level_rank threshold)))
+
+(fn ^^private close_subscribers [st] : Nil
+  (for subscriber in (?? st/subscribers [])
+    (subscriber .put "closed" true)
+    (try (subscriber/channel .close) catch Throwable nil)))
+
+(fn log_start [] : Nil
+  (if ($present? (state .get)) (close_subscribers (state .get)))
+  (state .set (fresh_state)))
+
+(fn log_reset [^strict strict : Bool = false, ^quiet quiet : Bool = false] : Nil
+  (if ($present? (state .get)) (close_subscribers (state .get)))
+  (state .set (fresh_state ^strict strict ^quiet quiet)))
+
+(fn log_configure [^mode mode = "pending", ^root root = "", ^workspace workspace = "",
+                   ^level level = "info", ^levels levels = {}] : Nil
+  (let st (current))
+  (st .put "mode" (if (log_modes .contains? mode) mode "pending"))
+  (if (!= root st/root)
+    (do (st .put "root" root) (st .put "redactions" [])
+        (st .put "redactions_root" "")))
+  (st .put "workspace" workspace)
+  (if (level_valid? level) (st .put "level" level))
+  (if (== ($head levels) Map) (st .put "levels" levels))
+  nil)
+
+(fn log_refresh_redactions [] : Nil
+  (let st (current))
+  (if (== st/root "") (return nil))
+  (st .put "redactions" (read_secrets st/root))
+  (st .put "redactions_root" st/root)
+  nil)
+
+(fn log_subscribe [^type type : Str = "", ^target target = nil, ^capacity capacity : Int = 256] : Any
+  (let st (current))
+  (let id ($str/join ["log-" ($to_str (?? st/next_subscriber 0))] ""))
+  (let size (if (< capacity 1) (then 1) (elif (> capacity 4096) 4096) (else capacity)))
+  (let channel ($channel ^capacity size))
+  (st .put "next_subscriber" (+ (?? st/next_subscriber 0) 1))
+  (let subscribers ($into (?? st/subscribers []) []))
+  (subscribers .push {^id id ^type type ^target target ^channel channel ^capacity capacity
+                       ^dropped 0 ^dropped_total 0 ^from 0 ^to 0 ^last nil ^closed false})
+  (st .put "subscribers" subscribers)
+  {^id id ^channel channel})
+
+(fn log_unsubscribe [id : Str] : Nil
+  (let st (current))
+  (var kept [])
+  (for subscriber in (?? st/subscribers [])
+    (if (== subscriber/id id)
+      (do
+        (subscriber .put "closed" true)
+        (try (subscriber/channel .close) catch Throwable nil))
+      (kept .push subscriber)))
+  (st .put "subscribers" kept)
+  nil)
+
+(fn log_subscription [id : Str] : Any
+  (let st (current))
+  (for subscriber in (?? st/subscribers [])
+    (if (== subscriber/id id)
+      (return {^id id ^type subscriber/type ^capacity (?? subscriber/capacity 0)
+               ^dropped (?? subscriber/dropped 0)
+               ^dropped_total (?? subscriber/dropped_total 0)
+               ^from (?? subscriber/from 0) ^to (?? subscriber/to 0)
+               ^closed subscriber/closed})))
+  nil)
+
+(fn log_gap_record [message] : Any
+  (let gap (?? message/gap nil))
+  (if ($absent? gap) (return nil))
+  (let record (?? message/record {}))
+  (make_record (?? record/run "") (?? record/seq 0) ($os/wall_ms)
+    "warn" "log/dropped" (?? record/target {^workspace "unknown"})
+    $"dropped ${gap/count} log records"
+    ^data gap))
+
+(fn log_set_levels [level : Str, levels] : Nil
+  (let st (current))
+  (if (level_valid? level) (st .put "level" level))
+  (if (== ($head levels) Map) (st .put "levels" levels))
+  nil)
+
+(fn ^^private ambient_target [] : Any
+  (let context ($runtime/context))
+  (if (&& ($present? context) (== ($head context) Map))
+    (?? context/log_target nil)
+    nil))
+
+(fn ^^private map_merge [base, overlay] : Any
+  (var merged {})
+  (if ($present? base) (map_for [key value] in base (merged .put key value)))
+  (if ($present? overlay) (map_for [key value] in overlay (merged .put key value)))
+  merged)
+
+(fn ^^private effective_target [st, target] : Any
+  (var merged {^workspace (if (== st/workspace "") "unknown" st/workspace)})
+  (set merged (map_merge merged (ambient_target)))
+  (set merged (map_merge merged target))
+  (if ($absent? merged/workspace)
+    (merged .put "workspace" (if (== st/workspace "") "unknown" st/workspace)))
+  merged)
+
+(fn ^^private redact_value [secrets, value] : Any
+  (let kind ($head value))
+  (if (== kind Str)
+    (return (redact_text value secrets)))
+  (if (== kind Map)
+    (do
+      (var copy {})
+      (map_for [key item] in value (copy .put key (redact_value secrets item)))
+      (return copy)))
+  (if (== kind List)
+    (return ($map value (fn [item] (redact_value secrets item)))))
+  value)
+
+(fn ^^private redact_record [st, record] : Any
+  (if (== st/root "") (return record))
+  (if (|| (st/redactions .empty?) (!= st/redactions_root st/root))
+    (do (log_refresh_redactions)
+        (if (st/redactions .empty?) (return record))))
+  (var copy {})
+  (map_for [key value] in record (copy .put key (redact_value st/redactions value)))
+  copy)
+
+(fn ^^private ring_push [st, record] : Nil
+  (let ring st/ring)
+  (ring .push record)
+  (if (> ring/.size ring_limit)
+    (do
+      (var kept [])
+      (var index (- ring/.size ring_limit))
+      (while (< index ring/.size)
+        (kept .push ring/%index)
+        (set index (+ index 1)))
+      (st .put "ring" kept))))
+
+(fn ^^private write_text [st, text : Str] : Nil
+  (if (|| st/quiet (== st/mode "silent")) (return nil))
+  (let mode st/mode)
+  (try
+    ($runtime/with_context nil
+      (fn [] : Nil
+        (if (|| (== mode "cli") (== mode "pending"))
+          ($eprintln text)
+          ($println text))))
+    catch Throwable
+      (st .put "write_failures" (+ (?? st/write_failures 0) 1)))
+  nil)
+
+(fn ^^private write_json [st, record] : Nil
+  (if (|| st/quiet (== st/mode "silent")) (return nil))
+  (try
+    ($runtime/with_context nil
+      (fn [] : Nil
+        ($print (serialize_line record))
+        ($io/flush_stdout)))
+    catch Throwable
+      (st .put "write_failures" (+ (?? st/write_failures 0) 1)))
+  nil)
+
+(fn ^^private deliver_subscribers [st, record] : Nil
+  (if ((?? st/subscribers []) .empty?) (return nil))
+  (for subscriber in st/subscribers
+    (if subscriber/closed (continue))
+    (if_not (&& (type_matches? ($to_str record/type) subscriber/type)
+                (target_matches? record subscriber/target))
+      (continue))
+    (let dropped (?? subscriber/dropped 0))
+    (let gap (if (> dropped 0)
+      {^count dropped ^from (?? subscriber/from 0) ^to (?? subscriber/to 0)}
+      nil))
+    (let envelope ($freeze {^kind "record" ^record record ^gap gap}))
+    (if (subscriber/channel .try_send envelope)
+      (do
+        (subscriber .put "dropped" 0)
+        (subscriber .put "from" 0)
+        (subscriber .put "to" 0)
+        (subscriber .put "last" record))
+      (do
+        (subscriber .put "dropped" (+ dropped 1))
+        (subscriber .put "dropped_total" (+ (?? subscriber/dropped_total 0) 1))
+        (if (== (?? subscriber/from 0) 0)
+          (subscriber .put "from" (?? record/seq 0)))
+        (subscriber .put "to" (?? record/seq 0)))))
+  nil)
+
+(fn ^^private emit_record [st, record] : Nil
+  (let bounded (bound_record record))
+  (ring_push st bounded)
+  (if (== st/mode "host_supervised")
+    (write_json st bounded)
+    (write_text st (render_text bounded)))
+  (try (deliver_subscribers st bounded) catch Throwable nil)
+  nil)
+
+(fn ^^private emit_invalid [st, attempted : Str, target, reason : Str] : Nil
+  (var merged {^workspace (if (== st/workspace "") "unknown" st/workspace)})
+  (try (set merged (effective_target st target)) catch Throwable nil)
+  (let message ($str/slice_bytes $"invalid log call: ${reason}" 0 512))
+  (let record
+    (make_record st/run (+ st/seq 1) ($os/wall_ms) "error" "log/invalid"
+      merged message
+      ^data {^type attempted}))
+  (st .put "seq" (+ st/seq 1))
+  (emit_record st (redact_record st record)))
+
+(fn ^^private compute_data [data] : Any
+  (if ($absent? data) (return nil))
+  (if (== ($to_str ($head data)) "(fn)")
+    (return (try (data) catch Throwable {^error "log data callback failed"})))
+  data)
+
+(fn ^^private log_event_inner [st, type : Str, message : Str, target = nil, data = nil,
+                     level : Str = "", event = nil] : Nil
+  (let merged (effective_target st target))
+  (let attempts (try
+    (do
+      (if (|| (!= ($head type) Str) (! ($str/contains? type "/")))
+        (fail (Error ^_msg "a log type is family/name")))
+      (if_not (known_type? type)
+        (fail (Error ^_msg $"unknown log type ${type}")))
+      (let missing (missing_target type merged))
+      (if (!= missing "")
+        (fail (Error ^_msg $"${type} requires target key ${missing}")))
+      nil)
+    catch Error $err/.message))
+  (if ($present? attempts)
+    (do
+      (if st/strict (fail (Error ^_msg attempts)))
+      (emit_invalid st type target attempts)
+      (return nil)))
+  (let chosen (if (== level "") (default_level type) level))
+  (if_not (level_valid? chosen)
+    (do
+      (if st/strict (fail (Error ^_msg $"unknown log level ${chosen}")))
+      (emit_invalid st type target $"unknown log level ${chosen}")
+      (return nil)))
+  (if_not (allows? st type chosen) (return nil))
+  (let record
+    (make_record st/run (+ st/seq 1) ($os/wall_ms) chosen type
+      merged message
+      ^data (compute_data data) ^event event))
+  (st .put "seq" (+ st/seq 1))
+  (emit_record st (redact_record st record))
+  nil)
+
+# The public call never raises except in strict mode. Validation problems are
+# handled inside; an unexpected failure (a malformed target, a value the JSON
+# writer cannot serialize) still becomes a bounded invalid record.
+(fn log_event [type : Str, message : Str, ^target target = nil, ^data data = nil,
+               ^level level = "", ^event event = nil] : Nil
+  (let st (current))
+  (try
+    (log_event_inner st type message target data level event)
+    catch Error
+      (if st/strict
+        (fail $err)
+        (do
+          (var reason $err/.message)
+          (try (emit_invalid st type target reason) catch Throwable nil)
+          nil))
+    catch Throwable
+      (if st/strict
+        (fail $err)
+        (do
+          (var reason $err/.message)
+          (try (emit_invalid st type target reason) catch Throwable nil)
+          nil)))
+  nil)
+
+(fn log_scope [target, body] : Any
+  (let context ($runtime/context))
+  (var merged {})
+  (if (&& ($present? context) (== ($head context) Map))
+    (map_for [key value] in context (merged .put key value)))
+  (let ambient (?? merged/log_target nil))
+  (merged .put "log_target" (map_merge ambient target))
+  ($runtime/with_context merged body))
+
+(fn ^^private type_matches? [record_type : Str, wanted : Str] : Bool
+  (if (== wanted "") (return true))
+  (if ($str/ends_with? wanted "/*")
+    (return ($str/starts_with? record_type ($str/slice_bytes wanted 0 (- ($str/byte_size wanted) 2)))))
+  (== record_type wanted))
+
+(fn ^^private target_matches? [record, target] : Bool
+  (if ($absent? target) (return true))
+  (let actual (?? record/target {}))
+  (var matched true)
+  (map_for [key value] in target
+    (if (!= ($to_str (?? (actual .get key) nil)) ($to_str value)) (set matched false)))
+  matched)
+
+(fn log_recent [^limit limit : Int = 50, ^type type : Str = "", ^target target = nil] : Any
+  (let st (current))
+  (let ring st/ring)
+  (let matched ($filter ring (fn [record]
+    (&& (type_matches? record/type type) (target_matches? record target)))))
+  (let start (if (> matched/.size limit) (- matched/.size limit) 0))
+  (var result [])
+  (var index start)
+  (while (< index matched/.size)
+    (result .push matched/%index)
+    (set index (+ index 1)))
+  result)
+
+(fn log_run [] : Str
+  (let st (current))
+  st/run)

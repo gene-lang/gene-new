@@ -20,6 +20,7 @@
 # Cursors are opaque JSON strings; callers must treat them as token values.
 
 (mod log_tail)
+(import [parse_record render_text] ^from "./log_record")
 
 (fn int_or [value : Any, fallback : Int] : Int
   (if ($absent? value) (return fallback))
@@ -155,7 +156,7 @@
   {^text ($str/join [head " … [line truncated]"] "") ^truncated true})
 
 (fn collect [raw : Bytes, segment : Any, start : Int, max_bytes : Int,
-             max_line : Int] : Any
+             max_line : Int, redact : (Fn [Str] Str)] : Any
   # Lines from `start`, which must be a line boundary (or the segment end).
   # The cursor stops before the incomplete tail, so the next poll can carry it.
   (if (! segment/ok)
@@ -172,6 +173,7 @@
     (return {^ok true ^lines [] ^bytes 0 ^end start ^consumed true
              ^truncated 0 ^skipped 0}))
   (let starts segment/starts)
+  (var raws [])
   (var index 0)
   (var found -1)
   (var count ($size starts))
@@ -191,18 +193,20 @@
   (var full false)
   (while (< at line_count)
     (let line segment/lines/%at)
-    (let rendered (render_line line max_line))
+    (let safe (redact line))
+    (let rendered (render_line safe max_line))
     (let cost (+ ($str/byte_size rendered/text) 1))
-    (let source_bytes (+ ($str/byte_size line) 1))
+    (let source_bytes (+ ($str/byte_size safe) 1))
     (if (&& (> ($size lines) 0) (> (+ bytes cost) max_bytes))
       (do (set full true) (set at line_count))
       (do
         (if rendered/truncated
           (do
             (set truncated (+ truncated 1))
-            (set skipped (+ skipped (- ($str/byte_size line) ($str/byte_size
+            (set skipped (+ skipped (- ($str/byte_size safe) ($str/byte_size
               ($str/slice_bytes rendered/text 0 max_line)))))))
         (lines .push rendered/text)
+        (raws .push safe)
         (set bytes (+ bytes cost))
         (set at (+ at 1)))))
   # Derive the exact end from the last consumed line instead of the render size.
@@ -211,12 +215,12 @@
       (let last (+ found (- ($size lines) 1)))
       (let line_end (+ segment/starts/%last (+ ($str/byte_size segment/lines/%last) 1)))
       (set end line_end)))
-  {^ok true ^lines lines ^bytes bytes ^end end
+  {^ok true ^lines lines ^raw_lines raws ^bytes bytes ^end end
    ^consumed (== (+ found ($size lines)) line_count)
    ^truncated truncated ^skipped skipped})
 
 (fn tail_start [segment : Any, initial_lines : Int, max_bytes : Int,
-                max_line : Int] : Int
+                max_line : Int, redact : (Fn [Str] Str)] : Int
   # Start of the newest lines that fit the initial byte and count budget.
   (let lines segment/lines)
   (let starts segment/starts)
@@ -228,7 +232,7 @@
   (var full false)
   (while (&& (>= index 0) (! full))
     (let line lines/%index)
-    (let rendered (render_line line max_line))
+    (let rendered (render_line (redact line) max_line))
     (let cost (+ ($str/byte_size rendered/text) 1))
     (if (&& (< first count)
              (|| (>= (- count first) initial_lines)
@@ -247,7 +251,7 @@
 
 (fn empty_response [state : Str, message : Str] : Any
   (var no_lines : (List Str) [])
-  {^ok true ^state state ^lines no_lines ^cursor "" ^gap "" ^truncated 0
+  {^ok true ^state state ^lines no_lines ^raw_lines [] ^cursor "" ^gap "" ^truncated 0
    ^skipped 0 ^message message})
 
 (fn finish [source : Str, segment_name : Str, raw : Bytes, segment : Any,
@@ -257,10 +261,14 @@
   (let redacted (redact joined))
   (var lines : (List Str) [])
   (if (!= joined "")
-    (set lines ($str/split redacted "\n")))
+    (set lines ($map ($str/split redacted "\n")
+      (fn [line]
+        (let record (try (parse_record line) catch Error nil))
+        (if ($present? record) (render_text record) line)))))
   {^ok true
    ^state (if (== gap "") "ok" "gap")
    ^lines lines
+   ^raw_lines (?? payload/raw_lines [])
    ^cursor (encode_cursor source segment_name payload/end
                            (prefix_digest raw payload/end))
    ^gap gap
@@ -304,8 +312,8 @@
 
   (if ($absent? cursor)
     (do
-      (let start (tail_start parsed initial_lines max_bytes max_line))
-      (let payload (collect raw parsed start max_bytes max_line))
+      (let start (tail_start parsed initial_lines max_bytes max_line redact))
+      (let payload (collect raw parsed start max_bytes max_line redact))
       (if (! payload/ok)
         (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
       (return (finish source segment_name raw parsed payload "" redact
@@ -323,9 +331,12 @@
                      active_raw : Bytes, active : Any, redact : (Fn [Str] Str),
                      ^note note : Str] : Any
   (var lines : (List Str) [])
+  (var raws [])
   (for line in first/lines (lines .push line))
   (for line in second/lines (lines .push line))
-  (let payload {^lines lines ^bytes (+ first/bytes second/bytes)
+  (for line in (?? first/raw_lines []) (raws .push line))
+  (for line in (?? second/raw_lines []) (raws .push line))
+  (let payload {^lines lines ^raw_lines raws ^bytes (+ first/bytes second/bytes)
                 ^end second/end ^consumed second/consumed
                 ^truncated (+ first/truncated second/truncated)
                 ^skipped (+ first/skipped second/skipped)})
@@ -337,7 +348,7 @@
   # yet. Deliver the complete lines, but keep the cursor on the partial tail so
   # the next poll can join and redact the whole line.
   (let payload
-    {^lines first/lines ^bytes first/bytes ^end previous/incomplete
+    {^lines first/lines ^raw_lines first/raw_lines ^bytes first/bytes ^end previous/incomplete
      ^consumed false ^truncated first/truncated ^skipped first/skipped})
   (finish source "previous" previous_raw previous payload "" redact
           ^note "waiting for the rest of a rotated line"))
@@ -363,8 +374,11 @@
   (let parts ($str/split joined_text "\n"))
   (let rendered (render_line parts/0 max_line))
   (var lines : (List Str) [])
+  (var raws [])
   (for line in first/lines (lines .push line))
+  (for line in (?? first/raw_lines []) (raws .push line))
   (lines .push rendered/text)
+  (raws .push (redact parts/0))
   (var used (+ first/bytes (+ ($str/byte_size rendered/text) 1)))
   (var truncated (+ first/truncated (if rendered/truncated 1 0)))
   (var skipped (+ first/skipped
@@ -379,12 +393,13 @@
   (let line_count ($size active/lines))
   (var full false)
   (while (&& (< at line_count) (! full))
-    (let rendered_line (render_line active/lines/%at max_line))
+    (let rendered_line (render_line (redact active/lines/%at) max_line))
     (let cost (+ ($str/byte_size rendered_line/text) 1))
     (if (> (+ used cost) max_bytes)
       (set full true)
       (do
         (lines .push rendered_line/text)
+        (raws .push (redact active/lines/%at))
         (set used (+ used cost))
         (set kept (+ kept 1))
         (if rendered_line/truncated
@@ -399,7 +414,7 @@
       (let last (- kept 1))
       (set end (+ active/starts/%last (+ ($str/byte_size active/lines/%last) 1)))))
   (let payload
-    {^lines lines ^bytes used ^end end ^consumed (== kept line_count)
+    {^lines lines ^raw_lines raws ^bytes used ^end end ^consumed (== kept line_count)
      ^truncated truncated ^skipped skipped})
   (finish source "active" active_raw active payload "" redact
           ^note "joined a line split by rotation"))
@@ -419,7 +434,7 @@
   (if (&& ($present? active_raw) active/ok)
     (do
       (let second (collect active_raw active 0
-        (remaining_budget max_bytes first/bytes) max_line))
+        (remaining_budget max_bytes first/bytes) max_line redact))
       (if (! second/ok)
         (return (empty_response "unreadable"
           (text_or second/message "the host log is unreadable"))))
@@ -432,7 +447,7 @@
                              active_raw : Bytes, active : Any, cursor : Any,
                              max_bytes : Int, max_line : Int,
                              redact : (Fn [Str] Str)] : Any
-  (let first (collect previous_raw previous cursor/offset max_bytes max_line))
+  (let first (collect previous_raw previous cursor/offset max_bytes max_line redact))
   (if (! first/ok)
     (return (empty_response "unreadable"
       (text_or first/message "the previous host log is unreadable"))))
@@ -445,7 +460,7 @@
                    redact : (Fn [Str] Str)] : Any
   (if (prefix_matches active_raw active cursor/offset cursor/prefix)
     (do
-      (let payload (collect active_raw active cursor/offset max_bytes max_line))
+      (let payload (collect active_raw active cursor/offset max_bytes max_line redact))
       (if (! payload/ok)
         (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
       (return (finish source "active" active_raw active payload "" redact))))
@@ -477,8 +492,8 @@
   (var parsed active)
   (if ($absent? active_raw)
     (do (set segment_name "previous") (set raw previous_raw) (set parsed previous)))
-  (let start (tail_start parsed initial_lines max_bytes max_line))
-  (let payload (collect raw parsed start max_bytes max_line))
+  (let start (tail_start parsed initial_lines max_bytes max_line redact))
+  (let payload (collect raw parsed start max_bytes max_line redact))
   (if (! payload/ok)
     (return (empty_response "unreadable" (text_or payload/message "the host log is unreadable"))))
   (finish source segment_name raw parsed payload

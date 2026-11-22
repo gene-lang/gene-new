@@ -351,8 +351,11 @@ non-nil context keeps spawned work on the root lane.
 
 When the context is a map with a callable `^output` field, `$print` and
 `$println` call that sink with the formatted text, including the newline for
-`$println`. Without a sink they write to the ordinary process output. Contexts
-may contain Cells for application lifecycle state; the runtime does not close
+`$println`. Without a sink they write to the ordinary process output.
+`$eprint` and `$eprintln` always write to the process standard error, flush
+immediately and ignore the context's output sink, so diagnostics stay out of a
+command's `--json` result. Contexts may contain Cells for application
+lifecycle state; the runtime does not close
 them automatically. An application can mark its shared turn state closed and
 reject later operations while continuing to route detached task output.
 

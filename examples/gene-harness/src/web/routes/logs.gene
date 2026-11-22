@@ -1,0 +1,93 @@
+# Core host-log route. Owner-authenticated through common admission; reads the
+# same retained host.log segments as the editor Logs tab, parses records, and
+# applies type/target/level/since filters without losing the cursor.
+(mod logs_routes)
+(import [api_root] ^from "../contract.gene")
+(import [field number response] ^from "../request")
+(import [read_log] ^from "../../public/log_tail")
+(import [parse_record] ^from "../../public/log_record")
+(import [redact_secrets] ^from "../../public/log_redaction")
+
+(const target_keys
+  ["workspace" "session" "round" "turn" "call" "command" "input" "plugin" "view"
+   "revision" "trigger" "delegation" "channel" "request" "client"])
+
+(fn level_rank [level : Str] : Int
+  (match level
+    (when "error" 0)
+    (when "warn" 1)
+    (when "info" 2)
+    (when "debug" 3)
+    (when "trace" 4)
+    (else 2)))
+
+(fn type_matches? [actual : Str, wanted : Str] : Bool
+  (if (== wanted "") (return true))
+  (if ($str/ends_with? wanted "/*")
+    (return ($str/starts_with? actual ($str/slice_bytes wanted 0 (- ($str/byte_size wanted) 2)))))
+  (== actual wanted))
+
+(fn requested_filters [params] : Any
+  (let type (field ^default "" params "type"))
+  (let level (field ^default "" params "level"))
+  (let since (number ^default "0" params "since"))
+  (let targets {})
+  (for key in target_keys
+    (let value (field ^default "" params key))
+    (if (!= value "") (targets .put key value)))
+  {^type type ^level level ^since since ^targets targets
+   ^active (|| (!= type "") (!= level "") (> since 0) (! targets/.empty?))})
+
+(fn matches? [record, filters] : Bool
+  (if_not (type_matches? ($to_str record/type) filters/type) (return false))
+  (if (&& (!= filters/level "")
+          (> (level_rank ($to_str record/level)) (level_rank filters/level)))
+    (return false))
+  (if (> filters/since 0)
+    (let at (?? record/time_ms 0))
+    (if (|| (!= ($head at) Int) (< at filters/since)) (return false)))
+  (let target (?? record/target {}))
+  (map_for [key value] in filters/targets
+    (if (!= ($to_str (?? (target .get key) "")) value) (return false)))
+  true)
+
+(fn logs_request [context, request, parts]
+  (if_not (&& (== request/method "GET") (== request/path $"${(api_root)}/logs"))
+    (return nil))
+  (let host context/host)
+  (let root host/runtime/root)
+  (let params request/params)
+  (let filters (requested_filters params))
+  (let filtered filters/active)
+  (let source (field ^default "host" params "source"))
+  (if (!= source "host") (return (response 400 {^code "invalid_request" ^message $"unknown log source ${source}"})))
+  (let options
+    {^max_bytes (if filtered 1048576 (number ^default "65536" params "max_bytes"))
+     ^max_line_bytes (number ^default "8192" params "max_line_bytes")
+     ^initial_lines (if filtered 1000 (number ^default "200" params "lines"))})
+  (let result
+    (read_log source
+      ($path/join root ".gene-harness/host.log")
+      ($path/join root ".gene-harness/host.log.1")
+      (field ^default "" params "cursor")
+      options
+      (fn [text : Str] : Str (redact_secrets root text))))
+  (if (|| (!= ($head result) Map) (! result/ok)) (return (response 200 result)))
+  (let lines result/lines)
+  (let raws (?? result/raw_lines []))
+  (var selected_lines [])
+  (var selected_records [])
+  (var index 0)
+  (while (< index lines/.size)
+    (let raw (if (< index raws/.size) raws/%index ""))
+    (let record (if (== raw "") nil (try (parse_record (redact_secrets root raw)) catch Error nil)))
+    (if (|| (! filtered) (&& ($present? record) (matches? record filters)))
+      (then
+        (selected_lines .push lines/%index)
+        (if ($present? record) (selected_records .push record))))
+    (set index (+ index 1)))
+  (result .put "lines" selected_lines)
+  (result .put "records" selected_records)
+  (result .put "filtered" (if filtered (- lines/.size selected_lines/.size) 0))
+  (result .delete "raw_lines")
+  (response 200 result))

@@ -1,6 +1,7 @@
 (import $test [describe it run])
 (import [read_log] ^from "../../../src/public/log_tail")
 (import [redact_secrets] ^from "../../../src/public/log_redaction")
+(import [make_record serialize_record] ^from "../../../src/public/log_record")
 
 # The cursor contract from tmp/gene-web-editor.md: byte offsets on line
 # boundaries, a prefix digest per segment, carried incomplete lines, rotation
@@ -229,6 +230,40 @@
     ($assert ($str/contains? first/lines/0 "line truncated"))
     ($assert (== first/lines/1 "next"))
     ($assert (== first/truncated 1))
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
+  (it "redacts a line before truncating it" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    (var line "")
+    (var index 0)
+    (while (< index 90)
+      (set line ($to_str line "x"))
+      (set index (+ index 1)))
+    ($fs/write_text active ($to_str line "SECRET" "yyyyyyyyyyyyyyyyyyyy\n"))
+    (let redact (fn [value : Str] : Str
+      ($str/join ($str/split value "SECRET") "[redacted]")))
+    (let first (read active previous "" ^max_bytes 4096 ^max_line 100 ^redact redact))
+    ($assert (== ($size first/lines) 1) ($to_str first))
+    ($assert (! ($str/contains? first/lines/0 "SECRET")) "a truncated secret prefix leaked")
+    ($assert ($str/contains? first/lines/0 "[redacted]") ($to_str first/lines/0))
+    ($fs/remove active)
+    ($fs/remove_dir dir))
+
+  (it "renders a valid record and leaves a raw line alone" []
+    (let dir (new_dir))
+    (let active ($path/join dir "host.log"))
+    (let previous ($path/join dir "host.log.1"))
+    (let record (make_record "run" 1 1000 "info" "host/ready" {^workspace "w"} "ready" ^data {^origin "http://x"}))
+    ($fs/write_text active ($to_str (serialize_record record) "\nnot a record\n"))
+    (let first (read active previous ""))
+    ($assert (== ($size first/lines) 2) ($to_str first))
+    ($assert ($str/contains? first/lines/0 "host/ready") ($to_str first/lines/0))
+    ($assert ($str/contains? first/lines/0 "ready") ($to_str first/lines/0))
+    ($assert (! ($str/contains? first/lines/0 "schema")) ($to_str first/lines/0))
+    ($assert (== first/lines/1 "not a record") ($to_str first/lines/1))
     ($fs/remove active)
     ($fs/remove_dir dir))
 

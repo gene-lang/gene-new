@@ -43,6 +43,7 @@ workspace/h                         # the kernel Harness: registries, plugins, e
 workspace/runtime                   # the HarnessRuntime
 workspace/sessions                  # the SessionManager
 workspace/services/values/commands  # any host service
+workspace/.logs                     # in-process log ring, filtered by type/target
 workspace/workspace                 # the composition store
 session/id
 session/.state                      # the live SessionState
@@ -76,6 +77,7 @@ directly is `undefined symbol`.
 
 ```gene
 (workspace .sessions ^q "audit")
+(workspace/.logs ^type "model/*" ^target {^session "s"})
 (let other (workspace .session id))
 (session .rename "Audit")
 (other .submit "Run the checks.")

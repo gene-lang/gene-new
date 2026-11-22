@@ -80,6 +80,13 @@
       (let token ($crypto/random_hex 16))
       (record/subscriptions .put token subscription)
       ($freeze_shallow (PublicSubscription ^host_token self/token ^token token)))
+    (message subscribe_log [selector, handler] : Any
+      (let record (host_record self/token))
+      (record/host .PluginHost:subscribe_log selector (fn [logged]
+        (handler ($freeze_shallow logged)))))
+    (message log [type : Str, message : Str, ^level level : Str = "info", ^data data = nil, ^event event = nil] : Nil
+      (let host (delegate self))
+      (host .PluginHost:log type message ^level level ^data data ^event event))
     (message emit_event [name : Str, payload] : Any
       (let host (delegate self)) (host .PluginHost:emit_event name payload))
     (message state [^session session = nil] : Any
