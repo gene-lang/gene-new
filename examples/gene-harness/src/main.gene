@@ -1,4 +1,4 @@
-(import [log_start log_configure] ^from "./kernel/log")
+(import [log_start log_configure log_set_workspace] ^from "./kernel/log")
 (import ^from "./cli/options" [argument_values parse_options problem])
 (import ^from "./cli/main" [run_client usage])
 (import ^from "./web/server" [main : serve_web])
@@ -50,7 +50,9 @@
       ($println (usage))
       (return 0))
     (if (== parsed/command "manager")
-      (parsed/options .put "workspace" (initialize_manager_workspace ^root parsed/options/root)))
+      (do
+        (parsed/options .put "workspace" (initialize_manager_workspace ^root parsed/options/root))
+        (log_set_workspace parsed/options/workspace parsed/options/workspace)))
     (if_yes (["web" "manager"] .contains? parsed/command)
       (if (> parsed/words/.size 1) (problem "web accepts host options, not additional commands."))
       (map_for [key value] in parsed/options

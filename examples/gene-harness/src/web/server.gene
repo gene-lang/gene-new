@@ -1,5 +1,5 @@
 (mod harness_web_server)
-(import [log_event log_refresh_redactions] ^from "../kernel/log")
+(import [log_event log_refresh_redactions log_set_workspace] ^from "../kernel/log")
 (import [api_root api_version] ^from "./contract.gene")
 (import [ServiceError DelegationError] ^from "../plugin_api")
 
@@ -126,6 +126,8 @@
   (if (&& offline ($absent? selected_profile))
     (set selected_profile (offline_profile)))
   (let root (prepare_workspace_root ^root workspace))
+  (log_set_workspace root root)
+  (log_refresh_redactions)
   (let ownership (acquire_workspace_lock ^wait_ms 250 root this_mod/.path))
   (var server nil)
   (var host nil)
@@ -149,6 +151,7 @@
   # Distinct names prevent local servers from overwriting each other's cookies.
   (var cookie_name $"gene_harness_session_${port}")
   (let auth (open_auth host/runtime/state_root))
+  (log_refresh_redactions)
   (var push (new_push_hub host))
 
   (fn authorized [request]
@@ -222,6 +225,7 @@
     (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/reset"))
       (reset_auth auth)
       (log_refresh_redactions)
+      (log_event "host/auth_reset" "owner credentials rotated" ^target {^workspace root})
       (disconnect_peers push)
       (publish_link host/runtime/state_root origin auth/secret)
       (return (response 200 {^^ok ^message "Owner credential reset. Use gene-harness link to reconnect."})))

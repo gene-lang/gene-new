@@ -36,7 +36,8 @@
   (cases .put "tests/unit/runtime/logging_spec.gene"
     {^target "log"
      ^names ["log_start" "log_reset" "log_configure" "log_set_levels" "log_refresh_redactions" "log_event"
-             "log_scope" "log_recent" "log_run" "log_subscribe" "log_unsubscribe" "log_subscription" "log_gap_record"]})
+             "log_scope" "log_recent" "log_run" "log_subscribe" "log_unsubscribe" "log_subscription" "log_gap_record"
+             "log_set_workspace"]})
   cases)
 
 (fn allowed_imports []

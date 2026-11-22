@@ -191,13 +191,21 @@
   (let writer_failed ($cell false))
   (let secrets ($cell []))
   (let secrets_checked ($cell false))
+  (let secrets_at ($cell 0))
   (let channel ($channel ^capacity 128))
   (let terminal tty)
 
+  (fn refresh_secrets [] : Nil
+    (secrets .set (read_secrets workspace))
+    (secrets_checked .set true)
+    (secrets_at .set ($os/monotonic_ms))
+    nil)
+
   (fn current_secrets [] : Any
     (let current (secrets .get))
-    (if (&& current/.empty? (! secrets_checked/.get))
-      (do (secrets .set (read_secrets workspace)) (secrets_checked .set true)))
+    (if (|| (&& current/.empty? (! secrets_checked/.get))
+            (> ($os/monotonic_ms) (+ (secrets_at .get) 1000)))
+      (refresh_secrets))
     (secrets .get))
 
   (fn make_launcher [type : Str, message : Str, target, data, level : Str] : Any
@@ -250,7 +258,9 @@
           (when "line"
             (let record (parse_record ($to_str message/text)))
             (if ($present? record)
-              (write_record (redact_record (current_secrets) record))
+              (do
+                (if (== record/type "host/auth_reset") (refresh_secrets))
+                (write_record (redact_record (current_secrets) record)))
               (child_output ($to_str message/stream) ($to_str message/text) message/bytes)))
           (when "discarded"
             (write_record
@@ -282,6 +292,14 @@
                   {^workspace workspace} {^count handoff_dropped/.get ^stage "handoff"} "warn")))
             (stopping .set true))
           (else nil))
+        (let pending (handoff_dropped .get))
+        (if (> pending 0)
+          (do
+            (handoff_dropped .set (- (handoff_dropped .get) pending))
+            (write_record
+              (make_launcher "log/dropped"
+                $"the launcher dropped ${pending} output frames while the writer was busy"
+                {^workspace workspace} {^count pending ^stage "handoff"} "warn"))))
         (if stopping/.get (break)))
     catch ChannelClosed nil
     catch Throwable
@@ -295,8 +313,7 @@
       (let marker $"${workspace}/.gene-harness/startup/${startup_id}")
       (if ($fs/exists? marker)
         (do
-          (secrets .set (read_secrets workspace))
-          (secrets_checked .set true)
+          (refresh_secrets)
           (if ($os/stdout_tty?)
             (then
               (let link (try ($str/trim ($fs/read_text $"${workspace}/.gene-harness/link")) catch Error ""))
@@ -410,8 +427,7 @@
         (barrier)
         (set source_only true)
         (continue)))
-    (secrets .set (read_secrets workspace))
-    (secrets_checked .set true)
+    (refresh_secrets)
     ($fs/make_dir $"${workspace}/.gene-harness")
     ($fs/write_text_atomic ^^owner_only $"${workspace}/.gene-harness/startup_failure"
       ($str/join ["Normal startup exited before readiness (status " ($to_str status) ").\n" (tail .get)] ""))

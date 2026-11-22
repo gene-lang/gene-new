@@ -17,6 +17,7 @@
    ^"host/port_changed" {^level "warn" ^target ["workspace"]}
    ^"host/restart_unsupported" {^level "info" ^target ["workspace"]}
    ^"host/stopping" {^level "info" ^target ["workspace"]}
+   ^"host/auth_reset" {^level "info" ^target ["workspace"]}
    ^"supervisor/child_started" {^level "info" ^target ["workspace"]}
    ^"supervisor/child_exited" {^level "info" ^target ["workspace"]}
    ^"supervisor/child_output" {^level "info" ^target ["workspace"]}

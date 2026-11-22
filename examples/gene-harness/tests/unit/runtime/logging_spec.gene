@@ -1,7 +1,7 @@
 # The process-global facade: identity, targets, levels, scoping, bounding,
 # redaction and the strict mode used by every spec.
 (import $test [describe it])
-(import [log_start log_reset log_configure log_set_levels log_refresh_redactions log_event log_scope log_recent log_run log_subscribe log_unsubscribe log_subscription log_gap_record]
+(import [log_start log_reset log_configure log_set_levels log_set_workspace log_refresh_redactions log_event log_scope log_recent log_run log_subscribe log_unsubscribe log_subscription log_gap_record]
   ^from "../../../src/kernel/log")
 (import [serialize_line log_line_budget parse_record render_text]
   ^from "../../../src/public/log_record")
@@ -109,6 +109,20 @@
     (log_unsubscribe subscription/id)
     (let closed (try (channel/.recv) false catch ChannelClosed true))
     ($assert closed "unsubscribe did not close the queue"))
+
+  (it "adopts a workspace resolved after logging starts" []
+    (let root ($path/join this_pkg/root $"tmp/log-late-${($crypto/random_hex 4)}"))
+    ($fs/make_dir $"${root}/.gene-harness")
+    ($fs/write_text $"${root}/.gene-harness/web_secret" "late-owner-secret")
+    (log_reset ^quiet true ^strict true)
+    (log_configure ^mode "silent" ^workspace "" ^level "info")
+    (log_set_workspace root root)
+    (log_refresh_redactions)
+    (log_event "host/start" "late-owner-secret" ^target {^workspace root})
+    (let records (log_recent))
+    (let record records/0)
+    ($assert (! ($str/contains? record/message "late-owner-secret")) ($to_str record))
+    ($assert ($str/contains? record/message "[redacted]") ($to_str record)))
 
   (it "refreshes redactions after the owner secret rotates" []
     (let root ($path/join this_pkg/root $"tmp/log-rotate-${($crypto/random_hex 4)}"))

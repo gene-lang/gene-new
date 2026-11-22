@@ -82,6 +82,14 @@
   (if (== ($head levels) Map) (st .put "levels" levels))
   nil)
 
+(fn log_set_workspace [root : Str, workspace : Str] : Nil
+  (let st (current))
+  (st .put "root" root)
+  (st .put "workspace" workspace)
+  (st .put "redactions" [])
+  (st .put "redactions_root" "")
+  nil)
+
 (fn log_refresh_redactions [] : Nil
   (let st (current))
   (if (== st/root "") (return nil))

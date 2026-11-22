@@ -1,7 +1,7 @@
 # Recovery serves only host-owned management APIs. It never opens event or
 # application-state streams and never constructs normal execution controllers.
 (mod recovery_server)
-(import [log_event log_refresh_redactions] ^from "../kernel/log")
+(import [log_event log_refresh_redactions log_set_workspace] ^from "../kernel/log")
 (import [api_root] ^from "./contract.gene")
 (import $net/http [serve stop html])
 (import ^from "./request" [response secure_response cookie_value field number request_data])
@@ -38,7 +38,10 @@
     (let origin $"http://127.0.0.1:${port}")
     (let authority $"127.0.0.1:${port}")
     (let cookie $"gene_harness_session_${port}")
+    (log_set_workspace runtime/root runtime/root)
+    (log_refresh_redactions)
     (let auth (open_auth runtime/state_root))
+    (log_refresh_redactions)
     (let connection (publish_connection runtime/root runtime/epoch port auth/secret))
     (fn handle [request]
       (if (!= (?? request/headers/host "") authority)
@@ -142,6 +145,7 @@
       (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/reset"))
         (reset_auth auth)
         (log_refresh_redactions)
+        (log_event "host/auth_reset" "owner credentials rotated" ^target {^workspace runtime/root})
         (publish_link runtime/state_root origin auth/secret)
         (return (response 200 {^^ok ^message "Owner credential reset. Use the new owner link."})))
       (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/control"))
