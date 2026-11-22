@@ -33,6 +33,7 @@ type
     mmGrouped
     mmFlat
     mmStripIfDo
+    mmFormatClauses
 
   MigrationIssue* = object
     path*: string
@@ -445,6 +446,19 @@ proc stripWrapper(edits: var seq[Edit], clause: Form) =
   edits.addDelete(clause.startByte, clause.startByte + 1)
   edits.addDelete(clause.closeStart, clause.closeStart + 1)
 
+proc stripThenWrapper(edits: var seq[Edit], text: string, clause: Form) =
+  ## Remove `(then`/its closing paren, leaving the body forms.
+  if clause.kind != fkGroup or clause.headText != "then" or clause.closeStart < 0:
+    return
+  var openerEnd = clause.headEnd
+  if clause.body.len > 0:
+    let gapStart = clause.headEnd
+    let gapEnd = clause.body[0].startByte
+    if gapEnd >= gapStart and '#' notin text[gapStart ..< gapEnd]:
+      openerEnd = gapEnd
+  edits.addDelete(clause.startByte, openerEnd)
+  edits.addDelete(clause.closeStart, clause.closeStart + 1)
+
 proc containsCandidate(form: Form): bool =
   if form.kind != fkGroup:
     return false
@@ -460,6 +474,8 @@ proc rewriteIf(form: Form, text: string, mode: MigrationMode,
                edits: var seq[Edit], issues: var seq[MigrationIssue],
                path: string)
 proc rewriteIfYes(form: Form, text: string, mode: MigrationMode,
+                  edits: var seq[Edit])
+proc rewriteIfNot(form: Form, text: string, mode: MigrationMode,
                   edits: var seq[Edit])
 proc rewriteIfPresent(form: Form, text: string, mode: MigrationMode,
                       edits: var seq[Edit], issues: var seq[MigrationIssue],
@@ -489,6 +505,11 @@ proc needsMigration(form: Form, text: string): bool =
     false
   of "if_yes":
     true
+  of "if_not":
+    for item in form.body[1 .. ^1]:
+      if item.kind == fkGroup and item.headText == "then":
+        return true
+    false
   of "if_present":
     let decoded = decodeLegacyPresent(form, text)
     if not decoded.valid or (not decoded.flatLike and decoded.hasElse):
@@ -590,6 +611,8 @@ proc rewriteForm(form: Form, text: string, mode: MigrationMode,
   case head
   of "if":
     rewriteIf(form, text, mode, edits, issues, path)
+  of "if_not":
+    rewriteIfNot(form, text, mode, edits)
   of "if_yes":
     rewriteIfYes(form, text, mode, edits)
   of "if_present":
@@ -670,6 +693,16 @@ proc rewriteIfYes(form: Form, text: string, mode: MigrationMode,
   elif branch.len > 1:
     edits.addInsert(branch[0].startByte, "(do ")
     edits.addInsert(branch[^1].endByte, ")")
+
+proc rewriteIfNot(form: Form, text: string, mode: MigrationMode,
+                  edits: var seq[Edit]) =
+  ## `if_not` has a flat body already; only a leftover `(then ...)` group from
+  ## the old clause spelling needs unwrapping.
+  if mode != mmFlat or form.body.len < 2:
+    return
+  for item in form.body[1 .. ^1]:
+    if item.kind == fkGroup and item.headText == "then":
+      stripThenWrapper(edits, text, item)
 
 proc rewriteIfPresent(form: Form, text: string, mode: MigrationMode,
                       edits: var seq[Edit], issues: var seq[MigrationIssue],
@@ -936,7 +969,8 @@ proc hasLoneDoArm(form: Form, text: string): bool =
   found
 
 proc renderIfForm(form: Form, raw: string, text: string,
-                  path: string, issues: var seq[MigrationIssue]): string =
+                  path: string, issues: var seq[MigrationIssue],
+                  requireDoChange = true): string =
   ## Format one if form after splicing its do arms. Comments are swapped for
   ## unique string sentinels before reading, then restored as comments. This
   ## keeps comments at their original arm/argument positions while still
@@ -968,7 +1002,7 @@ proc renderIfForm(form: Form, raw: string, text: string,
     issues.add MigrationIssue(path: path, line: lineOf(text, form.startByte),
       message: "cannot re-read if form: " & error.msg)
     return ""
-  if not stripped.changed:
+  if requireDoChange and not stripped.changed:
     return ""
   let lineStart = text.rfind('\n', 0, form.startByte) + 1
   let column = form.startByte - lineStart
@@ -1000,6 +1034,51 @@ proc hasCommentToken(raw: string): bool =
   except CatchableError:
     return false
   false
+
+proc formatClauseForms(forms: seq[Form], text: string, edits: var seq[Edit],
+                       issues: var seq[MigrationIssue], path: string)
+
+proc formatClauseUnquotes(form: Form, text: string, edits: var seq[Edit],
+                          issues: var seq[MigrationIssue], path: string) =
+  if form.kind != fkGroup:
+    return
+  if form.headText == "quote":
+    return
+  if form.headText == "unquote":
+    formatClauseForms(form.body, text, edits, issues, path)
+    return
+  if form.headForm != nil:
+    formatClauseUnquotes(form.headForm, text, edits, issues, path)
+  for item in form.props:
+    formatClauseUnquotes(item, text, edits, issues, path)
+  for item in form.body:
+    formatClauseUnquotes(item, text, edits, issues, path)
+
+proc formatClauseForms(forms: seq[Form], text: string, edits: var seq[Edit],
+                       issues: var seq[MigrationIssue], path: string) =
+  for form in forms:
+    if form.kind != fkGroup:
+      continue
+    if form.headText == "quote":
+      continue
+    if form.headText == "quasiquote":
+      formatClauseUnquotes(form, text, edits, issues, path)
+      continue
+    if form.headText == "unquote":
+      formatClauseForms(form.body, text, edits, issues, path)
+      continue
+    if form.headText in ["if", "if_not", "match", "if_present"]:
+      let raw = text[form.startByte ..< form.endByte]
+      let rendered = renderIfForm(form, raw, text, path, issues,
+                                  requireDoChange = false)
+      if rendered.len > 0:
+        edits.add Edit(startByte: form.startByte, endByte: form.endByte,
+                       text: rendered)
+        continue
+    if form.headForm != nil:
+      formatClauseForms(@[form.headForm], text, edits, issues, path)
+    formatClauseForms(form.props, text, edits, issues, path)
+    formatClauseForms(form.body, text, edits, issues, path)
 
 proc stripIfDoForms(forms: seq[Form], text: string, edits: var seq[Edit],
                     issues: var seq[MigrationIssue], path: string)
@@ -1033,6 +1112,14 @@ proc stripIfDoForms(forms: seq[Form], text: string, edits: var seq[Edit],
       continue
     if form.headText == "unquote":
       stripIfDoForms(form.body, text, edits, issues, path)
+      continue
+    if form.headText == "if_not":
+      for item in form.body[1 .. ^1]:
+        if item.hasHead("then"):
+          stripThenWrapper(edits, text, item)
+          stripIfDoForms(item.body, text, edits, issues, path)
+        else:
+          stripIfDoForms(@[item], text, edits, issues, path)
       continue
     if form.headText == "if":
       let raw = text[form.startByte ..< form.endByte]
@@ -1071,7 +1158,9 @@ proc rewriteGeneSource*(text: string, mode: MigrationMode,
   except ValueError as e:
     issues.add MigrationIssue(path: path, message: e.msg)
     return RewriteResult(text: text, issues: issues)
-  if mode == mmStripIfDo:
+  if mode == mmFormatClauses:
+    formatClauseForms(forms, text, edits, issues, path)
+  elif mode == mmStripIfDo:
     stripIfDoForms(forms, text, edits, issues, path)
   else:
     for form in forms:
@@ -1675,6 +1764,8 @@ proc main(): int =
       if argument == "--summary": summary = true
     of "--strip-if-do", "--remove-if-do":
       mode = mmStripIfDo
+    of "--format-clauses", "--reindent-clauses":
+      mode = mmFormatClauses
     else:
       if argument.startsWith("--to="):
         mode = if argument.endsWith("grouped"): mmGrouped else: mmFlat

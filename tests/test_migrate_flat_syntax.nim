@@ -35,6 +35,10 @@ suite "migration — flat clause rewrite":
     check flat("(match x (when 1 \"one\") (when 2 \"two\") (else \"other\"))") ==
       "(match x when 1 \"one\" when 2 \"two\" else \"other\")"
 
+  test "if_not then grouping is removed":
+    check flat("(if_not c (then a b))") == "(if_not c a b)"
+    check flat("(if_not c a)") == "(if_not c a)"
+
   test "if_present flattens its trailing else":
     check flat("(if_present x e a b (else c d))") ==
       "(if_present x e a b else c d)"
