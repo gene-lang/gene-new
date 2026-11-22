@@ -19,6 +19,17 @@ negating `$absent?`.
 Presence is separate from truthiness and emptiness: `false`, zero, empty
 strings and empty collections are all present.
 
+## No-op callbacks
+
+The native VM's `gene/noop` (`$noop`) accepts any number of positional and
+named arguments and returns `nil`. Use it as a callback that can ignore every
+argument. Argument expressions evaluate as usual before the call.
+
+```gene runnable
+(let on_complete $noop)
+(on_complete "done" ^count 3) # nil
+```
+
 ## Fresh macro names
 
 `($gensym base)` returns a symbol for a binder that a macro's template declares

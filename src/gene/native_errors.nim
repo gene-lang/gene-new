@@ -21,7 +21,7 @@ proc builtinNativeErrorMetadata*(name: string): NativeErrorMetadata =
     local = local.split('/')[1]
   case local
   of "assert", "test/assert_equal", "test/assert_raises",
-     "==", "!=", "same?", "not", "absent?", "present?",
+     "==", "!=", "same?", "not", "absent?", "present?", "noop",
      "+", "-", "*", "<", ">", "<=", ">=", "/", "//", "to_str",
      "range", "to_stream", "map", "filter", "filter_map", "each",
      "map_size", "map_empty?", "map_map", "map_filter", "map_filter_map",
@@ -41,6 +41,8 @@ proc nativeErrorAcceptsCall*(metadata: NativeErrorMetadata,
   ## ordinary RuntimeFault, rather than a generated annotated-parameter failure.
   if metadata.identity == "gene/read_all":
     return positionalCount == 1 and namedCount <= 2
+  if metadata.identity == "gene/noop":
+    return true
   if namedCount != 0: return false
   case metadata.identity
   of "gene/assert": positionalCount in 1..2

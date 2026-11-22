@@ -129,6 +129,30 @@ suite "nil — statement returns":
       [(try (f) catch TypeFault "TypeFault") (g)]
     """) == "[\"TypeFault\" 42]"
 
+suite "nil — noop callback":
+  test "noop returns nil for positional, named, and spread arguments":
+    check nilEval("""
+      (let ignore gene/noop)
+      (let args [1 nil])
+      (let options {^label "ignored" ^^enabled})
+      [($noop) ($noop 1 false nil) ($noop ^reason "ignored") (ignore args... options...)]
+    """) == "[nil nil nil nil]"
+
+  test "noop evaluates both kinds of arguments exactly once":
+    check nilEval("""
+      (var calls 0)
+      (fn touch [] (set calls (+ calls 1)) calls)
+      (let result ($noop (touch) ^reason (touch)))
+      [result calls]
+    """) == "[nil 2]"
+
+  test "noop accepts named arguments in a strict empty error row":
+    check nilEval("""
+      (mod callbacks ^errors_mode strict)
+      (fn ignore [] : Nil ^errors [] ($noop 1 ^reason "ignored"))
+      (ignore)
+    """) == "nil"
+
 suite "nil — review regressions":
   test "explicit return nil cannot bypass the declared result boundary":
     for source in [

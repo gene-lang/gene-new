@@ -3676,6 +3676,9 @@ proc biIsPresent(args: openArray[Value]): Value {.nimcall.} =
   requireOne("present?", args)
   newBool(not args[0].isAbsent)
 
+proc biNoop(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  NIL
+
 proc requireStr(name: string, value: Value) =
   if value.kind != vkString:
     raise newException(GeneError, name & " expects a Str")
@@ -10966,6 +10969,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.define("leaf?", builtinNativeFn("leaf?", biIsLeaf))
   result.define("absent?", builtinNativeFn("absent?", biIsAbsent))
   result.define("present?", builtinNativeFn("present?", biIsPresent))
+  result.define("noop", builtinNativeCallFn("noop", biNoop))
   result.define("first", firstFn)
   result.define("last", lastFn)
   result.defineBuiltinType(vkList, "List", {

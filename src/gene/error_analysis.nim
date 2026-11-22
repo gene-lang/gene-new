@@ -883,6 +883,8 @@ proc callValue(analysis: ErrorAnalysis, callee: AbstractValue,
     result.value = scalarValue("Bool")
   of "same?", "not", "absent?", "present?":
     result.value = scalarValue("Bool")
+  of "noop":
+    result.value = scalarValue("Nil")
   of "+", "-", "*", "<", ">", "<=", ">=":
     var allNumeric = true
     for arg in args: allNumeric = allNumeric and arg.numeric
