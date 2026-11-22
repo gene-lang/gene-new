@@ -305,6 +305,8 @@
           (if (== generation view/generation) (poll_log view)))))))
 
 (fn apply_log_filters [view : EditorView] : Nil
+  # Invalidate any in-flight poll before changing the query.
+  (set view/generation (+ view/generation 1))
   (set view/cursor "")
   (if ($present? view/log_view)
     (do

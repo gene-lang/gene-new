@@ -30,6 +30,8 @@
           (let start starts/0)
           ($assert (== start/target/session "default") ($to_str start))
           ($assert (== start/target/command admitted/id) ($to_str start))
+          ($assert (== start/data/name "run") ($to_str start))
+          ($assert ($absent? (start/data .get "raw")) "command body was copied into the log")
           ($assert (== start/event/stream "default") ($to_str start))
           ($assert ($present? start/event/seq) ($to_str start))
           (let ended ends/0)

@@ -58,28 +58,49 @@
   (map_for [key value] in record (copy .put key (redact_value secrets value)))
   copy)
 
-(var ^^private wire_seq ($cell 0))
-(var ^^private processed ($cell 0))
-
 (fn ^^private send_frame [channel, message] : Bool
-  (message .put "wire_seq" (next_seq wire_seq))
   (try (channel .send ($freeze message)) true catch ChannelClosed false))
+
+(fn ^^private send_data_frame [channel, message, dropped] : Bool
+  # Log data never waits for the writer. A full handoff queue drops the frame
+  # and the reader keeps draining the child pipe.
+  (let accepted
+    (try (channel .try_send ($freeze message)) catch ChannelClosed false))
+  (if (&& (! accepted) ($present? dropped))
+    (dropped .set (+ (dropped .get) 1)))
+  accepted)
 
 # Frame one child stream into line/discard/eof messages. The buffer is bytes so
 # a UTF-8 sequence or a secret may cross a pipe read; an over-budget line is
-# discarded whole, never clipped.
-(fn frame_stream [reader, stream : Str, channel] : Nil
+# discarded whole, never clipped. Line data uses nonblocking handoff; control
+# messages from the launcher stay reliable.
+(fn frame_stream [reader, stream : Str, channel, ^dropped dropped = nil] : Nil
   (let buffer ($cell ($binary/from_str "")))
   (let discarding ($cell false))
   (let discarded ($cell 0))
-  (let stopped ($cell false))
   (fn send_discard [count : Int]
-    (if_not (send_frame channel {^kind "discarded" ^stream stream ^bytes count})
-      (stopped .set true)))
+    (send_data_frame channel {^kind "discarded" ^stream stream ^bytes count} dropped))
   (fn send_line [bytes]
-    (if_not (send_frame channel {^kind "line" ^stream stream
-                                  ^text (line_text bytes) ^bytes ($binary/size bytes)})
-      (stopped .set true)))
+    (send_data_frame channel {^kind "line" ^stream stream
+                              ^text (line_text bytes) ^bytes ($binary/size bytes)} dropped))
+  (fn pump [] : Nil
+    (loop
+      (let at (find_byte (buffer .get) 10))
+      (if (< at 0)
+        (do
+          (if (> ($binary/size (buffer .get)) log_line_budget)
+            (do
+              (discarded .set ($binary/size (buffer .get)))
+              (discarding .set true)
+              (buffer .set ($binary/from_str ""))))
+          (break))
+        (do
+          (let line ($binary/slice (buffer .get) 0 at))
+          (buffer .set ($binary/slice (buffer .get) (+ at 1)
+                        (- ($binary/size (buffer .get)) (+ at 1))))
+          (if (> ($binary/size line) log_line_budget)
+            (send_discard (+ ($binary/size line) 1))
+            (send_line line))))))
   (try
     (loop
       (let chunk (try (await (reader .AsyncReader:read 65536)) catch Throwable nil))
@@ -94,40 +115,23 @@
               (send_discard (discarded .get))
               (discarding .set false)
               (discarded .set 0)
-              (buffer .set ($binary/slice chunk (+ at 1) (- ($binary/size chunk) (+ at 1)))))))
+              (buffer .set ($binary/slice chunk (+ at 1) (- ($binary/size chunk) (+ at 1))))
+              (pump))))
         (do
           (buffer .set ($binary/concat [(buffer .get) chunk]))
-          (loop
-            (let at (find_byte (buffer .get) 10))
-            (if (< at 0)
-              (do
-                (if (> ($binary/size (buffer .get)) log_line_budget)
-                  (do
-                    (discarded .set ($binary/size (buffer .get)))
-                    (discarding .set true)
-                    (buffer .set ($binary/from_str ""))))
-                (break))
-              (do
-                (let line ($binary/slice (buffer .get) 0 at))
-                (buffer .set ($binary/slice (buffer .get) (+ at 1)
-                              (- ($binary/size (buffer .get)) (+ at 1))))
-                (if (> ($binary/size line) log_line_budget)
-                  (send_discard (+ ($binary/size line) 1))
-                  (send_line line)))))
-          (if stopped/.get (break))))
-      (if stopped/.get (break)))
+          (pump))))
     catch Error
       (send_frame channel {^kind "reader_error" ^stream stream ^message $err/.message})
     ensure
       (try (reader .IoResource:close) catch Throwable nil))
-  (if (&& discarding/.get (! stopped/.get))
+  (if discarding/.get
     (send_discard (discarded .get)))
   (let remaining (buffer .get))
-  (if (&& (> ($binary/size remaining) 0) (! stopped/.get))
+  (if (> ($binary/size remaining) 0)
     (if (> ($binary/size remaining) log_line_budget)
       (send_discard ($binary/size remaining))
       (send_line remaining)))
-  (send_frame channel {^kind "eof" ^stream stream})
+  (send_data_frame channel {^kind "eof" ^stream stream} dropped)
   nil)
 
 # CLI commands keep their exact stdout and stderr; only hosting relays records.
@@ -182,6 +186,8 @@
   (let seq ($cell 0))
   (let tail ($cell ""))
   (let drops ($cell 0))
+  (let handoff_dropped ($cell 0))
+  (let barrier_ack ($cell 0))
   (let writer_failed ($cell false))
   (let secrets ($cell []))
   (let secrets_checked ($cell false))
@@ -262,16 +268,20 @@
             (write_record
               (make_launcher ($to_str message/type) ($to_str message/message)
                 message/target message/data ($to_str message/level))))
-          (when "barrier" nil)
+          (when "barrier" (barrier_ack .set (+ (barrier_ack .get) 1)))
           (when "stop"
             (if (> (drops .get) 0)
               (write_record
                 (make_launcher "log/dropped"
                   $"the launcher dropped ${drops/.get} output records"
-                  {^workspace workspace} {^count drops/.get} "warn")))
+                  {^workspace workspace} {^count drops/.get ^stage "writer"} "warn")))
+            (if (> (handoff_dropped .get) 0)
+              (write_record
+                (make_launcher "log/dropped"
+                  $"the launcher dropped ${handoff_dropped/.get} output frames"
+                  {^workspace workspace} {^count handoff_dropped/.get ^stage "handoff"} "warn")))
             (stopping .set true))
           (else nil))
-        (processed .set message/wire_seq)
         (if stopping/.get (break)))
     catch ChannelClosed nil
     catch Throwable
@@ -299,12 +309,24 @@
           (return nil))
         ($sleep 50))))
 
+  (fn send_control [message] : Bool
+    # A slow writer may fill the shared queue; retry without wedging the
+    # launcher if the writer has already failed.
+    (var sent false)
+    (while (&& (! sent) (! writer_failed/.get))
+      (set sent (try (channel .try_send ($freeze message)) catch ChannelClosed false))
+      (if_not sent ($sleep 1)))
+    sent)
+
   (fn barrier [] : Nil
-    (if (send_frame channel {^kind "barrier"})
+    # Readers have joined before this call, so FIFO delivery means an ack for
+    # the barrier covers every accepted record. Dropped data never leaves a
+    # sequence hole for the writer to wait on.
+    (if (send_control {^kind "barrier"})
       (do
-        (let target (wire_seq .get))
-        (while (&& (< (processed .get) target) (! writer_failed/.get))
-          ($sleep 1))))
+        (while (&& (== (barrier_ack .get) 0) (! writer_failed/.get))
+          ($sleep 1))
+        (barrier_ack .set 0)))
     nil)
 
   (let writer (if hosting (spawn ^lane root (writer_loop)) nil))
@@ -348,8 +370,8 @@
     (let task ($os/exec_stream_async ^env child_environment
       (?? ($os/env? "GENE_BINARY") ($os/executable_path))
       child_args... ^stdout_pipe out/1 ^stderr_pipe err/1))
-    (let stdout_reader (spawn ^lane root (frame_stream out/0 "stdout" channel)))
-    (let stderr_reader (spawn ^lane root (frame_stream err/0 "stderr" channel)))
+    (let stdout_reader (spawn ^lane root (frame_stream out/0 "stdout" channel ^dropped handoff_dropped)))
+    (let stderr_reader (spawn ^lane root (frame_stream err/0 "stderr" channel ^dropped handoff_dropped)))
     (let link_task (spawn ^lane root (present_browser_link startup_id task)))
     (let result (try (await task) ensure (if_not task/.done? task/.cancel task/.join)))
     (await stdout_reader)
@@ -401,6 +423,6 @@
   0
   ensure
     (if_not ($absent? writer)
-      (do (send_frame channel {^kind "stop"}) (await writer)))
+      (do (send_control {^kind "stop"}) (await writer)))
     (if_not ($absent? logger) (close_host_log logger))
     (if_not ($absent? launch_lock) launch_lock/.close)))

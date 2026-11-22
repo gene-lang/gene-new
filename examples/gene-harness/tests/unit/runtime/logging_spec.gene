@@ -110,6 +110,33 @@
     (let closed (try (channel/.recv) false catch ChannelClosed true))
     ($assert closed "unsubscribe did not close the queue"))
 
+  (it "refreshes redactions after the owner secret rotates" []
+    (let root ($path/join this_pkg/root $"tmp/log-rotate-${($crypto/random_hex 4)}"))
+    ($fs/make_dir $"${root}/.gene-harness")
+    ($fs/write_text $"${root}/.gene-harness/web_secret" "first-owner-secret")
+    (log_reset ^quiet true ^strict true)
+    (log_configure ^mode "silent" ^root root ^workspace "w_test" ^level "info")
+    (log_refresh_redactions)
+    (log_event "host/start" "old first-owner-secret" ^target {^workspace "w_test"})
+    ($fs/write_text $"${root}/.gene-harness/web_secret" "rotated-owner-secret")
+    (log_refresh_redactions)
+    (log_event "host/start" "new rotated-owner-secret" ^target {^workspace "w_test"})
+    (let records (log_recent))
+    (let latest records/1)
+    ($assert (! ($str/contains? latest/message "rotated-owner-secret")) ($to_str latest))
+    ($assert ($str/contains? latest/message "[redacted]") ($to_str latest)))
+
+  (it "freezes ring records returned to consumers" []
+    (reset)
+    (log_event "host/ready" "immutable" ^target {^workspace "w"})
+    (let records (log_recent ^type "host/ready"))
+    (let record records/0)
+    (let changed (try (record .put "message" "changed") true catch Throwable false))
+    ($assert (! changed) "a consumer mutated the ring record")
+    (let later (log_recent ^type "host/ready"))
+    (let again later/0)
+    ($assert (== again/message "immutable") ($to_str again)))
+
   (it "filters recent records by target keys" []
     (reset)
     (log_event "turn/start" "first" ^target {^session "s1" ^round "r" ^turn 1})

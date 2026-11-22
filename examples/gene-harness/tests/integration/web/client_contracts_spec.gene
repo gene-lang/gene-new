@@ -63,6 +63,8 @@
     ($assert (! ($str/contains? view "/p/editor/log")) "editor view still uses the plugin Logs route")
     ($assert (! ($str/contains? panel "/p/editor/log")) "editor panel still uses the plugin Logs route")
     ($assert ($str/contains? view "Log type filter") "editor view has no type filter")
+    ($assert ($str/contains? view "(set view/generation (+ view/generation 1))")
+      "applying a Logs filter does not invalidate in-flight polls")
     (let plugin ($fs/read_text (package_path "src/builtin/editor.gene")))
     (for field in ["log_type" "log_level" "log_session"]
       ($assert ($str/contains? plugin ($str/join ["^" field] "")) $"editor view state lacks ${field}")))

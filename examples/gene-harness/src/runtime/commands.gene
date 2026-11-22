@@ -506,7 +506,7 @@ Stopped."""))))
       (let saved (save_command_state_event manager/runtime session state))
       (log_event "command/start" $"command ${id} started"
         ^target {^session session ^command id}
-        ^data {^name parsed/name ^raw parsed/raw}
+        ^data {^name parsed/name}
         ^event {^stream session ^seq saved/event/seq})
       allocated)))
   (if duplicate (return record))

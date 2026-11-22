@@ -1,5 +1,5 @@
 (mod harness_web_server)
-(import [log_event] ^from "../kernel/log")
+(import [log_event log_refresh_redactions] ^from "../kernel/log")
 (import [api_root api_version] ^from "./contract.gene")
 (import [ServiceError DelegationError] ^from "../plugin_api")
 
@@ -221,6 +221,7 @@
     (if_not ($absent? feature) (return feature))
     (if_yes (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/reset"))
       (reset_auth auth)
+      (log_refresh_redactions)
       (disconnect_peers push)
       (publish_link host/runtime/state_root origin auth/secret)
       (return (response 200 {^^ok ^message "Owner credential reset. Use gene-harness link to reconnect."})))

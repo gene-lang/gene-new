@@ -244,7 +244,7 @@
   nil)
 
 (fn ^^private emit_record [st, record] : Nil
-  (let bounded (bound_record record))
+  (let bounded ($freeze (bound_record record)))
   (ring_push st bounded)
   (if (== st/mode "host_supervised")
     (write_json st bounded)
