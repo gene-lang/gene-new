@@ -6982,7 +6982,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
     let dir = hintDir()
     let msg = loadError(dir, "main.gene",
       "(import Shown Widget ^from \"./proto\")\n" &
-      "(import [] ^from \"./provider\")\n" &
+      "(import ^from \"./provider\")\n" &
       "(fn takes [a : Shown] \"ok\")\n" &
       "(takes (Widget))\n")
     check "import_impl Shown for Widget ^from" in msg
@@ -6999,7 +6999,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
     let msg = loadError(dir, "app.gene",
       "(import Shown Widget ^from \"./proto\")\n" &
       "(import lib_takes ^from \"./lib\")\n" &
-      "(import [] ^from \"./provider\")\n" &
+      "(import ^from \"./provider\")\n" &
       "(lib_takes (Widget))\n")
     check "lib.gene" in msg
     check "app.gene" notin msg
@@ -7008,7 +7008,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
     let dir = hintDir()
     let msg = loadError(dir, "main.gene",
       "(import Shown Base ^from \"./proto\")\n" &
-      "(import [] ^from \"./unexported\")\n" &
+      "(import ^from \"./unexported\")\n" &
       "(fn takes [a : Shown] \"ok\")\n" &
       "(takes (Base))\n")
     check "^^export" in msg
@@ -7023,7 +7023,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
       "(impl Shown for Base ^^export (message show [] : Str \"b\"))\n")
     let msg = loadError(dir, "main.gene",
       "(import Shown Base Derived ^from \"./proto\")\n" &
-      "(import [] ^from \"./baseprov\")\n" &
+      "(import ^from \"./baseprov\")\n" &
       "(fn takes [a : Shown] \"ok\")\n" &
       "(takes (Derived))\n")
     check "import_impl Shown for Base ^from" in msg
@@ -7033,7 +7033,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
     let dir = hintDir()
     let msg = loadError(dir, "main.gene",
       "(import Shown Widget ^from \"./proto\")\n" &
-      "(import [] ^from \"./provider\")\n" &
+      "(import ^from \"./provider\")\n" &
       "((Widget) .Shown:show)\n")
     check "no implementation of message 'show'" in msg
     check "import_impl Shown for Widget ^from" in msg

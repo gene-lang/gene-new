@@ -40,7 +40,7 @@ budgets bound the second.
   re-exports require unconditional top-level placement. Namespace imports
   without `^from` use `(import source [name name:alias])` or
   `(import source:alias)`.
-- `(import [] ^from "./setup")` loads a module without binding names.
+- `(import ^from "./setup")` loads a module without binding names.
 - `^pkg` on the `^from` form selects a package; `"."` names that package's
   `main_module`. A regular package may import only itself and its declared
   direct dependencies. No resolved module path may leave its package root after

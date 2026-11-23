@@ -249,7 +249,6 @@ src/gene/compiler.nim	import ^from must be a path string
 src/gene/compiler.nim	import ^pkg must be a non-empty package name string
 src/gene/compiler.nim	import ^pkg requires `^from \"path\"`; a namespace-path import never 
 src/gene/compiler.nim	import alias must be a single binding name
-src/gene/compiler.nim	import from a module requires a selection or wildcard
 src/gene/compiler.nim	import got unexpected option: ^
 src/gene/compiler.nim	import path segments must be names
 src/gene/compiler.nim	import requires a source
@@ -327,6 +326,7 @@ src/gene/compiler.nim	namespace '
 src/gene/compiler.nim	namespace import requires selections or `source:alias`
 src/gene/compiler.nim	new expects a Type argument
 src/gene/compiler.nim	ns requires a name
+src/gene/compiler.nim	omit `[]` to load a module without bindings; write `(import ^from \"path\")`
 src/gene/compiler.nim	only a named fexpr may bind a name ending in !: 
 src/gene/compiler.nim	panic expects zero or one value
 src/gene/compiler.nim	parameter annotation requires a parameter

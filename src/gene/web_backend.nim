@@ -1634,8 +1634,6 @@ proc parseWebImport(form: Value, loc: SourceLoc,
     raise webError(loc, "package imports are outside the web profile")
   if spec.wildcard:
     raise webError(loc, "wildcard imports are outside the web profile")
-  if spec.selections.len == 0:
-    raise webError(loc, "web imports require at least one selection")
   result.reexport = spec.reexport
   result.sourcePath = spec.modulePath
   if not (result.sourcePath.startsWith("./") or
@@ -5785,6 +5783,9 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
         raise webError(loc, "import is outside an embedded web module: " &
           "the block sees the web prelude and its own declarations only")
       var webImport = parseWebImport(form, loc, sourcePath)
+      if webImport.selections.len == 0:
+        result.imports.add webImport
+        continue
       if importedMacros.hasKey(webImport.sourcePath):
         let macros = importedMacros[webImport.sourcePath]
         var runtimeSelections: seq[WebImportSelection]
@@ -8840,7 +8841,9 @@ proc emitModule(module: WebModule, typescript: bool,
       else: selections.add sourceName & " as " & localName
     let target = "./" & splitFile(imported.resolvedPath).name &
       (if typescript: ".js" else: ".mjs")
-    if selections.len > 0:
+    if selections.len == 0:
+      emitter.line("import " & jsString(target) & ";")
+    else:
       emitter.line("import { " & selections.join(", ") & " } from " &
                    jsString(target) & ";")
       if imported.reexport:
@@ -10212,9 +10215,12 @@ proc emitDeclarations(module: WebModule): string =
       let local = mangleWebName(selection.localName)
       names.add(if original == local: original else: original & " as " & local)
       locals.add local
-    if names.len > 0:
+    let target = jsString("./" & splitFile(imported.resolvedPath).name & ".js")
+    if names.len == 0:
+      result.add "import " & target & ";\n"
+    else:
       result.add "import { " & names.join(", ") & " } from " &
-        jsString("./" & splitFile(imported.resolvedPath).name & ".js") & ";\n"
+        target & ";\n"
       if imported.reexport:
         result.add "export { " & locals.join(", ") & " };\n"
   for constant in module.constants:

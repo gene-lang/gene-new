@@ -5893,13 +5893,10 @@ proc parseImportSpec*(node: Value): ImportSpec =
     raise newException(GeneError,
       "import: `from` was removed; use `^from \"path\"`")
   if result.fromModule:
-    if body.len == 0:
-      raise newException(GeneError,
-        "import from a module requires a selection or wildcard")
-    if body.len == 1 and body[0].kind == vkList and body[0].listItems.len == 0:
-      # An empty vector is a load-only import and creates no local bindings.
-      discard
-    elif body[0].kind == vkList:
+    if body.len > 0 and body[0].kind == vkList:
+      if body.len == 1 and body[0].listItems.len == 0:
+        raise newException(GeneError,
+          "omit `[]` to load a module without bindings; write `(import ^from \"path\")`")
       raise newException(GeneError,
         "file import selectors go directly after `import`; write `(import a b ^from \"path\")`")
     elif body.len == 1:
@@ -5911,7 +5908,7 @@ proc parseImportSpec*(node: Value): ImportSpec =
         result.alias = alias
       else:
         collectImportSelections(body, @[], result.selections)
-    else:
+    elif body.len > 0:
       collectImportSelections(body, @[], result.selections)
     result.sourceLabel = result.modulePath
     if result.wildcardSegments.len > 0:

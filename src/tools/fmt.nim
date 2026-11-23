@@ -911,13 +911,10 @@ proc canonicalImportSource(source, sourceName: string): string =
         if hasSource and operands.len == 1:
           let vector = operands[0]
           if vector.kind == skList and vector.closed:
-            for member in indexed.children(vector):
-              if member.syntax.kind != skComment:
-                brackets.add vector.span.startByte
-                brackets.add vector.span.endByte - 1
-                if vector.immutable:
-                  brackets.add vector.span.startByte + 1
-                break
+            brackets.add vector.span.startByte
+            brackets.add vector.span.endByte - 1
+            if vector.immutable:
+              brackets.add vector.span.startByte + 1
         return
       else: discard
     for row in rows:

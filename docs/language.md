@@ -709,7 +709,7 @@ binds the namespace itself. Wildcards stand alone. `stats/*` makes public
 members available as fallback names, and `stats/*:s` binds the namespace as
 `s`. Wildcards, whole-source namespace aliases, and re-exports require an
 unconditional top-level import. Ordinary runtime selections work in local scopes.
-Use `(import [] ^from "./setup")` when you only need module initialization.
+Use `(import ^from "./setup")` to initialize a module without binding names.
 
 Namespace member imports such as `(import $str [join trim:clean])` use a
 selection vector without `^from`. Use `(import $str:strings)` to bind the

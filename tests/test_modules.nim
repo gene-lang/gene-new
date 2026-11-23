@@ -65,6 +65,23 @@ suite "modules — file imports":
     writeModule("math.gene", "(var pi 3)")
     check runProgram("(import pi ^from \"./math\") pi").print() == "3"
 
+  test "load-only imports initialize the module once without binding exports":
+    let marker = (modDir / "setup-ran.txt").escape
+    writeModule("setup.gene", """
+      (var answer 42)
+      (let previous (if ($fs/exists? MARKER_PATH) ($fs/read_text MARKER_PATH) else ""))
+      ($fs/write_text MARKER_PATH ($to_str previous "ran"))
+    """.replace("MARKER_PATH", marker))
+    writeModule("entry.gene", """
+      (import ^from "./setup")
+      (import ^from "./setup")
+      (var answer 7)
+    """)
+    let app = newApplication(modDir)
+    let loaded = app.loadFileModule(modDir / "entry.gene")
+    check readFile(modDir / "setup-ran.txt") == "ran"
+    check loaded.moduleRootNamespace.nsScope.lookup("answer").print() == "7"
+
   test "module source properties may precede or follow selections":
     writeModule("math.gene", "(var pi 3)")
     for source in [
@@ -89,7 +106,7 @@ suite "modules — file imports":
       ("(import pi ^from 42)", "^from must be a path string"),
       ("(import pi ^from nil)", "^from must be a path string"),
       ("(import pi ^^from)", "^from must be a path string"),
-      ("(import ^from \"./math\")", "requires a selection or wildcard"),
+      ("(import [] ^from \"./math\")", "omit `[]` to load a module without bindings"),
       ("(import [pi] ^from \"./math\")", "file import selectors go directly after"),
       ("(import pi ^from \"./math\" ^form \"./other\")", "unexpected option: ^form")
     ]:

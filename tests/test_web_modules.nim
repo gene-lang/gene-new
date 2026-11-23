@@ -730,6 +730,30 @@ suite "web function fields":
         "(holder/call \"wrong type\")"), "callbacks.gene")
 
 suite "web module import syntax":
+  test "load-only imports emit a dependency without bindings":
+    let root = createTempDir("gene-web-load-only-", "")
+    defer: removeDir(root)
+    writeFile(root / "setup.gene",
+      "(mod setup ^profile web) (const answer 42)")
+    writeFile(root / "entry.gene", """
+      (mod entry ^profile web)
+      (import ^from "./setup")
+      (const answer 7)
+      (fn run [] : Int answer)
+    """)
+    let output = root / "out"
+    discard buildWebModule(root / "entry.gene", output)
+    check "import \"./setup.mjs\";" in readFile(output / "entry.mjs")
+    check "import \"./setup.js\";" in readFile(output / "entry.ts")
+    let setupPath = output / "setup.mjs"
+    writeFile(setupPath, readFile(setupPath) & "\nglobalThis.setupRan = true;\n")
+    writeFile(output / "check.mjs",
+      "import {run} from './entry.mjs'; " &
+      "if (!globalThis.setupRan || run() !== 7n) throw Error('bad load-only import');")
+    let ran = execCmdEx("node " & quoteShell(output / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
   test "source properties work in either position with aliases and re-exports":
     let root = createTempDir("gene-web-imports-", "")
     defer: removeDir(root)
@@ -776,7 +800,7 @@ suite "web module import syntax":
     for (source, expected) in [
       ("(import [Thing] from \"./provider.gene\")", "`from` was removed; use `^from"),
       ("(import [Thing])", "web imports must use"),
-      ("(import ^from \"./provider.gene\")", "requires a selection or wildcard"),
+      ("(import [] ^from \"./provider.gene\")", "omit `[]` to load a module without bindings"),
       ("(import [Thing] ^from \"./provider.gene\")", "file import selectors go directly after"),
       ("(import Thing : Alias ^from \"./provider.gene\")", "write the import alias as `Thing:Alias`"),
       ("(import * ^from \"./provider.gene\")", "wildcard imports are outside the web profile"),
