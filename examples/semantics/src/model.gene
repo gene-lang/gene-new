@@ -1,0 +1,298 @@
+(mod semantics)
+
+(type Closure ^props {^parameters List ^body List ^bindings Map})
+(type Instance ^props {^type_id Str ^fields Map})
+(type ModelPath ^props {^segments List ^strict Bool ^has_default Bool ^fallback Any})
+
+(fn ^^private success [value]
+  {^kind "value" ^value value})
+
+(fn ^^private fault [code : Str, detail = nil]
+  {^kind "fault" ^code code ^detail detail})
+
+(const ^^private missing {^kind "missing"})
+
+(fn empty_world []
+  {^types {} ^impls []})
+
+(fn instance [type_id : Str, fields : Map]
+  (Instance ^type_id type_id ^fields ($freeze fields)))
+
+(fn make_path [segments : List, ^strict strict : Bool = false, ^default fallback = nil]
+  (ModelPath ^segments ($freeze segments) ^strict strict
+    ^has_default ($present? fallback) ^fallback fallback))
+
+(fn ^^private ancestors [world, type_id : Str]
+  (let chain [])
+  (var current type_id)
+  (while (!= current "")
+    (let declaration (world/types .get current))
+    (if ($absent? declaration) (break))
+    (chain .push current)
+    (set current declaration/parent))
+  chain)
+
+(fn ^^private direct_method [world, type_id : Str, name : Str]
+  (for owner in (ancestors world type_id)
+    (let declaration (world/types .get owner))
+    (let method (declaration/methods .get name))
+    (if ($present? method) (return {^owner owner ^method method})))
+  nil)
+
+(fn ^^private anchored [annotation : Str, owner : Str]
+  (if (== annotation "Self") owner else annotation))
+
+(fn ^^private signature [method, owner : Str]
+  [($map method/params (fn [parameter] (anchored parameter/1 owner)))
+   (anchored method/returns owner)])
+
+# Declarations are records in an explicit world. A replacement must keep the
+# inherited signature after anchoring Self at the original declaration.
+(fn declare_type [world, id : Str, ^parent parent : Str = "",
+                  ^fields fields : List = [], ^methods methods : Map = {}]
+  (if (|| (== id "") ($has_key? world/types id))
+    (return (fault "duplicate_type" id)))
+  (if (&& (!= parent "") (! ($has_key? world/types parent)))
+    (return (fault "unknown_parent" parent)))
+  (map_for [key method] in methods
+    (let name ($to_str key))
+    (let inherited (direct_method world parent name))
+    (if (!= (== method/override true) ($present? inherited))
+      (return (fault "override_intent" name)))
+    (if ($present? inherited)
+      (if (|| (== method/returns "Self")
+              (!= (signature method id) (signature inherited/method inherited/owner)))
+        (return (fault "override_contract" name)))
+      (for parameter in method/params
+        (if (== parameter/1 "Self") (return (fault "override_contract" name))))))
+  (let declaration ($freeze {^parent parent ^fields fields ^methods methods}))
+  (success (world .assoc "types" (world/types .assoc id declaration))))
+
+# Supply the visible per-protocol method tables for this evaluation.
+(fn with_impl [world, protocol : Str, receiver : Str, methods : Map]
+  (let impl ($freeze {^protocol protocol ^receiver receiver ^methods methods}))
+  (let existing world/impls)
+  (world .assoc "impls" [existing... impl]))
+
+(fn ^^private resolve_message [world, receiver, protocol : Str, name : Str]
+  (match receiver
+    when (object : Instance)
+      (if (== protocol "")
+        (let method (direct_method world object/type_id name))
+        (if ($present? method) (return (success method)))
+      else
+        (for owner in (ancestors world object/type_id)
+          (var chosen nil)
+          (for impl in world/impls
+            (if (|| (!= impl/receiver owner) (!= impl/protocol protocol)) (continue))
+            (let method (impl/methods .get name))
+            (if ($absent? method) (continue))
+            (if ($present? chosen) (return (fault "ambiguous_message" name)))
+            (set chosen method))
+          (if ($present? chosen) (return (success {^owner owner ^method chosen})))))
+    else nil)
+  (if (&& (== protocol "") (["head" "props" "body" "meta"] .contains? name)
+          (match receiver when (_ : Node) true else false))
+    (return (success {^projection name})))
+  (fault "missing_message" name))
+
+(fn ^^private accepts [world, annotation : Str, value]
+  (match annotation
+    when "Any" true
+    when "Nil" ($absent? value)
+    when "Int" (== ($head value) Int)
+    when "Str" (== ($head value) Str)
+    when "Bool" (== ($head value) Bool)
+    else (match value
+      when (object : Instance) ((ancestors world object/type_id) .contains? annotation)
+      else false)))
+
+(fn ^^private projection [receiver, name : Str]
+  (match receiver
+    when (object : Instance)
+      (match name
+        when "head" object/type_id
+        when "props" object/fields
+        when "body" []
+        else {})
+    else (match name
+      when "head" ($head receiver)
+      when "props" ($props receiver)
+      when "body" ($body receiver)
+      else ($meta receiver))))
+
+(fn ^^private invoke_message [world, receiver, descriptor, arguments : List]
+  (if ($present? descriptor/projection)
+    (if (! arguments/.empty?) (return (fault "arity" descriptor/projection)))
+    (return (success (projection receiver descriptor/projection))))
+  (let method descriptor/method)
+  (if (!= method/params/.size arguments/.size) (return (fault "arity")))
+  (var bindings {^self receiver})
+  (var index 0)
+  (for parameter in method/params
+    (let value arguments/%index)
+    (let annotation (anchored parameter/1 descriptor/owner))
+    (if (! (accepts world annotation value)) (return (fault "argument_contract" annotation)))
+    (set bindings (bindings .assoc parameter/0 value))
+    (set index (+ index 1)))
+  (let result (evaluate world method/body bindings))
+  (if (!= result/kind "value") (return result))
+  (let annotation (anchored method/returns descriptor/owner))
+  (if (== annotation "Nil") (return (success nil)))
+  (if (! (accepts world annotation result/value)) (return (fault "return_contract" annotation)))
+  result)
+
+(fn send [world, receiver, name : Str, ^qualifier qualifier : Str = "", ^args args : List = []]
+  (let resolved (resolve_message world receiver qualifier name))
+  (if (!= resolved/kind "value") (return resolved))
+  (invoke_message world receiver resolved/value args))
+
+(fn ^^private read_name [world, receiver, name : Str]
+  (if ($absent? receiver) (return missing))
+  (match receiver
+    when (object : Instance)
+      (if ($has_key? object/fields name) (return (success (object/fields .get name))))
+      (for owner in (ancestors world object/type_id)
+        (let declaration (world/types .get owner))
+        (if (declaration/fields .contains? name) (return missing)))
+      (fault "unknown_field" name)
+    when (node : Node)
+      (let props ($props node))
+      (if ($has_key? props name) (success (props .get name)) else missing)
+    when (props : PropMap)
+      (if ($has_key? props name) (success (props .get name)) else missing)
+    when (_ : HashMap) missing
+    else (fault "invalid_lookup" name)))
+
+(fn ^^private read_index [receiver, index : Int]
+  (if ($absent? receiver) (return missing))
+  (let items (match receiver
+    when (object : Instance) []
+    when (node : Node) ($body node)
+    else (if (== ($head receiver) List) receiver else nil)))
+  (if ($absent? items) (return (fault "invalid_lookup" index)))
+  (let offset (if (< index 0) (+ items/.size index) else index))
+  (if (|| (< offset 0) (>= offset items/.size)) missing else (success items/%offset)))
+
+(fn ^^private split_message [name : Str]
+  (let parts ($str/split name ":"))
+  (if (== parts/.size 2) parts else ["" name]))
+
+(fn ^^private receiver_segment [segment]
+  (if (!= ($head segment) Sym) (return segment))
+  (let text ($to_str segment))
+  (if ($str/starts_with? text "~")
+    ($to_str "." ($str/slice_bytes text 1 (- ($str/byte_size text) 1)))
+    else text))
+
+(fn lookup_path [world, selector : ModelPath, receiver]
+  (var value receiver)
+  (var index 0)
+  (for segment in selector/segments
+    (let step (if (== ($head segment) Int)
+      (read_index value segment)
+      elif (&& (== ($head segment) Str) ($str/starts_with? segment "."))
+        (let name (split_message ($str/slice_bytes segment 1 (- ($str/byte_size segment) 1))))
+        (send world value name/1 ^qualifier name/0)
+      elif (== ($head segment) Str) (read_name world value segment)
+      else (fault "unsupported_segment" segment)))
+    (if (!= step/kind "value") (return (step .assoc "index" index)))
+    (set value step/value)
+    (set index (+ index 1)))
+  (success value))
+
+(fn apply_path [world, selector : ModelPath, receiver]
+  (let result (lookup_path world selector receiver))
+  (if (!= result/kind "missing") (return result))
+  (if selector/strict
+    (let index result/index)
+    (return {^kind "fault" ^code "PathMissing" ^segment selector/segments/%index ^index index}))
+  (if selector/has_default (return (success selector/fallback)))
+  (success nil))
+
+(fn ^^private evaluate_arguments [world, forms : List, bindings : Map]
+  (let arguments [])
+  (for form in forms
+    (let result (evaluate world form bindings))
+    (if (!= result/kind "value") (return result))
+    (arguments .push result/value))
+  (success arguments))
+
+(fn ^^private invoke [world, callee, arguments : List]
+  (match callee
+    when (closure : Closure)
+      (if (!= closure/parameters/.size arguments/.size) (return (fault "arity")))
+      (var bindings closure/bindings)
+      (var index 0)
+      (for name in closure/parameters
+        (set bindings (bindings .assoc name arguments/%index))
+        (set index (+ index 1)))
+      (var result (success nil))
+      (for form in closure/body
+        (set result (evaluate world form bindings))
+        (if (!= result/kind "value") (return result)))
+      result
+    when (selector : ModelPath)
+      (if (!= arguments/.size 1) (fault "arity") else (apply_path world selector arguments/0))
+    else (fault "not_callable")))
+
+(fn ^^private evaluate_node [world, form, bindings : Map]
+  (let head ($head form))
+  (let body ($body form))
+  (let props ($props form))
+  (let name (if (== ($head head) Sym) ($to_str head) else ""))
+  (match name
+    when "quote" (success body/0)
+    when "fn"
+      (let parameters ($map body/0 (fn [name] ($to_str name))))
+      (success (Closure ^parameters parameters ^body ($drop body 1) ^bindings bindings))
+    when "Path"
+      (let segments (evaluate_arguments world body bindings))
+      (if (!= segments/kind "value") (return segments))
+      (let fallback (evaluate world props/default bindings))
+      (if (!= fallback/kind "value") (return fallback))
+      (success (ModelPath ^segments segments/value ^strict (== props/strict true)
+        ^has_default ($has_key? props "default") ^fallback fallback/value))
+    when "path"
+      (let receiver (evaluate world body/0 bindings))
+      (if (!= receiver/kind "value") (return receiver))
+      (let segments ($map ($drop body 1) receiver_segment))
+      (apply_path world (make_path segments) receiver/value)
+    else
+      (if (! ($map_empty? props)) (return (fault "unsupported_named_arguments")))
+      (let receiver (evaluate world head bindings))
+      (if (!= receiver/kind "value") (return receiver))
+      (if (&& (== ($head body/0) Sym) (== ($to_str body/0) "~"))
+        (let selector body/1)
+        (let message (if (== ($head selector) Sym) ["" ($to_str selector)]
+          else (let parts ($body selector))
+            [(if (== parts/0 (quote Self)) "" else ($to_str parts/0)) ($to_str parts/1)]))
+        (let resolved (resolve_message world receiver/value message/0 message/1))
+        (if (!= resolved/kind "value") (return resolved))
+        (let args (evaluate_arguments world ($drop body 2) bindings))
+        (if (!= args/kind "value") (return args))
+        (return (invoke_message world receiver/value resolved/value args/value)))
+      (let args (evaluate_arguments world body bindings))
+      (if (!= args/kind "value") (return args))
+      (invoke world receiver/value args/value)))
+
+(fn evaluate [world, expression, bindings : Map = {}]
+  (match expression
+    when (selector : Path)
+      (let props ($props selector))
+      (success (ModelPath ^segments ($body selector) ^strict (== props/strict true)
+        ^has_default ($has_key? props "default") ^fallback props/default))
+    when (node : Node) (evaluate_node world node bindings)
+    when (symbol : Sym)
+      (let name ($to_str symbol))
+      (if ($has_key? bindings name) (success (bindings .get name)) else (fault "unbound" name))
+    when (items : List) (evaluate_arguments world items bindings)
+    when (entries : PropMap)
+      (let props {})
+      (map_for [key form] in entries
+        (let result (evaluate world form bindings))
+        (if (!= result/kind "value") (return result))
+        (props .put key result/value))
+      (success props)
+    when (_ : HashMap) (fault "unsupported_hash_map_literal")
+    else (success expression)))

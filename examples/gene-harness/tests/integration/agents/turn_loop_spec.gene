@@ -254,6 +254,8 @@ END
               (set initial event/payload)))
           ($assert ($str/contains? initial/full "[harness_budget]")
             "request/prepare did not add the budget item")
+          ($assert ($str/ends_with? ($str/trim initial/full) "turns remain after this response.")
+            "the budget item should report the remaining turns")
           ($assert (! ($str/contains? initial/settled "[harness_budget]"))
             "budget item contaminated settled history")
         ensure

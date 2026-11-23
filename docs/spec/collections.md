@@ -47,8 +47,9 @@ address a node as follows:
 | Int | body item, or the `IndexRead` witness on an indexed type | body item replaced; indexed types reject `assoc` | `set` follows the Int Path and `IndexWrite`; `push` appends to the body |
 
 `head`, `props`, `body`, and `meta` are ordinary stored-prop names for these
-messages when no prop shadows them. They are not anatomy aliases; Paths and
-the `$assoc_in` family retain their existing anatomy behavior.
+messages. Named Path reads also treat them as props. Use explicit projections
+such as `value/.head` to read anatomy. The `$assoc_in` family retains its
+anatomy rules for reconstructing nodes.
 
 ## JSON
 

@@ -35,13 +35,12 @@ named rest applies to each captured value, not to the map itself. Positional
 rest parameters are independent, so `[^attrs... body...]` collects the two
 channels separately.
 
-A Path with a symbol or string segment reads a stored prop first. When no
-stored prop shadows the name, it reads the node anatomy: `head` is the head,
-`props` and `meta` are the projections, and `body` is the positional body.
-The `$assoc_in` and `$dissoc_in` families keep this anatomy behavior. Keyed
-Node messages (`get`, `assoc`, `dissoc`, `put`, and `delete`) instead treat
-those names as ordinary stored props. See
-[collection views](collections.md#keyed-node-operations).
+A Path with a symbol or string name segment follows the
+[property lookup rules](nil-void.md#path-reads). For example, `q/head` reads the
+property named `head`, and `q/.head` reads the node's head. The keyed Node
+messages treat anatomy names as ordinary properties. The
+`$assoc_in` and `$dissoc_in` families retain their anatomy rules for
+reconstructing nodes. See [collection views](collections.md#keyed-node-operations).
 
 ## Failed calls
 
@@ -533,7 +532,8 @@ receiver path evaluates its base once, then resolves all dynamic segments in
 order, then traverses them. Segment resolution failures prevent traversal.
 `/a/b/.c/1` is a callable Path value with the segments of
 `(Path "a" "b" ".c" 1)`; `a/b/c` applies `/b/c` to `a` after evaluating `a`.
-Static scalar/key Path segments are pure. Callable, call-stage, and message
+A static scalar/key Path describes lookup as data. Its evaluation may invoke
+`IndexRead` on an indexed type. Callable, call-stage, and message
 segments are executable: they are non-serializable and invalid for `assoc_in`
 and `update_in`. Strict missing lookup raises `PathMissing` with `^segment`.
 `$key` forces literal-key lookup when a string begins with `.`. Path values

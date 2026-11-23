@@ -1,0 +1,109 @@
+(import $test [describe it])
+(import [empty_world declare_type instance with_impl send make_path lookup_path apply_path evaluate]
+  ^from "../src/model")
+
+(describe "Gene reference semantics"
+  (it "keeps quoted syntax as data and evaluates ordinary arguments eagerly" []
+    (let world (empty_world))
+    (let raw (quote (quote (unbound 7))))
+    ($assert (== (/value (evaluate world raw)) (quote (unbound 7))))
+    (let closure (quote (((fn [outer] (fn [inner] [outer inner])) 7) 8)))
+    ($assert (== (/value (evaluate world closure)) (((fn [outer] (fn [inner] [outer inner])) 7) 8)))
+    (let failure (evaluate world (quote ((fn [a b] 42) first_error second_error))))
+    ($assert (== failure {^kind "fault" ^code "unbound" ^detail "first_error"})))
+
+  (it "models Path identity and composition over plain data" []
+    (let world (empty_world))
+    (let data {^a {^b [10 20 30]}})
+    (let identity (apply_path world (make_path []) data))
+    ($assert (same? identity/value data))
+    ($assert (same? ((Path) data) data))
+    (let outer (apply_path world (make_path ["a" "b"]) data))
+    (let inner (apply_path world (make_path [-1]) outer/value))
+    (let combined (apply_path world (make_path ["a" "b" -1]) data))
+    ($assert (== combined inner))
+    ($assert (== combined/value (/a/b/-1 data)))
+    (let called (evaluate world (quote (/a/b/1 data)) {^data data}))
+    ($assert (== called/value data/a/b/1)))
+
+  (it "distinguishes a found nil, a missing step, and a fault" []
+    (let world (empty_world))
+    (let selector (make_path ["x"] ^default "absent"))
+    ($assert (== (lookup_path world selector {^x nil}) {^kind "value" ^value nil}))
+    ($assert (== (lookup_path world selector {}) {^kind "missing" ^index 0}))
+    ($assert (== (/value (apply_path world selector {})) ((Path ^default "absent" "x") {})))
+    ($assert (== (/value (apply_path world selector {^x nil})) ((Path ^default "absent" "x") {^x nil})))
+    ($assert (== (/code (apply_path world selector 7)) "invalid_lookup"))
+    (let keyed {{"x": 1}})
+    ($assert (== (/value (apply_path world selector keyed)) ((Path ^default "absent" "x") keyed)))
+    ($assert (== (/code (apply_path world (make_path [".head"]) nil)) "missing_message"))
+    (let strict (make_path ["a" "b"] ^^strict ^default "absent"))
+    ($assert (== (apply_path world strict {^a {}}) {^kind "fault" ^code "PathMissing" ^segment "b" ^index 1})))
+
+  (it "shows why reading and writing back a missing key changes a map" []
+    (let world (empty_world))
+    (let before {})
+    (let selector (make_path ["x"]))
+    (let read (apply_path world selector before))
+    (let after (before .assoc "x" read/value))
+    ($assert (== (apply_path world selector after) read))
+    ($assert (! ($has_key? before "x")))
+    ($assert ($has_key? after "x"))
+    ($assert (== after ($assoc_in before /x (/x before))))
+    ($assert (!= before after)))
+
+  (it "separates a property read from an anatomy message" []
+    (let world (empty_world))
+    (let row (quote (record 1 2)))
+    (let bindings {^row row})
+    (let read (evaluate world (quote row/head) bindings))
+    ($assert (== read {^kind "value" ^value nil}))
+    ($assert (== read/value row/head))
+    ($assert (== (/value (evaluate world (quote row/.head) bindings)) row/.head))
+    ($assert (== (/code (evaluate world (quote (row .unknown missing_arg)) bindings)) "missing_message"))
+    (let shadow (quote (record ^head "stored" 1)))
+    ($assert (== (/value (apply_path world (make_path ["head"]) shadow)) "stored"))
+    ($assert (== (/value (send world shadow "head")) (quote record))))
+
+  (it "preserves declared Self while passing the actual receiver to the method" []
+    (type Dog ^props {^name Str}
+      (message other_name [other : Self] : Str other/name)
+      (message label [] : Str self/name))
+    (type Pup : Dog)
+    (let declared (declare_type (empty_world) "Dog" ^fields ["name"]
+      ^methods {^other_name {^params [["other" "Self"]] ^returns "Str" ^body (quote other/name)}
+                ^label {^params [] ^returns "Str" ^body (quote self/name)}}))
+    ($assert (== declared/kind "value") ($to_str declared))
+    (let world (declare_type declared/value "Pup" ^parent "Dog"))
+    ($assert (== world/kind "value") ($to_str world))
+    (let dog (instance "Dog" {^name "Rex"}))
+    (let pup (instance "Pup" {^name "Pip"}))
+    (let native_pup (Pup ^name "Pip"))
+    (let native_dog (Dog ^name "Rex"))
+    ($assert (== (/value (send world/value pup "other_name" ^args [dog])) (native_pup .other_name native_dog)))
+    ($assert (== (/value (evaluate world/value (quote (pup .label)) {^pup pup})) native_pup/.label))
+    ($assert (== (/code (send world/value pup "other_name" ^args [{}])) "argument_contract"))
+    (let narrowed (declare_type declared/value "OtherPup" ^parent "Dog"
+      ^methods {^other_name {^^override ^params [["other" "Self"]] ^returns "Str" ^body (quote other/name)}}))
+    ($assert (== narrowed/code "override_contract"))
+    (let replaced (declare_type declared/value "Pup" ^parent "Dog"
+      ^methods {^other_name {^^override ^params [["other" "Dog"]] ^returns "Str" ^body (quote self/name)}}))
+    ($assert (== (/value (send replaced/value pup "other_name" ^args [dog])) "Pip")))
+
+  (it "resolves qualified messages from the supplied implementation world" []
+    (protocol Labelled (message label [] : Str))
+    (type Person ^props {^name Str})
+    (impl Labelled for Person (message label [] : Str self/name))
+    (let native_person (Person ^name "Ada"))
+    (let declared (declare_type (empty_world) "Person" ^fields ["name"]))
+    (let person (instance "Person" {^name "Ada"}))
+    (let methods {^label {^params [] ^returns "Str" ^body (quote self/name)}})
+    (let visible (with_impl declared/value "Labelled" "Person" methods))
+    ($assert (== (/value (evaluate visible (quote (person .Labelled:label)) {^person person})) (native_person .Labelled:label)))
+    ($assert (== (/value (evaluate visible (quote person/.Labelled:label) {^person person})) "Ada"))
+    ($assert (== (/value (apply_path visible (make_path [".Labelled:label"]) person)) "Ada"))
+    ($assert (== (/code (send visible person "label")) "missing_message"))
+    ($assert (== (/code (send declared/value person "label" ^qualifier "Labelled")) "missing_message"))
+    (let conflict (with_impl visible "Labelled" "Person"
+      {^label {^params [] ^returns "Str" ^body "different"}}))
+    ($assert (== (/code (send conflict person "label" ^qualifier "Labelled")) "ambiguous_message"))))

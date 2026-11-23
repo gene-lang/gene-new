@@ -22,6 +22,7 @@ demonstrate.
 | [macro.gene](macro.gene) | Template macros. |
 | [fexpr_demo.gene](fexpr_demo.gene) | Fexprs, which interpret syntax at runtime. |
 | [testing_demo.gene](testing_demo.gene) | The test library; also runs under `bin/gene test`. |
+| [semantics](semantics/README.md) | Executable reference rules for nodes, calls, Paths, and message dispatch. |
 
 ## Services and the web
 

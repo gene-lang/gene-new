@@ -1,0 +1,5 @@
+{^format 1
+ ^name "gene/semantics"
+ ^version "0.1.0"
+ ^description "Executable reference rules for a small Gene core"
+ ^library {^entry "src/model.gene"}}
