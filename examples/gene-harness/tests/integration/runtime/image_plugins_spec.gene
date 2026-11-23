@@ -1,15 +1,15 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [image_fixture evaluate_image review] ^from "../../fixtures/image")
-(import [png] ^from "../../fixtures/png")
-(import [plugin_admin] ^from "../../../src/builtin/plugin_admin")
-(import [close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
-(import [row] ^from "../../../src/kernel")
+(import isolated run_spec ^from "../../support")
+(import image_fixture evaluate_image review ^from "../../fixtures/image")
+(import png ^from "../../fixtures/png")
+(import plugin_admin ^from "../../../src/builtin/plugin_admin")
+(import close_runtime ^from "../../../src/runtime/bootstrap")
+(import evaluate_harness_turn ^from "../../../src/agents/harness_turn")
+(import row ^from "../../../src/kernel")
 
 (fn workflow_source [delay : Int, ^repair_delay repair_delay : Int = 0]
   `(mod plugin
-    (import [Plugin PluginHost ImageHost] ^from "src/plugin_api.gene")
+    (import Plugin PluginHost ImageHost ^from "src/plugin_api.gene")
     (fn init [descriptor]
       (Plugin ^id "image" ^requires ["image/runtime"]
         ^provides [["functions" "image_generate"] ["docs" "image/usage"]]
@@ -44,7 +44,7 @@
 (fn generator_source [delay : Int]
   (let encoded ($base64/encode (png ^note "stored generator")))
   `(mod plugin
-    (import [Plugin PluginHost ImageHost] ^from "src/plugin_api.gene")
+    (import Plugin PluginHost ImageHost ^from "src/plugin_api.gene")
     (fn init [descriptor]
       (Plugin ^id "mock_image" ^requires ["image/runtime"] ^provides [["image_generators" "mock"]]
         ^activate (fn [host]

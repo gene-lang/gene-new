@@ -2,10 +2,10 @@
 
 (import $test [describe it after_each assert_equal assert_raises])
 
-(import [InstanceState RuntimeOptions ServiceKey Requirement PluginSpec
+(import InstanceState RuntimeOptions ServiceKey Requirement PluginSpec
          DuplicateProvider DependenciesUnavailable ServiceContractError
          ConfigValidationError
-         invocation_limits service_key default_plugin_invoker new_runtime]
+         invocation_limits service_key default_plugin_invoker new_runtime
   ^from "../src/cordis")
 
 (protocol Greeting

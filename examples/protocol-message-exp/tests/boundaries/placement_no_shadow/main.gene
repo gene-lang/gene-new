@@ -1,8 +1,8 @@
 # Impls never shadow. A function may import the pair its module already has (a
 # no-op), but importing a different provider of that pair is a conflict.
-(import [Article] ^from "../common/model")
-(import [Render] ^from "../common/contracts")
-(import [attempt] ^from "../common/util")
+(import Article ^from "../common/model")
+(import Render ^from "../common/contracts")
+(import attempt ^from "../common/util")
 (import_impl Render for Article ^from "../common/plain")
 (fn same [article]
   (import_impl Render for Article ^from "../common/plain")

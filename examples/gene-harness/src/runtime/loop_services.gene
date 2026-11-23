@@ -2,17 +2,17 @@
 # supplied runtime and controller; this graph owns their execution lifetime
 # with the channel service and drains the controller before channels close.
 (mod loop_services)
-(import [new_host_services start_host_services HostServiceError] ^from "./host_services")
-(import [close_round_controller resume_answered_rounds resume_continuations]
+(import new_host_services start_host_services HostServiceError ^from "./host_services")
+(import close_round_controller resume_answered_rounds resume_continuations
   ^from "./round_controller")
-(import [start_delegation_host] ^from "./delegations")
-(import [open_channel_service close_channel_service] ^from "../channels/service")
-(import [channel_host_binding] ^from "../channels/host")
-(import [admission_host_binding] ^from "./admission_host")
-(import [start_manager_polling] ^from "./workspace_manager")
-(import [provide withdraw_seam] ^from "../kernel")
-(import [quiesce_services] ^from "./activation_services")
-(import [open_housekeeping close_housekeeping] ^from "./housekeeping")
+(import start_delegation_host ^from "./delegations")
+(import open_channel_service close_channel_service ^from "../channels/service")
+(import channel_host_binding ^from "../channels/host")
+(import admission_host_binding ^from "./admission_host")
+(import start_manager_polling ^from "./workspace_manager")
+(import provide withdraw_seam ^from "../kernel")
+(import quiesce_services ^from "./activation_services")
+(import open_housekeeping close_housekeeping ^from "./housekeeping")
 
 (fn close_bindings [ctx] ^^private
   (if (== ctx/bindings_closed true) (return nil))

@@ -1,11 +1,11 @@
 # Verify the current website example without a model, including restart recovery.
 # Run from any directory; the fixture project and Harness state use a scratch workspace.
 (mod project_audit_check)
-(import [module_dir row] ^from "../../../src/kernel")
-(import [register_plugin] ^from "../../../src/storage/workspace")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [offline_profile] ^from "../../../src/profiles/offline")
-(import [submit_command command_receipt] ^from "../../../src/runtime/commands")
+(import module_dir row ^from "../../../src/kernel")
+(import register_plugin ^from "../../../src/storage/workspace")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import offline_profile ^from "../../../src/profiles/offline")
+(import submit_command command_receipt ^from "../../../src/runtime/commands")
 
 (let example_dir (module_dir this_mod/.path))
 (let package_root ($path/parent ($path/parent ($path/parent example_dir))))

@@ -4,7 +4,6 @@
 (mod cordis)
 
 (import ^from "./runtime" ^^export
-  [
     InstanceState
     PluginCallKind
     HookMode
@@ -58,4 +57,4 @@
     spawn_host_call
     config_update
     hmr_reloaded
-    new_runtime])
+    new_runtime)

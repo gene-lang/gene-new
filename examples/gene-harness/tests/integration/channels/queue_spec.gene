@@ -1,12 +1,12 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_authority configure_account configure_route authorize authorize_parts]
+(import isolated run_spec ^from "../../support")
+(import open_authority configure_account configure_route authorize authorize_parts
   ^from "../../../src/channels/authority")
-(import [open_queues configure_queues enqueue activate_binding tombstone_session
+(import open_queues configure_queues enqueue activate_binding tombstone_session
          pending_parts queue_status hold_queue resume_queue observe_round claim_batch
-         finish_admission release_batch snapshot close_channel_store discard_inputs]
+         finish_admission release_batch snapshot close_channel_store discard_inputs
   ^from "../../../src/channels/queue")
-(import [ChannelError] ^from "../../../src/channels/model")
+(import ChannelError ^from "../../../src/channels/model")
 
 (fn fixture [workspace, body]
   (let owner (open_authority ($path/join workspace "owner")))

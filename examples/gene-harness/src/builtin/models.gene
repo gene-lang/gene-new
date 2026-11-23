@@ -1,9 +1,9 @@
 (mod models_plugin)
-(import [Plugin PluginHost ModelsHost] ^from "../plugin_api")
-(import [list_catalog_models] ^from "../public/model_catalog")
-(import [contribute_text_doc] ^from "../public/documentation")
-(import [model_page] ^from "../public/model_page")
-(import [resolve_effort] ^from "../public/models")
+(import Plugin PluginHost ModelsHost ^from "../plugin_api")
+(import list_catalog_models ^from "../public/model_catalog")
+(import contribute_text_doc ^from "../public/documentation")
+(import model_page ^from "../public/model_page")
+(import resolve_effort ^from "../public/models")
 
 (const effort_levels ["auto" "none" "minimal" "low" "medium" "high" "xhigh" "max"])
 

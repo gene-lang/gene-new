@@ -55,7 +55,7 @@ class NativeModulePackageTests(unittest.TestCase):
 ''')
             (app / "src/main.gene").write_text('''
 (import $io [IoResource])
-(import [open] ^from "." ^pkg "module")
+(import open ^from "." ^pkg "module")
 (fn main [args] : Int
   (let baseline_roots (/native_roots ($runtime/gc_stats)))
   (let package ($pkg/dependency this_pkg "module"))

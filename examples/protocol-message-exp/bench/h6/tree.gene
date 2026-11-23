@@ -10,7 +10,7 @@
 # The recipe yields Section 234, Article 466, Figure 200, Chart 100, depth 8.
 # Leaf text is fixed by the node number: "a<n>" titles, "x<n>" text and "c<n>"
 # captions. The root is level 1 and a level-8 node never has children.
-(import [Section Article Figure Chart] ^from "./model")
+(import Section Article Figure Chart ^from "./model")
 
 (let node_count 1000)
 (let max_level 8)

@@ -1,8 +1,8 @@
 # A namespace body is a scope of its own, for import and import_impl alike: the
 # namespace's functions see the pair, the rest of the module does not.
-(import [Article] ^from "../common/model")
-(import [Render] ^from "../common/contracts")
-(import [attempt] ^from "../common/util")
+(import Article ^from "../common/model")
+(import Render ^from "../common/contracts")
+(import attempt ^from "../common/util")
 (let article (Article ^title "A"))
 (ns policy
   (import_impl Render for Article ^from "../common/plain")

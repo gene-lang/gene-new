@@ -1,9 +1,9 @@
 # Plain nested blocks and conditionals inside a function share the function's
 # scope, as they do for import: the pair reaches the rest of that call, and a
 # value can decide whether the call imports it.
-(import [Article] ^from "../common/model")
-(import [Render] ^from "../common/contracts")
-(import [attempt] ^from "../common/util")
+(import Article ^from "../common/model")
+(import Render ^from "../common/contracts")
+(import attempt ^from "../common/util")
 (fn show [flag article]
   (do (if flag (import_impl ^from "../common/plain" Render for Article)))
   (attempt (fn [] article/.Render:render)))

@@ -1,13 +1,13 @@
 # Tests image generation in a command-owned response context.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [image_fixture review] ^from "../../fixtures/image")
-(import [core_commands] ^from "../../../src/builtin/core_commands")
-(import [repl] ^from "../../../src/builtin/repl")
-(import [submit_mode_input mode_state] ^from "../../../src/runtime/input_modes")
-(import [submit_command command_receipt] ^from "../../../src/runtime/commands")
-(import [read_image_run] ^from "../../../src/storage/image_runs")
-(import [close_runtime] ^from "../../../src/runtime/bootstrap")
+(import isolated run_spec ^from "../../support")
+(import image_fixture review ^from "../../fixtures/image")
+(import core_commands ^from "../../../src/builtin/core_commands")
+(import repl ^from "../../../src/builtin/repl")
+(import submit_mode_input mode_state ^from "../../../src/runtime/input_modes")
+(import submit_command command_receipt ^from "../../../src/runtime/commands")
+(import read_image_run ^from "../../../src/storage/image_runs")
+(import close_runtime ^from "../../../src/runtime/bootstrap")
 
 (describe "Operator image evaluation"
   (it "generates and reviews an image from /run with a command-owned origin" []

@@ -459,8 +459,8 @@ type
                                  # reference is pending on either side
 
   ImportSelection* = object
-    name*: string         # exported name in the source
-    local*: string        # local name to bind (== name unless aliased)
+    name*: string         # slash-separated path to the source export
+    local*: string        # final path segment unless explicitly aliased
 
   MacroDefault* = object
     optional*: bool
@@ -601,7 +601,7 @@ type
     pkgName*: string                  # `^pkg "owner/name"`, or "" for the
                                       # importing module's own package
     nsSegments*: seq[string]          # namespace-path segments (e.g. std/stream)
-    alias*: string                    # `* : alias` / `source : alias`, or ""
+    alias*: string                    # `*:alias` / `source:alias`, or ""
     wildcard*: bool                   # bare/aliased `*` or `n/*`
     wildcardSegments*: seq[string]    # namespace subtree inside a file module
     wildcardNames*: seq[string]       # guaranteed runtime exports in that subtree

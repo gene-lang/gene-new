@@ -1,7 +1,7 @@
 # Provider-independent image parts. Binary assets are expanded only at the
 # model boundary; durable conversation history keeps media IDs instead.
 (mod model_content)
-(import [ProviderError] ^from "../plugin_api")
+(import ProviderError ^from "../plugin_api")
 
 (fn message_images [message]
   (let images (?? message/images []))

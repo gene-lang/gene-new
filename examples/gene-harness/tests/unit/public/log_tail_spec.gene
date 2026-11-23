@@ -1,7 +1,7 @@
 (import $test [describe it run])
-(import [read_log] ^from "../../../src/public/log_tail")
-(import [redact_secrets] ^from "../../../src/public/log_redaction")
-(import [make_record serialize_record] ^from "../../../src/public/log_record")
+(import read_log ^from "../../../src/public/log_tail")
+(import redact_secrets ^from "../../../src/public/log_redaction")
+(import make_record serialize_record ^from "../../../src/public/log_record")
 
 # The cursor contract from tmp/gene-web-editor.md: byte offsets on line
 # boundaries, a prefix digest per segment, carried incomplete lines, rotation

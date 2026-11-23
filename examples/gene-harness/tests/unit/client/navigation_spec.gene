@@ -1,5 +1,5 @@
 (import $test [describe it run])
-(import [default_view initial_view find_view presentation_for return_view]
+(import default_view initial_view find_view presentation_for return_view
   ^from "../../../client/ui/navigation")
 
 (describe "Workspace view navigation"

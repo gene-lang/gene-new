@@ -1,7 +1,7 @@
 # One cookie-backed appearance controller per document. GETs never write.
 (mod browser_appearance ^profile web)
-(import [api_root] ^from "../src/web/contract.gene")
-(import [text flag] ^from "../src/common/launcher.gene")
+(import api_root ^from "../src/web/contract.gene")
+(import text flag ^from "../src/common/launcher.gene")
 
 (type BrowserAppearance ^props {^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)
   ^changed (Fn [Any] Nil) ^error (Fn [Any] Nil) ^report (Fn [Any] Nil)

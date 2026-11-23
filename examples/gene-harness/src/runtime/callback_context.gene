@@ -1,9 +1,9 @@
 # Public adapters are installed by feature registry specs before supervision.
 # Direct kernel rows retain raw contexts, including under leases.
 (mod callback_context)
-(import [CommandContext] ^from "../plugin_api")
-(import [admit_command_alias original_command_context] ^from "./command_scope")
-(import [freeze_turn_data] ^from "./turn_data")
+(import CommandContext ^from "../plugin_api")
+(import admit_command_alias original_command_context ^from "./command_scope")
+(import freeze_turn_data ^from "./turn_data")
 
 (fn public_command_context [context : CommandContext]
   (let original (original_command_context context))

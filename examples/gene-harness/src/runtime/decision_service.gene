@@ -3,19 +3,19 @@
 # validation, fences, traces and outage notices. It never raises for engine or
 # transport problems: every failure is a status the caller maps to its default.
 (mod decision_service)
-(import [DecisionHost ServiceError ExecutionLimits] ^from "../plugin_api")
-(import [row row_record registry_row_records] ^from "../kernel")
-(import [effective_config] ^from "./settings_resolver")
-(import [supervised_call] ^from "./call_supervision")
-(import [append_core_event] ^from "../storage/state")
-(import [call_model] ^from "../agents/model_call")
-(import [select_provider catalog_snapshot selection_metadata catalog_default_model]
+(import DecisionHost ServiceError ExecutionLimits ^from "../plugin_api")
+(import row row_record registry_row_records ^from "../kernel")
+(import effective_config ^from "./settings_resolver")
+(import supervised_call ^from "./call_supervision")
+(import append_core_event ^from "../storage/state")
+(import call_model ^from "../agents/model_call")
+(import select_provider catalog_snapshot selection_metadata catalog_default_model
   ^from "../agents/provider_selection")
-(import [resolve_effort] ^from "../public/models")
-(import [nonempty] ^from "../public/provider")
-(import [safe_publish] ^from "../notifications/publisher")
-(import [immutable_view] ^from "./composition")
-(import [byte_prefix] ^from "../public/text")
+(import resolve_effort ^from "../public/models")
+(import nonempty ^from "../public/provider")
+(import safe_publish ^from "../notifications/publisher")
+(import immutable_view ^from "./composition")
+(import byte_prefix ^from "../public/text")
 
 (const question_types ["choice" "score" "noul"])
 (const engine_statuses ["unavailable" "timeout" "rate_limited" "too_large" "stale" "error"])

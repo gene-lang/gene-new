@@ -1,7 +1,7 @@
 (mod media_input)
-(import [open_media_store media_record media_bytes media_text MediaError] ^from "../storage/media")
-(import [byte_prefix] ^from "../public/text")
-(import [media_document] ^from "../storage/documents")
+(import open_media_store media_record media_bytes media_text MediaError ^from "../storage/media")
+(import byte_prefix ^from "../public/text")
+(import media_document ^from "../storage/documents")
 
 (fn image_part [store, id : Str, detail : Str, inventory]
   (if_not (["auto" "low" "high"] .contains? detail)

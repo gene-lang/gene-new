@@ -1,6 +1,6 @@
 (mod instructions)
-(import [api_root] ^from "../web/contract.gene")
-(import ^from "../kernel" [rows contribute])
+(import api_root ^from "../web/contract.gene")
+(import ^from "../kernel" rows contribute)
 
 (const discovery_instructions """
 (discover "topic") searches active documentation and capabilities by names, summaries and tags; results include owners, callable signatures and chapter references. All query words must match: use one focused topic or exact name per call, and batch separate queries when needed. Narrow with ^kind "docs" or "functions", or ^owner "plugin_id". Results are paged: pass next_offset as ^offset to continue. (doc "chapter/name") loads one chapter. These helpers are always available; discovered functions are already callable in response code, /run and the REPL.
@@ -41,7 +41,7 @@ report body
 END
 """)
 
-(import [reference_path] ^from "../public/documentation" ^^export)
+(import reference_path ^from "../public/documentation" ^^export)
 
 (fn render_context [runtime, session_record]
   (let settings (?? session_record/model_settings {}))

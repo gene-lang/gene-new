@@ -1,10 +1,10 @@
 (mod harness_client_view ^profile web)
 
-(import [markdown_view reply_summary] ^from "./markdown.gene")
-(import [code_view] ^from "./highlight.gene")
-(import [run_label terminal first_prompt_block status_text status_flag] ^from "./state.gene")
-(import [attachment_view] ^from "./media.gene")
-(import [author_line] ^from "./slack_users.gene")
+(import markdown_view reply_summary ^from "./markdown.gene")
+(import code_view ^from "./highlight.gene")
+(import run_label terminal first_prompt_block status_text status_flag ^from "./state.gene")
+(import attachment_view ^from "./media.gene")
+(import author_line ^from "./slack_users.gene")
 
 (fn execution_view [text : Str, summary : Str, is_gene : Bool,
                     expanded : Bool, on_copy : (Fn [Str] Nil),

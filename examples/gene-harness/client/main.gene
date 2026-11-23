@@ -1,37 +1,36 @@
 (mod harness_client ^profile web)
-(import ^from "./appearance.gene" [BrowserAppearance start_appearance appearance_event])
-(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
-(import [api_root client_record_limit] ^from "../src/web/contract.gene")
+(import ^from "./appearance.gene" BrowserAppearance start_appearance appearance_event)
+(import storage_get storage_set storage_remove ^from "./workspace_storage.gene")
+(import api_root client_record_limit ^from "../src/web/contract.gene")
 
-(import [initialize_delegation begin_delegation_render delegation_recovery set_delegation_recovery
-  render_delegation render_delegation_recovery] ^from "./delegation_ui.gene")
-(import [Client SessionTab] ^from "./workspace_model.gene" ^^export)
-(import [FeatureHost] ^from "./feature_host.gene")
-(import [render_session_title : slack_title resolve_slack_author : slack_author add_session_to_slack : slack_share pending_session : slack_pending] ^from "./slack_ui.gene")
-(import [voice_pending? : pending_voice voice_replay_handler : replay_voice voice_rounds : rounds_voice
-  voice_submit : submit_voice voice_review_key : review_key_voice reviewed_voice_input : input_voice
-  initialize_voice : initialize_voice_feature configure_voice
-  browser_capabilities : voice_capabilities] ^from "./voice_glue.gene")
-(import [model_capabilities model_allows_submit attach_model_draft model_draft_admitted transfer_model_draft]
+(import initialize_delegation begin_delegation_render delegation_recovery set_delegation_recovery
+  render_delegation render_delegation_recovery ^from "./delegation_ui.gene")
+(import Client SessionTab ^from "./workspace_model.gene" ^^export)
+(import FeatureHost ^from "./feature_host.gene")
+(import render_session_title:slack_title resolve_slack_author:slack_author add_session_to_slack:slack_share pending_session:slack_pending ^from "./slack_ui.gene")
+(import voice_pending?:pending_voice voice_replay_handler:replay_voice voice_rounds:rounds_voice
+  voice_submit:submit_voice voice_review_key:review_key_voice reviewed_voice_input:input_voice
+  initialize_voice:initialize_voice_feature configure_voice
+  browser_capabilities:voice_capabilities ^from "./voice_glue.gene")
+(import model_capabilities model_allows_submit attach_model_draft model_draft_admitted transfer_model_draft
   ^from "./model_glue.gene")
 
-(import [LiveOutput create_output output_entry receive_output output_text historical_records
-  turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open command_output_text]
+(import LiveOutput create_output output_entry receive_output output_text historical_records
+  turn_output_key command_output_key clear_session_output output_epoch interrupt_output observe_output output_open command_output_text
   ^from "./live_output.gene")
-(import [BrowserClients create_clients update_clients update_outlets] ^from "./browser_clients.gene")
-(import [FeatureEvents create_feature_events subscribe_feature feature_subscribed? emit_feature_event]
+(import BrowserClients create_clients update_clients update_outlets ^from "./browser_clients.gene")
+(import FeatureEvents create_feature_events subscribe_feature feature_subscribed? emit_feature_event
   ^from "./feature_events.gene")
-(import [SessionMenu create_session_menu open_session_menu bind_session_menu finish_session_menu_render]
+(import SessionMenu create_session_menu open_session_menu bind_session_menu finish_session_menu_render
   ^from "./session_menu.gene")
-(import [CommandClient create_commands configure_commands dispatch_command recover_command forget_command] ^from "./command_client.gene")
-(import [RoundClient create_rounds configure_rounds dispatch_round recover_round forget_round] ^from "./round_client.gene")
-(import [claim_modal release_modal keyboard_owned?] ^from "./overlays.gene")
-(import [items : launcher_items flag : launcher_flag] ^from "../src/common/launcher.gene")
-(import [can_share_session? session_share_pending? session_share_busy? session_share_label]
+(import CommandClient create_commands configure_commands dispatch_command recover_command forget_command ^from "./command_client.gene")
+(import RoundClient create_rounds configure_rounds dispatch_round recover_round forget_round ^from "./round_client.gene")
+(import claim_modal release_modal keyboard_owned? ^from "./overlays.gene")
+(import items:launcher_items flag:launcher_flag ^from "../src/common/launcher.gene")
+(import can_share_session? session_share_pending? session_share_busy? session_share_label
   ^from "./slack_channels.gene")
 
 (import ^from "./state.gene"
-  [
     terminal
     merge_blocks
     delegation_snapshot
@@ -45,30 +44,29 @@
     record_sequence
     run_label
     revision_before
-    status_is_current])
-(import ^from "../src/web/contract.gene" [protocol_version])
-(import ^from "./view.gene" [block_view step_view run_status_view not_durable append_history_start])
-(import [session_link dint dlist] ^from "./delegations.gene")
+    status_is_current)
+(import ^from "../src/web/contract.gene" protocol_version)
+(import ^from "./view.gene" block_view step_view run_status_view not_durable append_history_start)
+(import session_link dint dlist ^from "./delegations.gene")
 (import ^from "./media.gene"
-  [MediaComposer create_media media_select media_move media_ids media_has
-   media_blocked media_admitted media_controls])
-(import ^from "./components.gene" [render_slot])
-(import [create_editor_panel configure_editor editor_available? editor_open? open_editor close_editor EditorPanel]
+  MediaComposer create_media media_select media_move media_ids media_has
+   media_blocked media_admitted media_controls)
+(import ^from "./components.gene" render_slot)
+(import create_editor_panel configure_editor editor_available? editor_open? open_editor close_editor EditorPanel
   ^from "./editor.gene")
-(import ^from "./ui/model.gene" [UiClient UiNavigation copy_map persist_view])
-(import ^from "./ui/router.gene" [navigate update_url run_action action_chord])
-(import ^from "./ui/chords.gene" [event_chord])
-(import ^from "./ui/navigation.gene" [go view_url])
-(import ^from "./sidebar.gene" [close_mobile_sidebar update_sidebar])
-(import ^from "./notices.gene" [Notices create_notices put_notice remove_notice])
-(import ^from "./confirmations.gene" [Confirmations create_confirmations command_confirmation])
-(import ^from "./question_state.gene" [waiting_batch])
+(import ^from "./ui/model.gene" UiClient UiNavigation copy_map persist_view)
+(import ^from "./ui/router.gene" navigate update_url run_action action_chord)
+(import ^from "./ui/chords.gene" event_chord)
+(import ^from "./ui/navigation.gene" go view_url)
+(import ^from "./sidebar.gene" close_mobile_sidebar update_sidebar)
+(import ^from "./notices.gene" Notices create_notices put_notice remove_notice)
+(import ^from "./confirmations.gene" Confirmations create_confirmations command_confirmation)
+(import ^from "./question_state.gene" waiting_batch)
 (import ^from "./cards.gene"
-  [CardHost create_card_host card_defined card_observed card_view card_update_line answered_view])
+  CardHost create_card_host card_defined card_observed card_view card_update_line answered_view)
 (import ^from "./question_editors.gene"
-  [QuestionEditors create_question_editors mount_question question_ready resume_replies])
+  QuestionEditors create_question_editors mount_question question_ready resume_replies)
 (import ^from "./notification_center.gene"
-  [
     NotificationCenter
     create_center
     center_ready
@@ -76,12 +74,12 @@
     center_snapshot
     toggle_center
     invalidate_questions
-    update_center_count])
+    update_center_count)
 (import ^from "./producer_inbox.gene"
-  [ProducerInbox create_producer_inbox producer_ready producer_event opened_inbox])
+  ProducerInbox create_producer_inbox producer_ready producer_event opened_inbox)
 (import ^from "./ui/controller.gene"
-  [create : create_ui update : update_ui controls : ui_controls event : ui_event open_reference
-   outlet_nodes set_appearance : ui_appearance])
+  create:create_ui update:update_ui controls:ui_controls event:ui_event open_reference
+   outlet_nodes set_appearance:ui_appearance)
 
 
 (fn ensure_feature_host [client : Client] : Nil

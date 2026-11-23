@@ -10,7 +10,7 @@
 # A case expects either `ok` (exit 0, stdout equals expected.txt) or `error`
 # (non-zero exit, the first stderr line equals expected.txt) - the latter is
 # how compile-time rejections of a whole entry module are checked.
-(import [cases] ^from "./cases")
+(import cases ^from "./cases")
 
 (fn capture [executable arguments]
   (await ($os/exec_async executable arguments... ^timeout_ms 120000 ^max_bytes 1048576)))

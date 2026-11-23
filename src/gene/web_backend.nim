@@ -1623,22 +1623,21 @@ proc webErrorRow(analysis: WebAnalysis, form: Value, loc: SourceLoc): seq[WebTyp
 
 proc parseWebImport(form: Value, loc: SourceLoc,
                     importerPath: string): WebImport =
-  if form.body.len >= 2 and form.body[^2].isSym("from") and
-      form.body[^1].kind == vkString:
-    raise webError(loc,
-      "import: `from` was removed; use `^from \"path\"`")
-  if form.body.len != 1 or form.body[0].kind != vkList or
-      not form.props.hasKey("from"):
-    raise webError(loc,
-      "web imports must be `(import [names] ^from \"./relative.gene\")`")
-  rejectUnknownProps(form, loc, "import", ["from", "export"])
-  if form.props["from"].kind != vkString:
-    raise webError(loc, "web import ^from must be a path string")
-  if form.props.hasKey("export"):
-    if form.props["export"].kind != vkBool:
-      raise webError(loc, "web import ^export must be a literal Bool")
-    result.reexport = form.props["export"].boolVal
-  result.sourcePath = form.props["from"].strVal
+  if not form.props.hasKey("from") and not
+      (form.body.len >= 2 and form.body[^2].isSym("from") and
+       form.body[^1].kind == vkString):
+    raise webError(loc, "web imports must use `^from \"./relative.gene\"`")
+  let spec =
+    try: parseImportSpec(form)
+    except GeneError as error: raise webError(loc, error.msg)
+  if spec.pkgName.len > 0:
+    raise webError(loc, "package imports are outside the web profile")
+  if spec.wildcard:
+    raise webError(loc, "wildcard imports are outside the web profile")
+  if spec.selections.len == 0:
+    raise webError(loc, "web imports require at least one selection")
+  result.reexport = spec.reexport
+  result.sourcePath = spec.modulePath
   if not (result.sourcePath.startsWith("./") or
           result.sourcePath.startsWith("../")):
     raise webError(loc, "web imports must use a relative module path")
@@ -1647,27 +1646,9 @@ proc parseWebImport(form: Value, loc: SourceLoc,
   if splitFile(result.resolvedPath).ext.len == 0:
     result.resolvedPath.add ".gene"
   result.loc = loc
-  var i = 0
-  let items = form.body[0].listItems
-  while i < items.len:
-    if items[i].isSym(","):
-      inc i
-      continue
-    if items[i].kind != vkSymbol:
-      raise webError(loc, "web import selections must be names")
-    let sourceName = items[i].symVal
-    var localName = sourceName
-    if i + 2 < items.len and items[i + 1].isSym(":"):
-      if items[i + 2].kind != vkSymbol:
-        raise webError(loc, "web import alias must be a name")
-      localName = items[i + 2].symVal
-      inc i, 3
-    else:
-      inc i
-    result.selections.add WebImportSelection(sourceName: sourceName,
-                                              localName: localName)
-  if result.selections.len == 0:
-    raise webError(loc, "web import requires at least one selection")
+  for selection in spec.selections:
+    result.selections.add WebImportSelection(sourceName: selection.name,
+                                             localName: selection.local)
 
 proc parseWebExtern(analysis: WebAnalysis, form: Value,
                     loc: SourceLoc): WebExtern =
@@ -10191,6 +10172,9 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line()
   for fn in module.functions:
     emitter.emitFunction(fn)
+    if fn.namespacePath.len > 0:
+      emitter.line("export { " & fn.emittedName & " as " &
+        mangleWebName(fn.sourceName) & " };")
   if module.namespaces.len > 0:
     for i in countdown(module.namespaces.high, 0):
       let namespace = module.namespaces[i]
@@ -10347,7 +10331,7 @@ proc emitDeclarations(module: WebModule): string =
         "): " & tsType(methodDecl.returnType) & ";\n"
     result.add "}\n"
   for fn in module.functions:
-    if not fn.publicExport: continue
+    if not fn.publicExport and fn.namespacePath.len == 0: continue
     var params: seq[string]
     for i, param in fn.params:
       params.add param.emittedName & (if param.optional and fn.params[i .. ^1].allIt(it.optional): "?" else: "") & ": " &
@@ -10356,7 +10340,7 @@ proc emitDeclarations(module: WebModule): string =
     if fn.namedRest.namedRest:
       params.add fn.namedRest.emittedName & ": Record<string, " &
         tsType(fn.namedRest.typ) & ">"
-    result.add "export declare function " & fn.emittedName & "(" &
+    result.add "export declare function " & mangleWebName(fn.sourceName) & "(" &
       params.join(", ") & "): " &
       (if fn.async: "Promise<" & tsType(fn.returnType) & ">"
        else: tsType(fn.returnType)) & ";\n"
@@ -10726,7 +10710,11 @@ proc loadWebGraph(sourcePath: string,
   proc resolveExport(module: WebModule, name: string):
       tuple[owner: WebModule, name: string] =
     for fn in module.functions:
-      if fn.publicExport and fn.sourceName == name: return (module, name)
+      if (fn.publicExport or fn.namespacePath.len > 0) and fn.sourceName == name:
+        return (module, name)
+    for namespace in module.namespaces:
+      if namespace.path.join("/") == name:
+        raise webError(module.loc, "namespace-valued imports are outside the web profile: " & name)
     for constant in module.constants:
       if not constant.imported and constant.sourceName == name:
         return (module, name)

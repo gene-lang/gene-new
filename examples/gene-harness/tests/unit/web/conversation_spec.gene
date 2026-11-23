@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [project_conversation conversation_page] ^from "../../../src/web/conversation")
+(import project_conversation conversation_page ^from "../../../src/web/conversation")
 
 (fn record [phase, turn, text, seq, ^props props = {}]
   (let value {^id $"s/${seq}" ^seq ($to_str seq) ^round_id "r" ^turn turn

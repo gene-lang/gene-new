@@ -1,6 +1,6 @@
 (mod slack_session_title ^profile web)
-(import [api_root] ^from "../src/web/contract.gene")
-(import [text : string_value] ^from "../src/common/launcher.gene")
+(import api_root ^from "../src/web/contract.gene")
+(import text:string_value ^from "../src/common/launcher.gene")
 
 (type SlackSessionTitle ^props {^text Str ^target EventTarget ^rendered_text Str? ^rendered_url Str?})
 

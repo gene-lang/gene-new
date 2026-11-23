@@ -4,8 +4,8 @@
 # toolbar no longer carries a Triggers button. Mounted by the host bridge;
 # removed with the plugin.
 (mod triggers_client ^profile web)
-(import [api_root] ^from "../../src/web/contract.gene")
-(import [text] ^from "../../src/common/launcher.gene")
+(import api_root ^from "../../src/web/contract.gene")
+(import text ^from "../../src/common/launcher.gene")
 
 (fn route [suffix : Str] : Str $"${(api_root)}/p/triggers${suffix}")
 

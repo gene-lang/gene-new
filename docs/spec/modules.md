@@ -27,10 +27,20 @@ budgets bound the second.
   origin and digest, so multiple versions can coexist through separate aliases.
   Sync materializes immutable source objects. A matching vendor object takes
   precedence over the user cache; a corrupt candidate is not silently bypassed.
-- File imports use a literal string property: `(import x ^from "x.gene")`.
-  Selections and `source : alias` remain positional; `^from` may appear before
-  or after them. The old positional `from "path"` clause is rejected.
-  Namespace imports retain `(import source [names])` and `(import source : alias)`.
+- File imports use a literal `^from` string and a sequence of selectors.
+  `^from` may appear before or after the selectors. The compiler rejects the
+  positional `from "path"` clause and any whitespace around an alias colon.
+  `(import a/[b:bb c/[d e]] ^from "x.gene")` binds `bb`, `d`, and `e`
+  from the corresponding paths. Every segment must be exported, and
+  intermediate segments must be namespaces. A namespace at the end binds the
+  namespace. Duplicate local names are errors. Re-exports use the local names.
+- Wildcards stand alone and may target a namespace with `a/*`. A bare
+  wildcard supplies fallback bindings. A wildcard alias binds the module or
+  namespace as one value. Wildcards, whole-source namespace aliases, and
+  re-exports require unconditional top-level placement. Namespace imports
+  without `^from` use `(import source [name name:alias])` or
+  `(import source:alias)`.
+- `(import [] ^from "./setup")` loads a module without binding names.
 - `^pkg` on the `^from` form selects a package; `"."` names that package's
   `main_module`. A regular package may import only itself and its declared
   direct dependencies. No resolved module path may leave its package root after

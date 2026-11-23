@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [operator_round? collection_turns] ^from "../../../src/runtime/round_policy")
+(import operator_round? collection_turns ^from "../../../src/runtime/round_policy")
 
 (describe "Persisted round policy"
   (it "requires explicit operator admission independently of initiator spelling" []

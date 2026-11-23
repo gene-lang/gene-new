@@ -1,8 +1,8 @@
 
 (mod workspace_manager_plugin)
-(import [api_root] ^from "../web/contract.gene")
-(import [Plugin PluginHost WorkspaceHost] ^from "../plugin_api")
-(import [contribute_text_doc] ^from "../public/documentation")
+(import api_root ^from "../web/contract.gene")
+(import Plugin PluginHost WorkspaceHost ^from "../plugin_api")
+(import contribute_text_doc ^from "../public/documentation")
 
 (fn workspace_action [manager, operation : Str, id : Str = "", name : Str = "", port = nil,
   confirm_dir : Str = "", confirm_busy : Bool = false, expected : Str = ""]

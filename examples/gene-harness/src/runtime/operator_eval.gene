@@ -1,9 +1,9 @@
 (mod operator_eval)
-(import [effective_config] ^from "./settings_resolver")
-(import [new_turn_items append_prompt_at append_plugin_prompt attachment recall rewrite_prompt_calls render_request] ^from "../agents/outcome")
-(import [outcome_constructor] ^from "../agents/outcome_admission")
-(import [open_execution_scope close_execution_scope] ^from "./execution_budget")
-(import [select_provider] ^from "../agents/provider_selection")
+(import effective_config ^from "./settings_resolver")
+(import new_turn_items append_prompt_at append_plugin_prompt attachment recall rewrite_prompt_calls render_request ^from "../agents/outcome")
+(import outcome_constructor ^from "../agents/outcome_admission")
+(import open_execution_scope close_execution_scope ^from "./execution_budget")
+(import select_provider ^from "../agents/provider_selection")
 
 (fn operator_turn [ctx]
   (new_turn_items ($parse/parse_int ($str/slice_bytes ctx/id 1 (- ($str/byte_size ctx/id) 1)))))

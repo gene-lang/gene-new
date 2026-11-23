@@ -1,7 +1,7 @@
 # M3 framing: byte pipes become complete lines, over-budget raw lines are
 # discarded whole, and an invalid UTF-8 line stays routable as raw output.
 (import $test [describe it])
-(import [frame_stream] ^from "../../../src/runtime/supervisor")
+(import frame_stream ^from "../../../src/runtime/supervisor")
 (import $io [AsyncReader IoResource])
 
 (fn new_channel [] ($channel ^capacity 16))

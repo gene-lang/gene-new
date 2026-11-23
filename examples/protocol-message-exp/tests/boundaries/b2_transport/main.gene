@@ -1,9 +1,9 @@
 # B2 transport matrix: operations authored in A, invoked in a host without the
 # Article pair and at a B send site that has a different policy.
-(import [Article] ^from "./model")
-(import [Render] ^from "./contracts")
-(import [raw_message view closure path_value invoke_here] ^from "./author_a")
-(import [call_value dynamic_send fresh_qualified fresh_call_form] ^from "./site_b")
+(import Article ^from "./model")
+(import Render ^from "./contracts")
+(import raw_message view closure path_value invoke_here ^from "./author_a")
+(import call_value dynamic_send fresh_qualified fresh_call_form ^from "./site_b")
 
 (let article (Article ^title "A"))
 (fn attempt [thunk] (try (thunk) catch Error "ERR"))

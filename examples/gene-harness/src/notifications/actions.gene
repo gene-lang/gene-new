@@ -1,14 +1,14 @@
 (mod notification_actions)
-(import ^from "./inbox" [message_detail notification_error])
-(import ^from "./publisher" [publisher_revision])
-(import ^from "../ui/state" [ui_record ui_revision])
-(import ^from "../ui/views" [ui_view_state])
-(import ^from "../runtime/composition" [acquire_snapshot release_snapshot])
-(import ^from "../runtime/sessions" [with_session_gate require_record])
+(import ^from "./inbox" message_detail notification_error)
+(import ^from "./publisher" publisher_revision)
+(import ^from "../ui/state" ui_record ui_revision)
+(import ^from "../ui/views" ui_view_state)
+(import ^from "../runtime/composition" acquire_snapshot release_snapshot)
+(import ^from "../runtime/sessions" with_session_gate require_record)
 (import ^from "../runtime/commands"
-  [command_request_receipt parse_submission submit_routed_command view_command])
-(import ^from "../agents/history" [with_body_use])
-(import ^from "../plugin_api" [CommandResult])
+  command_request_receipt parse_submission submit_routed_command view_command)
+(import ^from "../agents/history" with_body_use)
+(import ^from "../plugin_api" CommandResult)
 
 (fn invoke_notification_action [runtime, request]
   (if (!= ($head request) Map)

@@ -1,6 +1,6 @@
 (mod outcome)
-(import ^from "../runtime/questions" [validate_questions])
-(import [TurnClosed] ^from "../plugin_api")
+(import ^from "../runtime/questions" validate_questions)
+(import TurnClosed ^from "../plugin_api")
 
 (type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^questions Any? ^attention Bool? ^extensions Any?})
 (type CheckedOutcome ^^private ^props {^value Outcome ^suspension Str?})

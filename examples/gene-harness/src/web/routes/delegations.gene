@@ -1,7 +1,7 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod delegations_routes)
-(import [response field number request_data session_path?] ^from "../request")
-(import [recover_children cancel_child] ^from "../session_service")
+(import response field number request_data session_path? ^from "../request")
+(import recover_children cancel_child ^from "../session_service")
 
 (fn delegations_request [context, request, parts]
   (let host context/host)

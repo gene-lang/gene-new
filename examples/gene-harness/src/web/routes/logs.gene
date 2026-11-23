@@ -1,12 +1,12 @@
 # Core host-log route. Owner-authenticated through common admission; reads the
 # retained host.log segments, with the in-process ring as a fallback.
 (mod logs_routes)
-(import [api_root] ^from "../contract.gene")
-(import [field number response] ^from "../request")
-(import [read_log] ^from "../../public/log_tail")
-(import [parse_record render_text serialize_record] ^from "../../public/log_record")
-(import [redact_secrets] ^from "../../public/log_redaction")
-(import [log_recent log_run ring_limit] ^from "../../kernel/log")
+(import api_root ^from "../contract.gene")
+(import field number response ^from "../request")
+(import read_log ^from "../../public/log_tail")
+(import parse_record render_text serialize_record ^from "../../public/log_record")
+(import redact_secrets ^from "../../public/log_redaction")
+(import log_recent log_run ring_limit ^from "../../kernel/log")
 
 (const target_keys
   ["workspace" "session" "round" "turn" "call" "command" "input" "plugin" "view"

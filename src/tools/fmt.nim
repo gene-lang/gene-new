@@ -12,8 +12,8 @@
 ##   whose span contains interior comments is emitted verbatim (the reader
 ##   drops comments, so reformatting such a form would delete them).
 ##
-## Formatted output must re-parse to the same canonical forms as the input
-## (`tests/test_cli.nim` asserts parse-equivalence and idempotence).
+## Formatted output preserves the meaning of the input. Legacy executable
+## file imports with a standalone selection vector are printed flat.
 
 import std/[strutils, tables]
 import ../gene/[clause_syntax, reader, types, printer]
@@ -419,6 +419,57 @@ proc pipelineOneLine(v: Value): string =
     result.add renderPipelineStage(stage)
   result.add ')'
 
+proc importPathText(value: Value): string =
+  if value.kind == vkSymbol:
+    return value.symVal
+  if value.kind != vkNode or not value.head.isSym("path") or
+      value.props.len > 0 or value.meta.len > 0:
+    return
+  var names: seq[string]
+  for segment in value.body:
+    if segment.kind != vkSymbol:
+      return
+    names.add segment.symVal
+  names.join("/")
+
+proc importItemTexts(items: openArray[Value], groups: bool): seq[string] =
+  var i = 0
+  while i < items.len:
+    let item = items[i]
+    let path = importPathText(item)
+    if groups and i < items.high and items[i + 1].kind == vkList and
+        not items[i + 1].listImmutable and path.len > 0 and
+        (item.kind == vkNode or path.endsWith("/")):
+      result.add path.strip(leading = false, chars = {'/'}) & "/[" &
+        importItemTexts(items[i + 1].listItems, true).join(" ") & "]"
+      inc i, 2
+      continue
+    if item.kind == vkList:
+      result.add (if item.listImmutable: "#[" else: "[") &
+        importItemTexts(item.listItems, true).join(" ") & "]"
+    elif item.kind == vkNode and item.head.isSym("msg") and
+        item.props.len == 0 and item.meta.len == 0 and not item.nodeImmutable and
+        item.body.len == 2 and item.body[1].kind == vkSymbol:
+      let source = importPathText(item.body[0])
+      result.add (if source.len == 0: oneLine(item)
+                  else: source & ":" & item.body[1].symVal)
+    elif item.kind == vkNode and item.head.isSym("path") and path.len > 0 and
+        item.body.len == 1:
+      result.add path & "/"
+    else:
+      result.add oneLine(item)
+    inc i
+
+proc renderImport(v: Value, indent: int, multiline: bool): string =
+  result = "(import"
+  addProps(result, v.meta, "@")
+  addProps(result, v.props, "^")
+  let items = importItemTexts(v.body, v.props.hasKey("from"))
+  let separator = if multiline: "\n" & repeat(' ', indent + 2) else: " "
+  for item in items:
+    result.add separator & item
+  result.add ')'
+
 proc oneLine(v: Value): string =
   case v.kind
   of vkPipeline:
@@ -447,6 +498,8 @@ proc oneLine(v: Value): string =
       of "path":
         let p = resugarPath(v)
         if p.len > 0: return p
+      of "import":
+        return renderImport(v, 0, false)
       of "quasiquote":
         if v.body.len == 1 and v.props.len == 0:
           return "`" & oneLine(v.body[0])
@@ -677,6 +730,8 @@ proc breakFlatMatch(v: Value, indent: int, clauses: MatchClauses): string =
 proc breakNode(v: Value, indent: int): string =
   if v.head.kind == vkSymbol:
     case v.head.symVal
+    of "import":
+      if not v.nodeImmutable: return renderImport(v, indent, true)
     of "if":
       let split = tryDecodeIf(v)
       if split.valid:
@@ -832,9 +887,51 @@ proc emitGap(sb: var string, gap: string, afterForm: bool) =
   if pendingBlank:
     sb.add "\n"
 
-proc formatSource*(src: string, sourceName = "<fmt>"): string =
+proc canonicalImportSource(source, sourceName: string): string =
+  if "^from" notin source or '[' notin source:
+    return source
+  let indexed = indexSource(source, sourceName)
+  var brackets: seq[int]
+  proc collect(syntax: SyntaxRef) =
+    if syntax.immutable or syntax.kind in {skQuasiquote, skComment}:
+      return
+    let rows = indexed.children(syntax)
+    if rows.len > 0 and rows[0].label == "head":
+      let head = rows[0].syntax.span
+      case source[head.startByte ..< head.endByte]
+      of "quote", "quasiquote":
+        return
+      of "import":
+        var operands: seq[SyntaxRef]
+        var hasSource = false
+        for row in rows:
+          if row.label == "from": hasSource = true
+          if row.label.len > 0 and row.label[0].isDigit:
+            operands.add row.syntax
+        if hasSource and operands.len == 1:
+          let vector = operands[0]
+          if vector.kind == skList and vector.closed:
+            for member in indexed.children(vector):
+              if member.syntax.kind != skComment:
+                brackets.add vector.span.startByte
+                brackets.add vector.span.endByte - 1
+                if vector.immutable:
+                  brackets.add vector.span.startByte + 1
+                break
+        return
+      else: discard
+    for row in rows:
+      collect(row.syntax)
+  for form in indexed.topLevel:
+    collect(form)
+  result = source
+  for position in brackets:
+    result[position] = ' '
+
+proc formatSource*(source: string, sourceName = "<fmt>"): string =
   ## Human-friendly formatting of a whole source unit. Raises ReadError on
   ## unparseable input (same contract as the canonical path).
+  let src = canonicalImportSource(source, sourceName)
   let unit = readAllWithLocs(src, sourceName)
   let starts = span.lineStarts(src)
   var sourceEnds = initTable[int, int]()

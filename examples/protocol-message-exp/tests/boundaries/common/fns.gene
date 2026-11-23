@@ -1,7 +1,7 @@
 # Function-local imports. Each pair belongs to the call that imported it, so
 # the two policies never meet and a sibling function sees neither.
-(import [Article] ^from "./model")
-(import [Render] ^from "./contracts")
+(import Article ^from "./model")
+(import Render ^from "./contracts")
 (fn render_plain [article]
   (import_impl Render for Article ^from "../common/plain")
   article/.Render:render)

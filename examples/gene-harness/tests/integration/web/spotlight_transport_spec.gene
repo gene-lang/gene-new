@@ -1,7 +1,7 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [start_host stop_host] ^from "../../web_support")
-(import [connect api] ^from "../../../src/cli/client")
+(import isolated run_spec ^from "../../support")
+(import start_host stop_host ^from "../../web_support")
+(import connect api ^from "../../../src/cli/client")
 (import $net/http_client [request])
 
 (describe "Spotlight HTTP contracts"

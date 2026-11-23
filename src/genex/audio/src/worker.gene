@@ -1,6 +1,6 @@
 # Length-framed subprocess I/O shared by platform and SDK audio helpers.
 (mod audio_worker)
-(import [AudioError] ^from "./audio")
+(import AudioError ^from "./audio")
 (import $io [AsyncReader AsyncWriter IoResource])
 
 (fn read_exact [reader, count : Int] : Bytes

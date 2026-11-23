@@ -1,6 +1,6 @@
 # Host feature row schemas; registry lifecycle belongs to the generic kernel.
 (mod registry_contracts)
-(import [HarnessError] ^from "../errors")
+(import HarnessError ^from "../errors")
 
 (fn validate_seam_row [candidate]
   (if (|| ($absent? candidate/name) ($absent? candidate/value))

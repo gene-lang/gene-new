@@ -1,6 +1,6 @@
 # Transient, host-wide speaker ownership. No microphone or synthesized audio is durable.
 (mod voice_state)
-(import [HarnessEvent publish] ^from "../kernel")
+(import HarnessEvent publish ^from "../kernel")
 
 (type VoiceError : Error ^props {^code Str})
 (type VoiceChanged : HarnessEvent ^props {^state Any})

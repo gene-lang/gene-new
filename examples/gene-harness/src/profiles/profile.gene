@@ -23,7 +23,7 @@
 
 (mod profile)
 
-(import [Harness new_harness put_cordis_plugins] ^from "../kernel")
+(import Harness new_harness put_cordis_plugins ^from "../kernel")
 
 (type Profile ^props {^name Str ^plugins Any ^limits Any? ^requires Any? ^provider Str? ^voice Any?})
 

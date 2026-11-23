@@ -1,18 +1,18 @@
 (import $test [describe it])
-(import [isolated run_spec test_controller] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [plugin_admin] ^from "../../../src/builtin/plugin_admin")
-(import [Plugin PluginHost ExecutionLimits] ^from "../../../src/plugin_api")
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [set_plugin_enabled restore_plugin] ^from "../../../src/storage/workspace_repair")
-(import [participant_quarantine] ^from "../../../src/storage/participant_health")
-(import [plugin_catalog] ^from "../../../src/runtime/plugin_manager")
-(import [validate_plan apply_plan] ^from "../../../src/runtime/plugin_plans")
-(import [submit_round round_receipt close_round_controller cancel_round] ^from "../../../src/runtime/round_controller")
-(import [plugin_state events_for] ^from "../../../src/storage/state")
-(import [contribute] ^from "../../../src/kernel")
-(import [native_owner] ^from "../../../src/runtime/turn_participant_registry")
+(import isolated run_spec test_controller ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import plugin_admin ^from "../../../src/builtin/plugin_admin")
+(import Plugin PluginHost ExecutionLimits ^from "../../../src/plugin_api")
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import set_plugin_enabled restore_plugin ^from "../../../src/storage/workspace_repair")
+(import participant_quarantine ^from "../../../src/storage/participant_health")
+(import plugin_catalog ^from "../../../src/runtime/plugin_manager")
+(import validate_plan apply_plan ^from "../../../src/runtime/plugin_plans")
+(import submit_round round_receipt close_round_controller cancel_round ^from "../../../src/runtime/round_controller")
+(import plugin_state events_for ^from "../../../src/storage/state")
+(import contribute ^from "../../../src/kernel")
+(import native_owner ^from "../../../src/runtime/turn_participant_registry")
 
 (fn profile [^limits limits = nil]
   (Profile ^name "participant-health" ^plugins [(plugin_admin)
@@ -22,7 +22,7 @@
 
 (fn fault_source [mode : Str, ^entered entered : Str = "", ^release release : Str = ""]
   `(mod plugin
-    (import [Plugin PluginHost ServiceError] ^from "src/plugin_api.gene")
+    (import Plugin PluginHost ServiceError ^from "src/plugin_api.gene")
     (type UnnamedError : Error ^props {^details Str}
       (message message [] : Str ^errors [] ^^override self/details))
     (fn init [descriptor]
@@ -54,7 +54,7 @@
 
 (fn binding_conflict_source [conflict : Str]
   `(mod plugin
-    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (import Plugin PluginHost ^from "src/plugin_api.gene")
     (fn init [descriptor]
       (Plugin ^id "faulty" ^activate (fn [host]
         (host .PluginHost:contribute "functions"

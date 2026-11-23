@@ -1,6 +1,6 @@
 (mod audio_call)
-(import [audio_error] ^from "./audio" ^pkg "audio")
-(import [supervised_call] ^from "../runtime/call_supervision")
+(import audio_error ^from "./audio" ^pkg "audio")
+(import supervised_call ^from "../runtime/call_supervision")
 
 # join returns TaskOutcome, not the callback's value. Optional audio failures
 # terminate their operation with an actionable error; they never fail a round.

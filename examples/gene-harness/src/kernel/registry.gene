@@ -1,14 +1,14 @@
 # Registry data and activation-owned rows. The Composer supplies publication.
 (mod kernel_registry)
-(import [default_execution_limits] ^from "../plugin_api")
-(import [HarnessError] ^from "../errors")
-(import [validate_discovery_metadata] ^from "../registries/contracts")
-(import [with_callback_budget] ^from "../runtime/execution_budget")
-(import [flush_event_store] ^from "../storage/state")
-(import [run_composition_change queue_composition_change current_snapshot immutable_view]
+(import default_execution_limits ^from "../plugin_api")
+(import HarnessError ^from "../errors")
+(import validate_discovery_metadata ^from "../registries/contracts")
+(import with_callback_budget ^from "../runtime/execution_budget")
+(import flush_event_store ^from "../storage/state")
+(import run_composition_change queue_composition_change current_snapshot immutable_view
   ^from "../runtime/composition")
-(import [retain_callback retained_callback? expire_scope_callbacks] ^from "../runtime/retained_callbacks")
-(import [invoke_supervised apply_argument_list] ^from "./invoke")
+(import retain_callback retained_callback? expire_scope_callbacks ^from "../runtime/retained_callbacks")
+(import invoke_supervised apply_argument_list ^from "./invoke")
 
 (protocol Composer
   (message changed [] : Nil)

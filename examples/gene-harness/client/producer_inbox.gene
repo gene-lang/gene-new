@@ -1,10 +1,10 @@
 # Producer inbox presentation and receipt recovery, independent of panel renders.
 (mod harness_producer_inbox ^profile web)
-(import [storage_set] ^from "./workspace_storage.gene")
-(import [api_root] ^from "../src/web/contract.gene")
-(import ^from "./question_editors.gene" [qtext qjson restored_map])
-(import ^from "./components.gene" [render_element])
-(import ^from "./notices.gene" [Notices put_notice remove_notice clear_notices])
+(import storage_set ^from "./workspace_storage.gene")
+(import api_root ^from "../src/web/contract.gene")
+(import ^from "./question_editors.gene" qtext qjson restored_map)
+(import ^from "./components.gene" render_element)
+(import ^from "./notices.gene" Notices put_notice remove_notice clear_notices)
 
 (type ProducerInbox ^props {^cards PropMap ^epoch Str ^revision Int ^watermark Str ^opened Str ^ready Bool ^clearing Bool ^safe Bool ^selected Str ^pending PropMap ^sending PropMap ^notices Notices ^reference_generation Int ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^changed (Fn [Int] Nil) ^navigate (Fn [Any] Nil) ^draft (Fn [Str Str] Nil)})
 (type ProducerCard ^props {^message Any ^element EventTarget ^heading EventTarget ^summary EventTarget ^source EventTarget ^details EventTarget ^content EventTarget ^actions EventTarget ^status EventTarget ^revision Int ^buttons PropMap ^reference EventTarget ^clear EventTarget})

@@ -1,8 +1,8 @@
 # Bounded invocation, independent of registry and composition storage.
 (mod kernel_invoke)
-(import [ExecutionLimits] ^from "../plugin_api")
-(import [HarnessError] ^from "../errors")
-(import [supervised_call] ^from "../runtime/call_supervision")
+(import ExecutionLimits ^from "../plugin_api")
+(import HarnessError ^from "../errors")
+(import supervised_call ^from "../runtime/call_supervision")
 
 (fn invoke_bounded [callable, argument, limits : ExecutionLimits]
   # A plugin's Fault, a Panic included, becomes a HarnessError that keeps it

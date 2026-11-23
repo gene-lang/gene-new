@@ -1,8 +1,8 @@
 (mod session_menu ^profile web)
-(import ^from "./css_values.gene" [computed_length])
-(import [api_root] ^from "../src/web/contract.gene")
-(import [text flag] ^from "../src/common/launcher.gene")
-(import [can_share_session? session_share_label session_share_busy?] ^from "./slack_channels.gene")
+(import ^from "./css_values.gene" computed_length)
+(import api_root ^from "../src/web/contract.gene")
+(import text flag ^from "../src/common/launcher.gene")
+(import can_share_session? session_share_label session_share_busy? ^from "./slack_channels.gene")
 
 (type SessionMenu ^props {^panel EventTarget ^error EventTarget ^session Any ^anchor Any ^pin Any ^share Any
   ^phase Str ^pending Bool ^generation Int

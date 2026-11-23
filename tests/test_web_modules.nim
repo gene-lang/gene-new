@@ -639,7 +639,7 @@ proc checkWebExportRejection(facade, selection, expected: string) =
     "(fn make [] : Thing (Thing ^value count))")
   writeFile(root / "facade.gene", "(mod facade ^profile web) " & facade)
   writeFile(root / "entry.gene", "(mod entry ^profile web) " &
-    "(import [" & selection & "] ^from \"./facade.gene\") (fn run [] : Int 0)")
+    "(import " & selection & " ^from \"./facade.gene\") (fn run [] : Int 0)")
   var diagnostic = ""
   try:
     discard buildWebModule(root / "entry.gene", root / "out")
@@ -736,25 +736,56 @@ suite "web module import syntax":
     writeFile(root / "provider.gene", "(mod provider ^profile web) " &
       "(let from 7)")
     for source in [
-      "(import [from : value] ^from \"./provider.gene\")",
-      "(import ^from \"./provider.gene\" [from : value])",
-      "(import ^^export [from : value] ^from \"./provider.gene\")"
+      "(import from:value ^from \"./provider.gene\")",
+      "(import ^from \"./provider.gene\" from:value)",
+      "(import ^^export from:value ^from \"./provider.gene\")"
     ]:
       writeFile(root / "entry.gene", "(mod entry ^profile web) " & source &
         " (fn run [] : Int value)")
       discard buildWebModule(root / "entry.gene", root / "out")
 
+  test "groups select qualified functions and re-export aliases":
+    let root = createTempDir("gene-web-grouped-imports-", "")
+    defer: removeDir(root)
+    writeFile(root / "provider.gene", """
+      (mod provider ^profile web)
+      (ns calculations
+        (fn identity [x : Int] : Int x)
+        (ns arithmetic
+          (fn add [x : Int y : Int] : Int (+ x y))
+          (fn double [x : Int] : Int (* x 2))))
+    """)
+    writeFile(root / "facade.gene", """
+      (mod facade ^profile web)
+      (import calculations/[identity arithmetic/[add:sum double]]
+        ^from "./provider.gene" ^^export)
+    """)
+    writeFile(root / "entry.gene", """
+      (mod entry ^profile web)
+      (import identity sum double ^from "./facade.gene")
+      (fn run [] : Int (sum (identity 10) (double 16)))
+    """)
+    discard buildWebModule(root / "entry.gene", root / "out")
+    writeFile(root / "out" / "check.mjs",
+      "import {run} from './entry.mjs'; if (run() !== 42n) throw Error('bad import');")
+    let ran = execCmdEx("node " & quoteShell(root / "out" / "check.mjs"))
+    checkpoint ran.output
+    check ran.exitCode == 0
+
   test "old syntax and malformed source properties are rejected":
     for (source, expected) in [
       ("(import [Thing] from \"./provider.gene\")", "`from` was removed; use `^from"),
-      ("(import [Thing])", "web imports must be"),
-      ("(import ^from \"./provider.gene\")", "web imports must be"),
-      ("(import [Thing] extra ^from \"./provider.gene\")", "web imports must be"),
-      ("(import [Thing] ^from provider)", "^from must be a path string"),
-      ("(import [Thing] ^from 42)", "^from must be a path string"),
-      ("(import [Thing] ^from nil)", "^from must be a path string"),
-      ("(import [Thing] ^^from)", "^from must be a path string"),
-      ("(import [Thing] ^from \"./provider.gene\" ^^form)", "unexpected named argument: form")
+      ("(import [Thing])", "web imports must use"),
+      ("(import ^from \"./provider.gene\")", "requires a selection or wildcard"),
+      ("(import [Thing] ^from \"./provider.gene\")", "file import selectors go directly after"),
+      ("(import Thing : Alias ^from \"./provider.gene\")", "write the import alias as `Thing:Alias`"),
+      ("(import * ^from \"./provider.gene\")", "wildcard imports are outside the web profile"),
+      ("(import Thing ^from \"./provider.gene\" ^pkg \"target\")", "package imports are outside the web profile"),
+      ("(import Thing ^from provider)", "^from must be a path string"),
+      ("(import Thing ^from 42)", "^from must be a path string"),
+      ("(import Thing ^from nil)", "^from must be a path string"),
+      ("(import Thing ^^from)", "^from must be a path string"),
+      ("(import Thing ^from \"./provider.gene\" ^^form)", "unexpected option: ^form")
     ]:
       checkpoint source
       checkWebExportRejection(source, "Thing", expected)
@@ -763,18 +794,18 @@ suite "web module export boundaries":
   test "ordinary imports do not implicitly re-export any declaration kind":
     for name in ["Thing", "count", "make"]:
       checkWebExportRejection(
-        "(import [Thing count make] ^from \"./provider.gene\")", name,
+        "(import Thing count make ^from \"./provider.gene\")", name,
         "no exported declaration: " & name)
 
   test "explicit false keeps an import private":
     checkWebExportRejection(
-      "(import [Thing] ^from \"./provider.gene\" ^!export)", "Thing",
+      "(import Thing ^from \"./provider.gene\" ^!export)", "Thing",
       "no exported declaration: Thing")
 
   test "export policy must be a literal boolean":
     checkWebExportRejection(
-      "(import [Thing] ^from \"./provider.gene\" ^export \"yes\")", "Thing",
-      "^export must be a literal Bool")
+      "(import Thing ^from \"./provider.gene\" ^export \"yes\")", "Thing",
+      "^export must be Bool")
 
 suite "web optional parameter defaults":
   test "foreign signatures keep nullable positions required and reject defaults":
@@ -900,7 +931,7 @@ suite "web named rest and property spread":
     """)
     writeFile(root / "attrs_main.gene", """
       (mod attrs_main ^profile web)
-      (import [collect] ^from "./attrs_lib.gene")
+      (import collect ^from "./attrs_lib.gene")
       (fn run [] : PropMap
         (let attrs {^class "card"})
         (collect attrs...))

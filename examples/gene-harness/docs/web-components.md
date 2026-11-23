@@ -163,7 +163,7 @@ lexical scope. Do not detach tasks from a renderer.
 
 ```gene
 (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-  (import ^from "src/plugin_api.gene" [Plugin PluginHost CommandResult])
+  (import ^from "src/plugin_api.gene" Plugin PluginHost CommandResult)
   (fn init [descriptor]
     (Plugin ^id "counter"
       ^provides [["commands" "count"] ["web_components" "counter"]]

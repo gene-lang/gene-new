@@ -1,16 +1,16 @@
-(import [test_controller] ^from "../../support.gene")
+(import test_controller ^from "../../support.gene")
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [image_fixture review] ^from "../../fixtures/image")
-(import [png] ^from "../../fixtures/png")
-(import [close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [submit_round round_receipt close_round_controller]
+(import isolated run_spec ^from "../../support")
+(import image_fixture review ^from "../../fixtures/image")
+(import png ^from "../../fixtures/png")
+(import close_runtime ^from "../../../src/runtime/bootstrap")
+(import submit_round round_receipt close_round_controller
   ^from "../../../src/runtime/round_controller")
-(import [events_for] ^from "../../../src/storage/state")
-(import [read_image_run image_catalog recall_image_run] ^from "../../../src/storage/image_runs")
-(import [append_message compact_history collect_unreferenced_bodies provider_context]
+(import events_for ^from "../../../src/storage/state")
+(import read_image_run image_catalog recall_image_run ^from "../../../src/storage/image_runs")
+(import append_message compact_history collect_unreferenced_bodies provider_context
   ^from "../../../src/agents/history")
-(import [open_media_store media_bytes] ^from "../../../src/storage/media")
+(import open_media_store media_bytes ^from "../../../src/storage/media")
 
 (describe "Image generation in a user round"
   (it "publishes only the final image, requires its preview, and keeps earlier attempts through compaction" []

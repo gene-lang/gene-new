@@ -1,7 +1,7 @@
 (mod offline_profile)
-(import [Profile] ^from "./profile")
-(import [baseline_profile] ^from "./baseline")
-(import [provider_offline] ^from "../builtin/provider_offline")
+(import Profile ^from "./profile")
+(import baseline_profile ^from "./baseline")
+(import provider_offline ^from "../builtin/provider_offline")
 
 (fn offline_profile [] : Profile
   (let base (baseline_profile))

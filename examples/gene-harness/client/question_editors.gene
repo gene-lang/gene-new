@@ -1,10 +1,10 @@
 # One reply controller per original session/batch, shared by every visible form.
 (mod harness_question_editors ^profile web)
-(import [storage_get storage_set] ^from "./workspace_storage.gene")
-(import [api_root] ^from "../src/web/contract.gene")
-(import ^from "./question_state.gene" [question_key definitive_reply])
-(import ^from "./notices.gene" [Notices put_notice remove_notice])
-(import ^from "./cards.gene" [question_tree])
+(import storage_get storage_set ^from "./workspace_storage.gene")
+(import api_root ^from "../src/web/contract.gene")
+(import ^from "./question_state.gene" question_key definitive_reply)
+(import ^from "./notices.gene" Notices put_notice remove_notice)
+(import ^from "./cards.gene" question_tree)
 
 (type QuestionEditors ^props {^editors PropMap ^mounts PropMap ^pending PropMap ^drafts PropMap ^ready Bool ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^changed (Fn [Str] Nil) ^stage (Fn [Str] Nil)})
 (type QuestionEditor ^props {^key Str ^session Str ^batch Any ^answers PropMap ^skips PropMap ^sending Bool ^error Str ^views (List Any)})

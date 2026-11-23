@@ -1,7 +1,7 @@
 (mod cron)
-(import [problem] ^from "./errors")
-(import * : calendar ^from "./calendar")
-(import * : timezone ^from "./timezone")
+(import problem ^from "./errors")
+(import *:calendar ^from "./calendar")
+(import *:timezone ^from "./timezone")
 
 (fn words [text]
   (let result [])

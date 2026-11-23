@@ -1,8 +1,8 @@
 (mod mac_recognition)
-(import [audio_error] ^from "./audio" ^pkg "audio")
-(import [open_worker close_worker read_json write_json write_packet] ^from "./worker" ^pkg "audio")
-(import [mac_helper mac_reason] ^from "./speech_engines")
-(import [encode_audio_frame] ^from "./voice_frames")
+(import audio_error ^from "./audio" ^pkg "audio")
+(import open_worker close_worker read_json write_json write_packet ^from "./worker" ^pkg "audio")
+(import mac_helper mac_reason ^from "./speech_engines")
+(import encode_audio_frame ^from "./voice_frames")
 
 (fn mac_open [settings]
   (let worker (open_worker (mac_helper) ["--stt" (?? settings/language "en-US")]))

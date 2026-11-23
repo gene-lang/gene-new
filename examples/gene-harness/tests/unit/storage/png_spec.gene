@@ -1,7 +1,7 @@
 (import $test [describe it run assert_equal])
-(import [inspect_png PngError] ^from "./png" ^pkg "documents")
-(import [inspect_bytes DocumentError] ^from "." ^pkg "documents")
-(import [png signature header chunk big_u32 deflate_row] ^from "../../fixtures/png")
+(import inspect_png PngError ^from "./png" ^pkg "documents")
+(import inspect_bytes DocumentError ^from "." ^pkg "documents")
+(import png signature header chunk big_u32 deflate_row ^from "../../fixtures/png")
 
 (fn rejected [bytes]
   ($assert (try (inspect_png bytes) false catch PngError true)

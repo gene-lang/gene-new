@@ -1,5 +1,5 @@
 (mod channel_thread_links)
-(import [remember_message] ^from "./model")
+(import remember_message ^from "./model")
 
 (fn same_thread? [left, right] : Bool
   (&& (== left/account right/account) (== left/team right/team)

@@ -1,7 +1,7 @@
 # Parsing and responses shared by authenticated host route modules.
 (mod web_request)
-(import [api_version] ^from "./contract")
-(import [RoundError] ^from "../runtime/round_controller")
+(import api_version ^from "./contract")
+(import RoundError ^from "../runtime/round_controller")
 (import $net/http [json])
 
 (fn response [status : Int, value]

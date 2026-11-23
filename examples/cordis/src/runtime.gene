@@ -8,7 +8,6 @@
 (mod runtime)
 
 (import ^from "./model" ^^export
-  [
     InstanceState
     PluginCallKind
     HookMode
@@ -42,7 +41,7 @@
     CompositionError
     ReloadRejected
     RecoveryRequired
-    invocation_limits])
+    invocation_limits)
 
 # --- public handles --------------------------------------------------------
 

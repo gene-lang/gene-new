@@ -1,24 +1,24 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [row doc] ^from "../../../src/kernel")
+(import isolated run_spec ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import row doc ^from "../../../src/kernel")
 
 (fn sdk_plugin []
   (quote (mod plugin
-    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
-    (import [contribute_doc] ^from "src/public/documentation.gene")
-    (import [configure_model] ^from "src/public/provider.gene")
-    (import [normalize_history_policy] ^from "src/public/history_policy.gene")
-    (import [responses_content] ^from "src/public/model_content.gene")
-    (import [image_usage] ^from "src/public/image_contract.gene")
-    (import [safe_error] ^from "src/public/model_text.gene")
-    (import [whisper_row] ^from "src/public/speech_engines.gene")
-    (import [mac_recognizer_row] ^from "src/public/mac_recognition.gene")
-    (import [encode_audio_frame] ^from "src/public/voice_frames.gene")
-    (import [byte_prefix] ^from "src/public/text.gene")
-    (import [api_path] ^from "src/web/contract.gene")
+    (import Plugin PluginHost ^from "src/plugin_api.gene")
+    (import contribute_doc ^from "src/public/documentation.gene")
+    (import configure_model ^from "src/public/provider.gene")
+    (import normalize_history_policy ^from "src/public/history_policy.gene")
+    (import responses_content ^from "src/public/model_content.gene")
+    (import image_usage ^from "src/public/image_contract.gene")
+    (import safe_error ^from "src/public/model_text.gene")
+    (import whisper_row ^from "src/public/speech_engines.gene")
+    (import mac_recognizer_row ^from "src/public/mac_recognition.gene")
+    (import encode_audio_frame ^from "src/public/voice_frames.gene")
+    (import byte_prefix ^from "src/public/text.gene")
+    (import api_path ^from "src/web/contract.gene")
     (fn init [descriptor]
       (Plugin ^id "public_sdk" ^provides [["functions" "sdk_probe"]]
         ^activate (fn [host]
@@ -62,8 +62,8 @@
           (check_sdk first)
           (for path in ["src/kernel.gene" "src/agents/content.gene" "src/public/../kernel.gene" "src/public/undeclared.gene"]
             (let invalid `(mod plugin
-              (import [Plugin] ^from "src/plugin_api.gene")
-              (import [nothing] ^from %path)
+              (import Plugin ^from "src/plugin_api.gene")
+              (import nothing ^from %path)
               (fn init [descriptor] (Plugin ^id "invalid" ^activate (fn [host] nil)))))
             ($assert (try (register_plugin first/workspace first/h "invalid" invalid) false
               catch Error ($str/contains? $err/.message "outside its dependency closure"))))

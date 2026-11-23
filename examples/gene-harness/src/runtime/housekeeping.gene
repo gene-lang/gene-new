@@ -3,11 +3,11 @@
 # of automated (non-interactive) rounds. It used to ride on the trigger
 # scheduler's tick, so disabling triggers silently stopped it.
 (mod housekeeping)
-(import [log_event] ^from "../kernel/log")
-(import [effective_config note_active_setting] ^from "./settings_resolver")
-(import [list_sessions load_session update_session unload_idle_sessions] ^from "./sessions")
-(import [answer_round] ^from "./round_controller")
-(import [collect_unreferenced_bodies] ^from "../agents/history")
+(import log_event ^from "../kernel/log")
+(import effective_config note_active_setting ^from "./settings_resolver")
+(import list_sessions load_session update_session unload_idle_sessions ^from "./sessions")
+(import answer_round ^from "./round_controller")
+(import collect_unreferenced_bodies ^from "../agents/history")
 
 (fn ^^private expire_automated_questions [runtime, controller, now : Int]
   (for record in (list_sessions runtime/sessions ^status "waiting")

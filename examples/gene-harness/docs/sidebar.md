@@ -49,7 +49,7 @@ content; including the `brand` widget is optional.
 
 ```gene
 (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-  (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+  (import ^from "src/plugin_api.gene" Plugin PluginHost)
   (fn init [descriptor]
     (Plugin ^id "sidebar"
       ^provides [["web_components" "conversation_sidebar"]]

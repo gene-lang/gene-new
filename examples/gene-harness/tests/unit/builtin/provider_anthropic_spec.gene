@@ -1,9 +1,9 @@
 # Tests src/builtin/provider_anthropic.gene.
 (import $test [describe it before_each assert_equal run])
-(import [prepare_anthropic anthropic_text] ^from "../../../src/builtin/provider_anthropic")
-(import [raw_blocks] ^from "./support")
-(import [configure_model] ^from "../../../src/public/provider")
-(import [anthropic_models] ^from "../../../src/public/model_defaults")
+(import prepare_anthropic anthropic_text ^from "../../../src/builtin/provider_anthropic")
+(import raw_blocks ^from "./support")
+(import configure_model ^from "../../../src/public/provider")
+(import anthropic_models ^from "../../../src/public/model_defaults")
 
 (describe "Harness provider requests"
   (before_each [t]

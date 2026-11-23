@@ -1,6 +1,6 @@
 # The provider is exported. Another module imported it; this module did not.
-(import [Article] ^from "./model")
-(import [Render] ^from "./contracts")
+(import Article ^from "./model")
+(import Render ^from "./contracts")
 (import ^from "./importer" [])
 (let article (Article ^title "A"))
 (fn full_message [thunk] (try (thunk) catch Error $err/.message))

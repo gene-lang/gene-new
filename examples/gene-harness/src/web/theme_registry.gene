@@ -1,8 +1,8 @@
 # Theme and icon contributions use the same leased registry lifecycle as views.
 (mod harness_theme_registry)
-(import ^from "./theme_error" [ThemeError theme_error] ^^export)
-(import ^from "./theme" [builtin_themes css_name])
-(import ^from "../ui/images" [safe_svg])
+(import ^from "./theme_error" ThemeError theme_error ^^export)
+(import ^from "./theme" builtin_themes css_name)
+(import ^from "../ui/images" safe_svg)
 
 (fn validate_icon [candidate]
   (if (|| (!= ($head candidate/name) Str) ($absent? (#"^[a-z][a-z0-9-]{0,79}$" .match candidate/name)))

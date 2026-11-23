@@ -1,6 +1,6 @@
 (import $test [describe it])
-(import [isolated run_spec fixture_path] ^from "../../support")
-(import [read_models_file write_models_file ModelsFileError models_path]
+(import isolated run_spec fixture_path ^from "../../support")
+(import read_models_file write_models_file ModelsFileError models_path
   ^from "../../../src/public/models_file")
 
 (describe "Shared model saves"

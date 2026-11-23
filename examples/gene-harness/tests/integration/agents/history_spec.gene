@@ -1,15 +1,15 @@
 # Tests src/agents/history.gene.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [baseline_profile] ^from "../../../src/profiles/baseline")
-(import [bounded_request recall_body append_message provider_context elide_response history_state
+(import isolated run_spec ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import baseline_profile ^from "../../../src/profiles/baseline")
+(import bounded_request recall_body append_message provider_context elide_response history_state
          compact_history context_bytes store_body collect_unreferenced_bodies acquire_body_use
-         release_body_use]
+         release_body_use
   ^from "../../../src/agents/history")
-(import [create_session delete_session] ^from "../../../src/runtime/sessions")
-(import [basic_history_policy] ^from "../../../src/builtin/history_basic")
-(import [events_for flush_event_store record_core_state] ^from "../../../src/storage/state")
+(import create_session delete_session ^from "../../../src/runtime/sessions")
+(import basic_history_policy ^from "../../../src/builtin/history_basic")
+(import events_for flush_event_store record_core_state ^from "../../../src/storage/state")
 
 (describe "Harness history"
   (it

@@ -274,7 +274,7 @@ suite "cli — gene run":
     if dirExists(root): removeDir(root)
     createDir(root)
     let contender = writeCliProgram("harness_store_contender.gene", """
-(import $store/fs [open : store_open Store StoreError])
+(import $store/fs [open:store_open Store StoreError])
 (import $fs [write_text exists?])
 (fn main [args]
   (var root args/0)
@@ -308,7 +308,7 @@ suite "cli — gene run":
     check combined.count("conflict ") == 1
 
     let reader = writeCliProgram("harness_store_reader.gene", """
-(import $store/fs [open : store_open Store])
+(import $store/fs [open:store_open Store])
 (fn main [args]
   (var store (store_open ^root args/0))
   (var loaded (store .Store:load_checkpoint))
@@ -380,7 +380,7 @@ import socketserver
 
 ROUTES = {
     "/real/entry.gene":
-        b'(import [util_fn] ^from "./util") ($println (+ (util_fn) 1))',
+        b'(import util_fn ^from "./util") ($println (+ (util_fn) 1))',
     "/real/util.gene": b'(fn util_fn [] 41)',
 }
 
@@ -432,7 +432,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 
   test "gene run cannot import URL modules":
     let fixture = writeCliProgram("url_import.gene",
-      "(import [x] ^from \"https://127.0.0.1:1/x.gene\")")
+      "(import x ^from \"https://127.0.0.1:1/x.gene\")")
     let ran = runGene(["run", fixture])
     check ran.exitCode == 1
     check "URL module imports require a 'gene runurl' entry" in ran.output
@@ -1178,14 +1178,14 @@ suite "cli — gene eval":
       "(var answer 42) (fn plus_one [value] (+ value 1)) " &
       "(macro twice [value] `(+ %value %value))")
     writeFile(root / "nested" / "child.gene",
-      "(import [plus_one] ^from \"../helper\") " &
+      "(import plus_one ^from \"../helper\") " &
       "(fn plus_two [value] (plus_one (plus_one value)))")
     for (source, expected) in [
-      ("(import [answer] ^from \"./helper\") answer", "42"),
+      ("(import answer ^from \"./helper\") answer", "42"),
       ("(import * ^from \"./helper\") (plus_one answer)", "43"),
-      ("(import * : helper ^from \"./helper\") helper/answer", "42"),
-      ("(import [twice] ^from \"./helper\") (twice 21)", "42"),
-      ("(import [plus_two] ^from \"./nested/child\") (plus_two 40)", "42"),
+      ("(import *:helper ^from \"./helper\") helper/answer", "42"),
+      ("(import twice ^from \"./helper\") (twice 21)", "42"),
+      ("(import plus_two ^from \"./nested/child\") (plus_two 40)", "42"),
       ("(import $str [join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
     ]:
       let ran = runGene(["eval", source], workingDir = root)
@@ -1201,7 +1201,7 @@ suite "cli — gene eval":
     createDir(root)
     writeFile(cliDir / "eval_outside.gene", "(var secret 1)")
     let ran = runGene(["eval",
-      "(import [secret] ^from \"../eval_outside\") secret"],
+      "(import secret ^from \"../eval_outside\") secret"],
       workingDir = root)
     check ran.exitCode == 1
     check "module path escapes package root" in ran.output
@@ -1314,17 +1314,17 @@ suite "cli — gene repl":
     createDir(root / "lib")
     writeFile(root / "lib" / "values.gene", "(mod values) (var value 41)")
     writeFile(root / "sample.gene", "(mod sample) " &
-      "(import [value] ^from \"./lib/values\") (fn answer [] (+ value 1))")
+      "(import value ^from \"./lib/values\") (fn answer [] (+ value 1))")
     let ran = runGeneInput(["repl"],
       "(import $math [max])\n" &
-      "(import [answer] ^from \"./sample\")\n" &
+      "(import answer ^from \"./sample\")\n" &
       "[(answer) (max 7 9)]\n:quit\n", workingDir = root)
     check ran.exitCode == 0
     check "[42 9]" in ran.output
     check "Error:" notin ran.output
 
   test "a missing REPL import reports an error and leaves the session usable":
-    let ran = runGeneInput(["repl"], "(import [x] ^from \"./missing\")\n(+ 1 2)\n")
+    let ran = runGeneInput(["repl"], "(import x ^from \"./missing\")\n(+ 1 2)\n")
     check ran.exitCode == 0
     check "Error:" in ran.output
     check ran.output.strip.splitLines[^1] == "3"
@@ -1337,7 +1337,7 @@ suite "cli — gene repl":
     writeFile(root / "sample.gene", "(mod sample) (var value 7)")
     writeFile(root / "nested" / "sample.gene", "(mod sample) (var value 42)")
     let ran = runGeneInput(["repl"],
-      "(import [value] ^from \"./sample\")\nvalue\n:quit\n",
+      "(import value ^from \"./sample\")\nvalue\n:quit\n",
       workingDir = root / "nested")
     check ran.exitCode == 0
     check ran.output.strip.splitLines[^1] == "42"
@@ -1461,6 +1461,32 @@ suite "cli — gene parse/fmt/compile":
     let second = writeCliProgram("fmt_zero_arg_sends_again.gene", formatted.output)
     check runGene(["fmt", second]).output == formatted.output
 
+  test "fmt renders grouped selectors and compact aliases with comments":
+    buildGeneCli()
+    let source = """
+(import a/ [b:bb c/ [d e:ee]] ^from "mod")
+(import a/[
+  b
+  # c contains the last two selections
+  c/d e:ee]
+  ^from "mod")
+(import [u:v w] ^from "old")
+(quote (import [u:v w] ^from "old"))
+"""
+    let file = writeCliProgram("fmt_imports.gene", source)
+    let formatted = runGene(["fmt", file])
+    checkpoint formatted.output
+    check formatted.exitCode == 0
+    check "(import ^from \"mod\" a/[b:bb c/[d e:ee]])" in formatted.output
+    check "# c contains the last two selections" in formatted.output
+    check "(import ^from \"old\" u:v w)" in formatted.output
+    let input = readAll(source)
+    let output = readAll(formatted.output)
+    for i in [0, 1, 3]:
+      check input[i].print() == output[i].print()
+    let second = writeCliProgram("fmt_imports_again.gene", formatted.output)
+    check runGene(["fmt", second]).output == formatted.output
+
   test "fmt output is parse-equivalent and idempotent on the todo app":
     buildGeneCli()
     let f1 = execCmdEx(shellQuote(geneExe) & " fmt examples/todo_app/src/main.gene")
@@ -1536,7 +1562,7 @@ suite "cli — gene parse/fmt/compile":
       "(macro twice [x] `(+ %x %x))\n" &
       "(panic \"dependency runtime should not run\")\n")
     let path = writeCliProgram("compile_macro_user.gene",
-      "(import [twice] ^from \"./compile_macro_dep\")\n" &
+      "(import twice ^from \"./compile_macro_dep\")\n" &
       "(var answer (twice 21))\n")
     let ran = runGene(["compile", path])
     check ran.exitCode == 0
@@ -1794,7 +1820,7 @@ suite "cli — gene parse/fmt/compile":
       "(fn invert [value : Bool] : Bool (! value))\n")
     let path = writeCliProgram("web_importer.gene",
       "(mod web_importer ^profile web)\n" &
-      "(import [invert] ^from \"./web_dep.gene\")\n" &
+      "(import invert ^from \"./web_dep.gene\")\n" &
       "(fn result [] : Bool (invert false))\n")
     let outDir = cliDir / "web_import_out"
     createDir(outDir)
@@ -1893,7 +1919,7 @@ suite "cli — gene parse/fmt/compile":
     let prog = writeCliProgram("serde_refs.gene", """
 (import $serde [write read write_data SerdePolicy SerdeError])
 (import $str [contains? join])
-(import [Point Line Shape Result Drawable area Counter Conn Handle Opaque REGISTRY] ^from "./serde_geometry")
+(import Point Line Shape Result Drawable area Counter Conn Handle Opaque REGISTRY ^from "./serde_geometry")
 (fn check [label ok] ($println (join [label (if ok "ok" else "FAIL")] " ")))
 # stage 3: references
 (check "type" (== Point (read (write Point))))
@@ -2051,9 +2077,9 @@ suite "cli — gene doc":
       "(var dep 1)")
     let path = writeCliProgram("doc_imports.gene",
       "(mod docs) " &
-      "(import [dep : local-dep] ^from \"./dep_for_doc\") " &
+      "(import dep:local-dep ^from \"./dep_for_doc\") " &
       "(ns source (var item 2)) " &
-      "(import source [item : local-item]) " &
+      "(import source [item:local-item]) " &
       "(var done true)")
     let ran = runGene(["doc", path])
     check ran.exitCode == 0
@@ -2224,8 +2250,8 @@ suite "cli — example runner":
     let root = exampleCliRoot()
     writeExampleFixture(root, "src/math.gene", "(fn twice [n] (* n 2))")
     writeExampleFixture(root, "tests/math_spec.gene", """
-      (import [twice] ^from "../src/math.gene")
-      (import $test [describe : suite it : example])
+      (import twice ^from "../src/math.gene")
+      (import $test [describe:suite it:example])
       (suite "math" (example "twice" [] ($assert (== (twice 3) 6))))
     """)
     let ran = runExamplesIn(root, ["test", "tests/math_spec.gene"])

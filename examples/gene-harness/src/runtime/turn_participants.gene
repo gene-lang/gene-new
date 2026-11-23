@@ -1,7 +1,7 @@
 # Mandatory turn phases. This is independent of optional hooks and owns no
 # feature policy, registry storage, durable journal, or composition lease.
 (mod turn_participants)
-(import [supervised_call] ^from "./call_supervision")
+(import supervised_call ^from "./call_supervision")
 
 (type ParticipantFailure : Error ^props {^participant Str ^phase Str ^code Str
   ^errors Any?})

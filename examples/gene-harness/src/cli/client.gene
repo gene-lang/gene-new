@@ -1,7 +1,7 @@
 (mod cli_client)
-(import [api_root] ^from "../web/contract.gene")
-(import ^from "./options" [CliError problem])
-(import ^from "../web/connection" [read_connection unavailable])
+(import api_root ^from "../web/contract.gene")
+(import ^from "./options" CliError problem)
+(import ^from "../web/connection" read_connection unavailable)
 (import $net/http_client [request])
 
 (fn wire [connection, method : Str, path : Str, data = nil, ^credentials credentials = nil, ^deadline deadline : Int = 0]

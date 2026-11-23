@@ -2,7 +2,7 @@
 
 (mod state)
 
-(import $store/fs [open : store_open Store StoreError])
+(import $store/fs [open:store_open Store StoreError])
 (import $serde [write_data])
 (import $crypto [sha256])
 (import $str [byte_size starts_with? slice_bytes])

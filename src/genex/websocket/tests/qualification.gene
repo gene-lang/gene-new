@@ -1,4 +1,4 @@
-(import [load open send_text receive_text flush WebSocketError] ^from "../src/websocket")
+(import load open send_text receive_text flush WebSocketError ^from "../src/websocket")
 
 (fn report [text : Str]
   ($println text)

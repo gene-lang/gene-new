@@ -1,11 +1,11 @@
 (mod delegation_crash_fixture)
-(import [test_controller] ^from "../support")
-(import [open_runtime] ^from "../../src/runtime/bootstrap")
-(import [baseline_profile] ^from "../../src/profiles/baseline")
-(import [submit_round round_state] ^from "../../src/runtime/round_controller")
-(import [require_record] ^from "../../src/runtime/sessions")
-(import [delegation_blocks] ^from "../../src/runtime/delegations")
-(import [terminal_delegation?] ^from "../../src/runtime/delegation_contract")
+(import test_controller ^from "../support")
+(import open_runtime ^from "../../src/runtime/bootstrap")
+(import baseline_profile ^from "../../src/profiles/baseline")
+(import submit_round round_state ^from "../../src/runtime/round_controller")
+(import require_record ^from "../../src/runtime/sessions")
+(import delegation_blocks ^from "../../src/runtime/delegations")
+(import terminal_delegation? ^from "../../src/runtime/delegation_contract")
 
 (fn model_counts [root : Str]
   (let path $"${root}/model-counts.gene")

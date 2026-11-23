@@ -1,12 +1,12 @@
 (import $test [describe it])
-(import [isolated run_spec test_service package_path] ^from "../../support")
-(import [close_session_service create_session host_status snapshot] ^from "../../../src/web/session_service")
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [row contribute put_cordis_plugin] ^from "../../../src/kernel")
-(import [ui_status UiError] ^from "../../../src/ui/state")
-(import [ui_render ui_preview ui_publication_preview] ^from "../../../src/ui/views")
-(import [SessionError] ^from "../../../src/runtime/sessions")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
+(import isolated run_spec test_service package_path ^from "../../support")
+(import close_session_service create_session host_status snapshot ^from "../../../src/web/session_service")
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import row contribute put_cordis_plugin ^from "../../../src/kernel")
+(import ui_status UiError ^from "../../../src/ui/state")
+(import ui_render ui_preview ui_publication_preview ^from "../../../src/ui/views")
+(import SessionError ^from "../../../src/runtime/sessions")
+(import Plugin PluginHost ^from "../../../src/plugin_api")
 
 # Host views are always listed; these specs exercise optional plugin views.
 (fn plugin_views [status]

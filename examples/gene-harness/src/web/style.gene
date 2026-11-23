@@ -1,13 +1,13 @@
 # Layer ordering is the host contract. Theme and plugin rules are unlayered.
 (mod harness_web_style)
-(import ^from "./style/manager" [styles : manager_styles])
-(import ^from "./style/preferences" [styles : preferences_styles])
-(import ^from "./style/reset" [styles : reset_styles])
-(import ^from "./style/base" [styles : root_styles])
-(import ^from "./style/shell" [styles : shell_styles])
-(import ^from "./style/components" [styles : components_styles])
-(import ^from "./style/content" [styles : content_styles])
-(import ^from "./style/utilities" [styles : utilities_styles])
+(import ^from "./style/manager" styles:manager_styles)
+(import ^from "./style/preferences" styles:preferences_styles)
+(import ^from "./style/reset" styles:reset_styles)
+(import ^from "./style/base" styles:root_styles)
+(import ^from "./style/shell" styles:shell_styles)
+(import ^from "./style/components" styles:components_styles)
+(import ^from "./style/content" styles:content_styles)
+(import ^from "./style/utilities" styles:utilities_styles)
 
 (var base_styles ($to_str "@layer preferences, reset, base, shell, components, content, utilities;\n"
   preferences_styles reset_styles root_styles shell_styles components_styles content_styles utilities_styles manager_styles))

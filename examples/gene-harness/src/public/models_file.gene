@@ -1,7 +1,7 @@
 # Inert shared configuration. Loading never resolves credentials or runs code.
 (mod models_file)
-(import [validate_model_settings] ^from "./models")
-(import [try_lock_wait] ^from "./file_lock")
+(import validate_model_settings ^from "./models")
+(import try_lock_wait ^from "./file_lock")
 
 (type ModelsFileError : Error ^props {^code Str})
 

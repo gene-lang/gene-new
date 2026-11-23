@@ -60,8 +60,8 @@ class GenexArchivePackageTests(unittest.TestCase):
  ^dependencies {^archive (dep "genex/archive" "0.1.0" ^path "../archive")}}
 ''')
             (app / "src/main.gene").write_text('''
-(import [codec_abi inspect_zip extract_zip_sync extract_zip _open_codec
-         gzip_reader gzip_writer ArchiveError]
+(import codec_abi inspect_zip extract_zip_sync extract_zip _open_codec
+         gzip_reader gzip_writer ArchiveError
   ^from "." ^pkg "archive")
 (import $io [IoResource AsyncReader AsyncWriter IoClosed])
 (fn collect_codec [codec]
@@ -279,7 +279,7 @@ class GenexArchivePackageTests(unittest.TestCase):
   0)
 ''')
             (app / "src/unawaited.gene").write_text('''
-(import [extract_zip] ^from "." ^pkg "archive")
+(import extract_zip ^from "." ^pkg "archive")
 (fn main [args] : Int
   (let pending (extract_zip args/0 args/1))
   ($sleep 100)

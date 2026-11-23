@@ -1,15 +1,15 @@
 # Offline repair keeps the previous activation-free bootstrap and its durable
 # crash recovery. Ordinary CLI operations never enter this module's runtime.
 (mod maintenance)
-(import ^from "./bootstrap" [open_runtime close_runtime prepare_workspace_root])
-(import ^from "./plugin_manager" [plugin_catalog])
-(import ^from "../profiles/baseline" [baseline_profile])
-(import ^from "../profiles/registry" [workspace_profile])
-(import [doctor disable_entry enable_entry restore_entry revert_entry plugin_history_page] ^from "../storage/workspace_repair")
-(import [composition_revision] ^from "../storage/composition_store")
-(import ^from "./workspace_lock" [acquire_workspace_lock close_workspace_lock])
-(import ^from "../web/auth" [reset_auth_at])
-(import ^from "../web/connection" [clear_connection])
+(import ^from "./bootstrap" open_runtime close_runtime prepare_workspace_root)
+(import ^from "./plugin_manager" plugin_catalog)
+(import ^from "../profiles/baseline" baseline_profile)
+(import ^from "../profiles/registry" workspace_profile)
+(import doctor disable_entry enable_entry restore_entry revert_entry plugin_history_page ^from "../storage/workspace_repair")
+(import composition_revision ^from "../storage/composition_store")
+(import ^from "./workspace_lock" acquire_workspace_lock close_workspace_lock)
+(import ^from "../web/auth" reset_auth_at)
+(import ^from "../web/connection" clear_connection)
 
 (fn repair [root : Str, action : Str, id : Str = "", ^revision revision = nil,
             ^expected expected = nil, ^before before = nil, ^limit limit : Int = 50,

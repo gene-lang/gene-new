@@ -1,16 +1,16 @@
 (import $test [describe it])
-(import [isolated run_spec test_controller] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [baseline_profile] ^from "../../../src/profiles/baseline")
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [submit_round round_receipt close_round_controller] ^from "../../../src/runtime/round_controller")
-(import [plugin_state events_for] ^from "../../../src/storage/state")
-(import [row put_cordis_plugin] ^from "../../../src/kernel")
-(import [ExecutionLimits] ^from "../../../src/plugin_api")
+(import isolated run_spec test_controller ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import baseline_profile ^from "../../../src/profiles/baseline")
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import submit_round round_receipt close_round_controller ^from "../../../src/runtime/round_controller")
+(import plugin_state events_for ^from "../../../src/storage/state")
+(import row put_cordis_plugin ^from "../../../src/kernel")
+(import ExecutionLimits ^from "../../../src/plugin_api")
 
 (fn notes_source [version : Str = "one", ^broken broken : Bool = false, ^delay delay : Int = 0]
   `(mod plugin
-     (import [Plugin PluginHost ServiceError] ^from "src/plugin_api.gene")
+     (import Plugin PluginHost ServiceError ^from "src/plugin_api.gene")
      (fn init [descriptor]
        (Plugin ^id "notes"
          ^requires [{^registry "turn_participants"} {^registry "outcome_extensions"}]
@@ -66,7 +66,7 @@
 
 (fn declaration_source [id : Str, registry : Str, definition, ^duplicate duplicate : Bool = false]
   `(mod plugin
-     (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+     (import Plugin PluginHost ^from "src/plugin_api.gene")
      (fn init [descriptor]
        (Plugin ^id %id ^requires [{^registry %registry}]
          ^activate (fn [host]

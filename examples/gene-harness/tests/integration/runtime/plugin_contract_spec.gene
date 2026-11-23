@@ -1,20 +1,20 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [provider_offline] ^from "../../../src/builtin/provider_offline")
-(import [PluginHost] ^from "../../../src/plugin_api")
-(import [row registry_names] ^from "../../../src/kernel")
-(import [register_plugin stage_plugin_entry] ^from "../../../src/storage/workspace_activation")
-(import [composition_entries composition_revision commit_composition] ^from "../../../src/storage/composition_store")
-(import [load_entry_descriptor] ^from "../../../src/storage/module_registry")
-(import [revert_plugin verify_stored_entry] ^from "../../../src/storage/workspace_repair")
-(import [validate_plan apply_plan] ^from "../../../src/runtime/plugin_plans")
-(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
-(import [submit_command command_receipt] ^from "../../../src/runtime/commands")
-(import [mode_state submit_mode_input close_mode] ^from "../../../src/runtime/input_modes")
-(import [assemble_instructions] ^from "../../../src/agents/instructions")
-(import [host_build] ^from "../../../src/runtime/host_identity")
+(import isolated run_spec ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import provider_offline ^from "../../../src/builtin/provider_offline")
+(import PluginHost ^from "../../../src/plugin_api")
+(import row registry_names ^from "../../../src/kernel")
+(import register_plugin stage_plugin_entry ^from "../../../src/storage/workspace_activation")
+(import composition_entries composition_revision commit_composition ^from "../../../src/storage/composition_store")
+(import load_entry_descriptor ^from "../../../src/storage/module_registry")
+(import revert_plugin verify_stored_entry ^from "../../../src/storage/workspace_repair")
+(import validate_plan apply_plan ^from "../../../src/runtime/plugin_plans")
+(import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
+(import submit_command command_receipt ^from "../../../src/runtime/commands")
+(import mode_state submit_mode_input close_mode ^from "../../../src/runtime/input_modes")
+(import assemble_instructions ^from "../../../src/agents/instructions")
+(import host_build ^from "../../../src/runtime/host_identity")
 
 (fn command [runtime, input]
   (let receipt (submit_command runtime/services/values/commands "default" input))
@@ -28,7 +28,7 @@
 
 (fn simple_source [id : Str]
   `(mod plugin
-    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (import Plugin PluginHost ^from "src/plugin_api.gene")
     (fn init [descriptor]
       ($assert (== descriptor/core_interface "gene-harness/PluginHost:3"))
       (Plugin ^id %id ^activate (fn [host]
@@ -38,7 +38,7 @@
 
 (fn public_source [n, marker]
   `(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-    (import [Plugin PluginHost CommandContext CommandResult OperatorHost DurableRecord] ^from "src/plugin_api.gene")
+    (import Plugin PluginHost CommandContext CommandResult OperatorHost DurableRecord ^from "src/plugin_api.gene")
     (fn init [descriptor]
       ($assert (== descriptor/core_interface "gene-harness/PluginHost:3"))
       (Plugin ^id "compat" ^activate (fn [host]
@@ -278,7 +278,7 @@
         (let marker $"${root}/failed-cleanup")
         (try
           (let source `(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-            (import [Plugin PluginHost ServiceError] ^from "src/plugin_api.gene")
+            (import Plugin PluginHost ServiceError ^from "src/plugin_api.gene")
             (fn init [descriptor]
               (Plugin ^id "partial" ^activate (fn [host]
                 (host .PluginHost:defer (fn []
@@ -306,7 +306,7 @@
       (fn [root]
         (let runtime (open_runtime root "default" (Profile ^name "source-contracts" ^plugins [])))
         (let source (quote (mod plugin
-          (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+          (import Plugin PluginHost ^from "src/plugin_api.gene")
           (fn init [descriptor]
             (Plugin ^id "versioned" ^activate (fn [host]
               (host .PluginHost:contribute "functions" {^name "versioned" ^doc "Selected interface."

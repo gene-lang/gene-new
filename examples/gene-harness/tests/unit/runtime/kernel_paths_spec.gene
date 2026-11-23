@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [new_harness shutdown_harness registry contribute row] ^from "../../../src/kernel")
+(import new_harness shutdown_harness registry contribute row ^from "../../../src/kernel")
 
 (describe "Harness construction and composition hooks"
   (it "loads source from the package default root even when launched in another directory" []

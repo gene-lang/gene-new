@@ -1,6 +1,6 @@
 (import $test [describe it])
-(import [resolve_wait_receipt poll_wait_receipt] ^from "../../../src/cli/client")
-(import [CliError] ^from "../../../src/cli/options")
+(import resolve_wait_receipt poll_wait_receipt ^from "../../../src/cli/client")
+(import CliError ^from "../../../src/cli/options")
 
 (describe "CLI continuation receipt resolution"
   (it "rechecks the parent when a reserved successor is not retained yet" []

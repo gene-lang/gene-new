@@ -1,7 +1,7 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod cards_routes)
-(import [response request_data session_path?] ^from "../request")
-(import [session_card_action session_card_receipt] ^from "../session_service")
+(import response request_data session_path? ^from "../request")
+(import session_card_action session_card_receipt ^from "../session_service")
 
 (fn cards_request [context, request, parts]
   (let host context/host)

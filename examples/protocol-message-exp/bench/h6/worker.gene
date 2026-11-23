@@ -6,12 +6,12 @@
 #
 # VARIANT is one of f, f_typed, p, p_closure, p_typed. The held operation (or
 # closure, or function) is applied at every recursive node.
-(import [build_tree describe] ^from "./tree")
-(import [operation : f_operation] ^from "./f/render")
-(import [operation : f_typed_operation] ^from "./f/render_typed")
-(import [operation : p_operation] ^from "./p/root")
-(import [operation : p_closure_operation] ^from "./p_closure/root")
-(import [operation : p_typed_operation] ^from "./p_typed/root")
+(import build_tree describe ^from "./tree")
+(import operation:f_operation ^from "./f/render")
+(import operation:f_typed_operation ^from "./f/render_typed")
+(import operation:p_operation ^from "./p/root")
+(import operation:p_closure_operation ^from "./p_closure/root")
+(import operation:p_typed_operation ^from "./p_typed/root")
 
 (fn acquire [variant]
   (match variant

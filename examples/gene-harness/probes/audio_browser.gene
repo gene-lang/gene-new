@@ -1,6 +1,6 @@
 # The audio specification calls for Chrome's fake-device/WAV flags. This only
 # bootstraps an isolated browser; UI interactions remain through Computer Use.
-(import [connection_link] ^from "../src/cli/client")
+(import connection_link ^from "../src/cli/client")
 (fn main [argv] : Int
   (let args []) (for arg in argv (args .push ($to_str arg)))
   ($assert (== args/.size 3) "Expected WORKSPACE FIXTURE_WAV BROWSER_PROFILE.")

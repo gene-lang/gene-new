@@ -1,6 +1,6 @@
 (import $test [describe it assert_equal assert_raises])
-(import [distribution] ^from "./run")
-(import [record_harness_sample] ^from "./run_harness")
+(import distribution ^from "./run")
+(import record_harness_sample ^from "./run_harness")
 
 (describe "Benchmark distributions"
   (it "keeps execution order while computing an odd median" []

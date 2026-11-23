@@ -1,22 +1,21 @@
 (mod session_service)
-(import [effective_config] ^from "../runtime/settings_resolver")
-(import [open_session_lifecycle close_session_lifecycle] ^from "./observers")
-(import [command_descriptors] ^from "../runtime/command_identity")
-(import [browser_client_descriptors] ^from "../ui/browser_assets")
-(import [speech_text speech_needs_audio_reply?] ^from "../runtime/speech_text")
-(import [project_conversation project_request conversation_page initiating_label] ^from "./conversation")
-(import [VoiceChanged voice_snapshot public_voice_state claim_voice release_voice] ^from "../runtime/voice_state")
-(import [voice_output?] ^from "../runtime/voice_state")
-(import [append_core_event] ^from "../storage/state")
-(import [pending_request read_body] ^from "../agents/history")
-(import [operator_round? continuable_round?] ^from "../runtime/round_policy")
-(import [delivery_status thread_link share_session] ^from "../channels/service")
-(import [sharing_available?] ^from "../channels/sharing")
-(import ^from "../runtime/bootstrap" [open_runtime close_runtime prepare_workspace_root])
-(import ^from "../profiles/registry" [workspace_profile])
-(import ^from "../runtime/workspace_manager" [WorkspaceManagerChanged])
+(import effective_config ^from "../runtime/settings_resolver")
+(import open_session_lifecycle close_session_lifecycle ^from "./observers")
+(import command_descriptors ^from "../runtime/command_identity")
+(import browser_client_descriptors ^from "../ui/browser_assets")
+(import speech_text speech_needs_audio_reply? ^from "../runtime/speech_text")
+(import project_conversation project_request conversation_page initiating_label ^from "./conversation")
+(import VoiceChanged voice_snapshot public_voice_state claim_voice release_voice ^from "../runtime/voice_state")
+(import voice_output? ^from "../runtime/voice_state")
+(import append_core_event ^from "../storage/state")
+(import pending_request read_body ^from "../agents/history")
+(import operator_round? continuable_round? ^from "../runtime/round_policy")
+(import delivery_status thread_link share_session ^from "../channels/service")
+(import sharing_available? ^from "../channels/sharing")
+(import ^from "../runtime/bootstrap" open_runtime close_runtime prepare_workspace_root)
+(import ^from "../profiles/registry" workspace_profile)
+(import ^from "../runtime/workspace_manager" WorkspaceManagerChanged)
 (import ^from "../runtime/round_controller" ^^export
-  [
     resume_answered_rounds
     resume_continuations
     continue_round
@@ -26,76 +25,69 @@
     answer_round
     cancel_round
     close_round_controller
-    RoundError])
+    RoundError)
 (import ^from "../runtime/sessions"
-  [
-    create_session
-    :
-    create_record
-    list_sessions
-    :
-    session_records
-    require_record
-    update_session
-    load_session])
-(import [delete_session with_session_gate] ^from "../runtime/sessions")
-(import ^from "../agents/provider_selection" [provider_choice select_provider selection_view session_settings catalog_snapshot readiness_report])
-(import [ModelCatalogChanged] ^from "../runtime/models_host")
-(import ^from "../storage/state" [events_for])
-(import ^from "./contract" [protocol_version history_page_limit api_path])
+  create_session:create_record
+  list_sessions:session_records
+  require_record
+  update_session
+  load_session)
+(import delete_session with_session_gate ^from "../runtime/sessions")
+(import ^from "../agents/provider_selection" provider_choice select_provider selection_view session_settings catalog_snapshot readiness_report)
+(import ModelCatalogChanged ^from "../runtime/models_host")
+(import ^from "../storage/state" events_for)
+(import ^from "./contract" protocol_version history_page_limit api_path)
 (import ^from "../runtime/commands"
-  [
     parse_submission
     submit_command
     command_receipt
     command_request_receipt
     command_state
-    cancel_command])
+    cancel_command)
 (import ^from "../kernel"
-  [
     registry_names
     rows
     contribute
     RoundChanged
     CommandChanged
     SessionChanged
-    DurableRecord])
-(import ^from "../runtime/composition" [acquire_snapshot release_snapshot current_snapshot])
-(import ^from "../runtime/input_modes" [mode_state])
-(import ^from "../kernel" [ModeChanged CompositionChanged CardChanged row])
-(import [ServiceError publish_host_objects] ^from "../plugin_api")
-(import [plugin_catalog plugin_history_catalog] ^from "../runtime/plugin_manager")
-(import [validate_plan apply_plan plan_result] ^from "../runtime/plugin_plans")
-(import [set_plugin_enabled restore_plugin revert_plugin] ^from "../storage/workspace_repair")
-(import [pin_history] ^from "../storage/plugin_history")
-(import [manager_list manager_inspect manager_operation] ^from "../runtime/workspace_manager")
-(import [manager_root_path] ^from "../public/workspace_paths")
-(import [inbox_snapshot message_detail clear_messages acknowledge_messages] ^from "../notifications/inbox")
-(import [publish_notification] ^from "../notifications/publisher")
-(import [invoke_notification_action] ^from "../notifications/actions")
-(import [set_appearance] ^from "../runtime/appearance")
-(import [search_sessions] ^from "../runtime/launcher_search")
-(import [read_workspace_settings update_workspace_settings] ^from "../runtime/workspace_settings")
-(import [channel_request] ^from "../channels/http")
-(import [list_media] ^from "../runtime/media_host")
-(import [open_media_store put_media_base64 media_descriptor media_bytes] ^from "../storage/media")
-(import [voice_timings] ^from "../runtime/voice_state")
-(import [list_settings read_setting set_setting reset_setting set_settings list_settings_groups setting_choices
+    DurableRecord)
+(import ^from "../runtime/composition" acquire_snapshot release_snapshot current_snapshot)
+(import ^from "../runtime/input_modes" mode_state)
+(import ^from "../kernel" ModeChanged CompositionChanged CardChanged row)
+(import ServiceError publish_host_objects ^from "../plugin_api")
+(import plugin_catalog plugin_history_catalog ^from "../runtime/plugin_manager")
+(import validate_plan apply_plan plan_result ^from "../runtime/plugin_plans")
+(import set_plugin_enabled restore_plugin revert_plugin ^from "../storage/workspace_repair")
+(import pin_history ^from "../storage/plugin_history")
+(import manager_list manager_inspect manager_operation ^from "../runtime/workspace_manager")
+(import manager_root_path ^from "../public/workspace_paths")
+(import inbox_snapshot message_detail clear_messages acknowledge_messages ^from "../notifications/inbox")
+(import publish_notification ^from "../notifications/publisher")
+(import invoke_notification_action ^from "../notifications/actions")
+(import set_appearance ^from "../runtime/appearance")
+(import search_sessions ^from "../runtime/launcher_search")
+(import read_workspace_settings update_workspace_settings ^from "../runtime/workspace_settings")
+(import channel_request ^from "../channels/http")
+(import list_media ^from "../runtime/media_host")
+(import open_media_store put_media_base64 media_descriptor media_bytes ^from "../storage/media")
+(import voice_timings ^from "../runtime/voice_state")
+(import list_settings read_setting set_setting reset_setting set_settings list_settings_groups setting_choices
   list_shared_settings read_shared_setting set_shared_setting reset_shared_setting commit_shared
-  require_definition SettingsChanged] ^from "../runtime/workspace_config")
-(import [log_recent log_refresh_redactions log_set_levels] ^from "../kernel/log")
-(import [keyboard_state keyboard_bindings bind_key clear_key restore_key] ^from "../runtime/keyboard")
+  require_definition SettingsChanged ^from "../runtime/workspace_config")
+(import log_recent log_refresh_redactions log_set_levels ^from "../kernel/log")
+(import keyboard_state keyboard_bindings bind_key clear_key restore_key ^from "../runtime/keyboard")
 (import ^from "../runtime/cards" ^^export
-  [card_records shown_card card_action card_action_receipt check_card_command
-   admit_card_command release_card_command CardError])
-(import ^from "../runtime/appearance" [AppearanceChanged AppearanceRequest appearance_tabs report_appearance])
-(import [delegation_blocks delegation_recovery cancel_delegation_admission]
+  card_records shown_card card_action card_action_receipt check_card_command
+   admit_card_command release_card_command CardError)
+(import ^from "../runtime/appearance" AppearanceChanged AppearanceRequest appearance_tabs report_appearance)
+(import delegation_blocks delegation_recovery cancel_delegation_admission
   ^from "../runtime/delegations")
-(import ^from "./theme_registry" [theme_tokens])
-(import ^from "../ui/state" [ui_status ui_data_revision])
-(import ^from "../ui/views" [render_component])
-(import ^from "../runtime/cordis_adapter" [spawn_composition_call])
-(import ^from "../ui/components" [bounded_component_view WebComponentError])
+(import ^from "./theme_registry" theme_tokens)
+(import ^from "../ui/state" ui_status ui_data_revision)
+(import ^from "../ui/views" render_component)
+(import ^from "../runtime/cordis_adapter" spawn_composition_call)
+(import ^from "../ui/components" bounded_component_view WebComponentError)
 
 (fn ^^private feature_function [runtime, name : Str]
   (let found (row runtime/h "functions" name))

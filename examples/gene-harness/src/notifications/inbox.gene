@@ -1,6 +1,6 @@
 # Independent checkpointed producer inbox. Never writes the workspace data stream.
 (mod notification_inbox)
-(import $store/fs [open : store_open Store])
+(import $store/fs [open:store_open Store])
 
 (type NotificationError : Error ^props {^code Str})
 (type Inbox ^props {^backend Any ^state Any ^gate Any ^observer Any ^progress Any})

@@ -1,7 +1,7 @@
 # Adapted from the recorded project_audit example to the current function API.
 # request.txt preserves the original request; check.gene verifies this version.
 (mod plugin
-  (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+  (import Plugin PluginHost ^from "src/plugin_api.gene")
   (type AuditError : Error ^props {^code Str ^data Any?})
 
   (fn audit_error [code : Str, message : Str, stage : Str, path : Str]

@@ -1,7 +1,7 @@
 # Local UI acceptance only. These records have no refresh token, and the host
 # removes every vendor provider before activation. No vendor request can run.
-(import [main : browser_fixture] ^from "./model_browser")
-(import [save_chatgpt_account] ^from "../../src/public/chatgpt_store")
+(import main:browser_fixture ^from "./model_browser")
+(import save_chatgpt_account ^from "../../src/public/chatgpt_store")
 
 (fn main [argv] : Int
   (let args ($body argv))

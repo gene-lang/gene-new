@@ -1,8 +1,8 @@
 # M4: the workspace object exposes the in-process ring to the REPL.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_session_service close_session_service] ^from "../../../src/web/session_service")
-(import [log_reset log_event] ^from "../../../src/kernel/log")
+(import isolated run_spec ^from "../../support")
+(import open_session_service close_session_service ^from "../../../src/web/session_service")
+(import log_reset log_event ^from "../../../src/kernel/log")
 
 (describe "Workspace logs object"
   (it "queries the ring by type and target" []

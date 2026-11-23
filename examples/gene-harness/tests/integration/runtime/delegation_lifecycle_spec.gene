@@ -1,11 +1,11 @@
 (import $test [describe it])
-(import [isolated run_spec test_controller] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [baseline_profile] ^from "../../../src/profiles/baseline")
-(import [submit_round round_receipt answer_round close_round_controller] ^from "../../../src/runtime/round_controller")
-(import [create_session require_record] ^from "../../../src/runtime/sessions")
-(import [delegation_blocks delegation_recovery] ^from "../../../src/runtime/delegations")
-(import [row] ^from "../../../src/kernel")
+(import isolated run_spec test_controller ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import baseline_profile ^from "../../../src/profiles/baseline")
+(import submit_round round_receipt answer_round close_round_controller ^from "../../../src/runtime/round_controller")
+(import create_session require_record ^from "../../../src/runtime/sessions")
+(import delegation_blocks delegation_recovery ^from "../../../src/runtime/delegations")
+(import row ^from "../../../src/kernel")
 
 (fn wait_for [predicate, message : Str]
   (let due (+ ($os/monotonic_ms) 15000))

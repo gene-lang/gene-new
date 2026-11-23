@@ -4,10 +4,10 @@
 # manifest that removes the provider while the consumer still requires it, then
 # restore it. Prints observable outcomes only.
 (import $log [new_logger])
-(import [ReconcileMode RuntimeOptions LoaderOptions invocation_limits
-         default_plugin_invoker new_runtime]
+(import ReconcileMode RuntimeOptions LoaderOptions invocation_limits
+         default_plugin_invoker new_runtime
   ^from "./cordis")
-(import [Clock clock_key] ^from "./demo_contract")
+(import Clock clock_key ^from "./demo_contract")
 
 (fn entries [with_clock]
   (var list [{^id "reporter" ^plugin_id "app/reporter" ^module "reporter.gene" ^config nil}])

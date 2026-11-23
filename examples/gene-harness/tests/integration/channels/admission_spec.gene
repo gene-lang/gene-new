@@ -1,16 +1,16 @@
 (import $test [describe it])
-(import [isolated run_spec test_service] ^from "../../support")
-(import [close_session_service snapshot command submit] ^from "../../../src/web/session_service")
-(import [create_session : create_record delete_session] ^from "../../../src/runtime/sessions")
-(import [admit_channel_queue submit_round round_receipt round_state continue_round save_round RoundError]
+(import isolated run_spec test_service ^from "../../support")
+(import close_session_service snapshot command submit ^from "../../../src/web/session_service")
+(import create_session:create_record delete_session ^from "../../../src/runtime/sessions")
+(import admit_channel_queue submit_round round_receipt round_state continue_round save_round RoundError
   ^from "../../../src/runtime/round_controller")
-(import [command_state] ^from "../../../src/runtime/commands")
-(import [with_session_gate] ^from "../../../src/runtime/sessions")
-(import [open_authority configure_account configure_route authorize authorize_parts close_channel_store]
+(import command_state ^from "../../../src/runtime/commands")
+(import with_session_gate ^from "../../../src/runtime/sessions")
+(import open_authority configure_account configure_route authorize authorize_parts close_channel_store
   ^from "../../../src/channels/authority")
-(import [configure_queues enqueue queue_status activate_binding resume_queue snapshot : queue_snapshot]
+(import configure_queues enqueue queue_status activate_binding resume_queue snapshot:queue_snapshot
   ^from "../../../src/channels/queue")
-(import [ChannelError] ^from "../../../src/channels/model")
+(import ChannelError ^from "../../../src/channels/model")
 
 (fn wait_round [service, session]
   (loop

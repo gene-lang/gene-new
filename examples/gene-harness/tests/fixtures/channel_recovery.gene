@@ -1,18 +1,18 @@
 (mod channel_recovery_fixture)
-(import [test_service] ^from "../support")
-(import [configure_account configure_route snapshot] ^from "../../src/channels/authority")
+(import test_service ^from "../support")
+(import configure_account configure_route snapshot ^from "../../src/channels/authority")
 
-(import [bind_workspace receive_handoff handoff_inputs handoff_outputs drain_session output_intent]
+(import bind_workspace receive_handoff handoff_inputs handoff_outputs drain_session output_intent
   ^from "../../src/channels/service")
-(import [queue_status hold_queue resume_queue] ^from "../../src/channels/queue")
-(import [queue_output deliver_output] ^from "../../src/channels/delivery")
-(import [open_api] ^from "../../src/builtin/slack/api")
-(import [load_session with_session_gate] ^from "../../src/runtime/sessions")
-(import [save_round round_receipt] ^from "../../src/runtime/round_controller")
-(import [submit] ^from "../../src/web/session_service")
-(import [key] ^from "../../src/channels/model")
-(import [receive_slack] ^from "../channel_support")
-(import [api_adapter] ^from "../../src/builtin/slack/adapter")
+(import queue_status hold_queue resume_queue ^from "../../src/channels/queue")
+(import queue_output deliver_output ^from "../../src/channels/delivery")
+(import open_api ^from "../../src/builtin/slack/api")
+(import load_session with_session_gate ^from "../../src/runtime/sessions")
+(import save_round round_receipt ^from "../../src/runtime/round_controller")
+(import submit ^from "../../src/web/session_service")
+(import key ^from "../../src/channels/model")
+(import receive_slack ^from "../channel_support")
+(import api_adapter ^from "../../src/builtin/slack/adapter")
 
 (fn read_count [root : Str]
   (let filename ($path/join root "model-count"))

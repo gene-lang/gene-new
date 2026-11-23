@@ -1,5 +1,5 @@
-(import [Section Figure] ^from "../../../src/model")
-(import [RenderTyped Ops] ^from "./contracts")
+(import Section Figure ^from "../../../src/model")
+(import RenderTyped Ops ^from "./contracts")
 (impl RenderTyped for Section ^^export
   (message render [ops : Ops] : Str
     (var out self/title)

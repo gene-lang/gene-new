@@ -1,6 +1,6 @@
 # Only assets admitted by web/load can become executable browser contributions.
 (mod browser_assets)
-(import [ui_revision] ^from "./state")
+(import ui_revision ^from "./state")
 
 (fn stylesheet_url [value]
   (if ($absent? value) (return ""))

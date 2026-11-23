@@ -1,11 +1,11 @@
 (import $test [describe it])
-(import ^from "../../support" [isolated run_spec source_path])
-(import ^from "../../web_support" [start_host ready_host stop_host])
-(import ^from "../../../src/cli/client" [connect api wire])
-(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
-(import ^from "../../../src/profiles/profile" [Profile])
-(import ^from "../../../src/profiles/baseline" [baseline_profile])
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import ^from "../../support" isolated run_spec source_path)
+(import ^from "../../web_support" start_host ready_host stop_host)
+(import ^from "../../../src/cli/client" connect api wire)
+(import ^from "../../../src/runtime/bootstrap" open_runtime close_runtime)
+(import ^from "../../../src/profiles/profile" Profile)
+(import ^from "../../../src/profiles/baseline" baseline_profile)
+(import register_plugin ^from "../../../src/storage/workspace_activation")
 (import $net/http [listen stop])
 
 (fn wait_job [client, started]
@@ -39,7 +39,7 @@
         (try
           (register_plugin seeded/workspace seeded/h "crasher"
             (quote (mod plugin
-              (import ^from "src/plugin_api.gene" [Plugin])
+              (import ^from "src/plugin_api.gene" Plugin)
               (fn init [descriptor]
                 (let n (if ($fs/exists? "init-runs") ($parse/parse_int ($fs/read_text "init-runs")) 0))
                 ($fs/write_text "init-runs" ($to_str (+ n 1)))

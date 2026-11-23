@@ -1,14 +1,14 @@
 # Tests src/agents/instructions.gene.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [baseline_profile] ^from "../../../src/profiles/baseline")
-(import [assemble_instructions response_format render_context] ^from "../../../src/agents/instructions")
-(import [workspace_bindings] ^from "../../../src/agents/harness_turn")
-(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
-(import [contribute doc] ^from "../../../src/kernel")
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [set_plugin_enabled restore_plugin] ^from "../../../src/storage/workspace_repair")
+(import isolated run_spec ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import baseline_profile ^from "../../../src/profiles/baseline")
+(import assemble_instructions response_format render_context ^from "../../../src/agents/instructions")
+(import workspace_bindings ^from "../../../src/agents/harness_turn")
+(import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
+(import contribute doc ^from "../../../src/kernel")
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import set_plugin_enabled restore_plugin ^from "../../../src/storage/workspace_repair")
 
 (describe "Registry-backed instructions"
   (it "renders concise orientation and dynamic context while loading manuals on demand" []
@@ -89,7 +89,7 @@
           (try
             (register_plugin ^^replace runtime/workspace runtime/h "working_instructions"
               (quote (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (import ^from "src/plugin_api.gene" Plugin PluginHost)
                 (fn init [descriptor]
                   (Plugin ^id "working_instructions"
                     ^activate (fn [host]

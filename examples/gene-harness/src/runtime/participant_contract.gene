@@ -1,8 +1,8 @@
 # Public projections and result admission. These private envelope types are
 # created by the host; plugins exchange ordinary owned data, never these tags.
 (mod participant_contract)
-(import [ParticipantFailure] ^from "./turn_participants")
-(import [freeze_turn_data] ^from "./turn_data")
+(import ParticipantFailure ^from "./turn_participants")
+(import freeze_turn_data ^from "./turn_data")
 
 (type ParticipantBindings ^props {^owner Str ^slot Str ^value Any})
 

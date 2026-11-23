@@ -1,17 +1,17 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_authority configure_account configure_route authorize snapshot close_channel_store]
+(import isolated run_spec ^from "../../support")
+(import open_authority configure_account configure_route authorize snapshot close_channel_store
   ^from "../../../src/channels/authority")
-(import [pending_ingress finish_handoff] ^from "../../../src/channels/ingress")
-(import [open_queues configure_queues enqueue] ^from "../../../src/channels/queue")
-(import [queue_output pending_output accept_output output_result reconcile_output
-         begin_part finish_part recover_deliveries deliver_output reconcile_remote] ^from "../../../src/channels/delivery")
-(import [open_api close_api] ^from "../../../src/builtin/slack/api")
-(import [mutate] ^from "../../../src/channels/store")
-(import [ChannelError key] ^from "../../../src/channels/model")
-(import [prune] ^from "../../../src/channels/retention")
-(import [receive_slack] ^from "../../channel_support")
-(import [api_adapter] ^from "../../../src/builtin/slack/adapter")
+(import pending_ingress finish_handoff ^from "../../../src/channels/ingress")
+(import open_queues configure_queues enqueue ^from "../../../src/channels/queue")
+(import queue_output pending_output accept_output output_result reconcile_output
+         begin_part finish_part recover_deliveries deliver_output reconcile_remote ^from "../../../src/channels/delivery")
+(import open_api close_api ^from "../../../src/builtin/slack/api")
+(import mutate ^from "../../../src/channels/store")
+(import ChannelError key ^from "../../../src/channels/model")
+(import prune ^from "../../../src/channels/retention")
+(import receive_slack ^from "../../channel_support")
+(import api_adapter ^from "../../../src/builtin/slack/adapter")
 
 (fn envelope [id : Str, ^event_type event_type : Str = "message", ^text text : Str = "<@UBOT> build it",
               ^author author : Str = "UOWNER", ^ts ts : Str = "1.000001"]

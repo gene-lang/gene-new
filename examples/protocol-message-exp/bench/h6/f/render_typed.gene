@@ -1,6 +1,6 @@
 # Control F-typed: the same function with the checked Callable parameter and a
 # Str result, so the cost of the view checks can be attributed separately.
-(import [Section Article Figure Chart] ^from "../model")
+(import Section Article Figure Chart ^from "../model")
 
 (fn render [node each : (Callable [Any Any] Str)] : Str
   (match node

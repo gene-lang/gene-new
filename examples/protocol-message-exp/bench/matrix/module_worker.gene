@@ -1,5 +1,5 @@
 # Layout "module": declarations and sends live in the imported rows.gene.
-(import [timed_row] ^from "./rows")
+(import timed_row ^from "./rows")
 (fn main [args] : Int
   ($assert (>= args/.body/.size 2) "usage: ROW ITERATIONS")
   (let report (timed_row args/.body/0 ($parse/parse_int args/.body/1)))

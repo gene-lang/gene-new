@@ -1,7 +1,7 @@
 (import $test [describe it run])
-(import ^from "../../../src/kernel" [new_harness])
-(import ^from "../../../src/runtime/appearance" [open_appearance set_appearance AppearanceChanged AppearanceRequest AppearanceError appearance_tabs report_appearance])
-(import ^from "../../../src/web/appearance" [read_saved encode_saved appearance_answer appearance_request])
+(import ^from "../../../src/kernel" new_harness)
+(import ^from "../../../src/runtime/appearance" open_appearance set_appearance AppearanceChanged AppearanceRequest AppearanceError appearance_tabs report_appearance)
+(import ^from "../../../src/web/appearance" read_saved encode_saved appearance_answer appearance_request)
 
 (describe "Browser appearance"
   (it "keeps saved choices when a host falls back" []

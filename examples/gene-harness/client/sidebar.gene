@@ -1,7 +1,7 @@
 # Conversation navigation visibility belongs to this browser tab.
 (mod harness_sidebar ^profile web)
-(import [storage_get storage_set] ^from "./workspace_storage.gene")
-(import ^from "./components.gene" [render_element])
+(import storage_get storage_set ^from "./workspace_storage.gene")
+(import ^from "./components.gene" render_element)
 
 (type Sidebar ^props {^root EventTarget ^desktop_open Bool ^mobile_open Bool ^full_view Bool ^available Bool ^safe Bool ^signature Str ^widgets PropMap ^target EventTarget ^pool EventTarget ^buttons (List Any)})
 

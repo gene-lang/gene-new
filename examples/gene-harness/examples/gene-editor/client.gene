@@ -7,7 +7,7 @@
 
 (mod gene_editor_client ^profile web)
 
-(import [mount_editor editor_document EditorDocument EditorServices Editor]
+(import mount_editor editor_document EditorDocument EditorServices Editor
   ^from "../../client/components/gene_editor.gene")
 
 # ---------------------------------------------------------------------------

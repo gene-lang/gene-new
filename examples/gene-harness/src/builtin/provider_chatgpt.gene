@@ -1,7 +1,7 @@
 (mod provider_chatgpt)
-(import [Plugin PluginHost] ^from "../plugin_api")
-(import [chatgpt_row] ^from "../public/chatgpt_provider")
-(import [contribute_text_doc] ^from "../public/documentation")
+(import Plugin PluginHost ^from "../plugin_api")
+(import chatgpt_row ^from "../public/chatgpt_provider")
+(import contribute_text_doc ^from "../public/documentation")
 
 (fn provider_chatgpt [] : Plugin
   (Plugin ^id "provider_chatgpt" ^provides [["providers" "chatgpt"]]

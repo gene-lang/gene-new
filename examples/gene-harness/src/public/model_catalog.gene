@@ -1,10 +1,10 @@
 # Optional contribution-owned model data. The loop reads snapshot only; every
 # file read, credential operation and network probe runs outside the turn path.
 (mod model_catalog)
-(import [ProviderError] ^from "../plugin_api")
-(import [transport_identity provider_transport validate_model_settings] ^from "./models")
-(import [read_models_file write_models_file validate_model ModelsFileError] ^from "./models_file")
-(import [bounded_probe] ^from "./provider_discovery")
+(import ProviderError ^from "../plugin_api")
+(import transport_identity provider_transport validate_model_settings ^from "./models")
+(import read_models_file write_models_file validate_model ModelsFileError ^from "./models_file")
+(import bounded_probe ^from "./provider_discovery")
 
 (type ModelCatalog ^props {^root Str ^providers Fn ^generation Str ^state Any ^discovered Any
   ^file Any ^revision Any ^closed Any ^worker Any ^requested Any ^refreshing Any

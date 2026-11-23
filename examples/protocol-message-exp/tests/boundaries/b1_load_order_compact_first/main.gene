@@ -1,8 +1,8 @@
 # H2: loading order must not change either policy's output. This process loads the
 # compact root first and the plain root second, then interleaves them over one value graph.
-(import [operation : first_op] ^from "../../../src/roots/compact_late")
-(import [operation : second_op] ^from "../../../src/roots/plain_late")
-(import [late_document] ^from "../../../src/documents")
+(import operation:first_op ^from "../../../src/roots/compact_late")
+(import operation:second_op ^from "../../../src/roots/plain_late")
+(import late_document ^from "../../../src/documents")
 (let tree (late_document))
 (let first (first_op))
 (let second (second_op))

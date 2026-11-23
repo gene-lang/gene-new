@@ -1,13 +1,13 @@
 # Tests src/runtime/sessions.gene.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_event_store close_event_store append_core_event record_core_state]
+(import isolated run_spec ^from "../../support")
+(import open_event_store close_event_store append_core_event record_core_state
   ^from "../../../src/storage/state")
-(import [open_session_manager close_session_manager create_session list_sessions load_session
+(import open_session_manager close_session_manager create_session list_sessions load_session
          view_session leave_session unload_session unload_idle_sessions update_session
-         session_busy?]
+         session_busy?
   ^from "../../../src/runtime/sessions")
-(import [append_message] ^from "../../../src/agents/history")
+(import append_message ^from "../../../src/agents/history")
 
 (describe "Harness sessions"
   (it "shares the runtime while preserving histories, idle unload and recovery" []

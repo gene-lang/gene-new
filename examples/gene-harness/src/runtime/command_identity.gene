@@ -1,6 +1,6 @@
 # Command descriptors and admission identity share the UI contribution epoch.
 (mod command_identity)
-(import [ui_record ui_revision] ^from "../ui/state")
+(import ui_record ui_revision ^from "../ui/state")
 
 (fn command_identity [h, record]
   {^name record/key ^owner record/owner ^revision (ui_revision h record)})

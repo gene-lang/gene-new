@@ -1,16 +1,16 @@
 (import $test [describe it])
-(import ^from "../../support" [isolated run_spec])
-(import ^from "../../../src/plugin_api" [Plugin PluginHost])
-(import ^from "../../../src/profiles/profile" [Profile])
-(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
-(import ^from "../../../src/runtime/plugin_manager" [plugin_catalog inspect_descriptor requirement_status])
-(import ^from "../../../src/runtime/composition" [current_snapshot acquire_snapshot release_snapshot])
-(import [validate_plan] ^from "../../../src/runtime/plugin_plans")
-(import [latest_interfaces] ^from "../../../src/runtime/interface_policy")
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
-(import [canonical_module_source write_module_blob] ^from "../../../src/storage/module_registry")
-(import [commit_composition default_limits_data] ^from "../../../src/storage/composition_store")
+(import ^from "../../support" isolated run_spec)
+(import ^from "../../../src/plugin_api" Plugin PluginHost)
+(import ^from "../../../src/profiles/profile" Profile)
+(import ^from "../../../src/runtime/bootstrap" open_runtime close_runtime)
+(import ^from "../../../src/runtime/plugin_manager" plugin_catalog inspect_descriptor requirement_status)
+(import ^from "../../../src/runtime/composition" current_snapshot acquire_snapshot release_snapshot)
+(import validate_plan ^from "../../../src/runtime/plugin_plans")
+(import latest_interfaces ^from "../../../src/runtime/interface_policy")
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
+(import canonical_module_source write_module_blob ^from "../../../src/storage/module_registry")
+(import commit_composition default_limits_data ^from "../../../src/storage/composition_store")
 
 (fn named [catalog, id]
   (for item in catalog/plugins
@@ -78,7 +78,7 @@
             "observed"
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (import ^from "src/plugin_api.gene" Plugin PluginHost)
                 (fn init [descriptor]
                   ($fs/write_text "init-marker" "executed")
                   (Plugin ^id "observed" ^provides [["functions" "stored"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "stored" ^doc "Stored function." ^fn (fn [] 1)})))))))
@@ -117,7 +117,7 @@
         (try
           (register_plugin runtime/workspace runtime/h "pure"
             (quote (mod plugin
-              (import ^from "src/plugin_api.gene" [Plugin])
+              (import ^from "src/plugin_api.gene" Plugin)
               (fn init [descriptor]
                 (Plugin ^id "pure" ^requires [["functions" "unavailable"]]
                   ^activate (fn [host] ($fs/write_text "activation-marker" "activated")))))))
@@ -132,7 +132,7 @@
           # boundary; ordinary registration correctly refuses a spinning init.
           (let source (canonical_module_source
             (quote (mod plugin
-              (import ^from "src/plugin_api.gene" [Plugin])
+              (import ^from "src/plugin_api.gene" Plugin)
               (fn init [descriptor] (while true nil))))))
           (let digest $"sha256:${($crypto/sha256 source)}")
           (write_module_blob runtime/workspace digest source)
@@ -156,7 +156,7 @@
         (let runtime (open_runtime root "default" profile))
         (try
           (let consumer_source (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-            (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+            (import Plugin PluginHost ^from "src/plugin_api.gene")
             (fn init [context]
               (Plugin ^id "extension_consumer" ^requires [{^registry "extensions"}]
                 ^activate (fn [host]
@@ -164,7 +164,7 @@
           (let pending (register_plugin runtime/workspace runtime/h "extension_consumer" consumer_source))
           ($assert (== pending/status "pending") ($to_str pending))
           (let owner_source (quote (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-            (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+            (import Plugin PluginHost ^from "src/plugin_api.gene")
             (fn init [context]
               (Plugin ^id "extension_owner" ^activate (fn [host]
                 (host .PluginHost:create_registry {^name "extensions" ^^unique ^key "name"})))))))

@@ -1,6 +1,6 @@
 (mod hooks)
-(import ^from "../storage/state" [append_core_event])
-(import ^from "../public/history_policy" [normalize_history_policy])
+(import ^from "../storage/state" append_core_event)
+(import ^from "../public/history_policy" normalize_history_policy)
 
 (type HookDispatchError : Error)
 

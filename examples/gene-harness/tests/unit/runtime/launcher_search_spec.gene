@@ -1,5 +1,5 @@
 (import $test [describe it run])
-(import [search_sessions] ^from "../../../src/runtime/launcher_search")
+(import search_sessions ^from "../../../src/runtime/launcher_search")
 
 (describe "Launcher workspace metadata search"
   (it "searches beyond 100 records and includes automated and child metadata" []

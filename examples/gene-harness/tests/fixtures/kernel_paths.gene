@@ -1,5 +1,5 @@
 # Runs without --snapshot so the package's default generated directory is writable.
-(import [new_harness put_cordis_plugin shutdown_harness install row Plugin PluginHost] ^from "../../src/kernel")
+(import new_harness put_cordis_plugin shutdown_harness install row Plugin PluginHost ^from "../../src/kernel")
 
 (fn main [args]
   (let generated ($path/join this_pkg/root "plugins/generated"))
@@ -10,7 +10,7 @@
   (let filename ($to_str "kernel_paths_" ($crypto/random_hex 8) ".gene"))
   (let path ($path/join generated filename))
   (let text ($to_str (quote (mod plugin
-    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (import Plugin PluginHost ^from "src/plugin_api.gene")
     (fn init [descriptor]
       ($assert (== descriptor/core_interface "gene-harness/PluginHost:3"))
       (Plugin ^id "default_root_fixture" ^activate (fn [host]

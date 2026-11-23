@@ -1,6 +1,6 @@
 (mod computer)
-(import [Plugin PluginHost ComputerHost] ^from "../plugin_api")
-(import [contribute_doc] ^from "../public/documentation")
+(import Plugin PluginHost ComputerHost ^from "../plugin_api")
+(import contribute_doc ^from "../public/documentation")
 
 (fn computer [] : Plugin
   (Plugin ^id "computer" ^requires ["computer/host"]

@@ -10,7 +10,7 @@ Run the specs from this directory with `gene test`, or run
 `../../bin/gene test` with the repository's executable.
 
 ```gene
-(import [empty_world evaluate] ^from "./src/model")
+(import empty_world evaluate ^from "./src/model")
 (let world (empty_world))
 (evaluate world (quote (/person/name data)) {^data {^person {^name "Ada"}}})
 # {^kind "value" ^value "Ada"}

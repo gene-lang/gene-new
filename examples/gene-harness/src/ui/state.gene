@@ -1,9 +1,9 @@
 # Workspace UI configuration and revision descriptors; no rendering or transport.
 (mod ui_state)
-(import [plugin_state next_sequence stream_key] ^from "../storage/state")
-(import [current_snapshot] ^from "../runtime/composition")
-(import [public_tokens theme_modes css_name] ^from "../web/theme")
-(import [theme_revision] ^from "../web/theme_registry")
+(import plugin_state next_sequence stream_key ^from "../storage/state")
+(import current_snapshot ^from "../runtime/composition")
+(import public_tokens theme_modes css_name ^from "../web/theme")
+(import theme_revision ^from "../web/theme_registry")
 
 (type UiError : Error ^props {^code Str})
 

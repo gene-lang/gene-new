@@ -2,8 +2,8 @@
 # (docs/decisions.md, "Channel messages"). A quick decision with a short
 # deadline; any other status keeps the channel's own rule.
 (mod addressed)
-(import [decide decision_available?] ^from "./decision_service")
-(import [byte_prefix] ^from "../public/text")
+(import decide decision_available? ^from "./decision_service")
+(import byte_prefix ^from "../public/text")
 
 (const addressed_use "channel/addressed")
 (const addressed_timeout_ms 1500)

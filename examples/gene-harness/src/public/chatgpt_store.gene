@@ -1,9 +1,9 @@
 # Account records are private transport state. Only public_account/list_accounts
 # return values intended for a browser or catalog; they whitelist metadata.
 (mod chatgpt_store)
-(import [ProviderError] ^from "../plugin_api")
-(import [login_root] ^from "./provider_login")
-(import [try_lock_wait] ^from "./file_lock")
+(import ProviderError ^from "../plugin_api")
+(import login_root ^from "./provider_login")
+(import try_lock_wait ^from "./file_lock")
 
 (fn chatgpt_root [root = nil] : Str
   ($path/join (login_root root) "chatgpt"))

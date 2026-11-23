@@ -1,11 +1,11 @@
 (mod outcome_extensions)
-(import [registry contribute] ^from "../kernel")
-(import [ParticipantFailure] ^from "./turn_participants")
-(import [freeze_turn_data TurnDataError] ^from "./turn_data")
-(import [public_turn_context] ^from "./participant_contract")
-(import [supervised_call] ^from "./call_supervision")
-(import [default_execution_limits response_execution_limits] ^from "../plugin_api")
-(import [builtin_outcome_schemas] ^from "./outcome_extension_specs")
+(import registry contribute ^from "../kernel")
+(import ParticipantFailure ^from "./turn_participants")
+(import freeze_turn_data TurnDataError ^from "./turn_data")
+(import public_turn_context ^from "./participant_contract")
+(import supervised_call ^from "./call_supervision")
+(import default_execution_limits response_execution_limits ^from "../plugin_api")
+(import builtin_outcome_schemas ^from "./outcome_extension_specs")
 
 (const native_owner "$host/outcome_extensions")
 

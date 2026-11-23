@@ -1,6 +1,6 @@
 (mod harness_media_composer ^profile web)
-(import [storage_get storage_set] ^from "./workspace_storage.gene")
-(import [media_url] ^from "./media_reference.gene")
+(import storage_get storage_set ^from "./workspace_storage.gene")
+(import media_url ^from "./media_reference.gene")
 
 (type MediaComposer ^props {^selected Str ^drafts PropMap ^enabled Bool ^working Bool
   ^list EventTarget ^input EventTarget ^status EventTarget

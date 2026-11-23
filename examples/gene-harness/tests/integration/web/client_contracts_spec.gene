@@ -1,7 +1,7 @@
 (import $test [describe it])
-(import [isolated run_spec package_path] ^from "../../support")
-(import [page] ^from "../../../src/web/page")
-(import [plugin_page] ^from "../../../src/web/plugin_page")
+(import isolated run_spec package_path ^from "../../support")
+(import page ^from "../../../src/web/page")
+(import plugin_page ^from "../../../src/web/plugin_page")
 
 # The harness client looks elements up by literal id; a missing id throws and
 # aborts the UI, so the page template must render every lookup.

@@ -1,7 +1,7 @@
 (mod shell_sessions)
-(import [effective_config] ^from "./settings_resolver")
-(import [CommandResult] ^from "../plugin_api")
-(import [byte_prefix] ^from "../public/text")
+(import effective_config ^from "./settings_resolver")
+(import CommandResult ^from "../plugin_api")
+(import byte_prefix ^from "../public/text")
 
 (let IoResource $io/IoResource)
 

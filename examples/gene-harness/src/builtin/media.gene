@@ -1,6 +1,6 @@
 (mod media)
-(import [Plugin PluginHost MediaHost] ^from "../plugin_api")
-(import [contribute_doc] ^from "../public/documentation")
+(import Plugin PluginHost MediaHost ^from "../plugin_api")
+(import contribute_doc ^from "../public/documentation")
 
 (fn media [] : Plugin
   (Plugin ^id "media" ^requires ["media/host"]

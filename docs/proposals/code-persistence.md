@@ -288,8 +288,8 @@ Ad-hoc content is otherwise ordinary. Its objects are content-addressed and veri
 Ordinary source should keep ordinary import forms:
 
 ```gene
-(import [helper] ^from "./utils.gene")
-(import [parse] ^from "." ^pkg "parser")
+(import helper ^from "./utils.gene")
+(import parse ^from "." ^pkg "parser")
 ```
 
 The relative import resolves within the importing package's logical path space. The package import resolves its alias through the pinned dependency lock.

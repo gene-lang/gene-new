@@ -1,16 +1,16 @@
 # Media IDs and attachment admission are host operations, independent of the
 # replaceable function/documentation plugin.
 (mod media_host)
-(import [MediaHost] ^from "../plugin_api")
-(import [append_prompt] ^from "../public/response")
-(import [service_binding require_service] ^from "./service_handles")
-(import [immutable_view] ^from "./composition")
-(import [execution_origin] ^from "./execution_budget")
-(import [open_media_store media_descriptor put_media MediaError] ^from "../storage/media")
-(import [media_pdf_page] ^from "../storage/documents")
-(import [history_state history_media_refs] ^from "../agents/history")
-(import [image_catalog] ^from "../storage/image_runs")
-(import [require_turn] ^from "../agents/outcome")
+(import MediaHost ^from "../plugin_api")
+(import append_prompt ^from "../public/response")
+(import service_binding require_service ^from "./service_handles")
+(import immutable_view ^from "./composition")
+(import execution_origin ^from "./execution_budget")
+(import open_media_store media_descriptor put_media MediaError ^from "../storage/media")
+(import media_pdf_page ^from "../storage/documents")
+(import history_state history_media_refs ^from "../agents/history")
+(import image_catalog ^from "../storage/image_runs")
+(import require_turn ^from "../agents/outcome")
 
 (fn attach_media [runtime, id : Str]
   (let origin (execution_origin))

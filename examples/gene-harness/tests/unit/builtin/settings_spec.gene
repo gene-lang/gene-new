@@ -2,7 +2,7 @@
 # exceed the wire limit for a web component view, so model_options pages the
 # catalog and keeps the current choice.
 (import $test [describe it run])
-(import [model_options] ^from "../../../src/builtin/settings.gene")
+(import model_options ^from "../../../src/builtin/settings.gene")
 
 (type FakeWorkspace ^props {^rows (List Any)}
   (message setting_choices [name : Str] : Any

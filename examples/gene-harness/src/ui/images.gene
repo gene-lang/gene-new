@@ -1,8 +1,8 @@
 # Workspace-only image URLs and inert, bounded image delivery.
 (mod workspace_images)
-(import [api_root] ^from "../web/contract.gene")
+(import api_root ^from "../web/contract.gene")
 (import $io [AsyncReader IoResource])
-(import ^from "." ^pkg "documents" [inspect_bytes])
+(import ^from "." ^pkg "documents" inspect_bytes)
 
 (type WorkspaceImageError : Error)
 (fn image_error []

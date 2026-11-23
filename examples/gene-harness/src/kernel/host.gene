@@ -1,16 +1,16 @@
 # Private activation delegate behind the public PluginHost receiver.
 (mod kernel_host)
-(import [Harness registry_names registry_row_keys rows row run_hooks validate_registry_spec
-  registry contribute row_record invoke_owned_callable cleanup_registry_context fresh_list]
+(import Harness registry_names registry_row_keys rows row run_hooks validate_registry_spec
+  registry contribute row_record invoke_owned_callable cleanup_registry_context fresh_list
   ^from "./registry")
-(import [resolve provide replace] ^from "./seams")
-(import [subscribe subscribe_log log_plugin] ^from "./observe")
-(import [invoke_bounded] ^from "./invoke")
-(import [Plugin PluginHost DescriptorContext default_execution_limits] ^from "../plugin_api")
-(import [HarnessError] ^from "../errors")
-(import [immutable_view] ^from "../runtime/composition")
-(import [execution_budget] ^from "../runtime/execution_budget")
-(import [bind_service] ^from "../runtime/service_binding")
+(import resolve provide replace ^from "./seams")
+(import subscribe subscribe_log log_plugin ^from "./observe")
+(import invoke_bounded ^from "./invoke")
+(import Plugin PluginHost DescriptorContext default_execution_limits ^from "../plugin_api")
+(import HarnessError ^from "../errors")
+(import immutable_view ^from "../runtime/composition")
+(import execution_budget ^from "../runtime/execution_budget")
+(import bind_service ^from "../runtime/service_binding")
 
 (type Host ^props {^h Harness ^owner Str ^effects Any ^notification_revision Str ^state_writer Any})
 

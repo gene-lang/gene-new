@@ -1,6 +1,6 @@
 (mod shell)
-(import [Plugin PluginHost OperatorHost] ^from "../plugin_api")
-(import [contribute_doc] ^from "../public/documentation")
+(import Plugin PluginHost OperatorHost ^from "../plugin_api")
+(import contribute_doc ^from "../public/documentation")
 
 (fn shell [] : Plugin
   (Plugin ^id "shell" ^requires ["operator/host"] ^provides [["commands" "sh"] ["input_modes" "sh"]]

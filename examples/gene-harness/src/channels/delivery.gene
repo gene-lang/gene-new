@@ -3,10 +3,10 @@
 # they survive a transport swap. The account's `channel_transports` row only
 # performs the external effect for one part (`send`, `remove`) and the
 # read-only recovery scan (`reconcile`), and classifies its own failures.
-(import [last_thread_message] ^from "./thread_links")
-(import [snapshot mutate read] ^from "./store")
-(import [channel_error copy key required_text identifier message_id remember_message ChannelError] ^from "./model")
-(import [transport_row transport_call transport_outcome] ^from "./transports")
+(import last_thread_message ^from "./thread_links")
+(import snapshot mutate read ^from "./store")
+(import channel_error copy key required_text identifier message_id remember_message ChannelError ^from "./model")
+(import transport_row transport_call transport_outcome ^from "./transports")
 
 (fn normalize_intent [supplied]
   (let parts supplied/parts)

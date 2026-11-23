@@ -1,7 +1,7 @@
 # Shared same-origin owner API transport for standalone workspace pages.
 (mod owner_api ^profile web)
-(import [query_value] ^from "./state.gene")
-(import [api_root] ^from "../src/web/contract.gene")
+(import query_value ^from "./state.gene")
+(import api_root ^from "../src/web/contract.gene")
 
 (fn owner_request [csrf : Str, method : Str, path : Str, payload : Any,
   done : (Fn [Int Any] Nil)] : Nil

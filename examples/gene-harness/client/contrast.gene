@@ -1,7 +1,7 @@
 # The browser resolves CSS colors, so specimen ratios work for variables, mixes,
 # system colors and plugin color spaces as well as six-digit hex values.
 (mod theme_contrast ^profile web)
-(import ^from "./css_values.gene" [css_number])
+(import ^from "./css_values.gene" css_number)
 
 (type ContrastError : Error)
 

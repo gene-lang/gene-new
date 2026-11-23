@@ -1,9 +1,9 @@
 # The process-global facade: identity, targets, levels, scoping, bounding,
 # redaction and the strict mode used by every spec.
 (import $test [describe it])
-(import [log_start log_reset log_configure log_set_levels log_set_workspace log_refresh_redactions log_event log_scope log_recent log_run log_subscribe log_unsubscribe log_subscription log_gap_record]
+(import log_start log_reset log_configure log_set_levels log_set_workspace log_refresh_redactions log_event log_scope log_recent log_run log_subscribe log_unsubscribe log_subscription log_gap_record
   ^from "../../../src/kernel/log")
-(import [serialize_line log_line_budget parse_record render_text]
+(import serialize_line log_line_budget parse_record render_text
   ^from "../../../src/public/log_record")
 
 (fn reset [] : Nil

@@ -157,12 +157,13 @@ An error type extends `Error`, and a function declares what it may raise:
 fixtures/default_name
 ```
 
-Two import forms, and the source comes first in only one of them:
+File imports use `^from` and flat selectors. Namespace member imports use a
+source followed by a vector.
 
 ```gene
-(import $str [join, trim])                  # from a namespace
-(import [double, factor] ^from "./util")     # from a file, relative to this module
-(import [double : dbl] ^from "./util")       # `:` aliases
+(import $str [join trim])
+(import double:dbl factor ^from "./util")
+(import math/[add sub:subtract] ^from "./util")
 ```
 
 `this_mod` and `this_pkg` are implicit lexical bindings for the current module

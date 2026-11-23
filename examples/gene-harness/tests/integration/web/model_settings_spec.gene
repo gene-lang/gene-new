@@ -1,12 +1,12 @@
 (import $test [describe it])
-(import [isolated run_spec test_service] ^from "../../support")
-(import [create_session submit receipt host_status model_catalog close_session_service command]
+(import isolated run_spec test_service ^from "../../support")
+(import create_session submit receipt host_status model_catalog close_session_service command
   ^from "../../../src/web/session_service")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [put_cordis_plugin row] ^from "../../../src/kernel")
-(import [require_record] ^from "../../../src/runtime/sessions")
-(import [RoundError] ^from "../../../src/runtime/round_controller")
-(import [command_receipt] ^from "../../../src/runtime/commands")
+(import Plugin PluginHost ^from "../../../src/plugin_api")
+(import put_cordis_plugin row ^from "../../../src/kernel")
+(import require_record ^from "../../../src/runtime/sessions")
+(import RoundError ^from "../../../src/runtime/round_controller")
+(import command_receipt ^from "../../../src/runtime/commands")
 
 (fn run_model_command [service, session, text]
   (let record (command service session text))

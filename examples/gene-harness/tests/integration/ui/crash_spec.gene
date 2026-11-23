@@ -1,9 +1,9 @@
 (import $test [describe it])
-(import [isolated run_spec fixture_path] ^from "../../support")
-(import [open_session_service close_session_service] ^from "../../../src/web/session_service")
-(import [row] ^from "../../../src/kernel")
-(import [list_sessions] ^from "../../../src/runtime/sessions")
-(import [ui_action ui_action_receipt] ^from "../../../src/ui/actions")
+(import isolated run_spec fixture_path ^from "../../support")
+(import open_session_service close_session_service ^from "../../../src/web/session_service")
+(import row ^from "../../../src/kernel")
+(import list_sessions ^from "../../../src/runtime/sessions")
+(import ui_action ui_action_receipt ^from "../../../src/ui/actions")
 
 (describe "Workspace action crash recovery"
   (it "persists saved domain data before done and never replays an interrupted effect" []

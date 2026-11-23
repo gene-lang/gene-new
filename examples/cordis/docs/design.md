@@ -42,7 +42,7 @@ The Gene module should keep those two mechanisms behind one small interface:
 
 ```gene
 (import $log [new_logger])
-(import [InvocationLimits RuntimeOptions default_plugin_invoker new_runtime]
+(import InvocationLimits RuntimeOptions default_plugin_invoker new_runtime
   ^from "./cordis")
 
 (var base_logger (new_logger "app/cordis"))
@@ -68,7 +68,7 @@ for standard-library namespaces — `$x` is sugar for `gene/x`, which is why
 `$runtime`, `$os`, and `$event` are spelled that way below — and Cordis is a
 package under `examples/`, not a member of the standard library. A consumer in
 another package declares a dependency alias and imports through it:
-`(import [Runtime] ^from "." ^pkg "cordis")`.
+`(import Runtime ^from "." ^pkg "cordis")`.
 
 `Runtime`, its owned `Loader`, `Context`, `PluginInstance`, and the nominal key
 and lifetime handles are the public model. The provider index, dependency graph,
@@ -505,7 +505,7 @@ in a context and carries the runtime facts needed to validate and bind that
 protocol.
 
 ```gene
-(import [service_key] ^from "./cordis")
+(import service_key ^from "./cordis")
 
 (protocol Clock
   (message now_ms [] : Int))

@@ -1,6 +1,6 @@
 (mod image_inspection)
-(import [inspect_png PngError] ^from "./png" ^pkg "documents")
-(import [worker_profile decode_png RasterError] ^from "." ^pkg "raster")
+(import inspect_png PngError ^from "./png" ^pkg "documents")
+(import worker_profile decode_png RasterError ^from "." ^pkg "raster")
 
 (type ImageInspectionError : Error ^props {^code Str})
 

@@ -1,16 +1,16 @@
 # Tests src/agents/turn_loop.gene.
 (import $test [describe it])
-(import [isolated run_spec test_controller] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [gene_reference] ^from "../../../src/builtin/gene_reference")
-(import [budget_advisory] ^from "../../../src/builtin/budget_advisory")
-(import [create_session load_session unload_session require_record] ^from "../../../src/runtime/sessions")
-(import [submit_round continue_round round_receipt answer_round close_round_controller]
+(import isolated run_spec test_controller ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import gene_reference ^from "../../../src/builtin/gene_reference")
+(import budget_advisory ^from "../../../src/builtin/budget_advisory")
+(import create_session load_session unload_session require_record ^from "../../../src/runtime/sessions")
+(import submit_round continue_round round_receipt answer_round close_round_controller
   ^from "../../../src/runtime/round_controller")
-(import [events_for] ^from "../../../src/storage/state")
-(import [scripted_profile] ^from "../../../src/profiles/scripted")
-(import [read_body] ^from "../../../src/agents/history")
+(import events_for ^from "../../../src/storage/state")
+(import scripted_profile ^from "../../../src/profiles/scripted")
+(import read_body ^from "../../../src/agents/history")
 
 (describe "Harness turn loop"
   (it

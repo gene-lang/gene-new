@@ -1,10 +1,10 @@
-(import ^from "../../src/runtime/bootstrap" [open_runtime close_runtime])
-(import [test_controller] ^from "../support")
-(import ^from "../../src/profiles/baseline" [baseline_profile])
-(import ^from "../../src/runtime/round_controller" [save_round])
-(import ^from "../../src/runtime/sessions" [require_record])
-(import ^from "../../src/storage/state" [append_core_event record_core_state flush_event_store core_state events_for])
-(import ^from "../../src/agents/harness_turn" [evaluate_harness_turn])
+(import ^from "../../src/runtime/bootstrap" open_runtime close_runtime)
+(import test_controller ^from "../support")
+(import ^from "../../src/profiles/baseline" baseline_profile)
+(import ^from "../../src/runtime/round_controller" save_round)
+(import ^from "../../src/runtime/sessions" require_record)
+(import ^from "../../src/storage/state" append_core_event record_core_state flush_event_store core_state events_for)
+(import ^from "../../src/agents/harness_turn" evaluate_harness_turn)
 
 (fn hold_patch [root]
   (let runtime (open_runtime root "default" (baseline_profile)))

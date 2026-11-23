@@ -1,9 +1,9 @@
 # M3: supervised hosts relay JSONL, the launcher owns host.log, and a restart
 # starts a new child while the log remains record-oriented.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [launch_host ready_host stop_host] ^from "../../web_support")
-(import [connect api] ^from "../../../src/cli/client")
+(import isolated run_spec ^from "../../support")
+(import launch_host ready_host stop_host ^from "../../web_support")
+(import connect api ^from "../../../src/cli/client")
 
 (fn log_lines [root : Str] : Any
   (let path ($path/join root ".gene-harness/host.log"))

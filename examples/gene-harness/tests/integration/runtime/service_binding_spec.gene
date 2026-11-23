@@ -1,9 +1,9 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [Plugin PluginHost ServiceError] ^from "../../../src/plugin_api")
-(import [new_harness install provide replace row shutdown_harness] ^from "../../../src/kernel")
-(import [service_binding require_service] ^from "../../../src/runtime/service_handles")
-(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+(import isolated run_spec ^from "../../support")
+(import Plugin PluginHost ServiceError ^from "../../../src/plugin_api")
+(import new_harness install provide replace row shutdown_harness ^from "../../../src/kernel")
+(import service_binding require_service ^from "../../../src/runtime/service_handles")
+(import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
 
 (describe "Scoped service dependency replacement"
   (it "stages an active binding swap without recursive-lock cleanup and keeps old handles leased" []

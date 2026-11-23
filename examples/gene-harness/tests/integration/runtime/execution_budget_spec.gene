@@ -1,16 +1,16 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_runtime close_runtime prepare_layout] ^from "../../../src/runtime/bootstrap")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [ExecutionLimits] ^from "../../../src/plugin_api")
-(import [plugin_admin] ^from "../../../src/builtin/plugin_admin")
-(import [row] ^from "../../../src/kernel")
-(import [current_snapshot] ^from "../../../src/runtime/composition")
-(import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
+(import isolated run_spec ^from "../../support")
+(import open_runtime close_runtime prepare_layout ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import ExecutionLimits ^from "../../../src/plugin_api")
+(import plugin_admin ^from "../../../src/builtin/plugin_admin")
+(import row ^from "../../../src/kernel")
+(import current_snapshot ^from "../../../src/runtime/composition")
+(import evaluate_harness_turn ^from "../../../src/agents/harness_turn")
 
 (fn helper_source []
   (quote (mod budget_helper
-    (import [PluginHost] ^from "src/plugin_api.gene")
+    (import PluginHost ^from "src/plugin_api.gene")
     (fn read_budget [host] host/.PluginHost:execution_budget)
     (fn wait_budget [host, milliseconds : Int]
       ($sleep milliseconds)
@@ -18,8 +18,8 @@
 
 (fn source [path : Str]
   `(mod plugin
-    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
-    (import [read_budget wait_budget] ^from %path)
+    (import Plugin PluginHost ^from "src/plugin_api.gene")
+    (import read_budget wait_budget ^from %path)
     (fn init [descriptor]
       (Plugin ^id "budget_probe"
         ^provides [["functions" "budget_probe"] ["functions" "budget_wait"]]

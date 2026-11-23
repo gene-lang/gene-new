@@ -18,12 +18,12 @@
 # Quiesce stops a producer; it does not revoke the activation, whose retained
 # handles keep working against the feature's authoritative records.
 (mod activation_services)
-(import [subscribe_publications current_snapshot] ^from "./composition")
-(import [supervised_call] ^from "./call_supervision")
-(import [default_execution_limits] ^from "../plugin_api")
-(import [contribute] ^from "../kernel")
-(import [HarnessError] ^from "../errors")
-(import [spawn_effect_call] ^from "." ^pkg "cordis")
+(import subscribe_publications current_snapshot ^from "./composition")
+(import supervised_call ^from "./call_supervision")
+(import default_execution_limits ^from "../plugin_api")
+(import contribute ^from "../kernel")
+(import HarnessError ^from "../errors")
+(import spawn_effect_call ^from "." ^pkg "cordis")
 
 (type ActivationServices ^^private ^props {^records Any ^subscription Any ^stopping Any ^gate Any
   ^holders Any})

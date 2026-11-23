@@ -2,8 +2,8 @@
 
 (import $test [describe it after_each assert_equal])
 
-(import [HookMode RuntimeOptions PluginSpec PluginCallKind invocation_limits hook_key
-         default_plugin_invoker new_runtime invoke_effect_owner]
+(import HookMode RuntimeOptions PluginSpec PluginCallKind invocation_limits hook_key
+         default_plugin_invoker new_runtime invoke_effect_owner
   ^from "../src/cordis")
 
 (describe "Cordis quiescence"

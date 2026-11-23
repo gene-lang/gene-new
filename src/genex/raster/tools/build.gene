@@ -1,6 +1,6 @@
 # Run with: gene run src/genex/raster/tools/build.gene [output-directory]
 # SDKROOT/CXX/PKG_CONFIG are explicit operator overrides. No shell execution.
-(import [checked] ^from "../src/raster")
+(import checked ^from "../src/raster")
 (fn main [argv]
   (let words ($body argv))
   (let root ($path/parent ($path/parent this_mod/.path)))

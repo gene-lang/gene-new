@@ -2,12 +2,12 @@
 # opening a harness changes cwd, and crash fixtures deliberately kill processes.
 # Both the parent and child use the ordinary $test registry and reports.
 (import $test [assert_equal run])
-(import [Plugin PluginHost] ^from "../src/plugin_api")
-(import [put_cordis_plugin] ^from "../src/kernel")
-(import [Profile] ^from "../src/profiles/profile")
-(import [baseline_profile] ^from "../src/profiles/baseline")
-(import [start_delegation_host] ^from "../src/runtime/delegations")
-(import [open_session_service] ^from "../src/web/session_service")
+(import Plugin PluginHost ^from "../src/plugin_api")
+(import put_cordis_plugin ^from "../src/kernel")
+(import Profile ^from "../src/profiles/profile")
+(import baseline_profile ^from "../src/profiles/baseline")
+(import start_delegation_host ^from "../src/runtime/delegations")
+(import open_session_service ^from "../src/web/session_service")
 
 (let package_root ($path/parent ($path/parent this_mod/.path)))
 (let application ($pkg/application))

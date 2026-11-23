@@ -1,13 +1,13 @@
 (import $test [describe it])
-(import [isolated run_spec test_service] ^from "../../support")
-(import [create_session edit_session remove_session close_session_service list_sessions queue_snapshot RoundError]
+(import isolated run_spec test_service ^from "../../support")
+(import create_session edit_session remove_session close_session_service list_sessions queue_snapshot RoundError
   ^from "../../../src/web/session_service")
-(import [create_session : create_record view_session require_record update_session delete_session SessionError]
+(import create_session:create_record view_session require_record update_session delete_session SessionError
   ^from "../../../src/runtime/sessions")
-(import [submit_command cancel_command] ^from "../../../src/runtime/commands")
-(import [start_host stop_host] ^from "../../web_support")
-(import [connect api] ^from "../../../src/cli/client")
-(import [CliError] ^from "../../../src/cli/options")
+(import submit_command cancel_command ^from "../../../src/runtime/commands")
+(import start_host stop_host ^from "../../web_support")
+(import connect api ^from "../../../src/cli/client")
+(import CliError ^from "../../../src/cli/options")
 
 (describe "Conversation row actions"
   (it "serves rename, pin and delete through the authenticated API" []

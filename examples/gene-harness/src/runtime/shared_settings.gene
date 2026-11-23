@@ -2,9 +2,9 @@
 # hosts share the file, so every write holds settings.lock across its read,
 # digest check and atomic write. Model defaults stay in models.gene.
 (mod shared_settings)
-(import [ServiceError] ^from "../plugin_api")
-(import [try_lock_wait] ^from "../public/file_lock")
-(import [manager_root_path] ^from "../public/workspace_paths")
+(import ServiceError ^from "../plugin_api")
+(import try_lock_wait ^from "../public/file_lock")
+(import manager_root_path ^from "../public/workspace_paths")
 
 (fn shared_settings_path [root : Str] : Str
   ($path/join root ".gene-harness" "settings.gene"))

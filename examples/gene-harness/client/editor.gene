@@ -15,10 +15,10 @@
 
 (mod harness_editor_panel ^profile web)
 
-(import [mount_editor editor_document EditorDocument EditorServices Editor]
+(import mount_editor editor_document EditorDocument EditorServices Editor
   ^from "./components/gene_editor.gene")
-(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
-(import [api_root] ^from "../src/web/contract.gene")
+(import storage_get storage_set storage_remove ^from "./workspace_storage.gene")
+(import api_root ^from "../src/web/contract.gene")
 
 (type EditorPanel ^props {
   ^workspace Str

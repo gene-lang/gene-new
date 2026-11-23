@@ -1,14 +1,14 @@
 # Document Lens: one tree, two Render policies and an Outline operation, chosen
 # by composition roots. The generic consumers never import a protocol impl.
-(import [Section Article Figure] ^from "./model")
-(import [Chart] ^from "./extensions/chart")
-(import [Table] ^from "./extensions/table")
-(import [Outline] ^from "./extensions/outline")
-(import [operation : plain_operation] ^from "./roots/plain_late")
-(import [operation : compact_operation] ^from "./roots/compact_late")
-(import [preview] ^from "./consumers/preview")
-(import [export_all] ^from "./consumers/export")
-(import [outline_report] ^from "./consumers/outline_report")
+(import Section Article Figure ^from "./model")
+(import Chart ^from "./extensions/chart")
+(import Table ^from "./extensions/table")
+(import Outline ^from "./extensions/outline")
+(import operation:plain_operation ^from "./roots/plain_late")
+(import operation:compact_operation ^from "./roots/compact_late")
+(import preview ^from "./consumers/preview")
+(import export_all ^from "./consumers/export")
+(import outline_report ^from "./consumers/outline_report")
 
 (fn sample_document [] 
   (Section ^title "Report" ^children [

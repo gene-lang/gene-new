@@ -1,5 +1,5 @@
 (mod harness_media_reference ^profile web)
-(import [api_path] ^from "../src/web/contract.gene")
+(import api_path ^from "../src/web/contract.gene")
 
 (fn media_url [id : Str] : Str
   (api_path ["media" ($url/encode_component id)]))

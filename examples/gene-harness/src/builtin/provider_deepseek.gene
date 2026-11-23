@@ -1,8 +1,8 @@
 (mod provider_deepseek)
-(import [Plugin PluginHost] ^from "../plugin_api")
-(import [contribute_text_doc] ^from "../public/documentation")
-(import [deepseek_models] ^from "../public/model_defaults")
-(import [deepseek_chat nonempty] ^from "../public/provider")
+(import Plugin PluginHost ^from "../plugin_api")
+(import contribute_text_doc ^from "../public/documentation")
+(import deepseek_models ^from "../public/model_defaults")
+(import deepseek_chat nonempty ^from "../public/provider")
 
 (fn provider_deepseek [] : Plugin
   (Plugin ^id "provider_deepseek" ^provides [["providers" "deepseek"]]

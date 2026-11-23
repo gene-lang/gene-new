@@ -18,7 +18,7 @@ proc provenanceFixture(base, name: string): string =
 """)
   writeFile(result / "lib/src/main.gene", "(var answer 7)")
   writeFile(result / "app/src/main.gene", """
-(import [answer] ^from "." ^pkg "lib")
+(import answer ^from "." ^pkg "lib")
 (var observed answer)
 (var info ($pkg/application))
 (var digests [($pkg/canonical_digest {^x 1 ^y 2})

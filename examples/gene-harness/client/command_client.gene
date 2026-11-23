@@ -1,8 +1,8 @@
 # Durable per-tab submission identity, independent of optional browser plugins.
 (mod harness_command_client ^profile web)
-(import [storage_get storage_set storage_remove] ^from "./workspace_storage.gene")
-(import [api_root] ^from "../src/web/contract.gene")
-(import [text flag] ^from "../src/common/launcher.gene")
+(import storage_get storage_set storage_remove ^from "./workspace_storage.gene")
+(import api_root ^from "../src/web/contract.gene")
+(import text flag ^from "../src/common/launcher.gene")
 
 (type CommandClient ^props {^workspace Str ^pending Any ^resolving Bool
   ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^changed (Fn [Str] Nil) ^settled Any})

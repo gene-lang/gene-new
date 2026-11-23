@@ -1,6 +1,6 @@
 (import $test [describe it run])
 (import ^from "../../../client/question_state"
-  [question_key current_fetch definitive_reply waiting_batch])
+  question_key current_fetch definitive_reply waiting_batch)
 
 (describe
   "Notification workflow identities"

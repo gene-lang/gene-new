@@ -1,2 +1,2 @@
-(import [build_tree describe] ^from "./tree")
+(import build_tree describe ^from "./tree")
 ($println ($json/stringify (describe (build_tree))))

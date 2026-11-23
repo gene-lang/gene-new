@@ -1,7 +1,7 @@
 # Alternate fresh processes and workspaces for the real service/patch workload.
 # Usage: gene run benchmarks/run_harness.gene OUTPUT_DIR GENE_EXE [GENE_EXE...]
 # GENE_BENCH_SAMPLES defaults to 3; each executable gets one excluded warmup.
-(import [capture distribution] ^from "./run")
+(import capture distribution ^from "./run")
 
 (fn record_harness_sample [variant result wall round]
   (if (== round 0)

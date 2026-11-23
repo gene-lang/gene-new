@@ -3,9 +3,9 @@
 # plugin no engine is installed, so every use applies its default and round
 # check-ins fall back to the turn limit.
 (mod decisions_plugin)
-(import [Plugin PluginHost DecisionHost] ^from "../plugin_api")
-(import [contribute_text_doc] ^from "../public/documentation")
-(import [jev_row model_row] ^from "../public/decision_engines")
+(import Plugin PluginHost DecisionHost ^from "../plugin_api")
+(import contribute_text_doc ^from "../public/documentation")
+(import jev_row model_row ^from "../public/decision_engines")
 
 (fn engines_section [service]
   (let rows [])

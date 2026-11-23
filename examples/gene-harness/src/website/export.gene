@@ -9,8 +9,8 @@
 # link. The output is index.html plus assets/, and needs no Gene process.
 (mod harness_website_export)
 
-(import [website_page] ^from "./page")
-(import [WebsiteError package_dir] ^from "./content")
+(import website_page ^from "./page")
+(import WebsiteError package_dir ^from "./content")
 (import $fs [write_text make_dir exists? list_dir remove])
 
 (fn option_value [args, index : Int, name : Str] : Str

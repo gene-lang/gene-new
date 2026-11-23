@@ -1,17 +1,17 @@
 # Stable host-facing entry point. Implementation lives in kernel/.
 (mod kernel)
 
-(import [Harness registry contribute rows row row_record registry_row_records registry_names remove_owner]
+(import Harness registry contribute rows row row_record registry_row_records registry_names remove_owner
   ^from "./kernel/registry" ^^export)
-(import [invoke_bounded configure_plugin_module] ^from "./kernel/invoke" ^^export)
-(import [RoundChanged CardChanged CommandChanged ModeChanged SessionChanged CompositionChanged
+(import invoke_bounded configure_plugin_module ^from "./kernel/invoke" ^^export)
+(import RoundChanged CardChanged CommandChanged ModeChanged SessionChanged CompositionChanged
   publish hydrate_harness_log log_append
-  record_composition_change flush_harness] ^from "./kernel/events" ^^export)
-(import [doc provide resolve withdraw_seam replace] ^from "./kernel/seams" ^^export)
-(import [new_harness put_cordis_plugins apply_plugin_set hide_owner_rows plugin_error
-  put_cordis_plugin shutdown_harness status_of uninstall install]
+  record_composition_change flush_harness ^from "./kernel/events" ^^export)
+(import doc provide resolve withdraw_seam replace ^from "./kernel/seams" ^^export)
+(import new_harness put_cordis_plugins apply_plugin_set hide_owner_rows plugin_error
+  put_cordis_plugin shutdown_harness status_of uninstall install
   ^from "./kernel/composition_bridge" ^^export)
-(import [describe_plugin_module] ^from "./kernel/host" ^^export)
-(import [Plugin PluginHost HarnessEvent DurableRecord ExecutionLimits default_execution_limits]
+(import describe_plugin_module ^from "./kernel/host" ^^export)
+(import Plugin PluginHost HarnessEvent DurableRecord ExecutionLimits default_execution_limits
   ^from "./plugin_api" ^^export)
-(import [HarnessError] ^from "./errors" ^^export)
+(import HarnessError ^from "./errors" ^^export)

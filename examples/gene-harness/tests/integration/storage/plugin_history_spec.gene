@@ -1,19 +1,19 @@
 (import $test [describe it])
 (import $store/fs [Store])
-(import ^from "../../support" [isolated run_spec])
-(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
-(import ^from "../../../src/profiles/profile" [Profile])
-(import ^from "../../../src/builtin/plugin_admin" [plugin_admin])
-(import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [composition_history composition_revision commit_composition] ^from "../../../src/storage/composition_store")
-(import [verify_stored_entry set_plugin_enabled disable_entry revert_entry revert_plugin] ^from "../../../src/storage/workspace_repair")
-(import ^from "../../../src/storage/state" [record_plugin_state plugin_state])
+(import ^from "../../support" isolated run_spec)
+(import ^from "../../../src/runtime/bootstrap" open_runtime close_runtime)
+(import ^from "../../../src/profiles/profile" Profile)
+(import ^from "../../../src/builtin/plugin_admin" plugin_admin)
+(import ^from "../../../src/agents/harness_turn" evaluate_harness_turn)
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import composition_history composition_revision commit_composition ^from "../../../src/storage/composition_store")
+(import verify_stored_entry set_plugin_enabled disable_entry revert_entry revert_plugin ^from "../../../src/storage/workspace_repair")
+(import ^from "../../../src/storage/state" record_plugin_state plugin_state)
 
 (fn sample []
   (quote
     (mod plugin
-      (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+      (import ^from "src/plugin_api.gene" Plugin PluginHost)
       (fn init [descriptor]
         (Plugin ^id "example" ^provides [["functions" "answer"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "answer" ^doc "History fixture." ^fn (fn [] 42)})))))))
 
@@ -34,7 +34,7 @@
           (let path $"./${($crypto/sha256 ($to_str dependency))}.gene")
           (let plugin
             `(mod plugin
-               (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+               (import ^from "src/plugin_api.gene" Plugin PluginHost)
                (import ^from %path [answer])
                (fn init [descriptor]
                  (Plugin ^id "example" ^provides [["functions" "answer"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "answer" ^doc "Retained dependency." ^fn answer}))))))
@@ -112,7 +112,7 @@
               "example"
               (quote
                 (mod plugin
-                  (import ^from "src/plugin_api.gene" [Plugin])
+                  (import ^from "src/plugin_api.gene" Plugin)
                   (fn init [descriptor]
                     (Plugin ^id "example" ^activate (fn [host] (fail (Error ^_msg "broken replacement")))))))))
           ($assert (== broken/status "error"))
@@ -206,7 +206,7 @@
 (let dependency (quote (mod numbers (fn answer [] 73))))
 (let import_path ($to_str "./" ($crypto/sha256 ($to_str dependency)) ".gene"))
 (let plugin `(mod plugin
-  (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+  (import ^from "src/plugin_api.gene" Plugin PluginHost)
   (import ^from %import_path [answer])
   (fn init [descriptor]
     (Plugin ^id "numbers" ^activate (fn [host]

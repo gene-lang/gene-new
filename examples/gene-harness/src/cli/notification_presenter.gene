@@ -1,7 +1,7 @@
 # Attached CLI presenter. Publications never print from producer callbacks.
 (mod notification_presenter)
-(import ^from "./client" [api])
-(import ^from "./options" [problem])
+(import ^from "./client" api)
+(import ^from "./options" problem)
 
 (fn one_line [value] : Str
   ($regex/replace_all #"[\r\n\t]+" ($to_str value) " "))

@@ -1,6 +1,6 @@
 # Callables retain the exact Cordis activation scope that contributed them.
 (mod retained_callbacks)
-(import [invoke_effect_owner PluginCallKind EffectDisposed] ^from "." ^pkg "cordis")
+(import invoke_effect_owner PluginCallKind EffectDisposed ^from "." ^pkg "cordis")
 
 (type RetainedCallback ^^private ^props {^token Any}
   (impl Callable

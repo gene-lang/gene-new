@@ -1,5 +1,5 @@
 (mod image_contract)
-(import [ImageError] ^from "../plugin_api")
+(import ImageError ^from "../plugin_api")
 
 (fn image_error [code : Str, message : Str]
   (fail (ImageError ^code code ^_msg message)))

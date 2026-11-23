@@ -4,9 +4,9 @@
 # Provider, model and effort pass through as stored: the model-selection resolver
 # owns their precedence and must not see injected defaults.
 (mod settings_resolver)
-(import [rows] ^from "../kernel")
-(import [core_setting_definitions model_setting_keys supports_scope?] ^from "./setting_definitions")
-(import [read_shared_settings shared_settings_root] ^from "./shared_settings")
+(import rows ^from "../kernel")
+(import core_setting_definitions model_setting_keys supports_scope? ^from "./setting_definitions")
+(import read_shared_settings shared_settings_root ^from "./shared_settings")
 
 (fn read_workspace_values [state_root : Str]
   ($serde/read_data ($fs/read_text $"${state_root}/config.gene")))

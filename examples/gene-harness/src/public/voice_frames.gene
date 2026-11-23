@@ -1,7 +1,7 @@
 # The audio socket is unsequenced and ephemeral; these sequence numbers belong
 # only to one PCM stream. Integers are little endian, like the PCM payload.
 (mod voice_protocol)
-(import [AudioError] ^from "./audio" ^pkg "audio")
+(import AudioError ^from "./audio" ^pkg "audio")
 
 (fn protocol_error [message : Str] (fail (AudioError ^_msg message)))
 

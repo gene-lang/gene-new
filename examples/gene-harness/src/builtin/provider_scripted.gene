@@ -1,6 +1,6 @@
 (mod provider_scripted)
-(import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "../public/documentation" [contribute_text_doc])
+(import ^from "../plugin_api" Plugin PluginHost)
+(import ^from "../public/documentation" contribute_text_doc)
 
 (type ScriptedProviderError : Error)
 

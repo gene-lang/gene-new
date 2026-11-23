@@ -21,7 +21,7 @@ Use the current stdlib registration path for the first standard modules. Impleme
 (let output (join "reports" "summary.csv"))
 ```
 
-An optional timezone dependency uses `(import [to_local] ^from "." ^pkg "tzdb")`, with that alias explicitly bound to genex/tzdb. The date/time constructor names already in the root remain constructors; temporal is a distinct namespace.
+An optional timezone dependency uses `(import to_local ^from "." ^pkg "tzdb")`, with that alias explicitly bound to genex/tzdb. The date/time constructor names already in the root remain constructors; temporal is a distinct namespace.
 
 ## APP-1: paths and traversal
 

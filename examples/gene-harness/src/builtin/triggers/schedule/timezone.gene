@@ -1,8 +1,8 @@
 # The platform timezone adapter imports zdump's documented interval format.
 # Scheduling itself uses only the retained transition table, not live OS calls.
 (mod timezone)
-(import [problem] ^from "./errors")
-(import * : calendar ^from "./calendar")
+(import problem ^from "./errors")
+(import *:calendar ^from "./calendar")
 
 (fn safe_name? [name]
   (if (|| (!= ($head name) Str) (== name "") (> ($str/byte_size name) 128) ($str/starts_with? name "/")) (return false))

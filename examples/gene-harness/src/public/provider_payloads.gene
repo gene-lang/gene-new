@@ -1,9 +1,9 @@
 # Pure wire construction and complete-response decoding. Credentials never enter
 # this module; transports call these helpers only with prepared data or responses.
 (mod provider_payloads)
-(import [ProviderError] ^from "../plugin_api")
-(import [chat_messages responses_content anthropic_content] ^from "./model_content")
-(import [anthropic_thinking_off] ^from "./model_defaults")
+(import ProviderError ^from "../plugin_api")
+(import chat_messages responses_content anthropic_content ^from "./model_content")
+(import anthropic_thinking_off ^from "./model_defaults")
 
 (fn output_budget [call]
   (let effort call/settings/effort)

@@ -1,5 +1,5 @@
 (mod slack_users)
-(import [read_slack_credentials open_api close_api api_call slack_error] ^from "./api")
+(import read_slack_credentials open_api close_api api_call slack_error ^from "./api")
 
 (fn ^^private key [parts] ($crypto/sha256 ($serde/write_data parts)))
 

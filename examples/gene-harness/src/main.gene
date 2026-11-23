@@ -1,9 +1,9 @@
-(import [log_start log_configure log_set_workspace] ^from "./kernel/log")
-(import ^from "./cli/options" [argument_values parse_options problem])
-(import ^from "./cli/main" [run_client usage])
-(import ^from "./web/server" [main : serve_web])
-(import ^from "./web/recovery" [main : serve_recovery])
-(import ^from "./runtime/workspace_settings" [initialize_manager_workspace])
+(import log_start log_configure log_set_workspace ^from "./kernel/log")
+(import ^from "./cli/options" argument_values parse_options problem)
+(import ^from "./cli/main" run_client usage)
+(import ^from "./web/server" main:serve_web)
+(import ^from "./web/recovery" main:serve_recovery)
+(import ^from "./runtime/workspace_settings" initialize_manager_workspace)
 
 (fn mark_startup_entry [input]
   (let marker ($os/env? "GENE_HARNESS_ENTRY_MARKER"))

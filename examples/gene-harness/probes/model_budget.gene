@@ -1,10 +1,10 @@
 # Opt-in inference probe. It never evaluates model output or prints credentials,
 # request bodies or response text. Each requested effort makes one billed call.
 # Usage: gene run probes/model_budget.gene --live MODELS_FILE PROVIDER MODEL [EFFORT ...]
-(import [normalize_models_file] ^from "../src/public/models_file")
-(import [endpoint_provider configure_model] ^from "../src/public/provider")
-(import [model_entry] ^from "../src/public/models")
-(import [merge_models] ^from "../src/public/model_catalog")
+(import normalize_models_file ^from "../src/public/models_file")
+(import endpoint_provider configure_model ^from "../src/public/provider")
+(import model_entry ^from "../src/public/models")
+(import merge_models ^from "../src/public/model_catalog")
 
 (fn number [value]
   (if (|| (== ($head value) Int) (== ($head value) Float))

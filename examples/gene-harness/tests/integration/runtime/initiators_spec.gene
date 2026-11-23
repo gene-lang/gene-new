@@ -1,16 +1,16 @@
 (import $test [describe it])
-(import [isolated run_spec test_controller] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [baseline_profile] ^from "../../../src/profiles/baseline")
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
-(import [submit_round continue_round round_receipt close_round_controller] ^from "../../../src/runtime/round_controller")
-(import [operator_round?] ^from "../../../src/runtime/round_policy")
-(import [row] ^from "../../../src/kernel")
+(import isolated run_spec test_controller ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import baseline_profile ^from "../../../src/profiles/baseline")
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
+(import submit_round continue_round round_receipt close_round_controller ^from "../../../src/runtime/round_controller")
+(import operator_round? ^from "../../../src/runtime/round_policy")
+(import row ^from "../../../src/kernel")
 
 (fn source [prefix : Str = "toy:", ^overlap overlap : Bool = false]
   `(mod plugin
-     (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+     (import Plugin PluginHost ^from "src/plugin_api.gene")
      (fn init [descriptor]
        (Plugin ^id "toy" ^requires [{^registry "initiators"}]
          ^provides [["initiators" "toy/messages"]]

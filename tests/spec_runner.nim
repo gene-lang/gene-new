@@ -3140,7 +3140,7 @@ int main(void) {
 
     # The benign case: the consumer imports the type it names.
     let ok = emitFor(dir, "ok.gene",
-      "(import [Node] ^from \"./lib\")\n" &
+      "(import Node ^from \"./lib\")\n" &
       "(fn peek [n : Node] : Node? n/next)\n")
     checkNativeSignature(ok, "peek", @["CNode *"], "CNode *")
     check "->next" in nativeFunction(ok, "peek")
@@ -3151,7 +3151,7 @@ int main(void) {
 
     # An aliased import still types the field by the *declarer's* Node.
     let aliased = emitFor(dir, "aliased.gene",
-      "(import [Node : ForeignNode] ^from \"./lib\")\n" &
+      "(import Node:ForeignNode ^from \"./lib\")\n" &
       "(fn peek [n : ForeignNode] : ForeignNode? n/next)\n")
     checkNativeSignature(aliased, "peek", @["CNode *"], "CNode *")
 
@@ -3159,7 +3159,7 @@ int main(void) {
     # answer for the imported field. Reproduced before the fix as a silent
     # miscompile returning `CEvil *` from a `CNode *` field.
     writeFile(dir / "steal.gene",
-      "(import [Node : ForeignNode] ^from \"./lib\")\n" &
+      "(import Node:ForeignNode ^from \"./lib\")\n" &
       "(ffi/struct CEvil ^fields [[a C/Int64] [b C/Int64] " &
       "  [c C/Int64] [d C/Int64]])\n" &
       "(type Node ^native {^abi CEvil ^lifecycle manual})\n" &
@@ -6963,10 +6963,10 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
       "(type Base ^props {})\n" &
       "(type Derived : Base ^props {})\n")
     writeFile(result / "provider.gene",
-      "(import [Shown Widget] ^from \"./proto\")\n" &
+      "(import Shown Widget ^from \"./proto\")\n" &
       "(impl Shown for Widget ^^export (message show [] : Str \"w\"))\n")
     writeFile(result / "unexported.gene",
-      "(import [Shown Base] ^from \"./proto\")\n" &
+      "(import Shown Base ^from \"./proto\")\n" &
       "(impl Shown for Base (message show [] : Str \"b\"))\n")
 
   proc loadError(dir, name, source: string): string =
@@ -6981,7 +6981,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
   test "an exported scoped impl names the module the import must land in":
     let dir = hintDir()
     let msg = loadError(dir, "main.gene",
-      "(import [Shown Widget] ^from \"./proto\")\n" &
+      "(import Shown Widget ^from \"./proto\")\n" &
       "(import [] ^from \"./provider\")\n" &
       "(fn takes [a : Shown] \"ok\")\n" &
       "(takes (Widget))\n")
@@ -6994,11 +6994,11 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
     # module does nothing when the failing annotation belongs to a library.
     let dir = hintDir()
     writeFile(dir / "lib.gene",
-      "(import [Shown Widget] ^from \"./proto\")\n" &
+      "(import Shown Widget ^from \"./proto\")\n" &
       "(fn lib_takes [a : Shown] \"ok\")\n")
     let msg = loadError(dir, "app.gene",
-      "(import [Shown Widget] ^from \"./proto\")\n" &
-      "(import [lib_takes] ^from \"./lib\")\n" &
+      "(import Shown Widget ^from \"./proto\")\n" &
+      "(import lib_takes ^from \"./lib\")\n" &
       "(import [] ^from \"./provider\")\n" &
       "(lib_takes (Widget))\n")
     check "lib.gene" in msg
@@ -7007,7 +7007,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
   test "an unexported scoped impl advises export before import":
     let dir = hintDir()
     let msg = loadError(dir, "main.gene",
-      "(import [Shown Base] ^from \"./proto\")\n" &
+      "(import Shown Base ^from \"./proto\")\n" &
       "(import [] ^from \"./unexported\")\n" &
       "(fn takes [a : Shown] \"ok\")\n" &
       "(takes (Base))\n")
@@ -7019,10 +7019,10 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
     # be a command that fails: the impl is for Base, the value is a Derived.
     let dir = hintDir()
     writeFile(dir / "baseprov.gene",
-      "(import [Shown Base] ^from \"./proto\")\n" &
+      "(import Shown Base ^from \"./proto\")\n" &
       "(impl Shown for Base ^^export (message show [] : Str \"b\"))\n")
     let msg = loadError(dir, "main.gene",
-      "(import [Shown Base Derived] ^from \"./proto\")\n" &
+      "(import Shown Base Derived ^from \"./proto\")\n" &
       "(import [] ^from \"./baseprov\")\n" &
       "(fn takes [a : Shown] \"ok\")\n" &
       "(takes (Derived))\n")
@@ -7032,7 +7032,7 @@ suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
   test "a qualified send gets the same advice":
     let dir = hintDir()
     let msg = loadError(dir, "main.gene",
-      "(import [Shown Widget] ^from \"./proto\")\n" &
+      "(import Shown Widget ^from \"./proto\")\n" &
       "(import [] ^from \"./provider\")\n" &
       "((Widget) .Shown:show)\n")
     check "no implementation of message 'show'" in msg
@@ -7090,7 +7090,7 @@ suite "spec — binding forms from design §12.1":
                         "loop is a special form")
     check_compile_error("(fn outer [loop] (fn inner [] (loop (break))))",
                         "loop is a special form")
-    check_compile_error("(import [loop] ^from \"./unused.gene\") (loop)",
+    check_compile_error("(import loop ^from \"./unused.gene\") (loop)",
                         "loop is a special form")
     check_eval("(let mod 1) mod", "1")
     check_eval("(fn once [] 1) (once)", "1")
@@ -9390,7 +9390,7 @@ suite "spec — Env and eval from design":
 
   test "eval rejects ambient imports inside evaluated code":
     check_eval("(try " &
-               "  (eval (quote (import [answer] ^from \"./envlib\")) ^in (env)) " &
+               "  (eval (quote (import answer ^from \"./envlib\")) ^in (env)) " &
                "catch CompileError $err/.message)",
                "\"eval cannot use import; add imports to Env\"")
 
@@ -9826,8 +9826,8 @@ suite "spec — packages (docs/workflows.md)":
       writeIn(root, dir & "/src/index.gene",
         "(var value \"" & value & "\")")
     writeIn(root, "app/src/main.gene",
-      "(import [value : old] ^from \".\" ^pkg \"old\")\n" &
-      "(import [value : new] ^from \".\" ^pkg \"new\")\n" &
+      "(import value:old ^from \".\" ^pkg \"old\")\n" &
+      "(import value:new ^from \".\" ^pkg \"new\")\n" &
       "(var values [old new])")
     let app = newApplicationForEntryFile(root / "app/src/main.gene")
     check moduleValueText(app.loadFileModule(root / "app/src/main.gene"),
@@ -9848,8 +9848,8 @@ suite "spec — packages (docs/workflows.md)":
     # A probe outside the entry's own import chain, so `"."` is not a self
     # import.
     writeIn(root, "src/probe.gene",
-      "(import [who : helper_who] ^from \"helper\")\n" &
-      "(import [who : entry_who] ^from \".\")\n" &
+      "(import who:helper_who ^from \"helper\")\n" &
+      "(import who:entry_who ^from \".\")\n" &
       "(var seen [helper_who entry_who])")
     let pkg = loadPackageAt(root, poEntry)
     check pkg.moduleBases() == @[normalizedPath(root / "src")]
@@ -9861,7 +9861,7 @@ suite "spec — packages (docs/workflows.md)":
     check moduleValueText(libApp.loadFileModule(root / "src/probe.gene"),
                           "seen") == "[\"helper\" \"boot\"]"
     # `stray.gene` sits at the package root, which is not a module base.
-    writeIn(root, "src/reach.gene", "(import [who] ^from \"stray\")")
+    writeIn(root, "src/reach.gene", "(import who ^from \"stray\")")
     let strayApp = newApplicationForEntryFile(root / "src/reach.gene")
     check packageErrorClass(proc () =
       discard strayApp.loadFileModule(root / "src/reach.gene")) ==
@@ -9927,7 +9927,7 @@ suite "spec — macros across modules (design §11/§15)":
   test "module macros import alongside values and expand at compile time":
     let dir = macroModuleDir()
     writeFile(dir / "muse.gene",
-      "(import [triple use_it] ^from \"./mlib\")\n" &
+      "(import triple use_it ^from \"./mlib\")\n" &
       "(var a (triple 7))\n" &
       "(var b (use_it))\n")
     let app = newApplication(dir)
@@ -9938,7 +9938,7 @@ suite "spec — macros across modules (design §11/§15)":
   test "macro-only imports and selection aliases work":
     let dir = macroModuleDir()
     writeFile(dir / "muse.gene",
-      "(import [triple : t3] ^from \"./mlib\")\n" &
+      "(import triple:t3 ^from \"./mlib\")\n" &
       "(var a (t3 4))\n")
     let app = newApplication(dir)
     check moduleVar(app.loadFileModule(dir / "muse.gene"), "a") == "12"
@@ -9949,7 +9949,7 @@ suite "spec — macros across modules (design §11/§15)":
       "(macro twice [x] `(+ %x %x))\n" &
       "(panic \"runtime phase executed\")\n")
     writeFile(dir / "consumer.gene",
-      "(import [twice] ^from \"./compile_only\")\n" &
+      "(import twice ^from \"./compile_only\")\n" &
       "(var answer (twice 21))\n")
     let app = newApplication(dir)
     let first = app.compileFileModule(dir / "consumer.gene")
@@ -9966,7 +9966,7 @@ suite "spec — macros across modules (design §11/§15)":
       "(var starts ($cell 0))\n" &
       "(starts .update (fn [n] (+ n 1)))\n")
     writeFile(dir / "phase_user.gene",
-      "(import [identity] ^from \"./phase_dep\")\n" &
+      "(import identity ^from \"./phase_dep\")\n" &
       "(var answer (identity 42))\n")
     let app = newApplication(dir)
     discard app.compileFileModule(dir / "phase_user.gene")
@@ -9983,10 +9983,10 @@ suite "spec — macros across modules (design §11/§15)":
     let dir = macroModuleDir()
     writeFile(dir / "a.gene",
       "(macro a [x] `%x)\n" &
-      "(import [b] ^from \"./b\")\n")
+      "(import b ^from \"./b\")\n")
     writeFile(dir / "b.gene",
       "(macro b [x] `%x)\n" &
-      "(import [a] ^from \"./a\")\n")
+      "(import a ^from \"./a\")\n")
     var message = ""
     try:
       discard newApplication(dir).compileFileModule(dir / "a.gene")
@@ -9998,15 +9998,15 @@ suite "spec — macros across modules (design §11/§15)":
     let dir = macroModuleDir()
     writeFile(dir / "mid.gene",
       "(mod mid)\n" &
-      "(import [triple] ^from \"./mlib\")\n" &
+      "(import triple ^from \"./mlib\")\n" &
       "(fn nine_x [x] (triple (triple x)))\n")
     writeFile(dir / "muse.gene",
-      "(import [nine_x] ^from \"./mid\")\n" &
+      "(import nine_x ^from \"./mid\")\n" &
       "(var a (nine_x 2))\n")
     let app = newApplication(dir)
     check moduleVar(app.loadFileModule(dir / "muse.gene"), "a") == "18"
     writeFile(dir / "reexport.gene",
-      "(import [triple] ^from \"./mid\")\n")
+      "(import triple ^from \"./mid\")\n")
     let app2 = newApplication(dir)
     expect GeneError:
       discard app2.loadFileModule(dir / "reexport.gene")
@@ -10014,7 +10014,7 @@ suite "spec — macros across modules (design §11/§15)":
   test "importing a macro over a local macro name is a duplicate":
     let dir = macroModuleDir()
     writeFile(dir / "muse.gene",
-      "(import [triple] ^from \"./mlib\")\n" &
+      "(import triple ^from \"./mlib\")\n" &
       "(macro triple [x] `(+ %x %x %x))\n")
     let app = newApplication(dir)
     expect GeneError:
@@ -10035,11 +10035,11 @@ suite "spec — macros across modules (design §11/§15)":
     let dir = macroModuleDir()
     writeFile(dir / "clash1.gene",
       "(fn triple [x] x)\n" &
-      "(import [triple] ^from \"./mlib\")\n")
+      "(import triple ^from \"./mlib\")\n")
     expect GeneError:
       discard newApplication(dir).loadFileModule(dir / "clash1.gene")
     writeFile(dir / "clash2.gene",
-      "(import [triple] ^from \"./mlib\")\n" &
+      "(import triple ^from \"./mlib\")\n" &
       "(var triple 5)\n")
     expect GeneError:
       discard newApplication(dir).loadFileModule(dir / "clash2.gene")
@@ -10057,7 +10057,7 @@ suite "spec — fexprs across modules (design §11.1/§15)":
       "  (if_not (eval cond ^in caller_env)\n" &
       "    (eval `(do %body...) ^in caller_env)))\n")
     writeFile(dir / "fuse.gene",
-      "(import [unless!] ^from \"./flib\")\n" &
+      "(import unless! ^from \"./flib\")\n" &
       "(var x 1)\n" &
       "(var a (unless! (> x 5) \"ok\"))\n")
     let app = newApplication(dir)
@@ -10087,7 +10087,7 @@ suite "spec — impl visibility across modules (design §10)":
     # imports Greet to make Greet:greet resolvable at the call site.
     let dir = implModuleDir()
     writeFile(dir / "use.gene",
-      "(import [Cat Greet] ^from \"./ilib\")\n" &
+      "(import Cat Greet ^from \"./ilib\")\n" &
       "(var r ((Cat ^name \"Tom\") .Greet:greet))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Tom\""
@@ -10096,11 +10096,11 @@ suite "spec — impl visibility across modules (design §10)":
     let dir = implModuleDir()
     writeFile(dir / "mid.gene",
       "(mod mid)\n" &
-      "(import [Cat] ^from \"./ilib\")\n" &
+      "(import Cat ^from \"./ilib\")\n" &
       "(fn make_cat [n : Str] : Cat (Cat ^name n))\n")
     writeFile(dir / "use.gene",
-      "(import [make_cat] ^from \"./mid\")\n" &
-      "(import [Greet] ^from \"./ilib\")\n" &
+      "(import make_cat ^from \"./mid\")\n" &
+      "(import Greet ^from \"./ilib\")\n" &
       "(var r ((make_cat \"Felix\") .Greet:greet))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Felix\""
@@ -10112,11 +10112,11 @@ suite "spec — impl visibility across modules (design §10)":
     # loaded, so the qualified send in `other` dispatches it.
     writeFile(dir / "other.gene",
       "(mod other)\n" &
-      "(import [Greet] ^from \"./ilib\")\n" &
+      "(import Greet ^from \"./ilib\")\n" &
       "(fn use_cat [c] (c .Greet:greet))\n")
     writeFile(dir / "use.gene",
-      "(import [Cat] ^from \"./ilib\")\n" &
-      "(import [use_cat] ^from \"./other\")\n" &
+      "(import Cat ^from \"./ilib\")\n" &
+      "(import use_cat ^from \"./other\")\n" &
       "(var r (use_cat (Cat ^name \"Zoe\")))\n")
     let app = newApplication(dir)
     check implModuleVar(app.loadFileModule(dir / "use.gene"), "r") == "\"meow Zoe\""
@@ -10283,7 +10283,7 @@ suite "spec — core value protocol admission":
     createDir(dir)
     writeFile(dir / "value.gene", "(type UserId ^props {^text Str})")
     writeFile(dir / "foreign.gene",
-      "(import [UserId] ^from \"./value.gene\") " &
+      "(import UserId ^from \"./value.gene\") " &
       "(impl ValueEq for UserId " &
       "  (message equal [other : UserId] : Bool true))")
     var rejected = false
@@ -10988,7 +10988,7 @@ suite "spec — structured logging contract":
                "[true false true]")
 
   test "built-in namespace macros support selection aliases":
-    check_eval("(import $log [new_logger log_debug : diagnostic]) " &
+    check_eval("(import $log [new_logger log_debug:diagnostic]) " &
                "(var logger (new_logger \"app/spec\")) " &
                "(var touched ($cell false)) " &
                "(diagnostic logger (do (touched .set true) \"x\")) " &
@@ -11085,7 +11085,7 @@ suite "spec — store persistence protocol":
 
   test "sqlite store round-trips data records and missing/default semantics":
     check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open : store-open Store StoreError]) " &
+               "(import $store/sqlite [open:store-open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
                "(s .Store:put \"a\" {^x 1}) " &
@@ -11100,7 +11100,7 @@ suite "spec — store persistence protocol":
 
   test "sqlite store supports full mode refs, keys, delete, clear, and close":
     check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open : store-open Store StoreError]) " &
+               "(import $store/sqlite [open:store-open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
                "(s .Store:put \"fn\" gene/str/join ^mode \"full\") " &
@@ -11122,7 +11122,7 @@ suite "spec — store persistence protocol":
       removeDir(dir)
     createDir(dir)
     writeFile(dir / "junk.tmp", "not a record")
-    check_eval_at("(import $store/fs [open : store-open Store StoreError]) " &
+    check_eval_at("(import $store/fs [open:store-open Store StoreError]) " &
                "(var s (store-open ^root " & geneString(dir) & ")) " &
                "(s .Store:put \"session:tg/42\" {^x 1}) " &
                "[(s .Store:get \"session:tg/42\") " &
@@ -11162,7 +11162,7 @@ suite "spec — store persistence protocol":
 
   test "sqlite checkpoints publish one hash-validated generation atomically":
     check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open : store-open Store]) " &
+               "(import $store/sqlite [open:store-open Store]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
                "(s .Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
@@ -11175,7 +11175,7 @@ suite "spec — store persistence protocol":
 
   test "checkpoint generations are exclusive CAS claims":
     check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open : store_open Store StoreError]) " &
+               "(import $store/sqlite [open:store_open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store_open db)) " &
                "(s .Store:checkpoint 1 {^state {^winner 1}}) " &
@@ -11190,7 +11190,7 @@ suite "spec — store persistence protocol":
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval_at("(import $store/fs [open : store_open Store StoreError]) " &
+    check_eval_at("(import $store/fs [open:store_open Store StoreError]) " &
                "(var first (store_open ^root " & geneString(dir) & ")) " &
                "(var stale (store_open ^root " & geneString(dir) & ")) " &
                "(first .Store:checkpoint 1 {^state {^winner 1}}) " &
@@ -11203,7 +11203,7 @@ suite "spec — store persistence protocol":
 
   test "a retained-out stale generation cannot roll CURRENT backward":
     check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open : store_open Store StoreError]) " &
+               "(import $store/sqlite [open:store_open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store_open db)) " &
                "(var n 1) " &
@@ -11221,7 +11221,7 @@ suite "spec — store persistence protocol":
     if dirExists(staleDir):
       removeDir(staleDir)
     createDir(staleDir)
-    check_eval_at("(import $store/fs [open : store_open Store StoreError]) " &
+    check_eval_at("(import $store/fs [open:store_open Store StoreError]) " &
                "(var s (store_open ^root " & geneString(staleDir) & ")) " &
                "(var n 1) " &
                "(while (<= n 5) " &
@@ -11240,7 +11240,7 @@ suite "spec — store persistence protocol":
       for suffix in ["", "-wal", "-shm", "-journal"]:
         if fileExists(path & suffix): removeFile(path & suffix)
       check_eval_at("(import $db/sqlite [open Db]) " &
-                 "(import $store/sqlite [open : store-open Store]) " &
+                 "(import $store/sqlite [open:store-open Store]) " &
                  "(var db (open " & geneString(path) & ")) " &
                  "(var s (store-open db)) " &
                  "(s .Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
@@ -11444,7 +11444,7 @@ suite "spec — store persistence protocol":
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval_at("(import $store/fs [open : store-open Store]) " &
+    check_eval_at("(import $store/fs [open:store-open Store]) " &
                "(var s (store-open ^root " & geneString(dir) & ")) " &
                "(s .Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
                "(s .Store:checkpoint 2 {^session {^schema 1 ^data {^x 2}}}) " &
@@ -11454,7 +11454,7 @@ suite "spec — store persistence protocol":
     let newest = dir / "generations" / "00000000000000000002" /
                  "session.gene"
     writeFile(newest, "corrupt")
-    check_eval_at("(import $store/fs [open : store-open Store]) " &
+    check_eval_at("(import $store/fs [open:store-open Store]) " &
                "(var s (store-open ^root " & geneString(dir) & ")) " &
                "(var loaded (s .Store:load_checkpoint)) " &
                "[loaded/generation loaded/records/session/data/x]",
@@ -11468,7 +11468,7 @@ suite "spec — store persistence protocol":
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval_at("(import $store/fs [open : store_open Store]) " &
+    check_eval_at("(import $store/fs [open:store_open Store]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "(s .Store:checkpoint 1 {^state {^value 1}}) true",
                "true", dir)
@@ -11479,14 +11479,14 @@ suite "spec — store persistence protocol":
     let unpublishedManifest = unpublished / "MANIFEST.gene"
     writeFile(unpublishedManifest,
       readFile(unpublishedManifest).replace("^generation 1", "^generation 2"))
-    check_eval_at("(import $store/fs [open : store_open Store]) " &
+    check_eval_at("(import $store/fs [open:store_open Store]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "(var loaded (s .Store:load_checkpoint)) " &
                "[loaded/generation loaded/records/state/value]",
                "[1 1]", dir)
     # The publication lock may reclaim the complete-but-unpublished directory
     # and reuse generation 2; it must not strand the store after a crash.
-    check_eval_at("(import $store/fs [open : store_open Store]) " &
+    check_eval_at("(import $store/fs [open:store_open Store]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "(s .Store:checkpoint 2 {^state {^value 2}}) " &
                "(var loaded (s .Store:load_checkpoint)) " &
@@ -11495,7 +11495,7 @@ suite "spec — store persistence protocol":
 
   test "malformed checkpoint CURRENT is corruption, never an empty store":
     check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open : store_open Store StoreError]) " &
+               "(import $store/sqlite [open:store_open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store_open db)) " &
                "(s .Store:checkpoint 1 {^state 1}) " &
@@ -11510,12 +11510,12 @@ suite "spec — store persistence protocol":
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval_at("(import $store/fs [open : store_open Store]) " &
+    check_eval_at("(import $store/fs [open:store_open Store]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "(s .Store:checkpoint 1 {^state 1}) true",
                "true", dir)
     writeFile(dir / "CURRENT", "broken\n")
-    check_eval_at("(import $store/fs [open : store_open Store StoreError]) " &
+    check_eval_at("(import $store/fs [open:store_open Store StoreError]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "[(try (s .Store:load_checkpoint) " &
                "  catch StoreError $err/kind) " &
@@ -11528,7 +11528,7 @@ suite "spec — store persistence protocol":
     removeDir(dir / "generations")
     for current in ["broken\n", "00000000000000000001\n"]:
       writeFile(dir / "CURRENT", current)
-      check_eval_at("(import $store/fs [open : store_open Store StoreError]) " &
+      check_eval_at("(import $store/fs [open:store_open Store StoreError]) " &
                  "(var s (store_open ^root " & geneString(dir) & ")) " &
                  "(try (s .Store:load_checkpoint) catch StoreError $err/kind)",
                  "corrupt", dir)
@@ -12715,7 +12715,7 @@ suite "spec — documentation contract":
               if name.len > 0:
                 declared.incl name
               at = line.find(kw, at + 1)
-          # `(import ns [a b : alias c])` binds those names locally too.
+          # `(import ns [a b:alias c])` binds those names locally too.
           if "(import " in line or "(import_impl " in line:
             let lb = line.find('[')
             if lb >= 0:

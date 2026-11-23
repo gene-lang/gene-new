@@ -724,12 +724,12 @@ suite "errors — module summaries":
     """)
     writeFile(root / "good.gene", """
       (mod good ^errors_mode strict)
-      (import [load ConfigError] ^from "./dep.gene")
+      (import load ConfigError ^from "./dep.gene")
       (fn main [] ^errors [] (try (load) catch ConfigError nil))
     """)
     writeFile(root / "bad.gene", """
       (mod bad ^errors_mode strict)
-      (import [load] ^from "./dep.gene")
+      (import load ^from "./dep.gene")
       (fn main [] ^errors [] (load))
     """)
     let app = newApplication(root)
@@ -746,7 +746,7 @@ suite "errors — module summaries":
     """)
     writeFile(root / "initialization.gene", """
       (mod initialization ^errors_mode strict)
-      (import [value] ^from "./fallible.gene")
+      (import value ^from "./fallible.gene")
       (fn main [] ^errors [] (value))
     """)
     for warm in [false, true]:
@@ -765,13 +765,13 @@ suite "errors — module summaries":
     """)
     writeFile(root / "constructors_good.gene", """
       (mod good ^errors_mode strict)
-      (import [Probe Resource Plain] ^from "./constructors.gene")
+      (import Probe Resource Plain ^from "./constructors.gene")
       (fn make [] ^errors [Probe] (new Resource))
       (fn plain [] ^errors [] (Plain))
     """)
     writeFile(root / "constructors_bad.gene", """
       (mod bad ^errors_mode strict)
-      (import [Resource] ^from "./constructors.gene")
+      (import Resource ^from "./constructors.gene")
       (fn make [] ^errors [] (new Resource))
     """)
     let app = newApplication(root)
@@ -799,7 +799,7 @@ suite "errors — module summaries":
     """)
     writeFile(root / "messages_good.gene", """
       (mod good ^errors_mode strict)
-      (import [Child Box Diamond Failure] ^from "./messages.gene")
+      (import Child Box Diamond Failure ^from "./messages.gene")
       (fn label [] : Str ^errors [] ((Child) .label))
       (fn copy_label [child : Child] : Str ^errors [] ((child .copy) .label))
       (fn query [child : Child] : Str ^errors [Failure] (child .query))
@@ -808,12 +808,12 @@ suite "errors — module summaries":
     """)
     writeFile(root / "messages_bad.gene", """
       (mod bad ^errors_mode strict)
-      (import [Box Diamond] ^from "./messages.gene")
+      (import Box Diamond ^from "./messages.gene")
       (fn unchecked [] : Str ^errors [] ((Box) .Diamond:value))
     """)
     writeFile(root / "messages_default_bad.gene", """
       (mod bad ^errors_mode strict)
-      (import [Child] ^from "./messages.gene")
+      (import Child ^from "./messages.gene")
       (fn unchecked [] : Str ^errors [] ((Child) .query "supplied"))
     """)
     let app = newApplication(root)
@@ -837,7 +837,7 @@ suite "errors — module summaries":
     """)
     writeFile(root / "branches_good.gene", """
       (mod good ^errors_mode strict)
-      (import [Broken Bad] ^from "./branches.gene")
+      (import Broken Bad ^from "./branches.gene")
       (type Worse : Broken)
       (fn emit [] ^errors [] (fail (Broken ^_msg "defect")))
       (fn emit_worse [] ^errors [] (fail (Worse ^_msg "defect")))
@@ -846,7 +846,7 @@ suite "errors — module summaries":
     """)
     writeFile(root / "branches_bad.gene", """
       (mod bad ^errors_mode strict)
-      (import [Bad] ^from "./branches.gene")
+      (import Bad ^from "./branches.gene")
       (fn emit [] ^errors [] (fail (Bad ^_msg "checked")))
     """)
     let app = newApplication(root)
@@ -884,7 +884,7 @@ suite "errors — module summaries":
     """)
     writeFile(root / "renamed_client.gene", """
       (mod renamed ^errors_mode strict)
-      (import [Original : Expected produce] ^from "./renamed_provider.gene")
+      (import Original:Expected produce ^from "./renamed_provider.gene")
       (fn helper ^^private [] (produce))
       (fn run [] : Str ^errors []
         (try (helper) "wrong" catch Expected $err/.message))
@@ -955,13 +955,13 @@ suite "errors — module summaries":
     """)
     writeFile(root / "protocol_names_good.gene", """
       (mod good ^errors_mode strict)
-      (import [Own] ^from "./protocol_names.gene")
+      (import Own ^from "./protocol_names.gene")
       (protocol Child ^inherit [Own])
       (fn read [receiver : Child] : Int ^errors [] (receiver .Own:value))
     """)
     writeFile(root / "protocol_names_bad.gene", """
       (mod bad ^errors_mode strict)
-      (import [Own] ^from "./protocol_names.gene")
+      (import Own ^from "./protocol_names.gene")
       (protocol Child ^inherit [Own])
       (fn read [receiver : Child] : Int ^errors [] (receiver .Child:value))
     """)
@@ -979,7 +979,7 @@ suite "errors — module summaries":
     writeFile(root / "error_alias.gene", "(alias AllErrors Error)")
     writeFile(root / "error_alias_client.gene", """
       (mod aliases ^errors_mode strict)
-      (import [AllErrors] ^from "./error_alias.gene")
+      (import AllErrors ^from "./error_alias.gene")
       (fn invoke [callback : Callable] : Any ^errors [AllErrors] (callback))
     """)
     discard newApplication(root).loadFileModule(root / "error_alias_client.gene")
@@ -992,7 +992,7 @@ suite "errors — module summaries":
     """)
     writeFile(root / "checked_value_client.gene", """
       (mod client ^errors_mode strict)
-      (import [exported] ^from "./checked_value.gene")
+      (import exported ^from "./checked_value.gene")
       (fn value [] : Int ^errors [] (exported))
     """)
     let app = newApplication(root)
@@ -1375,7 +1375,7 @@ suite "errors — retained strict assumptions":
   test "native namespace aliases retain the implementation's effect model":
     errorContractCheck """
       (mod aliases ^errors_mode strict)
-      (import gene/stream [map : map_values])
+      (import gene/stream [map:map_values])
       (fn positive [n : Int] : Bool ^errors [] (> n 0))
       (fn values [] ^errors []
         [(map_values [1 2] positive) ($stream/map [1 2] positive)])
@@ -1496,15 +1496,15 @@ suite "errors — retained strict assumptions":
     createDir(root)
     writeFile(root / "protocol.gene", "(protocol P (message value [] : Int ^errors []))")
     writeFile(root / "provider.gene", """
-      (import [P] ^from "./protocol.gene")
+      (import P ^from "./protocol.gene")
       (type Item ^props {})
       (impl P for Item (message value [] : Int ^errors [] 1))
       (fn make [] (Item))
     """)
     writeFile(root / "client.gene", """
       (mod client ^errors_mode strict)
-      (import [P] ^from "./protocol.gene")
-      (import * : provider ^from "./provider.gene")
+      (import P ^from "./protocol.gene")
+      (import *:provider ^from "./provider.gene")
       (fn invoke [item : P] : Int ^errors [] (item .P:value))
     """)
     let app = newApplication(root)
@@ -1514,7 +1514,7 @@ suite "errors — retained strict assumptions":
     scope.define("instance", value)
     check run(compileSource("(invoke instance)", useLocalSlots = false), scope).intVal == 1
     writeFile(root / "provider.gene", """
-      (import [P] ^from "./protocol.gene")
+      (import P ^from "./protocol.gene")
       (type Item ^props {})
       (fn make [] (Item))
     """)
@@ -1539,11 +1539,11 @@ suite "errors — retained strict assumptions":
       "(protocol P (message value [] : Int ^errors []))")
     writeFile(root / "client.gene", """
       (mod client ^errors_mode strict)
-      (import [P] ^from "./contract.gene")
+      (import P ^from "./contract.gene")
       (fn invoke [item : P] : Int ^errors [] (item .P:value))
     """)
     writeFile(pluginDir / "main.gene", """
-      (import [P] ^from "../contract.gene")
+      (import P ^from "../contract.gene")
       (type Item ^props {})
       (impl P for Item (message value [] : Int ^errors [] 42))
       (fn make [] (Item))
@@ -1591,14 +1591,14 @@ suite "errors — retained strict assumptions":
     createDir(root)
     writeFile(root / "model.gene", "(type Item ^props {})")
     writeFile(root / "provider.gene", """
-      (import [Item] ^from "./model.gene")
+      (import Item ^from "./model.gene")
       (protocol P (message value [] : Int ^errors []))
       (impl P for Item (message value [] : Int ^errors [] 1))
     """)
     writeFile(root / "client.gene", """
       (mod client ^errors_mode strict)
-      (import [Item] ^from "./model.gene")
-      (import [P] ^from "./provider.gene")
+      (import Item ^from "./model.gene")
+      (import P ^from "./provider.gene")
       (fn value [item : Item] : Int ^errors [] (item .P:value))
     """)
     let app = newApplication(root)
@@ -1607,7 +1607,7 @@ suite "errors — retained strict assumptions":
     check run(compileSource("(value (Item))", useLocalSlots = false), scope).intVal == 1
     let epoch = app.implActivationEpoch
     writeFile(root / "provider.gene", """
-      (import [Item] ^from "./model.gene")
+      (import Item ^from "./model.gene")
       (protocol P (message value [] : Int ^errors [Error]))
       (impl P for Item (message value [] : Int ^errors [Error] (/ 1 0)))
     """)
@@ -1623,12 +1623,12 @@ suite "errors — retained strict assumptions":
       (protocol P (message value [] : Int ^errors []))
     """)
     writeFile(root / "provider.gene", """
-      (import [P Item] ^from "./model.gene")
+      (import P Item ^from "./model.gene")
       (impl P for Item ^^export (message value [] : Int ^errors [] 1))
     """)
     writeFile(root / "client.gene", """
       (mod client ^errors_mode strict)
-      (import [P Item] ^from "./model.gene")
+      (import P Item ^from "./model.gene")
       (import_impl P for Item ^from "./provider.gene")
       (fn value [item : Item] : Int ^errors [] (item .P:value))
     """)
@@ -1637,7 +1637,7 @@ suite "errors — retained strict assumptions":
     let scope = loaded.moduleRootNamespace.nsScope
     check run(compileSource("(value (Item))", useLocalSlots = false), scope).intVal == 1
     writeFile(root / "provider.gene", """
-      (import [P Item] ^from "./model.gene")
+      (import P Item ^from "./model.gene")
       (impl P for Item ^^export (message value [] : Int ^errors [] 2))
     """)
     discard app.reloadFileModule(root / "provider.gene")

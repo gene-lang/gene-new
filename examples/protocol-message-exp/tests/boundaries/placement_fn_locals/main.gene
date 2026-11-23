@@ -1,7 +1,7 @@
 # Local bindings do not change where the pair lives: still the call.
-(import [Article] ^from "../common/model")
-(import [Render] ^from "../common/contracts")
-(import [attempt] ^from "../common/util")
+(import Article ^from "../common/model")
+(import Render ^from "../common/contracts")
+(import attempt ^from "../common/util")
 (fn show [article seed]
   (let label $"seed-${seed}")
   (import_impl Render for Article ^from "../common/plain")

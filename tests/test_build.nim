@@ -76,7 +76,7 @@ suite "build engine — pure Gene targets":
     writeBuildFile(root / "src/index.gene", "(var package_name \"app\")")
     writeBuildFile(root / "src/unused.gene", "((unterminated")
     writeBuildFile(root / "src/cli.gene", """
-(import [answer twice] ^from "." ^pkg "math")
+(import answer twice ^from "." ^pkg "math")
 (var doubled (twice answer))
 (fn main [] doubled)
 """)
@@ -90,7 +90,7 @@ suite "build engine — pure Gene targets":
    ^core (dep "acme/core" "1.0.0" ^^workspace)}}
 """)
     writeBuildFile(root / "packages/math/src/index.gene", """
-(import [base] ^from "." ^pkg "core")
+(import base ^from "." ^pkg "core")
 (var answer base)
 (fn expand_twice ^^private [x] `(+ %x %x))
 (macro twice [x] (expand_twice x))
@@ -279,7 +279,7 @@ suite "build engine — pure Gene targets":
  ^dependencies {^math (dep "acme/math" "1.0.0" ^^workspace)}}
 """)
     writeBuildFile(root / "src/main.gene",
-      "(import [answer] ^from \".\" ^pkg \"math\") (fn main [] answer)")
+      "(import answer ^from \".\" ^pkg \"math\") (fn main [] answer)")
     writeBuildFile(root / "packages/math/package.gene", """
 {^format 1 ^name "acme/math" ^version "1.0.0"
  ^library {^entry "src/index.gene"}}

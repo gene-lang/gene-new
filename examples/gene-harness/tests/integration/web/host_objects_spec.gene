@@ -1,13 +1,13 @@
 # Tests the global workspace, manager and session objects in src/web/session_service.gene.
 (import $test [describe it])
-(import [isolated run_spec test_service set_test_provider] ^from "../../support")
-(import [close_session_service create_session command operator_receipt submit receipt]
+(import isolated run_spec test_service set_test_provider ^from "../../support")
+(import close_session_service create_session command operator_receipt submit receipt
   ^from "../../../src/web/session_service")
-(import [Plugin PluginHost CommandResult current_workspace current_manager current_session]
+(import Plugin PluginHost CommandResult current_workspace current_manager current_session
   ^from "../../../src/plugin_api")
-(import [put_cordis_plugin row] ^from "../../../src/kernel")
-(import [submit_mode_input mode_state] ^from "../../../src/runtime/input_modes")
-(import [require_record] ^from "../../../src/runtime/sessions")
+(import put_cordis_plugin row ^from "../../../src/kernel")
+(import submit_mode_input mode_state ^from "../../../src/runtime/input_modes")
+(import require_record ^from "../../../src/runtime/sessions")
 
 (fn with_service [workspace : Str, body, ^provider provider = nil]
   (let service (test_service ^workspace workspace
@@ -298,7 +298,7 @@
       (fn [workspace]
         (let source
           "(register_plugin \"stored_probe\" `(mod plugin
-             (import [Plugin PluginHost current_workspace current_manager current_session] ^from \"src/plugin_api.gene\")
+             (import Plugin PluginHost current_workspace current_manager current_session ^from \"src/plugin_api.gene\")
              (fn init [descriptor]
                (Plugin ^id \"stored_probe\" ^provides [[\"functions\" \"stored_objects\"]]
                  ^activate (fn [host]

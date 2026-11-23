@@ -3,7 +3,6 @@
 (mod cordis_adapter)
 
 (import ^from "." ^pkg "cordis"
-  [
     EffectDisposed
     spawn_host_call
     RuntimeOptions
@@ -18,10 +17,10 @@
     PluginInstance
     invocation_limits
     default_plugin_invoker
-    new_runtime])
+    new_runtime)
 (import ^from "../plugin_api"
-  [Plugin PluginHost ExecutionLimits default_execution_limits response_execution_limits])
-(import [with_callback_budget] ^from "./execution_budget")
+  Plugin PluginHost ExecutionLimits default_execution_limits response_execution_limits)
+(import with_callback_budget ^from "./execution_budget")
 
 # Activations contribute directly to the live registries. Each activation
 # revision owns its rows and callbacks and releases them in its own cleanup, so

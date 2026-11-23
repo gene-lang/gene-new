@@ -1,6 +1,6 @@
 (mod repl)
-(import [Plugin PluginHost OperatorHost] ^from "../plugin_api")
-(import [contribute_doc] ^from "../public/documentation")
+(import Plugin PluginHost OperatorHost ^from "../plugin_api")
+(import contribute_doc ^from "../public/documentation")
 
 (fn repl [] : Plugin
   (Plugin ^id "repl" ^requires ["operator/host"] ^provides [["commands" "repl"] ["input_modes" "repl"]]

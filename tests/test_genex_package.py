@@ -112,7 +112,7 @@ build({str(package)!r}, 'gene_websocket', ['curl'],
  ^dependencies {^ws (dep "genex/websocket" "0.1.0" ^path "../websocket")}}
 ''')
             (app / "src/main.gene").write_text('''
-(import [load connect receive] ^from "." ^pkg "ws")
+(import load connect receive ^from "." ^pkg "ws")
 (fn main [args] : Int
   (let package ($pkg/dependency this_pkg "ws"))
   (let lease ($pkg/native_binary package "native"))

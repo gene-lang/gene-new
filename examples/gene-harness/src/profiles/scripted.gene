@@ -1,7 +1,7 @@
 (mod scripted_profile)
-(import [Profile] ^from "./profile")
-(import [baseline_profile] ^from "./baseline")
-(import [provider_scripted] ^from "../builtin/provider_scripted")
+(import Profile ^from "./profile")
+(import baseline_profile ^from "./baseline")
+(import provider_scripted ^from "../builtin/provider_scripted")
 
 (fn scripted_profile [responses] : Profile
   (let base (baseline_profile))

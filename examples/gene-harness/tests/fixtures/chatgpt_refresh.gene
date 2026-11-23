@@ -1,4 +1,4 @@
-(import [chatgpt_access] ^from "../../src/public/chatgpt_auth")
+(import chatgpt_access ^from "../../src/public/chatgpt_auth")
 
 (fn main [args] : Int
   (let access (chatgpt_access ^root args/0 ^exchange_url args/1

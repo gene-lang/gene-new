@@ -1,8 +1,8 @@
 # Deterministic input fixtures shared by every variant. The core tree uses only
 # frozen core types; the late tree adds the late Chart and Table types.
-(import [Section Article Figure] ^from "./model")
-(import [Chart] ^from "./extensions/chart")
-(import [Table] ^from "./extensions/table")
+(import Section Article Figure ^from "./model")
+(import Chart ^from "./extensions/chart")
+(import Table ^from "./extensions/table")
 
 (fn core_document []
   (Section ^title "A" ^children [

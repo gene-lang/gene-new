@@ -8,7 +8,7 @@ Linux runtime qualification is pending.
 
 ```gene
 (import $io [IoResource])
-(import [open] ^from "." ^pkg "timer")
+(import open ^from "." ^pkg "timer")
 
 (let timer (open (fn [payload] ($println ($binary/to_str payload)))))
 ($sleep 50)

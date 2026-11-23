@@ -1,18 +1,18 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
-(import [acquire_snapshot release_snapshot current_snapshot] ^from "../../../src/runtime/composition")
-(import [quiesce_services service_states] ^from "../../../src/runtime/activation_services")
+(import isolated run_spec ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import Plugin PluginHost ^from "../../../src/plugin_api")
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
+(import acquire_snapshot release_snapshot current_snapshot ^from "../../../src/runtime/composition")
+(import quiesce_services service_states ^from "../../../src/runtime/activation_services")
 
 # A producer that records its own lifecycle in the shared feature records:
 # `<label>/started` while it runs and `<label>/quiesced` once it stops.
 (fn producer_source [id : Str, label : Str, ^slot slot = nil, ^takeover takeover : Bool = false, ^fails fails : Bool = false]
   `(mod plugin
-    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (import Plugin PluginHost ^from "src/plugin_api.gene")
     (fn init [descriptor]
       (Plugin ^id %id ^activate (fn [host]
         %(if ($present? slot)
@@ -62,7 +62,7 @@
 
 (fn reader_source []
   (quote (mod plugin
-    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (import Plugin PluginHost ^from "src/plugin_api.gene")
     (fn init [descriptor]
       (Plugin ^id "reader" ^activate (fn [host]
         (host .PluginHost:contribute "functions" {^name "read_notes" ^doc "Read all notes."

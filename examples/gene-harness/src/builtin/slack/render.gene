@@ -2,8 +2,8 @@
 # The host supplies `reference`, the transcript link text it allows to leave
 # the workspace.
 (mod slack_render)
-(import [byte_prefix] ^from "../../public/text")
-(import [slack_error] ^from "./api")
+(import byte_prefix ^from "../../public/text")
+(import slack_error ^from "./api")
 
 (fn replace_literal [text : Str, needle : Str, replacement : Str]
   ($str/join (text .split needle) replacement))

@@ -1,11 +1,11 @@
 # Durable image reconstruction. It needs records and media, never a live
 # ImageHost, provider, controller or plugin activation.
 (mod image_recovery)
-(import [image_usage parse_image_review] ^from "../public/image_contract")
-(import [open_media_store generated_media recover_media_reservations] ^from "./media")
-(import [image_runs save_image_run] ^from "./image_runs")
-(import [events_for append_core_event flush_event_store] ^from "./state")
-(import [load_part] ^from "../agents/model_recording")
+(import image_usage parse_image_review ^from "../public/image_contract")
+(import open_media_store generated_media recover_media_reservations ^from "./media")
+(import image_runs save_image_run ^from "./image_runs")
+(import events_for append_core_event flush_event_store ^from "./state")
+(import load_part ^from "../agents/model_recording")
 
 (fn record_image_usage [state, purpose : Str, call_id, usage, ^attempt attempt = nil]
   (for item in state/usage

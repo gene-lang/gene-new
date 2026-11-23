@@ -1,6 +1,6 @@
 # Failing control: Render threaded alone; the body sends Mark directly.
-(import [Section Figure] ^from "../../../src/model")
-(import [RenderBody Mark] ^from "./contracts")
+(import Section Figure ^from "../../../src/model")
+(import RenderBody Mark ^from "./contracts")
 (impl RenderBody for Section ^^export
   (message render [each] : Str
     (var out self/title)

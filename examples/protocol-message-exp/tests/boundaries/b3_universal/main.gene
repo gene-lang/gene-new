@@ -1,8 +1,8 @@
 # A universal default applies to every type; a scoped specialization overrides it
 # only where imported. An ordinary explicit protocol is not a drop-in equivalent.
-(import [Article Other] ^from "./model")
-(import [Describe Explicit] ^from "./contracts")
-(import [attempt] ^from "../common/util")
+(import Article Other ^from "./model")
+(import Describe Explicit ^from "./contracts")
+(import attempt ^from "../common/util")
 (import_impl Describe for Article ^from "./special")
 (import_impl Explicit for Article ^from "./special")
 (let article (Article ^title "A"))

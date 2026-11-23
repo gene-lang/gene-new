@@ -1,21 +1,21 @@
-(import [test_controller] ^from "../../support.gene")
+(import test_controller ^from "../../support.gene")
 # Tests src/agents/model_call.gene.
 (import $test [describe it assert_equal])
-(import [isolated run_spec] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [call_model store_part load_part] ^from "../../../src/agents/model_call")
-(import [append_message collect_unreferenced_bodies] ^from "../../../src/agents/history")
-(import [scripted_profile] ^from "../../../src/profiles/scripted")
-(import [history_basic] ^from "../../../src/builtin/history_basic")
-(import [submit_round round_receipt close_round_controller cancel_round]
+(import isolated run_spec ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import Plugin PluginHost ^from "../../../src/plugin_api")
+(import call_model store_part load_part ^from "../../../src/agents/model_call")
+(import append_message collect_unreferenced_bodies ^from "../../../src/agents/history")
+(import scripted_profile ^from "../../../src/profiles/scripted")
+(import history_basic ^from "../../../src/builtin/history_basic")
+(import submit_round round_receipt close_round_controller cancel_round
   ^from "../../../src/runtime/round_controller")
-(import [events_for append_core_event flush_event_store repair_interrupted_turns
-         append_turn_end_once]
+(import events_for append_core_event flush_event_store repair_interrupted_turns
+         append_turn_end_once
   ^from "../../../src/storage/state")
-(import [configure_model] ^from "../../../src/public/provider")
-(import [new_harness shutdown_harness contribute provide] ^from "../../../src/kernel")
+(import configure_model ^from "../../../src/public/provider")
+(import new_harness shutdown_harness contribute provide ^from "../../../src/kernel")
 (import $net/http_client [request])
 
 (type ProviderError : Error)

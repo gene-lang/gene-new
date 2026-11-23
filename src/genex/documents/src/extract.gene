@@ -1,5 +1,5 @@
 (mod extract)
-(import [DocumentError inspect_bytes] ^from "./documents")
+(import DocumentError inspect_bytes ^from "./documents")
 
 # Each conversion owns a private directory. No caller filename is used as a
 # converter argument or output path. Cancellation retires the subprocess before

@@ -59,7 +59,7 @@ suite "modules — file imports":
 
   test "import selected bindings":
     writeModule("math.gene", "(fn add [a b] (+ a b))\n(var pi 3)")
-    check runProgram("(import [add] ^from \"./math\") (add 2 3)").print() == "5"
+    check runProgram("(import add ^from \"./math\") (add 2 3)").print() == "5"
 
   test "import a single binding":
     writeModule("math.gene", "(var pi 3)")
@@ -69,9 +69,9 @@ suite "modules — file imports":
     writeModule("math.gene", "(var pi 3)")
     for source in [
       "(import ^from \"./math\" pi) pi",
-      "(import ^from \"./math\" [pi : value]) value",
-      "(import pi ^from \"./math\" : value) value",
-      "(import ^from \"./math\" * : math) math/pi"
+      "(import ^from \"./math\" pi:value) value",
+      "(import pi:value ^from \"./math\") value",
+      "(import ^from \"./math\" *:math) math/pi"
     ]:
       check runProgram(source).print() == "3"
 
@@ -84,13 +84,13 @@ suite "modules — file imports":
   test "module imports reject old syntax and malformed source properties":
     for (source, expected) in [
       ("(import pi from \"./math\")", "`from` was removed; use `^from"),
-      ("(import * : math from \"./math\")", "`from` was removed; use `^from"),
+      ("(import *:math from \"./math\")", "`from` was removed; use `^from"),
       ("(import pi ^from math)", "^from must be a path string"),
       ("(import pi ^from 42)", "^from must be a path string"),
       ("(import pi ^from nil)", "^from must be a path string"),
       ("(import pi ^^from)", "^from must be a path string"),
       ("(import ^from \"./math\")", "requires a selection or wildcard"),
-      ("(import pi extra ^from \"./math\")", "^from requires a selection"),
+      ("(import [pi] ^from \"./math\")", "file import selectors go directly after"),
       ("(import pi ^from \"./math\" ^form \"./other\")", "unexpected option: ^form")
     ]:
       var diagnostic = ""
@@ -101,14 +101,106 @@ suite "modules — file imports":
       checkpoint source
       check expected in diagnostic
 
+  test "groups and qualified selectors agree on runtime and compile-time exports":
+    writeModule("origin.gene", """
+(ns a
+  (var b 4)
+  (ns c
+    (var d 9)
+    (macro e [x] `(+ %x 1))
+    (fn raw! [x] x)))
+""")
+    let app = newApplication(modDir)
+    for index, selectors in [
+        "a:aa a/c:sub a/[b c/[d:dd e raw!:raw_local!]]",
+        "a:aa a/c:sub a/b a/c/d:dd a/c/e a/c/raw!:raw_local!"]:
+      let user = "user" & $index & ".gene"
+      writeModule(user, "(import " & selectors & " ^from \"./origin\")" & """
+        (fn scoped []
+          (import a/[b:local c/d] ^from "./origin")
+          [local d])
+        (var observed [aa/b b dd (e 10) sub/d (sub/e 20)
+                       (raw_local! (+ 1 2)) (scoped)])
+      """)
+      let loaded = app.loadFileModule(modDir / user)
+      check loaded.moduleRootNamespace.nsScope.lookup("observed").print() ==
+        "[4 4 9 11 9 21 (+ 1 2) [4 9]]"
+    writeModule("facade.gene",
+      "(import a/c:sub a/[c/[d:dd e]] ^from \"./origin\" ^^export)")
+    writeModule("consumer.gene", """
+      (import sub dd e ^from "./facade")
+      (var observed [dd (e 10) sub/d (sub/e 20)])
+    """)
+    let consumer = app.loadFileModule(modDir / "consumer.gene")
+    check consumer.moduleRootNamespace.nsScope.lookup("observed").print() ==
+      "[9 11 9 21]"
+
+  test "qualified selections follow public namespace members":
+    writeModule("visibility.gene", """
+      (ns a
+        (ns hidden ^^private (var answer 7))
+        (fn secret ^^private [] 8)
+        (var value 9))
+    """)
+    for path in ["a/missing", "a/hidden/answer", "a/secret", "a/value/member"]:
+      var diagnostic = ""
+      try:
+        discard runProgram("(import " & path & " ^from \"./visibility\")")
+      except GeneError as error:
+        diagnostic = error.msg
+      check ("no export: " & path) in diagnostic
+
+  test "spaced aliases and malformed group selectors report corrections":
+    for (source, expected) in [
+      ("(import a : aa ^from \"x\")", "write the import alias as `a:aa`"),
+      ("(import a :aa ^from \"x\")", "write the import alias as `a:aa`"),
+      ("(import a: aa ^from \"x\")", "write the import alias as `a:aa`"),
+      ("(import a/b: bb ^from \"x\")", "write the import alias as `a/b:bb`"),
+      ("(import $str : strings)", "write the import alias as `gene/str:strings`"),
+      ("(import $str [trim : clean])", "write the import alias as `trim:clean`"),
+      ("(import a/[b c/[d : dd]] ^from \"x\")", "write the import alias as `d:dd`"),
+      ("(import a:aa/b ^from \"x\")", "write `a/b:aa`"),
+      ("(import a/b:bb/c ^from \"x\")", "write `a/b/c:bb`"),
+      ("(import a:aa/[b c] ^from \"x\")", "write `a:aa a/[...]`"),
+      ("(import a:[b c] ^from \"x\")", "use `a/[...]`"),
+      ("(import a/[b c]:x ^from \"x\")", "alias an individual member"),
+      ("(import a/[] ^from \"x\")", "requires at least one selection"),
+      ("(import *:m a ^from \"x\")", "wildcard must be the only selector"),
+      ("(import a/[*] ^from \"x\")", "wildcard must be the only selector"),
+      ("(import a/[b/*] ^from \"x\")", "wildcard must be the only selector"),
+      ("(import a:123 ^from \"x\")", "import alias must be a single binding name")
+    ]:
+      var diagnostic = ""
+      try:
+        discard compileSource(source)
+      except GeneError as error:
+        diagnostic = error.msg
+      checkpoint source
+      check expected in diagnostic
+
+  test "duplicate selections report both paths":
+    for (source, first, second) in [
+      ("(import a/[b] c/b ^from \"./base\")", "./base/a/b", "./base/c/b"),
+      ("(import a/x:b ^from \"./first\") (import c/b ^from \"./second\")",
+       "./first/a/x", "./second/c/b")
+    ]:
+      var diagnostic = ""
+      try:
+        discard compileSource(source)
+      except GeneError as error:
+        diagnostic = error.msg
+      check "duplicate import binding `b`" in diagnostic
+      check first in diagnostic
+      check second in diagnostic
+
   test "module reference tables are isolated by defining module":
     writeModule("refs_a.gene",
       "#Ref shared [1]\n(fn get_shared [] ($deref shared))")
     writeModule("refs_b.gene",
       "#Ref shared [2]\n(fn get_shared [] ($deref shared))")
     check runProgram(
-      "(import [get_shared : get_a] ^from \"./refs_a\") " &
-      "(import [get_shared : get_b] ^from \"./refs_b\") " &
+      "(import get_shared:get_a ^from \"./refs_a\") " &
+      "(import get_shared:get_b ^from \"./refs_b\") " &
       "(var a (get_a)) (var b (get_b)) " &
       "[(a .first) (b .first) (same? a b)]").print() ==
       "[1 2 false]"
@@ -125,7 +217,7 @@ suite "modules — file imports":
       "(type Timespec " &
       "  ^native {^abi CTimespec ^lifecycle manual ^^mutable})")
     writeModule("native_layout_user.gene",
-      "(import [Timespec] ^from \"./native_layout\") " &
+      "(import Timespec ^from \"./native_layout\") " &
       "(fn seconds [t : Timespec] : I64 t/tv_sec)")
     let c = newApplication(modDir)
       .compileFileModule(modDir / "native_layout_user.gene")
@@ -144,7 +236,7 @@ suite "modules — file imports":
       "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle " &
       "           ^release \"timespec_free\" ^copy \"timespec_copy\"})")
     writeModule("native_wrapper_user.gene",
-      "(import [Timespec] ^from \"./native_wrapper\") " &
+      "(import Timespec ^from \"./native_wrapper\") " &
       "(fn clone_timespec ^native_entry {^t borrow ^result copy} " &
       "  [t : Timespec] : Timespec t)")
     let c = newApplication(modDir)
@@ -165,7 +257,7 @@ suite "modules — file imports":
       "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
       "(type Timespec ^native {^abi CTimespec ^lifecycle manual})")
     writeModule("native_alias_user.gene",
-      "(import * : native ^from \"./native_alias_layout\") " &
+      "(import *:native ^from \"./native_alias_layout\") " &
       "(fn seconds [t : native/Timespec] : I64 t/tv_sec)")
     let c = newApplication(modDir)
       .compileFileModule(modDir / "native_alias_user.gene")
@@ -178,10 +270,10 @@ suite "modules — file imports":
     writeModule("native_abi_only.gene",
       "(ffi/struct CRecord ^fields [[value C/Int64]])")
     writeModule("native_type_only.gene",
-      "(import [CRecord] ^from \"./native_abi_only\") " &
+      "(import CRecord ^from \"./native_abi_only\") " &
       "(type Record ^native {^abi CRecord ^lifecycle manual})")
     writeModule("native_type_user.gene",
-      "(import [Record] ^from \"./native_type_only\") " &
+      "(import Record ^from \"./native_type_only\") " &
       "(fn value [p : Record] : I64 p/value)")
     let chunk = newApplication(modDir)
       .compileFileModule(modDir / "native_type_user.gene")
@@ -199,9 +291,9 @@ suite "modules — file imports":
       "(ffi/struct CRecord ^fields [[value C/Int64]]) " &
       "(type Record ^native {^abi CRecord ^lifecycle manual})")
     writeModule("native_reexport_mid.gene",
-      "(import [Record] ^from \"./native_reexport_base\" ^^export)")
+      "(import Record ^from \"./native_reexport_base\" ^^export)")
     writeModule("native_reexport_user.gene",
-      "(import [Record] ^from \"./native_reexport_mid\") " &
+      "(import Record ^from \"./native_reexport_mid\") " &
       "(fn value [p : Record] : I64 p/value)")
     let c = newApplication(modDir)
       .compileFileModule(modDir / "native_reexport_user.gene")
@@ -230,8 +322,8 @@ suite "modules — file imports":
       "(ffi/struct CRecord ^fields [[right C/Double]]) " &
       "(type RightRecord ^native {^abi CRecord ^lifecycle manual})")
     writeModule("native_collision_user.gene",
-      "(import [LeftRecord] ^from \"./native_left\") " &
-      "(import [RightRecord] ^from \"./native_right\") " &
+      "(import LeftRecord ^from \"./native_left\") " &
+      "(import RightRecord ^from \"./native_right\") " &
       "(fn left_value [p : LeftRecord] : I64 p/left) " &
       "(fn right_value [p : RightRecord] : F64 p/right)")
     let c = newApplication(modDir)
@@ -243,8 +335,8 @@ suite "modules — file imports":
 
   test "aliased selection (name : local)":
     writeModule("math.gene", "(fn sub [a b] (- a b))")
-    check runProgram("(import [sub : minus] ^from \"./math\") (minus 10 4)").print() == "6"
-    check runProgram("(import sub : minus ^from \"./math\") " &
+    check runProgram("(import sub:minus ^from \"./math\") (minus 10 4)").print() == "6"
+    check runProgram("(import sub:minus ^from \"./math\") " &
       "(minus 9 4)").print() == "5"
 
   test "bare wildcard imports are non-reexporting fallbacks":
@@ -258,7 +350,7 @@ suite "modules — file imports":
     check mid.moduleRootNamespace.nsScope.lookup("observed").print() == "84"
     expect GeneError:
       discard run(compileSource(
-        "(import [answer] ^from \"./wild_mid\") answer"),
+        "(import answer ^from \"./wild_mid\") answer"),
         newGlobalScope(app))
 
   test "wildcard collisions are lazy and share the prelude collision domain":
@@ -275,7 +367,7 @@ suite "modules — file imports":
     writeModule("wild_builtin_user.gene",
       "(import * ^from \"./wild_builtin\") (var observed map)")
     writeModule("wild_qualified_user.gene",
-      "(import * : imported ^from \"./wild_builtin\") " &
+      "(import *:imported ^from \"./wild_builtin\") " &
       "(var observed [(== gene/map gene/map) imported/map])")
     let app = newApplication(modDir)
     let unused = app.loadFileModule(modDir / "wild_unused_user.gene")
@@ -307,7 +399,7 @@ suite "modules — file imports":
       "(fn observe [] answer (var answer 1)) (var observed (observe))")
     writeModule("wild_selected_user.gene",
       "(import * ^from \"./wild_explicit\") " &
-      "(import [answer] ^from \"./wild_explicit\") (var observed answer)")
+      "(import answer ^from \"./wild_explicit\") (var observed answer)")
     let app = newApplication(modDir)
     expect GeneError:
       discard app.loadFileModule(modDir / "wild_before_local.gene")
@@ -324,17 +416,17 @@ suite "modules — file imports":
         "(import * ^from \"./wild_conditional\"))")
     expect GeneError:
       discard runProgram("(if true " &
-        "(import * : m ^from \"./wild_conditional\"))")
+        "(import *:m ^from \"./wild_conditional\"))")
     expect GeneError:
       discard runProgram("(if true " &
-        "(import [answer] ^from \"./wild_conditional\" ^^export))")
+        "(import answer ^from \"./wild_conditional\" ^^export))")
 
   test "namespace wildcard and alias use the static namespace interface":
     writeModule("nested.gene",
       "(ns math (var answer 42) (fn twice [x] (* x 2)))")
     writeModule("nested_user.gene",
       "(import math/* ^from \"./nested\") " &
-      "(import math/* : m ^from \"./nested\") " &
+      "(import math/*:m ^from \"./nested\") " &
       "(var observed [(twice answer) (m/twice m/answer)])")
     let app = newApplication(modDir)
     let loaded = app.loadFileModule(modDir / "nested_user.gene")
@@ -349,9 +441,9 @@ suite "modules — file imports":
       "  (macro thrice [x] `(+ %x %x %x)))")
     writeModule("syntax_user.gene",
       "(import * ^from \"./syntax_exports\") " &
-      "(import * : syntax ^from \"./syntax_exports\") " &
-      "(import [raw!] ^from \"./syntax_exports\") " &
-      "(import tools/* : tools ^from \"./syntax_exports\") " &
+      "(import *:syntax ^from \"./syntax_exports\") " &
+      "(import raw! ^from \"./syntax_exports\") " &
+      "(import tools/*:tools ^from \"./syntax_exports\") " &
       "(var observed [(twice 21) (syntax/twice 20) " &
       "  (tools/thrice 10) (raw! (+ 1 2))])")
     let app = newApplication(modDir)
@@ -365,7 +457,7 @@ suite "modules — file imports":
       "(macro computed [x] (helper x)) " &
       "(macro emitted [x] `(helper %x))")
     writeModule("macro_helper_user.gene",
-      "(import [computed emitted] ^from \"./macro_helpers\") " &
+      "(import computed emitted ^from \"./macro_helpers\") " &
       "(fn helper [x] (+ x 1)) " &
       "(var observed [(computed 2) (emitted 2)])")
     let app = newApplication(modDir)
@@ -378,17 +470,17 @@ suite "modules — file imports":
       "(macro computed [x] (helper x)) " &
       "(macro emitted [x] `(helper %x))")
     writeModule("macro_lookup_reexport.gene",
-      "(import [computed : calculate emitted : invoke] " &
+      "(import computed:calculate emitted:invoke " &
       "^from \"./macro_lookup_origin\" ^^export)")
-    writeModule("macro_lookup_user.gene", "(import * : library ^from \"./macro_lookup_reexport\") " &
-      "(import [calculate : selected] ^from \"./macro_lookup_reexport\") " &
+    writeModule("macro_lookup_user.gene", "(import *:library ^from \"./macro_lookup_reexport\") " &
+      "(import calculate:selected ^from \"./macro_lookup_reexport\") " &
       "(fn helper [x] (+ x 1)) " &
       "(var observed [(library/calculate 2) (library/invoke 2) (selected 2)])")
     let app = newApplication(modDir)
     let loaded = app.loadFileModule(modDir / "macro_lookup_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "[200 3 200]"
     writeModule("macro_lookup_missing.gene",
-      "(import [invoke] ^from \"./macro_lookup_reexport\") (invoke 2)")
+      "(import invoke ^from \"./macro_lookup_reexport\") (invoke 2)")
     var failure = ""
     try: discard app.loadFileModule(modDir / "macro_lookup_missing.gene")
     except GeneError as error: failure = error.msg
@@ -399,13 +491,13 @@ suite "modules — file imports":
       "(macro helper ^^private [x] `(* %x 100)) " &
       "(macro emitted [x] `(helper %x))")
     writeModule("macro_callsite_user.gene",
-      "(import [emitted] ^from \"./macro_callsite_helpers\") " &
+      "(import emitted ^from \"./macro_callsite_helpers\") " &
       "(macro helper [x] `(+ %x 1)) (var observed (emitted 2))")
     let app = newApplication(modDir)
     let loaded = app.loadFileModule(modDir / "macro_callsite_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "3"
     writeModule("macro_callsite_missing.gene",
-      "(import [emitted] ^from \"./macro_callsite_helpers\") (emitted 2)")
+      "(import emitted ^from \"./macro_callsite_helpers\") (emitted 2)")
     var failure = ""
     try: discard app.loadFileModule(modDir / "macro_callsite_missing.gene")
     except GeneError as error: failure = error.msg
@@ -422,7 +514,7 @@ suite "modules — file imports":
     let decoded = decodeExecutableGir(encodeExecutableGir(original))
     removeFile(modDir / "macro_identity.gene")
     writeModule("macro_identity_user.gene",
-      "(mod caller) (import [module_name computed] ^from \"./macro_identity\") " &
+      "(mod caller) (import module_name computed ^from \"./macro_identity\") " &
       "(var observed [(module_name) (computed 41)])")
     let app = newApplication(modDir)
     app.installCompiledModules(decoded.modules)
@@ -499,10 +591,10 @@ suite "modules — file imports":
       "(macro smuggle [items] (items .push helper) `(quote %items))")
     let app = newApplication(modDir)
     for caller in [
-        "(import [smuggle] ^from \"./launder_def\") (smuggle [])",
-        "(import [smuggle] ^from \"./launder_def\") " &
+        "(import smuggle ^from \"./launder_def\") (smuggle [])",
+        "(import smuggle ^from \"./launder_def\") " &
           "(var picked (eval `(smuggle []) ^in (env)))",
-        "(import [smuggle] ^from \"./launder_def\") " &
+        "(import smuggle ^from \"./launder_def\") " &
           "(fn run [] (macro local [] `(smuggle [])) (local)) (var picked (run))"]:
       writeModule("launder_user.gene", caller)
       var message = ""
@@ -514,7 +606,7 @@ suite "modules — file imports":
       check "cannot insert compile-time function 'helper'" in message
     # the valid case still works: a function the caller itself supplies
     writeModule("launder_user.gene",
-      "(import [helper read_calls smuggle] ^from \"./launder_def\") " &
+      "(import helper read_calls smuggle ^from \"./launder_def\") " &
       "(macro forward [syntax] syntax) " &
       "(var picked (eval `(forward %helper) ^in (env))) " &
       "(var observed [(same? picked helper) (picked) (read_calls)])")
@@ -543,9 +635,9 @@ suite "modules — file imports":
       "(type PhaseBox ^props {^value Int} (message value [] : Int self/value)) " &
       "(fn add [x : Int] : Int (+ x 1))")
     writeModule("phase_macros.gene",
-      "(import [add] ^from \"./phase_dep\") (macro computed [x] (add x))")
+      "(import add ^from \"./phase_dep\") (macro computed [x] (add x))")
     writeModule("phase_user.gene",
-      "(import [computed] ^from \"./phase_macros\") (var observed (computed 41))")
+      "(import computed ^from \"./phase_macros\") (var observed (computed 41))")
     let compilerApp = newApplication(modDir)
     let bundle = decodeExecutableGir(encodeExecutableGir(
       compilerApp.compileFileModuleBundle(modDir / "phase_user.gene",
@@ -562,7 +654,7 @@ suite "modules — file imports":
     check run(compileSource("[(dep/add 3) ((dep/PhaseBox ^value 7) .value)]"),
       runtimeScope).print() == "[4 7]"
     writeModule("phase_second_user.gene",
-      "(import [computed] ^from \"./phase_macros\") (var observed (computed 42))")
+      "(import computed ^from \"./phase_macros\") (var observed (computed 42))")
     let loaded = app.loadFileModule(modDir / "phase_second_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "43"
 
@@ -573,9 +665,9 @@ suite "modules — file imports":
       "(macro apply_helper [x] `(%$to_str %x)) " &
       "(var offset (apply_helper 2)) (fn add [x] ($to_str offset x))")
     writeModule("phase_value_macros.gene",
-      "(import [add] ^from \"./phase_value_dep\") (macro computed [x] (add x))")
+      "(import add ^from \"./phase_value_dep\") (macro computed [x] (add x))")
     writeModule("phase_value_user.gene",
-      "(import [computed] ^from \"./phase_value_macros\") (var observed (computed 40))")
+      "(import computed ^from \"./phase_value_macros\") (var observed (computed 40))")
     let app = newApplication(modDir)
     let loaded = app.loadFileModule(modDir / "phase_value_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "\"240\""
@@ -585,10 +677,10 @@ suite "modules — file imports":
       "(var count 0) (fn next [] (set count (+ count 1))) " &
       "(macro next_value [] (next))")
     writeModule("phase_counter_bridge.gene",
-      "(import [next] ^from \"./phase_counter\") (macro via_bridge [] (next))")
+      "(import next ^from \"./phase_counter\") (macro via_bridge [] (next))")
     writeModule("phase_counter_user.gene",
-      "(import [via_bridge] ^from \"./phase_counter_bridge\") " &
-      "(import [next_value count] ^from \"./phase_counter\") " &
+      "(import via_bridge ^from \"./phase_counter_bridge\") " &
+      "(import next_value count ^from \"./phase_counter\") " &
       "(var observed [(via_bridge) (next_value) count])")
     let loaded = newApplication(modDir).loadFileModule(modDir / "phase_counter_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "[1 2 0]"
@@ -599,9 +691,9 @@ suite "modules — file imports":
       "(macro next_value [] (next)) " &
       "(var baked (eval (quote (next_value)) ^in (env)))")
     writeModule("phase_reentrant_bridge.gene",
-      "(import [next] ^from \"./phase_reentrant\") (macro via_bridge [] (next))")
+      "(import next ^from \"./phase_reentrant\") (macro via_bridge [] (next))")
     writeModule("phase_reentrant_user.gene",
-      "(import [via_bridge] ^from \"./phase_reentrant_bridge\") " &
+      "(import via_bridge ^from \"./phase_reentrant_bridge\") " &
       "(var observed (via_bridge))")
     let loaded = newApplication(modDir).loadFileModule(modDir / "phase_reentrant_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "2"
@@ -609,7 +701,7 @@ suite "modules — file imports":
   test "qualified imported macros yield to a shadowing namespace value":
     writeModule("macro_alias.gene", "(macro twice [x] `(+ %x %x))")
     writeModule("macro_alias_user.gene",
-      "(import * : tools ^from \"./macro_alias\") " &
+      "(import *:tools ^from \"./macro_alias\") " &
       "(fn f [tools] (tools/twice 3)) " &
       "(var observed [(f {^twice (fn [x] (* x 10))}) (tools/twice 3)])")
     let loaded = newApplication(modDir).loadFileModule(modDir / "macro_alias_user.gene")
@@ -619,13 +711,13 @@ suite "modules — file imports":
     writeModule("env_macros.gene",
       "(macro twice [x] `(+ %x %x)) (macro secret ^^private [] 99)")
     writeModule("env_macro_mid.gene",
-      "(import [twice] ^from \"./env_macros\" ^^export)")
+      "(import twice ^from \"./env_macros\" ^^export)")
     check runProgram("(let e (env ^imports [\"./env_macro_mid\"])) " &
       "(eval (quote (twice 3)) ^in e)").print() == "6"
     check runProgram("(let e (env ^imports [\"./env_macros\"])) " &
       "(try (eval (quote (secret)) ^in e) catch Fault \"private\")").print() == "\"private\""
     writeModule("env_macro_alias_mid.gene",
-      "(import * : tools ^from \"./env_macros\" ^^export)")
+      "(import *:tools ^from \"./env_macros\" ^^export)")
     check runProgram("(let e (env ^imports [\"./env_macro_alias_mid\"])) " &
       "(eval (quote (tools/twice 3)) ^in e)").print() == "6"
 
@@ -640,25 +732,25 @@ suite "modules — file imports":
     let loaded = app.loadFileModule(modDir / "private_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() == "1"
     check run(compileSource(
-      "(import [visible] ^from \"./private_exports\") visible"),
+      "(import visible ^from \"./private_exports\") visible"),
       newGlobalScope(app)).print() == "4"
     expect GeneError:
       discard run(compileSource(
-        "(import [hidden] ^from \"./private_exports\") hidden"),
+        "(import hidden ^from \"./private_exports\") hidden"),
         newGlobalScope(app))
     expect GeneError:
       discard run(compileSource(
-        "(import [secret] ^from \"./private_exports\") secret"),
+        "(import secret ^from \"./private_exports\") secret"),
         newGlobalScope(app))
     check run(compileSource(
-      "(import * : exports ^from \"./private_exports\") exports/hidden"),
+      "(import *:exports ^from \"./private_exports\") exports/hidden"),
       newGlobalScope(app)).kind == vkNil
 
   test "explicit selected re-exports enter downstream wildcard interfaces":
     writeModule("reexport_base.gene",
       "(var answer 42) (macro twice [x] `(+ %x %x))")
     writeModule("reexport_mid.gene",
-      "(import [answer twice] ^from \"./reexport_base\" ^^export)")
+      "(import answer twice ^from \"./reexport_base\" ^^export)")
     writeModule("reexport_user.gene",
       "(import * ^from \"./reexport_mid\") " &
       "(var observed [(twice answer) answer])")
@@ -670,7 +762,7 @@ suite "modules — file imports":
   test "explicit alias re-exports retain their namespace interface":
     writeModule("alias_reexport_base.gene", "(var answer 42)")
     writeModule("alias_reexport_mid.gene",
-      "(import * : base ^from \"./alias_reexport_base\" ^^export)")
+      "(import *:base ^from \"./alias_reexport_base\" ^^export)")
     writeModule("alias_reexport_user.gene",
       "(import * ^from \"./alias_reexport_mid\") " &
       "(var observed base/answer)")
@@ -680,8 +772,8 @@ suite "modules — file imports":
 
   test "bind module value with wildcard alias":
     writeModule("math.gene", "(var pi 3) (fn add [a b] (+ a b))")
-    check runProgram("(import * : m ^from \"./math\") m/pi").print() == "3"
-    check runProgram("(import * : m ^from \"./math\") (m/add 1 1)").print() == "2"
+    check runProgram("(import *:m ^from \"./math\") m/pi").print() == "3"
+    check runProgram("(import *:m ^from \"./math\") (m/add 1 1)").print() == "2"
     expect GeneError:
       discard runProgram("(import ^from \"./math\" ^as m)")
     expect GeneError:
@@ -690,12 +782,12 @@ suite "modules — file imports":
   test "module reflection exposes normalized file path":
     writeModule("math.gene", "(var pi 3)")
     let expected = normalizedPath(absolutePath("math.gene", modDir))
-    check runProgram("(import * : m ^from \"./math\") (m .path)").strVal ==
+    check runProgram("(import *:m ^from \"./math\") (m .path)").strVal ==
       expected
 
   test "imported module roots expose declaration streams":
     writeModule("decls.gene", "(var exported 7)")
-    check runProgram("(import * : m ^from \"./decls\") " &
+    check runProgram("(import *:m ^from \"./decls\") " &
       "(var ds ($filter ($declarations m) (fn [d] (== d/name \"exported\")))) " &
       "(ds .next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
@@ -703,7 +795,7 @@ suite "modules — file imports":
   test "runtime declarations exclude compile-time macros":
     writeModule("macro_decls.gene",
       "(macro twice [x] `(+ %x %x)) (var runtime-value 7)")
-    check runProgram("(import * : m ^from \"./macro_decls\") " &
+    check runProgram("(import *:m ^from \"./macro_decls\") " &
       "(var macros ($filter ($declarations m) (fn [d] (== d/name \"twice\")))) " &
       "(var values ($filter ($declarations m) " &
       "  (fn [d] (== d/name \"runtime-value\")))) " &
@@ -717,7 +809,7 @@ suite "modules — file imports":
       "(var ds ($filter ($declarations this_mod) (fn [d] (== d/name \"x\")))) " &
       "(var decl (ds .next)) " &
       "(var seen decl/value)")
-    check runProgram("(import [seen] ^from \"./self\") seen").print() == "9"
+    check runProgram("(import seen ^from \"./self\") seen").print() == "9"
 
   test "this_mod exposes module reflection helpers":
     writeModule("selfpath.gene",
@@ -727,7 +819,7 @@ suite "modules — file imports":
       "                (this_mod .path) " &
       "                (== root this_mod) " &
       "                (/marker root)])")
-    let reflected = runProgram("(import [reflected] ^from \"./selfpath\") reflected")
+    let reflected = runProgram("(import reflected ^from \"./selfpath\") reflected")
     check reflected.listItems[0].strVal == "selfpath"
     check reflected.listItems[1].strVal ==
       normalizedPath(absolutePath("selfpath.gene", modDir))
@@ -739,12 +831,12 @@ suite "modules — file imports":
       "(mod renamed @doc \"module docs\") " &
       "(var reflected [(this_mod .name) " &
       "                (/doc (this_mod .meta))])")
-    check runProgram("(import [reflected] ^from \"./meta\") reflected").print() ==
+    check runProgram("(import reflected ^from \"./meta\") reflected").print() ==
       "[\"renamed\" \"module docs\"]"
 
   test "Module annotations accept module values":
     writeModule("math.gene", "(var pi 3)")
-    check runProgram("(import * : m ^from \"./math\") " &
+    check runProgram("(import *:m ^from \"./math\") " &
       "(fn module_path [m : Module] (m .path)) (module_path m)").strVal ==
       normalizedPath(absolutePath("math.gene", modDir))
     expect GeneError:
@@ -755,14 +847,14 @@ suite "modules — file imports":
 
   test "a module is loaded once (cache returns the same module value)":
     writeModule("m.gene", "(var v 1)")
-    check runProgram("(import * : a ^from \"./m\") (import * : b ^from \"./m\") (== a b)").print() == "true"
+    check runProgram("(import *:a ^from \"./m\") (import *:b ^from \"./m\") (== a b)").print() == "true"
 
   test "entry file modules load through the application cache":
     let entryPath = modDir / "entry.gene"
     writeFile(entryPath, "(var value 11) (fn main [] value)")
     let app = newApplication(modDir)
     let entryModule = app.loadFileModule(entryPath)
-    let imported = run(compileSource("(import * : e ^from \"./entry\") e"),
+    let imported = run(compileSource("(import *:e ^from \"./entry\") e"),
                        newGlobalScope(app))
     check imported.bits == entryModule.bits
     var mainBinding: Value
@@ -779,7 +871,7 @@ suite "modules — file imports":
     let appA = newApplication(dirA)
     let appB = newApplication(dirB)
     discard initModuleContext(dirB)
-    let src = "(import [value] ^from \"./lib\") value"
+    let src = "(import value ^from \"./lib\") value"
     check run(compileSource(src), newGlobalScope(appA)).print() == "\"A\""
     check run(compileSource(src), newGlobalScope(appB)).print() == "\"B\""
     writeFile(dirA / "lib.gene", "(var value \"changed\")")
@@ -787,8 +879,8 @@ suite "modules — file imports":
 
   test "transitive imports resolve relative to each module":
     writeModule("base.gene", "(fn one [] 1)")
-    writeModule("mid.gene", "(import [one] ^from \"./base\") (fn two [] (+ (one) (one)))")
-    check runProgram("(import [two] ^from \"./mid\") (two)").print() == "2"
+    writeModule("mid.gene", "(import one ^from \"./base\") (fn two [] (+ (one) (one)))")
+    check runProgram("(import two ^from \"./mid\") (two)").print() == "2"
 
   test "ordinary imports do not import scoped extension impls":
     writeModule("json.gene",
@@ -796,18 +888,18 @@ suite "modules — file imports":
     writeModule("model.gene",
       "(type User ^props {^name Str})")
     writeModule("json_ext.gene",
-      "(import [ToJson] ^from \"./json\") " &
-      "(import [User] ^from \"./model\") " &
+      "(import ToJson ^from \"./json\") " &
+      "(import User ^from \"./model\") " &
       "(impl ToJson for User (message to_json [self] : Str self/name)) " &
       "(fn local_json [user] (user .ToJson:to_json))")
-    check runProgram("(import [ToJson] ^from \"./json\") " &
-      "(import [User] ^from \"./model\") " &
-      "(import [local_json] ^from \"./json_ext\") " &
+    check runProgram("(import ToJson ^from \"./json\") " &
+      "(import User ^from \"./model\") " &
+      "(import local_json ^from \"./json_ext\") " &
       "(local_json (User ^name \"Ada\"))").print() == "\"Ada\""
     expect GeneError:
-      discard runProgram("(import [ToJson] ^from \"./json\") " &
-        "(import [User] ^from \"./model\") " &
-        "(import * : ext ^from \"./json_ext\") " &
+      discard runProgram("(import ToJson ^from \"./json\") " &
+        "(import User ^from \"./model\") " &
+        "(import *:ext ^from \"./json_ext\") " &
         "((User ^name \"Ada\") .ToJson:to_json)")
 
   test "import_impl imports one exported scoped pair idempotently":
@@ -816,8 +908,8 @@ suite "modules — file imports":
     writeModule("model.gene",
       "(type User ^props {^name Str})")
     writeModule("json_ext.gene",
-      "(import [ToJson] ^from \"./json\") " &
-      "(import [User] ^from \"./model\") " &
+      "(import ToJson ^from \"./json\") " &
+      "(import User ^from \"./model\") " &
       "(impl ToJson for User ^^export " &
       "  (message to_json [self] : Str self/name))")
     for source in [
@@ -825,20 +917,20 @@ suite "modules — file imports":
       "(import_impl ^from \"./json_ext\" ToJson for User) ",
       "(import_impl ToJson ^from \"./json_ext\" for User) "
     ]:
-      check runProgram("(import [ToJson] ^from \"./json\") " &
-        "(import [User] ^from \"./model\") " & source & source &
+      check runProgram("(import ToJson ^from \"./json\") " &
+        "(import User ^from \"./model\") " & source & source &
         "((User ^name \"Ada\") .ToJson:to_json)").print() == "\"Ada\""
 
   test "import_impl is accepted wherever import is and is visible where import binds":
     writeModule("pl_label.gene", "(protocol Label (message label [self] : Str))")
     writeModule("pl_item.gene", "(type Item)")
     writeModule("pl_ext.gene",
-      "(import [Label] ^from \"./pl_label\") " &
-      "(import [Item] ^from \"./pl_item\") " &
+      "(import Label ^from \"./pl_label\") " &
+      "(import Item ^from \"./pl_item\") " &
       "(var tag \"local\") " &
       "(impl Label for Item ^^export (message label [self] : Str \"local\"))")
-    let header = "(import [Label] ^from \"./pl_label\") " &
-      "(import [Item] ^from \"./pl_item\") (let item (Item)) "
+    let header = "(import Label ^from \"./pl_label\") " &
+      "(import Item ^from \"./pl_item\") (let item (Item)) "
     # Each position runs `{I}` then `{U}` and leaves the result in `inside`.
     # `nested` positions keep both kinds of import to their activation; the
     # others run in the module's base scope, so the import joins the module.
@@ -880,7 +972,7 @@ suite "modules — file imports":
       checkpoint kind
       var results: seq[string]
       for (importForm, use) in [
-        ("(import [tag] ^from \"./pl_ext\")", "tag"),
+        ("(import tag ^from \"./pl_ext\")", "tag"),
         ("(import_impl Label for Item ^from \"./pl_ext\")", "item/.Label:label")
       ]:
         let program = header &
@@ -895,7 +987,7 @@ suite "modules — file imports":
       "(let x 1) (import_impl Label for Item ^from \"./pl_ext\") " &
       "item/.Label:label)").print() == "\"local\""
     # eval rejects both.
-    for form in ["(import [tag] ^from \"./pl_ext\")",
+    for form in ["(import tag ^from \"./pl_ext\")",
                  "(import_impl Label for Item ^from \"./pl_ext\")"]:
       expect GeneError:
         discard runProgram(header &
@@ -906,16 +998,16 @@ suite "modules — file imports":
     writeModule("act_item.gene", "(type Item)")
     for name in ["one", "two"]:
       writeModule("act_" & name & ".gene",
-        "(import [Label] ^from \"./act_label\") " &
-        "(import [Item] ^from \"./act_item\") " &
+        "(import Label ^from \"./act_label\") " &
+        "(import Item ^from \"./act_item\") " &
         "(impl Label for Item ^^export (message label [self] : Str \"" & name & "\"))")
     writeModule("act_lib.gene",
-      "(import [Label] ^from \"./act_label\") " &
-      "(import [Item] ^from \"./act_item\") " &
+      "(import Label ^from \"./act_label\") " &
+      "(import Item ^from \"./act_item\") " &
       "(fn label_one [i] (import_impl Label for Item ^from \"./act_one\") i/.Label:label) " &
       "(fn sibling [i] (try i/.Label:label catch Fault \"hidden\"))")
-    let header = "(import [Label] ^from \"./act_label\") " &
-      "(import [Item] ^from \"./act_item\") " &
+    let header = "(import Label ^from \"./act_label\") " &
+      "(import Item ^from \"./act_item\") " &
       "(let item (Item)) "
     let one = "(import_impl Label for Item ^from \"./act_one\")"
     let two = "(import_impl Label for Item ^from \"./act_two\")"
@@ -923,7 +1015,7 @@ suite "modules — file imports":
     # policy of the activation that made it; a library function's import stays
     # in that call, so neither the library nor the caller sees it.
     check runProgram(header &
-      "(import [label_one sibling] ^from \"./act_lib\") " &
+      "(import label_one sibling ^from \"./act_lib\") " &
       "(fn one_fn [] " & one & " item/.Label:label) " &
       "(fn two_fn [] " & two & " item/.Label:label) " &
       "(fn escaping [] " & one & " (fn [] item/.Label:label)) " &
@@ -954,17 +1046,17 @@ suite "modules — file imports":
       "(protocol Label (message label [self] : Str)) (type Item) (type Other)")
     for (name, text) in [("fin4_a", "item"), ("fin4_b", "other")]:
       writeModule(name & ".gene",
-        "(import [Label Item Other] ^from \"./fin4_proto\") " &
+        "(import Label Item Other ^from \"./fin4_proto\") " &
         "(impl Label for " & (if text == "item": "Item" else: "Other") &
         " ^^export (message label [self] : Str \"" & text & "\"))")
     writeModule("fin4_root.gene",
-      "(import [Label Item Other] ^from \"./fin4_proto\") " &
+      "(import Label Item Other ^from \"./fin4_proto\") " &
       "(import_impl Label for Item ^from \"./fin4_a\") " &
       "(import_impl Label for Other ^from \"./fin4_b\") " &
       "(var first ((Item) .Label:label)) " &
       "(var second ((Other) .Label:label))")
     check runProgram(
-      "(import [first second] ^from \"./fin4_root\") [first second]").print() ==
+      "(import first second ^from \"./fin4_root\") [first second]").print() ==
       "[\"item\" \"other\"]"
 
   test "import_impl rejects positional from and malformed source properties":
@@ -996,39 +1088,39 @@ suite "modules — file imports":
       "(protocol P (message value [self])) (type T ^props {}) " &
       "(impl P for T ^^export (message value [self] 1))")
     expect GeneError:
-      discard runProgram("(import * : bad ^from \"./canonical_export\")")
+      discard runProgram("(import *:bad ^from \"./canonical_export\")")
 
     writeModule("private_ext.gene",
-      "(import [P T] ^from \"./export_base\") " &
+      "(import P T ^from \"./export_base\") " &
       "(impl P for T (message value [self] 1))")
     expect GeneError:
-      discard runProgram("(import [P T] ^from \"./export_base\") " &
+      discard runProgram("(import P T ^from \"./export_base\") " &
         "(import_impl P for T ^from \"./private_ext\")")
 
     writeModule("overlay_export.gene",
-      "(import [P T] ^from \"./export_base\") " &
+      "(import P T ^from \"./export_base\") " &
       "(fn install [] " &
       "  (impl P for T ^^export (message value [self] 1))) " &
       "(install)")
     expect GeneError:
-      discard runProgram("(import * : bad ^from \"./overlay_export\")")
+      discard runProgram("(import *:bad ^from \"./overlay_export\")")
 
   test "protocol-typed boundaries use their declaration module":
     writeModule("typed_base.gene",
       "(protocol Named (message name [self] : Str)) " &
       "(type User ^props {^name Str})")
     writeModule("typed_ext.gene",
-      "(import [Named User] ^from \"./typed_base\") " &
+      "(import Named User ^from \"./typed_base\") " &
       "(impl Named for User ^^export " &
       "  (message name [self] : Str self/name))")
     writeModule("typed_lib.gene",
-      "(import [Named] ^from \"./typed_base\") " &
+      "(import Named ^from \"./typed_base\") " &
       "(fn accept [x : Named] true) " &
       "(fn count [xs : (List Named)] (xs .size)) " &
       "(type Box ^props {^item Named})")
     check runProgram(
-      "(import [Named User] ^from \"./typed_base\") " &
-      "(import [accept count Box] ^from \"./typed_lib\") " &
+      "(import Named User ^from \"./typed_base\") " &
+      "(import accept count Box ^from \"./typed_lib\") " &
       "(import_impl Named for User ^from \"./typed_ext\") " &
       "(fn local_accept [x : Named] true) " &
       "(type LocalBox ^props {^item Named}) " &
@@ -1046,18 +1138,18 @@ suite "modules — file imports":
     writeModule("model.gene",
       "(type User ^props {^name Str})")
     writeModule("json_ext_a.gene",
-      "(import [ToJson] ^from \"./json\") " &
-      "(import [User] ^from \"./model\") " &
+      "(import ToJson ^from \"./json\") " &
+      "(import User ^from \"./model\") " &
       "(impl ToJson for User ^^export " &
       "  (message to_json [self] : Str self/name))")
     writeModule("json_ext_b.gene",
-      "(import [ToJson] ^from \"./json\") " &
-      "(import [User] ^from \"./model\") " &
+      "(import ToJson ^from \"./json\") " &
+      "(import User ^from \"./model\") " &
       "(impl ToJson for User ^^export " &
       "  (message to_json [self] : Str \"other\"))")
     expect GeneError:
-      discard runProgram("(import [ToJson] ^from \"./json\") " &
-        "(import [User] ^from \"./model\") " &
+      discard runProgram("(import ToJson ^from \"./json\") " &
+        "(import User ^from \"./model\") " &
         "(import_impl ToJson for User ^from \"./json_ext_a\") " &
         "(import_impl ToJson for User ^from \"./json_ext_b\")")
 
@@ -1066,18 +1158,18 @@ suite "modules — file imports":
       "(protocol Render (message render [self] : Str)) " &
       "(type Item ^props {})")
     writeModule("reload_ext.gene",
-      "(import [Render Item] ^from \"./reload_base\") " &
+      "(import Render Item ^from \"./reload_base\") " &
       "(impl Render for Item ^^export " &
       "  (message render [self] : Str \"one\"))")
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
     discard run(compileSource(
-      "(import [Render Item] ^from \"./reload_base\") " &
+      "(import Render Item ^from \"./reload_base\") " &
       "(import_impl Render for Item ^from \"./reload_ext\")"), scope)
     check run(compileSource("((Item) .Render:render)"), scope).print() == "\"one\""
     let before = app.implActivationEpoch
     writeModule("reload_ext.gene",
-      "(import [Render Item] ^from \"./reload_base\") " &
+      "(import Render Item ^from \"./reload_base\") " &
       "(impl Render for Item ^^export " &
       "  (message render [self] : Str \"two\"))")
     discard app.reloadFileModule(modDir / "reload_ext.gene")
@@ -1086,7 +1178,7 @@ suite "modules — file imports":
 
     let stableEpoch = app.implActivationEpoch
     writeModule("reload_ext.gene",
-      "(import [Render Item] ^from \"./reload_base\") (var removed true)")
+      "(import Render Item ^from \"./reload_base\") (var removed true)")
     expect GeneError:
       discard app.reloadFileModule(modDir / "reload_ext.gene")
     check app.implActivationEpoch == stableEpoch
@@ -1103,10 +1195,10 @@ suite "modules — file imports":
     writeModule("ret_base.gene",
       "(protocol Render (message render [] : Str)) (type Item ^props {})")
     writeModule("ret_prov.gene",
-      "(import [Render Item] ^from \"./ret_base\") " &
+      "(import Render Item ^from \"./ret_base\") " &
       "(impl Render for Item ^^export (message render [] : Str \"one\"))")
     writeModule("ret_author.gene",
-      "(import [Render Item] ^from \"./ret_base\") " &
+      "(import Render Item ^from \"./ret_base\") " &
       "(import_impl Render for Item ^from \"./ret_prov\") " &
       "(fn raw [] Render:render) " &
       "(fn as_view [op : (Callable [Any] Str)] op) " &
@@ -1118,9 +1210,9 @@ suite "modules — file imports":
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
     discard run(compileSource(
-      "(import [Item] ^from \"./ret_base\") " &
-      "(import [Render] ^from \"./ret_base\") " &
-      "(import [raw view closure path_value warmed later] ^from \"./ret_author\") " &
+      "(import Item ^from \"./ret_base\") " &
+      "(import Render ^from \"./ret_base\") " &
+      "(import raw view closure path_value warmed later ^from \"./ret_author\") " &
       "(var item (Item)) (var op (raw)) (var checked (view)) " &
       "(var cl (closure)) (var pv (path_value))"), scope)
     proc observe(): string =
@@ -1131,7 +1223,7 @@ suite "modules — file imports":
       "[\"one\" \"one\" \"one\" \"one\" \"one\" \"one\" \"hidden\"]"
     let before = app.implActivationEpoch
     writeModule("ret_prov.gene",
-      "(import [Render Item] ^from \"./ret_base\") " &
+      "(import Render Item ^from \"./ret_base\") " &
       "(impl Render for Item ^^export (message render [] : Str \"two\"))")
     discard app.reloadFileModule(modDir / "ret_prov.gene")
     check app.implActivationEpoch == before + 1
@@ -1140,7 +1232,7 @@ suite "modules — file imports":
     # A rejected replacement (the export disappears) leaves the published body.
     let stable = app.implActivationEpoch
     writeModule("ret_prov.gene",
-      "(import [Render Item] ^from \"./ret_base\") (var removed true)")
+      "(import Render Item ^from \"./ret_base\") (var removed true)")
     expect GeneError:
       discard app.reloadFileModule(modDir / "ret_prov.gene")
     check app.implActivationEpoch == stable
@@ -1174,7 +1266,7 @@ suite "modules — file imports":
     discard app.reloadFileModule(modDir / "reload_marker.gene")
     let scope = newGlobalScope(app)
     check run(compileSource(
-      "(import [Marker Token] ^from \"./reload_marker\") " &
+      "(import Marker Token ^from \"./reload_marker\") " &
       "(match (Token) when (m : Marker) true else false)"), scope).print() == "true"
 
   test "reload recomposes inherited impl entries through scoped imports":
@@ -1183,24 +1275,24 @@ suite "modules — file imports":
       (type Base ^props {}) (type Child : Base ^props {})
     """)
     writeModule("self_parent.gene", """
-      (import [P Base] ^from "./self_base")
+      (import P Base ^from "./self_base")
       (impl P for Base ^^export (message value [] : Int 1))
     """)
     writeModule("self_child.gene", """
-      (import [P Base Child] ^from "./self_base")
+      (import P Base Child ^from "./self_base")
       (import_impl P for Base ^from "./self_parent")
       (impl P for Child ^^export)
     """)
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
     discard run(compileSource("""
-      (import [P Child] ^from "./self_base")
+      (import P Child ^from "./self_base")
       (import_impl P for Child ^from "./self_child")
       (fn use_child [] ((Child) .P:value))
     """), scope)
     check run(compileSource("(use_child)"), scope).print() == "1"
     writeModule("self_parent.gene", """
-      (import [P Base] ^from "./self_base")
+      (import P Base ^from "./self_base")
       (impl P for Base ^^export (message value [] : Int 2))
     """)
     let epoch = app.implActivationEpoch
@@ -1209,7 +1301,7 @@ suite "modules — file imports":
     check run(compileSource("(use_child)"), scope).print() == "2"
     # The caller imported only the composed child pair, not the parent pair.
     expect GeneError:
-      discard run(compileSource("(import [Base] ^from \"./self_base\") ((Base) .P:value)"), scope)
+      discard run(compileSource("(import Base ^from \"./self_base\") ((Base) .P:value)"), scope)
 
   test "new canonical ancestor bindings cannot rewrite a scoped child conformance":
     let app = newApplication(modDir)
@@ -1246,15 +1338,15 @@ suite "modules — file imports":
       "(type A ^props {}) (type B ^props {}) " &
       "(impl P for B (message value [self] : Str \"existing\"))")
     writeModule("ext_bad.gene",
-      "(import [P A B] ^from \"./base\") " &
+      "(import P A B ^from \"./base\") " &
       "(impl P for A (message value [self] : Str \"staged\")) " &
       "(impl P for B (message value [self] : Str \"conflict\"))")
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
     discard run(compileSource(
-      "(import [P A B] ^from \"./base\")"), scope)
+      "(import P A B ^from \"./base\")"), scope)
     expect GeneError:
-      discard run(compileSource("(import * : bad ^from \"./ext_bad\")"), scope)
+      discard run(compileSource("(import *:bad ^from \"./ext_bad\")"), scope)
     expect GeneError:
       discard run(compileSource("((A) .P:value)"), scope)
     check run(compileSource("((B) .P:value)"), scope).print() ==
@@ -1262,14 +1354,14 @@ suite "modules — file imports":
 
   test "package-root-relative paths (/x and bare x)":
     writeModule("math.gene", "(var pi 3) (fn add [a b] (+ a b))")
-    check runProgram("(import [pi] ^from \"/math\") pi").print() == "3"
-    check runProgram("(import [add] ^from \"math\") (add 1 2)").print() == "3"
+    check runProgram("(import pi ^from \"/math\") pi").print() == "3"
+    check runProgram("(import add ^from \"math\") (add 1 2)").print() == "3"
 
   test "module paths cannot escape the package root":
     let outside = modDir & "_outside.gene"
     writeFile(outside, "(var secret 99)")
     try:
-      discard runProgram("(import [secret] ^from \"../gene_module_tests_outside\") secret")
+      discard runProgram("(import secret ^from \"../gene_module_tests_outside\") secret")
       fail()
     except GeneError as e:
       check e.msg.contains("module path escapes package root")
@@ -1278,17 +1370,17 @@ suite "modules — file imports":
 
   test "missing export raises":
     writeModule("math.gene", "(var pi 3)")
-    expect GeneError: discard runProgram("(import [nope] ^from \"./math\")")
+    expect GeneError: discard runProgram("(import nope ^from \"./math\")")
 
   test "selected imports reject duplicate local bindings":
     writeModule("math.gene", "(var pi 3) (var tau 6)")
     expect GeneError:
-      discard runProgram("(import [pi] ^from \"./math\") (var pi 4)")
+      discard runProgram("(import pi ^from \"./math\") (var pi 4)")
     expect GeneError:
-      discard runProgram("(import [pi : n, tau : n] ^from \"./math\")")
+      discard runProgram("(import pi:n, tau:n ^from \"./math\")")
 
   test "missing module raises":
-    expect GeneError: discard runProgram("(import [x] ^from \"./does-not-exist\")")
+    expect GeneError: discard runProgram("(import x ^from \"./does-not-exist\")")
 
   test "module aliases and re-exports contribute protocol interfaces":
     writeModule("interface_base.gene",
@@ -1296,18 +1388,18 @@ suite "modules — file imports":
       "(type T ^props {}) " &
       "(impl Render for T (message render [self] : Str \"interface\"))")
     writeModule("interface_mid.gene",
-      "(import [Render T] ^from \"./interface_base\" ^^export)")
-    check runProgram("(import * : base ^from \"./interface_base\") " &
+      "(import Render T ^from \"./interface_base\" ^^export)")
+    check runProgram("(import *:base ^from \"./interface_base\") " &
       "((base/T) .base/Render:render)").print() == "\"interface\""
-    check runProgram("(import [Render T] ^from \"./interface_mid\") " &
+    check runProgram("(import Render T ^from \"./interface_mid\") " &
       "((T) .Render:render)").print() == "\"interface\""
 
   test "caught import failures do not establish protocol candidates":
     writeModule("candidate_type.gene", "(type T ^props {})")
     var message = ""
     try:
-      discard runProgram("(import [T] ^from \"./candidate_type\") " &
-        "(try (import [Render] ^from \"./missing_protocol\") catch Fault nil) " &
+      discard runProgram("(import T ^from \"./candidate_type\") " &
+        "(try (import Render ^from \"./missing_protocol\") catch Fault nil) " &
         "((T) .render)")
     except GeneError as error:
       message = error.msg
@@ -1315,11 +1407,11 @@ suite "modules — file imports":
     check not message.contains("uninitialized protocol candidate")
 
   test "runtime import cycles have a runtime-phase diagnostic":
-    writeModule("a.gene", "(import * : b ^from \"./b\") (var x 1)")
-    writeModule("b.gene", "(import * : a ^from \"./a\") (var y 2)")
+    writeModule("a.gene", "(import *:b ^from \"./b\") (var x 1)")
+    writeModule("b.gene", "(import *:a ^from \"./a\") (var y 2)")
     var message = ""
     try:
-      discard runProgram("(import * : a ^from \"./a\") a/x")
+      discard runProgram("(import *:a ^from \"./a\") a/x")
     except GeneError as e:
       message = e.msg
     check message.contains("runtime module initialization cycle")
@@ -1336,7 +1428,7 @@ suite "modules — built-in identity and scope hygiene":
       "(type Boom : Error) " &
       " " &
       "(fn boom ^errors [Boom] [] (fail (Boom ^_msg \"x\")))")
-    check runProgram("(import [Boom, boom] ^from \"./erra\") " &
+    check runProgram("(import Boom, boom ^from \"./erra\") " &
       "(fn f ^errors [Boom] [] (boom)) " &
       "(try (f) catch Boom $err/.message)").print() == "\"x\""
 
@@ -1352,7 +1444,7 @@ suite "modules — built-in identity and scope hygiene":
       "(var [geney] [1])",
       "(set gene 1)",
       "(mod gene)",
-      "(import * : gene ^from \"./reserved_source\")"
+      "(import *:gene ^from \"./reserved_source\")"
     ]:
       if source.contains("reserved_source"):
         writeModule("reserved_source.gene", "(var value 1)")
@@ -1363,22 +1455,22 @@ suite "modules — built-in identity and scope hygiene":
     writeModule("decls2.gene", "(var only-me 1)")
     # Filtering the module's declarations for a built-in name finds nothing,
     # because built-ins live in the shared parent scope, not the module root.
-    check runProgram("(import * : m ^from \"./decls2\") " &
+    check runProgram("(import *:m ^from \"./decls2\") " &
       "(var ds ($filter ($declarations m) (fn [d] (== d/name \"map\")))) " &
       "(ds .has_next)").print() == "false"
-    check runProgram("(import * : m ^from \"./decls2\") " &
+    check runProgram("(import *:m ^from \"./decls2\") " &
       "(var ds ($filter ($declarations m) (fn [d] (== d/name \"this_mod\")))) " &
       "(ds .has_next)").print() == "false"
 
   test "selected imports cannot pull built-ins out of a module":
     writeModule("decls2.gene", "(var only-me 1)")
     expect GeneError:
-      discard runProgram("(import [map] ^from \"./decls2\")")
+      discard runProgram("(import map ^from \"./decls2\")")
 
   test "selected imports cannot pull this_mod out of a module":
     writeModule("decls3.gene", "(var only-me 1)")
     expect GeneError:
-      discard runProgram("(import [this_mod] ^from \"./decls3\")")
+      discard runProgram("(import this_mod ^from \"./decls3\")")
 
 suite "modules — diagnostics advice and lexical import paths":
   setup:
@@ -1389,18 +1481,18 @@ suite "modules — diagnostics advice and lexical import paths":
     writeModule("adv_proto.gene",
       "(protocol Shown (message show [] : Str)) (type Widget ^props {})")
     writeModule("adv_prov.gene",
-      "(import [Shown Widget] ^from \"./adv_proto\") " &
+      "(import Shown Widget ^from \"./adv_proto\") " &
       "(impl Shown for Widget ^^export (message show [] : Str \"w\"))")
     writeModule("adv_importer.gene",
-      "(import [Shown Widget] ^from \"./adv_proto\") " &
+      "(import Shown Widget ^from \"./adv_proto\") " &
       "(import_impl Shown for Widget ^from \"./adv_prov\") (var done 1)")
     writeModule("adv_main.gene",
-      "(import [Shown Widget] ^from \"./adv_proto\") " &
-      "(import [done] ^from \"./adv_importer\") " &
+      "(import Shown Widget ^from \"./adv_proto\") " &
+      "(import done ^from \"./adv_importer\") " &
       "(var shown ((Widget) .Shown:show))")
     var msg = ""
     try:
-      discard runProgram("(import [shown] ^from \"./adv_main\")")
+      discard runProgram("(import shown ^from \"./adv_main\")")
     except GeneError as error:
       msg = error.msg
     check "no implementation of message 'show'" in msg
@@ -1416,11 +1508,11 @@ suite "modules — diagnostics advice and lexical import paths":
       "(protocol P (message m [] : Int)) (type T ^props {}) " &
       "(impl P for T (message m [] : Int 1))")
     writeModule("dup_ext.gene",
-      "(import [P T] ^from \"./dup_proto\") " &
+      "(import P T ^from \"./dup_proto\") " &
       "(impl P for T ^^export (message m [] : Int 2))")
     var msg = ""
     try:
-      discard runProgram("(import [P T] ^from \"./dup_proto\") " &
+      discard runProgram("(import P T ^from \"./dup_proto\") " &
         "(import_impl P for T ^from \"./dup_ext\")")
     except GeneError as error:
       msg = error.msg
@@ -1436,11 +1528,11 @@ suite "modules — diagnostics advice and lexical import paths":
       "(protocol Q (message m [] : Int)) (type U ^props {})")
     for name in ["dup_a", "dup_b"]:
       writeModule(name & ".gene",
-        "(import [Q U] ^from \"./dup_scoped_proto\") " &
+        "(import Q U ^from \"./dup_scoped_proto\") " &
         "(impl Q for U ^^export (message m [] : Int 1))")
     msg = ""
     try:
-      discard runProgram("(import [Q U] ^from \"./dup_scoped_proto\") " &
+      discard runProgram("(import Q U ^from \"./dup_scoped_proto\") " &
         "(import_impl Q for U ^from \"./dup_a\") " &
         "(import_impl Q for U ^from \"./dup_b\")")
     except GeneError as error:
@@ -1454,14 +1546,14 @@ suite "modules — diagnostics advice and lexical import paths":
       "(protocol Format (message head [] : Str)) " &
       "(type Article ^props {}) (type Note : Article ^props {})")
     writeModule("self_child.gene",
-      "(import [Format Note] ^from \"./self_proto\") " &
+      "(import Format Note ^from \"./self_proto\") " &
       "(impl Format for Note ^^export (message head [] : Str \"n\"))")
     writeModule("self_parent.gene",
-      "(import [Format Article] ^from \"./self_proto\") " &
+      "(import Format Article ^from \"./self_proto\") " &
       "(impl Format for Article ^^export (message head [] : Str \"a\"))")
     var msg = ""
     try:
-      discard runProgram("(import [Format Article Note] ^from \"./self_proto\") " &
+      discard runProgram("(import Format Article Note ^from \"./self_proto\") " &
         "(import_impl Format for Note ^from \"./self_child\") " &
         "(import_impl Format for Article ^from \"./self_parent\")")
     except GeneError as error:
@@ -1478,19 +1570,19 @@ suite "modules — diagnostics advice and lexical import paths":
     writeFile(modDir / "lib" / "proto.gene",
       "(protocol Label (message label [self] : Str)) (type Item)")
     writeFile(modDir / "lib" / "policy.gene",
-      "(import [Label Item] ^from \"./proto\") " &
+      "(import Label Item ^from \"./proto\") " &
       "(impl Label for Item ^^export (message label [self] : Str \"lib\"))")
     writeFile(modDir / "lib" / "api.gene",
-      "(import [Label] ^from \"./proto\") " &
-      "(fn late_make [] (import [Item] ^from \"./proto\") (Item)) " &
-      "(fn labelled [item] (import [Item] ^from \"./proto\") " &
+      "(import Label ^from \"./proto\") " &
+      "(fn late_make [] (import Item ^from \"./proto\") (Item)) " &
+      "(fn labelled [item] (import Item ^from \"./proto\") " &
       "  (import_impl Label for Item ^from \"./policy\") item/.Label:label)")
     check runProgram(
-      "(import [late_make] ^from \"./lib/api\") " &
+      "(import late_make ^from \"./lib/api\") " &
       "(late_make) nil").print() == "nil"
     # import_impl executed in a library function resolves the same way.
     check runProgram(
-      "(import [late_make labelled] ^from \"./lib/api\") " &
+      "(import late_make labelled ^from \"./lib/api\") " &
       "(labelled (late_make))").print() == "\"lib\""
 
 suite "modules — namespace-path imports and mod":
@@ -1502,7 +1594,7 @@ suite "modules — namespace-path imports and mod":
 
   test "bind an in-file namespace with colon alias":
     initModuleContext(getTempDir())
-    check run(compileSource("(ns m (var a 5)) (import m : mm) mm/a"),
+    check run(compileSource("(ns m (var a 5)) (import m:mm) mm/a"),
       newGlobalScope()).print() == "5"
 
   test "co-located namespace impls are canonical":
@@ -1573,14 +1665,14 @@ suite "modules — impl activation across module paths":
       "(type T ^props {}) " &
       "(impl Show for T (message show [self] : Str \"shared\"))")
     writeModule("uses_shared.gene",
-      "(import [T] ^from \"./shared\") (fn marker [] 1)")
+      "(import T ^from \"./shared\") (fn marker [] 1)")
     # shared-first, then the local module that also imports it
-    check runProgram("(import [Show T] ^from \"./shared\") " &
-      "(import [marker] ^from \"./uses_shared\") " &
+    check runProgram("(import Show T ^from \"./shared\") " &
+      "(import marker ^from \"./uses_shared\") " &
       "[((T) .Show:show) (marker)]").print() == "[\"shared\" 1]"
     # local-module-first (the previously working order must stay working)
-    check runProgram("(import [marker] ^from \"./uses_shared\") " &
-      "(import [Show T] ^from \"./shared\") " &
+    check runProgram("(import marker ^from \"./uses_shared\") " &
+      "(import Show T ^from \"./shared\") " &
       "[((T) .Show:show) (marker)]").print() == "[\"shared\" 1]"
 
   test "conflicting impls for one protocol and receiver still raise":
@@ -1588,15 +1680,15 @@ suite "modules — impl activation across module paths":
       "(protocol Show2 (message show2 [self] : Str)) " &
       "(type U ^props {})")
     writeModule("impl_one.gene",
-      "(import [Show2 U] ^from \"./conflict_shared\") " &
+      "(import Show2 U ^from \"./conflict_shared\") " &
       "(impl Show2 for U ^^export " &
       "  (message show2 [self] : Str \"one\"))")
     writeModule("impl_two.gene",
-      "(import [Show2 U] ^from \"./conflict_shared\") " &
+      "(import Show2 U ^from \"./conflict_shared\") " &
       "(impl Show2 for U ^^export " &
       "  (message show2 [self] : Str \"two\"))")
     expect GeneError:
-      discard runProgram("(import [Show2 U] ^from \"./conflict_shared\") " &
+      discard runProgram("(import Show2 U ^from \"./conflict_shared\") " &
         "(import_impl Show2 for U ^from \"./impl_one\") " &
         "(import_impl Show2 for U ^from \"./impl_two\") nil")
 
@@ -1667,7 +1759,7 @@ suite "modules — the sandbox loader (design §D5)":
       (modDir / "gene_sandbox_escape").replace("\\", "/") &
       "\" \"via import\") \"wrote\")")
     writeModule("viaimport.gene",
-      "(import [sneak] ^from \"./helper\") (sneak)")
+      "(import sneak ^from \"./helper\") (sneak)")
     expect GeneError:
       discard runSandboxProgram(loadSandboxed(modDir, "viaimport.gene", "[]"))
     check not fileExists(modDir / "gene_sandbox_escape")
@@ -1679,7 +1771,7 @@ suite "modules — the sandbox loader (design §D5)":
     writeModule("quiet_helper.gene",
       "(fn sneak [p : Str] : Str ($fs/write_text p \"w\") \"wrote\")")
     writeModule("quiet.gene",
-      "(import [sneak] ^from \"./quiet_helper\") " &
+      "(import sneak ^from \"./quiet_helper\") " &
       "(fn try_it [p : Str] : Str (sneak p))")
     expect GeneError:
       discard runSandboxProgram(
@@ -1698,10 +1790,10 @@ suite "modules — the sandbox loader (design §D5)":
     writeModule("shared_helper.gene",
       "(fn sneak [p : Str] : Str ($fs/write_text p \"w\") \"wrote\")")
     writeModule("sandboxed_user.gene",
-      "(import [sneak] ^from \"./shared_helper\") (fn noop [] : Int 1)")
+      "(import sneak ^from \"./shared_helper\") (fn noop [] : Int 1)")
     check runSandboxProgram(
       loadSandboxed(modDir, "sandboxed_user.gene", "[]") & " " &
-      "(import [sneak] ^from \"./shared_helper\") " &
+      "(import sneak ^from \"./shared_helper\") " &
       "(sneak \"" &
       (modDir / "gene_sandbox_escape").replace("\\", "/") & "\")"
       ).print() == "\"wrote\""
@@ -1742,10 +1834,10 @@ suite "modules — the sandbox loader (design §D5)":
     writeModule("host_type.gene",
       "(type Reg ^props {^n Int} (ctor [n : Int] (set self/n n)))")
     writeFile(modRoot / "src" / "shared_mod.gene",
-      "(import [Reg] ^from \"../../../host_type\") " &
+      "(import Reg ^from \"../../../host_type\") " &
       "(fn take_it [r : Reg] : Int r/n)")
     check runProgramInOwnApp(
-      "(import [Reg] ^from \"./host_type\") " &
+      "(import Reg ^from \"./host_type\") " &
       "(var m " & loadSandboxed(modRoot, "src/shared_mod.gene", "[]",
                                 "[\"" & (modDir / "host_type.gene").replace("\\", "/") & "\"]") & ") " &
       "(m/take_it (new Reg 7))").print() == "7"
@@ -1762,16 +1854,16 @@ suite "modules — the sandbox loader (design §D5)":
     # to the host's shared contract.
     writeFile(externalRoot / "src" / "plugin_api.gene", "(var n 5)")
     writeFile(externalRoot / "src" / "helper.gene",
-      "(import [n] ^from \"./plugin_api\") (fn offset [] n)")
+      "(import n ^from \"./plugin_api\") (fn offset [] n)")
     writeFile(externalRoot / "src" / "plugin.gene",
-      "(import [Reg] ^from \"src/plugin_api.gene\") " &
-      "(import [offset] ^from \"./helper\") " &
+      "(import Reg ^from \"src/plugin_api.gene\") " &
+      "(import offset ^from \"./helper\") " &
       "(fn take_it [r : Reg] : Int (+ r/n (offset)))")
     check runProgramInOwnApp(
-      "(import [Reg] ^from \"src/plugin_api.gene\") " &
+      "(import Reg ^from \"src/plugin_api.gene\") " &
       "(var m " & loadSandboxed(externalRoot, "src/plugin.gene", "[]",
                                 "[\"src/plugin_api.gene\"]") & ") " &
-      "(import [Reg : StillReg] ^from \"src/plugin_api.gene\") " &
+      "(import Reg:StillReg ^from \"src/plugin_api.gene\") " &
       "(m/take_it (StillReg ^n 7))").print() == "12"
 
   test "complete grants see live canonical host implementations through a shared contract":
@@ -1780,11 +1872,11 @@ suite "modules — the sandbox loader (design §D5)":
     writeModule("host_api.gene",
       "(protocol PublicHost (message state [] : Int))")
     writeFile(pluginRoot / "plugin.gene",
-      "(import [PublicHost] ^from \"host_api.gene\") " &
+      "(import PublicHost ^from \"host_api.gene\") " &
       "(fn read [host] : Int (host .PublicHost:state)) " &
       "(fn experimental_hidden [] ($absent? genex))")
     let program =
-      "(import [PublicHost] ^from \"./host_api\") (type Host) " &
+      "(import PublicHost ^from \"./host_api\") (type Host) " &
       "(var m " & loadSandboxed(pluginRoot, "plugin.gene",
         "($runtime/sandbox_namespaces)", "[\"host_api.gene\"]") & ") " &
       # Register after creating the sandbox root: a copied impl list would
@@ -1803,7 +1895,7 @@ suite "modules — the sandbox loader (design §D5)":
     defer: removeDir(externalRoot)
     writeModule("secret.gene", "(var secret 42)")
     writeFile(externalRoot / "plugin.gene",
-      "(import [secret] ^from \"secret.gene\") secret")
+      "(import secret ^from \"secret.gene\") secret")
     expect GeneError:
       discard runSandboxProgram(loadSandboxed(externalRoot, "plugin.gene", "[]"))
     expect GeneError:
@@ -1841,7 +1933,7 @@ suite "modules — the sandbox loader (design §D5)":
       (modDir / "gene_sandbox_escape").replace("\\", "/") &
       "\" \"escaped\"))")
     writeFile(modRoot / "src" / "a" / "deep_mod.gene",
-      "(import [go] ^from \"../../free\") (fn run [] : Nil (go))")
+      "(import go ^from \"../../free\") (fn run [] : Nil (go))")
     expect GeneError:
       discard runSandboxProgram(
         "(var m " & loadSandboxed(modRoot, "src/a/deep_mod.gene", "[]") & ") " &
@@ -1868,7 +1960,7 @@ suite "modules — the sandbox loader (design §D5)":
     let modRoot = modDir / "mods" / "reacher"
     createDir(modRoot / "src")
     writeFile(modRoot / "src" / "reacher.gene",
-      "(import [touch] ^from \"../../../host_authority\") " &
+      "(import touch ^from \"../../../host_authority\") " &
       "(fn go [p : Str] : Str (touch p))")
     expect GeneError:
       discard runSandboxProgram(loadSandboxed(modRoot, "src/reacher.gene", "[]"))
@@ -1934,7 +2026,7 @@ suite "modules — the sandbox loader (design §D5)":
     let modRoot = modDir / "mods" / "climber3"
     createDir(modRoot / "src")
     writeFile(modRoot / "src" / "climber3.gene",
-      "(import [load_it] ^from \"../../../host_loader\") " &
+      "(import load_it ^from \"../../../host_loader\") " &
       "(fn go [] : Any (load_it \"x\" \"y.gene\"))")
     expect GeneError:
       discard runSandboxProgram(loadSandboxed(modRoot, "src/climber3.gene", "[]"))
@@ -2126,7 +2218,7 @@ suite "modules — the sandbox loader (design §D5)":
     createDir(root)
     writeFile(root / "dependency.gene", "(var leaked 1)")
     writeFile(root / "bad.gene",
-      "(import [leaked] ^from \"./dependency\") (while true nil)")
+      "(import leaked ^from \"./dependency\") (while true nil)")
     writeFile(root / "good.gene", "(var answer 42)")
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
@@ -2233,9 +2325,9 @@ suite "modules — the sandbox loader (design §D5)":
     writeFile(root / "dep.gene", "(var dep 20)")
     writeModule("generation_shared.gene", "(var shared_value 21)")
     writeFile(root / "plugin.gene",
-      "(import [add_one] ^from \"./macros\") " &
-      "(import [dep] ^from \"./dep\") " &
-      "(import [shared_value] ^from \"../generation_shared\") " &
+      "(import add_one ^from \"./macros\") " &
+      "(import dep ^from \"./dep\") " &
+      "(import shared_value ^from \"../generation_shared\") " &
       "(var answer (add_one (+ dep shared_value)))")
     let app = newApplication(modDir)
     let scope = newGlobalScope(app)
@@ -2344,7 +2436,7 @@ suite "modules — the sandbox loader (design §D5)":
       "(protocol Readable (message read [] : Int)) " &
       "(fn check [value : Readable] : Readable value)")
     writeFile(root / "plugin.gene",
-      "(import [Readable] ^from \"../generation_contract\") " &
+      "(import Readable ^from \"../generation_contract\") " &
       "(type Item) " &
       "(impl Readable for Item (message read [] : Int 42)) " &
       "(fn make [] (Item))")
@@ -2352,7 +2444,7 @@ suite "modules — the sandbox loader (design §D5)":
     let scope = newGlobalScope(app)
     let contractPath = (modDir / "generation_contract.gene").replace("\\", "/")
     check run(compileSource(
-      "(import [Readable check] ^from \"./generation_contract\") " &
+      "(import Readable check ^from \"./generation_contract\") " &
       "(var tx ($runtime/sandbox_transaction)) " &
       "(var generation " &
       "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &

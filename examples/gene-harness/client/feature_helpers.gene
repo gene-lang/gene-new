@@ -1,7 +1,7 @@
 (mod feature_helpers ^profile web)
-(import [Client] ^from "./workspace_model.gene")
-(import [FeatureHost] ^from "./feature_host.gene")
-(import [FeatureEvents create_feature_events] ^from "./feature_events.gene")
+(import Client ^from "./workspace_model.gene")
+(import FeatureHost ^from "./feature_host.gene")
+(import FeatureEvents create_feature_events ^from "./feature_events.gene")
 
 (fn host [client : Client] : FeatureHost
   (var raw : Any client/services)

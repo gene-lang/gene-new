@@ -1,9 +1,9 @@
 (import $test [describe it])
-(import [isolated run_spec test_service package_path] ^from "../../support")
-(import [host_status close_session_service] ^from "../../../src/web/session_service")
-(import [ui_preview] ^from "../../../src/ui/views")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [row] ^from "../../../src/kernel")
+(import isolated run_spec test_service package_path ^from "../../support")
+(import host_status close_session_service ^from "../../../src/web/session_service")
+(import ui_preview ^from "../../../src/ui/views")
+(import Plugin PluginHost ^from "../../../src/plugin_api")
+(import row ^from "../../../src/kernel")
 
 # Milestone 3: the editor plugin publishes a view-scoped browser client, its
 # web_components row renders a keyed outlet, and an outlet must name an enabled

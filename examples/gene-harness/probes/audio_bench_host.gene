@@ -1,6 +1,6 @@
 # A separate Application keeps server-owned schedulers and cwd out of the probe.
-(import [main : serve_web] ^from "../src/web/server")
-(import [bench_profile] ^from "./audio_bench")
+(import main:serve_web ^from "../src/web/server")
+(import bench_profile ^from "./audio_bench")
 (fn main [argv] : Int
   (let args []) (var position 0) (var mode "full") (var recognizer "whisper_local")
   (for value in argv

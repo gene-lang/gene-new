@@ -1,5 +1,5 @@
 # Alternate fresh processes for the matched VM operations in ops.gene.
-(import ^from "./run" [capture distribution])
+(import ^from "./run" capture distribution)
 
 (fn validate_payload [payload iterations]
   ($assert

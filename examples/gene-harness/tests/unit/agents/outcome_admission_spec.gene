@@ -1,9 +1,9 @@
 (import $test [describe it])
-(import [outcome_constructor] ^from "../../../src/agents/outcome_admission")
-(import [Outcome OutcomeError checked_outcome_extensions new_turn_items validate_outcome]
+(import outcome_constructor ^from "../../../src/agents/outcome_admission")
+(import Outcome OutcomeError checked_outcome_extensions new_turn_items validate_outcome
   ^from "../../../src/agents/outcome")
-(import [schema_verdict] ^from "../../../src/runtime/outcome_extensions")
-(import [ParticipantFailure] ^from "../../../src/runtime/turn_participants")
+(import schema_verdict ^from "../../../src/runtime/outcome_extensions")
+(import ParticipantFailure ^from "../../../src/runtime/turn_participants")
 
 (fn snapshot [key : Str]
   {^registries {^outcome_extensions [{^payload {^name key ^alias "wait"}}]}})

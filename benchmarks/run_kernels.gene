@@ -8,7 +8,7 @@
 # A ratio is computed inside each round from that round's runs, and the report
 # gives the median of those ratios, so it is a median of ratios and not a
 # ratio of the median times shown beside it.
-(import [capture distribution] ^from "./run")
+(import capture distribution ^from "./run")
 
 (fn parse_rows [process label]
   ($assert (&& (== process/status 0) (! process/timed_out) (! process/truncated))

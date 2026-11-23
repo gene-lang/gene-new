@@ -1,9 +1,9 @@
 (import $test [describe it run])
-(import [new_harness shutdown_harness contribute provide withdraw_seam] ^from "../../../src/kernel")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [select_provider resolve_selection readiness_report session_settings provider_choice]
+(import new_harness shutdown_harness contribute provide withdraw_seam ^from "../../../src/kernel")
+(import Profile ^from "../../../src/profiles/profile")
+(import select_provider resolve_selection readiness_report session_settings provider_choice
   ^from "../../../src/agents/provider_selection")
-(import [endpoint_provider] ^from "../../../src/public/provider")
+(import endpoint_provider ^from "../../../src/public/provider")
 
 (fn candidate [url]
   {^name "example" ^doc "Model snapshot fixture." ^auto 0

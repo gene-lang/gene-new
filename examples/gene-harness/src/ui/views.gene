@@ -1,11 +1,11 @@
 # Leased rendering and publication previews shared by CLI and browser hosts.
 (mod ui_views)
-(import [resolve] ^from "../kernel")
-(import [acquire_snapshot release_snapshot current_snapshot] ^from "../runtime/composition")
-(import [spawn_composition_call] ^from "../runtime/cordis_adapter")
-(import [bounded_component_view component_outlets WebComponentError] ^from "./components")
-(import [ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error view_listed? view_actions] ^from "./state")
-(import [view_outline outline_text] ^from "./outline")
+(import resolve ^from "../kernel")
+(import acquire_snapshot release_snapshot current_snapshot ^from "../runtime/composition")
+(import spawn_composition_call ^from "../runtime/cordis_adapter")
+(import bounded_component_view component_outlets WebComponentError ^from "./components")
+(import ui_settings ui_record ui_revision ui_data_revision ui_descriptor ui_error view_listed? view_actions ^from "./state")
+(import view_outline outline_text ^from "./outline")
 
 # One bounded plugin render call (1 s / 32 MiB) in the caller's context.
 (fn bounded_render_call [h, callback, args]

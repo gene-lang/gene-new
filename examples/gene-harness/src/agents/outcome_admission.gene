@@ -1,7 +1,7 @@
 # Adapt one typed Outcome through schemas from the same leased composition.
 (mod outcome_extension_admission)
-(import [Outcome OutcomeError checked_outcome_extensions] ^from "./outcome")
-(import [normalize_extension_fields] ^from "../runtime/outcome_extensions")
+(import Outcome OutcomeError checked_outcome_extensions ^from "./outcome")
+(import normalize_extension_fields ^from "../runtime/outcome_extensions")
 
 # The response spelling belongs to the leased schema rows, not to the core
 # nominal type. This constructor translates names without executing schemas;

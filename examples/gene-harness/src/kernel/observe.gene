@@ -1,7 +1,7 @@
 # Activation-owned, supervised event subscriptions.
 (mod kernel_observe)
-(import [Harness contribute invoke_owned_callable] ^from "./registry")
-(import [log_subscribe log_unsubscribe log_gap_record log_event] ^from "./log")
+(import Harness contribute invoke_owned_callable ^from "./registry")
+(import log_subscribe log_unsubscribe log_gap_record log_event ^from "./log")
 
 (type GuardedHandler ^^private ^props {^h Harness ^owner Str ^handler Any})
 

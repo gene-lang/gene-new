@@ -1,5 +1,5 @@
 (import $test [describe it run])
-(import [normalize_models_file] ^from "../../../src/public/models_file")
+(import normalize_models_file ^from "../../../src/public/models_file")
 
 (describe "Shared models configuration"
   (it "accepts the reference guide's inert configuration example without dropping entries" []

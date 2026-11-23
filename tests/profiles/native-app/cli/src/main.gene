@@ -1,4 +1,4 @@
-(import [label] ^from "." ^pkg "support")
+(import label ^from "." ^pkg "support")
 
 (fn main [args] : Int
   (let text ($pkg/read_text this_pkg "data/schema.json"))

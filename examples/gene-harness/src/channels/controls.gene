@@ -1,12 +1,12 @@
 (mod channel_controls)
-(import [snapshot mutate] ^from "./store")
-(import [channel_error key message_key binding_key copy] ^from "./model")
-(import [check_decision add_hold queue_status resume_queue_state] ^from "./queue")
-(import [with_body_use] ^from "../agents/history")
-(import [load_session with_session_gate] ^from "../runtime/sessions")
-(import [cancel_round_locked continue_round_locked answer_round_impl replace_paused_round_locked round_receipt]
+(import snapshot mutate ^from "./store")
+(import channel_error key message_key binding_key copy ^from "./model")
+(import check_decision add_hold queue_status resume_queue_state ^from "./queue")
+(import with_body_use ^from "../agents/history")
+(import load_session with_session_gate ^from "../runtime/sessions")
+(import cancel_round_locked continue_round_locked answer_round_impl replace_paused_round_locked round_receipt
   ^from "../runtime/round_controller")
-(import [close_delegation_owner] ^from "../runtime/delegations")
+(import close_delegation_owner ^from "../runtime/delegations")
 
 (fn parse_control [text : Str]
   # Transports strip their own attribution from commands at ingress.

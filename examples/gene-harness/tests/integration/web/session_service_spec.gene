@@ -1,19 +1,19 @@
 # Tests src/web/session_service.gene.
 (import $test [describe it])
-(import [isolated run_spec test_service set_test_provider fixture_path] ^from "../../support")
-(import [open_session_service close_session_service create_session submit receipt answer snapshot browser_request
+(import isolated run_spec test_service set_test_provider fixture_path ^from "../../support")
+(import open_session_service close_session_service create_session submit receipt answer snapshot browser_request
          host_status edit_session acknowledge_attention list_sessions command
-         session_card_action session_card_receipt]
+         session_card_action session_card_receipt
   ^from "../../../src/web/session_service")
-(import [update_session load_session unload_session list_sessions : runtime_list_sessions]
+(import update_session load_session unload_session list_sessions:runtime_list_sessions
   ^from "../../../src/runtime/sessions")
-(import [transcript] ^from "../../../src/agents/turn_loop")
-(import [events_for] ^from "../../../src/storage/state")
-(import [contribute put_cordis_plugin] ^from "../../../src/kernel")
-(import [card_record] ^from "../../../src/runtime/cards")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
+(import transcript ^from "../../../src/agents/turn_loop")
+(import events_for ^from "../../../src/storage/state")
+(import contribute put_cordis_plugin ^from "../../../src/kernel")
+(import card_record ^from "../../../src/runtime/cards")
+(import Plugin PluginHost ^from "../../../src/plugin_api")
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
 
 (fn named_component [components, name : Str]
   ($first ($filter components (fn [item] (== item/name name)))))
@@ -672,7 +672,7 @@ child/.detach
           (let deck
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (import ^from "src/plugin_api.gene" Plugin PluginHost)
                 (fn init [descriptor]
                   (Plugin ^id "deck" ^provides [["web_components" "welcome"] ["web_components" "help"]] ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "welcome" ^slot "welcome" ^view (quote (section (h2 "Welcome")))}) (host .PluginHost:contribute "web_components" {^name "help" ^slot "toolbar" ^view (quote (button ^command "/help" "Help"))})))))))
           (register_plugin service/runtime/workspace service/runtime/h "deck" ($to_str deck))
@@ -708,7 +708,7 @@ child/.detach
           (let source
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (import ^from "src/plugin_api.gene" Plugin PluginHost)
                 (fn init [descriptor]
                   (Plugin ^id "broken_view" ^provides [["web_components" "welcome"] ["web_components" "slow"]] ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "welcome" ^slot "welcome" ^render (fn [context] (/ 1 0))}) (host .PluginHost:contribute "web_components" {^name "slow" ^slot "sidebar" ^render (fn [context] (while true nil))})))))))
           (register_plugin
@@ -739,7 +739,7 @@ child/.detach
           (let source
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (import ^from "src/plugin_api.gene" Plugin PluginHost)
                 (fn init [descriptor]
                   (Plugin ^id "render_tasks" ^provides [["web_components" "panicking"] ["web_components" "child"] ["web_components" "healthy"]] ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "panicking" ^slot "sidebar" ^render (fn [context] ($panic "render panic probe"))}) (host .PluginHost:contribute "web_components" {^name "child" ^slot "sidebar" ^render (fn [context] (scope (spawn ^lane root ($sleep 60000)) (quote (p "Must wait for child"))))}) (host .PluginHost:contribute "web_components" {^name "healthy" ^slot "sidebar" ^render (fn [context] (quote (p "Still rendering")))})))))))
           (register_plugin
@@ -789,7 +789,7 @@ child/.detach
         (let source
           (quote
             (mod plugin
-              (import ^from "src/plugin_api.gene" [Plugin PluginHost CommandResult])
+              (import ^from "src/plugin_api.gene" Plugin PluginHost CommandResult)
               (fn init [descriptor]
                 (Plugin ^id "counter" ^provides [["commands" "counter"] ["web_components" "counter"] ["web_components" "welcome"]] ^activate (fn [host] (host .PluginHost:contribute "commands" {^name "counter" ^usage "/counter" ^doc "Increment the persistent counter." ^run (fn [ctx] (let state (?? host/.PluginHost:state {^count 0})) (host .PluginHost:update_state {^count (+ state/count 1)}) (CommandResult ^display "Counted."))}) (host .PluginHost:contribute "web_components" {^name "counter" ^slot "sidebar" ^render (fn [context] (let state (?? host/.PluginHost:state {^count 0})) `(section ^class_name "web_card" (strong %state/count) (button ^command "/counter" "Add")))}) (host .PluginHost:contribute "web_components" {^name "welcome" ^slot "welcome" ^view (quote (section (h2 "Custom welcome") (button ^prompt "Build a feature" "Start")))})))))))
         (try

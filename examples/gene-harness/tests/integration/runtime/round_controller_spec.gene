@@ -1,20 +1,20 @@
 # Tests src/runtime/round_controller.gene.
 (import $test [describe it])
-(import [isolated run_spec test_controller set_test_provider] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [baseline_profile] ^from "../../../src/profiles/baseline")
-(import [create_session load_session] ^from "../../../src/runtime/sessions")
-(import [submit_round round_receipt cancel_round close_round_controller
-         save_round RoundError answer_round request_stop resume_answered_rounds continue_round]
+(import isolated run_spec test_controller set_test_provider ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import baseline_profile ^from "../../../src/profiles/baseline")
+(import create_session load_session ^from "../../../src/runtime/sessions")
+(import submit_round round_receipt cancel_round close_round_controller
+         save_round RoundError answer_round request_stop resume_answered_rounds continue_round
   ^from "../../../src/runtime/round_controller")
-(import [events_for append_core_event flush_event_store core_state record_core_state] ^from "../../../src/storage/state")
-(import [QuestionError answer_questions] ^from "../../../src/runtime/questions")
-(import [append_message] ^from "../../../src/agents/history")
-(import [RoundChanged provide put_cordis_plugin] ^from "../../../src/kernel")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [scripted_profile] ^from "../../../src/profiles/scripted")
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
+(import events_for append_core_event flush_event_store core_state record_core_state ^from "../../../src/storage/state")
+(import QuestionError answer_questions ^from "../../../src/runtime/questions")
+(import append_message ^from "../../../src/agents/history")
+(import RoundChanged provide put_cordis_plugin ^from "../../../src/kernel")
+(import Profile ^from "../../../src/profiles/profile")
+(import Plugin PluginHost ^from "../../../src/plugin_api")
+(import scripted_profile ^from "../../../src/profiles/scripted")
+(import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
 
 (fn attempt [controller, id]
   (try {^^accepted ^receipt (submit_round controller "race" id 1 "ask")}

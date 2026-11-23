@@ -1,7 +1,7 @@
-(import [Section Article Figure] ^from "../../model")
-(import [Chart] ^from "../../extensions/chart")
-(import [Table] ^from "../../extensions/table")
-(import [Render] ^from "./contracts")
+(import Section Article Figure ^from "../../model")
+(import Chart ^from "../../extensions/chart")
+(import Table ^from "../../extensions/table")
+(import Render ^from "./contracts")
 (impl Render for Section ^^export
   (message render [each : (Callable [Any Any] Str)] : Str
     (var out self/title)

@@ -1,6 +1,6 @@
 # Third-party scoped impls (neither the protocol nor the types live here).
-(import [Section Article Figure Chart] ^from "../model")
-(import [Render] ^from "./contracts")
+(import Section Article Figure Chart ^from "../model")
+(import Render ^from "./contracts")
 
 (impl Render for Section ^^export
   (message render [each : (Callable [Any Any] Str)] : Str

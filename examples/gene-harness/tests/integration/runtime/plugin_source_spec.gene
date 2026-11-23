@@ -1,19 +1,19 @@
 (import $test [describe it])
-(import ^from "../../support" [isolated run_spec])
-(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
-(import ^from "../../../src/profiles/profile" [Profile])
-(import ^from "../../../src/plugin_api" [Plugin])
-(import ^from "../../../src/builtin/plugin_admin" [plugin_admin])
-(import ^from "../../../src/builtin/core_commands" [core_commands])
-(import ^from "../../../src/builtin/provider_offline" [provider_offline])
-(import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
-(import ^from "../../../src/runtime/commands" [submit_command command_receipt])
-(import ^from "../../../src/runtime/sessions" [create_session update_session delete_session])
-(import ^from "../../../src/runtime/plugin_manager" [plugin_catalog plugin_history_catalog])
-(import ^from "../../../src/runtime/plugin_plans" [validate_plan apply_plan])
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
-(import [composition_entries composition_revision] ^from "../../../src/storage/composition_store")
-(import [set_plugin_enabled restore_plugin revert_plugin revert_entry] ^from "../../../src/storage/workspace_repair")
+(import ^from "../../support" isolated run_spec)
+(import ^from "../../../src/runtime/bootstrap" open_runtime close_runtime)
+(import ^from "../../../src/profiles/profile" Profile)
+(import ^from "../../../src/plugin_api" Plugin)
+(import ^from "../../../src/builtin/plugin_admin" plugin_admin)
+(import ^from "../../../src/builtin/core_commands" core_commands)
+(import ^from "../../../src/builtin/provider_offline" provider_offline)
+(import ^from "../../../src/agents/harness_turn" evaluate_harness_turn)
+(import ^from "../../../src/runtime/commands" submit_command command_receipt)
+(import ^from "../../../src/runtime/sessions" create_session update_session delete_session)
+(import ^from "../../../src/runtime/plugin_manager" plugin_catalog plugin_history_catalog)
+(import ^from "../../../src/runtime/plugin_plans" validate_plan apply_plan)
+(import register_plugin ^from "../../../src/storage/workspace_activation")
+(import composition_entries composition_revision ^from "../../../src/storage/composition_store")
+(import set_plugin_enabled restore_plugin revert_plugin revert_entry ^from "../../../src/storage/workspace_repair")
 
 (fn profile [^builtin builtin : Bool = false]
   (let plugins [(plugin_admin) (core_commands) (provider_offline)])
@@ -22,7 +22,7 @@
 
 (fn source [id : Str, version : Int, ^bad_init bad_init : Bool = false, ^bad_activation bad_activation : Bool = false]
   `(mod plugin
-     (import ^from "src/plugin_api.gene" [Plugin])
+     (import ^from "src/plugin_api.gene" Plugin)
      (fn version [] %version)
      (fn init [descriptor]
        (if %bad_init (fail (Error ^_msg "preflight failure")))

@@ -15,8 +15,8 @@
 # An outcome is {^status sent|pending|uncertain|failed ^ts ^error ^retry_at}.
 # Transport errors reach callers as ChannelError with their code preserved.
 (mod channel_transports)
-(import [current_snapshot] ^from "../runtime/composition")
-(import [ChannelError channel_error transcript_reference] ^from "./model")
+(import current_snapshot ^from "../runtime/composition")
+(import ChannelError channel_error transcript_reference ^from "./model")
 
 (fn transport_rows [runtime]
   (if (|| ($absent? runtime) ($absent? runtime/h) ($absent? runtime/h/snapshots)) (return []))

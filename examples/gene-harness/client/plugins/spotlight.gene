@@ -1,7 +1,7 @@
 (mod harness_spotlight ^profile web)
-(import [api_root] ^from "../../src/web/contract.gene")
-(import [text flag items match_rank insert_ranked merge_results moved] ^from "../../src/common/launcher.gene")
-(import [go] ^from "../ui/navigation.gene")
+(import api_root ^from "../../src/web/contract.gene")
+(import text flag items match_rank insert_ranked merge_results moved ^from "../../src/common/launcher.gene")
+(import go ^from "../ui/navigation.gene")
 
 (type Spotlight ^props {^root EventTarget ^bridge Any ^owner Str ^button EventTarget
   ^panel EventTarget ^input EventTarget ^list EventTarget ^message EventTarget ^crumb EventTarget

@@ -2,9 +2,9 @@
 # host's event shape. The host records it durably (dedup, authorization,
 # queue) before the reader acknowledges the envelope.
 (mod slack_ingress)
-(import [slack_error SlackError] ^from "./api")
-(import [decode_text] ^from "./text")
-(import [ChannelHost] ^from "../../plugin_api")
+(import slack_error SlackError ^from "./api")
+(import decode_text ^from "./text")
+(import ChannelHost ^from "../../plugin_api")
 
 (fn ^^private text_field [value, label : Str, ^max_bytes maximum : Int = 256] : Str
   (if (|| (!= ($head value) Str) (== value "") (> value/.byte_size maximum))

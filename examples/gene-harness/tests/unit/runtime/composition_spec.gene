@@ -1,8 +1,8 @@
 # Tests src/runtime/composition.gene.
 (import $test [describe it run])
-(import [new_composition_state current_snapshot acquire_snapshot release_snapshot publish_snapshot
+(import new_composition_state current_snapshot acquire_snapshot release_snapshot publish_snapshot
          queue_composition_change take_composition_changes queue_retirement
-         close_composition_state subscribe_publications]
+         close_composition_state subscribe_publications
   ^from "../../../src/runtime/composition")
 
 (describe "Harness composition"

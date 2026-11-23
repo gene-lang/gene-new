@@ -22104,7 +22104,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   spec.sourceLabel & "/" & name)
               scope.addWildcardFallback(name, value, spec.sourceLabel)
           for sel in spec.selections:
-            let v = sourceNs.exportedBinding(sel.name)
+            var v = sourceNs
+            for segment in sel.name.split('/'):
+              v = v.exportedBinding(segment)
+              if v.isMissing:
+                break
             if v.isMissing:
               raise newException(GeneError, "module/namespace has no export: " & sel.name)
             scope.define(sel.local, v)
@@ -35229,10 +35233,13 @@ proc compileModuleArtifactRaw(app: Application,
         let path = selection.name.split('/')
         let resolved = compileInterfaceEntryAt(depInterface,
                                                path)
-        if resolved.found and resolved.entry.category == cbcMacro:
+        if resolved.found and (resolved.entry.category == cbcMacro or
+            (resolved.entry.category == cbcNamespace and
+             compileInterfacePaths(resolved.entry.namespace, cbcMacro).len > 0)):
           needsMacroArtifact = true
           break
-      var hasRuntimeImport = importSpec.alias.len > 0 or importSpec.wildcard
+      var hasRuntimeImport = importSpec.alias.len > 0 or importSpec.wildcard or
+        importSpec.selections.len == 0
       if not hasRuntimeImport:
         for selection in importSpec.selections:
           let resolved = compileInterfaceEntryAt(
@@ -35311,6 +35318,15 @@ proc compileModuleArtifactRaw(app: Application,
         if selection.name in dependency.syntaxFnExports and
             selection.local notin syntaxFnExports:
           syntaxFnExports.add selection.local
+        let prefix = selection.name & "/"
+        for path, definition in dependency.macroExports:
+          if path.startsWith(prefix):
+            macroExports[selection.local & "/" & path[prefix.len .. ^1]] = definition
+        for path in dependency.syntaxFnExports:
+          if path.startsWith(prefix):
+            let exported = selection.local & "/" & path[prefix.len .. ^1]
+            if exported notin syntaxFnExports:
+              syntaxFnExports.add exported
       if spec.alias.len > 0:
         let prefix = spec.wildcardSegments.join("/")
         for path, definition in dependency.macroExports:

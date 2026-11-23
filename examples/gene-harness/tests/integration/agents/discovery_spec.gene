@@ -1,15 +1,15 @@
 # Tests src/agents/discovery.gene, including plugin ownership and turn leases.
 (import $test [describe it])
-(import ^from "../../support" [isolated run_spec])
+(import ^from "../../support" isolated run_spec)
 (import ^from "../../../src/kernel"
-  [new_harness shutdown_harness put_cordis_plugin uninstall contribute doc])
-(import ^from "../../../src/plugin_api" [Plugin PluginHost])
-(import ^from "../../../src/agents/discovery" [discover])
-(import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
-(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
-(import ^from "../../../src/profiles/baseline" [baseline_profile])
-(import [set_plugin_enabled] ^from "../../../src/storage/workspace_repair")
-(import ^from "../../../src/agents/instructions" [assemble_instructions])
+  new_harness shutdown_harness put_cordis_plugin uninstall contribute doc)
+(import ^from "../../../src/plugin_api" Plugin PluginHost)
+(import ^from "../../../src/agents/discovery" discover)
+(import ^from "../../../src/agents/harness_turn" evaluate_harness_turn)
+(import ^from "../../../src/runtime/bootstrap" open_runtime close_runtime)
+(import ^from "../../../src/profiles/baseline" baseline_profile)
+(import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
+(import ^from "../../../src/agents/instructions" assemble_instructions)
 
 (fn widget [version : Str]
   (Plugin ^id "widget" ^activate (fn [host] (host .PluginHost:contribute "docs" {^name "widget/guide" ^summary $"${version} widget editing guide" ^tags ["forms" "editing"] ^text $"${version} detailed help"}) (host .PluginHost:contribute "functions" {^name "widget_save" ^doc $"${version} save an edited widget" ^tags ["forms"] ^docs ["widget/guide"] ^fn (fn [^expected expected : Str] version)}))))

@@ -1,8 +1,8 @@
 # User-initiated loopback sign-in. Secrets stay inside the transport and the
 # owner-only credential file; public status contains no callback parameters.
 (mod provider_login)
-(import [ProviderError] ^from "../plugin_api")
-(import [nonempty] ^from "./provider")
+(import ProviderError ^from "../plugin_api")
+(import nonempty ^from "./provider")
 (import $net/http_client [request])
 (import $sync [gate])
 

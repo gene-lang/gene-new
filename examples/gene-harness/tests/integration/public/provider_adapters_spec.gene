@@ -1,7 +1,7 @@
 (import $test [describe it])
-(import [isolated run_spec fixture_path] ^from "../../support")
-(import [endpoint_provider] ^from "../../../src/public/provider")
-(import [ProviderError] ^from "../../../src/plugin_api")
+(import isolated run_spec fixture_path ^from "../../support")
+(import endpoint_provider ^from "../../../src/public/provider")
+(import ProviderError ^from "../../../src/plugin_api")
 (import $net/http [listen serve stop json Response])
 
 (fn stream [events]

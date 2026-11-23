@@ -1,6 +1,6 @@
 # Shared host ownership; plugin graphs use the bridge instead of importing it.
 (mod harness_overlays ^profile web)
-(import [text] ^from "../src/common/launcher.gene")
+(import text ^from "../src/common/launcher.gene")
 
 (fn keyboard_owned? [] : Bool
   (var root ($dom/element "harness_root"))

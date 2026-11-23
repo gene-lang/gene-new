@@ -6,7 +6,7 @@
 # copy buttons, Gene highlighting, and the narrow-screen menu. It never runs
 # example code and never calls the Harness API.
 
-(import [code_view] ^from "./highlight.gene")
+(import code_view ^from "./highlight.gene")
 
 (fn view_names [] : (List Str)
   ["request" "plugin" "result"])

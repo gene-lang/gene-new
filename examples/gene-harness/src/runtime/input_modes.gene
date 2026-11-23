@@ -1,8 +1,8 @@
 (mod input_modes)
-(import [log_event] ^from "../kernel/log")
-(import [ModeChanged publish] ^from "../kernel")
-(import [retain_snapshot release_snapshot subscribe_publications] ^from "./composition")
-(import [with_session_gate require_record] ^from "./sessions")
+(import log_event ^from "../kernel/log")
+(import ModeChanged publish ^from "../kernel")
+(import retain_snapshot release_snapshot subscribe_publications ^from "./composition")
+(import with_session_gate require_record ^from "./sessions")
 
 (type ModeError : Error ^props {^code Str ^mode Any?})
 (type InputModes ^props {^runtime Any ^states Any ^jobs Any ^closed Any

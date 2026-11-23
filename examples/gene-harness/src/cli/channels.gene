@@ -1,6 +1,6 @@
 (mod cli_channels)
-(import [api] ^from "./client")
-(import [problem read_data_file] ^from "./options")
+(import api ^from "./client")
+(import problem read_data_file ^from "./options")
 
 (fn channel_command [client, words, options]
   (let action (?? words/1 "status"))

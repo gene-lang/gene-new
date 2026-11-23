@@ -1,6 +1,6 @@
 # Module B owns the compact policy. Its send sites resolve with B's scope.
-(import [Article] ^from "./model")
-(import [Render] ^from "./contracts")
+(import Article ^from "./model")
+(import Render ^from "./contracts")
 (import_impl Render for Article ^from "./compact")
 (fn call_value [op article] (op article))
 (fn dynamic_send [op article] (article .%op))

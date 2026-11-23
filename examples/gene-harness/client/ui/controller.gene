@@ -1,12 +1,11 @@
 # Workspace panel requests, actions and layout; independent of chat drafts.
 (mod harness_ui_controller ^profile web)
-(import ^from "../contrast.gene" [update_ratio])
-(import ^from "../appearance.gene" [BrowserAppearance change_appearance appearance_control load_preview])
-(import [storage_get storage_remove] ^from "../workspace_storage.gene")
-(import [api_root] ^from "../../src/web/contract.gene")
-(import ^from "../notices.gene" [Notices])
+(import ^from "../contrast.gene" update_ratio)
+(import ^from "../appearance.gene" BrowserAppearance change_appearance appearance_control load_preview)
+(import storage_get storage_remove ^from "../workspace_storage.gene")
+(import api_root ^from "../../src/web/contract.gene")
+(import ^from "../notices.gene" Notices)
 (import ^from "./model.gene"
-  [
     UiNode
     UiClient
     UiNavigation
@@ -22,11 +21,11 @@
     persist_pending
     field_value
     sync_controls
-    clear_saved_drafts])
-(import ^from "./tree.gene" [apply_tree])
-(import ^from "../state.gene" [revision_before])
-(import ^from "../sidebar.gene" [create_sidebar])
-(import ^from "./router.gene" [navigate update_views install_router capture_view restore_focus update_url layout])
+    clear_saved_drafts)
+(import ^from "./tree.gene" apply_tree)
+(import ^from "../state.gene" revision_before)
+(import ^from "../sidebar.gene" create_sidebar)
+(import ^from "./router.gene" navigate update_views install_router capture_view restore_focus update_url layout)
 
 (fn outlet_nodes [ui : UiClient] : (List Any)
   # Outlets that survived this render, in node-key order. The element identity

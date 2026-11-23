@@ -1,8 +1,8 @@
 (mod slack_plugin)
-(import [Plugin PluginHost ChannelHost] ^from "../plugin_api")
-(import [contribute_doc] ^from "../public/documentation")
-(import [slack_adapter close_adapter] ^from "./slack/adapter")
-(import [open_transport close_transport transport_loop] ^from "./slack/transport")
+(import Plugin PluginHost ChannelHost ^from "../plugin_api")
+(import contribute_doc ^from "../public/documentation")
+(import slack_adapter close_adapter ^from "./slack/adapter")
+(import open_transport close_transport transport_loop ^from "./slack/transport")
 
 # The Slack adapter: its `channel_transports` row (render, send, reconcile,
 # lookups, setup checks) and the Socket Mode receiver. The receiver is a slot

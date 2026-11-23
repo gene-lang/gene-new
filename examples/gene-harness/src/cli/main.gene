@@ -1,11 +1,11 @@
 (mod cli_main)
-(import ^from "./options" [CliError problem joined_words read_data_file])
-(import ^from "./client" [connect api connection_link session_path execution_receipt wait_for])
-(import ^from "../runtime/maintenance" [repair reset_offline])
-(import ^from "../runtime/workspace_lock" [WorkspaceInUse])
-(import ^from "./notification_presenter" [notification_command present_message])
-(import [channel_command] ^from "./channels")
-(import [named_model_choice] ^from "../public/model_choices")
+(import ^from "./options" CliError problem joined_words read_data_file)
+(import ^from "./client" connect api connection_link session_path execution_receipt wait_for)
+(import ^from "../runtime/maintenance" repair reset_offline)
+(import ^from "../runtime/workspace_lock" WorkspaceInUse)
+(import ^from "./notification_presenter" notification_command present_message)
+(import channel_command ^from "./channels")
+(import named_model_choice ^from "../public/model_choices")
 
 (fn usage [] """Gene Harness: one web host per workspace.
   gene-harness web [--workspace DIR] [--port PORT] [--offline | --script FILE]

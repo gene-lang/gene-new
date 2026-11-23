@@ -1,15 +1,15 @@
 (import $test [describe it])
-(import ^from "../../support" [isolated run_spec])
-(import ^from "../../web_support" [start_host stop_host cli])
-(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
-(import ^from "../../../src/profiles/profile" [Profile])
-(import ^from "../../../src/builtin/plugin_admin" [plugin_admin])
-(import ^from "../../../src/agents/harness_turn" [evaluate_harness_turn])
-(import ^from "../../../src/storage/state" [record_plugin_state])
+(import ^from "../../support" isolated run_spec)
+(import ^from "../../web_support" start_host stop_host cli)
+(import ^from "../../../src/runtime/bootstrap" open_runtime close_runtime)
+(import ^from "../../../src/profiles/profile" Profile)
+(import ^from "../../../src/builtin/plugin_admin" plugin_admin)
+(import ^from "../../../src/agents/harness_turn" evaluate_harness_turn)
+(import ^from "../../../src/storage/state" record_plugin_state)
 
 (fn source [bad]
   ($to_str `(mod plugin
-    (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+    (import ^from "src/plugin_api.gene" Plugin PluginHost)
     (type FixtureFailure : Error)
     (fn init [descriptor]
       (Plugin ^id "cli_fixture" ^provides [["functions" "cli_value"]]

@@ -1,7 +1,7 @@
-(import [Section Article Figure] ^from "../../model")
-(import [Chart] ^from "./chart")
-(import [PlainRender] ^from "./plain_policy")
-(import [CompactRender] ^from "./compact_policy")
+(import Section Article Figure ^from "../../model")
+(import Chart ^from "./chart")
+(import PlainRender ^from "./plain_policy")
+(import CompactRender ^from "./compact_policy")
 (let document (Section ^title "Report" ^children [
   (Article ^title "Intro" ^text "hello")
   (Section ^title "Data" ^children [(Chart ^caption "growth") (Figure ^caption "map")])]))

@@ -1,9 +1,9 @@
 # Console OAuth uses ant's documented token-export command. Claude Code's
 # subscription credentials are never inspected or passed to the Messages API.
 (mod anthropic_auth)
-(import [ProviderError] ^from "../plugin_api")
-(import [nonempty resolve_credential] ^from "./provider")
-(import [cli_probe api_connection] ^from "./provider_discovery")
+(import ProviderError ^from "../plugin_api")
+(import nonempty resolve_credential ^from "./provider")
+(import cli_probe api_connection ^from "./provider_discovery")
 
 (fn auth_env [name : Str, environment]
   (if ($present? environment) (environment .get name) else ($os/env? name)))

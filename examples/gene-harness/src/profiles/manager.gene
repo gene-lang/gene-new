@@ -1,6 +1,6 @@
 (mod manager_profile)
-(import ^from "./profile" [Profile])
-(import ^from "../builtin/workspace_manager" [workspace_manager])
+(import ^from "./profile" Profile)
+(import ^from "../builtin/workspace_manager" workspace_manager)
 
 (fn manager_profile [base]
   (let plugins [])

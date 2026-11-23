@@ -1,6 +1,6 @@
 # Pure catalog operations shared by the loop and model contributions.
 (mod models)
-(import [ProviderError] ^from "../plugin_api")
+(import ProviderError ^from "../plugin_api")
 
 (const effort_ladder ["none" "minimal" "low" "medium" "high" "xhigh" "max"])
 

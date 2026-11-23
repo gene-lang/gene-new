@@ -1,8 +1,8 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_model_catalog close_model_catalog refresh_catalog catalog_snapshot catalog_failure adopt_catalog_connection]
+(import isolated run_spec ^from "../../support")
+(import open_model_catalog close_model_catalog refresh_catalog catalog_snapshot catalog_failure adopt_catalog_connection
   ^from "../../../src/public/model_catalog")
-(import [bounded_probe claude_connection] ^from "../../../src/public/provider_discovery")
+(import bounded_probe claude_connection ^from "../../../src/public/provider_discovery")
 
 (describe "Model catalog discovery"
   (it "retries unavailable connections and keeps ready metadata through transient failures" []

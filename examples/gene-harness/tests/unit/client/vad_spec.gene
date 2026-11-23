@@ -1,5 +1,5 @@
 (import $test [describe it run])
-(import [new_vad vad_step] ^from "../../../src/common/vad.gene")
+(import new_vad vad_step ^from "../../../src/common/vad.gene")
 
 (describe "Hands-free energy VAD"
   (it "ignores brief noise, starts on sustained speech and ends after 600 ms of silence" []

@@ -1,8 +1,8 @@
 # F: Weight as explicit entries (one matcher + handler per receiver type).
-(import [Section Article Figure] ^from "../model")
-(import [Chart] ^from "../extensions/chart")
-(import [Table] ^from "../extensions/table")
-(import [entry] ^from "./dispatch")
+(import Section Article Figure ^from "../model")
+(import Chart ^from "../extensions/chart")
+(import Table ^from "../extensions/table")
+(import entry ^from "./dispatch")
 (fn is_section [n] (match n when (x : Section) true else false))
 (fn is_article [n] (match n when (x : Article) true else false))
 (fn is_figure [n] (match n when (x : Figure) true else false))

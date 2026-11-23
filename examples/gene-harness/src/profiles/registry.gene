@@ -1,8 +1,8 @@
 (mod profiles)
-(import [baseline_profile] ^from "./baseline")
-(import [offline_profile] ^from "./offline")
-(import [manager_profile] ^from "./manager")
-(import [manager_workspace?] ^from "../runtime/workspace_settings")
+(import baseline_profile ^from "./baseline")
+(import offline_profile ^from "./offline")
+(import manager_profile ^from "./manager")
+(import manager_workspace? ^from "../runtime/workspace_settings")
 (fn profile_names [] ["web" "manager"])
 (fn profile_named [name : Str]
   (if_not ((profile_names) .contains? name) (fail (Error ^_msg $"unknown profile ${name}")))

@@ -1,9 +1,9 @@
 (import $test [describe it])
-(import [ParticipantFailure new_turn_transaction begin_turn_transaction run_turn_phase
-  release_turn_transaction finish_turn_transaction guard_participant_callback]
+(import ParticipantFailure new_turn_transaction begin_turn_transaction run_turn_phase
+  release_turn_transaction finish_turn_transaction guard_participant_callback
   ^from "../../../src/runtime/turn_participants")
-(import [participant_bindings] ^from "../../../src/agents/turn_participation")
-(import [ParticipantBindings] ^from "../../../src/runtime/participant_contract")
+(import participant_bindings ^from "../../../src/agents/turn_participation")
+(import ParticipantBindings ^from "../../../src/runtime/participant_contract")
 
 (const phases ["request_items" "request_admitted" "bindings" "response_recorded" "validate_outcome" "commit"])
 

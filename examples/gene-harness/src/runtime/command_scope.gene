@@ -1,7 +1,7 @@
 # Authenticated, call-local command context. A public CommandContext is not
 # itself authority to execute a second command or create a new receipt.
 (mod command_scope)
-(import [ServiceError] ^from "../plugin_api")
+(import ServiceError ^from "../plugin_api")
 (var calls ^^private ($cell []))
 (var gate ^^private ($sync/gate))
 

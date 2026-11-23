@@ -1,9 +1,9 @@
 (import $test [describe it run])
-(import [new_harness contribute shutdown_harness install uninstall row Plugin PluginHost] ^from "../../../src/kernel")
-(import [new_speech_service choose_speech_engine warm_engine synthesize_speech cool_speech]
+(import new_harness contribute shutdown_harness install uninstall row Plugin PluginHost ^from "../../../src/kernel")
+(import new_speech_service choose_speech_engine warm_engine synthesize_speech cool_speech
   ^from "../../../src/runtime/speech_service")
-(import [bounded_audio_call] ^from "../../../src/audio/call")
-(import [AudioError audio_error] ^from "./audio" ^pkg "audio")
+(import bounded_audio_call ^from "../../../src/audio/call")
+(import AudioError audio_error ^from "./audio" ^pkg "audio")
 
 (describe "Host speech engine lifecycle"
   (it "uses profile then environment then config then available auto rank" []

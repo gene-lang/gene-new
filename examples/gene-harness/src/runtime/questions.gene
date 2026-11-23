@@ -1,6 +1,6 @@
 (mod questions)
-(import [core_state record_core_state flush_event_store] ^from "../storage/state")
-(import [bounded_card_view WebComponentError] ^from "../ui/components")
+(import core_state record_core_state flush_event_store ^from "../storage/state")
+(import bounded_card_view WebComponentError ^from "../ui/components")
 
 (type QuestionError : Error)
 (var answer_gate ^^private ($sync/gate))

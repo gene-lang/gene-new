@@ -1,9 +1,9 @@
 (import $test [describe it run])
-(import [prepare_chat prepare_responses prepare_messages output_budget chat_result responses_result
-  messages_result responses_stream_result messages_stream_result] ^from "../../../src/public/provider_payloads")
-(import [openai_chat openrouter_chat openai_responses anthropic_messages file_endpoint] ^from "../../../src/public/provider")
-(import [ProviderError] ^from "../../../src/plugin_api")
-(import [raw_blocks] ^from "../builtin/support")
+(import prepare_chat prepare_responses prepare_messages output_budget chat_result responses_result
+  messages_result responses_stream_result messages_stream_result ^from "../../../src/public/provider_payloads")
+(import openai_chat openrouter_chat openai_responses anthropic_messages file_endpoint ^from "../../../src/public/provider")
+(import ProviderError ^from "../../../src/plugin_api")
+(import raw_blocks ^from "../builtin/support")
 
 (fn call [effort]
   {^settings {^model "test" ^effort effort ^timeout_ms 600000 ^max_output 50000}

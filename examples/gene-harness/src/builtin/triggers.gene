@@ -1,9 +1,9 @@
 (mod triggers)
-(import ^from "../plugin_api" [Plugin PluginHost])
-(import ^from "../public/documentation" [contribute_doc])
-(import [new_scheduler run_scheduler create_trigger update_trigger delete_trigger list_triggers list_occurrences]
+(import ^from "../plugin_api" Plugin PluginHost)
+(import ^from "../public/documentation" contribute_doc)
+(import new_scheduler run_scheduler create_trigger update_trigger delete_trigger list_triggers list_occurrences
   ^from "./triggers/scheduler")
-(import [trigger_route] ^from "./triggers/routes")
+(import trigger_route ^from "./triggers/routes")
 
 # The browser client is compiled once, at descriptor construction, as the
 # spotlight built-in does; a compile failure quarantines only this plugin.

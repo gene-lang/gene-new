@@ -1,11 +1,11 @@
 (import $test [describe it])
-(import [isolated run_spec test_controller fixture_path] ^from "../../support")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [submit_round round_receipt] ^from "../../../src/runtime/round_controller")
-(import [provide put_cordis_plugin] ^from "../../../src/kernel")
-(import [resolve_credential] ^from "../../../src/public/provider")
+(import isolated run_spec test_controller fixture_path ^from "../../support")
+(import Plugin PluginHost ^from "../../../src/plugin_api")
+(import Profile ^from "../../../src/profiles/profile")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import submit_round round_receipt ^from "../../../src/runtime/round_controller")
+(import provide put_cordis_plugin ^from "../../../src/kernel")
+(import resolve_credential ^from "../../../src/public/provider")
 
 (fn connection_cache [billing : Str, account : Str]
   {^providers {^identity {^connection {^state "ready" ^billing billing ^account account}

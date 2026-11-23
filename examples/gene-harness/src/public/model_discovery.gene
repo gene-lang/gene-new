@@ -1,9 +1,9 @@
 # Normalize vendor metadata to the small catalog contract. Never retain raw
 # responses (ChatGPT catalogs can contain entire instruction templates).
 (mod model_discovery)
-(import [ProviderError] ^from "../plugin_api")
-(import [effort_ladder] ^from "./models")
-(import [anthropic_thinking_off] ^from "./model_defaults")
+(import ProviderError ^from "../plugin_api")
+(import effort_ladder ^from "./models")
+(import anthropic_thinking_off ^from "./model_defaults")
 
 (fn catalog_items [payload, field]
   (if (!= ($head payload) Map)

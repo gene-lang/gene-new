@@ -1,6 +1,6 @@
 # Publish an edition-demo review milestone without injecting a manual into the initial prompt.
 (mod plugin
-  (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+  (import Plugin PluginHost ^from "src/plugin_api.gene")
 
   # Publish a source-owned, keyed milestone with an edition entity and a draft-only action.
   (fn publish_review_notice [host, revision : Str, summary : Str]

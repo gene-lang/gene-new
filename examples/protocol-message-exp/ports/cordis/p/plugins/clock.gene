@@ -1,8 +1,8 @@
 (mod clock_plugin)
 
-(import [PluginSpec] ^from "../src/plugin_api")
-(import [Clock clock_key] ^from "../src/demo_contract")
-(import [CounterClock] ^from "./counter_type")
+(import PluginSpec ^from "../src/plugin_api")
+(import Clock clock_key ^from "../src/demo_contract")
+(import CounterClock ^from "./counter_type")
 
 # P: the pair is scoped, so it is visible here only. `check_clock` (declared in
 # demo_contract) cannot see it; the canonical ClockHandle adapter below, owned by

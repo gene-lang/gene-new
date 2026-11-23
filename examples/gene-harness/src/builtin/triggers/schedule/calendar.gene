@@ -1,5 +1,5 @@
 (mod calendar)
-(import [problem] ^from "./errors")
+(import problem ^from "./errors")
 (fn floor_div [value, divisor]
   (let truncated ($to_int (/ value divisor)))
   (if (< (* truncated divisor) value)

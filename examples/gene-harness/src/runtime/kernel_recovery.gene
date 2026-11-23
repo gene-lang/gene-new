@@ -1,9 +1,9 @@
 # Startup repair runs after catalog admission and before any execution host.
 # Reasoned session recovery precedes the broader sweep: a turn ends only once.
 (mod kernel_recovery)
-(import [recover_sessions] ^from "./sessions")
-(import [repair_interrupted_turns unload_event_stream] ^from "../storage/state")
-(import [recover_image_runs] ^from "../storage/image_recovery")
+(import recover_sessions ^from "./sessions")
+(import repair_interrupted_turns unload_event_stream ^from "../storage/state")
+(import recover_image_runs ^from "../storage/image_recovery")
 
 (fn recover_runtime_state [runtime]
   (recover_sessions runtime/sessions)

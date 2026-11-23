@@ -1,16 +1,15 @@
 (import $test [describe it])
-(import ^from "../../support" [isolated run_spec])
+(import ^from "../../support" isolated run_spec)
 (import ^from "../../../src/runtime/workspace_settings"
-  [
     read_workspace_settings
     write_workspace_settings
     update_workspace_settings
     manager_root_path
     initialize_manager_workspace
-    WorkspaceSettingsError])
-(import ^from "../../../src/runtime/host_log" [open_host_log write_host_log close_host_log])
-(import ^from "../../../src/kernel" [new_harness contribute HarnessError])
-(import ^from "../../../src/agents/provider_selection" [select_provider readiness_report])
+    WorkspaceSettingsError)
+(import ^from "../../../src/runtime/host_log" open_host_log write_host_log close_host_log)
+(import ^from "../../../src/kernel" new_harness contribute HarnessError)
+(import ^from "../../../src/agents/provider_selection" select_provider readiness_report)
 
 (describe
   "Manager workspace settings"

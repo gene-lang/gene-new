@@ -3088,7 +3088,11 @@ proc frontendImportMacros(c: var Compiler, node: Value) =
       c.importMacro(selection.local, exported[selection.name])
       if spec.reexport: c.publicMacroNames.incl selection.local
     else:
-      discard c.reserveLocal(selection.local, allowFexprName = true)
+      discard c.reserveLocal(selection.local, allowFexprName = true, importing = true)
+      let prefix = selection.name & "/"
+      for path, definition in exported:
+        if path.startsWith(prefix):
+          c.importMacro(selection.local & "/" & path[prefix.len .. ^1], definition)
   if spec.wildcard or spec.alias.len > 0:
     let prefix = if spec.wildcardSegments.len > 0:
                    spec.wildcardSegments.join("/") & "/" else: ""
@@ -5729,55 +5733,132 @@ proc compileFexpr(c: var Compiler, node: Value) =
       c.moduleSyntaxFnExports[].incl(
         (c.namespacePath & @[name]).join("/"))
 
-proc importSelections(sel: Value): seq[ImportSelection] =
-  ## Parse a single name `add` or a `[add, sub : minus]` selection list. The
-  ## reader keeps vectors as flat tokens, so `,` and `:` arrive as symbols.
-  proc selectionName(value: Value): string =
-    if value.kind == vkSymbol:
-      return value.symVal
-    if value.kind == vkNode and value.head.isSymbol("path"):
-      var segments: seq[string]
-      for segment in value.body:
-        if segment.kind != vkSymbol:
-          return ""
-        segments.add segment.symVal
-      return segments.join("/")
-  let single = selectionName(sel)
-  if single.len > 0:
-    return @[ImportSelection(name: single, local: single)]
-  if sel.kind != vkList:
-    raise newException(GeneError, "import selection must be a name or [list]")
-  let items = sel.listItems
+proc importSelectorPath(value: Value): seq[string] =
+  if value.kind == vkSymbol:
+    let name = value.symVal
+    # The reader leaves unaliased paths inside vectors as symbols.
+    if '/' in name and name != "//" and not name.startsWith("/"):
+      return importSelectorPath(desugarPath(name))
+    if name.len > 0 and '/' notin name:
+      return @[name]
+  elif value.kind == vkNode and value.head.isSymbol("path") and
+      value.body.len > 0 and value.props.len == 0 and value.meta.len == 0:
+    for segment in value.body:
+      if segment.kind != vkSymbol or segment.symVal.len == 0 or
+          '/' in segment.symVal or segment.symVal.startsWith("~") or
+          segment.symVal.startsWith("?~"):
+        raise newException(GeneError, "import path segments must be names")
+      result.add segment.symVal
+    return
+  raise newException(GeneError, "import selector must be a name or a namespace path")
+
+proc isImportGroupPrefix(value: Value): bool =
+  (value.kind == vkNode and value.head.isSymbol("path")) or
+    (value.kind == vkSymbol and value.symVal.endsWith("/"))
+
+proc isImportAliasMarker(value: Value): bool =
+  value.kind == vkSymbol and value.symVal.startsWith(":")
+
+proc invalidImportAlias(source, alias: string) {.noreturn.} =
+  raise newException(GeneError, "write the import alias as `" & source & ":" &
+    alias & "` with no spaces around `:`")
+
+proc readImportSelector(value, following: Value, grouped: bool): tuple[
+    path: seq[string], alias: string] =
+  if value.kind == vkNode and value.head.isSymbol("msg") and
+      value.body.len == 2 and value.body[1].kind == vkSymbol and
+      value.props.len == 0 and value.meta.len == 0:
+    result.path = importSelectorPath(value.body[0])
+    result.alias = value.body[1].symVal
+  else:
+    result.path = importSelectorPath(value)
+    # A leading $ is desugared as a gene/ path before message qualification.
+    if result.path.len > 1 and result.path[0] == "gene":
+      let leaf = result.path[^1]
+      let colon = qualifiedMessageSplit(leaf)
+      if colon > 0:
+        result.path[^1] = leaf[0 ..< colon]
+        result.alias = leaf[colon + 1 .. ^1]
+  for i, segment in result.path:
+    let colon = segment.find(':')
+    if colon < 0:
+      continue
+    if colon == segment.high and colon > 0 and i == result.path.high:
+      result.path[i] = segment[0 ..< colon]
+      let source = result.path.join("/")
+      if following.kind == vkList:
+        raise newException(GeneError, "use `" & source & "/[...]` for an import group")
+      let alias = if following.kind == vkSymbol: following.symVal else: "alias"
+      invalidImportAlias(source, alias)
+    if colon > 0 and colon < segment.high:
+      let alias = segment[colon + 1 .. ^1]
+      result.path[i] = segment[0 ..< colon]
+      let source = result.path.join("/")
+      let replacement =
+        if grouped: source & ":" & alias & " " & source & "/[...]"
+        else: source & ":" & alias
+      raise newException(GeneError,
+        "put the import alias at the end of the selector; write `" & replacement & "`")
+    invalidImportAlias(segment.strip(chars = {':'}), "alias")
+  if result.alias.len > 0:
+    let tokens = lexAll(result.alias)
+    if ':' in result.alias or '/' in result.alias or
+        result.alias in [",", "*", "nil", "true", "false"] or
+        tokens.len != 1 or tokens[0].kind != tkSymbol or
+        tokens[0].lexeme != result.alias or result.alias.startsWith("."):
+      raise newException(GeneError, "import alias must be a single binding name")
+  if grouped and result.alias.len > 0:
+    raise newException(GeneError, "alias an individual member inside the import group")
+
+proc importSelectionParts(items: openArray[Value], index: int): tuple[
+    path: seq[string], alias: string, grouped: bool] =
+  let value = items[index]
+  let hasNext = index < items.high
+  let following = if hasNext: items[index + 1] else: NIL
+  result.grouped = following.kind == vkList and
+    isImportGroupPrefix(value)
+  (result.path, result.alias) = readImportSelector(value, following, result.grouped)
+  let after = index + (if result.grouped: 2 else: 1)
+  if after <= items.high and isImportAliasMarker(items[after]):
+    if result.grouped:
+      raise newException(GeneError, "alias an individual member inside the import group")
+    let marker = items[after].symVal
+    let alias =
+      if marker.len > 1: marker[1 .. ^1]
+      elif after < items.high and items[after + 1].kind == vkSymbol:
+        items[after + 1].symVal
+      else: "alias"
+    invalidImportAlias(result.path.join("/"), alias)
+
+proc collectImportSelections(items: openArray[Value], prefix: seq[string],
+                             selections: var seq[ImportSelection]) =
+  let initialCount = selections.len
   var i = 0
   while i < items.len:
-    let s = selectionName(items[i])
-    if s == "," or s == "":
+    if items[i].isSymbol(","):
       inc i
       continue
-    var local = s
-    inc i
-    if i < items.len and items[i].symbolText == ":":
+    let (path, alias, grouped) = importSelectionParts(items, i)
+    if "*" in path:
+      raise newException(GeneError, "an import wildcard must be the only selector")
+    let fullPath = prefix & path
+    if grouped:
+      collectImportSelections(items[i + 1].listItems, fullPath, selections)
+      inc i, 2
+    else:
+      selections.add ImportSelection(name: fullPath.join("/"),
+        local: if alias.len > 0: alias else: path[^1])
       inc i
-      if i >= items.len or items[i].kind != vkSymbol:
-        raise newException(GeneError, "import alias requires a name")
-      local = items[i].symVal
-      inc i
-    result.add ImportSelection(name: s, local: local)
+  if selections.len == initialCount:
+    raise newException(GeneError, "import requires at least one selection")
 
-proc wildcardPath(value: Value,
-                  segments: var seq[string]): bool =
-  if value.kind == vkSymbol:
-    return value.symVal == "*"
-  if value.kind != vkNode or not value.head.isSymbol("path") or
-      value.body.len == 0 or not value.body[^1].isSymbol("*"):
-    return false
-  for i in 0 ..< value.body.high:
-    if value.body[i].kind != vkSymbol:
-      return false
-    segments.add value.body[i].symVal
-  true
+proc importBindingLabel(spec: ImportSpec, name: string): string =
+  if name.len == 0: spec.sourceLabel
+  else: spec.sourceLabel & "/" & name
 
-proc nsPathSegments(v: Value): seq[string]
+proc duplicateImportBinding(local, first, second: string) {.noreturn.} =
+  raise newException(GeneError, "duplicate import binding `" & local &
+    "` from `" & first & "` and `" & second & "`; use a distinct alias")
 
 proc parseImportSpec*(node: Value): ImportSpec =
   if node.kind != vkNode or not node.head.isSymbol("import"):
@@ -5802,7 +5883,7 @@ proc parseImportSpec*(node: Value): ImportSpec =
       result.pkgName = value.strVal
     of "as":
       raise newException(GeneError,
-        "import ^as was removed; use `source : alias`")
+        "import ^as was removed; use `source:alias`")
     else:
       raise newException(GeneError, "import got unexpected option: ^" & key)
 
@@ -5815,49 +5896,46 @@ proc parseImportSpec*(node: Value): ImportSpec =
     if body.len == 0:
       raise newException(GeneError,
         "import from a module requires a selection or wildcard")
-    var segments: seq[string]
-    let isWildcard = wildcardPath(body[0], segments)
-    if body.len == 1:
-      if isWildcard:
-        result.wildcard = true
-        result.wildcardSegments = segments
-      else:
-        result.selections = importSelections(body[0])
-    elif body.len == 3 and body[1].isSymbol(":") and
-        body[2].kind == vkSymbol:
-      if isWildcard:
-        result.wildcard = true
-        result.wildcardSegments = segments
-        result.alias = body[2].symVal
-      else:
-        let selections = importSelections(body[0])
-        if selections.len != 1:
-          raise newException(GeneError,
-            "single-name import alias requires one source name")
-        result.selections = @[
-          ImportSelection(name: selections[0].name, local: body[2].symVal)]
-    else:
+    if body.len == 1 and body[0].kind == vkList and body[0].listItems.len == 0:
+      # An empty vector is a load-only import and creates no local bindings.
+      discard
+    elif body[0].kind == vkList:
       raise newException(GeneError,
-        "import ^from requires a selection, wildcard, or `source : alias`")
+        "file import selectors go directly after `import`; write `(import a b ^from \"path\")`")
+    elif body.len == 1:
+      let (path, alias, grouped) = importSelectionParts(body, 0)
+      if not grouped and path[^1] == "*" and
+          "*" notin path[0 ..< path.high]:
+        result.wildcard = true
+        result.wildcardSegments = path[0 ..< path.high]
+        result.alias = alias
+      else:
+        collectImportSelections(body, @[], result.selections)
+    else:
+      collectImportSelections(body, @[], result.selections)
     result.sourceLabel = result.modulePath
     if result.wildcardSegments.len > 0:
       result.sourceLabel.add "/" & result.wildcardSegments.join("/")
   else:
     if body.len == 0:
       raise newException(GeneError, "import requires a source")
-    result.nsSegments = nsPathSegments(body[0])
+    # A path and vector also spell the established namespace-member import.
+    let source = importSelectionParts(body, 0)
+    result.nsSegments = source.path
     if "*" in result.nsSegments:
       raise newException(GeneError,
         "wildcard imports require `^from \"path\"`; a namespace-path import " &
         "has no `*` form")
-    if body.len == 2:
-      result.selections = importSelections(body[1])
-    elif body.len == 3 and body[1].isSymbol(":") and
-        body[2].kind == vkSymbol:
-      result.alias = body[2].symVal
+    if body.len == 2 and source.alias.len == 0:
+      if body[1].kind == vkList:
+        collectImportSelections(body[1].listItems, @[], result.selections)
+      else:
+        collectImportSelections(body.toOpenArray(1, 1), @[], result.selections)
+    elif body.len == 1 and source.alias.len > 0:
+      result.alias = source.alias
     else:
       raise newException(GeneError,
-        "namespace import requires selections or `source : alias`")
+        "namespace import requires selections or `source:alias`")
     result.sourceLabel = result.nsSegments.join("/")
   if result.pkgName.len > 0 and not result.fromModule:
     # `^pkg` is valid only on the `^from` form. A bare namespace path never
@@ -5873,17 +5951,13 @@ proc parseImportSpec*(node: Value): ImportSpec =
   if result.reexport and not result.fromModule:
     raise newException(GeneError,
       "re-export requires a module-path import")
-
-proc nsPathSegments(v: Value): seq[string] =
-  if v.kind == vkSymbol:
-    result.add v.symVal
-  elif v.kind == vkNode and v.head.isSymbol("path"):
-    for seg in v.body:
-      if seg.kind != vkSymbol:
-        raise newException(GeneError, "import namespace path must be symbols")
-      result.add seg.symVal
-  else:
-    raise newException(GeneError, "import source must be a namespace path or `^from \"path\"`")
+  var selectedNames: Table[string, string]
+  for selection in result.selections:
+    if selectedNames.hasKey(selection.local):
+      duplicateImportBinding(selection.local,
+        result.importBindingLabel(selectedNames[selection.local]),
+        result.importBindingLabel(selection.name))
+    selectedNames[selection.local] = selection.name
 
 proc propLiteral(node: Value, key, defaultValue, context: string): string
 proc propInt(node: Value, key: string, defaultValue: int,
@@ -6506,10 +6580,15 @@ proc prepareStaticImportForm(c: var Compiler, form: Value) =
       return
     let rootInterface = c.importedInterfaces[spec.importKey]
     for selection in spec.selections:
-      let resolved = compileInterfaceEntryAt(
-        rootInterface, selection.name.split('/'))
+      let path = selection.name.split('/')
+      let resolved = compileInterfaceEntryAt(rootInterface, path)
       if resolved.found:
         c.importedCompileEntries[selection.local] = resolved.entry
+        if resolved.entry.category == cbcNamespace:
+          c.aliasInterfaces[selection.local] = StaticAliasInterface(
+            importKey: spec.importKey, exportPrefix: path,
+            namespace: resolved.entry.namespace)
+          c.addAliasedCompileEntries(selection.local, resolved.entry.namespace)
     if not spec.wildcard:
       return
     let iface = compileInterfaceAt(rootInterface,
@@ -6548,9 +6627,31 @@ proc prepareStaticImportForm(c: var Compiler, form: Value) =
   else:
     discard
 
+proc checkImportBindingSources(forms: openArray[Value], first: int,
+                               sources: var Table[string, string]) =
+  for i in first ..< forms.len:
+    let form = forms[i]
+    if form.kind != vkNode:
+      continue
+    if form.head.isSymbol("do") or form.head.isSymbol("mod"):
+      checkImportBindingSources(form.body,
+        if form.head.isSymbol("mod"): 1 else: 0, sources)
+    elif form.head.isSymbol("import"):
+      let spec = parseImportSpec(form)
+      template register(local, source: string) =
+        if sources.hasKey(local):
+          duplicateImportBinding(local, sources[local], source)
+        sources[local] = source
+      for selection in spec.selections:
+        register(selection.local, spec.importBindingLabel(selection.name))
+      if spec.alias.len > 0:
+        register(spec.alias, spec.sourceLabel)
+
 proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first: int) =
   if first > forms.high:
     return
+  var bindingSources: Table[string, string]
+  checkImportBindingSources(forms, first, bindingSources)
   var runtimeNames = initHashSet[string]()
   for i in first .. forms.high:
     collectDeclaredUnitNames(forms[i], c.declaredUnitNames)
@@ -7385,16 +7486,6 @@ proc compileImport(c: var Compiler, node: Value) =
         else:
           runtimeSelections.add sel
       spec.selections = runtimeSelections
-  # Macro path selections were stripped above; a value selection that still
-  # names a nested path (`[ops/add]`) has no leaf local name and opImport would
-  # look up the literal "ops/add" key and fail with a confusing runtime error.
-  # Reject it at compile time — nested exports are reached with `n/*` or
-  # qualified access, not selection lists.
-  for sel in spec.selections:
-    if '/' in sel.name:
-      raise newException(GeneError,
-        "import selection '" & sel.name & "' names a nested path; import the " &
-        "namespace with `n/*` (optionally `: alias`) and use qualified access")
   if c.useLocalSlots:
     if spec.alias.len > 0:
       discard c.reserveLocal(spec.alias, importing = true)

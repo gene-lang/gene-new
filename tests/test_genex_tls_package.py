@@ -74,7 +74,7 @@ class GenexTlsPackageTests(unittest.TestCase):
  ^dependencies {^tls (dep "genex/tls" "0.1.0" ^path "../tls")}}
 ''')
             (app / "src/main.gene").write_text('''
-(import [adapter_abi] ^from "." ^pkg "tls")
+(import adapter_abi ^from "." ^pkg "tls")
 (fn main [args] : Int
   ($println ($json/stringify {^abi (adapter_abi)}))
   0)

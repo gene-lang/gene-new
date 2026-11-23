@@ -1,14 +1,14 @@
 # Tests src/kernel.gene.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../support")
-(import [new_harness shutdown_harness install put_cordis_plugin rows row status_of uninstall contribute]
+(import isolated run_spec ^from "../support")
+(import new_harness shutdown_harness install put_cordis_plugin rows row status_of uninstall contribute
   ^from "../../src/kernel")
-(import [append_plugin_prompt] ^from "../../src/agents/outcome")
-(import [evaluate_harness_turn function_instructions] ^from "../../src/agents/harness_turn")
-(import [open_runtime close_runtime] ^from "../../src/runtime/bootstrap")
-(import [baseline_profile] ^from "../../src/profiles/baseline")
-(import [Plugin PluginHost DurableRecord] ^from "../../src/plugin_api")
-(import [append_core_event] ^from "../../src/storage/state")
+(import append_plugin_prompt ^from "../../src/agents/outcome")
+(import evaluate_harness_turn function_instructions ^from "../../src/agents/harness_turn")
+(import open_runtime close_runtime ^from "../../src/runtime/bootstrap")
+(import baseline_profile ^from "../../src/profiles/baseline")
+(import Plugin PluginHost DurableRecord ^from "../../src/plugin_api")
+(import append_core_event ^from "../../src/storage/state")
 
 (describe "Core command reservations"
   (it "preserves theme and control command ownership even with explicit replacement" []

@@ -2,15 +2,15 @@
 # recovery) and public rows share one contract: public participants may also
 # declare `limit` callbacks and `request_record` annotations.
 (mod turn_participant_registry)
-(import [registry contribute row] ^from "../kernel")
-(import [new_turn_transaction guard_participant_callback ParticipantFailure phases]
+(import registry contribute row ^from "../kernel")
+(import new_turn_transaction guard_participant_callback ParticipantFailure phases
   ^from "./turn_participants")
-(import [delegation_participant] ^from "./delegation_participant")
-(import [cards_participant] ^from "./cards_participant")
-(import [voice_participant] ^from "./voice_participant")
-(import [response_execution_limits] ^from "../plugin_api")
-(import [public_turn_context public_phase_value public_phase_result] ^from "./participant_contract")
-(import [participant_excluded? record_participant_fault health_participant] ^from "./participant_health")
+(import delegation_participant ^from "./delegation_participant")
+(import cards_participant ^from "./cards_participant")
+(import voice_participant ^from "./voice_participant")
+(import response_execution_limits ^from "../plugin_api")
+(import public_turn_context public_phase_value public_phase_result ^from "./participant_contract")
+(import participant_excluded? record_participant_fault health_participant ^from "./participant_health")
 
 # Plugin IDs cannot contain '/', so this host publisher cannot be a stored
 # plugin claiming the ordinary spelling "core".

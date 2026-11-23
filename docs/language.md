@@ -675,27 +675,46 @@ root namespace. For example, put these two files in the same directory:
 ```gene
 # stats.gene
 (fn twice [n] (* n 2))
+(fn half [n] (/ n 2))
 ```
 
 ```gene
 # main.gene
-(import [twice] ^from "./stats.gene")
+(import twice ^from "./stats.gene")
 ($println (twice 3)) # 6
 ```
 
 Run `gene run main.gene`. No `ns` wrapper is needed in `stats.gene`.
 
-`^from` is a named property containing a literal module-path string. It works
-with a single name, a selection list, or a wildcard:
+`^from` names the module with a literal path string. A file import can select
+several exports. Attach an alias without spaces around the colon.
 
 ```gene
 (import twice ^from "./stats.gene")
-(import [twice : double] ^from "./stats.gene")
-(import * : stats ^from "./stats.gene")
+(import twice:double half ^from "./stats.gene")
+(import *:stats ^from "./stats.gene")
 ```
 
-The old `from "path"` clause is no longer accepted. Existing namespace imports
-such as `(import $str [join trim])` keep their syntax.
+Use `/` to select through exported namespaces. A qualified selector binds its
+last segment by default. Groups can nest and share the prefix before the vector.
+These two imports have the same effect when used separately.
+
+```gene
+(import stats/mean:average stats/sample/min stats/sample/max ^from "./metrics")
+(import stats/[mean:average sample/[min max]] ^from "./metrics")
+```
+
+Both bind `average`, `min`, and `max`. A selector ending in a namespace
+binds the namespace itself. Wildcards stand alone. `stats/*` makes public
+members available as fallback names, and `stats/*:s` binds the namespace as
+`s`. Wildcards, whole-source namespace aliases, and re-exports require an
+unconditional top-level import. Ordinary runtime selections work in local scopes.
+Use `(import [] ^from "./setup")` when you only need module initialization.
+
+Namespace member imports such as `(import $str [join trim:clean])` use a
+selection vector without `^from`. Use `(import $str:strings)` to bind the
+namespace. The compiler rejects spaced aliases and the old `from "path"`
+clause.
 
 To bring an exported scoped protocol implementation into the current module,
 use `(import_impl Protocol for Receiver ^from "./impls.gene")`. The protocol
@@ -718,9 +737,8 @@ external libraries; [workflows](workflows.md#packages) shows the project layout.
 (helpers/twice 3) # 6
 ```
 
-Here `twice` belongs to `helpers`. Wrapping the first example in `(ns stats ...)`
-would export the `stats` namespace, so `(import [twice] ...)` would no longer
-select a top-level binding.
+Here `twice` belongs to `helpers`. From another file, use
+`(import helpers/twice ^from "./helpers")` to bind it directly.
 
 ## Tasks and channels
 

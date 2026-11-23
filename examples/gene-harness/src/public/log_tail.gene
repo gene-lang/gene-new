@@ -20,7 +20,7 @@
 # Cursors are opaque JSON strings; callers must treat them as token values.
 
 (mod log_tail)
-(import [parse_record render_text] ^from "./log_record")
+(import parse_record render_text ^from "./log_record")
 
 (fn int_or [value : Any, fallback : Int] : Int
   (if ($absent? value) (return fallback))

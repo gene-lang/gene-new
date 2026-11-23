@@ -1,9 +1,9 @@
 # Explicit seam binding and documentation reads over leased registry rows.
 (mod kernel_seams)
-(import [Harness Composer queue_registry_change? contribute row row_record rows
-  remove_registry_row fresh_list] ^from "./registry")
-(import [queue_composition_change run_composition_change] ^from "../runtime/composition")
-(import [HarnessError] ^from "../errors")
+(import Harness Composer queue_registry_change? contribute row row_record rows
+  remove_registry_row fresh_list ^from "./registry")
+(import queue_composition_change run_composition_change ^from "../runtime/composition")
+(import HarnessError ^from "../errors")
 
 
 (fn ^^private mutate_seam [h : Harness, owner : Str, seam : Str, change]

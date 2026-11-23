@@ -1,8 +1,8 @@
 # import_impl goes where import goes. In a function body the pair belongs to
 # that call: the body sees it, the module after the call does not.
-(import [Article] ^from "../common/model")
-(import [Render] ^from "../common/contracts")
-(import [attempt] ^from "../common/util")
+(import Article ^from "../common/model")
+(import Render ^from "../common/contracts")
+(import attempt ^from "../common/util")
 (fn show [article]
   (import_impl Render for Article ^from "../common/plain")
   article/.Render:render)

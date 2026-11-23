@@ -1,5 +1,5 @@
 (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-(import [Plugin PluginHost] ^from "src/plugin_api.gene")
+(import Plugin PluginHost ^from "src/plugin_api.gene")
 (type BoardError : Error)
 
 (fn initial_tasks []

@@ -2,7 +2,7 @@
 # the settings registry exists read these, and the registry later installs the same
 # rows, so the screen and execution agree on every default.
 (mod setting_definitions)
-(import [ServiceError] ^from "../plugin_api")
+(import ServiceError ^from "../plugin_api")
 
 (const portable_efforts ["auto" "none" "minimal" "low" "medium" "high" "xhigh" "max"])
 

@@ -1,7 +1,7 @@
 (mod channel_store)
-(import $store/fs [open : store_open Store])
-(import [ChannelError channel_error copy] ^from "./model")
-(import [prune] ^from "./retention")
+(import $store/fs [open:store_open Store])
+(import ChannelError channel_error copy ^from "./model")
+(import prune ^from "./retention")
 
 (type ChannelStore ^props {^backend Any ^state Cell ^gate Any ^closed Cell ^checkpoint Any?
   ^manifest Cell ^buckets Cell ^changed Cell})

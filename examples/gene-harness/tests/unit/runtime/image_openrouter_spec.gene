@@ -1,8 +1,8 @@
 (import $test [describe it run])
-(import [configure_openrouter_images prepare_openrouter_image send_openrouter_image]
+(import configure_openrouter_images prepare_openrouter_image send_openrouter_image
   ^from "../../../src/builtin/image_openrouter")
-(import [ImageError] ^from "../../../src/plugin_api")
-(import [png] ^from "../../fixtures/png")
+(import ImageError ^from "../../../src/plugin_api")
+(import png ^from "../../fixtures/png")
 
 (fn input [^options options = {}]
   {^model "fixture/png" ^size "1024x1024" ^background "auto"

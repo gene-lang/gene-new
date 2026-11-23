@@ -1,9 +1,9 @@
 # Keyed DOM reconciliation. The controller supplies edit and submission handlers.
 (mod harness_ui_tree ^profile web)
-(import ^from "../appearance.gene" [BrowserAppearance appearance_control])
-(import [UiNode UiClient text flag copy_map sync_controls] ^from "./model.gene")
-(import [event_chord modifier_code? format_chord] ^from "./chords.gene")
-(import [set_chord_recorder] ^from "../overlays.gene")
+(import ^from "../appearance.gene" BrowserAppearance appearance_control)
+(import UiNode UiClient text flag copy_map sync_controls ^from "./model.gene")
+(import event_chord modifier_code? format_chord ^from "./chords.gene")
+(import set_chord_recorder ^from "../overlays.gene")
 
 (fn metadata [name : Str] : Bool
   (for key in ["key" "field" "state" "action" "args" "positional" "success-state" "command" "prompt" "switch-view" "presentation"]

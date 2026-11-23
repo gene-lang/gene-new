@@ -2,9 +2,9 @@
 # `keyboard_bindings` setting keyed by action id. A binding survives its plugin being
 # disabled, because disabling removes the row and leaves the stored override.
 (mod keyboard)
-(import [ServiceError] ^from "../plugin_api")
-(import [contribute rows row registry_row_records] ^from "../kernel")
-(import [read_config config_digest commit_workspace] ^from "./workspace_config")
+(import ServiceError ^from "../plugin_api")
+(import contribute rows row registry_row_records ^from "../kernel")
+(import read_config config_digest commit_workspace ^from "./workspace_config")
 
 (let modifier_order ["Ctrl" "Shift" "Alt" "Meta"])
 

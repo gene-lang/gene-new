@@ -1,6 +1,6 @@
 (import $test [describe it run])
-(import [chatgpt_result chatgpt_row] ^from "../../../src/public/chatgpt_provider")
-(import [ProviderError] ^from "../../../src/plugin_api")
+(import chatgpt_result chatgpt_row ^from "../../../src/public/chatgpt_provider")
+(import ProviderError ^from "../../../src/plugin_api")
 
 (describe "ChatGPT response recovery"
   (it "distinguishes retryable access errors from permanent connection failures" []

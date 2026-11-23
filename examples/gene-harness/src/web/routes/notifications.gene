@@ -1,10 +1,10 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod notifications_routes)
-(import [api_root api_version] ^from "../contract.gene")
-(import [response number request_data] ^from "../request")
-(import [inbox_snapshot message_detail clear_messages acknowledge_messages] ^from "../../notifications/inbox")
-(import [publish_notification] ^from "../../notifications/publisher")
-(import [invoke_notification_action] ^from "../../notifications/actions")
+(import api_root api_version ^from "../contract.gene")
+(import response number request_data ^from "../request")
+(import inbox_snapshot message_detail clear_messages acknowledge_messages ^from "../../notifications/inbox")
+(import publish_notification ^from "../../notifications/publisher")
+(import invoke_notification_action ^from "../../notifications/actions")
 
 (fn notifications_request [context, request, parts]
   (let host context/host)

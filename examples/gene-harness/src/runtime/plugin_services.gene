@@ -1,12 +1,12 @@
 # Runtime-owned persistence and publisher adapters. The kernel retains only
 # callbacks; it neither imports these subsystems nor holds their live objects.
 (mod plugin_services)
-(import [log_event] ^from "../kernel/log")
-(import [append_plugin_event prepare_plugin_state plugin_state append_core_event
-  record_core_state core_state core_states_with_prefix flush_event_store] ^from "../storage/state")
-(import [new_activation_services register_service] ^from "./activation_services")
-(import [safe_publish update_notification list_source_messages clear_source_message] ^from "../notifications/publisher")
-(import [HarnessError] ^from "../errors")
+(import log_event ^from "../kernel/log")
+(import append_plugin_event prepare_plugin_state plugin_state append_core_event
+  record_core_state core_state core_states_with_prefix flush_event_store ^from "../storage/state")
+(import new_activation_services register_service ^from "./activation_services")
+(import safe_publish update_notification list_source_messages clear_source_message ^from "../notifications/publisher")
+(import HarnessError ^from "../errors")
 
 (type PluginServices ^^private ^props {^notify Fn ^notifications Fn
   ^notification_update Fn ^notification_clear Fn ^emit_event Fn ^state Fn ^update_state Fn

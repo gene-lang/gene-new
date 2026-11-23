@@ -1,21 +1,21 @@
 # Exercises checkpointing, module loading, activation and workspace repair.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [plugin_admin] ^from "../../../src/builtin/plugin_admin")
-(import [Plugin PluginHost] ^from "../../../src/plugin_api")
-(import [row] ^from "../../../src/kernel")
-(import [set_plugin_enabled restore_plugin doctor enable_entry] ^from "../../../src/storage/workspace_repair")
-(import [register_plugin prepare_workspace] ^from "../../../src/storage/workspace_activation")
-(import [composition_entries composition_revision commit_composition] ^from "../../../src/storage/composition_store")
-(import [evaluate_harness_turn] ^from "../../../src/agents/harness_turn")
+(import isolated run_spec ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import plugin_admin ^from "../../../src/builtin/plugin_admin")
+(import Plugin PluginHost ^from "../../../src/plugin_api")
+(import row ^from "../../../src/kernel")
+(import set_plugin_enabled restore_plugin doctor enable_entry ^from "../../../src/storage/workspace_repair")
+(import register_plugin prepare_workspace ^from "../../../src/storage/workspace_activation")
+(import composition_entries composition_revision commit_composition ^from "../../../src/storage/composition_store")
+(import evaluate_harness_turn ^from "../../../src/agents/harness_turn")
 
 (fn ping_source []
   ($to_str
     (quote
       (mod plugin
-        (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+        (import ^from "src/plugin_api.gene" Plugin PluginHost)
         (fn init [descriptor]
           (Plugin ^id "example" ^provides [["functions" "ping"]]
             ^activate (fn [host]
@@ -39,7 +39,7 @@
           ($to_str
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (import ^from "src/plugin_api.gene" Plugin PluginHost)
                 (fn init [descriptor]
                   (Plugin ^id "built" ^provides [["functions" "marker"]]
                     ^activate (fn [host]
@@ -132,7 +132,7 @@
           ($to_str
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (import ^from "src/plugin_api.gene" Plugin PluginHost)
                 (fn init [descriptor]
                   (Plugin ^id "web" ^provides [["functions" "marker"]]
                     ^activate (fn [host]
@@ -142,7 +142,7 @@
           ($to_str
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (import ^from "src/plugin_api.gene" Plugin PluginHost)
                 (fn init [descriptor]
                   (Plugin ^id "other" ^provides [["functions" "sibling"]]
                     ^activate (fn [host]
@@ -209,8 +209,8 @@
           (let source
             (quote
               (mod plugin
-                (import [Plugin PluginHost] ^from "src/plugin_api.gene")
-(import [append_prompt] ^from "src/public/response.gene")
+                (import Plugin PluginHost ^from "src/plugin_api.gene")
+(import append_prompt ^from "src/public/response.gene")
                 (fn init [descriptor]
                   (Plugin ^id "io_plugin" ^provides [["functions" "write_marker"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "write_marker" ^doc "Write a marker through the standard library." ^fn (fn [path : Str text : Str] ($fs/write_text path text) (append_prompt "written" text) (host ^session "s1" .PluginHost:update_state {^last text}))})))))))
           (let registered (register_plugin runtime/workspace runtime/h "io_plugin" ($to_str source)))
@@ -240,7 +240,7 @@
           (let queued_source
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+                (import ^from "src/plugin_api.gene" Plugin PluginHost)
                 (fn init [descriptor]
                   (Plugin ^id "queued" ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "ping" ^doc "Queued function." ^fn (fn [] "pong")})))))))
           (let queued
@@ -330,7 +330,7 @@
           (let broken_source
             ($to_str (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin])
+                (import ^from "src/plugin_api.gene" Plugin)
                 (fn init [descriptor]
                   (Plugin ^id "broken" ^activate (fn [host]
                     ($panic "activation failed"))))))))
@@ -377,7 +377,7 @@
           (let broken
             ($to_str (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" [Plugin])
+                (import ^from "src/plugin_api.gene" Plugin)
                 (fn init [descriptor]
                   (Plugin ^id "example" ^activate (fn [host]
                     (fail (Error ^_msg "replacement failed")))))))))
@@ -441,7 +441,7 @@
           (let path ($to_str "./" ($crypto/sha256 canonical) ".gene"))
           (let plugin
             `(mod plugin
-              (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+              (import ^from "src/plugin_api.gene" Plugin PluginHost)
               (import ^from %path [escape_quotes])
               (fn init [descriptor]
                 (Plugin ^id "quoted_dependency"

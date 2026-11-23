@@ -1,5 +1,5 @@
 (mod host_identity)
-(import ^from "./interface_policy" [current_interfaces])
+(import ^from "./interface_policy" current_interfaces)
 
 (type HostIdentityError : Error)
 

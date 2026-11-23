@@ -4,9 +4,9 @@
 # host-owned channel initiator, `<transport>/channel` with prefix
 # `channel:<transport>/`, unless a plugin already contributes that transport's.
 (mod channel_initiators)
-(import [normalize_channel_input render_parts transport_name] ^from "./model")
-(import [RoundError] ^from "../runtime/round_errors")
-(import [contribute rows] ^from "../kernel")
+(import normalize_channel_input render_parts transport_name ^from "./model")
+(import RoundError ^from "../runtime/round_errors")
+(import contribute rows ^from "../kernel")
 
 (const channel_source_owner "$host/channels")
 

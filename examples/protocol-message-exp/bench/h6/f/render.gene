@@ -1,7 +1,7 @@
 # Variant F: an ordinary function with [node each] parameters and explicit
 # receiver-type identity branches in the order Section, Article, Figure, Chart.
 # Recursive calls apply `each` to the child and to `each`.
-(import [Section Article Figure Chart] ^from "../model")
+(import Section Article Figure Chart ^from "../model")
 
 (fn render [node each]
   (match node

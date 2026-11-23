@@ -1,7 +1,7 @@
 # Tests src/runtime/workspace_lock.gene.
 (import $test [describe it])
-(import [isolated run_spec source_path] ^from "../../support")
-(import [acquire_workspace_lock close_workspace_lock WorkspaceInUse]
+(import isolated run_spec source_path ^from "../../support")
+(import acquire_workspace_lock close_workspace_lock WorkspaceInUse
   ^from "../../../src/runtime/workspace_lock")
 
 (describe "Harness workspace locking"

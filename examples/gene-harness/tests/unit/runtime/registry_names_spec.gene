@@ -1,5 +1,5 @@
 (import $test [describe it])
-(import [builtin_registry_specs] ^from "../../../src/registries/builtins")
+(import builtin_registry_specs ^from "../../../src/registries/builtins")
 
 (fn source_files [directory : Str]
   (let files [])

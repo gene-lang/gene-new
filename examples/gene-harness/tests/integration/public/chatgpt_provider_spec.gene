@@ -1,8 +1,8 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [chatgpt_row] ^from "../../../src/public/chatgpt_provider")
-(import [transport_identity] ^from "../../../src/public/models")
-(import [ProviderError] ^from "../../../src/plugin_api")
+(import isolated run_spec ^from "../../support")
+(import chatgpt_row ^from "../../../src/public/chatgpt_provider")
+(import transport_identity ^from "../../../src/public/models")
+(import ProviderError ^from "../../../src/plugin_api")
 (import $net/http [listen serve stop json Response])
 
 (describe "ChatGPT public Responses transport"

@@ -380,7 +380,7 @@ class RegistryServiceTests(unittest.TestCase):
  ^applications [(application "app" ^entry "src/main.gene")]
  ^dependencies {^release (dep "acme/release" "1.2.3")}}
 ''')
-            (app / "src/main.gene").write_text('(import [value] ^from "." ^pkg "release")\n(fn main [args] : Int ($println value) 0)\n')
+            (app / "src/main.gene").write_text('(import value ^from "." ^pkg "release")\n(fn main [args] : Int ($println value) 0)\n')
             for action in ("resolve", "sync"):
                 command("pkg", action, "--package-root", str(app), "--registry-config", str(client_config))
             prefix = self.base / "installed"

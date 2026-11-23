@@ -1049,10 +1049,10 @@ when defined(geneRcStats):
         writeFile(dir / "base.gene",
           "(protocol Render (message render [] : Str)) (type Item ^props {})")
         writeFile(prov,
-          "(import [Render Item] ^from \"./base\") " &
+          "(import Render Item ^from \"./base\") " &
           "(impl Render for Item ^^export (message render [] : Str \"one\"))")
         writeFile(dir / "author.gene",
-          "(import [Render Item] ^from \"./base\") " &
+          "(import Render Item ^from \"./base\") " &
           "(import_impl Render for Item ^from \"./prov\") " &
           "(fn raw [] Render:render) " &
           "(fn as_view [op : (Callable [Any] Str)] op) " &
@@ -1063,7 +1063,7 @@ when defined(geneRcStats):
         let app = newApplication(dir)
         let scope = newGlobalScope(app)
         discard run(compileSource(
-          "(import [raw view closure path_value make] ^from \"./author\") " &
+          "(import raw view closure path_value make ^from \"./author\") " &
           "(var item nil) (var op nil) (var checked nil) (var cl nil) (var pv nil)"),
           scope)
         app.reloadAndCollect(prov, 2)
@@ -1095,15 +1095,15 @@ when defined(geneRcStats):
         writeFile(dir / "base.gene",
           "(protocol Render (message render [] : Str)) (type Item ^props {})")
         writeFile(dir / "prov.gene",
-          "(import [Render Item] ^from \"./base\") " &
+          "(import Render Item ^from \"./base\") " &
           "(impl Render for Item ^^export (message render [] : Str \"one\"))")
         let app = newApplication(dir)
         let scope = newGlobalScope(app)
         let pair =
           if withImport: "(import_impl Render for Item ^from \"./prov\") " else: ""
         discard scope.runText(
-          "(import [Render Item] ^from \"./base\") " &
-          "(import * : p ^from \"./prov\") " &
+          "(import Render Item ^from \"./base\") " &
+          "(import *:p ^from \"./prov\") " &
           "(let item (Item)) (var i 0) " &
           "(fn body [] " & pair &
           "  (let f (fn [] (try item/.Render:render catch MessageFault \"hidden\"))) (f)) " &

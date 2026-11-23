@@ -1,12 +1,12 @@
 # Real authenticated HTTP peer with deterministic Socket Mode / Slack API
 # fixtures. All credentials and external Slack responses here are fake.
-(import [main : web_main] ^from "../../src/web/server")
-(import [Profile] ^from "../../src/profiles/profile")
-(import [baseline_profile] ^from "../../src/profiles/baseline")
-(import [callback_plugin] ^from "../support")
-(import [slack] ^from "../../src/builtin/slack")
-(import [open_authority configure_account configure_route close_channel_store] ^from "../../src/channels/authority")
-(import [model_callback remote_api event crash install_channel_crash] ^from "./channel_recovery")
+(import main:web_main ^from "../../src/web/server")
+(import Profile ^from "../../src/profiles/profile")
+(import baseline_profile ^from "../../src/profiles/baseline")
+(import callback_plugin ^from "../support")
+(import slack ^from "../../src/builtin/slack")
+(import open_authority configure_account configure_route close_channel_store ^from "../../src/channels/authority")
+(import model_callback remote_api event crash install_channel_crash ^from "./channel_recovery")
 
 (fn main [args]
   (let root args/0) (let role args/1) (let point args/2) (let other args/3)

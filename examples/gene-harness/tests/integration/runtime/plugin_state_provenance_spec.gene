@@ -1,18 +1,18 @@
 (import $test [describe it])
-(import ^from "../../support" [isolated run_spec])
-(import ^from "../../../src/plugin_api" [Plugin PluginHost])
-(import ^from "../../../src/profiles/profile" [Profile])
-(import ^from "../../../src/runtime/bootstrap" [open_runtime close_runtime])
-(import ^from "../../../src/kernel" [row])
-(import [register_plugin] ^from "../../../src/storage/workspace_activation")
+(import ^from "../../support" isolated run_spec)
+(import ^from "../../../src/plugin_api" Plugin PluginHost)
+(import ^from "../../../src/profiles/profile" Profile)
+(import ^from "../../../src/runtime/bootstrap" open_runtime close_runtime)
+(import ^from "../../../src/kernel" row)
+(import register_plugin ^from "../../../src/storage/workspace_activation")
 (import ^from "../../../src/storage/state"
-  [flush_event_store saved_state_writers plugin_state record_plugin_state])
-(import ^from "../../../src/runtime/plugin_manager" [plugin_catalog])
-(import ^from "../../../src/runtime/composition" [acquire_snapshot release_snapshot])
+  flush_event_store saved_state_writers plugin_state record_plugin_state)
+(import ^from "../../../src/runtime/plugin_manager" plugin_catalog)
+(import ^from "../../../src/runtime/composition" acquire_snapshot release_snapshot)
 
 (fn writer_source [version : Int]
   `(mod plugin
-     (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+     (import ^from "src/plugin_api.gene" Plugin PluginHost)
      (fn init [descriptor]
        (Plugin ^id "writer" ^provides [["functions" "remember"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "remember" ^doc "Save managed state." ^fn (fn [value, ^session session = nil] (host ^session session .PluginHost:update_state {^version %version ^value value}))}))))))
 

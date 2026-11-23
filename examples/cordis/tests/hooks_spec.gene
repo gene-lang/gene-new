@@ -2,10 +2,10 @@
 
 (import $test [describe it after_each assert_equal assert_raises])
 
-(import [HookMode HookKey RuntimeOptions PluginSpec HookDispatchError
+(import HookMode HookKey RuntimeOptions PluginSpec HookDispatchError
          ContinuationAlreadyCalled ContextDisposed
          invocation_limits service_key hook_key default_plugin_invoker
-         new_runtime]
+         new_runtime
   ^from "../src/cordis")
 
 (protocol SubjectService

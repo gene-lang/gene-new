@@ -1,8 +1,8 @@
 # Durable workspace action identities, independent of conversation/data streams.
 (mod ui_action_log)
-(import $store/fs [open : store_open Store])
-(import [ui_error] ^from "./state")
-(import [byte_prefix] ^from "../public/text")
+(import $store/fs [open:store_open Store])
+(import ui_error ^from "./state")
+(import byte_prefix ^from "../public/text")
 
 (type ActionLog ^props {^backend Any ^state Any ^gate Any ^observer Any})
 

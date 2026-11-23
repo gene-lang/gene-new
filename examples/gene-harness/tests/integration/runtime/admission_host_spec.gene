@@ -1,13 +1,13 @@
 (import $test [describe it])
-(import [isolated run_spec test_controller] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [Profile] ^from "../../../src/profiles/profile")
-(import [Plugin PluginHost AdmissionHost] ^from "../../../src/plugin_api")
-(import [provide] ^from "../../../src/kernel")
-(import [admission_host_binding] ^from "../../../src/runtime/admission_host")
-(import [close_round_controller round_state] ^from "../../../src/runtime/round_controller")
-(import [require_record] ^from "../../../src/runtime/sessions")
-(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
+(import isolated run_spec test_controller ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import Plugin PluginHost AdmissionHost ^from "../../../src/plugin_api")
+(import provide ^from "../../../src/kernel")
+(import admission_host_binding ^from "../../../src/runtime/admission_host")
+(import close_round_controller round_state ^from "../../../src/runtime/round_controller")
+(import require_record ^from "../../../src/runtime/sessions")
+(import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
 
 # A feature plugin that admits its own work: an initiator row for its route
 # and a function that creates an origin-tagged session and submits a round.

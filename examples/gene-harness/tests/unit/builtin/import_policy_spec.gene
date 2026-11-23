@@ -1,6 +1,6 @@
 # Built-ins and their shared helpers use only the public plugin contract.
 (import $test [describe it])
-(import [sdk_modules] ^from "../../../src/runtime/plugin_sdk")
+(import sdk_modules ^from "../../../src/runtime/plugin_sdk")
 
 (describe "Built-in import boundary"
   (it "admits only public dependencies and the plugin's own modules" []

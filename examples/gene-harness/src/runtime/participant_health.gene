@@ -1,8 +1,8 @@
 (mod runtime_participant_health)
-(import [participant_quarantine quarantine_participant] ^from "../storage/participant_health")
-(import [CallbackCancelled] ^from "./execution_budget")
-(import [run_composition_change] ^from "./composition")
-(import [byte_prefix] ^from "../public/text")
+(import participant_quarantine quarantine_participant ^from "../storage/participant_health")
+(import CallbackCancelled ^from "./execution_budget")
+(import run_composition_change ^from "./composition")
+(import byte_prefix ^from "../public/text")
 
 (fn participant_excluded? [runtime, definition]
   (if (|| (== definition/_host true) (== definition/_mandatory true) ($absent? definition/_owner)) (return false))

@@ -1,12 +1,12 @@
 # Production setup qualification against real credentials, without starting the
 # transport plugin. Only local configuration is written. No Slack messages or
 # application event acknowledgments are sent.
-(import [open_queues close_channel_store] ^from "../src/channels/queue")
-(import [open_channel_service close_channel_service] ^from "../src/channels/service")
-(import [setup_account setup_route] ^from "../src/channels/setup")
-(import [snapshot] ^from "../src/channels/store")
-(import [slack_adapter] ^from "../src/builtin/slack/adapter")
-(import [secret_path load_socket_library] ^from "../src/builtin/slack/api")
+(import open_queues close_channel_store ^from "../src/channels/queue")
+(import open_channel_service close_channel_service ^from "../src/channels/service")
+(import setup_account setup_route ^from "../src/channels/setup")
+(import snapshot ^from "../src/channels/store")
+(import slack_adapter ^from "../src/builtin/slack/adapter")
+(import secret_path load_socket_library ^from "../src/builtin/slack/api")
 
 (fn main [argv] : Int
   (let args ($body argv))

@@ -1,9 +1,9 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod channels_routes)
-(import [api_root] ^from "../contract.gene")
-(import [response number request_data session_path?] ^from "../request")
-(import [channel_request] ^from "../../channels/http")
-(import [session_slack_thread session_add_to_slack] ^from "../session_service")
+(import api_root ^from "../contract.gene")
+(import response number request_data session_path? ^from "../request")
+(import channel_request ^from "../../channels/http")
+(import session_slack_thread session_add_to_slack ^from "../session_service")
 (import $net/http [redirect])
 
 (fn channels_request [context, request, parts]

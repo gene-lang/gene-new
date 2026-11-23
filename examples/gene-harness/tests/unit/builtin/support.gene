@@ -1,5 +1,5 @@
 (import $test [assert_equal])
-(import [split_response] ^from "../../../src/agents/response")
+(import split_response ^from "../../../src/agents/response")
 
 (fn raw_blocks [read_text]
   (for text in ["\n(+ 1 2)\n<<<raw END\nexact body\nEND" "*** Begin Patch\n*** Add File: model.txt\n+ok\n*** End Patch"]

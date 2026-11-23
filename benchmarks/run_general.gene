@@ -1,6 +1,6 @@
 # General-purpose cross-language benchmarks. Orchestration stays in Gene.
-(import [capture distribution] ^from "./run")
-(import [cases] ^from "./general/workloads")
+(import capture distribution ^from "./run")
+(import cases ^from "./general/workloads")
 
 (fn new_variant [language]
   {^language language ^label language ^rows {} ^wall_ms []})

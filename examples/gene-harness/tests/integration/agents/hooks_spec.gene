@@ -1,16 +1,16 @@
-(import [test_controller] ^from "../../support.gene")
+(import test_controller ^from "../../support.gene")
 # Tests src/agents/hooks.gene.
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
-(import [scripted_profile] ^from "../../../src/profiles/scripted")
-(import [contribute put_cordis_plugin plugin_error] ^from "../../../src/kernel")
-(import [Plugin PluginHost ExecutionLimits] ^from "../../../src/plugin_api")
-(import [acquire_snapshot release_snapshot] ^from "../../../src/runtime/composition")
-(import [submit_round round_receipt close_round_controller]
+(import isolated run_spec ^from "../../support")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import scripted_profile ^from "../../../src/profiles/scripted")
+(import contribute put_cordis_plugin plugin_error ^from "../../../src/kernel")
+(import Plugin PluginHost ExecutionLimits ^from "../../../src/plugin_api")
+(import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
+(import submit_round round_receipt close_round_controller
   ^from "../../../src/runtime/round_controller")
-(import [request_prepare history_policy hook_rows] ^from "../../../src/agents/hooks")
-(import [events_for] ^from "../../../src/storage/state")
+(import request_prepare history_policy hook_rows ^from "../../../src/agents/hooks")
+(import events_for ^from "../../../src/storage/state")
 
 (fn prepare_context []
   {^session "default" ^round "r" ^turn 1 ^round_turn 1

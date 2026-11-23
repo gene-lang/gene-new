@@ -1,5 +1,5 @@
 (import $test [describe it run])
-(import [validate_provider_row validate_image_generator_row] ^from "../../../src/registries/contracts")
+(import validate_provider_row validate_image_generator_row ^from "../../../src/registries/contracts")
 
 (fn provider []
   {^name "fixture" ^doc "Fixture" ^configure (fn [model effort timeout] {})

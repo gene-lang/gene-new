@@ -4,7 +4,7 @@
 #   PATCH  "/<id>"            change model_settings DELETE "/<id>" disable
 #   GET    "/<id>/occurrences" one trigger's occurrences
 (mod trigger_routes)
-(import [TriggerError create_trigger update_trigger delete_trigger list_triggers list_occurrences]
+(import TriggerError create_trigger update_trigger delete_trigger list_triggers list_occurrences
   ^from "./scheduler")
 
 (fn ^^private status_for [code : Str] : Int

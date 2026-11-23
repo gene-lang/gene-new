@@ -39,7 +39,7 @@ class GenexTzdbTests(unittest.TestCase):
  ^dependencies {^tzdb (dep "genex/tzdb" "0.1.0" ^path "../tzdb")}}
 ''')
             (app / "src/main.gene").write_text('''
-(import [to_local resolve_local release_id] ^from "." ^pkg "tzdb")
+(import to_local resolve_local release_id ^from "." ^pkg "tzdb")
 (fn main [args] : Int
   (let summer (to_local 2024-07-01T12:00Z "America/New_York"))
   (let winter (to_local 2024-01-01T12:00Z "America/New_York"))

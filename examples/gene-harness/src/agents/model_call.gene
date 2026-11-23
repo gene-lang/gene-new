@@ -1,13 +1,13 @@
 (mod model_call)
-(import [log_event] ^from "../kernel/log")
-(import ^from "./provider_selection" [select_provider])
+(import log_event ^from "../kernel/log")
+(import ^from "./provider_selection" select_provider)
 (import ^from "./model_recording"
-  [store_part : store_record_part load_part : load_record_part
-   prepared_record result_record safe_error redact_image_text])
-(import ^from "../storage/state" [append_core_event flush_event_store])
-(import ^from "../kernel" [HarnessError row])
-(import [expand_media_messages] ^from "./media_input")
-(import [require_model_input] ^from "../public/models")
+  store_part:store_record_part load_part:load_record_part
+   prepared_record result_record safe_error redact_image_text)
+(import ^from "../storage/state" append_core_event flush_event_store)
+(import ^from "../kernel" HarnessError row)
+(import expand_media_messages ^from "./media_input")
+(import require_model_input ^from "../public/models")
 
 (fn store_part [runtime, value]
   (store_record_part runtime value))

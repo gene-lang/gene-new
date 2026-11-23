@@ -1,7 +1,6 @@
 (import $test [describe it])
-(import ^from "../../support" [isolated run_spec])
+(import ^from "../../support" isolated run_spec)
 (import ^from "../../../src/storage/media"
-  [
     open_media_store
     put_media
     put_media_base64
@@ -16,8 +15,8 @@
     generated_media
     media_usage
     validate_media_refs
-    MediaError])
-(import [png] ^from "../../fixtures/png")
+    MediaError)
+(import png ^from "../../fixtures/png")
 
 (fn rejected [code : Str, action]
   (let result (try (action) "accepted" catch MediaError $err/code))

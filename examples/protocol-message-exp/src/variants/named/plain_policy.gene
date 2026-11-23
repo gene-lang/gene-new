@@ -1,7 +1,7 @@
 # N: this module owns the PlainRender protocol, so its impls for the core types
 # are canonical: no `^^export`, no import_impl, no threaded operation. Bodies
 # recurse with an ordinary qualified send because canonical impls are global.
-(import [Section Article Figure] ^from "../../model")
+(import Section Article Figure ^from "../../model")
 (protocol PlainRender (message render [] : Str))
 (impl PlainRender for Section
   (message render [] : Str

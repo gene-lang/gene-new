@@ -1,8 +1,8 @@
-(import [open_session_service] ^from "../../src/web/session_service")
-(import [register_plugin] ^from "../../src/storage/workspace_activation")
-(import [row Plugin PluginHost put_cordis_plugin] ^from "../../src/kernel")
-(import [ui_status] ^from "../../src/ui/state")
-(import [ui_action ui_action_receipt] ^from "../../src/ui/actions")
+(import open_session_service ^from "../../src/web/session_service")
+(import register_plugin ^from "../../src/storage/workspace_activation")
+(import row Plugin PluginHost put_cordis_plugin ^from "../../src/kernel")
+(import ui_status ^from "../../src/ui/state")
+(import ui_action ui_action_receipt ^from "../../src/ui/actions")
 
 (fn main [args]
   (let board_path ($path/join ($path/parent ($path/parent ($path/parent this_mod/.path))) "examples/project_board/project_board.gene"))

@@ -1,7 +1,7 @@
 # The second internal consumer. Model-facing bindings and durable progress
 # share the transaction boundary, including error and cancellation paths.
 (mod cards_participant)
-(import [card_bindings flush_card_progress] ^from "./cards")
+(import card_bindings flush_card_progress ^from "./cards")
 
 (fn cards_participant [runtime]
   {^name "core/cards" ^priority 10

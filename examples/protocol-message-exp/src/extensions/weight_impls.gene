@@ -1,7 +1,7 @@
-(import [Section Article Figure] ^from "../model")
-(import [Chart] ^from "./chart")
-(import [Table] ^from "./table")
-(import [Weight] ^from "./weight")
+(import Section Article Figure ^from "../model")
+(import Chart ^from "./chart")
+(import Table ^from "./table")
+(import Weight ^from "./weight")
 (impl Weight for Section ^^export
   (message weigh [each] : Int
     (var total 1)

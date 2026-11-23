@@ -1,5 +1,5 @@
 (mod workspace_model ^profile web)
-(import [Notices] ^from "./notices.gene")
+(import Notices ^from "./notices.gene")
 
 (type SessionTab ^props {^id Str ^title Str ^cache Any ^socket Any ^socket_epoch Int ^sequence Int ^connected Bool ^closed Bool ^expanded (List Str) ^server_epoch Str})
 

@@ -1,16 +1,16 @@
 # Seed an offline workspace for browser verification of plugin session links.
 # Run with a new workspace path, then start that workspace's web host.
-(import ^from "../../src/web/session_service" [open_session_service close_session_service])
-(import ^from "../../src/runtime/sessions" [create_session delete_session])
-(import ^from "../../src/runtime/commands" [submit_command command_receipt])
-(import [register_plugin] ^from "../../src/storage/workspace_activation")
-(import [composition_entries commit_composition] ^from "../../src/storage/composition_store")
-(import ^from "../../src/kernel" [row])
+(import ^from "../../src/web/session_service" open_session_service close_session_service)
+(import ^from "../../src/runtime/sessions" create_session delete_session)
+(import ^from "../../src/runtime/commands" submit_command command_receipt)
+(import register_plugin ^from "../../src/storage/workspace_activation")
+(import composition_entries commit_composition ^from "../../src/storage/composition_store")
+(import ^from "../../src/kernel" row)
 
 (fn source [id : Str, version : Int]
   (if (== id "source_demo")
     `(mod plugin
-       (import ^from "src/plugin_api.gene" [Plugin PluginHost])
+       (import ^from "src/plugin_api.gene" Plugin PluginHost)
        (fn version [] %version)
        (fn init [descriptor]
          (Plugin ^id "source_demo" ^provides [["web_components" "source_demo"]]
@@ -19,7 +19,7 @@
                {^name "source_demo" ^slot "view" ^title "Source demo view" ^view_state {}
                 ^render (fn [context] (quote (section (h2 "Source demo full-screen view"))))})))))
     else `(mod plugin
-       (import ^from "src/plugin_api.gene" [Plugin])
+       (import ^from "src/plugin_api.gene" Plugin)
        (fn init [descriptor] (Plugin ^id %id ^activate (fn [host] nil))))))
 
 (fn register_in [runtime, session : Str, id : Str, version : Int, replace : Bool = false]

@@ -1,8 +1,8 @@
 (import $test [describe it])
-(import [isolated run_spec] ^from "../../support")
-(import [open_session_service close_session_service] ^from "../../../src/web/session_service")
-(import [HostServiceError] ^from "../../../src/runtime/host_services")
-(import [lock_held?] ^from "../../../src/runtime/workspace_manager")
+(import isolated run_spec ^from "../../support")
+(import open_session_service close_session_service ^from "../../../src/web/session_service")
+(import HostServiceError ^from "../../../src/runtime/host_services")
+(import lock_held? ^from "../../../src/runtime/workspace_manager")
 
 (describe "Session service lifecycle"
   (it "unwinds every opened session-host prefix and releases runtime ownership after controller/channel cleanup" []
