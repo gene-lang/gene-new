@@ -46,6 +46,28 @@
           (close_round_controller controller)
           (close_runtime runtime)))))
 
+  (it "stops after three consecutive failed responses instead of consuming the turn budget" []
+    (isolated this_mod/.path "stops after three consecutive failed responses instead of consuming the turn budget"
+      (fn [workspace]
+        (let runtime (open_runtime workspace "default" (baseline_profile)))
+        (let calls ($cell 0))
+        (let controller
+          (test_controller runtime
+            (fn [request]
+              (calls .set (+ calls/.get 1))
+              "(+ 1")))
+        (try
+          (create_session runtime/sessions ^id "loop")
+          (let admitted (submit_round controller "loop" "loop" 1 "go"))
+          ((/watcher (controller/rounds/.get .get "loop")) .join)
+          (let receipt (round_receipt controller "loop" admitted/id))
+          ($assert (== receipt/state "failed") ($to_str receipt))
+          ($assert (== calls/.get 3) $"expected 3 repair attempts, saw ${calls/.get}")
+          ($assert ($str/contains? receipt/message "3 consecutive failed turns") ($to_str receipt))
+        ensure
+          (close_round_controller controller)
+          (close_runtime runtime)))))
+
   (it "refuses busy sessions while allowing independent rounds and cancellation" []
     (isolated this_mod/.path "refuses busy sessions while allowing independent rounds and cancellation"
       (fn [workspace]

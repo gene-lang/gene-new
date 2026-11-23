@@ -51,7 +51,28 @@
   (it "preserves authored source locations" []
     (let response (split_response "\n\n(+ 1 2)"))
     (let meta ($node/meta response/forms/0))
-    (assert_equal meta/line 3)))
+    (assert_equal meta/line 3))
+
+  (it "turns unadorned conversational prose into a final reply" []
+    (let response (split_response "Hi! I can help with that.\n\nTell me what to build."))
+    ($assert response/plain "plain reply was not marked")
+    (assert_equal response/forms/.size 1)
+    (let form response/forms/0)
+    (assert_equal ($head form) (quote Outcome))
+    (let props ($node/props form))
+    (assert_equal (props .get "done") true)
+    (assert_equal (props .get "reply") "Hi! I can help with that.\n\nTell me what to build."))
+
+  (it "accepts one outer Markdown code fence for an otherwise valid response" []
+    (let response (split_response "```gene\n(Outcome ^^done ^reply \"done\")\n```"))
+    ($assert (! response/plain))
+    (assert_equal response/forms/.size 1)
+    (assert_equal ($head response/forms/0) (quote Outcome)))
+
+  (it "does not mistake prose mixed with code for a plain reply" []
+    (assert_raises
+      (fn [] (split_response "I'll inspect the files.\n(Outcome ^^done ^reply \"done\")"))
+      ParseError)))
 
 (fn main [args] : Int
   (let result (run ^name (?? args/0 "")))

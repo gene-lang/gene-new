@@ -222,6 +222,7 @@
     (decision_available? runtime/services/values/decisions early_use)))
   (var next_early interval)
   (var count (?? round/turn_count 0))
+  (var consecutive_errors 0)
   (var last_request (?? round/request round/prompt))
   (if_not resume
     (let recovery (core_state runtime/events "session" session "recovery"))
@@ -396,7 +397,12 @@
         ($runtime/with_context
           {^composition runtime/h/snapshots ^snapshot lease/snapshot}
           (fn []
-            (assemble_instructions runtime (require_record runtime/sessions session)))))
+            (let record (copy_data (require_record runtime/sessions session)))
+            # Ground the model identity in the selection that actually serves
+            # this turn. Session records need not persist model_settings.
+            (if ($present? selected/selection)
+              (record .put "model_settings" selected/selection))
+            (assemble_instructions runtime record))))
       (set stage "history/compact")
       (let window_tokens selection/context_window)
       (let policy
@@ -620,6 +626,25 @@
     (if (== result/kind "cancelled")
       (flush_event_store runtime/events)
       (return {^state "cancelled" ^turn_count count ^last_turn number}))
+    # A broken response contract can otherwise consume the entire turn budget
+    # with the same diagnostic. Preserve the error for the user and stop after
+    # a short repair window instead of retrying forever.
+    (if (== result/kind "error")
+      (set consecutive_errors (+ consecutive_errors 1))
+      else (set consecutive_errors 0))
+    (if (>= consecutive_errors 3)
+      (flush_event_store runtime/events)
+      (return
+        {
+          ^state "failed"
+          ^reason "consecutive_errors"
+          ^message ($to_str
+                     "Stopped after 3 consecutive failed turns. Last error: "
+                     (?? result/error "unknown response error")
+                     " Send a continuation message to retry with different instructions.")
+          ^request last_request
+          ^turn_count count
+          ^last_turn number}))
     # The check runs once this turn's result is final and before the next
     # request is recorded, so the unsent marker reflects its verdict.
     (if (&& checked (! collection) ($absent? result/suspension) (!= result/kind "questions") (>= (+ (?? round/task_turns_base 0) count) round/next_check_turn))

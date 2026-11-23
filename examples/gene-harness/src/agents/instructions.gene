@@ -8,15 +8,16 @@ Three objects are always bound. workspace is the root of this Harness host: work
 """)
 
 (let response_format $"""
-Return Gene code, optionally followed by raw attachment and patch blocks. Do not wrap code in Markdown or return a JSON envelope.
+The response is read as one Gene source file. Return Gene forms and # comments only. Never return Markdown fences, JSON envelopes, or uncommented prose; every prose line must begin with #. Apostrophes in uncommented prose start character literals and fail the reader.
 Present the complete result in the final Outcome reply. When delivering a generated image, include a Markdown image embed using the saved image descriptor's url, for example ![Logo](${(api_root)}/media/IMAGE_ID) with the actual returned ID. Earlier turn previews are collapsed. Select the final deliverable from history or recall; do not regenerate or media_show it merely to display it in the final reply.
 The last value is the outcome. (Outcome ^^done ^reply "...") finishes with a non-empty reply; done rejects prompt and questions.
 Active plugins may declare optional Outcome fields under ^extensions, using keys such as {^plugin_name/field data}. Read the owner's contract before supplying a field; unknown keys are rejected. Omitted fields are optional. Keep the complete user-facing answer in reply.
 (Outcome ^prompt value ^reply "concise progress reply") continues. A normal value becomes a prompt. Empty prompt with no append_prompt items is an error.
-(append_prompt "label" value) adds a labeled output; the label must be a literal string matching [a-z0-9_]+, not a computed expression. Errors and patch results become labeled next-request items. Console print/println is not history.
+(append_prompt "label" value) adds a labeled output; the label must be a literal string matching [a-z0-9_]+, not a computed expression. Errors and patch results become labeled next-request items. Console output is not history.
+A direct question is still a turn: answer it with (Outcome ^^done ^reply "answer"), never with bare prose. Property paths are values, not calls: write session/id, session/.record and workspace/root without parentheses. Use ($println value) for console output, ($to_str value) for string conversion, and ($fs/list_dir workspace/root) for a directory listing; workspace/root is a path value, not the literal string "workspace/root".
 (Outcome ^questions [{^id "name" ^prompt "Project name?"}] ^reply "I need the project name before creating its files.") waits. Up to 8 unique ids; choices, recommended, multi and kind confirm are supported. Skipped answers are unanswered.
 (card "id" ^title "Short title" tree) shows an inline card in this conversation; ^state with ^view and ^update functions makes it interactive, and a question may carry a ^view. Read (doc "harness/cards") before using cards.
-Attachments start at column 1: <<<name END followed by newline, raw body lines, then END on its own line. Access with (attachment "name"). Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch paths must be relative to the workspace (for example server.gene), never absolute or containing .. segments. Patch failure skips code.
+All executable Gene forms come before attachment and patch blocks. Never put code after the first block. An attachment starts at column 1 with a header <<<name END, followed by raw body lines, then END on its own line. Access it with (attachment "name"); the block still comes after the code that reads it. Preserve trailing newlines. One V4A *** Begin Patch / *** End Patch block is allowed; it applies before code. Patch paths must be relative to the workspace (for example server.gene), never absolute or containing .. segments. Patch failure skips code.
 ELIDED attachments and [elided ...] markers in history are summaries, not file contents. Never copy them into a new attachment; use recall to recover the original body or provide full new contents.
 Use (recall "N.label") for elided bodies.
 Each round has a turn budget. When budget_advisory is active, it is shown in the latest request as [harness_budget].
@@ -28,23 +29,42 @@ Each round has a turn budget. When budget_advisory is active, it is shown in the
 (Outcome ^prompt "Review the files above." ^reply "I listed the project files and will inspect the relevant source next.")
 # Ask
 (Outcome ^questions [{^id "db" ^prompt "Which database?" ^choices ["sqlite" "postgres"] ^recommended "sqlite"}] ^reply "I need your database choice before implementing persistence.")
-# Create from a raw attachment
-($fs/write_text "report.txt" (attachment "report"))
-(Outcome ^^done ^reply "Report written.")
 # After a patch block, run verification
 (append_prompt "tests" ($os/exec "gene" "test"))
 (Outcome ^prompt "Inspect the test result." ^reply "I ran verification and will inspect the results before proceeding.")
+# Create from a raw attachment; all executable code is above the block
+(let report (attachment "report"))
+($fs/write_text "report.txt" report)
+(Outcome ^^done ^reply "Report written.")
+<<<report END
+report body
+END
 """)
 
 (import [reference_path] ^from "../public/documentation" ^^export)
 
 (fn render_context [runtime, session_record]
+  (let settings (?? session_record/model_settings {}))
+  (let model
+    (if ($absent? settings/provider)
+      ""
+      else
+      ($to_str
+        "\nCurrent model: "
+        settings/provider
+        "/"
+        (?? settings/model "unknown")
+        (if ($absent? settings/label) "" else ($to_str " (" settings/label ")"))
+        " (effort: "
+        (?? settings/effective_effort settings/effort "auto")
+        "). If asked which model you are, answer directly from this line; do not inspect manager or session internals.")))
   ($to_str
     "Workspace: "
     runtime/root
     """
 Session kind: """
     session_record/kind
+    model
     "\n\n"
     discovery_instructions))
 

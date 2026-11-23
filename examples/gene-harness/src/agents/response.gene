@@ -31,6 +31,64 @@
     ($str/slice_bytes line 0 (- ($str/byte_size line) 1))
     else line))
 
+(fn nonempty_bounds [lines]
+  (var first -1)
+  (var last -1)
+  (var index 0)
+  (while (< index lines/.size)
+    (if (!= ($str/trim (structural_line lines/%index)) "")
+      (if (< first 0) (set first index))
+      (set last index))
+    (set index (+ index 1)))
+  {^first first ^last last})
+
+(fn unwrap_code_fence [text : Str] : Str
+  (let lines ($str/split text "\n"))
+  (let bounds (nonempty_bounds lines))
+  (if (|| (< bounds/first 0) (== bounds/first bounds/last)) (return text))
+  (let first ($str/trim (structural_line (lines .get bounds/first))))
+  (let last ($str/trim (structural_line (lines .get bounds/last))))
+  (if_not (&& ($str/starts_with? first "```") (== last "```")) (return text))
+  (let body [])
+  (var index (+ bounds/first 1))
+  (while (< index bounds/last)
+    (body .push (line_text lines index))
+    (set index (+ index 1)))
+  ($str/join body ""))
+
+(fn gene_code_line? [line : Str] : Bool
+  (let trimmed ($str/trim (structural_line line)))
+  (|| ($str/starts_with? trimmed "(")
+      ($str/starts_with? trimmed "`(")
+      ($str/starts_with? trimmed "[")
+      ($str/starts_with? trimmed "{")
+      ($str/starts_with? trimmed "*** Begin Patch")
+      ($str/starts_with? trimmed "<<")))
+
+(fn plain_text_response? [text : Str] : Bool
+  (if (|| ($str/contains? text "(Outcome")
+          ($str/contains? text "(append_prompt")
+          ($str/contains? text "*** Begin Patch")
+          ($str/contains? text "<<"))
+    (return false))
+  (for line in ($str/split text "\n")
+    (if (gene_code_line? line) (return false)))
+  true)
+
+(fn plain_text_forms [text : Str] : Any
+  # A conversational answer is a safe final reply. Without this fallback a
+  # model that drops the code wrapper can burn the whole turn budget retrying
+  # against a reader error that gives it no useful recovery path.
+  (let literal ($json/stringify ($str/trim text)))
+  ($into ($parse/read_all ($to_str "(Outcome ^^done ^reply " literal ")")) []))
+
+(fn plain_shape? [forms] : Bool
+  # Gene accepts bare words as symbols, so much prose parses without error.
+  # Keep a single non-symbol value (for example 42 or a string) as ordinary
+  # response code, but treat multiple bare symbols as conversational text.
+  (|| (== forms/.size 0) (!= forms/.size 1) (== ($head forms/0) Sym)))
+
+
 (fn validate_execution_attachments [response]
   (for block in response/blocks
     (if (!= block/kind "attachment") (continue))
@@ -45,7 +103,8 @@
   response)
 
 (fn split_response [text : Str]
-  (let lines ($str/split text "\n"))
+  (let source (unwrap_code_fence text))
+  (let lines ($str/split source "\n"))
   (let code_parts [])
   (var start lines/.size)
   (var index 0)
@@ -101,6 +160,20 @@
         (blocks .push {^kind "patch" ^line opening ^body patch})
         (set index (+ index 1))
       else (read_error (+ index 1) "expected an attachment or patch after response code")))
-  # Read the code even when there were no blocks. Reading remains inert.
-  (let forms (read_response_code code))
-  {^text text ^code code ^forms forms ^attachments attachments ^patch patch ^blocks blocks})
+  # Read the code even when there were no blocks. Reading remains inert. If
+  # the reader rejects a response that contains no code-like lines, treat the
+  # text as a plain final answer instead of entering a repair loop.
+  (var plain false)
+  (var forms nil)
+  (try
+    (set forms (read_response_code code))
+  catch ParseError
+    (if (plain_text_response? code)
+      (do (set plain true) (set forms (plain_text_forms code)))
+      else (fail $err)))
+  (if (&& (! plain) (!= ($str/trim code) "")
+          (plain_text_response? code) (plain_shape? forms))
+    (do
+      (set plain true)
+      (set forms (plain_text_forms code))))
+  {^text text ^code code ^forms forms ^attachments attachments ^patch patch ^blocks blocks ^plain plain})

@@ -20,6 +20,18 @@
           (let initial (assemble_instructions runtime session))
           ($assert ($str/starts_with? initial response_format))
           ($assert ($str/contains? initial $"Workspace: ${runtime/root}\nSession kind: interactive"))
+          ($assert ($str/contains? initial "The response is read as one Gene source file"))
+          ($assert ($str/contains? initial "Never put code after the first block"))
+          ($assert ($str/contains? initial "answer it with (Outcome ^^done ^reply"))
+          (let modeled
+            (assemble_instructions runtime
+              {^kind "interactive"
+               ^model_settings {^provider "deepseek" ^model "deepseek-flash"
+                 ^label "DeepSeek-V4.1-Flash" ^effort "auto" ^effective_effort "high"}}))
+          ($assert ($str/contains? modeled "Current model: deepseek/deepseek-flash"))
+          ($assert ($str/contains? modeled "DeepSeek-V4.1-Flash"))
+          ($assert ($str/contains? modeled "effort: high"))
+          ($assert ($str/contains? modeled "answer directly from this line"))
           ($assert ($str/contains? initial "(discover \"topic\")"))
           ($assert ($str/contains? initial "All query words must match"))
           ($assert (! ($str/contains? initial "The rules that catch most errors")))

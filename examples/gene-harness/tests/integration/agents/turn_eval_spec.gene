@@ -53,6 +53,10 @@
         (let prose (evaluate_turn 3 root "I’ll inspect the files.\n# goal\n(Outcome ^^done ^reply \"done\")"))
         ($assert ($str/contains? prose/request "[3.error] line 1:") "prose preamble lacked its response line")
         ($assert ($str/contains? prose/request "# comments") "prose error lacked a format hint")
+        ($assert ($str/contains? prose/request "[repair]") "prose error lacked a repair block")
+        (let raw (evaluate_turn 30 root "Hi! I can answer that directly."))
+        ($assert (== raw/kind "done") "plain conversational reply was not accepted")
+        ($assert (== raw/validated/outcome/reply "Hi! I can answer that directly."))
         (let scalar (evaluate_turn 4 root "42"))
         ($assert (== scalar/kind "continue") "format diagnostic rejected a valid scalar response"))))
 

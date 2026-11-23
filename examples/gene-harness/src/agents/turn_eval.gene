@@ -21,6 +21,32 @@
 (fn response_error_line [failure]
   (?? failure/response_line (if (== failure/file "response") (?? failure/line nil) else nil)))
 
+(fn contains_any? [text : Str, needles] : Bool
+  (for needle in needles
+    (if ($str/contains? text needle) (return true)))
+  false)
+
+(fn response_repair_hint [message : Str] : Str
+  (if (contains_any? message ["attachment header" "unterminated attachment" "expected an attachment or patch"])
+    (return
+      "Put every executable Gene form above the first <<< or *** Begin Patch block. An attachment header is exactly <<<name END, followed by raw body lines, then END on its own line. Never put code after a block."))
+  (if (contains_any? message ["character literal" "read_all:" "ParseError" "unexpected token" "expected a"])
+    (return
+      "The previous response was not readable Gene. Return only Gene forms and # comments. Do not use Markdown or uncommented prose; apostrophes in uncommented prose start character literals."))
+  (if ($str/contains? message "undefined symbol: println")
+    (return "Console output is ($println value). Do not call bare println."))
+  (if ($str/contains? message "undefined symbol: str")
+    (return "Use ($to_str value) for string conversion, not (str value)."))
+  (if ($str/contains? message "undefined symbol:")
+    (return "The previous response was not executable Gene. Keep prose in # comments and finish direct answers with (Outcome ^^done ^reply \"...\")."))
+  (if (&& ($str/contains? message "not callable") ($str/contains? message "session/"))
+    (return "Property paths are values, not calls: write session/id, not (session/id)."))
+  (if (&& ($str/contains? message "not callable") ($str/contains? message "workspace/"))
+    (return "Property paths are values, not calls: write workspace/root, not (workspace/root)."))
+  (if (&& ($str/contains? message "expected Str") ($str/contains? message "got Nil"))
+    (return "A required value was nil. Use (?? map/key default) or check ($present? value) before passing it to a Str parameter."))
+  "")
+
 (fn literal_reply_hint [response]
   (if response/forms/.empty? (return nil))
   (match ($last response/forms)
@@ -174,6 +200,11 @@
         error
         """
 Return executable Gene code only. Put any prose preamble in # comments; evaluation stopped at this symbol.""")))
+  (if ($present? error)
+    (do
+      (let hint (response_repair_hint error))
+      (if (!= hint "")
+        (set error ($to_str error "\n\n[repair]\n" hint)))))
   (let patch_text (if ($absent? patch_result) nil else patch_result/text))
   (let request (if (|| cancelled (&& ($present? validated) (== validated/kind "done"))) ""
     else (render_request turn validated ^patch patch_text ^error error ^error_line error_line ^result_line last_line)))
