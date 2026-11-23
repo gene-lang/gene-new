@@ -272,6 +272,21 @@ proc lookup(environment: ErrorEnvironment, name: string): ErrorBinding =
     if current.values.hasKey(name): return current.values[name]
     current = current.parent
 
+proc exportedBinding(environment: ErrorEnvironment, name: string): ErrorBinding =
+  if environment != nil and name notin environment.hidden:
+    result = environment.values.getOrDefault(name)
+
+proc lookupImportPath(environment: ErrorEnvironment, path: string): ErrorBinding =
+  var current = environment
+  let segments = path.split('/')
+  for index, segment in segments:
+    let binding = current.exportedBinding(segment)
+    if index == segments.high:
+      return binding
+    if binding.value == nil or binding.value.kind != avNamespace:
+      return
+    current = binding.value.space
+
 proc newErrorEnvironment(parent: ErrorEnvironment, source, prefix: string): ErrorEnvironment =
   ErrorEnvironment(parent: parent, values: initTable[string, ErrorBinding](),
                     source: source, prefix: prefix)
@@ -1073,8 +1088,7 @@ proc selectValue(analysis: ErrorAnalysis, target: AbstractValue, selector: Value
     let originalTarget = current.target
     if current.kind == avNamespace:
       if current.space != nil:
-        let found = if key in current.space.hidden: ErrorBinding()
-                    else: current.space.values.getOrDefault(key)
+        let found = current.space.exportedBinding(key)
         current = if found.value != nil: copyValue(found.value) else: unknownValue()
       else:
         let name = current.name & "/" & key
@@ -1345,7 +1359,7 @@ proc predeclare(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviron
     if spec.alias.len > 0:
       environment.bindValue(spec.alias, AbstractValue(kind: avNamespace, name: spec.alias, space: space))
     for selected in spec.selections:
-      let found = space.lookup(selected.name)
+      let found = space.lookupImportPath(selected.name)
       let value = if found.value != nil: found.value
                   elif not spec.fromModule:
                     AbstractValue(kind: avNative, name: spec.nsSegments.join("/") & "/" & selected.name)

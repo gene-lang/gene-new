@@ -801,6 +801,7 @@ suite "web module import syntax":
       ("(import [Thing] from \"./provider.gene\")", "`from` was removed; use `^from"),
       ("(import [Thing])", "web imports must use"),
       ("(import [] ^from \"./provider.gene\")", "omit `[]` to load a module without bindings"),
+      ("(import ^from \"./provider.gene\" ^^export)", "load-only imports cannot re-export"),
       ("(import [Thing] ^from \"./provider.gene\")", "file import selectors go directly after"),
       ("(import Thing : Alias ^from \"./provider.gene\")", "write the import alias as `Thing:Alias`"),
       ("(import * ^from \"./provider.gene\")", "wildcard imports are outside the web profile"),

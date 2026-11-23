@@ -778,6 +778,42 @@ suite "errors — module summaries":
     discard app.loadFileModule(root / "constructors_good.gene")
     expect GeneError: discard app.compileFileModule(root / "constructors_bad.gene")
 
+  test "qualified selections preserve imported error contracts and types":
+    let root = errorModuleRoot()
+    writeFile(root / "qualified_provider.gene", """
+      (type ConfigError : Error)
+      (ns a
+        (ns c
+          (type Probe : Error)
+          (type Resource ^props {}
+            (ctor [ready = (fail (Probe ^_msg "not ready"))]
+              ^errors [Probe] nil))
+          (fn load [] ^errors [ConfigError]
+            (fail (ConfigError ^_msg "dependency")))))
+    """)
+    writeFile(root / "qualified_good.gene", """
+      (mod good ^errors_mode strict)
+      (import a/c:sub a/c/[Probe:Failure Resource load:read_config] ConfigError
+        ^from "./qualified_provider.gene")
+      (fn make [] ^errors [Failure] (new Resource))
+      (fn read [] ^errors [ConfigError] (read_config))
+      (fn read_qualified [] ^errors [ConfigError] (sub/load))
+      (fn annotate [] ^errors [sub/Probe] nil)
+    """)
+    writeFile(root / "qualified_bad.gene", """
+      (mod bad ^errors_mode strict)
+      (import a/c/load ConfigError ^from "./qualified_provider.gene")
+      (fn read [] ^errors [] (load))
+    """)
+    let app = newApplication(root)
+    discard app.compileFileModule(root / "qualified_good.gene")
+    var diagnostic = ""
+    try:
+      discard app.compileFileModule(root / "qualified_bad.gene")
+    except GeneError as error:
+      diagnostic = error.msg
+    check "may raise [ConfigError]" in diagnostic
+
   test "imports preserve direct inherited and protocol message contracts":
     let root = errorModuleRoot()
     writeFile(root / "messages.gene", """

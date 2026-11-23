@@ -1628,7 +1628,7 @@ proc parseWebImport(form: Value, loc: SourceLoc,
        form.body[^1].kind == vkString):
     raise webError(loc, "web imports must use `^from \"./relative.gene\"`")
   let spec =
-    try: parseImportSpec(form)
+    try: parseImportSpec(form, loc)
     except GeneError as error: raise webError(loc, error.msg)
   if spec.pkgName.len > 0:
     raise webError(loc, "package imports are outside the web profile")

@@ -6,7 +6,7 @@
 # 1	src/gene/aot_checked.nim
 # 1	src/gene/callable_reflection.nim
 # 1	src/gene/clause_syntax.nim
-# 422	src/gene/compiler.nim
+# 421	src/gene/compiler.nim
 # 11	src/gene/error_runtime.nim
 # 22	src/gene/events.nim
 # 1	src/gene/execution_limits.nim
@@ -105,8 +105,7 @@ src/gene/compiler.nim	a dot message descriptor requires a receiver; write (x
 src/gene/compiler.nim	a dot message descriptor requires a receiver; write (x .Proto:message)
 src/gene/compiler.nim	a fexpr cannot be a generator
 src/gene/compiler.nim	a message name must be a symbol
-src/gene/compiler.nim	alias an individual member inside the import group
-src/gene/compiler.nim	alias an individual member inside the import group
+src/gene/compiler.nim	alias an individual member inside the import group or write `
 src/gene/compiler.nim	alias got unexpected named argument: ^
 src/gene/compiler.nim	alias requires a name and one type expression: (alias Name TypeExpr)
 src/gene/compiler.nim	alternation pattern alternatives must bind the same names
@@ -154,7 +153,6 @@ src/gene/compiler.nim	duplicate generic type parameter:
 src/gene/compiler.nim	duplicate impl message: 
 src/gene/compiler.nim	duplicate impl message: 
 src/gene/compiler.nim	duplicate impl message: 
-src/gene/compiler.nim	duplicate import binding `
 src/gene/compiler.nim	duplicate macro parameter: 
 src/gene/compiler.nim	duplicate macro parameter: 
 src/gene/compiler.nim	duplicate macro parameter: 
@@ -265,6 +263,7 @@ src/gene/compiler.nim	inline impl requires a protocol
 src/gene/compiler.nim	inline impl requires a protocol
 src/gene/compiler.nim	leading '
 src/gene/compiler.nim	leading `
+src/gene/compiler.nim	load-only imports cannot re-export; remove `^export` or select names
 src/gene/compiler.nim	loop does not accept props
 src/gene/compiler.nim	loop requires a body
 src/gene/compiler.nim	macro 

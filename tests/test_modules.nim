@@ -107,6 +107,7 @@ suite "modules — file imports":
       ("(import pi ^from nil)", "^from must be a path string"),
       ("(import pi ^^from)", "^from must be a path string"),
       ("(import [] ^from \"./math\")", "omit `[]` to load a module without bindings"),
+      ("(import ^from \"./math\" ^^export)", "load-only imports cannot re-export"),
       ("(import [pi] ^from \"./math\")", "file import selectors go directly after"),
       ("(import pi ^from \"./math\" ^form \"./other\")", "unexpected option: ^form")
     ]:
@@ -178,9 +179,9 @@ suite "modules — file imports":
       ("(import a/[b c/[d : dd]] ^from \"x\")", "write the import alias as `d:dd`"),
       ("(import a:aa/b ^from \"x\")", "write `a/b:aa`"),
       ("(import a/b:bb/c ^from \"x\")", "write `a/b/c:bb`"),
-      ("(import a:aa/[b c] ^from \"x\")", "write `a:aa a/[...]`"),
-      ("(import a:[b c] ^from \"x\")", "use `a/[...]`"),
-      ("(import a/[b c]:x ^from \"x\")", "alias an individual member"),
+      ("(import a:aa/[b c] ^from \"x\")", "write `a:aa a/[b c]`"),
+      ("(import a:[b c] ^from \"x\")", "use `a/[b c]`"),
+      ("(import a/[b c]:x ^from \"x\")", "write `a:x` to bind the namespace"),
       ("(import a/[] ^from \"x\")", "requires at least one selection"),
       ("(import *:m a ^from \"x\")", "wildcard must be the only selector"),
       ("(import a/[*] ^from \"x\")", "wildcard must be the only selector"),
@@ -209,6 +210,26 @@ suite "modules — file imports":
       check "duplicate import binding `b`" in diagnostic
       check first in diagnostic
       check second in diagnostic
+
+  test "top-level import diagnostics point to the offending form":
+    writeModule("setup.gene", "(var a 1) (var b 2)")
+    for (source, diagnostic, line) in [
+      ("(var first 1)\n(import a : renamed ^from \"./setup\")",
+       "write the import alias", 2),
+      ("(import a:same ^from \"./setup\")\n(var marker 1)\n" &
+       "(import b:same ^from \"./setup\")", "duplicate import binding", 3)
+    ]:
+      writeModule("importer.gene", source)
+      let app = newApplication(modDir)
+      var message = ""
+      try:
+        discard app.compileFileModule(modDir / "importer.gene")
+      except GeneError as error:
+        message = error.msg
+        check error.loc.sourceName.endsWith("importer.gene")
+        check error.loc.line == line
+        check error.loc.col == 1
+      check diagnostic in message
 
   test "module reference tables are isolated by defining module":
     writeModule("refs_a.gene",

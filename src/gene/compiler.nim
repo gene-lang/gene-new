@@ -316,7 +316,7 @@ proc pollCompileBudget(budget: CompileBudget) =
     when defined(genePollWindowTests): inc depth
     current = current.parent
 
-proc parseImportSpec*(node: Value): ImportSpec
+proc parseImportSpec*(node: Value, loc = SourceLoc()): ImportSpec
 
 const MaxMacroExpansionDepth* = 100
 
@@ -3076,8 +3076,8 @@ proc markExpandedContainers(value: Value, loc: SourceLoc, macroName: string,
 proc rejectPipelineSyntaxStage(c: Compiler, stage: PipelineStage)
 proc pathSymbolSegments(value: Value): seq[string]
 
-proc frontendImportMacros(c: var Compiler, node: Value) =
-  let spec = parseImportSpec(node)
+proc frontendImportMacros(c: var Compiler, node: Value, loc: SourceLoc) =
+  let spec = parseImportSpec(node, loc)
   let exported =
     if spec.fromModule: c.importedMacroSets.getOrDefault(spec.importKey)
     else: builtinNamespaceMacros(spec.nsSegments)
@@ -3231,7 +3231,7 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
       c.compileMacro(value)
       return if c.macros[value.body[0].symVal].runtime: value else: NIL
     if value.head.isSymbol("import"):
-      c.frontendImportMacros(value)
+      c.frontendImportMacros(value, loc)
       return value
     let declarationPath = value.head.pathSymbolSegments
     if declarationPath.len == 2 and declarationPath[0] == "ffi" and
@@ -5763,6 +5763,11 @@ proc invalidImportAlias(source, alias: string) {.noreturn.} =
   raise newException(GeneError, "write the import alias as `" & source & ":" &
     alias & "` with no spaces around `:`")
 
+proc invalidImportGroupAlias(source, alias: string) {.noreturn.} =
+  raise newException(GeneError,
+    "alias an individual member inside the import group or write `" &
+    source & ":" & alias & "` to bind the namespace")
+
 proc readImportSelector(value, following: Value, grouped: bool): tuple[
     path: seq[string], alias: string] =
   if value.kind == vkNode and value.head.isSymbol("msg") and
@@ -5787,7 +5792,8 @@ proc readImportSelector(value, following: Value, grouped: bool): tuple[
       result.path[i] = segment[0 ..< colon]
       let source = result.path.join("/")
       if following.kind == vkList:
-        raise newException(GeneError, "use `" & source & "/[...]` for an import group")
+        raise newException(GeneError, "use `" & source & "/" & print(following) &
+          "` for an import group")
       let alias = if following.kind == vkSymbol: following.symVal else: "alias"
       invalidImportAlias(source, alias)
     if colon > 0 and colon < segment.high:
@@ -5795,7 +5801,7 @@ proc readImportSelector(value, following: Value, grouped: bool): tuple[
       result.path[i] = segment[0 ..< colon]
       let source = result.path.join("/")
       let replacement =
-        if grouped: source & ":" & alias & " " & source & "/[...]"
+        if grouped: source & ":" & alias & " " & source & "/" & print(following)
         else: source & ":" & alias
       raise newException(GeneError,
         "put the import alias at the end of the selector; write `" & replacement & "`")
@@ -5808,7 +5814,7 @@ proc readImportSelector(value, following: Value, grouped: bool): tuple[
         tokens[0].lexeme != result.alias or result.alias.startsWith("."):
       raise newException(GeneError, "import alias must be a single binding name")
   if grouped and result.alias.len > 0:
-    raise newException(GeneError, "alias an individual member inside the import group")
+    invalidImportGroupAlias(result.path.join("/"), result.alias)
 
 proc importSelectionParts(items: openArray[Value], index: int): tuple[
     path: seq[string], alias: string, grouped: bool] =
@@ -5820,15 +5826,16 @@ proc importSelectionParts(items: openArray[Value], index: int): tuple[
   (result.path, result.alias) = readImportSelector(value, following, result.grouped)
   let after = index + (if result.grouped: 2 else: 1)
   if after <= items.high and isImportAliasMarker(items[after]):
-    if result.grouped:
-      raise newException(GeneError, "alias an individual member inside the import group")
     let marker = items[after].symVal
     let alias =
       if marker.len > 1: marker[1 .. ^1]
       elif after < items.high and items[after + 1].kind == vkSymbol:
         items[after + 1].symVal
       else: "alias"
-    invalidImportAlias(result.path.join("/"), alias)
+    let source = result.path.join("/")
+    if result.grouped:
+      invalidImportGroupAlias(source, alias)
+    invalidImportAlias(source, alias)
 
 proc collectImportSelections(items: openArray[Value], prefix: seq[string],
                              selections: var seq[ImportSelection]) =
@@ -5856,11 +5863,14 @@ proc importBindingLabel(spec: ImportSpec, name: string): string =
   if name.len == 0: spec.sourceLabel
   else: spec.sourceLabel & "/" & name
 
-proc duplicateImportBinding(local, first, second: string) {.noreturn.} =
-  raise newException(GeneError, "duplicate import binding `" & local &
+proc duplicateImportBinding(local, first, second: string,
+                            loc = SourceLoc()) {.noreturn.} =
+  let error = newException(GeneError, "duplicate import binding `" & local &
     "` from `" & first & "` and `" & second & "`; use a distinct alias")
+  error.loc = loc
+  raise error
 
-proc parseImportSpec*(node: Value): ImportSpec =
+proc parseImportSpecImpl(node: Value): ImportSpec =
   if node.kind != vkNode or not node.head.isSymbol("import"):
     raise newException(GeneError, "expected import form")
   # Module sources are properties, just like package and export options.
@@ -5948,6 +5958,8 @@ proc parseImportSpec*(node: Value): ImportSpec =
   if result.reexport and not result.fromModule:
     raise newException(GeneError,
       "re-export requires a module-path import")
+  if result.reexport and body.len == 0:
+    raise newException(GeneError, "load-only imports cannot re-export; remove `^export` or select names")
   var selectedNames: Table[string, string]
   for selection in result.selections:
     if selectedNames.hasKey(selection.local):
@@ -5955,6 +5967,14 @@ proc parseImportSpec*(node: Value): ImportSpec =
         result.importBindingLabel(selectedNames[selection.local]),
         result.importBindingLabel(selection.name))
     selectedNames[selection.local] = selection.name
+
+proc parseImportSpec*(node: Value, loc: SourceLoc): ImportSpec =
+  try:
+    result = parseImportSpecImpl(node)
+  except GeneError as error:
+    if not error.loc.hasSourceLoc:
+      error.loc = loc
+    raise
 
 proc propLiteral(node: Value, key, defaultValue, context: string): string
 proc propInt(node: Value, key: string, defaultValue: int,
@@ -6505,7 +6525,8 @@ proc compileInterfaceEntryAt*(root: CompileNamespaceInterface,
       return
     current = entry.namespace
 
-proc collectDeclaredUnitNames(form: Value, names: var HashSet[string]) =
+proc collectDeclaredUnitNames(c: Compiler, form: Value,
+                              names: var HashSet[string]) =
   if form.kind != vkNode or form.head.kind != vkSymbol:
     return
   case form.head.symVal
@@ -6516,7 +6537,7 @@ proc collectDeclaredUnitNames(form: Value, names: var HashSet[string]) =
       names.incl name
     # Callable/type/namespace bodies create their own declaration units.
   of "import":
-    let spec = parseImportSpec(form)
+    let spec = parseImportSpec(form, c.sourceLocFor(form))
     if spec.alias.len > 0:
       names.incl spec.alias
     for selection in spec.selections:
@@ -6525,7 +6546,7 @@ proc collectDeclaredUnitNames(form: Value, names: var HashSet[string]) =
     discard
   else:
     for item in form.body:
-      collectDeclaredUnitNames(item, names)
+      c.collectDeclaredUnitNames(item, names)
 
 proc collectRuntimeDeclaredUnitNames(c: Compiler, form: Value,
                                      names: var HashSet[string]) =
@@ -6540,7 +6561,7 @@ proc collectRuntimeDeclaredUnitNames(c: Compiler, form: Value,
   of "macro", "quote", "quasiquote":
     discard
   of "import":
-    let spec = parseImportSpec(form)
+    let spec = parseImportSpec(form, c.sourceLocFor(form))
     if spec.alias.len > 0:
       names.incl spec.alias
     let macroLocals = c.importMacroLocals(form)
@@ -6571,7 +6592,7 @@ proc prepareStaticImportForm(c: var Compiler, form: Value) =
   of "do":
     c.prepareStaticImports(form.body, 0)
   of "import":
-    let spec = parseImportSpec(form)
+    let spec = parseImportSpec(form, c.sourceLocFor(form))
     if not spec.fromModule or
         not c.importedInterfaces.hasKey(spec.importKey):
       return
@@ -6624,20 +6645,21 @@ proc prepareStaticImportForm(c: var Compiler, form: Value) =
   else:
     discard
 
-proc checkImportBindingSources(forms: openArray[Value], first: int,
+proc checkImportBindingSources(c: Compiler, forms: openArray[Value], first: int,
                                sources: var Table[string, string]) =
   for i in first ..< forms.len:
     let form = forms[i]
     if form.kind != vkNode:
       continue
     if form.head.isSymbol("do") or form.head.isSymbol("mod"):
-      checkImportBindingSources(form.body,
+      c.checkImportBindingSources(form.body,
         if form.head.isSymbol("mod"): 1 else: 0, sources)
     elif form.head.isSymbol("import"):
-      let spec = parseImportSpec(form)
+      let loc = c.sourceLocFor(form)
+      let spec = parseImportSpec(form, loc)
       template register(local, source: string) =
         if sources.hasKey(local):
-          duplicateImportBinding(local, sources[local], source)
+          duplicateImportBinding(local, sources[local], source, loc)
         sources[local] = source
       for selection in spec.selections:
         register(selection.local, spec.importBindingLabel(selection.name))
@@ -6648,10 +6670,10 @@ proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first: int) 
   if first > forms.high:
     return
   var bindingSources: Table[string, string]
-  checkImportBindingSources(forms, first, bindingSources)
+  c.checkImportBindingSources(forms, first, bindingSources)
   var runtimeNames = initHashSet[string]()
   for i in first .. forms.high:
-    collectDeclaredUnitNames(forms[i], c.declaredUnitNames)
+    c.collectDeclaredUnitNames(forms[i], c.declaredUnitNames)
     c.collectRuntimeDeclaredUnitNames(forms[i], runtimeNames)
   for i in first .. forms.high:
     c.prepareStaticImportForm(forms[i])
@@ -6796,7 +6818,7 @@ proc importMacroLocals(c: Compiler, node: Value): HashSet[string] =
   ## compileImport strips macro selections from the runtime spec and hands
   ## them to importMacro, which rejects a name that already owns a slot.
   ## Mirrors compileImport's macro detection.
-  let spec = parseImportSpec(node)
+  let spec = parseImportSpec(node, c.sourceLocFor(node))
   var exported: Table[string, MacroDef]
   if spec.fromModule:
     if c.importedMacroSets.hasKey(spec.importKey):
@@ -6819,7 +6841,7 @@ proc reserveProtocolBinding(c: var Compiler, value: Value) =
       discard c.reserveLocal(value.body[0].symVal)
   of "import":
     let macroLocals = c.importMacroLocals(value)
-    let spec = parseImportSpec(value)
+    let spec = parseImportSpec(value, c.sourceLocFor(value))
     for selection in spec.selections:
       if selection.local notin macroLocals:
         let importsFexpr = spec.fromModule and
@@ -7430,7 +7452,7 @@ proc importMacro(c: var Compiler, local: string, def: MacroDef) =
 proc compileImport(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError, "eval cannot use import; add imports to Env")
-  var spec = parseImportSpec(node)
+  var spec = parseImportSpec(node, c.sourceLocFor(node))
   if spec.alias.len > 0:
     validateBindingName(spec.alias)
   for selection in spec.selections:

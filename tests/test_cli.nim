@@ -1474,6 +1474,9 @@ suite "cli — gene parse/fmt/compile":
 (quote (import [u:v w] ^from "old"))
 (import [] ^from "setup")
 (quote (import [] ^from "setup"))
+(import a/[b c])
+(import a/b/ [c d])
+(import $str [join trim])
 """
     let file = writeCliProgram("fmt_imports.gene", source)
     let formatted = runGene(["fmt", file])
@@ -1483,9 +1486,12 @@ suite "cli — gene parse/fmt/compile":
     check "# c contains the last two selections" in formatted.output
     check "(import ^from \"old\" u:v w)" in formatted.output
     check "(import ^from \"setup\")" in formatted.output
+    check "(import a/[b c])" in formatted.output
+    check "(import a/b/[c d])" in formatted.output
+    check "(import $str [join trim])" in formatted.output
     let input = readAll(source)
     let output = readAll(formatted.output)
-    for i in [0, 1, 3, 5]:
+    for i in [0, 1, 3, 5, 6, 7, 8]:
       check input[i].print() == output[i].print()
     let second = writeCliProgram("fmt_imports_again.gene", formatted.output)
     check runGene(["fmt", second]).output == formatted.output

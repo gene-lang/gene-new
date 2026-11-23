@@ -35181,7 +35181,7 @@ proc compileModuleArtifactRaw(app: Application,
     var compileDependencies: seq[string]
     var ownInterface = cloneCompileInterface(header.compileInterface)
     for form in collectStaticImportForms(header.unit.forms):
-      let importSpec = parseImportSpec(form)
+      let importSpec = parseImportSpec(form, header.unit.locs.getOrDefault(form.bits))
       if not importSpec.fromModule:
         continue
       importSpecs.add importSpec
@@ -35204,7 +35204,8 @@ proc compileModuleArtifactRaw(app: Application,
         depInterface = depHeader.compileInterface
         var depHasReexports = false
         for depImport in collectStaticImportForms(depHeader.unit.forms):
-          let depSpec = parseImportSpec(depImport)
+          let depSpec = parseImportSpec(depImport,
+                                       depHeader.unit.locs.getOrDefault(depImport.bits))
           if depSpec.fromModule and depSpec.reexport:
             depHasReexports = true
             break

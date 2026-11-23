@@ -464,7 +464,9 @@ proc renderImport(v: Value, indent: int, multiline: bool): string =
   result = "(import"
   addProps(result, v.meta, "@")
   addProps(result, v.props, "^")
-  let items = importItemTexts(v.body, v.props.hasKey("from"))
+  let builtinNamespace = not v.props.hasKey("from") and v.body.len > 0 and
+    importPathText(v.body[0]).startsWith("gene/")
+  let items = importItemTexts(v.body, not builtinNamespace)
   let separator = if multiline: "\n" & repeat(' ', indent + 2) else: " "
   for item in items:
     result.add separator & item
