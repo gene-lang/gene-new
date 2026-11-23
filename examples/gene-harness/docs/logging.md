@@ -181,16 +181,20 @@ raw lines as they arrived; managed workspaces get JSONL `host.log`; redirected
 supervised hosts get JSONL stdout. CLI commands keep their exact stdout and
 stderr.
 
+Harness launchers configure Gene runtime diagnostics on stderr as text. The
+host's Harness records still use JSONL on the supervised relay.
+
 The browser-link presenter lives in the launcher for supervised hosts. It
 follows the readiness marker rather than a log record, so a filtered
 `host/ready` changes nothing: a terminal gets `Browser: <link>`, redirected
 output gets the `gene-harness --workspace W link` hint, and a restart prints
 again for the new child. A direct host keeps its own presenter.
 
-The core Logs route (`GET /api/v9/logs`) reads `host.log` as records, filters by
-type, target key, minimum level and `since`, and redacts each complete line
-before it truncates for display. The editor Logs tab uses it and has a type,
-level and session filter row.
+The core Logs route (`GET /api/v9/logs`) reads retained `host.log` records and
+falls back to the host's in-process ring when no log file is available. It
+filters by type, target key, minimum level and `since`, and redacts each
+complete file line before it truncates for display. The editor Logs tab uses
+the same route.
 
 `gene-harness logs [--type T] [--level L] [--session ID] [--since MS] [--lines N] [--follow]`
 prints matching records through the same route. `--follow` polls with the

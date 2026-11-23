@@ -368,6 +368,8 @@
       ($os/spawn_detached ^dir entry/dir ^env environment ^output $"${entry/dir}/.gene-harness/bootstrap.log"
         (?? ($os/env? "GENE_BINARY") ($os/executable_path))
         "run"
+        "--log-config"
+        ($path/join manager/installation "src" "runtime" "console-logging.gene")
         "--snapshot"
         manager/entry
         "web"

@@ -100,6 +100,7 @@ check('exposes a Logs tab', Boolean(logsTab));
 logsTab.dispatchEvent({ type: 'click', preventDefault() {} });
 await tick(10);
 check('requests a log increment', requests.some(request => request.path.includes('/log')));
+check('renders the returned log lines', root.textContent.includes('boot') && root.textContent.includes('ready'));
 check('switches the saved tab', saves.some(changes => changes.tab === 'logs'), JSON.stringify(saves));
 const sourceTab = byText(root, 'Source');
 sourceTab.dispatchEvent({ type: 'click', preventDefault() {} });

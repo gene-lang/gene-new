@@ -152,9 +152,10 @@
 
 (fn child_entry [source_root : Str, hosting : Bool, offline : Bool, scripted : Bool, recovery : Bool,
   ^source_only source_only : Bool = false]
+  (let config ($path/join source_root "src" "runtime" "console-logging.gene"))
   (if (&& hosting (! offline) (! scripted) (! recovery) (! source_only))
-    ["run" "--package-root" source_root "harness"]
-    else ["run" "--snapshot" ($path/join source_root "src" "main.gene")]))
+    ["run" "--package-root" source_root "--log-config" config "harness"]
+    else ["run" "--snapshot" "--log-config" config ($path/join source_root "src" "main.gene")]))
 
 (fn main [args]
   (log_start)

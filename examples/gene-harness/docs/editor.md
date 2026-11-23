@@ -126,14 +126,15 @@ draft, caret, undo history, and each surface's scroll position. Logs are
 polled only while the tab is visible; hiding it stops the timer chain, and a
 delayed reply for a previous tab or plugin state is discarded.
 
-The Logs tab reads the core `GET /api/v9/logs` route, which reads the retained
-`.gene-harness/host.log` and its `host.log.1` predecessor. Its filter row sends
+The Logs tab reads the core `GET /api/v9/logs` route. It reads the retained
+`.gene-harness/host.log` and its `host.log.1` predecessor, or the running host's
+bounded in-memory log when those files are absent. Its filter row sends
 `type` (exact or `family/*`), `level` (minimum), `session` and `since` (epoch
 ms); an Apply clears the loaded tail and cursor before polling again. A line
 that parses as a Harness log record is rendered as console text; any other line
 is shown as raw text. Redaction runs on the complete line before the display budget truncates it, so
-a credential at the cut boundary cannot leak a prefix. The cursor is opaque: a
-segment name, a byte offset at a line boundary, and a SHA-256 digest of that
+a credential at the cut boundary cannot leak a prefix. For retained files, the
+opaque cursor contains a segment name, a byte offset at a line boundary, and a SHA-256 digest of that
 segment's prefix through the offset. Each poll compares the prefix:
 
 - matching active segment: deliver only the new complete lines;
@@ -156,9 +157,10 @@ applied before delivery and independently of the manager's excerpt cap.
 labelled as a host-log selection. The component's own toolbar offers follow,
 pause, jump to latest, filtering, and Copy over the same buffer.
 
-A workspace with no retained host log (for example a foreground launch whose
-output stayed on the terminal) shows that state instead of an empty stream. The
-manager's existing per-workspace Diagnostics action remains the way to inspect
+For a foreground launch, the in-memory cursor follows records by process run
+and sequence. When the host restarts or older records have left the ring, the
+view reports the gap and resumes from the available records. The manager's
+per-workspace Diagnostics action can inspect
 `bootstrap.log`, `startup_failure`, and the previous/current host log while the
 workspace host is down. Diagnostics and the browser route share the credential
 replacements; only the excerpt cap differs.

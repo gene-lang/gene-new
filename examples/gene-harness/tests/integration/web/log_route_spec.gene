@@ -3,13 +3,25 @@
 (import $test [describe it])
 (import [isolated run_spec source_path] ^from "../../support")
 (import [start_host stop_host] ^from "../../web_support")
-(import [connect api] ^from "../../../src/cli/client")
+(import [connect api wire] ^from "../../../src/cli/client")
+(import [open_runtime close_runtime] ^from "../../../src/runtime/bootstrap")
+(import [offline_profile] ^from "../../../src/profiles/offline")
+(import [register_plugin] ^from "../../../src/storage/workspace_activation")
 (import [make_record serialize_record] ^from "../../../src/public/log_record")
 (import $url [encode_component])
 
 (fn record_line [type : Str, level : Str, target, message : Str] : Str
   (serialize_record
     (make_record "run" 1 1000 level type target message)))
+
+(fn failing_route_source []
+  (quote (mod plugin
+    (import [Plugin PluginHost] ^from "src/plugin_api.gene")
+    (fn init [descriptor]
+      (Plugin ^id "log_probe" ^activate (fn [host]
+        (host .PluginHost:contribute "http_routes"
+          {^name "fail" ^kind "owner" ^methods ["GET"] ^path "/fail"
+           ^handle (fn [request] ($panic "log route test failure"))})))))))
 
 (describe "Core Logs route"
   (it "filters records by type, target, level and since" []
@@ -33,12 +45,16 @@
           ($assert (== ($size typed/lines) 1) ($to_str typed))
           ($assert (== typed/records/0/type "model/result") ($to_str typed))
           ($assert (== typed/filtered 3) ($to_str typed))
+          (let session_only (api client "GET" "/logs?session=s1"))
+          ($assert (== ($size session_only/records) 2) ($to_str session_only))
           (let warned (api client "GET" "/logs?lines=20&level=warn"))
           ($assert (== ($size warned/lines) 1) ($to_str warned))
           ($assert (== warned/records/0/level "warn") ($to_str warned))
           (let since (api client "GET" "/logs?lines=20&since=2000"))
           ($assert (== ($size since/lines) 0) ($to_str since))
           ($assert ($present? since/cursor) ($to_str since))
+          (let within_range (api client "GET" "/logs?since=1000"))
+          ($assert (== ($size within_range/records) 3) ($to_str within_range))
           (let printed (await ($os/exec_async ^timeout_ms 30000 ^max_bytes 1048576
             ($os/executable_path) "run" "--snapshot" (source_path "src/main.gene")
             "--workspace" workspace "logs" "--type" "model/*")))
@@ -50,4 +66,39 @@
             "--workspace" workspace "--json" "logs" "--type" "model/*")))
           (let parsed ($json/parse ($str/trim as_json/stdout)))
           ($assert (== ($size parsed/records) 1) ($to_str parsed))
+        ensure (stop_host host)))))
+
+  (it "tails a foreground host and records the original error from a request" []
+    (isolated this_mod/.path "tails a foreground host and records the original error from a request"
+      (fn [workspace]
+        (let setup (open_runtime workspace "default" (offline_profile)))
+        (try
+          (let result (register_plugin setup/workspace setup/h "log_probe" (failing_route_source)))
+          ($assert (== result/status "ready") ($to_str result))
+        ensure (close_runtime setup))
+        (let host (start_host workspace))
+        (try
+          (let client (connect workspace))
+          ($assert (! ($fs/exists? ($path/join workspace ".gene-harness" "host.log"))))
+          (let unfiltered (api client "GET" "/logs?source=host&cursor="))
+          ($assert (== unfiltered/state "ok") ($to_str unfiltered))
+          (let types ($map unfiltered/records (fn [record] record/type)))
+          ($assert (types .contains? "host/ready") ($to_str unfiltered))
+          (let ready (api client "GET" "/logs?type=host%2Fready"))
+          ($assert (== ($size ready/records) 1) ($to_str ready))
+          ($assert (== ready/records/0/type "host/ready"))
+          ($assert ($str/contains? ready/lines/0 "host/ready"))
+          (let errors_path "/logs?type=web%2Frequest_failed")
+          (let initial (api client "GET" errors_path))
+          ($assert initial/records/.empty? ($to_str initial))
+          (repeat attempt in 2
+            (let failed (wire client/connection "GET" "/p/log_probe/fail" ^credentials client/credentials))
+            ($assert (== failed/status 500))
+            ($assert (== failed/body/code "internal_error") ($to_str failed/body)))
+          (let errors (api client "GET" $"${errors_path}&cursor=${(encode_component initial/cursor)}"))
+          ($assert (== ($size errors/records) 2) ($to_str errors))
+          ($assert (!= errors/records/0/target/request errors/records/1/target/request))
+          ($assert (== errors/records/0/data/error "log route test failure") ($to_str errors))
+          (let caught_up (api client "GET" $"${errors_path}&cursor=${(encode_component errors/cursor)}"))
+          ($assert caught_up/lines/.empty? ($to_str caught_up))
         ensure (stop_host host))))))

@@ -1,12 +1,12 @@
 # Core host-log route. Owner-authenticated through common admission; reads the
-# same retained host.log segments as the editor Logs tab, parses records, and
-# applies type/target/level/since filters without losing the cursor.
+# retained host.log segments, with the in-process ring as a fallback.
 (mod logs_routes)
 (import [api_root] ^from "../contract.gene")
 (import [field number response] ^from "../request")
 (import [read_log] ^from "../../public/log_tail")
-(import [parse_record] ^from "../../public/log_record")
+(import [parse_record render_text serialize_record] ^from "../../public/log_record")
 (import [redact_secrets] ^from "../../public/log_redaction")
+(import [log_recent log_run ring_limit] ^from "../../kernel/log")
 
 (const target_keys
   ["workspace" "session" "round" "turn" "call" "command" "input" "plugin" "view"
@@ -36,7 +36,7 @@
     (let value (field ^default "" params key))
     (if (!= value "") (targets .put key value)))
   {^type type ^level level ^since since ^targets targets
-   ^active (|| (!= type "") (!= level "") (> since 0) (! targets/.empty?))})
+   ^active (|| (!= type "") (!= level "") (> since 0) (! ($map_empty? targets)))})
 
 (fn matches? [record, filters] : Bool
   (if_not (type_matches? ($to_str record/type) filters/type) (return false))
@@ -45,11 +45,60 @@
     (return false))
   (if (> filters/since 0)
     (let at (?? record/time_ms 0))
-    else (if (|| (!= ($head at) Int) (< at filters/since)) (return false)))
+    (if (|| (!= ($head at) Int) (< at filters/since)) (return false)))
   (let target (?? record/target {}))
   (map_for [key value] in filters/targets
     (if (!= ($to_str (?? (target .get key) "")) value) (return false)))
   true)
+
+(fn read_live_log [cursor_text : Str, filters, options] : Any
+  (let ring (log_recent ^limit ring_limit))
+  (let run (log_run))
+  (let cursor (try ($json/parse cursor_text) catch Error nil))
+  (let resume (&& (== ($head cursor) Map) (== cursor/source "ring")
+                  (== cursor/run run) (== ($head cursor/seq) Int) (>= cursor/seq 0)))
+  (let after (if resume cursor/seq else 0))
+  (var latest after)
+  (var available [])
+  (var filtered 0)
+  (var gap "")
+  (var start 0)
+  (if (&& resume (> after 0) (! ring/.empty?))
+    (while (&& (< start ring/.size) (!= ring/%start/seq after))
+      (set start (+ start 1)))
+    (if (== start ring/.size)
+      (set gap "The in-memory log rotated past the last read.")
+      (set start 0)
+      else (set start (+ start 1))))
+  (while (< start ring/.size)
+    (let record ring/%start)
+    (set latest record/seq)
+    (if (matches? record filters)
+      (available .push record)
+      else (set filtered (+ filtered 1)))
+    (set start (+ start 1)))
+  (if (&& (== ($head cursor) Map) (== cursor/source "ring") (!= cursor/run run))
+    (set gap "The host restarted."))
+  (let lines [])
+  (let records [])
+  (let max_lines ($math/max 1 options/initial_lines))
+  (let max_bytes ($math/max 4096 options/max_bytes))
+  (var bytes 0)
+  (var index (- available/.size 1))
+  (while (&& (>= index 0) (< records/.size max_lines))
+    (let record available/%index)
+    (let text (render_text record))
+    (let cost (+ 1 ($str/byte_size text) ($str/byte_size (serialize_record record))))
+    (if (&& (> records/.size 0) (> (+ bytes cost) max_bytes)) (break))
+    (lines .push text)
+    (records .push record)
+    (set bytes (+ bytes cost))
+    (set index (- index 1)))
+  (if (&& resume (>= index 0) (== gap ""))
+    (set gap "Some live log records exceeded the poll budget."))
+  {^^ok ^state (if (== gap "") "ok" else "gap") ^lines ($reverse lines)
+   ^records ($reverse records) ^cursor ($json/stringify {^source "ring" ^run run ^seq latest})
+   ^gap gap ^truncated 0 ^skipped 0 ^bytes bytes ^filtered filtered})
 
 (fn logs_request [context, request, parts]
   (if_not (&& (== request/method "GET") (== request/path $"${(api_root)}/logs"))
@@ -65,14 +114,17 @@
     {^max_bytes (if filtered 1048576 else (number ^default "65536" params "max_bytes"))
      ^max_line_bytes (number ^default "8192" params "max_line_bytes")
      ^initial_lines (if filtered 1000 else (number ^default "200" params "lines"))})
+  (let cursor (field ^default "" params "cursor"))
   (let result
     (read_log source
       ($path/join root ".gene-harness/host.log")
       ($path/join root ".gene-harness/host.log.1")
-      (field ^default "" params "cursor")
+      cursor
       options
       (fn [text : Str] : Str (redact_secrets root text))))
   (if (|| (!= ($head result) Map) (! result/ok)) (return (response 200 result)))
+  (if (== result/state "absent")
+    (return (response 200 (read_live_log cursor filters options))))
   (let lines result/lines)
   (let raws (?? result/raw_lines []))
   (var selected_lines [])
