@@ -485,6 +485,17 @@ suite "size and empty? of a List skip the override lookup":
       """"no message 'size' on Node; use value/.body for its body items """ &
       """or $map_size for its props"]"""
 
+  test "size and empty? messages count List items and Map entries":
+    fastCk """
+      (let items [nil false])
+      (let props {^missing nil})
+      (let entries {{"key": nil "other": false}})
+      [items/.size items/.empty? ([] .size) ([] .empty?)
+       (props .size) (props .empty?) ({} .size) ({} .empty?)
+       entries/.size entries/.empty?
+       (try ($empty? props) catch Fault "use map_empty?")]""",
+      """[2 false 0 true 1 false 0 true 2 false "use map_empty?"]"""
+
 suite "an indexed read of a List through a local index":
   test "in range, out of range, from the end, and other targets":
     fastCk """

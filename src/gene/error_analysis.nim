@@ -1232,6 +1232,8 @@ proc messageValue(analysis: ErrorAnalysis, receiver, qualifier: AbstractValue,
     return nativeMessage("Task")
   if receiver != nil and receiver.kind == avList and name in ["size", "empty?", "push"]:
     return nativeMessage("List")
+  if receiver != nil and receiver.kind == avMap and name in ["size", "empty?"]:
+    return nativeMessage("Map")
   AbstractValue(kind: avMessage, name: name)
 
 proc interfaceEnvironment(analysis: ErrorAnalysis, iface: CompileNamespaceInterface,

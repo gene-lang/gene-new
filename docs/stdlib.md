@@ -629,10 +629,10 @@ Generic operations live at the `gene` root and share their implementation with
 receiver messages: `($map xs f)` and `(xs .map f)` are the same operation.
 Text helpers live under `$str`, and ordering helpers under `$order`.
 
-The operation name selects the view: list-family operations read items,
-map-family operations read entries. A Map passed to `size`, `map`, `filter`,
-`filter_map`, `each`, or a loop is rejected with the corresponding map-family
-spelling in the diagnostic. A node's body is always explicit with
+List-family functions read items and map-family functions read entries.
+Passing a Map to `$size`, `$map`, `$filter`, `$filter_map`, or `$each`, or
+using it in `for`, raises an error that names the corresponding map-family
+operation. A node's body is always explicit with
 `value/.body` (or `$body`); map-family operations read a node's stored props.
 A node whose type implements `IndexRead` is list-like for the list family and
 uses the witness snapshot; a node without `IndexRead` is not.
@@ -640,9 +640,12 @@ uses the witness snapshot; a node without `IndexRead` is not.
 | Receiver | List family | Map family |
 | --- | --- | --- |
 | List | `assoc`, `get`, `join`, `set`, `push`, `size`, `empty?`, `first`, `last`, `contains?`, `map`, `filter_map`, `filter`, `take`, `drop`, `reverse`, `each`, `into`, `to_stream` | rejected |
-| Map (PropMap or HashMap) | rejected; use the map-family name | `assoc`, `get`, `has_key?`, `put`, `delete`, `map_size`, `map_empty?`, `map_map`, `map_filter`, `map_filter_map`, `map_each`, `to_pairs_stream` |
+| Map (PropMap or HashMap) | list-family function calls are rejected | `assoc`, `get`, `has_key?`, `put`, `delete`, `.size`, `.empty?`, `map_size`, `map_empty?`, `map_map`, `map_filter`, `map_filter_map`, `map_each`, `to_pairs_stream` |
 | Stream | `has_next`, `peek`, `next`, `try_next`, `close`, `map`, `filter_map`, `filter`, `take`, `drop`, `each`, `into`, `to_stream` | rejected |
 | Node | list family only with `IndexRead`; use `value/.body` otherwise | keyed operations plus `map_size`, `map_empty?`, `map_map`, `map_filter`, `map_filter_map`, `map_each`, `to_pairs_stream` |
+
+List and Map messages `.size` and `.empty?` work in the native VM and web
+profile. For example, `({^score nil} .size)` returns `1`.
 
 `(xs .get index)` reads the same element as an indexed Path: zero-based,
 negative indices count from the end, and out-of-range reads return `nil`.

@@ -19,6 +19,8 @@ proc builtinNativeErrorMetadata*(name: string): NativeErrorMetadata =
     local = local[6..^1]
   elif local in ["List/size", "List/empty?"]:
     local = local.split('/')[1]
+  elif local in ["Map/size", "Map/empty?"]:
+    local = "map_" & local[4..^1]
   case local
   of "assert", "test/assert_equal", "test/assert_raises",
      "==", "!=", "same?", "not", "absent?", "present?", "noop",
@@ -49,7 +51,8 @@ proc nativeErrorAcceptsCall*(metadata: NativeErrorMetadata,
   of "gene/test/assert_equal", "gene/test/assert_raises": positionalCount in 2..3
   of "gene/not", "gene/absent?", "gene/present?",
      "gene/to_stream", "gene/read_one", "gene/read_all", "gene/parse_int",
-     "gene/size", "gene/empty?", "gene/Stream/next", "gene/Stream/peek",
+     "gene/size", "gene/empty?", "gene/map_size", "gene/map_empty?",
+     "gene/Stream/next", "gene/Stream/peek",
      "gene/Stream/has_next", "gene/Stream/try_next", "gene/Stream/close",
      "gene/Task/join": positionalCount == 1
   of "gene/same?", "gene///", "gene/each", "gene/List/push": positionalCount == 2

@@ -927,6 +927,16 @@ suite "web map-family operations":
       (fn empty_probe [] : Bool
         (let m {^x 1})
         ($map_empty? m))
+      (fn collection_counts [] : (List Any)
+        (let items [1 2])
+        (let props {^x nil})
+        (let entries {{"x": 1 "y": 2}})
+        (let empty_items : (List Int) [])
+        [items/.size items/.empty? empty_items/.size empty_items/.empty?
+         (props .size) (props .empty?) ({} .size) ({} .empty?)
+         entries/.size entries/.empty?])
+      (fn optional_map_size [m : PropMap?] : Int? m/?.size)
+      (fn optional_list_empty [xs : (| (List Int) Nil)] : Bool? xs/?.empty?)
       (fn map_probe [] : (Map Str Int)
         (let m {{"x": 1 "y": 2}})
         ($map_map m (fn [v : Int] : Int (* v 10))))
@@ -942,9 +952,16 @@ suite "web map-family operations":
     discard buildWebModule(root / "map_family.gene", root / "out")
     writeFile(root / "out" / "check.mjs", """
       import assert from 'node:assert/strict';
-      import {size_probe, empty_probe, map_probe, filter_probe, pair_probe} from './map_family.mjs';
+      import {size_probe, empty_probe, collection_counts, optional_map_size,
+              optional_list_empty, map_probe, filter_probe, pair_probe} from './map_family.mjs';
       assert.equal(size_probe(), 2n);
       assert.equal(empty_probe(), false);
+      assert.deepEqual(collection_counts(), [2n, false, 0n, true, 1n, false, 0n, true, 2n, false]);
+      assert.equal(optional_map_size(null), null);
+      assert.equal(optional_map_size({x: null}), 1n);
+      assert.equal(optional_list_empty(null), null);
+      assert.equal(optional_list_empty([1n]), false);
+      assert.equal(optional_list_empty([]), true);
       assert.equal(map_probe().get('x'), 10n);
       assert.equal(map_probe().get('y'), 20n);
       assert.equal(filter_probe().has('x'), false);
@@ -955,20 +972,22 @@ suite "web map-family operations":
     checkpoint ran.output
     check ran.exitCode == 0
 
-  test "list-family names on a Map are rejected at web compile time":
-    for source in [
-      "(let m {^x 1}) ($size m)",
-      "(let m {^x 1}) (for [k v] in m nil)",
-      "(let m {^x 1}) (m .map (fn [v : Any] : Any v))",
-      "(let m {^x 1}) ($each m (fn [v : Any] : Any v))"
+  test "the web profile rejects list-family calls on maps and extra count arguments":
+    for (source, hint) in [
+      ("(let m {^x 1}) ($size m)", "map_size"),
+      ("(let m {^x 1}) (m .size 1)", "expects no message arguments"),
+      ("(let m {^x 1}) (m .empty? ^flag true)", "named message arguments"),
+      ("(let m {^x 1}) (for [k v] in m nil)", "map_for"),
+      ("(let m {^x 1}) (m .map (fn [v : Any] : Any v))", "map_map"),
+      ("(let m {^x 1}) ($each m (fn [v : Any] : Any v))", "map_each")
     ]:
       var message = ""
       try:
-        discard analyzeWebModule("(mod map_reject ^profile web) " & source,
-                                 "map_reject.gene")
+        discard analyzeWebModule("(mod map_reject ^profile web) " &
+          "(fn rejected [] : Any " & source & ")", "map_reject.gene")
       except WebProfileError as error:
         message = error.msg
-      check "map_" in message
+      check hint in message
 
   test "dynamic size preserves the Map rejection through Any":
     let root = createTempDir("gene-web-map-any-size-", "")

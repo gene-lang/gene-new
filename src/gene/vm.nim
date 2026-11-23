@@ -7750,6 +7750,9 @@ proc biListSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   if args[0].kind == vkList:
     return newInt(args[0].listItems.len)
   let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
+  if args[0].kind in {vkMap, vkHashMap}:
+    raiseMessageError("size", receiverDisplayType(args[0]), scope,
+                      familyHint = "use $map_size for a Map's entries")
   let runningOp = builtinBinding(scope, "size")
   let direct = typeDirectOverride("size", args[0], [], scope, runningOp)
   if direct.handled: return direct.value
@@ -7758,9 +7761,6 @@ proc biListSize(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
       return indexReadSize(args[0], args[0].head.readyCoreWitness(cvSize))
     raiseMessageError("size", receiverDisplayType(args[0]), scope,
                       nodeViewHint = true)
-  if args[0].kind in {vkMap, vkHashMap}:
-    raiseMessageError("size", receiverDisplayType(args[0]), scope,
-                      familyHint = "use $map_size for a Map's entries")
   case args[0].kind
   of vkList:
     newInt(args[0].listItems.len)
@@ -7779,6 +7779,9 @@ proc biListEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   if args[0].kind == vkList:
     return newBool(args[0].listItems.len == 0)
   let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
+  if args[0].kind in {vkMap, vkHashMap}:
+    raiseMessageError("empty?", receiverDisplayType(args[0]), scope,
+                      familyHint = "use $map_empty? for a Map's entries")
   let runningOp = builtinBinding(scope, "empty?")
   let direct = typeDirectOverride("empty?", args[0], [], scope, runningOp)
   if direct.handled: return direct.value
@@ -7788,9 +7791,6 @@ proc biListEmpty(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         args[0].head.readyCoreWitness(cvSize)).intIsZero)
     raiseMessageError("empty?", receiverDisplayType(args[0]), scope,
                       nodeViewHint = true)
-  if args[0].kind in {vkMap, vkHashMap}:
-    raiseMessageError("empty?", receiverDisplayType(args[0]), scope,
-                      familyHint = "use $map_empty? for a Map's entries")
   case args[0].kind
   of vkList:
     newBool(args[0].listItems.len == 0)
@@ -11005,6 +11005,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     "has_key?": hasKeyFn,
     "put": builtinNativeFn("Map/put", biMapPutBang),
     "delete": builtinNativeFn("Map/delete", biMapDeleteBang),
+    "size": mapSizeFn,
+    "empty?": mapEmptyFn,
     "map_size": mapSizeFn,
     "map_empty?": mapEmptyFn,
     "map_map": mapMapFn,

@@ -2874,11 +2874,19 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
                       typ: if throwableReceiver: unionType(webType(wtkStr), webType(wtkNil))
                            else: webType(wtkAny),
                       loc: loc, children: @[receiver])
+    if protocolMessage == nil and presentType.kind in {wtkList, wtkPropMap, wtkMap} and
+        messageName in ["size", "empty?"]:
+      if value.body.len != 2 or value.props.len != 0:
+        raise webError(loc, "web " & messageName & " expects no message arguments")
+      let resultType = webType(if messageName == "size": wtkInt else: wtkBool)
+      let optional = optionalSend and typeAllowsNil(receiver.typ)
+      let family = if presentType.kind == wtkList: "list_" else: "map_"
+      return WebExpr(kind: wekBuiltin, loc: loc, text: family & messageName,
+        typ: if optional: unionType(resultType, webType(wtkNil)) else: resultType,
+        boolValue: optional, children: @[receiver])
     if protocolMessage == nil and receiver.typ.kind in {wtkPropMap, wtkMap} and
-        messageName in ["size", "empty?", "map", "filter_map", "filter", "each"]:
+        messageName in ["map", "filter_map", "filter", "each"]:
       let replacement = case messageName
-        of "size": "map_size"
-        of "empty?": "map_empty?"
         of "map": "map_map"
         of "filter": "map_filter"
         of "filter_map": "map_filter_map"
@@ -3003,19 +3011,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         else: webType(wtkStr)
       methodDecl = WebMethod(sourceName: messageName, emittedName: messageName,
         params: params, returnType: returnType, loc: loc)
-    if methodDecl == nil and receiver.typ.kind == wtkMap and
-        messageName in ["get", "size"]:
-      let params = case messageName
-        of "get": @[WebParam(sourceName: "key",
-          emittedName: "key", typ: receiver.typ.params[0], loc: loc)]
-        else: newSeq[WebParam]()
-      let returnType = case messageName
-        of "get": receiver.typ.params[1]
-        else: webType(wtkInt)
+    if methodDecl == nil and receiver.typ.kind == wtkMap and messageName == "get":
       methodDecl = WebMethod(sourceName: messageName,
-        emittedName: messageName, params: params, returnType: returnType, loc: loc)
+        emittedName: messageName, params: @[WebParam(sourceName: "key",
+          emittedName: "key", typ: receiver.typ.params[0], loc: loc)],
+        returnType: receiver.typ.params[1], loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkList and
-        messageName in ["push", "pop", "size", "clear", "get", "join"]:
+        messageName in ["push", "pop", "clear", "get", "join"]:
       # The minimum a List needs to be built and measured. Without `push` a
       # program cannot construct a collection at all, which is why every
       # accumulator in this profile had to be pre-sized by its caller.
@@ -3029,7 +3031,6 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         of "get": unionType(receiver.typ.item, webType(wtkNil))
         of "join": webType(wtkStr)
         of "pop", "push": receiver.typ.item
-        of "size": webType(wtkInt)
         else: webType(wtkNil)
       if messageName == "join":
         analysis.requireType(loc, receiver.typ, webType(wtkList, webType(wtkStr)), "List/join receiver")
@@ -6945,8 +6946,19 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         ", " & arguments[2] & ")"
     of "http/request": "$gene_http_result(" & arguments.join(", ") & ")"
     of "size": "$gene_size(" & arguments[0] & ")"
-    of "map_size": "$gene_map_size(" & arguments[0] & ")"
-    of "map_empty?": "($gene_map_size(" & arguments[0] & ") === 0n)"
+    of "list_size", "list_empty?", "map_size", "map_empty?":
+      var input = arguments[0]
+      if expr.boolValue:
+        let saved = emitter.temp()
+        emitter.line("const " & saved & " = " & input & ";")
+        input = saved
+      let count = case expr.text
+        of "list_size": "BigInt(" & input & ".length)"
+        of "list_empty?": "(" & input & ".length === 0)"
+        of "map_size": "$gene_map_size(" & input & ")"
+        else: "($gene_map_size(" & input & ") === 0n)"
+      if expr.boolValue: "(" & input & " == null ? " & input & " : " & count & ")"
+      else: count
     of "map_map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ")"
     of "map_filter_map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ", true)"
     of "map_filter": "$gene_stream_filter(" & arguments[0] & ", " & arguments[1] & ")"
@@ -7335,7 +7347,6 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       of "join": return target & ".join(" & (if arguments.len == 0: "\"\"" else: arguments[0]) & ")"
       of "push": return "$gene_list_push(" & target & ", " & arguments[0] & ")"
       of "pop": return target & ".pop()"
-      of "size": return "BigInt(" & target & ".length)"
       of "clear": return "(" & target & ".splice(0), null)"
       else: discard
     # Buffer messages lower to plain indexed access on the typed array. `get`
@@ -7395,10 +7406,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       "(" & target & " == null ? " & target & " : " & target & member &
         "(" & arguments.join(", ") & "))"
     else:
-      if expr.text == "size" and expr.children[0].typ.kind == wtkMap:
-        "BigInt(" & receiver & ".size)"
-      else:
-        receiver & member & "(" & arguments.join(", ") & ")"
+      receiver & member & "(" & arguments.join(", ") & ")"
   of wekNew:
     var arguments: seq[string]
     for child in expr.children: arguments.add emitter.emitExpr(child)

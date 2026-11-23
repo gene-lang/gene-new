@@ -590,8 +590,11 @@ directly or import its name:
 The list family (`map`, `filter`, `filter_map`, `each`, `size`, `empty?`,
 `first`, `last`, `contains?`, `take`, `drop`, `reverse`, `to_stream`, `join`,
 and `into` as a source) reads a List's items, a Stream's items, or a node's
-logical items when its type implements `IndexRead`. A Map has entries, so the
-list family rejects it and names the corresponding map-family operation.
+logical items when its type implements `IndexRead`. List-family function calls
+on a Map name the corresponding map-family operation in the error.
+
+Both Lists and Maps answer `.size` and `.empty?`. These messages read items
+on a List and entries on a Map, including entries whose value is `nil`.
 
 The map family reads entries: `map_size`, `map_empty?`, `map_map`,
 `map_filter`, `map_filter_map`, `map_each`, `to_pairs_stream`, and
@@ -607,8 +610,8 @@ iterate a Map's `[key value]` pairs or a node's props:
 ```
 
 Use `N/.body` or `($body N)` when a node's positional body is intended.
-The operation name, never the receiver's declaration, selects the view. See
-[collections](spec/collections.md).
+For the list- and map-family functions, the operation name selects the view.
+See [collections](spec/collections.md).
 
 A Path can be the callback to a list-family operation:
 

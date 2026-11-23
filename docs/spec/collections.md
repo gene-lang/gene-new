@@ -2,9 +2,8 @@
 
 **Status:** normative and implemented.
 
-Gene has two collection-operation families. The operation name selects the
-view; a receiver's type declaration or a `^body` field never changes how an
-operation reads it.
+Gene has two collection-operation families. In a function call, the operation
+name selects the view. Messages use the receiver's message table.
 
 - The **list family** reads items: `for`, `size`, `empty?`, `map`, `filter`,
   `filter_map`, `each`, `first`, `last`, `contains?`, `take`, `drop`,
@@ -18,10 +17,14 @@ operation reads it.
 | Receiver | List family | Map family |
 | --- | --- | --- |
 | List, Set, Stream, Range, Str | that kind's items, as documented per operation | rejected; use the map-family name only on a Map or node |
-| Map (PropMap or HashMap) | rejected; the error names the matching map-family operation | entries |
+| Map (PropMap or HashMap) | function calls are rejected with the matching map-family name | entries |
 | node of an `IndexRead` type | logical items: `size` once, then `at` from `0`; `size` and `empty?` call the witness directly | stored props |
 | any other node | rejected; use `value/.body` for body items | stored props |
 | nil | `for` runs zero times | `map_for` runs zero times |
+
+`.size` and `.empty?` are messages on both Lists and Maps. On a Map they read
+entries, including entries with a stored `nil`. The list-family functions
+`$size` and `$empty?` retain their item-view rules.
 
 List-family results such as `map`, `take`, `drop`, and `reverse` are plain
 Lists. Map-family results are plain Maps. Both inherit the source's frozen
