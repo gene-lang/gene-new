@@ -10729,7 +10729,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   root.define("log", newNamespace("log", logScope))
   # Importable stdlib namespaces (docs/stdlib.md): mostly re-exports of the
   # built-ins above under stable module paths, so source programs can write
-  # `(import std/stream [map])` / `(import str [join])` today and swap in
+  # `(import std/stream/map)` / `(import str/join)` today and swap in
   # file-backed modules later without changing call sites.
   let stdStreamScope = newScope(root)
   stdStreamScope.define("to_stream",

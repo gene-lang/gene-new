@@ -4901,7 +4901,7 @@
     },
     {
       "id": "self.imported_default_scope",
-      "source": "(ns origin (fn private_label [x : Any] : Str \"source\") (protocol P (message label [other : Self] : Str (let mine : Self self) (private_label mine)))) (import origin [P]) (fn private_label [x : Any] : Str \"caller\") (type Item ^props {}) (impl P for Item) ((Item) .P:label (Item))",
+      "source": "(ns origin (fn private_label [x : Any] : Str \"source\") (protocol P (message label [other : Self] : Str (let mine : Self self) (private_label mine)))) (import origin/P) (fn private_label [x : Any] : Str \"caller\") (type Item ^props {}) (impl P for Item) ((Item) .P:label (Item))",
       "web_source": "(mod self_imported_default_scope ^profile web) (import P ^from \"./provider.gene\") (fn private_label [x : Any] : Str \"caller\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label (Item)))",
       "web_export": "run",
       "expected_value": {
@@ -4934,7 +4934,7 @@
     },
     {
       "id": "self.default_type_collision",
-      "source": "(ns origin (type Item ^props {} (message value [] : Str \"provider\")) (fn private_label [] : Str ((Item) .value)) (protocol P (message label [] : Str (private_label)))) (import origin [P]) (fn private_label [] : Str \"consumer\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label)) (run)",
+      "source": "(ns origin (type Item ^props {} (message value [] : Str \"provider\")) (fn private_label [] : Str ((Item) .value)) (protocol P (message label [] : Str (private_label)))) (import origin/P) (fn private_label [] : Str \"consumer\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label)) (run)",
       "web_source": "(mod self_default_type_collision ^profile web) (import P ^from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Item ^props {}) (impl P for Item) (fn run [] : Str ((Item) .P:label))",
       "web_export": "run",
       "expected_value": {
@@ -4952,7 +4952,7 @@
     },
     {
       "id": "self.default_nested_binding",
-      "source": "(ns origin (fn private_label [] : Str \"provider\") (protocol P (message checker [] : (Fn [Any] Str) (fn [x : Any] : Str (let checked : (List Self) x) (private_label))))) (import origin [P]) (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeFault \"checked\")]) (run)",
+      "source": "(ns origin (fn private_label [] : Str \"provider\") (protocol P (message checker [] : (Fn [Any] Str) (fn [x : Any] : Str (let checked : (List Self) x) (private_label))))) (import origin/P) (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeFault \"checked\")]) (run)",
       "web_source": "(mod self_default_nested_binding ^profile web) (import P ^from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeFault \"checked\")])",
       "web_export": "run",
       "expected_value": {
@@ -4979,7 +4979,7 @@
     },
     {
       "id": "self.imported_universal_value",
-      "source": "(ns origin (protocol U ^^universal (message label [] : Str \"fallback\"))) (import origin [U]) (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box))) (run)",
+      "source": "(ns origin (protocol U ^^universal (message label [] : Str \"fallback\"))) (import origin/U) (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box))) (run)",
       "web_source": "(mod self_imported_universal_value ^profile web) (import U ^from \"./provider.gene\") (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box)))",
       "web_export": "run",
       "expected_value": {
@@ -5375,7 +5375,7 @@
     },
     {
       "id": "nil_void.imported_alias",
-      "source": "(ns provider (alias Maybe Int?) (fn f [x : Maybe = 9] : Int? x)) (import provider [Maybe f]) (alias LocalMaybe Maybe) (fn local [x : LocalMaybe = nil] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)]) (run)",
+      "source": "(ns provider (alias Maybe Int?) (fn f [x : Maybe = 9] : Int? x)) (import provider/[Maybe f]) (alias LocalMaybe Maybe) (fn local [x : LocalMaybe = nil] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)]) (run)",
       "web_source": "(mod nil_void_imported_alias ^profile web) (import Maybe f ^from \"./provider.gene\") (alias LocalMaybe Maybe) (fn local [x : LocalMaybe = nil] : Int? x) (fn run [] : (List Int?) [(local) (f) (f nil)])",
       "web_export": "run",
       "expected_value": {
@@ -5404,7 +5404,7 @@
     },
     {
       "id": "nil_void.alias_use_site",
-      "source": "(ns provider (type Box ^props {^label Str}) (alias MaybeBox Box?)) (import provider [MaybeBox]) (type Box ^props {^value Int}) (fn value_of [x : MaybeBox = nil] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))]) (run)",
+      "source": "(ns provider (type Box ^props {^label Str}) (alias MaybeBox Box?)) (import provider/MaybeBox) (type Box ^props {^value Int}) (fn value_of [x : MaybeBox = nil] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))]) (run)",
       "web_source": "(mod nil_void_alias_use_site ^profile web) (import MaybeBox ^from \"./provider.gene\") (type Box ^props {^value Int}) (fn value_of [x : MaybeBox = nil] : Int (?? x/value 0)) (fn run [] : (List Int) [(value_of) (value_of (Box ^value 7))])",
       "web_export": "run",
       "expected_value": {

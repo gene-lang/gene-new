@@ -1,7 +1,7 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
 import std/[algorithm, monotimes, os, sets, strutils, tables]
-import ./[clause_syntax, digest, equality, execution_limits, gir, printer,
+import ./[clause_syntax, digest, equality, execution_limits, gir, import_syntax, printer,
           reader, types]
 import ./error_analysis
 export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
@@ -5752,10 +5752,6 @@ proc importSelectorPath(value: Value): seq[string] =
     return
   raise newException(GeneError, "import selector must be a name or a namespace path")
 
-proc isImportGroupPrefix(value: Value): bool =
-  (value.kind == vkNode and value.head.isSymbol("path")) or
-    (value.kind == vkSymbol and value.symVal.endsWith("/"))
-
 proc isImportAliasMarker(value: Value): bool =
   value.kind == vkSymbol and value.symVal.startsWith(":")
 
@@ -5792,7 +5788,7 @@ proc readImportSelector(value, following: Value, grouped: bool): tuple[
       result.path[i] = segment[0 ..< colon]
       let source = result.path.join("/")
       if following.kind == vkList:
-        raise newException(GeneError, "use `" & source & "/" & print(following) &
+        raise newException(GeneError, "use `" & source & "/" & renderImportGroup(following) &
           "` for an import group")
       let alias = if following.kind == vkSymbol: following.symVal else: "alias"
       invalidImportAlias(source, alias)
@@ -5801,7 +5797,7 @@ proc readImportSelector(value, following: Value, grouped: bool): tuple[
       result.path[i] = segment[0 ..< colon]
       let source = result.path.join("/")
       let replacement =
-        if grouped: source & ":" & alias & " " & source & "/" & print(following)
+        if grouped: source & ":" & alias & " " & source & "/" & renderImportGroup(following)
         else: source & ":" & alias
       raise newException(GeneError,
         "put the import alias at the end of the selector; write `" & replacement & "`")
@@ -5926,23 +5922,28 @@ proc parseImportSpecImpl(node: Value): ImportSpec =
   else:
     if body.len == 0:
       raise newException(GeneError, "import requires a source")
-    # A path and vector also spell the established namespace-member import.
     let source = importSelectionParts(body, 0)
     result.nsSegments = source.path
     if "*" in result.nsSegments:
       raise newException(GeneError,
         "wildcard imports require `^from \"path\"`; a namespace-path import " &
         "has no `*` form")
-    if body.len == 2 and source.alias.len == 0:
+    if body.len == 2 and source.grouped:
+      collectImportSelections(body[1].listItems, @[], result.selections)
+    elif body.len == 2 and source.alias.len == 0:
       if body[1].kind == vkList:
-        collectImportSelections(body[1].listItems, @[], result.selections)
-      else:
-        collectImportSelections(body.toOpenArray(1, 1), @[], result.selections)
+        raise newException(GeneError, "write `" & source.path.join("/") & "/" &
+          renderImportGroup(body[1]) & "` to select namespace members")
+      collectImportSelections(body.toOpenArray(1, 1), @[], result.selections)
     elif body.len == 1 and source.alias.len > 0:
       result.alias = source.alias
+    elif body.len == 1 and source.path.len > 1:
+      let member = source.path[^1]
+      result.nsSegments.setLen(source.path.len - 1)
+      result.selections.add ImportSelection(name: member, local: member)
     else:
       raise newException(GeneError,
-        "namespace import requires selections or `source:alias`")
+        "namespace import requires `source/member`, `source/[members]`, or `source:alias`")
     result.sourceLabel = result.nsSegments.join("/")
   if result.pkgName.len > 0 and not result.fromModule:
     # `^pkg` is valid only on the `^from` form. A bare namespace path never

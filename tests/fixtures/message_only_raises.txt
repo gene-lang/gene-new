@@ -6,7 +6,7 @@
 # 1	src/gene/aot_checked.nim
 # 1	src/gene/callable_reflection.nim
 # 1	src/gene/clause_syntax.nim
-# 421	src/gene/compiler.nim
+# 422	src/gene/compiler.nim
 # 11	src/gene/error_runtime.nim
 # 22	src/gene/events.nim
 # 1	src/gene/execution_limits.nim
@@ -322,7 +322,7 @@ src/gene/compiler.nim	named rest parameter cannot have a default
 src/gene/compiler.nim	named rest parameter requires a name
 src/gene/compiler.nim	named rest parameters are not supported in macro/fexpr parameters
 src/gene/compiler.nim	namespace '
-src/gene/compiler.nim	namespace import requires selections or `source:alias`
+src/gene/compiler.nim	namespace import requires `source/member`, `source/[members]`, or `source:alias`
 src/gene/compiler.nim	new expects a Type argument
 src/gene/compiler.nim	ns requires a name
 src/gene/compiler.nim	omit `[]` to load a module without bindings; write `(import ^from \"path\")`
@@ -451,6 +451,7 @@ src/gene/compiler.nim	web_module requires a name
 src/gene/compiler.nim	while requires a condition
 src/gene/compiler.nim	wildcard imports require `^from \"path\"`; a namespace-path import 
 src/gene/compiler.nim	wildcard, alias, and re-export imports must be unconditional 
+src/gene/compiler.nim	write `
 src/gene/compiler.nim	write the import alias as `
 src/gene/compiler.nim	yield expects one value
 src/gene/compiler.nim	yield is only valid inside fn

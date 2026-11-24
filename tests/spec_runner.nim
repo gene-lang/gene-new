@@ -12715,7 +12715,7 @@ suite "spec — documentation contract":
               if name.len > 0:
                 declared.incl name
               at = line.find(kw, at + 1)
-          # `(import ns [a b:alias c])` binds those names locally too.
+          # `(import ns/[a b:alias c])` binds those names locally too.
           if "(import " in line or "(import_impl " in line:
             let lb = line.find('[')
             if lb >= 0:

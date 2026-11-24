@@ -583,7 +583,7 @@ The standard-library root is `gene`, abbreviated `$`. You can call an operation
 directly or import its name:
 
 ```gene runnable
-(import $str [join])
+(import $str/[join])
 (join ["Ada" "Grace"] ", ") # "Ada, Grace"
 ```
 
@@ -712,10 +712,11 @@ unconditional top-level import. Ordinary runtime selections work in local scopes
 Use `(import ^from "./setup")` to initialize a module without binding names.
 Re-exports require an explicit selection or a wildcard alias.
 
-Namespace member imports such as `(import $str [join trim:clean])` use a
-selection vector without `^from`. Use `(import $str:strings)` to bind the
-namespace. The compiler rejects spaced aliases and the old `from "path"`
-clause.
+Use `(import helpers/greet)` to bind one member of an existing namespace.
+Use `(import helpers/[x y])` to bind several, and put aliases inside the
+group, as in `(import $str/[join trim:clean])`. Use `(import $str:strings)`
+to bind the namespace itself. The compiler rejects spaced aliases and the old
+`from "path"` clause.
 
 To bring an exported scoped protocol implementation into the current module,
 use `(import_impl Protocol for Receiver ^from "./impls.gene")`. The protocol

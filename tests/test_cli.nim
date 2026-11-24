@@ -1477,6 +1477,9 @@ suite "cli — gene parse/fmt/compile":
 (import a/[b c])
 (import a/b/ [c d])
 (import $str [join trim])
+(import gene/str/[trim:clean])
+(import local/name)
+(import local/[one two])
 """
     let file = writeCliProgram("fmt_imports.gene", source)
     let formatted = runGene(["fmt", file])
@@ -1488,10 +1491,13 @@ suite "cli — gene parse/fmt/compile":
     check "(import ^from \"setup\")" in formatted.output
     check "(import a/[b c])" in formatted.output
     check "(import a/b/[c d])" in formatted.output
-    check "(import $str [join trim])" in formatted.output
+    check "(import $str/[join trim])" in formatted.output
+    check "(import $str/[trim:clean])" in formatted.output
+    check "(import local/name)" in formatted.output
+    check "(import local/[one two])" in formatted.output
     let input = readAll(source)
     let output = readAll(formatted.output)
-    for i in [0, 1, 3, 5, 6, 7, 8]:
+    for i in [0, 1, 3, 5, 6, 7, 8, 9, 10, 11]:
       check input[i].print() == output[i].print()
     let second = writeCliProgram("fmt_imports_again.gene", formatted.output)
     check runGene(["fmt", second]).output == formatted.output
@@ -2088,7 +2094,7 @@ suite "cli — gene doc":
       "(mod docs) " &
       "(import dep:local-dep ^from \"./dep_for_doc\") " &
       "(ns source (var item 2)) " &
-      "(import source [item:local-item]) " &
+      "(import source/[item:local-item]) " &
       "(var done true)")
     let ran = runGene(["doc", path])
     check ran.exitCode == 0

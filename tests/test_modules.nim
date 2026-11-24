@@ -96,7 +96,7 @@ suite "modules — file imports":
     writeModule("keywords.gene", "(var from 7)")
     check runProgram("(import from ^from \"./keywords\") from").print() == "7"
     check runProgram("(ns from (var value 8)) " &
-      "(import from [value]) value").print() == "8"
+      "(import from/value) value").print() == "8"
 
   test "module imports reject old syntax and malformed source properties":
     for (source, expected) in [
@@ -180,7 +180,9 @@ suite "modules — file imports":
       ("(import a:aa/b ^from \"x\")", "write `a/b:aa`"),
       ("(import a/b:bb/c ^from \"x\")", "write `a/b/c:bb`"),
       ("(import a:aa/[b c] ^from \"x\")", "write `a:aa a/[b c]`"),
+      ("(import a:aa/[b:bb c] ^from \"x\")", "write `a:aa a/[b:bb c]`"),
       ("(import a:[b c] ^from \"x\")", "use `a/[b c]`"),
+      ("(import a:[b:bb c/[d:dd e]] ^from \"x\")", "use `a/[b:bb c/[d:dd e]]`"),
       ("(import a/[b c]:x ^from \"x\")", "write `a:x` to bind the namespace"),
       ("(import a/[] ^from \"x\")", "requires at least one selection"),
       ("(import *:m a ^from \"x\")", "wildcard must be the only selector"),
@@ -1627,8 +1629,28 @@ suite "modules — namespace-path imports and mod":
   test "import selected bindings from an in-file namespace":
     initModuleContext(getTempDir())
     check run(compileSource(
-      "(ns m (var a 1) (fn double [x] (* x 2))) (import m [a, double]) (double a)"),
+      "(ns m (var a 1) (fn double [x] (* x 2))) (import m/[a double]) (double a)"),
       newGlobalScope()).print() == "2"
+
+  test "import a single namespace member by path":
+    initModuleContext(getTempDir())
+    check run(compileSource("""
+      (ns helpers
+        (fn greet [] "hello")
+        (ns inner (var answer 42)))
+      (import helpers/greet)
+      (import helpers/inner/answer)
+      (import $str/trim)
+      [(greet) answer (trim " a ")]
+    """), newGlobalScope()).print() == "[\"hello\" 42 \"a\"]"
+
+  test "a bare namespace name with a separate selection vector is rejected":
+    var diagnostic = ""
+    try:
+      discard compileSource("(import helpers [greet:hello])")
+    except GeneError as error:
+      diagnostic = error.msg
+    check "write `helpers/[greet:hello]`" in diagnostic
 
   test "bind an in-file namespace with colon alias":
     initModuleContext(getTempDir())

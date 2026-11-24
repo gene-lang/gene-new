@@ -38,8 +38,9 @@ budgets bound the second.
   wildcard supplies fallback bindings. A wildcard alias binds the module or
   namespace as one value. Wildcards, whole-source namespace aliases, and
   re-exports require unconditional top-level placement. Namespace imports
-  without `^from` use `(import source [name name:alias])` or
-  `(import source:alias)`.
+  without `^from` select a member with `(import source/name)` or a group
+  with `(import source/[name other:alias])`. Use `(import source:alias)` to
+  bind a namespace as a whole.
 - `(import ^from "./setup")` loads a module without binding names. Setting
   `^export` to true on this form is a compile error.
 - `^pkg` on the `^from` form selects a package; `"."` names that package's
