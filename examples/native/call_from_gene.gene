@@ -9,7 +9,7 @@
 # The call below runs compiled machine code: the boundary unboxes the Int
 # argument, calls the native function directly, and boxes the Int result.
 
-(import $aot [load])
+(import $aot/load)
 
 (var native (load "build/native-example/libscaled.dylib"))
 

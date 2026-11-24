@@ -49,10 +49,10 @@
 
 # json/stringify must be imported before net/http's `json` response helper
 # shadows the `json` namespace name.
-(import $json [stringify])
-(import $str [join])
-(import gene/parse [parse_int ParseError])
-(import $net/http [Server serve listen stop status route text json])
+(import $json/stringify)
+(import $str/join)
+(import $parse/[parse_int ParseError])
+(import $net/http/[Server serve listen stop status route text json])
 
 # --- shared state ------------------------------------------------------------
 # The event loop runs handler fibers on one scheduler thread, so Cell is safe
@@ -259,7 +259,7 @@
 # the list, so hand-written and discovered routes are the same plain data.
 
 (fn routed? [d]
-  (not ($absent? d/%$meta/route)))
+  ($present? d/%$meta/route))
 
 (fn route_entry [d]
   (var r d/%$meta/route)

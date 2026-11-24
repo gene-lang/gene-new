@@ -1,8 +1,7 @@
 # Run with either:
 #   gene test examples/testing_demo.gene
 #   gene run examples/testing_demo.gene
-(import $test [describe context it before_each after_each assert_equal
-               assert_raises run])
+(import $test/[describe context it before_each after_each assert_equal assert_raises run])
 
 (fn twice [n : Int] : Int (* n 2))
 

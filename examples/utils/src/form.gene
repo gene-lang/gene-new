@@ -21,9 +21,9 @@
 
 (mod utils_form @doc "URL-encoded form decoding and validated field access")
 
-(import $url [parse_query UrlError])
-(import $parse [parse_int ParseError])
-(import $net/http [Response])
+(import $url/[parse_query UrlError])
+(import $parse/[parse_int ParseError])
+(import $net/http/Response)
 
 # `req` is deliberately unannotated. `net/http` documents a `Request` type, but
 # the server hands the handler a plain node rather than a `Request` instance,

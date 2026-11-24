@@ -159,16 +159,23 @@
 ($println "     MVP primitive `(await t)` propagates.)")
 
 ($println "   - error exit cancels pending siblings but their `ensure` runs")
-(var cleanup2 ($cell 0))
+(let sibling_cleanups ($cell 0))
 (type Boom : Error)
-(scope
-  (spawn (try ($sleep 60)
-          ensure (cleanup2 .set (+ cleanup2/.get 1))))
-  ($sleep 1)
-  (try (fail (Boom ^_msg "abandon"))
-    catch Boom nil))
-($sleep 1)
-($println "     sibling ensure ran:" cleanup2/.get)
+(try
+  (scope
+    (let started ($channel ^capacity 1))
+    (let blocked ($channel ^capacity 1))
+    (spawn
+      (try
+        (started .send true)
+        blocked/.recv
+      ensure
+        (sibling_cleanups .set (+ sibling_cleanups/.get 1))))
+    started/.recv
+    (fail (Boom ^_msg "abandon")))
+catch Boom nil)
+($assert (== sibling_cleanups/.get 1))
+($println "     sibling ensure ran:" sibling_cleanups/.get)
 
 ($println "")
 

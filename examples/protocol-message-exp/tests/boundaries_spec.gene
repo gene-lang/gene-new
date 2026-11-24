@@ -1,6 +1,6 @@
 (mod protocol_message_exp_boundaries_spec)
 
-(import $test [describe it assert_equal])
+(import $test/[describe it assert_equal])
 
 (fn capture [arguments]
   (await ($os/exec_async ($os/executable_path) arguments... ^timeout_ms 600000 ^max_bytes 4194304)))

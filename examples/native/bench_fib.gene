@@ -8,8 +8,8 @@
 #
 # Run via bench_fib.sh, which builds the library first.
 
-(import $aot [load])
-(import $os [monotonic_ms])
+(import $aot/load)
+(import $os/monotonic_ms)
 
 (var n 28)
 (var reps 20)

@@ -1,6 +1,6 @@
 (mod lens_integration_spec)
 
-(import $test [describe it assert_equal assert_raises])
+(import $test/[describe it assert_equal assert_raises])
 (import core_document late_document ^from "../../src/documents")
 (import operation:plain_core ^from "../../src/roots/plain")
 (import operation:compact_core ^from "../../src/roots/compact")
