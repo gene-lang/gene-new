@@ -9,8 +9,9 @@ Applications and examples are also opportunities to test the language itself. If
 Prefer `($present? x)` to `(! ($absent? x))`. Presence means neither `nil` nor
 `void`; `false`, zero, empty strings and empty collections are still present.
 
-Prefer an `elif` chain to nested `if` forms in successive else branches. Use
-parenthesized `then`, `elif` and `else` clauses, even for one-expression arms:
+Prefer an `elif` chain to nested `if` forms in successive else branches. Write
+`elif` and `else` as bare markers, not parenthesized clauses, even for
+one-expression arms:
 
 ```gene
 (if x

@@ -1,0 +1,9 @@
+{^format 1
+ ^name "gene/runtime"
+ ^description "The runtime for the Gene language"
+ ^version "0.5.0"
+ ^files {^exclude ["tmp/**"]}
+ ^library {}
+ ^applications []
+ ^tests {^root "tests"}
+ ^dependencies {}}
