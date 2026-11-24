@@ -1,6 +1,6 @@
 (mod cordis_services_spec)
 
-(import $test [describe it after_each assert_equal assert_raises])
+(import $test/[describe it after_each assert_equal assert_raises])
 
 (import InstanceState RuntimeOptions ServiceKey Requirement PluginSpec
          DuplicateProvider DependenciesUnavailable ServiceContractError
@@ -23,7 +23,7 @@
 
 (describe "Cordis services"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (it "binds and caches services within exact provider realms" [t]
     (fn new_test_runtime []
@@ -37,9 +37,9 @@
     (fn merge_greeting [left, right]
       (merge_count .set (+ merge_count/.get 1))
       (var out ($thaw #{}))
-      (if_not ($absent? left)
+      (if ($present? left)
         (map_for [key value] in left (out .put key value)))
-      (if_not ($absent? right)
+      (if ($present? right)
         (map_for [key value] in right (out .put key value)))
       out)
     (fn bind_greeting [provider, definition_context, use_context, config]

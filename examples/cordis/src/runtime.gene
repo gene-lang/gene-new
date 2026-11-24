@@ -731,7 +731,7 @@
   (var key (canonical_service_key candidate))
   (var keys runtime/service_keys/.get)
   (var existing (keys .get key/id))
-  (if_not ($absent? existing)
+  (if ($present? existing)
     (if (same? existing/token key/token) (return nil))
     (cordis_failure
       ServiceContractError
@@ -745,7 +745,7 @@
   (var key (canonical_hook_key candidate))
   (var keys runtime/hook_keys/.get)
   (var existing (keys .get key/id))
-  (if_not ($absent? existing)
+  (if ($present? existing)
     (if (same? existing/token key/token) (return nil))
     (cordis_failure HookDispatchError $"a different hook key is already admitted as ${key/id}"))
   (keys .put key/id key)
@@ -1688,7 +1688,7 @@
   (var key (admitted_service_key scope/runtime candidate))
   (if_not (plugin_declares_provision? scope/owner key)
     (plugin_error ServiceContractError $"plugin did not declare provision ${key/id}" scope/owner))
-  (if_not ($absent? (scope/owner/provided/.get .get key/id))
+  (if ($present? (scope/owner/provided/.get .get key/id))
     (plugin_error DuplicateProvider $"plugin published ${key/id} more than once" scope/owner))
   (if (&& (! (absent? availability)) (! (callable? availability)))
     (plugin_error ServiceContractError "provider availability must be callable or nil" scope/owner))
@@ -1865,7 +1865,7 @@
       "|"
       ($hash config)))
   (var cached (context/runtime/binding_cache/.get .get cache_key))
-  (if_not ($absent? cached) (return cached))
+  (if ($present? cached) (return cached))
   (var bound provider/value)
   (if_not (absent? key/bind)
     (try
@@ -2087,9 +2087,9 @@
       (var option_name ($to_str name))
       (if_not (["subject" "terminal"] .contains? option_name)
         (cordis_failure HookDispatchError $"unknown dispatch option ^${option_name}")))
-    (if_not ($absent? (options .get "subject"))
+    (if ($present? (options .get "subject"))
       (set subject (subject_record (options .get "subject"))))
-    (if_not ($absent? (options .get "terminal")) (set terminal (options .get "terminal"))))
+    (if ($present? (options .get "terminal")) (set terminal (options .get "terminal"))))
   (if_not (absent? subject)
     (if_not (same? subject/runtime/token context/runtime/token)
       (cordis_failure HookDispatchError "hook subject belongs to another runtime")))
@@ -2437,7 +2437,7 @@
     (if group
       (if_not (== ($head children) List)
           (cordis_failure CompositionError $"group ${id} children must be a list"))
-        (if_not ($absent? (entry .get "module"))
+        (if ($present? (entry .get "module"))
           (cordis_failure CompositionError $"group ${id} cannot declare a module"))
       else
         (if_not (== ($head (entry .get "module")) Str)
@@ -2603,7 +2603,7 @@
   (var entries (fresh_list))
   (for id in loader/order/.get
     (var entry (loader/entries/.get .get id))
-    (if_not ($absent? entry) (entries .push (loader_entry_snapshot entry))))
+    (if ($present? entry) (entries .push (loader_entry_snapshot entry))))
   ($freeze {^state loader/state/.get ^mode mode ^changed changed ^entries entries}))
 
 (fn next_parent_context [loader, next_entries, parent_id] ^^private
@@ -3744,7 +3744,7 @@
   (var admitted (fresh_map))
   (for row in rows
     (var plugin (plugins .get row/id))
-    (if_not ($absent? plugin) (admitted .put row/id plugin)))
+    (if ($present? plugin) (admitted .put row/id plugin)))
   # A publication participant swaps host state for a whole candidate, so it
   # needs staged reconciliation. Without one, entries reconcile individually:
   # unchanged plugins stay live and a failed activation affects only its entry.
@@ -4055,7 +4055,7 @@
   (while (>= index 0)
     (var entry (loader/entries/.get .get order/%index))
     (set index (- index 1))
-    (if_not ($absent? entry) (dispose_loader_entry loader entry)))
+    (if ($present? entry) (dispose_loader_entry loader entry)))
   (loader/entries .set (fresh_map))
   (loader/order .set (fresh_list))
   (loader/generations .set (fresh_list))

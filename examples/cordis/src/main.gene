@@ -1,6 +1,6 @@
 (mod main)
 
-(import $log [new_logger])
+(import $log/new_logger)
 (import ReconcileMode RuntimeOptions LoaderOptions invocation_limits
          default_plugin_invoker new_runtime
   ^from "./cordis")

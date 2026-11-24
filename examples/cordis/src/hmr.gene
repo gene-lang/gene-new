@@ -3,7 +3,7 @@
 
 (mod hmr)
 
-(import $fs [watch real_path WatcherClosed])
+(import $fs/[watch real_path WatcherClosed])
 (import Disposable ^from "./model")
 (import hmr_reloaded register_loader_watcher ^from "./runtime"
   ^^export)
@@ -22,9 +22,9 @@
 (fn changed_paths ^^private [adapter, change]
   (if (== change/kind `rescan_required) (return ["*"]))
   (var paths ($thaw #[]))
-  (if_not ($absent? change/path)
+  (if ($present? change/path)
     (paths .push $"${adapter/root}/${change/path}"))
-  (if_not ($absent? change/from)
+  (if ($present? change/from)
     (paths .push $"${adapter/root}/${change/from}"))
   paths)
 
@@ -70,7 +70,7 @@
   (adapter/active .set false)
   adapter/watcher/.close
   (var task adapter/task/.get)
-  (if_not ($absent? task)
+  (if ($present? task)
     task/.cancel
     task/.join)
   (adapter/task .set nil)

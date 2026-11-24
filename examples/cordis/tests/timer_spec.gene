@@ -1,6 +1,6 @@
 (mod cordis_timer_spec)
 
-(import $test [describe it after_each assert_equal])
+(import $test/[describe it after_each assert_equal])
 
 (import RuntimeOptions PluginSpec invocation_limits
          default_plugin_invoker new_runtime
@@ -10,7 +10,7 @@
 
 (describe "Cordis timer"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (it "delivers and coalesces callbacks until the owning instance is disposed" [t]
     (var events ($cell ($thaw #[])))

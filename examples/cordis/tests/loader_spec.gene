@@ -1,6 +1,6 @@
 (mod cordis_loader_spec)
 
-(import $test [describe it after_each assert_equal assert_raises])
+(import $test/[describe it after_each assert_equal assert_raises])
 
 (import InstanceState ReconcileMode RuntimeOptions LoaderOptions
          Requirement PluginSpec CompositionError
@@ -13,7 +13,7 @@
 
 (describe "Cordis loader"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (it "publishes staged revisions and preserves the live composition on rejection" [t]
     (fn uid_for [snapshot, plugin : Str]
@@ -133,7 +133,7 @@
     (var shared_path nil)
     (for node in loader_inspection/entries/0/graph/nodes
       (if_not node/owned (set shared_path node/path)))
-    ($assert (! ($absent? shared_path))
+    ($assert ($present? shared_path)
       "the generation graph must retain admitted shared dependencies")
     (var shared_change (loader .reload [shared_path]))
     (assert_equal shared_change/status "restart_required"
@@ -202,7 +202,7 @@
       "a host plugin must activate beside a failing sibling")
     (assert_equal failing_entry/state "failed"
       "an activation failure must stay on its own entry")
-    ($assert (! ($absent? failing_entry/error))
+    ($assert ($present? failing_entry/error)
       "a failed entry must report its activation error")
 
     (var second (loader .reconcile_plugins manifest {^counted counted ^failing failing}))

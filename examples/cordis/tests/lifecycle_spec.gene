@@ -1,6 +1,6 @@
 (mod cordis_lifecycle_spec)
 
-(import $test [describe it after_each assert_equal assert_raises])
+(import $test/[describe it after_each assert_equal assert_raises])
 
 (import InstanceState RuntimeOptions Requirement PluginSpec
          DependenciesUnavailable
@@ -17,7 +17,7 @@
 
 (describe "Cordis lifecycle"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (it "activates consumers and restarts them when their provider changes" [t]
     (fn check_clock [value : Clock] : Clock value)

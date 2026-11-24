@@ -1,6 +1,6 @@
 (mod cordis_stop_start_spec)
 
-(import $test [describe it after_each assert_equal])
+(import $test/[describe it after_each assert_equal])
 
 (import RuntimeOptions LoaderOptions invocation_limits
          default_plugin_invoker new_runtime
@@ -10,7 +10,7 @@
 
 (describe "Cordis stop_start"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (it "tears down and replaces plugins with the reduced reload guarantee" [t]
     (var runtime

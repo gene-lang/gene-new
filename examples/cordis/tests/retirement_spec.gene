@@ -1,6 +1,6 @@
 (mod cordis_retirement_spec)
 
-(import $test [describe it after_each assert_equal assert_raises])
+(import $test/[describe it after_each assert_equal assert_raises])
 (import RuntimeOptions LoaderOptions PluginSpec PluginCallKind EffectDisposed
          invocation_limits default_plugin_invoker new_runtime invoke_effect_owner
   ^from "../src/cordis")
@@ -8,7 +8,7 @@
 
 (describe "Cordis deferred retirement"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (it "keeps old effect calls alive until the host releases the retirement ticket" [t]
     (let cleanups ($cell []))

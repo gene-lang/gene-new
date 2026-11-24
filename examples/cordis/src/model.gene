@@ -4,7 +4,7 @@
 
 (mod model)
 
-(import $log [Logger])
+(import $log/Logger)
 
 (enum InstanceState
   pending loading active failed unloading disposed)

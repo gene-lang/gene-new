@@ -113,7 +113,7 @@
   (if_not self/active/.get (return nil))
   (self/active .set false)
   (var task self/task/.get)
-  (if_not ($absent? task)
+  (if ($present? task)
     task/.cancel
     task/.join)
   (self/task .set nil)
@@ -131,7 +131,7 @@
 
 (fn schedule_debounce ^^private [self, args]
   (var previous self/task/.get)
-  (if_not ($absent? previous) previous/.cancel)
+  (if ($present? previous) previous/.cancel)
   (var task
     (spawn_effect_call self/owner "debounce-task" run_debounce [self args]))
   (self/task .set task)
@@ -141,15 +141,15 @@
   ($sleep self/delay_ms)
   (if_not self/active/.get (return nil))
   (var pending (self/pending .swap nil))
-  (if (&& self/trailing (! ($absent? pending)))
+  (if (&& self/trailing ($present? pending))
     (scheduled_fire self pending)
-      (var task
-        (spawn_effect_call self/owner "throttle-window"
-          finish_throttle_window [self]))
-      (self/task .set task)
-    else
-      (self/busy .set false)
-      (self/task .set nil))
+    (var task
+      (spawn_effect_call self/owner "throttle-window"
+        finish_throttle_window [self]))
+    (self/task .set task)
+  else
+    (self/busy .set false)
+    (self/task .set nil))
   nil)
 
 (fn schedule_throttle ^^private [self, args]

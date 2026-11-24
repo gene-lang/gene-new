@@ -1,6 +1,6 @@
 (mod hmr_probe)
 
-(import $fs [read_text write_text])
+(import $fs/[read_text write_text])
 (import RuntimeOptions LoaderOptions PluginSpec ReloadRejected
          hmr_reloaded invocation_limits default_plugin_invoker new_runtime
   ^from "../src/cordis")
@@ -76,7 +76,7 @@
   (var source_path nil)
   (for node in graph/nodes
     (if node/owned (set source_path node/path)))
-  (assert (! ($absent? source_path))
+  (assert ($present? source_path)
     "generation graph must identify the owned source")
   (var original_source (read_text source_path))
   (try
@@ -135,7 +135,7 @@
     (var rejected watcher/.inspect)
     (assert (> rejected/failures 0)
       "watcher diagnostics must record rejected candidates")
-    (assert (! ($absent? rejected/last_error))
+    (assert ($present? rejected/last_error)
       "watcher diagnostics must retain the last failure")
     (assert (== ((runtime/.root .require loaded_key) .LoadedValue:value) 2)
       "a rejected watched candidate must preserve the live provider")

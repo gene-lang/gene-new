@@ -1,6 +1,6 @@
 (mod cordis_actor_spec)
 
-(import $test [describe it after_each assert_equal assert_raises])
+(import $test/[describe it after_each assert_equal assert_raises])
 
 (import RuntimeOptions PluginSpec invocation_limits
          default_plugin_invoker new_runtime
@@ -10,7 +10,7 @@
 
 (describe "Cordis actor"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (it "processes messages sequentially and closes the mailbox with its owner" [t]
     (fn init [] 0)

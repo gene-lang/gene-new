@@ -1,6 +1,6 @@
 (mod cordis_hooks_spec)
 
-(import $test [describe it after_each assert_equal assert_raises])
+(import $test/[describe it after_each assert_equal assert_raises])
 
 (import HookMode HookKey RuntimeOptions PluginSpec HookDispatchError
          ContinuationAlreadyCalled ContextDisposed
@@ -18,7 +18,7 @@
 
 (describe "Cordis hooks"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (it "dispatches each hook mode and respects service realms and owner lifetime" [t]
     (fn check_subject [value : SubjectService] : SubjectService value)

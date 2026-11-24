@@ -4,7 +4,7 @@
 
 (mod include)
 
-(import $fs [real_path read_text write_text_atomic])
+(import $fs/[real_path read_text write_text_atomic])
 (import Disposable ReconcileMode CompositionError ^from "./model")
 
 (type IncludeHandle
@@ -48,9 +48,9 @@
     (return false))
   (for field in ["config" "disabled" "isolate" "intercept"]
     (var value (patch .get field))
-    (if_not ($absent? value) (entry .put field value)))
+    (if ($present? value) (entry .put field value)))
   (var inserted (patch .get "children"))
-  (if_not ($absent? inserted)
+  (if ($present? inserted)
     (if_not (== (entry .get "group") true)
       (include_failure
         $"patch target ${target} is not a group"))

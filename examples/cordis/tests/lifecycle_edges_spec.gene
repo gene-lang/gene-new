@@ -1,6 +1,6 @@
 (mod cordis_lifecycle_edges_spec)
 
-(import $test [describe it after_each assert_equal assert_raises])
+(import $test/[describe it after_each assert_equal assert_raises])
 
 (import InstanceState PluginCallKind HookMode PluginInvoker
          RuntimeOptions PluginSpec ConfigValidationError
@@ -19,10 +19,10 @@
 
 (describe "Cordis lifecycle_edges"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (after_each [t]
-    (if_not ($absent? t/bounded_runtime) t/bounded_runtime/.close))
+    (if ($present? t/bounded_runtime) t/bounded_runtime/.close))
 
   (it "validates updates, recovers failed activations, and permits self-disposal" [t]
     (fn schema [value : Int] : Int value)

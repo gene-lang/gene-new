@@ -41,7 +41,7 @@ Cordis is two mechanisms made to cooperate:
 The Gene module should keep those two mechanisms behind one small interface:
 
 ```gene
-(import $log [new_logger])
+(import $log/new_logger)
 (import InvocationLimits RuntimeOptions default_plugin_invoker new_runtime
   ^from "./cordis")
 

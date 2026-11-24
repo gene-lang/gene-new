@@ -1,6 +1,6 @@
 (mod cordis_cycles_spec)
 
-(import $test [describe it after_each assert_raises])
+(import $test/[describe it after_each assert_raises])
 
 (import InstanceState RuntimeOptions Requirement PluginSpec
          DependenciesUnavailable invocation_limits service_key
@@ -17,7 +17,7 @@
 
 (describe "Cordis cycles"
   (after_each [t]
-    (if_not ($absent? t/runtime) t/runtime/.close))
+    (if ($present? t/runtime) t/runtime/.close))
 
   (it "keeps a provider cycle pending and reports unavailable dependencies" [t]
     (fn check_marker [value : Marker] : Marker value)

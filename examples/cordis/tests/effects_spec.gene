@@ -1,6 +1,6 @@
 (mod cordis_effects_spec)
 
-(import $test [describe it after_each assert_equal assert_raises])
+(import $test/[describe it after_each assert_equal assert_raises])
 
 (import ^from "../src/cordis"
     EffectOwner
@@ -18,7 +18,7 @@
 
 (describe
   "Cordis effects"
-  (after_each [t] (if_not ($absent? t/runtime) t/runtime/.close))
+  (after_each [t] (if ($present? t/runtime) t/runtime/.close))
   (it
     "starts host work outside the submitting invocation budget"
     [t]

@@ -1,6 +1,6 @@
 (mod needs_fs)
 
-(import $fs [read_text])
+(import $fs/read_text)
 (import PluginSpec ^from "../../src/plugin_api")
 
 (fn activate [ctx, config]
