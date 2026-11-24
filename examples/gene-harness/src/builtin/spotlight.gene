@@ -1,5 +1,5 @@
 (mod spotlight)
-(import ^from "../public/web_style" shell_css)
+(import shell_css ^from "../public/web_style")
 (import Plugin PluginHost ^from "../plugin_api")
 
 (var asset ($cell nil))

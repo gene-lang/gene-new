@@ -4,8 +4,16 @@
 # connections and acknowledges an envelope only after the host recorded it.
 (mod slack_transport)
 (import ChannelHost ^from "../../plugin_api")
-(import read_slack_credentials open_api close_api connect_socket socket_message
-         acknowledge load_socket_library slack_error ^from "./api")
+(import
+  read_slack_credentials
+  open_api
+  close_api
+  connect_socket
+  socket_message
+  acknowledge
+  load_socket_library
+  slack_error
+  ^from "./api")
 (import receive_envelope ^from "./ingress")
 
 (type SlackTransport ^props {^channels Any ^closed Cell ^jobs Cell

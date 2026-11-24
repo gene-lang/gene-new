@@ -4,8 +4,18 @@
   ^from "../../../src/channels/authority")
 (import pending_ingress finish_handoff ^from "../../../src/channels/ingress")
 (import open_queues configure_queues enqueue ^from "../../../src/channels/queue")
-(import queue_output pending_output accept_output output_result reconcile_output
-         begin_part finish_part recover_deliveries deliver_output reconcile_remote ^from "../../../src/channels/delivery")
+(import
+  queue_output
+  pending_output
+  accept_output
+  output_result
+  reconcile_output
+  begin_part
+  finish_part
+  recover_deliveries
+  deliver_output
+  reconcile_remote
+  ^from "../../../src/channels/delivery")
 (import open_api close_api ^from "../../../src/builtin/slack/api")
 (import mutate ^from "../../../src/channels/store")
 (import ChannelError key ^from "../../../src/channels/model")

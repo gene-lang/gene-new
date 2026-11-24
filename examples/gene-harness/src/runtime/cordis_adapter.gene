@@ -2,24 +2,25 @@
 # protocol. The host flag determines the activation receiver.
 (mod cordis_adapter)
 
-(import ^from "." ^pkg "cordis"
-    EffectDisposed
-    spawn_host_call
-    RuntimeOptions
-    LoaderOptions
-    PluginSpec
-    Requirement
-    service_key
-    InstanceState
-    CompositionError
-    RecoveryRequired
-    PluginInvoker
-    PluginInstance
-    invocation_limits
-    default_plugin_invoker
-    new_runtime)
-(import ^from "../plugin_api"
-  Plugin PluginHost ExecutionLimits default_execution_limits response_execution_limits)
+(import
+  EffectDisposed
+  spawn_host_call
+  RuntimeOptions
+  LoaderOptions
+  PluginSpec
+  Requirement
+  service_key
+  InstanceState
+  CompositionError
+  RecoveryRequired
+  PluginInvoker
+  PluginInstance
+  invocation_limits
+  default_plugin_invoker
+  new_runtime
+  ^from "." ^pkg "cordis")
+(import Plugin PluginHost ExecutionLimits default_execution_limits response_execution_limits
+  ^from "../plugin_api")
 (import with_callback_budget ^from "./execution_budget")
 
 # Activations contribute directly to the live registries. Each activation

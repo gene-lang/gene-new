@@ -1,7 +1,7 @@
 # Small, inert workspace metadata. Call writes only with workspace ownership.
 (mod workspace_settings)
 (import manager_root_path:shared_manager_root_path ^from "../public/workspace_paths")
-(import ^from "./workspace_lock" acquire_workspace_lock close_workspace_lock)
+(import acquire_workspace_lock close_workspace_lock ^from "./workspace_lock")
 
 (type WorkspaceSettingsError : Error ^props {^code Str})
 (let edit_gate ($sync/gate))

@@ -1,6 +1,17 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_driver grant_window grant_browser observe action action_receipt targets close_session normalize_result ComputerError ^from "." ^pkg "computer")
+(import
+  open_driver
+  grant_window
+  grant_browser
+  observe
+  action
+  action_receipt
+  targets
+  close_session
+  normalize_result
+  ComputerError
+  ^from "." ^pkg "computer")
 
 (describe "Scoped computer actions"
   (it "binds exact browser tabs and converts screenshot pixels without accepting stale refs" []

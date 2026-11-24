@@ -6,7 +6,7 @@
 # stylesheet itself is Gene data until `render_css` turns it into the generated
 # .css route.
 
-(import ^from "../public/web_style" compact_query)
+(import compact_query ^from "../public/web_style")
 (import $css/[css rule decl media container scoped class_name render:render_css])
 
 (var site_styles

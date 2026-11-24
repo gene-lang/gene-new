@@ -7,41 +7,42 @@
 
 (mod runtime)
 
-(import ^from "./model" ^^export
-    InstanceState
-    PluginCallKind
-    HookMode
-    ReconcileMode
-    Disposable
-    PluginInvoker
-    PublicationParticipant
-    EffectOwner
-    InvocationLimits
-    RuntimeOptions
-    PluginCall
-    LoaderOptions
-    ServiceKey
-    HookKey
-    Requirement
-    PluginSpec
-    CordisError
-    UndeclaredRequirement
-    ServiceUnavailable
-    DuplicateProvider
-    ServiceContractError
-    ConfigValidationError
-    PluginActivationError
-    PluginCleanupError
-    DependenciesUnavailable
-    InstanceDisposed
-    ContextDisposed
-    EffectDisposed
-    ContinuationAlreadyCalled
-    HookDispatchError
-    CompositionError
-    ReloadRejected
-    RecoveryRequired
-    invocation_limits)
+(import
+  InstanceState
+  PluginCallKind
+  HookMode
+  ReconcileMode
+  Disposable
+  PluginInvoker
+  PublicationParticipant
+  EffectOwner
+  InvocationLimits
+  RuntimeOptions
+  PluginCall
+  LoaderOptions
+  ServiceKey
+  HookKey
+  Requirement
+  PluginSpec
+  CordisError
+  UndeclaredRequirement
+  ServiceUnavailable
+  DuplicateProvider
+  ServiceContractError
+  ConfigValidationError
+  PluginActivationError
+  PluginCleanupError
+  DependenciesUnavailable
+  InstanceDisposed
+  ContextDisposed
+  EffectDisposed
+  ContinuationAlreadyCalled
+  HookDispatchError
+  CompositionError
+  ReloadRejected
+  RecoveryRequired
+  invocation_limits
+  ^from "./model" ^^export)
 
 # --- public handles --------------------------------------------------------
 

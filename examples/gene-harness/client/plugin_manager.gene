@@ -1,9 +1,10 @@
 (mod plugin_manager_client ^profile web)
-(import ^from "./appearance.gene" BrowserAppearance start_appearance refresh_appearance change_appearance)
+(import BrowserAppearance start_appearance refresh_appearance change_appearance
+  ^from "./appearance.gene")
 (import storage_get storage_set storage_remove ^from "./workspace_storage.gene")
 (import api_root ^from "../src/web/contract.gene")
-(import ^from "./state.gene" query_value)
-(import ^from "./plugin_sessions.gene" plugin_sessions_view)
+(import query_value ^from "./state.gene")
+(import plugin_sessions_view ^from "./plugin_sessions.gene")
 (import owner_request ^from "./owner_api.gene")
 
 (type Manager ^props {^csrf Str ^epoch Str ^host Str ^workspace Str ^revision Int ^base Int ^base_plugins (List Any) ^plugins (List Any) ^selected Str ^changes (List Any) ^restore Any ^plan Any ^busy Bool ^ready Bool ^recovery Bool ^repair Bool ^pending Str ^fetch_seq Int ^appearance Any ^notice EventTarget})

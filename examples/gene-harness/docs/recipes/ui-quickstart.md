@@ -18,7 +18,7 @@ together when adapting it for an application.
 
 ```gene
 (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-  (import ^from "src/plugin_api.gene" Plugin PluginHost)
+  (import Plugin PluginHost ^from "src/plugin_api.gene")
 
   (fn current_count [host] : Int
     (let state (?? host/.PluginHost:state {^count 0}))

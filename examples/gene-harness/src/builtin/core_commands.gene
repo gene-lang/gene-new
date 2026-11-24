@@ -1,6 +1,6 @@
 (mod core_commands)
-(import ^from "../plugin_api" Plugin PluginHost OperatorHost)
-(import ^from "../public/documentation" contribute_doc)
+(import Plugin PluginHost OperatorHost ^from "../plugin_api")
+(import contribute_doc ^from "../public/documentation")
 
 (fn core_commands [] : Plugin
   (Plugin ^id "core_commands" ^requires ["operator/host"]

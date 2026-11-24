@@ -1,10 +1,10 @@
 # Server commands request changes from connected browsers. No workspace file.
 (mod appearance)
-(import ^from "../kernel" publish contribute row)
-(import ^from "../plugin_api" HarnessEvent)
-(import ^from "./appearance_error" AppearanceError ^^export)
-(import ^from "../web/specimen" install_specimen)
-(import ^from "../web/appearance_values" validate_fields)
+(import publish contribute row ^from "../kernel")
+(import HarnessEvent ^from "../plugin_api")
+(import AppearanceError ^from "./appearance_error" ^^export)
+(import install_specimen ^from "../web/specimen")
+(import validate_fields ^from "../web/appearance_values")
 
 (type AppearanceChanged : HarnessEvent ^props {^saved Any})
 (type AppearanceRequest : HarnessEvent ^props {^fields Any})

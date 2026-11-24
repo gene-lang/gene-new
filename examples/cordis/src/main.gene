@@ -1,8 +1,13 @@
 (mod main)
 
 (import $log/new_logger)
-(import ReconcileMode RuntimeOptions LoaderOptions invocation_limits
-         default_plugin_invoker new_runtime
+(import
+  ReconcileMode
+  RuntimeOptions
+  LoaderOptions
+  invocation_limits
+  default_plugin_invoker
+  new_runtime
   ^from "./cordis")
 (import Clock clock_key ^from "./demo_contract")
 

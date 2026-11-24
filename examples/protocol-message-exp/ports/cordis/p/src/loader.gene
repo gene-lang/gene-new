@@ -1,5 +1,11 @@
 (mod loader)
 
-(import ReconcileMode LoaderOptions Loader RetirementTicket CompositionError ReloadRejected
-         RecoveryRequired
+(import
+  ReconcileMode
+  LoaderOptions
+  Loader
+  RetirementTicket
+  CompositionError
+  ReloadRejected
+  RecoveryRequired
   ^from "./runtime" ^^export)

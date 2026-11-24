@@ -11,8 +11,7 @@
 (import history_basic ^from "../../../src/builtin/history_basic")
 (import submit_round round_receipt close_round_controller cancel_round
   ^from "../../../src/runtime/round_controller")
-(import events_for append_core_event flush_event_store repair_interrupted_turns
-         append_turn_end_once
+(import events_for append_core_event flush_event_store repair_interrupted_turns append_turn_end_once
   ^from "../../../src/storage/state")
 (import configure_model ^from "../../../src/public/provider")
 (import new_harness shutdown_harness contribute provide ^from "../../../src/kernel")

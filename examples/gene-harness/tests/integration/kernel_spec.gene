@@ -1,7 +1,16 @@
 # Tests src/kernel.gene.
 (import $test/[describe it])
 (import isolated run_spec ^from "../support")
-(import new_harness shutdown_harness install put_cordis_plugin rows row status_of uninstall contribute
+(import
+  new_harness
+  shutdown_harness
+  install
+  put_cordis_plugin
+  rows
+  row
+  status_of
+  uninstall
+  contribute
   ^from "../../src/kernel")
 (import append_plugin_prompt ^from "../../src/agents/outcome")
 (import evaluate_harness_turn function_instructions ^from "../../src/agents/harness_turn")

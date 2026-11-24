@@ -1,6 +1,10 @@
 (import $test/[describe it])
-(import current_interfaces latest_interfaces
-  source_interfaces interface_diagnostic InterfacePolicyError
+(import
+  current_interfaces
+  latest_interfaces
+  source_interfaces
+  interface_diagnostic
+  InterfacePolicyError
   ^from "../../../src/runtime/interface_policy")
 
 (describe "Plugin interface requirements"

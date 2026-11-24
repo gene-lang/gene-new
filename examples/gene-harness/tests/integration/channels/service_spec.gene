@@ -1,9 +1,20 @@
 (import $test/[describe it])
 (import isolated run_spec test_service set_test_provider ^from "../../support")
 (import close_session_service submit answer ^from "../../../src/web/session_service")
-(import open_channel_service close_channel_service receive_handoff drain_session project_events
-         handoff_inputs handoff_outputs bind_workspace project_rounds project_queue ^from "../../../src/channels/service")
-(import configure_account configure_route snapshot authorize ^from "../../../src/channels/authority")
+(import
+  open_channel_service
+  close_channel_service
+  receive_handoff
+  drain_session
+  project_events
+  handoff_inputs
+  handoff_outputs
+  bind_workspace
+  project_rounds
+  project_queue
+  ^from "../../../src/channels/service")
+(import configure_account configure_route snapshot authorize
+  ^from "../../../src/channels/authority")
 (import pending_ingress ^from "../../../src/channels/ingress")
 (import queue_status ^from "../../../src/channels/queue")
 (import pending_output deliver_output reconcile_output ^from "../../../src/channels/delivery")

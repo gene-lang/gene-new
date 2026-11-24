@@ -1,10 +1,10 @@
 (import $test/[describe it])
 (import $net/http_client/request)
-(import ^from "../../support" isolated run_spec source_path)
-(import ^from "../../web_support" ready_host stop_host cli)
-(import ^from "../../../src/cli/client" connect api discover)
-(import ^from "../../../src/runtime/workspace_settings"
-  read_workspace_settings write_workspace_settings)
+(import isolated run_spec source_path ^from "../../support")
+(import ready_host stop_host cli ^from "../../web_support")
+(import connect api discover ^from "../../../src/cli/client")
+(import read_workspace_settings write_workspace_settings
+  ^from "../../../src/runtime/workspace_settings")
 
 (fn manager_host [home : Str, ^responses responses = nil, ^direct direct : Bool = false, ^recovery recovery : Bool = false]
   ($fs/make_dir home)
@@ -217,7 +217,7 @@
           ($assert (== ((Path "epoch") (discover project)) child/epoch))
           (set host (manager_host home))
           ($assert (== (managed_names host) entries))
-          (let code "(register_plugin \"workspace_manager\" (quote (mod plugin (import ^from \"src/plugin_api.gene\" Plugin) (fn init [descriptor] (Plugin ^id \"workspace_manager\" ^activate (fn [host] (fail (Error ^_msg \"test broken manager\"))))))) ^^replace)")
+          (let code "(register_plugin \"workspace_manager\" (quote (mod plugin (import Plugin ^from \"src/plugin_api.gene\") (fn init [descriptor] (Plugin ^id \"workspace_manager\" ^activate (fn [host] (fail (Error ^_msg \"test broken manager\"))))))) ^^replace)")
           (cli host/root ["--session" session/id "run" code])
           ($assert (== ((Path "epoch") (discover project)) child/epoch))
           ($assert (== (managed_names host) entries))

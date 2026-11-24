@@ -4,7 +4,8 @@
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
-(import submit_round continue_round round_receipt close_round_controller ^from "../../../src/runtime/round_controller")
+(import submit_round continue_round round_receipt close_round_controller
+  ^from "../../../src/runtime/round_controller")
 (import operator_round? ^from "../../../src/runtime/round_policy")
 (import row ^from "../../../src/kernel")
 

@@ -1,7 +1,7 @@
 # The Models contribution owns this standalone page and its executable asset.
 # The host supplies its theme CSS as data; no private host module is imported.
 (mod model_page)
-(import ^from "./web_style" shell_css)
+(import shell_css ^from "./web_style")
 (import $html/render)
 (import $web/[script stylesheet])
 

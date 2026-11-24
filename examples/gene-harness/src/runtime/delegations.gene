@@ -1,15 +1,30 @@
 (mod delegations)
 (import effective_config ^from "./settings_resolver")
 (import DelegationHost DelegationError DurableRecord ^from "../plugin_api")
-(import delegation_error delegation_limits normalize_delegation terminal_delegation?
-  delegation_source normalize_delegation_wait delegation_wait_members
-  delegation_wait_ready? delegation_question_source delegation_result_data delegation_descriptor
+(import
+  delegation_error
+  delegation_limits
+  normalize_delegation
+  terminal_delegation?
+  delegation_source
+  normalize_delegation_wait
+  delegation_wait_members
+  delegation_wait_ready?
+  delegation_question_source
+  delegation_result_data
+  delegation_descriptor
   ^from "./delegation_contract")
-(import load_delegation_parent delegation_parent_sessions save_delegation_parent
-  remove_delegation_parent ^from "../storage/delegations")
-(import copy_data core_state events_for append_core_event flush_event_store ^from "../storage/state")
+(import
+  load_delegation_parent
+  delegation_parent_sessions
+  save_delegation_parent
+  remove_delegation_parent
+  ^from "../storage/delegations")
+(import copy_data core_state events_for append_core_event flush_event_store
+  ^from "../storage/state")
 (import write_body read_body with_body_use ^from "../agents/history")
-(import require_record create_session update_session load_session with_session_gate ^from "./sessions")
+(import require_record create_session update_session load_session with_session_gate
+  ^from "./sessions")
 (import require_turn ^from "../agents/outcome")
 
 (var hosts ^^private ($cell []))

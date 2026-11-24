@@ -3,9 +3,18 @@
 (import isolated run_spec ^from "../../support")
 (import open_event_store close_event_store append_core_event record_core_state
   ^from "../../../src/storage/state")
-(import open_session_manager close_session_manager create_session list_sessions load_session
-         view_session leave_session unload_session unload_idle_sessions update_session
-         session_busy?
+(import
+  open_session_manager
+  close_session_manager
+  create_session
+  list_sessions
+  load_session
+  view_session
+  leave_session
+  unload_session
+  unload_idle_sessions
+  update_session
+  session_busy?
   ^from "../../../src/runtime/sessions")
 (import append_message ^from "../../../src/agents/history")
 

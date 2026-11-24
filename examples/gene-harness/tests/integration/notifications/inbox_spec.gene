@@ -1,14 +1,15 @@
 (import $test/[describe it])
-(import ^from "../../support" isolated run_spec)
-(import ^from "../../../src/notifications/inbox"
-    open_inbox
-    close_inbox
-    post_message
-    inbox_snapshot
-    message_detail
-    clear_messages
-    acknowledge_messages
-    publish_progress)
+(import isolated run_spec ^from "../../support")
+(import
+  open_inbox
+  close_inbox
+  post_message
+  inbox_snapshot
+  message_detail
+  clear_messages
+  acknowledge_messages
+  publish_progress
+  ^from "../../../src/notifications/inbox")
 
 (fn definition [title, ^detail detail = nil]
   {

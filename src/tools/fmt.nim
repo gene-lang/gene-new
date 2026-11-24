@@ -420,13 +420,31 @@ proc pipelineOneLine(v: Value): string =
   result.add ')'
 
 proc renderImport(v: Value, indent: int, multiline: bool): string =
-  result = "(import"
-  addProps(result, v.meta, "@")
-  addProps(result, v.props, "^")
-  let items = renderImportItems(v.body, oneLine, namespaceSource = not v.props.hasKey("from"))
-  let separator = if multiline: "\n" & repeat(' ', indent + 2) else: " "
-  for item in items:
-    result.add separator & item
+  ## `^from` follows the selectors. When the selectors still fit on the head
+  ## line, a long source property moves to a continuation line; a long
+  ## selector list wraps one selector per line instead.
+  var head = "(import"
+  addProps(head, v.meta, "@")
+  var props: string
+  addProps(props, v.props, "^")
+  let items = renderImportItems(v.body, oneLine,
+                                namespaceSource = not v.props.hasKey("from"))
+  if not multiline or items.len == 0:
+    result = head
+    for item in items:
+      result.add " " & item
+    result.add props & ")"
+    return
+  let pad = repeat(' ', indent + 2)
+  let headWithItems = head & " " & items.join(" ")
+  if indent + headWithItems.len <= MaxWidth:
+    result = headWithItems
+  else:
+    result = head
+    for item in items:
+      result.add "\n" & pad & item
+  if props.len > 0:
+    result.add "\n" & pad & props[1 .. ^1]
   result.add ')'
 
 proc oneLine(v: Value): string =

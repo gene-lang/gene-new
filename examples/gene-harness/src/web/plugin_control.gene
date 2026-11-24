@@ -1,6 +1,6 @@
 (mod plugin_control)
 (import api_root ^from "./contract.gene")
-(import ^from "../runtime/plugin_plans" validate_plan apply_plan plan_result)
+(import validate_plan apply_plan plan_result ^from "../runtime/plugin_plans")
 
 (type PluginControl ^props {^runtime Any ^jobs Any ^tasks Any ^closed Any})
 

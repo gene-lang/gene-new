@@ -1,5 +1,5 @@
 (mod harness_style_shell)
-(import ^from "../../public/web_style" shell_css)
+(import shell_css ^from "../../public/web_style")
 (var styles (shell_css """
 @layer shell {
 .site .hero_grid { grid-template-columns: minmax(0, 1fr); }

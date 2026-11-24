@@ -7,7 +7,8 @@
 (import row uninstall put_cordis_plugin ^from "../../../src/kernel")
 (import models_file_watch ^from "../../../src/builtin/model_endpoints")
 (import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
-(import submit_round round_receipt continue_round RoundError ^from "../../../src/runtime/round_controller")
+(import submit_round round_receipt continue_round RoundError
+  ^from "../../../src/runtime/round_controller")
 (import $net/http/[listen serve stop json])
 
 (fn settings [base : Str, ^window window : Int = 500000]

@@ -76,8 +76,8 @@ data literals are preserved.
 (let import_path ($to_str "./" ($crypto/sha256 ($to_str dependency)) ".gene"))
 (let plugin
   `(mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-    (import ^from "src/plugin_api.gene" Plugin PluginHost)
-    (import ^from %import_path double)
+    (import Plugin PluginHost ^from "src/plugin_api.gene")
+    (import double ^from %import_path)
     (fn init [descriptor]
       (Plugin ^id "double_numbers"
         ^activate (fn [host]
@@ -591,7 +591,7 @@ a concurrent plugin replacement does not change an in-progress turn.
 ### Observe durable facts
 
 ```gene
-(import ^from "src/plugin_api.gene" DurableRecord)
+(import DurableRecord ^from "src/plugin_api.gene")
 (host .PluginHost:subscribe DurableRecord
   (fn [event]
     (if (== event/name "turn/end")

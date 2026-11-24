@@ -1,8 +1,10 @@
 (import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
-(import create_session command submit receipt close_session_service ^from "../../../src/web/session_service")
+(import create_session command submit receipt close_session_service
+  ^from "../../../src/web/session_service")
 (import command_receipt ^from "../../../src/runtime/commands")
-(import open_computer_host close_computer_host computer_host_binding ^from "../../../src/runtime/computer_host")
+(import open_computer_host close_computer_host computer_host_binding
+  ^from "../../../src/runtime/computer_host")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import replace:replace_seam row ^from "../../../src/kernel")
 (import CommandContext ServiceError ^from "../../../src/plugin_api")

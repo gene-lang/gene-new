@@ -1,5 +1,5 @@
 (mod outcome)
-(import ^from "../runtime/questions" validate_questions)
+(import validate_questions ^from "../runtime/questions")
 (import TurnClosed ^from "../plugin_api")
 
 (type Outcome ^props {^done Bool? ^prompt Any? ^reply Str? ^questions Any? ^attention Bool? ^extensions Any?})

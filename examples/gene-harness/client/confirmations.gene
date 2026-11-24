@@ -4,7 +4,7 @@
 (import api_root ^from "../src/web/contract.gene")
 (import handoff_modal ^from "./overlays.gene")
 (import flag ^from "../src/common/launcher.gene")
-(import ^from "./notices.gene" Notices put_notice remove_notice)
+(import Notices put_notice remove_notice ^from "./notices.gene")
 (type Confirmations ^props {^target EventTarget ^items PropMap ^saved PropMap ^notices Notices ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)})
 
 (fn create_confirmations [target : EventTarget, notices : Notices, api : (Fn [Str Str Any (Fn [Int Any] Nil)] Nil)] : Confirmations

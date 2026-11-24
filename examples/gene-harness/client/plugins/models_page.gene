@@ -1,5 +1,6 @@
 (mod models_page_client ^profile web)
-(import ^from "../appearance.gene" BrowserAppearance start_appearance change_appearance refresh_appearance)
+(import BrowserAppearance start_appearance change_appearance refresh_appearance
+  ^from "../appearance.gene")
 (import api_root ^from "../../src/web/contract.gene")
 (import text flag items ^from "../../src/common/launcher.gene")
 (import owner_request owner_connect ^from "../owner_api.gene")

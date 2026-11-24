@@ -10,7 +10,8 @@
 (import voice_participant ^from "./voice_participant")
 (import response_execution_limits ^from "../plugin_api")
 (import public_turn_context public_phase_value public_phase_result ^from "./participant_contract")
-(import participant_excluded? record_participant_fault health_participant ^from "./participant_health")
+(import participant_excluded? record_participant_fault health_participant
+  ^from "./participant_health")
 
 # Plugin IDs cannot contain '/', so this host publisher cannot be a stored
 # plugin claiming the ordinary spelling "core".

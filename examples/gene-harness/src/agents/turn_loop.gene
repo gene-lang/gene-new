@@ -1,35 +1,51 @@
 (mod turn_loop)
 (import log_event log_scope ^from "../kernel/log")
 (import effective_config ^from "../runtime/settings_resolver")
-(import ^from "../runtime/composition" acquire_snapshot release_snapshot current_snapshot)
-(import ^from "./harness_turn" evaluate_harness_turn)
+(import acquire_snapshot release_snapshot current_snapshot ^from "../runtime/composition")
+(import evaluate_harness_turn ^from "./harness_turn")
 (import ui_publication_preview ^from "../ui/views")
-(import ^from "./instructions" assemble_instructions)
-(import ^from "./history"
-    append_message
-    provider_context
-    elide_response
-    recall_body
-    bounded_request
-    compact_history
-    history_state
-    read_body)
+(import assemble_instructions ^from "./instructions")
+(import
+  append_message
+  provider_context
+  elide_response
+  recall_body
+  bounded_request
+  compact_history
+  history_state
+  read_body
+  ^from "./history")
 (import pending_request replace_pending_request ^from "./history")
 (import next_request admit_next_request ^from "./next_request")
 (import operator_round? collection_turns ^from "../runtime/round_policy")
-(import ^from "../public/text" byte_prefix)
-(import ^from "./provider_selection" readiness_info select_provider session_settings resolve_selection)
-(import ^from "./model_call" call_model)
-(import ^from "./hooks" history_policy request_prepare)
-(import ^from "../storage/state"
-  append_core_event append_turn_end_once core_state record_core_state flush_event_store copy_data)
-(import ^from "../runtime/questions" ask_questions)
-(import ^from "../runtime/sessions" require_record update_session)
+(import byte_prefix ^from "../public/text")
+(import readiness_info select_provider session_settings resolve_selection
+  ^from "./provider_selection")
+(import call_model ^from "./model_call")
+(import history_policy request_prepare ^from "./hooks")
+(import
+  append_core_event
+  append_turn_end_once
+  core_state
+  record_core_state
+  flush_event_store
+  copy_data
+  ^from "../storage/state")
+(import ask_questions ^from "../runtime/questions")
+(import require_record update_session ^from "../runtime/sessions")
 (import new_runtime_turn_transaction ^from "../runtime/turn_participant_registry")
 (import begin_turn_transaction run_turn_phase finish_turn_transaction ParticipantFailure
   ^from "../runtime/turn_participants")
-(import participant_inputs participant_bindings validate_participants commit_participants round_limit_participants
-  request_source request_sources finish_participant_outcome ^from "./turn_participation")
+(import
+  participant_inputs
+  participant_bindings
+  validate_participants
+  commit_participants
+  round_limit_participants
+  request_source
+  request_sources
+  finish_participant_outcome
+  ^from "./turn_participation")
 (import turn_evidence run_check_in check_in_summary check_in_notice ^from "../runtime/check_ins")
 (import decision_available? ^from "../runtime/decision_service")
 (import dispatch_round_event claimed? ^from "../runtime/round_lifecycle")

@@ -1,6 +1,6 @@
 (import $test/[describe it run])
-(import ^from "../../../src/storage/plugin_source"
-  capture_source_origin source_attribution assign_creation preserve_creation_on_revert)
+(import capture_source_origin source_attribution assign_creation preserve_creation_on_revert
+  ^from "../../../src/storage/plugin_source")
 
 (describe "Plugin source attribution"
   (it "captures only the actual calling session and optional model turn" []

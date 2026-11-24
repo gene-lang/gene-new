@@ -1,5 +1,13 @@
 (mod effects)
 
-(import Disposable EffectOwner ActivationContext EffectScope EffectLease
-         ProviderLease PluginInstance EffectDisposed PluginCleanupError
+(import
+  Disposable
+  EffectOwner
+  ActivationContext
+  EffectScope
+  EffectLease
+  ProviderLease
+  PluginInstance
+  EffectDisposed
+  PluginCleanupError
   ^from "./runtime" ^^export)

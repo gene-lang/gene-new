@@ -1,9 +1,9 @@
 (import $test/[describe it])
 (import $net/http/[listen stop])
-(import ^from "../../support" isolated run_spec)
-(import ^from "../../../src/runtime/workspace_settings"
-  read_workspace_settings write_workspace_settings)
-(import ^from "../../../src/web/connection" bind_workspace publish_connection clear_connection)
+(import isolated run_spec ^from "../../support")
+(import read_workspace_settings write_workspace_settings
+  ^from "../../../src/runtime/workspace_settings")
+(import bind_workspace publish_connection clear_connection ^from "../../../src/web/connection")
 
 (describe
   "Manager port selection"

@@ -4,10 +4,20 @@
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import create_session load_session ^from "../../../src/runtime/sessions")
-(import submit_round round_receipt cancel_round close_round_controller
-         save_round RoundError answer_round request_stop resume_answered_rounds continue_round
+(import
+  submit_round
+  round_receipt
+  cancel_round
+  close_round_controller
+  save_round
+  RoundError
+  answer_round
+  request_stop
+  resume_answered_rounds
+  continue_round
   ^from "../../../src/runtime/round_controller")
-(import events_for append_core_event flush_event_store core_state record_core_state ^from "../../../src/storage/state")
+(import events_for append_core_event flush_event_store core_state record_core_state
+  ^from "../../../src/storage/state")
 (import QuestionError answer_questions ^from "../../../src/runtime/questions")
 (import append_message ^from "../../../src/agents/history")
 (import RoundChanged provide put_cordis_plugin ^from "../../../src/kernel")

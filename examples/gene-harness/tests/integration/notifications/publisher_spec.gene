@@ -1,17 +1,16 @@
 (import $test/[describe it])
-(import ^from "../../support" isolated run_spec)
-(import ^from "../../../src/web/session_service"
-  open_session_service close_session_service create_session)
-(import ^from "../../../src/notifications/publisher"
-  safe_publish update_notification)
-(import ^from "../../../src/notifications/inbox" inbox_snapshot message_detail)
-(import ^from "../../../src/notifications/actions" invoke_notification_action)
-(import ^from "../../../src/kernel" Plugin PluginHost put_cordis_plugin uninstall)
-(import ^from "../../../src/ui/state" ui_data_revision)
+(import isolated run_spec ^from "../../support")
+(import open_session_service close_session_service create_session
+  ^from "../../../src/web/session_service")
+(import safe_publish update_notification ^from "../../../src/notifications/publisher")
+(import inbox_snapshot message_detail ^from "../../../src/notifications/inbox")
+(import invoke_notification_action ^from "../../../src/notifications/actions")
+(import Plugin PluginHost put_cordis_plugin uninstall ^from "../../../src/kernel")
+(import ui_data_revision ^from "../../../src/ui/state")
 (import ui_settings ^from "../../../src/ui/state")
 (import row ^from "../../../src/kernel")
 (import list_sessions ^from "../../../src/runtime/sessions")
-(import ^from "../../../src/runtime/commands" command_receipt cancel_command)
+(import command_receipt cancel_command ^from "../../../src/runtime/commands")
 (import $store/fs/[Store open:store_open])
 
 (fn finished [runtime, session, id]

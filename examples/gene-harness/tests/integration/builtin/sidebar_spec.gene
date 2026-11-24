@@ -1,7 +1,7 @@
 (import $test/[describe it])
-(import ^from "../../support" isolated run_spec)
-(import ^from "../../../src/web/session_service"
-  open_session_service close_session_service host_status create_session submit receipt)
+(import isolated run_spec ^from "../../support")
+(import open_session_service close_session_service host_status create_session submit receipt
+  ^from "../../../src/web/session_service")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import set_plugin_enabled restore_plugin ^from "../../../src/storage/workspace_repair")
 
@@ -14,7 +14,7 @@
 (fn custom_sidebar []
   (quote
     (mod plugin
-      (import ^from "src/plugin_api.gene" Plugin PluginHost)
+      (import Plugin PluginHost ^from "src/plugin_api.gene")
       (fn init [descriptor]
         (Plugin ^id "sidebar" ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "conversation_sidebar" ^slot "conversation_sidebar" ^render (fn [context] (quote (div ^class_name "sidebar_content" (h3 "Custom navigation") (host_widget ^name "conversations") (host_widget ^name "new_conversation"))))})))))))
 
@@ -81,7 +81,7 @@
             "sidebar"
             (quote
               (mod plugin
-                (import ^from "src/plugin_api.gene" Plugin PluginHost)
+                (import Plugin PluginHost ^from "src/plugin_api.gene")
                 (fn init [descriptor]
                   (Plugin ^id "sidebar" ^activate (fn [host] (host .PluginHost:contribute "web_components" {^name "conversation_sidebar" ^slot "conversation_sidebar" ^render (fn [context] (quote (host_widget ^name "arbitrary_dom_element")))})))))))
           (let broken (sidebar_component service))

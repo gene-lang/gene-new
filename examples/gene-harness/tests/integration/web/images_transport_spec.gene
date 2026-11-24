@@ -1,8 +1,8 @@
 # Tests authenticated workspace image delivery in an independent host.
 (import $test/[describe it])
-(import ^from "../../support" isolated run_spec)
-(import ^from "../../web_support" start_host stop_host)
-(import ^from "../../../src/cli/client" connect wire)
+(import isolated run_spec ^from "../../support")
+(import start_host stop_host ^from "../../web_support")
+(import connect wire ^from "../../../src/cli/client")
 (import $net/http_client/request)
 
 (fn download_image [client, path]

@@ -1,10 +1,16 @@
 # Source ownership and frozen declarative content. No UI, console or model history.
 (mod notification_publisher)
-(import ^from "./inbox"
-  post_message publish_progress message_detail inbox_snapshot clear_messages notification_error)
-(import ^from "../ui/components" bounded_component_view)
-(import ^from "../ui/state" ui_record ui_revision)
-(import ^from "../runtime/composition" current_snapshot)
+(import
+  post_message
+  publish_progress
+  message_detail
+  inbox_snapshot
+  clear_messages
+  notification_error
+  ^from "./inbox")
+(import bounded_component_view ^from "../ui/components")
+(import ui_record ui_revision ^from "../ui/state")
+(import current_snapshot ^from "../runtime/composition")
 
 (fn bounded_text [value, label : Str, limit : Int, ^empty empty : Bool = false] : Str
   (if (|| (!= ($head value) Str) (> ($str/byte_size value) limit) (&& (! empty) (== ($str/trim value) "")))

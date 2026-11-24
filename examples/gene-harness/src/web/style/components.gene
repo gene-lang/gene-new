@@ -1,5 +1,5 @@
 (mod harness_style_components)
-(import ^from "../../public/web_style" shell_css)
+(import shell_css ^from "../../public/web_style")
 (var styles (shell_css """
 @layer components {
 :focus-visible { outline: var(--focus-width) solid var(--focus); outline-offset: var(--focus-offset); }

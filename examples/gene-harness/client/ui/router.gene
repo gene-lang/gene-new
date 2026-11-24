@@ -3,7 +3,8 @@
 (import storage_get storage_set ^from "../workspace_storage.gene")
 (import keyboard_owned? chord_recording? ^from "../overlays.gene")
 (import event_chord ^from "./chords.gene")
-(import UiClient UiNode UiNavigation text flag copy_map notice persist_view sync_controls ^from "./model.gene")
+(import UiClient UiNode UiNavigation text flag copy_map notice persist_view sync_controls
+  ^from "./model.gene")
 (import find_view initial_view presentation_for return_view view_url ^from "./navigation.gene")
 (import query_value ^from "../state.gene")
 (import sidebar_layout ^from "../sidebar.gene")

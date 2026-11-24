@@ -1,6 +1,6 @@
 # Shared registration helper; each calling plugin owns its documentation row.
 (mod documentation)
-(import ^from "../plugin_api" PluginHost ServiceError)
+(import PluginHost ServiceError ^from "../plugin_api")
 (fn reference_path [relative_path : Str] : Str
   # Documentation is part of the captured package closure, not a search up a
   # mutable checkout. Keep existing chapter paths as stable authoring names.

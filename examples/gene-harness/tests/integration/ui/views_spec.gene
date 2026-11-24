@@ -1,6 +1,7 @@
 (import $test/[describe it])
 (import isolated run_spec test_service package_path ^from "../../support")
-(import close_session_service create_session host_status snapshot ^from "../../../src/web/session_service")
+(import close_session_service create_session host_status snapshot
+  ^from "../../../src/web/session_service")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import row contribute put_cordis_plugin ^from "../../../src/kernel")
 (import ui_status UiError ^from "../../../src/ui/state")

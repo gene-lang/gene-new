@@ -1,7 +1,7 @@
 # Panel state, browser storage and control availability.
 (mod harness_ui_model ^profile web)
 (import storage_get storage_set ^from "../workspace_storage.gene")
-(import ^from "../notices.gene" Notices put_notice)
+(import Notices put_notice ^from "../notices.gene")
 (import Sidebar ^from "../sidebar.gene")
 
 (type UiNode ^props {^key Str ^tag Str ^element EventTarget ^props PropMap ^form Str ^seen Int})

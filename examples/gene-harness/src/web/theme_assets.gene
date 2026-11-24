@@ -1,8 +1,9 @@
 # Generated assets are shared by reads of the same effective theme catalog.
 # Keep a bounded number of catalog generations, including the safe catalog.
 (mod theme_assets)
-(import ^from "./theme" resolve_theme generate_theme preview_css resolved_tokens color_value theme_error)
-(import ^from "./theme_registry" themes_revision)
+(import resolve_theme generate_theme preview_css resolved_tokens color_value theme_error
+  ^from "./theme")
+(import themes_revision ^from "./theme_registry")
 
 (let asset_gate ($sync/gate))
 (var catalogs {})

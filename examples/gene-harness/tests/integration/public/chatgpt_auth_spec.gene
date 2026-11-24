@@ -1,7 +1,14 @@
 (import $test/[describe it])
 (import isolated run_spec fixture_path ^from "../../support")
-(import new_chatgpt_login complete_chatgpt_login chatgpt_access sign_out_chatgpt ^from "../../../src/public/chatgpt_auth")
-(import account_id list_chatgpt_accounts save_chatgpt_account read_chatgpt_record with_chatgpt_account ^from "../../../src/public/chatgpt_store")
+(import new_chatgpt_login complete_chatgpt_login chatgpt_access sign_out_chatgpt
+  ^from "../../../src/public/chatgpt_auth")
+(import
+  account_id
+  list_chatgpt_accounts
+  save_chatgpt_account
+  read_chatgpt_record
+  with_chatgpt_account
+  ^from "../../../src/public/chatgpt_store")
 (import close_login ^from "../../../src/public/provider_login")
 (import ProviderError ^from "../../../src/plugin_api")
 (import $net/http/[listen serve stop json text])

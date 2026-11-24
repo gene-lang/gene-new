@@ -1,10 +1,10 @@
 (import $test/[describe it])
-(import ^from "../../support" isolated run_spec source_path)
-(import ^from "../../web_support" start_host ready_host stop_host)
-(import ^from "../../../src/cli/client" connect api wire)
-(import ^from "../../../src/runtime/bootstrap" open_runtime close_runtime)
-(import ^from "../../../src/profiles/profile" Profile)
-(import ^from "../../../src/profiles/baseline" baseline_profile)
+(import isolated run_spec source_path ^from "../../support")
+(import start_host ready_host stop_host ^from "../../web_support")
+(import connect api wire ^from "../../../src/cli/client")
+(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import Profile ^from "../../../src/profiles/profile")
+(import baseline_profile ^from "../../../src/profiles/baseline")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import $net/http/[listen stop])
 
@@ -39,7 +39,7 @@
         (try
           (register_plugin seeded/workspace seeded/h "crasher"
             (quote (mod plugin
-              (import ^from "src/plugin_api.gene" Plugin)
+              (import Plugin ^from "src/plugin_api.gene")
               (fn init [descriptor]
                 (let n (if ($fs/exists? "init-runs") ($parse/parse_int ($fs/read_text "init-runs")) 0))
                 ($fs/write_text "init-runs" ($to_str (+ n 1)))

@@ -3,8 +3,16 @@
 (import log_event ^from "../kernel/log")
 (import effective_config ^from "../runtime/settings_resolver")
 (import ui_settings ui_record ui_revision ui_error view_listed? view_actions ^from "./state")
-(import copy_data open_action_log close_action_log admit_action action_receipt update_action
-         action_output notify_action ^from "./action_log")
+(import
+  copy_data
+  open_action_log
+  close_action_log
+  admit_action
+  action_receipt
+  update_action
+  action_output
+  notify_action
+  ^from "./action_log")
 (import acquire_snapshot release_snapshot ^from "../runtime/composition")
 (import acquire_body_use release_body_use ^from "../agents/history")
 (import byte_prefix ^from "../public/text")

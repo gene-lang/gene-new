@@ -1,5 +1,12 @@
 (import $test/[describe it run])
-(import new_voice_drafts start_utterance release_utterance finish_utterance dispose_drafts partial_utterance recognition_timeout_ms
+(import
+  new_voice_drafts
+  start_utterance
+  release_utterance
+  finish_utterance
+  dispose_drafts
+  partial_utterance
+  recognition_timeout_ms
   ^from "../../../src/common/voice_transitions.gene")
 
 (describe "Voice utterance ordering"

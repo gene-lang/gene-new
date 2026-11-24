@@ -4,15 +4,42 @@
 (import $store/fs/[open:store_open Store StoreError])
 (import $fs/[make_dir real_path read_text write_text_atomic exists?])
 (import $crypto/sha256)
-(import ^from "../kernel" Harness status_of plugin_error record_composition_change flush_harness row uninstall)
-(import ^from "../runtime/interface_policy" interface_diagnostic)
-(import ^from "./participant_health" reset_participant_quarantine)
-(import ^from "./plugin_history" history_entry history_results)
-(import ^from "./plugin_source" preserve_creation_on_revert)
-(import ^from "../runtime/composition" queue_composition_change run_composition_change)
-(import CompositionError CompositionConflict Workspace fresh_list fresh_map data_copy require_open validate_entry composition_revision composition_entries composition_history composition_history_result commit_composition find_entry_index previous_module_digest entries_with entry_enabled? record_quarantine ^from "./composition_store")
-(import digest_hex ensure_module_blob load_entry_descriptor register_descriptor_events ^from "./module_registry")
-(import record_application_result activate_descriptor update_active_revision change_origin activate_desired_plugin ^from "./workspace_activation")
+(import Harness status_of plugin_error record_composition_change flush_harness row uninstall
+  ^from "../kernel")
+(import interface_diagnostic ^from "../runtime/interface_policy")
+(import reset_participant_quarantine ^from "./participant_health")
+(import history_entry history_results ^from "./plugin_history")
+(import preserve_creation_on_revert ^from "./plugin_source")
+(import queue_composition_change run_composition_change ^from "../runtime/composition")
+(import
+  CompositionError
+  CompositionConflict
+  Workspace
+  fresh_list
+  fresh_map
+  data_copy
+  require_open
+  validate_entry
+  composition_revision
+  composition_entries
+  composition_history
+  composition_history_result
+  commit_composition
+  find_entry_index
+  previous_module_digest
+  entries_with
+  entry_enabled?
+  record_quarantine
+  ^from "./composition_store")
+(import digest_hex ensure_module_blob load_entry_descriptor register_descriptor_events
+  ^from "./module_registry")
+(import
+  record_application_result
+  activate_descriptor
+  update_active_revision
+  change_origin
+  activate_desired_plugin
+  ^from "./workspace_activation")
 
 (fn doctor [workspace : Workspace]
   (var out (fresh_list))

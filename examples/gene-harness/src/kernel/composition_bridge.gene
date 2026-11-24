@@ -1,19 +1,44 @@
 # Cordis reconciliation, snapshot publication and desired plugin state.
 (mod kernel_composition_bridge)
 (import log_event ^from "./log")
-(import Harness Registry Composer registry contribute row row_record rows registry_names
-  registry_named registry_exists? copy_list fresh_list fresh_map remove_registry_row
-  cleanup_registry_context release_activation_resources enter_plugin_execution leave_plugin_execution
+(import
+  Harness
+  Registry
+  Composer
+  registry
+  contribute
+  row
+  row_record
+  rows
+  registry_names
+  registry_named
+  registry_exists?
+  copy_list
+  fresh_list
+  fresh_map
+  remove_registry_row
+  cleanup_registry_context
+  release_activation_resources
+  enter_plugin_execution
+  leave_plugin_execution
   ^from "./registry")
 (import Host validate_plugin_descriptor describe_plugin_module ^from "./host")
 (import publish notify CompositionChanged log_append flush_harness ^from "./events")
 (import configure_plugin_module execution_limits_data ^from "./invoke")
-(import Plugin PluginHost DurableRecord ExecutionLimits response_execution_limits ^from "../plugin_api")
+(import Plugin PluginHost DurableRecord ExecutionLimits response_execution_limits
+  ^from "../plugin_api")
 (import HarnessError ^from "../errors")
 (import RegistryHost new_composition ^from "../runtime/cordis_adapter")
 (import LoaderOptions ^from "." ^pkg "cordis")
-(import new_composition_state current_snapshot publish_snapshot run_composition_change
-  queue_retirement begin_close_composition_state close_composition_state immutable_view
+(import
+  new_composition_state
+  current_snapshot
+  publish_snapshot
+  run_composition_change
+  queue_retirement
+  begin_close_composition_state
+  close_composition_state
+  immutable_view
   record_publication_diagnostic
   ^from "../runtime/composition")
 (import publication_metadata ^from "../storage/plugin_metadata")

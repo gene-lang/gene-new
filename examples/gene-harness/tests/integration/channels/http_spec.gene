@@ -2,7 +2,8 @@
 (import isolated run_spec ^from "../../support")
 (import start_host stop_host cli ^from "../../web_support")
 (import connect api wire ^from "../../../src/cli/client")
-(import open_authority configure_account configure_route close_channel_store ^from "../../../src/channels/authority")
+(import open_authority configure_account configure_route close_channel_store
+  ^from "../../../src/channels/authority")
 (import receive_slack ^from "../../channel_support")
 
 (describe "Channel host handoff"

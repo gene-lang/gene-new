@@ -1,8 +1,9 @@
 (mod history)
 (import byte_prefix byte_suffix ^from "../public/text")
-(import ^from "../storage/state" core_state core_states record_core_state append_core_event events_for flush_event_store)
-(import ^from "./response" split_response)
-(import ^from "../public/history_policy" normalize_history_policy)
+(import core_state core_states record_core_state append_core_event events_for flush_event_store
+  ^from "../storage/state")
+(import split_response ^from "./response")
+(import normalize_history_policy ^from "../public/history_policy")
 (import $store/fs/Store)
 
 (var ^^private history_gate ($sync/gate))

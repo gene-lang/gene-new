@@ -1,15 +1,17 @@
 (import $test/[describe it run])
 (import $store/fs/[open:store_open Store])
-(import ^from "../../../src/storage/plugin_history"
-    archive_host_build
-    archive_baseline
-    archive_candidate
-    archived_record
-    history_list
-    history_revision
-    history_entry
-    append_history_result
-    history_results pin_history)
+(import
+  archive_host_build
+  archive_baseline
+  archive_candidate
+  archived_record
+  history_list
+  history_revision
+  history_entry
+  append_history_result
+  history_results
+  pin_history
+  ^from "../../../src/storage/plugin_history")
 
 (fn fixture [body]
   (let root ($path/join ($os/launch_dir) $"tmp/history-spec-${($crypto/random_hex 12)}"))

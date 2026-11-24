@@ -1,12 +1,12 @@
 # Theme resolution and generation. Values belong in themes/, never host rules.
 (mod harness_web_theme)
-(import ^from "./theme_error" ThemeError theme_error ^^export)
+(import ThemeError theme_error ^from "./theme_error" ^^export)
 (import $css/[css rule decl_value font_face scoped class_name render:render_css])
-(import ^from "../public/web_style" narrow_minimum)
-(import ^from "./style/narrow" rules:narrow_rules)
-(import ^from "./style/wide" rules:wide_rules)
-(import ^from "./themes/default" theme:default_theme)
-(import ^from "./themes/minimal" theme:minimal_theme)
+(import narrow_minimum ^from "../public/web_style")
+(import rules:narrow_rules ^from "./style/narrow")
+(import rules:wide_rules ^from "./style/wide")
+(import theme:default_theme ^from "./themes/default")
+(import theme:minimal_theme ^from "./themes/minimal")
 
 (const theme_modes ["light" "dark"])
 (const public_tokens ["surface" "surface-alt" "surface-raised" "soft" "selected" "line" "edge" "ink" "muted" "accent" "link-color" "action" "action-hover" "action-ink" "focus" "danger" "success" "warning" "info" "danger-surface" "success-surface" "warning-surface" "info-surface" "scrim" "series-1" "series-2" "series-3" "series-4" "series-5" "series-6" "series-7" "series-8" "syntax-string" "syntax-number" "syntax-keyword" "syntax-callable" "syntax-type"])

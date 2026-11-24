@@ -1,6 +1,6 @@
 (mod web_test_support)
-(import ^from "./support" source_path:package_path)
-(import ^from "../src/cli/client" connect api discover)
+(import source_path:package_path ^from "./support")
+(import connect api discover ^from "../src/cli/client")
 
 (fn launch_host [root : Str, ^script responses = nil, ^port port = nil, ^restart_port restart_port = nil, ^supervised supervised : Bool = false, ^offline offline : Bool = true, ^recovery recovery : Bool = false, ^managed managed : Bool = false]
   ($fs/make_dir root)

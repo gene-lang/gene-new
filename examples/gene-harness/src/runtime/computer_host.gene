@@ -11,7 +11,17 @@
 (import immutable_view ^from "./composition")
 (import attach_media ^from "./media_host")
 (import open_media_store put_media ^from "../storage/media")
-(import open_driver driver_call grant_window grant_browser targets observe action action_receipt close_session session_label
+(import
+  open_driver
+  driver_call
+  grant_window
+  grant_browser
+  targets
+  observe
+  action
+  action_receipt
+  close_session
+  session_label
   ^from "." ^pkg "computer")
 
 (fn open_computer_host [runtime, ^driver supplied_driver = nil]

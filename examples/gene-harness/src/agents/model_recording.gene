@@ -14,7 +14,8 @@
   (if ($present? image/digest) (return image/digest))
   ($crypto/sha256 (if (== ($head image/base64) Str) image/base64 else "uncatalogued")))
 
-(import escaped_slashes payload_forms redact_image_text safe_error ^from "../public/model_text" ^^export)
+(import escaped_slashes payload_forms redact_image_text safe_error
+  ^from "../public/model_text" ^^export)
 
 (fn split_media_text [text : Str, inventory, matched]
   (var parts [text])

@@ -5,8 +5,14 @@
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
 (import put_cordis_plugin ^from "../../../src/kernel")
-(import submit_round continue_round cancel_round round_receipt close_round_controller
-  replace_paused_round_locked ^from "../../../src/runtime/round_controller")
+(import
+  submit_round
+  continue_round
+  cancel_round
+  round_receipt
+  close_round_controller
+  replace_paused_round_locked
+  ^from "../../../src/runtime/round_controller")
 (import require_record with_session_gate ^from "../../../src/runtime/sessions")
 (import delegation_blocks ^from "../../../src/runtime/delegations")
 (import events_for core_state ^from "../../../src/storage/state")

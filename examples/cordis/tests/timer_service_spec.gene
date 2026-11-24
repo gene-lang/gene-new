@@ -2,8 +2,7 @@
 
 (import $test/[describe it after_each assert_equal])
 
-(import RuntimeOptions Requirement PluginSpec invocation_limits
-         default_plugin_invoker new_runtime
+(import RuntimeOptions Requirement PluginSpec invocation_limits default_plugin_invoker new_runtime
   ^from "../src/cordis")
 
 (import Timer timer_key timer_plugin ^from "../src/timer")

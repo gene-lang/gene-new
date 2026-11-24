@@ -1,7 +1,7 @@
 # Immutable binary media is separate from the text-history blob collector.
 (mod media)
 (import api_root ^from "../web/contract.gene")
-(import ^from "." ^pkg "documents" inspect_bytes DocumentError)
+(import inspect_bytes DocumentError ^from "." ^pkg "documents")
 
 (type MediaError : Error ^props {^code Str})
 (type MediaStore ^props {^root Str ^max_file_bytes Int ^max_total_bytes Int ^max_records Int})

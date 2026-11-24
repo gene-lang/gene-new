@@ -1,5 +1,14 @@
 (import $test [describe it assert_equal assert_raises])
-(import cases make_input integer_loop closure_dispatch records text_index json_roundtrip event_replay measure
+(import
+  cases
+  make_input
+  integer_loop
+  closure_dispatch
+  records
+  text_index
+  json_roundtrip
+  event_replay
+  measure
   ^from "./general/workloads")
 (import new_variant validate_results record_sample checked_output ^from "./run_general")
 (import agree ^from "./run_kernels")

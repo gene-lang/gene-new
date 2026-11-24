@@ -5,7 +5,8 @@
 (import service_binding require_service ^from "./service_handles")
 (import current_snapshot immutable_view ^from "./composition")
 (import register_plugin ^from "../storage/workspace_activation")
-(import set_plugin_enabled restore_plugin plugin_history plugin_history_page revert_plugin ^from "../storage/workspace_repair")
+(import set_plugin_enabled restore_plugin plugin_history plugin_history_page revert_plugin
+  ^from "../storage/workspace_repair")
 
 (type HostedComposition ^^private ^props {^token Any}
   (impl CompositionHost

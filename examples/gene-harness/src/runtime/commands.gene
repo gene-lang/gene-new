@@ -5,24 +5,32 @@
 (import byte_prefix ^from "../public/text")
 (import command_identity same_command_identity? ^from "./command_identity")
 (import ui_record ^from "../ui/state")
-(import ^from "../kernel" rows row contribute CommandChanged publish)
-(import ^from "../plugin_api" ^^export CommandContext CommandResult)
-(import ^from "./composition" acquire_snapshot release_snapshot take_composition_changes discard_composition_changes)
+(import rows row contribute CommandChanged publish ^from "../kernel")
+(import CommandContext CommandResult ^from "../plugin_api" ^^export)
+(import acquire_snapshot release_snapshot take_composition_changes discard_composition_changes
+  ^from "./composition")
 (import drain_workspace_changes ^from "../storage/workspace_activation")
-(import ^from "../agents/harness_turn" workspace_bindings)
-(import ^from "../agents/eval_site" evaluate_response)
+(import workspace_bindings ^from "../agents/harness_turn")
+(import evaluate_response ^from "../agents/eval_site")
 (import close_execution_scope ^from "./execution_budget")
-(import operator_turn operator_bindings operator_forms operator_result operator_context operator_scope ^from "./operator_eval")
-(import ^from "../agents/history"
-  write_body read_body bounded_request acquire_body_use release_body_use with_body_use)
-(import ^from "../storage/state"
-  core_state record_core_state flush_event_store next_sequence stream_key)
-(import ^from "./sessions" load_session require_record)
-(import ^from "../web/theme_registry" installed_themes theme_catalog)
-(import ^from "./appearance" appearance_tabs set_appearance)
-(import ^from "../web/theme" theme_modes)
-(import ^from "./input_modes"
-  new_input_modes enter_mode close_mode_locked close_input_modes mode_command_finished)
+(import
+  operator_turn
+  operator_bindings
+  operator_forms
+  operator_result
+  operator_context
+  operator_scope
+  ^from "./operator_eval")
+(import write_body read_body bounded_request acquire_body_use release_body_use with_body_use
+  ^from "../agents/history")
+(import core_state record_core_state flush_event_store next_sequence stream_key
+  ^from "../storage/state")
+(import load_session require_record ^from "./sessions")
+(import installed_themes theme_catalog ^from "../web/theme_registry")
+(import appearance_tabs set_appearance ^from "./appearance")
+(import theme_modes ^from "../web/theme")
+(import new_input_modes enter_mode close_mode_locked close_input_modes mode_command_finished
+  ^from "./input_modes")
 
 (type CommandError : Error ^props {^code Str})
 (type CommandManager ^props {^runtime Any ^active Any ^watchers Any ^gate Any ^accepting Any ^closed Any ^modes Any?})

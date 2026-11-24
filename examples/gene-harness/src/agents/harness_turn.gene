@@ -1,10 +1,11 @@
 (mod harness_turn)
-(import ^from "../kernel" Harness rows doc)
-(import ^from "../runtime/composition" acquire_snapshot release_snapshot take_composition_changes discard_composition_changes)
-(import ^from "./turn_eval" evaluate_turn)
-(import ^from "./discovery" discovery_bindings)
+(import Harness rows doc ^from "../kernel")
+(import acquire_snapshot release_snapshot take_composition_changes discard_composition_changes
+  ^from "../runtime/composition")
+(import evaluate_turn ^from "./turn_eval")
+(import discovery_bindings ^from "./discovery")
 (import drain_workspace_changes ^from "../storage/workspace_activation")
-(import ^from "../public/text" byte_prefix)
+(import byte_prefix ^from "../public/text")
 (import bounded_render_call ^from "../ui/views")
 (import normalize_harness_outcome outcome_constructor ^from "./outcome_admission")
 

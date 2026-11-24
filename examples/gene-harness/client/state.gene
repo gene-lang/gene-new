@@ -1,7 +1,7 @@
 (mod harness_client_state ^profile web)
 (import client_record_limit ^from "../src/web/contract.gene")
 
-(import ^from "../src/web/contract.gene" ^^export terminal_round:terminal)
+(import terminal_round:terminal ^from "../src/web/contract.gene" ^^export)
 
 (fn merge_blocks [previous : (List Any), incoming : (List Any)] : (List Any)
   (var out : (List Any) [])

@@ -7,15 +7,19 @@
 (import open_event_store close_event_store flush_event_store ^from "../storage/state")
 (import open_inbox close_inbox ^from "../notifications/inbox")
 (import open_notification_host close_notification_host ^from "../notifications/host")
-(import open_workspace close_workspace set_profile_plugins attach_history ^from "../storage/composition_store")
-(import prepare_workspace activate_workspace_plan record_application_result ^from "../storage/workspace_activation")
+(import open_workspace close_workspace set_profile_plugins attach_history
+  ^from "../storage/composition_store")
+(import prepare_workspace activate_workspace_plan record_application_result
+  ^from "../storage/workspace_activation")
 (import acquire_workspace_lock close_workspace_lock ^from "./workspace_lock")
 (import open_appearance install_appearance_rows ^from "./appearance")
 (import install_setting_rows ^from "./workspace_config")
-(import startup_config new_settings_state note_active_setting effective_setting effective_config ^from "./settings_resolver")
+(import startup_config new_settings_state note_active_setting effective_setting effective_config
+  ^from "./settings_resolver")
 (import shared_settings_root ^from "./shared_settings")
 (import install_keyboard_rows ^from "./keyboard")
-(import open_session_manager close_session_manager create_session load_session with_session_gate ^from "./sessions")
+(import open_session_manager close_session_manager create_session load_session with_session_gate
+  ^from "./sessions")
 (import new_command_manager close_command_manager quiesce_command_manager ^from "./commands")
 (import new_round_controller close_round_controller delegation_callbacks ^from "./round_controller")
 (import open_card_service ^from "./cards")

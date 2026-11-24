@@ -2,8 +2,8 @@
 # holding the workspace lock; the live descriptor is not an ownership lock.
 (mod connection)
 (import log_event ^from "../kernel/log")
-(import ^from "./contract" protocol_version)
-(import ^from "../runtime/workspace_settings" read_workspace_settings)
+(import protocol_version ^from "./contract")
+(import read_workspace_settings ^from "../runtime/workspace_settings")
 (import $net/http/listen)
 
 (type ConnectionError : Error ^props {^code Str})

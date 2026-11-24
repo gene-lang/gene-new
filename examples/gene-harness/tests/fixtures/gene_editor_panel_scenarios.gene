@@ -8,9 +8,20 @@
 
 (mod gene_editor_panel_scenarios ^profile web)
 
-(import create_editor_panel configure_editor editor_available? editor_open?
-         open_editor close_editor attach_saved attach_draft show_logs show_source
-         poll_log attach_log EditorPanel
+(import
+  create_editor_panel
+  configure_editor
+  editor_available?
+  editor_open?
+  open_editor
+  close_editor
+  attach_saved
+  attach_draft
+  show_logs
+  show_source
+  poll_log
+  attach_log
+  EditorPanel
   ^from "../../client/editor.gene")
 (import Editor ^from "../../client/components/gene_editor.gene")
 

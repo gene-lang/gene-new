@@ -6,11 +6,14 @@
 (import $fs/[make_dir real_path read_text write_text_atomic exists?])
 (import $crypto/sha256)
 (import $str/[slice_bytes byte_size contains? starts_with? ends_with? split])
-(import ^from "../kernel" Harness describe_plugin_module configure_plugin_module contribute row rows remove_owner)
-(import ^from "../runtime/interface_policy" source_interfaces entry_core_interface interface_diagnostic InterfacePolicyError)
-(import ^from "../runtime/plugin_sdk" sdk_import?)
-(import ^from "./plugin_metadata" remember_descriptor)
-(import CompositionError Workspace fresh_list fresh_map entry_limits runtime_limits ^from "./composition_store")
+(import Harness describe_plugin_module configure_plugin_module contribute row rows remove_owner
+  ^from "../kernel")
+(import source_interfaces entry_core_interface interface_diagnostic InterfacePolicyError
+  ^from "../runtime/interface_policy")
+(import sdk_import? ^from "../runtime/plugin_sdk")
+(import remember_descriptor ^from "./plugin_metadata")
+(import CompositionError Workspace fresh_list fresh_map entry_limits runtime_limits
+  ^from "./composition_store")
 
 (fn safe_module_id? [id : Str] : Bool
   (var safe (&& (> (byte_size id) 0) (<= (byte_size id) 64)))

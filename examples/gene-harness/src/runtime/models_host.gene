@@ -2,24 +2,45 @@
 # starts outside activation deadlines; probes retain their own bounded calls.
 (mod models_host)
 (import effective_config ^from "./settings_resolver")
-(import ModelsHost ServiceError PluginHost HarnessEvent CommandResult CommandContext ^from "../plugin_api")
+(import ModelsHost ServiceError PluginHost HarnessEvent CommandResult CommandContext
+  ^from "../plugin_api")
 (import spawn_effect_call ^from "." ^pkg "cordis")
 (import rows registry_row_records put_cordis_plugin CompositionChanged publish ^from "../kernel")
 (import service_binding require_service ^from "./service_handles")
 (import manager_root_path ^from "../public/workspace_paths")
-(import open_model_catalog close_model_catalog run_model_catalog catalog_snapshot
-  request_catalog_refresh save_catalog_settings set_catalog_default adopt_catalog_file catalog_failure adopt_catalog_connection ^from "../public/model_catalog")
+(import
+  open_model_catalog
+  close_model_catalog
+  run_model_catalog
+  catalog_snapshot
+  request_catalog_refresh
+  save_catalog_settings
+  set_catalog_default
+  adopt_catalog_file
+  catalog_failure
+  adopt_catalog_connection
+  ^from "../public/model_catalog")
 (import named_model_choice ^from "../public/model_choices")
 (import validate_model_settings ^from "../public/models")
-(import session_settings selection_view select_provider readiness_report selection_pins ^from "../agents/provider_selection")
+(import session_settings selection_view select_provider readiness_report selection_pins
+  ^from "../agents/provider_selection")
 (import require_record update_session with_session_gate ^from "./sessions")
 (import run_composition_change ^from "./composition")
 (import composition_entries ^from "../storage/composition_store")
-(import read_models_file write_models_file models_path ModelsFileError ^from "../public/models_file")
+(import read_models_file write_models_file models_path ModelsFileError
+  ^from "../public/models_file")
 (import endpoint_plugin ^from "../public/provider")
-(import openrouter_login run_openrouter_login complete_openrouter_login login_status close_login ^from "../public/provider_login")
-(import new_chatgpt_login complete_chatgpt_login sign_out_chatgpt register_chatgpt_refresh unregister_chatgpt_refresh ^from "../public/chatgpt_auth")
-(import list_chatgpt_accounts select_chatgpt_account active_chatgpt_id acknowledge_chatgpt_plan ^from "../public/chatgpt_store")
+(import openrouter_login run_openrouter_login complete_openrouter_login login_status close_login
+  ^from "../public/provider_login")
+(import
+  new_chatgpt_login
+  complete_chatgpt_login
+  sign_out_chatgpt
+  register_chatgpt_refresh
+  unregister_chatgpt_refresh
+  ^from "../public/chatgpt_auth")
+(import list_chatgpt_accounts select_chatgpt_account active_chatgpt_id acknowledge_chatgpt_plan
+  ^from "../public/chatgpt_store")
 
 (type ModelCatalogChanged : HarnessEvent ^props {^revision Str})
 

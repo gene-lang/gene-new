@@ -1,8 +1,20 @@
 (mod channel_queue)
 (import last_thread_message ^from "./thread_links")
-(import open_channel_store close_channel_store snapshot mutate read has_queue? ^from "./store" ^^export)
-(import channel_error copy key normalize_message binding_key message_key
-         normalize_channel_input render_parts required_text remember_message transport_name ^from "./model")
+(import open_channel_store close_channel_store snapshot mutate read has_queue?
+  ^from "./store" ^^export)
+(import
+  channel_error
+  copy
+  key
+  normalize_message
+  binding_key
+  message_key
+  normalize_channel_input
+  render_parts
+  required_text
+  remember_message
+  transport_name
+  ^from "./model")
 
 (fn open_queues [root : Str, workspace : Str]
   (let store (open_channel_store root "workspace"

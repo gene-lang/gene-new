@@ -1,8 +1,8 @@
 (mod plugin_page)
-(import ^from "./appearance" appearance_answer appearance_link appearance_preloads)
+(import appearance_answer appearance_link appearance_preloads ^from "./appearance")
 (import $html/render)
 (import $web/[load script stylesheet])
-(import ^from "./style" styles)
+(import styles ^from "./style")
 
 (let client_cache ($cell nil))
 
@@ -11,7 +11,7 @@
     (client_cache .set
       ($web/load ($path/join ($path/parent this_mod/.path) "../../client/plugin_manager.gene"))))
   client_cache/.get)
-(import ^from "./style/manager" styles:manager_styles ^^export)
+(import styles:manager_styles ^from "./style/manager" ^^export)
 
 (fn plugin_page [^appearance appearance = nil, ^workspace workspace : Str = ""] : Str
   (let chosen (if ($absent? appearance) (appearance_answer {}) else (if (== ($head appearance) Str) (appearance_answer {^mode appearance}) else appearance)))

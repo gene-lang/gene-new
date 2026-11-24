@@ -2,8 +2,16 @@
 (import isolated run_spec ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
-(import create_session require_record list_sessions update_session delete_session
-  view_session leave_session SessionError ^from "../../../src/runtime/sessions")
+(import
+  create_session
+  require_record
+  list_sessions
+  update_session
+  delete_session
+  view_session
+  leave_session
+  SessionError
+  ^from "../../../src/runtime/sessions")
 (import write_body collect_unreferenced_bodies ^from "../../../src/agents/history")
 (import record_core_state core_state flush_event_store ^from "../../../src/storage/state")
 

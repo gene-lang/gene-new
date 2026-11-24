@@ -2,10 +2,33 @@
 (import storage_get storage_set storage_remove ^from "../workspace_storage.gene")
 (import api_root ^from "../../src/web/contract.gene")
 (import text flag integer items ^from "../../src/common/launcher.gene")
-(import VoiceDrafts new_voice_drafts start_utterance release_utterance finish_utterance
-  dispose_drafts voice_draft_key find_utterance partial_utterance recognition_timeout_ms ^from "../../src/common/voice_transitions.gene")
-(import HostAudio open_host_audio close_host_audio start_host_capture finish_host_capture
-  cancel_input cancel_output cancel_host_utterance speak_host_reply speak_host_announcement prefetch_host_reply start_handsfree stop_handsfree ^from "./host_audio.gene")
+(import
+  VoiceDrafts
+  new_voice_drafts
+  start_utterance
+  release_utterance
+  finish_utterance
+  dispose_drafts
+  voice_draft_key
+  find_utterance
+  partial_utterance
+  recognition_timeout_ms
+  ^from "../../src/common/voice_transitions.gene")
+(import
+  HostAudio
+  open_host_audio
+  close_host_audio
+  start_host_capture
+  finish_host_capture
+  cancel_input
+  cancel_output
+  cancel_host_utterance
+  speak_host_reply
+  speak_host_announcement
+  prefetch_host_reply
+  start_handsfree
+  stop_handsfree
+  ^from "./host_audio.gene")
 
 (type Voice ^props {^root EventTarget ^bridge Any ^button EventTarget ^panel EventTarget
   ^mic EventTarget ^message EventTarget ^transcript EventTarget ^send_button EventTarget ^discard_button EventTarget

@@ -1,6 +1,7 @@
 (import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
-(import create_session close_session_service submit receipt ^from "../../../src/web/session_service")
+(import create_session close_session_service submit receipt
+  ^from "../../../src/web/session_service")
 (import row ^from "../../../src/kernel")
 
 (fn source [version]

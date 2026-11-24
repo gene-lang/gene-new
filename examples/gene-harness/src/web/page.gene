@@ -1,7 +1,7 @@
 # Host-owned page shell and compiled browser entry point.
 (mod harness_web_page)
-(import ^from "./style" styles)
-(import ^from "./appearance" appearance_answer appearance_link appearance_preloads)
+(import styles ^from "./style")
+(import appearance_answer appearance_link appearance_preloads ^from "./appearance")
 (import $html/render)
 (import $web/[script stylesheet])
 

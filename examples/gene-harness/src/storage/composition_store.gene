@@ -5,11 +5,18 @@
 (import $serde/[write_data read_data])
 (import $fs/[make_dir real_path read_text write_text_atomic exists?])
 (import $str/[slice_bytes byte_size contains? starts_with? ends_with? split])
-(import ^from "../kernel" ExecutionLimits default_execution_limits)
-(import ^from "../runtime/interface_policy" current_interfaces latest_interfaces)
-(import ^from "../runtime/plugin_sdk" sdk_modules)
-(import ^from "./plugin_history" archive_host_build archive_baseline archive_candidate archived_record history_list append_history_result)
-(import ^from "./plugin_metadata" remember_descriptor remember_failure)
+(import ExecutionLimits default_execution_limits ^from "../kernel")
+(import current_interfaces latest_interfaces ^from "../runtime/interface_policy")
+(import sdk_modules ^from "../runtime/plugin_sdk")
+(import
+  archive_host_build
+  archive_baseline
+  archive_candidate
+  archived_record
+  history_list
+  append_history_result
+  ^from "./plugin_history")
+(import remember_descriptor remember_failure ^from "./plugin_metadata")
 
 (type CompositionError : Error)
 

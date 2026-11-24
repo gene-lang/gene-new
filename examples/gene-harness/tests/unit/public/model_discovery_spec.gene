@@ -1,6 +1,10 @@
 (import $test/[describe it run])
-(import normalize_openrouter_models normalize_chatgpt_models normalize_anthropic_models
-         normalize_compatible_models ^from "../../../src/public/model_discovery")
+(import
+  normalize_openrouter_models
+  normalize_chatgpt_models
+  normalize_anthropic_models
+  normalize_compatible_models
+  ^from "../../../src/public/model_discovery")
 
 (describe "Model discovery metadata"
   (it "normalizes the recorded public OpenRouter catalog and its nullable-effort contract" []

@@ -1,5 +1,5 @@
 (mod session_menu ^profile web)
-(import ^from "./css_values.gene" computed_length)
+(import computed_length ^from "./css_values.gene")
 (import api_root ^from "../src/web/contract.gene")
 (import text flag ^from "../src/common/launcher.gene")
 (import can_share_session? session_share_label session_share_busy? ^from "./slack_channels.gene")

@@ -1,6 +1,11 @@
 (import $test/[describe it run])
-(import delegation_limits normalize_delegation normalize_delegation_wait
-  delegation_wait_members delegation_wait_ready? delegation_result_data
+(import
+  delegation_limits
+  normalize_delegation
+  normalize_delegation_wait
+  delegation_wait_members
+  delegation_wait_ready?
+  delegation_result_data
   ^from "../../../src/runtime/delegation_contract")
 (import DelegationError ^from "../../../src/plugin_api")
 

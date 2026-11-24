@@ -1,5 +1,6 @@
 (import $test/[describe it run])
-(import merge_models canonical_models canonical_connection list_catalog_models ^from "../../../src/public/model_catalog")
+(import merge_models canonical_models canonical_connection list_catalog_models
+  ^from "../../../src/public/model_catalog")
 
 (describe "Merged model catalog"
   (it "keeps valid discovered models when other vendor rows are malformed" []

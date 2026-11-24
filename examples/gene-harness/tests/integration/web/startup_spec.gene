@@ -1,9 +1,9 @@
 # Startup diagnostics must reflect the launcher's terminal, even though the
 # supervisor captures its child's output for recovery diagnostics.
 (import $test/[describe it])
-(import ^from "../../support" isolated run_spec source_path)
-(import ^from "../../web_support" ready_host stop_host)
-(import ^from "../../../src/cli/client" connect api connection_link)
+(import isolated run_spec source_path ^from "../../support")
+(import ready_host stop_host ^from "../../web_support")
+(import connect api connection_link ^from "../../../src/cli/client")
 
 (fn terminal_environment []
   (let values {^GENE_BINARY ($os/executable_path) ^GENE_HARNESS_STDOUT_TTY "0"})

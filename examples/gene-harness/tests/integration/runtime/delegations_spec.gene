@@ -2,7 +2,8 @@
 (import isolated run_spec test_controller set_test_provider ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
-(import submit_round round_receipt cancel_round answer_round close_round_controller ^from "../../../src/runtime/round_controller")
+(import submit_round round_receipt cancel_round answer_round close_round_controller
+  ^from "../../../src/runtime/round_controller")
 (import require_record create_session ^from "../../../src/runtime/sessions")
 (import delegation_blocks ^from "../../../src/runtime/delegations")
 (import Plugin PluginHost ^from "../../../src/plugin_api")

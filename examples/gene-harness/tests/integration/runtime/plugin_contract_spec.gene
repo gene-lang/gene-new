@@ -6,7 +6,8 @@
 (import PluginHost ^from "../../../src/plugin_api")
 (import row registry_names ^from "../../../src/kernel")
 (import register_plugin stage_plugin_entry ^from "../../../src/storage/workspace_activation")
-(import composition_entries composition_revision commit_composition ^from "../../../src/storage/composition_store")
+(import composition_entries composition_revision commit_composition
+  ^from "../../../src/storage/composition_store")
 (import load_entry_descriptor ^from "../../../src/storage/module_registry")
 (import revert_plugin verify_stored_entry ^from "../../../src/storage/workspace_repair")
 (import validate_plan apply_plan ^from "../../../src/runtime/plugin_plans")

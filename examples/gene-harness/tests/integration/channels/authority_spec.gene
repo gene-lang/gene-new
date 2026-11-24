@@ -1,7 +1,13 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_authority configure_account configure_route authorize public_authority
-         snapshot close_channel_store
+(import
+  open_authority
+  configure_account
+  configure_route
+  authorize
+  public_authority
+  snapshot
+  close_channel_store
   ^from "../../../src/channels/authority")
 (import ChannelError normalize_message normalize_channel_input render_parts
   ^from "../../../src/channels/model")

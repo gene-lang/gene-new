@@ -5,8 +5,15 @@
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import submit_round round_receipt close_round_controller RoundError
   ^from "../../../src/runtime/round_controller")
-(import card_records card_record card_action card_action_receipt check_card_command
-         card_send_item flush_card_progress CardError
+(import
+  card_records
+  card_record
+  card_action
+  card_action_receipt
+  check_card_command
+  card_send_item
+  flush_card_progress
+  CardError
   ^from "../../../src/runtime/cards")
 (import core_state record_core_state flush_event_store ^from "../../../src/storage/state")
 (import contribute ^from "../../../src/kernel")

@@ -6,39 +6,45 @@
 (import ensure_channel_initiator ^from "../channels/initiators")
 (import resolve_initiator make_initiator ^from "./initiators")
 (import RoundError ^from "./round_errors" ^^export)
-(import observe_round:observe_channel_round
-         observe_rounds:observe_channel_rounds snapshot:channel_queue_snapshot
-         queue_status:channel_queue_status pending_parts:channel_pending_parts
-         claim_batch:claim_channel_batch finish_admission:finish_channel_admission
-         release_batch:release_channel_batch hold_queue:hold_channel_queue
+(import
+  observe_round:observe_channel_round
+  observe_rounds:observe_channel_rounds
+  snapshot:channel_queue_snapshot
+  queue_status:channel_queue_status
+  pending_parts:channel_pending_parts
+  claim_batch:claim_channel_batch
+  finish_admission:finish_channel_admission
+  release_batch:release_channel_batch
+  hold_queue:hold_channel_queue
   ^from "../channels/queue")
 (import open_media_store validate_media_refs ^from "../storage/media")
 (import prompt_limit receipt_limit ^from "../web/contract")
-(import ^from "../agents/turn_loop" run_round transcript finish_turn)
+(import run_round transcript finish_turn ^from "../agents/turn_loop")
 (import next_request ^from "../agents/next_request")
-(import ^from "../agents/provider_selection" readiness_report session_settings resolve_selection)
+(import readiness_report session_settings resolve_selection ^from "../agents/provider_selection")
 (import validate_model_settings ^from "../public/models")
 (import ProviderError ^from "../plugin_api")
-(import ^from "../agents/harness_turn" answer_validators)
-(import ^from "./composition" acquire_snapshot release_snapshot)
-(import ^from "./input_modes" require_chat)
-(import ^from "../agents/history"
-    bounded_request
-    pending_request
-    write_body
-    read_body
-    acquire_body_use
-    release_body_use
-    with_body_use)
-(import ^from "../storage/state"
-  core_state record_core_state flush_event_store copy_data append_core_event)
-(import ^from "./sessions"
-  load_session require_record update_session session_busy? with_session_gate)
-(import ^from "./questions" answer_questions submitted_digest QuestionError)
-(import ^from "./cards" wait_for_card_actions card_send_item)
-(import ^from "./commands" take_command_attachments)
-(import ^from "./workspace_lock" close_workspace_lock)
-(import ^from "../kernel" RoundChanged publish contribute)
+(import answer_validators ^from "../agents/harness_turn")
+(import acquire_snapshot release_snapshot ^from "./composition")
+(import require_chat ^from "./input_modes")
+(import
+  bounded_request
+  pending_request
+  write_body
+  read_body
+  acquire_body_use
+  release_body_use
+  with_body_use
+  ^from "../agents/history")
+(import core_state record_core_state flush_event_store copy_data append_core_event
+  ^from "../storage/state")
+(import load_session require_record update_session session_busy? with_session_gate
+  ^from "./sessions")
+(import answer_questions submitted_digest QuestionError ^from "./questions")
+(import wait_for_card_actions card_send_item ^from "./cards")
+(import take_command_attachments ^from "./commands")
+(import close_workspace_lock ^from "./workspace_lock")
+(import RoundChanged publish contribute ^from "../kernel")
 (import CommandResult ^from "../plugin_api")
 (import dispatch_round_event claimed? ^from "./round_lifecycle")
 (import decision_available? ^from "./decision_service")

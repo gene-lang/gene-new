@@ -8,13 +8,24 @@
 # The local Harness serves this page at /about/ (`^mode "embedded"`), and
 # `./export` writes it for a static host (`^mode "standalone"`).
 
-(import ^from "../web/appearance" appearance_answer appearance_link appearance_preloads)
+(import appearance_answer appearance_link appearance_preloads ^from "../web/appearance")
 (import $html/render)
 (import $web/[script stylesheet])
 (import website_css website_class ^from "./style")
-(import ^from "../web/style" styles)
-(import WebsiteError website_dir repository_url links hero capabilities steps faq
-         example site_excerpts run_commands ^from "./content")
+(import styles ^from "../web/style")
+(import
+  WebsiteError
+  website_dir
+  repository_url
+  links
+  hero
+  capabilities
+  steps
+  faq
+  example
+  site_excerpts
+  run_commands
+  ^from "./content")
 
 (var website_ui ($web/load $"${website_dir}/../../client/website.gene"))
 

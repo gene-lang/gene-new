@@ -1,13 +1,14 @@
 (mod provider_anthropic)
-(import ^from "../plugin_api" Plugin PluginHost)
-(import ^from "../public/documentation" contribute_text_doc)
-(import ^from "../plugin_api" ProviderError)
-(import ^from "../public/provider" nonempty configure_model http_json_attempt)
+(import Plugin PluginHost ^from "../plugin_api")
+(import contribute_text_doc ^from "../public/documentation")
+(import ProviderError ^from "../plugin_api")
+(import nonempty configure_model http_json_attempt ^from "../public/provider")
 (import anthropic_models ^from "../public/model_defaults")
 (import model_capabilities ^from "../public/models")
 (import anthropic_model_list ^from "../public/provider_discovery")
 (import prepare_messages messages_stream_result ^from "../public/provider_payloads")
-(import anthropic_auth_source anthropic_headers anthropic_connection ^from "../public/anthropic_auth")
+(import anthropic_auth_source anthropic_headers anthropic_connection
+  ^from "../public/anthropic_auth")
 
 (fn anthropic_text [response] : Str
   (if_not (== response/status 200)

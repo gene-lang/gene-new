@@ -695,6 +695,11 @@ several exports. Attach an alias without spaces around the colon.
 (import *:stats ^from "./stats.gene")
 ```
 
+`^from` follows the selectors. If the import does not fit on one line, the
+formatter keeps the selectors on the first line and moves `^from` to a
+continuation line; a selector list too long for that line gets one selector
+per line.
+
 Use `/` to select through exported namespaces. A qualified selector binds its
 last segment by default. Groups can nest and share the prefix before the vector.
 These two imports have the same effect when used separately.

@@ -3,12 +3,15 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
-(import new_harness install put_cordis_plugin status_of shutdown_harness row
-         apply_plugin_set
+(import new_harness install put_cordis_plugin status_of shutdown_harness row apply_plugin_set
   ^from "../../../src/kernel")
 (import Profile profile_admissions ^from "../../../src/profiles/profile")
-(import current_snapshot acquire_snapshot release_snapshot subscribe_publications
-         publication_diagnostics
+(import
+  current_snapshot
+  acquire_snapshot
+  release_snapshot
+  subscribe_publications
+  publication_diagnostics
   ^from "../../../src/runtime/composition")
 
 (type FixtureError : Error)

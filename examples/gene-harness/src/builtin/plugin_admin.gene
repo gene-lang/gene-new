@@ -1,6 +1,6 @@
 (mod plugin_admin)
-(import ^from "../plugin_api" Plugin PluginHost CompositionHost)
-(import ^from "../public/documentation" contribute_doc)
+(import Plugin PluginHost CompositionHost ^from "../plugin_api")
+(import contribute_doc ^from "../public/documentation")
 
 (fn plugin_admin [] : Plugin
   (Plugin ^id "plugin_admin" ^requires ["plugins/host"]

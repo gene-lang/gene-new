@@ -1,20 +1,21 @@
 (mod sessions)
 (import tombstone_session:tombstone_channel_session ^from "../channels/queue")
 
-(import ^from "../storage/state"
-    core_states
-    core_state
-    record_core_state
-    append_core_event
-    events_for
-    flush_event_store
-    unload_event_stream
-    delete_event_stream
-    repair_interrupted_turns
-    copy_data)
-(import ^from "../agents/history" history_state read_body write_body)
-(import ^from "./patch" recover_patch_temporaries)
-(import ^from "../kernel" SessionChanged publish)
+(import
+  core_states
+  core_state
+  record_core_state
+  append_core_event
+  events_for
+  flush_event_store
+  unload_event_stream
+  delete_event_stream
+  repair_interrupted_turns
+  copy_data
+  ^from "../storage/state")
+(import history_state read_body write_body ^from "../agents/history")
+(import recover_patch_temporaries ^from "./patch")
+(import SessionChanged publish ^from "../kernel")
 
 (type SessionError : Error ^props {^code Str})
 

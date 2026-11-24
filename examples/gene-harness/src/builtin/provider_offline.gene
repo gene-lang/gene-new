@@ -1,6 +1,6 @@
 (mod provider_offline)
-(import ^from "../plugin_api" Plugin PluginHost)
-(import ^from "../public/documentation" contribute_text_doc)
+(import Plugin PluginHost ^from "../plugin_api")
+(import contribute_text_doc ^from "../public/documentation")
 
 (fn provider_offline [] : Plugin
   (Plugin ^id "provider_offline" ^provides [["providers" "offline"]]

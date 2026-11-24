@@ -1,6 +1,6 @@
 (mod gene_reference)
-(import ^from "../plugin_api" Plugin PluginHost)
-(import ^from "../public/documentation" contribute_doc)
+(import Plugin PluginHost ^from "../plugin_api")
+(import contribute_doc ^from "../public/documentation")
 
 (fn gene_reference [] : Plugin
   (Plugin ^id "gene_reference"

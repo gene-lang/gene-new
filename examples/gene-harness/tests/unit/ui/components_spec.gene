@@ -1,7 +1,8 @@
 # Tests src/ui/components.gene.
 (import $test/[describe it run])
-(import ^from "../../../src/ui/components" validate_web_component bounded_component_view bounded_card_view tree_has_commands?)
-(import ^from "../../../src/ui/views" validate_view_actions)
+(import validate_web_component bounded_component_view bounded_card_view tree_has_commands?
+  ^from "../../../src/ui/components")
+(import validate_view_actions ^from "../../../src/ui/views")
 
 (describe
   "Harness web components"

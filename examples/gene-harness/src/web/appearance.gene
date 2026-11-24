@@ -1,14 +1,14 @@
 # Browser appearance is cookie data, independent of workspace settings.
 (mod browser_appearance)
-(import ^from "./theme" builtin_themes)
-(import ^from "./theme_registry" installed_themes theme_catalog themes_revision)
-(import ^from "./theme_assets" active_theme_assets theme_preview_asset)
-(import ^from "./request" cookie_value request_data response)
-(import ^from "../runtime/appearance" AppearanceError AppearanceChanged)
-(import ^from "../kernel" publish)
+(import builtin_themes ^from "./theme")
+(import installed_themes theme_catalog themes_revision ^from "./theme_registry")
+(import active_theme_assets theme_preview_asset ^from "./theme_assets")
+(import cookie_value request_data response ^from "./request")
+(import AppearanceError AppearanceChanged ^from "../runtime/appearance")
+(import publish ^from "../kernel")
 
 (const cookie_name "gene_harness_appearance")
-(import ^from "./appearance_values" defaults valid_field? validate_fields)
+(import defaults valid_field? validate_fields ^from "./appearance_values")
 
 (fn read_saved [header : Str]
   (let saved {})

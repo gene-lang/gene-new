@@ -3,8 +3,7 @@
 (mod provider_discovery)
 (import ProviderError ^from "../plugin_api")
 (import nonempty resolve_credential probe_json ^from "./provider")
-(import normalize_anthropic_models normalize_openrouter_models
-  ^from "./model_discovery")
+(import normalize_anthropic_models normalize_openrouter_models ^from "./model_discovery")
 
 (fn bounded_probe [callback, ^timeout_ms timeout_ms : Int = 5000]
   (scope

@@ -1485,9 +1485,9 @@ suite "cli — gene parse/fmt/compile":
     let formatted = runGene(["fmt", file])
     checkpoint formatted.output
     check formatted.exitCode == 0
-    check "(import ^from \"mod\" a/[b:bb c/[d e:ee]])" in formatted.output
+    check "(import a/[b:bb c/[d e:ee]] ^from \"mod\")" in formatted.output
     check "# c contains the last two selections" in formatted.output
-    check "(import ^from \"old\" u:v w)" in formatted.output
+    check "(import u:v w ^from \"old\")" in formatted.output
     check "(import ^from \"setup\")" in formatted.output
     check "(import a/[b c])" in formatted.output
     check "(import a/b/[c d])" in formatted.output
@@ -1500,6 +1500,43 @@ suite "cli — gene parse/fmt/compile":
     for i in [0, 1, 3, 5, 6, 7, 8, 9, 10, 11]:
       check input[i].print() == output[i].print()
     let second = writeCliProgram("fmt_imports_again.gene", formatted.output)
+    check runGene(["fmt", second]).output == formatted.output
+
+  test "fmt puts the source after selectors and wraps long imports":
+    buildGeneCli()
+    let source = """
+(import ^from "x" alpha beta)
+(import ^from "y" alpha_one alpha_two alpha_three alpha_four alpha_five alpha_six alpha_seven alpha_eight)
+(import ^from "z" alpha_one alpha_two alpha_three alpha_four alpha_five alpha_six alpha_seven alpha_eight alpha_nine alpha_ten alpha_eleven alpha_twelve)
+"""
+    let file = writeCliProgram("fmt_import_source_last.gene", source)
+    let formatted = runGene(["fmt", file])
+    checkpoint formatted.output
+    check formatted.exitCode == 0
+    check formatted.output ==
+      "(import alpha beta ^from \"x\")\n" &
+      "(import alpha_one alpha_two alpha_three alpha_four alpha_five " &
+      "alpha_six alpha_seven alpha_eight\n" &
+      "  ^from \"y\")\n" &
+      "(import\n" &
+      "  alpha_one\n" &
+      "  alpha_two\n" &
+      "  alpha_three\n" &
+      "  alpha_four\n" &
+      "  alpha_five\n" &
+      "  alpha_six\n" &
+      "  alpha_seven\n" &
+      "  alpha_eight\n" &
+      "  alpha_nine\n" &
+      "  alpha_ten\n" &
+      "  alpha_eleven\n" &
+      "  alpha_twelve\n" &
+      "  ^from \"z\")\n"
+    let input = readAll(source)
+    let output = readAll(formatted.output)
+    for i in 0 .. 2:
+      check input[i].print() == output[i].print()
+    let second = writeCliProgram("fmt_import_source_last_again.gene", formatted.output)
     check runGene(["fmt", second]).output == formatted.output
 
   test "fmt output is parse-equivalent and idempotent on the todo app":

@@ -1,5 +1,5 @@
 (mod working_instructions)
-(import ^from "../plugin_api" Plugin PluginHost)
+(import Plugin PluginHost ^from "../plugin_api")
 
 (const working_preferences """
 Start with a # goal comment and comment each step for your future self.

@@ -1,8 +1,18 @@
 # Slack account and route verification for the host's setup flow. The host
 # stores what these return; it never reads the credential file itself.
 (mod slack_setup)
-(import read_slack_credentials secret_path open_api close_api identify api_call
-         load_socket_library connect_socket socket_message slack_error ^from "./api")
+(import
+  read_slack_credentials
+  secret_path
+  open_api
+  close_api
+  identify
+  api_call
+  load_socket_library
+  connect_socket
+  socket_message
+  slack_error
+  ^from "./api")
 
 (fn ^^private reference [value, label : Str] : Str
   (if (|| (!= ($head value) Str) (== value "") (> value/.byte_size 4096))

@@ -6,8 +6,10 @@
 (import uninstall row ^from "../../../src/kernel")
 (import assemble_instructions ^from "../../../src/agents/instructions")
 (import submit_command command_receipt ^from "../../../src/runtime/commands")
-(import submit_round round_receipt close_round_controller ^from "../../../src/runtime/round_controller")
-(import participant_quarantine quarantine_participant ^from "../../../src/storage/participant_health")
+(import submit_round round_receipt close_round_controller
+  ^from "../../../src/runtime/round_controller")
+(import participant_quarantine quarantine_participant
+  ^from "../../../src/storage/participant_health")
 
 (describe "Profile plugin contract"
   (it "uses public activation prompt command and cleanup contexts with host policy" []

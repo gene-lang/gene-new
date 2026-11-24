@@ -1,7 +1,18 @@
 (import $test/[describe it])
 (import isolated run_spec fixture_path ^from "../../support")
-(import account_id account_path chatgpt_root chatgpt_host_id save_chatgpt_account
-  list_chatgpt_accounts select_chatgpt_account read_chatgpt_record with_chatgpt_account acknowledge_chatgpt_plan public_account ^from "../../../src/public/chatgpt_store")
+(import
+  account_id
+  account_path
+  chatgpt_root
+  chatgpt_host_id
+  save_chatgpt_account
+  list_chatgpt_accounts
+  select_chatgpt_account
+  read_chatgpt_record
+  with_chatgpt_account
+  acknowledge_chatgpt_plan
+  public_account
+  ^from "../../../src/public/chatgpt_store")
 
 (fn record [client : Str, subject : Str]
   {^version 1 ^issuer "https://auth.openai.com" ^client_id client ^subject subject

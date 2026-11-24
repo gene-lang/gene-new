@@ -5,7 +5,8 @@
 (import service_binding require_service ^from "./service_handles")
 (import require_command_scope ^from "./command_scope")
 (import help_command run_command view_command ^from "./commands")
-(import shell_command classify_shell evaluate_shell close_shell close_shells ^from "./shell_sessions")
+(import shell_command classify_shell evaluate_shell close_shell close_shells
+  ^from "./shell_sessions")
 (import classify_repl evaluate_repl close_repl close_repls ^from "./repl_sessions")
 
 (fn open_operator_host [runtime]

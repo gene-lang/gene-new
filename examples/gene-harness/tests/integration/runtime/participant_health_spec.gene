@@ -9,7 +9,8 @@
 (import participant_quarantine ^from "../../../src/storage/participant_health")
 (import plugin_catalog ^from "../../../src/runtime/plugin_manager")
 (import validate_plan apply_plan ^from "../../../src/runtime/plugin_plans")
-(import submit_round round_receipt close_round_controller cancel_round ^from "../../../src/runtime/round_controller")
+(import submit_round round_receipt close_round_controller cancel_round
+  ^from "../../../src/runtime/round_controller")
 (import plugin_state events_for ^from "../../../src/storage/state")
 (import contribute ^from "../../../src/kernel")
 (import native_owner ^from "../../../src/runtime/turn_participant_registry")

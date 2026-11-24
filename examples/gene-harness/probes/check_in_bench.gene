@@ -10,7 +10,8 @@
 # EVENTS_DIR is a stopped workspace's .gene-harness/events directory, or a copy.
 # Labels are a data file of {^session ^task_root ^boundary ^label "pause"|"continue"}.
 # Operator behavior after a boundary is reported as a tuning signal, not a label.
-(import check_in_questions task_turns_from unchanged_failure_loop fit_turns fuse ^from "../src/runtime/check_ins")
+(import check_in_questions task_turns_from unchanged_failure_loop fit_turns fuse
+  ^from "../src/runtime/check_ins")
 (import validate_answers estimated_tokens ^from "../src/runtime/decision_service")
 (import jev_row model_row ^from "../src/public/decision_engines")
 (import decide ^from "../src/runtime/decision_service")

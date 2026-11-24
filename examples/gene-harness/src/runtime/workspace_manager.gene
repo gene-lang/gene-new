@@ -5,15 +5,15 @@
 # child directory of ROOT/workspaces, named by that directory; there is no
 # separate registry. Archive moves a workspace to ROOT/archive.
 (mod workspace_manager_service)
-(import ^from "./workspace_settings"
-  read_workspace_settings write_workspace_settings update_workspace_settings validate_settings)
-(import ^from "./workspace_lock" acquire_workspace_lock close_workspace_lock WorkspaceInUse)
-(import ^from "../cli/client" connect api connection_link)
-(import ^from "../public/text" byte_prefix byte_suffix)
+(import read_workspace_settings write_workspace_settings update_workspace_settings validate_settings
+  ^from "./workspace_settings")
+(import acquire_workspace_lock close_workspace_lock WorkspaceInUse ^from "./workspace_lock")
+(import connect api connection_link ^from "../cli/client")
+(import byte_prefix byte_suffix ^from "../public/text")
 (import parse_record render_text ^from "../public/log_record")
-(import ^from "../public/log_redaction" redact_secrets)
-(import ^from "../plugin_api" HarnessEvent)
-(import ^from "../kernel" publish)
+(import redact_secrets ^from "../public/log_redaction")
+(import HarnessEvent ^from "../plugin_api")
+(import publish ^from "../kernel")
 
 (type ManagerError : Error ^props {^code Str})
 (type WorkspaceManagerChanged : HarnessEvent)

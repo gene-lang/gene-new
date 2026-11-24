@@ -6,10 +6,17 @@
 (mod workspace_config)
 (import ServiceError HarnessEvent ^from "../plugin_api")
 (import contribute rows row publish registry_row_records ^from "../kernel")
-(import core_setting_definitions model_setting_keys definition_scopes supports_scope? ^from "./setting_definitions")
+(import core_setting_definitions model_setting_keys definition_scopes supports_scope?
+  ^from "./setting_definitions")
 (import read_shared_settings write_shared_settings shared_settings_root ^from "./shared_settings")
 (import select_provider ^from "../agents/provider_selection")
-(import setting_definitions layered_value resolve_config bump_settings_revision active_settings settings_state
+(import
+  setting_definitions
+  layered_value
+  resolve_config
+  bump_settings_revision
+  active_settings
+  settings_state
   ^from "./settings_resolver")
 
 # After a committed write or reset, and when another host's shared write is observed.

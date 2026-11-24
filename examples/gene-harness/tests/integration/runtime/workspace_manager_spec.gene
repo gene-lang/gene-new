@@ -1,18 +1,18 @@
 (import $test/[describe it])
-(import ^from "../../support" isolated run_spec test_service source_path)
-(import ^from "../../../src/web/session_service" close_session_service)
-(import ^from "../../../src/runtime/workspace_settings"
-  write_workspace_settings read_workspace_settings)
-(import ^from "../../../src/runtime/workspace_manager"
-  manager_operation manager_list manager_inspect lock_held? ManagerError)
-(import ^from "../../../src/kernel" row)
-(import ^from "../../../src/runtime/workspace_lock" acquire_workspace_lock close_workspace_lock)
-(import ^from "../../../src/runtime/bootstrap" prepare_layout)
-(import ^from "../../../src/ui/state" ui_status)
-(import ^from "../../../src/ui/views" ui_preview)
-(import ^from "../../../src/ui/actions" ui_action ui_action_receipt)
-(import ^from "../../../src/cli/client" connect api discover)
-(import ^from "../../web_support" cli start_host stop_host)
+(import isolated run_spec test_service source_path ^from "../../support")
+(import close_session_service ^from "../../../src/web/session_service")
+(import write_workspace_settings read_workspace_settings
+  ^from "../../../src/runtime/workspace_settings")
+(import manager_operation manager_list manager_inspect lock_held? ManagerError
+  ^from "../../../src/runtime/workspace_manager")
+(import row ^from "../../../src/kernel")
+(import acquire_workspace_lock close_workspace_lock ^from "../../../src/runtime/workspace_lock")
+(import prepare_layout ^from "../../../src/runtime/bootstrap")
+(import ui_status ^from "../../../src/ui/state")
+(import ui_preview ^from "../../../src/ui/views")
+(import ui_action ui_action_receipt ^from "../../../src/ui/actions")
+(import connect api discover ^from "../../../src/cli/client")
+(import cli start_host stop_host ^from "../../web_support")
 
 (fn browser_action [service, named]
   (let state (ui_status service/runtime))

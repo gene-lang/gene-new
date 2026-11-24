@@ -3,15 +3,36 @@
 (import fixture receive wait_round ^from "./service_spec")
 (import fixture:delivery_fixture intent ^from "./handoff_spec")
 (import fixture:transport_fixture ^from "./transport_spec")
-(import open_channel_store close_channel_store mutate snapshot read collect_records ^from "../../../src/channels/store")
-(import drain_session handoff_inputs handoff_outputs queue_progress tick_channels delivery_status output_intent ^from "../../../src/channels/service")
-(import pending_parts claim_batch queue_status resume_queue resolve_claim ^from "../../../src/channels/queue")
+(import open_channel_store close_channel_store mutate snapshot read collect_records
+  ^from "../../../src/channels/store")
+(import
+  drain_session
+  handoff_inputs
+  handoff_outputs
+  queue_progress
+  tick_channels
+  delivery_status
+  output_intent
+  ^from "../../../src/channels/service")
+(import pending_parts claim_batch queue_status resume_queue resolve_claim
+  ^from "../../../src/channels/queue")
 (import authorize_parts ^from "../../../src/channels/authority")
 (import pending_ingress defer_handoff ^from "../../../src/channels/ingress")
 (import event ^from "./service_spec")
-(import submit snapshot:browser_snapshot close_session_service ^from "../../../src/web/session_service")
+(import submit snapshot:browser_snapshot close_session_service
+  ^from "../../../src/web/session_service")
 (import unload_session ^from "../../../src/runtime/sessions")
-(import queue_output accept_output begin_part finish_part reconcile_output due_output resolve_output output_result deliver_output ^from "../../../src/channels/delivery")
+(import
+  queue_output
+  accept_output
+  begin_part
+  finish_part
+  reconcile_output
+  due_output
+  resolve_output
+  output_result
+  deliver_output
+  ^from "../../../src/channels/delivery")
 (import open_api close_api ^from "../../../src/builtin/slack/api")
 (import open_transport close_transport socket_session ^from "../../../src/builtin/slack/transport")
 (import ChannelError key ^from "../../../src/channels/model")

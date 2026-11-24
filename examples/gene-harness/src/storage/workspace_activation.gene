@@ -5,13 +5,56 @@
 (import $fs/[make_dir real_path read_text write_text_atomic exists?])
 (import $crypto/sha256)
 (import $str/[slice_bytes byte_size contains? starts_with? ends_with? split])
-(import ^from "../kernel" Harness put_cordis_plugin put_cordis_plugins status_of plugin_error record_composition_change flush_harness hydrate_harness_log uninstall)
-(import ^from "./state" validate_event_catalog)
-(import ^from "./participant_health" reset_participant_quarantine)
-(import ^from "./plugin_source" capture_source_origin assign_creation)
-(import ^from "../runtime/composition" queue_composition_change take_composition_changes run_composition_change)
-(import CompositionError CompositionConflict Workspace fresh_list fresh_map data_copy require_open active_revision_path composition_revision composition_entries composition_history_result commit_composition find_entry_index previous_module_digest entries_with default_limits_data entry_enabled? record_quarantine ^from "./composition_store")
-(import safe_module_id? parse_plugin_source canonical_module_source dependency_module_texts validate_source_imports materialize_module_blob write_module_blob load_entry_descriptor descriptor_entry_options source_entry_interfaces register_descriptor_events known_event_types ^from "./module_registry")
+(import
+  Harness
+  put_cordis_plugin
+  put_cordis_plugins
+  status_of
+  plugin_error
+  record_composition_change
+  flush_harness
+  hydrate_harness_log
+  uninstall
+  ^from "../kernel")
+(import validate_event_catalog ^from "./state")
+(import reset_participant_quarantine ^from "./participant_health")
+(import capture_source_origin assign_creation ^from "./plugin_source")
+(import queue_composition_change take_composition_changes run_composition_change
+  ^from "../runtime/composition")
+(import
+  CompositionError
+  CompositionConflict
+  Workspace
+  fresh_list
+  fresh_map
+  data_copy
+  require_open
+  active_revision_path
+  composition_revision
+  composition_entries
+  composition_history_result
+  commit_composition
+  find_entry_index
+  previous_module_digest
+  entries_with
+  default_limits_data
+  entry_enabled?
+  record_quarantine
+  ^from "./composition_store")
+(import
+  safe_module_id?
+  parse_plugin_source
+  canonical_module_source
+  dependency_module_texts
+  validate_source_imports
+  materialize_module_blob
+  write_module_blob
+  load_entry_descriptor
+  descriptor_entry_options
+  source_entry_interfaces
+  register_descriptor_events
+  known_event_types
+  ^from "./module_registry")
 
 (type WorkspaceRestorePlan ^props {^workspace Workspace ^entries Any ^descriptors Any ^session Str})
 

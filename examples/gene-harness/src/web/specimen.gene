@@ -1,8 +1,9 @@
 # Host-owned specimen remains available when optional plugins are disabled.
 (mod theme_specimen)
-(import ^from "./theme" resolve_theme resolved_tokens public_tokens icon_names color_value contrast_ratio)
-(import ^from "./theme_registry" installed_themes theme_tokens)
-(import ^from "../kernel" contribute row)
+(import resolve_theme resolved_tokens public_tokens icon_names color_value contrast_ratio
+  ^from "./theme")
+(import installed_themes theme_tokens ^from "./theme_registry")
+(import contribute row ^from "../kernel")
 (import $css/[css rule decl_value])
 
 (const shared_classes ["web_card" "web_stack" "web_row" "web_spread" "web_grid" "web_tight" "web_loose"

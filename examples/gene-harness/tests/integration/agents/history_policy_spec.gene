@@ -2,8 +2,7 @@
 (import isolated run_spec test_controller ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
-(import append_message compact_history history_state
-  ^from "../../../src/agents/history")
+(import append_message compact_history history_state ^from "../../../src/agents/history")
 (import history_policy ^from "../../../src/agents/hooks")
 (import contribute ^from "../../../src/kernel")
 (import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
@@ -118,7 +117,7 @@
           (try
             (register_plugin ^^replace runtime/workspace runtime/h "history_basic"
               (quote (mod plugin
-                (import ^from "src/plugin_api.gene" Plugin PluginHost)
+                (import Plugin PluginHost ^from "src/plugin_api.gene")
                 (fn init [descriptor]
                   (Plugin ^id "history_basic"
                     ^provides [["hooks" "history/compact/history_basic"]]

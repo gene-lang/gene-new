@@ -5,11 +5,36 @@
 (import row ^from "../kernel")
 (import events_for append_core_event ^from "../storage/state")
 (import event_record session_voice_claim session_voice_state ^from "./session_service")
-(import VoiceError voice_snapshot voice_error voice_connected voice_disconnected voice_use_transport record_voice_timing ^from "../runtime/voice_state")
-(import new_speech_service speech_settings speech_catalog warm_engine synthesize_speech
-  speech_resources_current? cool_speech close_speech_service choose_speech_engine ^from "../runtime/speech_service")
-(import decode_audio_frame encode_audio_frame new_capture capture_frame new_credit
-  playback_ack playback_credit charge_playback ^from "../public/voice_frames")
+(import
+  VoiceError
+  voice_snapshot
+  voice_error
+  voice_connected
+  voice_disconnected
+  voice_use_transport
+  record_voice_timing
+  ^from "../runtime/voice_state")
+(import
+  new_speech_service
+  speech_settings
+  speech_catalog
+  warm_engine
+  synthesize_speech
+  speech_resources_current?
+  cool_speech
+  close_speech_service
+  choose_speech_engine
+  ^from "../runtime/speech_service")
+(import
+  decode_audio_frame
+  encode_audio_frame
+  new_capture
+  capture_frame
+  new_credit
+  playback_ack
+  playback_credit
+  charge_playback
+  ^from "../public/voice_frames")
 (import recognition_timeout_ms ^from "../common/voice_transitions")
 
 (type VoiceHub ^props {^host Any ^speech Any ^peers Any ^jobs Any ^closed Any ^send Any ^maintenance Any ^clock Any})

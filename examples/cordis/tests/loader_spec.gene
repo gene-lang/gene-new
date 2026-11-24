@@ -2,9 +2,17 @@
 
 (import $test/[describe it after_each assert_equal assert_raises])
 
-(import InstanceState ReconcileMode RuntimeOptions LoaderOptions
-         Requirement PluginSpec CompositionError
-         invocation_limits default_plugin_invoker new_runtime
+(import
+  InstanceState
+  ReconcileMode
+  RuntimeOptions
+  LoaderOptions
+  Requirement
+  PluginSpec
+  CompositionError
+  invocation_limits
+  default_plugin_invoker
+  new_runtime
   ^from "../src/cordis")
 
 (import LoadedValue loaded_key ^from "../fixtures/contract")

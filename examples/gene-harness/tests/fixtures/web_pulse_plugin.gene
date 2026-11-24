@@ -1,6 +1,6 @@
 # goal: Show current workspace, model and conversation activity from immutable render context.
 (mod plugin
-  (import ^from "src/plugin_api.gene" Plugin PluginHost)
+  (import Plugin PluginHost ^from "src/plugin_api.gene")
 
   # Count exact statuses; unknown statuses remain visible rather than masquerading as completed.
   (fn count_status [sessions, status]
