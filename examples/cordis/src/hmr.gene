@@ -3,7 +3,7 @@
 
 (mod hmr)
 
-(import $fs/[watch real_path WatcherClosed])
+(import $fs/[WatcherClosed real_path watch])
 (import Disposable ^from "./model")
 (import hmr_reloaded register_loader_watcher ^from "./runtime" ^^export)
 

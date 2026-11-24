@@ -10,9 +10,9 @@
 
 (mod harness_editor_view ^profile web)
 
-(import Editor EditorServices EditorDocument editor_document mount_editor
+(import Editor EditorDocument EditorServices editor_document mount_editor
   ^from "./components/gene_editor.gene")
-(import storage_get storage_set storage_remove ^from "./workspace_storage.gene")
+(import storage_get storage_remove storage_set ^from "./workspace_storage.gene")
 (import api_root ^from "../src/web/contract.gene")
 
 (type EditorView ^props {

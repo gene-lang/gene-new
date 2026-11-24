@@ -1,5 +1,5 @@
 (import $test [describe it run])
-(import encode_url decode_url verify_rs256 verify_id_token CryptoError ^from "." ^pkg "crypto")
+(import CryptoError decode_url encode_url verify_id_token verify_rs256 ^from "." ^pkg "crypto")
 
 (describe "Base64url"
   (it "round trips binary data and rejects noncanonical encodings" []

@@ -1,26 +1,26 @@
 # Host-owned management reads use inert metadata and registry snapshots.
 (mod plugin_manager)
 (import plugin_error ^from "../kernel")
-(import acquire_snapshot release_snapshot run_composition_change publication_diagnostics
+(import acquire_snapshot publication_diagnostics release_snapshot run_composition_change
   ^from "./composition")
 (import entry_core_interface ^from "./interface_policy")
 (import participant_quarantine ^from "../storage/participant_health")
 (import composition_entries composition_revision entry_limits ^from "../storage/composition_store")
-(import verify_stored_entry plugin_history_page ^from "../storage/workspace_repair")
+(import plugin_history_page verify_stored_entry ^from "../storage/workspace_repair")
 (import digest_hex ^from "../storage/module_registry")
 (import history_entry ^from "../storage/plugin_history")
-(import source_attribution session_reference ^from "../storage/plugin_source")
-(import require_record SessionError ^from "./sessions")
+(import session_reference source_attribution ^from "../storage/plugin_source")
+(import SessionError require_record ^from "./sessions")
 (import manifest_state_writers saved_state_writers ^from "../storage/state")
 (import
-  saved_metadata
   capabilities
   contribution_data
   descriptor_data
   remember_descriptor
   remember_failure
+  saved_metadata
   ^from "../storage/plugin_metadata")
-(import Plugin DescriptorContext ExecutionLimits ^from "../plugin_api")
+(import DescriptorContext ExecutionLimits Plugin ^from "../plugin_api")
 (import configure_plugin_module invoke_bounded ^from "../kernel")
 
 (fn source_session [runtime, value]

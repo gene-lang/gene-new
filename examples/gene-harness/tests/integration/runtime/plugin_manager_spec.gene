@@ -2,10 +2,10 @@
 (import isolated run_spec ^from "../../support")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
 (import Profile ^from "../../../src/profiles/profile")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
-(import plugin_catalog inspect_descriptor requirement_status
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
+(import inspect_descriptor plugin_catalog requirement_status
   ^from "../../../src/runtime/plugin_manager")
-(import current_snapshot acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
+(import acquire_snapshot current_snapshot release_snapshot ^from "../../../src/runtime/composition")
 (import validate_plan ^from "../../../src/runtime/plugin_plans")
 (import latest_interfaces ^from "../../../src/runtime/interface_policy")
 (import register_plugin ^from "../../../src/storage/workspace_activation")

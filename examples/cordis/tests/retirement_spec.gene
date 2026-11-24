@@ -1,16 +1,16 @@
 (mod cordis_retirement_spec)
 
-(import $test/[describe it after_each assert_equal assert_raises])
+(import $test/[after_each assert_equal assert_raises describe it])
 (import
-  RuntimeOptions
-  LoaderOptions
-  PluginSpec
-  PluginCallKind
   EffectDisposed
-  invocation_limits
+  LoaderOptions
+  PluginCallKind
+  PluginSpec
+  RuntimeOptions
   default_plugin_invoker
-  new_runtime
+  invocation_limits
   invoke_effect_owner
+  new_runtime
   ^from "../src/cordis")
 (import LoadedValue loaded_key ^from "../fixtures/contract")
 

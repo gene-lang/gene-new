@@ -1,10 +1,10 @@
 # Seed an offline workspace for browser verification of plugin session links.
 # Run with a new workspace path, then start that workspace's web host.
-(import open_session_service close_session_service ^from "../../src/web/session_service")
+(import close_session_service open_session_service ^from "../../src/web/session_service")
 (import create_session delete_session ^from "../../src/runtime/sessions")
-(import submit_command command_receipt ^from "../../src/runtime/commands")
+(import command_receipt submit_command ^from "../../src/runtime/commands")
 (import register_plugin ^from "../../src/storage/workspace_activation")
-(import composition_entries commit_composition ^from "../../src/storage/composition_store")
+(import commit_composition composition_entries ^from "../../src/storage/composition_store")
 (import row ^from "../../src/kernel")
 
 (fn source [id : Str, version : Int]

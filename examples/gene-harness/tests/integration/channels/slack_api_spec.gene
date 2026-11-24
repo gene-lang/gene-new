@@ -1,6 +1,6 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import read_slack_credentials secret_path open_api close_api api_call identify SlackError
+(import SlackError api_call close_api identify open_api read_slack_credentials secret_path
   ^from "../../../src/builtin/slack/api")
 
 (type ProbeError : Error)

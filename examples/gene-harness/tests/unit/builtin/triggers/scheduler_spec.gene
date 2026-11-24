@@ -1,6 +1,6 @@
 # Tests src/builtin/triggers/scheduler.gene.
-(import $test/[describe it assert_raises run])
-(import at_ms validate_definition TriggerError ^from "../../../../src/builtin/triggers/scheduler")
+(import $test/[assert_raises describe it run])
+(import TriggerError at_ms validate_definition ^from "../../../../src/builtin/triggers/scheduler")
 (import ScheduleError ^from "../../../../src/builtin/triggers/schedule/errors")
 
 (describe "Harness trigger calendar"

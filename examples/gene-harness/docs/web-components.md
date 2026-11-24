@@ -129,7 +129,7 @@ collisions; it is not isolation, and plugins are trusted to use broader rules
 deliberately.
 
 ```gene
-(import $css/[css rule decl])
+(import $css/[css decl rule])
 
 (host .PluginHost:contribute "web_components"
   {^name "sheet" ^slot "view" ^title "Sheet" ^view_state {} ^render render_sheet
@@ -163,7 +163,7 @@ lexical scope. Do not detach tasks from a renderer.
 
 ```gene
 (mod plugin @interfaces {^core "gene-harness/PluginHost:3"}
-  (import Plugin PluginHost CommandResult ^from "src/plugin_api.gene")
+  (import CommandResult Plugin PluginHost ^from "src/plugin_api.gene")
   (fn init [descriptor]
     (Plugin ^id "counter"
       ^provides [["commands" "count"] ["web_components" "counter"]]

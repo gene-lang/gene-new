@@ -2,14 +2,14 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import
-  open_event_store
-  close_event_store
   append_core_event
-  events_for
-  record_core_state
+  close_event_store
   core_state
   core_states
+  events_for
   flush_event_store
+  open_event_store
+  record_core_state
   unload_event_stream
   ^from "../../../src/storage/state")
 (import $store/fs/Store)

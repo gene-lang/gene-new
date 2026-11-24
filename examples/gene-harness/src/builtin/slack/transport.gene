@@ -5,14 +5,14 @@
 (mod slack_transport)
 (import ChannelHost ^from "../../plugin_api")
 (import
-  read_slack_credentials
-  open_api
+  acknowledge
   close_api
   connect_socket
-  socket_message
-  acknowledge
   load_socket_library
+  open_api
+  read_slack_credentials
   slack_error
+  socket_message
   ^from "./api")
 (import receive_envelope ^from "./ingress")
 

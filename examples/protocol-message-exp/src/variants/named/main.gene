@@ -1,4 +1,4 @@
-(import Section Article Figure ^from "../../model")
+(import Article Figure Section ^from "../../model")
 (import Chart ^from "./chart")
 (import PlainRender ^from "./plain_policy")
 (import CompactRender ^from "./compact_policy")

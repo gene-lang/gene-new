@@ -1,12 +1,12 @@
 # Tests src/runtime/patch.gene.
-(import $test/[describe it assert_equal])
-(import isolated run_spec fixture_path test_controller ^from "../../support")
+(import $test/[assert_equal describe it])
+(import fixture_path isolated run_spec test_controller ^from "../../support")
 (import apply_patch prepare_patch recover_patch_temporaries ^from "../../../src/runtime/patch")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import save_round ^from "../../../src/runtime/round_controller")
-(import require_record create_session load_session ^from "../../../src/runtime/sessions")
-(import append_core_event record_core_state flush_event_store core_state events_for
+(import create_session load_session require_record ^from "../../../src/runtime/sessions")
+(import append_core_event core_state events_for flush_event_store record_core_state
   ^from "../../../src/storage/state")
 
 (fn expect_file [root : Str, path : Str, expected : Str]

@@ -1,6 +1,6 @@
 # Failing control: a body-authored qualified send does not acquire impls just
 # because the caller (here the composition root) imports them.
-(import Section Figure ^from "../../../src/model")
+(import Figure Section ^from "../../../src/model")
 (import operation ^from "./control_root")
 (let op (operation))
 (let leaf (Figure ^caption "c"))

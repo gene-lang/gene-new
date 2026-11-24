@@ -1,7 +1,7 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import start_host stop_host ^from "../../web_support")
-(import connect api ^from "../../../src/cli/client")
+(import api connect ^from "../../../src/cli/client")
 (import offline_profile ^from "../../../src/profiles/offline")
 (import api_root ^from "../../../src/web/contract")
 (import $json/[parse stringify])

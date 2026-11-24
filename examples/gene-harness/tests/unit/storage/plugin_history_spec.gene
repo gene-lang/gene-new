@@ -1,15 +1,15 @@
 (import $test/[describe it run])
-(import $store/fs/[open:store_open Store])
+(import $store/fs/[Store open:store_open])
 (import
-  archive_host_build
+  append_history_result
   archive_baseline
   archive_candidate
+  archive_host_build
   archived_record
-  history_list
-  history_revision
   history_entry
-  append_history_result
+  history_list
   history_results
+  history_revision
   pin_history
   ^from "../../../src/storage/plugin_history")
 

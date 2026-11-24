@@ -1,6 +1,6 @@
 # Document Lens: one tree, two Render policies and an Outline operation, chosen
 # by composition roots. The generic consumers never import a protocol impl.
-(import Section Article Figure ^from "./model")
+(import Article Figure Section ^from "./model")
 (import Chart ^from "./extensions/chart")
 (import Table ^from "./extensions/table")
 (import Outline ^from "./extensions/outline")

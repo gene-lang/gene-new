@@ -1,5 +1,5 @@
 # Runs without --snapshot so the package's default generated directory is writable.
-(import new_harness put_cordis_plugin shutdown_harness install row Plugin PluginHost
+(import Plugin PluginHost install new_harness put_cordis_plugin row shutdown_harness
   ^from "../../src/kernel")
 
 (fn main [args]

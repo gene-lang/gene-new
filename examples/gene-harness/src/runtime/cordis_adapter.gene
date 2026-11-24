@@ -3,23 +3,23 @@
 (mod cordis_adapter)
 
 (import
-  EffectDisposed
-  spawn_host_call
-  RuntimeOptions
-  LoaderOptions
-  PluginSpec
-  Requirement
-  service_key
-  InstanceState
   CompositionError
-  RecoveryRequired
-  PluginInvoker
+  EffectDisposed
+  InstanceState
+  LoaderOptions
   PluginInstance
-  invocation_limits
+  PluginInvoker
+  PluginSpec
+  RecoveryRequired
+  Requirement
+  RuntimeOptions
   default_plugin_invoker
+  invocation_limits
   new_runtime
+  service_key
+  spawn_host_call
   ^from "." ^pkg "cordis")
-(import Plugin PluginHost ExecutionLimits default_execution_limits response_execution_limits
+(import ExecutionLimits Plugin PluginHost default_execution_limits response_execution_limits
   ^from "../plugin_api")
 (import with_callback_budget ^from "./execution_budget")
 

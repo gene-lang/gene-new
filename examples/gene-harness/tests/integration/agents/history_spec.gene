@@ -1,21 +1,21 @@
 # Tests src/agents/history.gene.
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import
-  bounded_request
-  recall_body
+  acquire_body_use
   append_message
-  provider_context
-  elide_response
-  history_state
+  bounded_request
+  collect_unreferenced_bodies
   compact_history
   context_bytes
-  store_body
-  collect_unreferenced_bodies
-  acquire_body_use
+  elide_response
+  history_state
+  provider_context
+  recall_body
   release_body_use
+  store_body
   ^from "../../../src/agents/history")
 (import create_session delete_session ^from "../../../src/runtime/sessions")
 (import basic_history_policy ^from "../../../src/builtin/history_basic")

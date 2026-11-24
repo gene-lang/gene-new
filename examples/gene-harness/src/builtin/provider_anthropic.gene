@@ -2,12 +2,12 @@
 (import Plugin PluginHost ^from "../plugin_api")
 (import contribute_text_doc ^from "../public/documentation")
 (import ProviderError ^from "../plugin_api")
-(import nonempty configure_model http_json_attempt ^from "../public/provider")
+(import configure_model http_json_attempt nonempty ^from "../public/provider")
 (import anthropic_models ^from "../public/model_defaults")
 (import model_capabilities ^from "../public/models")
 (import anthropic_model_list ^from "../public/provider_discovery")
-(import prepare_messages messages_stream_result ^from "../public/provider_payloads")
-(import anthropic_auth_source anthropic_headers anthropic_connection
+(import messages_stream_result prepare_messages ^from "../public/provider_payloads")
+(import anthropic_auth_source anthropic_connection anthropic_headers
   ^from "../public/anthropic_auth")
 
 (fn anthropic_text [response] : Str

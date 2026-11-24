@@ -39,17 +39,17 @@
   @doc "SQLite-backed TODO list with an HTML page and a JSON API")
 
 (import $html/render)
-(import $css/[css rule decl scoped class_name render:render_css])
+(import $css/[class_name css decl render:render_css rule scoped])
 (import $web/[script stylesheet])
 (import $json/stringify)
-(import $stream/[to_stream map filter into])
-(import $net/http/[Request Response Server serve json redirect not_found])
-(import $db/sqlite/[open DbError Db])
+(import $stream/[filter into map to_stream])
+(import $net/http/[Request Response Server json not_found redirect serve])
+(import $db/sqlite/[Db DbError open])
 # Form decoding and field validation are not todo-specific, so they live in a
 # sibling package rather than at the bottom of this file. `"."` is that
 # package's entry module (docs/workflows.md); the dependency is
 # declared in package.gene, and only a declared dependency can be imported.
-(import with_str with_int ^from "." ^pkg "utils")
+(import with_int with_str ^from "." ^pkg "utils")
 
 # -----------------------------------------------------------------------------
 # Store: SQLite via the Db protocol. `done` is stored as 0/1.

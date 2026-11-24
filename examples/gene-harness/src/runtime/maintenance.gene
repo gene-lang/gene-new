@@ -1,11 +1,11 @@
 # Offline repair keeps the previous activation-free bootstrap and its durable
 # crash recovery. Ordinary CLI operations never enter this module's runtime.
 (mod maintenance)
-(import open_runtime close_runtime prepare_workspace_root ^from "./bootstrap")
+(import close_runtime open_runtime prepare_workspace_root ^from "./bootstrap")
 (import plugin_catalog ^from "./plugin_manager")
 (import baseline_profile ^from "../profiles/baseline")
 (import workspace_profile ^from "../profiles/registry")
-(import doctor disable_entry enable_entry restore_entry revert_entry plugin_history_page
+(import disable_entry doctor enable_entry plugin_history_page restore_entry revert_entry
   ^from "../storage/workspace_repair")
 (import composition_revision ^from "../storage/composition_store")
 (import acquire_workspace_lock close_workspace_lock ^from "./workspace_lock")

@@ -1,5 +1,5 @@
 # Tests src/plugin_api.gene.
-(import $test/[describe it assert_equal run])
+(import $test/[assert_equal describe it run])
 (import make_direct_plugin ^from "../fixtures/activation")
 
 (describe "Harness activation"

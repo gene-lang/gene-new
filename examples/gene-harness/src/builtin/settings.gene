@@ -3,10 +3,10 @@
 # validation, inheritance, persistence and revisions stay in those operations, so
 # disabling this plugin leaves every setting and API in place.
 (mod settings_plugin)
-(import Plugin PluginHost UiHost ServiceError current_workspace current_manager
+(import Plugin PluginHost ServiceError UiHost current_manager current_workspace
   ^from "../plugin_api")
 (import contribute_text_doc ^from "../public/documentation")
-(import $css/[css rule decl])
+(import $css/[css decl rule])
 
 (const model_keys ["provider" "model" "effort"])
 (const efforts ["auto" "none" "minimal" "low" "medium" "high" "xhigh" "max"])

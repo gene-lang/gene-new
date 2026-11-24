@@ -1,4 +1,4 @@
-(import Section Article Figure ^from "../../model")
+(import Article Figure Section ^from "../../model")
 (protocol CompactRender (message render [] : Str))
 (impl CompactRender for Section
   (message render [] : Str

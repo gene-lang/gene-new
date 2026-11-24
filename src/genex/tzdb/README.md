@@ -6,7 +6,7 @@ uses the host timezone database. Pin it as a normal `genex/tzdb` dependency in
 alias.
 
 ```gene
-(import to_local resolve_local ^from "." ^pkg "tzdb")
+(import resolve_local to_local ^from "." ^pkg "tzdb")
 
 (let shown (to_local 2024-07-01T12:00Z "America/New_York"))
 (let first (resolve_local ($datetime 2024 11 3 1 30)

@@ -1,11 +1,11 @@
 # M5: a plugin gets bounded log subscriptions owned by its activation.
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
 (import Plugin plugin_log ^from "../../../src/plugin_api")
 (import install uninstall ^from "../../../src/kernel")
-(import log_reset log_configure log_event log_recent ^from "../../../src/kernel/log")
+(import log_configure log_event log_recent log_reset ^from "../../../src/kernel/log")
 
 (describe "Plugin log subscriptions"
   (it "delivers matching records to an activation-owned handler" []

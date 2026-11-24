@@ -2,12 +2,12 @@
 (import log_event ^from "../kernel/log")
 (import select_provider ^from "./provider_selection")
 (import
-  store_part:store_record_part
   load_part:load_record_part
   prepared_record
+  redact_image_text
   result_record
   safe_error
-  redact_image_text
+  store_part:store_record_part
   ^from "./model_recording")
 (import append_core_event flush_event_store ^from "../storage/state")
 (import HarnessError row ^from "../kernel")

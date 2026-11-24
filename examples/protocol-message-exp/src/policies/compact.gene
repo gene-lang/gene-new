@@ -1,5 +1,5 @@
 # Policy "compact": the same pairs with a different, independently authored body.
-(import Section Article Figure ^from "../model")
+(import Article Figure Section ^from "../model")
 (import Render ^from "../contracts")
 
 (impl Render for Section ^^export

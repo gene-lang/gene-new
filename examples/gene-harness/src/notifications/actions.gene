@@ -4,7 +4,7 @@
 (import ui_record ui_revision ^from "../ui/state")
 (import ui_view_state ^from "../ui/views")
 (import acquire_snapshot release_snapshot ^from "../runtime/composition")
-(import with_session_gate require_record ^from "../runtime/sessions")
+(import require_record with_session_gate ^from "../runtime/sessions")
 (import command_request_receipt parse_submission submit_routed_command view_command
   ^from "../runtime/commands")
 (import with_body_use ^from "../agents/history")

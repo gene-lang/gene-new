@@ -1,6 +1,6 @@
-(import Section Figure ^from "../../../src/model")
-(import body_op sep_ops raw_ops typed_ops raw_ops_missing_mark ^from "./root_bracket")
-(import sep_ops:star_sep raw_ops:star_raw typed_ops:star_typed ^from "./root_star")
+(import Figure Section ^from "../../../src/model")
+(import body_op raw_ops raw_ops_missing_mark sep_ops typed_ops ^from "./root_bracket")
+(import raw_ops:star_raw sep_ops:star_sep typed_ops:star_typed ^from "./root_star")
 (import Ops ^from "./contracts")
 (let tree (Section ^title "S" ^children [(Figure ^caption "a") (Section ^title "T" ^children [(Figure ^caption "b")])]))
 

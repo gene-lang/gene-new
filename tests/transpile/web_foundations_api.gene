@@ -1,3 +1,3 @@
 (mod web_foundations_api ^profile web)
 
-(import Counter factor values make read ^from "./web_foundations_dep.gene" ^^export)
+(import Counter factor make read values ^from "./web_foundations_dep.gene" ^^export)

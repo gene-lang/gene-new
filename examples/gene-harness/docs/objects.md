@@ -20,7 +20,7 @@ Response code, `/run`, the REPL and cards have the three names bound. Plugin cod
 closed module scope, so it calls accessors:
 
 ```gene
-(import current_workspace current_manager current_session ^from "src/plugin_api.gene")
+(import current_manager current_session current_workspace ^from "src/plugin_api.gene")
 ```
 
 `current_workspace` and `current_manager` work from activation onward, including in

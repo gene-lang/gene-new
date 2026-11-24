@@ -2,20 +2,20 @@
 (import split_response validate_execution_attachments ^from "./response")
 (import
   Outcome
-  new_turn_items
   append_plugin_prompt
   append_prompt_at
-  validate_outcome
+  attachment
+  new_turn_items
+  recall
   render_request
   request_items
   rewrite_prompt_calls
-  attachment
-  recall
+  validate_outcome
   ^from "./outcome")
 (import evaluate_response ^from "./eval_site")
-(import prepare_patch commit_patch with_patch_gate ^from "../runtime/patch")
+(import commit_patch prepare_patch with_patch_gate ^from "../runtime/patch")
 (import byte_prefix without_markdown_images ^from "../public/text")
-(import open_execution_scope close_execution_scope ^from "../runtime/execution_budget")
+(import close_execution_scope open_execution_scope ^from "../runtime/execution_budget")
 (import ParticipantFailure ^from "../runtime/turn_participants")
 
 (fn response_error_line [failure]

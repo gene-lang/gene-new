@@ -3,7 +3,7 @@
 (mod notification_host)
 (import NotificationHost ^from "../plugin_api")
 (import safe_publish update_notification ^from "./publisher")
-(import inbox_snapshot message_detail clear_messages notification_error ^from "./inbox")
+(import clear_messages inbox_snapshot message_detail notification_error ^from "./inbox")
 (import immutable_view ^from "../runtime/composition")
 
 (var hosts ^^private ($cell []))

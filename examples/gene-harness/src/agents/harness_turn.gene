@@ -1,6 +1,6 @@
 (mod harness_turn)
-(import Harness rows doc ^from "../kernel")
-(import acquire_snapshot release_snapshot take_composition_changes discard_composition_changes
+(import Harness doc rows ^from "../kernel")
+(import acquire_snapshot discard_composition_changes release_snapshot take_composition_changes
   ^from "../runtime/composition")
 (import evaluate_turn ^from "./turn_eval")
 (import discovery_bindings ^from "./discovery")

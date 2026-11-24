@@ -4,18 +4,18 @@
 # Every write goes through one transaction per store: read under the gate, check the
 # expected digest, validate every affected key, then write once.
 (mod workspace_config)
-(import ServiceError HarnessEvent ^from "../plugin_api")
-(import contribute rows row publish registry_row_records ^from "../kernel")
-(import core_setting_definitions model_setting_keys definition_scopes supports_scope?
+(import HarnessEvent ServiceError ^from "../plugin_api")
+(import contribute publish registry_row_records row rows ^from "../kernel")
+(import core_setting_definitions definition_scopes model_setting_keys supports_scope?
   ^from "./setting_definitions")
-(import read_shared_settings write_shared_settings shared_settings_root ^from "./shared_settings")
+(import read_shared_settings shared_settings_root write_shared_settings ^from "./shared_settings")
 (import select_provider ^from "../agents/provider_selection")
 (import
-  setting_definitions
+  active_settings
+  bump_settings_revision
   layered_value
   resolve_config
-  bump_settings_revision
-  active_settings
+  setting_definitions
   settings_state
   ^from "./settings_resolver")
 

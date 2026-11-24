@@ -1,15 +1,15 @@
 # Tests src/agents/outcome.gene.
-(import $test/[describe it before_each assert_equal assert_raises run])
+(import $test/[assert_equal assert_raises before_each describe it run])
 (import
   Outcome
   OutcomeError
-  new_turn_items
-  append_prompt_at
   append_plugin_prompt
-  validate_outcome
+  append_prompt_at
+  checked_outcome_extensions
+  new_turn_items
   render_request
   rewrite_prompt_calls
-  checked_outcome_extensions
+  validate_outcome
   ^from "../../../src/agents/outcome")
 (import TurnClosed ^from "../../../src/plugin_api")
 (import split_response ^from "../../../src/agents/response")

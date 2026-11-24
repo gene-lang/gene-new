@@ -1,19 +1,19 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import
-  create_session
-  require_record
-  list_sessions
-  update_session
-  delete_session
-  view_session
-  leave_session
   SessionError
+  create_session
+  delete_session
+  leave_session
+  list_sessions
+  require_record
+  update_session
+  view_session
   ^from "../../../src/runtime/sessions")
-(import write_body collect_unreferenced_bodies ^from "../../../src/agents/history")
-(import record_core_state core_state flush_event_store ^from "../../../src/storage/state")
+(import collect_unreferenced_bodies write_body ^from "../../../src/agents/history")
+(import core_state flush_event_store record_core_state ^from "../../../src/storage/state")
 
 (describe "Child session lifetime"
   (it "inherits pin and attention, protects the whole tree and deletes children with their parent" []

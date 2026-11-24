@@ -1,16 +1,16 @@
-(import $test [describe it assert_equal assert_raises])
+(import $test/[assert_equal assert_raises describe it])
 (import
   cases
-  make_input
-  integer_loop
   closure_dispatch
+  event_replay
+  integer_loop
+  json_roundtrip
+  make_input
+  measure
   records
   text_index
-  json_roundtrip
-  event_replay
-  measure
   ^from "./general/workloads")
-(import new_variant validate_results record_sample checked_output ^from "./run_general")
+(import checked_output new_variant record_sample validate_results ^from "./run_general")
 (import agree ^from "./run_kernels")
 
 (fn payload []

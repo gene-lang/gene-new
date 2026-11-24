@@ -1,21 +1,21 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import
+  MediaError
+  generated_media
+  media_bytes
+  media_data_url
+  media_descriptor
+  media_record
+  media_text
+  media_usage
   open_media_store
   put_media
   put_media_base64
-  media_record
-  media_descriptor
-  media_bytes
-  media_text
-  media_data_url
-  reserve_media
-  release_media_reservation
   recover_media_reservations
-  generated_media
-  media_usage
+  release_media_reservation
+  reserve_media
   validate_media_refs
-  MediaError
   ^from "../../../src/storage/media")
 (import png ^from "../../fixtures/png")
 

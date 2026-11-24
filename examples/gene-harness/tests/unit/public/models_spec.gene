@@ -1,10 +1,10 @@
 (import $test/[describe it run])
 (import
-  resolve_effort
+  model_capabilities
   model_entry
   model_window
-  model_capabilities
   require_model_input
+  resolve_effort
   validate_model_settings
   ^from "../../../src/public/models")
 

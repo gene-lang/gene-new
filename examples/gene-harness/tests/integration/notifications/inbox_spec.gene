@@ -1,13 +1,13 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import
-  open_inbox
+  acknowledge_messages
+  clear_messages
   close_inbox
-  post_message
   inbox_snapshot
   message_detail
-  clear_messages
-  acknowledge_messages
+  open_inbox
+  post_message
   publish_progress
   ^from "../../../src/notifications/inbox")
 

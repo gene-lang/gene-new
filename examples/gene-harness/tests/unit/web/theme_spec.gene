@@ -1,26 +1,26 @@
 # Public theme contracts and the guards documented in docs/theming.md.
 (import $test/[describe it run])
-(import $css/[css rule decl container font_face scoped render:render_css])
+(import $css/[container css decl font_face render:render_css rule scoped])
 (import
-  theme_css
+  alias_font_value
   builtin_themes
-  resolve_theme
-  resolved_tokens
   color_value
   contrast_ratio
-  hex_channel
-  linear_channel
-  relative_luminance
-  theme_mode
-  alias_font_value
-  preview_font_aliases
-  preview_css
   density_tokens
-  mode_tokens
-  system_tokens
-  icon_names
-  narrow_breakpoint
   generate_theme
+  hex_channel
+  icon_names
+  linear_channel
+  mode_tokens
+  narrow_breakpoint
+  preview_css
+  preview_font_aliases
+  relative_luminance
+  resolve_theme
+  resolved_tokens
+  system_tokens
+  theme_css
+  theme_mode
   ^from "../../../src/web/theme")
 (import base_styles ^from "../../../src/web/style")
 (import styles:preference_styles ^from "../../../src/web/style/preferences")
@@ -31,7 +31,7 @@
 (import write_route ^from "../../../src/website/export")
 (import appearance_answer ^from "../../../src/web/appearance")
 (import ThemeError ^from "../../../src/web/theme")
-(import validate_theme:validate_theme_row validate_icon theme_revision
+(import theme_revision validate_icon validate_theme:validate_theme_row
   ^from "../../../src/web/theme_registry")
 (import active_theme_assets theme_preview_asset ^from "../../../src/web/theme_assets")
 (import bounded_component_view ^from "../../../src/ui/components")

@@ -1,4 +1,4 @@
-(import $net/http [listen serve stop status text])
+(import $net/http/[listen serve status stop text])
 (import $net/http_client [request])
 
 (var server nil)

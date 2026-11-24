@@ -1,5 +1,5 @@
 # Compact-style impls that log each visit, so partial effects are observable.
-(import Section Figure ^from "../../../src/model")
+(import Figure Section ^from "../../../src/model")
 (import Render ^from "../../../src/contracts")
 (import events ^from "./trace")
 (impl Render for Section ^^export

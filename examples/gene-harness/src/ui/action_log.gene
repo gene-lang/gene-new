@@ -1,6 +1,6 @@
 # Durable workspace action identities, independent of conversation/data streams.
 (mod ui_action_log)
-(import $store/fs/[open:store_open Store])
+(import $store/fs/[Store open:store_open])
 (import ui_error ^from "./state")
 (import byte_prefix ^from "../public/text")
 

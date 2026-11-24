@@ -2,7 +2,7 @@
 (import isolated run_spec test_service ^from "../../support")
 (import close_session_service create_session event_record session_voice_claim
   ^from "../../../src/web/session_service")
-(import submit_round round_receipt RoundError ^from "../../../src/runtime/round_controller")
+(import RoundError round_receipt submit_round ^from "../../../src/runtime/round_controller")
 (import claim_voice release_voice voice_snapshot ^from "../../../src/runtime/voice_state")
 (import events_for ^from "../../../src/storage/state")
 

@@ -1,18 +1,18 @@
 # Workspace light/dark appearance and plugin style contributions; see
 # docs/theming.md.
 (import $test/[describe it])
-(import $css/[css rule decl])
+(import $css/[css decl rule])
 (import $net/http_client/request)
 (import isolated run_spec ^from "../../support")
-(import start_host stop_host cli ^from "../../web_support")
-(import connect api wire ^from "../../../src/cli/client")
+(import cli start_host stop_host ^from "../../web_support")
+(import api connect wire ^from "../../../src/cli/client")
 (import set_appearance ^from "../../../src/runtime/appearance")
-(import open_session_service close_session_service host_status
+(import close_session_service host_status open_session_service
   ^from "../../../src/web/session_service")
 (import installed_themes theme_tokens ^from "../../../src/web/theme_registry")
 (import appearance_answer ^from "../../../src/web/appearance")
 (import ui_status ^from "../../../src/ui/state")
-(import put_cordis_plugin uninstall row ^from "../../../src/kernel")
+(import put_cordis_plugin row uninstall ^from "../../../src/kernel")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
 
 (fn page_html [origin : Str, path : Str, cookie : Str = ""] : Str

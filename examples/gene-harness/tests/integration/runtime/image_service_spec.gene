@@ -1,10 +1,10 @@
 (import $test/[describe it])
 (import isolated run_spec source_path ^from "../../support")
-(import image_fixture evaluate_image review ^from "../../fixtures/image")
+(import evaluate_image image_fixture review ^from "../../fixtures/image")
 (import close_runtime ^from "../../../src/runtime/bootstrap")
-(import read_image_run image_catalog recall_image_run ^from "../../../src/storage/image_runs")
+(import image_catalog read_image_run recall_image_run ^from "../../../src/storage/image_runs")
 (import events_for ^from "../../../src/storage/state")
-(import open_media_store put_media media_bytes ^from "../../../src/storage/media")
+(import media_bytes open_media_store put_media ^from "../../../src/storage/media")
 (import png ^from "../../fixtures/png")
 
 (describe "Image generation with review"

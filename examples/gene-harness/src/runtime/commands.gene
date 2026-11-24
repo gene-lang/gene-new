@@ -5,31 +5,31 @@
 (import byte_prefix ^from "../public/text")
 (import command_identity same_command_identity? ^from "./command_identity")
 (import ui_record ^from "../ui/state")
-(import rows row contribute CommandChanged publish ^from "../kernel")
+(import CommandChanged contribute publish row rows ^from "../kernel")
 (import CommandContext CommandResult ^from "../plugin_api" ^^export)
-(import acquire_snapshot release_snapshot take_composition_changes discard_composition_changes
+(import acquire_snapshot discard_composition_changes release_snapshot take_composition_changes
   ^from "./composition")
 (import drain_workspace_changes ^from "../storage/workspace_activation")
 (import workspace_bindings ^from "../agents/harness_turn")
 (import evaluate_response ^from "../agents/eval_site")
 (import close_execution_scope ^from "./execution_budget")
 (import
-  operator_turn
   operator_bindings
+  operator_context
   operator_forms
   operator_result
-  operator_context
   operator_scope
+  operator_turn
   ^from "./operator_eval")
-(import write_body read_body bounded_request acquire_body_use release_body_use with_body_use
+(import acquire_body_use bounded_request read_body release_body_use with_body_use write_body
   ^from "../agents/history")
-(import core_state record_core_state flush_event_store next_sequence stream_key
+(import core_state flush_event_store next_sequence record_core_state stream_key
   ^from "../storage/state")
 (import load_session require_record ^from "./sessions")
 (import installed_themes theme_catalog ^from "../web/theme_registry")
 (import appearance_tabs set_appearance ^from "./appearance")
 (import theme_modes ^from "../web/theme")
-(import new_input_modes enter_mode close_mode_locked close_input_modes mode_command_finished
+(import close_input_modes close_mode_locked enter_mode mode_command_finished new_input_modes
   ^from "./input_modes")
 
 (type CommandError : Error ^props {^code Str})

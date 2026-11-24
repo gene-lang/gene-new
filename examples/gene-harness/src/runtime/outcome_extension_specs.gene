@@ -1,7 +1,7 @@
 # Optional feature data has one schema owner. Declared short spellings are
 # translated by the leased Outcome constructor before schema admission.
 (mod outcome_extension_specs)
-(import normalize_delegation_wait delegation_result_data ^from "./delegation_contract")
+(import delegation_result_data normalize_delegation_wait ^from "./delegation_contract")
 (import DelegationError ^from "../plugin_api")
 
 (fn audio_schema [context, value]

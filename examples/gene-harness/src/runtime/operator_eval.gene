@@ -1,16 +1,16 @@
 (mod operator_eval)
 (import effective_config ^from "./settings_resolver")
 (import
-  new_turn_items
-  append_prompt_at
   append_plugin_prompt
+  append_prompt_at
   attachment
+  new_turn_items
   recall
-  rewrite_prompt_calls
   render_request
+  rewrite_prompt_calls
   ^from "../agents/outcome")
 (import outcome_constructor ^from "../agents/outcome_admission")
-(import open_execution_scope close_execution_scope ^from "./execution_budget")
+(import close_execution_scope open_execution_scope ^from "./execution_budget")
 (import select_provider ^from "../agents/provider_selection")
 
 (fn operator_turn [ctx]

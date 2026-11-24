@@ -1,9 +1,9 @@
 (mod models_page_client ^profile web)
-(import BrowserAppearance start_appearance change_appearance refresh_appearance
+(import BrowserAppearance change_appearance refresh_appearance start_appearance
   ^from "../appearance.gene")
 (import api_root ^from "../../src/web/contract.gene")
-(import text flag items ^from "../../src/common/launcher.gene")
-(import owner_request owner_connect ^from "../owner_api.gene")
+(import flag items text ^from "../../src/common/launcher.gene")
+(import owner_connect owner_request ^from "../owner_api.gene")
 (import query_value ^from "../state.gene")
 
 (type ModelsPage ^props {^appearance Any? ^root EventTarget ^notice EventTarget ^csrf Str ^file Any ^catalog Any

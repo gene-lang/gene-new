@@ -3,9 +3,9 @@
 # The scripted turns are synthetic; no recorded transcripts are sent.
 #   gene run probes/check_in_live.gene NEW_DIR
 (import test_controller ^from "../tests/support")
-(import open_runtime close_runtime ^from "../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../src/runtime/bootstrap")
 (import baseline_profile ^from "../src/profiles/baseline")
-(import submit_round round_receipt close_round_controller ^from "../src/runtime/round_controller")
+(import close_round_controller round_receipt submit_round ^from "../src/runtime/round_controller")
 (import core_state ^from "../src/storage/state")
 
 (fn main [argv] : Int

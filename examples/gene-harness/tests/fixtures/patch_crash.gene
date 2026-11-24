@@ -1,4 +1,4 @@
-(import prepare_patch commit_patch ^from "../../src/runtime/patch")
+(import commit_patch prepare_patch ^from "../../src/runtime/patch")
 
 (fn main [args]
   (let root args/0)

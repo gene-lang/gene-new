@@ -1,28 +1,28 @@
 (mod image_service)
 (import effective_setting ^from "./settings_resolver")
-(import ImageHost ImageError ExecutionLimits ^from "../plugin_api")
+(import ExecutionLimits ImageError ImageHost ^from "../plugin_api")
 (import append_prompt ^from "../public/response")
-(import execution_origin execution_owner execution_budget register_execution_finalizer
+(import execution_budget execution_origin execution_owner register_execution_finalizer
   ^from "./execution_budget")
 (import supervised_call ^from "./call_supervision")
-(import image_error normalize_image_request image_usage parse_image_review
+(import image_error image_usage normalize_image_request parse_image_review
   ^from "../public/image_contract")
-(import prepare_image_run plugin_identity ^from "./image_preflight")
+(import plugin_identity prepare_image_run ^from "./image_preflight")
 (import read_image_run save_image_run ^from "../storage/image_runs")
-(import reconcile_image_candidates reconcile_image_calls record_image_usage
+(import reconcile_image_calls reconcile_image_candidates record_image_usage
   ^from "../storage/image_recovery")
 (import
-  open_media_store
-  reserve_media
-  release_media_reservation
+  MediaError
+  media_bytes
   media_descriptor
   media_record
-  media_bytes
+  open_media_store
   put_media
-  MediaError
+  release_media_reservation
+  reserve_media
   ^from "../storage/media")
-(import inspect_generated_png ImageInspectionError ^from "../storage/image_inspection")
-(import append_core_event flush_event_store events_for ^from "../storage/state")
+(import ImageInspectionError inspect_generated_png ^from "../storage/image_inspection")
+(import append_core_event events_for flush_event_store ^from "../storage/state")
 (import call_model record_request record_result ^from "../agents/model_call")
 (import safe_error ^from "../agents/model_recording")
 (import attach_media ^from "./media_host")

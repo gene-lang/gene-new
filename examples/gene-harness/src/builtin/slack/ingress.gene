@@ -2,7 +2,7 @@
 # host's event shape. The host records it durably (dedup, authorization,
 # queue) before the reader acknowledges the envelope.
 (mod slack_ingress)
-(import slack_error SlackError ^from "./api")
+(import SlackError slack_error ^from "./api")
 (import decode_text ^from "./text")
 (import ChannelHost ^from "../../plugin_api")
 

@@ -1,6 +1,6 @@
 # Tests src/ui/images.gene: workspace containment and inert bounded files.
 (import $test/[describe it])
-(import image_source workspace_image safe_svg ^from "../../../src/ui/images")
+(import image_source safe_svg workspace_image ^from "../../../src/ui/images")
 
 (describe
   "Harness workspace images"

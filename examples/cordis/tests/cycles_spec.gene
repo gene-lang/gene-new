@@ -1,17 +1,17 @@
 (mod cordis_cycles_spec)
 
-(import $test/[describe it after_each assert_raises])
+(import $test/[after_each assert_raises describe it])
 
 (import
-  InstanceState
-  RuntimeOptions
-  Requirement
-  PluginSpec
   DependenciesUnavailable
-  invocation_limits
-  service_key
+  InstanceState
+  PluginSpec
+  Requirement
+  RuntimeOptions
   default_plugin_invoker
+  invocation_limits
   new_runtime
+  service_key
   ^from "../src/cordis")
 
 (protocol Marker

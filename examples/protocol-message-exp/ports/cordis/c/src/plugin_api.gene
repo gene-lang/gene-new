@@ -5,16 +5,16 @@
 (mod plugin_api)
 
 (import
-  InstanceState
-  PluginCallKind
-  HookMode
   Disposable
-  PluginInvoker
   EffectOwner
+  HookKey
+  HookMode
+  InstanceState
   InvocationLimits
   PluginCall
-  ServiceKey
-  HookKey
-  Requirement
+  PluginCallKind
+  PluginInvoker
   PluginSpec
+  Requirement
+  ServiceKey
   ^from "./model" ^^export)

@@ -1,7 +1,7 @@
 # Exercise the actual service, turn controller, transcript and patch path.
 # No external model or network service is used. Each run needs a new workspace.
 # Usage: gene run examples/gene-harness/probes/performance.gene WORKSPACE [TURNS]
-(import open_session_service close_session_service create_session submit snapshot receipt
+(import close_session_service create_session open_session_service receipt snapshot submit
   ^from "../src/web/session_service")
 (import scripted_profile ^from "../src/profiles/scripted")
 

@@ -1,33 +1,33 @@
 (import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import load_session ^from "../../../src/runtime/sessions")
 (import
   acquire_snapshot
-  release_snapshot
+  close_composition_state
   current_snapshot
   new_composition_state
-  close_composition_state
+  release_snapshot
   ^from "../../../src/runtime/composition")
 (import
+  ParticipantFailure
   begin_turn_transaction
-  run_turn_phase
   finish_turn_transaction
   release_turn_transaction
-  ParticipantFailure
+  run_turn_phase
   ^from "../../../src/runtime/turn_participants")
-(import new_runtime_turn_transaction native_owner
+(import native_owner new_runtime_turn_transaction
   ^from "../../../src/runtime/turn_participant_registry")
 (import contribute ^from "../../../src/kernel")
 (import evaluate_harness_turn ^from "../../../src/agents/harness_turn")
 (import validate_participants ^from "../../../src/agents/turn_participation")
-(import append_core_event append_turn_end_once flush_event_store events_for
+(import append_core_event append_turn_end_once events_for flush_event_store
   ^from "../../../src/storage/state")
 (import card_record ^from "../../../src/runtime/cards")
 (import checkpoint_delegations ^from "../../../src/runtime/delegations")
 (import write_body ^from "../../../src/agents/history")
-(import submit_round cancel_round round_receipt close_round_controller
+(import cancel_round close_round_controller round_receipt submit_round
   ^from "../../../src/runtime/round_controller")
 (import require_record ^from "../../../src/runtime/sessions")
 

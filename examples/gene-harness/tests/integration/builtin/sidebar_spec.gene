@@ -1,9 +1,9 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_session_service close_session_service host_status create_session submit receipt
+(import close_session_service create_session host_status open_session_service receipt submit
   ^from "../../../src/web/session_service")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
-(import set_plugin_enabled restore_plugin ^from "../../../src/storage/workspace_repair")
+(import restore_plugin set_plugin_enabled ^from "../../../src/storage/workspace_repair")
 
 (fn sidebar_component [service, ^safe safe : Bool = false]
   (let status (host_status ^safe safe service))

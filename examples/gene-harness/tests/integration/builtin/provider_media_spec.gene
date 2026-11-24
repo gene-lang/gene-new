@@ -3,7 +3,7 @@
 (import close_session_service ^from "../../../src/web/session_service")
 (import row ^from "../../../src/kernel")
 (import ProviderError ^from "../../../src/plugin_api")
-(import responses_content anthropic_content chat_messages require_text_messages
+(import anthropic_content chat_messages require_text_messages responses_content
   ^from "../../../src/public/model_content")
 
 (describe "Harness provider image content"

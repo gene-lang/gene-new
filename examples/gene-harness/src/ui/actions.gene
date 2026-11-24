@@ -2,16 +2,16 @@
 (mod ui_actions)
 (import log_event ^from "../kernel/log")
 (import effective_config ^from "../runtime/settings_resolver")
-(import ui_settings ui_record ui_revision ui_error view_listed? view_actions ^from "./state")
+(import ui_error ui_record ui_revision ui_settings view_actions view_listed? ^from "./state")
 (import
-  copy_data
-  open_action_log
-  close_action_log
-  admit_action
-  action_receipt
-  update_action
   action_output
+  action_receipt
+  admit_action
+  close_action_log
+  copy_data
   notify_action
+  open_action_log
+  update_action
   ^from "./action_log")
 (import acquire_snapshot release_snapshot ^from "../runtime/composition")
 (import acquire_body_use release_body_use ^from "../agents/history")

@@ -1,11 +1,11 @@
 # Browser observer lifetime. Execution construction belongs to the loop layer.
 (mod web_observers)
-(import new_host_services start_host_services quiesce_host_services close_host_services
+(import close_host_services new_host_services quiesce_host_services start_host_services
   ^from "../runtime/host_services")
 (import close_runtime ^from "../runtime/bootstrap")
 (import open_loop_services ^from "../runtime/loop_services")
 (import HarnessEvent ^from "../kernel")
-(import observe_shared_settings close_shared_observation ^from "../runtime/workspace_config")
+(import close_shared_observation observe_shared_settings ^from "../runtime/workspace_config")
 
 (fn stop_observers [ctx] ^^private
   (let service ctx/service)

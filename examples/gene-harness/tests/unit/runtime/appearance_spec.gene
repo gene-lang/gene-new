@@ -1,15 +1,15 @@
 (import $test/[describe it run])
 (import new_harness ^from "../../../src/kernel")
 (import
-  open_appearance
-  set_appearance
   AppearanceChanged
-  AppearanceRequest
   AppearanceError
+  AppearanceRequest
   appearance_tabs
+  open_appearance
   report_appearance
+  set_appearance
   ^from "../../../src/runtime/appearance")
-(import read_saved encode_saved appearance_answer appearance_request
+(import appearance_answer appearance_request encode_saved read_saved
   ^from "../../../src/web/appearance")
 
 (describe "Browser appearance"

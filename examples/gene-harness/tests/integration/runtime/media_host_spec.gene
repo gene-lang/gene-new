@@ -1,14 +1,14 @@
 (import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
-(import create_session submit receipt close_session_service
+(import close_session_service create_session receipt submit
   ^from "../../../src/web/session_service")
-(import Plugin PluginHost MediaHost ServiceError ^from "../../../src/plugin_api")
+(import MediaHost Plugin PluginHost ServiceError ^from "../../../src/plugin_api")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import put_cordis_plugin uninstall ^from "../../../src/kernel")
 
 (fn replacement []
   (quote (mod plugin
-    (import Plugin PluginHost MediaHost ^from "src/plugin_api.gene")
+    (import MediaHost Plugin PluginHost ^from "src/plugin_api.gene")
     (fn init [descriptor]
       (Plugin ^id "media" ^requires ["media/host"]
         ^provides [["functions" "media_list"] ["functions" "media_show"]

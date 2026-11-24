@@ -1,4 +1,4 @@
-(import $test [describe it assert_equal])
+(import $test/[assert_equal describe it])
 
 (describe "blocking root-lane gates"
   (it "serializes yielding bodies and returns their values" []

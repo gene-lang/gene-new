@@ -2,9 +2,9 @@
 # records the resulting account and route. data/transport names the
 # `channel_transports` row; it may be omitted while only one is installed.
 (mod channel_setup)
-(import configure_account configure_route snapshot route_key ^from "./authority")
+(import configure_account configure_route route_key snapshot ^from "./authority")
 (import channel_error transport_name ^from "./model")
-(import transport_row transport_call transport_rows ^from "./transports")
+(import transport_call transport_row transport_rows ^from "./transports")
 (import ensure_channel_initiator ^from "./initiators")
 (import bind_workspace ^from "./service")
 

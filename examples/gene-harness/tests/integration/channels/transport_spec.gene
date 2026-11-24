@@ -1,18 +1,18 @@
 (import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
 (import close_session_service ^from "../../../src/web/session_service")
-(import configure_account configure_route snapshot open_authority close_channel_store
+(import close_channel_store configure_account configure_route open_authority snapshot
   ^from "../../../src/channels/authority")
-(import open_transport close_transport socket_session reconcile_connections
+(import close_transport open_transport reconcile_connections socket_session
   ^from "../../../src/builtin/slack/transport")
-(import accept_output begin_part recover_deliveries reconcile_remote deliver_pending
+(import accept_output begin_part deliver_pending reconcile_remote recover_deliveries
   ^from "../../../src/channels/delivery")
 (import key ^from "../../../src/channels/model")
 (import slack ^from "../../../src/builtin/slack")
-(import put_cordis_plugin provide withdraw_seam replace:replace_seam ^from "../../../src/kernel")
+(import provide put_cordis_plugin replace:replace_seam withdraw_seam ^from "../../../src/kernel")
 (import channel_host_binding local_channel_host ^from "../../../src/channels/host")
 (import bind_workspace receive_handoff ^from "../../../src/channels/service")
-(import queue_status hold_queue ^from "../../../src/channels/queue")
+(import hold_queue queue_status ^from "../../../src/channels/queue")
 (import submit ^from "../../../src/web/session_service")
 (import ChannelError ^from "../../../src/channels/model")
 (import receive_slack slack_row ^from "../../channel_support")

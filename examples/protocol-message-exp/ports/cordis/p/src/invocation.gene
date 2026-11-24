@@ -1,10 +1,10 @@
 (mod invocation)
 
 (import
-  PluginCallKind
-  PluginInvoker
   InvocationLimits
   PluginCall
-  invocation_limits
+  PluginCallKind
+  PluginInvoker
   default_plugin_invoker
+  invocation_limits
   ^from "./runtime" ^^export)

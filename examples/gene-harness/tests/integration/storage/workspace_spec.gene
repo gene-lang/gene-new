@@ -1,15 +1,15 @@
 # Exercises checkpointing, module loading, activation and workspace repair.
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
 (import plugin_admin ^from "../../../src/builtin/plugin_admin")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
 (import row ^from "../../../src/kernel")
-(import set_plugin_enabled restore_plugin doctor enable_entry
+(import doctor enable_entry restore_plugin set_plugin_enabled
   ^from "../../../src/storage/workspace_repair")
-(import register_plugin prepare_workspace ^from "../../../src/storage/workspace_activation")
-(import composition_entries composition_revision commit_composition
+(import prepare_workspace register_plugin ^from "../../../src/storage/workspace_activation")
+(import commit_composition composition_entries composition_revision
   ^from "../../../src/storage/composition_store")
 (import evaluate_harness_turn ^from "../../../src/agents/harness_turn")
 

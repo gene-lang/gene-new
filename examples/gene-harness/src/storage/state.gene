@@ -2,10 +2,10 @@
 
 (mod state)
 
-(import $store/fs/[open:store_open Store StoreError])
+(import $store/fs/[Store StoreError open:store_open])
 (import $serde/write_data)
 (import $crypto/sha256)
-(import $str/[byte_size starts_with? slice_bytes])
+(import $str/[byte_size slice_bytes starts_with?])
 (import $fs/real_path)
 
 (type HarnessStateError : Error)

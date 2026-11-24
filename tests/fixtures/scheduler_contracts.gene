@@ -1,6 +1,6 @@
 # Run with a -d:geneSchedulerTests binary at several quanta. Assertions describe
 # observable safety/liveness, not the precise order of scheduler instructions.
-(import $test [describe it assert_equal])
+(import $test/[assert_equal describe it])
 
 (describe "scheduler variation contract"
   (it "reports the selected test quantum" []

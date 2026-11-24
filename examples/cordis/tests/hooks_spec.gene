@@ -1,20 +1,20 @@
 (mod cordis_hooks_spec)
 
-(import $test/[describe it after_each assert_equal assert_raises])
+(import $test/[after_each assert_equal assert_raises describe it])
 
 (import
-  HookMode
-  HookKey
-  RuntimeOptions
-  PluginSpec
-  HookDispatchError
-  ContinuationAlreadyCalled
   ContextDisposed
-  invocation_limits
-  service_key
-  hook_key
+  ContinuationAlreadyCalled
+  HookDispatchError
+  HookKey
+  HookMode
+  PluginSpec
+  RuntimeOptions
   default_plugin_invoker
+  hook_key
+  invocation_limits
   new_runtime
+  service_key
   ^from "../src/cordis")
 
 (protocol SubjectService

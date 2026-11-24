@@ -1,163 +1,163 @@
 (mod harness_client ^profile web)
-(import BrowserAppearance start_appearance appearance_event ^from "./appearance.gene")
-(import storage_get storage_set storage_remove ^from "./workspace_storage.gene")
+(import BrowserAppearance appearance_event start_appearance ^from "./appearance.gene")
+(import storage_get storage_remove storage_set ^from "./workspace_storage.gene")
 (import api_root client_record_limit ^from "../src/web/contract.gene")
 
 (import
-  initialize_delegation
   begin_delegation_render
   delegation_recovery
-  set_delegation_recovery
+  initialize_delegation
   render_delegation
   render_delegation_recovery
+  set_delegation_recovery
   ^from "./delegation_ui.gene")
 (import Client SessionTab ^from "./workspace_model.gene" ^^export)
 (import FeatureHost ^from "./feature_host.gene")
 (import
-  render_session_title:slack_title
-  resolve_slack_author:slack_author
   add_session_to_slack:slack_share
   pending_session:slack_pending
+  render_session_title:slack_title
+  resolve_slack_author:slack_author
   ^from "./slack_ui.gene")
 (import
+  browser_capabilities:voice_capabilities
+  configure_voice
+  initialize_voice:initialize_voice_feature
+  reviewed_voice_input:input_voice
   voice_pending?:pending_voice
   voice_replay_handler:replay_voice
+  voice_review_key:review_key_voice
   voice_rounds:rounds_voice
   voice_submit:submit_voice
-  voice_review_key:review_key_voice
-  reviewed_voice_input:input_voice
-  initialize_voice:initialize_voice_feature
-  configure_voice
-  browser_capabilities:voice_capabilities
   ^from "./voice_glue.gene")
 (import
-  model_capabilities
-  model_allows_submit
   attach_model_draft
+  model_allows_submit
+  model_capabilities
   model_draft_admitted
   transfer_model_draft
   ^from "./model_glue.gene")
 
 (import
   LiveOutput
-  create_output
-  output_entry
-  receive_output
-  output_text
-  historical_records
-  turn_output_key
-  command_output_key
   clear_session_output
-  output_epoch
+  command_output_key
+  command_output_text
+  create_output
+  historical_records
   interrupt_output
   observe_output
+  output_entry
+  output_epoch
   output_open
-  command_output_text
+  output_text
+  receive_output
+  turn_output_key
   ^from "./live_output.gene")
 (import BrowserClients create_clients update_clients update_outlets ^from "./browser_clients.gene")
-(import FeatureEvents create_feature_events subscribe_feature feature_subscribed? emit_feature_event
+(import FeatureEvents create_feature_events emit_feature_event feature_subscribed? subscribe_feature
   ^from "./feature_events.gene")
 (import
   SessionMenu
-  create_session_menu
-  open_session_menu
   bind_session_menu
+  create_session_menu
   finish_session_menu_render
+  open_session_menu
   ^from "./session_menu.gene")
 (import
   CommandClient
-  create_commands
   configure_commands
+  create_commands
   dispatch_command
-  recover_command
   forget_command
+  recover_command
   ^from "./command_client.gene")
-(import RoundClient create_rounds configure_rounds dispatch_round recover_round forget_round
+(import RoundClient configure_rounds create_rounds dispatch_round forget_round recover_round
   ^from "./round_client.gene")
-(import claim_modal release_modal keyboard_owned? ^from "./overlays.gene")
-(import items:launcher_items flag:launcher_flag ^from "../src/common/launcher.gene")
-(import can_share_session? session_share_pending? session_share_busy? session_share_label
+(import claim_modal keyboard_owned? release_modal ^from "./overlays.gene")
+(import flag:launcher_flag items:launcher_items ^from "../src/common/launcher.gene")
+(import can_share_session? session_share_busy? session_share_label session_share_pending?
   ^from "./slack_channels.gene")
 
 (import
-  terminal
-  merge_blocks
-  delegation_snapshot
-  submission_blocks
-  first_prompt_block
-  query_value
-  draft_key
   bounded_blocks
-  step_key
   conversation_groups
+  delegation_snapshot
+  draft_key
+  first_prompt_block
+  merge_blocks
+  query_value
   record_sequence
-  run_label
   revision_before
+  run_label
   status_is_current
+  step_key
+  submission_blocks
+  terminal
   ^from "./state.gene")
 (import protocol_version ^from "../src/web/contract.gene")
-(import block_view step_view run_status_view not_durable append_history_start ^from "./view.gene")
-(import session_link dint dlist ^from "./delegations.gene")
+(import append_history_start block_view not_durable run_status_view step_view ^from "./view.gene")
+(import dint dlist session_link ^from "./delegations.gene")
 (import
   MediaComposer
   create_media
-  media_select
-  media_move
-  media_ids
-  media_has
-  media_blocked
   media_admitted
+  media_blocked
   media_controls
+  media_has
+  media_ids
+  media_move
+  media_select
   ^from "./media.gene")
 (import render_slot ^from "./components.gene")
 (import
-  create_editor_panel
+  EditorPanel
+  close_editor
   configure_editor
+  create_editor_panel
   editor_available?
   editor_open?
   open_editor
-  close_editor
-  EditorPanel
   ^from "./editor.gene")
 (import UiClient UiNavigation copy_map persist_view ^from "./ui/model.gene")
-(import navigate update_url run_action action_chord ^from "./ui/router.gene")
+(import action_chord navigate run_action update_url ^from "./ui/router.gene")
 (import event_chord ^from "./ui/chords.gene")
 (import go view_url ^from "./ui/navigation.gene")
 (import close_mobile_sidebar update_sidebar ^from "./sidebar.gene")
 (import Notices create_notices put_notice remove_notice ^from "./notices.gene")
-(import Confirmations create_confirmations command_confirmation ^from "./confirmations.gene")
+(import Confirmations command_confirmation create_confirmations ^from "./confirmations.gene")
 (import waiting_batch ^from "./question_state.gene")
 (import
   CardHost
-  create_card_host
+  answered_view
   card_defined
   card_observed
-  card_view
   card_update_line
-  answered_view
+  card_view
+  create_card_host
   ^from "./cards.gene")
 (import QuestionEditors create_question_editors mount_question question_ready resume_replies
   ^from "./question_editors.gene")
 (import
   NotificationCenter
-  create_center
   center_ready
   center_sessions
   center_snapshot
-  toggle_center
+  create_center
   invalidate_questions
+  toggle_center
   update_center_count
   ^from "./notification_center.gene")
-(import ProducerInbox create_producer_inbox producer_ready producer_event opened_inbox
+(import ProducerInbox create_producer_inbox opened_inbox producer_event producer_ready
   ^from "./producer_inbox.gene")
 (import
-  create:create_ui
-  update:update_ui
   controls:ui_controls
+  create:create_ui
   event:ui_event
   open_reference
   outlet_nodes
   set_appearance:ui_appearance
+  update:update_ui
   ^from "./ui/controller.gene")
 
 

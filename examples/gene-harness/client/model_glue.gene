@@ -1,9 +1,9 @@
 # Page-owned model drafts survive replacement of the optional picker asset.
 (mod model_glue ^profile web)
 (import Client ^from "./workspace_model.gene")
-(import features browser_event notice ^from "./feature_helpers.gene")
-(import text flag items ^from "../src/common/launcher.gene")
-(import storage_get storage_set storage_remove ^from "./workspace_storage.gene")
+(import browser_event features notice ^from "./feature_helpers.gene")
+(import flag items text ^from "../src/common/launcher.gene")
+(import storage_get storage_remove storage_set ^from "./workspace_storage.gene")
 (import MediaComposer media_ids ^from "./media.gene")
 
 (type ModelDrafts ^props {^workspace Str ^choices PropMap ^loaded Bool ^required Bool ^requested Bool

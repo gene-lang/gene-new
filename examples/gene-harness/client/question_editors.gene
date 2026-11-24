@@ -2,7 +2,7 @@
 (mod harness_question_editors ^profile web)
 (import storage_get storage_set ^from "./workspace_storage.gene")
 (import api_root ^from "../src/web/contract.gene")
-(import question_key definitive_reply ^from "./question_state.gene")
+(import definitive_reply question_key ^from "./question_state.gene")
 (import Notices put_notice remove_notice ^from "./notices.gene")
 (import question_tree ^from "./cards.gene")
 

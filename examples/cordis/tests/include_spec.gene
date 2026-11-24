@@ -1,13 +1,13 @@
 (mod cordis_include_spec)
 
-(import $test/[describe it after_each assert_equal assert_raises])
+(import $test/[after_each assert_equal assert_raises describe it])
 
 (import
-  RuntimeOptions
-  LoaderOptions
   CompositionError
-  invocation_limits
+  LoaderOptions
+  RuntimeOptions
   default_plugin_invoker
+  invocation_limits
   new_runtime
   ^from "../src/cordis")
 

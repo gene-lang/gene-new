@@ -1,7 +1,7 @@
 # Host-owned executable-contribution lifecycle. Feature state stays in plugins.
 (mod harness_browser_clients ^profile web)
-(import trap_modal_tab release_modal chord_recording? ^from "./overlays.gene")
-(import text flag integer ^from "../src/common/launcher.gene")
+(import chord_recording? release_modal trap_modal_tab ^from "./overlays.gene")
+(import flag integer text ^from "../src/common/launcher.gene")
 
 (type BrowserClients ^props {^root EventTarget ^safe Bool ^bridge Any
   ^mounts PropMap ^outlets PropMap ^descriptors PropMap ^generation Int})

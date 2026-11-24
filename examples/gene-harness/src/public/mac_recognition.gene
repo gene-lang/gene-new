@@ -1,6 +1,6 @@
 (mod mac_recognition)
 (import audio_error ^from "./audio" ^pkg "audio")
-(import open_worker close_worker read_json write_json write_packet ^from "./worker" ^pkg "audio")
+(import close_worker open_worker read_json write_json write_packet ^from "./worker" ^pkg "audio")
 (import mac_helper mac_reason ^from "./speech_engines")
 (import encode_audio_frame ^from "./voice_frames")
 

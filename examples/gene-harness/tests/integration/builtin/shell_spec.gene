@@ -1,13 +1,13 @@
 # Tests one-shot /sh and the session-specific shell input mode.
 (import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
-(import create_session close_session_service submit ^from "../../../src/web/session_service")
-(import submit_command command_receipt command_state take_command_attachments cancel_command
+(import close_session_service create_session submit ^from "../../../src/web/session_service")
+(import cancel_command command_receipt command_state submit_command take_command_attachments
   ^from "../../../src/runtime/commands")
-(import mode_state submit_mode_input close_mode ModeError ^from "../../../src/runtime/input_modes")
+(import ModeError close_mode mode_state submit_mode_input ^from "../../../src/runtime/input_modes")
 (import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
 (import recall_body ^from "../../../src/agents/history")
-(import row doc put_cordis_plugin ^from "../../../src/kernel")
+(import doc put_cordis_plugin row ^from "../../../src/kernel")
 (import shell:shell_plugin ^from "../../../src/builtin/shell")
 
 (fn command [service, session, text]

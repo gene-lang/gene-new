@@ -1,6 +1,6 @@
 (mod cli_main)
-(import CliError problem joined_words read_data_file ^from "./options")
-(import connect api connection_link session_path execution_receipt wait_for ^from "./client")
+(import CliError joined_words problem read_data_file ^from "./options")
+(import api connect connection_link execution_receipt session_path wait_for ^from "./client")
 (import repair reset_offline ^from "../runtime/maintenance")
 (import WorkspaceInUse ^from "../runtime/workspace_lock")
 (import notification_command present_message ^from "./notification_presenter")

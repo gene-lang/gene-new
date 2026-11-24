@@ -1,12 +1,12 @@
 # Tests src/agents/discovery.gene, including plugin ownership and turn leases.
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import new_harness shutdown_harness put_cordis_plugin uninstall contribute doc
+(import contribute doc new_harness put_cordis_plugin shutdown_harness uninstall
   ^from "../../../src/kernel")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
 (import discover ^from "../../../src/agents/discovery")
 (import evaluate_harness_turn ^from "../../../src/agents/harness_turn")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
 (import assemble_instructions ^from "../../../src/agents/instructions")

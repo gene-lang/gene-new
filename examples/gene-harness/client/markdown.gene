@@ -1,7 +1,7 @@
 (mod harness_markdown ^profile web)
 
 (import code_view ^from "./highlight.gene")
-(import referenced_media_id media_url ^from "./media_reference.gene")
+(import media_url referenced_media_id ^from "./media_reference.gene")
 
 # A small, text-only Markdown renderer. Every node is built through $dom;
 # source HTML is text and links accept only explicit safe URL forms.

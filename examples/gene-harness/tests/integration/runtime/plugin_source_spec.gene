@@ -1,19 +1,19 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
 (import Plugin ^from "../../../src/plugin_api")
 (import plugin_admin ^from "../../../src/builtin/plugin_admin")
 (import core_commands ^from "../../../src/builtin/core_commands")
 (import provider_offline ^from "../../../src/builtin/provider_offline")
 (import evaluate_harness_turn ^from "../../../src/agents/harness_turn")
-(import submit_command command_receipt ^from "../../../src/runtime/commands")
-(import create_session update_session delete_session ^from "../../../src/runtime/sessions")
+(import command_receipt submit_command ^from "../../../src/runtime/commands")
+(import create_session delete_session update_session ^from "../../../src/runtime/sessions")
 (import plugin_catalog plugin_history_catalog ^from "../../../src/runtime/plugin_manager")
-(import validate_plan apply_plan ^from "../../../src/runtime/plugin_plans")
+(import apply_plan validate_plan ^from "../../../src/runtime/plugin_plans")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import composition_entries composition_revision ^from "../../../src/storage/composition_store")
-(import set_plugin_enabled restore_plugin revert_plugin revert_entry
+(import restore_plugin revert_entry revert_plugin set_plugin_enabled
   ^from "../../../src/storage/workspace_repair")
 
 (fn profile [^builtin builtin : Bool = false]

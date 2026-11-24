@@ -2,8 +2,8 @@
 # do not disturb state-frame sequencing.
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import start_host stop_host cli ^from "../../web_support")
-(import connect api ^from "../../../src/cli/client")
+(import cli start_host stop_host ^from "../../web_support")
+(import api connect ^from "../../../src/cli/client")
 
 (fn read_exact [socket : Any, count : Int] : Any
   (var data ($binary/from_list []))

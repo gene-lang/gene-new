@@ -4,7 +4,7 @@
 # immutable request projection and returns {^status Int ^body ...}; a string
 # body is sent as text, anything else as JSON.
 (mod plugin_routes)
-(import acquire_snapshot release_snapshot immutable_view ^from "../../runtime/composition")
+(import acquire_snapshot immutable_view release_snapshot ^from "../../runtime/composition")
 (import response ^from "../request")
 (import $net/http/Response)
 

@@ -1,9 +1,9 @@
 (import $test/[describe it])
-(import isolated run_spec fixture_path ^from "../../support")
+(import fixture_path isolated run_spec ^from "../../support")
 (import model_counts recovery_controller ^from "../../fixtures/delegation_crash")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
-(import submit_round round_state round_receipt close_round_controller
+(import close_round_controller round_receipt round_state submit_round
   ^from "../../../src/runtime/round_controller")
 (import require_record ^from "../../../src/runtime/sessions")
 (import delegation_blocks delegation_recovery ^from "../../../src/runtime/delegations")

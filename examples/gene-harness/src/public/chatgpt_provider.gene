@@ -1,12 +1,12 @@
 (mod chatgpt_provider)
 (import ProviderError ^from "../plugin_api")
-(import configure_model nonempty http_json_attempt probe_json endpoint_url ^from "./provider")
+(import configure_model endpoint_url http_json_attempt nonempty probe_json ^from "./provider")
 (import chatgpt_access ^from "./chatgpt_auth")
 (import chatgpt_root ^from "./chatgpt_store")
 (import login_root ^from "./provider_login")
 (import normalize_chatgpt_models ^from "./model_discovery")
 (import model_capabilities transport_identity ^from "./models")
-(import prepare_responses responses_stream_result chatgpt_failure ^from "./provider_payloads")
+(import chatgpt_failure prepare_responses responses_stream_result ^from "./provider_payloads")
 
 (fn chatgpt_result [response]
   (if (!= response/status 200)

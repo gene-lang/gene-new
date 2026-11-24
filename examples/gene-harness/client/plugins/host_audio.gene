@@ -1,7 +1,7 @@
 (mod host_audio ^profile web)
 (import api_root voice_subprotocol ^from "../../src/web/contract.gene")
-(import text integer ^from "../../src/common/launcher.gene")
-(import pack_pcm read_u32 frame_pcm ^from "../pcm_frames.gene")
+(import integer text ^from "../../src/common/launcher.gene")
+(import frame_pcm pack_pcm read_u32 ^from "../pcm_frames.gene")
 (import Vad new_vad reset_vad vad_step ^from "../../src/common/vad.gene")
 
 (type HostAudio ^props {^socket EventTarget ^context EventTarget ^closed Bool ^ready Bool

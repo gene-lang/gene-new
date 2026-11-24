@@ -3,7 +3,7 @@
 (mod session_host)
 (import SessionHost ^from "../plugin_api")
 (import require_record ^from "./sessions")
-(import service_binding require_service ^from "./service_handles")
+(import require_service service_binding ^from "./service_handles")
 (import immutable_view ^from "./composition")
 
 (type HostedSessions ^^private ^props {^token Any}

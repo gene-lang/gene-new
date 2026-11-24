@@ -1,4 +1,4 @@
-(import Section Article Figure ^from "../model")
+(import Article Figure Section ^from "../model")
 (import entry ^from "./dispatch")
 
 (fn is_section [n] (match n when (x : Section) true else false))

@@ -1,4 +1,4 @@
-(import make_graph graph_ok ^from "./mixed_graph.gene")
+(import graph_ok make_graph ^from "./mixed_graph.gene")
 
 (var cleanups 0)
 (var nested_cleanups 0)

@@ -1,12 +1,12 @@
 (import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
-(import submit_round round_receipt close_round_controller
+(import close_round_controller round_receipt submit_round
   ^from "../../../src/runtime/round_controller")
-(import plugin_state events_for ^from "../../../src/storage/state")
-(import row put_cordis_plugin ^from "../../../src/kernel")
+(import events_for plugin_state ^from "../../../src/storage/state")
+(import put_cordis_plugin row ^from "../../../src/kernel")
 (import ExecutionLimits ^from "../../../src/plugin_api")
 
 (fn notes_source [version : Str = "one", ^broken broken : Bool = false, ^delay delay : Int = 0]

@@ -1,11 +1,11 @@
 # Real CLI processes talk to the same host and HTTP contract as the browser.
 (import $test/[describe it])
 (import isolated run_spec source_path:package_path ^from "../support")
-(import start_host launch_host ready_host stop_host cli ^from "../web_support")
-(import connect api wire checked session_path wait_for ^from "../../src/cli/client")
+(import cli launch_host ready_host start_host stop_host ^from "../web_support")
+(import api checked connect session_path wait_for wire ^from "../../src/cli/client")
 (import acquire_workspace_lock close_workspace_lock ^from "../../src/runtime/workspace_lock")
 (import $net/http/[listen stop])
-(import $io/[tcp_connect AsyncReader IoResource write_all])
+(import $io/[AsyncReader IoResource tcp_connect write_all])
 (import $net/http_client/request)
 
 (describe

@@ -1,6 +1,6 @@
 (mod history)
 (import byte_prefix byte_suffix ^from "../public/text")
-(import core_state core_states record_core_state append_core_event events_for flush_event_store
+(import append_core_event core_state core_states events_for flush_event_store record_core_state
   ^from "../storage/state")
 (import split_response ^from "./response")
 (import normalize_history_policy ^from "../public/history_policy")

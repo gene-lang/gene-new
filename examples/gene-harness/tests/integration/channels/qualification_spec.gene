@@ -1,16 +1,16 @@
 (import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
-(import qualification_provider qualification_driver completed_qualification retire_qualification
+(import completed_qualification qualification_driver qualification_provider retire_qualification
   ^from "../../../probes/slack_live")
 (import close_session_service ^from "../../../src/web/session_service")
 (import put_cordis_plugin ^from "../../../src/kernel")
-(import open_authority configure_account configure_route snapshot close_channel_store
+(import close_channel_store configure_account configure_route open_authority snapshot
   ^from "../../../src/channels/authority")
-(import bind_workspace receive_handoff drain_session project_events handoff_outputs
+(import bind_workspace drain_session handoff_outputs project_events receive_handoff
   ^from "../../../src/channels/service")
 
-(import pending_output deliver_output ^from "../../../src/channels/delivery")
-(import open_api close_api ^from "../../../src/builtin/slack/api")
+(import deliver_output pending_output ^from "../../../src/channels/delivery")
+(import close_api open_api ^from "../../../src/builtin/slack/api")
 (import ChannelError ^from "../../../src/channels/model")
 (import receive_slack ^from "../../channel_support")
 (import api_adapter ^from "../../../src/builtin/slack/adapter")

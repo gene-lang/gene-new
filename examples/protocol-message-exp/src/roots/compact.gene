@@ -1,4 +1,4 @@
-(import Section Article Figure ^from "../model")
+(import Article Figure Section ^from "../model")
 (import Render ^from "../contracts")
 (import_impl Render for Section ^from "../policies/compact")
 (import_impl Render for Article ^from "../policies/compact")

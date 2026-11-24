@@ -1,4 +1,4 @@
-(import log_start log_configure log_set_workspace ^from "./kernel/log")
+(import log_configure log_set_workspace log_start ^from "./kernel/log")
 (import argument_values parse_options problem ^from "./cli/options")
 (import run_client usage ^from "./cli/main")
 (import main:serve_web ^from "./web/server")

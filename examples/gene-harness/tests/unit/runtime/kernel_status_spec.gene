@@ -1,15 +1,15 @@
 (import $test/[describe it])
 (import
-  new_harness
-  shutdown_harness
-  install
-  put_cordis_plugin
-  put_cordis_plugins
-  status_of
-  contribute
-  row
   Plugin
   PluginHost
+  contribute
+  install
+  new_harness
+  put_cordis_plugin
+  put_cordis_plugins
+  row
+  shutdown_harness
+  status_of
   ^from "../../../src/kernel")
 # Internal behavior is verified without widening the stable facade.
 (import plugin_states retry ^from "../../../src/kernel/composition_bridge")

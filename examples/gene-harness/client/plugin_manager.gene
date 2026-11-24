@@ -1,7 +1,7 @@
 (mod plugin_manager_client ^profile web)
-(import BrowserAppearance start_appearance refresh_appearance change_appearance
+(import BrowserAppearance change_appearance refresh_appearance start_appearance
   ^from "./appearance.gene")
-(import storage_get storage_set storage_remove ^from "./workspace_storage.gene")
+(import storage_get storage_remove storage_set ^from "./workspace_storage.gene")
 (import api_root ^from "../src/web/contract.gene")
 (import query_value ^from "./state.gene")
 (import plugin_sessions_view ^from "./plugin_sessions.gene")

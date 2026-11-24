@@ -1,4 +1,4 @@
-(import Section Article Figure ^from "../../../src/model")
+(import Article Figure Section ^from "../../../src/model")
 (import Chart ^from "../../../src/extensions/chart")
 (import Outline2 ^from "./contract")
 (fn pad [depth] (var s "") (repeat _ in depth (set s ($to_str s "  "))) s)

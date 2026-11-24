@@ -1,4 +1,4 @@
-(import $io [open_read IoResource])
+(import $io/[IoResource open_read])
 (import $csv [reader])
 (import $order [sort_by])
 (import $parse [parse_int])

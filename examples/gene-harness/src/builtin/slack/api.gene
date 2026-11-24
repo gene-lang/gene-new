@@ -1,6 +1,6 @@
 (mod slack_api)
 (import $io/IoResource)
-(import load open send_text receive_text flush ^from "." ^pkg "websocket")
+(import flush load open receive_text send_text ^from "." ^pkg "websocket")
 
 (type SlackError : Error ^props {^code Str ^retry_after_ms Int?})
 (type SlackApi ^props {^client Any ^bot Str ^requester Any? ^closed Cell})

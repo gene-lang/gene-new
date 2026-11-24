@@ -1,8 +1,8 @@
 # Version-3 receiver: one opaque token, with private activation-owned delegates.
 (mod plugin_receiver)
-(import PluginHost DurableRecord ServiceError ^from "../plugin_api")
+(import DurableRecord PluginHost ServiceError ^from "../plugin_api")
 (import freeze_turn_data ^from "./turn_data")
-(import new_handle_table lookup_handle intern_handle revoke_handle ^from "./handle_table")
+(import intern_handle lookup_handle new_handle_table revoke_handle ^from "./handle_table")
 
 (var records ^^private (new_handle_table))
 

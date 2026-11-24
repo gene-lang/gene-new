@@ -1,5 +1,5 @@
 (mod image_openrouter)
-(import Plugin PluginHost ImageHost ImageError ^from "../plugin_api")
+(import ImageError ImageHost Plugin PluginHost ^from "../plugin_api")
 (import image_error image_usage pixel_dimensions ^from "../public/image_contract")
 (import nonempty ^from "../public/provider")
 (import safe_error ^from "../public/model_text")

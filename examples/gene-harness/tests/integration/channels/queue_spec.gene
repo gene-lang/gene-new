@@ -1,24 +1,24 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_authority configure_account configure_route authorize authorize_parts
+(import authorize authorize_parts configure_account configure_route open_authority
   ^from "../../../src/channels/authority")
 (import
-  open_queues
-  configure_queues
-  enqueue
   activate_binding
-  tombstone_session
+  claim_batch
+  close_channel_store
+  configure_queues
+  discard_inputs
+  enqueue
+  finish_admission
+  hold_queue
+  observe_round
+  open_queues
   pending_parts
   queue_status
-  hold_queue
-  resume_queue
-  observe_round
-  claim_batch
-  finish_admission
   release_batch
+  resume_queue
   snapshot
-  close_channel_store
-  discard_inputs
+  tombstone_session
   ^from "../../../src/channels/queue")
 (import ChannelError ^from "../../../src/channels/model")
 

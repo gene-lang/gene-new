@@ -2,19 +2,19 @@
 # admission and recovery remain in delegations; this owns only phase wiring.
 (mod delegation_participant)
 (import
+  adopt_delegation_owner
+  begin_delegation_request
+  close_delegation_owner
+  commit_delegation_turn
   delegation_context
   delegation_request_items
-  begin_delegation_request
-  mark_delegation_results_seen
-  commit_delegation_turn
-  release_delegation_turn
   has_owned_work?
-  adopt_delegation_owner
+  mark_delegation_results_seen
   note_delegation_round
-  close_delegation_owner
-  queue_delegation_answer
-  prepare_delegations_stop
   owned_delegation_counts
+  prepare_delegations_stop
+  queue_delegation_answer
+  release_delegation_turn
   ^from "./delegations")
 (import new_turn_items ^from "../agents/outcome")
 (import ParticipantValidation ^from "./participant_contract")

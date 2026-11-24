@@ -3,7 +3,7 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import launch_host ready_host stop_host ^from "../../web_support")
-(import connect api ^from "../../../src/cli/client")
+(import api connect ^from "../../../src/cli/client")
 
 (fn log_lines [root : Str] : Any
   (let path ($path/join root ".gene-harness/host.log"))

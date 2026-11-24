@@ -1,6 +1,6 @@
 ## Surface spelling for import selectors, shared by the formatter and diagnostics.
 
-import std/strutils
+import std/[algorithm, strutils]
 import ./[clause_syntax, printer, types]
 
 type ImportValueRenderer = proc(value: Value): string {.nimcall.}
@@ -23,14 +23,31 @@ proc importPathText(value: Value): string =
   names.join("/")
 
 proc renderImportItems*(items: openArray[Value], render: ImportValueRenderer,
-                        namespaceSource = false): seq[string]
+                        namespaceSource = false,
+                        sortSelectors = false): seq[string]
 
-proc renderImportGroup*(group: Value, render: ImportValueRenderer = print): string =
+proc compareImportSelectors(a, b: string): int =
+  ## Capitalised selectors first, then the rest, alphabetically within each
+  ## group. The written selector text is the sort key, so aliases and
+  ## qualified paths sort under their source spelling.
+  proc rank(text: string): int =
+    if text.len > 0 and text[0] in {'A'..'Z'}: 0 else: 1
+  result = cmp(rank(a), rank(b))
+  if result != 0:
+    return
+  result = cmp(a.toLowerAscii, b.toLowerAscii)
+  if result == 0:
+    result = cmp(a, b)
+
+proc renderImportGroup*(group: Value, render: ImportValueRenderer = print,
+                        sortSelectors = false): string =
   (if group.listImmutable: "#[" else: "[") &
-    renderImportItems(group.listItems, render).join(" ") & "]"
+    renderImportItems(group.listItems, render,
+                      sortSelectors = sortSelectors).join(" ") & "]"
 
 proc renderImportItems*(items: openArray[Value], render: ImportValueRenderer,
-                        namespaceSource: bool): seq[string] =
+                        namespaceSource = false,
+                        sortSelectors = false): seq[string] =
   var i = 0
   while i < items.len:
     let item = items[i]
@@ -42,11 +59,12 @@ proc renderImportItems*(items: openArray[Value], render: ImportValueRenderer,
           render(item)
         else:
           path.strip(leading = false, chars = {'/'})
-      result.add prefix & "/" & renderImportGroup(items[i + 1], render)
+      result.add prefix & "/" & renderImportGroup(items[i + 1], render,
+                                                   sortSelectors)
       inc i, 2
       continue
     if item.kind == vkList:
-      result.add renderImportGroup(item, render)
+      result.add renderImportGroup(item, render, sortSelectors)
     elif item.kind == vkNode and item.head.isSymbolNamed("msg") and
         item.props.len == 0 and item.meta.len == 0 and not item.nodeImmutable and
         item.body.len == 2 and item.body[1].kind == vkSymbol:
@@ -59,3 +77,5 @@ proc renderImportItems*(items: openArray[Value], render: ImportValueRenderer,
     else:
       result.add render(item)
     inc i
+  if sortSelectors:
+    result.sort(compareImportSelectors)

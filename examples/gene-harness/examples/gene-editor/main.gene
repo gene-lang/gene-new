@@ -29,7 +29,7 @@
 
 (import $html/render)
 (import $json/[parse stringify])
-(import $net/http/[Response Server serve not_found])
+(import $net/http/[Response Server not_found serve])
 (import $web/script)
 
 # ---------------------------------------------------------------------------

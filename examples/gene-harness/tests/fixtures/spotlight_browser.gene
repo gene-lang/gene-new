@@ -1,5 +1,5 @@
 # Seed an existing disposable offline host for real-browser scrolling checks.
-(import connect api ^from "../../src/cli/client")
+(import api connect ^from "../../src/cli/client")
 
 (fn main [args] : Int
   (let client (connect args/0))

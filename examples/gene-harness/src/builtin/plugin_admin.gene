@@ -1,5 +1,5 @@
 (mod plugin_admin)
-(import Plugin PluginHost CompositionHost ^from "../plugin_api")
+(import CompositionHost Plugin PluginHost ^from "../plugin_api")
 (import contribute_doc ^from "../public/documentation")
 
 (fn plugin_admin [] : Plugin

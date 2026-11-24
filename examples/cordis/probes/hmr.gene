@@ -2,13 +2,13 @@
 
 (import $fs/[read_text write_text])
 (import
-  RuntimeOptions
   LoaderOptions
   PluginSpec
   ReloadRejected
+  RuntimeOptions
+  default_plugin_invoker
   hmr_reloaded
   invocation_limits
-  default_plugin_invoker
   new_runtime
   ^from "../src/cordis")
 (import watch_loader ^from "../src/hmr")

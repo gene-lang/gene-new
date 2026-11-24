@@ -3,7 +3,7 @@
 (import close_session_service ^from "../../../src/web/session_service")
 (import configure_account configure_route snapshot ^from "../../../src/channels/authority")
 (import bind_workspace tick_transport ^from "../../../src/channels/service")
-(import Plugin PluginHost ChannelHost ^from "../../../src/plugin_api")
+(import ChannelHost Plugin PluginHost ^from "../../../src/plugin_api")
 (import require_record ^from "../../../src/runtime/sessions")
 (import round_state ^from "../../../src/runtime/round_controller")
 (import row ^from "../../../src/kernel")

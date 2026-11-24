@@ -1,8 +1,8 @@
 (mod cordis_timer_service_spec)
 
-(import $test/[describe it after_each assert_equal])
+(import $test/[after_each assert_equal describe it])
 
-(import RuntimeOptions Requirement PluginSpec invocation_limits default_plugin_invoker new_runtime
+(import PluginSpec Requirement RuntimeOptions default_plugin_invoker invocation_limits new_runtime
   ^from "../src/cordis")
 
 (import Timer timer_key timer_plugin ^from "../src/timer")

@@ -1,17 +1,17 @@
 (import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
 (import plugin_admin ^from "../../../src/builtin/plugin_admin")
-(import Plugin PluginHost ExecutionLimits ^from "../../../src/plugin_api")
+(import ExecutionLimits Plugin PluginHost ^from "../../../src/plugin_api")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
-(import set_plugin_enabled restore_plugin ^from "../../../src/storage/workspace_repair")
+(import restore_plugin set_plugin_enabled ^from "../../../src/storage/workspace_repair")
 (import participant_quarantine ^from "../../../src/storage/participant_health")
 (import plugin_catalog ^from "../../../src/runtime/plugin_manager")
-(import validate_plan apply_plan ^from "../../../src/runtime/plugin_plans")
-(import submit_round round_receipt close_round_controller cancel_round
+(import apply_plan validate_plan ^from "../../../src/runtime/plugin_plans")
+(import cancel_round close_round_controller round_receipt submit_round
   ^from "../../../src/runtime/round_controller")
-(import plugin_state events_for ^from "../../../src/storage/state")
+(import events_for plugin_state ^from "../../../src/storage/state")
 (import contribute ^from "../../../src/kernel")
 (import native_owner ^from "../../../src/runtime/turn_participant_registry")
 

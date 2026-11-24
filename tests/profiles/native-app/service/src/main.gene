@@ -1,5 +1,5 @@
-(import $net/http [listen serve stop status text stream])
-(import $db/sqlite [open_file Db])
+(import $net/http/[listen serve status stop stream text])
+(import $db/sqlite/[Db open_file])
 
 (let AsyncReader $io/AsyncReader)
 (let AsyncWriter $io/AsyncWriter)

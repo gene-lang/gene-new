@@ -51,8 +51,8 @@
 # shadows the `json` namespace name.
 (import $json/stringify)
 (import $str/join)
-(import $parse/[parse_int ParseError])
-(import $net/http/[Server serve listen stop status route text json])
+(import $parse/[ParseError parse_int])
+(import $net/http/[Server json listen route serve status stop text])
 
 # --- shared state ------------------------------------------------------------
 # The event loop runs handler fibers on one scheduler thread, so Cell is safe

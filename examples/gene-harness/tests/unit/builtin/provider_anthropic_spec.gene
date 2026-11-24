@@ -1,6 +1,6 @@
 # Tests src/builtin/provider_anthropic.gene.
-(import $test/[describe it before_each assert_equal run])
-(import prepare_anthropic anthropic_text ^from "../../../src/builtin/provider_anthropic")
+(import $test/[assert_equal before_each describe it run])
+(import anthropic_text prepare_anthropic ^from "../../../src/builtin/provider_anthropic")
 (import raw_blocks ^from "./support")
 (import configure_model ^from "../../../src/public/provider")
 (import anthropic_models ^from "../../../src/public/model_defaults")

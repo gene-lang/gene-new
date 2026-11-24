@@ -1,5 +1,5 @@
 (import $test/[describe it])
-(import isolated run_spec package_path ^from "../../support")
+(import isolated package_path run_spec ^from "../../support")
 (import page ^from "../../../src/web/page")
 (import plugin_page ^from "../../../src/web/plugin_page")
 

@@ -1,6 +1,6 @@
 (mod documents)
 (import extract_document extract_pdf_page ^from "./extract" ^pkg "documents")
-(import media_record media_bytes put_media MediaError ^from "./media")
+(import MediaError media_bytes media_record put_media ^from "./media")
 (var ^^private extraction_gate ($sync/gate))
 
 (fn cached_extraction [store, key : Str, extract]

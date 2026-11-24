@@ -1,6 +1,6 @@
 # Page-owned output. Only live socket deliveries may enter this store.
 (mod live_output ^profile web)
-(import text flag integer ^from "../src/common/launcher.gene")
+(import flag integer text ^from "../src/common/launcher.gene")
 
 (type LiveOutput ^props {^entries (List Any) ^index PropMap ^bytes Int ^chunks Int ^epoch Str
   ^retired (List Str) ^mounts (List Any) ^scheduled Bool ^notify_session Str})

@@ -1,9 +1,9 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
-(import row doc ^from "../../../src/kernel")
+(import doc row ^from "../../../src/kernel")
 
 (fn sdk_plugin []
   (quote (mod plugin

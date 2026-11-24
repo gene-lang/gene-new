@@ -1,7 +1,7 @@
 (mod provider_selection)
-(import row rows HarnessError ^from "../kernel")
+(import HarnessError row rows ^from "../kernel")
 (import nonempty ^from "../public/provider")
-(import resolve_effort model_entry model_window transport_identity provider_transport
+(import model_entry model_window provider_transport resolve_effort transport_identity
   ^from "../public/models")
 
 # The optional contribution returns cached data; selection never probes.

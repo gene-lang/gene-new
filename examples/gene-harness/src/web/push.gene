@@ -1,15 +1,15 @@
 # Ordered, bounded server-to-browser delivery. Commands stay on HTTP POST.
 (mod harness_web_push)
-(import log_event log_subscribe log_unsubscribe log_gap_record ^from "../kernel/log")
+(import log_event log_gap_record log_subscribe log_unsubscribe ^from "../kernel/log")
 
-(import host_status list_sessions snapshot RoundError ^from "./session_service")
-(import report_appearance appearance_tabs ^from "../runtime/appearance")
+(import RoundError host_status list_sessions snapshot ^from "./session_service")
+(import appearance_tabs report_appearance ^from "../runtime/appearance")
 (import protocol_version ^from "./contract")
 (import inbox_snapshot ^from "../notifications/inbox")
-(import view_session leave_session ^from "../runtime/sessions")
-(import voice_connected voice_disconnected voice_snapshot public_voice_state
+(import leave_session view_session ^from "../runtime/sessions")
+(import public_voice_state voice_connected voice_disconnected voice_snapshot
   ^from "../runtime/voice_state")
-(import $net/http/[ws_send ws_try_send ws_queued ws_close])
+(import $net/http/[ws_close ws_queued ws_send ws_try_send])
 (import $os/monotonic_ms)
 
 (type PushHub ^props {^host Any ^peers Any})

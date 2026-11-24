@@ -1,9 +1,9 @@
-(import open_runtime close_runtime ^from "../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../src/runtime/bootstrap")
 (import test_controller ^from "../support")
 (import baseline_profile ^from "../../src/profiles/baseline")
 (import save_round ^from "../../src/runtime/round_controller")
 (import require_record ^from "../../src/runtime/sessions")
-(import append_core_event record_core_state flush_event_store core_state events_for
+(import append_core_event core_state events_for flush_event_store record_core_state
   ^from "../../src/storage/state")
 (import evaluate_harness_turn ^from "../../src/agents/harness_turn")
 

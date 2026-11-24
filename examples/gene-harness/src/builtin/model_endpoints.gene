@@ -1,7 +1,7 @@
 # Data is read only during activation, so doctor/recovery may inspect the profile
 # without opening models.gene. Replacements are ordinary provider contributions.
 (mod model_endpoints_plugin)
-(import Plugin PluginHost ModelsHost ^from "../plugin_api")
+(import ModelsHost Plugin PluginHost ^from "../plugin_api")
 (import file_endpoint ^from "../public/provider")
 
 (fn model_endpoints [^root root = nil] : Plugin

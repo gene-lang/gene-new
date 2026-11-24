@@ -8,7 +8,7 @@
 # A stored replacement uses only the public protocol: no receiver of its own.
 (fn stored_slack []
   (quote (mod plugin
-    (import Plugin PluginHost ChannelHost ^from "src/plugin_api.gene")
+    (import ChannelHost Plugin PluginHost ^from "src/plugin_api.gene")
     (fn init [descriptor]
       (Plugin ^id "slack" ^requires ["channels/host"] ^provides [["functions" "slack_status"]]
         ^activate (fn [host]

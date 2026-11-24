@@ -3,7 +3,7 @@
 (import $test/[describe it])
 (import isolated run_spec source_path ^from "../../support")
 (import ready_host stop_host ^from "../../web_support")
-(import connect api connection_link ^from "../../../src/cli/client")
+(import api connect connection_link ^from "../../../src/cli/client")
 
 (fn terminal_environment []
   (let values {^GENE_BINARY ($os/executable_path) ^GENE_HARNESS_STDOUT_TTY "0"})

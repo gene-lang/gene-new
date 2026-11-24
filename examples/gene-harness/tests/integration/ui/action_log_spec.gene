@@ -2,14 +2,14 @@
 (import isolated run_spec ^from "../../support")
 (import UiError ^from "../../../src/ui/state")
 (import
-  open_action_log
-  close_action_log
-  admit_action
-  update_action
-  action_receipt
   action_metadata
-  list_action_receipts
   action_output
+  action_receipt
+  admit_action
+  close_action_log
+  list_action_receipts
+  open_action_log
+  update_action
   ^from "../../../src/ui/action_log")
 
 (fn request [id : Str, generation : Int = 1]

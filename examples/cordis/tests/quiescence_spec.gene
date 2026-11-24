@@ -1,17 +1,17 @@
 (mod cordis_quiescence_spec)
 
-(import $test/[describe it after_each assert_equal])
+(import $test/[after_each assert_equal describe it])
 
 (import
   HookMode
-  RuntimeOptions
-  PluginSpec
   PluginCallKind
-  invocation_limits
-  hook_key
+  PluginSpec
+  RuntimeOptions
   default_plugin_invoker
-  new_runtime
+  hook_key
+  invocation_limits
   invoke_effect_owner
+  new_runtime
   ^from "../src/cordis")
 
 (describe "Cordis quiescence"

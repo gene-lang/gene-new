@@ -164,7 +164,7 @@ use `$binary/from_str` to checksum UTF-8 text. It does not require a native
 codec library. For example, the checksum of `"123456789"` is `3421780262`.
 
 ```gene runnable
-(import $str [split trim join])
+(import $str [join split trim])
 (let names ($map (split " Ada, Grace " ",") trim))
 (join names " & ") # "Ada & Grace"
 ```
@@ -512,7 +512,7 @@ OsError for a cross-filesystem move, rather than copying data in the caller.
 This recipe writes a file under the launch directory:
 
 ```gene
-(import $fs [write_text read_text])
+(import $fs [read_text write_text])
 (write_text "greeting.txt" "Hello from Gene")
 (read_text "greeting.txt")
 ```
@@ -578,7 +578,7 @@ their variant record. See [native module ownership](spec/native-module.md).
 VM currently qualifies these operations for POSIX paths:
 
 ```gene runnable
-(import $path [join relative extension])
+(import $path [extension join relative])
 [(join "reports" "2026" "summary.csv")
  (relative "reports/2026" "reports")
  (extension "summary.csv")]
@@ -607,14 +607,14 @@ a Task yielding one row or nil. Close it through `IoResource`. Pass
 `^^own_reader` when the wrapper should close the upstream reader too.
 
 ```gene runnable
-(import $csv [parse_rows encode_row])
+(import $csv [encode_row parse_rows])
 [(parse_rows "name,count\nAda,3\n" ^^headers)
  ($binary/to_str (encode_row ["a,b" "two"]))]
 # [[{^name "Ada" ^count "3"}] "\"a,b\",two\r\n"]
 ```
 
 ```gene
-(import $io [open_read IoResource])
+(import $io [IoResource open_read])
 (let rows ($csv/reader (await (open_read "large.csv"))
                         ^^headers ^^own_reader))
 (try
@@ -883,7 +883,7 @@ protocol upgrades. Transport failures use `HttpClientError`.
 Database backends expose the shared Db protocol. Bind SQL values as parameters:
 
 ```gene runnable
-(import $db/sqlite [open Db])
+(import $db/sqlite [Db open])
 (let db (open ":memory:"))
 (try
   (db .Db:exec "create table people (name text)")
@@ -907,7 +907,7 @@ itself: SQLite's pager and journal persist each commit by writing only the
 pages it changed, and nothing is republished.
 
 ```gene
-(import $db/sqlite [open_file Db])
+(import $db/sqlite [Db open_file])
 (let db (open_file "world.sqlite" ^^create ^busy_timeout_ms 5000))
 (db .Db:query_one "PRAGMA journal_mode=WAL")   # durability settings are yours
 (db .Db:exec "PRAGMA synchronous=FULL")
@@ -926,7 +926,7 @@ untrusted values into SQL.
 SQLite also supports synchronous C-backed row visitation:
 
 ```gene runnable
-(import $db/sqlite [open Db visit_text_rows])
+(import $db/sqlite [Db open visit_text_rows])
 (let db (open ":memory:"))
 (let rows [])
 (try
@@ -959,7 +959,7 @@ blocked until the native borrow ends. See the
 For Gene data, start with the data-only serde pair:
 
 ```gene runnable
-(import $serde [write_data read_data])
+(import $serde [read_data write_data])
 (let original {^name "Ada" ^scores [3 5]})
 (== original (read_data (write_data original))) # true
 ```
@@ -971,7 +971,7 @@ restore hooks require an explicit trusted opt-in.
 For durable named records, create a state directory and use a Store backend:
 
 ```gene
-(import $store/fs [open Store])
+(import $store/fs [Store open])
 (let state (open ^root ".state"))
 (try
   (state .Store:put "settings" {^theme "dark"})
@@ -991,7 +991,7 @@ changing a serde limit must not silently restore older committed state.
 ## Logging
 
 ```gene runnable
-(import $log [new_logger log_debug])
+(import $log [log_debug new_logger])
 (let logger (new_logger "app/demo" ^payload {^component "example"}))
 (logger .info "ready" ^payload {^items 3})
 (log_debug logger $"details: ${[1 2 3]}")

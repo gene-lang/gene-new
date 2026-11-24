@@ -1,4 +1,4 @@
-(import Section Figure ^from "../../../src/model")
+(import Figure Section ^from "../../../src/model")
 (import RenderRec ^from "./contracts")
 (impl RenderRec for Section ^^export
   (message render [ops] : Str

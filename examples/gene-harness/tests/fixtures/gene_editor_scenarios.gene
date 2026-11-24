@@ -15,7 +15,7 @@
 
 (mod gene_editor_scenarios ^profile web)
 
-(import mount_editor editor_document EditorDocument EditorServices Editor
+(import Editor EditorDocument EditorServices editor_document mount_editor
   ^from "../../client/components/gene_editor.gene")
 
 (type Scenario ^props {

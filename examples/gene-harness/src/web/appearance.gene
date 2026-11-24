@@ -4,7 +4,7 @@
 (import installed_themes theme_catalog themes_revision ^from "./theme_registry")
 (import active_theme_assets theme_preview_asset ^from "./theme_assets")
 (import cookie_value request_data response ^from "./request")
-(import AppearanceError AppearanceChanged ^from "../runtime/appearance")
+(import AppearanceChanged AppearanceError ^from "../runtime/appearance")
 (import publish ^from "../kernel")
 
 (const cookie_name "gene_harness_appearance")

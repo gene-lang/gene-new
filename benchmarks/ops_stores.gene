@@ -1,5 +1,5 @@
 # Focused control using the unchanged loops from the full operation benchmark.
-(import empty_loop typed_counter float_local_plain float_local_typed ^from "./ops")
+(import empty_loop float_local_plain float_local_typed typed_counter ^from "./ops")
 
 (fn main [args] : Int
   (let n 10000000)

@@ -1,12 +1,12 @@
 (import $test/[describe it run])
-(import $store/fs/[open:store_open Store])
+(import $store/fs/[Store open:store_open])
 (import
+  PluginMetadataError
+  contribution_data
+  descriptor_data
   remember_descriptor
   remember_observation
   saved_metadata
-  contribution_data
-  descriptor_data
-  PluginMetadataError
   ^from "../../../src/storage/plugin_metadata")
 
 (describe "Registry requirement metadata"

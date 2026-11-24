@@ -1,6 +1,6 @@
 # Shared native/web utterance transitions; callbacks cannot reorder or revive input.
 (mod voice_transitions ^profile web)
-(import text flag ^from "./launcher.gene")
+(import flag text ^from "./launcher.gene")
 
 # Allow slower local models to finish a backlog, while keeping a finite bound.
 (fn recognition_timeout_ms [audio_ms : Int] : Int

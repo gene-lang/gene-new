@@ -1,16 +1,16 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import
-  open_driver
-  grant_window
-  grant_browser
-  observe
+  ComputerError
   action
   action_receipt
-  targets
   close_session
+  grant_browser
+  grant_window
   normalize_result
-  ComputerError
+  observe
+  open_driver
+  targets
   ^from "." ^pkg "computer")
 
 (describe "Scoped computer actions"

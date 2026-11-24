@@ -1,5 +1,5 @@
 # F: Weight as explicit entries (one matcher + handler per receiver type).
-(import Section Article Figure ^from "../model")
+(import Article Figure Section ^from "../model")
 (import Chart ^from "../extensions/chart")
 (import Table ^from "../extensions/table")
 (import entry ^from "./dispatch")

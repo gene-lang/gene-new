@@ -1,4 +1,4 @@
-(import read_models_file write_models_file ModelsFileError ^from "../../src/public/models_file")
+(import ModelsFileError read_models_file write_models_file ^from "../../src/public/models_file")
 
 (fn main [args] : Int
   (let root args/0)

@@ -1,6 +1,6 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_session_service close_session_service create_session
+(import close_session_service create_session open_session_service
   ^from "../../../src/web/session_service")
 (import safe_publish update_notification ^from "../../../src/notifications/publisher")
 (import inbox_snapshot message_detail ^from "../../../src/notifications/inbox")
@@ -10,7 +10,7 @@
 (import ui_settings ^from "../../../src/ui/state")
 (import row ^from "../../../src/kernel")
 (import list_sessions ^from "../../../src/runtime/sessions")
-(import command_receipt cancel_command ^from "../../../src/runtime/commands")
+(import cancel_command command_receipt ^from "../../../src/runtime/commands")
 (import $store/fs/[Store open:store_open])
 
 (fn finished [runtime, session, id]

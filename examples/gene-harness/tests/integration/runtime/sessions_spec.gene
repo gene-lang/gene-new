@@ -1,20 +1,20 @@
 # Tests src/runtime/sessions.gene.
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_event_store close_event_store append_core_event record_core_state
+(import append_core_event close_event_store open_event_store record_core_state
   ^from "../../../src/storage/state")
 (import
-  open_session_manager
   close_session_manager
   create_session
+  leave_session
   list_sessions
   load_session
-  view_session
-  leave_session
-  unload_session
-  unload_idle_sessions
-  update_session
+  open_session_manager
   session_busy?
+  unload_idle_sessions
+  unload_session
+  update_session
+  view_session
   ^from "../../../src/runtime/sessions")
 (import append_message ^from "../../../src/agents/history")
 

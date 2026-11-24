@@ -1,5 +1,5 @@
 (import $test/[describe it])
-(import resolve_wait_receipt poll_wait_receipt ^from "../../../src/cli/client")
+(import poll_wait_receipt resolve_wait_receipt ^from "../../../src/cli/client")
 (import CliError ^from "../../../src/cli/options")
 
 (describe "CLI continuation receipt resolution"

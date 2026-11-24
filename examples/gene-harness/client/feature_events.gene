@@ -1,7 +1,7 @@
 # Validated stream/local events are observed here. A listener cannot mutate the
 # coordinator's payload, break core handling, or survive its owner's disposal.
 (mod feature_events ^profile web)
-(import items text flag ^from "../src/common/launcher.gene")
+(import flag items text ^from "../src/common/launcher.gene")
 
 (type FeatureEvents ^props {^listeners (List Any) ^sequence Int})
 

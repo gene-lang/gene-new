@@ -37,20 +37,20 @@
 (mod gene_editor ^profile web)
 
 (import
-  line_starts
-  line_index
-  line_span
-  line_col
-  position_label
-  slice_utf16
-  diff_rows
   changed_rows
-  log_entry
-  trim_log
-  visible_lines
+  diff_rows
+  draft
   indent_style
   kind_glyph
-  draft
+  line_col
+  line_index
+  line_span
+  line_starts
+  log_entry
+  position_label
+  slice_utf16
+  trim_log
+  visible_lines
   ^from "./gene_editor_model.gene")
 
 # ---------------------------------------------------------------------------

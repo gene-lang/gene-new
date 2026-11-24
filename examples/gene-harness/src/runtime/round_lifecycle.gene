@@ -11,7 +11,7 @@
 # Handlers are `round_lifecycle` rows {^name ^events [...] ^handle}; the
 # delegation host's are native rows, and any plugin may add its own.
 (mod round_lifecycle)
-(import registry contribute ^from "../kernel")
+(import contribute registry ^from "../kernel")
 (import current_snapshot ^from "./composition")
 (import HarnessError ^from "../errors")
 

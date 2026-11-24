@@ -1,7 +1,7 @@
 # The loop owns request projection, receipt fields and the matching protocol
 # record. Question and delegation resumptions use exactly the same preparation.
 (mod next_request)
-(import bounded_request append_message write_body ^from "./history")
+(import append_message bounded_request write_body ^from "./history")
 (import request_sources ^from "./turn_participation")
 (import append_core_event ^from "../storage/state")
 

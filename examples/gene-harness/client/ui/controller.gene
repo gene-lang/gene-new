@@ -1,33 +1,33 @@
 # Workspace panel requests, actions and layout; independent of chat drafts.
 (mod harness_ui_controller ^profile web)
 (import update_ratio ^from "../contrast.gene")
-(import BrowserAppearance change_appearance appearance_control load_preview
+(import BrowserAppearance appearance_control change_appearance load_preview
   ^from "../appearance.gene")
 (import storage_get storage_remove ^from "../workspace_storage.gene")
 (import api_root ^from "../../src/web/contract.gene")
 (import Notices ^from "../notices.gene")
 (import
-  UiNode
   UiClient
   UiNavigation
-  text
-  flag
-  copy_map
+  UiNode
   body_args
-  notice
-  state_key
-  saved_view
-  pending_key
-  persist_view
-  persist_pending
-  field_value
-  sync_controls
   clear_saved_drafts
+  copy_map
+  field_value
+  flag
+  notice
+  pending_key
+  persist_pending
+  persist_view
+  saved_view
+  state_key
+  sync_controls
+  text
   ^from "./model.gene")
 (import apply_tree ^from "./tree.gene")
 (import revision_before ^from "../state.gene")
 (import create_sidebar ^from "../sidebar.gene")
-(import navigate update_views install_router capture_view restore_focus update_url layout
+(import capture_view install_router layout navigate restore_focus update_url update_views
   ^from "./router.gene")
 
 (fn outlet_nodes [ui : UiClient] : (List Any)

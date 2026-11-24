@@ -1,25 +1,25 @@
 (import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
 (import
+  RoundError
+  close_session_service
   create_session
   edit_session
-  remove_session
-  close_session_service
   list_sessions
   queue_snapshot
-  RoundError
+  remove_session
   ^from "../../../src/web/session_service")
 (import
+  SessionError
   create_session:create_record
-  view_session
+  delete_session
   require_record
   update_session
-  delete_session
-  SessionError
+  view_session
   ^from "../../../src/runtime/sessions")
-(import submit_command cancel_command ^from "../../../src/runtime/commands")
+(import cancel_command submit_command ^from "../../../src/runtime/commands")
 (import start_host stop_host ^from "../../web_support")
-(import connect api ^from "../../../src/cli/client")
+(import api connect ^from "../../../src/cli/client")
 (import CliError ^from "../../../src/cli/options")
 
 (describe "Conversation row actions"

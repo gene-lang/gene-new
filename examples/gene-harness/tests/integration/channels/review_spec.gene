@@ -3,45 +3,45 @@
 (import fixture receive wait_round ^from "./service_spec")
 (import fixture:delivery_fixture intent ^from "./handoff_spec")
 (import fixture:transport_fixture ^from "./transport_spec")
-(import open_channel_store close_channel_store mutate snapshot read collect_records
+(import close_channel_store collect_records mutate open_channel_store read snapshot
   ^from "../../../src/channels/store")
 (import
+  delivery_status
   drain_session
   handoff_inputs
   handoff_outputs
+  output_intent
   queue_progress
   tick_channels
-  delivery_status
-  output_intent
   ^from "../../../src/channels/service")
-(import pending_parts claim_batch queue_status resume_queue resolve_claim
+(import claim_batch pending_parts queue_status resolve_claim resume_queue
   ^from "../../../src/channels/queue")
 (import authorize_parts ^from "../../../src/channels/authority")
-(import pending_ingress defer_handoff ^from "../../../src/channels/ingress")
+(import defer_handoff pending_ingress ^from "../../../src/channels/ingress")
 (import event ^from "./service_spec")
-(import submit snapshot:browser_snapshot close_session_service
+(import close_session_service snapshot:browser_snapshot submit
   ^from "../../../src/web/session_service")
 (import unload_session ^from "../../../src/runtime/sessions")
 (import
-  queue_output
   accept_output
   begin_part
-  finish_part
-  reconcile_output
-  due_output
-  resolve_output
-  output_result
   deliver_output
+  due_output
+  finish_part
+  output_result
+  queue_output
+  reconcile_output
+  resolve_output
   ^from "../../../src/channels/delivery")
-(import open_api close_api ^from "../../../src/builtin/slack/api")
-(import open_transport close_transport socket_session ^from "../../../src/builtin/slack/transport")
+(import close_api open_api ^from "../../../src/builtin/slack/api")
+(import close_transport open_transport socket_session ^from "../../../src/builtin/slack/transport")
 (import ChannelError key ^from "../../../src/channels/model")
 (import decode_text ^from "../../../src/builtin/slack/text")
 (import render_reply ^from "../../../src/builtin/slack/render")
 (import prune ^from "../../../src/channels/retention")
 (import round_state ^from "../../../src/runtime/round_controller")
-(import record_core_state flush_event_store ^from "../../../src/storage/state")
-(import $store/fs/[open:store_open Store])
+(import flush_event_store record_core_state ^from "../../../src/storage/state")
+(import $store/fs/[Store open:store_open])
 (import receive_slack ^from "../../channel_support")
 (import local_channel_host ^from "../../../src/channels/host")
 (import api_adapter ^from "../../../src/builtin/slack/adapter")

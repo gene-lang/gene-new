@@ -1,5 +1,5 @@
 (mod repl)
-(import Plugin PluginHost OperatorHost ^from "../plugin_api")
+(import OperatorHost Plugin PluginHost ^from "../plugin_api")
 (import contribute_doc ^from "../public/documentation")
 
 (fn repl [] : Plugin

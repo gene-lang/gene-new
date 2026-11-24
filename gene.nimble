@@ -99,6 +99,9 @@ task tools, "Build gene-fmt, gene-lsp, and gene-viewer":
 task migrate, "Build the flat-clause source migration tool":
   exec "nim c --path:src --hints:off -o:bin/migrate_flat_syntax tools/migrate_flat_syntax.nim"
 
+task sort_imports, "Build the import-selector sorting tool":
+  exec "nim c --path:src --hints:off -o:bin/sort_imports tools/sort_imports.nim"
+
 task test, "Run the test suite":
   exec "nim c -r -d:geneScopeReuseTests -d:geneInertStampTests -d:geneFastLoopTests --path:src --hints:off tests/test_all.nim"
   exec "nim c -r -d:genePollWindowTests --path:src --hints:off tests/test_poll_window.nim"

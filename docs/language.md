@@ -691,22 +691,23 @@ several exports. Attach an alias without spaces around the colon.
 
 ```gene
 (import twice ^from "./stats.gene")
-(import twice:double half ^from "./stats.gene")
+(import half twice:double ^from "./stats.gene")
 (import *:stats ^from "./stats.gene")
 ```
 
 `^from` follows the selectors. If the import does not fit on one line, the
 formatter keeps the selectors on the first line and moves `^from` to a
 continuation line; a selector list too long for that line gets one selector
-per line.
+per line. Write capitalised selectors before lower-case ones, alphabetically
+within each group, as in `(import A B a b)`.
 
 Use `/` to select through exported namespaces. A qualified selector binds its
 last segment by default. Groups can nest and share the prefix before the vector.
 These two imports have the same effect when used separately.
 
 ```gene
-(import stats/mean:average stats/sample/min stats/sample/max ^from "./metrics")
-(import stats/[mean:average sample/[min max]] ^from "./metrics")
+(import stats/mean:average stats/sample/max stats/sample/min ^from "./metrics")
+(import stats/[mean:average sample/[max min]] ^from "./metrics")
 ```
 
 Both bind `average`, `min`, and `max`. A selector ending in a namespace

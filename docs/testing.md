@@ -82,7 +82,7 @@ deferred bodies:
 
 ```gene
 # tests/list_spec.gene
-(import $test [describe context it before_each assert_equal run])
+(import $test [assert_equal before_each context describe it run])
 
 (describe "a list"
   (before_each [t]

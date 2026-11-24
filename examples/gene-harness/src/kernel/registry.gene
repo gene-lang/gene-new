@@ -5,11 +5,11 @@
 (import validate_discovery_metadata ^from "../registries/contracts")
 (import with_callback_budget ^from "../runtime/execution_budget")
 (import flush_event_store ^from "../storage/state")
-(import run_composition_change queue_composition_change current_snapshot immutable_view
+(import current_snapshot immutable_view queue_composition_change run_composition_change
   ^from "../runtime/composition")
-(import retain_callback retained_callback? expire_scope_callbacks
+(import expire_scope_callbacks retain_callback retained_callback?
   ^from "../runtime/retained_callbacks")
-(import invoke_supervised apply_argument_list ^from "./invoke")
+(import apply_argument_list invoke_supervised ^from "./invoke")
 
 (protocol Composer
   (message changed [] : Nil)

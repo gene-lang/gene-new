@@ -2,7 +2,7 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import evaluate_turn ^from "../../../src/agents/turn_eval")
-(import new_harness shutdown_harness contribute doc ^from "../../../src/kernel")
+(import contribute doc new_harness shutdown_harness ^from "../../../src/kernel")
 
 (describe "Harness turn evaluation"
   (it "preserves concurrent patches across a suspended durable response write" []

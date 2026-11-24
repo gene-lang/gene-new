@@ -1,5 +1,5 @@
 (mod notifications)
-(import Plugin PluginHost NotificationHost ^from "../plugin_api")
+(import NotificationHost Plugin PluginHost ^from "../plugin_api")
 
 (fn notifications [] : Plugin
   (Plugin ^id "notifications" ^requires ["notifications/host"]

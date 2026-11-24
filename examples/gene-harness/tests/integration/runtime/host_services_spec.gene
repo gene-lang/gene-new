@@ -1,12 +1,12 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
-(import acquire_workspace_lock close_workspace_lock WorkspaceInUse
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
+(import WorkspaceInUse acquire_workspace_lock close_workspace_lock
   ^from "../../../src/runtime/workspace_lock")
 (import HostServiceError ^from "../../../src/runtime/host_services")
 (import Profile ^from "../../../src/profiles/profile")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
-(import open_event_store close_event_store append_core_event plugin_state
+(import append_core_event close_event_store open_event_store plugin_state
   ^from "../../../src/storage/state")
 
 (describe "Real host service startup and unwind"

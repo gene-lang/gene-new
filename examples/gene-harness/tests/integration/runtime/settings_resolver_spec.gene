@@ -2,14 +2,14 @@
 # settings, shared defaults read on use, and empty configurations.
 (import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
-(import submit_round round_state close_round_controller
+(import close_round_controller round_state submit_round
   ^from "../../../src/runtime/round_controller")
 (import create_session ^from "../../../src/runtime/sessions")
 (import effective_config settings_state ^from "../../../src/runtime/settings_resolver")
 (import read_setting reset_setting ^from "../../../src/runtime/workspace_config")
-(import write_shared_settings shared_settings_root ^from "../../../src/runtime/shared_settings")
+(import shared_settings_root write_shared_settings ^from "../../../src/runtime/shared_settings")
 
 # The configuration bootstrap wrote before empty configurations.
 (fn materialized_defaults []

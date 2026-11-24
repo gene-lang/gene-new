@@ -5,9 +5,9 @@
 (import baseline_profile ^from "../../src/profiles/baseline")
 (import callback_plugin ^from "../support")
 (import slack ^from "../../src/builtin/slack")
-(import open_authority configure_account configure_route close_channel_store
+(import close_channel_store configure_account configure_route open_authority
   ^from "../../src/channels/authority")
-(import model_callback remote_api event crash install_channel_crash ^from "./channel_recovery")
+(import crash event install_channel_crash model_callback remote_api ^from "./channel_recovery")
 
 (fn main [args]
   (let root args/0) (let role args/1) (let point args/2) (let other args/3)

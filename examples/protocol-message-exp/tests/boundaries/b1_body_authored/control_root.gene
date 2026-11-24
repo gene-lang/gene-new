@@ -1,4 +1,4 @@
-(import Section Article Figure ^from "../../../src/model")
+(import Article Figure Section ^from "../../../src/model")
 (import Render ^from "../../../src/contracts")
 (import_impl Render for Section ^from "../b1_recursion/support")
 (import_impl Render for Article ^from "../../../src/policies/plain")

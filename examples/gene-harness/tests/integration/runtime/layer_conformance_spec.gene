@@ -3,12 +3,12 @@
 # completeness has its own direct spec in tests/integration/agents/.
 (import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import profile_admissions ^from "../../../src/profiles/profile")
-(import uninstall put_cordis_plugin status_of ^from "../../../src/kernel")
+(import put_cordis_plugin status_of uninstall ^from "../../../src/kernel")
 (import current_snapshot ^from "../../../src/runtime/composition")
-(import create_session submit close_session_service ^from "../../../src/web/session_service")
+(import close_session_service create_session submit ^from "../../../src/web/session_service")
 (import set_plugin_enabled ^from "../../../src/storage/workspace_repair")
 (import events_for ^from "../../../src/storage/state")
 

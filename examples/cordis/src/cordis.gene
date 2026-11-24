@@ -4,58 +4,58 @@
 (mod cordis)
 
 (import
-  InstanceState
-  PluginCallKind
-  HookMode
-  ReconcileMode
-  Disposable
-  PluginInvoker
-  PublicationParticipant
-  EffectOwner
-  InvocationLimits
-  RuntimeOptions
-  PluginCall
-  LoaderOptions
-  ServiceKey
-  HookKey
-  Requirement
-  PluginSpec
-  CordisError
-  UndeclaredRequirement
-  ServiceUnavailable
-  DuplicateProvider
-  ServiceContractError
-  ConfigValidationError
-  PluginActivationError
-  PluginCleanupError
-  DependenciesUnavailable
-  InstanceDisposed
-  ContextDisposed
-  EffectDisposed
-  ContinuationAlreadyCalled
-  HookDispatchError
-  CompositionError
-  ReloadRejected
-  RecoveryRequired
-  Runtime
-  Context
   ActivationContext
-  EffectScope
+  CompositionError
+  ConfigValidationError
+  Context
+  ContextDisposed
+  ContinuationAlreadyCalled
+  CordisError
+  DependenciesUnavailable
+  Disposable
+  DuplicateProvider
+  EffectDisposed
   EffectLease
-  ProviderLease
-  PluginInstance
+  EffectOwner
+  EffectScope
+  HookDispatchError
+  HookKey
+  HookMode
   HookSubject
-  RealmId
+  InstanceDisposed
+  InstanceState
+  InvocationLimits
   Loader
+  LoaderOptions
+  PluginActivationError
+  PluginCall
+  PluginCallKind
+  PluginCleanupError
+  PluginInstance
+  PluginInvoker
+  PluginSpec
+  ProviderLease
+  PublicationParticipant
+  RealmId
+  ReconcileMode
+  RecoveryRequired
+  ReloadRejected
+  Requirement
   RetirementTicket
-  invocation_limits
-  service_key
-  hook_key
+  Runtime
+  RuntimeOptions
+  ServiceContractError
+  ServiceKey
+  ServiceUnavailable
+  UndeclaredRequirement
+  config_update
   default_plugin_invoker
+  hmr_reloaded
+  hook_key
+  invocation_limits
   invoke_effect_owner
+  new_runtime
+  service_key
   spawn_effect_call
   spawn_host_call
-  config_update
-  hmr_reloaded
-  new_runtime
   ^from "./runtime" ^^export)

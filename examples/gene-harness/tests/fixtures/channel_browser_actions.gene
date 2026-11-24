@@ -1,4 +1,4 @@
-(import connect api ^from "../../src/cli/client")
+(import api connect ^from "../../src/cli/client")
 
 (fn main [args]
   (let root args/0) (let action args/1)

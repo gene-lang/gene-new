@@ -1,24 +1,24 @@
 # Tests src/web/session_service.gene.
 (import $test/[describe it])
-(import isolated run_spec test_service set_test_provider fixture_path ^from "../../support")
+(import fixture_path isolated run_spec set_test_provider test_service ^from "../../support")
 (import
-  open_session_service
-  close_session_service
-  create_session
-  submit
-  receipt
-  answer
-  snapshot
-  browser_request
-  host_status
-  edit_session
   acknowledge_attention
-  list_sessions
+  answer
+  browser_request
+  close_session_service
   command
+  create_session
+  edit_session
+  host_status
+  list_sessions
+  open_session_service
+  receipt
   session_card_action
   session_card_receipt
+  snapshot
+  submit
   ^from "../../../src/web/session_service")
-(import update_session load_session unload_session list_sessions:runtime_list_sessions
+(import list_sessions:runtime_list_sessions load_session unload_session update_session
   ^from "../../../src/runtime/sessions")
 (import transcript ^from "../../../src/agents/turn_loop")
 (import events_for ^from "../../../src/storage/state")
@@ -802,7 +802,7 @@ child/.detach
         (let source
           (quote
             (mod plugin
-              (import Plugin PluginHost CommandResult ^from "src/plugin_api.gene")
+              (import CommandResult Plugin PluginHost ^from "src/plugin_api.gene")
               (fn init [descriptor]
                 (Plugin ^id "counter" ^provides [["commands" "counter"] ["web_components" "counter"] ["web_components" "welcome"]] ^activate (fn [host] (host .PluginHost:contribute "commands" {^name "counter" ^usage "/counter" ^doc "Increment the persistent counter." ^run (fn [ctx] (let state (?? host/.PluginHost:state {^count 0})) (host .PluginHost:update_state {^count (+ state/count 1)}) (CommandResult ^display "Counted."))}) (host .PluginHost:contribute "web_components" {^name "counter" ^slot "sidebar" ^render (fn [context] (let state (?? host/.PluginHost:state {^count 0})) `(section ^class_name "web_card" (strong %state/count) (button ^command "/counter" "Add")))}) (host .PluginHost:contribute "web_components" {^name "welcome" ^slot "welcome" ^view (quote (section (h2 "Custom welcome") (button ^prompt "Build a feature" "Start")))})))))))
         (try

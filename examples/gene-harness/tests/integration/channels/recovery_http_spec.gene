@@ -1,7 +1,7 @@
 (import $test/[describe it])
-(import isolated run_spec fixture_path ^from "../../support")
+(import fixture_path isolated run_spec ^from "../../support")
 (import ready_host stop_host ^from "../../web_support")
-(import connect api ^from "../../../src/cli/client")
+(import api connect ^from "../../../src/cli/client")
 (import read_count remote_messages ^from "../../fixtures/channel_recovery")
 
 (fn start_peer [root : Str, role : Str, point : Str, other : Str]

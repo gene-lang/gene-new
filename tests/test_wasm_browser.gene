@@ -2,7 +2,7 @@
 # Only the browser ABI adapter and browser-executed checks need JavaScript.
 # Run from the repository root with a threads-enabled Gene binary:
 # gene run tests/test_wasm_browser.gene BUILD_DIR CHROMIUM REPORT_JSON
-(import $net/http [listen serve stop Response text])
+(import $net/http/[Response listen serve stop text])
 
 (fn main [args] : Int
   ($assert (== ($size args/.body) 3) "expected BUILD_DIR CHROMIUM REPORT_JSON")

@@ -1,4 +1,4 @@
-(import Section Figure Article ^from "../../../src/model")
+(import Article Figure Section ^from "../../../src/model")
 (import Chart ^from "../../../src/extensions/chart")
 (import operation ^from "./root")
 (import events ^from "./trace")

@@ -4,7 +4,7 @@
 (import configure_account configure_route ^from "../../../src/channels/authority")
 (import bind_workspace lookup ^from "../../../src/channels/service")
 (import channel_request ^from "../../../src/channels/http")
-(import open_users lookup_name profile_name thread_url ^from "../../../src/builtin/slack/users")
+(import lookup_name open_users profile_name thread_url ^from "../../../src/builtin/slack/users")
 (import ChannelError ^from "../../../src/channels/model")
 (import message_after? ^from "../../../src/channels/model")
 (import last_thread_message ^from "../../../src/channels/thread_links")

@@ -5,11 +5,11 @@
 (import Plugin PluginHost ^from "../src/plugin_api")
 (import slack ^from "../src/builtin/slack")
 (import default_driver ^from "../src/builtin/slack/transport")
-(import open_session_service close_session_service ^from "../src/web/session_service")
+(import close_session_service open_session_service ^from "../src/web/session_service")
 (import setup_account setup_route ^from "../src/channels/setup")
-(import open_api close_api api_call load_socket_library read_slack_credentials
+(import api_call close_api load_socket_library open_api read_slack_credentials
   ^from "../src/builtin/slack/api")
-(import snapshot mutate ^from "../src/channels/store")
+(import mutate snapshot ^from "../src/channels/store")
 (import pending_output ^from "../src/channels/delivery")
 (import round_state ^from "../src/runtime/round_controller")
 

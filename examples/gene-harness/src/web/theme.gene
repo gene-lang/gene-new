@@ -1,7 +1,7 @@
 # Theme resolution and generation. Values belong in themes/, never host rules.
 (mod harness_web_theme)
 (import ThemeError theme_error ^from "./theme_error" ^^export)
-(import $css/[css rule decl_value font_face scoped class_name render:render_css])
+(import $css/[class_name css decl_value font_face render:render_css rule scoped])
 (import narrow_minimum ^from "../public/web_style")
 (import rules:narrow_rules ^from "./style/narrow")
 (import rules:wide_rules ^from "./style/wide")

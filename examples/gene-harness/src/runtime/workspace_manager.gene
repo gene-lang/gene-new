@@ -5,10 +5,10 @@
 # child directory of ROOT/workspaces, named by that directory; there is no
 # separate registry. Archive moves a workspace to ROOT/archive.
 (mod workspace_manager_service)
-(import read_workspace_settings write_workspace_settings update_workspace_settings validate_settings
+(import read_workspace_settings update_workspace_settings validate_settings write_workspace_settings
   ^from "./workspace_settings")
-(import acquire_workspace_lock close_workspace_lock WorkspaceInUse ^from "./workspace_lock")
-(import connect api connection_link ^from "../cli/client")
+(import WorkspaceInUse acquire_workspace_lock close_workspace_lock ^from "./workspace_lock")
+(import api connect connection_link ^from "../cli/client")
 (import byte_prefix byte_suffix ^from "../public/text")
 (import parse_record render_text ^from "../public/log_record")
 (import redact_secrets ^from "../public/log_redaction")

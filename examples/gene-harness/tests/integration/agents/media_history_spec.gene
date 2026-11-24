@@ -1,17 +1,17 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import
   append_message
-  history_state
   compact_history
+  context_bytes
   history_media_refs
+  history_state
   provider_context
   recall_body
-  context_bytes
   ^from "../../../src/agents/history")
-(import open_media_store put_media_base64 media_bytes ^from "../../../src/storage/media")
+(import media_bytes open_media_store put_media_base64 ^from "../../../src/storage/media")
 
 (describe "Attachment retention during compaction"
   (it "preserves a deduplicated catalog through summaries and restart without resending pixels" []

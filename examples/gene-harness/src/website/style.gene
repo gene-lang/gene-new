@@ -7,7 +7,7 @@
 # .css route.
 
 (import compact_query ^from "../public/web_style")
-(import $css/[css rule decl media container scoped class_name render:render_css])
+(import $css/[class_name container css decl media render:render_css rule scoped])
 
 (var site_styles
   (scoped "harness_site"

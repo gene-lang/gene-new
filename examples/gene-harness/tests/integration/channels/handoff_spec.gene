@@ -1,22 +1,22 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_authority configure_account configure_route authorize snapshot close_channel_store
+(import authorize close_channel_store configure_account configure_route open_authority snapshot
   ^from "../../../src/channels/authority")
-(import pending_ingress finish_handoff ^from "../../../src/channels/ingress")
-(import open_queues configure_queues enqueue ^from "../../../src/channels/queue")
+(import finish_handoff pending_ingress ^from "../../../src/channels/ingress")
+(import configure_queues enqueue open_queues ^from "../../../src/channels/queue")
 (import
-  queue_output
-  pending_output
   accept_output
-  output_result
-  reconcile_output
   begin_part
-  finish_part
-  recover_deliveries
   deliver_output
+  finish_part
+  output_result
+  pending_output
+  queue_output
+  reconcile_output
   reconcile_remote
+  recover_deliveries
   ^from "../../../src/channels/delivery")
-(import open_api close_api ^from "../../../src/builtin/slack/api")
+(import close_api open_api ^from "../../../src/builtin/slack/api")
 (import mutate ^from "../../../src/channels/store")
 (import ChannelError key ^from "../../../src/channels/model")
 (import prune ^from "../../../src/channels/retention")

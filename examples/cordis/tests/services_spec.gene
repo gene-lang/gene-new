@@ -1,21 +1,21 @@
 (mod cordis_services_spec)
 
-(import $test/[describe it after_each assert_equal assert_raises])
+(import $test/[after_each assert_equal assert_raises describe it])
 
 (import
-  InstanceState
-  RuntimeOptions
-  ServiceKey
-  Requirement
-  PluginSpec
-  DuplicateProvider
-  DependenciesUnavailable
-  ServiceContractError
   ConfigValidationError
-  invocation_limits
-  service_key
+  DependenciesUnavailable
+  DuplicateProvider
+  InstanceState
+  PluginSpec
+  Requirement
+  RuntimeOptions
+  ServiceContractError
+  ServiceKey
   default_plugin_invoker
+  invocation_limits
   new_runtime
+  service_key
   ^from "../src/cordis")
 
 (protocol Greeting

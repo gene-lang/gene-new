@@ -5,19 +5,19 @@
 (mod cards)
 (import CardChanged publish ^from "../kernel")
 (import
+  copy_data
   core_state
   core_states
-  record_core_state
   flush_event_store
-  copy_data
   next_sequence
+  record_core_state
   stream_key
   ^from "../storage/state")
 (import acquire_snapshot release_snapshot ^from "./composition")
 (import workspace_bindings ^from "../agents/harness_turn")
 (import OutcomeError append_plugin_prompt ^from "../agents/outcome")
 (import evaluate_response ^from "../agents/eval_site")
-(import bounded_card_view tree_has_commands? WebComponentError ^from "../ui/components")
+(import WebComponentError bounded_card_view tree_has_commands? ^from "../ui/components")
 (import view_outline ^from "../ui/outline")
 (import load_session require_record with_session_gate ^from "./sessions")
 

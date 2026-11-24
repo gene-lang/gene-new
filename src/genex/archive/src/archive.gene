@@ -1,5 +1,5 @@
 (mod archive)
-(import $io [AsyncReader AsyncWriter IoResource IoBusy IoClosed IoError])
+(import $io/[AsyncReader AsyncWriter IoBusy IoClosed IoError IoResource])
 
 (type ArchiveError : Error
   (ctor [message : Str] (set self/_msg message)))

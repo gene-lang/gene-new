@@ -1,10 +1,10 @@
 # M2: operational records beside durable turn, model and console events.
 (import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
-(import submit_round close_round_controller ^from "../../../src/runtime/round_controller")
-(import log_reset log_recent ^from "../../../src/kernel/log")
+(import close_round_controller submit_round ^from "../../../src/runtime/round_controller")
+(import log_recent log_reset ^from "../../../src/kernel/log")
 
 (fn records_of [records, type : Str] : Any
   ($filter records (fn [record] (== record/type type))))

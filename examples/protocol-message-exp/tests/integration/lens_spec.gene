@@ -1,6 +1,6 @@
 (mod lens_integration_spec)
 
-(import $test/[describe it assert_equal assert_raises])
+(import $test/[assert_equal assert_raises describe it])
 (import core_document late_document ^from "../../src/documents")
 (import operation:plain_core ^from "../../src/roots/plain")
 (import operation:compact_core ^from "../../src/roots/compact")
@@ -18,7 +18,7 @@
 (import operation:f_weight_late ^from "../../src/baseline/weight_late_root")
 (import operation:closure_plain_late ^from "../../src/variants/closure/plain_late")
 (import operation:typed_plain_late ^from "../../src/variants/typed/plain_late")
-(import Section Article Figure ^from "../../src/model")
+(import Article Figure Section ^from "../../src/model")
 (import Chart ^from "../../src/variants/named/chart")
 (import PlainRender ^from "../../src/variants/named/plain_policy")
 (import CompactRender ^from "../../src/variants/named/compact_policy")

@@ -1,6 +1,6 @@
 (mod models_picker ^profile web)
 (import api_root ^from "../../src/web/contract.gene")
-(import text flag items ^from "../../src/common/launcher.gene")
+(import flag items text ^from "../../src/common/launcher.gene")
 
 (type Picker ^props {^root EventTarget ^bridge Any ^cap Any ^controls EventTarget
   ^button EventTarget ^effort EventTarget ^usage EventTarget ^panel EventTarget ^heading EventTarget ^search EventTarget

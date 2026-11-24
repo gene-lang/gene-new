@@ -1,5 +1,5 @@
 (import $test/[describe it])
-(import new_harness shutdown_harness contribute row ^from "../../../src/kernel")
+(import contribute new_harness row shutdown_harness ^from "../../../src/kernel")
 (import public_contract? ^from "../../../src/runtime/callback_context")
 (import CommandContext ^from "../../../src/plugin_api")
 

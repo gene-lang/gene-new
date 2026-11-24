@@ -3,17 +3,17 @@
 (mod plugin_services)
 (import log_event ^from "../kernel/log")
 (import
-  append_plugin_event
-  prepare_plugin_state
-  plugin_state
   append_core_event
-  record_core_state
+  append_plugin_event
   core_state
   core_states_with_prefix
   flush_event_store
+  plugin_state
+  prepare_plugin_state
+  record_core_state
   ^from "../storage/state")
 (import new_activation_services register_service ^from "./activation_services")
-(import safe_publish update_notification list_source_messages clear_source_message
+(import clear_source_message list_source_messages safe_publish update_notification
   ^from "../notifications/publisher")
 (import HarnessError ^from "../errors")
 

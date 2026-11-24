@@ -1,8 +1,8 @@
 (mod voice_host)
 (import VoiceHost ^from "../plugin_api")
 (import row ^from "../kernel")
-(import voice_output? reset_voice ^from "./voice_state")
-(import service_binding require_service ^from "./service_handles")
+(import reset_voice voice_output? ^from "./voice_state")
+(import require_service service_binding ^from "./service_handles")
 
 (type HostedVoice ^^private ^props {^token Any}
   (impl VoiceHost

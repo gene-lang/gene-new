@@ -1,12 +1,12 @@
 (mod ui_host)
 (import effective_config ^from "./settings_resolver")
-(import UiHost PluginHost ServiceError ^from "../plugin_api")
-(import service_binding require_service ^from "./service_handles")
+(import PluginHost ServiceError UiHost ^from "../plugin_api")
+(import require_service service_binding ^from "./service_handles")
 (import immutable_view ^from "./composition")
-(import validate_ui_settings ui_settings ui_record ^from "../ui/state")
+(import ui_record ui_settings validate_ui_settings ^from "../ui/state")
 (import ui_preview ui_validate_fragment ^from "../ui/views")
 (import list_action_receipts ^from "../ui/action_log")
-(import load_session require_record list_sessions ^from "./sessions")
+(import list_sessions load_session require_record ^from "./sessions")
 
 (fn ui_context_data [runtime, session : Str, state]
   (let loaded (if (== session "") nil else (load_session runtime/sessions session)))

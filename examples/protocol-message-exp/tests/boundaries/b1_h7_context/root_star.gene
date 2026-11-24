@@ -1,5 +1,5 @@
-(import Section Figure ^from "../../../src/model")
-(import Mark RenderBody RenderSep RenderRec RenderTyped Ops ^from "./contracts")
+(import Figure Section ^from "../../../src/model")
+(import Mark Ops RenderBody RenderRec RenderSep RenderTyped ^from "./contracts")
 (import_impl Mark for Figure ^from "./mark_star")
 (import_impl RenderBody for Section ^from "./render_body")
 (import_impl RenderBody for Figure ^from "./render_body")

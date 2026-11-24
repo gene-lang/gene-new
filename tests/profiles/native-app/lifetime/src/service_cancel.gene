@@ -1,5 +1,5 @@
-(import $net/http [listen serve stop status text])
-(import make_graph graph_ok ^from "./mixed_graph.gene")
+(import $net/http/[listen serve status stop text])
+(import graph_ok make_graph ^from "./mixed_graph.gene")
 
 (let AsyncReader $io/AsyncReader)
 (let AsyncWriter $io/AsyncWriter)

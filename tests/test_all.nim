@@ -4,6 +4,7 @@ include test_execution_expiry
 include test_reader
 include test_reader_wrap
 include test_source_index
+include test_sort_imports
 include test_source_outline
 include test_viewer
 include test_viewer_editor

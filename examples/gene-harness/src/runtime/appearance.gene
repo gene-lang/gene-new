@@ -1,6 +1,6 @@
 # Server commands request changes from connected browsers. No workspace file.
 (mod appearance)
-(import publish contribute row ^from "../kernel")
+(import contribute publish row ^from "../kernel")
 (import HarnessEvent ^from "../plugin_api")
 (import AppearanceError ^from "./appearance_error" ^^export)
 (import install_specimen ^from "../web/specimen")

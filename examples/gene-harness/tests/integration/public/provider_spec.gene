@@ -1,8 +1,8 @@
 (import $test/[describe it])
 (import resolve_credential ^from "../../../src/public/provider")
-(import isolated run_spec fixture_path ^from "../../support")
+(import fixture_path isolated run_spec ^from "../../support")
 (import api_connection ^from "../../../src/public/provider_discovery")
-(import $net/http/[listen serve stop json])
+(import $net/http/[json listen serve stop])
 
 (describe "Transport credentials"
   (it "resolves environment credentials without exposing their values in failures" []

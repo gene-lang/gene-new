@@ -1,14 +1,14 @@
 (mod workspace_host)
-(import WorkspaceHost BrowserTarget ServiceError ^from "../plugin_api")
-(import service_binding require_service ^from "./service_handles")
+(import BrowserTarget ServiceError WorkspaceHost ^from "../plugin_api")
+(import require_service service_binding ^from "./service_handles")
 (import immutable_view ^from "./composition")
 (import
-  manager_list
-  manager_snapshot
-  manager_inspect
-  manager_operation
-  manager_open_link
   manager_error
+  manager_inspect
+  manager_list
+  manager_open_link
+  manager_operation
+  manager_snapshot
   ^from "./workspace_manager")
 
 (fn workspace_manager [handle]

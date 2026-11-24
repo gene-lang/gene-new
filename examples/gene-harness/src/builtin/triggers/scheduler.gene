@@ -6,7 +6,7 @@
 # AdmissionHost with the plugin's own `triggers:` initiator.
 (mod trigger_scheduler)
 (import log_event ^from "../../kernel/log")
-(import PluginHost AdmissionHost ServiceError current_workspace ^from "../../plugin_api")
+(import AdmissionHost PluginHost ServiceError current_workspace ^from "../../plugin_api")
 (import *:cron ^from "./schedule/cron")
 (import *:timezone ^from "./schedule/timezone")
 (import *:calendar ^from "./schedule/calendar")

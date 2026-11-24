@@ -1,9 +1,9 @@
 (import $test/[describe it])
-(import isolated run_spec test_service source_path ^from "../../support")
+(import isolated run_spec source_path test_service ^from "../../support")
 (import close_session_service ^from "../../../src/web/session_service")
-(import write_workspace_settings read_workspace_settings
+(import read_workspace_settings write_workspace_settings
   ^from "../../../src/runtime/workspace_settings")
-(import manager_operation manager_list manager_inspect lock_held? ManagerError
+(import ManagerError lock_held? manager_inspect manager_list manager_operation
   ^from "../../../src/runtime/workspace_manager")
 (import row ^from "../../../src/kernel")
 (import acquire_workspace_lock close_workspace_lock ^from "../../../src/runtime/workspace_lock")
@@ -11,7 +11,7 @@
 (import ui_status ^from "../../../src/ui/state")
 (import ui_preview ^from "../../../src/ui/views")
 (import ui_action ui_action_receipt ^from "../../../src/ui/actions")
-(import connect api discover ^from "../../../src/cli/client")
+(import api connect discover ^from "../../../src/cli/client")
 (import cli start_host stop_host ^from "../../web_support")
 
 (fn browser_action [service, named]

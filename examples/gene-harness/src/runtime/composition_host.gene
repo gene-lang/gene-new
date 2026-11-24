@@ -2,10 +2,10 @@
 # leased selection. The plugin receives records instead of the Harness/workspace.
 (mod composition_host)
 (import CompositionHost ^from "../plugin_api")
-(import service_binding require_service ^from "./service_handles")
+(import require_service service_binding ^from "./service_handles")
 (import current_snapshot immutable_view ^from "./composition")
 (import register_plugin ^from "../storage/workspace_activation")
-(import set_plugin_enabled restore_plugin plugin_history plugin_history_page revert_plugin
+(import plugin_history plugin_history_page restore_plugin revert_plugin set_plugin_enabled
   ^from "../storage/workspace_repair")
 
 (type HostedComposition ^^private ^props {^token Any}

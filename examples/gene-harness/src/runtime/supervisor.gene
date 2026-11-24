@@ -2,19 +2,19 @@
 (import argument_values parse_options ^from "../cli/options")
 (import byte_suffix ^from "../public/text")
 (import
-  make_record
   bound_record
+  log_line_budget
+  make_record
   parse_record
   render_text
-  serialize_record
   serialize_line
-  log_line_budget
+  serialize_record
   ^from "../public/log_record")
 (import read_secrets redact_text ^from "../public/log_redaction")
-(import log_start log_configure log_run ^from "../kernel/log")
+(import log_configure log_run log_start ^from "../kernel/log")
 (import initialize_manager_workspace ^from "./workspace_settings")
 (import try_lock_wait ^from "./workspace_lock")
-(import open_host_log write_host_log close_host_log ^from "./host_log")
+(import close_host_log open_host_log write_host_log ^from "./host_log")
 (import $io/[AsyncReader IoResource pipe])
 (import $binary/[concat decode_utf8 from_str get size slice to_str])
 

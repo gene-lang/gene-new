@@ -1,5 +1,5 @@
 (mod slack_channels ^profile web)
-(import text flag ^from "../src/common/launcher.gene")
+(import flag text ^from "../src/common/launcher.gene")
 
 (fn can_share_session? [session : Any] : Bool
   (&& (flag session/slack_available) (== (text session/kind) "interactive")

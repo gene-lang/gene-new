@@ -1,10 +1,10 @@
 # M2: command records and links to their durable command state events.
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
-(import submit_command command_receipt ^from "../../../src/runtime/commands")
-(import log_reset log_recent ^from "../../../src/kernel/log")
+(import command_receipt submit_command ^from "../../../src/runtime/commands")
+(import log_recent log_reset ^from "../../../src/kernel/log")
 
 (fn records_of [records, type : Str] : Any
   ($filter records (fn [record] (== record/type type))))

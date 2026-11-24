@@ -1,8 +1,8 @@
 # Host-owned voice admissions. Optional plugins never own pending HTTP receipts.
 (mod harness_round_client ^profile web)
-(import storage_get storage_set storage_remove ^from "./workspace_storage.gene")
+(import storage_get storage_remove storage_set ^from "./workspace_storage.gene")
 (import api_root ^from "../src/web/contract.gene")
-(import text flag integer ^from "../src/common/launcher.gene")
+(import flag integer text ^from "../src/common/launcher.gene")
 (import voice_draft_key ^from "../src/common/voice_transitions.gene")
 
 (type RoundClient ^props {^workspace Str ^pending Any ^resolving Bool

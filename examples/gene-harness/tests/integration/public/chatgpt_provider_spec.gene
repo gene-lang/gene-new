@@ -3,7 +3,7 @@
 (import chatgpt_row ^from "../../../src/public/chatgpt_provider")
 (import transport_identity ^from "../../../src/public/models")
 (import ProviderError ^from "../../../src/plugin_api")
-(import $net/http/[listen serve stop json Response])
+(import $net/http/[Response json listen serve stop])
 
 (describe "ChatGPT public Responses transport"
   (it "omits unsupported parameters, buffers completion and refuses a changed known account before inference" []

@@ -1,16 +1,16 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
 (import notifications ^from "../../../src/builtin/notifications")
-(import Plugin PluginHost NotificationHost ^from "../../../src/plugin_api")
-(import row resolve ^from "../../../src/kernel")
+(import NotificationHost Plugin PluginHost ^from "../../../src/plugin_api")
+(import resolve row ^from "../../../src/kernel")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 
 (fn stored_notifications []
   (quote
     (mod plugin
-      (import Plugin PluginHost NotificationHost ^from "src/plugin_api.gene")
+      (import NotificationHost Plugin PluginHost ^from "src/plugin_api.gene")
       (fn init [descriptor]
         (Plugin ^id "notifications" ^requires ["notifications/host"]
           ^provides [["functions" "notification_post"] ["functions" "notification_update"]

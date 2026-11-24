@@ -1,5 +1,5 @@
 (mod media)
-(import Plugin PluginHost MediaHost ^from "../plugin_api")
+(import MediaHost Plugin PluginHost ^from "../plugin_api")
 (import contribute_doc ^from "../public/documentation")
 
 (fn media [] : Plugin

@@ -5,11 +5,11 @@
 # rendering and delivery through its `channel_transports` row.
 (mod channel_host)
 (import ChannelHost ServiceError ^from "../plugin_api")
-(import service_binding require_service ^from "../runtime/service_handles")
+(import require_service service_binding ^from "../runtime/service_handles")
 (import immutable_view ^from "../runtime/composition")
 (import public_authority transport_accounts ^from "./authority")
 (import record_ingress ^from "./ingress")
-(import tick_transport report_health ^from "./service")
+(import report_health tick_transport ^from "./service")
 (import transport_name ^from "./model")
 
 (fn channel_service [view]

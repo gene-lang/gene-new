@@ -1,8 +1,8 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import start_host stop_host cli ^from "../../web_support")
-(import connect api wire ^from "../../../src/cli/client")
-(import open_authority configure_account configure_route close_channel_store
+(import cli start_host stop_host ^from "../../web_support")
+(import api connect wire ^from "../../../src/cli/client")
+(import close_channel_store configure_account configure_route open_authority
   ^from "../../../src/channels/authority")
 (import receive_slack ^from "../../channel_support")
 

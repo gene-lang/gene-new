@@ -1,12 +1,12 @@
 # Source ownership and frozen declarative content. No UI, console or model history.
 (mod notification_publisher)
 (import
+  clear_messages
+  inbox_snapshot
+  message_detail
+  notification_error
   post_message
   publish_progress
-  message_detail
-  inbox_snapshot
-  clear_messages
-  notification_error
   ^from "./inbox")
 (import bounded_component_view ^from "../ui/components")
 (import ui_record ui_revision ^from "../ui/state")

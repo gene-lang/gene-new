@@ -12,10 +12,10 @@
 
 (mod log)
 
-(import make_record bound_record serialize_record serialize_line log_line_budget render_text
+(import bound_record log_line_budget make_record render_text serialize_line serialize_record
   ^from "../public/log_record")
 (import read_secrets redact_text ^from "../public/log_redaction")
-(import known_type? default_level missing_target log_levels ^from "./log_catalog")
+(import default_level known_type? log_levels missing_target ^from "./log_catalog")
 
 (const ring_limit 2048)
 

@@ -1,18 +1,18 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import Plugin PluginHost ExecutionLimits ^from "../../../src/plugin_api")
+(import ExecutionLimits Plugin PluginHost ^from "../../../src/plugin_api")
 (import
   new_harness
+  plugin_error
   put_cordis_plugin
+  registry_names
+  row
   shutdown_harness
   status_of
-  row
   uninstall
-  registry_names
-  plugin_error
   ^from "../../../src/kernel")
 (import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
-(import execution_owner execution_budget ^from "../../../src/runtime/execution_budget")
+(import execution_budget execution_owner ^from "../../../src/runtime/execution_budget")
 
 (fn invoke [h, name : Str, args...]
   (let callable (/fn (row h "functions" name)))

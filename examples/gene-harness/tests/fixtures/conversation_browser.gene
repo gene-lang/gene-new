@@ -1,7 +1,7 @@
 # Deterministic, model-free workspace for live conversation UI verification.
 (import png ^from "./png")
-(import open_session_service close_session_service ^from "../../src/web/session_service")
-(import open_media_store put_media media_descriptor ^from "../../src/storage/media")
+(import close_session_service open_session_service ^from "../../src/web/session_service")
+(import media_descriptor open_media_store put_media ^from "../../src/storage/media")
 (fn main [args]
   (let root args/0)
   ($fs/make_dir root)

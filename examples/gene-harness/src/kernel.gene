@@ -3,43 +3,43 @@
 
 (import
   Harness
-  registry
   contribute
-  rows
+  registry
+  registry_names
+  registry_row_records
+  remove_owner
   row
   row_record
-  registry_row_records
-  registry_names
-  remove_owner
+  rows
   ^from "./kernel/registry" ^^export)
-(import invoke_bounded configure_plugin_module ^from "./kernel/invoke" ^^export)
+(import configure_plugin_module invoke_bounded ^from "./kernel/invoke" ^^export)
 (import
-  RoundChanged
   CardChanged
   CommandChanged
-  ModeChanged
-  SessionChanged
   CompositionChanged
-  publish
+  ModeChanged
+  RoundChanged
+  SessionChanged
+  flush_harness
   hydrate_harness_log
   log_append
+  publish
   record_composition_change
-  flush_harness
   ^from "./kernel/events" ^^export)
-(import doc provide resolve withdraw_seam replace ^from "./kernel/seams" ^^export)
+(import doc provide replace resolve withdraw_seam ^from "./kernel/seams" ^^export)
 (import
-  new_harness
-  put_cordis_plugins
   apply_plugin_set
   hide_owner_rows
+  install
+  new_harness
   plugin_error
   put_cordis_plugin
+  put_cordis_plugins
   shutdown_harness
   status_of
   uninstall
-  install
   ^from "./kernel/composition_bridge" ^^export)
 (import describe_plugin_module ^from "./kernel/host" ^^export)
-(import Plugin PluginHost HarnessEvent DurableRecord ExecutionLimits default_execution_limits
+(import DurableRecord ExecutionLimits HarnessEvent Plugin PluginHost default_execution_limits
   ^from "./plugin_api" ^^export)
 (import HarnessError ^from "./errors" ^^export)

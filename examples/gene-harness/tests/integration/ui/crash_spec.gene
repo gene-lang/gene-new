@@ -1,6 +1,6 @@
 (import $test/[describe it])
-(import isolated run_spec fixture_path ^from "../../support")
-(import open_session_service close_session_service ^from "../../../src/web/session_service")
+(import fixture_path isolated run_spec ^from "../../support")
+(import close_session_service open_session_service ^from "../../../src/web/session_service")
 (import row ^from "../../../src/kernel")
 (import list_sessions ^from "../../../src/runtime/sessions")
 (import ui_action ui_action_receipt ^from "../../../src/ui/actions")

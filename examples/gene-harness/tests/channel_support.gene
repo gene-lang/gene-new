@@ -4,7 +4,7 @@
 (import snapshot ^from "../src/channels/store")
 (import record_ingress ^from "../src/channels/ingress")
 (import normalize_envelope ^from "../src/builtin/slack/ingress")
-(import slack_adapter api_adapter ^from "../src/builtin/slack/adapter")
+(import api_adapter slack_adapter ^from "../src/builtin/slack/adapter")
 
 (fn receive_slack [owner, account_id : Str, envelope]
   (let state (snapshot owner))

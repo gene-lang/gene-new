@@ -1,19 +1,19 @@
 # Turn coordination knows phase contracts, never a feature's service object.
 (mod turn_participation)
 (import
-  run_turn_phase
-  reduce_turn_phase
-  begin_turn_transaction
-  release_turn_transaction
-  fail_turn_participant
   ParticipantFailure
+  begin_turn_transaction
+  fail_turn_participant
+  reduce_turn_phase
+  release_turn_transaction
+  run_turn_phase
   ^from "../runtime/turn_participants")
 (import new_runtime_turn_transaction ^from "../runtime/turn_participant_registry")
 (import acquire_snapshot release_snapshot ^from "../runtime/composition")
 (import ParticipantBindings ParticipantCommit ParticipantValidation freeze_bindings
   ^from "../runtime/participant_contract")
 (import freeze_turn_data ^from "../runtime/turn_data")
-(import request_items discard_done_items ^from "./outcome")
+(import discard_done_items request_items ^from "./outcome")
 
 (fn bad_phase_result [transaction, name : Str, phase : Str, message : Str]
   (fail_turn_participant transaction name phase "invalid_result" message))

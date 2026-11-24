@@ -419,7 +419,8 @@ proc pipelineOneLine(v: Value): string =
     result.add renderPipelineStage(stage)
   result.add ')'
 
-proc renderImport(v: Value, indent: int, multiline: bool): string =
+proc renderImport(v: Value, indent: int, multiline: bool,
+                  sortSelectors = false): string =
   ## `^from` follows the selectors. When the selectors still fit on the head
   ## line, a long source property moves to a continuation line; a long
   ## selector list wraps one selector per line instead.
@@ -428,7 +429,8 @@ proc renderImport(v: Value, indent: int, multiline: bool): string =
   var props: string
   addProps(props, v.props, "^")
   let items = renderImportItems(v.body, oneLine,
-                                namespaceSource = not v.props.hasKey("from"))
+                                namespaceSource = not v.props.hasKey("from"),
+                                sortSelectors = sortSelectors)
   if not multiline or items.len == 0:
     result = head
     for item in items:
@@ -954,3 +956,13 @@ proc formatForm*(value: Value, wraps: Table[uint64, WrapSyntax],
                  indent = 0): string =
   ## Render one form while restoring reader sugar recorded in `wraps`.
   fmtValue(formattingView(value, wraps), indent)
+
+proc formatImportForm*(value: Value, indent = 0): string =
+  ## Render one import with its selectors ordered for canonical imports:
+  ## capitalised selectors first, then the rest, alphabetically within each
+  ## group. Sorting happens in the renderer, so quoted imports must not use
+  ## this entry point.
+  if fits(value, indent) and not prefersMultiline(value):
+    renderImport(value, 0, false, sortSelectors = true)
+  else:
+    renderImport(value, indent, true, sortSelectors = true)

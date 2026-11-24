@@ -4,7 +4,7 @@
 (import SlackUserLabels create_user_labels user_label ^from "./slack_users.gene")
 (import SlackSessionTitle create_session_title update_session_title
   ^from "./slack_session_title.gene")
-(import api string_or show_error notice update_controls session_tab upsert_session features
+(import api features notice session_tab show_error string_or update_controls upsert_session
   ^from "./feature_helpers.gene")
 
 

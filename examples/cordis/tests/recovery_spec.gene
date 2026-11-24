@@ -1,14 +1,14 @@
 (mod cordis_recovery_spec)
 
-(import $test/[describe it after_each assert_equal assert_raises])
+(import $test/[after_each assert_equal assert_raises describe it])
 
 (import
-  ReconcileMode
-  RuntimeOptions
   LoaderOptions
+  ReconcileMode
   RecoveryRequired
-  invocation_limits
+  RuntimeOptions
   default_plugin_invoker
+  invocation_limits
   new_runtime
   ^from "../src/cordis")
 

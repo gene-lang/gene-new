@@ -2,10 +2,10 @@
 # contract). Send-side API clients are opened per account on first use and
 # closed with the activation.
 (mod slack_adapter)
-(import read_slack_credentials open_api close_api ^from "./api")
-(import send_part remove_part reconcile_parts ^from "./delivery")
-(import render_reply render_title check_surface ^from "./render")
-(import open_users lookup_name ^from "./users")
+(import close_api open_api read_slack_credentials ^from "./api")
+(import reconcile_parts remove_part send_part ^from "./delivery")
+(import check_surface render_reply render_title ^from "./render")
+(import lookup_name open_users ^from "./users")
 (import verify_account verify_route ^from "./setup")
 
 (type SlackClients ^props {^clients Cell ^gate Any ^requester Any?})

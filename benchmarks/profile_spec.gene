@@ -1,4 +1,4 @@
-(import $test [describe it assert_equal])
+(import $test/[assert_equal describe it])
 
 (describe "Native sampling report accounting"
   (it "counts recursive publication once and excludes the idle worker" []

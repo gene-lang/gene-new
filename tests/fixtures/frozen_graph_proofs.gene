@@ -1,4 +1,4 @@
-(import $test [describe it assert_equal])
+(import $test/[assert_equal describe it])
 # Make the borrowed-authority checks active before measuring ordinary stores.
 (fn mark! [] (eval (quote nil) ^in caller_env))
 (mark!)

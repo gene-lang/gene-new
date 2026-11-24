@@ -5,11 +5,11 @@
 # restore it. Prints observable outcomes only.
 (import $log [new_logger])
 (import
+  LoaderOptions
   ReconcileMode
   RuntimeOptions
-  LoaderOptions
-  invocation_limits
   default_plugin_invoker
+  invocation_limits
   new_runtime
   ^from "./cordis")
 (import Clock clock_key ^from "./demo_contract")

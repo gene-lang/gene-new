@@ -2,7 +2,7 @@
 # read-only recovery scan. The host owns receipts, part claims, ordering and
 # pacing; these functions only call Slack and classify the result.
 (mod slack_delivery)
-(import api_call SlackError ^from "./api")
+(import SlackError api_call ^from "./api")
 
 (fn digest [value] ($crypto/sha256 ($serde/write_data value)))
 

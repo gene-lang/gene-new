@@ -1,7 +1,7 @@
 (mod channel_ingress)
-(import snapshot mutate read ^from "./store")
-(import route_key authorize_state ^from "./authority")
-(import channel_error copy key required_text normalize_message binding_key ^from "./model")
+(import mutate read snapshot ^from "./store")
+(import authorize_state route_key ^from "./authority")
+(import binding_key channel_error copy key normalize_message required_text ^from "./model")
 
 # A transport plugin normalizes its own envelope and calls this on the
 # connection owner before acknowledging it. Returning means the disposition is

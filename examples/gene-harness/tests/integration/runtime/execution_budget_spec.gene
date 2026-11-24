@@ -1,6 +1,6 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime prepare_layout ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime prepare_layout ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
 (import ExecutionLimits ^from "../../../src/plugin_api")
 (import plugin_admin ^from "../../../src/builtin/plugin_admin")

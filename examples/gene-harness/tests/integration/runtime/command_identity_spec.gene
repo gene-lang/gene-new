@@ -1,11 +1,11 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import contribute remove_owner ^from "../../../src/kernel")
 (import command_descriptors command_identity ^from "../../../src/runtime/command_identity")
 (import ui_record ^from "../../../src/ui/state")
-(import submit_command command_receipt command_state ^from "../../../src/runtime/commands")
+(import command_receipt command_state submit_command ^from "../../../src/runtime/commands")
 
 (fn descriptor [runtime]
   (for item in (command_descriptors runtime/h runtime/h/snapshots/current/.get)

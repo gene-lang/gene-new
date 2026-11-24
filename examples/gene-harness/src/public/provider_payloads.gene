@@ -2,7 +2,7 @@
 # this module; transports call these helpers only with prepared data or responses.
 (mod provider_payloads)
 (import ProviderError ^from "../plugin_api")
-(import chat_messages responses_content anthropic_content ^from "./model_content")
+(import anthropic_content chat_messages responses_content ^from "./model_content")
 (import anthropic_thinking_off ^from "./model_defaults")
 
 (fn output_budget [call]

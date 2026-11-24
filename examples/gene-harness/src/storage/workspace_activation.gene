@@ -1,59 +1,59 @@
 # Workspace ownership: workspace_activation.
 (mod workspace_activation)
 
-(import $serde/[write_data read_data])
-(import $fs/[make_dir real_path read_text write_text_atomic exists?])
+(import $serde/[read_data write_data])
+(import $fs/[exists? make_dir read_text real_path write_text_atomic])
 (import $crypto/sha256)
-(import $str/[slice_bytes byte_size contains? starts_with? ends_with? split])
+(import $str/[byte_size contains? ends_with? slice_bytes split starts_with?])
 (import
   Harness
-  put_cordis_plugin
-  put_cordis_plugins
-  status_of
-  plugin_error
-  record_composition_change
   flush_harness
   hydrate_harness_log
+  plugin_error
+  put_cordis_plugin
+  put_cordis_plugins
+  record_composition_change
+  status_of
   uninstall
   ^from "../kernel")
 (import validate_event_catalog ^from "./state")
 (import reset_participant_quarantine ^from "./participant_health")
-(import capture_source_origin assign_creation ^from "./plugin_source")
-(import queue_composition_change take_composition_changes run_composition_change
+(import assign_creation capture_source_origin ^from "./plugin_source")
+(import queue_composition_change run_composition_change take_composition_changes
   ^from "../runtime/composition")
 (import
-  CompositionError
   CompositionConflict
+  CompositionError
   Workspace
-  fresh_list
-  fresh_map
-  data_copy
-  require_open
   active_revision_path
-  composition_revision
+  commit_composition
   composition_entries
   composition_history_result
-  commit_composition
-  find_entry_index
-  previous_module_digest
-  entries_with
+  composition_revision
+  data_copy
   default_limits_data
+  entries_with
   entry_enabled?
+  find_entry_index
+  fresh_list
+  fresh_map
+  previous_module_digest
   record_quarantine
+  require_open
   ^from "./composition_store")
 (import
-  safe_module_id?
-  parse_plugin_source
   canonical_module_source
   dependency_module_texts
-  validate_source_imports
-  materialize_module_blob
-  write_module_blob
-  load_entry_descriptor
   descriptor_entry_options
-  source_entry_interfaces
-  register_descriptor_events
   known_event_types
+  load_entry_descriptor
+  materialize_module_blob
+  parse_plugin_source
+  register_descriptor_events
+  safe_module_id?
+  source_entry_interfaces
+  validate_source_imports
+  write_module_blob
   ^from "./module_registry")
 
 (type WorkspaceRestorePlan ^props {^workspace Workspace ^entries Any ^descriptors Any ^session Str})

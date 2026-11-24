@@ -1,5 +1,5 @@
 (mod websocket_subprotocol)
-(import load connect_protocol send receive WebSocketError ^from "../src/websocket.gene")
+(import WebSocketError connect_protocol load receive send ^from "../src/websocket.gene")
 
 (fn main [args] : Nil
   (var argv args/.body)

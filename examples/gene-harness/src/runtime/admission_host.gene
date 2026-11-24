@@ -4,23 +4,23 @@
 # is an opaque record supplied by the feature, not a per-feature parameter.
 (mod admission_host)
 (import AdmissionHost ServiceError ^from "../plugin_api")
-(import service_binding require_service ^from "./service_handles")
+(import require_service service_binding ^from "./service_handles")
 (import immutable_view ^from "./composition")
 (import
   create_session
-  require_record
-  list_sessions
-  update_session
   delete_session
+  list_sessions
   load_session
+  require_record
   session_busy?
+  update_session
   ^from "./sessions")
-(import submit_round round_state round_for_request RoundError ^from "./round_controller")
+(import RoundError round_for_request round_state submit_round ^from "./round_controller")
 (import copy_data ^from "../storage/state")
 (import row ^from "../kernel")
 (import validate_model_settings ^from "../public/models")
 (import effective_config ^from "./settings_resolver")
-(import catalog_snapshot session_settings select_provider ^from "../agents/provider_selection")
+(import catalog_snapshot select_provider session_settings ^from "../agents/provider_selection")
 
 # How a round admitted with `settings` would select its model: an error for an
 # unusable choice, otherwise warnings (unready provider, effort resolution,

@@ -2,23 +2,23 @@
 (mod kernel_host)
 (import
   Harness
+  cleanup_registry_context
+  contribute
+  fresh_list
+  invoke_owned_callable
+  registry
   registry_names
   registry_row_keys
-  rows
   row
+  row_record
+  rows
   run_hooks
   validate_registry_spec
-  registry
-  contribute
-  row_record
-  invoke_owned_callable
-  cleanup_registry_context
-  fresh_list
   ^from "./registry")
-(import resolve provide replace ^from "./seams")
-(import subscribe subscribe_log log_plugin ^from "./observe")
+(import provide replace resolve ^from "./seams")
+(import log_plugin subscribe subscribe_log ^from "./observe")
 (import invoke_bounded ^from "./invoke")
-(import Plugin PluginHost DescriptorContext default_execution_limits ^from "../plugin_api")
+(import DescriptorContext Plugin PluginHost default_execution_limits ^from "../plugin_api")
 (import HarnessError ^from "../errors")
 (import immutable_view ^from "../runtime/composition")
 (import execution_budget ^from "../runtime/execution_budget")

@@ -16,13 +16,13 @@
 # This is the package entry (`^main_module "form"` in package.gene), so it is
 # reachable as `^from "."`:
 #
-#   (import with_str with_int ^from "." ^pkg "utils")
+#   (import with_int with_str ^from "." ^pkg "utils")
 # =============================================================================
 
 (mod utils_form @doc "URL-encoded form decoding and validated field access")
 
-(import $url/[parse_query UrlError])
-(import $parse/[parse_int ParseError])
+(import $url/[UrlError parse_query])
+(import $parse/[ParseError parse_int])
 (import $net/http/Response)
 
 # `req` is deliberately unannotated. `net/http` documents a `Request` type, but

@@ -1,6 +1,6 @@
 (mod input_metadata)
 (import normalize_voice_input ^from "./voice_state")
-(import normalize_channel_input channel_error ^from "../channels/model")
+(import channel_error normalize_channel_input ^from "../channels/model")
 
 (fn normalize_round_input [value, ^channel channel : Bool = false]
   (if ($absent? value) (return nil))

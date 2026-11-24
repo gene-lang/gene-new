@@ -2,16 +2,16 @@
 # stores what these return; it never reads the credential file itself.
 (mod slack_setup)
 (import
+  api_call
+  close_api
+  connect_socket
+  identify
+  load_socket_library
+  open_api
   read_slack_credentials
   secret_path
-  open_api
-  close_api
-  identify
-  api_call
-  load_socket_library
-  connect_socket
-  socket_message
   slack_error
+  socket_message
   ^from "./api")
 
 (fn ^^private reference [value, label : Str] : Str

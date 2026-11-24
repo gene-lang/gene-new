@@ -1,10 +1,10 @@
 (import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
-(import submit_round round_receipt cancel_round close_round_controller
+(import cancel_round close_round_controller round_receipt submit_round
   ^from "../../../src/runtime/round_controller")
-(import require_record list_sessions load_session ^from "../../../src/runtime/sessions")
+(import list_sessions load_session require_record ^from "../../../src/runtime/sessions")
 (import delegation_blocks ^from "../../../src/runtime/delegations")
 
 (type DeliveryProbeError : Error)

@@ -1,13 +1,13 @@
 (mod channel_controls)
-(import snapshot mutate ^from "./store")
-(import channel_error key message_key binding_key copy ^from "./model")
-(import check_decision add_hold queue_status resume_queue_state ^from "./queue")
+(import mutate snapshot ^from "./store")
+(import binding_key channel_error copy key message_key ^from "./model")
+(import add_hold check_decision queue_status resume_queue_state ^from "./queue")
 (import with_body_use ^from "../agents/history")
 (import load_session with_session_gate ^from "../runtime/sessions")
 (import
+  answer_round_impl
   cancel_round_locked
   continue_round_locked
-  answer_round_impl
   replace_paused_round_locked
   round_receipt
   ^from "../runtime/round_controller")

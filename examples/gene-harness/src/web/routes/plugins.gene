@@ -1,9 +1,9 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod plugins_routes)
 (import api_root ^from "../contract.gene")
-(import response fail_request field number request_data ^from "../request")
+(import fail_request field number request_data response ^from "../request")
 (import plugin_control_request ^from "../plugin_control")
-(import plugin_catalog inspect_descriptor plugin_history_catalog
+(import inspect_descriptor plugin_catalog plugin_history_catalog
   ^from "../../runtime/plugin_manager")
 (import revert_plugin ^from "../../storage/workspace_repair")
 (import CompositionConflict ^from "../../storage/composition_store")

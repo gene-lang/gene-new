@@ -1,7 +1,7 @@
 (mod delegation_ui ^profile web)
 (import api_root ^from "../src/web/contract.gene")
 (import Client ^from "./workspace_model.gene")
-(import features client_events api show_error select_session session_tab render_transcript string_or
+(import api client_events features render_transcript select_session session_tab show_error string_or
   ^from "./feature_helpers.gene")
 (import subscribe_feature ^from "./feature_events.gene")
 (import merge_delegation ^from "./state.gene")

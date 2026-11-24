@@ -1,16 +1,16 @@
 (mod cordis_effects_spec)
 
-(import $test/[describe it after_each assert_equal assert_raises])
+(import $test/[after_each assert_equal assert_raises describe it])
 
 (import
-  EffectOwner
-  RuntimeOptions
-  PluginSpec
   EffectDisposed
-  PluginCleanupError
+  EffectOwner
   PluginActivationError
-  invocation_limits
+  PluginCleanupError
+  PluginSpec
+  RuntimeOptions
   default_plugin_invoker
+  invocation_limits
   new_runtime
   spawn_host_call
   ^from "../src/cordis")

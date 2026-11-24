@@ -1,8 +1,8 @@
 # Workflow projections. Session metadata is a hint; only snapshots own questions.
 (mod harness_notification_center ^profile web)
 (import api_root ^from "../src/web/contract.gene")
-(import Notices Notice remove_notice ^from "./notices.gene")
-(import QuestionEditors QuestionEditor mount_question qtext qjson ^from "./question_editors.gene")
+(import Notice Notices remove_notice ^from "./notices.gene")
+(import QuestionEditor QuestionEditors mount_question qjson qtext ^from "./question_editors.gene")
 (import current_fetch waiting_batch ^from "./question_state.gene")
 
 (type NotificationCenter ^props {^cards PropMap ^locals PropMap ^epoch Str ^open Bool ^new_messages Int ^on_open (Fn [] Nil) ^ready Bool ^selected Str ^notices Notices ^questions QuestionEditors ^generation Int ^api (Fn [Str Str Any (Fn [Int Any] Nil)] Nil) ^select (Fn [Str] Nil)})

@@ -1,12 +1,12 @@
 (import $test/[describe it])
 (import
-  protocol_version
-  api_version
-  api_root
   api_path
-  voice_subprotocol
-  history_page_limit
+  api_root
+  api_version
   client_record_limit
+  history_page_limit
+  protocol_version
+  voice_subprotocol
   ^from "../../../src/web/contract")
 
 (fn check_wire_literals [directory : Str]

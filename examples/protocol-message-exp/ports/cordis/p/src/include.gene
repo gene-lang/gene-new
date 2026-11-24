@@ -4,8 +4,8 @@
 
 (mod include)
 
-(import $fs [real_path read_text write_text_atomic])
-(import Disposable ReconcileMode CompositionError ^from "./model")
+(import $fs/[read_text real_path write_text_atomic])
+(import CompositionError Disposable ReconcileMode ^from "./model")
 
 (type IncludeHandle
   ^props {^loader Any ^path Str ^patches Any ^writable Bool

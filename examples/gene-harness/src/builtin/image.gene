@@ -1,5 +1,5 @@
 (mod image)
-(import Plugin PluginHost ImageHost ^from "../plugin_api")
+(import ImageHost Plugin PluginHost ^from "../plugin_api")
 (import contribute_doc ^from "../public/documentation")
 
 (fn review_instructions []

@@ -1,4 +1,4 @@
-(import Section Article Figure Chart ^from "../model")
+(import Article Chart Figure Section ^from "../model")
 (import Render ^from "./contracts")
 (import_impl Render for Section ^from "./impls")
 (import_impl Render for Article ^from "./impls")

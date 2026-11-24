@@ -1,5 +1,5 @@
 (mod documents)
-(import inspect_png PngError ^from "./png")
+(import PngError inspect_png ^from "./png")
 
 (type DocumentError : Error)
 

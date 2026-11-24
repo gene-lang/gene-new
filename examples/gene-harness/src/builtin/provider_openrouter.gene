@@ -2,11 +2,11 @@
 (import Plugin PluginHost ^from "../plugin_api")
 (import contribute_text_doc ^from "../public/documentation")
 (import ProviderError ^from "../plugin_api")
-(import nonempty configure_model http_json_attempt ^from "../public/provider")
+(import configure_model http_json_attempt nonempty ^from "../public/provider")
 (import api_connection openrouter_model_list ^from "../public/provider_discovery")
 (import model_capabilities ^from "../public/models")
-(import prepare_chat chat_result ^from "../public/provider_payloads")
-(import read_openrouter_record openrouter_record_path ^from "../public/provider_login")
+(import chat_result prepare_chat ^from "../public/provider_payloads")
+(import openrouter_record_path read_openrouter_record ^from "../public/provider_login")
 
 (fn key_source []
   (if ($present? (nonempty ($os/env? "OPENROUTER_API_KEY")))

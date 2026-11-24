@@ -3,8 +3,8 @@
 # disabled, because disabling removes the row and leaves the stored override.
 (mod keyboard)
 (import ServiceError ^from "../plugin_api")
-(import contribute rows row registry_row_records ^from "../kernel")
-(import read_config config_digest commit_workspace ^from "./workspace_config")
+(import contribute registry_row_records row rows ^from "../kernel")
+(import commit_workspace config_digest read_config ^from "./workspace_config")
 
 (let modifier_order ["Ctrl" "Shift" "Alt" "Meta"])
 

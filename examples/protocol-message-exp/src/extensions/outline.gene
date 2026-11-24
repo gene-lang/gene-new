@@ -2,7 +2,7 @@
 # so its impls for existing types are canonical (application-wide on load) and
 # need no import_impl, no `^^export` and no threaded operation. Recursion is an
 # ordinary qualified send because canonical impls are visible at every send site.
-(import Section Article Figure ^from "../model")
+(import Article Figure Section ^from "../model")
 
 (protocol Outline (message outline [depth : Int] : Str))
 

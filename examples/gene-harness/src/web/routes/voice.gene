@@ -1,11 +1,11 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod voice_routes)
 (import api_root voice_subprotocol ^from "../contract.gene")
-(import response fail_request field request_data session_path? ^from "../request")
+(import fail_request field request_data response session_path? ^from "../request")
 (import row ^from "../../kernel")
 (import speech_catalog ^from "../../runtime/speech_service")
 (import add_voice_peer remove_voice_peer voice_message ^from "../voice")
-(import session_voice_state session_voice_claim ^from "../session_service")
+(import session_voice_claim session_voice_state ^from "../session_service")
 (import record_voice_timing voice_timings ^from "../../runtime/voice_state")
 (import append_core_event ^from "../../storage/state")
 (import $net/http/ws_accept)

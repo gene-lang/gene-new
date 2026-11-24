@@ -18,7 +18,7 @@
 # Quiesce stops a producer; it does not revoke the activation, whose retained
 # handles keep working against the feature's authoritative records.
 (mod activation_services)
-(import subscribe_publications current_snapshot ^from "./composition")
+(import current_snapshot subscribe_publications ^from "./composition")
 (import supervised_call ^from "./call_supervision")
 (import default_execution_limits ^from "../plugin_api")
 (import contribute ^from "../kernel")

@@ -1,8 +1,8 @@
 (import $test/[describe it])
 (import $net/http_client/request)
 (import isolated run_spec source_path ^from "../../support")
-(import ready_host stop_host cli ^from "../../web_support")
-(import connect api discover ^from "../../../src/cli/client")
+(import cli ready_host stop_host ^from "../../web_support")
+(import api connect discover ^from "../../../src/cli/client")
 (import read_workspace_settings write_workspace_settings
   ^from "../../../src/runtime/workspace_settings")
 

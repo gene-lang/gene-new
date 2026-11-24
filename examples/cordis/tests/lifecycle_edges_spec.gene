@@ -1,19 +1,19 @@
 (mod cordis_lifecycle_edges_spec)
 
-(import $test/[describe it after_each assert_equal assert_raises])
+(import $test/[after_each assert_equal assert_raises describe it])
 
 (import
+  ConfigValidationError
+  HookMode
   InstanceState
   PluginCallKind
-  HookMode
   PluginInvoker
-  RuntimeOptions
   PluginSpec
-  ConfigValidationError
+  RuntimeOptions
   config_update
-  invocation_limits
-  hook_key
   default_plugin_invoker
+  hook_key
+  invocation_limits
   new_runtime
   ^from "../src/cordis")
 

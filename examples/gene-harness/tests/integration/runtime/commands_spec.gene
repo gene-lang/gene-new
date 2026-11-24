@@ -1,18 +1,18 @@
 # Tests src/runtime/commands.gene.
 (import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import
-  submit_command
+  cancel_command
   command_receipt
   parse_submission
-  take_command_attachments
-  cancel_command
   read_command_state
   save_command_state
+  submit_command
+  take_command_attachments
   ^from "../../../src/runtime/commands")
-(import submit_round round_receipt close_round_controller
+(import close_round_controller round_receipt submit_round
   ^from "../../../src/runtime/round_controller")
 (import Plugin PluginHost contribute ^from "../../../src/kernel")
 (import recall_body ^from "../../../src/agents/history")
@@ -216,7 +216,7 @@ three""")
         (let runtime (open_runtime workspace "default" (baseline_profile)))
         (try
           (let source (quote (mod plugin
-            (import Plugin PluginHost CommandContext CommandResult ^from "src/plugin_api.gene")
+            (import CommandContext CommandResult Plugin PluginHost ^from "src/plugin_api.gene")
             (fn init [descriptor]
               (Plugin ^id "echo" ^activate (fn [host]
                 (host .PluginHost:contribute "commands"

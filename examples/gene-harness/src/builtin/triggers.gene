@@ -2,13 +2,13 @@
 (import Plugin PluginHost ^from "../plugin_api")
 (import contribute_doc ^from "../public/documentation")
 (import
+  create_trigger
+  delete_trigger
+  list_occurrences
+  list_triggers
   new_scheduler
   run_scheduler
-  create_trigger
   update_trigger
-  delete_trigger
-  list_triggers
-  list_occurrences
   ^from "./triggers/scheduler")
 (import trigger_route ^from "./triggers/routes")
 

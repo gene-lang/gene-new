@@ -1,5 +1,5 @@
 (import $test/[describe it])
-(import empty_world declare_type instance with_impl send make_path lookup_path apply_path evaluate
+(import apply_path declare_type empty_world evaluate instance lookup_path make_path send with_impl
   ^from "../src/model")
 
 (describe "Gene reference semantics"

@@ -1,5 +1,5 @@
 # B1: recursive composition with the root-authored held message (variant P).
-(import Section Article Figure ^from "../../../src/model")
+(import Article Figure Section ^from "../../../src/model")
 (import Chart ^from "../../../src/extensions/chart")
 (import Table ^from "../../../src/extensions/table")
 (import Render ^from "../../../src/contracts")

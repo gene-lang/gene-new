@@ -1,6 +1,6 @@
 # Tests Gene captured-process lifecycle.
 (import $test/[describe it])
-(import isolated run_spec fixture_path ^from "../support")
+(import fixture_path isolated run_spec ^from "../support")
 
 (describe "Harness process cleanup"
   (it "terminates captured groups on INT, TERM, HUP and normal exit" []

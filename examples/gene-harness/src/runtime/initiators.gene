@@ -1,6 +1,6 @@
 (mod initiators)
-(import registry contribute rows registry_row_records ^from "../kernel")
-(import acquire_snapshot release_snapshot current_snapshot ^from "./composition")
+(import contribute registry registry_row_records rows ^from "../kernel")
+(import acquire_snapshot current_snapshot release_snapshot ^from "./composition")
 (import core_initiators core_source_owner initiator_matches? ^from "./initiator_specs")
 (import channel_source_owner ^from "../channels/initiators")
 (import normalize_round_input ^from "./input_metadata")

@@ -1,5 +1,5 @@
 (mod media_input)
-(import open_media_store media_record media_bytes media_text MediaError ^from "../storage/media")
+(import MediaError media_bytes media_record media_text open_media_store ^from "../storage/media")
 (import byte_prefix ^from "../public/text")
 (import media_document ^from "../storage/documents")
 

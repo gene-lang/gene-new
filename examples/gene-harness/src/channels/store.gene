@@ -1,5 +1,5 @@
 (mod channel_store)
-(import $store/fs/[open:store_open Store])
+(import $store/fs/[Store open:store_open])
 (import ChannelError channel_error copy ^from "./model")
 (import prune ^from "./retention")
 

@@ -1,22 +1,22 @@
 # Tests src/runtime/round_controller.gene.
 (import $test/[describe it])
-(import isolated run_spec test_controller set_test_provider ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import isolated run_spec set_test_provider test_controller ^from "../../support")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import create_session load_session ^from "../../../src/runtime/sessions")
 (import
-  submit_round
-  round_receipt
-  cancel_round
-  close_round_controller
-  save_round
   RoundError
   answer_round
+  cancel_round
+  close_round_controller
+  continue_round
   request_stop
   resume_answered_rounds
-  continue_round
+  round_receipt
+  save_round
+  submit_round
   ^from "../../../src/runtime/round_controller")
-(import events_for append_core_event flush_event_store core_state record_core_state
+(import append_core_event core_state events_for flush_event_store record_core_state
   ^from "../../../src/storage/state")
 (import QuestionError answer_questions ^from "../../../src/runtime/questions")
 (import append_message ^from "../../../src/agents/history")

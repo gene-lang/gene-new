@@ -1,5 +1,5 @@
 (import $test/[describe it run])
-(import validate_provider_row validate_image_generator_row
+(import validate_image_generator_row validate_provider_row
   ^from "../../../src/registries/contracts")
 
 (fn provider []

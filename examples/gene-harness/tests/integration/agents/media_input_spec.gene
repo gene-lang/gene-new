@@ -1,8 +1,8 @@
 (import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
-(import create_session submit snapshot close_session_service
+(import close_session_service create_session snapshot submit
   ^from "../../../src/web/session_service")
-(import open_media_store put_media_base64 put_media media_descriptor MediaError
+(import MediaError media_descriptor open_media_store put_media put_media_base64
   ^from "../../../src/storage/media")
 (import expand_media_messages ^from "../../../src/agents/media_input")
 (import png ^from "../../fixtures/png")

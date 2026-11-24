@@ -4,7 +4,7 @@
 (import Harness ^from "./registry")
 (import HarnessEvent ^from "../plugin_api")
 (import HarnessError ^from "../errors")
-(import events_for append_core_event core_event_size flush_event_store ^from "../storage/state")
+(import append_core_event core_event_size events_for flush_event_store ^from "../storage/state")
 
 # Harness events. A plugin observes the harness through the event bus rather
 # than by being called back, because observation is what the bus is for and

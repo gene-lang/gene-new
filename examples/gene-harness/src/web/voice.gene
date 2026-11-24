@@ -1,39 +1,39 @@
 # Ephemeral audio transport. Model turns, event sequencing and durable round
 # admission never wait for these jobs. Every stream is fenced by a page claim.
 (mod voice_socket)
-(import $net/http/[ws_try_send ws_close])
+(import $net/http/[ws_close ws_try_send])
 (import row ^from "../kernel")
-(import events_for append_core_event ^from "../storage/state")
+(import append_core_event events_for ^from "../storage/state")
 (import event_record session_voice_claim session_voice_state ^from "./session_service")
 (import
   VoiceError
-  voice_snapshot
-  voice_error
+  record_voice_timing
   voice_connected
   voice_disconnected
+  voice_error
+  voice_snapshot
   voice_use_transport
-  record_voice_timing
   ^from "../runtime/voice_state")
 (import
-  new_speech_service
-  speech_settings
-  speech_catalog
-  warm_engine
-  synthesize_speech
-  speech_resources_current?
-  cool_speech
-  close_speech_service
   choose_speech_engine
+  close_speech_service
+  cool_speech
+  new_speech_service
+  speech_catalog
+  speech_resources_current?
+  speech_settings
+  synthesize_speech
+  warm_engine
   ^from "../runtime/speech_service")
 (import
+  capture_frame
+  charge_playback
   decode_audio_frame
   encode_audio_frame
   new_capture
-  capture_frame
   new_credit
   playback_ack
   playback_credit
-  charge_playback
   ^from "../public/voice_frames")
 (import recognition_timeout_ms ^from "../common/voice_transitions")
 

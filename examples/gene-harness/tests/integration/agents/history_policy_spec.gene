@@ -1,6 +1,6 @@
 (import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
 (import append_message compact_history history_state ^from "../../../src/agents/history")
 (import history_policy ^from "../../../src/agents/hooks")
@@ -9,7 +9,7 @@
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import events_for ^from "../../../src/storage/state")
 (import load_part ^from "../../../src/agents/model_call")
-(import submit_round round_receipt close_round_controller
+(import close_round_controller round_receipt submit_round
   ^from "../../../src/runtime/round_controller")
 
 (fn large_text []

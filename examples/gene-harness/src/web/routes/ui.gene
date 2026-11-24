@@ -1,14 +1,14 @@
 # Host-only feature routes. Called only after common HTTP admission.
 (mod ui_routes)
 (import api_root api_version ^from "../contract.gene")
-(import response fail_request field request_data ^from "../request")
+(import fail_request field request_data response ^from "../request")
 (import row ^from "../../kernel")
 (import ui_status ^from "../../ui/state")
 (import ui_render ^from "../../ui/views")
-(import ui_action ui_action_receipt cancel_ui_action ^from "../../ui/actions")
+(import cancel_ui_action ui_action ui_action_receipt ^from "../../ui/actions")
 (import workspace_image ^from "../../ui/images")
 (import resolve_browser_target ^from "../../runtime/workspace_host")
-(import $net/http/[redirect bytes:http_bytes])
+(import $net/http/[bytes:http_bytes redirect])
 
 (fn ui_request [context, request, parts]
   (let host context/host)

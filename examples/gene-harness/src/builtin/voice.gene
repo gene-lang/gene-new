@@ -1,8 +1,8 @@
 # Optional voice policy and browser contribution. Host admission owns durable work.
 (mod voice_plugin)
-(import Plugin PluginHost VoiceHost SessionHost ^from "../plugin_api")
+(import Plugin PluginHost SessionHost VoiceHost ^from "../plugin_api")
 (import contribute_text_doc ^from "../public/documentation")
-(import whisper_row piper_row elevenlabs_row mac_synthesizer_row ^from "../public/speech_engines")
+(import elevenlabs_row mac_synthesizer_row piper_row whisper_row ^from "../public/speech_engines")
 (import mac_recognizer_row ^from "../public/mac_recognition")
 
 (var asset ($cell nil))

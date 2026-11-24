@@ -1,13 +1,13 @@
 # Operator implementation stays host-owned. Plugins contribute command policy
 # and mode metadata using a scoped facade, never a manager or REPL handle.
 (mod operator_host)
-(import OperatorHost CommandContext CommandResult ServiceError ^from "../plugin_api")
-(import service_binding require_service ^from "./service_handles")
+(import CommandContext CommandResult OperatorHost ServiceError ^from "../plugin_api")
+(import require_service service_binding ^from "./service_handles")
 (import require_command_scope ^from "./command_scope")
 (import help_command run_command view_command ^from "./commands")
-(import shell_command classify_shell evaluate_shell close_shell close_shells
+(import classify_shell close_shell close_shells evaluate_shell shell_command
   ^from "./shell_sessions")
-(import classify_repl evaluate_repl close_repl close_repls ^from "./repl_sessions")
+(import classify_repl close_repl close_repls evaluate_repl ^from "./repl_sessions")
 
 (fn open_operator_host [runtime]
   {^runtime runtime ^shells ($cell {}) ^repls ($cell {}) ^readers {} ^gate ($sync/gate) ^closed ($cell false)})

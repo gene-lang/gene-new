@@ -1,5 +1,5 @@
 (import $test/[describe it run])
-(import capture_source_origin source_attribution assign_creation preserve_creation_on_revert
+(import assign_creation capture_source_origin preserve_creation_on_revert source_attribution
   ^from "../../../src/storage/plugin_source")
 
 (describe "Plugin source attribution"

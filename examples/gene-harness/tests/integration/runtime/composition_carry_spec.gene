@@ -3,10 +3,10 @@
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
-(import new_harness install uninstall put_cordis_plugin status_of row shutdown_harness
+(import install new_harness put_cordis_plugin row shutdown_harness status_of uninstall
   ^from "../../../src/kernel")
 (import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
-(import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
+(import close_runtime open_runtime ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 

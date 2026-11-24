@@ -2,7 +2,7 @@
 (mod service_handles)
 (import ServiceError ^from "../plugin_api")
 (import HostServiceBinding ^from "./service_binding")
-(import new_handle_table lookup_handle find_handle intern_handle revoke_handle
+(import find_handle intern_handle lookup_handle new_handle_table revoke_handle
   ^from "./handle_table")
 (var handles ^^private (new_handle_table))
 

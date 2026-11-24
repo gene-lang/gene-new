@@ -1,9 +1,9 @@
 (mod bootstrap)
-(import new_host_services start_host_services close_host_services HostServiceError
+(import HostServiceError close_host_services new_host_services start_host_services
   ^from "./host_services")
 (import runtime_service_specs ^from "./runtime_services")
 (import host_build ^from "./host_identity")
-(import acquire_workspace_lock close_workspace_lock WorkspaceInUse
+(import WorkspaceInUse acquire_workspace_lock close_workspace_lock
   ^from "./workspace_lock" ^^export)
 
 (type HarnessRuntime ^props {^root Str ^state_root Str ^epoch Str ^h Any ^workspace Any ^profile Any ^events Any ^sessions Any ^body_users Any ^body_collecting Any ^body_gc_pending Any ^stopping Any ^exit_code Any ^ownership Any ^owns_ownership Bool ^owns_events Bool ^closed Any ^restarted Bool ^shutdown_watchdog Any ^listen_port Any? ^supervised Bool? ^recovery Bool? ^managed Bool? ^services Any? ^launch Any?})

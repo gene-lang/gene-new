@@ -1,5 +1,5 @@
 (mod launcher_search)
-(import match_rank insert_ranked ^from "../common/launcher")
+(import insert_ranked match_rank ^from "../common/launcher")
 (import byte_prefix ^from "../public/text")
 
 (fn search_sessions [manager, query : Str, ^limit limit : Int = 50]

@@ -1,6 +1,6 @@
 (mod web_component_spec)
 (import image_source ^from "./images")
-(import $css/[scoped class_name render:render_css])
+(import $css/[class_name render:render_css scoped])
 
 (type WebComponentError : Error)
 

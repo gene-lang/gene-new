@@ -1,7 +1,7 @@
 # Tests src/web/auth.gene.
 (import $test/[describe it])
 (import isolated run_spec ^from "../../support")
-(import open_auth create_cookie authenticate exchange reset_auth ^from "../../../src/web/auth")
+(import authenticate create_cookie exchange open_auth reset_auth ^from "../../../src/web/auth")
 
 (describe
   "Harness browser authentication"
