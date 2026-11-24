@@ -33,7 +33,7 @@
     (let record (require_record manager session))
     (let id ($to_str "share-" (key session)))
     (let previous (read service/runtime/services/values/channel_queues (fn [state] (state/outbox .get id))))
-    (if_not ($absent? previous) (return record))
+    (if ($present? previous) (return record))
     (if (|| (!= record/kind "interactive") ($present? record/channel) ($present? record/parent))
       (channel_error "conflict" "Only browser-only conversations can be added to Slack."))
     (if (!= (?? record/revision 0) revision)

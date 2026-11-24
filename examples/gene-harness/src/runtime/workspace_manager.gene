@@ -218,7 +218,7 @@
    ^archived (child_directories manager/archive)})
 
 (fn open_workspace_manager [runtime]
-  (if_not ($absent? runtime/services/values/manager) (return runtime/services/values/manager))
+  (if ($present? runtime/services/values/manager) (return runtime/services/values/manager))
   (let workspaces $"${runtime/root}/workspaces")
   ($fs/make_dir workspaces)
   (let application ($pkg/application))
@@ -227,7 +227,7 @@
   manager)
 
 (fn start_manager_polling [manager]
-  (if_not ($absent? manager/poller/.get) (return nil))
+  (if ($present? manager/poller/.get) (return nil))
   (manager/poller .set
     (spawn ^lane root ($runtime/with_context nil (fn [] (while (! manager/closed/.get) (try (manager_refresh manager) catch Error nil) ($sleep 1500))))))
   nil)
@@ -235,7 +235,7 @@
 (fn close_workspace_manager [manager]
   (manager/closed .set true)
   (let task manager/poller/.get)
-  (if_not ($absent? task)
+  (if ($present? task)
     task/.cancel
     task/.join))
 

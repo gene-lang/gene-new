@@ -88,7 +88,7 @@
   (if (&& (== kind "command") (!= (text data/status) "") (!= (text data/status) "running"))
     (set key (command_output_key session (text data/command_id (text data/id)))))
   (var entry : Any (output_entry store key))
-  (if_not ($absent? entry) (set entry/terminal true)))
+  (if ($present? entry) (set entry/terminal true)))
 
 (fn evict_output [store : LiveOutput] : Nil
   (for entry in store/entries
@@ -184,7 +184,7 @@
   # A shell's returned value is its captured stream. Gene expressions have
   # an independent return value, even when it happens to equal printed text.
   (if (&& (== (text command/name) "sh") ($present? command/exit))
-    (if_not ($absent? entry) (set result ""))
+    (if ($present? entry) (set result ""))
     (var code : Int command/exit)
     (if (!= code 0)
       (set result

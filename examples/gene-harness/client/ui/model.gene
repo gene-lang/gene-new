@@ -79,7 +79,7 @@
 
 (fn saved_view [ui : UiClient, key : Str] : PropMap
   (var memory : Any ui/navigation/snapshots/%key)
-  (if_not ($absent? memory) (return (copy_map memory)))
+  (if ($present? memory) (return (copy_map memory)))
   (var raw (?? (storage_get key) ""))
   (if (== raw "") (return {}))
   (try (copy_map ($json/parse raw)) catch Error {}))

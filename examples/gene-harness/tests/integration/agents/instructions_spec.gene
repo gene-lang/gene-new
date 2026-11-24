@@ -1,5 +1,5 @@
 # Tests src/agents/instructions.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")

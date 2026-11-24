@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import protocol_version api_version api_root api_path voice_subprotocol
   history_page_limit client_record_limit ^from "../../../src/web/contract")
 

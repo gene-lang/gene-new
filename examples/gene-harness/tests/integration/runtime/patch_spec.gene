@@ -1,5 +1,5 @@
 # Tests src/runtime/patch.gene.
-(import $test [describe it assert_equal])
+(import $test/[describe it assert_equal])
 (import isolated run_spec fixture_path test_controller ^from "../../support")
 (import apply_patch prepare_patch recover_patch_temporaries ^from "../../../src/runtime/patch")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")

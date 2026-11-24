@@ -1,10 +1,10 @@
 # Workspace ownership: workspace_activation.
 (mod workspace_activation)
 
-(import $serde [write_data read_data])
-(import $fs [make_dir real_path read_text write_text_atomic exists?])
-(import $crypto [sha256])
-(import $str [slice_bytes byte_size contains? starts_with? ends_with? split])
+(import $serde/[write_data read_data])
+(import $fs/[make_dir real_path read_text write_text_atomic exists?])
+(import $crypto/sha256)
+(import $str/[slice_bytes byte_size contains? starts_with? ends_with? split])
 (import ^from "../kernel" Harness put_cordis_plugin put_cordis_plugins status_of plugin_error record_composition_change flush_harness hydrate_harness_log uninstall)
 (import ^from "./state" validate_event_catalog)
 (import ^from "./participant_health" reset_participant_quarantine)
@@ -106,7 +106,7 @@
     (materialize_module_blob workspace blob/digest blob/text))
   (let entry {^id id ^module_digest digest ^closure closure
     ^interfaces required ^limits (default_limits_data) ^!disabled})
-  (if_not ($absent? (workspace/profile_plugins/.get .get id))
+  (if ($present? (workspace/profile_plugins/.get .get id))
     (entry .put "replaces_builtin" true))
   entry)
 
@@ -130,7 +130,7 @@
   # That check stays where it is: it is the invariant on the entry list, and
   # this one is the early answer to a question already decided.
   (if_not replace
-    (if_not ($absent? (workspace/profile_plugins/.get .get id))
+    (if ($present? (workspace/profile_plugins/.get .get id))
       (fail (CompositionError
         ^_msg $"profile plugin ${id} already exists; use ^^replace")))
     (var claimed (composition_entries workspace))
@@ -170,7 +170,7 @@
      ^session (?? caller/session nil) ^turn authenticated_turn
      ^source_origin source_origin})
   (entry .put "origin" (change_origin h (if replace "replace" else "register") id))
-  (if_not ($absent? (workspace/profile_plugins/.get .get id))
+  (if ($present? (workspace/profile_plugins/.get .get id))
     (entry .put "replaces_builtin" true))
 
   # Descriptor-only preflight: load and run `init`, but do not install or
@@ -300,7 +300,7 @@
   # Phase 2: validate the already-decoded generic envelopes against the core +
   # descriptor catalog. Missing plugin vocabulary quarantines that projection;
   # an unknown required core event refuses reconstruction in state.gene.
-  (if_not ($absent? h/event_store)
+  (if ($present? h/event_store)
     (for plugin in (validate_event_catalog h/event_store (known_event_types h) ^all_streams all_streams)
       (record_quarantine workspace ($to_str plugin)
         "required plugin event schema is unavailable"))
@@ -367,7 +367,7 @@
   (if (== index -1)
     (let default (workspace/profile_plugins/.get .get id))
       (if ($absent? default)
-        (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
+        (if ($present? (h/plugins/.get .get id)) (uninstall h id))
         else (put_cordis_plugin ^^replace h default/plugin default/options))
     else
       (let entry entries/%index)
@@ -376,4 +376,4 @@
           (register_descriptor_events h descriptor)
           (activate_descriptor workspace h descriptor entry)
         else
-          (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id)))))
+          (if ($present? (h/plugins/.get .get id)) (uninstall h id)))))

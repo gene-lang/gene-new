@@ -58,7 +58,7 @@ Use --file FILE for send/run text, --no-wait for operator commands,
   (let parts [])
   (for name in names
     (let value (options .get name))
-    (if_not ($absent? value) (parts .push $"${name}=${($url/encode_component ($to_str value))}")))
+    (if ($present? value) (parts .push $"${name}=${($url/encode_component ($to_str value))}")))
   (if parts/.empty?
     ""
     else ($to_str "&" ($str/join parts "&"))))
@@ -93,7 +93,7 @@ Use --file FILE for send/run text, --no-wait for operator commands,
   (if ($absent? result) (return nil))
   (if json (return ($println ($json/stringify result))))
   (if (== ($head result) Str) (return ($println result)))
-  (if_not ($absent? result/messages)
+  (if ($present? result/messages)
     (for message in result/messages
       (present_message message false))
     (return nil))
@@ -102,30 +102,30 @@ Use --file FILE for send/run text, --no-wait for operator commands,
     (for plugin in result/plugins
       ($println $"${plugin/id}  ${plugin/state}  ${plugin/source}"))
     (return nil))
-  (if_not ($absent? result/history)
+  (if ($present? result/history)
     ($println $"Current composition: ${result/revision}")
     (for item in result/history
       ($println ($to_str "r" item/revision "  " item/at "  "
         (?? item/origin/kind "unknown") "  " (?? item/origin/operation "")
         "  " (?? item/origin/plugin ""))))
     (return nil))
-  (if_not ($absent? result/sessions)
+  (if ($present? result/sessions)
     (for session in result/sessions
       ($println $"${session/id}  ${session/status}  ${session/title}"))
     (return nil))
-  (if_not ($absent? result/findings)
+  (if ($present? result/findings)
     (if result/findings/.empty?
       ($println "No composition problems found.")
       else (for finding in result/findings
         ($println finding)))
     (return nil))
-  (if_not ($absent? result/records)
+  (if ($present? result/records)
     (for record in result/records
       (if (== record/kind "delegation") (continue))
       ($println $"[${record/seq} ${record/kind}] ${(record_text record)}"))
     (if result/has_older ($println "Earlier records are available with transcript --before SEQ."))
     (return nil))
-  (if_not ($absent? result/workspace)
+  (if ($present? result/workspace)
     ($println
       ($to_str
         result/workspace
@@ -135,9 +135,9 @@ Profile: """
         "; running rounds: "
         result/running))
     (return nil))
-  (if_not ($absent? result/id)
+  (if ($present? result/id)
     ($println ($to_str result/id " " (?? result/state (?? result/status "")))))
-  (if_not ($absent? result/request_id)
+  (if ($present? result/request_id)
     ($println
       $"Request: ${result/request_id}; sequence: ${(?? result/submission_seq result/request_seq)}"))
   (var displayed false)
@@ -146,7 +146,7 @@ Profile: """
     (if (&& ($present? value) (!= value ""))
       ($println value)
       (set displayed true)))
-  (if_not ($absent? result/questions)
+  (if ($present? result/questions)
     ($println ($serde/write_data result/questions))
     (set displayed true))
   (if (&& (! displayed) ($absent? result/id)) ($println ($serde/write_data result)))
@@ -166,7 +166,7 @@ Profile: """
   (var query $"/logs?source=host&cursor=${($url/encode_component cursor)}")
   (for key in ["type" "level" "session" "since"]
     (let value (options .get key))
-    (if_not ($absent? value)
+    (if ($present? value)
       (set query ($to_str query "&" key "=" ($url/encode_component ($to_str value))))))
   (set query ($to_str query "&lines=" ($url/encode_component (?? options/lines "200"))))
   query)
@@ -195,7 +195,7 @@ Profile: """
   (if_not (["doctor" "enable" "disable" "restore" "plugins" "history" "revert" "status" "link" "auth" "stop" "restart" "logs" "sessions" "triggers" "channels" "notifications" "transcript" "receipt" "wait" "answer" "dismiss" "cancel" "send" "run" "sh" "view" "command"] .contains? action)
     (problem $"Unknown command ${action}. Use --help for usage."))
   (for key in ["port" "restart-port" "startup-id" "script" "supervised" "recovery" "managed"]
-    (if_not ($absent? (options .get key)) (problem $"--${key} is a web-host option.")))
+    (if ($present? (options .get key)) (problem $"--${key} is a web-host option.")))
   (if (&& (== options/offline true) (! (["plugins" "history" "revert"] .contains? action)))
     (problem "--offline is available for plugins, history and revert, or for the web host."))
   (let selected (?? options/workspace ($os/launch_dir)))
@@ -332,7 +332,7 @@ Profile: """
     (let kind (receipt_kind options))
     (var id (?? options/command (?? words/1 options/round)))
     (let request_id (options .get "request-id"))
-    (if_not ($absent? request_id)
+    (if ($present? request_id)
       (let result
         (api
           client
@@ -364,7 +364,7 @@ Profile: """
         (session_path session "/answers")
         {^batch_id options/batch ^answers values ^dismiss (== action "dismiss")})))
   (if (== action "cancel")
-    (if_not ($absent? options/command)
+    (if ($present? options/command)
       (let result
         (api
           client

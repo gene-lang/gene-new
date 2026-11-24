@@ -35,7 +35,7 @@
   (for candidate in (rows runtime/h registry)
     (if (&& ($present? name) (!= candidate/name name)) (continue))
     (let reason (speech_reason candidate))
-    (if_not ($absent? reason)
+    (if ($present? reason)
       (diagnostics .push {^name candidate/name ^reason ($to_str reason)})
       (continue))
     (if (|| ($present? name) ($present? candidate/auto))
@@ -63,14 +63,14 @@
   (service/gate (fn []
     (if service/closed/.get (voice_error "unavailable" "The speech service is closed."))
     (let choice (choose_speech_engine service/runtime settings kind))
-    (if_not ($absent? choice/reason) (voice_error "unavailable" choice/reason))
+    (if ($present? choice/reason) (voice_error "unavailable" choice/reason))
     (let registry (if (== kind "recognizer") "speech_recognizers" else "speech_synthesizers"))
     (let record (row_record service/runtime/h registry choice/name))
     (let key ($crypto/sha256 ($serde/write_data [record/row_id settings])))
     (let existing (service/resources/.get .get kind))
     (if (&& ($present? existing) (== existing/key key)
       (!= (if ($absent? existing/resource/closed) false else existing/resource/closed/.get) true)) (return existing))
-    (if_not ($absent? existing)
+    (if ($present? existing)
       (service/resources/.get .delete kind)
       (if_not (if ($absent? existing/resource/closed) false else existing/resource/closed/.get)
         (existing/row/close existing/resource)))
@@ -88,9 +88,9 @@
     # Start the persistent reader in the host job, after the bounded open call
     # has settled. Starting it inside that invocation would keep its scope and
     # composition call alive for the entire lifetime of the speech engine.
-    (if_not ($absent? resource/dispatch_message)
+    (if ($present? resource/dispatch_message)
       (var message resource/dispatch_message) (var error resource/dispatch_error)
-      (if_not ($absent? record/effects)
+      (if ($present? record/effects)
         (set message (retain_callback record/effects "speech/message" message))
         (set error (retain_callback record/effects "speech/error" error)))
       (dispatch_json resource message error))
@@ -111,7 +111,7 @@
     # Also collect an open result abandoned by a cancelled host job.
     (for registry in ["speech_recognizers" "speech_synthesizers"]
       (for engine in (rows service/runtime/h registry)
-        (if_not ($absent? engine/close_all)
+        (if ($present? engine/close_all)
           (engine/close_all))))
     (service/dirty .set false)))
   (service/cache .set []) (service/cache_bytes .set 0)
@@ -126,7 +126,7 @@
   (let kept [])
   (for item in service/cache/.get
     (if (== item/key key) (set found item) else (kept .push item)))
-  (if_not ($absent? found) (kept .push found) (service/cache .set kept))
+  (if ($present? found) (kept .push found) (service/cache .set kept))
   found)
 
 (fn cache_speech [service : SpeechService, key : Str, chunks, count : Int]
@@ -142,7 +142,7 @@
 (fn synthesize_speech [service : SpeechService, opened, text : Str, emit]
   (let key ($crypto/sha256 ($serde/write_data [opened/key text])))
   (let cached (cached_speech service key))
-  (if_not ($absent? cached)
+  (if ($present? cached)
     (for bytes in cached/chunks (emit bytes))
     (return nil))
   (let chunks []) (var count 0)

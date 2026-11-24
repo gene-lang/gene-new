@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
@@ -35,7 +35,7 @@
   (run_turn_phase transaction "request_admitted")
   (let bindings {})
   (for packet in (run_turn_phase transaction "bindings")
-    (if_not ($absent? packet/value)
+    (if ($present? packet/value)
       (map_for [name value] in packet/value (bindings .put name value))))
   (let result (evaluate_harness_turn runtime/h ctx/turn runtime/root source
     ^session ctx/session ^round ctx/round/id ^lease lease ^bindings bindings ^^coordinated ^turn_context ctx

@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import start_host stop_host ^from "../../web_support")
 (import connect api wire ^from "../../../src/cli/client")

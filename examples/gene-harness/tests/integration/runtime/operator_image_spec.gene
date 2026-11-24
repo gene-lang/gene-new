@@ -1,5 +1,5 @@
 # Tests image generation in a command-owned response context.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import image_fixture review ^from "../../fixtures/image")
 (import core_commands ^from "../../../src/builtin/core_commands")

@@ -61,7 +61,7 @@
       (let arguments [])
       (for key in ["workspace" "root" "port" "restart-port" "startup-id" "script" "provider" "model" "effort"]
         (let value (parsed/options .get key))
-        (if_not ($absent? value)
+        (if ($present? value)
           (arguments .push $"--${key}")
           (arguments .push value)))
       (if (== parsed/options/offline true) (arguments .push "--offline"))
@@ -74,7 +74,7 @@
     (let properties ($props $err))
     (for key in ["request_id" "submission_seq" "execution_id" "kind" "session"]
       (let value (properties .get key))
-      (if_not ($absent? value) (error .put key value)))
+      (if ($present? value) (error .put key value)))
     ($println
       (if (== parsed/options/json true)
         ($json/stringify error)

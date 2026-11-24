@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
 (import create_session close_session_service session_add_to_slack submit remove_session list_sessions ^from "../../../src/web/session_service")
 (import require_record update_session create_session:create_record SessionError ^from "../../../src/runtime/sessions")
@@ -51,7 +51,7 @@
 
 (fn wait_round [harness, session]
   (let task (/watcher (harness/runtime/services/values/controller/rounds/.get .get session)))
-  (if_not ($absent? task) task/.join))
+  (if ($present? task) task/.join))
 
 (describe "Add a browser conversation to Slack"
   (it "copies public history, links the same session and continues in both directions without replay" []

@@ -48,7 +48,7 @@
   (let prepared_style stylesheet/.get)
   (Plugin ^id "spotlight" ^provides [["browser_clients" "spotlight"]]
     ^activate (fn [host]
-      (if_not ($absent? preparation_error) (fail preparation_error))
+      (if ($present? preparation_error) (fail preparation_error))
       (host .PluginHost:contribute "browser_clients"
         {^name "spotlight" ^title "Search Harness" ^asset prepared_asset ^style prepared_style}))))
 

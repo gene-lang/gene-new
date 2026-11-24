@@ -57,6 +57,6 @@
         catch ChannelClosed nil)))
   (let closer {^cancel (fn [] : Nil
     (log_unsubscribe subscription/id)
-    (try (task .cancel) catch Throwable nil))})
+    (try task/.cancel catch Throwable nil))})
   (contribute h id "subscriptions" {^name "" ^sub closer})
   ($freeze_shallow {^kind "log" ^id subscription/id}))

@@ -1,10 +1,10 @@
 # Tests src/storage/state.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import open_event_store close_event_store append_core_event events_for record_core_state
          core_state core_states flush_event_store unload_event_stream
   ^from "../../../src/storage/state")
-(import $store/fs [Store])
+(import $store/fs/Store)
 
 (type ObservedStore ^props {^inner Any ^lookups Any}
   (impl Store

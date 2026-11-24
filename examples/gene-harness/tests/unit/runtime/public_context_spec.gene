@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import new_harness shutdown_harness contribute row ^from "../../../src/kernel")
 (import public_contract? ^from "../../../src/runtime/callback_context")
 (import CommandContext ^from "../../../src/plugin_api")

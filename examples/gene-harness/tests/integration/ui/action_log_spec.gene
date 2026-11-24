@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import UiError ^from "../../../src/ui/state")
 (import open_action_log close_action_log admit_action update_action action_receipt

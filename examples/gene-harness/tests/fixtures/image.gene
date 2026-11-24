@@ -42,7 +42,7 @@
            (if (== mode/.get "generation_wait") ($sleep 10000))
            (if (&& (== mode/.get "generation_wait2") (== prepared/attempt 2)) ($sleep 10000))
            (for id in prepared/reference_images (images .ImageHost:image_input prepared/run id))
-           (if_not ($absent? prepared/candidate)
+           (if ($present? prepared/candidate)
              (images .ImageHost:image_input prepared/run prepared/candidate))
            {^images [{^mime "image/png"
               ^bytes (if (== mode/.get "invalid_png") ($binary/from_str "not PNG")

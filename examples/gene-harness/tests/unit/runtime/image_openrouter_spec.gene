@@ -1,4 +1,4 @@
-(import $test [describe it run])
+(import $test/[describe it run])
 (import configure_openrouter_images prepare_openrouter_image send_openrouter_image
   ^from "../../../src/builtin/image_openrouter")
 (import ImageError ^from "../../../src/plugin_api")

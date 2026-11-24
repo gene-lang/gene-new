@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import new_host_services start_host_services close_host_services HostServiceError
   ^from "../../../src/runtime/host_services")
 

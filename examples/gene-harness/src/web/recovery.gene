@@ -3,7 +3,7 @@
 (mod recovery_server)
 (import log_event log_refresh_redactions log_set_workspace ^from "../kernel/log")
 (import api_root ^from "./contract.gene")
-(import $net/http [serve stop html])
+(import $net/http/[serve stop html])
 (import ^from "./request" response secure_response cookie_value field number request_data)
 (import ^from "./auth" open_auth authenticate exchange reset_auth AuthError)
 (import ^from "./connection" bind_workspace publish_connection publish_link clear_connection)
@@ -70,7 +70,7 @@
       (if runtime/stopping/.get
         (return (response 503 {^code "stopped" ^message "Recovery host is stopping."})))
       (let managed (plugin_control_request control request))
-      (if_not ($absent? managed) (return (response managed/status managed/body)))
+      (if ($present? managed) (return (response managed/status managed/body)))
       (if (== request/path $"${(api_root)}/workspace/settings")
         (if (== request/method "GET")
           (return (response 200 (read_workspace_settings runtime/root))))
@@ -199,5 +199,5 @@
   ensure
     (close_plugin_control control)
     (clear_connection runtime/root runtime/epoch)
-    (if_not ($absent? server) (try (stop server) catch Error nil))
+    (if ($present? server) (try (stop server) catch Error nil))
     (close_runtime runtime)))

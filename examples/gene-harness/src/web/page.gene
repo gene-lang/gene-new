@@ -2,8 +2,8 @@
 (mod harness_web_page)
 (import ^from "./style" styles)
 (import ^from "./appearance" appearance_answer appearance_link appearance_preloads)
-(import $html [render])
-(import $web [script stylesheet])
+(import $html/render)
+(import $web/[script stylesheet])
 
 (var harness_ui ($web/load $"${($path/parent this_mod/.path)}/../../client/main.gene"))
 

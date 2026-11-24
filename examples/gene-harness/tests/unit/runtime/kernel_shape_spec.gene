@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (describe "Harness state shape"
   (it "keeps product state outside the kernel with only injected plugin callbacks" []
     (var fields nil)

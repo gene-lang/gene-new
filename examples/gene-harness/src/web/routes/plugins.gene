@@ -13,7 +13,7 @@
   (let browser context/browser)
   (let plugin_control context/plugin_control)
   (let management (plugin_control_request plugin_control request))
-  (if_not ($absent? management) (return (response management/status management/body)))
+  (if ($present? management) (return (response management/status management/body)))
   (if (&& (== request/method "GET") (== request/path $"${(api_root)}/plugins/history"))
     (return (response 200
       (plugin_history_catalog

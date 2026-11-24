@@ -59,7 +59,7 @@
   (if (&& ($present? data/started_at_ms)
              (|| (== state "running") (== state "waiting") (== state "queued")))
     (tick_elapsed clock elapsed alive))
-  (if_not ($absent? data/usage/total_tokens)
+  (if ($present? data/usage/total_tokens)
     (var known : Bool data/usage/tokens_known)
     (var tokens (dint data/usage/total_tokens))
     ($dom/append body ($dom/render `(p %(if known $"${tokens} tokens" else "Token usage unavailable")))))

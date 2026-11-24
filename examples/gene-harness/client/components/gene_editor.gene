@@ -804,11 +804,11 @@
       (set index (+ index 1)))
     (set entries kept))
   (set state/undo entries)
-  (state/redo .clear))
+  state/redo/.clear)
 
 (fn undo_edit [state : EditorState] : Bool
   (if (== ($size state/undo) 0) (return false))
-  (var entry : Any (state/undo .pop))
+  (var entry : Any state/undo/.pop)
   (if ($absent? entry) (return false))
   (var after (text entry/after ""))
   (if (!= after state/text)
@@ -821,7 +821,7 @@
 
 (fn redo_edit [state : EditorState] : Bool
   (if (== ($size state/redo) 0) (return false))
-  (var entry : Any (state/redo .pop))
+  (var entry : Any state/redo/.pop)
   (if ($absent? entry) (return false))
   (var before (text entry/before ""))
   (if (!= before state/text)

@@ -1,5 +1,5 @@
 # Tests src/runtime/round_controller.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_controller set_test_provider ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
@@ -291,7 +291,7 @@
               ^submission_seq (+ i 1) ^state "done" ^prompt "test" ^digest "test"}))
           (var kept 0)
           (repeat j in 130
-            (if_not ($absent? (round_receipt controller "long" $"r${(+ j 1)}"))
+            (if ($present? (round_receipt controller "long" $"r${(+ j 1)}"))
               (set kept (+ kept 1))))
           ($assert (== kept 128) "session did not keep exactly 128 receipts")
           ($assert ($absent? (round_receipt controller "long" "r2")) "an oldest receipt was kept")

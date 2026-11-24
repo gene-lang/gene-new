@@ -66,7 +66,7 @@
   (if (== status "done")
     (host/errors .delete key)
     else (set host/errors/%key (ctext data/message "The card action did not complete.")))
-  (if_not ($absent? data/card)
+  (if ($present? data/card)
     (var current : Any data/card)
     (if (== status "done")
       (if (== (ctext data/action) "enable")
@@ -147,12 +147,12 @@
   (for child in children
     ($dom/append element (render_card_tree host session card child enabled form_fields)))
   (var id (ctext card/id))
-  (if_not ($absent? props/field)
+  (if ($present? props/field)
     (var field_name : Str props/field)
     (var draft_key $"${(card_key session id)}/${field_name}")
     (var checkbox (== (ctext props/type) "checkbox"))
     # A checkbox draft is its checked state, not its value.
-    (if_not ($absent? host/drafts/%draft_key)
+    (if ($present? host/drafts/%draft_key)
       (var draft_value : Str host/drafts/%draft_key)
       (if checkbox
         (set element/checked (== draft_value "true"))
@@ -167,7 +167,7 @@
   (if (&& (== tag "form") ($present? props/update))
     (var form_action : Str props/update)
     (var form_args : Any {})
-    (if_not ($absent? props/args) (set form_args props/args))
+    (if ($present? props/args) (set form_args props/args))
     ($dom/add_event_listener
       element
       "submit"
@@ -197,27 +197,27 @@
     (if (&& ($present? props/update) (!= (ctext props/type) "submit"))
       (var button_action : Str props/update)
       (var button_args : Any {})
-      (if_not ($absent? props/args) (set button_args props/args))
+      (if ($present? props/args) (set button_args props/args))
       ($dom/add_event_listener
         element
         "click"
         (fn [event : Any] : Nil
           (if enabled (update_action host session card button_action button_args {})))))
-    (if_not ($absent? props/send)
+    (if ($present? props/send)
       (var send_text : Str props/send)
       ($dom/add_event_listener
         element
         "click"
         (fn [event : Any] : Nil
           (if enabled (host/send session send_text (card_ref card))))))
-    (if_not ($absent? props/command)
+    (if ($present? props/command)
       (var command_text : Str props/command)
       ($dom/add_event_listener
         element
         "click"
         (fn [event : Any] : Nil
           (if enabled (host/command session command_text (card_ref card))))))
-    (if_not ($absent? props/prompt)
+    (if ($present? props/prompt)
       (var prompt_text : Str props/prompt)
       ($dom/add_event_listener element "click" (fn [event : Any] : Nil (host/prompt prompt_text)))))
   element)
@@ -290,7 +290,7 @@
     ($dom/append element (question_tree child selected on_answer on_prompt enabled)))
   (if (== tag "button")
     ($dom/set_attribute element "type" "button")
-    (if_not ($absent? props/answer)
+    (if ($present? props/answer)
       (var answer_value : Any props/answer)
       (var chosen (selected answer_value))
       ($dom/set_attribute element "aria-pressed" (if chosen "true" else "false"))
@@ -299,7 +299,7 @@
         ($dom/add_event_listener element "click" (fn [event : Any] : Nil (on_answer answer_value)))
       else
         ($dom/set_attribute element "disabled" "")))
-    (if_not ($absent? props/prompt)
+    (if ($present? props/prompt)
       (var question_prompt : Str props/prompt)
       ($dom/add_event_listener element "click" (fn [event : Any] : Nil (on_prompt question_prompt)))))
   element)
@@ -327,7 +327,7 @@
     ($dom/append section ($dom/render `(p ^class_name "muted" "User · Harness"))))
   (var questions : (List Any) batch/questions)
   (var answers : PropMap {})
-  (if_not ($absent? batch/answers) (set answers batch/answers))
+  (if ($present? batch/answers) (set answers batch/answers))
   (for question in questions
     (var id (ctext question/id))
     (var answer : Any answers/%id)

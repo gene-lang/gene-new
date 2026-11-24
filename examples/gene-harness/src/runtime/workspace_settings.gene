@@ -21,7 +21,7 @@
   (if (&& ($present? value/role) (!= value/role "manager"))
     (settings_error "Unknown workspace role."))
   (let result {^version 1 ^port port})
-  (if_not ($absent? value/role) (result .put "role" value/role))
+  (if ($present? value/role) (result .put "role" value/role))
   result)
 
 (fn read_workspace_settings [root : Str]

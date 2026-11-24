@@ -26,7 +26,7 @@
   (var player : EventTarget host/player)
   (send host {^type "player" ^id host/speak_id ^played_bytes ($to_int ($audio/player_played_bytes player))
     ^queued_ms ($audio/player_queued_ms player)})
-  (if_not ($absent? host/ahead)
+  (if ($present? host/ahead)
     (send host {^type "player" ^id (text host/ahead/id) ^played_bytes 0 ^^waiting}))
   (if (&& host/speak_ended (<= ($audio/player_queued_ms player) 0.0))
     (set host/suppress_until (+ ($time/now) 300.0))
@@ -38,21 +38,21 @@
 (fn cancel_output [host : HostAudio] : Nil
   (var had_output (|| ($present? host/player) (!= host/speak_id "") host/external_playback))
   (send host {^type "speak/cancel"})
-  (if_not ($absent? host/player)
+  (if ($present? host/player)
     (var player : EventTarget host/player) ($audio/player_fade_stop player))
   (set host/player nil) (set host/speak_id "") (set host/ahead nil)
   (if had_output (set host/suppress_until (+ ($time/now) 300.0))))
 
 (fn cancel_input [host : HostAudio] : Nil
   (if (!= host/capture_id "") (send host {^type "capture/cancel" ^id host/capture_id}))
-  (if_not ($absent? host/capture)
+  (if ($present? host/capture)
     (var capture : EventTarget host/capture) ($audio/capture_close capture))
   (set host/capture nil) (set host/capture_id "") (set host/capturing false)
   (set host/manual false) (set host/preroll []) (reset_vad host/vad))
 
 (fn stop_handsfree [host : HostAudio] : Nil
   (cancel_input host)
-  (if_not ($absent? host/monitor)
+  (if ($present? host/monitor)
     (var monitor : EventTarget host/monitor) ($audio/capture_close monitor))
   (set host/monitor nil))
 
@@ -300,7 +300,7 @@
   (if (|| host/closed (! host/ready) host/capturing) (return false))
   (begin_capture host id)
   (set host/manual true)
-  (if_not ($absent? host/monitor) (return true))
+  (if ($present? host/monitor) (return true))
   (var frame (fn [pcm : (Buffer U8)] : Nil
       (if (|| host/closed (!= id host/capture_id)) (return))
       (send_mic host pcm)))
@@ -320,7 +320,7 @@
   (if (! host/capturing) (return))
   (var id host/capture_id)
   (set host/capture_released_ms ($to_int ($time/now)))
-  (if_not ($absent? host/monitor)
+  (if ($present? host/monitor)
     (send_capture_end host id)
     (set host/capturing false) (set host/capture_id "") (set host/manual false)
     (set host/preroll []) (reset_vad host/vad)
@@ -381,7 +381,7 @@
 (fn start_handsfree [host : HostAudio, duplex : Str, level : (Fn [F64] Nil)] : Bool
   (if (|| host/closed (! host/ready) host/capturing) (return false))
   (set host/duplex duplex)
-  (if_not ($absent? host/monitor) (return true))
+  (if ($present? host/monitor) (return true))
   (reset_vad host/vad) (set host/level 0.0)
   (set host/monitor (open_capture host
     (fn [pcm : (Buffer U8)] : Nil (handsfree_frame host pcm))
@@ -395,7 +395,7 @@
 
 (fn prefetch_host_reply [host : HostAudio, reply : Str] : Bool
   (if (|| host/closed (! host/ready) (== host/speak_id "")) (return false))
-  (if_not ($absent? host/ahead) (return (== (text host/ahead/reply) reply)))
+  (if ($present? host/ahead) (return (== (text host/ahead/reply) reply)))
   (var id ($browser/request_id)) (var stream host/next) (set host/next (+ stream 1))
   (var chunks : (List (Buffer U8)) [])
   (set host/ahead {^id id ^stream stream ^reply reply ^chunks chunks ^sequence 0 ^received 0
@@ -429,7 +429,7 @@
   (if (|| host/closed (! host/ready) (!= host/speak_id "")) (return false))
   (set host/speak_requested_ms ($to_int ($time/now))) (set host/speak_first_ms 0)
   (if (activate_prefetch host reply) (return true))
-  (if_not ($absent? host/ahead) (cancel_output host))
+  (if ($present? host/ahead) (cancel_output host))
   (set host/speak_id ($browser/request_id))
   (set host/speak_stream host/next) (set host/next (+ host/next 1))
   (send host {^type "speak" ^id host/speak_id ^reply reply ^stream host/speak_stream})
@@ -437,7 +437,7 @@
 
 (fn speak_host_announcement [host : HostAudio, kind : Str, count : Int] : Bool
   (if (|| host/closed (! host/ready) (!= host/speak_id "")) (return false))
-  (if_not ($absent? host/ahead) (cancel_output host))
+  (if ($present? host/ahead) (cancel_output host))
   (set host/speak_requested_ms ($to_int ($time/now))) (set host/speak_first_ms 0)
   (set host/speak_id ($browser/request_id))
   (set host/speak_stream host/next) (set host/next (+ host/next 1))

@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_service package_path ^from "../../support")
 (import close_session_service create_session snapshot ^from "../../../src/web/session_service")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
@@ -42,7 +42,7 @@
                     (entered .set true)
                     (if emit (host .PluginHost:emit_event "action_probe/event" {^value "workspace"}))
                     (if spin (while true ($sleep 1)))
-                    (if_not ($absent? payload) ($sleep 30))
+                    (if ($present? payload) ($sleep 30))
                     (if ($absent? payload) "complete" else payload/value))})
                 (host .PluginHost:contribute "web_components"
                   {^name "probe" ^slot "view" ^title "Probe" ^view_state {}

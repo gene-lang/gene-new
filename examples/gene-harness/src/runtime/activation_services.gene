@@ -102,14 +102,14 @@
       when TaskOutcome/cancelled (record/error .set "quiesce exceeded its budget")
       else nil))
   (let task record/task/.get)
-  (if_not ($absent? task) task/.cancel)
+  (if ($present? task) task/.cancel)
   nil)
 
 (fn ^^private stop_record [record]
   (record/state .set "stopped")
   (let task record/task/.get)
   (record/task .set nil)
-  (if_not ($absent? task)
+  (if ($present? task)
     task/.cancel
     (try task/.join catch Error nil))
   nil)

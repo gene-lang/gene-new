@@ -16,7 +16,7 @@
 (fn account_api [clients, account]
   (clients/gate (fn []
     (let found (clients/clients/.get .get account/id))
-    (if_not ($absent? found) (return found))
+    (if ($present? found) (return found))
     (let credentials (read_slack_credentials account/config/secret_file))
     (let client (open_api credentials/bot ^requester clients/requester))
     (clients/clients/.get .put account/id client)

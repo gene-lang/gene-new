@@ -44,7 +44,7 @@
   (fail (ModeError ^code code ^_msg message ^mode (mode_state manager session))))
 
 (fn require_chat [manager, session : Str]
-  (if_not ($absent? (mode_state manager session))
+  (if ($present? (mode_state manager session))
     (problem manager session "mode_open" "Leave the input mode before sending a model prompt.")))
 
 (fn enter_mode [manager, session : Str, name : Str, snapshot]
@@ -53,7 +53,7 @@
     (if (|| manager/closed/.get manager/runtime/stopping/.get)
       (problem manager session "stopped" "Workspace is stopping."))
     (let previous (manager/states/.get .get session))
-    (if_not ($absent? previous)
+    (if ($present? previous)
       (if (&& (! previous/closing) (== previous/row/payload/name name))
         (return (mode_state manager session)))
       (problem manager session "busy" "This session already has an input mode."))
@@ -93,7 +93,7 @@
   (if ($absent? state) (return nil))
   (state .put "closing" true)
   (try
-    (if_not ($absent? state/running)
+    (if ($present? state/running)
       (manager/cancel session state/running)
       (while (! state/completed/.get) ($sleep 1)))
     (close_mode_resources state session reason)
@@ -132,7 +132,7 @@
     (if (== kind "ignored") (return {^^ignored}))
     (if (!= kind "input")
       (problem manager session "invalid_request" "The input mode returned an invalid classification."))
-    (if_not ($absent? state/running)
+    (if ($present? state/running)
       (problem manager session "busy" "An input is already running."))
     (manager/submit session
       {^kind "command" ^name state/row/payload/name ^raw text

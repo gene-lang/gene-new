@@ -1,6 +1,6 @@
 # M4: the core Logs route filters parsed records while advancing the same
 # byte cursor and leaves raw lines out of a filtered response.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec source_path ^from "../../support")
 (import start_host stop_host ^from "../../web_support")
 (import connect api wire ^from "../../../src/cli/client")
@@ -8,7 +8,7 @@
 (import offline_profile ^from "../../../src/profiles/offline")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import make_record serialize_record ^from "../../../src/public/log_record")
-(import $url [encode_component])
+(import $url/encode_component)
 
 (fn record_line [type : Str, level : Str, target, message : Str] : Str
   (serialize_record

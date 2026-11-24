@@ -1,6 +1,6 @@
 # Startup diagnostics must reflect the launcher's terminal, even though the
 # supervisor captures its child's output for recovery diagnostics.
-(import $test [describe it])
+(import $test/[describe it])
 (import ^from "../../support" isolated run_spec source_path)
 (import ^from "../../web_support" ready_host stop_host)
 (import ^from "../../../src/cli/client" connect api connection_link)
@@ -11,7 +11,7 @@
   # locations when supplied by the test runner.
   (for name in ["GENE_USER_PACKAGES" "GENE_ARTIFACT_STORE"]
     (let value ($os/env? name))
-    (if_not ($absent? value) (values .put name value)))
+    (if ($present? value) (values .put name value)))
   values)
 
 (fn browser_output [terminal, count : Int = 1] : Str

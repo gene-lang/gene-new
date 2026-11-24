@@ -77,7 +77,7 @@
     (let namespaces (contributor_namespaces runtime owner))
     (prepared .put "normalize" (fn [context value]
       (let result (normalize (freeze_turn_data context) (freeze_turn_data value)))
-      (if_not ($absent? result)
+      (if ($present? result)
         (if (!= ($head result) Map) (initiator_error "An initiator must return input metadata or nil."))
         (if (== kind "channel")
           (if (|| (!= result/kind "channel") (!= result/transport transport))

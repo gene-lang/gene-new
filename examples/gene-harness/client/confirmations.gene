@@ -32,11 +32,11 @@
 
 (fn command_confirmation [controller : Confirmations, session : Str, command : Any] : Nil
   (var code "")
-  (if_not ($absent? command/error_code) (set code command/error_code))
+  (if ($present? command/error_code) (set code command/error_code))
   (if (!= code "confirmation_required") (return))
   (var id : Str command/id)
   (var key ($json/stringify [session id]))
-  (if_not ($absent? controller/items/%key) (return))
+  (if ($present? controller/items/%key) (return))
   (var handoff (handoff_modal))
   (var text : Str command/display)
   (var name : Str command/name)

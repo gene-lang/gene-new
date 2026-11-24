@@ -4,7 +4,7 @@
 (import log_event ^from "../kernel/log")
 (import ^from "./contract" protocol_version)
 (import ^from "../runtime/workspace_settings" read_workspace_settings)
-(import $net/http [listen])
+(import $net/http/listen)
 
 (type ConnectionError : Error ^props {^code Str})
 
@@ -41,7 +41,7 @@
   (if (&& ($absent? requested) (!= settings/port 0)) (set requested settings/port))
   (var selected 0)
   (var strict false)
-  (if_not ($absent? restart_port)
+  (if ($present? restart_port)
     (set selected (valid_port restart_port))
     (set strict true))
   (if (&& (! strict) ($present? requested))

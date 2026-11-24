@@ -1,10 +1,10 @@
 # Workspace ownership: composition_store.
 (mod composition_store)
 
-(import $store/fs [open:store_open Store StoreError])
-(import $serde [write_data read_data])
-(import $fs [make_dir real_path read_text write_text_atomic exists?])
-(import $str [slice_bytes byte_size contains? starts_with? ends_with? split])
+(import $store/fs/[open:store_open Store StoreError])
+(import $serde/[write_data read_data])
+(import $fs/[make_dir real_path read_text write_text_atomic exists?])
+(import $str/[slice_bytes byte_size contains? starts_with? ends_with? split])
 (import ^from "../kernel" ExecutionLimits default_execution_limits)
 (import ^from "../runtime/interface_policy" current_interfaces latest_interfaces)
 (import ^from "../runtime/plugin_sdk" sdk_modules)
@@ -38,7 +38,7 @@
     (fail (CompositionError ^_msg "composition entry requires id")))
   (var id ($to_str entry/id))
   (if (== id "") (fail (CompositionError ^_msg "composition entry id is empty")))
-  (if_not ($absent? (ids .get id))
+  (if ($present? (ids .get id))
     (fail (CompositionError ^_msg $"duplicate composition entry ${id}")))
   (ids .put id true)
   (if (== entry/builtin true)
@@ -124,7 +124,7 @@
   (let defaults (fresh_map))
   (for item in admissions
     (let id item/plugin/id)
-    (if_not ($absent? (defaults .get id))
+    (if ($present? (defaults .get id))
       (fail (CompositionError ^_msg $"duplicate profile plugin ${id}")))
     (defaults .put id item))
   (workspace/profile_plugins .set defaults)
@@ -164,7 +164,7 @@
   (history_list ^limit limit ^before before workspace/store workspace/history_head/.get))
 
 (fn composition_history_result [workspace : Workspace, result]
-  (if_not ($absent? workspace/history_head/.get)
+  (if ($present? workspace/history_head/.get)
     (append_history_result workspace/store workspace/history_head/.get result)))
 
 (fn commit_composition [workspace : Workspace, entries, ^origin origin = nil]
@@ -251,7 +251,7 @@
   (var errors workspace/errors/.get)
   (errors .put id message)
   (workspace/errors .set errors)
-  (if_not ($absent? workspace/history_build/.get)
+  (if ($present? workspace/history_build/.get)
     (try
       (remember_failure workspace/store workspace/history_build/.get
         (?? (previous_module_digest (composition_entries workspace) id) "builtin") id message)

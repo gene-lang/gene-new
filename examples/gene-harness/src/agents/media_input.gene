@@ -8,7 +8,7 @@
     (fail (MediaError ^code "invalid_request" ^_msg "Image detail must be auto, low or high.")))
   (let record (media_record store id))
   (let encoded ($base64/encode (media_bytes store id)))
-  (if_not ($absent? inventory)
+  (if ($present? inventory)
     (inventory .push {^id id ^digest record/digest ^mime record/mime ^detail detail
       ^base64 encoded ^data_url $"data:${record/mime};base64,${encoded}"}))
   {^mime record/mime ^data encoded ^detail detail})
@@ -19,7 +19,7 @@
   (for message in messages
     # Direct callers can supply already-expanded images. These have no
     # durable media identity, so the recorder must omit their prepared body.
-    (if_not ($absent? inventory)
+    (if ($present? inventory)
       (for image in (?? message/images [])
         (inventory .push {^id nil ^digest nil ^mime image/mime
           ^detail (?? image/detail "auto") ^base64 image/data
@@ -52,7 +52,7 @@
               (for page in document/pages
                 (images .push (image_part store page/media/id detail inventory))
                 (set text $"${text}\n[PDF page ${page/page} image follows; image ID=${page/media/id}.]"))
-              (if_not ($absent? document/page_count)
+              (if ($present? document/page_count)
                 (set text $"${text}\n[PDF: ${document/page_count} pages; initial text covers pages 1–${document/text_pages}. Request other pages by attachment ID.]"))
               (if document/truncated
                 (set text $"${text}\n[Document excerpt truncated; full attachment remains available by ID.]"))))

@@ -146,7 +146,7 @@
     (keys .put id {^registry registry ^name name ^key key})
     # The bindings entry projected the keys known when it activated. A key
     # admitted later is projected now, before any plugin requiring it installs.
-    (if (&& (! record/defer_selection) (! ($absent? record/base_owner/.get)))
+    (if (&& (! record/defer_selection) ($present? record/base_owner/.get))
       (selection_changed record registry name)))
   (let binding (keys .get id))
   (Requirement ^key binding/key ^config nil))
@@ -335,7 +335,7 @@
               else (changed .put (binding_id registry key) [registry key])))
           (record/policies/.get .get plugin/id)))
       (record/host .RegistryHost:activate (fn [] (plugin/activate receiver)))
-      (if_not ($absent? plugin/deactivate)
+      (if ($present? plugin/deactivate)
         (fx .defer (fn []
           (record/host .RegistryHost:cleanup (fn [] (plugin/deactivate receiver))))))
       # Children can activate while their parent is still loading. Publish
@@ -381,7 +381,7 @@
   (var restore_previous false)
   (for failure in failures
     (if_not (rollback .contains? failure/id) (rollback .push failure/id))
-    (if_not ($absent? (record/current/.get .get failure/id))
+    (if ($present? (record/current/.get .get failure/id))
       (set restore_previous true)))
   # A newly failed plugin returns to its last active revision, or leaves the
   # composition when it has none. Its siblings activated regardless.
@@ -493,7 +493,7 @@
     (map_for [id revision] in record/current/.get
       (if (&& ($present? (wanted .get ($to_str id))) ($absent? (changed_set .get ($to_str id))) (== (states .get ($to_str id)) "active"))
         (carried .put ($to_str id) true))))
-  (if_not ($absent? record/prepare_owners) (record/prepare_owners carried))
+  (if ($present? record/prepare_owners) (record/prepare_owners carried))
   (record/policies .set ($freeze metadata))
   (record/busy .set true)
   (let previous_projections ($thaw ($freeze_shallow record/projections/.get)))
@@ -532,7 +532,7 @@
       (if ($present? prior) (live .put plugin/id prior))
       else (live .put plugin/id {^plugin plugin ^options (?? (entry_options .get plugin/id) #{})})))
   (record/current .set live)
-  (if_not ($absent? retirement_failure) (fail retirement_failure))
+  (if ($present? retirement_failure) (fail retirement_failure))
   snapshot)
 
 (fn close_composition [handle] ^^private

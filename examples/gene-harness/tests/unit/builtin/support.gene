@@ -1,4 +1,4 @@
-(import $test [assert_equal])
+(import $test/assert_equal)
 (import split_response ^from "../../../src/agents/response")
 
 (fn raw_blocks [read_text]

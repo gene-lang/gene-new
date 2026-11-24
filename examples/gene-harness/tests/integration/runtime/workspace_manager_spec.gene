@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import ^from "../../support" isolated run_spec test_service source_path)
 (import ^from "../../../src/web/session_service" close_session_service)
 (import ^from "../../../src/runtime/workspace_settings"
@@ -262,8 +262,8 @@
           ($assert (== removed/status "done") removed/display)
           ($assert (! ($fs/exists? first/dir)))
         ensure
-          (if_not ($absent? first) (stop_project first/dir))
-          (if_not ($absent? second) (stop_project second/dir))
+          (if ($present? first) (stop_project first/dir))
+          (if ($present? second) (stop_project second/dir))
           (close_session_service service)))))
   (it
     "rejects stale edits and unsafe names, and deletes workspaces without following links"
@@ -468,7 +468,7 @@
           ($assert (== ($size ($filter sessions (fn [item] (== item/id session/id)))) 1))
         ensure
           (stop_project project)
-          (if_not ($absent? original) (stop_host original))
+          (if ($present? original) (stop_host original))
           (close_session_service service))))))
 
 (fn main [args] : Int

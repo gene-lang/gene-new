@@ -47,7 +47,7 @@
   (let settings {^language "en" ^rate 1.0})
   (let started ($os/monotonic_ms))
   (let resource (engine/open settings))
-  (if_not ($absent? resource/dispatch_message)
+  (if ($present? resource/dispatch_message)
     (dispatch_json resource resource/dispatch_message resource/dispatch_error))
   (let opened (- ($os/monotonic_ms) started))
   (try
@@ -84,7 +84,7 @@
               (while (! done/.get)
                 (if (> ($os/monotonic_ms) deadline) (audio_error "SpeechAnalyzer did not finalize within five seconds."))
                 ($sleep 5))
-              (if_not ($absent? error/.get) (audio_error error/.get))
+              (if ($present? error/.get) (audio_error error/.get))
             ensure (sink/close))
           else (set transcript (engine/transcribe resource wav/pcm settings)))
         ($println ($json/stringify {^engine kind ^open_ms opened ^total_ms (- ($os/monotonic_ms) began)

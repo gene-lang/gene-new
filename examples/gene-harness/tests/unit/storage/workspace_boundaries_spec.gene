@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 
 (describe "Workspace ownership boundaries"
   (it "keeps checkpoint module activation and repair dependencies in one direction" []

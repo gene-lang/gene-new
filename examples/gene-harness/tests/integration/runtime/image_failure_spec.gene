@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import image_fixture evaluate_image review ^from "../../fixtures/image")
 (import close_runtime ^from "../../../src/runtime/bootstrap")

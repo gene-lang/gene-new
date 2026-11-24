@@ -199,7 +199,7 @@
           true)
         (return))
       (set manager/csrf data/csrf)
-      (if_not ($absent? manager/appearance)
+      (if ($present? manager/appearance)
         (var appearance : BrowserAppearance manager/appearance)
         (refresh_appearance appearance))
       (if (&& (!= manager/epoch "") (!= manager/epoch (text data/epoch)))
@@ -218,7 +218,7 @@
             (if (== (text draft/workspace) manager/workspace)
               (set manager/base draft/base)
               (var retained_base : (List Any) [])
-              (if_not ($absent? draft/base_plugins) (set retained_base draft/base_plugins))
+              (if ($present? draft/base_plugins) (set retained_base draft/base_plugins))
               (set manager/base_plugins retained_base)
               (set manager/changes draft/changes)
               (set manager/restore draft/restore)
@@ -252,7 +252,7 @@
           (if manager/recovery
             "Workspace plugins are not running. Save repairs, then retry normal startup."
             else "Changes stay in a draft until you validate and apply them.")))
-      (if_not ($absent? data/startup_failure) (notice manager (text data/startup_failure) true))
+      (if ($present? data/startup_failure) (notice manager (text data/startup_failure) true))
       (var diagnostics : (List Any) data/diagnostics)
       (if (> ($size diagnostics) 0)
         (var messages : (List Str) [])
@@ -410,12 +410,12 @@
                  " · "
                  %(text record/origin/operation)))))
         (add_line row $"Host: ${(text record/host_build_id)}")
-        (if_not ($absent? record/entry/module_digest)
+        (if ($present? record/entry/module_digest)
           (add_line row $"Code: ${(text record/entry/module_digest)}"))
-        (if_not ($absent? record/entry)
+        (if ($present? record/entry)
           ($dom/append row ($dom/render
             (plugin_sessions_view record/development ($absent? record/entry/module_digest)))))
-        (if_not ($absent? record/origin/reason) (add_line row (text record/origin/reason)))
+        (if ($present? record/origin/reason) (add_line row (text record/origin/reason)))
         (var outcomes : (List Any) record/outcomes)
         (for outcome in outcomes
           (add_line
@@ -430,9 +430,9 @@
               (if ($absent? outcome/result/message)
                 ""
                 else $" · ${(text outcome/result/message)}")))
-          (if_not ($absent? outcome/result/host_build_id)
+          (if ($present? outcome/result/host_build_id)
             (add_line row $"Observed on host: ${(text outcome/result/host_build_id)}"))
-          (if_not ($absent? outcome/result/readiness_reason)
+          (if ($present? outcome/result/readiness_reason)
             (add_line row (text outcome/result/readiness_reason))))
         (var attempts : (List Any) record/attempts)
         (for attempt in attempts
@@ -443,11 +443,11 @@
                 "Validation failed: "
                 else "Rejected attempt: ")
               (text attempt/result/message))))
-        (if_not ($absent? record/validation/status)
+        (if ($present? record/validation/status)
           (add_line
             row
             $"Validation: ${(text record/validation/kind)} · ${(text record/validation/status)}"))
-        (if_not ($absent? record/validation/warnings)
+        (if ($present? record/validation/warnings)
           (var warnings : (List Any) record/validation/warnings)
           (for warning in warnings
             (add_line row $"Validation: ${(text warning)}")))
@@ -490,13 +490,13 @@
             row
             ($dom/render
               `(button ^type "button" ^on_click %(fn [event : Any] : Nil (if manager/busy (return)) (begin_draft manager) (set manager/restore revision) (invalidate_draft manager) (save_draft manager) (render manager)) "Stage composition reversion")))
-          else (if_not ($absent? record/entry/module_digest)
+          else (if ($present? record/entry/module_digest)
             ($dom/append
               row
               ($dom/render
                 `(button ^type "button" ^on_click %(fn [event : Any] : Nil (stage manager {^id id ^kind "revert" ^revision revision})) "Stage this version")))))
         ($dom/append target row))
-      (if_not ($absent? data/next_before)
+      (if ($present? data/next_before)
         (var cursor : Int data/next_before)
         ($dom/append
           target
@@ -522,15 +522,15 @@
     (plugin_sessions_view selected/development (== (text selected/source) "built_in"))))
   (if (&& ($present? selected/active_digest) (!= (text selected/active_digest) (if ($absent? selected/digest) "builtin" else (text selected/digest))))
     (add_line target $"Still running the previous code: ${(text selected/active_digest)}"))
-  (if_not ($absent? selected/changed_at)
+  (if ($present? selected/changed_at)
     (add_line target $"Source recorded: ${(text selected/changed_at)}"))
-  (if_not ($absent? selected/last_error)
+  (if ($present? selected/last_error)
     (add_line target $"Last activation error: ${(text selected/last_error)}"))
-  (if_not ($absent? selected/inspection_error)
+  (if ($present? selected/inspection_error)
     (add_line target $"Last restricted read: ${(text selected/inspection_error)}"))
-  (if_not ($absent? selected/error)
+  (if ($present? selected/error)
     ($dom/append target ($dom/render `(p ^class_name "manager_error" %(text selected/error)))))
-  (if_not ($absent? selected/digest)
+  (if ($present? selected/digest)
     ($dom/append target ($dom/render `(p ^class_name "muted" (code %(text selected/digest))))))
   (var actions ($dom/render `(div ^class_name "manager_actions")))
   (if (&& (flag selected/enabled) (|| (== (text selected/state) "error") (== (text selected/state) "pending")))
@@ -547,7 +547,7 @@
       actions
       ($dom/render
         `(button ^type "button" ^disabled %manager/busy ^on_click %(fn [event : Any] : Nil (stage manager {^id id ^kind "restore"})) "Stage default restoration"))))
-  (if_not ($absent? selected/digest)
+  (if ($present? selected/digest)
     ($dom/append
       actions
       ($dom/render
@@ -559,9 +559,9 @@
     (add_line source_details (text digest)))
   (if (== ($size closure) 0) (add_line source_details "Bundled with the current host."))
   (add_line source_details $"Interfaces: ${($json/stringify selected/interfaces)}")
-  (if_not ($absent? selected/descriptor_limits)
+  (if ($present? selected/descriptor_limits)
     (add_line source_details $"Descriptor limits: ${($json/stringify selected/descriptor_limits)}"))
-  (if_not ($absent? selected/callback_limits)
+  (if ($present? selected/callback_limits)
     (add_line source_details $"Effective callback limits: ${($json/stringify selected/callback_limits)}"))
   ($dom/append target source_details)
   ($dom/append target ($dom/render `(h3 "Declared capabilities")))
@@ -648,14 +648,14 @@
   (set_text_content "draft_base" $"Based on revision ${($to_str manager/base)}")
   (var target ($dom/element "draft_changes"))
   ($dom/clear target)
-  (if_not ($absent? manager/restore)
+  (if ($present? manager/restore)
     (add_line target $"Revert composition to revision ${(number_text manager/restore)}"))
   (for change in manager/changes
     (add_line target $"${(text change/id)}: ${(change_label change)}"))
   (var report ($dom/element "draft_report"))
   ($dom/clear report)
   (if (!= manager/base manager/revision) (render_intervening_changes manager report))
-  (if_not ($absent? manager/plan)
+  (if ($present? manager/plan)
     ($dom/append report ($dom/render `(h3 "Reviewed composition changes")))
     (var differences : (List Any) manager/plan/diff)
     (if (== ($size differences) 0) (add_line report "No desired composition changes."))
@@ -683,7 +683,7 @@
           ($dom/render
             `(button ^type "button" ^disabled %manager/busy ^on_click %(fn [event : Any] : Nil (for id in names (for plugin in manager/plugins (if (== (text plugin/id) id) (stage_enabled manager plugin false)))))
                %$"Stage disabling dependents of ${(text item/id)}")))))
-    (if_not ($absent? manager/plan/conflicts)
+    (if ($present? manager/plan/conflicts)
       (var conflicts : (List Any) manager/plan/conflicts)
       (for conflict in conflicts
         (var owners : (List Str) conflict/owners)
@@ -696,7 +696,7 @@
             (text conflict/key)
             " claimed by "
             (str/join owners ", ")))))
-    (if_not ($absent? manager/plan/current_defaults)
+    (if ($present? manager/plan/current_defaults)
       (var defaults : (List Any) manager/plan/current_defaults)
       (if (> ($size defaults) 0)
         (var names : (List Str) [])
@@ -734,7 +734,7 @@
       ($dom/set_class row "selected" (== id manager/selected))
       (var change : Any (change_for manager id))
       (var checked : Bool plugin/enabled)
-      (if_not ($absent? change/enabled) (set checked change/enabled))
+      (if ($present? change/enabled) (set checked change/enabled))
       (var toggle
         ($dom/render
           `(input ^type "checkbox" ^aria_label %$"Enable ${id}" ^checked %checked ^disabled %manager/busy)))

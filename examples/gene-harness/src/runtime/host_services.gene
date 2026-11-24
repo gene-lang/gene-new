@@ -53,7 +53,7 @@
     ^closed ($cell false) ^quiesced ($cell false) ^started ($cell false) ^observer observe))
 
 (fn service_event [owner, phase : Str, name : Str]
-  (if_not ($absent? owner/observer) (owner/observer phase name)))
+  (if ($present? owner/observer) (owner/observer phase name)))
 
 (fn quiesce_host_services [owner]
   (if (owner/quiesced .swap true) (return nil))

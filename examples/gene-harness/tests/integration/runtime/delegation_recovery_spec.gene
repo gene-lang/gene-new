@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec fixture_path ^from "../../support")
 (import model_counts recovery_controller ^from "../../fixtures/delegation_crash")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
@@ -48,7 +48,7 @@
             ($assert (!= blocks/records/0/source blocks/records/1/source))
             (for child in blocks/records
               (let metadata (runtime/sessions/index/.get .get child/session))
-              (if_not ($absent? metadata)
+              (if ($present? metadata)
                 ($assert (== metadata/kind "child"))
                 ($assert (== metadata/parent/session "default"))))
             (if (== marker/parent_state "running")

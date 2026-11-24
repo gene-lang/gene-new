@@ -58,7 +58,7 @@
   (for finalize in finalizers
     (try (finalize)
       catch Error
-        (if_not ($absent? scope/origin/output)
+        (if ($present? scope/origin/output)
           (try (scope/origin/output "Image-run cleanup could not be recorded.\n") catch Error nil))))
   nil)
 

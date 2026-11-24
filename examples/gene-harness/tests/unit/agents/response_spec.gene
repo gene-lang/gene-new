@@ -1,5 +1,5 @@
 # Tests src/agents/response.gene.
-(import $test [describe it assert_equal assert_raises run])
+(import $test/[describe it assert_equal assert_raises run])
 (import split_response ResponseReadError ^from "../../../src/agents/response")
 (import evaluate_response ^from "../../../src/agents/eval_site")
 

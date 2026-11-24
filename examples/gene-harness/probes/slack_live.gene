@@ -75,14 +75,14 @@
   (try
     (mutate service/runtime/services/values/channels/owner (fn [state]
       (let account (state/accounts .get "qualification"))
-      (if_not ($absent? account) (account .put "enabled" false))
+      (if ($present? account) (account .put "enabled" false))
       (map_for [id route] in state/routes
         (if (== route/account "qualification") (route .put "enabled" false)))
       (state .put "policy_revision" (+ state/policy_revision 1)) nil))
   ensure
     (try (close_session_service service)
     ensure
-      (if_not ($absent? native) ($assert (== (native/open_count) 0))))))
+      (if ($present? native) ($assert (== (native/open_count) 0))))))
 
 (fn main [argv] : Int
   (let args ($body argv))

@@ -1,6 +1,6 @@
 # An unchanged entry is carried across reconciliation: its activation, rows,
 # services and receiver survive an unrelated composition change.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
 (import new_harness install uninstall put_cordis_plugin status_of row shutdown_harness

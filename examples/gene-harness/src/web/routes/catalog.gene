@@ -25,5 +25,5 @@
 (fn feature_request [context, request, parts]
   (for feature in (feature_routes)
     (let result (feature/request context request parts))
-    (if_not ($absent? result) (return result)))
+    (if ($present? result) (return result)))
   nil)

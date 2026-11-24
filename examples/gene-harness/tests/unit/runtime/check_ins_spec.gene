@@ -1,6 +1,6 @@
 # Quick decisions and round check-ins as data: validation, engine reply
 # mapping, per-turn evidence, the repetition rule and the fusion bands.
-(import $test [describe it])
+(import $test/[describe it])
 (import validate_questions validate_answers estimated_tokens ^from "../../../src/runtime/decision_service")
 (import check_in_questions turn_evidence unchanged_failure_loop fuse fit_turns check_in_state
   next_counters check_in_notice ^from "../../../src/runtime/check_ins")

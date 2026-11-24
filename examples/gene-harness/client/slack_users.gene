@@ -11,7 +11,7 @@
   (var account : Str source/account) (var team : Str source/team)
   (var key $"${account}/${team}/${author}")
   (var cached : Any users/cache/%key)
-  (if_not ($absent? cached)
+  (if ($present? cached)
     (if cached/ready
       ($dom/set_text target cached/text)
     else
@@ -35,7 +35,7 @@
 (fn author_view [source : Any, resolve : Any = nil] : EventTarget
   (var author : Str source/author)
   (var target ($dom/render `(span %author)))
-  (if_not ($absent? resolve)
+  (if ($present? resolve)
     (var apply : (Fn [Any EventTarget] Nil) resolve) (apply source target))
   target)
 

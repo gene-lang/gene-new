@@ -5,7 +5,7 @@
 # under website/examples, which check.gene re-verifies, so the page cannot show
 # output the fixtures do not produce.
 
-(import $fs [read_text])
+(import $fs/read_text)
 
 (type WebsiteError : Error)
 

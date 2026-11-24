@@ -187,7 +187,7 @@
     ^open %(output_open entry default_open) ^hidden %($absent? entry)
     ^on_toggle %(fn [event : Any] : Nil
       (var current : Any (output_entry store key))
-      (if_not ($absent? current) (set current/open event/current_target/open))))))
+      (if ($present? current) (set current/open event/current_target/open))))))
   ($dom/append panel summary)
   ($dom/append panel ($dom/render `(button ^type "button" ^class_name "copy"
     ^on_click %(fn [event : Any] : Nil
@@ -435,7 +435,7 @@
     buttons))
 
 (fn render_extensions [client : Client] : Nil
-  (if_not ($absent? client/ui)
+  (if ($present? client/ui)
     (var sidebar_ui : UiClient client/ui)
     (update_sidebar sidebar_ui/navigation/sidebar client/components
       (fn [text : Str] : Nil (component_command client text))
@@ -447,7 +447,7 @@
     (var target ($dom/element $"web_${slot}"))
     ($dom/clear target)
     (render_plugin_slot client target slot))
-  (if_not ($absent? client/component_buttons)
+  (if ($present? client/component_buttons)
     (var slots : PropMap client/component_buttons)
     (map_for [slot entries] in slots
       (var buttons : (List Any) entries)
@@ -539,8 +539,8 @@
       (var title tab/title)
       (var state : Str "")
       (var cache : Any tab/cache)
-      (if_not ($absent? cache/round) (set state cache/round/state))
-      (if_not ($absent? cache/mode) (set state cache/mode/label))
+      (if ($present? cache/round) (set state cache/round/state))
+      (if ($present? cache/mode) (set state cache/mode/label))
       ($dom/append
         target
         ($dom/render
@@ -557,7 +557,7 @@
   (var tab (session_tab client id))
   (set tab/closed true)
   (set tab/socket_epoch (+ tab/socket_epoch 1))
-  (if_not ($absent? tab/socket)
+  (if ($present? tab/socket)
     (var socket : EventTarget tab/socket)
     ($ws/close socket))
   (if (&& navigate (== id client/selected))
@@ -581,13 +581,13 @@
       "Browser storage is unavailable. Keep this tab open to preserve your draft.")))
 
 (fn controls [client : Client] : Nil
-  (if_not ($absent? client/inbox)
+  (if ($present? client/inbox)
     (var inbox : ProducerInbox client/inbox)
     (producer_ready inbox (&& client/ready client/connected) client/selected))
-  (if_not ($absent? client/questions)
+  (if ($present? client/questions)
     (var questions : QuestionEditors client/questions)
     (question_ready questions (&& client/ready client/connected)))
-  (if_not ($absent? client/center)
+  (if ($present? client/center)
     (var center : NotificationCenter client/center)
     (center_ready center (&& client/ready client/connected)))
   (var send ($dom/element "send"))
@@ -652,7 +652,7 @@
       else "Resolve"))
   ($dom/set_class send "stop" executing)
   (var mode "Local workspace")
-  (if_not ($absent? client/status)
+  (if ($present? client/status)
     (var model : Str client/status/model/model)
     (var provider : Str client/status/model/provider)
     (set mode (if client/status/offline "Command demo · no model" else $"${model} · ${provider}"))
@@ -662,7 +662,7 @@
   (set_hidden "offline_notice" (|| ($absent? client/status) (! client/status/offline)))
   ($dom/set_text ($dom/element "mode") mode)
   (render_extensions client)
-  (if_not ($absent? client/ui)
+  (if ($present? client/ui)
     (var ui : UiClient client/ui)
     (ui_controls ui (&& client/ready client/connected) client/selected)))
 
@@ -670,7 +670,7 @@
   (var batch (waiting_batch {^round client/round}))
   (set client/input_id (if ($absent? batch) "" else (string_or batch/id "")))
   (set_hidden "input_panel" (== client/input_id ""))
-  (if_not ($absent? client/questions)
+  (if ($present? client/questions)
     (var questions : QuestionEditors client/questions)
     (mount_question questions client/selected batch ($dom/element "input_fields") "conversation")))
 
@@ -678,13 +678,13 @@
   (var focused ($dom/active_element))
   (set client/list/harness_focus_session
     (if ($dom/contains? client/list focused) (string_or focused/harness_session "") else ""))
-  (if_not ($absent? client/session_menu)
+  (if ($present? client/session_menu)
     (var active_raw : Any client/session_menu)
     (var active_menu : SessionMenu active_raw) (set active_menu/anchor nil))
   ($dom/clear client/list)
   (var attention ($dom/element "attention_sessions"))
   ($dom/clear attention)
-  (if_not ($absent? client/center)
+  (if ($present? client/center)
     (var center : NotificationCenter client/center)
     (center_sessions center client/sessions client/needs_attention))
   (var visible 0)
@@ -696,7 +696,7 @@
     ($dom/append
       client/list
       ($dom/render `(p ^class_name "sidebar_empty" "Your conversations will appear here."))))
-  (if_not ($absent? client/session_menu)
+  (if ($present? client/session_menu)
     (var menu_raw : Any client/session_menu)
     (var menu : SessionMenu menu_raw) (finish_session_menu_render menu)))
 
@@ -1050,7 +1050,7 @@
   (var first : Any (first_prompt_block cache/session client/records client/preview))
   (if_not client/viewing_history
     (var runs : (List Any) client/rounds)
-    (if_not ($absent? client/round) (set runs (merge_blocks runs [client/round])))
+    (if ($present? client/round) (set runs (merge_blocks runs [client/round])))
     (set all_visible (submission_blocks client/selected client/pending runs all_visible
       ^shown_round (if ($absent? first) "" else (string_or first/round_id "")))))
   (append_history_start client/transcript cache/session client/records client/preview
@@ -1101,7 +1101,7 @@
     (for receipt in client/rounds
       (var receipt_id : Str receipt/id)
       (if (== receipt_id id) (set run receipt)))
-    (if_not ($absent? client/round)
+    (if ($present? client/round)
       (var current_id : Str client/round/id)
       (if (== current_id id)
         (set run client/round)
@@ -1171,7 +1171,7 @@
   (if (&& (!= mode "light") (!= mode "dark")) (return))
   (set client/appearance mode)
   ($dom/set_attribute ($dom/element "harness_document") "data-mode" mode)
-  (if_not ($absent? client/ui)
+  (if ($present? client/ui)
     (var ui : UiClient client/ui)
     (ui_appearance ui mode)))
 
@@ -1181,12 +1181,12 @@
   (var entries : (List Any) [])
   (if_not client/safe_ui
     (for component in client/components
-      (if_not ($absent? component/style)
+      (if ($present? component/style)
         (entries .push {^name (string_or component/name "") ^css (string_or component/style "")})))
-    (if_not ($absent? client/ui)
+    (if ($present? client/ui)
       (var ui : UiClient client/ui)
       (for view in ui/navigation/views
-        (if_not ($absent? view/style)
+        (if ($present? view/style)
           (entries .push {^name (string_or view/name "") ^css (string_or view/style "")})))))
   (var signature ($json/stringify entries))
   (if (== signature client/style_signature) (return))
@@ -1213,11 +1213,11 @@
   (var unchanged (== ($json/stringify client/status) ($json/stringify data)))
   (set client/status data)
   (configure_voice client data)
-  (if_not ($absent? client/command_client)
+  (if ($present? client/command_client)
     (var commands : CommandClient client/command_client)
     (configure_commands commands (string_or data/workspace "")))
 
-  (if_not ($absent? client/editor)
+  (if ($present? client/editor)
     (do
       (var raw_panel : Any client/editor)
       (var panel : EditorPanel raw_panel)
@@ -1225,15 +1225,15 @@
       (configure_editor panel data/plugins)
       (if (&& (!= was_available (editor_available? panel)) (! (editor_open? panel)))
         (render_transcript client))))
-  (if_not ($absent? client/ui)
+  (if ($present? client/ui)
     (var ui : UiClient client/ui)
     (update_ui ui data/ui))
-  (if_not ($absent? client/browser_clients)
+  (if ($present? client/browser_clients)
     (var browsers : BrowserClients client/browser_clients)
     (update_clients browsers (launcher_items data/browser_clients) data))
   (sync_outlets client)
   (var components : (List Any) [])
-  (if_not ($absent? data/web_components) (set components data/web_components))
+  (if ($present? data/web_components) (set components data/web_components))
   (var components_changed (!= ($json/stringify client/components) ($json/stringify components)))
   (set client/components components)
   (sync_plugin_styles client)
@@ -1250,7 +1250,7 @@
     (var provider : Str data/model/provider)
     ($dom/append drawer ($dom/render `(p "Model: " %model)))
     ($dom/append drawer ($dom/render `(p "Provider: " %provider)))
-    (if_not ($absent? data/model/effort)
+    (if ($present? data/model/effort)
       (var effort : Str data/model/effort)
       ($dom/append drawer ($dom/render `(p "Reasoning effort: " %effort)))))
   (var plugins : (List Any) data/plugins)
@@ -1259,7 +1259,7 @@
     (var state : Str plugin/state)
     ($dom/append drawer ($dom/render `(div ^class_name "plugin_status" (span %id) (span %state)))))
   (for component in components
-    (if_not ($absent? component/error)
+    (if ($present? component/error)
       (var name : Str component/name)
       (var error : Str component/error)
       ($dom/append drawer ($dom/render `(p ^class_name "web_muted" %$"${name}: ${error}")))))
@@ -1368,9 +1368,9 @@
   (if (== (string_or data/status/epoch client/epoch) client/epoch)
     (var before_sequence : Int 0)
     (var next_sequence : Int 0)
-    (if_not ($absent? client/round/submission_seq)
+    (if ($present? client/round/submission_seq)
       (set before_sequence client/round/submission_seq))
-    (if_not ($absent? data/round/submission_seq) (set next_sequence data/round/submission_seq))
+    (if ($present? data/round/submission_seq) (set next_sequence data/round/submission_seq))
     (if (|| (> before_sequence next_sequence) (&& (== before_sequence next_sequence) ($present? client/round) (terminal (string_or client/round/state "")) (== (string_or data/round/state "") "running")))
       (set data/round client/round)))
   (if client/viewing_history
@@ -1396,7 +1396,7 @@
           else
             (var preview : (List Any) data/preview)
             (set data/preview (merge_blocks preview [record])))))))
-  (if_not ($absent? data/status) (apply_status client data/status))
+  (if ($present? data/status) (apply_status client data/status))
   (if_not client/viewing_history
     (var records : (List Any) (historical_records data/records))
     (set client/records (bounded_blocks (delegation_snapshot records client/records) true))
@@ -1428,7 +1428,7 @@
   (var origin ($dom/element "child_origin"))
   ($dom/clear origin)
   (set_hidden "child_origin" ($absent? data/session/parent))
-  (if_not ($absent? data/session/parent)
+  (if ($present? data/session/parent)
     (var parent : Str data/session/parent/session)
     (var parent_title (string_or data/session/parent_title parent))
     (var turn (dint data/session/parent/turn))
@@ -1438,7 +1438,7 @@
   (set tab/title title)
   (set tab/cache data)
   (var pinned : Bool false)
-  (if_not ($absent? data/session/pinned) (set pinned data/session/pinned))
+  (if ($present? data/session/pinned) (set pinned data/session/pinned))
   ($dom/set_text ($dom/element "pin_session") (if pinned "Unpin" else "Pin"))
   (set_hidden "pin_session" ($present? data/session/parent))
   (render_transcript client)
@@ -1481,9 +1481,9 @@
   (if (== session client/selected)
     (var current_sequence : Int 0)
     (var incoming_sequence : Int 0)
-    (if_not ($absent? client/round/submission_seq)
+    (if ($present? client/round/submission_seq)
       (set current_sequence client/round/submission_seq))
-    (if_not ($absent? data/submission_seq) (set incoming_sequence data/submission_seq))
+    (if ($present? data/submission_seq) (set incoming_sequence data/submission_seq))
     (if (>= incoming_sequence current_sequence) (set client/round data))
     (set client/rounds (bounded_blocks (merge_blocks client/rounds [data]) true))
     (render_transcript client))
@@ -1573,7 +1573,7 @@
   (var tab (session_tab client id))
   (var cache : Any tab/cache)
   (var pinned : Bool false)
-  (if_not ($absent? cache/session/pinned) (set pinned cache/session/pinned))
+  (if ($present? cache/session/pinned) (set pinned cache/session/pinned))
   (api
     client
     "PATCH"
@@ -1613,7 +1613,7 @@
   (var session : Str pending/session)
   (var request_id : Str pending/request_id)
   (var already_seen false)
-  (if_not ($absent? client/round)
+  (if ($present? client/round)
     (set already_seen (&& (== session client/selected)
       (== (string_or client/round/request_id "") request_id))))
   (if_not already_seen
@@ -1641,7 +1641,7 @@
           (var submitted : Str pending/text)
           (var attachments : MediaComposer client/media)
           (var submitted_media : (List Any) [])
-          (if_not ($absent? pending/media) (set submitted_media pending/media))
+          (if ($present? pending/media) (set submitted_media pending/media))
           (media_admitted attachments session submitted_media)
           (if (== session client/selected)
             (if (== ($dom/input_value client/prompt) submitted)
@@ -1672,7 +1672,7 @@
               # Unknown outcomes keep their idempotency key. Reconnect checks
               # authentication and backs off before resolving the submission.
               (set client/connected false)
-              (if_not ($absent? client/socket)
+              (if ($present? client/socket)
                 (var socket : EventTarget client/socket)
                 ($ws/close socket))))
       (set_hidden "resolve_submission" ($absent? client/pending))
@@ -1728,7 +1728,7 @@
   (if (!= session client/selected) (return))
   (var id (string_or card/id ""))
   (var created_seq : Int 0)
-  (if_not ($absent? card/created_seq) (set created_seq card/created_seq))
+  (if ($present? card/created_seq) (set created_seq card/created_seq))
   (var block
     {^id $"${session}/card/${id}" ^seq ($to_str created_seq)
      ^round_id (string_or card/placement_round "") ^turn card/turn
@@ -1900,8 +1900,8 @@
       (set client/sending false)
       (var incomplete : Bool false)
       (var closed : Bool false)
-      (if_not ($absent? data/incomplete) (set incomplete data/incomplete))
-      (if_not ($absent? data/closed) (set closed data/closed))
+      (if ($present? data/incomplete) (set incomplete data/incomplete))
+      (if ($present? data/closed) (set closed data/closed))
       (if (|| (== code 202) (== code 200))
         (storage_remove (mode_pending_key session))
           (set client/mode_pending nil)
@@ -2163,7 +2163,7 @@
         (update_controls client)
         (var questions : QuestionEditors client/questions)
         (resume_replies questions)
-        (if_not ($absent? client/pending) (send_pending client))
+        (if ($present? client/pending) (send_pending client))
         (if (|| client/queued_submit (!= client/queued_prompt ""))
           (var queued client/queued_prompt)
           (set client/queued_prompt "")
@@ -2202,7 +2202,7 @@
   (var epoch tab/socket_epoch)
   (set tab/connected false)
   (set tab/sequence 0)
-  (if_not ($absent? tab/socket)
+  (if ($present? tab/socket)
     (var old : EventTarget tab/socket)
     ($ws/close old))
   (if (== tab/id client/selected)
@@ -2400,7 +2400,7 @@
   (var saved : Str (?? (storage_get "gene-harness/pending") ""))
   (if (!= saved "")
     (set client/pending (try ($json/parse saved) catch Error nil)))
-  (if_not ($absent? client/pending)
+  (if ($present? client/pending)
     (var id : Str client/pending/session)
     (set client/selected id))
   (var attachments : MediaComposer client/media)
@@ -2444,7 +2444,7 @@
   # The server renders the page in the workspace's current theme.
   (var document ($dom/element "harness_document"))
   (var initial_mode : Str "light")
-  (if_not ($absent? document/dataset/mode) (set initial_mode document/dataset/mode))
+  (if ($present? document/dataset/mode) (set initial_mode document/dataset/mode))
   (var client
     (Client ^browser_appearance nil ^browser_clients nil ^command_client nil ^log_sink (fn [message : Any] : Nil nil) ^selected (query_value ($browser/search) "session") ^csrf "" ^cursor "" ^next_seq "1" ^epoch "" ^!ready ^!sending ^!connected ^!server_busy ^awaiting "" ^awaiting_session "" ^queued_prompt "" ^!queued_submit ^message_sequence 0 ^!busy ^^autoscroll ^generation 0 ^!has_older ^!loading_older ^socket_epoch 0 ^!viewing_history ^records [] ^preview [] ^sessions [] ^needs_attention [] ^filter_epoch 0 ^tabs [] ^expanded [] ^rounds [] ^input_id "" ^!answering ^round nil ^mode nil ^mode_pending nil ^!action_cooldown ^!was_executing ^pending nil ^status nil ^status_epoch "" ^status_revision "" ^status_generation 0 ^components [] ^component_buttons {} ^socket nil ^session_revision "1" ^ui nil ^media nil ^notices (create_notices) ^confirmations nil ^questions nil ^center nil ^inbox nil ^safe_ui (== (query_value ($browser/search) "ui") "default") ^root root ^list ($dom/element "sessions") ^transcript ($dom/element "transcript") ^prompt ($dom/element "prompt") ^notice ($dom/element "notice") ^title ($dom/element "conversation_title") ^appearance initial_mode ^style_signature "" ^cards nil))
   (set client/command_client
@@ -2530,7 +2530,7 @@
         (if ($absent? reference/component)
           (navigate ui "harness")
           else (open_reference ui reference))
-        (if_not ($absent? reference/round)
+        (if ($present? reference/round)
           (var round : Str reference/round)
           (client/expanded .push round)
           (render_transcript client))
@@ -2570,7 +2570,7 @@
       (fn [text : Str] : Nil
         (stage_prompt client text))
       client/appearance))
-  (if_not ($absent? client/browser_clients)
+  (if ($present? client/browser_clients)
     (var outlet_browsers : BrowserClients client/browser_clients)
     (var outlet_ui : UiClient client/ui)
     (set outlet_ui/outlet_sync
@@ -2590,7 +2590,7 @@
       (apply_appearance client answer/rendered/mode))
     ^on_error (fn [error : Any] : Nil (show_error client error))
     ^report (fn [answer : Any] : Nil
-      (if_not ($absent? client/socket)
+      (if ($present? client/socket)
         (var socket : EventTarget client/socket)
         (if ($ws/open? socket)
           ($ws/send socket ($json/stringify {^type "appearance_report" ^saved answer/saved ^rendered answer/rendered}))))

@@ -1,5 +1,5 @@
 # Tests src/agents/provider_selection.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import new_harness shutdown_harness contribute provide ^from "../../../src/kernel")
 (import Profile ^from "../../../src/profiles/profile")

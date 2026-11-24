@@ -12,7 +12,7 @@
   (let canonical ($fs/real_path root))
   (let gate (patch_gate_index (fn []
     (let existing (patch_gates/.get .get canonical))
-    (if_not ($absent? existing) (return existing))
+    (if ($present? existing) (return existing))
     (let created ($sync/gate))
     (patch_gates/.get .put canonical created)
     created)))
@@ -201,7 +201,7 @@
             ^mode target/mode
             ^text content})
         (files .push relative)))
-    (if_not ($absent? (targets .get operation/target))
+    (if ($present? (targets .get operation/target))
       (patch_error $"multiple patch operations target ${operation/target}"))
     (targets .put operation/target true)
     (let original (originals .get operation/path))
@@ -219,7 +219,7 @@
       (let physical
         ($fs/real_path
           (if original/symlink original/physical else ($path/join root operation/target))))
-      (if_not ($absent? (physical_targets .get physical))
+      (if ($present? (physical_targets .get physical))
         (patch_error "multiple patch operations target the same physical file"))
       (physical_targets .put physical true)
       (operation .put "physical" physical)
@@ -254,7 +254,7 @@
         ($fs/make_dir ($path/parent operation/temporary))
         ($fs/write_text operation/temporary operation/result)
         (let original (plan/originals .get operation/path))
-        (if_not ($absent? original/mode) ($fs/set_mode operation/temporary original/mode))))
+        (if ($present? original/mode) ($fs/set_mode operation/temporary original/mode))))
     (for operation in plan/operations
       (if (!= operation/kind "delete")
         (set current operation/target)
@@ -267,7 +267,7 @@
             ^relative (if original/symlink operation/path else operation/target)
             ^physical operation/physical})
         (set renames (+ renames 1))
-        (if_not ($absent? after_rename) (after_rename renames))))
+        (if ($present? after_rename) (after_rename renames))))
     (for operation in plan/operations
       (if (|| (== operation/kind "delete") (!= operation/path operation/target))
         (set current operation/path)
@@ -295,7 +295,7 @@
                   ($fs/create_symlink original/link_target ($path/join plan/root relative))
                 else
                   ($fs/write_text_atomic original/physical original/text)
-                  (if_not ($absent? original/mode) ($fs/set_mode original/physical original/mode)))
+                  (if ($present? original/mode) ($fs/set_mode original/physical original/mode)))
             else ($fs/remove change/physical))
           (restored .push relative)
           catch Error (partial .push relative)))

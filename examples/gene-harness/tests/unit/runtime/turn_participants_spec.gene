@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import ParticipantFailure new_turn_transaction begin_turn_transaction run_turn_phase
   release_turn_transaction finish_turn_transaction guard_participant_callback
   ^from "../../../src/runtime/turn_participants")

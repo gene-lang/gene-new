@@ -75,7 +75,7 @@
       ["speech_synthesizers" "elevenlabs"] ["speech_synthesizers" "macos"]
       ["setting_choices" "voices"] ["settings_groups" "Voice"] ["web_components" "voice_engines"]]
     ^activate (fn [host]
-      (if_not ($absent? error) (fail error))
+      (if ($present? error) (fail error))
       (let service (host .PluginHost:resolve "voice/host"))
       (let sessions (host .PluginHost:resolve "sessions/host"))
       (host .PluginHost:defer (fn [] service/.VoiceHost:reset_if_unused))

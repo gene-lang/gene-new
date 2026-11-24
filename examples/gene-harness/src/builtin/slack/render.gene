@@ -82,10 +82,10 @@
     (var rendered (inline_code line surface reference))
     (if (== surface "mrkdwn")
       (let heading (#"^#{1,6}[ \t]+(.+)$" .match rendered))
-      (if_not ($absent? heading) (set rendered $"*${heading/groups/0}*"))
+      (if ($present? heading) (set rendered $"*${heading/groups/0}*"))
       (set rendered ($regex/replace #"^[ \t]*[-+][ \t]+" rendered "• ")))
     (output .push rendered))
-  (if_not ($absent? fence) (output .push "```"))
+  (if ($present? fence) (output .push "```"))
   output)
 
 (fn split_lines [lines, maximum : Int]

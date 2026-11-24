@@ -1,7 +1,7 @@
 # The Models group renders one select per scope. A large provider catalog can
 # exceed the wire limit for a web component view, so model_options pages the
 # catalog and keeps the current choice.
-(import $test [describe it run])
+(import $test/[describe it run])
 (import model_options ^from "../../../src/builtin/settings.gene")
 
 (type FakeWorkspace ^props {^rows (List Any)}
@@ -24,14 +24,14 @@
     (let workspace (FakeWorkspace ^rows (rows 250)))
     (let result (model_options workspace "p/m5"))
     # "-", one provider default, 100 model options.
-    ($assert (<= (result/options .size) 103) ($to_str (result/options .size)))
+    ($assert (<= result/options/.size 103) ($to_str result/options/.size))
     ($assert ($str/contains? result/note "Showing the first 100 of the 250 models"))
     ($assert ((values result) .contains? "p/m5"))
 
     (let beyond (model_options workspace "p/m220"))
     ($assert ((values beyond) .contains? "p/m220")
       "a saved model beyond the page must stay selected")
-    ($assert (<= (beyond/options .size) 103) ($to_str (beyond/options .size)))
+    ($assert (<= beyond/options/.size 103) ($to_str beyond/options/.size))
 
     (let missing (model_options workspace "q/absent"))
     (let labels ($map missing/options (fn [option] ($to_str option))))

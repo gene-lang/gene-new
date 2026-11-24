@@ -100,7 +100,7 @@
     else
       (kept .push item)))
   (set media/drafts/%session kept)
-  (if_not ($absent? reader)
+  (if ($present? reader)
     (var active : EventTarget reader)
     ($files/cancel active))
   (media_changed media media/selected))

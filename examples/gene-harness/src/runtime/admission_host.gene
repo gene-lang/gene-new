@@ -62,7 +62,7 @@
 (fn ^^private find_receipt [controller, runtime, session : Str, request_id : Str]
   (if ($absent? (runtime/sessions/index/.get .get session)) (return nil))
   (let loaded (runtime/sessions/loaded/.get .get session))
-  (if_not ($absent? loaded)
+  (if ($present? loaded)
     (let current loaded/round/.get)
     (if (&& ($present? current) (== current/request_id request_id)) (return (copy_data current))))
   (round_for_request controller session request_id))

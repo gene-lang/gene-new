@@ -1,5 +1,5 @@
 (mod slack_api)
-(import $io [IoResource])
+(import $io/IoResource)
 (import load open send_text receive_text flush ^from "." ^pkg "websocket")
 
 (type SlackError : Error ^props {^code Str ^retry_after_ms Int?})
@@ -60,7 +60,7 @@
 (fn close_api [api : SlackApi]
   (if api/closed/.get (return nil))
   (api/closed .set true)
-  (if_not ($absent? api/client)
+  (if ($present? api/client)
     api/client/.IoResource:close
     (await api/client/.IoResource:wait_closed))
   nil)

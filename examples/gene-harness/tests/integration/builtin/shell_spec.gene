@@ -1,5 +1,5 @@
 # Tests one-shot /sh and the session-specific shell input mode.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
 (import create_session close_session_service submit ^from "../../../src/web/session_service")
 (import submit_command command_receipt command_state take_command_attachments cancel_command
@@ -18,7 +18,7 @@
 (fn input [service, session, id, text]
   (let mode (mode_state service/runtime/services/values/commands/modes session))
   (let record (submit_mode_input service/runtime/services/values/commands/modes session mode/instance id text))
-  (if_not ($absent? record/id)
+  (if ($present? record/id)
     (service/runtime/services/values/commands/watchers/.get .get $"${session}:${record/id}"; .join)
     (return (command_receipt service/runtime/services/values/commands session record/id)))
   record)

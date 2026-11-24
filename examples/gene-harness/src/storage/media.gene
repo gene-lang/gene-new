@@ -221,7 +221,7 @@
     (metadata .put "digest" digest)
     (metadata .put "source" source)
     (metadata .put "created_at_ms" ($os/wall_ms))
-    (if_not ($absent? reservation)
+    (if ($present? reservation)
       (metadata .put "generation" {^run reservation/run ^attempt reservation/attempt
         ^session reservation/session ^round reservation/round})
       (metadata .put "has_transparent_pixels" transparent))
@@ -229,7 +229,7 @@
     # Rewriting the immutable object also repairs an interrupted/corrupt write.
     ($fs/write_bytes_atomic path data)
     (index/assets .put id metadata)
-    (if_not ($absent? reservation) (index/reservations .delete reservation/id))
+    (if ($present? reservation) (index/reservations .delete reservation/id))
     (write_index store index)
     (media_descriptor store id))))
 
@@ -250,7 +250,7 @@
   (var total 0)
   (for id in ids
     (if_not (== ($head id) Str) (media_error "invalid_request" "Attachment IDs must be text."))
-    (if_not ($absent? (seen .get id))
+    (if ($present? (seen .get id))
       (media_error "invalid_request" "The same attachment was supplied twice."))
     (seen .put id true)
     (let descriptor (media_descriptor store id))

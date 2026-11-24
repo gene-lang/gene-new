@@ -4,7 +4,7 @@
 (import ^from "../public/documentation" contribute_text_doc contribute_doc)
 (import ^from "../plugin_api" ProviderError)
 (import ^from "../public/provider" nonempty configure_model)
-(import $os [exec_async])
+(import $os/exec_async)
 (import claude_models ^from "../public/model_defaults")
 (import claude_connection ^from "../public/provider_discovery")
 
@@ -45,7 +45,7 @@
           (!= parsed/is_error false))
     (fail (ProviderError ^_msg
       "Claude CLI did not complete successfully; incomplete output was not executed")))
-  (if_not ($absent? parsed/stop_reason)
+  (if ($present? parsed/stop_reason)
     (if_not (== parsed/stop_reason "end_turn")
       (fail (ProviderError ^_msg
         "Claude CLI response did not finish its turn; incomplete output was not executed"))))

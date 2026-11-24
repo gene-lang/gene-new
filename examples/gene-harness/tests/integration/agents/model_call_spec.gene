@@ -1,6 +1,6 @@
 (import test_controller ^from "../../support.gene")
 # Tests src/agents/model_call.gene.
-(import $test [describe it assert_equal])
+(import $test/[describe it assert_equal])
 (import isolated run_spec ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
@@ -16,7 +16,7 @@
   ^from "../../../src/storage/state")
 (import configure_model ^from "../../../src/public/provider")
 (import new_harness shutdown_harness contribute provide ^from "../../../src/kernel")
-(import $net/http_client [request])
+(import $net/http_client/request)
 
 (type ProviderError : Error)
 

@@ -11,7 +11,7 @@
 
 (mod gene_viewer)
 
-(import $json [parse])
+(import $json/parse)
 
 (fn helper_path [] : Str
   (let sibling ($path/join ($path/parent ($os/executable_path)) "gene-viewer"))

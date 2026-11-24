@@ -1,7 +1,7 @@
 (mod speech_engines)
 (import pcm_format wav_encode audio_error ^from "./audio" ^pkg "audio")
 (import open_worker close_worker write_json read_json read_packet ^from "./worker" ^pkg "audio")
-(import $io [AsyncReader IoResource])
+(import $io/[AsyncReader IoResource])
 
 (fn nonempty [value]
   (if ($absent? value) (return nil))

@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import open_model_catalog close_model_catalog refresh_catalog catalog_snapshot catalog_failure adopt_catalog_connection
   ^from "../../../src/public/model_catalog")

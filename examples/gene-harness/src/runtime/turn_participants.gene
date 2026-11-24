@@ -70,7 +70,7 @@
   # Result admission can fail after callback dispatch has completed. It owns
   # the same transaction failure and reporting path as a callback failure.
   (transaction/failed .set true)
-  (if_not ($absent? transaction/on_failure)
+  (if ($present? transaction/on_failure)
     (for definition in transaction/participants
       (if (== definition/name name)
         (try (transaction/on_failure definition phase failure)
@@ -158,7 +158,7 @@
       (let result (invoke_participant transaction entry phase current))
       (let packet {^name entry/definition/name ^value result})
       (results .push packet)
-      (if_not ($absent? reduce) (set current (reduce current packet))))
+      (if ($present? reduce) (set current (reduce current packet))))
     (set completed true)
     {^results results ^value current}
   ensure (if_not completed (transaction/failed .set true))))

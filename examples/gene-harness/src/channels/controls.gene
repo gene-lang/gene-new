@@ -36,7 +36,7 @@
       (return control))
     (if (!= queue/revision expected)
       (channel_error "stale" "The queue changed; inspect its current state before replacing paused work."))
-    (if_not ($absent? queue/batch)
+    (if ($present? queue/batch)
       (channel_error "uncertain" "Resolve the existing admission before replacing paused work."))
     (if (== ($size ($filter queue/order (fn [member]
       (== (/status (state/messages .get member)) "queued")))) 0)
@@ -110,7 +110,7 @@
           (if recorded
             (set responding_round (?? control/responding_round control/target))
           else
-            (if_not ($absent? control/target)
+            (if ($present? control/target)
               (let stopped (cancel_round_locked service/controller binding/session control/target))
               (set responding_round stopped/id))
             (mutate

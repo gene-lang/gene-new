@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")
@@ -8,7 +8,7 @@
 (import models_file_watch ^from "../../../src/builtin/model_endpoints")
 (import acquire_snapshot release_snapshot ^from "../../../src/runtime/composition")
 (import submit_round round_receipt continue_round RoundError ^from "../../../src/runtime/round_controller")
-(import $net/http [listen serve stop json])
+(import $net/http/[listen serve stop json])
 
 (fn settings [base : Str, ^window window : Int = 500000]
   {^version 1 ^default {^provider "custom" ^model "model" ^effort "high"}

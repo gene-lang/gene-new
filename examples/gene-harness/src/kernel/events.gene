@@ -29,13 +29,13 @@
 
 (fn hydrate_harness_log [h : Harness]
   (if h/log_hydrated/.get (return))
-  (if_not ($absent? h/event_store)
+  (if ($present? h/event_store)
     (for envelope in (events_for h/event_store h/event_scope h/event_stream)
       (if (["lifecycle" "message" "output" "trace"] .contains? ($to_str envelope/type))
-        (if_not ($absent? envelope/payload/text)
+        (if ($present? envelope/payload/text)
           (var record {^kind envelope/type ^text envelope/payload/text ^seq envelope/seq})
           (for name in ["truncated" "original_bytes"]
-            (if_not ($absent? (envelope/payload .get name))
+            (if ($present? (envelope/payload .get name))
               (record .put name (envelope/payload .get name))))
           (h/log
             .get
@@ -58,7 +58,7 @@
   (var end maximum)
   (while (> end 0)
     (var prefix (try ($str/slice_bytes text 0 end) catch Error nil))
-    (if_not ($absent? prefix) (return prefix))
+    (if ($present? prefix) (return prefix))
     (set end (- end 1)))
   "")
 
@@ -104,7 +104,7 @@
   (append_log_record h {^kind kind ^text text}))
 
 (fn ^^private append_committed_record [h : Harness, record] : Any
-  (if_not ($absent? h/event_store)
+  (if ($present? h/event_store)
     (var payload (log_event_payload record))
     (var envelope (append_core_event h/event_store h/event_scope h/event_stream payload))
     (record .put "seq" envelope/seq))
@@ -116,7 +116,7 @@
 (fn record_composition_change [h : Harness, id : Str, previous_digest, new_digest, revision : Int, turn : Int, operation : Str]
   (append_log_only h "composition" $"${operation} ${id} at revision ${revision}")
   (var envelope nil)
-  (if_not ($absent? h/event_store)
+  (if ($present? h/event_store)
     (set envelope
       (append_core_event
         h/event_store
@@ -143,7 +143,7 @@
   (append_committed_record h record))
 
 (fn flush_harness [h : Harness]
-  (if_not ($absent? h/event_store)
+  (if ($present? h/event_store)
     (var flushed (flush_event_store h/event_store))
     (var next (h/event_store/next_sequences .get; .get $"${h/event_scope}:${h/event_stream}"))
     (publish h (HarnessFlushed ^through (- (?? next 1) 1)))

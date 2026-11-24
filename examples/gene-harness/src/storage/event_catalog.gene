@@ -38,7 +38,7 @@
 
 (fn validate_reply_event [payload]
   (require_event_fields payload ["type" "text" "final" "round" "turn"] "reply")
-  (if_not ($absent? payload/audio_reply)
+  (if ($present? payload/audio_reply)
     (if (|| (!= ($head payload/audio_reply) Str) (> ($str/byte_size payload/audio_reply) 2048))
       ($panic "reply audio_reply must be a string of at most 2 KiB")))
   payload)
@@ -57,17 +57,17 @@
 
 (fn validate_turn_request_event [payload]
   (require_event_fields payload ["type" "turn" "round" "full" "settled"] "turn_request")
-  (if_not ($absent? payload/for_turn)
+  (if ($present? payload/for_turn)
     (if (|| (!= ($head payload/for_turn) Int) (< payload/for_turn 1))
       ($panic "turn/request for_turn must be a positive integer")))
-  (if_not ($absent? payload/combine)
+  (if ($present? payload/combine)
     (if_not (["replace" "append"] .contains? payload/combine)
       ($panic "turn/request combine must be replace or append")))
   payload)
 
 (fn validate_turn_response_event [payload]
   (require_event_fields payload ["type" "turn" "round" "text" "blobs"] "turn_response")
-  (if_not ($absent? payload/reply_hint)
+  (if ($present? payload/reply_hint)
     (if (|| (!= ($head payload/reply_hint) Str) (> ($str/byte_size payload/reply_hint) 1024))
       ($panic "turn/response reply_hint must be a string of at most 1 KiB")))
   payload)
@@ -76,7 +76,7 @@
 # the state that was judged.
 (fn validate_decision_event [payload]
   (require_event_fields payload ["type" "use" "status" "latency_ms"] "decision")
-  (if_not ($absent? payload/state)
+  (if ($present? payload/state)
     ($panic "decision traces never record the judged state"))
   payload)
 

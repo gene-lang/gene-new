@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import read_slack_credentials secret_path open_api close_api api_call identify SlackError
   ^from "../../../src/builtin/slack/api")

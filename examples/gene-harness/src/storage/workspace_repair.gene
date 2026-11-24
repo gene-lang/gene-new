@@ -1,9 +1,9 @@
 # Workspace ownership: workspace_repair.
 (mod workspace_repair)
 
-(import $store/fs [open:store_open Store StoreError])
-(import $fs [make_dir real_path read_text write_text_atomic exists?])
-(import $crypto [sha256])
+(import $store/fs/[open:store_open Store StoreError])
+(import $fs/[make_dir real_path read_text write_text_atomic exists?])
+(import $crypto/sha256)
 (import ^from "../kernel" Harness status_of plugin_error record_composition_change flush_harness row uninstall)
 (import ^from "../runtime/interface_policy" interface_diagnostic)
 (import ^from "./participant_health" reset_participant_quarantine)
@@ -63,7 +63,7 @@
   (var revision (commit_composition ^origin (?? origin
     {^kind (if ($absent? h) "direct" else "offline") ^operation (if disabled "disable" else "enable") ^plugin id})
     workspace next_entries))
-  (if_not ($absent? h)
+  (if ($present? h)
     (var digest (previous_module_digest next_entries id))
     (record_composition_change
       h
@@ -96,7 +96,7 @@
   (if_not removed (return (composition_revision workspace)))
   (let revision (commit_composition ^origin (?? origin
     {^kind (if ($absent? h) "direct" else "offline") ^operation "restore_default" ^plugin id}) workspace kept))
-  (if_not ($absent? h)
+  (if ($present? h)
     (record_composition_change h id (previous_module_digest entries id) nil
       revision 0 "restored")
     (flush_harness h)
@@ -144,7 +144,7 @@
   (for record in records
     (record .put "outcomes" (history_results workspace/store record/id))
     (record .put "attempts" (history_results ^kind "attempt" workspace/store record/id))
-    (if_not ($absent? record/origin/plan)
+    (if ($present? record/origin/plan)
       (let key $"plugin_plan/${record/origin/plan}")
       (if (workspace/store .Store:has? key)
         (let plan (workspace/store .Store:get key))
@@ -203,7 +203,7 @@
   (let index (find_entry_index current id))
   (preserve_creation_on_revert saved (if (== index -1) nil else current/%index))
   (saved .put "disabled" (if (== index -1) false else (== current/%index/disabled true)))
-  (if_not ($absent? (workspace/profile_plugins/.get .get id))
+  (if ($present? (workspace/profile_plugins/.get .get id))
     (saved .put "replaces_builtin" true))
   saved)
 
@@ -251,7 +251,7 @@
           else
             (workspace/errors/.get .delete id))
         else
-          (if_not ($absent? (h/plugins/.get .get id)) (uninstall h id))
+          (if ($present? (h/plugins/.get .get id)) (uninstall h id))
           (workspace/errors/.get .delete id))
       catch Error
         (set status "error")

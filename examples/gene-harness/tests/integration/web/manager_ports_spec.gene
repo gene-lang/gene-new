@@ -1,5 +1,5 @@
-(import $test [describe it])
-(import $net/http [listen stop])
+(import $test/[describe it])
+(import $net/http/[listen stop])
 (import ^from "../../support" isolated run_spec)
 (import ^from "../../../src/runtime/workspace_settings"
   read_workspace_settings write_workspace_settings)
@@ -45,7 +45,7 @@
           ($assert (!= selected/port occupied/port))
           ($assert (== ((Path "port") (read_workspace_settings root)) 0))
         ensure
-          (if_not ($absent? selected) (stop selected))
+          (if ($present? selected) (stop selected))
           (stop occupied))))))
 
 (fn main [args] : Int

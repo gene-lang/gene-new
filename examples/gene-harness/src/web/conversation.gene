@@ -2,8 +2,8 @@
 (mod conversation)
 
 (fn initiating_label [round, record]
-  (if_not ($absent? round/card) (return "Card action"))
-  (if_not ($absent? record/card) (return "Card action"))
+  (if ($present? round/card) (return "Card action"))
+  (if ($present? record/card) (return "Card action"))
   (let initiator (?? record/initiator (?? round/initiator "")))
   (if (== initiator "user") (return "User"))
   (if ($str/starts_with? initiator "channel:") (return "User"))

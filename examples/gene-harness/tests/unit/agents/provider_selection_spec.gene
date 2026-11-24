@@ -1,4 +1,4 @@
-(import $test [describe it run])
+(import $test/[describe it run])
 (import new_harness shutdown_harness contribute provide withdraw_seam ^from "../../../src/kernel")
 (import Profile ^from "../../../src/profiles/profile")
 (import select_provider resolve_selection readiness_report session_settings provider_choice

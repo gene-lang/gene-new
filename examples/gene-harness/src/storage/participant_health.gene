@@ -1,6 +1,6 @@
 # Participant quarantine is host state, independent of plugin-owned state.
 (mod participant_health)
-(import $store/fs [Store])
+(import $store/fs/Store)
 (var gate ^^private ($sync/gate))
 
 (fn health_key [id : Str] $"participant_quarantine/${id}")

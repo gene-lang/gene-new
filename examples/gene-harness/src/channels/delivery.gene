@@ -43,7 +43,7 @@
     (if (|| (!= ($head supplied/through) Int) (< supplied/through 0))
       (channel_error "invalid_request" "A new channel thread needs its conversation boundary."))
     (intent .put "through" supplied/through)
-    (if_not ($absent? supplied/archived_rounds)
+    (if ($present? supplied/archived_rounds)
       (let archived supplied/archived_rounds)
       (if (!= ($head archived) List)
         (channel_error "invalid_request" "Invalid archived round IDs."))

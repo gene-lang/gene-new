@@ -21,16 +21,16 @@
   (var children : (List Any) tree/children)
   (for child in children
     ($dom/append element (render_element ^widgets widgets child on_command on_prompt on_navigate enabled buttons)))
-  (if_not ($absent? props/switch-view)
+  (if ($present? props/switch-view)
     (var destination : Str props/switch-view)
     (var presentation : Str "")
-    (if_not ($absent? props/presentation) (set presentation props/presentation))
+    (if ($present? props/presentation) (set presentation props/presentation))
     ($dom/set_attribute element "type" "button")
     ($dom/add_event_listener element "click"
       (fn [event : Any] : Nil
         ($dom/prevent_default event)
         (if ($absent? props/disabled) (on_navigate destination presentation)))))
-  (if_not ($absent? props/command)
+  (if ($present? props/command)
     (buttons .push {^element element ^disabled ($present? props/disabled)})
     (var command : Str props/command)
     ($dom/set_attribute element "type" "button")
@@ -40,7 +40,7 @@
       "click"
       (fn [event : Any] : Nil
         (if ($absent? props/disabled) (on_command command)))))
-  (if_not ($absent? props/prompt)
+  (if ($present? props/prompt)
     (buttons .push {^element element ^disabled ($present? props/disabled)})
     (var prompt : Str props/prompt)
     ($dom/set_attribute element "type" "button")
@@ -60,7 +60,7 @@
     (var wrapper ($dom/create_element "div"))
     # A style contribution is scoped to the component's class.
     (var style_class : Str "")
-    (if_not ($absent? component/style_class) (set style_class component/style_class))
+    (if ($present? component/style_class) (set style_class component/style_class))
     ($dom/set_attribute wrapper "class" (if (== style_class "") "plugin_component" else $"plugin_component ${style_class}"))
     (var name : Str component/name)
     ($dom/set_attribute wrapper "data-component" name)

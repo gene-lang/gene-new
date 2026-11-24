@@ -1,5 +1,5 @@
 (import test_controller ^from "../../support.gene")
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import image_fixture review ^from "../../fixtures/image")
 (import png ^from "../../fixtures/png")

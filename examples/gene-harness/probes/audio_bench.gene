@@ -124,8 +124,8 @@
     ($println ($json/stringify (result .assoc "timings" nil)))
     0
   ensure
-    (if_not ($absent? browser) browser/.cancel browser/.join)
-    (if_not ($absent? client) (try (api client "POST" "/control" {^action "stop" ^^confirm}) catch Error nil))
+    (if ($present? browser) browser/.cancel browser/.join)
+    (if ($present? client) (try (api client "POST" "/control" {^action "stop" ^^confirm}) catch Error nil))
     (let stopped_by (+ ($os/monotonic_ms) 10000))
     (while (&& (! server/.done?) (< ($os/monotonic_ms) stopped_by)) ($sleep 20))
     (if_not server/.done? server/.cancel)

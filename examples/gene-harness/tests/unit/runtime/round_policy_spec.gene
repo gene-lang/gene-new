@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import operator_round? collection_turns ^from "../../../src/runtime/round_policy")
 
 (describe "Persisted round policy"

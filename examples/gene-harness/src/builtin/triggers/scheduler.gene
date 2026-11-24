@@ -113,7 +113,7 @@
   (if_not (["skip" "queue_one"] .contains? definition/overlap) (invalid "Invalid overlap policy"))
   (for key in ["enabled" "continue_session"]
     (if (!= ($head (definition .get key)) Bool) (invalid $"Trigger ${key} must be boolean")))
-  (if_not ($absent? definition/retention)
+  (if ($present? definition/retention)
     (let policy definition/retention)
     (if (== ($absent? policy/keep) ($absent? policy/days)) (invalid "Retention requires either keep or days"))
     (let amount (?? policy/keep policy/days))
@@ -144,7 +144,7 @@
 (fn create_trigger [s, input, ^now now = nil]
   (let definition (validate_definition input (?? now ($os/wall_ms))))
   (s/gate (fn []
-    (if_not ($absent? (s/host .PluginHost:record definition_kind definition/id))
+    (if ($present? (s/host .PluginHost:record definition_kind definition/id))
       (fail (TriggerError ^code "conflict" ^_msg "Trigger already exists")))
     (let warnings (check_model s definition))
     (let result (save_definition s definition))
@@ -168,7 +168,7 @@
 
 (fn ^^private clear_waiting_notice [s, id : Str]
   (try
-    (for message in (s/host .PluginHost:notifications)
+    (for message in s/host/.PluginHost:notifications
       (if (== message/key $"trigger-blocked/${id}")
         (s/host .PluginHost:notification_clear message/id message/revision)))
   catch Error nil))
@@ -206,7 +206,7 @@
 # --- scheduling --------------------------------------------------------
 
 (fn ^^private boundary [s, name, occurrence]
-  (if_not ($absent? s/hook) (s/hook name occurrence))
+  (if ($present? s/hook) (s/hook name occurrence))
   nil)
 
 (fn ^^private reconcile_occurrences [s]
@@ -231,7 +231,7 @@
 
 (fn ^^private record_due [s, definition, at, ^missed missed : Bool = false]
   (let id $"${definition/id}@${at}")
-  (if_not ($absent? (s/host .PluginHost:record occurrence_kind id)) (return nil))
+  (if ($present? (s/host .PluginHost:record occurrence_kind id)) (return nil))
   (let watermark (s/host .PluginHost:record watermark_kind definition/id))
   (if (<= at (?? watermark/at_ms -1)) (return nil))
   (var state "due")

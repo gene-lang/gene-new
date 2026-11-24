@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec fixture_path ^from "../../support")
 (import open_session_service close_session_service ^from "../../../src/web/session_service")
 (import row ^from "../../../src/kernel")

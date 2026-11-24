@@ -89,7 +89,7 @@
           (if (&& (> direction 0) (<= (- local minimum) second)) (continue))
           (if (&& (< direction 0) (> (- local maximum) second)) (continue))
           (let candidate (timezone/first_instant rules local))
-          (if_not ($absent? candidate)
+          (if ($present? candidate)
             (let at (* candidate 1000))
             (if (if (> direction 0) (> at instant_ms) else (<= at instant_ms)) (return at))))))
     (set date (calendar/shift_day date direction))

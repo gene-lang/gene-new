@@ -8,7 +8,7 @@
 (import session_voice_state session_voice_claim ^from "../session_service")
 (import record_voice_timing voice_timings ^from "../../runtime/voice_state")
 (import append_core_event ^from "../../storage/state")
-(import $net/http [ws_accept])
+(import $net/http/ws_accept)
 
 (fn voice_request [context, request, parts]
   (let host context/host)

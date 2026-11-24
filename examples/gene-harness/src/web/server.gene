@@ -67,12 +67,12 @@
 (import ChannelError ^from "../channels/model")
 (import ^from "../profiles/scripted" scripted_profile)
 (import ^from "../profiles/offline" offline_profile)
-(import $net/http [serve stop html redirect ws_accept ws_close Response])
+(import $net/http/[serve stop html redirect ws_accept ws_close Response])
 (import ^from "./auth" open_auth exchange authenticate reset_auth AuthError)
 (import open_media_store MediaError
   ^from "../storage/media")
 (import ^from "./connection" bind_workspace publish_connection publish_link clear_connection)
-(import $os [get_env])
+(import $os/get_env)
 (import response fail_request field optional_field number request_data path_parts cookie_value secure_response ^from "./request")
 (import feature_request ^from "./routes/catalog")
 (import plugin_route ^from "./routes/plugin_routes")
@@ -139,7 +139,7 @@
   (set port server/port)
   (set host (open_session_service ^workspace root ^offline offline
     ^profile selected_profile ^ownership ownership ^managed managed ^channel_options channel_options ^launch launch))
-  (if_not ($absent? on_open) (on_open host))
+  (if ($present? on_open) (on_open host))
   (set plugin_control (new_plugin_control host/runtime))
   (set voice_hub (new_voice_hub host))
   (let media_store (open_media_store host/runtime/state_root))
@@ -165,7 +165,7 @@
     # callback route verifies its own protocol before browser admission.
     (if ($str/starts_with? request/path "/callback/")
       (let callback (plugin_route host/runtime/h request "callback"))
-      (if_not ($absent? callback) (return callback)))
+      (if ($present? callback) (return callback)))
     # OAuth authenticates its own one-shot state. This loopback GET must work
     # even when the vendor opens a browser without the Harness owner cookie.
     (if (&& (== request/method "GET") (== request/path "/auth/callback"))
@@ -215,12 +215,12 @@
       (fail_request "stopped" "The workspace is stopping."))
     (let parts (path_parts request/path))
     (let plugin_owned (plugin_route host/runtime/h request "owner"))
-    (if_not ($absent? plugin_owned) (return plugin_owned))
+    (if ($present? plugin_owned) (return plugin_owned))
     (let feature (feature_request
       {^host host ^root root ^safe safe ^media media_store ^voice voice_hub
        ^browser browser ^auth auth ^origin origin ^request_origin request_origin ^plugin_control plugin_control}
       request parts))
-    (if_not ($absent? feature) (return feature))
+    (if ($present? feature) (return feature))
     (if (&& (== request/method "POST") (== request/path $"${(api_root)}/auth/reset"))
       (reset_auth auth)
       (log_refresh_redactions)
@@ -370,7 +370,7 @@
                 (field data "request_id")
                 (number data "submission_seq")
                 (field data "text")))))
-        (if_not ($absent? data/input)
+        (if ($present? data/input)
           (fail_request "invalid_request" "Voice input must be submitted literally."))
         (return
           (response
@@ -512,14 +512,14 @@
           (stop server))))
   host/runtime/exit_code/.get
   ensure
-    (if_not ($absent? voice_hub) (close_voice_hub voice_hub))
-    (if_not ($absent? plugin_control) (close_plugin_control plugin_control))
+    (if ($present? voice_hub) (close_voice_hub voice_hub))
+    (if ($present? plugin_control) (close_plugin_control plugin_control))
     (try
       (clear_connection root (if ($absent? host) "" else host/epoch))
     ensure
       (try
-        (if_not ($absent? server) (try (stop server) catch Error nil))
+        (if ($present? server) (try (stop server) catch Error nil))
       ensure
         (try
-          (if_not ($absent? host) (close_session_service host))
+          (if ($present? host) (close_session_service host))
         ensure (close_workspace_lock ownership))))))

@@ -11,7 +11,7 @@
 
 (import website_page ^from "./page")
 (import WebsiteError package_dir ^from "./content")
-(import $fs [write_text make_dir exists? list_dir remove])
+(import $fs/[write_text make_dir exists? list_dir remove])
 
 (fn option_value [args, index : Int, name : Str] : Str
   (var next (+ index 1))

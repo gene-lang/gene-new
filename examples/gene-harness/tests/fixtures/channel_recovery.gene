@@ -56,7 +56,7 @@
 
 (fn event [id : Str, ts : Str, text : Str, ^thread thread = nil, ^author author : Str = "UOWNER"]
   (let message {^type "message" ^user author ^channel "C123" ^ts ts ^text text})
-  (if_not ($absent? thread) (message .put "thread_ts" thread))
+  (if ($present? thread) (message .put "thread_ts" thread))
   {^type "events_api" ^envelope_id id ^payload {^type "event_callback" ^event_id id
     ^api_app_id "A123" ^team_id "T123" ^event message}})
 

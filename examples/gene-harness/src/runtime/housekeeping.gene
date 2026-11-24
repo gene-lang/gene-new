@@ -49,5 +49,5 @@
 (fn close_housekeeping [state]
   (if (state/closed .swap true) (return nil))
   (let task state/task/.get)
-  (if_not ($absent? task) task/.cancel (try task/.join catch Error nil))
+  (if ($present? task) task/.cancel (try task/.join catch Error nil))
   nil)

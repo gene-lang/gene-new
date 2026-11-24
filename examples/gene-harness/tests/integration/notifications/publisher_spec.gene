@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import ^from "../../support" isolated run_spec)
 (import ^from "../../../src/web/session_service"
   open_session_service close_session_service create_session)
@@ -12,7 +12,7 @@
 (import row ^from "../../../src/kernel")
 (import list_sessions ^from "../../../src/runtime/sessions")
 (import ^from "../../../src/runtime/commands" command_receipt cancel_command)
-(import $store/fs [Store open:store_open])
+(import $store/fs/[Store open:store_open])
 
 (fn finished [runtime, session, id]
   (let deadline (+ ($os/monotonic_ms) 5000))

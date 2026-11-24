@@ -1,6 +1,6 @@
 # Owns a workspace and accepts HTTP, but never answers within control deadlines.
 # The test owns this captured process and cancels it as external intervention.
-(import $net/http [listen serve json stop])
+(import $net/http/[listen serve json stop])
 (import ^from "../../src/runtime/workspace_lock" acquire_workspace_lock close_workspace_lock)
 (import ^from "../../src/web/connection" publish_connection clear_connection)
 

@@ -1,6 +1,6 @@
 # The process-global facade: identity, targets, levels, scoping, bounding,
 # redaction and the strict mode used by every spec.
-(import $test [describe it])
+(import $test/[describe it])
 (import log_start log_reset log_configure log_set_levels log_set_workspace log_refresh_redactions log_event log_scope log_recent log_run log_subscribe log_unsubscribe log_subscription log_gap_record
   ^from "../../../src/kernel/log")
 (import serialize_line log_line_budget parse_record render_text
@@ -18,7 +18,7 @@
       ^data {^model "provider/x"})
     (log_event "turn/end" "turn 3 ended" ^target {^session "s_7" ^round "r_3" ^turn 3})
     (let records (log_recent))
-    ($assert (== (records .size) 2) ($to_str (records .size)))
+    ($assert (== records/.size 2) ($to_str records/.size))
     (let first records/0)
     ($assert (== first/schema "harness.log.v1"))
     ($assert (== first/run (log_run)))
@@ -47,7 +47,7 @@
     (log_configure ^mode "silent" ^workspace "w_test" ^level "info")
     (log_event "turn/start" "missing session" ^target {^round "r_3" ^turn 3})
     (let records (log_recent))
-    ($assert (== (records .size) 1))
+    ($assert (== records/.size 1))
     ($assert (== records/0/type "log/invalid"))
     ($assert ($str/contains? records/0/message "session")))
 
@@ -156,10 +156,10 @@
     (log_event "turn/start" "first" ^target {^session "s1" ^round "r" ^turn 1})
     (log_event "turn/start" "second" ^target {^session "s2" ^round "r" ^turn 1})
     (let selected (log_recent ^type "turn/*" ^target {^session "s2"}))
-    ($assert (== (selected .size) 1) ($to_str selected))
+    ($assert (== selected/.size 1) ($to_str selected))
     ($assert (== selected/0/message "second") ($to_str selected))
     (let wild (log_recent ^type "turn/*" ^target {^round "r"}))
-    ($assert (== (wild .size) 2) ($to_str wild)))
+    ($assert (== wild/.size 2) ($to_str wild)))
 
   (it "calls a data function only when the record is emitted" []
     (reset)
@@ -167,13 +167,13 @@
     (log_event "model/call" "filtered"
       ^target {^session "s" ^round "r" ^turn 1 ^call "c"}
       ^level "debug"
-      ^data (fn [] (calls .set (+ (calls .get) 1)) {^n (calls .get)}))
-    ($assert (== (calls .get) 0))
+      ^data (fn [] (calls .set (+ calls/.get 1)) {^n calls/.get}))
+    ($assert (== calls/.get 0))
     (log_event "model/call" "emitted"
       ^target {^session "s" ^round "r" ^turn 1 ^call "c"}
       ^level "info"
-      ^data (fn [] (calls .set (+ (calls .get) 1)) {^n (calls .get)}))
-    ($assert (== (calls .get) 1))
+      ^data (fn [] (calls .set (+ calls/.get 1)) {^n calls/.get}))
+    ($assert (== calls/.get 1))
     (let records (log_recent))
     ($assert (== (records/0/data .get "n") 1)))
 

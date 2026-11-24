@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import start_host stop_host ^from "../../web_support")
 (import connect api wire ^from "../../../src/cli/client")
@@ -6,7 +6,7 @@
 (import offline_profile ^from "../../../src/profiles/offline")
 (import register_plugin ^from "../../../src/storage/workspace_activation")
 (import api_root ^from "../../../src/web/contract")
-(import $net/http_client [request])
+(import $net/http_client/request)
 
 (fn routes_source []
   (quote (mod plugin

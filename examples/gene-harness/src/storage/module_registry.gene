@@ -1,11 +1,11 @@
 # Workspace ownership: module_registry.
 (mod module_registry)
 
-(import $store/fs [open:store_open Store StoreError])
-(import $serde [write_data read_data])
-(import $fs [make_dir real_path read_text write_text_atomic exists?])
-(import $crypto [sha256])
-(import $str [slice_bytes byte_size contains? starts_with? ends_with? split])
+(import $store/fs/[open:store_open Store StoreError])
+(import $serde/[write_data read_data])
+(import $fs/[make_dir real_path read_text write_text_atomic exists?])
+(import $crypto/sha256)
+(import $str/[slice_bytes byte_size contains? starts_with? ends_with? split])
 (import ^from "../kernel" Harness describe_plugin_module configure_plugin_module contribute row rows remove_owner)
 (import ^from "../runtime/interface_policy" source_interfaces entry_core_interface interface_diagnostic InterfacePolicyError)
 (import ^from "../runtime/plugin_sdk" sdk_import?)
@@ -188,7 +188,7 @@
       loaded
       ($to_str entry/id)))
   (if events (validate_descriptor_events h descriptor))
-  (if_not ($absent? workspace/history_build/.get)
+  (if ($present? workspace/history_build/.get)
     (try (remember_descriptor workspace/store workspace/history_build/.get entry/module_digest descriptor)
       catch Error (workspace/metadata_errors/.get .push {^id entry/id ^message $err/.message})))
   descriptor)
@@ -202,7 +202,7 @@
     (if_not ($runtime/callable? event/schema)
       (fail (CompositionError ^_msg $"plugin ${descriptor/id} event schema must be callable")))
     (var name ($to_str event/name))
-    (if_not ($absent? (seen .get name))
+    (if ($present? (seen .get name))
       (fail (CompositionError ^_msg $"plugin ${descriptor/id} duplicates event type ${name}")))
     (seen .put name true)
     (var existing (row h "event_types" name))
@@ -219,7 +219,7 @@
       ^init_limits (runtime_limits entry)
       ^core_interface (entry_core_interface entry)
       ^!host})
-  (if_not ($absent? activation) (options .put "activation" activation))
+  (if ($present? activation) (options .put "activation" activation))
   options)
 
 (fn source_entry_interfaces [workspace : Workspace, source]

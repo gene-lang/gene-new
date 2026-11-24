@@ -1,5 +1,5 @@
 # Tests src/runtime/composition.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import RuntimeOptions LoaderOptions PluginSpec invocation_limits default_plugin_invoker
          new_runtime

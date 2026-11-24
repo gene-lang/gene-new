@@ -71,7 +71,7 @@
             name)))))
   (var registries_cell h/registries)
   (var registries registries_cell/.get)
-  (if_not ($absent? (registries .get name))
+  (if ($present? (registries .get name))
     (fail (HarnessError ^_msg $"registry ${name} already defined")))
   (let declared (validate_registry_spec
     (?? spec {^name name ^unique unique ^ordered ordered ^schema schema ^on_remove on_remove})))
@@ -87,8 +87,8 @@
       ^revision ($crypto/random_hex 16) ^effects policy/effects ^owner_context (callback_receiver h owner)))
   (registries .put name created)
   (registries_cell .set registries)
-  (if_not ($absent? policy/owned_registries) (policy/owned_registries/.get .push created))
-  (if_not ($absent? h/registry_observer) (h/registry_observer "$registries" name))
+  (if ($present? policy/owned_registries) (policy/owned_registries/.get .push created))
+  (if ($present? h/registry_observer) (h/registry_observer "$registries" name))
   (publish_direct_registry_change h)
   created)
 
@@ -229,7 +229,7 @@
 
 (fn registry_row_records [h : Harness, registry_name : Str]
   (let view (registry_read_view h))
-  (if_not ($absent? view)
+  (if ($present? view)
     (let records (view .get registry_name))
     (if ($absent? records)
       (fail (HarnessError ^_msg $"registry ${registry_name} is not defined")))
@@ -238,7 +238,7 @@
   r/rows/.get)
 
 (fn ^^private publish_direct_registry_change [h : Harness]
-  (if_not ($absent? h/composer) h/composer/.Composer:changed)
+  (if ($present? h/composer) h/composer/.Composer:changed)
   nil)
 
 (fn rows [h : Harness, registry_name : Str]
@@ -316,10 +316,10 @@
   (row_index .delete row_id)
   (row_index_cell .set row_index)
   (ledger_forget h record/owner row_id)
-  (if_not ($absent? h/registry_observer) (h/registry_observer record/registry record/key))
+  (if ($present? h/registry_observer) (h/registry_observer record/registry record/key))
   (if cleanup
-    (if_not ($absent? record/cleanup_state) (record/cleanup_state .set false))
-    (if_not ($absent? r/on_remove) (r/on_remove r/owner_context record/payload)))
+    (if ($present? record/cleanup_state) (record/cleanup_state .set false))
+    (if ($present? r/on_remove) (r/on_remove r/owner_context record/payload)))
   (publish_direct_registry_change h)
   true)
 
@@ -348,7 +348,7 @@
   (let r (registry_named h registry_name))
   (var checked (if ($absent? r/schema) payload else (r/schema payload)))
   (validate_discovery_metadata checked)
-  (if_not ($absent? r/prepare) (set checked (r/prepare owner checked)))
+  (if ($present? r/prepare) (set checked (r/prepare owner checked)))
   (let logical_key
     (if ($absent? key)
       ($to_str (if ($runtime/callable? r/key) (r/key checked) else (?? (checked .get r/key) "")))
@@ -360,7 +360,7 @@
       $"registry ${registry_name} key ${logical_key} is reserved by ${reserved_label}")))
   (let guarded (fresh_map))
   (map_for [field value] in checked (guarded .put field value))
-  (if_not ($absent? r/spec/signature)
+  (if ($present? r/spec/signature)
     (guarded .put "signature" ($runtime/signature (checked .get r/spec/signature))))
   (for field in (?? r/spec/callbacks [])
     (let callback (checked .get field))
@@ -397,9 +397,9 @@
   (row_index .put row_id record)
   (row_index_cell .set row_index)
   (ledger_record h owner row_id)
-  (if_not ($absent? policy/owned_rows)
+  (if ($present? policy/owned_rows)
     (policy/owned_rows/.get .push {^record record ^registry r}))
-  (if_not ($absent? h/registry_observer)
+  (if ($present? h/registry_observer)
     (h/registry_observer registry_name logical_key))
   (publish_direct_registry_change h)
   row_id)
@@ -419,7 +419,7 @@
       (if ($absent? failure) (set failure $err)))
     (set i (- i 1)))
   (expire_scope_callbacks effects)
-  (if_not ($absent? failure) (fail failure))
+  (if ($present? failure) (fail failure))
   nil)
 
 (fn ^^private release_activation_registries [h : Harness, owned_registries]
@@ -438,7 +438,7 @@
       (if_not errors/.empty?
         (fail (HarnessError ^_msg $"Registry ${definition/name} cleanup failed: ${errors}")))
       catch Error (if ($absent? failure) (set failure $err))))
-  (if_not ($absent? failure) (fail failure))
+  (if ($present? failure) (fail failure))
   nil)
 
 (fn release_activation_resources [h : Harness, effects, owned_rows, owned_registries]
@@ -446,7 +446,7 @@
   (try (release_activation_rows h effects owned_rows) catch Error (set failure $err))
   (try (release_activation_registries h owned_registries)
     catch Error (if ($absent? failure) (set failure $err)))
-  (if_not ($absent? failure) (fail failure))
+  (if ($present? failure) (fail failure))
   nil)
 
 (fn ^^private cleanup_owned_registry_row [h : Harness, record : RegistryRow, r : Registry]
@@ -457,7 +457,7 @@
   ensure
     # Publication may already have removed this ID from discovery. Its owned
     # cleanup still runs once with the captured old payload and registry hook.
-    (if_not ($absent? r/on_remove)
+    (if ($present? r/on_remove)
       (r/on_remove r/owner_context record/payload)))
   nil)
 
@@ -521,7 +521,7 @@
   (var registries registries_cell/.get)
   (registries .delete name)
   (registries_cell .set registries)
-  (if_not ($absent? h/registry_observer) (h/registry_observer "$registries" name))
+  (if ($present? h/registry_observer) (h/registry_observer "$registries" name))
   (publish_direct_registry_change h)
   errors)
 

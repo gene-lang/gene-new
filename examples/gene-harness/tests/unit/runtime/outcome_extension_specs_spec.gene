@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import audio_schema wait_schema ^from "../../../src/runtime/outcome_extension_specs")
 
 (describe "Owned Outcome feature schemas"

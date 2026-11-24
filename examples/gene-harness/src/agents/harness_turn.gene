@@ -77,7 +77,7 @@
   (let renderers {})
   (for record in (?? (snapshot/registries .get "interactions") [])
     (let handler record/payload)
-    (if_not ($absent? handler/render)
+    (if ($present? handler/render)
       (let render handler/render)
       (renderers .put handler/name (fn [question]
         ($runtime/with_context {^composition h/snapshots ^snapshot snapshot ^^ui_render}
@@ -129,7 +129,7 @@
         number
         workspace_root
         text))
-    (if_not ($absent? h/workspace)
+    (if ($present? h/workspace)
       (result .put "composition_changes"
         (drain_workspace_changes ^origin result/turn h/workspace h)))
     (if ($absent? h/workspace)
@@ -140,7 +140,7 @@
       (append_boundary_item result number "plugins" (plugin_change_summary changes))
       (let preview (if ($absent? publication_preview) nil
         else (try (publication_preview session changes) catch Error (byte_prefix $err/.message 512))))
-      (if_not ($absent? preview)
+      (if ($present? preview)
         (append_boundary_item result number "ui" preview)))
     (if (== result/validated/rejected_done true)
       (append_boundary_item result number "plugin_notice"

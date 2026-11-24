@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import ^from "../../support" isolated run_spec)
 (import ^from "../../../src/notifications/inbox"
     open_inbox

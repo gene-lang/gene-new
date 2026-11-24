@@ -10,7 +10,7 @@
 (fn record_image_usage [state, purpose : Str, call_id, usage, ^attempt attempt = nil]
   (for item in state/usage
     (if (== item/call_id call_id)
-      (if_not ($absent? usage) (item .put "usage" (image_usage usage)))
+      (if ($present? usage) (item .put "usage" (image_usage usage)))
       (return nil)))
   (state/usage .push {^purpose purpose ^call_id call_id
     ^attempt (?? attempt state/attempts/.size) ^usage (image_usage usage)}))
@@ -41,7 +41,7 @@
   (for attempt in state/attempts
     (map_for [field role] in {^generation_call "generation" ^review_call "review" ^repair_call "repair"}
       (let id (attempt .get field))
-      (if_not ($absent? id) (calls .put id {^attempt attempt ^role role}))))
+      (if ($present? id) (calls .put id {^attempt attempt ^role role}))))
   (for event in (events_for runtime/events "session" state/session)
     (let payload event/payload)
     (if (|| (!= event/type "model/result") (!= payload/final true)) (continue))

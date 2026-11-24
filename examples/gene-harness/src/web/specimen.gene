@@ -3,7 +3,7 @@
 (import ^from "./theme" resolve_theme resolved_tokens public_tokens icon_names color_value contrast_ratio)
 (import ^from "./theme_registry" installed_themes theme_tokens)
 (import ^from "../kernel" contribute row)
-(import $css [css rule decl_value])
+(import $css/[css rule decl_value])
 
 (const shared_classes ["web_card" "web_stack" "web_row" "web_spread" "web_grid" "web_tight" "web_loose"
   "web_actions" "web_badge" "web_badge_danger" "web_badge_success" "web_notice" "web_notice_error"

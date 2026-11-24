@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import acquire_workspace_lock close_workspace_lock WorkspaceInUse ^from "../../../src/runtime/workspace_lock")

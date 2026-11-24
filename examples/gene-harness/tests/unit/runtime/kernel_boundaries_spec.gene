@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 
 (fn parsed [path : Str] ($into ($parse/read_all ($fs/read_text path)) []))
 (fn imports [forms]
@@ -111,7 +111,7 @@
       (let permitted (allowed .get name))
       ($assert ($present? permitted) $"Declare the layer for ${name}.")
       (for form in (imports (parsed path))
-        (if_not ($absent? form/pkg)
+        (if ($present? form/pkg)
           ($assert (&& (== name "composition_bridge") (== form/pkg "cordis"))
             $"${name} imports package ${form/pkg}.")
           (continue))

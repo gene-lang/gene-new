@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec source_path ^from "../../support")
 (import prepare_image_inspection inspect_generated_png has_transparent_pixels
          with_image_scratch ImageInspectionError ^from "../../../src/storage/image_inspection")

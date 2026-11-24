@@ -31,7 +31,7 @@
   ensure
     (runtime/closed .set true)
     (let watchdog runtime/shutdown_watchdog/.get)
-    (if_not ($absent? watchdog) watchdog/.cancel watchdog/.join))
+    (if ($present? watchdog) watchdog/.cancel watchdog/.join))
   nil)
 
 (fn open_runtime [root : Str, session : Str, profile, ^events supplied_events = nil,
@@ -70,4 +70,4 @@
     (start_host_services services mode)
     context/runtime
   unwind
-    (if_not ($absent? context/runtime) (context/runtime/closed .set true))))
+    (if ($present? context/runtime) (context/runtime/closed .set true))))

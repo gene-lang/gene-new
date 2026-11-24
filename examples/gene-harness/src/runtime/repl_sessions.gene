@@ -58,7 +58,7 @@
 
 (fn close_repl [sessions, session : Str]
   (let state (sessions/.get .get session))
-  (if_not ($absent? state)
+  (if ($present? state)
     ($repl/close state/handle)
     (sessions/.get .delete session))
   nil)

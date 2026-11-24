@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_service package_path ^from "../../support")
 (import close_session_service create_session host_status snapshot ^from "../../../src/web/session_service")
 (import register_plugin ^from "../../../src/storage/workspace_activation")

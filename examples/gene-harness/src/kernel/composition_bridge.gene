@@ -63,7 +63,7 @@
           ^activation_revision policy/activation_revision
           ^provides plugin/provides
           ^requires plugin/requires}))
-    (if_not ($absent? h/workspace)
+    (if ($present? h/workspace)
       (for entry in h/workspace/entries/.get
         (if ($absent? (seen .get entry/id))
           (plugins .push
@@ -142,7 +142,7 @@
       (try
         ($runtime/with_context {^composition self/h/snapshots ^publication publication
           ^output (fn [text]
-            (if_not ($absent? self/h/event_store)
+            (if ($present? self/h/event_store)
               (append_core_event self/h/event_store "workspace" "workspace"
                 {^type "console" ^turn 0 ^text text ^!late ^^ignorable}))
             (log_event "plugin/output" text
@@ -287,7 +287,7 @@
         ^retirement (fn [ticket]
           (queue_retirement h/snapshots ticket ticket/.instances)))))
   (publish_registry_snapshot h)
-  (if_not ($absent? event_store)
+  (if ($present? event_store)
     (set event_store/observer
       (fn [envelope]
         (publish h
@@ -361,7 +361,7 @@
   (h/row_index .set (clone_row_index h))
   (h/plugin_policies .set ($thaw ($freeze_shallow h/plugin_policies/.get)))
   (set h/registry_observer nil)
-  (if_not ($absent? prepare) (prepare))
+  (if ($present? prepare) (prepare))
   # Cordis stages changed, pending and departed activations. Their previous
   # contributions leave the candidate; a carried owner keeps its rows. The
   # composition reports which owners it carries once entry identities are
@@ -403,7 +403,7 @@
     (let options {})
     (for admission in admissions
       (validate_plugin_descriptor h admission/plugin/id admission/plugin)
-      (if_not ($absent? (plugins .get admission/plugin/id))
+      (if ($present? (plugins .get admission/plugin/id))
         (fail (HarnessError ^_msg "duplicate plugin in candidate composition")))
       (plugins .put admission/plugin/id admission/plugin)
       (options .put admission/plugin/id admission/options))

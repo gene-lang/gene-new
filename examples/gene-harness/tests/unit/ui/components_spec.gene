@@ -1,5 +1,5 @@
 # Tests src/ui/components.gene.
-(import $test [describe it run])
+(import $test/[describe it run])
 (import ^from "../../../src/ui/components" validate_web_component bounded_component_view bounded_card_view tree_has_commands?)
 (import ^from "../../../src/ui/views" validate_view_actions)
 
@@ -178,13 +178,13 @@
       false
     catch Error ($str/contains? $err/.message "name must equal")))))
 
-(import $css [css rule decl])
+(import $css/[css rule decl])
 
 (describe "Web component style contributions"
   (fn board [style ^scoped scoped = nil]
     (let candidate {^name "board" ^slot "view" ^title "Board" ^view_state {}
       ^render (fn [ctx] (quote (div ^class_name "board_grid"))) ^style style})
-    (if_not ($absent? scoped) (candidate .put "style_scoped" scoped))
+    (if ($present? scoped) (candidate .put "style_scoped" scoped))
     (validate_web_component candidate))
 
   (it "scopes a contribution to its component by default" []

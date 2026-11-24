@@ -8,7 +8,7 @@
   (HostLog ^path path ^limit limit ^size (if ($fs/exists? path) ((Path "size") ($fs/info path)) else 0) ^writer nil))
 
 (fn close_host_log [log]
-  (if_not ($absent? log/writer)
+  (if ($present? log/writer)
     log/writer/.IoResource:close
     (await log/writer/.IoResource:wait_closed)
     (set log/writer nil)))

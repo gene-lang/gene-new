@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import ^from "../../support" isolated run_spec)
 (import ^from "../../../src/plugin_api" Plugin PluginHost)
 (import ^from "../../../src/profiles/profile" Profile)

@@ -48,7 +48,7 @@
 (fn public_voice_state [claim]
   (let result {})
   (for key in ["enabled" "owner" "session" "output" "revision" "expires_ms"]
-    (if_not ($absent? (claim .get key)) (result .put key (claim .get key))))
+    (if ($present? (claim .get key)) (result .put key (claim .get key))))
   result)
 
 (fn voice_output? [voice, session : Str] : Bool
@@ -58,7 +58,7 @@
 
 (fn voice_changed [voice : VoiceState]
   (let state (voice_snapshot voice))
-  (if_not ($absent? voice/runtime/h) (publish voice/runtime/h (VoiceChanged ^state state)))
+  (if ($present? voice/runtime/h) (publish voice/runtime/h (VoiceChanged ^state state)))
   state)
 
 (fn claim_voice [voice : VoiceState, session : Str, owner : Str, output : Bool,

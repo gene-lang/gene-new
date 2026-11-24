@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import outcome_constructor ^from "../../../src/agents/outcome_admission")
 (import Outcome OutcomeError checked_outcome_extensions new_turn_items validate_outcome
   ^from "../../../src/agents/outcome")

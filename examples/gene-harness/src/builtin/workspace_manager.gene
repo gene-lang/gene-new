@@ -44,7 +44,7 @@
          (td %($to_str port actual pending))
          (td %item/status (small %(?? item/message "")))
          (td %controls...)))
-    (if_not ($absent? item/confirmation)
+    (if ($present? item/confirmation)
       (panels .push
         `(section ^role "alert"
            (h3 %$"Confirm ${item/confirmation}: ${item/name}")

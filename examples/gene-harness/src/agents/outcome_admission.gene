@@ -32,7 +32,7 @@
   (let aliases {})
   (for record in (?? (snapshot/registries .get "outcome_extensions") [])
     (let definition record/payload)
-    (if_not ($absent? definition/alias) (aliases .put definition/alias definition/name)))
+    (if ($present? definition/alias) (aliases .put definition/alias definition/name)))
   (LeasedOutcomeConstructor ^aliases ($freeze aliases)))
 
 (fn normalize_harness_outcome [h, snapshot, session : Str, round, turn, turn_context, value]
@@ -47,9 +47,9 @@
       ^attention (== value/attention true) ^has_questions ($present? value/questions)
       ^has_prompt ($present? value/prompt)}})
   (let result (normalize_extension_fields snapshot context value/extensions))
-  (if_not ($absent? result/error) (fail (OutcomeError ^_msg result/error)))
+  (if ($present? result/error) (fail (OutcomeError ^_msg result/error)))
   (if (|| ($present? value/extensions) (> ($map_size result/values) 0))
     (fields .put "extensions" result/values))
   (for warning in result/warnings
-    (if_not ($absent? turn/console) (turn/console warning)))
+    (if ($present? turn/console) (turn/console warning)))
   (checked_outcome_extensions (Outcome fields...) ^suspension result/suspension))

@@ -31,7 +31,7 @@
   # Recovery deliberately has no session manager or application event store.
   (if recovery (return result))
   (let record (try (require_record runtime/sessions reference/session) catch SessionError nil))
-  (if_not ($absent? record)
+  (if ($present? record)
     (result .put "title" (if (== (?? record/title "") "") reference/session else record/title))
     (result .put "kind" record/kind)
     (result .put "available" true))
@@ -46,7 +46,7 @@
   (run_composition_change runtime/h/snapshots (fn []
     (let page (plugin_history_page ^limit limit ^before before runtime/workspace id))
     (for record in page/history
-      (if_not ($absent? record/entry)
+      (if ($present? record/entry)
         (record .put "development"
           (development_sessions ^revision record/revision runtime record/entry))))
     page)))
@@ -206,7 +206,7 @@
     (let requirement (requirement_status snapshot pair))
     (profile_requirements .push requirement)
     (let provider (if ($absent? requirement/provider) nil else (by_id .get requirement/provider)))
-    (if_not ($absent? provider) (provider .put "required_by_profile" true)))
+    (if ($present? provider) (provider .put "required_by_profile" true)))
   (for provider in rows
     (let visited [provider/id])
     (let pending ($thaw ($freeze provider/required_by)))
@@ -218,7 +218,7 @@
         (visited .push id)
         (provider/transitive_required_by .push id)
         (let consumer (by_id .get id))
-        (if_not ($absent? consumer) (for other in consumer/required_by (pending .push other))))))
+        (if ($present? consumer) (for other in consumer/required_by (pending .push other))))))
   (let selected [])
   (let needle ($str/lower ($str/trim query)))
   (for row in rows
@@ -332,4 +332,4 @@
               ^metadata_error metadata_error
               ^activation "unverified"}
           ensure
-            (if_not ($absent? transaction) transaction/.discard)))))))
+            (if ($present? transaction) transaction/.discard)))))))

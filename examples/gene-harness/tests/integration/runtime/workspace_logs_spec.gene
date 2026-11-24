@@ -1,5 +1,5 @@
 # M4: the workspace object exposes the in-process ring to the REPL.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import open_session_service close_session_service ^from "../../../src/web/session_service")
 (import log_reset log_event ^from "../../../src/kernel/log")
@@ -18,8 +18,8 @@
           (let objects service/runtime/h/objects/.get)
           (let workspace_object objects/workspace)
           (let selected (workspace_object/logs ^type "turn/*" ^target {^session "s2"}))
-          ($assert (== (selected .size) 1) ($to_str selected))
+          ($assert (== selected/.size 1) ($to_str selected))
           ($assert (== selected/0/message "two") ($to_str selected))
           (let wild (workspace_object/logs ^type "*/*" ^target {^session "s2"}))
-          ($assert (== (wild .size) 2) ($to_str wild))
+          ($assert (== wild/.size 2) ($to_str wild))
         ensure (close_session_service service))))))

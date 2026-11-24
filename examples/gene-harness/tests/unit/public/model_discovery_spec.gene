@@ -1,4 +1,4 @@
-(import $test [describe it run])
+(import $test/[describe it run])
 (import normalize_openrouter_models normalize_chatgpt_models normalize_anthropic_models
          normalize_compatible_models ^from "../../../src/public/model_discovery")
 

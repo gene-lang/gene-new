@@ -87,7 +87,7 @@
       (contract_error name phase "Request item settled must be a boolean."))
     (let id $"${context/turn}.${name}/${item/id}")
     (let admitted {^id id ^header $"[${id}]" ^value item/value ^settled (!= item/settled false)})
-    (if_not ($absent? item/source)
+    (if ($present? item/source)
       (if (|| (!= ($head item/source) Str) (== item/source "") (> ($str/byte_size item/source) 256))
         (contract_error name phase "Request item source must be a nonempty string of at most 256 bytes."))
       (admitted .put "source" $"participant:${name}/${item/source}"))

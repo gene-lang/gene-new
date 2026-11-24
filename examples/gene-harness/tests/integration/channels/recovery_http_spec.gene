@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec fixture_path ^from "../../support")
 (import ready_host stop_host ^from "../../web_support")
 (import connect api ^from "../../../src/cli/client")
@@ -81,7 +81,7 @@ Complete."""))))
             (if (== scenario/1 "effect")
               ($assert (== ($fs/read_text ($path/join project_root "effect.txt")) "once")))
           ensure
-            (if_not ($absent? project/.get) (stop_host project/.get))
+            (if ($present? project/.get) (stop_host project/.get))
             (stop_host owner/.get))))))
 )
 

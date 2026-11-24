@@ -25,7 +25,7 @@
     (if (&& ($present? state/source) (!= state/source source))
       (channel_error "conflict" "Changing a workspace's channel source requires an explicit migration."))
     (state .put "source" source)
-    (if_not ($absent? owner_root)
+    (if ($present? owner_root)
       (state .put "owner_root" (required_text owner_root "owner workspace directory" ^max_bytes 4096)))
     source)))
 
@@ -189,7 +189,7 @@
     (let queue (require_queue state session))
     (if (!= queue/revision expected)
       (channel_error "stale" "The queue changed; review it again before discarding input."))
-    (if_not ($absent? queue/batch)
+    (if ($present? queue/batch)
       (channel_error "uncertain" "Resolve the claimed batch's admission before discarding queued input."))
     (let seen {})
     (for id in ids
@@ -307,7 +307,7 @@
   (let proposed ($to_str "batch-" ($crypto/random_hex 16)))
   (mutate store (fn [state]
     (let queue (require_queue state session))
-    (if_not ($absent? queue/batch)
+    (if ($present? queue/batch)
       (return {^kind "recover" ^batch (state/batches .get queue/batch)}))
     (if (> ($map_size queue/holds) 0) (return {^kind "held"}))
     (if ($present? members)

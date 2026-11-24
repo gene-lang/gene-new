@@ -24,7 +24,7 @@
   (for key in ["image_input" "image_output" "image_edit"]
     (result .put key (capability value key)))
   (for key in ["max_images" "max_input_bytes"]
-    (if_not ($absent? (value .get key))
+    (if ($present? (value .get key))
       (let bound (value .get key))
       (if (|| (!= ($head bound) Int) (< bound 0))
         (image_error "invalid_capabilities" $"${key} must be a nonnegative integer."))
@@ -37,9 +37,9 @@
   ($freeze result))
 
 (fn check_available [row, role : Str]
-  (if_not ($absent? row/available)
+  (if ($present? row/available)
     (let reason (row/available))
-    (if_not ($absent? reason)
+    (if ($present? reason)
       (image_error "unavailable" $"${role}: ${reason}"))))
 
 (fn check_image_limits [caps, references, count : Int, bytes : Int, role : Str]
@@ -47,7 +47,7 @@
     (image_error "unsupported_input" $"${role} cannot accept all reference images and the candidate."))
   (if (> bytes (?? caps/max_input_bytes 41943040))
     (image_error "unsupported_input" $"${role} image input exceeds its byte limit."))
-  (if_not ($absent? caps/image_formats)
+  (if ($present? caps/image_formats)
     (if (!= ($head caps/image_formats) List)
       (image_error "invalid_capabilities" "image_formats must be a list."))
     (for image in references
@@ -94,7 +94,7 @@
     (require_capability generator_caps "image_input" "The image generator"))
   (if (> request/max_attempts 1)
     (require_capability generator_caps "image_edit" "The image generator"))
-  (if_not ($absent? generator_caps/output_formats)
+  (if ($present? generator_caps/output_formats)
     (if (|| (!= ($head generator_caps/output_formats) List)
             (! (generator_caps/output_formats .contains? "png")))
       (image_error "unsupported_output" "The image generator cannot select PNG output.")))

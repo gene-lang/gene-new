@@ -1,6 +1,6 @@
 # Tests src/runtime/settings_resolver.gene: one read path for definition-backed
 # settings, shared defaults read on use, and empty configurations.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")

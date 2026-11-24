@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import Plugin PluginHost ServiceError ^from "../../../src/plugin_api")
 (import new_harness install put_cordis_plugin shutdown_harness status_of row uninstall

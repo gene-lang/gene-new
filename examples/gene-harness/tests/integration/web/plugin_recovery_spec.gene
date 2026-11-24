@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import ^from "../../support" isolated run_spec source_path)
 (import ^from "../../web_support" start_host ready_host stop_host)
 (import ^from "../../../src/cli/client" connect api wire)
@@ -6,7 +6,7 @@
 (import ^from "../../../src/profiles/profile" Profile)
 (import ^from "../../../src/profiles/baseline" baseline_profile)
 (import register_plugin ^from "../../../src/storage/workspace_activation")
-(import $net/http [listen stop])
+(import $net/http/[listen stop])
 
 (fn wait_job [client, started]
   (let due (+ ($os/monotonic_ms) 30000))

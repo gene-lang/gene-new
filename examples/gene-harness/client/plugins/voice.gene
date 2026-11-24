@@ -117,7 +117,7 @@
 (fn earcon [voice : Voice, frequency : F64] : Nil
   (if ($absent? voice/context) (return))
   (var context : EventTarget voice/context)
-  (if_not ($absent? voice/host)
+  (if ($present? voice/host)
     (var host (host_audio voice))
     (if (< host/suppress_until (+ ($time/now) 200.0)) (set host/suppress_until (+ ($time/now) 200.0))))
   (try ($audio/tone context frequency 0.07 0.04) catch Error nil))
@@ -164,7 +164,7 @@
   (set voice/speech_generation (+ voice/speech_generation 1))
   (set voice/queue [])
   (set voice/speaking false)
-  (if_not ($absent? voice/host)
+  (if ($present? voice/host)
     (var host (host_audio voice)) (cancel_output host) (set host/external_playback false))
   ($speech/cancel))
 
@@ -206,7 +206,7 @@
     (return))
   (var generation voice/speech_generation)
   (var began voice/speech_began)
-  (if_not ($absent? voice/host)
+  (if ($present? voice/host)
     (var host (host_audio voice)) (set host/external_playback true))
   ($speech/speak (text next/speech) voice/voice (if (> voice/queue/.size 1) 1.15 else 1.0)
     (fn [] : Nil
@@ -216,7 +216,7 @@
     (fn [error : Str] : Nil
       (if (|| voice/disposed (!= generation voice/speech_generation)) (return))
       (set voice/speaking false)
-      (if_not ($absent? voice/host)
+      (if ($present? voice/host)
         (var host (host_audio voice)) (set host/external_playback false)
         (set host/suppress_until (+ ($time/now) 300.0)))
       (if (!= error "") (set voice/feedback ($to_str "Speech unavailable: " error ". You can read the reply on screen.")))
@@ -303,7 +303,7 @@
       (var name ($to_str key))
       (set keep/%name value)))
   (set voice/pending keep)
-  (if_not ($absent? voice/host)
+  (if ($present? voice/host)
     (var host (host_audio voice)) (set host/input_paused (>= (pending_count voice) 4))))
 
 (fn await_host_final [voice : Voice, id : Str, duration : Int] : Nil
@@ -456,7 +456,7 @@
   (set voice/enabled false) (set voice/claiming false)
   (set voice/generation (+ voice/generation 1)) (set voice/submitting false)
   (cancel_speech voice)
-  (if_not ($absent? voice/host)
+  (if ($present? voice/host)
     (close_host_audio (host_audio voice)) (set voice/host nil))
   (map_for [id pending] in voice/pending
     (finish_utterance voice/drafts ($to_str id) "" "cancelled"))
@@ -466,7 +466,7 @@
     (api voice "POST" $"${(api_root)}/sessions/${voice/session}/voice"
       {^client_id voice/client_id ^token voice/token ^enabled false} (fn [code : Int, data : Any] : Nil nil)))
   (set voice/token "")
-  (if_not ($absent? voice/context)
+  (if ($present? voice/context)
     (var context : EventTarget voice/context)
     ($audio/close context) (set voice/context nil))
   (paint voice))
@@ -607,7 +607,7 @@
     (drop_pending voice id)
     (if (&& (== kind "transcript/final") ($present? data/audio_ms))
       (var utterance : Any (find_utterance voice/drafts id))
-      (if_not ($absent? utterance) (set utterance/audio_ms (integer data/audio_ms))))
+      (if ($present? utterance) (set utterance/audio_ms (integer data/audio_ms))))
     (finish_utterance
       voice/drafts
       id
@@ -616,7 +616,7 @@
     (if (== kind "capture/error")
       (set voice/feedback (text data/message "Recognition failed. You can type instead."))
       (earcon voice 220.0))
-    (if_not ($absent? (draft voice))
+    (if ($present? (draft voice))
       (var session voice/session)
       (set voice/drafts/drafts/%session/recognizer (text data/recognizer "host")))
     (store_draft voice)
@@ -626,7 +626,7 @@
 
 (fn connect_host [voice : Voice] : Nil
   (if (|| (! voice/enabled) (&& (!= voice/recognizer "host") (!= voice/synthesizer "host"))) (return))
-  (if_not ($absent? voice/host) (close_host_audio (host_audio voice)))
+  (if ($present? voice/host) (close_host_audio (host_audio voice)))
   (var current (state voice))
   (var context : EventTarget voice/context)
   (set voice/host (open_host_audio context voice/session voice/client_id (text current/csrf) voice/token voice/output
@@ -658,7 +658,7 @@
     (paint voice)
     (return))
   (if voice/recording (finish_capture voice true))
-  (if_not ($absent? voice/host) (stop_handsfree (host_audio voice)))
+  (if ($present? voice/host) (stop_handsfree (host_audio voice)))
   (set voice/mode mode) (save_settings voice)
   (if (== mode "handsfree") (enable_handsfree voice))
   (paint voice))
@@ -869,7 +869,7 @@
     (summary "Voice settings")
     (label (input ^type "checkbox" ^checked %voice/output ^on_change %(fn [e : Any] : Nil
       (set voice/output (flag e/current_target/checked))
-      (if_not ($absent? voice/host)
+      (if ($present? voice/host)
         (var host (host_audio voice)) (set host/output voice/output))
       (save_settings voice)
       (if (! voice/output) (cancel_speech voice))

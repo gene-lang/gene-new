@@ -1,5 +1,5 @@
 # Tests Gene captured-process lifecycle.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec fixture_path ^from "../support")
 
 (describe "Harness process cleanup"

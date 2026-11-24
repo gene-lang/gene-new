@@ -223,7 +223,7 @@
     (fail (HarnessError ^_msg "a discovery summary must be a string")))
   (for field in ["tags" "docs"]
     (let values (candidate .get field))
-    (if_not ($absent? values)
+    (if ($present? values)
       (if (!= ($head values) List)
         (fail (HarnessError ^_msg $"discovery ${field} must be a list of strings")))
       (for value in values

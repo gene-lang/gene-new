@@ -39,9 +39,9 @@
   (nav_text view/default_presentation "full"))
 
 (fn return_view [views : (List Any), settings : Any, last : Str] : Str
-  (if_not ($absent? (find_view views last)) (return last))
+  (if ($present? (find_view views last)) (return last))
   (var default (default_view views settings))
-  (if_not ($absent? (find_view views default)) (return default))
+  (if ($present? (find_view views default)) (return default))
   (if (> views/.size 0) (return (nav_text views/0/name)))
   "harness")
 

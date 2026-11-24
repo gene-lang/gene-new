@@ -13,7 +13,7 @@
   (let selected (gate (fn []
     (for record in hosts/.get (if (same? record/token handle/token) (return record/runtime)))
     nil)))
-  (if_not ($absent? selected) (return selected))
+  (if ($present? selected) (return selected))
   (notification_error "unavailable" "The operator inbox is closed."))
 
 (type HostedNotifications ^^private ^props {^token Any}

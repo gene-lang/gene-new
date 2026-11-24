@@ -1,6 +1,6 @@
 # Publication is a commit point: failures after it are diagnostics, not
 # rollbacks, and a retirement failure is isolated to its ticket.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import Plugin PluginHost ^from "../../../src/plugin_api")
 (import new_harness install put_cordis_plugin status_of shutdown_harness row
@@ -48,7 +48,7 @@
           ($assert (== ($size (publication_diagnostics h/snapshots snapshot)) 1)
             "the observer diagnostic expired with its snapshot")
           ($assert (== (publication_diagnostics h/snapshots (current_snapshot h/snapshots)) []))
-          (subscription .cancel)
+          subscription/.cancel
         ensure (shutdown_harness h)))))
 
   (it "records a failing retired cleanup without failing the replacement" []

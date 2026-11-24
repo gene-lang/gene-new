@@ -45,7 +45,7 @@
     # Tabs share a cookie jar but keep their own cached CSRF value.
     # Reopening the owner link must preserve that pair for existing tabs.
     (let existing (try (authenticate auth cookie) catch AuthError nil))
-    (if_not ($absent? existing)
+    (if ($present? existing)
       (return {^cookie cookie ^csrf existing/csrf}))
     (issue_cookie auth))))
 

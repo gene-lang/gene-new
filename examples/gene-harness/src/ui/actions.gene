@@ -52,7 +52,7 @@
     (let value (request .get key))
     (if (|| (!= ($head value) Str) (== value "") (> ($str/byte_size value) 256))
       (ui_error "invalid_request" $"Invalid action ${key}.")))
-  (if_not ($absent? request/session)
+  (if ($present? request/session)
     (ui_error "invalid_request" "Workspace actions have no implicit session. Pass conversation data explicitly in named arguments if needed."))
   (let args (?? request/args []))
   (let named (?? request/named {}))
@@ -133,7 +133,7 @@
 (fn cancel_ui_action [manager : UiActionManager, input_id : Str]
   (let receipt (ui_action_receipt manager input_id))
   (let task (manager/active/.get .get input_id))
-  (if_not ($absent? task) task/.cancel)
+  (if ($present? task) task/.cancel)
   receipt)
 
 (fn quiesce_ui_actions [manager : UiActionManager]

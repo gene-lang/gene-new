@@ -1,7 +1,7 @@
 # Runtime specs need independent Applications as well as fresh workspaces:
 # opening a harness changes cwd, and crash fixtures deliberately kill processes.
 # Both the parent and child use the ordinary $test registry and reports.
-(import $test [assert_equal run])
+(import $test/[assert_equal run])
 (import Plugin PluginHost ^from "../src/plugin_api")
 (import put_cordis_plugin ^from "../src/kernel")
 (import Profile ^from "../src/profiles/profile")
@@ -47,7 +47,7 @@
   nil)
 
 (fn test_controller [runtime, callback]
-  (if_not ($absent? callback)
+  (if ($present? callback)
     (let cell ($cell callback))
     (put_cordis_plugin ^^replace runtime/h (callback_plugin cell)
       {^^host ^limits runtime/profile/limits})
@@ -100,7 +100,7 @@
 
 (fn isolated [spec_path : Str, name : Str, body, ^timeout_ms timeout_ms : Int = 120000]
   (let selected active_workspace/.get)
-  (if_not ($absent? selected) (return (body selected)))
+  (if ($present? selected) (return (body selected)))
   (let workspace ($path/join source_root $"tmp/spec-${($crypto/random_hex 12)}"))
   ($fs/make_dir workspace)
   # Vendor probes must never inspect the developer's accounts or API keys.
@@ -147,6 +147,6 @@
 # Used by `gene run file_spec.gene` and by isolated children. Ordinary `gene
 # test` discovery registers examples without invoking main or creating files.
 (fn run_spec [args] : Int
-  (if_not ($absent? args/0) (active_workspace .set args/0))
+  (if ($present? args/0) (active_workspace .set args/0))
   (let result (run ^name (?? args/1 "")))
   result/exit_code)

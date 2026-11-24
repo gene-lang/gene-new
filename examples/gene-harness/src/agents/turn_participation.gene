@@ -93,7 +93,7 @@
     (if ($absent? packet/value) (continue))
     (if (!= ($head packet/value) ParticipantValidation)
       (bad_phase_result transaction packet/name "validate_outcome" "Invalid participant validation verdict."))
-    (if_not ($absent? packet/value/error) (errors .push $"${packet/name}: ${packet/value/error}"))
+    (if ($present? packet/value/error) (errors .push $"${packet/name}: ${packet/value/error}"))
     (for item in packet/value/items (additions .push item))
     (if packet/value/defer_done (set deferred true)))
   (if_not errors/.empty?
@@ -145,6 +145,6 @@
     selected
   ensure
     (try
-      (if_not ($absent? transaction)
+      (if ($present? transaction)
         (release_turn_transaction transaction {^result selected ^turn_end_durable false}))
     ensure (release_snapshot runtime/h/snapshots lease))))

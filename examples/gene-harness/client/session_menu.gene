@@ -11,7 +11,7 @@
 
 (fn close_session_menu [menu : SessionMenu, restore : Bool = false] : Nil
   (var anchor : Any menu/anchor)
-  (if_not ($absent? anchor)
+  (if ($present? anchor)
     (var button : EventTarget anchor)
     ($dom/set_attribute button "aria-expanded" "false")
     (if restore ($dom/focus button)))

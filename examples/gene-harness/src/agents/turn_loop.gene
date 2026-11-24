@@ -84,7 +84,7 @@
           ^data {^bytes ($str/byte_size chunk) ^late true}
           ^event {^stream "workspace" ^seq envelope/seq})
       else
-        (if_not ($absent? loaded) (loaded/console/.get .push payload))
+        (if ($present? loaded) (loaded/console/.get .push payload))
         (let envelope (transcript runtime session payload))
         (log_event "output/print" "console output"
           ^target {^session session ^round round ^turn turn}
@@ -122,7 +122,7 @@
       (let source (request_source item))
       (if_not (sources .contains? source)
         (items .push item)
-        (if_not ($absent? source) (sources .push source))))
+        (if ($present? source) (sources .push source))))
     (let prepared
       ($runtime/with_context
         {^composition runtime/h/snapshots ^snapshot lease/snapshot}
@@ -157,10 +157,10 @@
 
 (fn record_turn_result [runtime, session : Str, round, number : Int, result, ^reply reply : Bool = true]
   (let outcome (?? result/validated/outcome nil))
-  (if_not ($absent? result/patch)
+  (if ($present? result/patch)
     (update_session runtime/sessions session {^^has_patch})
     (if (== result/patch/attention true) (update_session runtime/sessions session {^^attention})))
-  (if_not ($absent? result/composition_changes)
+  (if ($present? result/composition_changes)
     (if_not result/composition_changes/.empty?
       (update_session runtime/sessions session {^^has_registration})))
   (if (== outcome/attention true) (update_session runtime/sessions session {^^attention}))
@@ -272,7 +272,7 @@
     (fn seal_turn [terminal, errors]
       (start_record)
       (let failed (! errors/.empty?))
-      (if_not ($absent? result)
+      (if ($present? result)
         (record_turn_result runtime session round number result
           ^reply (&& (! failed) ($absent? failure) body_completed)))
       (let reason (if failed "error" else terminal/kind))
@@ -412,7 +412,7 @@
               {^session session ^round round/id ^turn number
                ^window_tokens window_tokens ^instructions instructions
                ^messages ((history_state runtime session) .get "messages")}))))
-      (if_not ($absent? policy)
+      (if ($present? policy)
         (compact_history ^policy policy
           runtime
           session
@@ -742,7 +742,7 @@
                         ^source_turn (?? round/last_turn 0)}}))
   (let boundary_turn (?? round/last_turn metadata/turns))
   (let parked (round_limit_participants runtime session round boundary_turn count limit collection))
-  (if_not ($absent? parked)
+  (if ($present? parked)
     (return (suspension_result parked round (?? round/request last_request) count boundary_turn)))
   (if (operator_round? round)
     (let turns (+ (?? round/task_turns_base 0) count))

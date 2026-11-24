@@ -27,7 +27,7 @@
   (let record (host_record receiver/host_token ^required false))
   (if ($absent? record) (return nil))
   (let subscription (record/subscriptions .get receiver/token))
-  (if_not ($absent? subscription)
+  (if ($present? subscription)
     (record/subscriptions .delete receiver/token)
     subscription/.cancel)
   nil)

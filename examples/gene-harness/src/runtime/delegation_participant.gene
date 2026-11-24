@@ -48,10 +48,10 @@
    ^response_recorded (fn [context state value]
      (let sources (?? context/round/request_sources []))
      (if sources/.empty? (return nil))
-     (if_not ($absent? service/checkpoint)
+     (if ($present? service/checkpoint)
        (service/checkpoint "parent_response_recorded" context/session))
      (mark_delegation_results_seen service context/session context/round/id context/turn sources)
-     (if_not ($absent? service/checkpoint)
+     (if ($present? service/checkpoint)
        (service/checkpoint "parent_response" context/session))
      nil)
    ^validate_outcome (fn [context state result]
@@ -63,7 +63,7 @@
          ^value "Done was deferred because this round has unfinished children or unseen results. Use Outcome ^wait all to collect them."}]))
    ^commit (fn [context state result] (commit_result service context state result))
    ^finalize (fn [context state result]
-     (if_not ($absent? state/staged) (state/staged .set []))
+     (if ($present? state/staged) (state/staged .set []))
      nil)
    ^release (fn [context state completion]
      (let errors (?? completion/finalization_errors []))

@@ -19,7 +19,7 @@
     ^generator nil ^generation_model nil ^size "1024x1024" ^background "auto"})
   (for key in (input_fields)
     (if (== key "prompt") (continue))
-    (if_not ($absent? (defaults .get key)) (values .put key (defaults .get key)))
+    (if ($present? (defaults .get key)) (values .put key (defaults .get key)))
     (if ($has_key? input key) (values .put key (input .get key))))
   (for key in ["prompt" "generator" "generation_model" "size"]
     (if_not (nonempty (values .get key))
@@ -80,7 +80,7 @@
       (result .put key item))
     (if (== ($head item) Map)
       (let child (image_usage ^depth (+ depth 1) item))
-      (if_not ($absent? child) (result .put key child))))
+      (if ($present? child) (result .put key child))))
   result)
 
 (fn parse_image_review [text]

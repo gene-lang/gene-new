@@ -3,7 +3,7 @@
 (import ^from "../storage/state" core_state core_states record_core_state append_core_event events_for flush_event_store)
 (import ^from "./response" split_response)
 (import ^from "../public/history_policy" normalize_history_policy)
-(import $store/fs [Store])
+(import $store/fs/Store)
 
 (var ^^private history_gate ($sync/gate))
 (type HistoryError : Error)
@@ -40,7 +40,7 @@
     (if_not ($fs/exists? path) (return nil))
     (live .put value true)
     (let nested (try ($serde/read_data (read_body runtime value)) catch Error nil))
-    (if_not ($absent? nested) (mark_body_references runtime nested live))
+    (if ($present? nested) (mark_body_references runtime nested live))
     (return nil))
   (if (== ($head value) Map)
     (map_for [key item] in value
@@ -68,7 +68,7 @@
     # Retained event generations can still be selected after a damaged newest
     # checkpoint. Their projection blobs must remain readable too.
     (let manifest runtime/events/last_manifest/.get)
-    (if_not ($absent? manifest)
+    (if ($present? manifest)
       (let seen {})
       (for generation in manifest/history
         (for digest in generation
@@ -86,16 +86,16 @@
   ensure (runtime/body_collecting .set false)))
 
 (fn history_state [runtime, session : Str]
-  (if_not ($absent? runtime/sessions)
+  (if ($present? runtime/sessions)
     (let loaded (runtime/sessions/loaded/.get .get session))
-    (if_not ($absent? loaded)
+    (if ($present? loaded)
       (return
         {
           ^messages ($thaw ($freeze loaded/history/.get))
           ^outputs ($thaw ($freeze_shallow loaded/outputs/.get))})))
   (let ref (core_state runtime/events "session" session "history"))
   (if ($absent? ref) (return {^messages [] ^outputs {}}))
-  (if_not ($absent? ref/digest) (return ($serde/read_data (read_body runtime ref/digest))))
+  (if ($present? ref/digest) (return ($serde/read_data (read_body runtime ref/digest))))
   ref)
 
 (fn keep_full_message? [messages, index : Int] : Bool
@@ -116,10 +116,10 @@
   (let path $"${runtime/state_root}/blobs/${digest}")
   (if_not ($fs/exists? path) ($fs/write_text_atomic path text))
   (record_core_state runtime/events "session" session "session/state" "history" {^digest digest})
-  (if_not ($absent? runtime/body_gc_pending) (runtime/body_gc_pending .set true))
-  (if_not ($absent? runtime/sessions)
+  (if ($present? runtime/body_gc_pending) (runtime/body_gc_pending .set true))
+  (if ($present? runtime/sessions)
     (let loaded (runtime/sessions/loaded .get; .get session))
-    (if_not ($absent? loaded)
+    (if ($present? loaded)
       (loaded/history .set state/messages)
       (loaded/outputs .set state/outputs)))
   state)
@@ -128,7 +128,7 @@
   (let digest ($crypto/sha256 text))
   (let path $"${runtime/state_root}/blobs/${digest}")
   (if_not ($fs/exists? path) ($fs/write_text_atomic path text))
-  (if_not ($absent? runtime/body_gc_pending) (runtime/body_gc_pending .set true))
+  (if ($present? runtime/body_gc_pending) (runtime/body_gc_pending .set true))
   digest)
 
 (fn read_body [runtime, digest : Str] : Str
@@ -215,9 +215,9 @@
     (let saved {^id item/id ^header item/header ^value body
       ^original_bytes entry/size ^inline (== item/inline true)
       ^settled (if (== item/settled false) false else true) ^^saved})
-    (if_not ($absent? item/delegation_source)
+    (if ($present? item/delegation_source)
       (saved .put "delegation_source" item/delegation_source))
-    (if_not ($absent? item/source)
+    (if ($present? item/source)
       (saved .put "source" item/source))
     (saved_items .push saved)
     (set bytes (+ bytes (+ separator ($str/byte_size rendered)))))
@@ -257,7 +257,7 @@ ELIDED
             block/terminator
             """
 """))))
-  (if_not ($absent? parsed/patch)
+  (if ($present? parsed/patch)
     (let id $"${turn}.patch_body")
     (refs .put id (store_body runtime session id parsed/patch))
     (parts .push
@@ -304,7 +304,7 @@ ELIDED
       (fail (HistoryError ^_msg "Pending continuation history changed.")))
     (tail .put "content" prepared/full)
     (tail .put "settled" prepared/settled)
-    (if_not ($absent? prepared/media) (tail .put "media" prepared/media))
+    (if ($present? prepared/media) (tail .put "media" prepared/media))
     (save_history runtime session state)
     (flush_event_store runtime/events)
     true)))
@@ -316,7 +316,7 @@ ELIDED
       {
         ^role message/role
         ^content message/content})
-    (if_not ($absent? message/media) (prepared .put "media" message/media))
+    (if ($present? message/media) (prepared .put "media" message/media))
     (messages .push prepared))
   messages)
 

@@ -1,5 +1,5 @@
 # Tests src/builtin/triggers/scheduler.gene.
-(import $test [describe it assert_raises run])
+(import $test/[describe it assert_raises run])
 (import at_ms validate_definition TriggerError ^from "../../../../src/builtin/triggers/scheduler")
 (import ScheduleError ^from "../../../../src/builtin/triggers/schedule/errors")
 

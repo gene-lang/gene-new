@@ -69,7 +69,7 @@
       (let decision
         ($runtime/with_context caller_context
           (fn [] (listener/run input))))
-      (if_not ($absent? decision)
+      (if ($present? decision)
         (return (normalize_history_policy decision)))
     catch Throwable
       ($runtime/with_context caller_context

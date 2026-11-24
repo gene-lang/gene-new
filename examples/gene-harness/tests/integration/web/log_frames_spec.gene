@@ -1,6 +1,6 @@
 # M5: diagnostics ride the existing browser stream on their own sequence and
 # do not disturb state-frame sequencing.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import start_host stop_host cli ^from "../../web_support")
 (import connect api ^from "../../../src/cli/client")
@@ -82,5 +82,5 @@
             (set expected (+ expected 1)))
           ($assert (> expected 1) "no state frames arrived")
         ensure
-          (if_not ($absent? socket) socket/.IoResource:close)
+          (if ($present? socket) socket/.IoResource:close)
           (stop_host host))))))

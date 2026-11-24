@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_service set_test_provider ^from "../../support")
 (import close_session_service submit answer ^from "../../../src/web/session_service")
 (import open_channel_service close_channel_service receive_handoff drain_session project_events
@@ -20,7 +20,7 @@
 
 (fn wait_round [service, session]
   (let watcher (/watcher (service/runtime/services/values/controller/rounds/.get .get session)))
-  (if_not ($absent? watcher) watcher/.join))
+  (if ($present? watcher) watcher/.join))
 
 (fn fixture [workspace, body]
   (let calls ($cell []))
@@ -40,7 +40,7 @@
 (fn event [id : Str, ts : Str, text : Str, ^thread thread = nil, ^author author : Str = "UOWNER",
            ^kind kind : Str = "message"]
   (let message {^type kind ^ts ts ^text text ^user author ^channel "C123"})
-  (if_not ($absent? thread) (message .put "thread_ts" thread))
+  (if ($present? thread) (message .put "thread_ts" thread))
   {^envelope_id id ^type "events_api" ^payload {^type "event_callback" ^api_app_id "A123"
     ^team_id "T123" ^event_id id ^event message}})
 

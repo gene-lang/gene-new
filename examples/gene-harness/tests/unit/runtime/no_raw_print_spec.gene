@@ -2,7 +2,7 @@
 # raw prints are the console writer, the CLI result presenter, the browser-link
 # presenter, the launcher's terminal/CLI presenters, and the standalone audio
 # build tool.
-(import $test [describe it])
+(import $test/[describe it])
 
 (const allowed
   ["src/kernel/log.gene"
@@ -23,7 +23,7 @@
     (for entry in stream
       (if (&& (== entry/kind "file") ($str/ends_with? entry/relative_path ".gene"))
         (files .push {^path entry/path ^relative $"src/${entry/relative_path}"})))
-    ensure (stream .close))
+    ensure stream/.close)
   files)
 
 (fn violations [] : Any
@@ -44,4 +44,4 @@
 (describe "raw Harness prints"
   (it "are confined to the log writer and the presenters" []
     (let found (violations))
-    ($assert (found .empty?) ($str/join found ", "))))
+    ($assert found/.empty? ($str/join found ", "))))

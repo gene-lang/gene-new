@@ -1,8 +1,8 @@
 # M3 framing: byte pipes become complete lines, over-budget raw lines are
 # discarded whole, and an invalid UTF-8 line stays routable as raw output.
-(import $test [describe it])
+(import $test/[describe it])
 (import frame_stream ^from "../../../src/runtime/supervisor")
-(import $io [AsyncReader IoResource])
+(import $io/[AsyncReader IoResource])
 
 (fn new_channel [] ($channel ^capacity 16))
 
@@ -109,4 +109,4 @@
     (await task)
     (let first channel/.recv)
     ($assert (== first/text "one") ($to_str first))
-    ($assert (== (drops .get) 2) "expected the line and eof handoff drops")))
+    ($assert (== drops/.get 2) "expected the line and eof handoff drops")))

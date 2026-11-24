@@ -1,7 +1,7 @@
 # Ephemeral audio transport. Model turns, event sequencing and durable round
 # admission never wait for these jobs. Every stream is fenced by a page claim.
 (mod voice_socket)
-(import $net/http [ws_try_send ws_close])
+(import $net/http/[ws_try_send ws_close])
 (import row ^from "../kernel")
 (import events_for append_core_event ^from "../storage/state")
 (import event_record session_voice_claim session_voice_state ^from "./session_service")
@@ -155,7 +155,7 @@
         (set ended true)
         (sink/finish))
       ($sleep 5))
-    (if_not ($absent? failure/.get) (voice_error "unavailable" failure/.get))
+    (if ($present? failure/.get) (voice_error "unavailable" failure/.get))
     nil
   ensure (sink/close)))
 
@@ -226,7 +226,7 @@
   (peer/used .put key true)
   (let capture (new_capture data/id data/stream))
   (let choice (choose_speech_engine hub/host/runtime peer/settings "recognizer"))
-  (if_not ($absent? choice/reason) (voice_error "unavailable" choice/reason))
+  (if ($present? choice/reason) (voice_error "unavailable" choice/reason))
   (capture .put "mode" choice/row/mode)
   (map_for [key value] in {^segments [] ^cursor 0 ^text "" ^!cancelled ^segment_bytes 0 ^silence_ms 0
     ^!segment_voiced ^started ($os/monotonic_ms) ^first_frame_ms 0 ^last_segment_ms 0 ^released 0 ^client_points {} ^job ""} (capture .put key value))
@@ -499,8 +499,8 @@
   (map_for [key peer] in hub/peers/.get
     (cancel_peer_streams hub peer) (ws_close peer/connection))
   (let tasks (hub/jobs .swap {}))
-  (map_for [id task] in tasks (if_not ($absent? task) task/.cancel))
-  (map_for [id task] in tasks (if_not ($absent? task) task/.join))
+  (map_for [id task] in tasks (if ($present? task) task/.cancel))
+  (map_for [id task] in tasks (if ($present? task) task/.join))
   (close_speech_service hub/speech)
   (hub/peers .set {})
   nil)

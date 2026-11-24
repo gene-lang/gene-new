@@ -7,8 +7,8 @@
 (import ^from "./workspace_settings" initialize_manager_workspace)
 (import ^from "./workspace_lock" try_lock_wait)
 (import ^from "./host_log" open_host_log write_host_log close_host_log)
-(import $io [AsyncReader IoResource pipe])
-(import $binary [concat decode_utf8 from_str get size slice to_str])
+(import $io/[AsyncReader IoResource pipe])
+(import $binary/[concat decode_utf8 from_str get size slice to_str])
 
 (const tail_limit 16384)
 
@@ -19,8 +19,8 @@
   merged)
 
 (fn ^^private next_seq [counter] : Int
-  (counter .set (+ (counter .get) 1))
-  (counter .get))
+  (counter .set (+ counter/.get 1))
+  counter/.get)
 
 (fn ^^private find_byte [bytes, wanted : Int] : Int
   (var index 0)
@@ -67,7 +67,7 @@
   (let accepted
     (try (channel .try_send ($freeze message)) catch ChannelClosed false))
   (if (&& (! accepted) ($present? dropped))
-    (dropped .set (+ (dropped .get) 1)))
+    (dropped .set (+ dropped/.get 1)))
   accepted)
 
 # Frame one child stream into line/discard/eof messages. The buffer is bytes so
@@ -85,17 +85,17 @@
                               ^text (line_text bytes) ^bytes ($binary/size bytes)} dropped))
   (fn pump [] : Nil
     (loop
-      (let at (find_byte (buffer .get) 10))
+      (let at (find_byte buffer/.get 10))
       (if (< at 0)
-        (if (> ($binary/size (buffer .get)) log_line_budget)
-          (discarded .set ($binary/size (buffer .get)))
+        (if (> ($binary/size buffer/.get) log_line_budget)
+          (discarded .set ($binary/size buffer/.get))
           (discarding .set true)
           (buffer .set ($binary/from_str "")))
         (break)
       else
-        (let line ($binary/slice (buffer .get) 0 at))
+        (let line ($binary/slice buffer/.get 0 at))
         (buffer .set
-          ($binary/slice (buffer .get) (+ at 1) (- ($binary/size (buffer .get)) (+ at 1))))
+          ($binary/slice buffer/.get (+ at 1) (- ($binary/size buffer/.get) (+ at 1))))
         (if (> ($binary/size line) log_line_budget)
           (send_discard (+ ($binary/size line) 1))
         else
@@ -107,24 +107,24 @@
       (if discarding/.get
         (let at (find_byte chunk 10))
         (if (< at 0)
-          (discarded .set (+ (discarded .get) ($binary/size chunk)))
+          (discarded .set (+ discarded/.get ($binary/size chunk)))
         else
-          (discarded .set (+ (discarded .get) at 1))
-          (send_discard (discarded .get))
+          (discarded .set (+ discarded/.get at 1))
+          (send_discard discarded/.get)
           (discarding .set false)
           (discarded .set 0)
           (buffer .set ($binary/slice chunk (+ at 1) (- ($binary/size chunk) (+ at 1))))
           (pump))
       else
-        (buffer .set ($binary/concat [(buffer .get) chunk]))
+        (buffer .set ($binary/concat [buffer/.get chunk]))
         (pump)))
     catch Error
       (send_frame channel {^kind "reader_error" ^stream stream ^message $err/.message})
     ensure
-      (try (reader .IoResource:close) catch Throwable nil))
+      (try reader/.IoResource:close catch Throwable nil))
   (if discarding/.get
-    (send_discard (discarded .get)))
-  (let remaining (buffer .get))
+    (send_discard discarded/.get))
+  (let remaining buffer/.get)
   (if (> ($binary/size remaining) 0)
     (if (> ($binary/size remaining) log_line_budget)
       (send_discard ($binary/size remaining))
@@ -147,7 +147,7 @@
         ($io/flush_stdout)))
     catch Throwable nil
     ensure
-      (try (reader .IoResource:close) catch Throwable nil))
+      (try reader/.IoResource:close catch Throwable nil))
   nil)
 
 (fn child_entry [source_root : Str, hosting : Bool, offline : Bool, scripted : Bool, recovery : Bool,
@@ -205,11 +205,11 @@
     nil)
 
   (fn current_secrets [] : Any
-    (let current (secrets .get))
+    (let current secrets/.get)
     (if (|| (&& current/.empty? (! secrets_checked/.get))
-            (> ($os/monotonic_ms) (+ (secrets_at .get) 1000)))
+            (> ($os/monotonic_ms) (+ secrets_at/.get 1000)))
       (refresh_secrets))
-    (secrets .get))
+    secrets/.get)
 
   (fn make_launcher [type : Str, message : Str, target, data, level : Str] : Any
     (make_record run (next_seq seq) ($os/wall_ms) level type
@@ -221,7 +221,7 @@
     (let bounded (bound_record record))
     (let serialized (if ($present? line) line else (serialize_record bounded)))
     (let shown (if ($present? raw) raw else (render_text bounded)))
-    (tail .set (byte_suffix ($str/join [(tail .get) shown "\n"] "") tail_limit))
+    (tail .set (byte_suffix ($str/join [tail/.get shown "\n"] "") tail_limit))
     (try
       (if ($present? logger)
         (write_host_log
@@ -245,7 +245,7 @@
             ""))
         ($io/flush_stdout))
       catch Throwable
-        (drops .set (+ (drops .get) 1)))
+        (drops .set (+ drops/.get 1)))
     nil)
 
   (fn send_launcher [type : Str, message : Str, target, data, level : Str] : Nil
@@ -292,23 +292,23 @@
             (write_record
               (make_launcher ($to_str message/type) ($to_str message/message)
                 message/target message/data ($to_str message/level)))
-          when "barrier" (barrier_ack .set (+ (barrier_ack .get) 1))
+          when "barrier" (barrier_ack .set (+ barrier_ack/.get 1))
           when "stop"
-            (if (> (drops .get) 0)
+            (if (> drops/.get 0)
               (write_record
                 (make_launcher "log/dropped"
                   $"the launcher dropped ${drops/.get} output records"
                   {^workspace workspace} {^count drops/.get ^stage "writer"} "warn")))
-            (if (> (handoff_dropped .get) 0)
+            (if (> handoff_dropped/.get 0)
               (write_record
                 (make_launcher "log/dropped"
                   $"the launcher dropped ${handoff_dropped/.get} output frames"
                   {^workspace workspace} {^count handoff_dropped/.get ^stage "handoff"} "warn")))
             (stopping .set true)
           else nil)
-        (let pending (handoff_dropped .get))
+        (let pending handoff_dropped/.get)
         (if (> pending 0)
-          (handoff_dropped .set (- (handoff_dropped .get) pending))
+          (handoff_dropped .set (- handoff_dropped/.get pending))
           (write_record
             (make_launcher
               "log/dropped"
@@ -360,7 +360,7 @@
     # the barrier covers every accepted record. Dropped data never leaves a
     # sequence hole for the writer to wait on.
     (if (send_control {^kind "barrier"})
-      (while (&& (== (barrier_ack .get) 0) (! writer_failed/.get))
+      (while (&& (== barrier_ack/.get 0) (! writer_failed/.get))
         ($sleep 1))
       (barrier_ack .set 0))
     nil)
@@ -382,7 +382,7 @@
       (child_args .push "--startup-id")
       (child_args .push startup_id)
       (if recovery (child_args .push "--recovery")))
-    (if_not ($absent? restart_port)
+    (if ($present? restart_port)
       (child_args .push "--restart-port")
       (child_args .push ($to_str restart_port)))
 
@@ -452,7 +452,7 @@
     (refresh_secrets)
     ($fs/make_dir $"${workspace}/.gene-harness")
     ($fs/write_text_atomic ^^owner_only $"${workspace}/.gene-harness/startup_failure"
-      ($str/join ["Normal startup exited before readiness (status " ($to_str status) ").\n" (tail .get)] ""))
+      ($str/join ["Normal startup exited before readiness (status " ($to_str status) ").\n" tail/.get] ""))
     (send_launcher "supervisor/startup_failed"
       "Normal startup failed. Starting the plugin recovery interface."
       {^workspace workspace} {^status status} "error")
@@ -460,7 +460,7 @@
     (set recovery true))
   0
   ensure
-    (if_not ($absent? writer)
+    (if ($present? writer)
       (do (send_control {^kind "stop"}) (await writer)))
-    (if_not ($absent? logger) (close_host_log logger))
-    (if_not ($absent? launch_lock) launch_lock/.close)))
+    (if ($present? logger) (close_host_log logger))
+    (if ($present? launch_lock) launch_lock/.close)))

@@ -10,7 +10,7 @@
 (fn last_thread_message [state, source] : Str
   (let result {^thread source/thread ^last_message source/thread})
   (for timestamp in [source/last_message source/message]
-    (if_not ($absent? timestamp) (remember_message result timestamp)))
+    (if ($present? timestamp) (remember_message result timestamp)))
   (for name in ["messages" "ingress"]
     (map_for [id record] in (?? (state .get name) {})
       (let message record/message)

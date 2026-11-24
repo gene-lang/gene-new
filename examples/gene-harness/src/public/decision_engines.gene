@@ -2,7 +2,7 @@
 # (docs/decisions.md). Each row answers in the service's portable shape; the
 # service validates every answer centrally, so a row only maps its transport.
 (mod decision_engines)
-(import $io [IoResource])
+(import $io/IoResource)
 
 (const jev_url "https://api.typesafe.ai/v1/systemone")
 (const jev_default_model "jev-1.14.0")

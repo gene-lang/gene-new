@@ -23,7 +23,7 @@
   (let identity (verified/identity .assoc "transport" transport))
   (let result (configure_account service/owner data/id identity ^config (?? verified/config {})))
   (if ($present? service/runtime/h) (ensure_channel_initiator service/runtime/h transport))
-  (if_not ($absent? verified/channel) (result .put "channel" verified/channel))
+  (if ($present? verified/channel) (result .put "channel" verified/channel))
   result)
 
 (fn setup_route [service, data, ^row supplied = nil]

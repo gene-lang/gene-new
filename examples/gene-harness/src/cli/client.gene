@@ -2,13 +2,13 @@
 (import api_root ^from "../web/contract.gene")
 (import ^from "./options" CliError problem)
 (import ^from "../web/connection" read_connection unavailable)
-(import $net/http_client [request])
+(import $net/http_client/request)
 
 (fn wire [connection, method : Str, path : Str, data = nil, ^credentials credentials = nil, ^deadline deadline : Int = 0]
   (let timeout (if (== deadline 0) 30000 else (- deadline ($os/monotonic_ms))))
   (if (<= timeout 0) (problem ^code "control_timeout" "Workspace control timed out."))
   (let headers {^origin connection/origin ^content-type "application/json"})
-  (if_not ($absent? credentials)
+  (if ($present? credentials)
     (headers .put "cookie" credentials/cookie)
     (headers .put "x-csrf-token" credentials/csrf))
   (let pending
@@ -129,7 +129,7 @@
     (let result (poll_wait_receipt fetch current parent kind due session original))
     (let state (if (== kind "command") result/status else result/state))
     (if (&& (!= kind "command") (== state "paused") (== result/continuation_mode "automatic"))
-      (if_not ($absent? result/continuation_stop)
+      (if ($present? result/continuation_stop)
         (result .put "state" "interrupted")
         (result .put
           "message"

@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import ^from "../../support" isolated run_spec)
 (import ^from "../../web_support" start_host stop_host cli)
 (import ^from "../../../src/runtime/bootstrap" open_runtime close_runtime)

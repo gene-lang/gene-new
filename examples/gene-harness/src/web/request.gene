@@ -2,7 +2,7 @@
 (mod web_request)
 (import api_version ^from "./contract")
 (import RoundError ^from "../runtime/round_controller")
-(import $net/http [json])
+(import $net/http/json)
 
 (fn response [status : Int, value]
   (json status ($json/stringify value)))
@@ -60,7 +60,7 @@
   "")
 
 (fn secure_response [result]
-  (if_not ($absent? result/headers)
+  (if ($present? result/headers)
     (result/headers .put "cache-control" "no-store")
     (result/headers .put "x-content-type-options" "nosniff")
     (result/headers .put "referrer-policy" "no-referrer"))

@@ -1,7 +1,7 @@
 # Immutable composition history. Only a checkpoint's history_head commits a
 # candidate; orphan records from interrupted writes are never history roots.
 (mod plugin_history)
-(import $store/fs [Store])
+(import $store/fs/Store)
 
 (type PluginHistoryError : Error)
 

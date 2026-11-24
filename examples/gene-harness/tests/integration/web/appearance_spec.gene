@@ -1,8 +1,8 @@
 # Workspace light/dark appearance and plugin style contributions; see
 # docs/theming.md.
-(import $test [describe it])
-(import $css [css rule decl])
-(import $net/http_client [request])
+(import $test/[describe it])
+(import $css/[css rule decl])
+(import $net/http_client/request)
 (import ^from "../../support" isolated run_spec)
 (import ^from "../../web_support" start_host stop_host cli)
 (import ^from "../../../src/cli/client" connect api wire)

@@ -1,6 +1,6 @@
 # Public theme contracts and the guards documented in docs/theming.md.
-(import $test [describe it run])
-(import $css [css rule decl container font_face scoped render:render_css])
+(import $test/[describe it run])
+(import $css/[css rule decl container font_face scoped render:render_css])
 (import ^from "../../../src/web/theme"
   theme_css builtin_themes resolve_theme resolved_tokens color_value contrast_ratio hex_channel linear_channel relative_luminance theme_mode alias_font_value preview_font_aliases preview_css density_tokens mode_tokens system_tokens icon_names narrow_breakpoint generate_theme)
 (import ^from "../../../src/web/style" base_styles)
@@ -22,7 +22,7 @@
   (for block in ($str/split text "}")
     (let parts ($str/split block "{"))
     (if (< parts/.size 2) (continue))
-    (let body (parts .last))
+    (let body parts/.last)
     (for item in ($str/split body ";")
       (let pair ($str/split ($str/trim item) ":"))
       (if (== pair/.size 2) (result .push [($str/trim pair/0) ($str/trim pair/1)]))))

@@ -1,5 +1,5 @@
 # Tests the global workspace, manager and session objects in src/web/session_service.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_service set_test_provider ^from "../../support")
 (import close_session_service create_session command operator_receipt submit receipt
   ^from "../../../src/web/session_service")
@@ -232,7 +232,7 @@
           (let plan (shown .validate_plugin_plan
             {^base_revision (/revision shown/.plugins) ^changes []}))
           ($assert ($present? plan) "a plan is reachable from Gene")
-          (let history (shown .plugin_history))
+          (let history shown/.plugin_history)
           ($assert ($present? history))
           ($assert ($absent? (shown .plugin_plan_result "absent")) "an unknown plan has no result")
           (let session (create_session service))

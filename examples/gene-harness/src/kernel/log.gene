@@ -34,8 +34,8 @@
    ^redactions [] ^redactions_root "" ^write_failures 0})
 
 (fn ^^private current [] : Any
-  (if ($absent? (state .get)) (state .set (fresh_state)))
-  (state .get))
+  (if ($absent? state/.get) (state .set (fresh_state)))
+  state/.get)
 
 (fn ^^private level_rank [level : Str] : Int
   (match level
@@ -60,14 +60,14 @@
 (fn ^^private close_subscribers [st] : Nil
   (for subscriber in (?? st/subscribers [])
     (subscriber .put "closed" true)
-    (try (subscriber/channel .close) catch Throwable nil)))
+    (try subscriber/channel/.close catch Throwable nil)))
 
 (fn log_start [] : Nil
-  (if ($present? (state .get)) (close_subscribers (state .get)))
+  (if ($present? state/.get) (close_subscribers state/.get))
   (state .set (fresh_state)))
 
 (fn log_reset [^strict strict : Bool = false, ^quiet quiet : Bool = false] : Nil
-  (if ($present? (state .get)) (close_subscribers (state .get)))
+  (if ($present? state/.get) (close_subscribers state/.get))
   (state .set (fresh_state ^strict strict ^quiet quiet)))
 
 (fn log_configure [^mode mode = "pending", ^root root = "", ^workspace workspace = "",
@@ -117,7 +117,7 @@
     (if (== subscriber/id id)
       (subscriber .put "closed" true)
       (try
-        (subscriber/channel .close)
+        subscriber/channel/.close
       catch Throwable
         nil)
     else
@@ -186,9 +186,9 @@
 
 (fn ^^private redact_record [st, record] : Any
   (if (== st/root "") (return record))
-  (if (|| (st/redactions .empty?) (!= st/redactions_root st/root))
+  (if (|| st/redactions/.empty? (!= st/redactions_root st/root))
     (log_refresh_redactions)
-    (if (st/redactions .empty?) (return record)))
+    (if st/redactions/.empty? (return record)))
   (var copy {})
   (map_for [key value] in record (copy .put key (redact_value st/redactions value)))
   copy)

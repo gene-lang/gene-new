@@ -26,7 +26,7 @@
        (button ^type "button" ^class_name "copy"
          ^on_click %(fn [event : Any] : Nil (on_copy text)) "Copy"))))
   ($dom/append details pre)
-  (if_not ($absent? on_mount)
+  (if ($present? on_mount)
     (var mounted : (Fn [EventTarget] Nil) on_mount) (mounted details))
   details)
 
@@ -41,7 +41,7 @@
   (var cls (if (== role "user") "message user" else "message agent"))
   (if provisional (set cls $"${cls} provisional"))
   (var view_kind : Str "")
-  (if_not ($absent? block/view) (set view_kind block/view/kind))
+  (if ($present? block/view) (set view_kind block/view/kind))
   (var content : EventTarget
     (if (== role "user")
       ($dom/render `(div ^class_name "message_text" %text))
@@ -74,7 +74,7 @@
       " answered the questions." resolve_author)))
   (if (== (status_text block/answer_source/kind) "harness")
     ($dom/append article ($dom/render `(p ^class_name "muted" "User · Harness answered the questions."))))
-  (if_not ($absent? block/media)
+  (if ($present? block/media)
     (var attachments : (List Any) block/media)
     (var gallery ($dom/render `(div ^class_name "message_attachments")))
     (for asset in attachments ($dom/append gallery (attachment_view asset)))
@@ -88,7 +88,7 @@
   records : (List Any), preview : (List Any), has_older : Bool, loading : Bool,
   on_copy : (Fn [Str] Nil), on_load : (Fn [] Nil)] : Nil
   (var first : Any (first_prompt_block session records preview))
-  (if_not ($absent? first)
+  (if ($present? first)
     ($dom/append target (block_view first false on_copy false (fn [open : Bool] : Nil nil))))
   (if has_older
     ($dom/append target
@@ -170,7 +170,7 @@
           (if response (on_toggle $"collapsed/${id}" (! open)) else (on_toggle id open)))
         ^on_execution (fn [panel : EventTarget] : Nil
           (responses .push {^id id ^panel panel}))))))
-  (if_not ($absent? output_view)
+  (if ($present? output_view)
     (var output : EventTarget output_view) ($dom/append content output))
   (for block in blocks
     (var id : Str block/id)
@@ -179,7 +179,7 @@
     (if (== phase "reply")
       (if (status_flag block/final) (continue))
       (var media : (List Any) [])
-      (if_not ($absent? block/media) (set media block/media))
+      (if ($present? block/media) (set media block/media))
       (if (&& (> media/.size 0) ($present? render_extra))
         (var media_render : (Fn [EventTarget Any] Nil) render_extra)
         (media_render content block))
@@ -217,7 +217,7 @@
     ($dom/append root ($dom/render `(span ^class_name "outcome_message" %detail))))
   (if (&& (== status "paused") ($present? run/notice) ($absent? run/continued_by))
     ($dom/append root ($dom/render `(span ^class_name "outcome_message" %(status_text run/notice)))))
-  (if_not ($absent? run/continuation_error)
+  (if ($present? run/continuation_error)
     ($dom/append root ($dom/render `(span ^class_name "outcome_message" %(status_text run/continuation_error)))))
   (if (&& limited resumable ($present? on_continue) ($absent? run/continued_by) (|| ($absent? run/continuation_stop) (== (status_text run/continuation_stop) "failed")))
     (if ($present? run/selection/model)

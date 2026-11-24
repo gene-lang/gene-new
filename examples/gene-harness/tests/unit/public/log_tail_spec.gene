@@ -1,4 +1,4 @@
-(import $test [describe it run])
+(import $test/[describe it run])
 (import read_log ^from "../../../src/public/log_tail")
 (import redact_secrets ^from "../../../src/public/log_redaction")
 (import make_record serialize_record ^from "../../../src/public/log_record")

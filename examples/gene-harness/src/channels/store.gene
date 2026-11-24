@@ -1,5 +1,5 @@
 (mod channel_store)
-(import $store/fs [open:store_open Store])
+(import $store/fs/[open:store_open Store])
 (import ChannelError channel_error copy ^from "./model")
 (import prune ^from "./retention")
 
@@ -162,12 +162,12 @@
     (if maintenance (set changes nil))
     (let previous_queues store/state/.get/queues)
     (let next (if ($absent? changes) (copy store/state/.get) else (shallow store/state/.get)))
-    (if_not ($absent? changes)
+    (if ($present? changes)
       (map_for [field ids] in changes
         (let name ($to_str field))
         (let table (if ($absent? ids) (copy (?? (next .get name) {}))
           else (shallow (?? (next .get name) {}))))
-        (if_not ($absent? ids)
+        (if ($present? ids)
           (for id in ids
             (if ($has_key? table id) (table .put id (copy (table .get id))))))
         (next .put name table)))
@@ -177,9 +177,9 @@
       (next .put "revision" (+ store/state/.get/revision 1))
       # Host-only diagnostic seam, also used to kill qualification processes
       # on either side of the physical checkpoint. Callbacks get detached data.
-      (if_not ($absent? store/checkpoint) (store/checkpoint "before" (copy next) (copy result)))
+      (if ($present? store/checkpoint) (store/checkpoint "before" (copy next) (copy result)))
       (publish_records store next (if (== store/manifest/.get/leaf_encoding 1) changes else nil))
-      (if_not ($absent? store/checkpoint) (store/checkpoint "after" (copy next) (copy result)))
+      (if ($present? store/checkpoint) (store/checkpoint "after" (copy next) (copy result)))
       (store/state .set next)
       (store/changed/.get .put "revision" next/revision)
       (map_for [session queue] in (?? next/queues {})

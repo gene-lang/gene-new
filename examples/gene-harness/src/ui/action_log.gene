@@ -1,6 +1,6 @@
 # Durable workspace action identities, independent of conversation/data streams.
 (mod ui_action_log)
-(import $store/fs [open:store_open Store])
+(import $store/fs/[open:store_open Store])
 (import ui_error ^from "./state")
 (import byte_prefix ^from "../public/text")
 
@@ -46,7 +46,7 @@
 
 (fn notify_action [log : ActionLog, record]
   (let observer log/observer/.get)
-  (if_not ($absent? observer)
+  (if ($present? observer)
     # A transport failure cannot turn a committed operation into a refusal.
     (try (observer (copy_data record) (action_metadata log)) catch Error nil)))
 
@@ -72,7 +72,7 @@
   (log/gate (fn []
     (let state (copy_data log/state/.get))
     (let previous (find_action state request/input_id))
-    (if_not ($absent? previous)
+    (if ($present? previous)
       (if (!= previous/request request)
         (ui_error "submission_conflict" "Action identity has different content."))
       (return {^record (copy_data previous) ^!admitted}))

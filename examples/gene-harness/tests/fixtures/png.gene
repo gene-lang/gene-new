@@ -34,8 +34,8 @@
          ^transparency transparency = nil,
          ^width width : Int = 1, ^height height : Int = 1, ^note note : Str = ""]
   (let parts [(signature) (header ^color color ^depth depth ^width width ^height height)])
-  (if_not ($absent? palette) (parts .push (chunk "PLTE" ($binary/from_list palette))))
-  (if_not ($absent? transparency) (parts .push (chunk "tRNS" ($binary/from_list transparency))))
+  (if ($present? palette) (parts .push (chunk "PLTE" ($binary/from_list palette))))
+  (if ($present? transparency) (parts .push (chunk "tRNS" ($binary/from_list transparency))))
   (if (!= note "")
     (parts .push (chunk "tEXt" ($binary/concat
       [($binary/from_str "Comment") ($binary/from_list [0]) ($binary/from_str note)]))))

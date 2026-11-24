@@ -2,7 +2,7 @@
 # accepts replacement source or a revised operation list from the client.
 (mod plugin_plans)
 (import effective_config ^from "./settings_resolver")
-(import $store/fs [Store])
+(import $store/fs/Store)
 (import ^from "./composition" run_composition_change current_snapshot)
 (import ^from "./plugin_manager" plugin_catalog inspect_descriptor)
 (import ^from "../agents/provider_selection" readiness_report)
@@ -162,7 +162,7 @@
       "Recovery saves desired state without activating plugins. Readiness and state compatibility remain unverified until normal startup."
       else "Activation and application-state compatibility are unverified until Apply.")
       "Full-grant initialization and activation may have external effects. Disposing a rejected candidate does not undo those effects."])
-    (if_not ($absent? request/restore_revision)
+    (if ($present? request/restore_revision)
       (if (!= ($head request/restore_revision) Int) (plan_error "restore_revision must be an integer"))
       (let historical (history_revision workspace/store workspace/history_head/.get request/restore_revision))
       (set historical_build historical/host_build_id)
@@ -217,7 +217,7 @@
         (let saved
           (saved_metadata workspace/store id (?? entry/module_digest "builtin") stamp/host_build_id))
         (set data saved/declared))
-      (if_not ($absent? data)
+      (if ($present? data)
         (descriptors .put id data)
         (for pair in data/provides (claim_capability providers claims pair id)))
       (let live (current .get id))
@@ -383,7 +383,7 @@
                 (plan_error "Configuration changed during activation; validate the draft again."))
               (if_not plan/repair
                 (let readiness (readiness_report runtime (effective_config runtime)))
-                (if_not ($absent? readiness) (plan_error readiness))))
+                (if ($present? readiness) (plan_error readiness))))
             (fn []
               (check_reversion_base workspace plan/base_revision)
               (if (!= plan/stamp (fingerprint runtime))
@@ -446,7 +446,7 @@
     runtime/h/snapshots
     (fn []
       (let prior (plan_result runtime id))
-      (if_not ($absent? prior) (return prior))
+      (if ($present? prior) (return prior))
       (let key $"plugin_plan_result/${id}")
       (runtime/workspace/store .Store:put
         key

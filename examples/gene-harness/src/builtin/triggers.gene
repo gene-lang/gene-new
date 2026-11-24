@@ -32,7 +32,7 @@
                ["functions" "delete_trigger"] ["functions" "update_trigger"]
                ["functions" "trigger_occurrences"]]
     ^activate (fn [host]
-      (if_not ($absent? preparation_error) (fail preparation_error))
+      (if ($present? preparation_error) (fail preparation_error))
       (let admission (host .PluginHost:resolve "admission/host"))
       (host .PluginHost:contribute "browser_clients" {^name "triggers" ^title "Triggers" ^asset prepared_asset})
       (let scheduler (new_scheduler host admission))

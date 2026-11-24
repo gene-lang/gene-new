@@ -167,7 +167,7 @@
   (var last 400)
   (if (&& (> pieces/.size 1) (! ($fs/exists? ($path/join ctx/runtime/root specification))))
     (let suffix ($last pieces))
-    (if_not ($absent? (#"^[0-9]+(-[0-9]+)?$" .match suffix))
+    (if ($present? (#"^[0-9]+(-[0-9]+)?$" .match suffix))
       (let range ($str/split suffix "-"))
       (set first ($parse/parse_int range/0))
       (set last (if (> range/.size 1) ($parse/parse_int range/1) else (+ first 399)))
@@ -269,11 +269,11 @@
   (map_for [key task] in manager/active/.get
     (if ($str/starts_with? ($to_str key) $"${session}:") (return true)))
   (let mode (manager/modes/states/.get .get session))
-  (if_not ($absent? mode/running) (return true))
+  (if ($present? mode/running) (return true))
   # Admission saves its receipt before installing the task. Read the durable
   # projection too, without acquiring the command gate under a session gate.
   (let ref (core_state manager/runtime/events "session" session "commands"))
-  (if_not ($absent? ref/digest)
+  (if ($present? ref/digest)
     (for command in (/records ($serde/read_data (read_body manager/runtime ref/digest)))
       (if (&& (== command/status "running") (== command/runtime_epoch manager/runtime/epoch))
         (return true))))
@@ -338,7 +338,7 @@
   (match outcome ^!exhaustive
       when (TaskOutcome/ok value)
         (var result (if (== ($head value) CommandResult) value else (CommandResult ^display value)))
-        (if_not ($absent? result/mode)
+        (if ($present? result/mode)
           (try
             (enter_mode manager/modes session result/mode lease/snapshot)
           catch Error
@@ -365,10 +365,10 @@
         (let properties ($props result))
         (for key in ["exit" "view" "selected" "stop"]
           (let field (properties .get key))
-          (if_not ($absent? field) (record .put key field)))
+          (if ($present? field) (record .put key field)))
       when (TaskOutcome/error error)
         (record .put "status" "failed")
-        (if_not ($absent? error/code) (record .put "error_code" error/code))
+        (if ($present? error/code) (record .put "error_code" error/code))
         (let location (?? error/line "?"))
         (record .put "display" (if (== record/ui_action true)
           error/.message else $"line ${location}: ${error/.message}"))
@@ -445,7 +445,7 @@ Stopped.""")))
 (fn submit_command_impl [manager, session : Str, text : Str, ^request_id request_id : Str = "", ^sequence sequence = nil,
                          ^expected expected = nil, ^on_admit on_admit = nil, ^on_finish on_finish = nil]
   (let digest ($crypto/sha256 text))
-  (if_not ($absent? expected)
+  (if ($present? expected)
     (if (|| (!= ($head expected) Map) (== request_id ""))
       (fail (CommandError ^code "invalid_request" ^_msg "A revision-bound command needs an identity and request id.")))
     (for key in ["name" "owner" "revision"]
@@ -457,7 +457,7 @@ Stopped.""")))
       (fail
         (CommandError ^code "invalid_request" ^_msg "A command request id requires a positive submission sequence.")))
     (let old (command_request_receipt manager session request_id))
-    (if_not ($absent? old)
+    (if ($present? old)
       (if (&& (== old/request_digest digest) (== old/request_seq sequence) (same_command_identity? old/expected_command expected))
         (return old))
       (fail
@@ -468,8 +468,8 @@ Stopped.""")))
   (let parsed (if ($absent? expected) (parse_submission manager/runtime/h text)
     else {^kind "command" ^name expected/name ^input_text text ^expected_command expected}))
   # on_admit runs only for a new admission; on_finish runs when its task ends.
-  (if_not ($absent? on_admit) (parsed .put "on_admit" on_admit))
-  (if_not ($absent? on_finish) (parsed .put "on_finish" on_finish))
+  (if ($present? on_admit) (parsed .put "on_admit" on_admit))
+  (if ($present? on_finish) (parsed .put "on_finish" on_finish))
   (if (!= request_id "")
     (parsed .put "request_id" request_id)
     (parsed .put "request_seq" sequence)
@@ -491,7 +491,7 @@ Stopped.""")))
     (manager/gate (fn []
       (require_record manager/runtime/sessions session)
       (let state (read_command_state manager/runtime session))
-      (if_not ($absent? parsed/request_id)
+      (if ($present? parsed/request_id)
         (for previous in state/records
           (if (== previous/request_id parsed/request_id)
             (if (&& (== previous/request_digest parsed/request_digest) (== previous/request_seq parsed/request_seq) (same_command_identity? previous/expected_command parsed/expected_command))
@@ -501,7 +501,7 @@ Stopped.""")))
               (CommandError ^code "submission_conflict" ^_msg "Command request identity has different content."))))
         (if (!= parsed/request_seq state/next_id)
           (fail (CommandError ^code "submission_conflict" ^_msg "Unexpected command sequence; refresh or look up the previous receipt."))))
-      (if_not ($absent? parsed/expected_command)
+      (if ($present? parsed/expected_command)
         (let expected parsed/expected_command)
         (let contribution (ui_record supplied_lease/snapshot "commands" expected/name))
         (if (|| ($absent? contribution)
@@ -529,7 +529,7 @@ Stopped.""")))
           ^start_seq (next_sequence manager/runtime/events (stream_key "session" session))})
       (for key in ["input_text" "mode_instance" "input_id" "ui_action" "ui_request" "ui_action_id" "request_id" "request_seq" "request_digest" "expected_command" "admitted_command"]
         (let value (parsed .get key))
-        (if_not ($absent? value) (allocated .put key value)))
+        (if ($present? value) (allocated .put key value)))
       (state/records .push allocated)
       (let saved (save_command_state_event manager/runtime session state))
       (log_event "command/start" $"command ${id} started"
@@ -538,7 +538,7 @@ Stopped.""")))
         ^event {^stream session ^seq saved/event/seq})
       allocated)))
   (if duplicate (return record))
-  (if_not ($absent? parsed/on_admit) (parsed/on_admit record))
+  (if ($present? parsed/on_admit) (parsed/on_admit record))
   # A setup failure before the watcher exists still runs on_finish, so a
   # caller's registration (such as a card command's) is always released.
   (var watched false)
@@ -570,7 +570,7 @@ Stopped.""")))
           (try (finish_command manager session record lease outcome)
             ensure
               (mode_command_finished manager/modes session record)
-              (if_not ($absent? parsed/on_finish) (try (parsed/on_finish) catch Error nil)))
+              (if ($present? parsed/on_finish) (try (parsed/on_finish) catch Error nil)))
         ensure (release_body_use manager/runtime))))
     (set watched true)
     (parsed .put "lease_transferred" true)
@@ -584,7 +584,7 @@ Stopped.""")))
       # The watcher owns the lease once it exists; before that, release it here.
       (if (&& ($absent? supplied_lease) ($present? lease))
         (release_snapshot manager/runtime/h/snapshots lease))
-      (if_not ($absent? parsed/on_finish) (try (parsed/on_finish) catch Error nil)))))
+      (if ($present? parsed/on_finish) (try (parsed/on_finish) catch Error nil)))))
 
 (fn command_receipt [manager, session : Str, id : Str]
   (let state (command_state manager/runtime session))
@@ -602,7 +602,7 @@ Stopped.""")))
   (let receipt (command_receipt manager session id))
   (if ($absent? receipt) (fail (CommandError ^code "not_found" ^_msg "command not found")))
   (let task (manager/active/.get .get $"${session}:${id}"))
-  (if_not ($absent? task) task/.cancel)
+  (if ($present? task) task/.cancel)
   receipt)
 
 (fn take_command_attachments [runtime, session : Str]
@@ -616,7 +616,7 @@ Stopped.""")))
 
 (fn quiesce_command_manager [manager]
   (manager/accepting .set false)
-  (if_not ($absent? manager/modes) (close_input_modes manager/modes))
+  (if ($present? manager/modes) (close_input_modes manager/modes))
   (map_for [id task] in manager/active/.get
     task/.cancel)
   (map_for [id watcher] in manager/watchers/.get

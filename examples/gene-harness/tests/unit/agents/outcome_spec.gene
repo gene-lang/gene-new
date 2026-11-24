@@ -1,5 +1,5 @@
 # Tests src/agents/outcome.gene.
-(import $test [describe it before_each assert_equal assert_raises run])
+(import $test/[describe it before_each assert_equal assert_raises run])
 (import Outcome OutcomeError new_turn_items append_prompt_at append_plugin_prompt
          validate_outcome render_request rewrite_prompt_calls checked_outcome_extensions
   ^from "../../../src/agents/outcome")

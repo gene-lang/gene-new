@@ -12,12 +12,12 @@
     (set rest ($str/slice_bytes rest found/end ($str/byte_size rest)))))
 
 (fn speech_token [token : Str] : Str
-  (if_not ($absent? (#"^[0-9]{8,}[.,;:!?]?$" .match token)) (return "a long number"))
-  (if_not ($absent? (#"^(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{10,}[.,;:!?]?$" .match token))
+  (if ($present? (#"^[0-9]{8,}[.,;:!?]?$" .match token)) (return "a long number"))
+  (if ($present? (#"^(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{10,}[.,;:!?]?$" .match token))
     (return "a hash"))
   # Bare slash choices and decimal/version ratios are ambiguous prose. Only
   # shorten rooted paths or a path ending in an alphabetic file extension.
-  (if_not ($absent? (#"^(?:\.{1,2}/\S+|/\S+|(?:[^\s/]+/)+[^\s/]+\.[A-Za-z][A-Za-z0-9_-]*[.,;:!?]?)$" .match token))
+  (if ($present? (#"^(?:\.{1,2}/\S+|/\S+|(?:[^\s/]+/)+[^\s/]+\.[A-Za-z][A-Za-z0-9_-]*[.,;:!?]?)$" .match token))
     (return ($last ($str/split token "/"))))
   token)
 

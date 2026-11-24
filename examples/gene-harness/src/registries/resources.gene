@@ -21,8 +21,8 @@
     resource))
   (result .put "close" (fn [resource]
     (for item in owned/.get
-      (if (same? item/resource resource) (item/lease .dispose)))))
+      (if (same? item/resource resource) item/lease/.dispose))))
   (result .put "close_all" (fn []
     (let resources owned/.get)
-    (for item in resources (try (item/lease .dispose) catch Error nil))))
+    (for item in resources (try item/lease/.dispose catch Error nil))))
   result)

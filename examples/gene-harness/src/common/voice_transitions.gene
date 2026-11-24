@@ -52,7 +52,7 @@
       (var previous : Any state/drafts/%session)
       (var before (text previous/text))
       (var previous_ms : Int 0)
-      (if_not ($absent? previous/audio_ms)
+      (if ($present? previous/audio_ms)
         (var duration : Int previous/audio_ms)
         (set previous_ms duration))
       (set state/drafts/%session

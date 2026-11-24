@@ -6,7 +6,7 @@
 (mod plugin_routes)
 (import acquire_snapshot release_snapshot immutable_view ^from "../../runtime/composition")
 (import response ^from "../request")
-(import $net/http [Response])
+(import $net/http/Response)
 
 (fn ^^private matches? [route, path : Str]
   (|| (== path route/prefix) ($str/starts_with? path ($to_str route/prefix "/"))))

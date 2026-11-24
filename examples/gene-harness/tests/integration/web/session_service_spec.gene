@@ -1,5 +1,5 @@
 # Tests src/web/session_service.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_service set_test_provider fixture_path ^from "../../support")
 (import open_session_service close_session_service create_session submit receipt answer snapshot browser_request
          host_status edit_session acknowledge_attention list_sessions command

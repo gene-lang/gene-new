@@ -16,7 +16,7 @@
 (fn configure [name : Str, options : Map] : Map
   # The default lives here so a change is a one-line diff in the editor.
   (var merged {^model "small" ^timeout_ms 30000})
-  (for key in (options .keys)
+  (for key in options/.keys
     (set merged/%key (options .get key)))
   (set defaults/%name merged)
   merged)

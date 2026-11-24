@@ -30,7 +30,7 @@
   (if (|| bench/failed bench/done) (return))
   (set bench/failed true)
   ($dom/set_text bench/root ($to_str "Audio benchmark failed: " stage))
-  (if_not ($absent? bench/host) (close_host_audio (host bench)))
+  (if ($present? bench/host) (close_host_audio (host bench)))
   (if (!= bench/session "")
     (api bench "POST" $"/api/v9/sessions/${bench/session}/voice/latency"
       {^kind "error" ^elapsed_ms 0 ^identity stage}
@@ -45,8 +45,8 @@
 
 (fn finish [bench : AudioBench] : Nil
   (set bench/done true)
-  (if_not ($absent? bench/host) (close_host_audio (host bench)))
-  (if_not ($absent? bench/context)
+  (if ($present? bench/host) (close_host_audio (host bench)))
+  (if ($present? bench/context)
     (var context : EventTarget bench/context) ($audio/close context))
   ($dom/set_text bench/root "Audio benchmark complete."))
 

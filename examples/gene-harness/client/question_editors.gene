@@ -45,7 +45,7 @@
 (fn editor_for [controller : QuestionEditors, session : Str, batch : Any] : QuestionEditor
   (var key (question_key session (qtext batch/id)))
   (var raw : Any controller/editors/%key)
-  (if_not ($absent? raw)
+  (if ($present? raw)
     (var found : QuestionEditor raw)
     (return found))
   (var answers : PropMap {})
@@ -53,14 +53,14 @@
   (var questions : (List Any) batch/questions)
   (for question in questions
     (var id (qtext question/id))
-    (if_not ($absent? question/recommended)
+    (if ($present? question/recommended)
       (if (== (qjson question/multi) "true")
         (set answers/%id [question/recommended])
         else (set answers/%id question/recommended))))
   (var draft : Any controller/drafts/%key)
   (var pending : Any controller/pending/%key)
-  (if_not ($absent? pending) (set answers pending/answers))
-  (if_not ($absent? draft)
+  (if ($present? pending) (set answers pending/answers))
+  (if ($present? draft)
     (set answers draft/answers)
     (set skips draft/skips))
   (var editor
@@ -105,7 +105,7 @@
         when "skip" (set element/checked (== (qjson editor/skips/%id) "true"))
         when "multi" (do
             (var checked false)
-            (if_not ($absent? editor/answers/%id)
+            (if ($present? editor/answers/%id)
               (var picked : (List Any) editor/answers/%id)
               (for value in picked
                 (if (== (qjson value) (qjson field/choice)) (set checked true))))
@@ -144,7 +144,7 @@
         (if multi
           (var next : (List Any) [])
           (var removed false)
-          (if_not ($absent? editor/answers/%id)
+          (if ($present? editor/answers/%id)
             (var saved : (List Any) editor/answers/%id)
             (for item in saved
               (if (== (qjson item) (qjson value)) (set removed true) else (next .push item))))
@@ -229,7 +229,7 @@
 (fn resume_replies [controller : QuestionEditors] : Nil
   (if_not controller/ready (return))
   (map_for [key payload] in controller/pending
-    (if_not ($absent? payload)
+    (if ($present? payload)
       (var empty : (List Any) [])
       (var editor
         (editor_for
@@ -285,7 +285,7 @@
   (var identity (if ($absent? batch) "" else (question_key session (qtext batch/id))))
   (var previous : Any controller/mounts/%slot)
   (if (== (qtext previous/key) identity) (return))
-  (if_not ($absent? previous)
+  (if ($present? previous)
     (var previous_key (qtext previous/key))
     (var old : QuestionEditor controller/editors/%previous_key)
     (var kept : (List Any) [])
@@ -333,7 +333,7 @@
             "change"
             (fn [event : Any] : Nil
               (var picked : (List Any) [])
-              (if_not ($absent? editor/answers/%id)
+              (if ($present? editor/answers/%id)
                 (var saved : (List Any) editor/answers/%id)
                 (for value in saved
                   (if (!= (qjson value) (qjson choice)) (picked .push value))))

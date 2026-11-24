@@ -129,7 +129,7 @@ collisions; it is not isolation, and plugins are trusted to use broader rules
 deliberately.
 
 ```gene
-(import $css [css rule decl])
+(import $css/[css rule decl])
 
 (host .PluginHost:contribute "web_components"
   {^name "sheet" ^slot "view" ^title "Sheet" ^view_state {} ^render render_sheet

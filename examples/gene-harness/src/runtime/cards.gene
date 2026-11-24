@@ -177,7 +177,7 @@
   (let bindings (workspace_bindings ^extra {^context {}} runtime/h snapshot session runtime/root))
   (let warnings [])
   (map_for [name text] in source
-    (if_not ($absent? text)
+    (if ($present? text)
       (let form ($first ($into ($parse/read_all ^source "card" text) [])))
       (let missing (unresolved_names form bindings))
       (let listed ($str/join missing ", "))
@@ -426,7 +426,7 @@
   (receipt .put "message"
     (if committed "Applied before the host restarted."
       else "Interrupted by a host restart. The card is unchanged; effects of anything update called are unknown."))
-  (if_not ($absent? card) (receipt .put "card" (shown_card runtime session card)))
+  (if ($present? card) (receipt .put "card" (shown_card runtime session card)))
   (save_receipt runtime session receipt))
 
 # Every admission left by an earlier process is resolved before this process
@@ -489,7 +489,7 @@
       # click that went through is never refused as stale.
       (let existing (resolved_receipt runtime session
         (core_state runtime/events "session" session (action_key request/input_id))))
-      (if_not ($absent? existing)
+      (if ($present? existing)
         (if (!= existing/digest digest)
           (card_fail "submission_conflict" "This card action identity has different content."))
         (return {^existing existing}))
@@ -520,7 +520,7 @@
       (save_receipt runtime session receipt)
       (register_inflight runtime session 1)
       {^receipt receipt})))
-  (if_not ($absent? admitted/existing) (return admitted/existing))
+  (if ($present? admitted/existing) (return admitted/existing))
   (try
     (with_card_gate runtime session request/card (fn []
       (execute_card_action runtime session request admitted/receipt)))

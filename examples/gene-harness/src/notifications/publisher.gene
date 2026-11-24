@@ -35,7 +35,7 @@
         "invalid_request"
         "Notification details are read-only; declare actions separately."))
     (for key in ["action" "command" "prompt" "state" "field"]
-      (if_not ($absent? (node/props .get key))
+      (if ($present? (node/props .get key))
         (notification_error
           "invalid_request"
           "Notification details cannot contain callbacks or hidden actions.")))
@@ -59,12 +59,12 @@
       {^id id ^label (bounded_text item/label "action label" 120) ^publisher_revision revision})
     (var count 0)
     (for key in ["reference" "prompt" "function" "command"]
-      (if_not ($absent? (item .get key))
+      (if ($present? (item .get key))
         (set count (+ count 1))
         (action .put key (item .get key))))
     (if (!= count 1)
       (notification_error "invalid_request" "An action requires exactly one behavior."))
-    (if_not ($absent? item/reference)
+    (if ($present? item/reference)
       (let ref item/reference)
       (if (!= ($head ref) Map) (notification_error "invalid_request" "A reference must be a map."))
       (if (&& ($present? ref/session) (!= ($head ref/session) Str))
@@ -78,21 +78,21 @@
         (if_not (["session" "round" "command" "artifact" "entity" "component" "view_state"] .contains? ($to_str key))
           (notification_error "invalid_request" "Unknown notification reference field.")))
       (for key in ["session" "round" "command" "artifact" "entity" "component"]
-        (if_not ($absent? (ref .get key)) (bounded_text (ref .get key) "reference" 1024)))
+        (if ($present? (ref .get key)) (bounded_text (ref .get key) "reference" 1024)))
       (let patch (?? ref/view_state {}))
       (if (!= ($head patch) Map)
         (notification_error "invalid_request" "View-state patch must be a map."))
       (map_for [key value] in patch
         (if_not ([Str Bool Int Float Nil] .contains? ($head value))
           (notification_error "invalid_request" "View-state patch values must be scalar.")))
-      (if_not ($absent? ref/component)
+      (if ($present? ref/component)
         (let component (ui_record snapshot "web_components" ref/component))
         (if (|| ($absent? component) ($absent? component/payload/view_state))
           (notification_error "not_found" "Reference component is unavailable."))
         (action .put "component_revision" (ui_revision h component)))
       (action .put "reference" ($thaw ($freeze ref))))
-    (if_not ($absent? item/prompt) (bounded_text item/prompt "prompt" 16384))
-    (if_not ($absent? item/command)
+    (if ($present? item/prompt) (bounded_text item/prompt "prompt" 16384))
+    (if ($present? item/command)
       (bounded_text item/command "command" 16384)
       (if_not ($str/starts_with? item/command "/")
         (notification_error "invalid_request" "Operator commands start with /."))
@@ -103,7 +103,7 @@
         (notification_error "not_found" "Notification command is unavailable."))
       (action .put "command_name" name)
       (action .put "command_revision" (ui_revision h command)))
-    (if_not ($absent? item/function)
+    (if ($present? item/function)
       (bounded_text item/function "function" 128)
       (let function (ui_record snapshot "functions" item/function))
       (if ($absent? function)
@@ -124,7 +124,7 @@
   (if (!= ($head input) Map)
     (notification_error "invalid_request" "Notification needs a data map."))
   (for key in ["id" "source" "sequence" "revision" "state" "kind" "dismissible" "response" "cleared_revision"]
-    (if_not ($absent? (input .get key))
+    (if ($present? (input .get key))
       (notification_error "invalid_request" $"Notification ${key} is host-owned or unsupported.")))
   (let context ($runtime/context))
   (let origin ($thaw ($freeze (?? input/origin {}))))
@@ -134,7 +134,7 @@
   (if (&& (! preserve_origin) ($present? context/session))
     (origin .put "session" context/session))
   (for key in ["session" "round" "command" "component" "entity" "revision"]
-    (if_not ($absent? (origin .get key)) (bounded_text ($to_str (origin .get key)) "origin" 1024)))
+    (if ($present? (origin .get key)) (bounded_text ($to_str (origin .get key)) "origin" 1024)))
   (let key (bounded_text ^^empty (?? input/key "") "key" 128))
   (if (== input/progress true)
     (if (== key "") (notification_error "invalid_request" "Progress requires a stable source key."))
@@ -148,7 +148,7 @@
   (let severity (?? input/severity "info"))
   (if_not (["info" "success" "warning" "error"] .contains? severity)
     (notification_error "invalid_request" "Unknown notification severity."))
-  (if_not ($absent? input/expires_at)
+  (if ($present? input/expires_at)
     (if (|| (!= ($head input/expires_at) Int) (<= input/expires_at ($os/wall_ms)))
       (notification_error "invalid_request" "expires_at must be a future epoch millisecond value.")))
   (let definition

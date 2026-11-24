@@ -107,7 +107,7 @@
   (let functions {})
   (for name in (view_actions snapshot candidate)
     (let action (?? (ui_record snapshot "ui_actions" name) (ui_record snapshot "functions" name)))
-    (if_not ($absent? action) (functions .put name (ui_revision h action))))
+    (if ($present? action) (functions .put name (ui_revision h action))))
   {^name candidate/name ^title (?? candidate/title candidate/name) ^owner record/owner
    ^default_presentation (?? candidate/default_presentation "docked")
    ^slot candidate/slot ^revision (ui_revision h record)

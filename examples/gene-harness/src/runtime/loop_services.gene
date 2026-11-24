@@ -51,7 +51,7 @@
     ^open (fn [ctx] true) ^recover nil
     ^quiesce (fn [ctx, value]
       (let services ctx/runtime/services/values/plugin_services)
-      (if_not ($absent? services) (quiesce_services services/activation_services)))}
+      (if ($present? services) (quiesce_services services/activation_services)))}
    {^name "resumption" ^layer "loop" ^requires ["controller_lifetime"]
     ^open (fn [ctx]
       (start_delegation_host ctx/runtime/services/values/delegations)
@@ -60,14 +60,14 @@
       nil) ^recover nil}
    {^name "manager_polling" ^layer "feature_host" ^requires ["controller_lifetime"]
     ^open (fn [ctx]
-      (if_not ($absent? ctx/runtime/services/values/manager)
+      (if ($present? ctx/runtime/services/values/manager)
         (start_manager_polling ctx/runtime/services/values/manager))
       nil) ^recover nil}
    {^name "bindings" ^layer "loop" ^requires ["resumption" "manager_polling" "plugin_service_lifetime"]
     ^open (fn [ctx]
       (try
         (provide ctx/runtime/h "core" "admission/host" (admission_host_binding ctx/runtime))
-        (if_not ($absent? ctx/runtime/services/values/channels)
+        (if ($present? ctx/runtime/services/values/channels)
           (provide ctx/runtime/h "core" "channels/host"
             (channel_host_binding ctx/runtime ^options ctx/channel_options)))
         true

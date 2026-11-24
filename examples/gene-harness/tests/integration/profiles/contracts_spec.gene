@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_controller ^from "../../support")
 (import Profile ^from "../../../src/profiles/profile")
 (import Plugin PluginHost OperatorHost ^from "../../../src/plugin_api")

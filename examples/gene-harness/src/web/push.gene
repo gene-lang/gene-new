@@ -8,8 +8,8 @@
 (import ^from "../notifications/inbox" inbox_snapshot)
 (import ^from "../runtime/sessions" view_session leave_session)
 (import voice_connected voice_disconnected voice_snapshot public_voice_state ^from "../runtime/voice_state")
-(import $net/http [ws_send ws_try_send ws_queued ws_close])
-(import $os [monotonic_ms])
+(import $net/http/[ws_send ws_try_send ws_queued ws_close])
+(import $os/monotonic_ms)
 
 (type PushHub ^props {^host Any ^peers Any})
 
@@ -36,7 +36,7 @@
   (var frame {^protocol protocol_version ^epoch hub/host/epoch
     ^sequence ($to_str peer/sequence) ^type message/type
     ^session message/session ^data data})
-  (if_not ($absent? message/reason) (frame .put "reason" message/reason))
+  (if ($present? message/reason) (frame .put "reason" message/reason))
   (try
     (if (!= (ws_send peer/connection ($json/stringify frame)) 0)
       # A dropped frame invalidates the stream. Reconnect gets a fresh snapshot.

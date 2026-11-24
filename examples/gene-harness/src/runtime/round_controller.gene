@@ -92,11 +92,11 @@
   (install_loop_commands controller)
   # Session recovery can change receipts before channel stores are opened.
   # Reconcile ended task blockers before any transport or delegation resumes.
-  (if_not ($absent? runtime/services/values/channel_queues)
+  (if ($present? runtime/services/values/channel_queues)
     (let queues (/queues (channel_queue_snapshot runtime/services/values/channel_queues)))
     (map_for [id queue] in queues
       (let session ($to_str id))
-      (if_not ($absent? (runtime/sessions/index/.get .get session))
+      (if ($present? (runtime/sessions/index/.get .get session))
         (observe_channel_rounds runtime/services/values/channel_queues session (/receipts (round_state controller session))))))
   controller)
 
@@ -147,7 +147,7 @@
 (fn round_state [controller : RoundController, session : Str]
   (let saved (core_state controller/runtime/events "session" session "rounds"))
   (if ($absent? saved) (return {^next_seq 1 ^receipts []}))
-  (if_not ($absent? saved/digest)
+  (if ($present? saved/digest)
     (return ($serde/read_data (read_body controller/runtime saved/digest))))
   saved)
 
@@ -178,7 +178,7 @@
       (let queues controller/runtime/services/values/channel_queues)
       (let loaded (load_session controller/runtime/sessions session))
       (let current loaded/round/.get)
-      (if_not ($absent? current) (observe_channel_round queues session current))
+      (if ($present? current) (observe_channel_round queues session current))
       (let state (round_state controller session))
       (let status (channel_queue_status queues session))
       (if ($present? status/batch)
@@ -383,7 +383,7 @@
       nil
       else (spawn ^lane root (do ($sleep ($math/max 0 (- receipt/deadline_ms ($os/wall_ms)))) (expired .set true) task/.cancel))))
   (let watcher
-    (spawn ^lane root (do (try (let outcome (try task/.join ensure (if_not ($absent? deadline) deadline/.cancel deadline/.join))) (finish_round ^completion completion controller session receipt (if expired/.get (TaskOutcome/ok {^state "failed" ^message (if ($absent? receipt/delegation) "trigger round budget timed out" else "child round budget timed out")}) else outcome)) ensure (release_body_use controller/runtime)))))
+    (spawn ^lane root (do (try (let outcome (try task/.join ensure (if ($present? deadline) deadline/.cancel deadline/.join))) (finish_round ^completion completion controller session receipt (if expired/.get (TaskOutcome/ok {^state "failed" ^message (if ($absent? receipt/delegation) "trigger round budget timed out" else "child round budget timed out")}) else outcome)) ensure (release_body_use controller/runtime)))))
   (frame .put "watcher" watcher)
   receipt)
 
@@ -520,13 +520,13 @@
       ^turn_count 0
       ^accepted_at ($to_str ($now))})
   (if_not attachments/.empty? (receipt .put "media" attachments))
-  (if_not ($absent? checked_input) (receipt .put "input" checked_input))
-  (if_not ($absent? limits) (receipt .put "effective_limits" (copy_data limits)))
-  (if_not ($absent? delegation) (receipt .put "delegation" (copy_data delegation)))
+  (if ($present? checked_input) (receipt .put "input" checked_input))
+  (if ($present? limits) (receipt .put "effective_limits" (copy_data limits)))
+  (if ($present? delegation) (receipt .put "delegation" (copy_data delegation)))
   (receipt .put "task_root" (?? continuation/task_root receipt/id))
   (receipt .put "task_turns_base" (?? continuation/task_turns 0))
   (receipt .put "continuation_mode" (?? continuation/mode (initial_continuation_mode controller receipt)))
-  (if_not ($absent? continuation)
+  (if ($present? continuation)
     (receipt .put "continuation" (copy_data continuation))
     (receipt .put "continued_from" continuation/source_round))
   (if (! (operator_round? receipt))
@@ -566,7 +566,7 @@
           text)))
   (loaded/round .set receipt)
   (save_round controller session receipt)
-  (if_not ($absent? on_admit) (on_admit receipt))
+  (if ($present? on_admit) (on_admit receipt))
   (start_round_task controller session receipt))
 
 (fn stop_continuation [controller, session : Str, source : Str, failure]
@@ -576,7 +576,7 @@
 (fn stop_continuation_locked [controller, session : Str, source : Str, failure]
   (let original (round_receipt controller session source))
   (if ($absent? original) (return nil))
-  (if_not ($absent? original/continuation_stop) (return nil))
+  (if ($present? original/continuation_stop) (return nil))
   (let stopped (copy_data original))
   (stopped .put "continuation_stop"
     (if (["stale" "busy" "not_found"] .contains? failure/code) "superseded" else "failed"))
@@ -616,9 +616,9 @@
   ^operator operator : Bool = true, ^model_settings model_settings = nil]
   (let old (copy_data (round_receipt controller session source)))
   (if ($absent? old) (fail (RoundError ^code "not_found" ^_msg "Paused round not found.")))
-  (if_not ($absent? old/continued_by)
+  (if ($present? old/continued_by)
     (let successor (round_receipt controller session old/continued_by))
-    (if_not ($absent? successor)
+    (if ($present? successor)
       (if (&& (== successor/request_id $"continue/${source}")
               (== successor/continued_from source))
         (return successor)
@@ -641,7 +641,7 @@
     {^items_ref old/request_items_ref ^history (pending_request controller/runtime session)
      ^media (?? old/request_media []) ^request_sources (?? old/request_sources [])
      ^task_root (?? old/task_root old/id) ^task_turns (?? old/task_turns old/turn_count)})))
-  (if_not ($absent? old/input) (descriptor .put "input" (copy_data old/input)))
+  (if ($present? old/input) (descriptor .put "input" (copy_data old/input)))
   (if (|| ($absent? descriptor/items_ref) ($absent? descriptor/history))
     (fail (RoundError ^code "unavailable" ^_msg "Pending input cannot be safely restored.")))
   (descriptor .put "mode" chosen)
@@ -680,7 +680,7 @@
     (let session ($to_str id))
     (let loaded (load_session controller/runtime/sessions session))
     (let receipt loaded/round/.get)
-    (if_not ($absent? receipt/continuation_stop) (continue))
+    (if ($present? receipt/continuation_stop) (continue))
     (if (|| (== receipt/continuation_mode "automatic") ($present? receipt/continuation_intent))
       (try (continue_round ^operator false controller session receipt/id (?? receipt/continuation_mode "manual"))
         catch Throwable (stop_continuation controller session receipt/id $err))))
@@ -698,7 +698,7 @@
           (answer_round_impl ^dismiss dismiss ^operator_input operator_input controller session batch_id values))))))
 
 (fn batch_round_id [batch, batch_id : Str] : Str
-  (if_not ($absent? batch/round) (return batch/round))
+  (if ($present? batch/round) (return batch/round))
   (let parts ($str/split batch_id "-q-"))
   (if (< ($size parts) 2) "" else parts/0))
 
@@ -724,8 +724,8 @@
     (if (|| (!= stored/submitted_digest (submitted_digest values dismiss)) (!= (?? stored/intent "continue") "continue"))
       (fail (QuestionError ^_msg $"question batch ${batch_id} already has different answers")))
     (let owner (round_receipt controller session (batch_round_id stored batch_id)))
-    (if_not ($absent? owner) (return (copy_data owner)))
-    (if_not ($absent? receipt) (return (copy_data receipt)))
+    (if ($present? owner) (return (copy_data owner)))
+    (if ($present? receipt) (return (copy_data receipt)))
     (fail (RoundError ^code "not_found" ^_msg "The round for this answered batch is not retained.")))
   (if (|| ($absent? receipt) (!= receipt/questions/id batch_id))
     (fail (RoundError ^code "invalid_request" ^_msg "session is not waiting on this batch")))
@@ -859,9 +859,9 @@
     (if_not (&& (== source/continuation_mode "automatic") (== (?? source/task_root source/id) (?? receipt/task_root receipt/id)))
       (fail (RoundError ^code "not_found" ^_msg "round not found"))))
   (let task controller/rounds/.get/%session/task)
-  (if_not ($absent? task) task/.cancel)
+  (if ($present? task) task/.cancel)
   (if (["waiting" "paused"] .contains? receipt/state)
-    (if_not ($absent? receipt/questions)
+    (if ($present? receipt/questions)
       (let batch
         (core_state
           controller/runtime/events
@@ -883,9 +883,9 @@
   (if (controller/closed .swap true) (return nil))
   (dispatch_round_event controller/runtime "host/stopping" {})
   (map_for [session frame] in controller/rounds/.get
-    (if_not ($absent? frame/task) frame/task/.cancel))
+    (if ($present? frame/task) frame/task/.cancel))
   (map_for [session frame] in controller/rounds/.get
-    (if_not ($absent? frame/watcher) frame/watcher/.join))
+    (if ($present? frame/watcher) frame/watcher/.join))
   (controller/rounds .set {})
   nil)
 
@@ -894,11 +894,11 @@
   (map_for [id frame] in controller/rounds/.get
     (if (&& ($present? frame/task) (!= ($to_str id) session)) (others .push ($to_str id))))
   (let runtime controller/runtime)
-  (if_not ($absent? runtime/services/values/commands)
+  (if ($present? runtime/services/values/commands)
     (map_for [id task] in runtime/services/values/commands/active/.get
       (if (|| (== session "") (! ($str/starts_with? ($to_str id) $"${session}:")))
         (others .push $"command ${id}"))))
-  (if_not ($absent? runtime/services/values/actions)
+  (if ($present? runtime/services/values/actions)
     (map_for [id task] in runtime/services/values/actions/active/.get (others .push $"view action ${id}")))
   (let names ($str/join others ", "))
   (if (&& (! others/.empty?) (! confirmed))
@@ -924,20 +924,20 @@
       ($serde/write_data {^at ($to_str ($now)) ^port runtime/listen_port})))
   (let running [])
   (map_for [id frame] in controller/rounds/.get
-    (if_not ($absent? frame/task) (running .push {^id ($to_str id) ^task frame/task})))
+    (if ($present? frame/task) (running .push {^id ($to_str id) ^task frame/task})))
   (let cancelled {})
   (for entry in running
     entry/task/.cancel
     (let state (load_session runtime/sessions entry/id))
     (let receipt state/round/.get)
-    (if_not ($absent? receipt) (cancelled .put receipt/id true)))
+    (if ($present? receipt) (cancelled .put receipt/id true)))
   # One durable admission marker covers every active round before any slow
   # receipt publication or uncooperative cleanup can consume the grace time.
   ($fs/write_text_atomic $"${runtime/state_root}/shutdown.gene" ($serde/write_data cancelled))
   (for entry in running
     (let state (load_session runtime/sessions entry/id))
     (let receipt state/round/.get)
-    (if_not ($absent? receipt)
+    (if ($present? receipt)
       (receipt .put "state" "cancelled")
       (receipt .put "message" "Workspace stopped.")
       (receipt .put "last_turn" (/turns (require_record runtime/sessions entry/id)))

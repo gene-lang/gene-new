@@ -32,7 +32,7 @@
        [value elapsed]))
 
 (fn summarize [account : Account] : Str
-  (var text (account .label))
+  (var text account/.label)
   (var suffix "𝄞")
   $"${text} ${suffix}")
 

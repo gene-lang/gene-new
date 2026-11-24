@@ -138,7 +138,7 @@
 (fn close_transport [transport]
   (if (transport/closed .swap true) (return nil))
   (let main transport/task/.get)
-  (if_not ($absent? main) main/.cancel main/.join)
+  (if ($present? main) main/.cancel main/.join)
   (let jobs (transport/jobs .swap {}))
   (map_for [id job] in jobs job/task/.cancel)
   (map_for [id job] in jobs job/task/.join)

@@ -26,7 +26,7 @@
     (fn []
       (if (&& (!= session "") (!= request_id ""))
         (let previous (command_request_receipt runtime/services/values/commands session request_id))
-        (if_not ($absent? previous)
+        (if ($present? previous)
           (if (!= previous/request_digest digest)
             (notification_error "submission_conflict" "Action retry changed its original payload."))
           (return {^kind "command" ^session session ^receipt previous})))
@@ -46,16 +46,16 @@
       (let lease (acquire_snapshot h/snapshots))
       (var transferred false)
       (try
-        (if_not ($absent? action/reference)
+        (if ($present? action/reference)
           (let reference ($thaw ($freeze action/reference)))
           (if (&& ($present? reference/session) (!= reference/session ""))
             (require_record runtime/sessions reference/session))
-          (if_not ($absent? reference/artifact)
+          (if ($present? reference/artifact)
             (let view (view_command {^runtime runtime ^raw reference/artifact}))
             (reference .put
               "evidence"
               {^title reference/artifact ^text ($to_str view/display) ^view view/view}))
-          (if_not ($absent? reference/component)
+          (if ($present? reference/component)
             (let component (ui_record lease/snapshot "web_components" reference/component))
             (if (|| ($absent? component) (!= action/component_revision (ui_revision h component)))
               (notification_error "revision_conflict" "The referenced panel was replaced."))
@@ -63,7 +63,7 @@
               "view_state"
               (ui_view_state component/payload (?? reference/view_state {}))))
           (return {^kind "reference" ^reference reference}))
-        (if_not ($absent? action/prompt)
+        (if ($present? action/prompt)
           (return
             {
               ^kind "prompt"

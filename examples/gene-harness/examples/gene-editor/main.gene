@@ -27,10 +27,10 @@
 (mod gene_editor_demo
   @doc "Standalone demo host for the reusable Gene web editor")
 
-(import $html [render])
-(import $json [parse stringify])
-(import $net/http [Response Server serve not_found])
-(import $web [script])
+(import $html/render)
+(import $json/[parse stringify])
+(import $net/http/[Response Server serve not_found])
+(import $web/script)
 
 # ---------------------------------------------------------------------------
 # Coercions

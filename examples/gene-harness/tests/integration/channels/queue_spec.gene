@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import open_authority configure_account configure_route authorize authorize_parts
   ^from "../../../src/channels/authority")

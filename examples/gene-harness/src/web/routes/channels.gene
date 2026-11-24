@@ -4,14 +4,14 @@
 (import response number request_data session_path? ^from "../request")
 (import channel_request ^from "../../channels/http")
 (import session_slack_thread session_add_to_slack ^from "../session_service")
-(import $net/http [redirect])
+(import $net/http/redirect)
 
 (fn channels_request [context, request, parts]
   (let host context/host)
   (let channel_result (channel_request host/runtime/services/values/channels request/method request/path
     (if (&& (== request/method "POST") (request/path .starts_with? $"${(api_root)}/channels"))
       (request_data request) else {})))
-  (if_not ($absent? channel_result) (return (response channel_result/status channel_result/body)))
+  (if ($present? channel_result) (return (response channel_result/status channel_result/body)))
   (if (session_path? parts)
     (let id parts/4)
     (if (&& (== parts/.size 6) (== parts/5 "slack-thread") (== request/method "GET"))

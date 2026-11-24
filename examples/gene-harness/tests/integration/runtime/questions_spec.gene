@@ -1,5 +1,5 @@
 # Tests src/runtime/questions.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import open_event_store close_event_store core_state ^from "../../../src/storage/state")
 (import validate_questions normalize_answers ask_questions answer_questions QuestionError submitted_digest

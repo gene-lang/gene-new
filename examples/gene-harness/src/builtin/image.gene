@@ -36,7 +36,7 @@ Return only one JSON object with an integer score from 0 through 100, a nonempty
                   ^size size = nil, ^background background = nil]
            (let request {^prompt prompt ^reference_images references ^max_attempts attempts})
            (map_for [key value] in {^generator generator ^generation_model model ^size size ^background background}
-             (if_not ($absent? value) (request .put key value)))
+             (if ($present? value) (request .put key value)))
            (run_image_workflow images request))})
       (contribute_doc host "image/usage" "Generate and review PNG images through replaceable plugins."
         "examples/gene-harness/docs/image-generation.md" ^tags ["image" "generate" "edit" "png"]))))

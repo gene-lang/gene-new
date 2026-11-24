@@ -1,6 +1,6 @@
 # Passive metadata is inert and belongs to an exact code + host revision.
 (mod plugin_metadata)
-(import $store/fs [Store])
+(import $store/fs/Store)
 (import ^from "../public/text" byte_prefix)
 
 (type PluginMetadataError : Error)

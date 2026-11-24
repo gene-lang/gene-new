@@ -17,7 +17,7 @@
 (import run_machine ^from "../public/gene_viewer")
 (import read_log ^from "../public/log_tail")
 (import redact_secrets ^from "../public/log_redaction")
-(import $json [parse])
+(import $json/parse)
 
 # ---------------------------------------------------------------------------
 # Request helpers

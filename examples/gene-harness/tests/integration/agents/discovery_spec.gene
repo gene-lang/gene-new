@@ -1,5 +1,5 @@
 # Tests src/agents/discovery.gene, including plugin ownership and turn leases.
-(import $test [describe it])
+(import $test/[describe it])
 (import ^from "../../support" isolated run_spec)
 (import ^from "../../../src/kernel"
   new_harness shutdown_harness put_cordis_plugin uninstall contribute doc)

@@ -6,7 +6,7 @@
 (fn session_reference [value]
   (if (|| (!= ($head value/session) Str) (== value/session "")) (return nil))
   (let result {^session value/session})
-  (if_not ($absent? value/turn) (result .put "turn" ($to_str value/turn)))
+  (if ($present? value/turn) (result .put "turn" ($to_str value/turn)))
   result)
 
 (fn capture_source_origin [context]
@@ -21,7 +21,7 @@
       else "model")})
   (if (&& (== ($head context/session) Str) (!= context/session ""))
     (result .put "session" context/session))
-  (if_not ($absent? turn/turn) (result .put "turn" ($to_str turn/turn)))
+  (if ($present? turn/turn) (result .put "turn" ($to_str turn/turn)))
   result)
 
 (fn source_attribution [entry]
@@ -38,12 +38,12 @@
     (if ($absent? previous/module_digest)
       (session_reference entry/source_origin)
       else (session_reference previous/created_in)))
-  (if_not ($absent? creation) (entry .put "created_in" creation))
+  (if ($present? creation) (entry .put "created_in" creation))
   entry)
 
 (fn preserve_creation_on_revert [saved, previous]
-  (if_not ($absent? previous/module_digest)
+  (if ($present? previous/module_digest)
     (let creation (session_reference previous/created_in))
     (saved .delete "created_in")
-    (if_not ($absent? creation) (saved .put "created_in" creation)))
+    (if ($present? creation) (saved .put "created_in" creation)))
   saved)

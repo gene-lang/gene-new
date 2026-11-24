@@ -1,5 +1,5 @@
 # Tests src/agents/eval_site.gene.
-(import $test [describe it assert_equal run])
+(import $test/[describe it assert_equal run])
 (import evaluate_response ^from "../../../src/agents/eval_site")
 
 (describe "Harness responses"

@@ -37,7 +37,7 @@
       (if (&& (same? record/token token) (command_context_matches? record supplied))
         (return record/context)))
     nil)))
-  (if_not ($absent? original) (return original))
+  (if ($present? original) (return original))
   (fail (ServiceError ^code "command_required" ^_msg "A public command projection requires its admitted operator command.")))
 
 (fn require_command_scope [runtime, supplied]
@@ -47,5 +47,5 @@
       (if (&& (same? record/token token) (same? record/runtime runtime) (command_context_matches? record supplied))
         (return record/context)))
     nil)))
-  (if_not ($absent? original) (return original))
+  (if ($present? original) (return original))
   (fail (ServiceError ^code "command_required" ^_msg "This operation requires its admitted operator command.")))

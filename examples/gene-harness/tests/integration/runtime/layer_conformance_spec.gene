@@ -1,7 +1,7 @@
 # The contributions layer test: a built-in is removed, replaced and restored
 # like a stored plugin, and the host stays up throughout. The loop's record
 # completeness has its own direct spec in tests/integration/agents/.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
 (import open_runtime close_runtime ^from "../../../src/runtime/bootstrap")
 (import baseline_profile ^from "../../../src/profiles/baseline")

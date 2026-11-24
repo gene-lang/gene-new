@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec fixture_path ^from "../../support")
 (import counted_service read_count event intake session_id wait_round remote_api remote_messages
   ^from "../../fixtures/channel_recovery")

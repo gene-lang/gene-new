@@ -1,5 +1,5 @@
 # Tests src/runtime/sessions.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import open_event_store close_event_store append_core_event record_core_state
   ^from "../../../src/storage/state")

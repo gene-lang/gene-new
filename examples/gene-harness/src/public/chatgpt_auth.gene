@@ -5,8 +5,8 @@
 (import account_id chatgpt_host_id active_chatgpt_id read_chatgpt_record save_chatgpt_account
   with_chatgpt_account with_chatgpt_account_checkpoint plan_enabled? public_account ^from "./chatgpt_store")
 (import decode_url verify_rs256 verify_id_token CryptoError ^from "." ^pkg "crypto")
-(import $net/http_client [request])
-(import $sync [gate])
+(import $net/http_client/request)
+(import $sync/gate)
 
 (const issuer "https://auth.openai.com")
 (const resource "https://api.openai.com/v1")

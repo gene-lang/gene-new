@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import Plugin PluginHost ExecutionLimits ^from "../../../src/plugin_api")
 (import new_harness put_cordis_plugin shutdown_harness status_of row uninstall registry_names plugin_error

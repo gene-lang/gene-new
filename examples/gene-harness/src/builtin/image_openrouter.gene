@@ -3,7 +3,7 @@
 (import image_error image_usage pixel_dimensions ^from "../public/image_contract")
 (import nonempty ^from "../public/provider")
 (import safe_error ^from "../public/model_text")
-(import $net/http_client [request])
+(import $net/http_client/request)
 
 (fn image_api_key []
   (?? (nonempty ($os/env? "OPENROUTER_API_KEY"))
@@ -34,7 +34,7 @@
     else false))
 
 (fn size_support [parameters, size : Str]
-  (if_not ($absent? parameters/size)
+  (if ($present? parameters/size)
     (return (if (allows parameters "size" size) "yes" else "no")))
   # The API normalizes size into endpoint resolution/aspect controls. It does
   # not require a literal `size` descriptor when those controls are present.
@@ -64,7 +64,7 @@
 
 (fn normalized_dimensions [size : Str]
   (let pixels (pixel_dimensions size))
-  (if_not ($absent? pixels) (return pixels))
+  (if ($present? pixels) (return pixels))
   # With no aspect-ratio override the tier shorthand requests a square.
   # Actual output dimensions are always inspected again by the host.
   (let tiers {^"512" 512 ^"768" 768 ^"1K" 1024 ^"1.5K" 1536 ^"2K" 2048 ^"4K" 4096})
@@ -127,7 +127,7 @@
         "unsupported_model"
         "The selected model is absent from OpenRouter image discovery.")))
   (let need_input (|| (> input/reference_count 0) (> input/max_attempts 1)))
-  (if_not ($absent? model)
+  (if ($present? model)
     (if (&& (== ($head model/architecture/output_modalities) List)
             (! (model/architecture/output_modalities .contains? "image")))
       (image_error "unsupported_output" "The selected model does not generate images."))
@@ -201,14 +201,14 @@
     # Prefer the advertised controls to the API's pixel-size convenience
     # conversion, which some endpoints pass through as an invalid ratio.
     (if normalized_supported (set size_parameters normalized_size)))
-  (if_not ($absent? model)
+  (if ($present? model)
     (if (&& (== ($head model/architecture/input_modalities) List)
             (! (model/architecture/input_modalities .contains? "image"))) (set input_support "no")))
   (let caps {^image_input input_support ^image_edit input_support ^image_output output_support
     ^routing route ^metadata_available known
     ^source "OpenRouter Image API endpoint discovery"})
   (if (&& known send_output_format) (caps .put "output_formats" ["png"]))
-  (if_not ($absent? max_images) (caps .put "max_images" max_images))
+  (if ($present? max_images) (caps .put "max_images" max_images))
   {^model input/model ^size input/size ^background input/background ^send_background send_background
    ^send_output_format send_output_format ^size_support requested_size_support
    ^dimensions (normalized_dimensions input/size) ^size_parameters size_parameters
@@ -226,7 +226,7 @@
     (body .put key value))
   (if settings/send_background (body .put "background" settings/background))
   (let references ($thaw ($freeze call/reference_images)))
-  (if_not ($absent? call/candidate) (references .push call/candidate))
+  (if ($present? call/candidate) (references .push call/candidate))
   {^body body ^reference_images references ^run call/run
    ^timeout_ms call/timeout_ms ^max_response_bytes 16777216 ^max_image_bytes 10485760})
 

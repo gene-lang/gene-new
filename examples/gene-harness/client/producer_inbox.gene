@@ -75,7 +75,7 @@
   (var region ($dom/element "notification_reference"))
   (var target ($dom/element "notification_reference_text"))
   (set region/hidden false)
-  (if_not ($absent? reference/evidence)
+  (if ($present? reference/evidence)
     ($dom/set_text
       target
       ($to_str
@@ -86,9 +86,9 @@
     (return))
   (var session (qtext reference/session))
   (var path "")
-  (if_not ($absent? reference/round)
+  (if ($present? reference/round)
     (set path $"${(api_root)}/sessions/${session}/rounds/${(qtext reference/round)}"))
-  (if_not ($absent? reference/command)
+  (if ($present? reference/command)
     (set path $"${(api_root)}/sessions/${session}/commands/${(qtext reference/command)}"))
   (if (== path "")
     ($dom/set_text
@@ -219,7 +219,7 @@
       (recover_action inbox ($to_str key) true)
       (return)))
   (var admission ($json/stringify [message/id action/id]))
-  (if_not ($absent? inbox/sending/%admission) (return))
+  (if ($present? inbox/sending/%admission) (return))
   (if (== session "")
     (producer_problem inbox "Open or create a conversation before running this action.")
     (return))

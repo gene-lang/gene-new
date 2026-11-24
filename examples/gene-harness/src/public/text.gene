@@ -8,7 +8,7 @@
   (var count ($math/min maximum ($str/byte_size text)))
   (while (>= count 0)
     (let prefix (try ($str/slice_bytes text 0 count) catch Fault nil))
-    (if_not ($absent? prefix) (return prefix))
+    (if ($present? prefix) (return prefix))
     (set count (- count 1)))
   "")
 
@@ -17,6 +17,6 @@
   (var count ($math/min maximum size))
   (while (>= count 0)
     (let suffix (try ($str/slice_bytes text (- size count) count) catch Fault nil))
-    (if_not ($absent? suffix) (return suffix))
+    (if ($present? suffix) (return suffix))
     (set count (- count 1)))
   "")

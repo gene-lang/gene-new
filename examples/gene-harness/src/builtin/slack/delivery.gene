@@ -18,12 +18,12 @@
     ^metadata {^event_type "gene_harness_delivery"
       ^event_payload {^delivery request/delivery ^part request/index ^revision request/revision
         ^body_digest (digest rendered)}}})
-  (if_not ($absent? rendered/blocks) (data .put "blocks" rendered/blocks))
+  (if ($present? rendered/blocks) (data .put "blocks" rendered/blocks))
   (let update ($present? request/ts))
   (if update (data .put "ts" request/ts)
     else
       (data .put "unfurl_links" false) (data .put "unfurl_media" false)
-      (if_not ($absent? request/thread) (data .put "thread_ts" request/thread)))
+      (if ($present? request/thread) (data .put "thread_ts" request/thread)))
   (try
     (let response (api_call api (if update "chat.update" else "chat.postMessage") data))
     # An unrecognizable timestamp cannot be linked or updated later.
@@ -61,7 +61,7 @@
   (let thread (if (== original/intent/mode "thread") original/parts/0/ts else original/intent/thread))
   (let query {^channel original/intent/channel ^include_all_metadata true ^limit 100})
   (if_not new_root (query .put "ts" thread))
-  (if_not ($absent? original/reconcile_cursor) (query .put "cursor" original/reconcile_cursor))
+  (if ($present? original/reconcile_cursor) (query .put "cursor" original/reconcile_cursor))
   (let response (api_call api (if new_root "conversations.history" else "conversations.replies") query ^http_method "GET"))
   (let found [])
   (for part in original/parts

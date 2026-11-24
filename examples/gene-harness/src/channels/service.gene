@@ -397,7 +397,7 @@
         (let example {})
         (for question in receipt/questions/questions
           (lines .push $"${question/id}: ${question/prompt}")
-          (if_not ($absent? question/choices)
+          (if ($present? question/choices)
             (lines .push $"Choices: ${($json/stringify question/choices)}"))
           (example .put
             question/id
@@ -510,7 +510,7 @@
         (result .push {^id record/intent/id
           ^status (if (== record/last_error "uncertain") "uncertain" else record/status)})))
     (let queue (state/queues .get session))
-    (if_not ($absent? queue)
+    (if ($present? queue)
       (map_for [id hold] in queue/holds
         (if (== hold/reason "uncertain_admission")
           (result .push {^id hold/source ^status "uncertain_admission"}))))

@@ -296,9 +296,9 @@
   (if (&& ($absent? active_raw) ($absent? previous_raw))
     (return (empty_response "absent"
       "No retained host log yet. A foreground launch may keep its output only on the terminal.")))
-  (if (&& (! ($absent? active_raw)) (! active/ok))
+  (if (&& ($present? active_raw) (! active/ok))
     (return (empty_response "unreadable" (text_or active/message "the host log is unreadable"))))
-  (if (&& (! ($absent? previous_raw)) (! previous/ok))
+  (if (&& ($present? previous_raw) (! previous/ok))
     (return (empty_response "unreadable" (text_or previous/message "the previous host log is unreadable"))))
   (let cursor (decode_cursor cursor_text source))
   (var segment_name "active")

@@ -23,7 +23,7 @@
     (if (|| runtime/closed/.get (! (same? host/h runtime/h)))
       (fail (ServiceError ^code "unavailable" ^_msg "Host service belongs to a closed or different workspace.")))
     (let existing (matching_service runtime host name))
-    (if_not ($absent? existing) (return existing/handle))
+    (if ($present? existing) (return existing/handle))
     (let token ($cell nil))
     (let handle ($freeze_shallow (constructor token)))
     (let record {^token token ^name name ^runtime runtime ^host host ^handle handle

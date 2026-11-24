@@ -1,5 +1,5 @@
-(import $test [describe it])
-(import $net/http_client [request])
+(import $test/[describe it])
+(import $net/http_client/request)
 (import ^from "../../support" isolated run_spec source_path)
 (import ^from "../../web_support" ready_host stop_host cli)
 (import ^from "../../../src/cli/client" connect api discover)
@@ -21,7 +21,7 @@
   (args .push "--port")
   (args .push "0")
   (if recovery (args .push "--recovery"))
-  (if_not ($absent? responses)
+  (if ($present? responses)
     (let script $"${home}/responses.gene")
     ($fs/write_text script ($to_str responses))
     (args .push "--script")
@@ -231,7 +231,7 @@
             (== ($size ($filter restored/ui/components (fn [item] (== item/name "workspaces")))) 1))
         ensure
           (stop_managed project)
-          (if_not ($absent? host) (stop_host host)))))))
+          (if ($present? host) (stop_host host)))))))
 (describe
   "Manager recovery metadata"
   (it

@@ -2,11 +2,11 @@
 
 (mod state)
 
-(import $store/fs [open:store_open Store StoreError])
-(import $serde [write_data])
-(import $crypto [sha256])
-(import $str [byte_size starts_with? slice_bytes])
-(import $fs [real_path])
+(import $store/fs/[open:store_open Store StoreError])
+(import $serde/write_data)
+(import $crypto/sha256)
+(import $str/[byte_size starts_with? slice_bytes])
+(import $fs/real_path)
 
 (type HarnessStateError : Error)
 
@@ -53,12 +53,12 @@
   (require_open events)
   (var streams events/streams/.get)
   (var found (streams .get key))
-  (if_not ($absent? found) (return found))
+  (if ($present? found) (return found))
   (var values (fresh_list))
   (var manifest events/last_manifest/.get)
-  (if_not ($absent? manifest)
+  (if ($present? manifest)
     (var descriptor (manifest/streams .get key))
-    (if_not ($absent? descriptor)
+    (if ($present? descriptor)
       (for digest in descriptor/segments
         (var segment (events/backend .Store:get $"segment/${digest}"))
         (if ($absent? segment)
@@ -71,13 +71,13 @@
 
 (fn ensure_projections_loaded [events : EventStore, key : Str]
   (var projections events/projections/.get)
-  (if_not ($absent? (projections .get key)) (return nil))
+  (if ($present? (projections .get key)) (return nil))
   (var plugin (fresh_map))
   (var core (fresh_map))
   (var manifest events/last_manifest/.get)
-  (if_not ($absent? manifest)
+  (if ($present? manifest)
     (var descriptor (manifest/streams .get key))
-    (if_not ($absent? descriptor)
+    (if ($present? descriptor)
       (var saved (events/backend .Store:get $"projection/${descriptor/projection}"))
       (if ($absent? saved)
         (fail (HarnessStateError ^_msg $"missing stream projection for ${key}")))
@@ -91,7 +91,7 @@
   (if_not (== envelope/format 2)
     (fail (HarnessStateError ^_msg "unsupported event envelope; start a fresh workspace")))
   (var catalog events/catalog/.get)
-  (if_not ($absent? catalog)
+  (if ($present? catalog)
     (var known (catalog .get envelope/type))
     (var quarantined events/quarantined/.get)
     (var seen (fresh_map))
@@ -104,7 +104,7 @@
 (fn unload_event_stream [events : EventStore, scope : Str, stream : Str]
   (var key (stream_key scope stream))
   (with_event_writer events (fn []
-    (if_not ($absent? (events/dirty_streams/.get .get key))
+    (if ($present? (events/dirty_streams/.get .get key))
       (flush_event_store_unlocked events))
     (events/streams/.get .delete key)
     (events/projections/.get .delete key)
@@ -172,7 +172,7 @@
   (let envelope
     (with_event_writer events (fn []
       (append_stamped_event_unlocked events scope stream event origin owner projection))))
-  (if_not ($absent? events/observer)
+  (if ($present? events/observer)
     (try (events/observer envelope)
       catch Error nil))
   envelope)
@@ -311,16 +311,16 @@
   (ensure_projections_loaded events (stream_key scope stream))
   (var all events/projections/.get)
   (var stream_states (all .get (stream_key scope stream)))
-  (if_not ($absent? stream_states)
+  (if ($present? stream_states)
     (var found (stream_states .get plugin))
     # A detached copy, as `core_state` returns: changing it stores nothing.
-    (if_not ($absent? found) (copy_data found))))
+    (if ($present? found) (copy_data found))))
 
 # Provenance travels in the same checkpoint as the state it describes. Reading
 # it needs no application projections, event segments, or plugin callbacks.
 (fn manifest_state_writers [manifest]
   (let result [])
-  (if_not ($absent? manifest)
+  (if ($present? manifest)
     (map_for [stream descriptor] in manifest/streams
       (map_for [id record] in (?? descriptor/state_writers {})
         (result .push (copy_data record)))))
@@ -380,7 +380,7 @@
       (var schema known/schema)
       (if ($present? known/versions)
         (var version_schema (known/versions .get $"v${envelope/version}"))
-        (if_not ($absent? version_schema) (set schema version_schema)))
+        (if ($present? version_schema) (set schema version_schema)))
       (schema schema_payload)
     catch Throwable
       (set schema_error ($to_str $err/.message))))
@@ -449,7 +449,7 @@
     (var segment
       (slice_events values start (+ start events/segment_events)))
     (var digest (sha256 (write_data segment)))
-    (if_not ($absent? backend)
+    (if ($present? backend)
       (var key $"segment/${digest}")
       (if_not (backend .Store:has? key)
         (backend .Store:put key segment)))
@@ -479,7 +479,7 @@
 (fn build_event_manifest [events : EventStore, generation : Int]
   (var descriptors (fresh_map))
   (var previous events/last_manifest/.get)
-  (if_not ($absent? previous)
+  (if ($present? previous)
     (map_for [key descriptor] in previous/streams
       (descriptors .put key descriptor)))
   (var streams events/streams/.get)
@@ -513,7 +513,7 @@
 
   (var history (fresh_list))
   (history .push (unique_strings current_digests))
-  (if_not ($absent? previous)
+  (if ($present? previous)
     (var i 0)
     (while (&& (< i previous/history/.size) (< history/.size 3))
       (history .push previous/history/%i)
@@ -571,7 +571,7 @@
   (events/generation .set generation)
   (events/last_manifest .set manifest)
   (clear_dirty events)
-  (if_not ($absent? events/checkpoint) (events/checkpoint generation))
+  (if ($present? events/checkpoint) (events/checkpoint generation))
   {^generation generation ^manifest manifest})
 
 (fn flush_event_store [events : EventStore]
@@ -608,7 +608,7 @@
    ^^created})
 
 (fn repair_interrupted_turns [events : EventStore, ^session session = nil, ^reason reason : Str = "interrupted"] : Int
-  (if_not ($absent? session)
+  (if ($present? session)
     (current_events events (stream_key "session" session)))
   (var repairs (fresh_list))
   (var interrupted_calls (fresh_list))

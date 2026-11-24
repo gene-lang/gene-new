@@ -1,4 +1,4 @@
-(import $test [describe it run])
+(import $test/[describe it run])
 (import resolve_effort model_entry model_window model_capabilities require_model_input validate_model_settings
   ^from "../../../src/public/models")
 

@@ -5,7 +5,7 @@
 (mod settings_plugin)
 (import Plugin PluginHost UiHost ServiceError current_workspace current_manager ^from "../plugin_api")
 (import contribute_text_doc ^from "../public/documentation")
-(import $css [css rule decl])
+(import $css/[css rule decl])
 
 (const model_keys ["provider" "model" "effort"])
 (const efforts ["auto" "none" "minimal" "low" "medium" "high" "xhigh" "max"])

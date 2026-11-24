@@ -80,7 +80,7 @@
       (if (&& ($present? payload) (== (qtext payload/session) card/session) (!= (qtext payload/batch_id) (qtext current_batch/id)))
         (var identity ($to_str key))
         (var editor : QuestionEditor center/questions/editors/%identity)
-        (if_not ($absent? editor)
+        (if ($present? editor)
           (var slot $"pending/${identity}")
           (if ($absent? center/questions/mounts/%slot)
             (var recovery ($dom/render `(div ^class_name "reply_recovery")))
@@ -118,7 +118,7 @@
 
 (fn card_for [center : NotificationCenter, session : Str] : QuestionCard
   (var found : Any center/cards/%session)
-  (if_not ($absent? found)
+  (if ($present? found)
     (var existing : QuestionCard found)
     (return existing))
   (var element ($dom/render `(section ^class_name "notification_card")))
@@ -183,7 +183,7 @@
     (if (|| card/stale ($absent? card/snapshot))
       (set card/waiting (== (qtext session/status) "waiting"))))
   (map_for [key payload] in center/questions/pending
-    (if_not ($absent? payload) (card_for center (qtext payload/session))))
+    (if ($present? payload) (card_for center (qtext payload/session))))
   (map_for [key raw] in center/cards
     (var card : QuestionCard raw)
     (paint_card center card)))

@@ -3,8 +3,8 @@
 (mod provider_login)
 (import ProviderError ^from "../plugin_api")
 (import nonempty ^from "./provider")
-(import $net/http_client [request])
-(import $sync [gate])
+(import $net/http_client/request)
+(import $sync/gate)
 
 (fn require_login_key [value] : Str
   (if (|| (!= ($head value) Str) (== value "") (> ($str/byte_size value) 16384)

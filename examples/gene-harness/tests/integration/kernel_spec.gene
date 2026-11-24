@@ -1,5 +1,5 @@
 # Tests src/kernel.gene.
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../support")
 (import new_harness shutdown_harness install put_cordis_plugin rows row status_of uninstall contribute
   ^from "../../src/kernel")

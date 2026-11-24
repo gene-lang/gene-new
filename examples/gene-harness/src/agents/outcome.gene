@@ -88,7 +88,7 @@
 
 (fn discard_done_items [turn]
   (if (> ($size turn/items/.get) 0)
-    (if_not ($absent? turn/console)
+    (if ($present? turn/console)
       (turn/console """done Outcome dropped appended prompt items
 """))
     (turn/items .set []))
@@ -99,7 +99,7 @@
   (let checked (== ($head value) CheckedOutcome))
   (let raw (if checked value/value else value))
   (let candidate (if (== ($head raw) Outcome) raw else (Outcome ^prompt raw)))
-  (if_not ($absent? candidate/extensions)
+  (if ($present? candidate/extensions)
     (if (!= ($head candidate/extensions) Map)
       (fail (OutcomeError ^_msg "Outcome extensions must be a map of registered keys.")))
     (if (&& (! checked) (> ($map_size candidate/extensions) 0))
@@ -132,7 +132,7 @@
     # appended context until they have had their chance to defer done.
     (if_not coordinated (discard_done_items turn))
     (return {^kind "done" ^outcome outcome ^questions nil}))
-  (if_not ($absent? outcome/questions)
+  (if ($present? outcome/questions)
     (return
       {
         ^kind "questions"
@@ -229,30 +229,30 @@
 
 (fn item_header [item] : Str
   (var header $"[${item/id}]")
-  (if_not ($absent? item/function) (return $"${header} fn ${item/function}"))
-  (if_not ($absent? item/line) (set header $"${header} line ${item/line}:"))
-  (if_not ($absent? item/form) (set header $"${header} ${(abbreviated_form item/form)}"))
+  (if ($present? item/function) (return $"${header} fn ${item/function}"))
+  (if ($present? item/line) (set header $"${header} line ${item/line}:"))
+  (if ($present? item/form) (set header $"${header} ${(abbreviated_form item/form)}"))
   header)
 
 (fn request_items [turn, validated, ^patch patch = nil, ^error error = nil, ^error_line error_line = nil, ^answers answers = nil, ^result_line result_line = nil]
   (let rendered [])
-  (if_not ($absent? patch)
+  (if ($present? patch)
     (let patch_id (implicit_id turn "patch"))
     (rendered .push {^id patch_id ^header $"[${patch_id}]" ^value patch ^^inline}))
   (for item in turn/items/.get
     (rendered .push {^id item/id ^header (item_header item) ^value (value_text item/value)}))
-  (if_not ($absent? validated)
+  (if ($present? validated)
     (let outcome validated/outcome)
-    (if_not ($absent? outcome/prompt)
+    (if ($present? outcome/prompt)
       (let result_id (implicit_id turn "result"))
       (let line (if ($absent? result_line) "" else $" line ${result_line}: Outcome ^prompt"))
       (rendered .push
         {^id result_id ^header $"[${result_id}]${line}" ^value (value_text outcome/prompt)})))
-  (if_not ($absent? error)
+  (if ($present? error)
     (let error_id (implicit_id turn "error"))
     (let line (if ($absent? error_line) "" else $" line ${error_line}:"))
     (rendered .push {^id error_id ^header $"[${error_id}]${line}" ^value error}))
-  (if_not ($absent? answers)
+  (if ($present? answers)
     (let answers_id (implicit_id turn "answers"))
     (rendered .push {^id answers_id ^header $"[${answers_id}]" ^value (value_text answers)}))
   rendered)

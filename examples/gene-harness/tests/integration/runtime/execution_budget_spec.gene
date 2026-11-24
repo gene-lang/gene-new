@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec ^from "../../support")
 (import open_runtime close_runtime prepare_layout ^from "../../../src/runtime/bootstrap")
 (import Profile ^from "../../../src/profiles/profile")
@@ -49,7 +49,7 @@
         ") ^dependencies [(quote " ($to_str helper)
         ")]) (Outcome ^prompt \"Use the published plugin.\")")
       ^round "publication" ^timeout_ms timeout))
-    (if_not ($absent? published/error) (fail published/error))
+    (if ($present? published/error) (fail published/error))
     ($assert ($present? (row runtime/h "functions" "budget_probe"))
       "The stored budget probe did not activate.")
     runtime

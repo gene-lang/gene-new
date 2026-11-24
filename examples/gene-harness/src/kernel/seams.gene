@@ -80,7 +80,7 @@
   (let names [])
   (for chapter in chapters
     (if (== chapter/name name)
-      (if_not ($absent? chapter/text) (return chapter/text))
+      (if ($present? chapter/text) (return chapter/text))
       (return ($fs/read_text chapter/path)))
     (names .push chapter/name))
   (let listed ($str/join names ", "))

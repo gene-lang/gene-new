@@ -1,4 +1,4 @@
-(import $test [describe it run])
+(import $test/[describe it run])
 (import new_harness contribute shutdown_harness install uninstall row Plugin PluginHost ^from "../../../src/kernel")
 (import new_speech_service choose_speech_engine warm_engine synthesize_speech cool_speech
   ^from "../../../src/runtime/speech_service")

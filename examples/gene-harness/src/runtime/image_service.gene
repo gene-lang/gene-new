@@ -49,7 +49,7 @@
 (fn latest_candidate [state] ^^private
   (var found nil)
   (for attempt in state/attempts
-    (if_not ($absent? attempt/image_id) (set found attempt)))
+    (if ($present? attempt/image_id) (set found attempt)))
   found)
 
 (fn image_result [service, state, ^reused reused : Bool = false]
@@ -84,7 +84,7 @@
     ^turn state/turn ^at_ms ($os/wall_ms) ^text text
     ^late ($absent? origin) ^^ignorable})
   (let loaded (service/runtime/sessions/loaded/.get .get state/session))
-  (if_not ($absent? loaded) (loaded/console/.get .push payload))
+  (if ($present? loaded) (loaded/console/.get .push payload))
   (append_core_event service/runtime/events "session" state/session payload)
   (flush_event_store service/runtime/events)
   nil)
@@ -124,7 +124,7 @@
   (reconcile_image_candidates service/store live/state)
   (settle_open_calls service live)
   (reconcile_image_calls service/runtime live/state)
-  (if_not ($absent? live/reservation)
+  (if ($present? live/reservation)
     (release_media_reservation service/store live/reservation)
     (live .put "reservation" nil))
   (live/state .put "state" "finished")
@@ -159,7 +159,7 @@
 (fn begin_image_run [service, input] ^^private
   (let origin (owned_origin service))
   (let saved (service/gate (fn [] (read_image_run service/runtime origin/session origin/round))))
-  (if_not ($absent? saved)
+  (if ($present? saved)
     (let request (normalize_image_request input saved/request))
     (if (!= request saved/request)
       (image_error "round_conflict" "This round already has an image run with different inputs. Start a new user request."))
@@ -178,7 +178,7 @@
     prepared/limits/persistence_margin_ms))
   (service/gate (fn []
     (let concurrent (read_image_run service/runtime origin/session origin/round))
-    (if_not ($absent? concurrent)
+    (if ($present? concurrent)
       (if (!= (normalize_image_request input concurrent/request) concurrent/request)
         (image_error "round_conflict" "This round already admitted different image inputs."))
       (return (image_result service concurrent ^reused true)))
@@ -208,7 +208,7 @@
   (if (|| ($absent? stored) (!= stored/id id))
     (image_error "unknown_run" "Image run does not belong to this response's round."))
   (let live (service/live .get id))
-  (if_not ($absent? live) (return live))
+  (if ($present? live) (return live))
   (if (== stored/state "running")
     (image_error "interrupted" "This image run is no longer executing and cannot be resumed."))
   {^state stored ^published true})

@@ -191,7 +191,7 @@
   (let shown (public_round service record/id loaded/round/.get))
   (copy .put "last_round" shown)
   (if (== shown/state "paused") (copy .put "status" "paused"))
-  (if_not ($absent? record/parent)
+  (if ($present? record/parent)
     (let owner (service/runtime/sessions/index/.get .get record/parent/session))
     (copy .put "parent_title" (?? owner/title record/parent/session)))
   copy)
@@ -214,9 +214,9 @@
 
 (fn publish_message [service, kind : Str, session : Str, data, ^reason reason = nil]
   (let publisher service/publisher/.get)
-  (if_not ($absent? publisher)
+  (if ($present? publisher)
     (let message {^type kind ^session session ^data data})
-    (if_not ($absent? reason) (message .put "reason" reason))
+    (if ($present? reason) (message .put "reason" reason))
     (publisher message))
   nil)
 
@@ -302,13 +302,13 @@
     (return nil))
   (if (== kind "delegation/state")
     (let data event/payload/state/record)
-    (if_not ($absent? data)
+    (if ($present? data)
       (if (== data/created_seq 0) (data .put "created_seq" event/seq))
       (publish_message service "delegation" session (delegation_block session data)))
     (queue_snapshot service session))
   (if (== kind "turn/request")
     (let request (browser_request service session event))
-    (if_not ($absent? request) (publish_message service "turn" session request)))
+    (if ($present? request) (publish_message service "turn" session request)))
   (if (["turn/response" "turn/start" "turn/end" "turn/patch"] .contains? kind)
     (publish_message service "turn" session (event_record session event)))
   (if (["reply" "console"] .contains? kind)
@@ -498,7 +498,7 @@
   service
   catch Error
     (let original $err)
-    (if_not ($absent? service) (service/closed .set true))
+    (if ($present? service) (service/closed .set true))
     (if (|| ($absent? service) ($absent? service/lifecycle))
       (close_runtime runtime)
       else (close_session_lifecycle service/lifecycle))
@@ -575,11 +575,11 @@
     (fail
       (RoundError ^code "revision_conflict" ^_msg "Session changed; refresh before editing it.")))
   (let update {^revision (+ revision 1)})
-  (if_not ($absent? changes/title)
+  (if ($present? changes/title)
     (if (|| (!= ($head changes/title) Str) (== ($str/trim changes/title) "") (> ($str/byte_size changes/title) 256))
       (fail (RoundError ^code "invalid_request" ^_msg "Session title must have 1–256 bytes")))
     (update .put "title" ($str/trim changes/title)))
-  (if_not ($absent? changes/pinned)
+  (if ($present? changes/pinned)
     (if (!= ($head changes/pinned) Bool)
       (fail (RoundError ^code "invalid_request" ^_msg "Pinned must be boolean")))
     (update .put "pinned" changes/pinned))
@@ -604,7 +604,7 @@
   (if_not (== ($head media) List)
     (fail (RoundError ^code "invalid_request" ^_msg "Attachments must be a list of media IDs.")))
   # A card send is always a chat message, never a slash command.
-  (if_not ($absent? card)
+  (if ($present? card)
     (return (submit_round ^model_settings model_settings ^media media ^card card service/runtime/services/values/controller session request_id sequence text)))
   (let parsed (parse_submission service/runtime/h text))
   (if (&& (== parsed/kind "command") (! media/.empty?))
@@ -650,7 +650,7 @@
 
 (fn question_view? [batch] : Bool
   (for question in (?? batch/questions [])
-    (if_not ($absent? (?? question/view nil)) (return true)))
+    (if ($present? (?? question/view nil)) (return true)))
   false)
 
 (fn operator_receipt [service, session : Str, id : Str]
@@ -669,7 +669,7 @@
   (if (== kind "command")
     (let result
       (command_request_receipt service/runtime/services/values/commands session request_id))
-    (if_not ($absent? result) (return result)))
+    (if ($present? result) (return result)))
   (if (== kind "round")
     (for record in ((Path "receipts") (round_state service/runtime/services/values/controller session))
       (if (== record/request_id request_id) (return (public_round service session record)))))
@@ -907,7 +907,7 @@
   (for candidate in (rows service/runtime/h "web_components")
     (if (|| ($present? candidate/view_state) (== candidate/slot "settings_section")) (continue))
     (let item {^name candidate/name ^slot candidate/slot})
-    (if_not ($absent? candidate/style_css)
+    (if ($present? candidate/style_css)
       (item .put "style" candidate/style_css)
       (item .put "style_class" candidate/style_class))
     (try
@@ -946,7 +946,7 @@
   (let catalog_revision (?? (/id (catalog_snapshot service/runtime)) nil))
   (var running 0)
   (map_for [id frame] in service/runtime/services/values/controller/rounds/.get
-    (if_not ($absent? frame/task) (set running (+ running 1))))
+    (if ($present? frame/task) (set running (+ running 1))))
   (let commands (command_descriptors service/runtime/h composition))
   (let plugins [])
   (for plugin in composition/plugins
@@ -1399,7 +1399,7 @@
 
 (fn client_reply [service, reply]
   (let slot (service/client_requests/.get .get reply/id))
-  (if_not ($absent? slot) (slot .set reply))
+  (if ($present? slot) (slot .set reply))
   {^^ok})
 
 (fn workspace_directory_list [workspaces_dir : Str, archive_dir : Str]

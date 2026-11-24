@@ -1,4 +1,4 @@
-(import $test [describe it])
+(import $test/[describe it])
 (import isolated run_spec test_service ^from "../../support")
 (import create_session submit receipt snapshot answer command close_session_service ^from "../../../src/web/session_service")
 (import continue_round cancel_round save_round resume_continuations round_receipt RoundError ^from "../../../src/runtime/round_controller")

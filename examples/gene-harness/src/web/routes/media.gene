@@ -3,7 +3,7 @@
 (import api_root api_version ^from "../contract.gene")
 (import response fail_request field ^from "../request")
 (import put_media_base64 media_descriptor media_bytes ^from "../../storage/media")
-(import $net/http [bytes:http_bytes])
+(import $net/http/[bytes:http_bytes])
 
 (fn media_request [context, request, parts]
   (let media_store context/media)

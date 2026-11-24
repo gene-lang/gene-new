@@ -11,7 +11,7 @@
      image/mime else "unknown")})
 
 (fn payload_key [image]
-  (if_not ($absent? image/digest) (return image/digest))
+  (if ($present? image/digest) (return image/digest))
   ($crypto/sha256 (if (== ($head image/base64) Str) image/base64 else "uncatalogued")))
 
 (import escaped_slashes payload_forms redact_image_text safe_error ^from "../public/model_text" ^^export)
@@ -89,7 +89,7 @@
 (fn load_part [runtime, value]
   (if (== ($head value) Map)
     (if (== ($map_size value) 1)
-      (if_not ($absent? value/harness_blob)
+      (if ($present? value/harness_blob)
         (if (== ($head value/harness_blob) Str) (return (read_body runtime value/harness_blob)))
         (if (== value/harness_blob/kind "media")
           (return (restore_media runtime value/harness_blob)))
@@ -97,7 +97,7 @@
           (return
             ($str/join ($map value/harness_blob/parts (fn [part] (load_part runtime part))) "")))
         (fail (Error ^_msg "Unsupported recorded payload marker.")))
-      (if_not ($absent? value/harness_literal)
+      (if ($present? value/harness_literal)
         (let result {})
         (map_for [key item] in value/harness_literal
           (result .put key (load_part runtime item)))
@@ -144,7 +144,7 @@
       (if ($absent? reason) (set reason "Provider transformed or omitted an input image."))))
   (if (&& ($absent? reason) (opaque_value? rewritten))
     (set reason "Prepared input contains an unsupported image representation."))
-  (if_not ($absent? reason)
+  (if ($present? reason)
     (return {^harness_prepared_omitted {^reason reason ^media (image_catalog inventory)}}))
   (store_part runtime rewritten))
 (fn result_record [runtime, value, inventory]
