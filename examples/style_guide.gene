@@ -95,10 +95,11 @@ line two"""
   user/roles/.size)
 
 (fn active_names [users : (List User)] : (List Str)
-  ((path users %$to_stream)
-    .filter (fn [user] user/active)
-    ; .map (fn [user] user/name)
-    ; .into []))
+  (users
+    -> to_stream
+    -> filter (fn [user] user/active)
+    -> map (fn [user] user/name)
+    -> into []))
 
 # Compact conditions, guard sequences, and full clauses.
 
@@ -193,7 +194,7 @@ line two"""
 (type ExampleError : Error)
 
 (fn checked_value [value] ^errors [ExampleError]
-  (if_not value (fail (ExampleError ^_msg "value is required")))
+  (if_not ($present? value) (fail (ExampleError ^_msg "value is required")))
   value)
 
 (fn recover_value [load, close]
@@ -206,11 +207,13 @@ line two"""
   ensure
     (close)))
 
+# Thread-affine work can opt out of automatic worker placement.
+(fn run_on_root [work]
+  (scope
+    (await (spawn ^lane root (work)))))
+
 (fn concurrent_pair [left, right]
   (scope
-    # Thread-affine work can opt out of automatic worker placement.
-    (var local_task (spawn ^lane root (left)))
-    (await local_task)
     (var left_task (spawn (left)))
     (var right_task (spawn (right)))
     [(await left_task) (await right_task)]))
@@ -230,9 +233,8 @@ line two"""
   ($head form))
 
 (fn user_card [user : User]
-  `(article ^class "user-card"
-     (h2 %user/.label)
-     (ul %((path user roles %$to_stream) .map (fn [role] `(li %role)); .into []) ...)))
+  (let items (user/roles -> map (fn [role] `(li %role)) -> into []))
+  `(article ^class "user-card" (h2 %user/.Labelled:label) (ul %items...)))
 
 (fn path_examples [session, field]
   [session/user/name session/items/-1 /user/name (session .%(Path "user" %field))])
