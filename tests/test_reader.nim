@@ -235,6 +235,9 @@ suite "reader — paths":
     check_read("users/%i/.to_html", "users/%i/.to_html")
   test "qualified dynamic and optional path sends":
     check_read("x/.Proto:msg", "(x .Proto:msg)")
+    check_read("x/.get/.Proto:msg", "(x/.get .Proto:msg)")
+    check_read("x/.get/.ns/Proto:msg", "(x/.get .ns/Proto:msg)")
+    check_read("x/.get/?.Proto:msg", "(x/.get ?.Proto:msg)")
     check_read("x/.%m", "x/.%m")
     check_read("x/?.msg", "x/?.msg")
     check_read("x/?.%m", "x/?.%m")

@@ -1424,8 +1424,8 @@ proc dotSendDescriptor(value: Value): DotSendDescriptor =
 
 proc normalizeDotQualifiedPathMessage(value: Value): Value =
   ## `x/.Proto:msg` is tokenized as one qualified-message lexeme whose
-  ## qualifier path contains the send marker. Split that path at the marker
-  ## into receiver and protocol, then lower to the canonical send node.
+  ## qualifier path contains the send marker. Split at the final send marker
+  ## so earlier message stages, such as `.get`, stay in the receiver path.
   if value.kind != vkNode or value.head.kind != vkSymbol or
       value.head.symVal != "msg" or
       value.body.len != 2 or value.body[0].kind != vkNode or
@@ -1435,7 +1435,7 @@ proc normalizeDotQualifiedPathMessage(value: Value): Value =
   let path = value.body[0].body
   var marker = -1
   var prefix: tuple[found, optional: bool, rest: string]
-  for i in 1 ..< path.len:
+  for i in countdown(path.high, 1):
     if path[i].kind == vkSymbol:
       let name = path[i].symVal
       var candidate: tuple[found, optional: bool, rest: string]

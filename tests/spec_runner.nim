@@ -6777,6 +6777,10 @@ suite "spec — absence-guarded sends (design §3)":
                "(var x (X ^n 1)) (var absent nil) (var m P:pm) " &
                "[x/?.msg absent/?.msg x/.P:pm x/.%m absent/?.%m]",
                "[\"x\" nil \"x-pm\" \"x-pm\" nil]")
+    check_eval(guarded &
+               "(let cell ($cell (X ^n 1))) (let empty ($cell nil)) " &
+               "[cell/.get/.P:pm empty/.get/?.P:pm]",
+               "[\"x-pm\" nil]")
 
   test "absence is decided before the message name, but never hides a typo":
     # An absent receiver short-circuits an unknown message too — the guard is

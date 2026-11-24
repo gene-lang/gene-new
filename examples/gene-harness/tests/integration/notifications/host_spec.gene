@@ -81,7 +81,7 @@
           ($assert (&& (! denied/ok) (== denied/code "forbidden")))
           (let plugin_denied (publisher/.get .PluginHost:notification_update keyed/id {^title "Stolen"}))
           ($assert (&& (! plugin_denied/ok) (== plugin_denied/code "forbidden")))
-          (let owned_messages (publisher/.get .PluginHost:notifications))
+          (let owned_messages publisher/.get/.PluginHost:notifications)
           ($assert (== owned_messages/.size 1))
           (let invalid (call h "notification_post" {^title "Invalid" ^detail (quote (script "bad"))}))
           ($assert (! invalid/ok) "facade bypassed detail validation")
