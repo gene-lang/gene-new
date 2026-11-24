@@ -11460,10 +11460,15 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     for entry in bare:
       result.define(entry[0], entry[1])
   result.define("gene", newNamespace("gene", geneScope))
-  # `genex` is an active, initially empty root for experimental/incubating
-  # APIs; `geney`/`genez` stay reserved but undefined. All four are rejected in
-  # binding position by the compiler (reservedStdlibRoots).
-  result.define("genex", newNamespace("genex", newScope(result)))
+  # `genex` is an owner name for experimental packages, not a namespace. Both
+  # owner names stay reserved in binding position so no program can make
+  # `gene/x` or `genex/x` look like a namespace path (reservedStdlibRoots);
+  # `geney`/`genez` from the July root-swap lifecycle are released.
+  #
+  # A `gene/x` package may take any valid package name, including one the
+  # runtime binds: the namespace and the owner are separate namespaces of names,
+  # and they load differently. The binding keeps `$x`; the package is reached
+  # through its dependency alias (docs/spec/packages.md §3).
   app.stdlib = geneScope
   # Foreign native threads can look up canonical implementations without first
   # spawning a Gene task, so their manual Value edges must already use atomic
@@ -12024,13 +12029,6 @@ proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
   # The lexical root is copied whole: after `staysBare` pruning it holds
   # operators, core forms and type names, none of which reach outside the
   # process. What is *not* copied is `gene`, which is rebound below.
-  # `genex` is withheld along with `gene`, and unlike `gene` it is not rebound.
-  # The grant filter below runs over `app.stdlib` — the members of `gene` — so a
-  # second stdlib root copied whole would never meet it: the first incubating API
-  # that reached outside the process would land inside every sandbox silently.
-  # It is empty today, which is exactly when this is cheap to close. An
-  # experimental root is withheld until its members are classified, and `genex`
-  # is in `reservedStdlibRoots`, so a mod cannot bind the name back.
   var completeGrants = true
   for name in sandboxableNamespaces:
     if name notin grants:
@@ -12042,7 +12040,7 @@ proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
   # Partial grants retain their isolated implementation boundary.
   let root = newScope(if completeGrants: full else: nil, application = app)
   for name, value in full.vars:
-    if name != "gene" and name != "genex":
+    if name != "gene":
       root.define(name, value)
   let restricted = newScope(root)
   for name, value in app.stdlib.vars:
@@ -12050,9 +12048,6 @@ proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
       continue
     restricted.define(name, value)
   root.define("gene", newNamespace("gene", restricted))
-  if completeGrants:
-    # The incubating root is not part of the namespace grant inventory.
-    root.define("genex", NIL)
   app.sandboxRoots[key] = root
   root
 

@@ -12470,11 +12470,14 @@ suite "spec — serde references (stage 3)":
                "true")
 
   test "unresolved module reference errors without loading":
+    # Whether the host package cannot resolve the path at all (no library
+    # target) or resolves it to an unloaded module, the reader raises before
+    # loading anything, and the message names the module.
     check_eval("(import $serde [read SerdeError]) " &
                "(import $str [contains?]) " &
                "(try (read \"(serde_v1 (serde_type_ref ^module \\\"no/such\\\" " &
                "^path \\\"X\\\"))\") " &
-               "catch SerdeError (contains? $err/.message \"not loaded\"))",
+               "catch SerdeError (contains? $err/.message \"no/such\"))",
                "true")
 
   test "reserved ref props are rejected":

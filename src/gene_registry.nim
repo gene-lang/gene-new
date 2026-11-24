@@ -152,6 +152,10 @@ proc randomBytes(): string =
   result = newString(bytes.len)
   for i, b in bytes: result[i] = char(b)
 
+proc provisionFailure(message: string) {.noreturn.} =
+  stderr.writeLine("gene-registry: " & message)
+  quit(2)
+
 proc provision(): bool =
   if paramCount() == 5 and paramStr(1) == "keygen" and
       paramStr(2) == "--crypto" and paramStr(4) == "--out":
@@ -167,15 +171,40 @@ proc provision(): bool =
     privateFile(directory / "publish.token", base64.encode(randomBytes()) & "\n")
     stdout.writeLine("public key: " & base64.encode(publicKey))
     return true
-  if paramCount() == 11 and paramStr(1) == "delegate" and
-      paramStr(2) == "--crypto" and paramStr(4) == "--registry-key" and
-      paramStr(6) == "--owner" and paramStr(8) == "--owner-key" and paramStr(10) == "--out":
-    let crypto = loadReleaseCrypto(paramStr(3))
+  if paramCount() >= 2 and paramStr(1) == "delegate":
+    # `gene` and `genex` are reserved owners (docs/spec/packages.md §1), so a
+    # mistaken delegation fails loudly instead of handing out a project owner
+    # name. `--force-reserved` is the explicit override for a project key.
+    var options = initTable[string, string]()
+    var forceReserved = false
+    var index = 2
+    while index <= paramCount():
+      let argument = paramStr(index)
+      case argument
+      of "--force-reserved":
+        forceReserved = true
+        inc index
+      of "--crypto", "--registry-key", "--owner", "--owner-key", "--out":
+        if index + 1 > paramCount():
+          provisionFailure(argument & " expects a value")
+        options[argument] = paramStr(index + 1)
+        index += 2
+      else:
+        provisionFailure("unknown delegate option: " & argument)
+    for required in ["--crypto", "--registry-key", "--owner", "--owner-key",
+                     "--out"]:
+      if not options.hasKey(required):
+        provisionFailure("delegate needs " & required)
+    let owner = options["--owner"]
+    if owner in ["gene", "genex"] and not forceReserved:
+      provisionFailure("owner " & owner & " is reserved for the project; " &
+        "pass --force-reserved to delegate it")
+    let crypto = loadReleaseCrypto(options["--crypto"])
     defer: crypto.close()
-    let seed = rawKey(paramStr(5))
-    let record = ownerKeyRecord(paramStr(7), rawKey(paramStr(9)))
+    let seed = rawKey(options["--registry-key"])
+    let record = ownerKeyRecord(owner, rawKey(options["--owner-key"]))
     let signature = crypto.ed25519Sign(seed, ownerKeySignaturePayload(record))
-    let directory = paramStr(11)
+    let directory = options["--out"]
     privateOutput(directory)
     privateFile(directory / "owner-record.gene", print(record) & "\n")
     privateFile(directory / "owner-record.sig", signature)

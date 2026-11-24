@@ -598,7 +598,8 @@ type
   ImportSpec* = object
     fromModule*: bool                 # true: `^from "path"`; false: namespace path
     modulePath*: string               # the `^from "path"` string
-    pkgName*: string                  # `^pkg "owner/name"`, or "" for the
+    pkgName*: string                  # `^pkg "alias"`: a dependency alias of the
+                                      # importing package, or "" for the
                                       # importing module's own package
     nsSegments*: seq[string]          # namespace-path segments (e.g. std/stream)
     alias*: string                    # `*:alias` / `source:alias`, or ""

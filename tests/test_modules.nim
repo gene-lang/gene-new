@@ -1,4 +1,4 @@
-import gene/[compiler, gir, gir_codec, types, vm, printer]
+import gene/[compiler, gir, gir_codec, package, types, vm, printer]
 import std/[os, osproc, strutils, unittest]
 
 let modDir = getTempDir() / "gene_module_tests"
@@ -1481,7 +1481,6 @@ suite "modules — built-in identity and scope hygiene":
     for source in [
       "(var gene 1)",
       "(fn f [genex] genex)",
-      "(var [geney] [1])",
       "(set gene 1)",
       "(mod gene)",
       "(import *:gene ^from \"./reserved_source\")"
@@ -1490,6 +1489,9 @@ suite "modules — built-in identity and scope hygiene":
         writeModule("reserved_source.gene", "(var value 1)")
       expect GeneError:
         discard runProgram(source)
+    # `geney`/`genez` were reserved by the July root-swap lifecycle, which is
+    # gone (docs/spec/packages.md §2). Only the two owner names stay reserved.
+    check runProgram("(var geney 1) (var genez 2) (+ geney genez)").print() == "3"
 
   test "module declarations do not include built-ins":
     writeModule("decls2.gene", "(var only-me 1)")
@@ -1933,8 +1935,7 @@ suite "modules — the sandbox loader (design §D5)":
       "(protocol PublicHost (message state [] : Int))")
     writeFile(pluginRoot / "plugin.gene",
       "(import PublicHost ^from \"host_api.gene\") " &
-      "(fn read [host] : Int (host .PublicHost:state)) " &
-      "(fn experimental_hidden [] ($absent? genex))")
+      "(fn read [host] : Int (host .PublicHost:state))")
     let program =
       "(import PublicHost ^from \"./host_api\") (type Host) " &
       "(var m " & loadSandboxed(pluginRoot, "plugin.gene",
@@ -1942,8 +1943,8 @@ suite "modules — the sandbox loader (design §D5)":
       # Register after creating the sandbox root: a copied impl list would
       # still miss the implementation and make a cached root stale.
       "(impl PublicHost for Host (message state [] : Int 7)) " &
-      "[(m/read (Host)) (m/experimental_hidden)]"
-    check runSandboxProgram(program).print() == "[7 true]"
+      "[(m/read (Host))]"
+    check runSandboxProgram(program).print() == "[7]"
     expect GeneError:
       discard runSandboxProgram(program.replace(
         "($runtime/sandbox_namespaces)", "[\"fs\"]"))
@@ -2560,3 +2561,24 @@ suite "modules — the sandbox loader (design §D5)":
       "(var identity saved/identity) " &
       "(tx .commit) (generation .release) " &
       "(same? (identity) saved)"), scope).boolVal
+
+suite "modules — package names and the gene namespace":
+  setup:
+    removeDir(modDir)
+    createDir(modDir)
+
+  test "a gene/x package may take a runtime binding name":
+    # The namespace and the owner are separate namespaces of names
+    # (docs/spec/packages.md §3): `$str` stays the runtime namespace, while the
+    # package is reached through its dependency alias.
+    writeFile(modDir / "package.gene", """
+{^format 1
+ ^name "gene/str"
+ ^version "0.1.0"
+ ^files {^include ["package.gene" "*.gene"]}}
+""")
+    let pkg = loadPackageAt(modDir, poEntry)
+    check pkg.name == "gene/str"
+    let scope = newGlobalScope(newApplication(singlePackageGraph(pkg)))
+    check run(compileSource("($str/join [\"a\" \"b\"] \"-\")"), scope).print() ==
+      "\"a-b\""

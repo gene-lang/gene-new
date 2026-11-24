@@ -73,6 +73,9 @@ Useful commands:
 | `gene pkg publish --registry-config <path> --signing-key <file>` | Sign and stage a local package release, then publish its immutable version. |
 | `gene pkg cache gc` | Remove unreferenced cached objects. |
 
+The reserved `gene` and `genex` owners and the read-only install store are
+specified in [package owners and the install store](spec/packages.md).
+
 Workspaces, multiple package versions, lockfiles, git/path sources, and local
 registry adapters are implemented. Experimental hosted resolution and sync
 use `gene pkg resolve --registry-config <path>` and

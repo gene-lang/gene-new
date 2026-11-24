@@ -381,7 +381,8 @@ standard library can use this list directly for both its loader ceiling and
 each generated module, without maintaining a second namespace inventory.
 With the complete grant list, canonical protocol implementations remain visible
 through the application's live registry. Partial grant lists retain isolated
-implementation visibility. The experimental `genex` root is still withheld.
+implementation visibility. A sandbox root carries `gene` only; `genex` is an
+owner name for experimental packages, not a namespace.
 
 `($os/exit status)` terminates the native process with a status in `0..255`.
 It flushes ordinary stdio through native exit and does not unwind Gene

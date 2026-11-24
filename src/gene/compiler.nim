@@ -377,7 +377,7 @@ proc enableLocalSlots(c: var Compiler) =
   c.localFunctionSigs = initTable[string, KnownFunctionSig]()
   c.localNames = @[]
 
-const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
+const reservedStdlibRoots = ["gene", "genex"]
 
 # `$err` reads as `(path gene err)`, so it cannot collide with an ordinary
 # lexical binding. Catch bodies reserve this otherwise-unspellable slot and

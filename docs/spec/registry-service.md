@@ -26,6 +26,20 @@ Delegation writes the existing `owner-record.gene` and raw 64-byte
 needs only public keys, delegation records/signatures, and owner token files.
 Keep signing seeds with their signing operators, outside the service deployment.
 
+**Reserved owners.** `gene` and `genex` belong to the project: `gene` carries the
+runtime and its standard libraries, `genex` the experimental packages
+(docs/spec/packages.md §1). `delegate` refuses both owner names unless it
+is given `--force-reserved`, so a mistaken delegation fails at provision time
+instead of publishing under a project name later:
+
+```sh
+bin/gene-registry delegate --crypto /absolute/libcrypto.3 --registry-key /private/registry-keys/private.seed --owner gene --owner-key /private/gene-keys/public.key --out /private/gene-delegation --force-reserved
+```
+
+The service keeps no name-specific check of its own. A publish authenticates as
+the owner whose delegation was provisioned, so the provision step is the gate,
+and an operator who delegates a reserved owner has made that choice explicitly.
+
 ## Service config
 
 Supply one inert Map, at most 64 KiB, with duplicate/unknown fields refused:

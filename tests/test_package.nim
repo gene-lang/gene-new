@@ -787,3 +787,112 @@ suite "package manager — format 1 workspace graph":
     let adHoc = newApplication(singlePackageGraph(
       discoverApplicationPackage(bare)))
     check adHoc.applicationPackage.kind == pkAdHoc
+
+suite "package manager — the library target":
+  test "an empty ^library declares a package with no library target":
+    # `gene/runtime` at the repository root names itself this way: its surface
+    # is the compiled runtime, not an importable main module
+    # (docs/spec/packages.md §1).
+    let root = packageTestRoot("empty_library")
+    writePackageFile(root / "package.gene", """
+{^format 1 ^name "gene/runtime" ^version "0.5.0" ^library {}}
+""")
+    let pkg = loadPackageAt(root, poEntry)
+    check pkg.name == "gene/runtime"
+    check not pkg.hasLibrary
+    check pkg.mainModule.len == 0
+    check pkg.moduleBases().len == 0
+
+  test "^library without ^entry is still refused":
+    let root = packageTestRoot("library_without_entry")
+    writePackageFile(root / "package.gene", """
+{^format 1 ^name "acme/app" ^version "1.0.0" ^library {^uses ["plain"]}}
+""")
+    check raisedPackageClass(
+      proc () = discard loadPackageAt(root, poEntry)) == pecManifestInvalid
+
+suite "package manager — the install store":
+  test "GENE_INSTALL_PACKAGES overrides the install store":
+    let previous = getEnv(InstallStoreEnvVar)
+    defer:
+      if previous.len > 0: putEnv(InstallStoreEnvVar, previous)
+      else: delEnv(InstallStoreEnvVar)
+    let root = packageTestRoot("install_store_path")
+    putEnv(InstallStoreEnvVar, root)
+    check installStoreDir() == normalizedPath(absolutePath(root))
+
+  test "offline sync serves a locked tree from the install store":
+    let root = packageTestRoot("install_store_serve")
+    let appRoot = root / "app"
+    writePackageFile(appRoot / "package.gene", """
+{^format 1 ^name "acme/app" ^version "1.0.0"
+ ^applications [(application "app" ^entry "src/main.gene")]
+ ^dependencies {^foo (dep "gene/foo" "0.3.0")}}
+""")
+    writePackageFile(appRoot / "src/main.gene", "(fn main [] 0)")
+    let source = root / "registry" / "gene" / "foo" / "0.3.0"
+    writePackageFile(source / "package.gene", """
+{^format 1 ^name "gene/foo" ^version "0.3.0"
+ ^library {^entry "src/index.gene"}}
+""")
+    writePackageFile(source / "src/index.gene", "(var answer 42)")
+    let registries = @[newFilesystemRegistry("test", root / "registry")]
+    let manager = newPackageManager(root / "store", registries, nil, "test")
+    let resolution = manager.resolve(ResolveRequest(startDir: appRoot))
+    discard resolution.writeResolutionLock()
+
+    let sourcePkg = loadPackageAt(source, poRegistrySource)
+    let digest = sourceTreeDigest(sourcePkg)
+    let hex = digest.replace("sha256:", "")
+    let installRoot = root / "install"
+    let installed = installRoot / "objects" / "sha256" / hex[0 .. 1] /
+      hex[2 .. ^1]
+    createDir(parentDir(installed))
+    materializeSourceTree(sourcePkg, installed)
+    protectMaterializedTree(installed)
+
+    let previous = getEnv(InstallStoreEnvVar)
+    putEnv(InstallStoreEnvVar, installRoot)
+    defer:
+      if previous.len > 0: putEnv(InstallStoreEnvVar, previous)
+      else: delEnv(InstallStoreEnvVar)
+
+    let loaded = manager.loadResolutionLock(appRoot)
+    let graph = manager.sync(loaded,
+      SyncPolicy(offline: true, locked: true, userStoreRoot: root / "store"))
+    let active = graph.packagesById[graph.activePackageId]
+    let foo = graph.packageForAlias(active.id, "foo")
+    check foo.name == "gene/foo"
+    check foo.version == "0.3.0"
+    check foo.origin == poInstallStore
+    check foo.root == normalizedPath(installed)
+
+  test "an absent install store fails an offline sync":
+    let root = packageTestRoot("install_store_absent")
+    let appRoot = root / "app"
+    writePackageFile(appRoot / "package.gene", """
+{^format 1 ^name "acme/app" ^version "1.0.0"
+ ^applications [(application "app" ^entry "src/main.gene")]
+ ^dependencies {^foo (dep "gene/foo" "0.3.0")}}
+""")
+    writePackageFile(appRoot / "src/main.gene", "(fn main [] 0)")
+    let source = root / "registry" / "gene" / "foo" / "0.3.0"
+    writePackageFile(source / "package.gene", """
+{^format 1 ^name "gene/foo" ^version "0.3.0"
+ ^library {^entry "src/index.gene"}}
+""")
+    writePackageFile(source / "src/index.gene", "(var answer 42)")
+    let registries = @[newFilesystemRegistry("test", root / "registry")]
+    let manager = newPackageManager(root / "store", registries, nil, "test")
+    let resolution = manager.resolve(ResolveRequest(startDir: appRoot))
+    discard resolution.writeResolutionLock()
+
+    let previous = getEnv(InstallStoreEnvVar)
+    putEnv(InstallStoreEnvVar, root / "empty_install")
+    defer:
+      if previous.len > 0: putEnv(InstallStoreEnvVar, previous)
+      else: delEnv(InstallStoreEnvVar)
+    let loaded = manager.loadResolutionLock(appRoot)
+    check raisedPackageClass(proc () =
+      discard manager.sync(loaded, SyncPolicy(offline: true, locked: true,
+        userStoreRoot: root / "store"))) == pecNotFound

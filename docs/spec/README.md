@@ -19,6 +19,7 @@ Start with [the language guide](../language.md) for examples and ordinary usage.
 - [Native byte ingress foundation](native-ingress.md)
 - [Packaged managed native modules](native-module.md)
 - [Modules and native boundaries](modules.md)
+- [Package owners and the install store](packages.md)
 - [Native paths, CSV, and filesystem walking](path-csv-walk.md)
 - [Experimental temporal arithmetic and RFC3339](temporal.md)
 - [Experimental pinned time zones](tzdb.md)

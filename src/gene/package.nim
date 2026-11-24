@@ -46,6 +46,7 @@ type
     poRegistrySource = "registry_source"
     poApplicationStore = "application_store"
     poUserStore = "user_store"
+    poInstallStore = "install_store"
     poPathDependency = "path_dependency"
 
   DependencyScope* = enum
@@ -622,6 +623,22 @@ proc userStoreDir*(): string =
   normalizedPath(getHomeDir() / ".gene" / "packages")
 
 # ---------------------------------------------------------------------------
+# The install store (docs/spec/packages.md §4)
+# ---------------------------------------------------------------------------
+
+const InstallStoreEnvVar* = "GENE_INSTALL_PACKAGES"
+
+proc installStoreDir*(): string =
+  ## The read-only store an install provides (docs/spec/packages.md §4):
+  ## content-addressed package trees under `<prefix>/share/gene/packages`,
+  ## beside the docs path `<prefix>/share/gene/docs`. `GENE_INSTALL_PACKAGES`
+  ## overrides it for tests and for a relocated install.
+  let override = getEnv(InstallStoreEnvVar)
+  if override.len > 0:
+    return normalizedPath(absolutePath(override))
+  normalizedPath(getAppDir().parentDir / "share" / "gene" / "packages")
+
+# ---------------------------------------------------------------------------
 # Manifest parsing (proposal §6)
 # ---------------------------------------------------------------------------
 
@@ -1113,15 +1130,23 @@ proc parseManifest*(source, manifestPath, root: string,
     result.workspace = parseWorkspace(entries["workspace"], manifestPath)
     result.hasWorkspace = true
   if entries.hasKey("library"):
-    result.library = parseLibrary(entries["library"], manifestPath)
-    result.hasLibrary = true
-    let parent = parentDir(result.library.entry).replace('\\', '/')
-    result.sourceDir = if parent == ".": "" else: parent
-    var modulePath = relativePath(result.library.entry,
-      if result.sourceDir.len > 0: result.sourceDir else: ".").replace('\\', '/')
-    if modulePath.endsWith(".gene"):
-      modulePath.setLen(modulePath.len - 5)
-    result.mainModule = modulePath
+    if entries["library"].kind == vkMap and
+        entries["library"].mapEntries.len == 0:
+      # `^library {}` declares a package with no Gene library entry, which is
+      # how `gene/runtime` (the repository root) names itself: its surface is
+      # the compiled runtime, not an importable main module.
+      result.sourceDir = ""
+      result.mainModule = ""
+    else:
+      result.library = parseLibrary(entries["library"], manifestPath)
+      result.hasLibrary = true
+      let parent = parentDir(result.library.entry).replace('\\', '/')
+      result.sourceDir = if parent == ".": "" else: parent
+      var modulePath = relativePath(result.library.entry,
+        if result.sourceDir.len > 0: result.sourceDir else: ".").replace('\\', '/')
+      if modulePath.endsWith(".gene"):
+        modulePath.setLen(modulePath.len - 5)
+      result.mainModule = modulePath
   else:
     result.sourceDir = ""
     result.mainModule = ""
@@ -3317,6 +3342,10 @@ proc sync*(manager: PackageManager, resolution: Resolution,
       normalizedPath(absolutePath(policy.userStoreRoot))
     else:
       manager.userStoreRoot
+  # The read-only store the install provides (docs/spec/packages.md §4). It is
+  # consulted before the user store, and a tree is used only when its digest
+  # matches, so it can never substitute a different release.
+  let installRoot = installStoreDir()
   if policy.locked and resolution.lockDigest.len == 0:
     raisePackageError(pecVersionMismatch,
       "locked synchronization requires package.gene.lock")
@@ -3514,6 +3543,12 @@ proc sync*(manager: PackageManager, resolution: Resolution,
         [expected.id, $expected.sourceKind])
 
   proc insertUserObject(pkg: Package): Package =
+    let installed = digestPath(installRoot, pkg.treeDigest)
+    if dirExists(installed):
+      # Content addressing makes the installed tree equivalent to the user
+      # store's object, so it is used in place and never copied
+      # (docs/spec/packages.md §4).
+      return verifiedPackageAt(installed, pkg, poInstallStore)
     let target = digestPath(storeRoot, pkg.treeDigest)
     let objectLockPath = storeRoot / "locks" / "objects" /
       (pkg.treeDigest.replace("sha256:", "") & ".lock")
@@ -3560,6 +3595,7 @@ proc sync*(manager: PackageManager, resolution: Resolution,
         continue
       if dirExists(vendorPath(pkg)) or
           dirExists(digestPath(storeRoot, pkg.treeDigest)) or
+          dirExists(digestPath(installRoot, pkg.treeDigest)) or
           (pkg.root.len > 0 and fileExists(pkg.root / ManifestFileName)):
         continue
       missing.add pkg.name & "@" & pkg.version & " [" & pkg.id & "]"
