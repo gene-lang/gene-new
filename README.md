@@ -68,12 +68,11 @@ structured tasks, modules, and template macros.
 
 | Start here | What you will find |
 | --- | --- |
-| [Language guide](docs/language.md) | Values, functions, types, protocols, collections, errors, and concurrency—with examples. |
-| [Design](docs/design.md) | The main language choices, illustrated in code. |
-| [Library recipes](docs/stdlib.md) | Strings, JSON, files, HTTP, databases, logging, and events. |
-| [Workflows](docs/workflows.md) | Scripts, packages, editor tools, browser output, and native interop. |
-| [Testing](docs/testing.md) | Assertions and RSpec-style examples, fixtures, and reports. |
-| [Error handling](docs/error-handling.md) | Typed failures, messages, error rows, and gradual checking. |
+| [Overview](docs/book/overview.md) | What Gene is, a short tour, and how the docs are organized. |
+| [Getting started](docs/book/getting_started.md) | Building Gene, `gene eval`, `gene run`, and programs with `main`. |
+| [The book](docs/README.md) | Seventeen short chapters, from values to the web, native code, and tools. |
+| [Errors](docs/book/errors.md) | Raising, catching, errors and faults, and how strictly to check. |
+| [Testing](docs/book/testing.md) | Assertions and RSpec-style examples, fixtures, and `gene test`. |
 
 For larger programs, read the [Todo web app](examples/todo_app/src/main.gene),
 [protocol demo](examples/protocol_demo.gene), or
@@ -83,12 +82,12 @@ For larger programs, read the [Todo web app](examples/todo_app/src/main.gene),
 
 Gene is under active development. The VM and a checked browser subset work;
 APIs are still evolving. Native compilation and worker-thread execution remain
-experimental. See [support and known limits](docs/development.md#status) before
-choosing a backend or relying on sandbox behavior.
+experimental. [Native code, builds, and deployment](docs/book/native.md) says
+what the sandbox loader does and does not limit.
 
-To contribute, see [development](docs/development.md). Exact edge-case contracts
-live in [the specification](docs/spec/README.md); they are reference material,
-not required reading for a first program.
+To contribute, read [AGENTS.md](AGENTS.md). The book replaced the earlier
+guides, specification, change log, proposals, and reports; git history keeps
+them under `docs/`.
 
 ## License
 

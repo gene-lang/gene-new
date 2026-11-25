@@ -1,7 +1,7 @@
 # Typed-native SQLite example
 
 A working end-to-end use of the experimental `typed_native` C backend
-(`docs/workflows.md#native-interop`): Gene functions that take an unboxed
+([Calling C libraries](../../docs/book/native.md#calling-c-libraries)): Gene functions that take an unboxed
 `sqlite3_stmt *` in a register and call SQLite directly, with no `GeneValue`,
 no boxing, and no runtime message resolution.
 
@@ -120,7 +120,7 @@ Boundary cost over 200000 crossings:
 ```
 
 The result was 317811 on both paths in every run. The full samples are in the
-[review follow-up](../../docs/reports/optimization-review.md). The earlier
+[review follow-up](../../archive/docs/reports/optimization-review.md). The earlier
 pre-guard capture remains under `benchmarks/baselines/2026-10-04-publication/aot/`.
 These are local measurements, including the Gene loop's overhead in the boundary
 rows. The earlier 117× figure used unchecked ABI v1 and is not representative of

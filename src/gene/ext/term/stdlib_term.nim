@@ -1,5 +1,5 @@
 ## Local terminal support: PTY sessions, the libvterm state machine, and the
-## owned curses screen (docs/stdlib.md `terminal` and `curses`).
+## owned curses screen (archive/docs/stdlib.md `terminal` and `curses`).
 ##
 ## `include`d by stdlib.nim late -- it depends on `nativeReceiverIs` and the
 ## `os` natives defined earlier there. Its declarations live in

@@ -792,7 +792,7 @@ suite "package manager — the library target":
   test "an empty ^library declares a package with no library target":
     # `gene/runtime` at the repository root names itself this way: its surface
     # is the compiled runtime, not an importable main module
-    # (docs/spec/packages.md §1).
+    # (archive/docs/spec/packages.md §1).
     let root = packageTestRoot("empty_library")
     writePackageFile(root / "package.gene", """
 {^format 1 ^name "gene/runtime" ^version "0.5.0" ^library {}}

@@ -1,4 +1,4 @@
-## Gene standard library surface (docs/stdlib.md).
+## Gene standard library surface (archive/docs/stdlib.md).
 ##
 ## This file is `include`d by vm.nim after the core native helpers are
 ## defined: the stdlib natives use the VM's require*/applyCall/raise* helpers
@@ -1114,7 +1114,7 @@ when not defined(geneWasm):
   # --- web: placing generated assets in a page ---------------------------------
   #
   # The whole author-facing surface for embedded web modules
-  # (docs/workflows.md). Two things: a composition operation
+  # (archive/docs/workflows.md). Two things: a composition operation
   # that returns a finished node, and the base those nodes' URLs are built from.
   # Application code never sees JavaScript, a source map, a hash, or a route
   # table — and cannot forget to publish one, because referring to an asset is
@@ -1275,7 +1275,7 @@ when not defined(geneWasm):
 
 # CSS is ordered node data. Declarations deliberately live in the body rather
 # than a PropTable: duplicate fallbacks and interleaving with nested rules are
-# observable CSS semantics (docs/workflows.md).
+# observable CSS semantics (archive/docs/workflows.md).
 proc cssNode(head: string, body: openArray[Value]): Value =
   newNode(newSym(head), body = @body)
 
@@ -2276,7 +2276,7 @@ proc biPathRelative(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   except ValueError as e:
     raisePathError("path/relative: " & e.msg, scope)
 
-# --- os: environment, subprocess, and line input (docs/stdlib.md "Module Layout") ---
+# --- os: environment, subprocess, and line input (archive/docs/stdlib.md "Module Layout") ---
 #
 # Errors are the typed `OsError`.
 
@@ -5767,7 +5767,7 @@ proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
                               ReplOptions(interactive: interactive,
                                           prompt: prompt)))
 
-# --- fs: synchronous read + directory listing (docs/stdlib.md "Module Layout") ---
+# --- fs: synchronous read + directory listing (archive/docs/stdlib.md "Module Layout") ---
 
 proc biFsTryLock(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("fs/try_lock", args)
@@ -6385,7 +6385,7 @@ proc biFsRemoveDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     raiseFilesystemOperationError("fs/remove_dir", e, scope)
   NIL
 
-# --- json: parse and stringify over Gene value kinds (docs/stdlib.md "Module Layout") ---
+# --- json: parse and stringify over Gene value kinds (archive/docs/stdlib.md "Module Layout") ---
 
 const jsonMaxDepth = 200
 
@@ -7177,7 +7177,7 @@ defineLoggerLevelProc(biLoggerTrace, "Logger/trace", llTrace)
 
 # --- serde: Gene-text serialization, data core -------------------------------
 #
-# Stage 1 of docs/stdlib.md: write_data / read_data / data?
+# Stage 1 of archive/docs/stdlib.md: write_data / read_data / data?
 # over the data bucket, riding the canonical printer/reader. Serialized text is
 # a (serde_v1 <payload>) envelope of ordinary Gene source. Control tags are
 # underscore-named plain symbols (serde_v1, serde_float, serde_sym, serde_map,
@@ -10323,7 +10323,7 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
      "closed": newCell(FALSE)})
   store
 
-## typed_native AOT loading (docs/workflows.md).
+## typed_native AOT loading (archive/docs/workflows.md).
 ##
 ## `aot_runtime.nim` exports the C helpers a generated module calls; this is
 ## the other half — opening such a module and binding its entries so ordinary
@@ -10690,7 +10690,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   let fsFileLockType = newType("FsFileLock", NIL, @[], @[], root,
     messages = fsFileLockMessages)
   root.define("FsFileLock", fsFileLockType)
-  # Structured diagnostic logging (docs/stdlib.md). Logger methods
+  # Structured diagnostic logging (archive/docs/stdlib.md). Logger methods
   # are receiver-dispatched through builtinReceiverMessage; lazy `*!` forms
   # are compiler-known macros selected from this same namespace.
   let logLevel = newEnum("LogLevel", @[],
@@ -10727,7 +10727,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   logScope.define("debug", builtinNativeCallFn("Logger/debug", biLoggerDebug))
   logScope.define("trace", builtinNativeCallFn("Logger/trace", biLoggerTrace))
   root.define("log", newNamespace("log", logScope))
-  # Importable stdlib namespaces (docs/stdlib.md): mostly re-exports of the
+  # Importable stdlib namespaces (archive/docs/stdlib.md): mostly re-exports of the
   # built-ins above under stable module paths, so source programs can write
   # `(import std/stream/map)` / `(import str/join)` today and swap in
   # file-backed modules later without changing call sites.
@@ -11651,7 +11651,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   root.define("db", newNamespace("db", dbScope))
 
   # store: durable key -> serde text over interchangeable backends
-  # (docs/stdlib.md). Backend namespaces mirror db/sqlite.
+  # (archive/docs/stdlib.md). Backend namespaces mirror db/sqlite.
   let storeError = newType("StoreError", errorRoot,
                            @[TypeField(name: "kind", optional: false,
                                        typeExpr: newSym("Sym"), scope: root),
@@ -11766,7 +11766,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
                                                       acceptsNamed = false))
   root.define("crypto", newNamespace("crypto", cryptoScope))
 
-  # os: env, subprocess, line input (docs/stdlib.md "Module Layout"). 
+  # os: env, subprocess, line input (archive/docs/stdlib.md "Module Layout"). 
   let osScope = newScope(root)
   osScope.define("get_env", builtinNativeCallFn("os/get_env", biOsGetEnv,
                  acceptsNamed = false))
@@ -11977,7 +11977,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
     fsNs.nsScope.define("FsError", fsError)
     fsNs.nsScope.define("FsLimitError", fsLimitError)
 
-  # json: parse/stringify over Gene value kinds (docs/stdlib.md "Module Layout").
+  # json: parse/stringify over Gene value kinds (archive/docs/stdlib.md "Module Layout").
   let jsonScope = newScope(root)
   jsonScope.define("parse", builtinNativeCallFn("json/parse", biJsonParse))
   jsonScope.define("stringify", builtinNativeCallFn("json/stringify",
@@ -11987,7 +11987,7 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   jsonScope.define("JsonError", jsonError)
   root.define("json", newNamespace("json", jsonScope))
 
-  # serde: Gene-text serialization data core (docs/stdlib.md
+  # serde: Gene-text serialization data core (archive/docs/stdlib.md
   # stage 1).
   let serdeScope = newScope(root)
   serdeScope.define("write_data",

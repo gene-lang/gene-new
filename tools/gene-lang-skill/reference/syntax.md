@@ -1,6 +1,6 @@
 # Syntax and values
 
-Normative contract: `docs/spec/reader.md`. Everything below is probed.
+Normative contract: `archive/docs/spec/reader.md`. Everything below is probed.
 
 ## The node
 

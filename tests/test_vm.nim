@@ -1288,7 +1288,7 @@ suite "compiler — GIR emission":
     check useProto.chunk.instructions[0].intArg == 1
 
   test "protocol messages get no scope slots; sends resolve by name":
-    # Message names are not bound in the enclosing scope (docs/spec/protocols.md);
+    # Message names are not bound in the enclosing scope (archive/docs/spec/protocols.md);
     # a send compiles to opResolveMessage, here fused as opSend, with the
     # message name.
     let chunk = compileSource(

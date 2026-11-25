@@ -1,4 +1,4 @@
-## LSP document analysis for Gene (docs/workflows.md).
+## LSP document analysis for Gene (archive/docs/workflows.md).
 ##
 ## Pure functions from source text to LSP-shaped data: parse diagnostics,
 ## a hierarchical document-symbol tree, and a flat definition index used by

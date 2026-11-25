@@ -1,4 +1,4 @@
-## The application event bus — `gene/event` (docs/stdlib.md).
+## The application event bus — `gene/event` (archive/docs/stdlib.md).
 ##
 ## Included into `vm.nim` after `defineBuiltinType`, so the four things this
 ## needs from the VM — `applyCall`, `freezeValue`, `builtinBinding`, and the

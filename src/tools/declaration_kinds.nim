@@ -2,7 +2,7 @@
 ##
 ## One module owns the numeric kinds because they are the contract between
 ## tools, not an implementation detail of the language server
-## (docs/workflows.md): the LSP document-symbol tree, the browser editor's
+## (archive/docs/workflows.md): the LSP document-symbol tree, the browser editor's
 ## outline, and the parity test between them all name the same numbers. A
 ## second literal table is how the outline would quietly drift from the server
 ## the editor is supposed to agree with.

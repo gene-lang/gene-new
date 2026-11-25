@@ -658,7 +658,7 @@ triggers, recovery, live delivery, concurrency and shutdown. Responsiveness
 tests in `tests/integration/runtime/call_supervision_spec.gene` measure HTTP
 and cancellation while CPU loops, native collection callbacks and synchronous
 process calls run. New tests should use the same
-`*_spec.gene` convention; see [Gene testing](../../docs/testing.md).
+`*_spec.gene` convention; see [Gene testing](../../docs/book/testing.md).
 Use a release binary for the responsiveness tests' 100 ms latency bounds;
 build it with `nimble speedy` from the repository root. Debug builds can
 exceed those bounds during cleanup.

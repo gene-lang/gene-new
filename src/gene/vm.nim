@@ -607,7 +607,7 @@ type
     # a host module with host authority (see `loadSandboxedModule`).
     sandboxShared: HashSet[string]
     currentModuleDir: string
-    # --- packages (docs/workflows.md) --------------------------------
+    # --- packages (archive/docs/workflows.md) --------------------------------
     #
     # `appPackage` is the application package selected at startup — either the
     # nearest ancestor `package.gene` or a synthesized ad-hoc package. It
@@ -649,7 +649,7 @@ type
     serdeValueOrigins: Table[uint64, tuple[module, path: string]]
     serdeOriginBuiltinsDone: bool
     serdeOriginModules: HashSet[string]
-    # Generated web assets (docs/workflows.md). The
+    # Generated web assets (archive/docs/workflows.md). The
     # *Application* owns them, not the Server and not the process: a block is
     # compiled while a module loads, which happens here, and the composition
     # operation takes no server. So every Server this application starts
@@ -6037,7 +6037,7 @@ proc freezeValue(value: Value): Value =
       items[i] = freezeValue(item)
     # `deepFrozen` composes by construction: every child came out of a
     # recursive `freezeValue`, so it is already deep-frozen and the invariant
-    # holds without re-deriving it (docs/stdlib.md).
+    # holds without re-deriving it (archive/docs/stdlib.md).
     newList(items, immutable = true, deepFrozen = true)
   of vkMap:
     newMap(freezeEntries(value.mapEntries), immutable = true,
@@ -9344,7 +9344,7 @@ proc biPanic(args: openArray[Value]): Value {.nimcall.} =
 
 when defined(geneWasm):
   # Under the wasm profile there is no useful process stdout; `print`/`println`
-  # append to a per-eval buffer the host reads through the ABI (docs/workflows.md
+  # append to a per-eval buffer the host reads through the ABI (archive/docs/workflows.md
   # §A.4 `gene_result_out_*`). `geneWasmCapture` is nil outside an eval so
   # startup prints (if any) are harmless.
   var geneWasmCapture*: ref string = nil
@@ -10542,7 +10542,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   let sendProtocol = newProtocol("Send", [])
   result.define("Send", sendProtocol)
   # Marker protocol (empty): a module-level instance whose type implements it
-  # serializes by identity reference (serde, docs/stdlib.md).
+  # serializes by identity reference (serde, archive/docs/stdlib.md).
   let serdeRefProtocol = newProtocol("SerdeRef", [])
   result.define("SerdeRef", serdeRefProtocol)
   let callType = newType("Call", NIL,
@@ -11468,7 +11468,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # A `gene/x` package may take any valid package name, including one the
   # runtime binds: the namespace and the owner are separate namespaces of names,
   # and they load differently. The binding keeps `$x`; the package is reached
-  # through its dependency alias (docs/spec/packages.md §3).
+  # through its dependency alias (archive/docs/spec/packages.md §3).
   app.stdlib = geneScope
   # Foreign native threads can look up canonical implementations without first
   # spawning a Gene task, so their manual Value edges must already use atomic
@@ -11593,7 +11593,7 @@ proc userStore*(app: Application): string =
   app.userStoreRoot
 
 # ---------------------------------------------------------------------------
-# Package resolution (docs/workflows.md)
+# Package resolution (archive/docs/workflows.md)
 # ---------------------------------------------------------------------------
 
 proc packageForImport(app: Application, importer: Package,
@@ -13941,7 +13941,7 @@ proc qualifiedMessageName(message: Value): string =
 proc resolveImplMessage(scope: Scope, protocol: Value,
                         protocolPath: openArray[string], name: string): Value =
   ## Resolve one impl-body message name against the target protocol's closure
-  ## (docs/spec/protocols.md). Qualified names (`A/do_x`, or `ns/A/do_x` for
+  ## (archive/docs/spec/protocols.md). Qualified names (`A/do_x`, or `ns/A/do_x` for
   ## namespace-qualified owners) resolve through the named protocol's own
   ## messages; unqualified names must be unique in the closure.
   if protocolPath.len > 0:
@@ -15429,7 +15429,7 @@ proc checkingModulePath(scope: Scope): string =
 
 proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
   # An impl of a protocol that ^inherits `protocol` also satisfies `protocol`
-  # (docs/spec/protocols.md — structural subtyping from the impl).
+  # (archive/docs/spec/protocols.md — structural subtyping from the impl).
   var s = scope
   while s != nil:
     for impl in s.impls:
@@ -17752,7 +17752,7 @@ proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
   ## value passed as `self`. Starting the walk at the parent *is* "continue
   ## from above the enclosing type", because selection already keeps only
   ## providers at the nearest applicable receiver depth
-  ## (`docs/spec/protocols.md`).
+  ## (`archive/docs/spec/protocols.md`).
   ##
   ## Deliberately a separate proc rather than a parameter on
   ## `resolveQualifiedSend`: widening that one cost 4-8% on
@@ -19108,7 +19108,7 @@ proc fastLoopForScope(chunk: Chunk, scope: Scope, stack: var seq[Value],
   ##
   ## Without a profile, the C compiler allocates `runLoop`'s registers and
   ## places its blocks over the whole dispatch loop, and its hot handlers ran
-  ## about 94 instructions per dispatch (docs/proposals/vm-dispatch-core.md).
+  ## about 94 instructions per dispatch (archive/docs/proposals/vm-dispatch-core.md).
   ## A small proc is compiled on its own. Every index below is tested before
   ## use, so this proc runs without the compiler's checks.
   when defined(geneFastLoopTests):
@@ -21786,7 +21786,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if proto.nativeType != nil:
             registerNativeTypeIdentity(proto.nativeType.identity, typ)
           # Inline impls register exactly like standalone (impl P for T ...) forms
-          # written after the type declaration (docs/spec/protocols.md), before
+          # written after the type declaration (archive/docs/spec/protocols.md), before
           # ^derive runs so manual-vs-generated conflicts surface normally.
           for i, inline in proto.inlineImpls:
             var entries: seq[ImplMessage]
@@ -21955,7 +21955,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if fn.kind == vkFunction and fn.fnCode of FunctionProto:
                 validateUniversalSelf(FunctionProto(fn.fnCode), fn.fnScope)
           scope.registerProtocolContract(chunk, protocol)
-          # Message names are not bound in the enclosing scope (docs/spec/protocols.md
+          # Message names are not bound in the enclosing scope (archive/docs/spec/protocols.md
           # §1, OQ-I): messages are reached via Protocol:name and sends.
           spush protocol
         of opMakeImpl:
@@ -22562,7 +22562,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             continue
           ip += 4
         of opResolveMessage, opSend:
-          # Receiver-first message send (docs/spec/protocols.md): an unqualified send
+          # Receiver-first message send (archive/docs/spec/protocols.md): an unqualified send
           # reaches only the receiver's type-direct messages (walking parents),
           # then the built-in type-direct surface. There is no protocol tier and
           # no lexical fallback — protocol messages are always qualified

@@ -1,4 +1,4 @@
-// P0.5 numeric representation spike (docs/workflows.md).
+// P0.5 numeric representation spike (archive/docs/workflows.md).
 // Measures the cost B pays at the browser's dominant boundary: parse a real
 // JSON-shaped payload, adapt schema-known Int fields to bigint, compute over
 // them, and adapt back to JSON-safe decimal strings.

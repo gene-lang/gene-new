@@ -99,7 +99,7 @@ type
     opCall
     opCallSplice
     opNew            # constructor keyword: type + named args + body args
-    opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/spec/protocols.md)
+    opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (archive/docs/spec/protocols.md)
     # opResolveMessage fused with the argument loads and the plain call after
     # it, which stay in place (`fusedSendCall`). A plain native found in the
     # dispatch cache is called with the receiver and the arguments, and no
@@ -369,7 +369,7 @@ type
   CapturePlan* = ref object
     ## How a closure created inside function, loop, match, or catch
     ## activations copies the values it reads instead of holding those
-    ## activation scopes (docs/proposals/vm-reliability.md, VM-2). Level 1 is
+    ## activation scopes (archive/docs/proposals/vm-reliability.md, VM-2). Level 1 is
     ## the scope the closure is created in; levels 1..activationLevels are
     ## activations and the next one is static (module, program, namespace).
     activationLevels*: int
@@ -522,7 +522,7 @@ type
     state*: RootRef
 
   GensymContext* = ref object
-    ## One running macro body's `$gensym` state (docs/macro.md `$gensym`). A
+    ## One running macro body's `$gensym` state (archive/docs/macro.md `$gensym`). A
     ## context belongs to one invocation: it is created when the body starts
     ## and ends when the body does. `count` is the `k` of the next name.
     hash*: string      # 8 hex digits of sha256(identity of the expanding module)
@@ -821,8 +821,8 @@ type
     requiredImplCount*: int
     deriveProtocolCount*: int
     deriveRequests*: seq[Value]
-    messages*: seq[ImplMessageProto] # type-direct messages (docs/spec/protocols.md)
-    inlineImpls*: seq[InlineImplProto] # (impl P ...) body items (docs/spec/protocols.md)
+    messages*: seq[ImplMessageProto] # type-direct messages (archive/docs/spec/protocols.md)
+    inlineImpls*: seq[InlineImplProto] # (impl P ...) body items (archive/docs/spec/protocols.md)
     ctorFn*: FunctionProto       # (ctor ...) body item, or nil (design §7.1.1)
 
   EnumVariantProto* = object
@@ -871,7 +871,7 @@ type
     loc*: SourceLoc
 
   ## An (impl P (message ...) ...) block inside a type body; the receiver is
-  ## the enclosing type (docs/spec/protocols.md). The protocol expression is compiled
+  ## the enclosing type (archive/docs/spec/protocols.md). The protocol expression is compiled
   ## onto the stack alongside the message error rows.
   InlineImplProto* = object
     messages*: seq[ImplMessageProto]
@@ -3566,7 +3566,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     " * helpers exported by src/gene/aot_runtime.nim. Define",
     " * GENE_AOT_DYNAMIC_ENTRIES when building a library for aot/load and",
     " * export those helpers from its host executable (see nim.cfg).",
-    " * This backend accepts an experimental subset; consult docs/development.md",
+    " * This backend accepts an experimental subset; consult archive/docs/development.md",
     " * for current semantic and platform limits.",
     " */",
     "#include <stdbool.h>",

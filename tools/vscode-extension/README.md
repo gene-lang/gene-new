@@ -4,10 +4,8 @@ Syntax highlighting plus language-server support (diagnostics, outline,
 go to definition, hover, workspace symbols) for the
 [Gene programming language](https://github.com/gene-lang/gene-new).
 
-Full setup, feature, and troubleshooting documentation:
-[docs/workflows.md#editor-and-command-line-tools](https://github.com/gene-lang/gene-new/blob/main/docs/workflows.md#editor-and-command-line-tools).
-The server half is documented in
-[docs/workflows.md#editor-and-command-line-tools](https://github.com/gene-lang/gene-new/blob/main/docs/workflows.md#editor-and-command-line-tools).
+The `gene lsp` server and the other editor tools are described in
+[docs/book/tools.md#editors](https://github.com/gene-lang/gene-new/blob/main/docs/book/tools.md#editors).
 
 Quick start:
 

@@ -1,7 +1,8 @@
 ## Executable Gene language surface spec.
 ##
-## This file intentionally checks behavior from docs/spec/ and
-## examples/style_guide.gene at a higher level than unit tests. Run after changes:
+## This file intentionally checks the language surface (first written down in
+## archive/docs/spec/) and examples/style_guide.gene at a higher level than
+## unit tests. Run after changes:
 ##   nimble spec
 
 import gene/[compiler, gir, gir_codec, package, printer,
@@ -382,21 +383,11 @@ suite "spec — reader surface from design":
     check_compile_error(".message", "requires a receiver")
     check_compile_error(".Proto:message", "requires a receiver")
 
-  test "documented inventory matches compiler dispatch and has fixtures":
-    let design = readFile("docs/spec/calls.md")
-    let marker = "<!-- compiler-head-dispatch:start -->"
-    let markerAt = design.find(marker)
-    check markerAt >= 0
-    let fenceAt = design.find("```text", markerAt)
-    let namesAt = design.find('\n', fenceAt) + 1
-    let fenceEnd = design.find("```", namesAt)
-    var documented = design[namesAt ..< fenceEnd].splitWhitespace()
+  test "every compiler head has a compile fixture":
     var dispatched = CoreSpecialFormNames.toSeq()
-    documented.sort()
     dispatched.sort()
-    check documented == dispatched
-    for i in 1 ..< documented.len:
-      check documented[i - 1] != documented[i]
+    for i in 1 ..< dispatched.len:
+      check dispatched[i - 1] != dispatched[i]
 
     var covered: seq[string]
     template fixture(names: openArray[string], source: string) =
@@ -2912,7 +2903,7 @@ void point_free(CPoint *p) { free(p); }
     checkCCompiles(c, "typed_native_protocol_pointer_result")
 
   test "a bare typed-native send never resolves to a protocol impl":
-    ## Bare is type-direct, qualified is protocol (docs/spec/protocols.md). The
+    ## Bare is type-direct, qualified is protocol (archive/docs/spec/protocols.md). The
     ## interpreter answers "no message 'read_value' on Node" for this source,
     ## so the backend must not lower it to a direct impl call.
     check_compile_error(
@@ -2936,7 +2927,7 @@ void point_free(CPoint *p) { free(p); }
       "typed_native function read cannot lower its body statically")
 
   test "an overlay impl anywhere in the unit blocks a direct send":
-    ## docs/spec/protocols.md: a direct protocol call needs the winning
+    ## archive/docs/spec/protocols.md: a direct protocol call needs the winning
     ## unconditional canonical pair with no reachable overlay. Overlay-only
     ## impls are collected before compilation, so the check does not depend on
     ## where the overlay sits or whether it precedes the send — a per-chunk
@@ -6625,7 +6616,7 @@ suite "spec — implicit self in message bodies from design §10":
                "[\"super send\" \"Protocol\"]")
 
   test "super delegates a protocol message from the nominal parent":
-    # `docs/spec/protocols.md` already keeps only providers at the nearest
+    # `archive/docs/spec/protocols.md` already keeps only providers at the nearest
     # applicable receiver depth, so resolving from the parent *is* "continue the
     # walk from above the enclosing type" — no new precedence rule was needed.
     # The qualifier names the message; the parent selects the impl.
@@ -6826,7 +6817,7 @@ suite "spec — absence-guarded sends (design §3)":
                "[nil 1]")
 
   test "an optional dot send does not change what a plain dot send means for nil":
-    # docs/spec/protocols.md: Nil is an ordinary nominal type with no dispatch
+    # archive/docs/spec/protocols.md: Nil is an ordinary nominal type with no dispatch
     # carve-out, so a bare send still fails and an explicit impl still wins.
     check_eval(guarded &
                "(try (nil .msg) catch MessageFault $err/.message)",
@@ -6973,7 +6964,7 @@ suite "spec — protocol intersection types":
                "(impl Early for G) (impl Late for G) (takes (G))",
                "\"ok\"")
 
-suite "spec — hidden impl diagnostics (docs/spec/protocols.md)":
+suite "spec — hidden impl diagnostics (archive/docs/spec/protocols.md)":
   # A conformance failure must distinguish "no impl exists" from "an impl
   # exists but is not visible here", and must name the module whose scope
   # governs the check — importing anywhere else is a no-op.
@@ -9770,7 +9761,7 @@ suite "spec — modules from design":
                   newGlobalScope())
     check_eval("(var x 1) (ns m (var x 2)) [x (/x m)]", "[1 2]")
 
-suite "spec — packages (docs/workflows.md)":
+suite "spec — packages (archive/docs/workflows.md)":
   proc packagesRoot(): string =
     result = getTempDir() / "gene_spec_packages"
     removeDir(result)
@@ -11994,7 +11985,7 @@ suite "spec — os and json from ai-agent plan":
       check getMonoTime() - started < initDuration(milliseconds = 3000)
 
   test "scheduler stays live while an async exec child runs":
-    # The whole point of the async variants (docs/stdlib.md, `$os` async exec):
+    # The whole point of the async variants (archive/docs/stdlib.md, `$os` async exec):
     # fibers must make progress during a subprocess. The snapshot is taken
     # right after the await — a blocking exec would leave it at 0.
     check_eval("(import $os [exec_async]) " &
@@ -12240,7 +12231,7 @@ suite "spec — flat clause syntax":
     check_eval("(fn recur [n] (if (> n 0) (recur (- n 1)) else 0)) " &
                "(recur 20000)", "0")
 
-suite "spec — serde data core (docs/stdlib.md stage 1)":
+suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
   test "scalars and containers round-trip under structural equality":
     check_eval("(import $serde [write_data read_data]) " &
                "(var v {^a 1 ^b [1 2.5 \"x\" true nil] " &
@@ -12668,15 +12659,6 @@ iterator documentationSources(): string =
       yield path
 
 suite "spec — documentation contract":
-  test "focused normative specification files exist":
-    for path in ["docs/spec/README.md", "docs/spec/reader.md",
-                 "docs/spec/calls.md", "docs/spec/types.md",
-                 "docs/spec/protocols.md", "docs/spec/streams.md",
-                 "docs/spec/concurrency.md", "docs/spec/modules.md",
-                 "docs/spec/path-csv-walk.md",
-                 "docs/development.md"]:
-      check fileExists(path)
-
   test "referenced concrete example files exist":
     for source in documentationSources():
       let text = readFile(source)
@@ -12708,11 +12690,6 @@ suite "spec — documentation contract":
                   "message", "in", "for", "from"])
     var offenders: seq[string]
     for path in documentationSources():
-      # Proposal fragments can refer to injected application bindings, such
-      # as Life's `store`; a name-only lint cannot classify those calls. Every
-      # proposal gene block is still parsed by the next test below.
-      if path.startsWith("docs/proposals/"):
-        continue
       let lines = readFile(path).splitLines()
       var blocks: seq[seq[string]]
       var cur: seq[string]
@@ -12911,7 +12888,7 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
     check "animation-name: fade__" & digest & ";" in cssText
     check "color: fade;" in cssText
 
-suite "spec — application event bus (docs/stdlib.md)":
+suite "spec — application event bus (archive/docs/stdlib.md)":
   const orderFamily =
     "(ns order " &
     "  (type Event : $event/Event) " &

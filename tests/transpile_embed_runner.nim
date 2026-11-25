@@ -1,5 +1,5 @@
 ## Embedded web modules: the lifecycle, not the internals
-## (docs/workflows.md "Acceptance").
+## (archive/docs/workflows.md "Acceptance").
 ##
 ## These exercise the interfaces an application actually touches — load a
 ## module, ask the application what it publishes, fetch it by URL — because the

@@ -5,7 +5,7 @@
 ## controlling terminal directly rather than through a parent process.
 ##
 ## `--machine analyze|format` is the same reader-backed index in a form a
-## browser can consume (docs/workflows.md): one JSON request in, one JSON
+## browser can consume (archive/docs/workflows.md): one JSON request in, one JSON
 ## response out, no terminal and no alternate screen.
 
 import std/[os, strutils]

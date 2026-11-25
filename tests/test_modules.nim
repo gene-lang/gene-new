@@ -1490,7 +1490,7 @@ suite "modules — built-in identity and scope hygiene":
       expect GeneError:
         discard runProgram(source)
     # `geney`/`genez` were reserved by the July root-swap lifecycle, which is
-    # gone (docs/spec/packages.md §2). Only the two owner names stay reserved.
+    # gone (archive/docs/spec/packages.md §2). Only the two owner names stay reserved.
     check runProgram("(var geney 1) (var genez 2) (+ geney genez)").print() == "3"
 
   test "module declarations do not include built-ins":
@@ -2569,7 +2569,7 @@ suite "modules — package names and the gene namespace":
 
   test "a gene/x package may take a runtime binding name":
     # The namespace and the owner are separate namespaces of names
-    # (docs/spec/packages.md §3): `$str` stays the runtime namespace, while the
+    # (archive/docs/spec/packages.md §3): `$str` stays the runtime namespace, while the
     # package is reached through its dependency alias.
     writeFile(modDir / "package.gene", """
 {^format 1

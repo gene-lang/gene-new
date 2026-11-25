@@ -53,7 +53,7 @@ task speedy_pgo, "speedy, profile-guided: instrument, train (tools/pgo), rebuild
        " --passC:\"-march=native -O3 -fprofile-instr-use=" & profile & "\"" &
        " -o:bin/gene src/gene.nim"
 
-task wasm, "Build the wasm host-ABI module (docs/workflows.md §A.4) via Emscripten":
+task wasm, "Build the wasm host-ABI module (archive/docs/workflows.md §A.4) via Emscripten":
   ## Requires the Emscripten SDK (`emcc` on PATH). Produces web/gene.js +
   ## web/gene.wasm exporting the text-only eval ABI, ready for the browser
   ## playground (web/index.html) and the node harness (tests/test_wasm.mjs).

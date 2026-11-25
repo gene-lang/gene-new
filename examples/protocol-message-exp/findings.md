@@ -431,7 +431,7 @@ held messages being identity-per-authoring.
   at traversal; Section 9.2 shows the dispatch cost when many types share a site.
 - Done: final impls (sections 8 and 12), diagnostics, lexical path (section 8).
 - Next actions, in order:
-  1. **Documented pattern** (done here): `docs/protocol-composition.md` records root-authored
+  1. **Documented pattern** (done here): `archive/docs/protocol-composition.md` records root-authored
      operations, the contract-first rule, and the ownership routes.
   2. **Pre-flight helper** (library, no new syntax): wrap `($runtime/signature op sample)` over
      a declared sample set as a stdlib helper; acceptance: reports exactly the unsupported types
@@ -481,7 +481,7 @@ Clock is not a third-party boundary; the repository has no executable `import_im
 because its extension points (service keys, plugin specs) bind providers by value, which this
 experiment finds is the right abstraction there. The Document Lens pattern, not Cordis, is
 where scoped impls compose; keep `examples/protocol-message-exp` and
-`docs/protocol-composition.md` as the executable adoption example.
+`archive/docs/protocol-composition.md` as the executable adoption example.
 
 ## 11. Completion checklist (plan section 10)
 
@@ -559,7 +559,7 @@ time"), so this makes the native rule match.
   the C-compiling tests need `SDKROOT=.../MacOSX26.5.sdk` at *runtime* (the 27.0 SDK linker
   rejects its own `libSystem.tbd`), and `test_modules` and `test_all` share
   `$TMPDIR/gene_module_tests`, so running them concurrently fails module lookups at random.
-- Defect found by the docs guard on the way: `docs/protocol-composition.md` (written in
+- Defect found by the docs guard on the way: `archive/docs/protocol-composition.md` (written in
   section 8's commit) used `each` as a parameter name, which the "pruned stdlib name"
   lint reads as a bare `$each` call. The doc example now names the parameter `visit`; the
   package keeps `each`.
@@ -649,7 +649,7 @@ every nested activation isolates, matching `import`.
   - `tests/test_rc.nim` (`-d:geneRcStats`): 92 OK. New: "a function-local import_impl is
     released with its activation", which runs 40 calls that import a pair and make and drop
     a closure; they leave as many managed values as a control without the import (zero).
-- The `docs/protocol-composition.md` example (a function importing both pairs and passing
+- The `archive/docs/protocol-composition.md` example (a function importing both pairs and passing
   `Render:render` through the container) was run as a scratch program. It printed
   `S / fig:a / fig:b` twice and `hidden outside`.
 

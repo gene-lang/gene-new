@@ -92,7 +92,7 @@ block:
 # flag (a `_tlv_get_addr` call on macOS) and every call site tests it
 # afterwards. That preamble also keeps the small helpers in types.nim out of
 # line from the VM's dispatch loop: every interpreter kernel runs 11-29% faster
-# with panics on (docs/reports/boundary-costs.md). Gene never recovered from a
+# with panics on (archive/docs/reports/boundary-costs.md). Gene never recovered from a
 # Defect: the dispatch loop and the CLI catch only Gene's own exception types.
 # So code must not catch one (`except FieldDefect`, or a bare `except:` relied
 # on to see one); test the condition first, e.g. `tryIntVal` before `intVal`.

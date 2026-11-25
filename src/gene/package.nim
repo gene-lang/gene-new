@@ -1,5 +1,5 @@
 ## Package discovery, manifests, identity, and local stores
-## (docs/workflows.md).
+## (archive/docs/workflows.md).
 ##
 ## This deep module owns discovery, the closed manifest and lock schemas,
 ## source identity, solving, immutable stores, vendoring, and GC roots. It
@@ -623,13 +623,13 @@ proc userStoreDir*(): string =
   normalizedPath(getHomeDir() / ".gene" / "packages")
 
 # ---------------------------------------------------------------------------
-# The install store (docs/spec/packages.md §4)
+# The install store (archive/docs/spec/packages.md §4)
 # ---------------------------------------------------------------------------
 
 const InstallStoreEnvVar* = "GENE_INSTALL_PACKAGES"
 
 proc installStoreDir*(): string =
-  ## The read-only store an install provides (docs/spec/packages.md §4):
+  ## The read-only store an install provides (archive/docs/spec/packages.md §4):
   ## content-addressed package trees under `<prefix>/share/gene/packages`,
   ## beside the docs path `<prefix>/share/gene/docs`. `GENE_INSTALL_PACKAGES`
   ## overrides it for tests and for a relocated install.
@@ -3342,7 +3342,7 @@ proc sync*(manager: PackageManager, resolution: Resolution,
       normalizedPath(absolutePath(policy.userStoreRoot))
     else:
       manager.userStoreRoot
-  # The read-only store the install provides (docs/spec/packages.md §4). It is
+  # The read-only store the install provides (archive/docs/spec/packages.md §4). It is
   # consulted before the user store, and a tree is used only when its digest
   # matches, so it can never substitute a different release.
   let installRoot = installStoreDir()
@@ -3547,7 +3547,7 @@ proc sync*(manager: PackageManager, resolution: Resolution,
     if dirExists(installed):
       # Content addressing makes the installed tree equivalent to the user
       # store's object, so it is used in place and never copied
-      # (docs/spec/packages.md §4).
+      # (archive/docs/spec/packages.md §4).
       return verifiedPackageAt(installed, pkg, poInstallStore)
     let target = digestPath(storeRoot, pkg.treeDigest)
     let objectLockPath = storeRoot / "locks" / "objects" /

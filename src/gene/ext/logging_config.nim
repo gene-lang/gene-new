@@ -1,4 +1,4 @@
-## Data-only logging configuration loader (docs/stdlib.md).
+## Data-only logging configuration loader (archive/docs/stdlib.md).
 
 import std/[algorithm, os, sets, strutils, tables]
 import ./logging

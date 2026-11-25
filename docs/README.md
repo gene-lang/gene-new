@@ -1,24 +1,34 @@
 # Gene documentation
 
-Read the [project README](../README.md) to build Gene and run a first program.
-Then choose a guide:
+The book teaches the language in reading order, one idea per `##` section,
+and every example in it runs. Start with the overview, then read the
+chapters you need.
 
-1. [Language](language.md) — learn the syntax and everyday programming model.
-2. [Design](design.md) — understand why the language works this way.
-3. [Library recipes](stdlib.md) — work with text, files, services, and data.
-4. [Workflows](workflows.md) — organize a project, use tools, and target the web.
-5. [Testing](testing.md) — write assertions, examples, fixtures, and test suites.
-6. [Error handling](error-handling.md) — typed failures, messages, and gradual checking.
+| # | Chapter | Covers |
+| --- | --- | --- |
+| 1 | [Overview](book/overview.md) | what Gene is, a tour in short programs, how these docs work |
+| 2 | [Getting started](book/getting_started.md) | building Gene, `gene eval`, `gene run`, `main` and its arguments, the REPL |
+| 3 | [Values and expressions](book/values.md) | numbers, text, symbols, booleans, `nil`, collection literals, equality, printing |
+| 4 | [Names, bindings, and paths](book/names.md) | bindings, naming rules, the standard library, paths and path reads, namespaces |
+| 5 | [Control flow](book/control_flow.md) | `do`, `if`, `if_present`, `match` and patterns, loops |
+| 6 | [Functions](book/functions.md) | `fn`, annotations, optional, named, and rest arguments, closures, `#@`, `@doc` |
+| 7 | [Collections and streams](book/collections.md) | Lists, Maps, Sets, nodes, the two operation families, pipelines, streams, generators |
+| 8 | [Types, messages, and protocols](book/types.md) | record types, messages, constructors, protocols, inheritance, enums, type expressions |
+| 9 | [Errors](book/errors.md) | raising, catching, errors and faults, declared errors, cleanup, strictness |
+| 10 | [Modules and packages](book/modules.md) | modules, imports, impl imports, packages, dependencies |
+| 11 | [Input and output](book/io.md) | files, paths, JSON, CSV, processes, the environment, SQLite, serializing |
+| 12 | [Tasks, channels, and actors](book/concurrency.md) | tasks, channels, cells, cancellation, actors, events |
+| 13 | [Code as data](book/code_as_data.md) | quoting, templates, macros, fexprs, `eval` |
+| 14 | [Testing](book/testing.md) | assertions, `*_spec.gene` examples, fixtures, `gene test` |
+| 15 | [Gene on the web](book/web.md) | HTTP server and client, HTML and CSS as data, the web profile |
+| 16 | [Native code, builds, and deployment](book/native.md) | `gene build`, `gene install`, C libraries, untrusted code |
+| 17 | [Tools](book/tools.md) | the `gene` command, inspecting code, editors, logging |
 
-Each guide starts with ordinary examples and introduces advanced features later.
-You do not need to read every page in order.
+The library reference, one entry per standard name generated from the
+source, is not built yet. Until it is, `($runtime/signature f)` and
+`gene doc file.gene` describe what is defined.
 
-For contributors:
-
-- [Development, status, and roadmap](development.md)
-- [The implemented specification](spec/README.md) — precise rules
-- [Macro design and implementation guide](macro.md)
-- [Composing protocols across modules](protocol-composition.md) — root-authored operations and impl ownership
-- [Design proposals](proposals/README.md) — open and staged designs
-- [Work reports](reports/README.md) — completed optimizations and verifications
-- [Native application profile](profiles/native-app.md) — qualification evidence
+The book replaced the earlier guides, the specification, the change log,
+proposals, and reports. Git history keeps them under `docs/`, and code
+comments cite them as `archive/docs/…`, the untracked copy kept beside the
+repository's other retired material.

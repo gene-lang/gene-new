@@ -30,7 +30,7 @@ demonstrate.
 | --- | --- |
 | [async-http-server.gene](async-http-server.gene) | The `net/http` server: routes, async jobs, limits, logging. `async-http-server.sh validate` checks it end to end. |
 | [todo_app](todo_app/src/main.gene) | A server-rendered web app with forms and a JSON API (`bin/gene run examples/todo_app/src/main.gene`; creates `./todo.db`). |
-| [web_component.gene](web_component.gene) | A web-profile component that renders a DOM node; see [web applications](../docs/workflows.md#web-applications). |
+| [web_component.gene](web_component.gene) | A web-profile component that renders a DOM node; see [the web profile](../docs/book/web.md#the-web-profile). |
 | [utils](utils/src/form.gene) | URL-encoded form handling shared by the web examples. |
 
 ## Native code

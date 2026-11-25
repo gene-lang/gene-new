@@ -97,7 +97,7 @@
    ^design (repository_file "examples/gene-harness/docs/design.md")
    ^web_client (repository_file "examples/gene-harness/docs/web-client.md")
    ^claude (repository_file "examples/gene-harness/docs/claude.md")
-   ^workflows (repository_file "docs/workflows.md")
+   ^workflows (repository_file "docs/book/getting_started.md")
    ^page (repository_file "examples/gene-harness/src/website/page.gene")
    ^style (repository_file "examples/gene-harness/src/website/style.gene")
    ^client (repository_file "examples/gene-harness/client/website.gene")})

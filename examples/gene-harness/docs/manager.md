@@ -368,7 +368,7 @@ retained log until their first manager restart.
 
 The manager and launcher are implemented in Gene. The native process additions
 are ordinary `$os` functions, with no language syntax changes. See the
-[standard library contract](../../../docs/stdlib.md) for literal arguments,
+[standard library contract](../../../archive/docs/stdlib.md) for literal arguments,
 child directory/environment handling and detached lifetime semantics.
 
 ### Child environment

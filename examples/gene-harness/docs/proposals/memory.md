@@ -679,7 +679,7 @@ If scans become slow, SQLite FTS5 provides indexed text search and BM25 ranking.
 SQLite library at runtime, so qualify FTS5 on each supported host, including
 Linux x86_64. Use `$db/sqlite/open_file` for a persistent index, since its pager
 avoids the whole-image publication mode of `open` described in the repository's
-[library guide](../../../../docs/stdlib.md).
+[library guide](../../../../archive/docs/stdlib.md).
 
 A derived index then needs explicit canonical revision checks, replay/rebuild
 progress, recent-change handling, and deletion suppression. Those obligations

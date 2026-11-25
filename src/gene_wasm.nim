@@ -1,4 +1,4 @@
-## WebAssembly host ABI v0 for the Gene VM (docs/workflows.md §A.4).
+## WebAssembly host ABI v0 for the Gene VM (archive/docs/workflows.md §A.4).
 ##
 ## Text-only, synchronous: source string in; status + rendered result + captured
 ## print/println output out. No raw `Value` crosses the boundary — results are

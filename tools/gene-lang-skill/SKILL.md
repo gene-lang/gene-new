@@ -168,9 +168,7 @@ Load by branch — each file is self-contained:
 In the repository itself:
 
 - `examples/style_guide.gene` — every everyday construct, formatted canonically. The most reliable source to copy a spelling from.
-- `docs/spec/` — normative contract for the implemented surface, split by subsystem.
-- `docs/language.md` — the current language guide.
-- `docs/workflows.md` — tools, project organization, and formatting conventions.
+- `docs/book/` — the language book, one idea per section, every example run. Start with `overview.md`; `docs/README.md` lists the chapters.
 
 Changing the *implementation* (Nim under `src/`) rather than writing Gene is a
 different job with different gates — `AGENTS.md` governs it.

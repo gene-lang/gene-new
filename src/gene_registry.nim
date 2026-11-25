@@ -172,7 +172,7 @@ proc provision(): bool =
     stdout.writeLine("public key: " & base64.encode(publicKey))
     return true
   if paramCount() >= 2 and paramStr(1) == "delegate":
-    # `gene` and `genex` are reserved owners (docs/spec/packages.md §1), so a
+    # `gene` and `genex` are reserved owners (archive/docs/spec/packages.md §1), so a
     # mistaken delegation fails loudly instead of handing out a project owner
     # name. `--force-reserved` is the explicit override for a project key.
     var options = initTable[string, string]()

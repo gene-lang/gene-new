@@ -1940,7 +1940,7 @@ suite "cli — gene parse/fmt/compile":
     check "2 | (+ x missing)" in ran.output
 
   test "serde references, instances, hooks, and value-refs round-trip across modules":
-    ## Stages 3-4 (docs/stdlib.md): type/enum/variant/
+    ## Stages 3-4 (archive/docs/stdlib.md): type/enum/variant/
     ## protocol/fn refs to an imported module round-trip by identity; typed
     ## instances round-trip via direct construction (ctor never runs on
     ## read-back); serde/read resolves against loaded modules WITHOUT executing
@@ -2862,7 +2862,7 @@ int64_t native_answer(int64_t value) { return value + DELTA; }
     check "[OK] tests/one.gene" in ran.output
     check "tests/two.gene" notin ran.output
 
-suite "cli — gene pkg (docs/workflows.md)":
+suite "cli — gene pkg (archive/docs/workflows.md)":
   proc pkgCliDir(): string =
     result = cliDir / "pkg"
     removeDir(result)

@@ -674,7 +674,7 @@ libcurl-backed client with TLS, fragmentation and polling. Reuse and extend it
 for this milestone, including text sends and cancellable connection setup.
 The browser's `ws/connect` is a separate API, and the native HTTP client keeps
 its documented rejection of protocol upgrades; see the
-[standard library](../../../docs/stdlib.md).
+[standard library](../../../archive/docs/stdlib.md).
 
 The client needs verified TLS, the WebSocket handshake, bounded text/binary
 frames and fragmentation, ping/pong, close handling, cancellation and resource
