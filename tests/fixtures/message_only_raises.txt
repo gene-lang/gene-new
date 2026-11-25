@@ -6,7 +6,7 @@
 # 1	src/gene/aot_checked.nim
 # 1	src/gene/callable_reflection.nim
 # 1	src/gene/clause_syntax.nim
-# 422	src/gene/compiler.nim
+# 396	src/gene/compiler.nim
 # 11	src/gene/error_runtime.nim
 # 22	src/gene/events.nim
 # 1	src/gene/execution_limits.nim
@@ -19,6 +19,7 @@
 # 18	src/gene/ext/term/stdlib_term.nim
 # 5	src/gene/ext/tzif.nim
 # 1	src/gene/gir.nim
+# 26	src/gene/import_spec.nim
 # 2	src/gene/io_read_guard.nim
 # 5	src/gene/macro_runtime.nim
 # 47	src/gene/native_api.nim
@@ -105,12 +106,10 @@ src/gene/compiler.nim	a dot message descriptor requires a receiver; write (x
 src/gene/compiler.nim	a dot message descriptor requires a receiver; write (x .Proto:message)
 src/gene/compiler.nim	a fexpr cannot be a generator
 src/gene/compiler.nim	a message name must be a symbol
-src/gene/compiler.nim	alias an individual member inside the import group or write `
 src/gene/compiler.nim	alias got unexpected named argument: ^
 src/gene/compiler.nim	alias requires a name and one type expression: (alias Name TypeExpr)
 src/gene/compiler.nim	alternation pattern alternatives must bind the same names
 src/gene/compiler.nim	ambiguous typed_native Type metadata: 
-src/gene/compiler.nim	an import wildcard must be the only selector
 src/gene/compiler.nim	an optional dot descriptor guards a message send; Paths are 
 src/gene/compiler.nim	an optional dot descriptor guards a message send; Paths are 
 src/gene/compiler.nim	an optional dot send short-circuits an absent receiver, but super 
@@ -118,7 +117,6 @@ src/gene/compiler.nim	an optional dot send short-circuits an absent receiver, bu
 src/gene/compiler.nim	await expects one Task
 src/gene/compiler.nim	backed enum variant '
 src/gene/compiler.nim	bare wildcard import requires module-loader compilation: 
-src/gene/compiler.nim	bare wildcards do not re-export; use an alias or explicit selections
 src/gene/compiler.nim	binding '
 src/gene/compiler.nim	binding name must not be empty
 src/gene/compiler.nim	break expects no arguments
@@ -182,7 +180,6 @@ src/gene/compiler.nim	eval cannot use import_impl; add policy impls to the surro
 src/gene/compiler.nim	eval expects one node
 src/gene/compiler.nim	eval requires ^in Env
 src/gene/compiler.nim	eval unknown option: ^
-src/gene/compiler.nim	expected import form
 src/gene/compiler.nim	fail expects one Error value or Str
 src/gene/compiler.nim	fexpr requires a parameter vector
 src/gene/compiler.nim	fexprs must be named by a trailing-! binding: (fn name! [syntax...] body...)
@@ -205,7 +202,6 @@ src/gene/compiler.nim	ffi/struct requires ^fields
 src/gene/compiler.nim	ffi/struct requires a name
 src/gene/compiler.nim	ffi/union requires ^fields
 src/gene/compiler.nim	ffi/union requires a name
-src/gene/compiler.nim	file import selectors go directly after `import`; write `(import a b ^from \"path\")`
 src/gene/compiler.nim	fn requires a parameter vector
 src/gene/compiler.nim	fn! was removed; define a named fexpr with fn: (fn name! [syntax...] body...)
 src/gene/compiler.nim	function 
@@ -241,18 +237,6 @@ src/gene/compiler.nim	impl ^export must be Bool
 src/gene/compiler.nim	impl body requires message declarations; 
 src/gene/compiler.nim	impl got unexpected named argument: 
 src/gene/compiler.nim	impl requires a protocol and receiver type: 
-src/gene/compiler.nim	import ^as was removed; use `source:alias`
-src/gene/compiler.nim	import ^export must be Bool
-src/gene/compiler.nim	import ^from must be a path string
-src/gene/compiler.nim	import ^pkg must be a non-empty package name string
-src/gene/compiler.nim	import ^pkg requires `^from \"path\"`; a namespace-path import never 
-src/gene/compiler.nim	import alias must be a single binding name
-src/gene/compiler.nim	import got unexpected option: ^
-src/gene/compiler.nim	import path segments must be names
-src/gene/compiler.nim	import requires a source
-src/gene/compiler.nim	import requires at least one selection
-src/gene/compiler.nim	import selector must be a name or a namespace path
-src/gene/compiler.nim	import: `from` was removed; use `^from \"path\"`
 src/gene/compiler.nim	import_impl ^from must be a path string
 src/gene/compiler.nim	import_impl got unexpected option: ^
 src/gene/compiler.nim	import_impl requires: (import_impl Protocol for Receiver ^from \"path\")
@@ -263,7 +247,6 @@ src/gene/compiler.nim	inline impl requires a protocol
 src/gene/compiler.nim	inline impl requires a protocol
 src/gene/compiler.nim	leading '
 src/gene/compiler.nim	leading `
-src/gene/compiler.nim	load-only imports cannot re-export; remove `^export` or select names
 src/gene/compiler.nim	loop does not accept props
 src/gene/compiler.nim	loop requires a body
 src/gene/compiler.nim	macro 
@@ -322,10 +305,8 @@ src/gene/compiler.nim	named rest parameter cannot have a default
 src/gene/compiler.nim	named rest parameter requires a name
 src/gene/compiler.nim	named rest parameters are not supported in macro/fexpr parameters
 src/gene/compiler.nim	namespace '
-src/gene/compiler.nim	namespace import requires `source/member`, `source/[members]`, or `source:alias`
 src/gene/compiler.nim	new expects a Type argument
 src/gene/compiler.nim	ns requires a name
-src/gene/compiler.nim	omit `[]` to load a module without bindings; write `(import ^from \"path\")`
 src/gene/compiler.nim	only a named fexpr may bind a name ending in !: 
 src/gene/compiler.nim	panic expects zero or one value
 src/gene/compiler.nim	parameter annotation requires a parameter
@@ -348,7 +329,6 @@ src/gene/compiler.nim	protocol got unexpected named argument:
 src/gene/compiler.nim	protocol has duplicate derive form
 src/gene/compiler.nim	protocol requires a name
 src/gene/compiler.nim	protocol/impl body must contain message declarations
-src/gene/compiler.nim	put the import alias at the end of the selector; write `
 src/gene/compiler.nim	qualified function name must end in a symbol, string, or %expression
 src/gene/compiler.nim	qualified function name must end in a symbol, string, or %expression
 src/gene/compiler.nim	qualified function name requires a target namespace and member name
@@ -357,7 +337,6 @@ src/gene/compiler.nim	qualified message names are only valid in impl bodies:
 src/gene/compiler.nim	quasiquote expects one template
 src/gene/compiler.nim	quasiquote expects one template
 src/gene/compiler.nim	quasiquoted pipeline stages do not support body splices
-src/gene/compiler.nim	re-export requires a module-path import
 src/gene/compiler.nim	recursive type alias
 src/gene/compiler.nim	repeat does not accept props
 src/gene/compiler.nim	repeat index 
@@ -441,7 +420,6 @@ src/gene/compiler.nim	unquote requires one expression
 src/gene/compiler.nim	unsupported macro type annotation
 src/gene/compiler.nim	unsupported macro type annotation
 src/gene/compiler.nim	unsupported supervisor strategy: 
-src/gene/compiler.nim	use `
 src/gene/compiler.nim	var type annotation requires a type
 src/gene/compiler.nim	web_module 
 src/gene/compiler.nim	web_module '
@@ -449,10 +427,7 @@ src/gene/compiler.nim	web_module got unexpected named argument:
 src/gene/compiler.nim	web_module must be an unconditional top-level declaration
 src/gene/compiler.nim	web_module requires a name
 src/gene/compiler.nim	while requires a condition
-src/gene/compiler.nim	wildcard imports require `^from \"path\"`; a namespace-path import 
 src/gene/compiler.nim	wildcard, alias, and re-export imports must be unconditional 
-src/gene/compiler.nim	write `
-src/gene/compiler.nim	write the import alias as `
 src/gene/compiler.nim	yield expects one value
 src/gene/compiler.nim	yield is only valid inside fn
 src/gene/compiler.nim	yield requires an explicit ^^generator declaration
@@ -610,6 +585,32 @@ src/gene/ext/tzif.nim	resolve_local fold must be reject, earlier, or later
 src/gene/ext/tzif.nim	temporal/_tzif_resolve_local expects 5 arguments
 src/gene/ext/tzif.nim	temporal/_tzif_to_local expects 4 arguments
 src/gene/gir.nim	typed_native backend has no lowering for 
+src/gene/import_spec.nim	alias an individual member inside the import group or write `
+src/gene/import_spec.nim	an import wildcard must be the only selector
+src/gene/import_spec.nim	bare wildcards do not re-export; use an alias or explicit selections
+src/gene/import_spec.nim	expected import form
+src/gene/import_spec.nim	file import selectors go directly after `import`; write `(import a b ^from \"path\")`
+src/gene/import_spec.nim	import ^as was removed; use `source:alias`
+src/gene/import_spec.nim	import ^export must be Bool
+src/gene/import_spec.nim	import ^from must be a path string
+src/gene/import_spec.nim	import ^pkg must be a non-empty package name string
+src/gene/import_spec.nim	import ^pkg requires `^from \"path\"`; a namespace-path import never 
+src/gene/import_spec.nim	import alias must be a single binding name
+src/gene/import_spec.nim	import got unexpected option: ^
+src/gene/import_spec.nim	import path segments must be names
+src/gene/import_spec.nim	import requires a source
+src/gene/import_spec.nim	import requires at least one selection
+src/gene/import_spec.nim	import selector must be a name or a namespace path
+src/gene/import_spec.nim	import: `from` was removed; use `^from \"path\"`
+src/gene/import_spec.nim	load-only imports cannot re-export; remove `^export` or select names
+src/gene/import_spec.nim	namespace import requires `source/member`, `source/[members]`, or `source:alias`
+src/gene/import_spec.nim	omit `[]` to load a module without bindings; write `(import ^from \"path\")`
+src/gene/import_spec.nim	put the import alias at the end of the selector; write `
+src/gene/import_spec.nim	re-export requires a module-path import
+src/gene/import_spec.nim	use `
+src/gene/import_spec.nim	wildcard imports require `^from \"path\"`; a namespace-path import 
+src/gene/import_spec.nim	write `
+src/gene/import_spec.nim	write the import alias as `
 src/gene/io_read_guard.nim	AsyncReader/read expects a receiver and max_bytes
 src/gene/io_read_guard.nim	read borrow requires an owner
 src/gene/macro_runtime.nim	<expr instance.failure)>
