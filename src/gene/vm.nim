@@ -5,6 +5,8 @@ import std/[algorithm, atomics, base64, dynlib, hashes, json, locks, math, monot
 import ./[compiler, diagnostics, digest, equality, execution_limits, gir, package, printer, reader, types,
           type_contracts]
 import ./[callable_reflection, error_analysis, gir_codec, native_errors, value_graph]
+import ./module_resolver
+export module_resolver
 import ./io_lifecycle
 import ./pending_exception
 when defined(geneAtomicGenerationRetirementProbe):
@@ -968,7 +970,6 @@ proc resolveMapFamily(name: string, receiver: Value,
                       tuple[handled: bool, value: Value, source: Value]
 proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
-proc isUrlModulePath*(path: string): bool
 # The AOT loader lives in the included stdlib, which is spliced in well before
 # these are defined.
 proc validateAotTypeRequirements*(reqs: openArray[AotTypeRequirement]): string
@@ -12367,9 +12368,6 @@ proc isWithinPackageRoot(app: Application, path: string): bool =
 # URL, so a remote module can never name a local file. Relative references
 # resolve against the *final* URL after redirects (see moduleSourceDir).
 
-proc isUrlModulePath*(path: string): bool =
-  path.startsWith("https://") or path.startsWith("http://")
-
 proc urlOriginAndPath(url: string): tuple[origin, path: string] =
   ## Split "scheme://authority/path" into origin ("scheme://authority") and
   ## the absolute path (defaulting to "/").
@@ -12443,67 +12441,11 @@ proc validateModuleUrl(app: Application, url, rawPath: string): string =
     normalized &= ".gene"
   normalized
 
-proc moduleCandidate(base, relPath: string): string =
-  ## One module base plus one module name, with the MVP extension policy
-  ## applied. A name without an extension resolves to `<name>.gene`; a file
-  ## literally named `<name>` sitting beside it makes the reference ambiguous
-  ## rather than silently resolving to one of the two.
-  let direct = normalizedPath(absolutePath(relPath, base))
-  if splitFile(relPath).ext.len > 0:
-    return direct
-  result = direct & ".gene"
-  if fileExists(result) and fileExists(direct):
-    raisePackageError(pecModuleAmbiguous,
-      "module reference \"" & relPath & "\" matches two files",
-      ["candidate: " & result, "candidate: " & direct])
-
-proc resolveInModuleBases(pkg: Package, relPath: string): string =
-  ## Resolve beneath the package's single declared library root. Ad-hoc
-  ## packages use their synthesized root; regular packages have no root
-  ## fallback.
-  var fallback = ""
-  for base in pkg.moduleBases():
-    let candidate = moduleCandidate(base, relPath)
-    if fallback.len == 0:
-      fallback = candidate
-    if fileExists(candidate):
-      return candidate
-  if fallback.len == 0:
-    raisePackageError(pecModuleNotFound,
-      pkg.describe & " has no library target")
-  fallback
-
 proc resolvePackageModule*(app: Application, pkg: Package,
                            rawPath: string): string =
-  ## Module selection inside an already-selected package (§10). Every module
-  ## name resolves literally; `"."` is the only path the resolver rewrites, and
-  ## it rewrites to `main_module`. `"."` can never collide with a real module
-  ## because `.` does not name a file, and it works identically for regular and
-  ## ad-hoc packages.
-  var p = rawPath
-  if p == PackageEntryModulePath:
-    if pkg.mainModule.len == 0:
-      raisePackageError(pecModuleNotFound,
-        "\".\" has no entry module in " & pkg.describe)
-    p = pkg.mainModule
-  if p.isUrlModulePath:
-    raisePackageError(pecBoundary,
-      "a package-qualified import cannot name a URL: " & rawPath,
-      ["package: " & pkg.describe])
-  if p.len == 0 or p.isAbsolute or p[0] == '/':
-    raisePackageError(pecBoundary,
-      "a package-qualified module path must be package-relative: " & rawPath,
-      ["package: " & pkg.describe])
-  for segment in p.replace('\\', '/').split('/'):
-    if segment == "..":
-      raisePackageError(pecBoundary,
-        "a package-qualified import cannot use `..`: " & rawPath,
-        ["package: " & pkg.describe])
-  result = resolveInModuleBases(pkg, p)
-  if not pkg.contains(result):
-    raisePackageError(pecBoundary,
-      "module path escapes package root: " & rawPath,
-      ["package: " & pkg.describe, "root: " & pkg.root])
+  ## Module selection inside an already-selected package (§10). The shared
+  ## resolver owns the rules; this keeps the Application-shaped call site.
+  pkg.packageModulePath(rawPath)
 
 proc resolveModuleRef*(app: Application, rawPath: string,
                        pkgName = ""): string =
@@ -12530,20 +12472,7 @@ proc resolveModuleRef*(app: Application, rawPath: string,
     # importing module's URL — a remote module can never name a local file.
     return app.validateModuleUrl(
       resolveUrlRef(app.currentModuleDir, rawPath), rawPath)
-  let pkg = app.currentPackage
-  if rawPath == PackageEntryModulePath:
-    return app.resolvePackageModule(pkg, rawPath)
-  if rawPath.startsWith("./") or rawPath.startsWith("../"):
-    result = moduleCandidate(app.currentModuleDir, rawPath)
-  else:
-    var p = rawPath
-    if p.startsWith("/"):     # bare and leading-"/" resolve from the package
-      p = p[1 .. ^1]
-    result = resolveInModuleBases(pkg, p)
-  if not pkg.contains(result):
-    raisePackageError(pecBoundary,
-      "module path escapes package root: " & rawPath,
-      ["package: " & pkg.describe, "root: " & pkg.root])
+  fileModulePath(app.currentPackage, app.currentModuleDir, rawPath)
 
 proc resolveModulePath*(app: Application, rawPath: string): string =
   app.resolveModuleRef(rawPath)
@@ -28489,7 +28418,7 @@ proc adaptBoundary(where: BoundaryLabel, typeExpr, value: Value, scope: Scope): 
     value.setReplyToResultType(resultType, scope)
   value
 
-proc reflectionTypeLookup(expr: Value, scope: Scope): Value {.nimcall.} =
+proc reflectionTypeLookup*(expr: Value, scope: Scope): Value {.nimcall.} =
   # Match normal boundary lookup precedence, but only read initialized static
   # type bindings. No evaluation, module import, or impl dispatch occurs here.
   if expr.kind == vkSymbol:
