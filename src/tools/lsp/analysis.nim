@@ -13,10 +13,11 @@
 
 import std/[strutils, tables, unicode]
 import ../../gene/[reader, types]
+import ../declaration_heads
 import ../declaration_kinds
 import ../source_positions
 import ../source_index as sourceIndex
-export declaration_kinds, source_positions
+export declaration_heads, declaration_kinds, source_positions
 
 type
   LspRange* = object
@@ -418,65 +419,68 @@ proc childDecls(parentForm: Value, unit: SourceUnit,
       continue
     result.add declFromNode(item, loc, unit, src, starts)
 
+proc enumChildren(form: Value, unit: SourceUnit, src: string, starts: seq[int],
+                  startOff: int): seq[DocSymbol] =
+  ## Unit variants are bare symbols with no loc entry, so their token is found
+  ## in the form's own source range. Tuple variants are nodes with a loc.
+  let endOff = matchingCloseOffset(src, startOff)
+  for i in 1 ..< form.body.len:
+    case form.body[i].kind
+    of vkSymbol:
+      let r = findTokenRange(src, starts, startOff + 1, endOff,
+                             form.body[i].symVal)
+      result.add DocSymbol(name: form.body[i].symVal, kind: skEnumMember,
+                           range: r, selectionRange: r)
+    of vkNode:
+      if form.body[i].head.kind == vkSymbol:
+        let vloc = unit.locs.getOrDefault(form.body[i].bits)
+        if vloc.hasSourceLoc:
+          let vr = formRange(src, starts, vloc)
+          result.add DocSymbol(name: form.body[i].head.symVal,
+                               kind: skEnumMember, range: vr,
+                               selectionRange: vr)
+    else:
+      discard
+
 proc declFromNode(form: Value, loc: SourceLoc, unit: SourceUnit,
                   src: string, starts: seq[int]): seq[DocSymbol] =
-  if form.kind != vkNode or form.head.kind != vkSymbol:
+  ## One declaration form, read through the shared head table. The table owns
+  ## which heads declare, their kinds, which bodies hold nested declarations,
+  ## and the SymbolKind mapping; this proc only extracts the name and the
+  ## editor-facing detail.
+  if form.kind != vkNode:
     return
-  let headName = form.head.symVal
+  let headName = headText(form.head)
+  if headName.len == 0:
+    return
+  let found = declarationHeadInfo(headName)
+  if not found.found or not found.info.symbol:
+    return
+  let info = found.info
   let range = formRange(src, starts, loc)
   let startOff = byteOffset(starts, loc.line, loc.col)
   let body = form.body
 
-  proc named(kind: int, name: string, detail = ""): DocSymbol =
-    DocSymbol(name: name, detail: detail, kind: kind, range: range,
+  proc named(name: string, detail = ""): DocSymbol =
+    DocSymbol(name: name, detail: detail, kind: lspKind(info.kind),
+              range: range,
               selectionRange: nameSelectionRange(src, starts, startOff))
 
-  case headName
-  of "fn", "macro":
-    if body.len > 0 and body[0].kind == vkSymbol:
-      let flag = form.props.getOrDefault("generator", NIL)
-      result.add named(skFunction, body[0].symVal,
-        if headName != "fn": headName
-        elif flag.kind == vkBool and flag.boolVal: "generator"
-        else: "")
-  of "var":
-    if body.len > 0 and body[0].kind == vkSymbol:
-      result.add named(skVariable, body[0].symVal)
-  of "type":
-    if body.len > 0 and body[0].kind == vkSymbol:
-      var sym = named(skClass, body[0].symVal)
+  let generator = block:
+    let flag = form.props.getOrDefault("generator", NIL)
+    flag.kind == vkBool and flag.boolVal
+
+  case info.name
+  of dnkFirst:
+    if body.len == 0 or body[0].kind != vkSymbol:
+      return
+    var sym = named(body[0].symVal, lspDetail(info.kind, generator))
+    if info.recurse:
       sym.children = childDecls(form, unit, src, starts)
-      result.add sym
-  of "enum":
-    if body.len > 0 and body[0].kind == vkSymbol:
-      var sym = named(skEnum, body[0].symVal)
-      let endOff = matchingCloseOffset(src, startOff)
-      for i in 1 ..< body.len:
-        case body[i].kind
-        of vkSymbol:
-          # Unit variants are bare symbols with no loc entry: find the token.
-          let r = findTokenRange(src, starts, startOff + 1, endOff,
-                                 body[i].symVal)
-          sym.children.add DocSymbol(name: body[i].symVal, kind: skEnumMember,
-                                     range: r, selectionRange: r)
-        of vkNode:
-          # Tuple variants are nodes: (ok Any)
-          if body[i].head.kind == vkSymbol:
-            let vloc = unit.locs.getOrDefault(body[i].bits)
-            if vloc.hasSourceLoc:
-              let vr = formRange(src, starts, vloc)
-              sym.children.add DocSymbol(name: body[i].head.symVal,
-                                         kind: skEnumMember, range: vr,
-                                         selectionRange: vr)
-        else:
-          discard
-      result.add sym
-  of "protocol":
-    if body.len > 0 and body[0].kind == vkSymbol:
-      var sym = named(skInterface, body[0].symVal)
-      sym.children = childDecls(form, unit, src, starts)
-      result.add sym
-  of "impl":
+    elif info.kind == dkEnum:
+      sym.children = enumChildren(form, unit, src, starts, startOff)
+    result.add sym
+  of dnkImpl:
     # (impl P for T body...) or inline (impl P body...) inside a type
     var name = "impl"
     if body.len > 0 and body[0].kind == vkSymbol:
@@ -484,25 +488,15 @@ proc declFromNode(form: Value, loc: SourceLoc, unit: SourceUnit,
       if body.len > 2 and symName(body[1]) == "for" and
           body[2].kind == vkSymbol:
         name.add " for " & body[2].symVal
-    var sym = named(skObject, name)
+    var sym = named(name)
     sym.children = childDecls(form, unit, src, starts)
     result.add sym
-  of "message":
+  of dnkCtor:
+    result.add named("ctor")
+  of dnkMod:
     if body.len > 0 and body[0].kind == vkSymbol:
-      let flag = form.props.getOrDefault("generator", NIL)
-      result.add named(skMethod, body[0].symVal,
-        if flag.kind == vkBool and flag.boolVal: "generator" else: "")
-  of "ctor":
-    result.add named(skConstructor, "ctor")
-  of "ns":
-    if body.len > 0 and body[0].kind == vkSymbol:
-      var sym = named(skNamespace, body[0].symVal)
-      sym.children = childDecls(form, unit, src, starts)
-      result.add sym
-  of "mod":
-    if body.len > 0 and body[0].kind == vkSymbol:
-      result.add named(skModule, body[0].symVal)
-  else:
+      result.add named(body[0].symVal)
+  of dnkNone:
     discard
 
 proc analyze*(src: string, sourceName = "<lsp>"): DocAnalysis =

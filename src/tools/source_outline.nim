@@ -11,7 +11,7 @@
 ## and therefore always agrees with this outline about spelling and spans.
 
 import ../gene/reader
-import ./declaration_kinds
+import ./declaration_heads
 import ./source_index
 import ./source_positions
 
@@ -80,7 +80,9 @@ proc nameRow(doc: SourceDocument, operands: seq[SourceRow],
 
 proc fromSyntax(doc: SourceDocument, decl: SyntaxRef,
                 found: var bool): OutlineRow =
-  ## One indexed top-level form, interpreted with the LSP's declaration cases.
+  ## One indexed top-level form, interpreted with the shared declaration
+  ## table. The table decides whether the form declares, its kind, and where
+  ## its name is; this proc only reads the name token and the detail flag.
   found = false
   if decl.kind != skNode:
     return
@@ -95,6 +97,10 @@ proc fromSyntax(doc: SourceDocument, decl: SyntaxRef,
   if not hasHead or not symbolAt(doc, headRow):
     return
   let head = rawText(doc, headRow.syntax.span)
+  let foundHead = declarationHeadInfo(head)
+  if not foundHead.found or not foundHead.info.symbol:
+    return
+  let info = foundHead.info
   let operands = positionalRows(rows)
   var row = OutlineRow(head: head, span: decl.span,
                        nameSpan: headRow.syntax.span, closed: decl.closed)
@@ -109,27 +115,12 @@ proc fromSyntax(doc: SourceDocument, decl: SyntaxRef,
       else:
         return
 
-  case head
-  of "fn", "macro":
+  row.kind = lspKind(info.kind)
+  case info.name
+  of dnkFirst:
     nameFrom(0):
-      row.kind = skFunction
-      if head == "macro":
-        row.detail = "macro"
-      elif propTrue(doc, rows, "generator"):
-        row.detail = "generator"
-  of "var":
-    nameFrom(0):
-      row.kind = skVariable
-  of "type":
-    nameFrom(0):
-      row.kind = skClass
-  of "enum":
-    nameFrom(0):
-      row.kind = skEnum
-  of "protocol":
-    nameFrom(0):
-      row.kind = skInterface
-  of "impl":
+      row.detail = lspDetail(info.kind, propTrue(doc, rows, "generator"))
+  of dnkImpl:
     # `(impl P for T body…)` or an inline `(impl P body…)`; a malformed impl is
     # still a declaration, named `impl`, exactly as the LSP reports it.
     row.name = "impl"
@@ -142,22 +133,12 @@ proc fromSyntax(doc: SourceDocument, decl: SyntaxRef,
         let target = doc.operandRow(operands, 2)
         if target.found:
           row.name.add " for " & rawText(doc, target.row.syntax.span)
-    row.kind = skObject
-  of "message":
-    nameFrom(0):
-      row.kind = skMethod
-      if propTrue(doc, rows, "generator"):
-        row.detail = "generator"
-  of "ctor":
+  of dnkCtor:
     row.name = "ctor"
-    row.kind = skConstructor
-  of "ns":
+  of dnkMod:
     nameFrom(0):
-      row.kind = skNamespace
-  of "mod":
-    nameFrom(0):
-      row.kind = skModule
-  else:
+      discard
+  of dnkNone:
     return
   result = row
   found = true

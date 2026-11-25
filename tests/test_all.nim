@@ -51,6 +51,7 @@ include test_nil_void
 include test_native_api
 include test_native_callbacks
 include test_logging
+include test_declaration_heads
 include test_cli
 include test_lsp
 include test_http_server
