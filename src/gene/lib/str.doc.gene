@@ -1,0 +1,93 @@
+(mod str
+  @doc "String operations: searching, comparing, splitting and joining, trimming, case conversion, byte sizes and slices, and UTF-8 buffer conversion.")
+
+(fn byte_size [text : Str] : Int
+  ^errors []
+  @doc "Returns the number of UTF-8 bytes in `text`, not the number of characters. An empty string has byte size 0."
+  @see ["book/values/text"]
+  @for "gene/str/byte_size"
+  nil)
+
+(fn contains? [text : Str, needle : Str] : Bool
+  ^errors []
+  @doc "Reports whether `text` contains `needle` as a substring, comparing bytes. The comparison is case-sensitive, and every string contains the empty string."
+  @see ["book/values/text"]
+  @for "gene/str/contains?"
+  nil)
+
+(fn empty? [text : Str] : Bool
+  ^errors []
+  @doc "Reports whether `text` has no bytes. A string of whitespace is not empty."
+  @see ["book/values/text"]
+  @for "gene/str/empty?"
+  nil)
+
+(fn ends_with? [text : Str, suffix : Str] : Bool
+  ^errors []
+  @doc "Reports whether `text` ends with `suffix`, comparing bytes. The comparison is case-sensitive, and every string ends with the empty string."
+  @see ["book/values/text"]
+  @for "gene/str/ends_with?"
+  nil)
+
+(fn from_utf8 [bytes : (Buffer U8)] : Str
+  ^errors []
+  @doc "Returns a Str whose bytes are copied from `bytes`. The copy does not validate UTF-8, so malformed input is preserved as-is."
+  @see ["gene/str/to_utf8"]
+  @for "gene/str/from_utf8"
+  nil)
+
+(fn join [items : (List Str), separator : Str = ""] : Str
+  ^errors []
+  @doc "Joins the strings in `items`, placing `separator` between neighbours. With one argument the separator is the empty string, and an empty List joins to the empty string."
+  @see ["book/collections/lists"]
+  @for "gene/str/join"
+  nil)
+
+(fn lower [text : Str] : Str
+  ^errors []
+  @doc "Returns `text` with its ASCII letters in lower case. Characters outside ASCII are left unchanged."
+  @see ["book/values/text"]
+  @for "gene/str/lower"
+  nil)
+
+(fn slice_bytes [text : Str, start : Int, max_bytes : Int] : Str
+  ^errors []
+  @doc "Returns at most `max_bytes` bytes of `text` starting at byte offset `start`, backing up to a UTF-8 character boundary rather than splitting a character. `start` and `max_bytes` must be non-negative, and `start` must be a boundary no greater than the string's byte size; other values fail."
+  @see ["book/values/text"]
+  @for "gene/str/slice_bytes"
+  nil)
+
+(fn split [text : Str, separator : Str] : (List Str)
+  ^errors []
+  @doc "Splits `text` on every occurrence of `separator` and returns the fields as a List of Str. Adjacent separators produce empty fields, and an empty separator fails."
+  @see ["book/values/text"]
+  @for "gene/str/split"
+  nil)
+
+(fn starts_with? [text : Str, prefix : Str] : Bool
+  ^errors []
+  @doc "Reports whether `text` starts with `prefix`, comparing bytes. The comparison is case-sensitive, and every string starts with the empty string."
+  @see ["book/values/text"]
+  @for "gene/str/starts_with?"
+  nil)
+
+(fn to_utf8 [text : Str] : (Buffer U8)
+  ^errors []
+  @doc "Returns a Buffer U8 holding the UTF-8 bytes of `text`, one byte per U8 item."
+  @see ["gene/str/from_utf8"]
+  @for "gene/str/to_utf8"
+  nil)
+
+(fn trim [text : Str] : Str
+  ^errors []
+  @doc "Returns `text` without leading and trailing whitespace, including Unicode whitespace. A string that is all whitespace trims to the empty string."
+  @see ["book/values/text"]
+  @for "gene/str/trim"
+  nil)
+
+(fn upper [text : Str] : Str
+  ^errors []
+  @doc "Returns `text` with its ASCII letters in upper case. Characters outside ASCII are left unchanged."
+  @see ["book/values/text"]
+  @for "gene/str/upper"
+  nil)

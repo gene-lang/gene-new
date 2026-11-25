@@ -52,6 +52,7 @@ include test_native_api
 include test_native_callbacks
 include test_logging
 include test_declaration_heads
+include test_str_declarations
 include test_cli
 include test_lsp
 include test_doc_builder
