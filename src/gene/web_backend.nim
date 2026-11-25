@@ -409,7 +409,7 @@ type
     nominalTypes: HashSet[string] # decides node-vs-class patterns
     errorTypes: HashSet[string]   # nominal types implementing Error
     # Enclosing function's declared return type, so `wekReturn` can yield the
-    # declared unit under a `Nil`/`Void` signature instead of the given value.
+    # declared unit under a `Nil` signature instead of the given value.
     currentReturnType: WebType
 
 const WebCatchErrorBindingName = "__gene_catch_error"
@@ -648,7 +648,7 @@ proc withoutAbsent(typ: WebType): WebType =
   elif members.len == 1: members[0]
   else: WebType(kind: wtkUnion, members: members)
 
-proc withoutVoid(typ: WebType): WebType =
+proc withoutNil(typ: WebType): WebType =
   if typ.kind == wtkNil: return webType(wtkNever)
   if typ.kind != wtkUnion: return typ
   var members: seq[WebType]
@@ -2526,7 +2526,7 @@ proc isLiteralConstant(expr: WebExpr): bool =
     false
 
 proc isStatementType(typ: WebType): bool {.inline.} =
-  ## `Nil` and `Void` are statement signatures: the body's trailing value is
+  ## `Nil` is a statement signature: the body's trailing value is
   ## discarded and the function yields the declared unit. Mirrors the VM's
   ## `isStatementReturnType`, and the two must stay in step or the same source
   ## means different things on the two backends.
@@ -3170,7 +3170,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           else:
             kinds.incl part.typ.kind
           if not (kinds <= displayable):
-            raise webError(loc, "web to_str displays Str, Int, F64, Bool, Nil, Void, " &
+            raise webError(loc, "web to_str displays Str, Int, F64, Bool, Nil, " &
               "and Sym values, got " & typeName(part.typ))
           result.children.add part
         return
@@ -3377,14 +3377,14 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         paramTypes = @[]
         returnType = webType(wtkF64)
       of "time/after":
-        # `($time/after ms (fn [] : Void …))` — `setTimeout`, and the profile had
+        # `($time/after ms (fn [] : Nil …))` — `setTimeout`, and the profile had
         # no way to wait at all: `frame/request` is the next paint, which is not a
         # duration, and `time/now` only reads the clock. A browser has this and a
         # program that has to let something settle needs it.
         #
         # Continuation-passing for the same reason `http/get` is, and the note
         # there is the argument: the callers that matter are event handlers, and
-        # the listener ABI is `Callback [Any] Void` while `spawn` wants an
+        # the listener ABI is `Callback [Any] Nil` while `spawn` wants an
         # enclosing scope. A `Task`-returning sleep would read better inside an
         # `await` and cannot be started from a handler, which is where waiting is
         # usually wanted.
@@ -3846,7 +3846,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "http/post_form", "http/get":
         # Continuation-passing rather than `Task`-returning, because the only
         # caller that matters is a DOM event handler: the listener ABI requires
-        # `Callback [Any] Void`, and `spawn` requires an enclosing `scope`, so
+        # `Callback [Any] Nil`, and `spawn` requires an enclosing `scope`, so
         # an async request cannot be started from a handler at all. A success
         # callback can.
         #
@@ -3948,7 +3948,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           return WebExpr(kind: wekBuiltin, typ: webType(wtkNil), loc: loc,
             text: "map_each", children: @[input, callback])
         let itemType = if builtin == "map_filter": inputItem
-                       elif builtin == "map_filter_map": withoutVoid(callback.typ.returnType)
+                       elif builtin == "map_filter_map": withoutNil(callback.typ.returnType)
                        else: normalizeMapResult(callback.typ.returnType)
         let resultType = case input.typ.kind
           of wtkMap: WebType(kind: wtkMap, params: @[input.typ.params[0], itemType])
@@ -3976,7 +3976,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           params: @[inputItem], returnType: webType(wtkAny))
         let callback = analysis.analyzeExpr(value.body[1], bindings, callbackExpected)
         let itemType = if builtin == "filter": inputItem
-                       elif builtin == "filter_map": withoutVoid(callback.typ.returnType)
+                       elif builtin == "filter_map": withoutNil(callback.typ.returnType)
                        else: normalizeMapResult(callback.typ.returnType)
         let resultType = webType(input.typ.kind, itemType)
         return WebExpr(kind: wekBuiltin, typ: resultType,
@@ -4879,13 +4879,13 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         raise webError(loc, "generator return takes no value")
       return WebExpr(kind: wekReturn, typ: webType(wtkNever), loc: loc,
         children: @[analysis.analyzeExpr(NIL, bindings)])
-    # Same rule as the VM compiler: under a `Nil`/`Void` signature the frame
+    # Same rule as the VM compiler: under a `Nil` signature the frame
     # yields the declared unit, so a returned value could only be discarded.
     if analysis.currentReturn != nil and
         analysis.currentReturn.isStatementType and value.body.len == 1 and
         value.body[0].kind notin {vkNil}:
       raise webError(loc,
-        "return in a Nil/Void function takes no value; " &
+        "return in a Nil function takes no value; " &
         "use (return) or (return nil)")
     let returned = if value.body.len == 0:
       WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
@@ -7357,7 +7357,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       of "set":
         # Evaluate all call arguments before checking or mutating, and return
         # the checked input value like the VM rather than JavaScript's length
-        # or an invented Void result.
+        # or an invented nil result.
         return "$gene_buffer_set(" & target & ", " & arguments[0] & ", " &
           arguments[1] & ", " & jsString(element) & ")"
       of "fill":
@@ -7669,7 +7669,8 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
   var checkedArgs, omitted: seq[string]
   emitter.beginWebErrorGuard(fn.checkedErrors)
   # Validate every supplied value before any default expression can run.
-  # A runtime Void is supplied; the reader alone removes literal void props.
+  # A supplied `nil` is an argument and is checked; only an omitted one takes
+  # the default, as on the VM.
   for index, param in fn.params:
     let checked = validatorName(param.typ) & "(" & param.emittedName &
       ", " & jsString(fn.sourceName & " argument " & param.sourceName) & ")"
@@ -9443,7 +9444,7 @@ proc emitModule(module: WebModule, typescript: bool,
   if needsDomEvents:
     # The listener is passed through unwrapped so `remove_event_listener` can
     # find it again by identity. There is nothing to adapt: the analyzer has
-    # already required a `Callback [Any] Void`, and the emitted Gene function
+    # already required a `Callback [Any] Nil`, and the emitted Gene function
     # validates its own parameter, so the checking the ABI promises happens at
     # the registration site and inside the handler rather than in a wrapper the
     # remover could not reproduce.
@@ -10614,7 +10615,7 @@ proc webAssetMountModule*(asset: WebAsset, mountId: string): WebAssetRoute =
 
 proc checkWebEntry(module: WebModule, identity: string):
     tuple[name: string, async: bool] =
-  ## `main : EventTarget -> Void`, verified against the analyzed module rather
+  ## `main : EventTarget -> Nil`, verified against the analyzed module rather
   ## than against a string appended after emission. A missing, duplicated, or
   ## mis-typed entry is reported at the declaration the author wrote.
   var found: WebFunction = nil
@@ -10626,7 +10627,7 @@ proc checkWebEntry(module: WebModule, identity: string):
       found = fn
   if found == nil:
     raise webError(module.loc, "web module " & identity &
-      " has no entry: it must declare `(fn main [root : EventTarget] : Void ...)`")
+      " has no entry: it must declare `(fn main [root : EventTarget] : Nil ...)`")
   if found.generator:
     raise webError(found.loc, "web module entry `main` must not be a generator")
   if found.params.len != 1:
@@ -10646,7 +10647,7 @@ proc checkWebEntry(module: WebModule, identity: string):
       found.params[0].argName & "`")
   if found.returnType.kind != wtkNil:
     raise webError(found.loc,
-      "web module entry `main` must return Void, got " &
+      "web module entry `main` must return Nil, got " &
       typeName(found.returnType))
   if not jsIdentifierIsSafe(found.emittedName):
     raise webError(found.loc, "web module entry `main` has no emittable name")

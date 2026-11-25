@@ -6,8 +6,9 @@ Applications and examples are also opportunities to test the language itself. If
 
 ### Preferred Gene style
 
-Prefer `($present? x)` to `(! ($absent? x))`. Presence means neither `nil` nor
-`void`; `false`, zero, empty strings and empty collections are still present.
+Prefer `($present? x)` to `(! ($absent? x))`. Presence means not `nil`, Gene's
+one absence value; `false`, zero, empty strings and empty collections are still
+present.
 
 Prefer an `elif` chain to nested `if` forms in successive else branches. Write
 `elif` and `else` as bare markers, not parenthesized clauses, even for

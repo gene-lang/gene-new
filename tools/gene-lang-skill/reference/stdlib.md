@@ -4,8 +4,7 @@ Dumped from the live global scope of the built binary, not from prose. Two
 surfaces reach it: the `$` sigil (`$x` is sugar for `gene/x`) and messages on
 the receiving type.
 
-`archive/docs/stdlib.md` is a *plan* document and describes modules that may not exist —
-trust this file and a probe over it. Regenerate after stdlib changes:
+Trust this file and a probe over it; the book's chapters show the common uses. Regenerate after stdlib changes:
 
 ```console
 $ nim c --path:src -o:/tmp/dump_globals tools/gene-lang-skill/scripts/dump_globals.nim

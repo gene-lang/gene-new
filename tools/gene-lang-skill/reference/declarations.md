@@ -1,7 +1,7 @@
 # Declarations
 
-Normative contract: `archive/docs/spec/types.md`, `archive/docs/spec/protocols.md`,
-`archive/docs/spec/modules.md`, `archive/docs/spec/calls.md`. Everything below is probed.
+Taught in the book: `docs/book/functions.md`, `docs/book/types.md`,
+`docs/book/modules.md`, `docs/book/code_as_data.md`. Everything below is probed.
 
 ## Bindings
 

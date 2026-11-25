@@ -2785,7 +2785,7 @@
       "expected_stdout": "",
       "profile": {
         "status": "rejected",
-        "reason": "a Nil/Void signature yields the declared unit, so a returned value could only be discarded",
+        "reason": "a Nil signature yields the declared unit, so a returned value could only be discarded",
         "diagnostic": "takes no value"
       }
     },

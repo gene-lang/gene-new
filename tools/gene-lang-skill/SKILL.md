@@ -117,8 +117,8 @@ reaches a protocol impl. There is no lexical callable fallback, so a function
 in scope is invisible to a dot send.
 
 **Collection operations have eager and lazy forms.** Map/filter/filter_map
-accept eager collections and streams. Map normalizes void to nil; filter_map
-drops only void. `to_stream` creates a cursor and `into` consumes it.
+accept eager collections and streams. Map keeps a `nil` result; filter_map
+drops only `nil` (a `false` result is kept). `to_stream` creates a cursor and `into` consumes it.
 
 **One-sided conditions omit the else arm.** `(if cond value)` already yields
 `nil` on the false path. An arm holds one or more expressions, so
@@ -127,7 +127,7 @@ remains the guard for a falsy condition; `if_yes` is gone. `elif` and `else`
 are bare markers, never parenthesized clauses.
 
 **Prefer direct presence tests.** Write `($present? x)`, not
-`(! ($absent? x))`. Both `nil` and `void` are absent; `false`, zero, empty
+`(! ($absent? x))`. `nil` is the one absence value; `false`, zero, empty
 strings and empty collections are present.
 
 **Keep dispatch at one level.** Prefer `elif` to an else arm containing
@@ -136,7 +136,7 @@ single-expression arms. When each branch compares the same value with a
 literal, use `match` with flat `when` arms and an explicit `else`; it evaluates
 the value once.
 
-**Only `nil`, `false`, and `void` are falsy.** `""`, `0`, and `[]` are truthy,
+**Only `nil` and `false` are falsy.** `""`, `0`, and `[]` are truthy,
 so test emptiness explicitly: `(== s "")`, `xs/.empty?`, `($absent? v)`.
 
 **Boolean operators are `&&`, `||`, and `!`.** Write `(&& ready valid)`,

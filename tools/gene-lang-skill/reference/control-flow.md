@@ -1,8 +1,8 @@
 # Control flow, errors, streams, tasks
 
-Normative contract: `archive/docs/spec/calls.md`, `archive/docs/spec/streams.md`,
-`archive/docs/spec/concurrency.md`. Canonical formatting fixture: `examples/style_guide.gene`.
-Everything below is probed.
+Taught in the book: `docs/book/control_flow.md`, `docs/book/errors.md`,
+`docs/book/collections.md` (streams), `docs/book/concurrency.md`. Canonical
+formatting fixture: `examples/style_guide.gene`. Everything below is probed.
 
 ## Conditionals
 

@@ -20,7 +20,7 @@ what Gene actually wants.
 | `size expects a collection` | `$size` rejects strings | `($str/byte_size s)` or `($size ($chars s))` |
 | `no message 'size' on Str` | String length needs an explicit unit | `s/.byte_size` for UTF-8 bytes or `($size ($chars s))` for code points; ordinary text methods such as `(s .split ",")` are supported |
 | `no message 'foo' on T` | Sends dispatch only — no lexical fallback | Declare a `(message …)` in the type, or call the function directly |
-| `value is not callable: vkVoid` | Missing key read as `void`, then called | Check the path; supply `(?? m/k default)` |
+| `cannot call m/b: the value is nil` | Missing key read as `nil`, then called | Check the path; supply `(?? m/k default)` |
 | `import selector must be a name or a namespace path` | Invalid import selector | `(import name ^from "./path")` or `(import $str [name])` |
 | `break expects no arguments` | Carrying a value out of a loop | Assign to a binding before `(break)` |
 | `channel expects no positional arguments` | Capacity is named | `($channel ^capacity 2)` |
@@ -31,7 +31,7 @@ what Gene actually wants.
 | `message send expected Protocol, got vkType` | Qualified a type-direct message as `T:msg` | Send it bare; only protocols qualify |
 | `List/push expects 2 arguments, got 1` | Wrote `(xs/.push v)` | `(xs .push v)` — the path shortcut takes no arguments |
 
-## Only `nil`, `false`, and `void` are falsy
+## Only `nil` and `false` are falsy
 
 `""`, `0`, and `[]` are all **truthy**. A guard carried over from Python, JS, or
 Ruby silently never fires:
@@ -93,13 +93,13 @@ send whose *result* is called. The path shortcut carries no arguments:
 
 **`//` is remainder, not floor division.** `(/ 7 2)` is `3`; `(// 7 2)` is `1`.
 
-**The `/.message` shortcut needs a symbol base.** On a literal it silently reads
-as two values — a collection and a Path — with no error at all:
+**The `/.message` shortcut needs a symbol base.** On a literal it is a read
+error: `a path cannot follow ']' without whitespace; use a Path call (/a (g)) or
+bind the value first`.
 
 ```gene
 (var xs [1 2])
 xs/.size        # 2
-[1 2]/.size     # two forms, not a send
 ([1 2] .size)  # 2
 ```
 
@@ -136,9 +136,10 @@ so `(if a x else (elif b y))` raises `undefined symbol: elif`.
 (if a x elif b y else z)   # right
 ```
 
-**A missing map key is `void`, not an error.** `m/b` on `{^a 1}` yields `void`,
-which then fails at the point of *use* rather than the point of the typo. When a
-value surprises you, print it before chasing the call that consumed it.
+**A missing map key is `nil`, not an error.** `m/b` on `{^a 1}` yields `nil`,
+which then fails at the point of *use* rather than the point of the typo. A
+misspelled *field* of a declared type does raise (`P has no field 'nmae'`). When
+a value surprises you, print it before chasing the call that consumed it.
 
 **`if_not` has no else arm — its tail is a sequence.** Used as a two-branch
 conditional it silently yields the *last* body value, so a predicate written this
@@ -174,10 +175,12 @@ way copies everything:
 **`match` without `else` is not a nil default** — unlike `if`, it needs the arm.
 Writing `else nil` there is idiomatic.
 
-**`nil` and `void` are different.** An unset prop-schema field reads `void`; an
-omitted named parameter binds `nil`. `$absent?` covers both; `$present?` is its
-direct opposite. Prefer `($present? x)` to `(! ($absent? x))`. Do not substitute
-a truthiness check: `false` is present.
+**`nil` is the only absence value.** An unset optional field reads `nil`. A
+named parameter may be omitted only when it declares a default
+(`[^x : Int? = nil]`); without one, the call fails with `missing named argument:
+x`. `$absent?` tests for `nil`; `$present?` is its direct opposite. Prefer
+`($present? x)` to `(! ($absent? x))`. Do not substitute a truthiness check:
+`false` is present.
 
 **Direct construction never runs `ctor`.** `(T ^n 5)` fills the schema;
 `(new T 5)` runs the constructor. Neither is a fallback for the other.

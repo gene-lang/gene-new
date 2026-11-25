@@ -1,6 +1,7 @@
 # Syntax and values
 
-Normative contract: `archive/docs/spec/reader.md`. Everything below is probed.
+Taught in the book: `docs/book/values.md`, `docs/book/names.md`. Everything
+below is probed.
 
 ## The node
 
@@ -105,11 +106,11 @@ xs/.size                 # zero-argument send (see SKILL.md)
 A delimited `/` — whitespace on both sides — is an ordinary symbol, which is how
 division is spelled: `(/ 10 2)`.
 
-A missing key reads as `void`, so supply defaults with `??`:
+A missing key reads as `nil`, so supply defaults with `??`:
 
 ```gene
 (var m {^a 1})
-m/b              # void
+m/b              # nil
 (?? m/b "dflt")  # "dflt"
 ```
 

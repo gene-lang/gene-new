@@ -12778,20 +12778,35 @@ suite "spec — documentation contract":
       checkpoint offenders.join("\n")
     check offenders.len == 0
 
-  test "documented gene blocks marked runnable actually run":
+  test "documented gene blocks marked runnable run and print their result":
     # ```gene runnable is the opt-in: a block spelled that way is a claim that
     # it executes, and this is what makes the claim true. `Self` stayed broken
     # across a whole release because design.md §10's own normative example was
     # never run — marking an example is how a doc stops being prose.
     var offenders: seq[string]
     var ran = 0
+    var compared = 0
     for path in documentationSources():
       for blk in geneBlocks(path):
         if not blk.runnable:
           continue
         inc ran
+        # A trailing `# …` line is the block's value as `gene eval` prints
+        # it. A block that prints shows its output there instead, so it only
+        # has to run.
+        let lines = blk.src.strip(leading = false).splitLines()
+        let expected =
+          if lines.len > 0 and lines[^1].startsWith("# ") and
+              "$print" notin blk.src: lines[^1][2 .. ^1].strip()
+          else: ""
         try:
-          discard run(compileSource(blk.src), newGlobalScope())
+          let value = run(compileSource(blk.src), newGlobalScope())
+          if expected.len > 0:
+            inc compared
+            let got = value.print()
+            if got != expected:
+              offenders.add path & ":" & $blk.line & "  expected " &
+                expected & ", got " & got
         except CatchableError as e:
           offenders.add path & ":" & $blk.line & "  " & e.msg.splitLines()[0]
     if offenders.len > 0:
@@ -12799,6 +12814,7 @@ suite "spec — documentation contract":
     check offenders.len == 0
     # A marker that stops matching any block would make this vacuously green.
     check ran > 0
+    check compared > 0
 
 suite "spec — Tier 0 HTML renderer (transpile proposal P0)":
   test "html/render escapes text and attributes through the public namespace":

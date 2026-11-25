@@ -12,7 +12,7 @@ demonstrate.
 | [fibonacci.gene](fibonacci.gene) | Recursive functions. |
 | [style_guide.gene](style_guide.gene) | Canonical Gene style. |
 | [pipeline.gene](pipeline.gene) | `->` and `=>` value pipelines. |
-| [nil_void_demo.gene](nil_void_demo.gene) | Optional arguments, missing fields, `nil` and `void`. |
+| [nil_void_demo.gene](nil_void_demo.gene) | Optional arguments, missing fields, and `nil`. |
 | [protocol_demo.gene](protocol_demo.gene) | Types, protocols, messages, inheritance, and `Self`. |
 | [error_handling.gene](error_handling.gene) | Typed errors and recovery. |
 | [generators.gene](generators.gene) | Generators, including inherited generator messages. |
