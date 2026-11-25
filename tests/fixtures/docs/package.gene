@@ -1,0 +1,6 @@
+{^format 1
+ ^name "test/docs"
+ ^description "Fixture package for the documentation builder"
+ ^version "0.0.0"
+ ^library {^entry "src/main.gene"}
+ ^files {^include ["package.gene" "src/**"]}}

@@ -1,0 +1,7 @@
+(mod paired @doc "Source module doc.")
+
+(fn documented [x] @doc "Source doc." x)
+
+(fn described [x] x)
+
+(fn shaped [x : Int] : Int x)

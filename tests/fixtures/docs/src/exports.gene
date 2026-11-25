@@ -1,0 +1,4 @@
+(mod exports)
+
+(import greet ^from "./main" ^^export)
+(import answer ^from "./main")

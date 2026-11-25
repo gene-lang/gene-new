@@ -1,0 +1,59 @@
+(mod main @doc "Fixture module covering every declaration kind.")
+
+(type InputError : Error ^props {^field Str})
+
+(fn greet [name : Str, ^loud flag : Bool = false] : Str
+  @doc "Greet one person."
+  @see ["book/values/text" "book/functions/functions"]
+  @status "experimental"
+  ^errors [InputError]
+  (if flag ($str/upper name) name))
+
+(macro twice [x]
+  @doc "Evaluate the form twice."
+  `(do %x %x))
+
+(fn ^^generator naturals [limit : Int]
+  @doc "Yield the integers below `limit`."
+  : (Stream Int Never)
+  (var i 0)
+  (while (< i limit)
+    (yield i)
+    (set i (+ i 1))))
+
+(let answer 42)
+(var counter 0)
+(const limit 10)
+
+(type Person ^props {^name Str ^nickname Str?} ^body [Int Int...]
+  @doc "A person with a public identity."
+  (message greet [] : Str
+    @doc "Return a greeting."
+    self/name)
+  (message rename [new_name : Str] : Person
+    (set self/name new_name))
+  (ctor [name : Str]
+    (self .put `name name)))
+
+(enum Color
+  @doc "A small colour set."
+  red
+  green
+  (rgb Int Int Int))
+
+(protocol Labelled
+  @doc "Anything with a label."
+  (message label [] : Str)
+  (message shout [] : Str "LOUD"))
+
+(impl Labelled for Person
+  (message label [] : Str self/name))
+
+(alias Name Str)
+
+(fn ^^private hidden [] 1)
+
+(ns tools
+  @doc "Small helpers."
+  (fn helper [x] x)
+  (let marker "tools"))

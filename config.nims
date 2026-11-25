@@ -8,7 +8,7 @@ import std/[os, strutils]
 # Executables used by people should not accidentally run the instrumented
 # interpreter. Keep implementation tests at their requested build mode, and
 # retain an explicit debug build for the CLI and its companion tools.
-if projectName() in ["gene", "gene_fmt", "gene_lsp", "gene_viewer", "gene_registry"]:
+if projectName() in ["gene", "gene_fmt", "gene_lsp", "gene_viewer", "gene_registry", "gene_doc"]:
   if projectDir() == thisDir() / "src":
     let executableCache = thisDir() / "build" / "nimcache" / (projectName() & "-ic")
     var incremental = defined(NimblePkgVersion)

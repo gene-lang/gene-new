@@ -1,0 +1,7 @@
+(mod standalone @doc "A native namespace documented only by its sidecar.")
+
+(fn thing [x : Int] : Int
+  ^errors []
+  @doc "Return `x` unchanged."
+  @for "standalone/thing"
+  nil)

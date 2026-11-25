@@ -1,0 +1,8 @@
+{^for "paired/documented" ^doc "Sidecar doc wins." ^status "experimental"}
+
+{^for "paired/described" ^see ["book/values/text"]}
+
+(fn shaped [x : Int] : Int
+  @doc "The sidecar restates this shape so the builder can check it."
+  @for "paired/shaped"
+  nil)

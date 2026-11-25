@@ -1,0 +1,19 @@
+(mod forms @doc "Declaration forms the builder maps but never executes.")
+
+(web_module browser_app)
+
+(ffi/library libc ^macos "libSystem")
+
+(ffi/struct Point ^fields [x : C/Int y : C/Int])
+
+(ffi/fn abs ^library libc [value : C/Int] : C/Int)
+
+(ffi/union Number ^fields [i : C/Int f : C/Float])
+
+(ffi/callback Callback [] : C/Void)
+
+(ffi/signature Signature [] : C/Void)
+
+(import_impl Labelled for Person ^from "./main")
+
+(derive [x] x)

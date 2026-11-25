@@ -31,6 +31,9 @@ tests/*
 # suite passed only on a machine where they happened to exist.
 !tests/fixtures/
 !tests/fixtures/**
+# Documentation-builder fixtures write their own build/docs when a test builds
+# in place; that output is generated, not fixture source.
+tests/fixtures/docs/build/
 !tests/profiles/
 !tests/profiles/**
 !tests/lifetime/

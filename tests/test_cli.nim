@@ -30,7 +30,7 @@ proc buildGeneCli() =
   # tools must sit next to geneExe for those subcommands to work here. Building
   # them means the delegation path itself is under test, not stubbed.
   for (module, exe) in [("gene_fmt", "gene-fmt"), ("gene_lsp", "gene-lsp"),
-                        ("gene_viewer", "gene-viewer")]:
+                        ("gene_viewer", "gene-viewer"), ("gene_doc", "gene-doc")]:
     let toolBuild = execCmdEx("nim c -d:geneDebug --path:src --hints:off " &
       "--nimcache:" & (cliDir / ("nimcache-" & module)) & " -o:" &
       (cliDir / exe) & " src/" & module & ".nim")
@@ -2157,6 +2157,28 @@ suite "cli — gene doc":
       "Namespace source:",
       "- item : Int"
     ]
+
+  test "gene doc build delegates to gene-doc and writes the corpus":
+    let root = cliDir / "doc_build"
+    if dirExists(root): removeDir(root)
+    createDir(root / "src")
+    writeFile(root / "package.gene",
+      "{^format 1 ^name \"test/doc_build\" ^version \"0.0.0\" " &
+      "^library {^entry \"src/main.gene\"}}\n")
+    writeFile(root / "src/main.gene",
+      "(mod main @doc \"Built by the CLI.\")\n" &
+      "(fn twice [x : Int] : Int @doc \"Double `x`.\" (* x 2))\n")
+    let ran = runGene(["doc", "build"], workingDir = root)
+    check ran.exitCode == 0
+    check "modules: 1" in ran.output
+    check "entries: 1" in ran.output
+    check "with @doc: 1" in ran.output
+    let data = root / "build" / "docs" / "modules" / "main.gene"
+    check fileExists(data)
+    if fileExists(data):
+      let text = readFile(data)
+      check "^module \"main\"" in text
+      check "^id \"lib/main/twice\"" in text
 
 suite "cli — example runner":
   proc exampleCliRoot(): string =

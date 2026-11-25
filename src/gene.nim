@@ -90,7 +90,8 @@ proc usage() =
   echo "  gene test [files/dirs...] [--name text] run *_spec.gene examples"
   echo "  gene test --package [selector] build and run package test targets"
   echo "  gene clean               remove project build views and sandboxes"
-  echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
+  echo "  gene doc <file.gene>     print module metadata, imports, and declarations"
+  echo "  gene doc build [dir]     write the documentation corpus to build/docs/"
   echo "  gene pkg <command>      init/add/remove/resolve/update/sync/vendor/members/tree/why"
   echo "  gene view [options] <file.gene> browse source structure and edit externally"
   echo "  gene lsp                run the language server over stdio (docs/book/tools.md)"
@@ -1843,10 +1844,13 @@ proc main() =
      "rollback", "installed":
     unavailableBuildFeature(cmd)
   of "doc":
-    if paramCount() < 2:
-      stderr.writeLine "Error: 'doc' needs a file path"
+    if paramCount() >= 2 and paramStr(2) == "build":
+      delegateToTool("gene-doc", commandArgs(2))
+    elif paramCount() < 2:
+      stderr.writeLine "Error: 'doc' needs a file path or 'build [dir]'"
       quit(1)
-    cmdDoc(paramStr(2))
+    else:
+      cmdDoc(paramStr(2))
   of "pkg":
     cmdPkg()
   of "view":

@@ -1,0 +1,6 @@
+(fn value [x : Str] : Str
+  @doc "This shape disagrees with the source."
+  @for "mismatch/value"
+  nil)
+
+{^for "mismatch/absent" ^doc "Names nothing."}

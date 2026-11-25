@@ -12,11 +12,12 @@ binDir        = "bin"
 # structural index, and the viewer out of every Gene process; `gene fmt|lsp|view`
 # exec the sibling binary. namedBin maps the Nim module name (no hyphens
 # allowed) to the hyphenated executable the CLI looks for.
-bin           = @["gene", "gene_fmt", "gene_lsp", "gene_viewer", "gene_registry"]
+bin           = @["gene", "gene_fmt", "gene_lsp", "gene_viewer", "gene_registry", "gene_doc"]
 namedBin["gene_fmt"] = "gene-fmt"
 namedBin["gene_lsp"] = "gene-lsp"
 namedBin["gene_viewer"] = "gene-viewer"
 namedBin["gene_registry"] = "gene-registry"
+namedBin["gene_doc"] = "gene-doc"
 
 # Dependencies
 
@@ -87,14 +88,15 @@ task genex, "Build the genex SDL2 and WebSocket libraries":
   ## and libcurl with WebSocket support. See src/genex/README.md.
   exec "python3 src/genex/tools/build.py"
 
-task tools, "Build gene-fmt, gene-lsp, and gene-viewer":
-  ## `gene fmt|lsp|view` exec these, resolved next to the running `gene` binary
-  ## and then on PATH. Without them those three subcommands report a clear
-  ## error naming both places they looked.
+task tools, "Build gene-fmt, gene-lsp, gene-viewer, and gene-doc":
+  ## `gene fmt|lsp|view|doc build` exec these, resolved next to the running
+  ## `gene` binary and then on PATH. Without them those subcommands report a
+  ## clear error naming both places they looked.
   exec "mkdir -p bin"
   exec "nim c --path:src --hints:off -o:bin/gene-fmt src/gene_fmt.nim"
   exec "nim c --path:src --hints:off -o:bin/gene-lsp src/gene_lsp.nim"
   exec "nim c --path:src --hints:off -o:bin/gene-viewer src/gene_viewer.nim"
+  exec "nim c --path:src --hints:off -o:bin/gene-doc src/gene_doc.nim"
 
 task migrate, "Build the flat-clause source migration tool":
   exec "nim c --path:src --hints:off -o:bin/migrate_flat_syntax tools/migrate_flat_syntax.nim"

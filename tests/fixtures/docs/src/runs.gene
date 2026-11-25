@@ -1,0 +1,5 @@
+(mod runs)
+
+($fs/write_text "tests/fixtures/docs/RAN_MARKER" "the builder ran this form")
+($println "the builder ran this form")
+(fn main [] (panic "the builder called main"))
