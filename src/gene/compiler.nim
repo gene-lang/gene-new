@@ -9448,7 +9448,7 @@ proc compileAwait(c: var Compiler, node: Value) =
 
 proc compileFail(c: var Compiler, node: Value) =
   if node.props.len != 0 or node.body.len != 1:
-    raise newException(GeneError, "fail expects one Error value")
+    raise newException(GeneError, "fail expects one Error value or Str")
   compileExpr(c, node.body[0])
   discard c.emit(opFail)
 

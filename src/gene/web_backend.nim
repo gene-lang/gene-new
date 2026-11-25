@@ -842,7 +842,7 @@ proc escapeHostGlobal(name: string): string =
 
 type WebBuiltinError = tuple[name, js, parent: string, fault: bool, fields: string]
 
-const WebBuiltinErrors: array[16, WebBuiltinError] = [
+const WebBuiltinErrors: array[17, WebBuiltinError] = [
   ## Built-in Throwable types the web runtime defines as classes, which user
   ## code can construct and subtype as on the VM. Fields beyond `_msg` and
   ## `_cause` follow the VM's declarations. MessageFault and CallKindFault are
@@ -858,6 +858,7 @@ const WebBuiltinErrors: array[16, WebBuiltinError] = [
   ("MatchFault", "$gene_match_fault", "Fault", true, ""),
   ("PathMissing", "$gene_path_missing", "MatchFault", true, "{^segment Any}"),
   ("EndOfStream", "$gene_end_of_stream", "Error", false, ""),
+  ("AdHocError", "$gene_ad_hoc_error", "Error", false, ""),
   ("AssertionFault", "$gene_assertion_fault", "Fault", true,
    "{^has_comparison Bool? ^actual Any ^expected Any}"),
   ("RefFault", "$gene_ref_fault", "Fault", true, "{^name Str}"),
@@ -4358,10 +4359,16 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   if name == "fail":
     if value.body.len != 1:
       raise webError(loc, "web fail expects one error value")
-    let errorValue = analysis.analyzeExpr(value.body[0], bindings)
+    var errorValue = analysis.analyzeExpr(value.body[0], bindings)
+    if errorValue.typ.kind == wtkStr:
+      # `(fail "message")` raises an AdHocError, as on the VM.
+      errorValue = WebExpr(kind: wekNew,
+        typ: WebType(kind: wtkNominal, name: "AdHocError"), loc: loc,
+        text: analysis.typeDecls["AdHocError"].emittedName, immutable: true,
+        keys: @["_msg"], propCount: 1, children: @[errorValue])
     if errorValue.typ.kind != wtkNominal or
         errorValue.typ.name notin analysis.errorTypes:
-      raise webError(loc, "web fail value must implement Error")
+      raise webError(loc, "web fail value must implement Error or be a Str")
     return WebExpr(kind: wekFail, typ: webType(wtkNever), loc: loc,
       children: @[errorValue])
   if name == "try":

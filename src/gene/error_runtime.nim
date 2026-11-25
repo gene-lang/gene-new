@@ -617,6 +617,14 @@ proc admitErrorValue(value: Value, scope: Scope): Value =
     raiseTypeError("Error admission", "value of an Error or Fault type", value, scope)
   value
 
+proc failurePayload(value: Value, scope: Scope): Value =
+  ## `(fail "message")` raises an `AdHocError` carrying the text, so the
+  ## shorthand is `(fail (AdHocError ^_msg "message"))` and nothing else.
+  if value.kind != vkString: return value
+  var props = initPropTable()
+  props["_msg"] = value
+  newNode(builtInTypeHead(scope, "AdHocError"), props = props, immutable = true)
+
 proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError =
   let context = if scope != nil: scope
                 elif activeVmScope != nil: activeVmScope[] else: builtinsScope()

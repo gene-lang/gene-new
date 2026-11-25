@@ -10639,6 +10639,9 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   proc defineErrorType(name: string): Value =
     result = newType(name, errorRoot, @[], @[], root)
     root.define(name, result)
+  # What `(fail "message")` raises: a failure with no type of its own, known
+  # only by its text. A library names the error a caller can act on instead.
+  discard defineErrorType("AdHocError")
   let osError = defineErrorType("OsError")
   let pathError = defineErrorType("PathError")
   let packageResourceError = defineErrorType("PackageResourceError")

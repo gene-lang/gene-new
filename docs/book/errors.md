@@ -20,8 +20,29 @@ An error is a value of a type whose parent is `Error`. `fail` raises it, and
 # ["age" "age must not be negative"]
 ```
 
-`fail` takes only an error value. `(fail "x")` is itself a mistake, and it
-raises a `TypeFault`.
+`(fail "text")` is shorthand for `(fail (AdHocError ^_msg "text"))`. An
+`AdHocError` is an ordinary `Error` with no type of its own, so a caller can
+tell it from other failures only by its message:
+
+```gene runnable
+(try (fail "no such user")
+  catch AdHocError $err/.message)
+# "no such user"
+```
+
+`fail` takes an error value or a `Str`. Any other value raises a `TypeFault`.
+
+> **Watch out:** a library does not write `(fail "text")`. A caller cannot
+> `catch` one failure of yours without catching all of them, and a `^errors`
+> row cannot promise it. Raise an error type that matches the case: an
+> existing one such as `IoError` or `JsonError`, or your own, as `InputError`
+> above. Keep `(fail "text")` for scripts, tests, and failures nobody will
+> handle.
+
+> **Why:** the shorthand raises an `AdHocError`, not a bare `Error`, so a
+> function that uses it can declare `^errors [AdHocError]` without declaring
+> `Error`, which would let every other error through too
+> ([Declaring errors](#declaring-errors)).
 
 ## Catching errors
 
@@ -94,6 +115,8 @@ the original error as its cause:
 - `^errors []` lets no ordinary error escape.
 - `^errors [ParseError]` lets `ParseError` and its subtypes escape.
 - `^errors [Error]` lets any ordinary error escape.
+- `^errors [AdHocError]` lets `(fail "text")` escape. A library declares a
+  type that names its case instead ([Raising an error](#raising-an-error)).
 
 Faults are never checked by rows, so they pass through every row.
 

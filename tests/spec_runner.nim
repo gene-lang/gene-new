@@ -1250,7 +1250,7 @@ suite "spec — macro fresh names ($gensym)":
     check_eval("""
       (fn f []
         (macro bad [] ($gensym "t") (fail "mid-body"))
-        (try (bad) catch Fault "caught"))
+        (try (bad) catch Error "caught"))
       (fn g []
         (macro again [] (let a ($gensym "t")) `(quote %a))
         (again))
@@ -5319,6 +5319,30 @@ suite "spec — gene/math from design (§7.8)":
       "[(try ($to_int \"x\") catch TypeFault $err/where) " &
       "(try ($to_float \"x\") catch Fault $err/where)]"), scope)
     check caught.print() == "[\"to_int\" \"to_float\"]"
+  test "fail with text raises an AdHocError":
+    # `(fail "message")` is `(fail (AdHocError ^_msg "message"))`: an Error,
+    # catchable by its type, never a Fault.
+    check_eval("[(try (fail \"boom\") catch AdHocError $err/.message) " &
+      "(try (fail \"x\") catch Error \"error\") " &
+      "(try (fail \"x\") catch Fault \"fault\" catch Error \"error\")]",
+      "[\"boom\" \"error\" \"error\"]")
+    check_eval("(let who \"Ada\") (try (fail $\"no ${who}\") catch AdHocError $err/.message)",
+      "\"no Ada\"")
+    check_eval("(try (fail (AdHocError ^_msg \"direct\")) catch AdHocError $err/.message)",
+      "\"direct\"")
+    check_eval_error("(fail \"uncaught\")", "uncaught")
+    check_eval_error("(fail 42)", "Error admission")
+  test "fail with text is an AdHocError in a declared error row":
+    check_eval("(fn f [] : Nil ^errors [AdHocError] (fail \"x\")) " &
+      "(try (f) catch AdHocError \"caught\")", "\"caught\"")
+    check_eval_error("(fn g [] : Nil ^errors [IoError] (fail \"x\")) (g)",
+      "raised an undeclared error")
+    check_eval_error("(mod checked ^errors_mode strict) " &
+      "(fn g [] : Nil ^errors [IoError] (fail \"x\"))",
+      "may raise [AdHocError]")
+    check_eval("(mod checked ^errors_mode strict) " &
+      "(fn g [] : Nil ^errors [AdHocError] (fail \"x\")) " &
+      "(try (g) catch AdHocError \"declared\")", "\"declared\"")
   test "abs and sign preserve kind":
     check_eval("[($math/abs -4) ($math/abs -4.5) ($math/abs 4)]", "[4 4.5 4]")
     check_eval("[($math/sign -9) ($math/sign 0.0) ($math/sign 2.5)]",
@@ -5667,7 +5691,6 @@ suite "spec — checked errors from design":
                "  catch Fault $err/.message)",
                "\"no message 'get' on Str\"")
     check_eval_error("(fail 42)", "Error admission expected value of an Error or Fault type")
-    check_eval_error("(fail \"text\")", "Error admission expected value of an Error or Fault type")
 
 suite "spec — pattern destructuring from design":
   test "match/for bindings and $err are branch-local":
@@ -11053,7 +11076,7 @@ suite "spec — db protocol from stdlib plan":
                "(c .Db:exec \"create table t (x text)\") " &
                "(try (c .Db:transaction (fn [d] " &
                "  (d .Db:execute \"insert into t(x) values (?)\" \"doomed\") " &
-               "  (fail \"abort\"))) catch Fault nil) " &
+               "  (fail \"abort\"))) catch Error nil) " &
                "(c .Db:transaction (fn [d] " &
                "  (d .Db:execute \"insert into t(x) values (?)\" \"kept\"))) " &
                "(c .Db:query \"select x from t\")",

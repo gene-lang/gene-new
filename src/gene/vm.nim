@@ -2589,6 +2589,7 @@ proc isPanicError*(e: ref GeneError): bool =
   e != nil and e.hasErrVal and e.errVal.isPanicValue
 
 proc admitErrorValue(value: Value, scope: Scope): Value
+proc failurePayload(value: Value, scope: Scope): Value
 proc normalizeFailure(error: ref GeneError, scope: Scope): ref GeneError
 proc makeErrorContractViolation(error: ref GeneError, allowed: seq[Value],
                                 name: string, scope: Scope): ref GeneError
@@ -24224,7 +24225,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opFail:
           let errVal = spop()
           rejectCallerEnvEscape("fail payload", errVal)
-          raiseFailedValue(admitErrorValue(errVal, scope))
+          raiseFailedValue(admitErrorValue(failurePayload(errVal, scope), scope))
         of opPanic:
           let panicVal = spop()
           rejectCallerEnvEscape("panic payload", panicVal)

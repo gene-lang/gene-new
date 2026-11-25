@@ -183,7 +183,7 @@ src/gene/compiler.nim	eval expects one node
 src/gene/compiler.nim	eval requires ^in Env
 src/gene/compiler.nim	eval unknown option: ^
 src/gene/compiler.nim	expected import form
-src/gene/compiler.nim	fail expects one Error value
+src/gene/compiler.nim	fail expects one Error value or Str
 src/gene/compiler.nim	fexpr requires a parameter vector
 src/gene/compiler.nim	fexprs must be named by a trailing-! binding: (fn name! [syntax...] body...)
 src/gene/compiler.nim	ffi/callback ^^escaping is not supported yet

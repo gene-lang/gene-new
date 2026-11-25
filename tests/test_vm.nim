@@ -4372,7 +4372,7 @@ suite "vm — named rest and property spread":
        "[2 1]"
     ck "(var calls 0) (fn make [] (set calls (+ calls 1)) (fail \"boom\")) " &
        "(fn take [^x : Int] : Int x) (let override {^x 2}) " &
-       "[(try (take ^x (make) override...) catch Fault \"caught\") calls]",
+       "[(try (take ^x (make) override...) catch Error \"caught\") calls]",
        "[\"caught\" 1]"
 
   test "general maps spread as named arguments and reject bad keys":

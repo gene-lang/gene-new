@@ -505,7 +505,8 @@ proc newErrorAnalysis*(root: Chunk,
   let builtins = newErrorEnvironment(nil, "builtin", "")
   for name in ["CompileError", "ParseError", "IoError", "IoBusy", "IoClosed",
                "IoBackpressure", "JsonError", "OsError", "DbError", "EndOfStream",
-               "DecodeError", "TimeError", "NativeLibraryError", "LimitExceeded"]:
+               "DecodeError", "TimeError", "NativeLibraryError", "LimitExceeded",
+               "AdHocError"]:
     let typ = AnalyzedType(info: builtinError(name), constructorKnown: true, methodsKnown: true,
       throwable: true,
       fields: initTable[string, Value](), methods: initTable[string, AnalyzedFunction]())
@@ -1850,6 +1851,10 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       if value.caught: errors.mergeErrors(value.caughtErrors)
       elif value.nominal != nil and value.nominal.fault:
         discard # a Fault is never part of an error row
+      elif value.kind == avScalar and value.typ.kind == vkSymbol and
+          value.typ.symVal == "Str":
+        # `(fail "message")` raises an AdHocError.
+        errors.mergeErrors(oneError("AdHocError"))
       elif value.nominal != nil:
         errors.mergeErrors(ErrorEffectSummary(named: @[value.nominal.info]))
         let binding = analysis.dispatchProofTarget(value.nominal, environment)
@@ -1859,7 +1864,9 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       else: errors.open = true
       if function != nil and function.summary.origins.len < 128:
         let origin = ErrorOrigin(declaration: function.summary.identity,
-          callee: "fail " & (if value.nominal != nil: value.nominal.info.name else: "Error"), loc: loc)
+          callee: "fail " & (if value.nominal != nil: value.nominal.info.name
+                             elif value.kind == avScalar: "AdHocError"
+                             else: "Error"), loc: loc)
         if origin notin function.summary.origins: function.summary.origins.add origin
       observeException(state)
       next = false

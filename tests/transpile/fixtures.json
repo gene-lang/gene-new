@@ -2005,6 +2005,34 @@
       }
     },
     {
+      "id": "errors.ad_hoc_message",
+      "source": "(let who \"Ada\") [(try (fail \"boom\") catch AdHocError $err/.message) (try (fail $\"no ${who}\") catch Error $err/.message) (try (fail \"fault?\") catch Fault \"fault\" catch Error \"error\")]",
+      "web_source": "(mod errors_ad_hoc_message ^profile web) (fn run [] : (List Str) (let who \"Ada\") [(try (fail \"boom\") catch AdHocError $err/.message) (try (fail $\"no ${who}\") catch Error $err/.message) (try (fail \"fault?\") catch Fault \"fault\" catch Error \"error\")])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "boom"
+          },
+          {
+            "kind": "str",
+            "value": "no Ada"
+          },
+          {
+            "kind": "str",
+            "value": "error"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
       "id": "errors.checked_row",
       "source": "(type AppError : Error) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^_msg \"checked\"))) (try (raise_app) catch AppError $err/.message)",
       "web_source": "(mod errors_checked_row ^profile web) (type AppError : Error) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^_msg \"checked\"))) (fn run [] : Str (try (raise_app) catch AppError $err/.message))",

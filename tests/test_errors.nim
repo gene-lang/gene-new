@@ -65,7 +65,7 @@ suite "errors — fail and catch":
        " " &
        "(try (fail (Boom ^_msg \"boom\")) catch Boom $err/.message)", "\"boom\""
   test "fail only raises values implementing Error":
-    expect GeneError: discard runStr("(fail \"boom\")")
+    expect GeneError: discard runStr("(fail 42)")
   test "the body result is returned when nothing fails":
     ck "(try (+ 1 2) catch Error \"caught\")", "3"
   test "catch exposes typed error properties through $err":

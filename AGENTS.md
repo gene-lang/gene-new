@@ -65,6 +65,12 @@ As a general rule:
 
 Prefer small, composable APIs that fit Gene's existing design over wrappers copied directly from another language's conventions.
 
+### Raise typed errors in libraries
+
+Library code (`gene/`, `genex/`, and any package others depend on) never raises `(fail "text")`. That raises an `AdHocError`, which a caller can tell apart from other failures only by its message, and which a `^errors` row cannot promise precisely. Raise the error type that matches the case: an existing one (`IoError`, `JsonError`, `DecodeError`, ...) or a new `(type NameError : Error)`, and declare it in `^errors`.
+
+`(fail "text")` is for scripts, tests, probes, and failures no caller will handle.
+
 ### Prefer Gene for project tooling
 
 Ideally, developing and using Gene should not require Shell, Python, or another programming language for ordinary project tasks.

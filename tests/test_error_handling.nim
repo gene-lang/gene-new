@@ -72,7 +72,7 @@ suite "errors — gradual runtime contract":
       (type JustData ^props {^message Str})
       [(try (fail (JustData ^message "data")) catch TypeFault true)
        (try (fail (Throwable ^_msg "root")) catch TypeFault true)
-       (try (fail "text") catch TypeFault true)
+       (try (fail 42) catch TypeFault true)
        (try (fail nil) catch TypeFault true)]
     """, "[true true true true]"
 
