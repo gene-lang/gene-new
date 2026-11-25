@@ -39,11 +39,18 @@ suite "declaration heads":
       check found
       check class == dhcDeclaration
       check geneKindName(info.kind).len > 0
-      check lspKind(info.kind) >= 2
       # A named declaration must be able to read a name from somewhere.
       if info.class == dhcDeclaration:
         check info.name != dnkNone or
           info.kind in {dkImport, dkImportImpl, dkDerive}
+
+  test "every declaration kind has a name and an editor kind":
+    for kind in DeclKind:
+      checkpoint "kind: " & $kind
+      check geneKindName(kind).len > 0
+      check lspKind(kind) in [skModule, skNamespace, skClass, skMethod,
+                              skFunction, skVariable, skConstructor,
+                              skEnum, skEnumMember, skInterface, skObject]
 
   test "an unclassified head is reported as unknown, not guessed":
     for head in ["my_macro", "make_handler", "not_a_declaration", ""]:

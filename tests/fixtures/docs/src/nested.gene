@@ -1,0 +1,18 @@
+(mod nested)
+
+(ns a
+  (type T
+    (message m [] : Int 1)
+    (ctor [x : Int] (self .put `x x))))
+
+(ns b
+  (type T
+    (message m [] : Int 2)
+    (ctor [x : Int] (self .put `x x))))
+
+(ns c
+  (protocol Q
+    (message n [] : Int)))
+
+(protocol P
+  (message p [] : Int))

@@ -1,0 +1,5 @@
+{^format 1
+ ^name "probe/docs_multi"
+ ^version "0.0.0"
+ ^applications [(application "one" ^entry "a/main.gene")
+                (application "two" ^entry "b/main.gene")]}

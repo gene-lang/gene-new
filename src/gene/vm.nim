@@ -5,8 +5,7 @@ import std/[algorithm, atomics, base64, dynlib, hashes, json, locks, math, monot
 import ./[compiler, diagnostics, digest, equality, execution_limits, gir, package, printer, reader, types,
           type_contracts]
 import ./[callable_reflection, error_analysis, gir_codec, native_errors, value_graph]
-import ./module_resolver
-export module_resolver
+import ./[import_spec, module_resolver]
 import ./io_lifecycle
 import ./pending_exception
 when defined(geneAtomicGenerationRetirementProbe):
@@ -12441,12 +12440,6 @@ proc validateModuleUrl(app: Application, url, rawPath: string): string =
     normalized &= ".gene"
   normalized
 
-proc resolvePackageModule*(app: Application, pkg: Package,
-                           rawPath: string): string =
-  ## Module selection inside an already-selected package (§10). The shared
-  ## resolver owns the rules; this keeps the Application-shaped call site.
-  pkg.packageModulePath(rawPath)
-
 proc resolveModuleRef*(app: Application, rawPath: string,
                        pkgName = ""): string =
   ## Normalize a `^from "path"` reference to a stable absolute module identity.
@@ -12454,8 +12447,8 @@ proc resolveModuleRef*(app: Application, rawPath: string,
   ## name is interpreted, which is what keeps module selection separate from
   ## package selection (§9, §10).
   if pkgName.len > 0:
-    return app.resolvePackageModule(
-      app.packageForImport(app.currentPackage, pkgName), rawPath)
+    let target = app.packageForImport(app.currentPackage, pkgName)
+    return target.packageModulePath(rawPath)
   if app.sandboxRoot != nil and app.sandboxRestricting and
       not rawPath.isUrlModulePath and not rawPath.startsWith("./") and
       not rawPath.startsWith("../"):
@@ -12472,7 +12465,7 @@ proc resolveModuleRef*(app: Application, rawPath: string,
     # importing module's URL — a remote module can never name a local file.
     return app.validateModuleUrl(
       resolveUrlRef(app.currentModuleDir, rawPath), rawPath)
-  fileModulePath(app.currentPackage, app.currentModuleDir, rawPath)
+  resolveFileModule(app.currentPackage, app.currentModuleDir, rawPath)
 
 proc resolveModulePath*(app: Application, rawPath: string): string =
   app.resolveModuleRef(rawPath)

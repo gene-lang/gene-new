@@ -17,7 +17,7 @@ import std/[algorithm, json, os, osproc, sets, strutils, tables, unittest]
 import gene/[callable_reflection, gir, package, printer, reader, types, vm,
             web]
 import tools/declaration_heads
-import tools/docs/builder as docTestuilder
+import tools/docs/builder as docBuilder
 from tools/docs/model import DocEntry, DocImport, DocParam, ModuleDoc, renderModuleDoc
 
 const docTestFixturesRelative = "tests/fixtures/docs"
@@ -29,10 +29,23 @@ proc docTestFixturesRoot(): string = docTestRepoRoot() / docTestFixturesRelative
 
 proc docTestFixture(name: string): string = docTestFixturesRoot() / "src" / name
 
-type DocBuildResult = docTestuilder.BuildResult
+proc docTestCopyTree(source, target: string, skipBuild = true) =
+  createDir(target)
+  for kind, path in walkDir(source):
+    let name = lastPathPart(path)
+    case kind
+    of pcDir:
+      if not (skipBuild and name == "build"):
+        docTestCopyTree(path, target / name, skipBuild = false)
+    of pcFile:
+      copyFile(path, target / name)
+    else:
+      discard
+
+type DocBuildResult = docBuilder.BuildResult
 
 proc docTestBuildFixtures(): DocBuildResult =
-  result = docTestuilder.buildPackage(docTestFixturesRoot())
+  result = docBuilder.buildPackage(docTestFixturesRoot())
   result.summarize()
 
 proc docTestDocFor(build: DocBuildResult, modulePath: string): ModuleDoc =
@@ -210,6 +223,71 @@ suite "doc builder — declaration pass":
     check "shape_mismatch" in kinds
     check "unresolved_for" in kinds
 
+  test "a type inside a namespace keeps its path in its children's ids":
+    let nested = docTestBuildFixtures().docTestDocFor("nested")
+    check nested.diagnostics.len == 0
+    for id in ["lib/nested/a/T/m", "lib/nested/a/T/ctor",
+               "lib/nested/b/T/m", "lib/nested/b/T/ctor",
+               "lib/nested/c/Q:n"]:
+      checkpoint "id: " & id
+      var found = false
+      for entry in nested.entries:
+        if entry.id == id:
+          found = true
+      check found
+
+  test "sidecar diagnostics point into the sidecar, not the module source":
+    let result = docTestBuildFixtures()
+    let mismatch = result.docTestDocFor("mismatch")
+    check mismatch.diagnostics.len == 2
+    for diagnostic in mismatch.diagnostics:
+      check diagnostic.source == "src/mismatch.doc.gene"
+      check diagnostic.line in [1, 6]
+      check diagnostic.col > 0
+    let broken = result.docTestDocFor("broken_sidecar")
+    check broken.entries.len == 1
+    check broken.diagnostics.len == 1
+    check broken.diagnostics[0].kind == "read_error"
+    check broken.diagnostics[0].source == "src/broken_sidecar.doc.gene"
+
+  test "the walk follows package membership, not directory names":
+    let result = docTestBuildFixtures()
+    # `src/build/` is ordinary source; only the package-root build output is
+    # skipped. `src/excluded/**` is the manifest's own exclusion.
+    check result.docTestDocFor("build/inner").entries.len == 1
+    var excluded = false
+    for doc in result.modules:
+      if doc.module == "excluded/hidden":
+        excluded = true
+    check not excluded
+
+  test "every application entry's directory is walked":
+    let result = docBuilder.buildPackage(
+      docTestRepoRoot() / "tests/fixtures/docs_multi")
+    var paths: seq[string]
+    for doc in result.modules:
+      paths.add doc.module
+    paths.sort()
+    check paths == @["a/main", "b/main"]
+
+  test "a lock that cannot load is a diagnostic, not a silent fallback":
+    var result = docBuilder.buildPackage(
+      docTestRepoRoot() / "tests/fixtures/docs_bad_lock")
+    result.summarize()
+    check result.buildDiagnostics.len == 1
+    check result.buildDiagnostics[0].kind == "lock_unreadable"
+    let main = result.docTestDocFor("main")
+    check main.imports.len == 1
+    check main.imports[0].resolvedModule.len == 0
+    check result.unresolvedImports == 1
+    let outDir = docTestRepoRoot() / "build/m1/doc-bad-lock"
+    if dirExists(outDir): removeDir(outDir)
+    result.writeOutputs(outDir)
+    let coverage = readFile(outDir / "coverage.gene")
+    check "lock_unreadable" in coverage
+    check "^unresolved_imports 1" in coverage
+    removeDir(outDir)
+
   test "imports are recorded with resolution, selectors, and re-export":
     let result = docTestBuildFixtures()
     let paired = result.docTestDocFor("paired")
@@ -232,6 +310,11 @@ suite "doc builder — declaration pass":
     check unresolved.imports.len == 1
     check unresolved.imports[0].resolvedModule.len == 0
     check unresolved.imports[0].reason.len > 0
+    let missing = result.docTestDocFor("missing_import")
+    check missing.imports.len == 2
+    for imported in missing.imports:
+      check imported.resolvedModule.len == 0
+      check "module not found" in imported.reason
 
   test "an unreadable file is a positioned diagnostic and the walk continues":
     let result = docTestBuildFixtures()
@@ -242,7 +325,16 @@ suite "doc builder — declaration pass":
           found = true
           check diagnostic.line > 0
     check found
-    check result.readErrors == 1
+    check result.readErrors == 2
+    let outDir = docTestRepoRoot() / "build/m1/doc-unreadable"
+    if dirExists(outDir): removeDir(outDir)
+    result.writeOutputs(outDir)
+    check not fileExists(outDir / "modules" / "unreadable.gene")
+    check fileExists(outDir / "modules" / "broken_sidecar.gene")
+    let coverage = readFile(outDir / "coverage.gene")
+    check "^unresolved_imports 3" in coverage
+    check "^build_diagnostics []" in coverage
+    removeDir(outDir)
 
   test "an unknown head becomes an unexpanded record":
     let userMacro = docTestBuildFixtures().docTestDocFor("user_macro")
@@ -260,8 +352,8 @@ suite "doc builder — declaration pass":
     let outB = docTestRepoRoot() / "build/m1/doc-determinism-b"
     if dirExists(outA): removeDir(outA)
     if dirExists(outB): removeDir(outB)
-    docTestuilder.writeOutputs(first, outA)
-    docTestuilder.writeOutputs(second, outB)
+    docBuilder.writeOutputs(first, outA)
+    docBuilder.writeOutputs(second, outB)
     var filesA, filesB: seq[string]
     for path in walkDirRec(outA): filesA.add relativePath(path, outA)
     for path in walkDirRec(outB): filesB.add relativePath(path, outB)
@@ -272,12 +364,24 @@ suite "doc builder — declaration pass":
       check readFile(outA / name) == readFile(outB / name)
     removeDir(outA)
     removeDir(outB)
+    # The same corpus at a different absolute path renders the same bytes: no
+    # diagnostic may leak an absolute path.
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-copy"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(docTestFixturesRoot(), copyRoot)
+    let copied = docBuilder.buildPackage(copyRoot)
+    check copied.modules.len == first.modules.len
+    for i in 0 ..< min(first.modules.len, copied.modules.len):
+      check first.modules[i].module == copied.modules[i].module
+      check renderModuleDoc(first.modules[i]) == renderModuleDoc(copied.modules[i])
+    removeDir(copyRoot)
 
   test "a build runs no form and calls no main":
     let marker = docTestFixturesRoot() / "RAN_MARKER"
     if fileExists(marker): removeFile(marker)
     let runs = docTestBuildFixtures().docTestDocFor("runs")
     check not fileExists(marker)
+    check not fileExists("tests/fixtures/docs/RAN_MARKER")
     # The declarations are still read; the deliberately unknown calls are
     # recorded rather than executed.
     check runs.docTestEntriesNamed("main").len == 1
@@ -580,7 +684,7 @@ suite "doc builder — runtime conformance":
     docTestConformanceFailures = 0
     let result = docTestBuildFixtures()
     var app: Application
-    for name in ["main", "paired", "mismatch", "exports"]:
+    for name in ["main", "paired", "mismatch", "exports", "nested"]:
       let file = docTestFixture(name & ".gene")
       if app == nil:
         app = newApplicationForEntryFile(file)
@@ -593,7 +697,7 @@ suite "doc builder — runtime conformance":
 
   test "the stdlib's embedded Gene source agrees":
     docTestConformanceFailures = 0
-    var build = docTestuilder.buildPackage(docTestRepoRoot(), docTestRepoRoot() / "src/gene/lib")
+    var build = docBuilder.buildPackage(docTestRepoRoot(), docTestRepoRoot() / "src/gene/lib")
     build.summarize()
     let doc = build.docTestDocFor("gene/sync")
     let app = newApplicationForEntryFile(docTestRepoRoot() / "src/gene/lib/sync.gene")
@@ -607,7 +711,7 @@ suite "doc builder — runtime conformance":
       check true
     else:
       docTestConformanceFailures = 0
-      var build = docTestuilder.buildPackage(harnessRoot)
+      var build = docBuilder.buildPackage(harnessRoot)
       build.summarize()
       var files: seq[string]
       for kind, path in walkDir(harnessRoot / "src/public"):

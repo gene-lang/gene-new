@@ -4,7 +4,7 @@
 ## mutate GIR; unsupported forms fail while building the IR, before emission.
 
 import std/[json, os, sequtils, sets, strutils, tables]
-import ./[clause_syntax, compiler, gir, printer, reader, types,
+import ./[clause_syntax, compiler, gir, import_spec, printer, reader, types,
           type_contracts]
 
 const webAudioWorklet = staticRead("web_audio_worklet.js")

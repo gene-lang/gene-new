@@ -95,6 +95,10 @@ suite "source outline — LSP declaration parity":
   test "wrapping prefixes, properties, and nested declarations match":
     checkParity(wrapSource, "wrapped")
 
+  test "heads added by the declaration table match":
+    checkParity("(let a 1)\n(const b 2)\n(alias N Str)\n" &
+      "(web_module app)\n(ffi/fn abs [x : C/Int] : C/Int)", "table heads")
+
   test "a non-declaration buffer has no outline rows":
     for src in ["(+ 1 2)", "[a b c]", "{^a 1}", "(log \"x\")", "# comment\n",
                 "(server ^host \"127.0.0.1\" ^port 8080)"]:

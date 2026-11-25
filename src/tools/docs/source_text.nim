@@ -3,221 +3,119 @@
 ## A documentation entry states a parameter's type, a default, a field type,
 ## and an error row **as written**. The reader gives locations for containers
 ## (nodes, lists, maps) but not for leaves (symbols, strings, numbers), so a
-## declaration walker cannot slice those out of `SourceUnit.locs`. This module
-## scans the exact text of an already-read form instead: the parameter vector
-## occupies one known source range, and the items inside it can be split and
-## sliced without re-reading or evaluating anything.
+## declaration walker cannot slice those out of `SourceUnit.locs`.
 ##
-## The scanner understands the reader's lexical surface — line and block
-## comments, datum comments (`#_`), strings, interpolated strings, char
-## literals, regex, byte literals, and `#@` wrappers — because a naive
-## delimiter count would slice a `)` inside a string.
+## This module slices them from the reader's own token stream
+## (`lexAllSpanned`): each datum's bytes are the span between its first and
+## last token. Lexing stays in the reader, so a new literal or comment form
+## cannot make the builder disagree with the language about where a datum
+## starts and ends.
 
-import std/strutils
+import std/[strutils, tables]
+import ../../gene/reader
 import ../source_positions
 
-proc skipTrivia*(src: string, start: int): int
-proc datumEnd*(src: string, start: int): int
+type
+  SourceText* = object
+    src*: string
+    tokens*: seq[SpannedToken]
+    starts*: Table[int, int]   ## first byte of a datum -> token index
 
-proc skipString(src: string, start: int): int =
-  ## `start` is at the opening quote; returns the offset just past the close.
-  var i = start
-  if src.continuesWith("\"\"\"", i):
-    i += 3
-    while i < src.len:
-      if src.continuesWith("\"\"\"", i):
-        return i + 3
-      inc i
-    return src.len
-  inc i
-  while i < src.len:
-    case src[i]
-    of '\\': i += 2
-    of '"': return i + 1
-    else: inc i
-  src.len
+proc isOpener(kind: TokenKind): bool =
+  kind in {tkLParen, tkLBracket, tkLBrace, tkHashLParen, tkHashLBracket,
+           tkHashLBrace}
 
-proc skipCharLiteral(src: string, start: int): int =
-  ## `start` is at a `'`. Gene's `'` introduces only a char literal.
-  var i = start + 1
-  while i < src.len and src[i] != '\n':
-    if src[i] == '\\':
-      i += 2
-      continue
-    if src[i] == '\'':
-      return i + 1
-    inc i
-  src.len
+proc isCloser(kind: TokenKind): bool =
+  kind in {tkRParen, tkRBracket, tkRBrace}
 
-proc skipBlockComment(src: string, start: int): int =
-  var depth = 1
-  var i = start + 2
-  while i < src.len and depth > 0:
-    if src.continuesWith("#<", i):
-      inc depth
-      i += 2
-    elif src.continuesWith(">#", i):
-      dec depth
-      i += 2
-    else:
-      inc i
-  i
+proc isPrefix(kind: TokenKind): bool =
+  kind in {tkPercent, tkBacktick, tkDollar, tkRef, tkDeref}
 
-proc skipLineComment(src: string, start: int): int =
-  var i = start
-  while i < src.len and src[i] != '\n':
-    inc i
-  i
+proc startsDatum(kind: TokenKind): bool =
+  not isCloser(kind) and kind notin {tkComma, tkEof}
 
-proc skipTrivia(src: string, start: int): int =
-  ## Skip whitespace, commas, and comments, including `#_ datum` which the
-  ## reader treats as spacing.
-  var i = start
-  while i < src.len:
-    case src[i]
-    of ' ', '\t', '\r', '\n', ',':
-      inc i
-    of '#':
-      if i + 1 < src.len and src[i + 1] == '_':
-        i = skipTrivia(src, datumEnd(src, skipTrivia(src, i + 2)))
-      elif i + 1 < src.len and src[i + 1] == '<':
-        i = skipBlockComment(src, i)
-      elif i + 1 < src.len and src[i + 1] in {'"', 'B', '(', '[', '{', '@'}:
-        # A regex, bytes literal, reader-prefixed container, or wrapper is an
-        # atom, not a comment.
-        return i
-      else:
-        i = skipLineComment(src, i)
-    else:
-      return i
-
-proc atomEnd(src: string, start: int): int =
-  ## An atom ends at whitespace or a delimiter. `:` and `=` are included
-  ## because in a parameter vector they are the separators a caller writes
-  ## with spaces around them; a selector alias such as `a:b` never appears
-  ## inside a signature.
-  var i = start
-  while i < src.len and src[i] notin {' ', '\t', '\r', '\n', ',', ';',
-                                      '(', ')', '[', ']', '{', '}', ':',
-                                      '='}:
-    inc i
-  if i == start:
-    inc i
-  i
-
-proc delimitedEnd(src: string, start: int): int =
-  ## Offset just past the delimiter matching the opener at `start`. A stack of
-  ## expected closers keeps nested forms of different kinds straight.
-  var closers: seq[char]
-  var i = start
-  while i < src.len:
-    case src[i]
-    of '(', '[', '{':
-      if closers.len == 0:
-        if i != start:
-          return i
-        if src[i] == '(': closers.add ')'
-        elif src[i] == '[': closers.add ']'
-        else: closers.add '}'
-      else:
-        closers.add(if src[i] == '(': ')'
-                    elif src[i] == '[': ']'
-                    else: '}')
-      inc i
-    of ')', ']', '}':
-      if closers.len > 0 and src[i] == closers[^1]:
-        closers.setLen(closers.len - 1)
-        inc i
-        if closers.len == 0:
-          return i
-      else:
-        inc i
-    of '"':
-      i = skipString(src, i)
-    of '\'':
-      i = skipCharLiteral(src, i)
-    of '#':
-      if i + 1 < src.len and src[i + 1] == '<':
-        i = skipBlockComment(src, i)
-      elif i + 1 < src.len and src[i + 1] == '"':
-        i = skipString(src, i + 1)
-      elif i + 1 < src.len and src[i + 1] == '_':
-        i = skipTrivia(src, i)
-      elif i + 1 < src.len and src[i + 1] in {'(', '[', '{', '@'}:
-        i = datumEnd(src, i)
-      else:
-        i = skipLineComment(src, i)
-    else:
-      inc i
-  src.len
-
-proc datumEnd(src: string, start: int): int =
-  ## Offset just past the datum that starts at `start` (the first non-space
-  ## byte of the datum).
-  if start >= src.len:
-    return src.len
-  case src[start]
-  of '(', '[', '{':
-    return delimitedEnd(src, start)
-  of '"':
-    return skipString(src, start)
-  of '\'':
-    let stop = skipCharLiteral(src, start)
-    if stop > start + 1: return stop
-    return atomEnd(src, start)
-  of '#':
-    if start + 1 < src.len:
-      case src[start + 1]
-      of '<': return skipBlockComment(src, start)
-      of '"': return skipString(src, start + 1)
-      of '(', '[', '{': return delimitedEnd(src, start + 1)
-      of '@':
-        # `#@ head argument` is one form whose operands follow the marker.
-        var i = skipTrivia(src, start + 2)
-        i = datumEnd(src, i)
-        i = skipTrivia(src, i)
-        return datumEnd(src, i)
-      of '_':
-        return skipTrivia(src, start)
-      else:
-        return atomEnd(src, start)
-    return atomEnd(src, start)
-  of '$':
-    if start + 1 < src.len and src[start + 1] == '"':
-      return skipString(src, start + 2)
-    return atomEnd(src, start)
+proc tokenStart(st: SourceText, index: int): int =
+  let token = st.tokens[index]
+  # `$name` is one datum whose token starts after the sigil.
+  if token.kind == tkGeneMember and token.startByte > 0 and
+      st.src[token.startByte - 1] == '$':
+    token.startByte - 1
   else:
-    return atomEnd(src, start)
+    token.startByte
 
-proc scanItem*(src: string, start: int): tuple[stop: int, punctuation: bool] =
-  ## One item inside a form: either a datum or a single punctuation token
-  ## (`:`, `=`, `^`, `^^`, `^!`, `@`, `@@`, `@!`, `;`).
-  var i = skipTrivia(src, start)
-  if i >= src.len:
-    return (stop: i, punctuation: false)
-  if src[i] in {':', '=', '^', '@', ';'}:
-    if src[i] in {'^', '@'} and i + 1 < src.len and
-        src[i + 1] in {'^', '!', '@'}:
-      return (stop: i + 2, punctuation: true)
-    return (stop: i + 1, punctuation: true)
-  (stop: datumEnd(src, i), punctuation: false)
+proc initSourceText*(src: string): SourceText =
+  result.src = src
+  result.tokens = lexAllSpanned(src)
+  for index in 0 ..< result.tokens.len:
+    result.starts[result.tokenStart(index)] = index
 
-proc splitItems*(src: string, openOffset: int): seq[ByteSpan] =
+proc datumSpan(st: SourceText, index: int):
+    tuple[span: ByteSpan, next: int] =
+  ## The bytes of the datum that starts at token `index`, and the token after
+  ## it. Prefixes that belong to a datum (`%`, `` ` ``, `$`, `#Ref`, `#Deref`,
+  ## `#@`) extend the span over their operand.
+  if index >= st.tokens.len:
+    return (ByteSpan(startByte: st.src.len, endByte: st.src.len), index)
+  let token = st.tokens[index]
+  if isOpener(token.kind):
+    var depth = 0
+    var i = index
+    while i < st.tokens.len:
+      if isOpener(st.tokens[i].kind):
+        inc depth
+      elif isCloser(st.tokens[i].kind):
+        dec depth
+        if depth == 0:
+          return (ByteSpan(startByte: st.tokenStart(index),
+                           endByte: st.tokens[i].endByte), i + 1)
+      inc i
+    return (ByteSpan(startByte: st.tokenStart(index),
+                     endByte: st.src.len), st.tokens.len)
+  if token.kind == tkWrap:
+    # `#@ head argument` is one form whose two operands follow the marker.
+    var next = index + 1
+    var stop = token.endByte
+    for _ in 0 .. 1:
+      let part = st.datumSpan(next)
+      stop = part.span.endByte
+      next = part.next
+    return (ByteSpan(startByte: st.tokenStart(index), endByte: stop), next)
+  if isPrefix(token.kind):
+    let part = st.datumSpan(index + 1)
+    return (ByteSpan(startByte: st.tokenStart(index),
+                     endByte: part.span.endByte), part.next)
+  (ByteSpan(startByte: st.tokenStart(index), endByte: token.endByte), index + 1)
+
+proc splitItems*(st: SourceText, openOffset: int): seq[ByteSpan] =
   ## The top-level items of the delimited form whose opening byte is at
-  ## `openOffset`, each as an exact source span. Punctuation items are
-  ## included as tiny spans so callers can read `:`, `=`, `^`, and `@`.
-  let closeOffset = delimitedEnd(src, openOffset)
-  var i = openOffset + 1
-  let limit = if closeOffset > openOffset: closeOffset - 1 else: closeOffset
+  ## `openOffset`, each as an exact source span. Punctuation items (`:`, `=`,
+  ## `^`, `@`) are returned as their own spans.
+  let openIndex = st.starts.getOrDefault(openOffset, -1)
+  if openIndex < 0 or not isOpener(st.tokens[openIndex].kind):
+    return
+  let opened = st.datumSpan(openIndex)
+  let limit = opened.next - 1
+  var i = openIndex + 1
   while i < limit:
-    i = skipTrivia(src, i)
-    if i >= limit:
-      break
-    let item = scanItem(src, i)
-    if item.stop <= i:
-      break
-    result.add ByteSpan(startByte: i, endByte: min(item.stop, limit))
-    i = item.stop
+    case st.tokens[i].kind
+    of tkComma:
+      inc i
+    of tkUnderscore:
+      # `#_ datum` is spacing: skip the marker and its datum.
+      i = st.datumSpan(i + 1).next
+    else:
+      let item = st.datumSpan(i)
+      if item.next <= i:
+        break
+      result.add item.span
+      i = item.next
+
+proc spanOf*(st: SourceText, openOffset: int): ByteSpan =
+  ## The whole delimited form opening at `openOffset`.
+  let openIndex = st.starts.getOrDefault(openOffset, -1)
+  if openIndex < 0:
+    return ByteSpan(startByte: -1, endByte: -1)
+  st.datumSpan(openIndex).span
 
 proc spanText*(src: string, span: ByteSpan): string =
   ## The exact source text a span covers, stripped of surrounding whitespace.
@@ -226,6 +124,36 @@ proc spanText*(src: string, span: ByteSpan): string =
     return ""
   src[span.startByte ..< min(span.endByte, src.len)].strip()
 
-proc spanOf*(src: string, openOffset: int): ByteSpan =
-  ## The span of the whole delimited form opening at `openOffset`.
-  ByteSpan(startByte: openOffset, endByte: delimitedEnd(src, openOffset))
+proc afterProperty(st: SourceText, index: int): int =
+  ## `^key value`, `@key value`, and the flag spellings (`^^`, `^!`, `@@`,
+  ## `@!`) may sit between a parameter vector and its return annotation.
+  let kind = st.tokens[index].kind
+  var i = index + 1
+  if i < st.tokens.len:
+    inc i # the key
+  if kind in {tkCaret, tkAt} and i < st.tokens.len:
+    i = st.datumSpan(i).next
+  i
+
+proc typeAfterColon*(st: SourceText, offset: int): ByteSpan =
+  ## The source span of the type after a `:` that follows `offset`, skipping
+  ## the form's properties and meta (the reader keeps them out of the body, so
+  ## they may sit between the parameters and the return annotation), or a span
+  ## with `startByte == -1` when there is no return annotation.
+  var i = 0
+  while i < st.tokens.len and st.tokens[i].startByte < offset:
+    inc i
+  while i < st.tokens.len:
+    case st.tokens[i].kind
+    of tkColon:
+      inc i
+      while i < st.tokens.len and st.tokens[i].kind == tkComma:
+        inc i
+      if i >= st.tokens.len or not startsDatum(st.tokens[i].kind):
+        return ByteSpan(startByte: -1, endByte: -1)
+      return st.datumSpan(i).span
+    of tkCaret, tkCaretCaret, tkCaretBang, tkAt, tkAtAt, tkAtBang:
+      i = st.afterProperty(i)
+    else:
+      break
+  ByteSpan(startByte: -1, endByte: -1)

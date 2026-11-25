@@ -72,6 +72,10 @@ node_modules/
 .next/
 dist/
 build/
+# A fixture directory is literally named `build` to prove the docs walker does
+# not skip every directory with that name; its source must stay tracked.
+!tests/fixtures/docs/src/build/
+!tests/fixtures/docs/src/build/**
 __pycache__/
 *.pyc
 .venv/

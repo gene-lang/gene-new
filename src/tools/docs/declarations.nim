@@ -26,6 +26,7 @@ type
     pkg*: Package
     file*: string
     modulePath*: string
+    text*: SourceText
     seen*: Table[string, bool]
 
 proc sourceLocOffset(b: DeclBuilder, value: Value): int =
@@ -75,9 +76,6 @@ proc entryBase(modulePath: string): string =
 proc entryId(modulePath: string, path: seq[string]): string =
   entryBase(modulePath) & "/" & path.join("/")
 
-proc parentFor(modulePath: string, path: seq[string]): string =
-  if path.len == 0: "" else: entryId(modulePath, path)
-
 proc addEntry(b: var DeclBuilder, entry: DocEntry) =
   if b.seen.hasKey(entry.id):
     b.doc.diagnostics.add DocDiagnostic(
@@ -95,12 +93,6 @@ proc addDiagnostic(b: var DeclBuilder, kind, message: string, line = 0,
 proc addUnexpanded(b: var DeclBuilder, line: int, head, reason: string) =
   b.doc.unexpanded.add DocUnexpanded(line: line, head: head, reason: reason)
 
-proc locationOf(b: DeclBuilder, value: Value): SourceLoc =
-  result = b.unit.locs.getOrDefault(value.bits)
-  if not result.hasSourceLoc and value.kind == vkNode:
-    let loc = b.unit.locs.getOrDefault(value.bits)
-    result = loc
-
 # ---------------------------------------------------------------------------
 # Signature text
 # ---------------------------------------------------------------------------
@@ -110,12 +102,9 @@ proc listOffset(b: DeclBuilder, value: Value): int =
     return -1
   b.sourceLocOffset(value)
 
-proc fallbackText(value: Value): string =
-  if value.isMissing: "" else: print(value)
-
 proc readParamsFromSource(b: var DeclBuilder, offset: int):
     tuple[positional, named: seq[DocParam], rest, namedRest: DocParam] =
-  var items = splitItems(b.src, offset)
+  var items = splitItems(b.text, offset)
   var i = 0
   while i < items.len:
     let span = items[i]
@@ -178,72 +167,7 @@ proc readParamsFromSource(b: var DeclBuilder, offset: int):
       param.local = param.name
       result.positional.add param
 
-proc readParamsFromValues(params: Value): tuple[
-    positional, named: seq[DocParam], rest, namedRest: DocParam] =
-  if params.kind != vkList:
-    return
-  let items = params.listItems
-  var i = 0
-  while i < items.len:
-    let item = items[i]
-    if item.kind == vkSymbol and item.symVal == "^":
-      if i + 1 >= items.len: break
-      var param = DocParam(required: true)
-      param.name = items[i + 1].symbolText
-      param.local = param.name
-      i += 2
-      if i < items.len and items[i].kind == vkSymbol and
-          items[i].symVal notin [":", "=", "^", "^^", ",", "@"]:
-        param.local = items[i].symVal
-        inc i
-      if i < items.len and items[i].symbolText == ":":
-        inc i
-        if i < items.len:
-          param.typ = fallbackText(items[i])
-          inc i
-      if i < items.len and items[i].symbolText == "=":
-        inc i
-        if i < items.len:
-          param.default = fallbackText(items[i])
-          param.hasDefault = true
-          param.required = false
-          inc i
-      if param.name.endsWith("..."):
-        param.name.setLen(param.name.len - 3)
-        if param.local.endsWith("..."):
-          param.local.setLen(param.local.len - 3)
-        result.namedRest = param
-      else:
-        result.named.add param
-      continue
-    if item.kind == vkSymbol and item.symVal in [",", "^^", ":"]:
-      inc i
-      continue
-    var param = DocParam(required: true)
-    param.name = if item.kind == vkSymbol: item.symVal else: fallbackText(item)
-    inc i
-    if i < items.len and items[i].symbolText == ":":
-      inc i
-      if i < items.len:
-        param.typ = fallbackText(items[i])
-        inc i
-    if i < items.len and items[i].symbolText == "=":
-      inc i
-      if i < items.len:
-        param.default = fallbackText(items[i])
-        param.hasDefault = true
-        param.required = false
-        inc i
-    if param.name.endsWith("..."):
-      param.name.setLen(param.name.len - 3)
-      param.local = param.name
-      param.required = false
-      result.rest = param
-    else:
-      param.local = param.name
-      result.positional.add param
-
-proc readErrors(b: DeclBuilder, form: Value): seq[string] =
+proc readErrors(b: var DeclBuilder, form: Value): seq[string] =
   ## The `^errors` row as written. The compiler stores `signatureErrorExprs`
   ## only for a list row, so a non-list property is not a row.
   if not form.props.hasKey("errors"):
@@ -252,50 +176,44 @@ proc readErrors(b: DeclBuilder, form: Value): seq[string] =
   if row.kind notin {vkList, vkSet}:
     return
   let offset = b.listOffset(row)
-  if offset >= 0:
-    for span in splitItems(b.src, offset):
-      let text = spanText(b.src, span)
-      if text.len > 0:
-        result.add text
-  else:
-    for item in row.listItems:
-      result.add fallbackText(item)
+  if offset < 0:
+    b.addDiagnostic("source_missing", "error row has no source location")
+    return
+  for span in splitItems(b.text, offset):
+    let text = spanText(b.src, span)
+    if text.len > 0:
+      result.add text
 
-proc readReturnType(b: DeclBuilder, form: Value, paramsIndex: int): string =
+proc readReturnType(b: var DeclBuilder, form: Value,
+                    paramsIndex: int): string =
   if paramsIndex + 1 < form.body.len and
       form.body[paramsIndex + 1].kind == vkSymbol and
       form.body[paramsIndex + 1].symVal == ":":
-    let params = form.body[paramsIndex]
-    let offset = b.listOffset(params)
-    if offset >= 0:
-      var i = skipTrivia(b.src, spanOf(b.src, offset).endByte)
-      if i < b.src.len and b.src[i] == ':':
-        i = skipTrivia(b.src, i + 1)
-        let stop = datumEnd(b.src, i)
-        let text = spanText(b.src, ByteSpan(startByte: i, endByte: stop))
-        if text.len > 0:
-          return text
-    if paramsIndex + 2 < form.body.len:
-      return fallbackText(form.body[paramsIndex + 2])
+    let offset = b.listOffset(form.body[paramsIndex])
+    if offset < 0:
+      b.addDiagnostic("source_missing", "parameter vector has no source location")
+      return
+    let span = typeAfterColon(b.text, spanOf(b.text, offset).endByte)
+    if span.startByte >= 0:
+      return spanText(b.src, span)
 
 proc readSignature(b: var DeclBuilder, form: Value, paramsIndex: int):
     tuple[positional, named: seq[DocParam], rest, namedRest: DocParam,
           result: string] =
   if paramsIndex >= form.body.len:
     return
-  let params = form.body[paramsIndex]
-  let offset = b.listOffset(params)
-  let signature =
-    if offset >= 0: b.readParamsFromSource(offset)
-    else: readParamsFromValues(params)
+  let offset = b.listOffset(form.body[paramsIndex])
+  if offset < 0:
+    b.addDiagnostic("source_missing", "parameter vector has no source location")
+    return
+  let signature = b.readParamsFromSource(offset)
   result.positional = signature.positional
   result.named = signature.named
   result.rest = signature.rest
   result.namedRest = signature.namedRest
   result.result = b.readReturnType(form, paramsIndex)
 
-proc fillMeta(b: DeclBuilder, entry: var DocEntry, form: Value) =
-  discard b
+proc fillMeta(entry: var DocEntry, form: Value) =
   let doc = metaString(form, "doc")
   if doc.present:
     entry.doc = doc.value
@@ -314,16 +232,13 @@ proc fillMeta(b: DeclBuilder, entry: var DocEntry, form: Value) =
 # Type bodies
 # ---------------------------------------------------------------------------
 
-proc readPropsMap(b: DeclBuilder, map: Value): seq[DocParam] =
+proc readPropsMap(b: var DeclBuilder, map: Value): seq[DocParam] =
   ## `^props {^name Str ^nickname Str?}` in source order, with exact type text.
   let offset = b.sourceLocOffset(map)
   if offset < 0:
-    for key, value in map.mapEntries:
-      var param = DocParam(name: key, local: key, typ: fallbackText(value),
-                           required: true)
-      result.add param
+    b.addDiagnostic("source_missing", "field map has no source location")
     return
-  var items = splitItems(b.src, offset)
+  var items = splitItems(b.text, offset)
   var i = 0
   while i < items.len:
     let text = spanText(b.src, items[i])
@@ -344,16 +259,15 @@ proc readPropsMap(b: DeclBuilder, map: Value): seq[DocParam] =
     else:
       inc i
 
-proc readBodyFields(b: DeclBuilder, body: Value): tuple[
+proc readBodyFields(b: var DeclBuilder, body: Value): tuple[
     positional: seq[DocParam], rest: DocParam] =
   let offset = b.listOffset(body)
   var texts: seq[string]
-  if offset >= 0:
-    for span in splitItems(b.src, offset):
-      texts.add spanText(b.src, span)
-  else:
-    for item in body.listItems:
-      texts.add fallbackText(item)
+  if offset < 0:
+    b.addDiagnostic("source_missing", "body field list has no source location")
+    return
+  for span in splitItems(b.text, offset):
+    texts.add spanText(b.src, span)
   for text in texts:
     if text.len == 0:
       continue
@@ -365,7 +279,7 @@ proc readBodyFields(b: DeclBuilder, body: Value): tuple[
     else:
       result.positional.add param
 
-proc readVariants(form: Value): seq[DocVariant] =
+proc readVariants(b: var DeclBuilder, form: Value): seq[DocVariant] =
   for i in 1 ..< form.body.len:
     let item = form.body[i]
     case item.kind
@@ -373,27 +287,29 @@ proc readVariants(form: Value): seq[DocVariant] =
       result.add DocVariant(name: item.symVal)
     of vkNode:
       var variant = DocVariant(name: headText(item.head))
-      for field in item.body:
-        variant.fields.add fallbackText(field)
+      let offset = b.sourceLocOffset(item)
+      if offset >= 0:
+        let items = splitItems(b.text, offset)
+        for j in 1 ..< items.len:
+          variant.fields.add spanText(b.src, items[j])
+      else:
+        b.addDiagnostic("source_missing", "enum variant has no source location")
       result.add variant
     else:
       discard
 
-proc readImplements(b: DeclBuilder, form: Value): seq[string] =
+proc readImplements(b: var DeclBuilder, form: Value): seq[string] =
   if not form.props.hasKey("impl"):
     return
   let value = form.props["impl"]
   let offset = b.listOffset(value)
-  if offset >= 0:
-    for span in splitItems(b.src, offset):
-      let text = spanText(b.src, span)
-      if text.len > 0:
-        result.add text
-  elif value.kind in {vkList, vkSet}:
-    for item in value.listItems:
-      result.add fallbackText(item)
-  else:
-    result.add fallbackText(value)
+  if offset < 0:
+    b.addDiagnostic("source_missing", "^impl row has no source location")
+    return
+  for span in splitItems(b.text, offset):
+    let text = spanText(b.src, span)
+    if text.len > 0:
+      result.add text
 
 # ---------------------------------------------------------------------------
 # Imports
@@ -420,12 +336,18 @@ proc resolveImport(b: DeclBuilder, imported: var DocImport) =
     if imported.pkg.len > 0:
       candidate = packageModulePath(target, imported.path)
     else:
-      candidate = fileModulePath(target, parentDir(b.file), imported.path)
+      candidate = resolveFileModule(target, parentDir(b.file), imported.path)
   except PackageError as error:
     imported.reason = shortened(error.msg)
     return
   except GeneError as error:
     imported.reason = shortened(error.msg)
+    return
+  if not fileExists(candidate):
+    # The resolver returns its best candidate even when nothing is there,
+    # because the loader fails later when it opens the file. `^resolved` in
+    # documentation must mean the module exists.
+    imported.reason = "module not found: " & imported.path
     return
   imported.resolvedPackage = target.name
   imported.resolvedModule = target.relativeModulePath(candidate)
@@ -478,9 +400,10 @@ proc recordImport(b: var DeclBuilder, form: Value, loc: SourceLoc) =
 
 proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
               path: seq[string], parent: string)
-proc walkTypeBody(b: var DeclBuilder, form: Value, typeId, typeName: string)
-proc walkProtocolBody(b: var DeclBuilder, form: Value, protocolId,
-                      protocolName: string, entry: var DocEntry)
+proc walkTypeBody(b: var DeclBuilder, form: Value, typeId: string,
+                  typePath: seq[string])
+proc walkProtocolBody(b: var DeclBuilder, form: Value, protocolId: string,
+                      protocolPath: seq[string])
 
 proc nestedLoc(b: DeclBuilder, form: Value, fallback: SourceLoc): SourceLoc =
   let loc = b.unit.locs.getOrDefault(form.bits)
@@ -525,11 +448,12 @@ proc walkMessage(b: var DeclBuilder, form: Value, loc: SourceLoc,
                        line: loc.line, col: loc.col)
   entry.namePath = path.join("/") & separator & name
   entry.id = entryBase(b.modulePath) & "/" & path.join("/") & separator & name
-  b.fillMeta(entry, form)
+  entry.fillMeta(form)
   b.signatureEntry(entry, form, 1)
   b.addEntry(entry)
 
-proc walkTypeBody(b: var DeclBuilder, form: Value, typeId, typeName: string) =
+proc walkTypeBody(b: var DeclBuilder, form: Value, typeId: string,
+                  typePath: seq[string]) =
   # `(type Name : Parent members...)`: the parent type is not a member.
   var memberStart = 1
   if form.body.len > 1 and form.body[1].kind == vkSymbol and
@@ -543,13 +467,13 @@ proc walkTypeBody(b: var DeclBuilder, form: Value, typeId, typeName: string) =
     let head = headText(item.head)
     case head
     of "message":
-      b.walkMessage(item, loc, @[typeName], typeId, "/")
+      b.walkMessage(item, loc, typePath, typeId, "/")
     of "ctor":
       var entry = DocEntry(kind: dkCtor, name: "ctor", parent: typeId,
                            line: loc.line, col: loc.col)
-      entry.namePath = typeName & "/ctor"
-      entry.id = entryBase(b.modulePath) & "/" & typeName & "/ctor"
-      b.fillMeta(entry, item)
+      entry.namePath = typePath.join("/") & "/ctor"
+      entry.id = entryId(b.modulePath, typePath & @["ctor"])
+      entry.fillMeta(item)
       b.signatureEntry(entry, item, 0)
       b.addEntry(entry)
     of "impl":
@@ -559,8 +483,8 @@ proc walkTypeBody(b: var DeclBuilder, form: Value, typeId, typeName: string) =
       if not found.found:
         b.addUnexpanded(loc.line, head, "not a known declaration")
 
-proc walkProtocolBody(b: var DeclBuilder, form: Value, protocolId,
-                      protocolName: string, entry: var DocEntry) =
+proc walkProtocolBody(b: var DeclBuilder, form: Value, protocolId: string,
+                      protocolPath: seq[string]) =
   for i in 1 ..< form.body.len:
     let item = form.body[i]
     if item.kind != vkNode:
@@ -569,7 +493,7 @@ proc walkProtocolBody(b: var DeclBuilder, form: Value, protocolId,
     let head = headText(item.head)
     case head
     of "message":
-      b.walkMessage(item, loc, @[protocolName], protocolId, ":")
+      b.walkMessage(item, loc, protocolPath, protocolId, ":")
     of "derive":
       # A protocol's `derive` form defines how derived types are constructed.
       # It is a compiler-time member, not a reference entry of its own.
@@ -644,11 +568,7 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
   if name.len == 0:
     b.addUnexpanded(loc.line, head, "declaration has no readable name")
     return
-  if name.endsWith("!"):
-    # A fexpr keeps its bang in the source; the entry is named without it so
-    # the id is the callable's ordinary spelling, and the flag records it.
-    discard
-  if isPrivate(form):
+  if info.exportable and isPrivate(form):
     b.doc.hidden.add hiddenPath(path, name)
     return
 
@@ -656,7 +576,7 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
                        line: loc.line, col: loc.col)
   entry.namePath = (path & @[name]).join("/")
   entry.id = entryId(b.modulePath, path & @[name])
-  b.fillMeta(entry, form)
+  entry.fillMeta(form)
   if info.callable:
     let paramsIndex =
       case info.kind
@@ -672,7 +592,7 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
       entry.rest = fields.rest
     entry.implements = b.readImplements(form)
   if info.kind == dkEnum:
-    entry.variants = readVariants(form)
+    entry.variants = b.readVariants(form)
 
   if entry.parent.len == 0:
     entry.parent = entryBase(b.modulePath)
@@ -680,15 +600,9 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
   if info.recurse:
     case info.kind
     of dkType:
-      b.walkTypeBody(form, entry.id, name)
+      b.walkTypeBody(form, entry.id, path & @[name])
     of dkProtocol:
-      var protocolEntry = entry
-      b.walkProtocolBody(form, entry.id, name, protocolEntry)
-      # walkProtocolBody may add derive entries; replace the stored copy.
-      for i in 0 ..< b.doc.entries.len:
-        if b.doc.entries[i].id == protocolEntry.id:
-          b.doc.entries[i] = protocolEntry
-          break
+      b.walkProtocolBody(form, entry.id, path & @[name])
     of dkNs:
       for i in 1 ..< form.body.len:
         let child = form.body[i]
@@ -700,32 +614,48 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
 # Module entry point
 # ---------------------------------------------------------------------------
 
+proc buildModuleDocFromUnit*(pkg: Package, file, modulePath, sourceRel: string,
+                             graph: MaterializedGraph, src: string,
+                             unit: SourceUnit): ModuleDoc =
+  ## Walk an already-read source unit. The VM-side caller reads once; sidecars
+  ## share this so their declarations and prose maps come from one parse.
+  result.package = pkg.name
+  result.module = modulePath
+  result.source = sourceRel
+  result.readable = true
+  var b = DeclBuilder(doc: result, pkg: pkg, file: file, graph: graph,
+                      modulePath: modulePath, seen: initTable[string, bool]())
+  b.src = src
+  b.text = initSourceText(src)
+  b.starts = lineStarts(src)
+  b.unit = unit
+  for i in 0 ..< b.unit.forms.len:
+    let loc = b.unit.formLocs[i]
+    b.walkForm(b.unit.forms[i], loc, @[], "")
+  result = b.doc
+
 proc buildModuleDoc*(pkg: Package, file, modulePath: string,
                      graph: MaterializedGraph): ModuleDoc =
   ## Read one module's source and return its documentation. A read error is a
   ## diagnostic with a position; the caller still writes coverage.
+  let sourceRel = relativePath(file, pkg.root).replace('\\', '/')
   result.package = pkg.name
   result.module = modulePath
-  result.source = relativePath(file, pkg.root).replace('\\', '/')
-  var b = DeclBuilder(doc: result, pkg: pkg, file: file, graph: graph,
-                      modulePath: modulePath, seen: initTable[string, bool]())
+  result.source = sourceRel
   var src = ""
   try:
     src = readFile(file)
   except IOError as error:
     result.diagnostics.add DocDiagnostic(kind: "read_error",
-      message: "cannot read file: " & error.msg, source: result.source)
-    return result
-  b.src = src
-  b.starts = lineStarts(src)
+      message: "cannot read file: " & error.msg, source: sourceRel)
+    return
+  var unit: SourceUnit
   try:
-    b.unit = readAllWithLocs(src, result.source)
+    unit = readAllWithLocs(src, sourceRel)
   except ReadError as error:
     result.diagnostics.add DocDiagnostic(kind: "read_error",
-      message: error.msg, source: result.source, line: error.line,
+      message: error.msg, source: sourceRel, line: error.line,
       col: error.col)
-    return result
-  for i in 0 ..< b.unit.forms.len:
-    let loc = b.unit.formLocs[i]
-    b.walkForm(b.unit.forms[i], loc, @[], "")
-  result = b.doc
+    return
+  result = buildModuleDocFromUnit(pkg, file, modulePath, sourceRel, graph,
+                                  src, unit)

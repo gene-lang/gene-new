@@ -1681,7 +1681,7 @@ proc selectedByFiles*(pkg: Package, relPath: string): bool =
       return false
   true
 
-proc excludedSubtree(pkg: Package, relPath: string): bool =
+proc excludedSubtree*(pkg: Package, relPath: string): bool =
   ## A matching exclusion ending in ** excludes every descendant as well.
   ## Exclusions cannot be undone by includes. Other patterns may exclude a
   ## directory's spelling without excluding its children, so keep walking them.

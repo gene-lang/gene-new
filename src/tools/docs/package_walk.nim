@@ -59,39 +59,20 @@ proc sourceRoots*(pkg: Package): seq[string] =
       return @[candidate]
   @[pkg.root]
 
-proc relativeToRoot(pkg: Package, path: string): string =
+proc relativeToRoot*(pkg: Package, path: string): string =
   relativePath(path, pkg.root).replace('\\', '/')
 
 proc skippedDir(pkg: Package, path: string): bool =
-  ## A directory the walk must not enter: another package's root, a generated
-  ## or vendored tree, or a subtree the manifest excludes.
-  let rel = pkg.relativeToRoot(path)
-  if rel == "." or rel.len == 0:
+  ## A directory the walk must not enter: another package's root, this build's
+  ## own output at the package root, or a subtree `package.nim` excludes.
+  ## Membership is the package's rule, not a second list here.
+  if path == pkg.root:
     return false
-  if fileExists(path / ManifestFileName) and path != pkg.root:
+  if fileExists(path / ManifestFileName):
     return true
-  let name = lastPathPart(path)
-  if name in ["build", "vendor", "node_modules"]:
+  if path == normalizedPath(absolutePath(pkg.root / "build")):
     return true
-  if rel.startsWith("build/") or rel.startsWith("vendor/"):
-    return true
-  for pattern in pkg.files.excludes:
-    if pattern.endsWith("/**") and workspaceMemberMatches(pattern, rel):
-      return true
-
-proc excludedByManifest(pkg: Package, path: string): bool =
-  let rel = pkg.relativeToRoot(path)
-  for pattern in pkg.files.excludes:
-    if workspaceMemberMatches(pattern, rel):
-      return true
-  if pkg.files.includes.len > 0:
-    var included = false
-    for pattern in pkg.files.includes:
-      if workspaceMemberMatches(pattern, rel):
-        included = true
-        break
-    if not included:
-      return true
+  pkg.excludedSubtree(pkg.relativeToRoot(path))
 
 proc skippedFile(pkg: Package, path: string): bool =
   let name = lastPathPart(path)
@@ -99,12 +80,7 @@ proc skippedFile(pkg: Package, path: string): bool =
     return true
   if name == ManifestFileName or name.endsWith("_spec.gene"):
     return true
-  let rel = pkg.relativeToRoot(path)
-  for segment in rel.split('/'):
-    if segment == ".gene" or segment.startsWith(".gene-"):
-      return true
-  if pkg.excludedByManifest(path):
-    return true
+  not pkg.selectedByFiles(pkg.relativeToRoot(path))
 
 proc walkGeneFiles(pkg: Package, root: string): seq[string] =
   ## Every `.gene` file under `root`, skipping nested packages, test specs,

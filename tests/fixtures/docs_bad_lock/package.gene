@@ -1,0 +1,4 @@
+{^format 1
+ ^name "probe/docs_bad_lock"
+ ^version "0.0.0"
+ ^library {^entry "src/main.gene"}}

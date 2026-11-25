@@ -75,7 +75,7 @@ proc packageModulePath*(pkg: Package, rawPath: string): string =
       "module path escapes package root: " & rawPath,
       ["package: " & pkg.describe, "root: " & pkg.root])
 
-proc fileModulePath*(pkg: Package, moduleDir, rawPath: string): string =
+proc resolveFileModule*(pkg: Package, moduleDir, rawPath: string): string =
   ## The branch of `resolveModuleRef` that needs no `Application`: `"."` names
   ## the package entry module, `./x` and `../x` resolve against the importing
   ## module's directory, and a bare or leading-`/` path resolves against the

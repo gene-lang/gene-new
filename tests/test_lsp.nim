@@ -107,6 +107,19 @@ suite "lsp — analysis":
     check util.children.len == 1
     check util.children[0].name == "helper"
 
+  test "table-added declaration heads become symbols":
+    let source = "(let a 1)\n(const b 2)\n(alias N Str)\n" &
+      "(web_module app)\n(ffi/fn abs [x : C/Int] : C/Int)"
+    let analysis = analyze(source)
+    check analysis.parsed
+    var names: seq[string]
+    for symbol in analysis.symbols:
+      names.add symbol.name
+    check names == @["a", "b", "N", "app", "abs"]
+    check analysis.symbols[0].kind == skVariable
+    check analysis.symbols[2].kind == skClass
+    check analysis.symbols[4].kind == skFunction
+
   test "selection range points at the declared name":
     let a = analyze(lspSample)
     let greet = findSym(a.symbols, "greet")

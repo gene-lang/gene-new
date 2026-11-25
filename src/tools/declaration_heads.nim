@@ -17,6 +17,7 @@
 import std/strutils
 import ./declaration_kinds
 import ../gene/types
+export declaration_kinds
 
 type
   DeclHeadClass* = enum
@@ -51,45 +52,44 @@ type
     recurse*: bool        ## this form's body is a list of nested declarations
     symbol*: bool         ## appears in the editor's symbol tree
     exportable*: bool     ## `^private`/`^^private` applies
-    doc*: bool            ## `@doc` and the other doc meta apply
 
 const declarationTable* = [
   # Callables.
   DeclHeadInfo(head: "fn", class: dhcDeclaration, kind: dkFn,
-    name: dnkFirst, callable: true, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, callable: true, symbol: true, exportable: true),
   DeclHeadInfo(head: "macro", class: dhcDeclaration, kind: dkMacro,
-    name: dnkFirst, callable: true, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, callable: true, symbol: true, exportable: true),
   DeclHeadInfo(head: "message", class: dhcDeclaration, kind: dkMessage,
-    name: dnkFirst, callable: true, symbol: true, doc: true),
+    name: dnkFirst, callable: true, symbol: true),
   DeclHeadInfo(head: "ctor", class: dhcDeclaration, kind: dkCtor,
-    name: dnkCtor, callable: true, symbol: true, doc: true),
+    name: dnkCtor, callable: true, symbol: true),
   # Types and their behaviour.
   DeclHeadInfo(head: "type", class: dhcDeclaration, kind: dkType,
-    name: dnkFirst, recurse: true, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, recurse: true, symbol: true, exportable: true),
   DeclHeadInfo(head: "enum", class: dhcDeclaration, kind: dkEnum,
-    name: dnkFirst, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, symbol: true, exportable: true),
   DeclHeadInfo(head: "alias", class: dhcDeclaration, kind: dkAlias,
-    name: dnkFirst, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, symbol: true, exportable: true),
   DeclHeadInfo(head: "protocol", class: dhcDeclaration, kind: dkProtocol,
-    name: dnkFirst, recurse: true, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, recurse: true, symbol: true, exportable: true),
   DeclHeadInfo(head: "impl", class: dhcDeclaration, kind: dkImpl,
-    name: dnkImpl, symbol: true, doc: true),
+    name: dnkImpl, recurse: true, symbol: true),
   DeclHeadInfo(head: "derive", class: dhcDeclaration, kind: dkDerive,
-    name: dnkNone, doc: true),
+    name: dnkNone),
   # Bindings.
   DeclHeadInfo(head: "let", class: dhcDeclaration, kind: dkLet,
-    name: dnkFirst, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, symbol: true, exportable: true),
   DeclHeadInfo(head: "var", class: dhcDeclaration, kind: dkVar,
-    name: dnkFirst, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, symbol: true, exportable: true),
   DeclHeadInfo(head: "const", class: dhcDeclaration, kind: dkConst,
-    name: dnkFirst, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, symbol: true, exportable: true),
   # Modules and namespaces.
   DeclHeadInfo(head: "ns", class: dhcDeclaration, kind: dkNs,
-    name: dnkFirst, recurse: true, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, recurse: true, symbol: true, exportable: true),
   DeclHeadInfo(head: "mod", class: dhcDeclaration, kind: dkMod,
-    name: dnkMod, symbol: true, doc: true),
+    name: dnkMod, symbol: true),
   DeclHeadInfo(head: "web_module", class: dhcDeclaration, kind: dkWebModule,
-    name: dnkFirst, symbol: true, exportable: true, doc: true),
+    name: dnkFirst, symbol: true, exportable: true),
   # Imports. They bind names but declare nothing of this module's own.
   DeclHeadInfo(head: "import", class: dhcDeclaration, kind: dkImport,
     name: dnkNone),
@@ -97,18 +97,17 @@ const declarationTable* = [
     name: dnkNone),
   # FFI declarations (path heads: `ffi/fn` reads as (path ffi fn)).
   DeclHeadInfo(head: "ffi/library", class: dhcDeclaration, kind: dkFfiLibrary,
-    name: dnkFirst, symbol: true, doc: true),
+    name: dnkFirst, symbol: true),
   DeclHeadInfo(head: "ffi/fn", class: dhcDeclaration, kind: dkFfiFn,
-    name: dnkFirst, callable: true, symbol: true, doc: true),
+    name: dnkFirst, callable: true, symbol: true),
   DeclHeadInfo(head: "ffi/struct", class: dhcDeclaration, kind: dkFfiStruct,
-    name: dnkFirst, symbol: true, doc: true),
+    name: dnkFirst, symbol: true),
   DeclHeadInfo(head: "ffi/union", class: dhcDeclaration, kind: dkFfiUnion,
-    name: dnkFirst, symbol: true, doc: true),
+    name: dnkFirst, symbol: true),
   DeclHeadInfo(head: "ffi/callback", class: dhcDeclaration, kind: dkFfiCallback,
-    name: dnkFirst, callable: true, symbol: true, doc: true),
+    name: dnkFirst, callable: true, symbol: true),
   DeclHeadInfo(head: "ffi/signature", class: dhcDeclaration,
-    kind: dkFfiSignature, name: dnkFirst, callable: true, symbol: true,
-    doc: true)
+    kind: dkFfiSignature, name: dnkFirst, callable: true, symbol: true)
 ]
 
 const classifiedHeads* = [

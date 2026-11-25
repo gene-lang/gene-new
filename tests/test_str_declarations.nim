@@ -10,6 +10,11 @@
 ## failure counts as arity rejection; a type failure would not.
 import std/[os, strutils, tables, unittest]
 import gene/[compiler, reader, types, vm]
+import tools/docs/builder as docBuilder
+from tools/docs/model import ModuleDoc
+
+proc strDeclRepoRoot(): string =
+  normalizedPath(parentDir(currentSourcePath()) / "..")
 
 const
   strDeclPath = parentDir(currentSourcePath()) / ".." /
@@ -325,3 +330,39 @@ suite "str declarations":
       check faultKind.kind == vkString
       if faultKind.kind == vkString:
         check faultKind.strVal == "fault"
+
+  test "the builder turns the sidecar into the module data":
+    ## Check 6 must validate what the builder emits, not only a second parse
+    ## of the sidecar: a bug in the declaration pass would otherwise pass.
+    let build = docBuilder.buildPackage(strDeclRepoRoot(),
+      strDeclRepoRoot() / "src/gene/lib")
+    var strModule: ModuleDoc
+    for doc in build.modules:
+      if doc.module == "gene/str":
+        strModule = doc
+    check strModule.module == "gene/str"
+    check strModule.diagnostics.len == 0
+    check strModule.entries.len == strDeclTable.decls.len
+    for entry in strModule.entries:
+      checkpoint "entry: " & entry.id
+      check entry.id == "lib/gene/str/" & entry.name
+      check entry.forName == "gene/str/" & entry.name
+      check entry.named.len == 0
+      check entry.errors.len == 0
+      check entry.doc.len > 0
+      var declared: StrDecl
+      var found = false
+      for decl in strDeclTable.decls:
+        if decl.name == entry.name:
+          declared = decl
+          found = true
+      check found
+      if found:
+        check entry.positional.len == declared.params
+        var required = 0
+        for param in entry.positional:
+          if param.required: inc required
+        check required == declared.required
+        check entry.doc == declared.doc
+        check entry.see == declared.sees
+        check (entry.result.len > 0) == declared.hasReturn

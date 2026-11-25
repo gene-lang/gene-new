@@ -63,8 +63,12 @@ proc runDocCli*() =
     stdout.writeLine "  entries: " & $result.entryCount
     stdout.writeLine "  with @doc: " & $result.withDoc
     stdout.writeLine "  without @doc: " & $(result.entryCount - result.withDoc)
+    stdout.writeLine "  unresolved imports: " & $result.unresolvedImports
     stdout.writeLine "  unexpanded forms: " & $result.unexpandedCount
     stdout.writeLine "  diagnostics: " & $result.diagnosticCount
+    for diagnostic in result.buildDiagnostics:
+      stderr.writeLine "  " & diagnostic.source & ": " & diagnostic.kind &
+        ": " & diagnostic.message
     for module in result.modules:
       for diagnostic in module.diagnostics:
         stderr.writeLine "  " & diagnostic.source & ":" & $diagnostic.line &

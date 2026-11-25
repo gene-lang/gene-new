@@ -24,28 +24,10 @@ type
     hasStatus*: bool
     line*, col*: int
 
-proc proseField(map: Value, key: string): tuple[present: bool, value: Value] =
-  if map.kind == vkMap and map.mapEntries.hasKey(key):
-    return (present: true, value: map.mapEntries[key])
-
-proc loadSidecarProse*(file: string):
-    tuple[prose: seq[SidecarProse], diagnostics: seq[DocDiagnostic]] =
-  ## The maps of a sidecar, form by form, with the reader alone. Declaration
-  ## forms are read by the declaration pass instead.
-  var source = ""
-  try:
-    source = readFile(file)
-  except IOError as error:
-    result.diagnostics.add DocDiagnostic(kind: "read_error",
-      message: "cannot read sidecar: " & error.msg, source: file)
-    return
-  var unit: SourceUnit
-  try:
-    unit = readAllWithLocs(source, file)
-  except ReadError as error:
-    result.diagnostics.add DocDiagnostic(kind: "read_error",
-      message: error.msg, source: file, line: error.line, col: error.col)
-    return
+proc proseFromUnit(unit: SourceUnit, sourceRel: string,
+                   diagnostics: var seq[DocDiagnostic]): seq[SidecarProse] =
+  ## The maps of a sidecar. Declaration forms are walked by the declaration
+  ## pass over the same unit, so the file is read and parsed once.
   for i in 0 ..< unit.forms.len:
     let form = unit.forms[i]
     if form.kind != vkMap:
@@ -77,14 +59,45 @@ proc loadSidecarProse*(file: string):
         if value.kind == vkString:
           prose.status = value.strVal
       else:
-        result.diagnostics.add DocDiagnostic(kind: "sidecar_field",
-          message: "unknown sidecar map field: ^" & key, source: file,
+        diagnostics.add DocDiagnostic(kind: "sidecar_field",
+          message: "unknown sidecar map field: ^" & key, source: sourceRel,
           line: loc.line, col: loc.col)
     if prose.forName.len == 0:
-      result.diagnostics.add DocDiagnostic(kind: "sidecar_field",
-        message: "a sidecar prose map requires ^for", source: file,
+      diagnostics.add DocDiagnostic(kind: "sidecar_field",
+        message: "a sidecar prose map requires ^for", source: sourceRel,
         line: loc.line, col: loc.col)
-    result.prose.add prose
+    result.add prose
+
+proc readSidecar*(pkg: Package, file, modulePath, sourceRel: string,
+                  graph: MaterializedGraph):
+    tuple[doc: ModuleDoc, prose: seq[SidecarProse]] =
+  ## Read a sidecar once: one SourceUnit yields both the declarations and the
+  ## prose maps. A read error is one diagnostic, labelled with the sidecar's
+  ## package-relative path.
+  var src = ""
+  try:
+    src = readFile(file)
+  except IOError as error:
+    result.doc.package = pkg.name
+    result.doc.module = modulePath
+    result.doc.source = sourceRel
+    result.doc.diagnostics.add DocDiagnostic(kind: "read_error",
+      message: "cannot read sidecar: " & error.msg, source: sourceRel)
+    return
+  var unit: SourceUnit
+  try:
+    unit = readAllWithLocs(src, sourceRel)
+  except ReadError as error:
+    result.doc.package = pkg.name
+    result.doc.module = modulePath
+    result.doc.source = sourceRel
+    result.doc.diagnostics.add DocDiagnostic(kind: "read_error",
+      message: error.msg, source: sourceRel, line: error.line,
+      col: error.col)
+    return
+  result.doc = buildModuleDocFromUnit(pkg, file, modulePath, sourceRel, graph,
+                                      src, unit)
+  result.prose = proseFromUnit(unit, sourceRel, result.doc.diagnostics)
 
 proc qualifiedName(modulePath: string, entry: DocEntry): string =
   if entry.forName.len > 0:
@@ -152,20 +165,25 @@ proc applyProse(target: var DocEntry, prose: SidecarProse) =
     target.status = prose.status
     target.hasStatus = true
 
-proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile: string,
-                   standalone: bool, graph: MaterializedGraph) =
-  ## Read the sidecar and fold it into `doc` by field.
+proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile,
+                   sidecarRel: string, standalone: bool,
+                   graph: MaterializedGraph) =
+  ## Read the sidecar once and fold it into `doc` by field. Every diagnostic
+  ## positioned inside the sidecar names the sidecar, not the module source.
   let modulePath = doc.module
-  var sidecar = buildModuleDoc(pkg, sidecarFile, modulePath, graph)
-  for diagnostic in sidecar.diagnostics:
+  let read = readSidecar(pkg, sidecarFile, modulePath, sidecarRel, graph)
+  for diagnostic in read.doc.diagnostics:
     doc.diagnostics.add diagnostic
-  if sidecar.doc.len > 0:
-    doc.doc = sidecar.doc
-  let (prose, proseDiagnostics) = loadSidecarProse(sidecarFile)
-  for diagnostic in proseDiagnostics:
-    doc.diagnostics.add diagnostic
+  if read.doc.doc.len > 0:
+    doc.doc = read.doc.doc
+  if not read.doc.readable:
+    # The sidecar did not read; there is nothing to merge.
+    return
+  let sidecar = read.doc
+  let prose = read.prose
 
   if standalone:
+    doc.readable = sidecar.readable
     doc.entries = sidecar.entries
     for i in 0 ..< doc.entries.len:
       var entry = doc.entries[i]
@@ -173,12 +191,12 @@ proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile: string,
       if entry.forName.len == 0:
         doc.diagnostics.add DocDiagnostic(kind: "missing_for",
           message: "native documentation requires @for \"" & expected & "\"",
-          source: doc.source, line: entry.line, col: entry.col)
+          source: sidecarRel, line: entry.line, col: entry.col)
         entry.forName = expected
       elif entry.forName != expected:
         doc.diagnostics.add DocDiagnostic(kind: "unresolved_for",
           message: "@for \"" & entry.forName & "\" does not name " & expected,
-          source: doc.source, line: entry.line, col: entry.col)
+          source: sidecarRel, line: entry.line, col: entry.col)
       doc.entries[i] = entry
   else:
     for sidecarEntry in sidecar.entries:
@@ -191,14 +209,14 @@ proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile: string,
       if found < 0:
         doc.diagnostics.add DocDiagnostic(kind: "unresolved_for",
           message: "@for \"" & key & "\" names nothing in this module",
-          source: doc.source, line: sidecarEntry.line, col: sidecarEntry.col)
+          source: sidecarRel, line: sidecarEntry.line, col: sidecarEntry.col)
         continue
       let mismatch = shapeMismatch(doc.entries[found], sidecarEntry)
       if mismatch.len > 0:
         doc.diagnostics.add DocDiagnostic(kind: "shape_mismatch",
           message: "sidecar shape differs from the source for \"" & key &
             "\": " & mismatch,
-          source: doc.source, line: sidecarEntry.line, col: sidecarEntry.col)
+          source: sidecarRel, line: sidecarEntry.line, col: sidecarEntry.col)
       doc.entries[found].mergeProse(sidecarEntry)
 
   for item in prose:
@@ -210,6 +228,6 @@ proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile: string,
     if found < 0:
       doc.diagnostics.add DocDiagnostic(kind: "unresolved_for",
         message: "^for names nothing in this module: " & item.forName,
-        source: doc.source, line: item.line, col: item.col)
+        source: sidecarRel, line: item.line, col: item.col)
       continue
     doc.entries[found].applyProse(item)

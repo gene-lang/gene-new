@@ -1,0 +1,3 @@
+(mod main)
+
+(import thing ^from "." ^pkg "dep")

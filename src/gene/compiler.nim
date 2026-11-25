@@ -316,8 +316,6 @@ proc pollCompileBudget(budget: CompileBudget) =
     when defined(genePollWindowTests): inc depth
     current = current.parent
 
-export import_spec
-
 const MaxMacroExpansionDepth* = 100
 
 const CoreSpecialFormNames* = [

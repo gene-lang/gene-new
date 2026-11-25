@@ -18,32 +18,41 @@ type
     packageRoot*: string
     outputRoot*: string
     modules*: seq[ModuleDoc]
+    buildDiagnostics*: seq[DocDiagnostic]   ## not attached to one module
     diagnosticCount*: int
     readErrors*: int
     entryCount*: int
     withDoc*: int
-    missingDoc*: seq[string]
+    unresolvedImports*: int
     unexpandedCount*: int
 
-proc graphFor(pkg: Package): MaterializedGraph =
+proc graphFor(pkg: Package):
+    tuple[graph: MaterializedGraph, diagnostic: DocDiagnostic] =
   ## The lock graph when there is one, so `^pkg` imports resolve to their real
   ## packages; otherwise the package stands alone. Reading the lock does not
-  ## acquire, materialize, or run anything, and a lock that no longer matches
-  ## the tree falls back rather than failing the build.
+  ## acquire, materialize, or run anything. A lock that cannot be loaded is
+  ## reported, not swallowed: the build still runs, but a reader must be able
+  ## to tell that every `^pkg` reason comes from that failure.
   let lockPath = packageLockPathFor(pkg.root)
   if fileExists(lockPath):
     try:
       let manager = newPackageManager()
       let resolution = manager.loadResolutionLock(pkg.root)
-      return MaterializedGraph(workspaceRoot: resolution.workspaceRoot,
+      return (MaterializedGraph(workspaceRoot: resolution.workspaceRoot,
         lockDigest: resolution.lockDigest,
         activePackageId: resolution.activePackageId,
         developmentPackageId: resolution.activePackageId,
         rootPackageIds: resolution.rootPackageIds,
-        packagesById: resolution.packagesById)
-    except CatchableError:
-      discard
-  singlePackageGraph(pkg)
+        packagesById: resolution.packagesById), DocDiagnostic())
+    except CatchableError as error:
+      let newline = error.msg.find('\n')
+      let text = if newline >= 0: error.msg[0 ..< newline] else: error.msg
+      return (singlePackageGraph(pkg), DocDiagnostic(
+        kind: "lock_unreadable",
+        message: "package.gene.lock could not be loaded, so ^pkg imports are " &
+          "unresolved and names from dependencies are not documented: " & text,
+        source: "package.gene.lock"))
+  (singlePackageGraph(pkg), DocDiagnostic())
 
 proc moduleOutputPath(outputRoot, modulePath: string): string =
   var rel = modulePath.replace('\\', '/')
@@ -51,12 +60,26 @@ proc moduleOutputPath(outputRoot, modulePath: string): string =
     rel = "main"
   result = outputRoot / "modules" / (rel & ".gene")
 
+proc unreadable(doc: ModuleDoc): bool =
+  ## A sidecar that fails does not make the module's own source unreadable;
+  ## `readable` is set only by the source read.
+  not doc.readable
+
+proc unresolvedImports(doc: ModuleDoc): int =
+  for imported in doc.imports:
+    if imported.resolvedModule.len == 0:
+      inc result
+
 proc writeModuleFiles(build: BuildResult) =
   let modulesRoot = build.outputRoot / "modules"
   if dirExists(modulesRoot):
     removeDir(modulesRoot)
   createDir(modulesRoot)
   for doc in build.modules:
+    # A module that did not read has a diagnostic and no data file: an empty
+    # module would tell a consumer the file is fine with zero entries.
+    if doc.unreadable:
+      continue
     let path = moduleOutputPath(build.outputRoot, doc.module)
     createDir(parentDir(path))
     writeFile(path, renderModuleDoc(doc))
@@ -80,7 +103,8 @@ proc renderCoverage(build: BuildResult): string =
   var entriesCount = 0
   var withDoc = 0
   var unexpandedCount = 0
-  var diagnosticCount = 0
+  var moduleDiagnostics = 0
+  var unresolvedCount = 0
   var missing: seq[string]
   for doc in modules:
     var entries = doc.entries
@@ -94,16 +118,21 @@ proc renderCoverage(build: BuildResult): string =
     entriesCount += entries.len
     withDoc += moduleWithDoc
     unexpandedCount += doc.unexpanded.len
-    diagnosticCount += doc.diagnostics.len
+    moduleDiagnostics += doc.diagnostics.len
+    let unresolved = doc.unresolvedImports
+    unresolvedCount += unresolved
     moduleRows.add "  {^module " & qq(doc.module) & " ^source " &
       qq(doc.source) & " ^entries " & $entries.len & " ^with_doc " &
-      $moduleWithDoc & " ^unexpanded " & $doc.unexpanded.len &
-      " ^diagnostics " & $doc.diagnostics.len & "}"
+      $moduleWithDoc & " ^unresolved_imports " & $unresolved &
+      " ^unexpanded " & $doc.unexpanded.len & " ^diagnostics " &
+      $doc.diagnostics.len & "}"
   lines.addList("^modules", moduleRows)
+  let diagnosticCount = moduleDiagnostics + build.buildDiagnostics.len
   lines.add " ^counts {^modules " & $modules.len & " ^entries " &
     $entriesCount & " ^with_doc " & $withDoc & " ^without_doc " &
-    $(entriesCount - withDoc) & " ^unexpanded " & $unexpandedCount &
-    " ^diagnostics " & $diagnosticCount & "}"
+    $(entriesCount - withDoc) & " ^unresolved_imports " & $unresolvedCount &
+    " ^unexpanded " & $unexpandedCount & " ^diagnostics " &
+    $diagnosticCount & "}"
   missing.sort()
   var missingRows: seq[string]
   for id in missing:
@@ -115,6 +144,11 @@ proc renderCoverage(build: BuildResult): string =
       unexpandedRows.add "  {^module " & qq(doc.module) & " ^line " &
         $item.line & " ^head " & qq(item.head) & "}"
   lines.addList("^unexpanded", unexpandedRows)
+  var buildRows: seq[string]
+  for diagnostic in build.buildDiagnostics:
+    buildRows.add "  {^kind " & qq(diagnostic.kind) & " ^message " &
+      qq(diagnostic.message) & " ^source " & qq(diagnostic.source) & "}"
+  lines.addList("^build_diagnostics", buildRows)
   var diagnosticRows: seq[string]
   for doc in modules:
     for diagnostic in doc.diagnostics:
@@ -134,7 +168,9 @@ proc buildPackage*(startDir: string, corpusDir = ""): BuildResult =
   ## `corpusDir`, when given, is the directory the walk starts from (a subtree
   ## such as `src/gene/lib`).
   var pkg = discoverApplicationPackage(startDir)
-  let graph = graphFor(pkg)
+  let (graph, graphDiagnostic) = graphFor(pkg)
+  if graphDiagnostic.kind.len > 0:
+    result.buildDiagnostics.add graphDiagnostic
   # The lock graph's instance carries the dependency edges and the instance
   # id; the freshly discovered package has neither. Prefer the graph's copy
   # when it names the same root.
@@ -142,22 +178,34 @@ proc buildPackage*(startDir: string, corpusDir = ""): BuildResult =
     let active = graph.packagesById[graph.activePackageId]
     if active.root == pkg.root:
       pkg = active
-  var walkRoot = ""
+  var roots: seq[string]
   if corpusDir.len > 0:
-    walkRoot = normalizedPath(absolutePath(corpusDir))
+    let root = normalizedPath(absolutePath(corpusDir))
+    if not dirExists(root):
+      raise newException(ValueError, "corpus directory does not exist: " & root)
+    if not pkg.contains(root) and root != pkg.root:
+      raise newException(ValueError,
+        "corpus directory is outside package " & pkg.name & ": " & root)
+    roots = @[root]
   else:
-    let roots = pkg.sourceRoots()
-    if roots.len > 0: walkRoot = roots[0]
-    else: walkRoot = pkg.root
-  if not dirExists(walkRoot):
-    raise newException(ValueError, "corpus directory does not exist: " & walkRoot)
-  if not pkg.contains(walkRoot) and walkRoot != pkg.root:
-    raise newException(ValueError,
-      "corpus directory is outside package " & pkg.name & ": " & walkRoot)
+    roots = pkg.sourceRoots()
+    if roots.len == 0:
+      roots = @[pkg.root]
+  var items: seq[CorpusItem]
+  var seenFiles = initTable[string, bool]()
+  for root in roots:
+    if not dirExists(root):
+      continue
+    for item in corpusItems(pkg, root):
+      let key = if item.sourceFile.len > 0: item.sourceFile else: item.sidecarFile
+      if seenFiles.hasKey(key):
+        continue
+      seenFiles[key] = true
+      items.add item
+  items.sort(proc (a, b: CorpusItem): int = cmp(a.modulePath, b.modulePath))
   result.packageName = pkg.name
   result.packageRoot = pkg.root
   result.outputRoot = pkg.root / OutputDir
-  let items = corpusItems(pkg, walkRoot)
   for item in items:
     var doc: ModuleDoc
     if item.sourceFile.len > 0:
@@ -166,9 +214,9 @@ proc buildPackage*(startDir: string, corpusDir = ""): BuildResult =
       doc = ModuleDoc(package: pkg.name, module: item.modulePath,
                       source: item.sourceRel)
     if item.sidecarFile.len > 0:
-      mergeSidecar(doc, pkg, item.sidecarFile, item.sourceFile.len == 0, graph)
-    elif item.sourceFile.len == 0 and item.sidecarFile.len == 0:
-      discard
+      mergeSidecar(doc, pkg, item.sidecarFile,
+                   pkg.relativeToRoot(item.sidecarFile),
+                   item.sourceFile.len == 0, graph)
     result.modules.add doc
 
 proc summarize*(build: var BuildResult) =
@@ -180,8 +228,9 @@ proc summarize*(build: var BuildResult) =
     for entry in doc.entries:
       inc build.entryCount
       if entry.doc.len > 0: inc build.withDoc
-      else: build.missingDoc.add entry.id
     build.unexpandedCount += doc.unexpanded.len
+    build.unresolvedImports += doc.unresolvedImports
+  build.diagnosticCount += build.buildDiagnostics.len
 
 proc writeOutputs*(build: BuildResult, outputRoot = "") =
   ## `outputRoot` is for tests that build twice; the command always uses the

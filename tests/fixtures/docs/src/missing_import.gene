@@ -1,0 +1,4 @@
+(mod missing_import)
+
+(import nothing ^from "./does_not_exist")
+(import nothing2 ^from "no/such/module")

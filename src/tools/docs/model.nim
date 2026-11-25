@@ -40,7 +40,6 @@ type
     generator*, fexpr*: bool
     variants*: seq[DocVariant]
     implements*: seq[string]
-    derives*: seq[string]
 
   DocImport* = object
     path*: string
@@ -72,6 +71,7 @@ type
 
   ModuleDoc* = object
     package*, module*, source*: string
+    readable*: bool          ## false when the module's own source did not read
     doc*: string
     imports*: seq[DocImport]
     entries*: seq[DocEntry]
@@ -154,8 +154,6 @@ proc renderEntry(entry: DocEntry): string =
     lines.add "   ^variants [" & variants.join(" ") & "]"
   if entry.implements.len > 0:
     lines.add "   ^implements " & qs(entry.implements)
-  if entry.derives.len > 0:
-    lines.add "   ^derives " & qs(entry.derives)
   lines.add "   ^doc " & q(entry.doc)
   if entry.see.len > 0:
     lines.add "   ^see " & qs(entry.see)

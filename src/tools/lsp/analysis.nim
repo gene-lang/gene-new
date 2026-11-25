@@ -489,7 +489,8 @@ proc declFromNode(form: Value, loc: SourceLoc, unit: SourceUnit,
           body[2].kind == vkSymbol:
         name.add " for " & body[2].symVal
     var sym = named(name)
-    sym.children = childDecls(form, unit, src, starts)
+    if info.recurse:
+      sym.children = childDecls(form, unit, src, starts)
     result.add sym
   of dnkCtor:
     result.add named("ctor")
