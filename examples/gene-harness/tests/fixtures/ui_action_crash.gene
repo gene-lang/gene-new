@@ -4,6 +4,11 @@
 (import ui_status ^from "../../src/ui/state")
 (import ui_action ui_action_receipt ^from "../../src/ui/actions")
 
+# A component's descriptor by name; components are listed in name order, and
+# built-ins such as the editor contribute their own.
+(fn component [runtime, name : Str]
+  ($first ($filter (/components (ui_status runtime)) (fn [item] (== item/name name)))))
+
 (fn main [args]
   (let board_path ($path/join ($path/parent ($path/parent ($path/parent this_mod/.path))) "examples/project_board/project_board.gene"))
   (let service (open_session_service ^workspace args/0 ^^offline))
@@ -12,7 +17,7 @@
   (var request nil)
   (if (== args/1 "saved")
     (register_plugin service/runtime/workspace h "project_board" ($fs/read_text board_path))
-    (let view ((Path 0) ((Path "components") (ui_status service/runtime))))
+    (let view (component service/runtime "project_board"))
     (set request
       {
         ^input_id "1:crash-saved"
@@ -29,7 +34,7 @@
       h
       (Plugin ^id "crash_probe" ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "crash_effect" ^doc "Write an external effect then terminate the test process." ^fn (fn [] ($fs/write_text "effect.txt" "once") ($os/exit 74))}) (host .PluginHost:contribute "web_components" {^name "crash_view" ^slot "view" ^title "Crash probe" ^view_state {} ^actions ["crash_effect"] ^render (fn [ctx] (quote (p "Crash probe")))})))
       {})
-    (let view ((Path 0) ((Path "components") (ui_status service/runtime))))
+    (let view (component service/runtime "crash_view"))
     (set request
       {
         ^input_id "1:crash-effect"

@@ -14,7 +14,7 @@
    "src/runtime/supervisor.gene"
    "src/audio/build_mac.gene"])
 
-(const tokens ["$println" "$print" "$eprintln"])
+(let tokens [(quote $println) (quote $print) (quote $eprintln)])
 
 (fn source_files [] : Any
   (let stream ($fs/walk ($path/join this_pkg/root "src") ^max_depth 20))
@@ -26,19 +26,30 @@
     ensure stream/.close)
   files)
 
+# Read as code, so a print named inside a string, such as the model's
+# instructions, is text and not a print.
+(fn find_prints [form, relative : Str, line : Int, found]
+  (if (tokens .contains? form)
+    (found .push $"${relative}:${line}: a raw print")
+    (return nil))
+  (if (== ($head form) List) (for item in form (find_prints item relative line found)))
+  (if (== ($head form) Map) (map_for [key value] in form (find_prints value relative line found)))
+  (match form
+    when (node : Node)
+      (let meta ($meta node))
+      (let at (?? meta/line line))
+      (find_prints ($head node) relative at found)
+      (map_for [key value] in ($node/props node) (find_prints value relative at found))
+      (for item in ($node/body node) (find_prints item relative at found))
+    else nil))
+
 (fn violations [] : Any
   (let found [])
   (for file in (source_files)
     (let relative file/relative)
     (if (allowed .contains? relative) (continue))
-    (let lines ($str/split ($fs/read_text file/path) "\n"))
-    (var number 0)
-    (for line in lines
-      (set number (+ number 1))
-      (if ($str/starts_with? ($str/trim line) "#") (continue))
-      (for token in tokens
-        (if ($str/contains? line token)
-          (found .push $"${relative}:${number}: ${token}")))))
+    (for form in (($parse/read_all ($fs/read_text file/path) ^locs true) .into [])
+      (find_prints form relative 0 found)))
   found)
 
 (describe "raw Harness prints"

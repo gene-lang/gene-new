@@ -39,14 +39,14 @@
   ^view (fn [state]
     (let rows [])
     (for item in state/items
-      (let label (if item/keep "Keep" "Skip"))
+      (let label (if item/keep "Keep" else "Skip"))
       (rows .push `(li ^key %item/from (button ^key %$"t-${item/from}" ^update "toggle" ^args %{^from item/from} %label))))
     `(section (ul %rows...) (button ^key "send" ^send "Apply." "Send") (button ^command "/help" "Help")))
   ^update (fn [state action]
     (if (== action/name "fail") (missing_card_helper))
     (if (== action/name "bad_state") (return {^f (fn [] 1)}))
     {^items (state/items .map (fn [item]
-      (if (== item/from action/args/from) {^from item/from ^to item/to ^keep (! item/keep)} item)))}))""")
+      (if (== item/from action/args/from) {^from item/from ^to item/to ^keep (! item/keep)} else item)))}))""")
 
 (fn click [runtime, id : Str, card, ^name name : Str = "toggle"]
   (card_action runtime "default"

@@ -13,7 +13,8 @@
   validate_outcome
   ^from "./outcome")
 (import evaluate_response ^from "./eval_site")
-(import commit_patch prepare_patch with_patch_gate ^from "../runtime/patch")
+(import commit_patch prepare_patch ^from "../runtime/patch")
+(import with_patch_gate ^from "../public/patch_gate")
 (import byte_prefix without_markdown_images ^from "../public/text")
 (import close_execution_scope open_execution_scope ^from "../runtime/execution_budget")
 (import ParticipantFailure ^from "../runtime/turn_participants")

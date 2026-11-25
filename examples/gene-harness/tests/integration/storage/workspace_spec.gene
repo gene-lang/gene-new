@@ -444,7 +444,7 @@
           (let plugin
             `(mod plugin
               (import Plugin PluginHost ^from "src/plugin_api.gene")
-              (import [escape_quotes] ^from %path)
+              (import escape_quotes ^from %path)
               (fn init [descriptor]
                 (Plugin ^id "quoted_dependency"
                   ^activate (fn [host]

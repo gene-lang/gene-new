@@ -126,7 +126,7 @@
                         {^point "history/compact" ^name "history_basic"
                          ^run (fn [context]
                            ($assert (> context/messages/.size 0) "history snapshot missing")
-                           ($assert ($str/contains? context/instructions "Return Gene code"))
+                           ($assert ($str/contains? context/instructions "Return Gene forms"))
                            (let retained [])
                            (for message in context/messages
                              (if (== message/content "Pinned decision.") (retained .push message/round)))

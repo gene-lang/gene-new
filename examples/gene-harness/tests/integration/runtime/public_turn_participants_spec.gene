@@ -267,6 +267,7 @@
               ^commit (fn [context state value]
                 (if (&& (== context/round_turn 1) (== value/kind "done"))
                   [{^id "review" ^value "Confirm the final work before finishing."}]
+                else
                   nil))}))))
         ($assert (== gate/status "ready") ($to_str gate))
         (let calls ($cell 0))

@@ -22,8 +22,10 @@
           ($assert (== found/results/0/session target/id) ($to_str found))
           ($assert (> found/inspected 100))
           (let status (api client "GET" "/status"))
-          ($assert (== status/browser_clients/0/name "spotlight"))
-          (for path in [status/browser_clients/0/url status/browser_clients/0/stylesheet]
+          (let clients ($filter status/browser_clients (fn [client] (== client/name "spotlight"))))
+          ($assert (== clients/.size 1) ($to_str status/browser_clients))
+          (let spotlight clients/0)
+          (for path in [spotlight/url spotlight/stylesheet]
             (let response (await (request ^url $"${client/connection/origin}${path}" ^timeout_ms 10000)))
             ($assert (== response/status 200) $"Asset ${path} returned ${response/status}")
             ($assert (> ($str/byte_size response/body) 0)))

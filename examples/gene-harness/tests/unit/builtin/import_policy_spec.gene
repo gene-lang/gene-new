@@ -2,6 +2,13 @@
 (import $test/[describe it])
 (import sdk_modules ^from "../../../src/runtime/plugin_sdk")
 
+# Built-in imports of host modules the boundary admits, each with its reason.
+(let exempt
+  # The scheduler emits the core `trigger/fired` and `trigger/tick_failed`
+  # types with a `trigger` target (docs/logging.md), which a plugin's
+  # `PluginHost:log` cannot: it files every record under `plugin/<id>/…`.
+  [["src/builtin/triggers/scheduler.gene" "../../kernel/log"]])
+
 (describe "Built-in import boundary"
   (it "admits only public dependencies and the plugin's own modules" []
     # A built-in is src/builtin/<id>.gene plus optional private modules under
@@ -15,6 +22,7 @@
       (let first (/0 ($str/split entry/relative_path "/")))
       (files .push {^path path ^plugin (if ($str/ends_with? first ".gene")
         ($str/slice_bytes first 0 (- ($str/byte_size first) 5)) else first)}))
+    (let found [])
     (for file in files
       (let own ($to_str ($path/join root file/plugin) "/"))
       (for form in ($parse/read_all ($fs/read_text file/path))
@@ -24,9 +32,14 @@
         (let path form/from)
         (let resolved ($path/normalize ($path/join ($path/parent file/path)
           (if ($str/ends_with? path ".gene") path else ($to_str path ".gene")))))
-        ($assert (|| (shared .contains? ($path/relative resolved this_pkg/root))
-                     ($str/starts_with? resolved own))
-          $"${file/path} imports host internals: ${path}; use a narrow public protocol"))))
+        (let relative ($path/relative file/path this_pkg/root))
+        (if_not (|| (shared .contains? ($path/relative resolved this_pkg/root))
+                    ($str/starts_with? resolved own)
+                    (exempt .contains? [relative path]))
+          (found .push $"${relative} imports ${path}"))))
+    (let listed ($str/join found ", "))
+    ($assert found/.empty?
+      $"built-ins import host internals; use a narrow public protocol: ${listed}"))
 
   (it "keeps public helpers independent of private host implementation modules" []
     (let shared (sdk_modules))

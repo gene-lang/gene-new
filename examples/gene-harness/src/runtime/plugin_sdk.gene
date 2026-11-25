@@ -17,7 +17,10 @@
    "src/public/model_page.gene" "src/public/web_style.gene"
    "src/public/image_contract.gene" "src/public/model_text.gene"
    "src/public/speech_engines.gene" "src/public/mac_recognition.gene"
-   "src/public/voice_frames.gene" "src/public/decision_engines.gene"])
+   "src/public/voice_frames.gene" "src/public/decision_engines.gene"
+   "src/public/patch_gate.gene" "src/public/source_bytes.gene"
+   "src/public/gene_viewer.gene" "src/public/log_tail.gene"
+   "src/public/log_record.gene" "src/public/log_redaction.gene"])
 
 (fn sdk_import? [path : Str] : Bool
   ((sdk_modules) .contains? path))

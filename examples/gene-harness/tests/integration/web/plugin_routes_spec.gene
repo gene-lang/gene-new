@@ -21,6 +21,7 @@
            ^handle (fn [req]
              (if (== (?? req/headers/x-signature "") "good")
                {^status 200 ^body "accepted"}
+             else
                {^status 401 ^body "bad signature"}))})))))))
 
 (fn raw [connection, method : Str, path : Str, headers]

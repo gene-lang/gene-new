@@ -641,25 +641,6 @@
     (if (== result/kind "cancelled")
       (flush_event_store runtime/events)
       (return {^state "cancelled" ^turn_count count ^last_turn number}))
-    # A broken response contract can otherwise consume the entire turn budget
-    # with the same diagnostic. Preserve the error for the user and stop after
-    # a short repair window instead of retrying forever.
-    (if (== result/kind "error")
-      (set consecutive_errors (+ consecutive_errors 1))
-      else (set consecutive_errors 0))
-    (if (>= consecutive_errors 3)
-      (flush_event_store runtime/events)
-      (return
-        {
-          ^state "failed"
-          ^reason "consecutive_errors"
-          ^message ($to_str
-                     "Stopped after 3 consecutive failed turns. Last error: "
-                     (?? result/error "unknown response error")
-                     " Send a continuation message to retry with different instructions.")
-          ^request last_request
-          ^turn_count count
-          ^last_turn number}))
     # The check runs once this turn's result is final and before the next
     # request is recorded, so the unsent marker reflects its verdict.
     (if (&& checked (! collection) ($absent? result/suspension) (!= result/kind "questions") (>= (+ (?? round/task_turns_base 0) count) round/next_check_turn))
@@ -676,6 +657,27 @@
         (if (== record/action "pause") (set pause record))
         (set limit (checked_limit round configured_limit))
         (set ceiling (+ limit extra_turns))))
+    # A broken response contract can otherwise consume the entire turn budget
+    # with the same diagnostic. Preserve the error for the user and stop after
+    # a short repair window instead of retrying forever. A check-in that just
+    # paused the round (an unchanged failure loop at its boundary) already
+    # stopped it, with the evidence, so it takes precedence.
+    (if (== result/kind "error")
+      (set consecutive_errors (+ consecutive_errors 1))
+      else (set consecutive_errors 0))
+    (if (&& (>= consecutive_errors 3) ($absent? pause))
+      (flush_event_store runtime/events)
+      (return
+        {
+          ^state "failed"
+          ^reason "consecutive_errors"
+          ^message ($to_str
+                     "Stopped after 3 consecutive failed turns. Last error: "
+                     (?? result/error "unknown response error")
+                     " Send a continuation message to retry with different instructions.")
+          ^request last_request
+          ^turn_count count
+          ^last_turn number}))
     (if (&& early (>= count next_early) (!= result/kind "questions") ($absent? result/suspension))
       (let early_record
         (run_check_in ^use early_use ^interval interval runtime session round count))

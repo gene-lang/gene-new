@@ -12,7 +12,7 @@
 
 (mod editor)
 (import Plugin PluginHost current_workspace ^from "../plugin_api")
-(import checked_path temporary_path with_patch_gate ^from "../runtime/patch")
+(import checked_path temporary_path with_patch_gate ^from "../public/patch_gate")
 (import decode_source encode_source ^from "../public/source_bytes")
 (import run_machine ^from "../public/gene_viewer")
 (import read_log ^from "../public/log_tail")

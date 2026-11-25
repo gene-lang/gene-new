@@ -1,33 +1,10 @@
 (mod patch)
 
-(type PatchError : Error)
+(import checked_path patch_error temporary_path with_patch_gate ^from "../public/patch_gate")
 
-(var patch_gates ^^private ($cell {}))
-(var patch_gate_index ^^private ($sync/gate))
-
-# Hold this across preparation, the durable response record, and commit or
-# rollback. Locking only rename would allow a prepared plan to overwrite a
-# patch that committed after it read the original file.
-(fn with_patch_gate [root : Str, body]
-  (let canonical ($fs/real_path root))
-  (let gate (patch_gate_index (fn []
-    (let existing (patch_gates/.get .get canonical))
-    (if ($present? existing) (return existing))
-    (let created ($sync/gate))
-    (patch_gates/.get .put canonical created)
-    created)))
-  (gate body))
-
-(fn patch_error [message : Str] (fail (PatchError ^_msg message)))
 (fn suffix [text : Str, prefix : Str]
   (let count ($str/byte_size prefix))
   ($str/slice_bytes text count (- ($str/byte_size text) count)))
-
-(fn checked_path [path : Str]
-  (if (|| (== path "") ($str/starts_with? path "/") ($str/contains? path "\0")
-          (($str/split path "/") .contains? ".."))
-    (patch_error $"invalid relative patch path ${path}"))
-  path)
 
 (fn file_header? [line : Str]
   (|| ($str/starts_with? line "*** Add File: ") ($str/starts_with? line "*** Update File: ")
@@ -167,9 +144,6 @@
     (set start (+ position hunk/new/.size))
     (set lines next))
   ($str/join [($str/join lines ending) (if newline ending else "")] ""))
-
-(fn temporary_path [target : Str]
-  ($path/join ($path/parent target) $".${($path/name target)}.gene-harness-tmp"))
 
 (fn prepare_patch [root : Str, text : Str]
   (let operations (parse_patch text))

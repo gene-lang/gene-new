@@ -37,7 +37,7 @@
           (let plugin
             `(mod plugin
                (import Plugin PluginHost ^from "src/plugin_api.gene")
-               (import [answer] ^from %path)
+               (import answer ^from %path)
                (fn init [descriptor]
                  (Plugin ^id "example" ^provides [["functions" "answer"]] ^activate (fn [host] (host .PluginHost:contribute "functions" {^name "answer" ^doc "Retained dependency." ^fn answer}))))))
           (let program
@@ -209,7 +209,7 @@
 (let import_path ($to_str "./" ($crypto/sha256 ($to_str dependency)) ".gene"))
 (let plugin `(mod plugin
   (import Plugin PluginHost ^from "src/plugin_api.gene")
-  (import [answer] ^from %import_path)
+  (import answer ^from %import_path)
   (fn init [descriptor]
     (Plugin ^id "numbers" ^activate (fn [host]
       (host .PluginHost:contribute "functions" {^name "answer" ^doc "Exact-node dependency." ^fn answer}))))))
