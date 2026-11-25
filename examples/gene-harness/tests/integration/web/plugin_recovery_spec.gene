@@ -41,7 +41,7 @@
             (quote (mod plugin
               (import Plugin ^from "src/plugin_api.gene")
               (fn init [descriptor]
-                (let n (if ($fs/exists? "init-runs") ($parse/parse_int ($fs/read_text "init-runs")) 0))
+                (let n (if ($fs/exists? "init-runs") ($parse/parse_int ($fs/read_text "init-runs")) else 0))
                 ($fs/write_text "init-runs" ($to_str (+ n 1)))
                 (Plugin ^id "crasher" ^activate (fn [host]
                   (if ($fs/exists? "crash-on-start") ($os/exit 93))))))))

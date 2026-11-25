@@ -403,7 +403,7 @@
         (mod plugin
           (import Plugin ^from "src/plugin_api.gene")
           (fn init [descriptor]
-            (Plugin ^id "crasher" ^activate (fn [host] (let count (if ($fs/exists? "activation-count") ($parse/parse_int ($fs/read_text "activation-count")) 0)) ($fs/write_text "activation-count" ($to_str (+ count 1))) ($os/exit 92))))))))
+            (Plugin ^id "crasher" ^activate (fn [host] (let count (if ($fs/exists? "activation-count") ($parse/parse_int ($fs/read_text "activation-count")) else 0)) ($fs/write_text "activation-count" ($to_str (+ count 1))) ($os/exit 92))))))))
   (let plan
     (validate_plan
       runtime

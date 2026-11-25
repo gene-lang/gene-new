@@ -15,7 +15,7 @@
 (import f32_bytes u32_bytes ^from "../src/buffers.gene")
 
 (fn main [args] : Nil
-  (var argv args/.body)
+  (var argv args)
   ($assert (|| (== argv/.size 1) (== argv/.size 2)) "triangle.gene <compiled SDL2 library> [font]")
   (var sdl (load argv/0))
   (sdl/set_main_ready)

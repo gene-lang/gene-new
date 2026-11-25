@@ -6,7 +6,7 @@
   (var production false)
   (var defines [])
   (var i 0)
-  (let raw args/.body)
+  (let raw args)
   (while (< i ($size raw))
     (let option raw/%i)
     (if (== option "--debug")

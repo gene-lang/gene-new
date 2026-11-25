@@ -24,8 +24,8 @@ wildcards. No source file is created. The current directory is its ad-hoc
 package boundary. Language-level `(eval …)` and the REPL retain their separate
 Env-based import rules.
 
-`main` may return nil for success or an integer exit code. Program arguments
-are strings.
+`main` receives the program arguments as a `(List Str)` and may return nil
+for success or an integer exit code.
 
 ## Packages
 

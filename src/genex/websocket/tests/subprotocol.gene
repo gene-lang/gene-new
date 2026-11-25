@@ -2,7 +2,7 @@
 (import WebSocketError connect_protocol load receive send ^from "../src/websocket.gene")
 
 (fn main [args] : Nil
-  (var argv args/.body)
+  (var argv args)
   ($assert (== argv/.size 3) "subprotocol.gene <native library> <selecting URL> <ignoring URL>")
   (var native (load argv/0))
   (var socket (connect_protocol native argv/1 "gene.world.v1"))

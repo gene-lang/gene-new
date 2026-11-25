@@ -15623,9 +15623,15 @@ proc builtinBinding(scope: Scope, name: string): Value =
   ## surfaces (`Cell`, `stream/each`, an error type), and a probe must be able
   ## to fail into the caller's own diagnostic — an internal lookup must never
   ## surface as "undefined symbol" in user code.
+  ##
+  ## A native with no scope (`raiseTypeError(…, nil)`) resolves against the
+  ## running program's application, not the process default: an error type
+  ## taken from another application fails the running one's Error/Fault
+  ## admission.
   let app =
-    if scope == nil: currentApplication()
-    else: scope.application()
+    if scope != nil: scope.application()
+    elif activeVmScope != nil: activeVmScope[].application()
+    else: currentApplication()
   discard app.builtinsScope()      # forces construction, which fills `stdlib`
   if app.stdlib == nil:
     return NIL

@@ -32,7 +32,7 @@
   changed)
 
 (fn main [args] : Int
-  (let mode (if (> args/.body/.size 0) args/.body/0 else "check"))
+  (let mode (if (> args/.size 0) args/0 else "check"))
   (if (== mode "write")
     (let root (package_root))
       (let body ($str/join (manifest_lines) "\n"))

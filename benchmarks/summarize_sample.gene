@@ -31,14 +31,14 @@
   (leaves .put frame/name (+ (?? (leaves .get frame/name) 0) frame/remaining)))
 
 (fn main [args] : Int
-  ($assert (== ($size args/.body) 1) "expected one sample report")
+  ($assert (== ($size args) 1) "expected one sample report")
   (let stack ($cell nil))
   (let buckets {})
   (let leaves {})
   (var graph false)
   (var main_thread false)
   (var total 0)
-  (for line in ($str/split ($fs/read_text args/.body/0) "\n")
+  (for line in ($str/split ($fs/read_text args/0) "\n")
     (if (== line "Call graph:") (set graph true))
     (if (! graph) (continue))
     (if ($str/starts_with? line "Total number in stack") (break))
@@ -80,6 +80,6 @@
   (set counted (+ counted other))
   (rows .push {^name "unattributed" ^samples other ^percent (/ (* other 100.0) total)})
   ($assert (== counted total) "sample accounting does not match main thread total")
-  ($println ($json/stringify {^file args/.body/0 ^thread_samples total
+  ($println ($json/stringify {^file args/0 ^thread_samples total
     ^accounted_samples counted ^buckets rows ^self_samples leaves}))
   0)

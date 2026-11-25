@@ -17,7 +17,7 @@
    ^min sorted/0 ^max sorted/%last ^samples_ns values})
 
 (fn main [args] : Int
-  (let argv args/.body)
+  (let argv args)
   ($assert (== ($size argv) 6)
     "usage: run_exec.gene OUTPUT CHILD NATIVE CONTROL M1A FINAL")
   (let output argv/0)

@@ -79,7 +79,7 @@
           (let command (cli host/root ["--session" session "run" "(+ 2 3)"]))
           ($assert (== command/status "done") "operator command did not finish")
           ($assert ($str/contains? command/display "5") "operator result missing")
-          (let text "($fs/write_text \"once\" ($to_str (+ 1 (if ($fs/exists? \"once\") ($parse/parse_int ($fs/read_text \"once\")) 0))))")
+          (let text "($fs/write_text \"once\" ($to_str (+ 1 (if ($fs/exists? \"once\") ($parse/parse_int ($fs/read_text \"once\")) else 0))))")
           (let identity "once / owner")
           (let first
             (cli
@@ -619,7 +619,7 @@
         (try
           (let session ((Path "id") (cli host/root ["sessions" "create"])))
           (let round (cli host/root ["--session" session "send" "long work"]))
-          (let code "($fs/write_text \"command-count\" ($to_str (+ 1 (if ($fs/exists? \"command-count\") ($parse/parse_int ($fs/read_text \"command-count\")) 0)))) ($sleep 60000) 42")
+          (let code "($fs/write_text \"command-count\" ($to_str (+ 1 (if ($fs/exists? \"command-count\") ($parse/parse_int ($fs/read_text \"command-count\")) else 0)))) ($sleep 60000) 42")
           (let command
             (cli
               host/root

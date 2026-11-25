@@ -6,12 +6,12 @@
 (import scripted_profile ^from "../src/profiles/scripted")
 
 (fn main [args] : Int
-  ($assert (>= ($size args/.body) 1) "expected a new workspace path")
-  (let workspace args/.body/0)
+  ($assert (>= ($size args) 1) "expected a new workspace path")
+  (let workspace args/0)
   ($assert (! ($fs/exists? workspace)) "profile workspace must be new")
   ($fs/make_dir workspace)
   (let absolute ($fs/real_path workspace))
-  (let turns (if (> ($size args/.body) 1) ($parse/parse_int args/.body/1) else 100))
+  (let turns (if (> ($size args) 1) ($parse/parse_int args/1) else 100))
   ($assert (&& (> turns 0) (<= turns 10000)) "turn count must be in 1..10000")
   # Prepare deterministic provider output outside the timed region. The
   # supported service API accepts a profile, not the retired callback argument.

@@ -75,6 +75,6 @@
         (totals .put key (+ (totals .get key) (row .get key)))))
     ($println $"${group/name}: files=${group/files/.size} ${totals}")
     (report .push {^name group/name ^files rows ^totals totals}))
-  (if (> args/.body/.size 0)
-    ($fs/write_text args/.body/0 ($json/stringify {^format 1 ^sets report})))
+  (if (> args/.size 0)
+    ($fs/write_text args/0 ($json/stringify {^format 1 ^sets report})))
   0)

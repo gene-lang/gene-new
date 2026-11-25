@@ -2,7 +2,7 @@
 # Run from the repository root with optional --asan and --tsan.
 (fn main [args] : Int
   (let modes ["disabled" "probe"])
-  (for option in args/.body
+  (for option in args
     ($assert (|| (== option "--asan") (== option "--tsan"))
       "expected --asan or --tsan")
     (modes .push (if (== option "--asan") "asan" else "tsan")))

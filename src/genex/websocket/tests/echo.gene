@@ -18,7 +18,7 @@
     (set i (+ i 1))))
 
 (fn main [args] : Nil
-  (var argv args/.body)
+  (var argv args)
   ($assert (== argv/.size 2) "echo.gene <native library> <ws URL>")
   (var native (load argv/0))
   (var socket (connect native argv/1))

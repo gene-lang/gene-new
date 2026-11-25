@@ -201,6 +201,16 @@ proc checkCRuns(source, label, expected: string,
     doAssert ran.output.strip() == expected, ran.output & " != " & expected
 
 suite "spec — reader surface from design":
+  test "a comma separates list items as it does call and map items":
+    check_eval("[1, 2, 3]", "[1 2 3]")
+    check_eval("#[1, 2]", "#[1 2]")
+    check_eval("(let ys [3, 4]) [1, ys..., 5]", "[1 3 4 5]")
+    check_eval("[(+ 1, 2) {^a 1, ^b 2}]", "[3 {^a 1 ^b 2}]")
+    # In a parameter list the comma still ends a named parameter: `[^a, b]`
+    # is named `a` then positional `b`, while `[^a b]` gives `a` the local `b`.
+    check_eval("(fn f [^a, b] [a b]) (f ^a 1 2)", "[1 2]")
+    check_eval("(fn g [^a b] b) (g ^a 1)", "1")
+    check_eval("(let [x, y] [1, 2]) [y x]", "[2 1]")
   test "Path literals and construction have the same callable value":
     check_eval("(let datum {^a {^b [10 20]}}) " &
                "[(== /a/b/1 (Path \"a\" \"b\" 1)) " &
@@ -5308,6 +5318,16 @@ suite "spec — gene/math from design (§7.8)":
     check_runtime_error("($to_int 1e30)", "out of Int range")
     check_runtime_error("($to_int \"x\")", "expected Int or Float")
     check_runtime_error("($to_float \"x\")", "expected Int or Float")
+  test "a native's TypeFault belongs to the running application":
+    # A native that raises with no scope must build the running program's
+    # TypeFault. `gene run` gives each program its own application, and a
+    # TypeFault from the process default one failed Error/Fault admission
+    # ("Error admission expected value of an Error or Fault type").
+    let scope = newGlobalScope(newApplication(getTempDir()))
+    let caught = run(compileSource(
+      "[(try ($to_int \"x\") catch TypeFault $err/where) " &
+      "(try ($to_float \"x\") catch Fault $err/where)]"), scope)
+    check caught.print() == "[\"to_int\" \"to_float\"]"
   test "abs and sign preserve kind":
     check_eval("[($math/abs -4) ($math/abs -4.5) ($math/abs 4)]", "[4 4.5 4]")
     check_eval("[($math/sign -9) ($math/sign 0.0) ($math/sign 2.5)]",

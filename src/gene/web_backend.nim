@@ -5200,6 +5200,9 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
     result = WebExpr(kind: wekList, loc: loc,
                      immutable: value.listImmutable)
     for item in value.listItems:
+      # A comma in a list literal is a separator, as on the VM (the reader
+      # keeps it in `[...]` for parameter lists).
+      if item.isSym(","): continue
       let analyzed = analysis.analyzeExpr(item, bindings, itemType)
       if itemType == nil: itemType = analyzed.typ
       requireType(analysis, loc, analyzed.typ, itemType, "list item")

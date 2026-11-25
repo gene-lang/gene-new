@@ -156,14 +156,11 @@ proc cmdRepl(errorsMode = "") =
     quit(code)
 
 proc argsValue(args: openArray[string]): Value =
-  # Preserve positional argv compatibility through node body indexes while
-  # exposing the whole shell argument tail for future script-level parsing.
-  var props = initPropTable()
-  props["raw"] = newStr(args.join(" "))
+  ## `main`'s argument: the command-line arguments as a `(List Str)`.
   var values = newSeq[Value](args.len)
   for i, arg in args:
     values[i] = newStr(arg)
-  newNode(newSym("args"), props = props, body = values)
+  newList(values)
 
 proc commandArgs(first: int): seq[string] =
   if first <= paramCount():

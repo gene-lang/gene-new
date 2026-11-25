@@ -1,5 +1,5 @@
 (mod supervisor)
-(import argument_values parse_options ^from "../cli/options")
+(import parse_options ^from "../cli/options")
 (import byte_suffix ^from "../public/text")
 (import
   bound_record
@@ -383,7 +383,7 @@
       (|| (== parsed/options/offline true) (== ($os/env? "GENE_HARNESS_OFFLINE") "1"))
       ($present? parsed/options/script) recovery))
     (let packaged (== child_args/1 "--package-root"))
-    (for arg in (argument_values args)
+    (for arg in args
       (if (!= ($to_str arg) "--recovery") (child_args .push ($to_str arg))))
     (if hosting
       (child_args .push "--supervised")

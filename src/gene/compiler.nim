@@ -8252,16 +8252,26 @@ proc hasValueSpread(values: openArray[Value]): bool =
       return true
     inc i
 
+proc listLiteralItems(value: Value): seq[Value] =
+  ## A list literal's items without separator commas. The reader keeps `,` in
+  ## `[...]` because parameter lists give it meaning (`[^a, b]` ends the named
+  ## parameter `a`; `[^a b]` gives it the local `b`). As a value, a comma is
+  ## only a separator, as it already is in calls and maps.
+  for item in value.listItems:
+    if not item.isSymbol(","):
+      result.add item
+
 proc compileListValue(c: var Compiler, value: Value) =
+  let items = listLiteralItems(value)
   var splices: seq[bool]
   var hasSplice = false
-  compileSpreadValues(c, value.listItems, 0, forList = true, splices, hasSplice)
+  compileSpreadValues(c, items, 0, forList = true, splices, hasSplice)
   if hasSplice:
     let idx = c.chunk.addListBuild(ListBuildProto(splices: splices,
                                                   immutable: value.listImmutable))
     discard c.emit(opMakeListSplice, idx)
   else:
-    discard c.emit(opMakeList, value.listItems.len, flag = value.listImmutable)
+    discard c.emit(opMakeList, items.len, flag = value.listImmutable)
 
 proc compileHashMapValue(c: var Compiler, value: Value) =
   for entry in value.hashMapEntries:

@@ -193,10 +193,15 @@ suite "cli — gene run":
     let ran = runGene(["run", argMain, "ok"])
     check ran.exitCode == 0
 
-  test "main receives raw command-line argument tail":
-    let rawMain = writeCliProgram("raw_arg_main.gene",
-      "(fn main [args] (if (== args/raw \"a b, c\") 0 else 4))")
-    let ran = runGene(["run", rawMain, "a", "b,", "c"])
+  test "main receives its arguments as a (List Str)":
+    let listMain = writeCliProgram("list_arg_main.gene",
+      "(fn main [args : (List Str)] " &
+      "(if (== args [\"a\" \"b,\" \"c d\"]) 0 else 4))")
+    var ran = runGene(["run", listMain, "a", "b,", "c d"])
+    check ran.exitCode == 0
+    let emptyMain = writeCliProgram("empty_arg_main.gene",
+      "(fn main [args : (List Str)] (if (== args []) 0 else 4))")
+    ran = runGene(["run", emptyMain])
     check ran.exitCode == 0
 
   test "run reports tail-call fallback reasons once per source site":
@@ -363,10 +368,10 @@ suite "cli — gene run":
 
   test "main parameter boundary errors include source location":
     let typedMain = writeCliProgram("typed_arg_main.gene",
-      "(fn main [args : (List Str)] nil)")
+      "(fn main [args : (List Int)] nil)")
     let ran = runGene(["run", typedMain, "x"])
     check ran.exitCode == 1
-    check "parameter 'args' expected (List Str), got Node" in ran.output
+    check "parameter 'args' expected (List Int), got (List Str)" in ran.output
     check ("at " & normalizedPath(absolutePath(typedMain)) & ":1:1") in ran.output
 
   test "runurl runs a remote module graph with URL-relative imports":
