@@ -223,6 +223,49 @@ suite "doc builder — declaration pass":
     check "shape_mismatch" in kinds
     check "unresolved_for" in kinds
 
+  test "@@unverified declares an entry the source does not show":
+    let dynamic = docTestBuildFixtures().docTestDocFor("dynamic")
+    proc entryById(id: string): DocEntry =
+      for entry in dynamic.entries:
+        if entry.id == id:
+          return entry
+      checkpoint "no entry: " & id
+      check false
+    # Declared by the sidecar alone: as written, flagged, located in the sidecar.
+    let made = entryById("lib/dynamic/made_in_if")
+    check made.unverified
+    check made.forName == "dynamic/made_in_if"
+    check made.sourceFile == "src/dynamic.doc.gene"
+    check made.positional.len == 1 and made.positional[0].typ == "Int"
+    check made.result == "Int"
+    check made.doc.startsWith("Defined inside an `if`")
+    # A prose map can still target it.
+    check made.see == @["book/values/text"]
+    # Everything inside a flagged form is flagged too.
+    check entryById("lib/dynamic/Dyn").unverified
+    check entryById("lib/dynamic/Dyn/go").unverified
+    check entryById("lib/dynamic/Dyn/go").doc == "Runs it."
+    # A flagged entry added to a namespace the source declares.
+    let extra = entryById("lib/dynamic/tools/extra")
+    check extra.unverified
+    check extra.parent == "lib/dynamic/tools"
+    # The source's own entries are untouched and unflagged.
+    check not entryById("lib/dynamic/tools").unverified
+    check not entryById("lib/dynamic/tools/helper").unverified
+    # A flag on something the source does declare is stale: the entry stays the
+    # source's, the prose merges, and the build says to remove the flag.
+    let plain = entryById("lib/dynamic/plain")
+    check not plain.unverified
+    check plain.sourceFile.len == 0
+    check plain.doc.startsWith("The source declares this one")
+    check dynamic.diagnostics.len == 1
+    check dynamic.diagnostics[0].kind == "unverified_in_source"
+    check dynamic.diagnostics[0].source == "src/dynamic.doc.gene"
+    # The data says which entries the builder could not verify.
+    let text = renderModuleDoc(dynamic)
+    check text.count("^unverified true") == 4
+    check "^source \"src/dynamic.doc.gene\"" in text
+
   test "a type inside a namespace keeps its path in its children's ids":
     let nested = docTestBuildFixtures().docTestDocFor("nested")
     check nested.diagnostics.len == 0

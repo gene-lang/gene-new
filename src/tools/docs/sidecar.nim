@@ -206,11 +206,25 @@ proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile,
         if qualifiedName(modulePath, doc.entries[i]) == key:
           found = i
           break
+      if found < 0 and sidecarEntry.unverified:
+        # Declared by the sidecar alone: the source defines it in a form the
+        # builder does not read. It is the entry as written, not checked
+        # against anything; its location is in the sidecar.
+        var added = sidecarEntry
+        added.forName = key
+        added.sourceFile = sidecarRel
+        doc.entries.add added
+        continue
       if found < 0:
         doc.diagnostics.add DocDiagnostic(kind: "unresolved_for",
           message: "@for \"" & key & "\" names nothing in this module",
           source: sidecarRel, line: sidecarEntry.line, col: sidecarEntry.col)
         continue
+      if sidecarEntry.unverified:
+        doc.diagnostics.add DocDiagnostic(kind: "unverified_in_source",
+          message: "\"" & key & "\" is declared in the source; remove " &
+            "@@unverified so the sidecar's shape is checked",
+          source: sidecarRel, line: sidecarEntry.line, col: sidecarEntry.col)
       let mismatch = shapeMismatch(doc.entries[found], sidecarEntry)
       if mismatch.len > 0:
         doc.diagnostics.add DocDiagnostic(kind: "shape_mismatch",

@@ -1,0 +1,23 @@
+(fn made_in_if [x : Int] : Int
+  @@unverified
+  @doc "Defined inside an `if`, which the builder does not read."
+  nil)
+
+(type Dyn
+  @@unverified
+  @doc "A type that a statement defines."
+  (message go [] : Int
+    @doc "Runs it."))
+
+(ns tools
+  (fn extra [n : Int] : Int
+    @@unverified
+    @doc "Added to a namespace the source declares."
+    nil))
+
+(fn plain [x : Int] : Int
+  @@unverified
+  @doc "The source declares this one, so the flag is stale."
+  nil)
+
+{^for "dynamic/made_in_if" ^see ["book/values/text"]}

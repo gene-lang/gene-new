@@ -33,6 +33,8 @@ type
     status*: string
     line*, col*: int
     forName*: string         ## `@for`: the native a declaration documents
+    unverified*: bool        ## declared by `@@unverified` in a sidecar; the source does not show it
+    sourceFile*: string      ## package-relative file of `^loc` when it is not the module's `^source`
     positional*, named*: seq[DocParam]
     rest*, namedRest*: DocParam
     result*: string
@@ -131,6 +133,10 @@ proc renderEntry(entry: DocEntry): string =
     lines.add "   ^parent " & qq(entry.parent)
   if entry.forName.len > 0:
     lines.add "   ^for " & qq(entry.forName)
+  if entry.unverified:
+    lines.add "   ^unverified true"
+  if entry.sourceFile.len > 0:
+    lines.add "   ^source " & qq(entry.sourceFile)
   lines.add "   ^positional " & renderParams(entry.positional)
   lines.add "   ^named " & renderParams(entry.named)
   lines.add "   ^rest " &

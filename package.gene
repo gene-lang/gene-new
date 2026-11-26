@@ -2,7 +2,7 @@
  ^name "gene/runtime"
  ^description "The runtime for the Gene language"
  ^version "0.5.0"
- ^files {^exclude ["tmp/**"]}
+ ^files {^exclude ["**/tmp/**" "**/.gene-harness/**"]}
  ^library {}
  ^applications []
  ^tests {^root "tests"}

@@ -1,0 +1,10 @@
+(mod dynamic)
+
+(fn plain [x : Int] : Int x)
+
+(ns tools
+  (fn helper [] 1))
+
+# The builder does not read inside a statement, so it cannot see this one.
+(if true
+  (fn made_in_if [x : Int] : Int x))

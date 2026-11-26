@@ -28,6 +28,7 @@ type
     modulePath*: string
     text*: SourceText
     seen*: Table[string, bool]
+    unverified*: bool     ## inside a form flagged `@@unverified`
 
 proc sourceLocOffset(b: DeclBuilder, value: Value): int =
   let loc = b.unit.locs.getOrDefault(value.bits)
@@ -69,6 +70,12 @@ proc propTrue(form: Value, key: string): bool =
   value.kind == vkBool and value.boolVal
 
 proc isPrivate(form: Value): bool = propTrue(form, "private")
+
+proc isUnverified(form: Value): bool =
+  ## `@@unverified`: doc meta, like `@doc` and `@for`, so it is not a property
+  ## of the declaration the language compiles.
+  form.kind == vkNode and form.meta.hasKey("unverified") and
+    form.meta["unverified"].kind == vkBool and form.meta["unverified"].boolVal
 
 proc entryBase(modulePath: string): string =
   "lib/" & modulePath
@@ -449,6 +456,7 @@ proc walkMessage(b: var DeclBuilder, form: Value, loc: SourceLoc,
   entry.namePath = path.join("/") & separator & name
   entry.id = entryBase(b.modulePath) & "/" & path.join("/") & separator & name
   entry.fillMeta(form)
+  entry.unverified = b.unverified or form.isUnverified
   b.signatureEntry(entry, form, 1)
   b.addEntry(entry)
 
@@ -474,6 +482,7 @@ proc walkTypeBody(b: var DeclBuilder, form: Value, typeId: string,
       entry.namePath = typePath.join("/") & "/ctor"
       entry.id = entryId(b.modulePath, typePath & @["ctor"])
       entry.fillMeta(item)
+      entry.unverified = b.unverified or item.isUnverified
       b.signatureEntry(entry, item, 0)
       b.addEntry(entry)
     of "impl":
@@ -577,6 +586,7 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
   entry.namePath = (path & @[name]).join("/")
   entry.id = entryId(b.modulePath, path & @[name])
   entry.fillMeta(form)
+  entry.unverified = b.unverified or form.isUnverified
   if info.callable:
     let paramsIndex =
       case info.kind
@@ -598,6 +608,9 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
     entry.parent = entryBase(b.modulePath)
   b.addEntry(entry)
   if info.recurse:
+    # A flagged form flags everything declared inside it.
+    let outer = b.unverified
+    b.unverified = entry.unverified
     case info.kind
     of dkType:
       b.walkTypeBody(form, entry.id, path & @[name])
@@ -609,6 +622,7 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
         b.walkForm(child, b.nestedLoc(child, loc), path & @[name], entry.id)
     else:
       discard
+    b.unverified = outer
 
 # ---------------------------------------------------------------------------
 # Module entry point
