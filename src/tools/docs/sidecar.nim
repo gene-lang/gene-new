@@ -178,6 +178,8 @@ proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile,
     doc.diagnostics.add diagnostic
   if read.doc.doc.len > 0:
     doc.doc = read.doc.doc
+  if doc.name.len == 0:
+    doc.name = read.doc.name
   if not read.doc.readable:
     # The sidecar did not read; there is nothing to merge.
     return

@@ -43,6 +43,10 @@ type
     generator*, fexpr*: bool
     variants*: seq[DocVariant]
     implements*: seq[string]
+    valueType*: string       ## `let`/`var`/`const`: the declared type, or a
+                             ## literal initializer's type; "" when only
+                             ## running the form would tell. Read by
+                             ## `gene doc <file>`; not rendered.
 
   DocImport* = object
     path*: string
@@ -56,6 +60,9 @@ type
     wildcard*: bool
     reexport*: bool
     line*, col*: int
+    resolvedFile*: string    ## the resolved module's absolute path, for
+                             ## `gene doc <file>`. Never rendered: the data
+                             ## carries no checkout path.
 
   DocImpl* = object
     protocol*, receiver*: string
@@ -75,10 +82,13 @@ type
   ModuleDoc* = object
     package*, module*, source*: string
     readable*: bool          ## false when the module's own source did not read
+    name*: string            ## the name a top-level `(mod name …)` gives; not rendered
     doc*: string
     imports*: seq[DocImport]
     entries*: seq[DocEntry]
     hidden*: seq[string]
+    privates*: seq[DocEntry] ## the private declarations behind `hidden`, with
+                             ## their kinds, for `gene doc <file>`; not rendered
     impls*: seq[DocImpl]
     unexpanded*: seq[DocUnexpanded]
     diagnostics*: seq[DocDiagnostic]

@@ -9,7 +9,8 @@
 ##   gene fmt <file>     format source through the canonical printer
 ##   gene compile <file> print compiled GIR bytecode (no execution)
 ##   gene compile --target c <file> print experimental typed_native C
-##   gene doc <file>     print module metadata, imports, and declarations
+##   gene doc <file>     print a module's doc, imports, and declarations
+##                       without compiling or running it
 ##   gene doc build      build the documentation corpus (builder + generator)
 ##   gene doc index|ls|show|search
 ##                       read the generated corpus
@@ -20,6 +21,7 @@ import gene/[build, build_info, compiler, diagnostics, gir, install,
              registry_publish, repl, system_dependency, types, vm, web]
 # native_managed installs the owned byte-ingress adapter for this executable.
 import gene/ext/[logging, logging_config]
+import tools/docs/file_view
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
 # executable's dynamic symbol table for a dlopened AOT library to resolve.
@@ -93,7 +95,7 @@ proc usage() =
   echo "  gene test [files/dirs...] [--name text] run *_spec.gene examples"
   echo "  gene test --package [selector] build and run package test targets"
   echo "  gene clean               remove project build views and sandboxes"
-  echo "  gene doc <file.gene>     print module metadata, imports, and declarations"
+  echo "  gene doc <file.gene>     print a module's doc, imports, and declarations (never runs it)"
   echo "  gene doc build [dir]     write the documentation corpus to build/docs"
   echo "  gene doc index|ls|show|search [--corpus dir]"
   echo "                              read the generated corpus"
@@ -1197,94 +1199,6 @@ proc unavailableBuildFeature(command: string) =
     "' has not passed its demand gate"
   quit(1)
 
-proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
-  scope.materializeMirroredVars()
-  for name in scope.vars.keys:
-    # NUL-prefixed names are the compiler's own bindings: block bindings and
-    # the namespace a scope belongs to, which would make the walk below loop.
-    if name.startsWith('\x00'):
-      continue
-    if includeThisModule or name notin ["this_mod", "this_pkg"]:
-      result.add name
-  result.sort()
-
-proc writeDocDeclarations(scope: Scope, includeThisModule = false) =
-  var declarations = initTable[string, string]()
-  for name in docDeclarationNames(scope, includeThisModule):
-    declarations[name] = declarationKind(scope.vars[name])
-  if scope.compilerMacros != nil and scope.compilerMacros of MacroBindings:
-    let context = MacroBindings(scope.compilerMacros)
-    for name in context.ownedNames:
-      if '/' notin name and context.definitions.hasKey(name):
-        declarations[name] = "Macro"
-  var names: seq[string]
-  for name in declarations.keys: names.add name
-  names.sort()
-  for name in names:
-    echo "- " & name & " : " & declarations[name]
-
-proc collectDocNamespaces(ns: Value, prefix: string,
-                          namespaces: var seq[tuple[path: string, ns: Value]]) =
-  for name in docDeclarationNames(ns.nsScope):
-    let value = ns.nsScope.vars[name]
-    if value.kind == vkNamespace:
-      let path = if prefix.len == 0: name else: prefix & "/" & name
-      namespaces.add (path: path, ns: value)
-      collectDocNamespaces(value, path, namespaces)
-
-proc collectDocImports(chunk: Chunk, imports: var seq[ImportSpec]) =
-  if chunk == nil:
-    return
-  for spec in chunk.imports:
-    imports.add spec
-  for subchunk in chunk.subchunks:
-    collectDocImports(subchunk, imports)
-  for fn in chunk.functions:
-    collectDocImports(fn.chunk, imports)
-  for loop in chunk.forLoops:
-    collectDocImports(loop.body, imports)
-  for match in chunk.matches:
-    for clause in match.clauses:
-      collectDocImports(clause.body, imports)
-    collectDocImports(match.elseBody, imports)
-  for attempt in chunk.tries:
-    collectDocImports(attempt.body, imports)
-    for clause in attempt.catches:
-      collectDocImports(clause.body, imports)
-    collectDocImports(attempt.ensureBody, imports)
-
-proc docSelectionText(sel: ImportSelection): string =
-  if sel.name == sel.local:
-    sel.name
-  else:
-    sel.name & " : " & sel.local
-
-proc docImportText(app: Application, spec: ImportSpec): string =
-  if spec.fromModule:
-    result = "- from \"" & spec.modulePath & "\""
-    if spec.pkgName.len > 0:
-      result.add " ^pkg \"" & spec.pkgName & "\""
-    result.add " -> " & app.resolveModuleRef(spec.modulePath, spec.pkgName)
-  else:
-    result = "- " & spec.nsSegments.join("/")
-  if spec.alias.len > 0:
-    result.add " : " & spec.alias
-  elif spec.wildcard:
-    result.add " *"
-  if spec.selections.len > 0:
-    var selections: seq[string]
-    for sel in spec.selections:
-      selections.add docSelectionText(sel)
-    result.add " [" & selections.join(", ") & "]"
-
-proc writeDocImports(app: Application, chunk: Chunk) =
-  var imports: seq[ImportSpec]
-  collectDocImports(chunk, imports)
-  if imports.len > 0:
-    echo "Imports:"
-    for spec in imports:
-      echo docImportText(app, spec)
-
 proc docToolExecutable(tool: string): string =
   let sibling = getAppDir() / tool
   result = if fileExists(sibling): sibling else: findExe(tool)
@@ -1391,36 +1305,24 @@ proc cmdDocBuild(args: openArray[string]) =
     quit(builderCode)
 
 proc cmdDoc(path: string) =
+  ## Read the module the way the corpus builder does: nothing is compiled or
+  ## run, so a top-level form never executes and `main` is never called.
   if not fileExists(path):
     stderr.writeLine "Error: file not found: " & path
     quit(1)
+  var view: FileView
   try:
-    let absPath = normalizedPath(absolutePath(path))
-    let app = newApplicationForEntryFile(absPath)
-    let chunk = app.compileFileModule(absPath)
-    let module = app.loadFileModule(absPath)
-    echo "Module: " & module.moduleName
-    echo "Path: " & module.modulePath
-    let meta = module.moduleMeta
-    if meta.hasKey("doc") and meta["doc"].kind == vkString:
-      echo "Doc: " & meta["doc"].strVal
-    writeDocImports(app, chunk)
-    echo "Declarations:"
-    let rootScope = module.moduleRootNamespace.nsScope
-    writeDocDeclarations(rootScope)
-    var namespaces: seq[tuple[path: string, ns: Value]]
-    collectDocNamespaces(module.moduleRootNamespace, "", namespaces)
-    if namespaces.len > 0:
-      echo "Namespaces:"
-      for item in namespaces:
-        echo "Namespace " & item.path & ":"
-        writeDocDeclarations(item.ns.nsScope)
-  except ReadError as e:
-    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
+    view = fileView(path)
+  except CatchableError as error:
+    let newline = error.msg.find('\n')
+    stderr.writeLine "Error: " &
+      (if newline >= 0: error.msg[0 ..< newline] else: error.msg)
     quit(1)
-  except GeneError as e:
-    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+  for line in view.diagnostics:
+    stderr.writeLine line
+  if view.readFailed:
     quit(1)
+  stdout.write view.text
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------

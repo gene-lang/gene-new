@@ -31,18 +31,21 @@ the build: release or debug, platform, and runtime checks.
 ## Inspecting code
 
 `gene doc file.gene` prints a module's doc, imports, and declarations. It
-loads the module to inspect it, so the module's top-level forms run:
+reads the source the way the documentation build does, so nothing is compiled
+or run: top-level forms do not execute and `main` is not called.
 
 ```sh
 gene doc greet.gene
 # Module: greet
+# Path: /home/me/greet.gene
 # Doc: Greetings.
 # Declarations:
 # - hello : Fn
 ```
 
-For a view that never executes the module, build the corpus or read one of
-its pages (`gene doc build`, then `gene doc show`).
+An import shows the file it resolves to, or why it does not resolve. A `let`,
+`var`, or `const` shows its declared type or the type of its literal value;
+when only running the form would tell, it shows `var`.
 
 `gene parse` shows what the reader made of a file, with shorthand expanded.
 It is useful when a form does not mean what it seems to:

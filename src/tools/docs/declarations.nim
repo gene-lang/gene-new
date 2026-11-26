@@ -358,6 +358,7 @@ proc resolveImport(b: DeclBuilder, imported: var DocImport) =
     return
   imported.resolvedPackage = target.name
   imported.resolvedModule = target.relativeModulePath(candidate)
+  imported.resolvedFile = candidate
 
 proc recordImport(b: var DeclBuilder, form: Value, loc: SourceLoc) =
   let head = headText(form.head)
@@ -404,6 +405,35 @@ proc recordImport(b: var DeclBuilder, form: Value, loc: SourceLoc) =
 # ---------------------------------------------------------------------------
 # Walking
 # ---------------------------------------------------------------------------
+
+proc literalTypeName(value: Value): string =
+  ## The type a literal initializer has without running anything. A call, a
+  ## name, or a quoted form is known only by evaluating it.
+  case value.kind
+  of vkNil: "Nil"
+  of vkBool: "Bool"
+  of vkInt: "Int"
+  of vkFloat: "Float"
+  of vkString: "Str"
+  of vkChar: "Char"
+  of vkRegex: "Regex"
+  of vkList: "List"
+  of vkMap: "Map"
+  of vkSet: "Set"
+  else: ""
+
+proc valueTypeText(form: Value, kind: DeclKind): string =
+  ## `(var name : T value)` gives `T` as written; `(var name 42)` gives the
+  ## literal's type; anything else gives "".
+  if kind notin {dkLet, dkVar, dkConst}:
+    return ""
+  if form.body.len >= 3 and form.body[1].kind == vkSymbol and
+      form.body[1].symVal == ":":
+    return print(form.body[2])
+  if form.body.len >= 2:
+    return literalTypeName(form.body[1])
+  if form.body.len == 1:
+    return "Nil"
 
 proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
               path: seq[string], parent: string)
@@ -526,6 +556,7 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
   # declarations belong to the module itself, not to a namespace.
   if head == "mod":
     if form.body.len > 0 and form.body[0].kind == vkSymbol and path.len == 0:
+      b.doc.name = form.body[0].symVal
       let doc = metaString(form, "doc")
       if doc.present:
         b.doc.doc = doc.value
@@ -581,12 +612,18 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
     return
   if info.exportable and isPrivate(form):
     b.doc.hidden.add hiddenPath(path, name)
+    # The corpus documents only the path; `gene doc <file>` also shows the kind.
+    b.doc.privates.add DocEntry(kind: info.kind, name: name,
+      namePath: (path & @[name]).join("/"),
+      parent: (if parent.len > 0: parent else: entryBase(b.modulePath)),
+      valueType: valueTypeText(form, info.kind), line: loc.line, col: loc.col)
     return
 
   var entry = DocEntry(kind: info.kind, name: name, parent: parent,
                        line: loc.line, col: loc.col)
   entry.namePath = (path & @[name]).join("/")
   entry.id = entryId(b.modulePath, path & @[name])
+  entry.valueType = valueTypeText(form, info.kind)
   entry.fillMeta(form)
   entry.ownUnverified = form.isUnverified
   entry.unverified = b.unverified or entry.ownUnverified

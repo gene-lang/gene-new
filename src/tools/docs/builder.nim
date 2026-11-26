@@ -187,14 +187,12 @@ proc renderCoverage(build: BuildResult): string =
 proc writeCoverage(build: BuildResult) =
   writeFile(build.outputRoot / "coverage.gene", renderCoverage(build))
 
-proc buildPackage*(startDir: string, corpusDir = ""): BuildResult =
-  ## Build one package's corpus. `startDir` is where package discovery starts;
-  ## `corpusDir`, when given, is the directory the walk starts from (a subtree
-  ## such as `src/gene/lib`).
+proc packageAndGraph*(startDir: string): tuple[pkg: Package,
+    graph: MaterializedGraph, diagnostic: DocDiagnostic] =
+  ## The package `startDir` belongs to and the graph its imports resolve in.
+  ## A lock that cannot load is the diagnostic; its `kind` is "" otherwise.
   var pkg = discoverApplicationPackage(startDir)
   let (graph, graphDiagnostic) = graphFor(pkg)
-  if graphDiagnostic.kind.len > 0:
-    result.buildDiagnostics.add graphDiagnostic
   # The lock graph's instance carries the dependency edges and the instance
   # id; the freshly discovered package has neither. Prefer the graph's copy
   # when it names the same root.
@@ -202,6 +200,15 @@ proc buildPackage*(startDir: string, corpusDir = ""): BuildResult =
     let active = graph.packagesById[graph.activePackageId]
     if active.root == pkg.root:
       pkg = active
+  (pkg, graph, graphDiagnostic)
+
+proc buildPackage*(startDir: string, corpusDir = ""): BuildResult =
+  ## Build one package's corpus. `startDir` is where package discovery starts;
+  ## `corpusDir`, when given, is the directory the walk starts from (a subtree
+  ## such as `src/gene/lib`).
+  let (pkg, graph, graphDiagnostic) = packageAndGraph(startDir)
+  if graphDiagnostic.kind.len > 0:
+    result.buildDiagnostics.add graphDiagnostic
   var roots: seq[string]
   if corpusDir.len > 0:
     let root = normalizedPath(absolutePath(corpusDir))

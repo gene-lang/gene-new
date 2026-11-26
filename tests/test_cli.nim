@@ -2158,13 +2158,52 @@ suite "cli — gene doc":
       "- source [item : local-item]",
       "Declarations:",
       "- done : Bool",
-      "- local-dep : Int",
-      "- local-item : Int",
       "- source : Namespace",
       "Namespaces:",
       "Namespace source:",
       "- item : Int"
     ]
+
+  test "reads the file without compiling or running it":
+    let marker = cliDir / "doc_side_effect.txt"
+    if fileExists(marker): removeFile(marker)
+    let path = writeCliProgram("doc_no_run.gene",
+      "(mod docs) " &
+      "(import gone ^from \"./no_such_module\") " &
+      "($println \"TOP-LEVEL-RAN\") " &
+      "($fs/write_text " & "\"" & marker & "\" \"x\") " &
+      "(var computed (undefined_name 1)) " &
+      "(var typed : Str (undefined_name 2)) " &
+      "(let ratio 1.5) " &
+      "(fn helper ^private true [] 1) " &
+      "(fn quoted! [x] x) " &
+      "(fn main [] (panic \"doc should not call main\"))")
+    let ran = runGene(["doc", path])
+    check ran.exitCode == 0
+    check "TOP-LEVEL-RAN" notin ran.output
+    check not fileExists(marker)
+    let lines = ran.output.strip.splitLines
+    check lines == @[
+      "Module: docs",
+      "Path: " & normalizedPath(absolutePath(path)),
+      "Imports:",
+      "- from \"./no_such_module\" -> unresolved: module not found: " &
+        "./no_such_module [gone]",
+      "Declarations:",
+      "- computed : var",
+      "- helper : Fn",
+      "- main : Fn",
+      "- quoted! : Fexpr",
+      "- ratio : Float",
+      "- typed : Str"
+    ]
+
+  test "a file that does not read is an error":
+    let path = writeCliProgram("doc_broken.gene", "(fn broken [")
+    let ran = runGene(["doc", path])
+    check ran.exitCode == 1
+    check "read_error" in ran.output
+    check "Declarations:" notin ran.output
 
   test "gene doc build writes the corpus and the lookup reads it":
     let root = cliDir / "doc_build"
