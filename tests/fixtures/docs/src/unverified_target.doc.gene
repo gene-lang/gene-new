@@ -1,0 +1,15 @@
+(fn zed [] : Int
+  @@unverified
+  @for "unverified_target/other"
+  @doc "The id follows @for, so id and ^for agree."
+  nil)
+
+(type Dyn
+  @@unverified
+  (message go [] : Int)
+  (ctor [x : Int] nil))
+
+(message flag_msg [] : Int
+  @@unverified
+  @doc "A message form the source does not show."
+  nil)

@@ -26,6 +26,15 @@ type
     unresolvedImports*: int
     unexpandedCount*: int
 
+proc stableMessage(message, root: string): string =
+  ## Diagnostics are data: they must not carry the checkout's absolute path.
+  ## The package root and the user's home directory are the two prefixes the
+  ## loader's messages can name.
+  result = message.replace(root & "/", "").replace(root, ".")
+  let home = getHomeDir()
+  if home.len > 1:
+    result = result.replace(home, "~")
+
 proc graphFor(pkg: Package):
     tuple[graph: MaterializedGraph, diagnostic: DocDiagnostic] =
   ## The lock graph when there is one, so `^pkg` imports resolve to their real
@@ -47,10 +56,14 @@ proc graphFor(pkg: Package):
     except CatchableError as error:
       let newline = error.msg.find('\n')
       let text = if newline >= 0: error.msg[0 ..< newline] else: error.msg
+      # The lock lives at the workspace root, which may be above pkg.root (a
+      # workspace member), so both prefixes are made relative.
+      var clean = stableMessage(text, pkg.root)
+      clean = stableMessage(clean, parentDir(lockPath))
       return (singlePackageGraph(pkg), DocDiagnostic(
         kind: "lock_unreadable",
         message: "package.gene.lock could not be loaded, so ^pkg imports are " &
-          "unresolved and names from dependencies are not documented: " & text,
+          "unresolved and names from dependencies are not documented: " & clean,
         source: "package.gene.lock"))
   (singlePackageGraph(pkg), DocDiagnostic())
 
@@ -105,6 +118,7 @@ proc renderCoverage(build: BuildResult): string =
   var unexpandedCount = 0
   var moduleDiagnostics = 0
   var unresolvedCount = 0
+  var unverifiedCount = 0
   var missing: seq[string]
   for doc in modules:
     var entries = doc.entries
@@ -121,16 +135,23 @@ proc renderCoverage(build: BuildResult): string =
     moduleDiagnostics += doc.diagnostics.len
     let unresolved = doc.unresolvedImports
     unresolvedCount += unresolved
+    var moduleUnverified = 0
+    for entry in entries:
+      if entry.unverified:
+        inc moduleUnverified
+    unverifiedCount += moduleUnverified
     moduleRows.add "  {^module " & qq(doc.module) & " ^source " &
       qq(doc.source) & " ^entries " & $entries.len & " ^with_doc " &
-      $moduleWithDoc & " ^unresolved_imports " & $unresolved &
+      $moduleWithDoc & " ^unverified " & $moduleUnverified &
+      " ^unresolved_imports " & $unresolved &
       " ^unexpanded " & $doc.unexpanded.len & " ^diagnostics " &
       $doc.diagnostics.len & "}"
   lines.addList("^modules", moduleRows)
   let diagnosticCount = moduleDiagnostics + build.buildDiagnostics.len
   lines.add " ^counts {^modules " & $modules.len & " ^entries " &
     $entriesCount & " ^with_doc " & $withDoc & " ^without_doc " &
-    $(entriesCount - withDoc) & " ^unresolved_imports " & $unresolvedCount &
+    $(entriesCount - withDoc) & " ^unverified " & $unverifiedCount &
+    " ^unresolved_imports " & $unresolvedCount &
     " ^unexpanded " & $unexpandedCount & " ^diagnostics " &
     $diagnosticCount & "}"
   missing.sort()
@@ -152,10 +173,13 @@ proc renderCoverage(build: BuildResult): string =
   var diagnosticRows: seq[string]
   for doc in modules:
     for diagnostic in doc.diagnostics:
-      diagnosticRows.add "  {^module " & qq(doc.module) & " ^kind " &
+      var row = "  {^module " & qq(doc.module) & " ^kind " &
         qq(diagnostic.kind) & " ^message " & qq(diagnostic.message) &
-        " ^source " & qq(diagnostic.source) & " ^line " & $diagnostic.line &
-        " ^col " & $diagnostic.col & "}"
+        " ^source " & qq(diagnostic.source)
+      if diagnostic.line > 0 or diagnostic.col > 0:
+        row.add " ^line " & $diagnostic.line & " ^col " & $diagnostic.col
+      row.add "}"
+      diagnosticRows.add row
   lines.addList("^diagnostics", diagnosticRows)
   lines.add "}"
   lines.join("\n") & "\n"

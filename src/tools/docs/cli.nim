@@ -63,6 +63,12 @@ proc runDocCli*() =
     stdout.writeLine "  entries: " & $result.entryCount
     stdout.writeLine "  with @doc: " & $result.withDoc
     stdout.writeLine "  without @doc: " & $(result.entryCount - result.withDoc)
+    var unverified = 0
+    for module in result.modules:
+      for entry in module.entries:
+        if entry.unverified:
+          inc unverified
+    stdout.writeLine "  unverified entries: " & $unverified
     stdout.writeLine "  unresolved imports: " & $result.unresolvedImports
     stdout.writeLine "  unexpanded forms: " & $result.unexpandedCount
     stdout.writeLine "  diagnostics: " & $result.diagnosticCount
@@ -71,8 +77,10 @@ proc runDocCli*() =
         ": " & diagnostic.message
     for module in result.modules:
       for diagnostic in module.diagnostics:
-        stderr.writeLine "  " & diagnostic.source & ":" & $diagnostic.line &
-          ":" & $diagnostic.col & ": " & diagnostic.kind & ": " &
+        var where = diagnostic.source
+        if diagnostic.line > 0 or diagnostic.col > 0:
+          where.add ":" & $diagnostic.line & ":" & $diagnostic.col
+        stderr.writeLine "  " & where & ": " & diagnostic.kind & ": " &
           diagnostic.message
     stdout.writeLine "  wrote: " & result.outputRoot
     if result.readErrors > 0:

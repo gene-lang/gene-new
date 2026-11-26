@@ -5,3 +5,9 @@
   @doc "Return `x` unchanged."
   @for "standalone/thing"
   nil)
+
+(fn ghost [] : Int
+  @@unverified
+  @doc "A name the runtime may not register; recorded as unverified."
+  @for "standalone/ghost"
+  nil)

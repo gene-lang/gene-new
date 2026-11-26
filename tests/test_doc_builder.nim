@@ -211,9 +211,16 @@ suite "doc builder — declaration pass":
     let standalone = docTestBuildFixtures().docTestDocFor("standalone")
     check standalone.source == "src/standalone.doc.gene"
     check standalone.doc.startsWith("A native namespace")
-    check standalone.entries.len == 1
+    check standalone.entries.len == 2
     check standalone.entries[0].id == "lib/standalone/thing"
     check standalone.entries[0].forName == "standalone/thing"
+    # A flagged declaration in a standalone sidecar is recorded, and nothing
+    # else changes: the @for still has to match the native name.
+    check standalone.entries[1].id == "lib/standalone/ghost"
+    check standalone.entries[1].unverified
+    check standalone.entries[1].ownUnverified
+    check standalone.entries[1].forName == "standalone/ghost"
+    check standalone.diagnostics.len == 0
 
   test "a shape mismatch and a dangling @for are diagnostics, not failures":
     let mismatch = docTestBuildFixtures().docTestDocFor("mismatch")
@@ -265,6 +272,77 @@ suite "doc builder — declaration pass":
     let text = renderModuleDoc(dynamic)
     check text.count("^unverified true") == 4
     check "^source \"src/dynamic.doc.gene\"" in text
+
+  test "a stale @@unverified is reported once, for the flagged form":
+    let stale = docTestBuildFixtures().docTestDocFor("stale_type")
+    check stale.diagnostics.len == 1
+    check stale.diagnostics[0].kind == "unverified_in_source"
+    check stale.diagnostics[0].source == "src/stale_type.doc.gene"
+    # The messages inherit the flag for adding, but are not each reported.
+    check stale.docTestAnyEntryNamed("a").doc.len == 0
+    check not stale.docTestAnyEntryNamed("a").unverified
+
+  test "an unverified entry's id follows @for":
+    let target = docTestBuildFixtures().docTestDocFor("unverified_target")
+    check target.diagnostics.len == 0
+    proc entryById(id: string): DocEntry =
+      for entry in target.entries:
+        if entry.id == id:
+          return entry
+      checkpoint "no entry: " & id
+      check false
+    # @for names the entry, so the id and ^for agree.
+    let other = entryById("lib/unverified_target/other")
+    check other.name == "zed"
+    check other.forName == "unverified_target/other"
+    check other.unverified
+    check other.sourceFile == "src/unverified_target.doc.gene"
+    # The flag directly on a message form and an inherited flag on a ctor.
+    check entryById("lib/unverified_target/flag_msg").unverified
+    check entryById("lib/unverified_target/flag_msg").ownUnverified
+    check entryById("lib/unverified_target/Dyn/ctor").unverified
+    check not entryById("lib/unverified_target/Dyn/ctor").ownUnverified
+    # The data and coverage count what is not backed by source.
+    var build = docTestBuildFixtures()
+    build.summarize()
+    let outDir = docTestRepoRoot() / "build/m1/doc-unverified"
+    if dirExists(outDir): removeDir(outDir)
+    docBuilder.writeOutputs(build, outDir)
+    let coverage = readFile(outDir / "coverage.gene")
+    check "^unverified 10" in coverage
+    check "^counts {^modules 18" in coverage
+    removeDir(outDir)
+
+  test "an I/O read failure has no line and no absolute path":
+    let root = docTestRepoRoot() / "build/m1/docs-io"
+    if dirExists(root): removeDir(root)
+    docTestCopyTree(docTestFixturesRoot(), root)
+    let target = root / "src/main.gene"
+    setFilePermissions(target, {})
+    var readable = true
+    try:
+      discard readFile(target)
+    except IOError:
+      readable = false
+    if not readable:
+      var build = docBuilder.buildPackage(root)
+      build.summarize()
+      var main: ModuleDoc
+      for doc in build.modules:
+        if doc.module == "main":
+          main = doc
+      check main.diagnostics.len == 1
+      check main.diagnostics[0].kind == "read_error"
+      check main.diagnostics[0].line == 0
+      check main.diagnostics[0].col == 0
+      check main.diagnostics[0].message.startsWith("cannot read file: src/main.gene")
+      check docTestRepoRoot() notin main.diagnostics[0].message
+      check "^loc" notin renderModuleDoc(main)
+    else:
+      checkpoint "read permission is not enforced here; I/O failure not tested"
+    setFilePermissions(target, {fpUserRead, fpUserWrite, fpGroupRead,
+                                fpOthersRead})
+    removeDir(root)
 
   test "a type inside a namespace keeps its path in its children's ids":
     let nested = docTestBuildFixtures().docTestDocFor("nested")
@@ -368,12 +446,19 @@ suite "doc builder — declaration pass":
           found = true
           check diagnostic.line > 0
     check found
-    check result.readErrors == 2
+    check result.readErrors == 3
     let outDir = docTestRepoRoot() / "build/m1/doc-unreadable"
     if dirExists(outDir): removeDir(outDir)
     result.writeOutputs(outDir)
     check not fileExists(outDir / "modules" / "unreadable.gene")
     check fileExists(outDir / "modules" / "broken_sidecar.gene")
+    # A broken source with a valid sidecar reports the source once; the sidecar
+    # is not re-reported as dangling.
+    let broken = result.docTestDocFor("broken_source")
+    check broken.diagnostics.len == 1
+    check broken.diagnostics[0].kind == "read_error"
+    check broken.diagnostics[0].source == "src/broken_source.gene"
+    check not fileExists(outDir / "modules" / "broken_source.gene")
     let coverage = readFile(outDir / "coverage.gene")
     check "^unresolved_imports 3" in coverage
     check "^build_diagnostics []" in coverage
@@ -417,6 +502,36 @@ suite "doc builder — declaration pass":
     for i in 0 ..< min(first.modules.len, copied.modules.len):
       check first.modules[i].module == copied.modules[i].module
       check renderModuleDoc(first.modules[i]) == renderModuleDoc(copied.modules[i])
+    # Coverage carries diagnostics, so it is the file most likely to leak a
+    # path; compare it too.
+    let firstOut = docTestRepoRoot() / "build/m1/doc-copy-a"
+    let copiedOut = docTestRepoRoot() / "build/m1/doc-copy-b"
+    if dirExists(firstOut): removeDir(firstOut)
+    if dirExists(copiedOut): removeDir(copiedOut)
+    docBuilder.writeOutputs(first, firstOut)
+    docBuilder.writeOutputs(copied, copiedOut)
+    check readFile(firstOut / "coverage.gene") ==
+      readFile(copiedOut / "coverage.gene")
+    removeDir(firstOut)
+    removeDir(copiedOut)
+    removeDir(copyRoot)
+
+  test "a lock failure names no checkout path":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_missing_dep_lock"
+    let copyRoot = docTestRepoRoot() / "build/m1/missing-dep-lock-copy"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    var first = docBuilder.buildPackage(firstRoot)
+    first.summarize()
+    var second = docBuilder.buildPackage(copyRoot)
+    second.summarize()
+    check first.buildDiagnostics.len == 1
+    let message = first.buildDiagnostics[0].message
+    check first.buildDiagnostics[0].kind == "lock_unreadable"
+    check "missing_dep/package.gene" in message
+    check docTestRepoRoot() notin message
+    check second.buildDiagnostics.len == 1
+    check second.buildDiagnostics[0].message == message
     removeDir(copyRoot)
 
   test "a build runs no form and calls no main":

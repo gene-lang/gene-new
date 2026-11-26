@@ -9,7 +9,7 @@
 ## value. An unknown head becomes an `^unexpanded` record instead of being
 ## silently dropped.
 
-import std/[os, strutils, tables]
+import std/[os, oserrors, strutils, tables]
 import ../../gene/[gir, import_spec, module_resolver, package, printer, reader, types]
 import ../declaration_heads
 import ../source_positions
@@ -456,7 +456,8 @@ proc walkMessage(b: var DeclBuilder, form: Value, loc: SourceLoc,
   entry.namePath = path.join("/") & separator & name
   entry.id = entryBase(b.modulePath) & "/" & path.join("/") & separator & name
   entry.fillMeta(form)
-  entry.unverified = b.unverified or form.isUnverified
+  entry.ownUnverified = form.isUnverified
+  entry.unverified = b.unverified or entry.ownUnverified
   b.signatureEntry(entry, form, 1)
   b.addEntry(entry)
 
@@ -482,7 +483,8 @@ proc walkTypeBody(b: var DeclBuilder, form: Value, typeId: string,
       entry.namePath = typePath.join("/") & "/ctor"
       entry.id = entryId(b.modulePath, typePath & @["ctor"])
       entry.fillMeta(item)
-      entry.unverified = b.unverified or item.isUnverified
+      entry.ownUnverified = item.isUnverified
+      entry.unverified = b.unverified or entry.ownUnverified
       b.signatureEntry(entry, item, 0)
       b.addEntry(entry)
     of "impl":
@@ -586,7 +588,8 @@ proc walkForm(b: var DeclBuilder, form: Value, loc: SourceLoc,
   entry.namePath = (path & @[name]).join("/")
   entry.id = entryId(b.modulePath, path & @[name])
   entry.fillMeta(form)
-  entry.unverified = b.unverified or form.isUnverified
+  entry.ownUnverified = form.isUnverified
+  entry.unverified = b.unverified or entry.ownUnverified
   if info.callable:
     let paramsIndex =
       case info.kind
@@ -660,8 +663,12 @@ proc buildModuleDoc*(pkg: Package, file, modulePath: string,
   try:
     src = readFile(file)
   except IOError as error:
+    # The OS message carries the absolute path; the diagnostic already names
+    # the package-relative file, and the data must not depend on the checkout.
     result.diagnostics.add DocDiagnostic(kind: "read_error",
-      message: "cannot read file: " & error.msg, source: sourceRel)
+      message: "cannot read file: " & sourceRel & ": " &
+        osErrorMsg(osLastError()),
+      source: sourceRel)
     return
   var unit: SourceUnit
   try:

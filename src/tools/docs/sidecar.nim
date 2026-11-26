@@ -7,7 +7,7 @@
 ## field, else from the source. A mismatch is a diagnostic, never a failed
 ## build: the docs still describe everything else.
 
-import std/[strutils]
+import std/[oserrors, strutils]
 import ../../gene/[package, reader, types]
 import ../declaration_heads
 import ./declarations
@@ -82,7 +82,9 @@ proc readSidecar*(pkg: Package, file, modulePath, sourceRel: string,
     result.doc.module = modulePath
     result.doc.source = sourceRel
     result.doc.diagnostics.add DocDiagnostic(kind: "read_error",
-      message: "cannot read sidecar: " & error.msg, source: sourceRel)
+      message: "cannot read sidecar: " & sourceRel & ": " &
+        osErrorMsg(osLastError()),
+      source: sourceRel)
     return
   var unit: SourceUnit
   try:
@@ -179,6 +181,11 @@ proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile,
   if not read.doc.readable:
     # The sidecar did not read; there is nothing to merge.
     return
+  if not standalone and not doc.readable:
+    # The module's own source did not read. Its read_error is the only useful
+    # diagnostic; checking a valid sidecar against an empty module would report
+    # every sidecar declaration as dangling and point away from the real error.
+    return
   let sidecar = read.doc
   let prose = read.prose
 
@@ -209,9 +216,19 @@ proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile,
       if found < 0 and sidecarEntry.unverified:
         # Declared by the sidecar alone: the source defines it in a form the
         # builder does not read. It is the entry as written, not checked
-        # against anything; its location is in the sidecar.
+        # against anything; its location is in the sidecar. The id follows
+        # `@for` when one is given, so the id and `^for` cannot disagree.
         var added = sidecarEntry
-        added.forName = key
+        let declared = modulePath & "/" & added.namePath
+        if key.startsWith(modulePath & "/"):
+          added.forName = key
+          added.id = "lib/" & key
+        else:
+          doc.diagnostics.add DocDiagnostic(kind: "unresolved_for",
+            message: "@for \"" & key & "\" is not in module " & modulePath,
+            source: sidecarRel, line: added.line, col: added.col)
+          added.forName = declared
+          added.id = "lib/" & declared
         added.sourceFile = sidecarRel
         doc.entries.add added
         continue
@@ -220,7 +237,9 @@ proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile,
           message: "@for \"" & key & "\" names nothing in this module",
           source: sidecarRel, line: sidecarEntry.line, col: sidecarEntry.col)
         continue
-      if sidecarEntry.unverified:
+      if sidecarEntry.ownUnverified:
+        # `@@unverified` on this form, not inherited from a flagged parent:
+        # report the stale flag once for the outermost flagged declaration.
         doc.diagnostics.add DocDiagnostic(kind: "unverified_in_source",
           message: "\"" & key & "\" is declared in the source; remove " &
             "@@unverified so the sidecar's shape is checked",

@@ -1,0 +1,5 @@
+(mod stale_type)
+
+(type T
+  (message a [] : Int 1)
+  (message b [] : Int 2))

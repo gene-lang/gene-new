@@ -1,0 +1,31 @@
+{
+  ^lock_format 1
+  ^root_manifest_digest "sha256:fd978ffc32bd24da182adcea4c6cc2535c9b951d2edb0b811788794e197da681"
+  ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
+  ^registry_snapshots [
+  ]
+  ^roots [ "workspace:probe/lock_parent@0.1.0#sha256:2b96d6014d2ddd3bf64e589257834ec995e157a3914b9144ea3cde6eaf7736ab"]
+  ^packages [
+    (locked_package
+      ^id "path:probe/dep@0.1.0#sha256:61adfebd31c989ba07f003521e34424bb0800a6e4b6827775930e4708ad51a0e"
+      ^name "probe/dep"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:4f644bc103fe700e2377b2710dde8f392cc069afd66a5de2b853d1ced05305ad"
+      ^source (path ^path "missing_dep")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "workspace:probe/lock_parent@0.1.0#sha256:2b96d6014d2ddd3bf64e589257834ec995e157a3914b9144ea3cde6eaf7736ab"
+      ^name "probe/lock_parent"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:fd978ffc32bd24da182adcea4c6cc2535c9b951d2edb0b811788794e197da681"
+      ^source (workspace ^path ".")
+      ^features []
+      ^dependencies {
+        ^dep (locked_edge ^scope runtime ^target "path:probe/dep@0.1.0#sha256:61adfebd31c989ba07f003521e34424bb0800a6e4b6827775930e4708ad51a0e")
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+  ]
+}

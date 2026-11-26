@@ -1,0 +1,5 @@
+{^format 1
+ ^name "probe/lock_parent"
+ ^version "0.1.0"
+ ^library {^entry "src/main.gene"}
+ ^dependencies {^dep (dep "probe/dep" "0.1.0" ^path "missing_dep")}}

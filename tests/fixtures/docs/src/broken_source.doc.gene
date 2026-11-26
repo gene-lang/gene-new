@@ -1,0 +1,4 @@
+(fn beta [x : Int] : Int
+  @doc "The sidecar is valid; the source is not."
+  @for "broken_source/beta"
+  nil)

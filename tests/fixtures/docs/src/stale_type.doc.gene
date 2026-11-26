@@ -1,0 +1,5 @@
+(type T
+  @@unverified
+  @doc "The source declares this type, so the flag is stale."
+  (message a [] : Int 1)
+  (message b [] : Int 2))

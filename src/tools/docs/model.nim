@@ -34,6 +34,7 @@ type
     line*, col*: int
     forName*: string         ## `@for`: the native a declaration documents
     unverified*: bool        ## declared by `@@unverified` in a sidecar; the source does not show it
+    ownUnverified*: bool     ## this entry's own form carries `@@unverified` (not a parent's)
     sourceFile*: string      ## package-relative file of `^loc` when it is not the module's `^source`
     positional*, named*: seq[DocParam]
     rest*, namedRest*: DocParam
@@ -191,9 +192,13 @@ proc renderImport(imported: DocImport): string =
   "  {" & fields.join(" ") & "}"
 
 proc renderDiagnostic(diagnostic: DocDiagnostic): string =
-  "  {^kind " & qq(diagnostic.kind) & " ^message " & qq(diagnostic.message) &
-    " ^source " & qq(diagnostic.source) & " ^loc " &
-    "{^line " & $diagnostic.line & " ^col " & $diagnostic.col & "}}"
+  ## A diagnostic without a position (an I/O failure has no line) omits
+  ## `^loc` rather than claiming line 0, column 0.
+  result = "  {^kind " & qq(diagnostic.kind) & " ^message " &
+    qq(diagnostic.message) & " ^source " & qq(diagnostic.source)
+  if diagnostic.line > 0 or diagnostic.col > 0:
+    result.add " ^loc " & renderLoc(diagnostic.line, diagnostic.col)
+  result.add "}"
 
 proc renderImpl(impl: DocImpl): string =
   "  {^protocol " & qq(impl.protocol) & " ^receiver " & qq(impl.receiver) &
