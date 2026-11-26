@@ -100,8 +100,13 @@ a qualified send, `.Protocol:message`, calls them:
 
 - A message with a body in the protocol, such as `shout`, is a default that
   each impl gets unless it supplies its own.
-- `Labelled:label` is also a callable value, which takes the receiver as its
-  first argument.
+- `Labelled:label` is a callable message value. Pass the receiver as its
+  first argument. Both `(Labelled:label ada)` and `(label ada)` after
+  `(let label Labelled:label)` evaluate the callee and arguments before
+  dispatch. Dispatch uses the scope where the message value was created.
+- A dot send evaluates the receiver first and resolves the method at the
+  send site before evaluating the remaining arguments. Use a dot send
+  for statically specialized dispatch in typed-native functions.
 - The qualifier keeps two protocols that use the same message name apart.
 
 > **Watch out:** a protocol message needs its qualifier. A bare

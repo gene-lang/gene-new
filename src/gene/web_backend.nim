@@ -89,6 +89,7 @@ type
     loc*: SourceLoc
     text*: string
     boolValue*: bool
+    eagerArguments: bool      # wekSend used to dispatch an ordinary message call
     children*: seq[WebExpr]
     external*: bool
     paramTypes*: seq[WebType]
@@ -2742,14 +2743,23 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   if not structuralPath and value.head.kind == vkSymbol and
       bindings.hasKey(value.head.symVal):
     requireWebBinding(value.head.symVal, bindings[value.head.symVal], loc)
-  var directSend: Value
-  try:
-    directSend = normalizeMessageHeadCall(value)
-  except GeneError as error:
-    raise webError(loc, error.msg)
-  if directSend.bits != value.bits:
-    result = analysis.analyzeCall(directSend, bindings, expected)
+  if value.head.kind == vkNode and value.head.head.isSym("msg"):
+    let message = value.head
+    if message.body.len != 2 or message.body[1].kind != vkSymbol:
+      raise webError(loc, "web message call requires a named message")
+    if value.body.len == 0:
+      raise webError(loc, "web message call requires a receiver")
+    if value.body[0].isSym("super"):
+      raise webError(loc, "super requires an explicit dot send")
+    # Reuse the static message analysis. Protocol identities are fixed in
+    # this profile, so only the receiver and arguments need evaluation.
+    let send = newNode(value.body[0], props = value.props,
+      body = @[newSym("~"), message] & value.body[1 .. ^1],
+      meta = value.meta, immutable = value.nodeImmutable)
+    result = analysis.analyzeCall(send, bindings, expected)
     result.loc = loc
+    if result.kind == wekSend:
+      result.eagerArguments = true
     return
   if value.head.kind == vkNode and value.head.head.isSym("Path"):
     if value.props.len != 0 or value.body.len != 1:
@@ -5095,6 +5105,7 @@ proc analyzePipeline(analysis: WebAnalysis, value: Value,
           # Declared web functions and compiler arithmetic heads cannot be
           # rebound. Keeping those heads preserves their static signatures;
           # actual callback bindings and every fixed argument are captured.
+          (head.kind == vkNode and head.head.isSym("msg")) or
           (head.kind == vkNode and head.head.isSym("fn") and
              stage.body.len == 0 and stage.props.len == 0) or
           (head.kind == vkSymbol and not local.hasKey(head.symVal) and
@@ -7248,8 +7259,10 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     let receiver = if emitter.typescript: "($receiver as any)" else: "$receiver"
     let dispatch = receiver & "?.[" & expr.text & "]" &
       (if expr.defaultFactory.len > 0: " ?? " & expr.defaultFactory & "()" else: "")
-    "$gene_message_value((" & params.join(", ") & ") => (" & dispatch & ").call(" & receiver &
-      (if args.len > 0: ", " & args.join(", ") else: "") & "), " & $expr.typ.requiredCallbackParams & ")"
+    "$gene_message_value((" & params.join(", ") & ") => { const $method = " & dispatch &
+      "; if (typeof $method !== \"function\") throw new $gene_message_fault(" &
+      "{ _msg: \"no applicable message implementation\" }); return $method.call(" & receiver &
+      (if args.len > 0: ", " & args.join(", ") else: "") & "); }, " & $expr.typ.requiredCallbackParams & ")"
   of wekSetPath:
     var container = emitter.emitExpr(expr.children[0])
     var dynamicIndex = 1
@@ -7296,6 +7309,15 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       let saved = emitter.temp()
       emitter.line("const " & saved & " = " & receiver & ";")
       receiver = saved
+    var arguments: seq[string]
+    template emitArguments() =
+      for i in 1 ..< expr.children.len:
+        let argument = emitter.emitExpr(expr.children[i])
+        let saved = emitter.temp()
+        emitter.line("const " & saved & " = " & argument & ";")
+        arguments.add saved
+    if expr.eagerArguments:
+      emitArguments()
     var resolvedMethod = ""
     if expr.keys.len == 1 or superSend:
       resolvedMethod = emitter.temp()
@@ -7307,12 +7329,8 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       emitter.line("const " & resolvedMethod & " = " & target & member &
         (if expr.defaultFactory.len > 0: " ?? " & expr.defaultFactory & "()" else: "") & ";")
       emitter.line("if (typeof " & resolvedMethod & " !== \"function\") throw new $gene_message_fault({ _msg: \"no applicable message implementation\" });")
-    var arguments: seq[string]
-    for i in 1 ..< expr.children.len:
-      let argument = emitter.emitExpr(expr.children[i])
-      let saved = emitter.temp()
-      emitter.line("const " & saved & " = " & argument & ";")
-      arguments.add saved
+    if not expr.eagerArguments:
+      emitArguments()
     if resolvedMethod.len > 0:
       return resolvedMethod & ".call(" & receiver &
         (if arguments.len > 0: ", " & arguments.join(", ") else: "") & ")"

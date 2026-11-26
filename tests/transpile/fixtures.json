@@ -4285,6 +4285,34 @@
       "expected_error": null
     },
     {
+      "id": "callable.message_evaluation_order",
+      "source": "(protocol Paint (message paint [color : Int] : Int)) (type Box ^props {}) (fn run [] : (List Int) (let box (Box)) (let held Paint:paint) (var touched 0) (try (box .Paint:paint (do (set touched (+ touched 1)) 0)) catch MessageFault nil) (let after_send touched) (try (Paint:paint box (do (set touched (+ touched 1)) 0)) catch MessageFault nil) (let after_inline touched) (try (held box (do (set touched (+ touched 1)) 0)) catch MessageFault nil) [after_send after_inline touched]) (run)",
+      "web_source": "(mod callable_message_evaluation_order ^profile web) (protocol Paint (message paint [color : Int] : Int)) (type Box ^props {}) (fn run [] : (List Int) (let box (Box)) (let held Paint:paint) (var touched 0) (try (box .Paint:paint (do (set touched (+ touched 1)) 0)) catch MessageFault nil) (let after_send touched) (try (Paint:paint box (do (set touched (+ touched 1)) 0)) catch MessageFault nil) (let after_inline touched) (try (held box (do (set touched (+ touched 1)) 0)) catch MessageFault nil) [after_send after_inline touched])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "0"
+          },
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
       "id": "callable.prefix_pipeline",
       "source": "(type Box ^props {^n Int} (message plus [x : Int] : Int (+ self/n x))) (fn run [] : (List Int) (let boxes [(Box ^n 2) (Box ^n 3)]) (boxes -> Self:to_stream => Self:plus 1 -> $into [])) (run)",
       "web_source": "(mod callable_prefix_pipeline ^profile web) (type Box ^props {^n Int} (message plus [x : Int] : Int (+ self/n x))) (fn run [] : (List Int) (let boxes [(Box ^n 2) (Box ^n 3)]) (boxes -> Self:to_stream => Self:plus 1 -> $into []))",

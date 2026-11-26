@@ -24,7 +24,6 @@
 # 5	src/gene/macro_runtime.nim
 # 47	src/gene/native_api.nim
 # 187	src/gene/native_managed.nim
-# 3	src/gene/reader.nim
 # 243	src/gene/stdlib.nim
 # 19	src/gene/testing.nim
 # 2	src/gene/type_contracts.nim
@@ -852,9 +851,6 @@ src/gene/native_managed.nim	typed foreign Task failure needs a root-lane adapter
 src/gene/native_managed.nim	typed foreign Task failure needs a root-lane adapter
 src/gene/native_managed.nim	wrapper field requires a name
 src/gene/native_managed.nim	wrapper type requires a name
-src/gene/reader.nim	a direct message call requires a named message
-src/gene/reader.nim	a direct message call requires a receiver
-src/gene/reader.nim	a direct message call requires an explicit receiver before spreads; 
 src/gene/stdlib.nim	<expr if ctx.message.len > 0: ctx.message>
 src/gene/stdlib.nim	<expr label & " expects a web_module or web/load asset")>
 src/gene/stdlib.nim	<expr message & ": " & path)>

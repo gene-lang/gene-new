@@ -5,7 +5,7 @@ template unifyCallableCheck(source, expected: string) =
   check run(compileSource(source), newGlobalScope()).print() == expected
 
 suite "unified callable — direct message syntax":
-  test "prefix protocol and Self calls share dot dispatch":
+  test "prefix protocol and Self calls select the same methods as sends":
     unifyCallableCheck """
       (protocol Named (message name [] : Str))
       (type Box ^props {^label Str}
@@ -16,7 +16,7 @@ suite "unified callable — direct message syntax":
        (Self:label box) (box .Self:label) (box .label)]
     """, "[\"box\" \"box\" \"box\" \"box\" \"box\"]"
 
-  test "the receiver runs before the qualifier is read":
+  test "ordinary calls read the qualifier first and sends read the receiver first":
     unifyCallableCheck """
       (protocol A (message label [] : Str))
       (protocol B (message label [] : Str))
@@ -25,10 +25,11 @@ suite "unified callable — direct message syntax":
       (impl B for Box (message label [] : Str "b"))
       (var selected A)
       (fn make [] (set selected B) (Box))
-      (selected:label (make))
-    """, "\"b\""
+      [(selected:label (make))
+       (do (set selected A) ((make) .selected:label))]
+    """, "[\"a\" \"b\"]"
 
-  test "direct rejection precedes arguments while held calls stay eager":
+  test "inline and held calls evaluate arguments before dispatch, unlike sends":
     unifyCallableCheck """
       (protocol Paint (message paint [color] : Str))
       (let log [])
@@ -36,10 +37,11 @@ suite "unified callable — direct message syntax":
       (try (Paint:paint (note 1) (note 2)) catch MessageFault nil)
       (let held Paint:paint)
       (try (held (note 3) (note 4)) catch MessageFault nil)
+      (try ((note 5) .Paint:paint (note 6)) catch MessageFault nil)
       log
-    """, "[1 3 4]"
+    """, "[1 2 3 4 5]"
 
-  test "prefix stages normalize before per-item preparation":
+  test "prefix stages prepare and apply messages as ordinary callables":
     unifyCallableCheck """
       (type Box ^props {^n Int} (message plus [x] (+ self/n x)))
       (let box (Box ^n 10))
@@ -48,8 +50,8 @@ suite "unified callable — direct message syntax":
        ([(Box ^n 2) (Box ^n 3)] => Self:plus 1 -> $into [])]
     """, "[11 [11 12] [3 4]]"
     unifyCallableCheck """
-      (type Invalid ^props {})
-      (let qualifier Invalid)
+      (protocol Paint (message missing [color] : Str))
+      (let qualifier Paint)
       (let effects [])
       (fn setup [] (effects .push "setup") 1)
       (let pending ([] => qualifier:missing (setup)))
@@ -57,20 +59,23 @@ suite "unified callable — direct message syntax":
       effects
     """, "[\"setup\"]"
 
-  test "prefix sends retain spreads, named arguments, and explicit receivers":
+  test "prefix calls support named arguments and receivers supplied by a spread":
     unifyCallableCheck """
       (type Box ^props {}
         (message collect [^tag, xs...] [tag xs]))
-      (Self:collect (Box) ^tag "t" [1 2]...)
-    """, "[\"t\" [1 2]]"
-    for source in ["(Self:missing)", "(Self:missing [1]...)"]:
-      expect GeneError: discard compileSource(source)
+      (let box (Box))
+      [(Self:collect box ^tag "t" [1 2]...)
+       (Self:collect [box 3 4]... ^tag "u")]
+    """, "[[\"t\" [1 2]] [\"u\" [3 4]]]"
+    for source in ["(Self:missing)", "(Self:missing []...)"]:
+      let chunk = compileSource(source)
+      expect GeneError: discard run(chunk, newGlobalScope())
 
   test "concrete qualifiers remain invalid and super stays explicit":
     unifyCallableCheck """
       (type Base ^props {} (message value [] 1))
       (type Child : Base
-        (message value [] ^^override (+ 1 (Self:value super))))
+        (message value [] ^^override (+ 1 (super .value))))
       [(Self:value (Child))
        (try (Base:value (Child)) false catch CallKindFault true)]
     """, "[2 true]"

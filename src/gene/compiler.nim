@@ -4836,12 +4836,11 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     ## Requiring exactly one form here meant every typed-native function with
     ## more than one statement had to be wrapped in an explicit `(do ...)`,
     ## which nothing else in the language asks for.
-    let rawLowerBody =
+    let lowerBody =
       if body.len == start + 1: normalizedBody[start]
       elif body.len > start + 1:
         newNode(newSym("do"), body = normalizedBody[start .. ^1])
       else: NIL
-    let lowerBody = normalizeMessageCallTree(rawLowerBody)
     let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.inGenerator or
         specs.rest.len != 0 or specs.named.len != 0 or
         specs.namedRest.len != 0 or
@@ -4884,10 +4883,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       specs.namedRest.len == 0 and
       not specs.hasOptionalPositional
     if scalarLowerable and start < body.len:
-      let rawLowerBody =
+      let lowerBody =
         if body.len == start + 1: normalizedBody[start]
         else: newNode(newSym("do"), body = normalizedBody[start .. ^1])
-      let lowerBody = normalizeMessageCallTree(rawLowerBody)
       var scalarLocals: seq[AotLocal]
       if c.isTypedNativeAotExpr(lowerBody, specs.positional, aotParamReprs,
                                 aotReturnRepr, c.chunk.ffiFns, scalarLocals):
@@ -7917,11 +7915,7 @@ proc compileMessageValue(c: var Compiler, node: Value) =
   ## `Proto:msg` / `Self:msg` in value position (design §3): a **message
   ## value**, not a function and not a closure.
   ##
-  ## It carries the scope it was written in. That is what makes a message usable
-  ## in a higher-order position at all: applying one has no send site, so there
-  ## is no reaching scope to resolve impls against — which is exactly why the
-  ## first attempt at this failed. Resolving in the scope where the value was
-  ## *authored* is the send-site rule, evaluated one step earlier.
+  ## It carries its authored scope for dispatch when applied, inline or held.
   ##
   ## `Self:msg` names no qualifier, so it binds NIL and dispatches bare.
   if node.hasDotMessageQualifier:
@@ -8179,14 +8173,6 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
 
 proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
                  tail = false) =
-  let directSend = normalizeMessageHeadCall(node)
-  if directSend.bits != node.bits:
-    let firstInstruction = c.chunk.instructions.len
-    compileCall(c, directSend, allowSyntax = false, tail = tail)
-    for instruction, site in c.chunk.callSites.mpairs:
-      if instruction >= firstInstruction and site.bits == directSend.bits:
-        site = node
-    return
   if node.body.len > 1 and node.body[0].kind == vkSymbol and
       (node.body[0].symVal == "~" or node.body[0].symVal == "?~"):
     # (x .f a) — infix message send (archive/docs/spec/protocols.md). The optional marker is the same
@@ -10689,8 +10675,7 @@ proc compilePreparedPipelineCall(c: var Compiler, stage: PipelineStage,
   ## layout preparation is new: it happens now, including all symbol reads and
   ## spread expansion, rather than on each invocation of the retained callback.
   let item = newSym(PipelineItemName)
-  let call = normalizeMessageHeadCall(
-    materializePipelineStage(stage, item, immutable))
+  let call = materializePipelineStage(stage, item, immutable)
   let publicSite = materializePipelineStage(stage, newSym("_"), immutable)
   if call.props.hasKey("types") and call.head.kind == vkSymbol:
     let types = call.props["types"]

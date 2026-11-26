@@ -2501,16 +2501,11 @@ proc rejectSyntaxSend(callee: Value, scope: Scope) {.noreturn.} =
                      scope)
 
 proc rejectMessageCall(callee: Value, scope: Scope) {.noreturn.} =
-  ## A dot send is the only way to invoke a message (design §3): a message identity is
-  ## not callable in head position, so `(P:m x)` is a CallKindFault. Qualified
-  ## sends resolve the impl through `opResolveQualifiedMessage`, so an ordinary
-  ## call never legitimately holds a message value here. The diagnostic names
-  ## the fix, because the head-position spelling is the habit being redirected.
+  ## A declaration-site identity has no authored scope for an ordinary call.
   let name = callee.protocolMessageName
   let shown = if name.len > 0: name else: "m"
   raiseCallKindError("call", "Callable", "Message", callee, scope,
-                     hint = "a message dispatches only through a dot send; write " &
-                            "(x .P:" & shown & ")")
+                     hint = "use a qualified call (P:" & shown & " x) or a dot send (x .P:" & shown & ")")
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
@@ -22820,10 +22815,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if valueMayRetainScope(stack[i]):
               callValuesMayCapture = true
               break
-          # A message identity is not callable in head position (design §3):
-          # qualified sends resolve their impl in opResolveQualifiedMessage, so a
-          # message value reaching an ordinary call came from a dynamic value;
-          # direct source `(P:m x)` is rejected by the compiler.
           if callee.kind == vkProtocolMessage and
               not callee.protocolMessageIsBound:
             # A *bound* message is applicable — that is decision 2. An unbound

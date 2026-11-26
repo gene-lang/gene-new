@@ -2444,17 +2444,14 @@ int main(void) {
     check "= gene_native_impl_0_read_value(" in nativeFunction(c, "read")
     checkCCompiles(c, "typed_native_specialized_send")
 
-  test "typed-native prefix sends use the same specialized implementation":
-    let chunk = compileSource(
+  test "typed-native dispatch requires an explicit dot send":
+    check_compile_error(
       "(protocol ReadValue (message read_value [] : I64)) " &
       "(ffi/struct CNode ^fields [[value C/Int64]]) " &
       "(type Node ^native {^abi CNode ^lifecycle manual}) " &
       "(impl ReadValue for Node (message read_value [] : I64 self/value)) " &
-      "(fn read [node : Node] : I64 (ReadValue:read_value node))")
-    let c = chunk.emitExperimentalC()
-    check chunk.directProtocolCalls.len == 1
-    check "= gene_native_impl_0_read_value(" in nativeFunction(c, "read")
-    checkCCompiles(c, "typed_native_prefix_send")
+      "(fn read [node : Node] : I64 (ReadValue:read_value node))",
+      "typed_native function read cannot lower its body statically")
 
   test "two slot-compiled chunks cannot silently share one scope":
     ## Each slot layout numbers its locals from zero, so a second such chunk
@@ -6472,7 +6469,7 @@ suite "spec — implicit self in message bodies from design §10":
                "catch MessageFault $err/receiver_type)",
                "\"P\"")
 
-  test "a message in head position normalizes to a send":
+  test "an inline message value can be called with a receiver":
     check_eval("(protocol P (message m [] : Str)) " &
       "(type T ^props {} (impl P (message m [] : Str \"ok\"))) " &
       "[(P:m (T)) ((T) .P:m)]", "[\"ok\" \"ok\"]")
