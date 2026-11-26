@@ -239,7 +239,7 @@ proc checkFactoryScheduling() =
   doAssert run(compileSource("(do ($sleep 0) (await subject))"),
     normalProbe).intVal == 42
   discard run(compileSource(
-    "(import $io [IoResource]) module/.IoResource:close"), scope)
+    "(import $io/[IoResource]) module/.IoResource:close"), scope)
   geneManagedPollNativeModules()
 
 # A broken guard used to block inside a native completion poll indefinitely,
@@ -711,7 +711,7 @@ suite "two-phase native module close":
       scope.assign("module", NIL)
     else:
       discard run(compileSource(
-        "(import $io [IoResource]) (module .IoResource:close)"), scope)
+        "(import $io/[IoResource]) (module .IoResource:close)"), scope)
       check run(compileSource("(let s (module .status)) s/close_phase"),
                 newScope(scope)).strVal == "prepare"
     var flag: uint8
@@ -771,7 +771,7 @@ suite "two-phase native module close":
           scope.assign("module", NIL)
         else:
           discard run(compileSource(
-            "(import $io [IoResource]) (module .IoResource:close)"), scope)
+            "(import $io/[IoResource]) (module .IoResource:close)"), scope)
         for _ in 0 ..< 5: geneManagedPollNativeModules()
         check fn[Count](handle, "gene_async_context_retires")() == 0
         check fn[Count](handle, "gene_async_release_attacher")() == 0
@@ -803,7 +803,7 @@ suite "two-phase native module close":
     scope.define("native", run(compileSource("(module .module)"), scope))
     let live = run(compileSource("(native/start 1)"), scope)
     discard run(compileSource(
-      "(import $io [IoResource]) (module .IoResource:close)"), scope)
+      "(import $io/[IoResource]) (module .IoResource:close)"), scope)
     # Today's order: every registration retires while a producer is live.
     check fn[Count](handle, "gene_async_context_retires")() == 3
     check run(compileSource("(let s (module .status)) s/close_phase"),
@@ -815,7 +815,7 @@ suite "two-phase native module close":
               newScope(scope)).strVal == "closed"
 
 const patternSource = """
-(import $io [IoResource])
+(import $io/[IoResource])
 (var stopping false)
 (var reopened 0)
 (fn ingress_handler [bytes]

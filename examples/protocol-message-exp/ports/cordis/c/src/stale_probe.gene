@@ -3,7 +3,7 @@
 # Same scenario for C and P: activate provider + consumer, then reconcile a
 # manifest that removes the provider while the consumer still requires it, then
 # restore it. Prints observable outcomes only.
-(import $log [new_logger])
+(import $log/[new_logger])
 (import
   LoaderOptions
   ReconcileMode

@@ -1257,7 +1257,7 @@ suite "compiler — GIR emission":
 
   test "emits slots for imported bindings":
     let selectedChunk = compileSource(
-      "(import foo, bar:baz ^from \"./lib\") (fn use [] [foo baz])")
+      "(import foo, bar:baz ^from \"./lib\") (fn use/[] [foo baz])")
     check selectedChunk.localNames == @["foo", "baz", "use"]
     let selectedProto = selectedChunk.functions[0]
     var sawFoo = false
@@ -1273,7 +1273,7 @@ suite "compiler — GIR emission":
     check sawBaz
 
     let aliasChunk = compileSource(
-      "(import gene/stream:stream) (fn use [] stream)")
+      "(import gene/stream:stream) (fn use/[] stream)")
     check aliasChunk.localNames == @["stream", "use"]
     check aliasChunk.functions[0].chunk.instructions[0].op == opLoadOuterLocal
     check aliasChunk.functions[0].chunk.instructions[0].name == "stream"

@@ -21,7 +21,7 @@ what Gene actually wants.
 | `no message 'size' on Str` | String length needs an explicit unit | `s/.byte_size` for UTF-8 bytes or `($size ($chars s))` for code points; ordinary text methods such as `(s .split ",")` are supported |
 | `no message 'foo' on T` | Sends dispatch only — no lexical fallback | Declare a `(message …)` in the type, or call the function directly |
 | `cannot call m/b: the value is nil` | Missing key read as `nil`, then called | Check the path; supply `(?? m/k default)` |
-| `import selector must be a name or a namespace path` | Invalid import selector | `(import name ^from "./path")` or `(import $str [name])` |
+| `import selector must be a name or a namespace path` | Invalid import selector | `(import name ^from "./path")` or `(import $str/[name])` |
 | `break expects no arguments` | Carrying a value out of a loop | Assign to a binding before `(break)` |
 | `channel expects no positional arguments` | Capacity is named | `($channel ^capacity 2)` |
 | `actor/spawn expects no positional arguments` | Actor config is named | `($actor/spawn ^init … ^handle …)` |

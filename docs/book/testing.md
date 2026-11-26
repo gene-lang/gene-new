@@ -24,7 +24,7 @@ enabled.
 `$test` adds two helpers that work anywhere:
 
 ```gene runnable
-(import $test [assert_equal assert_raises])
+(import $test/[assert_equal assert_raises])
 (assert_equal (+ 1 1) 2)
 (let error (assert_raises (fn [] ($assert false)) AssertionFault))
 error/.message
@@ -44,7 +44,7 @@ Its name ends in `_spec.gene`, and it usually lives under `tests/`:
 
 ```gene
 # tests/list_spec.gene
-(import $test [assert_equal assert_raises before_each context describe it])
+(import $test/[assert_equal assert_raises before_each context describe it])
 
 (describe "a list"
   (before_each [t]

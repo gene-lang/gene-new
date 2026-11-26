@@ -4,11 +4,11 @@
 # book, and writes the pages, the index, the manifest, and the search database.
 # It never loads a documented module.
 
-(import $str [join split trim lower upper starts_with? ends_with? contains?
+(import $str/[join split trim lower upper starts_with? ends_with? contains?
               byte_size])
-(import $fs [exists? make_dir read_text write_text list_dir])
-(import $order [sort sort_by])
-(import $parse [read_all])
+(import $fs/[exists? make_dir read_text write_text list_dir])
+(import $order/[sort sort_by])
+(import $parse/[read_all])
 
 (type DocsError : Error)
 

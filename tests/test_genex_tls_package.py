@@ -80,7 +80,7 @@ class GenexTlsPackageTests(unittest.TestCase):
   0)
 ''')
             (app / "src/https.gene").write_text(f'''
-(import $net/http [listen serve text])
+(import $net/http/[listen serve text])
 (let AsyncReader $io/AsyncReader)
 (fn main [args] : Int
   (let server (listen ^host "127.0.0.1" ^port {port}

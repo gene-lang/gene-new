@@ -2,9 +2,9 @@
 # file. Names and signatures are real; prose, examples, and profiles are not
 # invented.
 
-(import $str [join split trim starts_with? ends_with? contains? byte_size
+(import $str/[join split trim starts_with? ends_with? contains? byte_size
               slice_bytes])
-(import $order [sort_by])
+(import $order/[sort_by])
 (import fail_pipeline ^from "./util")
 
 (fn kind_name [kind]

@@ -1,6 +1,6 @@
 (mod main)
 
-(import $log [new_logger])
+(import $log/[new_logger])
 (import
   LoaderOptions
   ReconcileMode

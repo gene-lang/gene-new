@@ -128,7 +128,7 @@ proc geneQuotedPath(path: string): string =
 suite "net/http server e2e":
   test "occupied listeners report a structured bind error":
     let result = run(compileSource("""
-      (import $net/http [listen stop])
+      (import $net/http/[listen stop])
       (let listener (listen ^host "127.0.0.1" ^port 0))
       (try
         (try (listen ^host "127.0.0.1" ^port listener/port) "unexpected"
@@ -139,7 +139,7 @@ suite "net/http server e2e":
 
   test "ephemeral listeners report their actual reserved ports":
     let ports = run(compileSource("""
-      (import $net/http [listen status stop])
+      (import $net/http/[listen status stop])
       (let a (listen ^host "127.0.0.1" ^port 0))
       (let b (listen ^host "127.0.0.1" ^port 0))
       (let a_status (status a))
@@ -158,7 +158,7 @@ suite "net/http server e2e":
 
   test "handler parked in sleep does not stall other requests":
     let p = startHttpServer("concurrent.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req]
   (if (== req/path "/slow")
     ($sleep 800)
@@ -182,7 +182,7 @@ suite "net/http server e2e":
 
   test "request bytes may arrive in dribbles":
     let p = startHttpServer("dribble.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req]
   (text req/params/a))
 (serve (Server ^host "127.0.0.1" ^port 8182) handle ^max_requests 1)
@@ -199,7 +199,7 @@ suite "net/http server e2e":
 
   test "stream mode dispatches after headers and reads bounded body chunks":
     let p = startHttpServer("stream_body.gene", """
-(import $net/http [Server StreamRequest serve text])
+(import $net/http/[Server StreamRequest serve text])
 (let AsyncReader $io/AsyncReader)
 (fn handle [req]
   ($assert (== ($head req) StreamRequest))
@@ -226,7 +226,7 @@ suite "net/http server e2e":
 
   test "a slow streamed body does not delay an unrelated fast request":
     let p = startHttpServer("stream_concurrent.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (let AsyncReader $io/AsyncReader)
 (fn handle [req]
   (if (== req/path "/fast")
@@ -257,7 +257,7 @@ suite "net/http server e2e":
 
   test "stream backpressure leaves fast requests responsive":
     let p = startHttpServer("stream_backpressure.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (let AsyncReader $io/AsyncReader)
 (fn handle [req]
   (if (== req/path "/fast")
@@ -289,7 +289,7 @@ suite "net/http server e2e":
 
   test "truncated stream body never appears as successful EOF":
     let p = startHttpServer("stream_truncated.gene", """
-(import $net/http [listen serve stop text])
+(import $net/http/[listen serve stop text])
 (let AsyncReader $io/AsyncReader)
 (var cleaned 0)
 (var entered false)
@@ -339,7 +339,7 @@ suite "net/http server e2e":
 
   test "stream mode rejects conflicting framing and oversize before dispatch":
     let p = startHttpServer("stream_rejections.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req] (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8195) handle
   ^body_mode "stream" ^max_body_bytes 1024 ^max_requests 2)
@@ -359,7 +359,7 @@ suite "net/http server e2e":
 
   test "chunked stream frames split across reads yield only decoded Bytes":
     let p = startHttpServer("stream_chunked.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (let AsyncReader $io/AsyncReader)
 (fn handle [req]
   (var payload "")
@@ -384,7 +384,7 @@ suite "net/http server e2e":
 
   test "chunked stream rejects malformed size and decoded-size overflow":
     let p = startHttpServer("stream_chunked_errors.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (let AsyncReader $io/AsyncReader)
 (fn handle [req]
   (while true
@@ -416,7 +416,7 @@ suite "net/http server e2e":
 
   test "truncated chunked body never appears as successful EOF":
     let p = startHttpServer("stream_chunked_truncated.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (let AsyncReader $io/AsyncReader)
 (fn handle [req]
   (while true
@@ -436,7 +436,7 @@ suite "net/http server e2e":
 
   test "stream body idle timeout is monotonic and reports 408":
     let p = startHttpServer("stream_idle.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (let AsyncReader $io/AsyncReader)
 (fn handle [req]
   (await (req/body .AsyncReader:read 1))
@@ -458,7 +458,7 @@ suite "net/http server e2e":
 
   test "handler may close an unfinished stream body and answer early":
     let p = startHttpServer("stream_early_close.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (let IoResource $io/IoResource)
 (fn handle [req]
   (req/body .IoResource:close)
@@ -475,7 +475,7 @@ suite "net/http server e2e":
 
   test "streaming headers stop at the configured header cap":
     let p = startHttpServer("stream_header_limit.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req] (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8197) handle
   ^body_mode "stream" ^max_requests 1)
@@ -495,8 +495,8 @@ suite "net/http server e2e":
     writeFile(path, "a\0b")
     defer: removeFile(path)
     let p = startHttpServer("stream_response_known.gene", """
-(import $net/http [Server serve stream])
-(import $io [open_read])
+(import $net/http/[Server serve stream])
+(import $io/[open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
   (stream 200 source ^content_length 3 ^^own_reader))
@@ -514,8 +514,8 @@ suite "net/http server e2e":
     writeFile(path, expected)
     defer: removeFile(path)
     let p = startHttpServer("stream_response_chunked.gene", """
-(import $net/http [Server serve stream])
-(import $io [open_read])
+(import $net/http/[Server serve stream])
+(import $io/[open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
   (stream 200 source ^^own_reader))
@@ -532,8 +532,8 @@ suite "net/http server e2e":
     writeFile(path, "ab")
     defer: removeFile(path)
     let p = startHttpServer("stream_response_short.gene", """
-(import $net/http [Server serve stream])
-(import $io [open_read])
+(import $net/http/[Server serve stream])
+(import $io/[open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
   (stream 200 source ^content_length 3 ^^own_reader))
@@ -550,8 +550,8 @@ suite "net/http server e2e":
     writeFile(path, "abcdef")
     defer: removeFile(path)
     let p = startHttpServer("stream_response_limit.gene", """
-(import $net/http [Server serve stream])
-(import $io [open_read])
+(import $net/http/[Server serve stream])
+(import $io/[open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
   (stream 200 source ^^own_reader ^max_bytes 4))
@@ -568,8 +568,8 @@ suite "net/http server e2e":
     writeFile(path, "abc")
     defer: removeFile(path)
     let p = startHttpServer("stream_response_head.gene", """
-(import $net/http [Server serve stream])
-(import $io [open_read])
+(import $net/http/[Server serve stream])
+(import $io/[open_read])
 (fn handle [req]
   (let source (await (open_read """ & geneQuotedPath(path) & """)))
   (stream 200 source ^content_length 3 ^^own_reader))
@@ -586,7 +586,7 @@ suite "net/http server e2e":
 
   test "streamed response accepts a third-party AsyncReader implementation":
     let p = startHttpServer("stream_response_protocol.gene", """
-(import $net/http [Server serve stream])
+(import $net/http/[Server serve stream])
 (let AsyncReader $io/AsyncReader)
 (type Parts ^props {^chunks List ^index Cell})
 (impl AsyncReader for Parts
@@ -614,7 +614,7 @@ suite "net/http server e2e":
 
   test "streamed response deadline closes an unfinished body":
     let p = startHttpServer("stream_response_timeout.gene", """
-(import $net/http [Server serve stream])
+(import $net/http/[Server serve stream])
 (let AsyncReader $io/AsyncReader)
 (var cleaned 0)
 (type SlowReader ^props {})
@@ -650,7 +650,7 @@ suite "net/http server e2e":
 
   test "streamed response can echo an unfinished request body":
     let p = startHttpServer("stream_echo.gene", """
-(import $net/http [Server serve stream])
+(import $net/http/[Server serve stream])
 (fn handle [req] (stream 200 req/body))
 (serve (Server ^host "127.0.0.1" ^port 8211) handle
   ^body_mode "stream" ^max_requests 1)
@@ -678,7 +678,7 @@ suite "net/http server e2e":
 
   test "chunked upload can be echoed before its final chunk":
     let p = startHttpServer("stream_chunked_echo.gene", """
-(import $net/http [Server serve stream])
+(import $net/http/[Server serve stream])
 (fn handle [req] (stream 200 req/body))
 (serve (Server ^host "127.0.0.1" ^port 8212) handle
   ^body_mode "stream" ^max_requests 1)
@@ -711,7 +711,7 @@ suite "net/http server e2e":
 
   test "malformed upload during echo closes the partial response":
     let p = startHttpServer("stream_echo_malformed.gene", """
-(import $net/http [Server serve stream])
+(import $net/http/[Server serve stream])
 (fn handle [req] (stream 200 req/body))
 (serve (Server ^host "127.0.0.1" ^port 8213) handle
   ^body_mode "stream" ^max_requests 1)
@@ -747,8 +747,8 @@ suite "net/http server e2e":
     writeFile(path, repeat('x', 16 * 1024 * 1024))
     defer: removeFile(path)
     let p = startHttpServer("stream_response_slow.gene", """
-(import $net/http [Server serve stream text])
-(import $io [open_read])
+(import $net/http/[Server serve stream text])
+(import $io/[open_read])
 (fn handle [req]
   (if (== req/path "/fast")
     (text "fast")
@@ -782,7 +782,7 @@ suite "net/http server e2e":
 
   test "POST body and query params reach the handler":
     let p = startHttpServer("post.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req]
   (text ($to_str req/method ":" req/params/k ":" req/body)))
 (serve (Server ^host "127.0.0.1" ^port 8183) handle ^max_requests 1)
@@ -797,7 +797,7 @@ suite "net/http server e2e":
 
   test "malformed request answers 400":
     let p = startHttpServer("bad.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req] (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8184) handle ^max_requests 1)
 """)
@@ -809,7 +809,7 @@ suite "net/http server e2e":
 
   test "handler errors answer 500":
     let p = startHttpServer("boom.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req] (no-such-function))
 (serve (Server ^host "127.0.0.1" ^port 8185) handle ^max_requests 1)
 """)
@@ -819,7 +819,7 @@ suite "net/http server e2e":
 
   test "slow handler answers 504 after request_timeout_ms":
     let p = startHttpServer("late.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req]
   ($sleep 10000)
   (text "late"))
@@ -834,7 +834,7 @@ suite "net/http server e2e":
 
   test "requests beyond max_in_flight answer 503":
     let p = startHttpServer("busy.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req]
   ($sleep 900)
   (text "done"))
@@ -852,7 +852,7 @@ suite "net/http server e2e":
 
   test "oversized headers answer 400":
     let p = startHttpServer("bighead.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req] (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8188) handle ^max_requests 1)
 """)
@@ -864,7 +864,7 @@ suite "net/http server e2e":
 
   test "declared body beyond max_body_bytes answers 413":
     let p = startHttpServer("bigbody.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req] (text "unreachable"))
 (serve (Server ^host "127.0.0.1" ^port 8189) handle
   ^max_requests 1 ^max_body_bytes 16)
@@ -879,7 +879,7 @@ suite "net/http server e2e":
 
   test "meta-based route discovery serves @route-annotated handlers":
     let p = startHttpServer("discover.gene", """
-(import $net/http [Server serve text route])
+(import $net/http/[Server serve text route])
 (fn home [req]
   @route (route ^method "GET" ^path "/")
   (text "home-discovered"))
@@ -905,7 +905,7 @@ suite "net/http server e2e":
 
   test "access_log records responses with redacted headers; error_log records failures":
     let p = startHttpServer("logs.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (var access-entries ($cell nil))
 (var error-entries ($cell nil))
 (fn on-access [rec] (access-entries .set rec))
@@ -953,7 +953,7 @@ suite "net/http server e2e":
 
   test "route table matches :param patterns into req/params":
     let p = startHttpServer("routes.gene", """
-(import $net/http [Server serve text route])
+(import $net/http/[Server serve text route])
 (fn job-handler [req]
   (text ($to_str "job:" req/params/id ":verbose=" req/params/verbose)))
 (fn home [req] (text "home"))
@@ -972,7 +972,7 @@ suite "net/http server e2e":
 
   test "actor_pool ^supervision restarts workers and emits failure events":
     let p = startHttpServer("pool.gene", """
-(import $net/http [Server serve text actor_pool supervisor_policy RequestMsg])
+(import $net/http/[Server serve text actor_pool supervisor_policy RequestMsg])
 (type Boom : Error)
 (var failures ($channel ^capacity 8))
 (fn worker-init [] 0)
@@ -1007,7 +1007,7 @@ suite "net/http server e2e":
 
   test "custom overload_response answers admission overflow":
     let p = startHttpServer("busy-custom.gene", """
-(import $net/http [Server serve text])
+(import $net/http/[Server serve text])
 (fn handle [req]
   ($sleep 900)
   (text "done"))
@@ -1100,7 +1100,7 @@ suite "net/http server e2e":
 
   test "ws_send emits binary for Bytes and text for Str":
     let p = startHttpServer("ws-kinds.gene", """
-(import $net/http [Server serve listen ws_accept ws_send])
+(import $net/http/[Server serve listen ws_accept ws_send])
 (serve (listen ^host "127.0.0.1" ^port 8188)
   (fn [req]
     (ws_accept req
@@ -1137,7 +1137,7 @@ suite "net/http server e2e":
     # through untouched would look the same whatever it was. Reversing it can
     # only be done to a real `Bytes`.
     let p = startHttpServer("ws-bytes.gene", """
-(import $net/http [Server serve listen ws_accept ws_send])
+(import $net/http/[Server serve listen ws_accept ws_send])
 (serve (listen ^host "127.0.0.1" ^port 8187)
   (fn [req]
     (ws_accept req
@@ -1180,7 +1180,7 @@ suite "net/http server e2e":
     # thread — and a throwing tick must not take every connected client down
     # with it, since the next one may well succeed.
     let p = startHttpServer("tick.gene", """
-(import $net/http [serve listen stop text])
+(import $net/http/[serve listen stop text])
 (var n ($cell 0))
 (var srv (listen ^host "127.0.0.1" ^port 8187))
 (serve srv
@@ -1206,7 +1206,7 @@ suite "net/http server e2e":
 
   test "stop returns a physical-cleanup report after a forced drain":
     let p = startHttpServer("stop-report.gene", """
-(import $net/http [listen serve stop text])
+(import $net/http/[listen serve stop text])
 (var srv (listen ^host "127.0.0.1" ^port 8222))
 (var cleaned 0)
 (let report (serve srv
@@ -1245,7 +1245,7 @@ suite "net/http server e2e":
 
   test "stop reports incomplete cleanup when an owned reader will not close":
     let p = startHttpServer("stop-incomplete.gene", """
-(import $net/http [listen serve stop text stream])
+(import $net/http/[listen serve stop text stream])
 (let AsyncReader $io/AsyncReader)
 (let IoResource $io/IoResource)
 (type NeverClose ^props {})
@@ -1293,7 +1293,7 @@ suite "net/http server e2e":
     # answer names it, so the selection has to reach the 101 response. A name
     # the client never offered is refused before any upgrade happens.
     let p = startHttpServer("ws-protocol.gene", """
-(import $net/http [Server serve listen ws_accept ws_send ws_queued text])
+(import $net/http/[Server serve listen ws_accept ws_send ws_queued text])
 (serve (listen ^host "127.0.0.1" ^port 8185)
   (fn [req]
     (ws_accept req ^subprotocol "gene.world.v1"
@@ -1334,7 +1334,7 @@ suite "net/http server e2e":
 
   test "ws_try_send paces more than 256 frames without dropping data":
     let p = startHttpServer("ws-no-drop.gene", """
-(import $net/http [listen serve ws_accept ws_try_send])
+(import $net/http/[listen serve ws_accept ws_try_send])
 (serve (listen ^host "127.0.0.1" ^port 8215)
   (fn [req]
     (ws_accept req
@@ -1363,7 +1363,7 @@ suite "net/http server e2e":
     # exception inside one used to vanish completely: no delivery, no error,
     # no close — indistinguishable from a client that never sent anything.
     let p = startHttpServer("ws-throw.gene", """
-(import $net/http [Server serve listen ws_accept ws_send])
+(import $net/http/[Server serve listen ws_accept ws_send])
 (serve (listen ^host "127.0.0.1" ^port 8186)
   (fn [req]
     (ws_accept req
@@ -1386,7 +1386,7 @@ suite "net/http server e2e":
     # shows as loop work rather than as a late kernel wakeup. The SERVICE
     # heartbeat relies on that split to attribute a stall.
     let p = startHttpServer("loop-timing.gene", """
-(import $net/http [listen serve status text])
+(import $net/http/[listen serve status text])
 (var server (listen ^host "127.0.0.1" ^port 8214))
 (fn handle [req]
   (if (== req/path "/spin")

@@ -60,7 +60,7 @@ class GenexLibuvTimerTests(unittest.TestCase):
  ^dependencies {^timer (dep "genex/libuv_timer" "0.1.0" ^path "../timer")}}
 ''')
             (app / "src/main.gene").write_text('''
-(import $io [IoResource])
+(import $io/[IoResource])
 (import open ^from "." ^pkg "timer")
 (fn main [args] : Int
   (let baseline_roots (/native_roots ($runtime/gc_stats)))

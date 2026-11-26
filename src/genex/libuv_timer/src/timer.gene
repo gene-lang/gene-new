@@ -1,5 +1,5 @@
 (mod timer)
-(import $io [IoResource])
+(import $io/[IoResource])
 
 # The subscription owns the C callback context. The materialized image and
 # library stay alive until its native retirement and handler have both settled.

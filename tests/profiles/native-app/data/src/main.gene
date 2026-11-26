@@ -1,7 +1,7 @@
 (import $io/[IoResource open_read])
-(import $csv [reader])
-(import $order [sort_by])
-(import $parse [parse_int])
+(import $csv/[reader])
+(import $order/[sort_by])
+(import $parse/[parse_int])
 
 (type DataLimitError : Error)
 

@@ -1,4 +1,4 @@
-(import $parse [read_all])
+(import $parse/[read_all])
 
 (fn main [args] : Int
   (let path (?? args/0 "tests/profiles/native-app/profile.gene"))

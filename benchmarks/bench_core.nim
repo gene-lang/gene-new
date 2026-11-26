@@ -265,7 +265,7 @@ proc main() =
 
   let disabledGeneScope = newGlobalScope()
   discard run(compileSource(
-    "(import $log [new_logger log_debug]) " &
+    "(import $log/[new_logger log_debug]) " &
     "(var logger (new_logger \"app/bench\")) " &
     "(var drive (fn [] (log_debug logger \"disabled\")))"),
     disabledGeneScope)
@@ -827,7 +827,7 @@ proc main() =
 
   let sqliteScope = newGlobalScope()
   discard run(compileSource(
-    "(import $db/sqlite [open Db]) " &
+    "(import $db/sqlite/[open Db]) " &
     "(var sqlite_conn (open \":memory:\"))"), sqliteScope)
   let sqliteQueryChunk = compileSource(
     "(sqlite_conn .Db:query \"select 1 as value\")")

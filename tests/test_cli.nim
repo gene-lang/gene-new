@@ -287,8 +287,8 @@ suite "cli — gene run":
     if dirExists(root): removeDir(root)
     createDir(root)
     let contender = writeCliProgram("harness_store_contender.gene", """
-(import $store/fs [open:store_open Store StoreError])
-(import $fs [write_text exists?])
+(import $store/fs/[open:store_open Store StoreError])
+(import $fs/[write_text exists?])
 (fn main [args]
   (var root args/0)
   (var id args/1)
@@ -321,7 +321,7 @@ suite "cli — gene run":
     check combined.count("conflict ") == 1
 
     let reader = writeCliProgram("harness_store_reader.gene", """
-(import $store/fs [open:store_open Store])
+(import $store/fs/[open:store_open Store])
 (fn main [args]
   (var store (store_open ^root args/0))
   (var loaded (store .Store:load_checkpoint))
@@ -346,7 +346,7 @@ suite "cli — gene run":
  ^loggers {{"app" : {^level "info" ^targets ["main"]}}}}
 """)
     let fixture = writeCliProgram("logging_configured.gene", """
-(import $log [new_logger])
+(import $log/[new_logger])
 (var logger (new_logger "app/cli" ^payload {^service "test"}))
 (logger .info "started" ^payload {^token "secret" ^count 2})
 """)
@@ -367,7 +367,7 @@ suite "cli — gene run":
     writeFile(configPath,
       "{^sinks {^console {^type \"console\"}} ^targets [\"missing\"]}")
     let fixture = writeCliProgram("bad_logging_entry.gene",
-      "(import $fs [write_text WriteDir]) " &
+      "(import $fs/[write_text WriteDir]) " &
       "(write_text " & geneQuote(marker) & " \"ran\")")
     let ran = runGene(["run", "--log-config", configPath, fixture])
     check ran.exitCode == 1
@@ -520,8 +520,8 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_events.gene", """
-(import $curses [open close dimensions next_event])
-(import $json [stringify])
+(import $curses/[open close dimensions next_event])
+(import $json/[stringify])
 (var screen (open))
 (try
   (do
@@ -578,8 +578,8 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_control_events.gene", """
-(import $curses [open close next_event])
-(import $json [stringify])
+(import $curses/[open close next_event])
+(import $json/[stringify])
 (var screen (open))
 (try
   (do
@@ -653,8 +653,8 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_log_suppression.gene", """
-(import $curses [open close draw])
-(import $log [new_logger log_warn])
+(import $curses/[open close draw])
+(import $log/[new_logger log_warn])
 (var logger (new_logger "app/curses_test"))
 (var screen (open))
 (try
@@ -691,7 +691,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_paste.gene", """
-(import $curses [open close read_input])
+(import $curses/[open close read_input])
 (var screen (open))
 (try
   (do
@@ -736,7 +736,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_history.gene", """
-(import $curses [open close read_input])
+(import $curses/[open close read_input])
 (var screen (open))
 (try
   (do
@@ -780,7 +780,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_panes.gene", """
-(import $curses [open close read_input])
+(import $curses/[open close read_input])
 (var screen (open))
 (try
   (do
@@ -826,7 +826,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_pane_scroll.gene", """
-(import $curses [open close read_input])
+(import $curses/[open close read_input])
 (var screen (open))
 (try
   (do
@@ -870,7 +870,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_focused_narrow.gene", """
-(import $curses [open close read_input])
+(import $curses/[open close read_input])
 (var screen (open))
 (try
   (do
@@ -912,7 +912,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_escape.gene", """
-(import $curses [open close read_input escape_pressed?])
+(import $curses/[open close read_input escape_pressed?])
 (var screen (open))
 (var found false)
 (try
@@ -957,8 +957,8 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("agent_escape_cancel.gene", """
-(import $os [begin_interrupt take_interrupt end_interrupt])
-(import $curses [open close escape_pressed?])
+(import $os/[begin_interrupt take_interrupt end_interrupt])
+(import $curses/[open close escape_pressed?])
 (var screen (open))
 (var running ($cell true))
 (var cancelled ($cell false))
@@ -1022,7 +1022,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_scroll.gene", """
-(import $curses [open close read_input])
+(import $curses/[open close read_input])
 (var screen (open))
 (try
   (do
@@ -1063,7 +1063,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_mouse_scroll.gene", """
-(import $curses [open close read_input])
+(import $curses/[open close read_input])
 (var screen (open))
 (try
   (do
@@ -1110,7 +1110,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     when defined(macosx):
       buildGeneCli()
       let fixture = writeCliProgram("curses_word_wrap.gene", """
-(import $curses [open close read_input])
+(import $curses/[open close read_input])
 (var screen (open))
 (try
   (do
@@ -1199,7 +1199,7 @@ suite "cli — gene eval":
       ("(import *:helper ^from \"./helper\") helper/answer", "42"),
       ("(import twice ^from \"./helper\") (twice 21)", "42"),
       ("(import plus_two ^from \"./nested/child\") (plus_two 40)", "42"),
-      ("(import $str [join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
+      ("(import $str [join]) (join/[\"a\" \"b\"] \"-\")", "\"a-b\"")
     ]:
       let ran = runGene(["eval", source], workingDir = root)
       check ran.exitCode == 0
@@ -1327,9 +1327,9 @@ suite "cli — gene repl":
     createDir(root / "lib")
     writeFile(root / "lib" / "values.gene", "(mod values) (var value 41)")
     writeFile(root / "sample.gene", "(mod sample) " &
-      "(import value ^from \"./lib/values\") (fn answer [] (+ value 1))")
+      "(import value ^from \"./lib/values\") (fn answer/[] (+ value 1))")
     let ran = runGeneInput(["repl"],
-      "(import $math [max])\n" &
+      "(import $math/[max])\n" &
       "(import answer ^from \"./sample\")\n" &
       "[(answer) (max 7 9)]\n:quit\n", workingDir = root)
     check ran.exitCode == 0
@@ -1489,7 +1489,7 @@ suite "cli — gene parse/fmt/compile":
 (quote (import [] ^from "setup"))
 (import a/[b c])
 (import a/b/ [c d])
-(import $str [join trim])
+(import $str/[join trim])
 (import gene/str/[trim:clean])
 (import local/name)
 (import local/[one two])
@@ -1982,8 +1982,8 @@ suite "cli — gene parse/fmt/compile":
 (type Widget ^props {^n Int})
 """)
     let prog = writeCliProgram("serde_refs.gene", """
-(import $serde [write read write_data SerdePolicy SerdeError])
-(import $str [contains? join])
+(import $serde/[write read write_data SerdePolicy SerdeError])
+(import $str/[contains? join])
 (import Point Line Shape Result Drawable area Counter Conn Handle Opaque REGISTRY ^from "./serde_geometry")
 (fn check [label ok] ($println (join [label (if ok "ok" else "FAIL")] " ")))
 # stage 3: references
@@ -2336,12 +2336,12 @@ suite "cli — example runner":
   test "default discovery is recursive and ordered without calling main":
     let root = exampleCliRoot()
     writeExampleFixture(root, "tests/z_spec.gene", """
-      (import $test [describe it])
+      (import $test/[describe it])
       (describe "z" (it "last" [] ($assert true)))
       (fn main [] (panic "main must not run"))
     """)
     writeExampleFixture(root, "tests/nested/a_spec.gene", """
-      (import $test [describe it])
+      (import $test/[describe it])
       (describe "a" (it "first" [] ($assert true)))
     """)
     writeExampleFixture(root, "tests/helper.gene", "(panic \"not a spec\")")
@@ -2352,7 +2352,7 @@ suite "cli — example runner":
 
   test "explicit files and overlapping directories register once":
     let root = exampleCliRoot()
-    let source = "(import $test [describe it]) " &
+    let source = "(import $test/[describe it]) " &
       "(describe \"one\" (it \"example\" [] nil))"
     writeExampleFixture(root, "tests/one_spec.gene", source)
     writeExampleFixture(root, "manual.gene", source)
@@ -2375,14 +2375,14 @@ suite "cli — example runner":
   test "name filtering follows collection and matches nested descriptions":
     let root = exampleCliRoot()
     writeExampleFixture(root, "tests/math_spec.gene", """
-      (import $test [describe context it])
+      (import $test/[describe context it])
       (describe "math"
         (context "integers"
           (it "adds" [] ($assert true))
           (it "fails" [] ($assert false))))
     """)
     writeExampleFixture(root, "tests/other_spec.gene", """
-      (import $test [describe it])
+      (import $test/[describe it])
       ($println "other module loaded")
       (describe "other" (it "unselected" [] ($assert false)))
     """)
@@ -2395,7 +2395,7 @@ suite "cli — example runner":
   test "failures print operands and source while cleanup and later examples run":
     let root = exampleCliRoot()
     writeExampleFixture(root, "tests/failure_spec.gene", """
-(import $test [describe it after_each assert_equal])
+(import $test/[describe it after_each assert_equal])
 (describe "failure"
   (after_each [] ($println "cleaned"))
   (it "values" []
@@ -2413,7 +2413,7 @@ suite "cli — example runner":
   test "load failure prevents execution of the collected subset":
     let root = exampleCliRoot()
     writeExampleFixture(root, "tests/a_spec.gene", """
-      (import $test [describe it])
+      (import $test/[describe it])
       (describe "ready" (it "deferred" [] ($println "BODY RAN")))
     """)
     writeExampleFixture(root, "tests/z_spec.gene", "(unclosed")
@@ -2426,9 +2426,9 @@ suite "cli — example runner":
   test "run during module collection and invalid registration fail":
     let root = exampleCliRoot()
     for source in [
-      "(import $test [describe it run]) " &
+      "(import $test/[describe it run]) " &
         "(describe \"g\" (it \"e\" [] ($println \"BODY RAN\"))) (run)",
-      "(import $test [it]) (it \"outside\" [] nil)"]:
+      "(import $test/[it]) (it \"outside\" [] nil)"]:
       writeExampleFixture(root, "tests/bad_spec.gene", source)
       let ran = runExamplesIn(root, ["test"])
       check ran.exitCode == 1
@@ -2442,7 +2442,7 @@ suite "cli — example runner":
       let ran = runExamplesIn(root, args)
       check ran.exitCode == 2
     writeExampleFixture(root, "tests/one_spec.gene",
-      "(import $test [describe it]) (describe \"one\" (it \"example\" [] nil))")
+      "(import $test/[describe it]) (describe \"one\" (it \"example\" [] nil))")
     let empty = runExamplesIn(root, ["test", "--name=missing"])
     check empty.exitCode == 2
     check "No examples selected" in empty.output
@@ -2450,7 +2450,7 @@ suite "cli — example runner":
   test "all skipped succeeds and direct gene run uses the same report":
     let root = exampleCliRoot()
     writeExampleFixture(root, "tests/skip_spec.gene", """
-      (import $test [describe it run])
+      (import $test/[describe it run])
       (describe "later" (it "skipped" [] ^skip "waiting" ($assert false)))
       (fn main [args] : Int (let result (run)) result/exit_code)
     """)
@@ -2465,7 +2465,7 @@ suite "cli — example runner":
     writeExampleFixture(root, "src/math.gene", "(fn twice [n] (* n 2))")
     writeExampleFixture(root, "tests/math_spec.gene", """
       (import twice ^from "../src/math.gene")
-      (import $test [describe:suite it:example])
+      (import $test/[describe:suite it:example])
       (suite "math" (example "twice" [] ($assert (== (twice 3) 6))))
     """)
     let ran = runExamplesIn(root, ["test", "tests/math_spec.gene"])

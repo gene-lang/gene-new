@@ -791,7 +791,7 @@ proc biCompositeSinkSinks(args: openArray[Value], call: ptr NativeCall): Value
 proc registerEventNamespace(root: Scope) =
   ## `event` is a new stdlib root, registered under `gene/event` like every
   ## other lowercase stdlib namespace (§7). Case is the rule the compiler
-  ## already enforces: `$event/Bus` and `(import gene/event [Bus])` both work,
+  ## already enforces: `$event/Bus` and `(import gene/event/[Bus])` both work,
   ## and bare `event/Bus` does not.
   let errorRoot = root.vars["Error"]
   proc defineEventError(name: string, parent: Value): Value =

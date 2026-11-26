@@ -63,7 +63,7 @@ class GenexArchivePackageTests(unittest.TestCase):
 (import codec_abi inspect_zip extract_zip_sync extract_zip _open_codec
          gzip_reader gzip_writer ArchiveError
   ^from "." ^pkg "archive")
-(import $io [IoResource AsyncReader AsyncWriter IoClosed])
+(import $io/[IoResource AsyncReader AsyncWriter IoClosed])
 (fn collect_codec [codec]
   (var chunks [])
   (var item (codec .pull 65536))

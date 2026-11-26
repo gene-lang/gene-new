@@ -1,7 +1,7 @@
 # The book: one Markdown file per chapter, one `##` heading per section.
 
-(import $str [join split trim lower upper starts_with? byte_size])
-(import $fs [exists? read_text])
+(import $str/[join split trim lower upper starts_with? byte_size])
+(import $fs/[exists? read_text])
 (import slug strip_inline first_paragraph fail_pipeline
   ^from "./util")
 

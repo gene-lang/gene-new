@@ -1411,7 +1411,7 @@ suite "errors — retained strict assumptions":
   test "native namespace aliases retain the implementation's effect model":
     errorContractCheck """
       (mod aliases ^errors_mode strict)
-      (import gene/stream [map:map_values])
+      (import gene/stream/[map:map_values])
       (fn positive [n : Int] : Bool ^errors [] (> n 0))
       (fn values [] ^errors []
         [(map_values [1 2] positive) ($stream/map [1 2] positive)])

@@ -1,4 +1,4 @@
-(import $str [trim])
+(import $str/[trim])
 
 (type ScriptError : Error)
 

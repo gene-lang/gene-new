@@ -1,8 +1,8 @@
 # Rendering pages: chapters, sections, namespaces, and entries.
 
-(import $str [join split trim lower upper starts_with? ends_with? byte_size
+(import $str/[join split trim lower upper starts_with? ends_with? byte_size
               slice_bytes])
-(import $order [sort_by])
+(import $order/[sort_by])
 (import fail_pipeline in? first_paragraph anchor format_size str_or_empty short_summary ^from "./util")
 (import gene_tail entry_local ^from "./names")
 

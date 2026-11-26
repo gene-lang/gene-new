@@ -262,7 +262,7 @@ suite "spec — reader surface from design":
                "[false true]")
 
   test "programs contain multiple top-level forms":
-    let forms = readAll("(mod app) (import gene/stream [map]) (fn main [] nil)")
+    let forms = readAll("(mod app) (import gene/stream [map]) (fn main/[] nil)")
     check forms.len == 3
     check forms[0].print() == "(mod app)"
     check forms[1].print() == "(import (path gene stream) [map])"
@@ -417,7 +417,7 @@ suite "spec — reader surface from design":
     fixture(["ns"], "(ns sample (var x 1))")
     fixture(["env"], "(env ^bindings {^x 1})")
     fixture(["eval"], "(eval (quote 1) ^in (env))")
-    fixture(["import"], "(import gene/stream [map])")
+    fixture(["import"], "(import gene/stream/[map])")
     fixture(["mod"], "(mod sample)")
     fixture(["match"], "(match 1 when x x)")
     fixture(["while", "break"], "(while true (break))")
@@ -2462,7 +2462,7 @@ int main(void) {
     discard run(compileSource("(var q 1)"), scope)
     var raised = false
     try:
-      discard run(compileSource("(import $str/[join]) (join [\"a\"] \",\")"),
+      discard run(compileSource("(import $str/[join]) (join/[\"a\"] \",\")"),
                   scope)
     except CatchableError as e:
       raised = true
@@ -2474,7 +2474,7 @@ int main(void) {
     ## compileEvalSource this keeps ambient import authority.
     let scope = newGlobalScope()
     discard run(compileSource("(var q 1)", useLocalSlots = false), scope)
-    check run(compileSource("(import $str/[join]) (join [\"a\" \"b\"] \",\")",
+    check run(compileSource("(import $str/[join]) (join/[\"a\" \"b\"] \",\")",
                             useLocalSlots = false), scope).strVal == "a,b"
     check run(compileSource("q", useLocalSlots = false), scope).intVal == 1
 
@@ -4980,7 +4980,7 @@ suite "spec — native wrapper types (design §16.6)":
     check_eval("(try (SqliteDb) catch Fault $err/.message)",
                "\"direct construction cannot construct SqliteDb: it is a " &
                "native wrapper; construct it with (new SqliteDb ...)\"")
-    check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
+    check_eval("(import $db/sqlite/[open Db]) (var c (open \":memory:\")) " &
                "[(try (set c/handle \"junk\") catch Fault \"no\") " &
                " (try ($assoc_in c /backend \"junk\") catch Fault \"no\") " &
                " c/backend]",
@@ -9319,7 +9319,7 @@ suite "spec — Env and eval from design":
   test "persistent REPL eval keeps declarations, imports, macros and base shadowing":
     check_eval("""
       (let s ($repl/open (env ^bindings {^base 40})))
-      ($repl/eval s "(import $math/[max]) (var x base) (fn plus [n] (+ x n)) (type Point ^props {^x Int})")
+      ($repl/eval s "(import $math/[max]) (var x base) (fn plus/[n] (+ x n)) (type Point ^props {^x Int})")
       ($repl/eval s "(macro twice [x] `(+ %x %x))")
       ($repl/bind s "base" 41)
       (let first ($repl/eval s "[(plus 2) (max 3 4) (/x (Point ^x 7)) (twice 3) base]"))
@@ -9758,7 +9758,7 @@ suite "spec — parser helpers from design":
                "[(a) (b 2) false]")
 
   test "reader failures preserve structured location and open-form context":
-    check_eval("(import gene/parse [read_all ParseError]) " &
+    check_eval("(import gene/parse/[read_all ParseError]) " &
                "(try (read_all \"(a [b)\") false " &
                " catch ParseError " &
                "   [$err/line $err/col " &
@@ -10538,8 +10538,8 @@ suite "spec — value ordering and stable sort":
       "  catch OrderFault true))) (await task))"), newGlobalScope(app)).print() == "true"
 
   test "default sort is stable and sort_by evaluates each key once":
-    check_eval("(import gene/order [sort]) (sort [3 1 2])", "[1 2 3]")
-    check_eval("(import gene/order [sort_by]) " &
+    check_eval("(import gene/order [sort]) (sort/[3 1 2])", "[1 2 3]")
+    check_eval("(import gene/order/[sort_by]) " &
       "(let rows [{^rank 2 ^name \"Ada\"} {^rank 1 ^name \"Bob\"} " &
       "           {^rank 2 ^name \"Cy\"}]) " &
       "(let sorted (sort_by rows /rank)) " &
@@ -10902,27 +10902,27 @@ suite "spec — stdlib namespaces from stdlib plan":
   test "io/flush_stdout is available to streaming CLIs":
     check_eval("($io/flush_stdout)", "nil")
   test "gene/stream, gene/node, and gene/parse resolve as namespace imports":
-    check_eval("(import gene/stream [to_stream map into]) " &
+    check_eval("(import gene/stream/[to_stream map into]) " &
                "((to_stream [1 2 3]) .map (fn [x] (* x x)) ; .into [])",
                "[1 4 9]")
-    check_eval("(import gene/stream [to_stream each]) " &
+    check_eval("(import gene/stream/[to_stream each]) " &
                "(var sum ($cell 0)) " &
                "(each (to_stream [1 2 3]) (fn [x] " &
                "  (sum .update (fn [s] (+ s x))))) " &
                "(sum .get)",
                "6")
-    check_eval("(import gene/node [head]) (head (quote (a 1)))", "a")
-    check_eval("(import gene/parse [parse_int]) (parse_int \" 42 \")", "42")
-    check_eval("(import gene/parse [parse_int ParseError]) " &
+    check_eval("(import gene/node/[head]) (head (quote (a 1)))", "a")
+    check_eval("(import gene/parse/[parse_int]) (parse_int \" 42 \")", "42")
+    check_eval("(import gene/parse/[parse_int ParseError]) " &
                "(try (parse_int \"4x\") catch ParseError -1)",
                "-1")
     # `gene/parse/format` was removed: canonical formatting is a tool surface
     # (the separately built `gene-fmt`), not a runtime one.
 
   test "str module covers join/split/trim/lower and predicates":
-    check_eval("(import $str/[join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
+    check_eval("(import $str/[join]) (join/[\"a\" \"b\"] \"-\")", "\"a-b\"")
     # D6: `join` is a function, not a List message — call it, don't send it.
-    check_eval("(import $str/[join]) (join [\"a\" \"b\"] \"\")", "\"ab\"")
+    check_eval("(import $str/[join]) (join/[\"a\" \"b\"] \"\")", "\"ab\"")
     check_eval("(import $str/[split]) (split \"a,b,,c\" \",\")",
                "[\"a\" \"b\" \"\" \"c\"]")
     check_eval("(import $str/[trim lower]) (lower (trim \"  MiXeD  \"))",
@@ -10963,7 +10963,7 @@ suite "spec — stdlib namespaces from stdlib plan":
                "\"bad\"")
 
   test "response helpers build typed Response nodes":
-    check_eval("(import $net/http/[text]) (import gene/node [body]) " &
+    check_eval("(import $net/http/[text]) (import gene/node/[body]) " &
                "(var r (text \"hi\")) " &
                "[r/status r/headers/content-type (body r)]",
                "[200 \"text/plain; charset=utf-8\" [\"hi\"]]")
@@ -11863,7 +11863,7 @@ suite "spec — os and json from ai-agent plan":
 
   test "os/exec_stream invokes stdout callbacks while retaining captured output":
     check_eval("(import $os/[exec_stream]) " &
-               "(import gene/stream [to_stream into]) " &
+               "(import gene/stream/[to_stream into]) " &
                "(var seen ($cell [])) " &
                "(var r (exec_stream \"printf\" \"a\\nb\\n\" " &
                "                    ^stdout_line (fn [line] " &
@@ -11922,7 +11922,7 @@ suite "spec — os and json from ai-agent plan":
 
   test "os/exec_stream_async feeds stdout lines through a channel then closes it":
     check_eval("(import $os/[exec_stream_async]) " &
-               "(import gene/stream [to_stream into]) " &
+               "(import gene/stream/[to_stream into]) " &
                "(var ch ($channel ^capacity 8)) " &
                "(var t (exec_stream_async \"printf\" " &
                "         \"a\\nb\\n\" ^stdout_chan ch)) " &
@@ -13382,9 +13382,9 @@ suite "spec — application event bus (archive/docs/stdlib.md)":
 
   test "event is a namespace under gene, never a bare root":
     # `event` is not kept bare, so `$event/Bus` and
-    # `(import gene/event [Bus])` work and bare `event/Bus` does not (§7).
+    # `(import gene/event/[Bus])` work and bare `event/Bus` does not (§7).
     check_eval("(($event/Bus) .closed?)", "false")
-    check_eval("(import gene/event [Bus]) ((Bus) .closed?)", "false")
+    check_eval("(import gene/event/[Bus]) ((Bus) .closed?)", "false")
     check_eval_error("(event/Bus)", "event")
 
 suite "spec — lexical path library":

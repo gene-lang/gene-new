@@ -15,7 +15,7 @@ suite "net/http_client e2e":
 
   test "request runs off-thread and returns status headers and body":
     let server = startHttpServer("client-request-server.gene", """
-(import $net/http [Server serve Response])
+(import $net/http/[Server serve Response])
 (fn handle [req]
   (Response ^status 201 ^headers {^x-test "yes"} ^body req/body))
 (serve (Server ^host "127.0.0.1" ^port 8201) handle ^max_requests 2)
@@ -24,7 +24,7 @@ suite "net/http_client e2e":
     let ready = httpConnect(8201)
     ready.close()
     let client = runHttpClient("client-request.gene", """
-(import $net/http_client [request])
+(import $net/http_client/[request])
 (var r (await (request ^method "POST" ^url "http://127.0.0.1:8201/echo"
                        ^headers {^content-type "text/plain"} ^body "hello")))
 ($println [r/status r/body r/truncated r/headers/x-test])
@@ -34,7 +34,7 @@ suite "net/http_client e2e":
 
   test "stream sends bounded raw chunks and closes before task settlement":
     let server = startHttpServer("client-stream-server.gene", """
-(import $net/http [Server serve Response])
+(import $net/http/[Server serve Response])
 (fn handle [req]
   (Response ^status 200 ^body "alpha\nbeta\n"))
 (serve (Server ^host "127.0.0.1" ^port 8202) handle ^max_requests 2)
@@ -43,7 +43,7 @@ suite "net/http_client e2e":
     let ready = httpConnect(8202)
     ready.close()
     let client = runHttpClient("client-stream.gene", """
-(import $net/http_client [stream])
+(import $net/http_client/[stream])
 (var transfer (stream ^url "http://127.0.0.1:8202/events"
                       ^channel_capacity 2 ^max_pending_bytes 4096))
 (var seen ($cell ""))
@@ -60,7 +60,7 @@ suite "net/http_client e2e":
 
   test "output cap truncates without turning HTTP status into an error":
     let server = startHttpServer("client-cap-server.gene", """
-(import $net/http [Server serve Response])
+(import $net/http/[Server serve Response])
 (fn handle [req] (Response ^status 418 ^body "abcdefghij"))
 (serve (Server ^host "127.0.0.1" ^port 8203) handle ^max_requests 2)
 """)
@@ -68,7 +68,7 @@ suite "net/http_client e2e":
     let ready = httpConnect(8203)
     ready.close()
     let client = runHttpClient("client-cap.gene", """
-(import $net/http_client [request])
+(import $net/http_client/[request])
 (var r (await (request ^url "http://127.0.0.1:8203/cap" ^max_bytes 4)))
 ($println [r/status r/body r/truncated])
 """)
@@ -77,7 +77,7 @@ suite "net/http_client e2e":
 
   test "Task cancellation aborts a live native transfer promptly":
     let server = startHttpServer("client-cancel-server.gene", """
-(import $net/http [Server serve Response])
+(import $net/http/[Server serve Response])
 (fn handle [req] ($sleep 5000) (Response ^status 200 ^body "late"))
 (serve (Server ^host "127.0.0.1" ^port 8204) handle ^max_requests 2)
 """)
@@ -86,7 +86,7 @@ suite "net/http_client e2e":
     ready.close()
     let started = getMonoTime()
     let client = runHttpClient("client-cancel.gene", """
-(import $net/http_client [request])
+(import $net/http_client/[request])
 (var t (request ^url "http://127.0.0.1:8204/slow"))
 ($sleep 100)
 (t .cancel)
@@ -102,8 +102,8 @@ suite "net/http_client e2e":
     # settled off-lane, so each await in the serving process stalled that long:
     # 100 requests took about 5 s. They now take a small fraction of that.
     let client = runHttpClient("client-in-process.gene", """
-(import $net/http [listen serve stop text])
-(import $net/http_client [request])
+(import $net/http/[listen serve stop text])
+(import $net/http_client/[request])
 (var server (listen ^host "127.0.0.1" ^port 8224))
 (fn handle [req] (text 200 req/path))
 (var driver (spawn ^lane root
@@ -144,13 +144,13 @@ suite "net/http_client e2e":
       let ready = httpConnect(8205)
       ready.close()
       let untrusted = runHttpClient("client-tls-untrusted.gene", """
-(import $net/http_client [request])
+(import $net/http_client/[request])
 (await (request ^url "https://127.0.0.1:8205/" ^timeout_ms 5000))
 """)
       check untrusted.exitCode != 0
       let client = runHttpClient("client-tls.gene", """
-(import $net/http_client [request])
-(import $str [starts_with?])
+(import $net/http_client/[request])
+(import $str/[starts_with?])
 (var r (await (request ^url "https://127.0.0.1:8205/"
                        ^ca_file "/CERT_PATH/" ^timeout_ms 5000)))
 ($println [r/status (starts_with? r/effective_url "https://") r/truncated])

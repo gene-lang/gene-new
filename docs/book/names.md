@@ -72,7 +72,7 @@ under it, and libraries such as `$str` and `$json` are namespaces inside it:
 be called without the prefix:
 
 ```gene runnable
-(import $str [join split])
+(import $str/[join split])
 (join (split "a,b,c" ",") " ")
 # "a b c"
 ```

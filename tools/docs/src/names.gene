@@ -1,9 +1,9 @@
 # The name table: every Gene spelling the reference or the book can address,
 # and the index of names computed from the book's Gene fences.
 
-(import $str [join split trim lower starts_with? ends_with? contains? byte_size
+(import $str/[join split trim lower starts_with? ends_with? contains? byte_size
               slice_bytes])
-(import $order [sort_by])
+(import $order/[sort_by])
 (import fail_pipeline in? ^from "./util")
 
 (fn copy_list [items]

@@ -145,7 +145,7 @@ const cases = [
    '(try (yield 1) ensure (fail (Error ^_msg "cleanup")))) ' +
    '(let s (bad)) (s .next) (try (s .close) false catch ContractViolation true)',
    0, "true", ""],
-  ['(import $log [new_logger log_debug]) ' +
+  ['(import $log/[new_logger log_debug]) ' +
    '(var logger (new_logger "app/wasm")) ' +
    '(var touched ($cell false)) ' +
    '(log_debug logger (do (touched .set true) "hidden")) ' +
@@ -198,7 +198,7 @@ if (strictFailure.status === 0 || !strictFailure.text.includes('error checking:'
 }
 
 const logResult = geneEval(
-  '(import $log [new_logger]) ' +
+  '(import $log/[new_logger]) ' +
   '(var logger (new_logger "app/wasm" ^payload {^token "secret"})) ' +
   '(logger .warn "host warning")');
 if (logResult.status !== 0 || logResult.text !== "nil" ||

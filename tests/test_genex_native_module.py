@@ -54,7 +54,7 @@ class NativeModulePackageTests(unittest.TestCase):
  ^dependencies {^module (dep "genex/native_module_probe" "0.1.0" ^path "../module")}}
 ''')
             (app / "src/main.gene").write_text('''
-(import $io [IoResource])
+(import $io/[IoResource])
 (import open ^from "." ^pkg "module")
 (fn main [args] : Int
   (let baseline_roots (/native_roots ($runtime/gc_stats)))

@@ -1,11 +1,11 @@
 # Emitting the corpus: Markdown pages, the index, the manifest, the name
 # table, and the search database.
 
-(import $str [join split trim lower starts_with? ends_with? contains? byte_size
+(import $str/[join split trim lower starts_with? ends_with? contains? byte_size
               slice_bytes])
-(import $fs [exists? make_dir remove_dir remove read_text write_text])
-(import $order [sort sort_by])
-(import $db/sqlite [Db open])
+(import $fs/[exists? make_dir remove_dir remove read_text write_text])
+(import $order/[sort sort_by])
+(import $db/sqlite/[Db open])
 (import fail_pipeline in? format_size ^from "./util")
 (import load_index load_coverage load_modules load_heads load_package load_packages read_one ^from "./data")
 (import read_book ^from "./book")

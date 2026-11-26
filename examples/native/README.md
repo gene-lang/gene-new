@@ -52,7 +52,7 @@ Both directions across the boundary are covered.
 ## Gene calling native code
 
 ```gene
-(import $aot [load])
+(import $aot/[load])
 (var native (load "build/native-example/libscaled.dylib"))
 ($println (native/triple 14))   # => 42
 ```

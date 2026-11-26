@@ -94,7 +94,7 @@ itself, and `--path` jumps to a path inside it.
 level, a message, and an optional payload:
 
 ```gene
-(import $log [log_debug new_logger])
+(import $log/[log_debug new_logger])
 (let logger (new_logger "app/demo" ^payload {^component "example"}))
 (logger .info "ready" ^payload {^items 3})
 (logger .warn "disk almost full")

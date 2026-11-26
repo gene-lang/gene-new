@@ -17,7 +17,7 @@ suite "import selector sorting":
       "(import A:C a/b:beta m/[a b d:C] z:last ^from \"x\")"
 
   test "namespace member imports sort inside the group":
-    let value = importForm("(import $fs [watch real_path WatcherClosed])")
+    let value = importForm("(import $fs/[watch real_path WatcherClosed])")
     check formatImportForm(value) ==
       "(import $fs/[WatcherClosed real_path watch])"
 

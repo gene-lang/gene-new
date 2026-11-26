@@ -225,7 +225,7 @@ suite "native synchronous callback boundary":
 suite "SQLite synchronous native callbacks":
   test "text rows preserve duplicate columns and copied values after close":
     check callbackEval("""
-      (import $db/sqlite [open Db visit_text_rows])
+      (import $db/sqlite/[open Db visit_text_rows])
       (let db (open ":memory:")) (let seen [])
       (let count (visit_text_rows db "select 1 as x, 2 as x, NULL as missing"
         (fn [names values] (seen .push [names values]) true)))
@@ -235,7 +235,7 @@ suite "SQLite synchronous native callbacks":
 
   test "false stops rows normally and callback failures preserve their type":
     check callbackEval("""
-      (import $db/sqlite [open Db visit_text_rows])
+      (import $db/sqlite/[open Db visit_text_rows])
       (let db (open ":memory:"))
       (try
         (let count (visit_text_rows db "select 1 union all select 2"
@@ -249,7 +249,7 @@ suite "SQLite synchronous native callbacks":
 
   test "same-connection re-entry and direct pointer disposal are blocked":
     check callbackEval("""
-      (import $db/sqlite [open Db visit_text_rows])
+      (import $db/sqlite/[open Db visit_text_rows])
       (let db (open ":memory:"))
       (try
         (let close_failed (try (visit_text_rows db "select 1"
@@ -264,7 +264,7 @@ suite "SQLite synchronous native callbacks":
 
   test "only one read-only query without parameters is admitted":
     check callbackEval("""
-      (import $db/sqlite [open Db visit_text_rows])
+      (import $db/sqlite/[open Db visit_text_rows])
       (let db (open ":memory:")) (var called 0)
       (fn row [names values] (set called (+ called 1)) true)
       (try

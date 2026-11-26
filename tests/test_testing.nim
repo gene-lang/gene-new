@@ -59,7 +59,7 @@ suite "testing — standalone assertions":
 suite "testing — assertion helpers":
   test "equality uses == and records both absence operands":
     testingCheck """
-      (import $test [assert_equal])
+      (import $test/[assert_equal])
       [(assert_equal [1 2] #[1 2])
        (try (assert_equal nil false)
          catch AssertionFault [$err/has_comparison $err/actual $err/expected])]
@@ -67,7 +67,7 @@ suite "testing — assertion helpers":
 
   test "assert_raises invokes once and returns the matched typed error":
     testingCheck """
-      (import $test [assert_raises])
+      (import $test/[assert_raises])
       (var calls 0)
       (let error (assert_raises (fn []
         (set calls (+ calls 1)) ($assert false "detail")) Fault))
@@ -76,7 +76,7 @@ suite "testing — assertion helpers":
 
   test "assert_raises matches ancestry and preserves unexpected errors":
     testingCheck """
-      (import $test [assert_raises])
+      (import $test/[assert_raises])
       (type Base : Error)
       (type Child : Base ^props {})
       (let caught (assert_raises (fn [] (fail (Child ^_msg "child"))) Base))
@@ -87,14 +87,14 @@ suite "testing — assertion helpers":
 
   test "normal return fails even when the value is an error":
     testingCheck """
-      (import $test [assert_raises])
+      (import $test/[assert_raises])
       (try (assert_raises (fn [] (AssertionFault ^_msg "returned")) Error "missing")
         catch AssertionFault $err/.message)
     """, "\"missing\""
 
   test "thunk validation happens before invocation and a panic matches only Panic":
     testingCheck """
-      (import $test [assert_raises])
+      (import $test/[assert_raises])
       (var calls 0)
       (try (assert_raises (fn [] (set calls 1)) "not a type")
         catch TypeFault nil)
@@ -108,7 +108,7 @@ suite "testing — assertion helpers":
 suite "testing — example lifecycle":
   test "declarations defer bodies, capture lexical values, and rerun with fresh fixtures":
     testingCheck """
-      (import $test [describe context it before_each run])
+      (import $test/[describe context it before_each run])
       (var calls 0)
       (describe "list"
         (let number 7)
@@ -125,7 +125,7 @@ suite "testing — example lifecycle":
 
   test "hooks follow ancestry and reverse cleanup order":
     testingCheck """
-      (import $test [describe context it before_each after_each run])
+      (import $test/[describe context it before_each after_each run])
       (var events [])
       (describe "outer"
         (before_each [] (events .push "b1"))
@@ -144,7 +144,7 @@ suite "testing — example lifecycle":
 
   test "failed setup skips the body and unentered groups but cleans entered groups":
     testingCheck """
-      (import $test [describe context it before_each after_each run])
+      (import $test/[describe context it before_each after_each run])
       (var events [])
       (describe "outer"
         (before_each [] ($assert false "setup"))
@@ -159,7 +159,7 @@ suite "testing — example lifecycle":
 
   test "multiple failures retain phases, finish cleanup, and continue the suite":
     testingCheck """
-      (import $test [describe it after_each run])
+      (import $test/[describe it after_each run])
       (var events [])
       (describe "broken"
         (after_each [] (events .push "cleanup"))
@@ -174,7 +174,7 @@ suite "testing — example lifecycle":
 
   test "skips run no hooks and false return passes":
     testingCheck """
-      (import $test [describe it before_each run])
+      (import $test/[describe it before_each run])
       (var calls 0)
       (describe "group"
         (before_each [] (set calls (+ calls 1)))
@@ -187,7 +187,7 @@ suite "testing — example lifecycle":
 
   test "filter applies to full names and empty selection has its own status":
     testingCheck """
-      (import $test [describe it run])
+      (import $test/[describe it run])
       (describe "math" (it "adds" [] nil) (it "subtracts" [] nil))
       (let selected (run ^name "math adds" ^!report))
       (let empty (run ^name "missing" ^!report))
@@ -196,7 +196,7 @@ suite "testing — example lifecycle":
 
   test "registration errors prevent a partial run even when caught":
     testingCheck """
-      (import $test [describe it run])
+      (import $test/[describe it run])
       (var called false)
       (describe "ready" (it "must not run" [] (set called true)))
       (try (it "outside" [] nil) catch RuntimeFault nil)
@@ -211,11 +211,11 @@ suite "testing — example lifecycle":
       "(describe \"x\" (it \"bad\" [] ^^unknown nil))",
       "(before_each [] nil)"]:
       expect GeneError:
-        discard testingEval("(import $test [describe it before_each]) " & source)
+        discard testingEval("(import $test/[describe it before_each]) " & source)
 
   test "registration and nested runs are rejected during execution":
     testingCheck """
-      (import $test [describe it run])
+      (import $test/[describe it run])
       (describe "group"
         (it "register" [] (describe "late" (it "late" [] nil)))
         (it "nested run" [] (run ^!report)))
@@ -224,7 +224,7 @@ suite "testing — example lifecycle":
     """, "[2 2]"
 
   test "example source locations survive macro expansion":
-    let value = testingEval("(import $test [describe it run])\n" &
+    let value = testingEval("(import $test/[describe it run])\n" &
       "(describe \"group\"\n  (it \"fails\" []\n    ($assert false)))\n" &
       "(run ^!report)")
     let example = value.props["examples"].listItems[0].mapEntries
@@ -234,7 +234,7 @@ suite "testing — example lifecycle":
 
   test "reporting bounds huge and cyclic operands without re-running code":
     let value = testingEval("""
-      (import $test [describe it run assert_equal])
+      (import $test/[describe it run assert_equal])
       (var cycle [])
       (cycle .push cycle)
       (describe "report" (it "cycle" [] (assert_equal cycle nil)))
@@ -245,7 +245,7 @@ suite "testing — example lifecycle":
     check "expected: nil" in report
     check "testing_spec.gene" in report
     check "1 failed" in report
-    let huge = testingEval("(import $test [describe it run assert_equal]) " &
+    let huge = testingEval("(import $test/[describe it run assert_equal]) " &
       "(describe \"report\" (it \"large\" [] (assert_equal \"" &
       repeat('x', 5000) & "\" nil))) (run ^!report)")
     check formatTestReport(huge).len < 1800
@@ -253,7 +253,7 @@ suite "testing — example lifecycle":
   test "a panic is an example error; cleanup runs and the run continues":
     let scope = newGlobalScope(newApplication())
     discard run(compileSource("""
-      (import $test [describe it after_each])
+      (import $test/[describe it after_each])
       (var cleaned false)
       (describe "panic"
         (after_each [] (set cleaned true))
@@ -272,14 +272,14 @@ suite "testing — example lifecycle":
   test "registries belong to their application":
     let left = newGlobalScope(newApplication())
     let right = newGlobalScope(newApplication())
-    discard run(compileSource("(import $test [describe it]) " &
+    discard run(compileSource("(import $test/[describe it]) " &
       "(describe \"only left\" (it \"example\" [] nil))"), left)
     check runTests(left, report = false).props["passed"].intVal == 1
     check runTests(right, report = false).props["exit_code"].intVal == 2
 
   test "closures retain scoped protocol implementations":
     testingCheck """
-      (import $test [describe it run])
+      (import $test/[describe it run])
       (protocol Label (message label [] : Int))
       (type Item ^props {})
       (describe "local impl"
@@ -291,7 +291,7 @@ suite "testing — example lifecycle":
 
   test "diagnostic operand snapshots precede cleanup mutation":
     testingCheck """
-      (import $test [describe it before_each after_each assert_equal run])
+      (import $test/[describe it before_each after_each assert_equal run])
       (describe "snapshot"
         (before_each [t] (set t/items []))
         (after_each [t] (t/items .push 99))
@@ -302,7 +302,7 @@ suite "testing — example lifecycle":
 
   test "diagnostics distinguish absent details from explicit nil":
     testingCheck """
-      (import $test [describe it run assert_equal])
+      (import $test/[describe it run assert_equal])
       (describe "details"
         (it "absent" []
           (fail (AssertionFault ^_msg "custom" ^^has_comparison)))
@@ -314,7 +314,7 @@ suite "testing — example lifecycle":
 
   test "explicit awaits complete while returned streams stay lazy":
     testingCheck """
-      (import $test [describe it run])
+      (import $test/[describe it run])
       (describe "deferred work"
         (it "awaits" []
           (scope
@@ -334,7 +334,7 @@ suite "testing — example lifecycle":
     expect GeneCancel:
       discard run(compileSource("($test/assert_raises cancel_testing Error)"), scope)
     discard run(compileSource("""
-      (import $test [describe it after_each])
+      (import $test/[describe it after_each])
       (var cleaned false)
       (describe "cancel"
         (after_each [] (set cleaned true))
@@ -349,7 +349,7 @@ suite "testing — backend admission":
     expect WebProfileError:
       discard analyzeWebModule("(fn example [] : Nil ($assert true))", "assert_web.gene")
     expect WebProfileError:
-      discard analyzeWebModule("(import $test [describe it]) " &
+      discard analyzeWebModule("(import $test/[describe it]) " &
         "(describe \"group\" (it \"example\" [] nil))", "suite_web.gene")
 
   test "explicit native entries reject unlowerable assertion calls":
@@ -364,7 +364,7 @@ when defined(geneRcStats):
     test "test runs release fresh fixtures and failure snapshots":
       let scope = newGlobalScope(newApplication())
       discard run(compileSource("""
-        (import $test [describe it before_each assert_equal])
+        (import $test/[describe it before_each assert_equal])
         (describe "fixtures"
           (before_each [t] (set t/items ["one" "two" "three"]))
           (it "passes" [t] ($assert (== (t/items .size) 3)))

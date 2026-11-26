@@ -9,7 +9,7 @@ other programs, reads standard input, and stores data in SQLite.
 directory:
 
 ```gene
-(import $fs [read_text write_text])
+(import $fs/[read_text write_text])
 (write_text "greeting.txt" "Hello")
 (read_text "greeting.txt")
 # "Hello"
@@ -35,7 +35,7 @@ owner before any content is written, which suits a secret such as a token.
 `$path` works on path strings without touching the filesystem:
 
 ```gene runnable
-(import $path [extension join relative])
+(import $path/[extension join relative])
 [(join "reports" "2026" "summary.csv")
  (relative "reports/2026" "reports")
  (extension "summary.csv")]
@@ -59,7 +59,7 @@ end:
 A JSON object becomes a property map, and `null` becomes `nil`:
 
 ```gene runnable
-(import $json [parse stringify])
+(import $json/[parse stringify])
 (let data (parse "{\"name\":\"Ada\",\"scores\":[3,5]}"))
 [data/name data/scores (stringify {^ok true ^missing nil})]
 # ["Ada" [3 5] "{\"ok\":true,\"missing\":null}"]
@@ -76,7 +76,7 @@ keys and invalid UTF-8, and bounds the nesting. `^^omit_nil` on
 each row into a property map keyed by the header row:
 
 ```gene runnable
-(import $csv [encode_row parse_rows])
+(import $csv/[encode_row parse_rows])
 [(parse_rows "name,count\nAda,3\n" ^^headers)
  ($binary/to_str (encode_row ["a,b" "two"]))]
 # [[{^name "Ada" ^count "3"}] "\"a,b\",two\r\n"]
@@ -142,7 +142,7 @@ printf 'ada\ngrace\n' | gene run upper.gene
 parameters, never by building SQL strings:
 
 ```gene runnable
-(import $db/sqlite [Db open])
+(import $db/sqlite/[Db open])
 (let db (open ":memory:"))
 (try
   (db .Db:exec "create table people (name text, age int)")
@@ -168,7 +168,7 @@ protocol.
 it back to an equal value:
 
 ```gene runnable
-(import $serde [read_data write_data])
+(import $serde/[read_data write_data])
 (let original {^name "Ada" ^scores [3 5]})
 [(write_data {^a 1}) (== original (read_data (write_data original)))]
 # ["(serde_v1 {^a 1})" true]
@@ -178,7 +178,7 @@ This covers data, not functions or open resources. For named records that
 survive a restart, `$store/fs` keeps them in a directory:
 
 ```gene
-(import $store/fs [Store open])
+(import $store/fs/[Store open])
 (let state (open ^root ".state"))
 (try
   (state .Store:put "settings" {^theme "dark"})

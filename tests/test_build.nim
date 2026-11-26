@@ -279,7 +279,7 @@ suite "build engine — pure Gene targets":
  ^dependencies {^math (dep "acme/math" "1.0.0" ^^workspace)}}
 """)
     writeBuildFile(root / "src/main.gene",
-      "(import answer ^from \".\" ^pkg \"math\") (fn main [] answer)")
+      "(import answer ^from \".\" ^pkg \"math\") (fn main/[] answer)")
     writeBuildFile(root / "packages/math/package.gene", """
 {^format 1 ^name "acme/math" ^version "1.0.0"
  ^library {^entry "src/index.gene"}}

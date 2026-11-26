@@ -175,7 +175,7 @@ suite "modules — file imports":
       ("(import a: aa ^from \"x\")", "write the import alias as `a:aa`"),
       ("(import a/b: bb ^from \"x\")", "write the import alias as `a/b:bb`"),
       ("(import $str : strings)", "write the import alias as `gene/str:strings`"),
-      ("(import $str [trim : clean])", "write the import alias as `trim:clean`"),
+      ("(import $str/[trim : clean])", "write the import alias as `trim:clean`"),
       ("(import a/[b c/[d : dd]] ^from \"x\")", "write the import alias as `d:dd`"),
       ("(import a:aa/b ^from \"x\")", "write `a/b:aa`"),
       ("(import a/b:bb/c ^from \"x\")", "write `a/b/c:bb`"),
@@ -631,7 +631,7 @@ suite "modules — file imports":
       "(macro smuggle [items] (items .push helper) `(quote %items))")
     let app = newApplication(modDir)
     for caller in [
-        "(import smuggle ^from \"./launder_def\") (smuggle [])",
+        "(import smuggle ^from \"./launder_def\") (smuggle/[])",
         "(import smuggle ^from \"./launder_def\") " &
           "(var picked (eval `(smuggle []) ^in (env)))",
         "(import smuggle ^from \"./launder_def\") " &
@@ -675,7 +675,7 @@ suite "modules — file imports":
       "(type PhaseBox ^props {^value Int} (message value [] : Int self/value)) " &
       "(fn add [x : Int] : Int (+ x 1))")
     writeModule("phase_macros.gene",
-      "(import add ^from \"./phase_dep\") (macro computed [x] (add x))")
+      "(import add ^from \"./phase_dep\") (macro computed/[x] (add x))")
     writeModule("phase_user.gene",
       "(import computed ^from \"./phase_macros\") (var observed (computed 41))")
     let compilerApp = newApplication(modDir)
@@ -705,7 +705,7 @@ suite "modules — file imports":
       "(macro apply_helper [x] `(%$to_str %x)) " &
       "(var offset (apply_helper 2)) (fn add [x] ($to_str offset x))")
     writeModule("phase_value_macros.gene",
-      "(import add ^from \"./phase_value_dep\") (macro computed [x] (add x))")
+      "(import add ^from \"./phase_value_dep\") (macro computed/[x] (add x))")
     writeModule("phase_value_user.gene",
       "(import computed ^from \"./phase_value_macros\") (var observed (computed 40))")
     let app = newApplication(modDir)
@@ -717,7 +717,7 @@ suite "modules — file imports":
       "(var count 0) (fn next [] (set count (+ count 1))) " &
       "(macro next_value [] (next))")
     writeModule("phase_counter_bridge.gene",
-      "(import next ^from \"./phase_counter\") (macro via_bridge [] (next))")
+      "(import next ^from \"./phase_counter\") (macro via_bridge/[] (next))")
     writeModule("phase_counter_user.gene",
       "(import via_bridge ^from \"./phase_counter_bridge\") " &
       "(import next_value count ^from \"./phase_counter\") " &
@@ -731,7 +731,7 @@ suite "modules — file imports":
       "(macro next_value [] (next)) " &
       "(var baked (eval (quote (next_value)) ^in (env)))")
     writeModule("phase_reentrant_bridge.gene",
-      "(import next ^from \"./phase_reentrant\") (macro via_bridge [] (next))")
+      "(import next ^from \"./phase_reentrant\") (macro via_bridge/[] (next))")
     writeModule("phase_reentrant_user.gene",
       "(import via_bridge ^from \"./phase_reentrant_bridge\") " &
       "(var observed (via_bridge))")
@@ -919,7 +919,7 @@ suite "modules — file imports":
 
   test "transitive imports resolve relative to each module":
     writeModule("base.gene", "(fn one [] 1)")
-    writeModule("mid.gene", "(import one ^from \"./base\") (fn two [] (+ (one) (one)))")
+    writeModule("mid.gene", "(import one ^from \"./base\") (fn two/[] (+ (one) (one)))")
     check runProgram("(import two ^from \"./mid\") (two)").print() == "2"
 
   test "ordinary imports do not import scoped extension impls":
@@ -1649,7 +1649,7 @@ suite "modules — namespace-path imports and mod":
   test "a bare namespace name with a separate selection vector is rejected":
     var diagnostic = ""
     try:
-      discard compileSource("(import helpers [greet:hello])")
+      discard compileSource("(import helpers/[greet:hello])")
     except GeneError as error:
       diagnostic = error.msg
     check "write `helpers/[greet:hello]`" in diagnostic
@@ -1727,7 +1727,7 @@ suite "modules — impl activation across module paths":
       "(type T ^props {}) " &
       "(impl Show for T (message show [self] : Str \"shared\"))")
     writeModule("uses_shared.gene",
-      "(import T ^from \"./shared\") (fn marker [] 1)")
+      "(import T ^from \"./shared\") (fn marker/[] 1)")
     # shared-first, then the local module that also imports it
     check runProgram("(import Show T ^from \"./shared\") " &
       "(import marker ^from \"./uses_shared\") " &
@@ -1852,7 +1852,7 @@ suite "modules — the sandbox loader (design §D5)":
     writeModule("shared_helper.gene",
       "(fn sneak [p : Str] : Str ($fs/write_text p \"w\") \"wrote\")")
     writeModule("sandboxed_user.gene",
-      "(import sneak ^from \"./shared_helper\") (fn noop [] : Int 1)")
+      "(import sneak ^from \"./shared_helper\") (fn noop/[] : Int 1)")
     check runSandboxProgram(
       loadSandboxed(modDir, "sandboxed_user.gene", "[]") & " " &
       "(import sneak ^from \"./shared_helper\") " &
@@ -1916,7 +1916,7 @@ suite "modules — the sandbox loader (design §D5)":
     # to the host's shared contract.
     writeFile(externalRoot / "src" / "plugin_api.gene", "(var n 5)")
     writeFile(externalRoot / "src" / "helper.gene",
-      "(import n ^from \"./plugin_api\") (fn offset [] n)")
+      "(import n ^from \"./plugin_api\") (fn offset/[] n)")
     writeFile(externalRoot / "src" / "plugin.gene",
       "(import Reg ^from \"src/plugin_api.gene\") " &
       "(import offset ^from \"./helper\") " &
@@ -1994,7 +1994,7 @@ suite "modules — the sandbox loader (design §D5)":
       (modDir / "gene_sandbox_escape").replace("\\", "/") &
       "\" \"escaped\"))")
     writeFile(modRoot / "src" / "a" / "deep_mod.gene",
-      "(import go ^from \"../../free\") (fn run [] : Nil (go))")
+      "(import go ^from \"../../free\") (fn run/[] : Nil (go))")
     expect GeneError:
       discard runSandboxProgram(
         "(var m " & loadSandboxed(modRoot, "src/a/deep_mod.gene", "[]") & ") " &

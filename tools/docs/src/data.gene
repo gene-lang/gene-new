@@ -1,9 +1,9 @@
 # Reading the builder's data files and the root manifest.
 
-(import $str [join split trim])
-(import $fs [exists? list_dir read_text])
-(import $parse [read_all])
-(import $order [sort_by])
+(import $str/[join split trim])
+(import $fs/[exists? list_dir read_text])
+(import $parse/[read_all])
+(import $order/[sort_by])
 (import fail_pipeline ^from "./util")
 
 (fn read_forms [path]

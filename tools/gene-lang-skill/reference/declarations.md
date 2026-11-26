@@ -161,7 +161,7 @@ File imports use `^from` and flat selectors. Namespace member imports use a
 source followed by a vector.
 
 ```gene
-(import $str [join trim])
+(import $str/[join trim])
 (import double:dbl factor ^from "./util")
 (import math/[add sub:subtract] ^from "./util")
 ```
