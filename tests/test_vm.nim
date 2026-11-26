@@ -820,6 +820,18 @@ suite "compiler — GIR emission":
     check decoded.implProtos[0].loc.line == 4
     check decoded.typeProtos[0].inlineImpls[0].loc.line == 2
 
+  test "GIR preserves the missing-lookup branch of a path send":
+    let chunk = compileSource("""
+      (fn read [data] (try data/value/.size catch Fault "fault"))
+      [(read {}) (read {^value nil}) (read {^value [1 2]})]
+    """)
+    let artifact = ExecutableGir(entryIdentity: "test/path-lookup",
+      modules: @[CompiledModule(identity: "test/path-lookup", chunk: chunk,
+        compileInterface: CompileNamespaceInterface(
+          entries: initTable[string, CompileInterfaceEntry]()))])
+    let restored = decodeExecutableGir(encodeExecutableGir(artifact))
+    check run(restored.modules[0].chunk, newGlobalScope()).print() == "[nil \"fault\" 2]"
+
   test "GIR rejects runtime Self binding state at encoding and decoding":
     for field in ["annotationSelfBits", "contractResolved", "signatureHadSelf"]:
       let chunk = compileSource("(fn f [x] x)")
@@ -4974,17 +4986,18 @@ suite "vm — cooperative scheduler":
        "  (spawn ^lane root (do ($sleep 1) (ch .send 7))) " &
        "  [(await reader) entered/.get])", "[7 1]"
 
-  test "path message calls stop at nil":
+  test "path message calls stop at a miss and dispatch on a found nil":
     ck "(let data {}) data/missing/.size", "nil"
     ck "(let data {^value nil}) " &
-       "data/value/.size",
-       "nil"
+       "(try data/value/.size catch MessageFault \"fault\")",
+       "\"fault\""
     ck "(let calls ($cell 0)) " &
        "(type Stop ^props {} " &
        "  (message first [] nil) " &
        "  (message second [] (calls .set 1) 7)) " &
        "(let value (Stop)) " &
-       "[value/.first/.second calls/.get]", "[nil 0]"
+       "[(try value/.first/.second catch MessageFault \"fault\") " &
+       "value/.first/?.second calls/.get]", "[\"fault\" nil 0]"
 
   test "closing a channel wakes parked receivers and senders":
     ck "(scope (var ch ($channel ^capacity 1)) " &

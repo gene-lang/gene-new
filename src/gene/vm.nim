@@ -2538,7 +2538,8 @@ proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value
 proc applyNativeCompiled(callee: Value, proto: FunctionProto,
                          args: openArray[Value],
                          named: NamedArgs): tuple[handled: bool, value: Value]
-proc applySelector(selector, target: Value, dispatchScope: Scope = nil): Value
+proc applySelector(selector, target: Value, dispatchScope: Scope = nil,
+                   keepMissing = false): Value
 proc staticLookup(target, segment: Value): Value
 proc staticLookupValue(target, segment: Value): Value
 proc pathQualifiedMessageValue(text: string, scope: Scope): Value
@@ -21369,6 +21370,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if inst[].intArg == 1 and sp >= 2 and
               ip < chunk.instructions.len and
               chunk.instructions[ip].op == opApplySelectorTop and
+              not chunk.instructions[ip].flag and
               (instructionBudget <= 0 or remainingBudget > 0):
             # `xs/%i`: a one-segment selector built only for the next
             # instruction to apply. For a List or Map target and a plain key
@@ -21430,6 +21432,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
           let argsStart = sp - 2
+          if inst[].flag:
+            # Intermediate lookup before a path send. Keep the miss local to
+            # this instruction so a found nil still reaches dispatch.
+            let found = applySelector(
+              stack[argsStart + 1], stack[argsStart], scope, keepMissing = true)
+            let missing = found.isMissing
+            let value = if missing: NIL else: materializedModuleRefValue(scope, found)
+            strunc(argsStart)
+            spush value
+            if missing:
+              ip = inst[].intArg
+            continue
           if stack[argsStart].isPropMap:
             # `row/amount` on a Map: what applySelector does for a plain
             # one-key selector is this one table read. An absent key is nil
@@ -24223,7 +24237,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # as the receiver when falling through.
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in conditional jump")
-          # Path traversal and an optional send both stop on nil.
           if stack[sp - 1].isAbsent:
             ip = inst[].intArg
         of opNot:
@@ -29063,11 +29076,12 @@ proc applyPathHeldMessage(segment, target: Value, scope: Scope): Value =
   var args = [target]
   applyCall(callee, args, NamedArgs(), boundScope)
 
-proc applySelector(selector, target: Value, dispatchScope: Scope = nil): Value =
+proc applySelector(selector, target: Value, dispatchScope: Scope,
+                   keepMissing: bool): Value =
   let scope = if dispatchScope != nil: dispatchScope
               elif activeVmScope != nil: activeVmScope[]
               else: currentApplication().builtinsScope()
-  if selector.props.len == 0 and selector.body.len == 1:
+  if not keepMissing and selector.props.len == 0 and selector.body.len == 1:
     let segment = selector.body[0]
     case segment.kind
     of vkInt, vkSymbol:
@@ -29113,6 +29127,8 @@ proc applySelector(selector, target: Value, dispatchScope: Scope = nil): Value =
     if result.isMissing:
       if strict:
         raisePathMissing(segment)
+      if keepMissing:
+        return MISSING
       return selector.selectorMissingResult(segment)
 
 proc ensureNoInteriorNul(name: string, text: string) =

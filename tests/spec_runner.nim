@@ -6816,6 +6816,24 @@ suite "spec — absence-guarded sends (design §3)":
                "[cell/.get/.P:pm empty/.get/?.P:pm]",
                "[\"x-pm\" nil]")
 
+  test "path sends distinguish stored nil from a missing lookup":
+    check_eval("""
+      (let data {^x nil})
+      [(try data/x/.size catch Fault "fault")
+       (try (data/x .size) catch Fault "fault")
+       (try (/x/.size data) catch Fault "fault")
+       (data/x ?.size)
+       data/x/?.size
+       data/missing/.size
+       (/missing/.size data)]
+    """, "[\"fault\" \"fault\" \"fault\" nil nil nil nil]")
+    check_eval("""
+      (let cell ($cell nil))
+      [(try cell/.get/.size catch Fault "fault")
+       (try (/.get/.size cell) catch Fault "fault")
+       cell/.get/?.size]
+    """, "[\"fault\" \"fault\" nil]")
+
   test "absence is decided before the message name, but never hides a typo":
     # An absent receiver short-circuits an unknown message too — the guard is
     # about the receiver. A *present* receiver still reports the bad name.

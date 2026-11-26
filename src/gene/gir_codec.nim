@@ -600,6 +600,8 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
           of opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
              opJumpIfPresentOrPop, opJumpIfAbsent:
             if inst.intArg < cells: valid = false
+          of opApplySelectorTop:
+            if inst.flag: valid = false
           else: discard
       if not valid:
         raise newException(ValueError,
@@ -651,6 +653,9 @@ proc restoreChunkOwners(root: Chunk, allowRuntimeState = false) =
         for offset, name in inst.names:
           if chunk.localNames[inst.intArg + 1 + offset] != name:
             raise newException(ValueError, "encoded GIR contains an invalid inlined for")
+      of opApplySelectorTop:
+        if inst.flag and (inst.intArg <= index or inst.intArg > chunk.instructions.len):
+          raise newException(ValueError, "encoded GIR contains an invalid selector jump target")
       of opLoadStdlibPath:
         if inst.intArg < 0 or inst.intArg >= chunk.constants.len or
             inst.name != "gene" or inst.depth != stdlibSlots:

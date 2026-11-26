@@ -61,7 +61,7 @@ type
     opMakePipeline
     opMakeSelector
     opApplySelector
-    opApplySelectorTop
+    opApplySelectorTop # flag: a miss returns nil and jumps to intArg
     opMakeFn
     opMakeNamespace
     opDefineNamespaceMember
@@ -1335,7 +1335,7 @@ proc fusedSequenceFollows*(code: openArray[Instruction], index: int,
       code[index + 1].op == opJumpIfFalse
   of opLoadLocalField:
     index + 2 < code.len and code[index + 1].op == opPushConst and
-      code[index + 2].op == opApplySelectorTop
+      code[index + 2].op == opApplySelectorTop and not code[index + 2].flag
   of opSend:
     code[index].intArg == 0 and code.fusedSendCall(index) >= 0
   of opSendLocal, opSendOuterLocal:
@@ -1626,7 +1626,7 @@ proc formatInstruction(inst: Instruction): string =
   of opApplySelector:
     discard
   of opApplySelectorTop:
-    discard
+    if inst.flag: result.add " missing-target=" & $inst.intArg
   of opMakeFn:
     result.add " fn=" & $inst.intArg
   of opMakeNamespace:
@@ -4054,7 +4054,7 @@ proc deriveScopelessChunk*(proto: FunctionProto) =
       # the field, which the VM sites rule out before entering (see
       # `scopelessReadsFields`). A message segment or a longer path can
       # dispatch through the scope, so it keeps the classic convention.
-      if i == 0 or chunk.instructions[i - 1].op != opPushConst or
+      if inst.flag or i == 0 or chunk.instructions[i - 1].op != opPushConst or
           chunk.constants[chunk.instructions[i - 1].intArg].plainPathKeyId == -2:
         return
       readsFields = true

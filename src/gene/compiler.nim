@@ -7767,8 +7767,8 @@ proc compilePathSend(c: var Compiler, part, site: Value) =
 proc compilePathSuffix(c: var Compiler, parts: seq[Value], start: int,
                        site: Value) =
   # Static path messages use the ordinary VM call path, so Gene message
-  # bodies can suspend without a nested synchronous invocation. Property
-  # traversal still stops the complete path when a segment produces nil.
+  # bodies can suspend without a nested synchronous invocation. A missing
+  # lookup stops the path, while a stored or returned nil can receive a send.
   # Dynamic segments are resolved before any traversal by the Path contract;
   # retain the complete selector for those paths rather than interleave them
   # with message calls.
@@ -7786,12 +7786,9 @@ proc compilePathSuffix(c: var Compiler, parts: seq[Value], start: int,
       continue
     if i > first:
       compileSelectorParts(c, parts.toOpenArray(first, i - 1))
-      discard c.emit(opApplySelectorTop)
-      missingJumps.add c.emitJump(opJumpIfAbsent)
+      missingJumps.add c.emit(opApplySelectorTop, -1, flag = true)
     c.compilePathSend(parts[i], site)
     first = i + 1
-    if first < parts.len:
-      missingJumps.add c.emitJump(opJumpIfAbsent)
   if first < parts.len:
     compileSelectorParts(c, parts.toOpenArray(first, parts.high))
     discard c.emit(opApplySelectorTop)

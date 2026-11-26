@@ -117,7 +117,10 @@ A send with arguments keeps its parentheses: `(person/roles .get 1)`.
 ## Missing and wrong reads
 
 A path step that finds nothing reads `nil`: a missing key, a position past
-the end, an optional field left out, or any step through `nil`. A step that
+the end, an optional field left out, or a name or index read through `nil`.
+A missing lookup ends a plain path. A message stage dispatches on a stored
+`nil` like a parenthesized send. Use `?.` to skip dispatch on a `nil`
+receiver. A step that
 cannot be right raises a `Fault` instead:
 
 - a name that the value's type does not declare;

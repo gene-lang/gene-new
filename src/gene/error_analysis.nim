@@ -1670,6 +1670,10 @@ proc analyzeBody(analysis: ErrorAnalysis, chunk: Chunk, environment: ErrorEnviro
       let target = if inst.op == opApplySelector: a else: b
       let selected = analysis.selectValue(target, selector.literal, environment)
       absorb(selected)
+      if inst.op == opApplySelectorTop and inst.flag:
+        push scalarValue("Nil")
+        enqueue(inst.intArg, state)
+        discard state.pop()
       push selected.value
     of opMakeFn:
       let proto = chunk.functions[inst.intArg]
