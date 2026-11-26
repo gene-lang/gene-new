@@ -10,11 +10,14 @@
 ##   gene compile <file> print compiled GIR bytecode (no execution)
 ##   gene compile --target c <file> print experimental typed_native C
 ##   gene doc <file>     print module metadata, imports, and declarations
+##   gene doc build      build the documentation corpus (builder + generator)
+##   gene doc index|ls|show|search
+##                       read the generated corpus
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
-import gene/[build, build_info, diagnostics, gir, install, native_managed, package,
-             printer, reader, registry_config, registry_publish, repl,
-             system_dependency, types, vm, web]
+import gene/[build, build_info, compiler, diagnostics, gir, install,
+             native_managed, package, printer, reader, registry_config,
+             registry_publish, repl, system_dependency, types, vm, web]
 # native_managed installs the owned byte-ingress adapter for this executable.
 import gene/ext/[logging, logging_config]
 # Imported for its side effect: the typed_native AOT boundary helpers are
@@ -91,7 +94,9 @@ proc usage() =
   echo "  gene test --package [selector] build and run package test targets"
   echo "  gene clean               remove project build views and sandboxes"
   echo "  gene doc <file.gene>     print module metadata, imports, and declarations"
-  echo "  gene doc build [dir]     write the documentation corpus to build/docs/"
+  echo "  gene doc build [dir]     write the documentation corpus to build/docs"
+  echo "  gene doc index|ls|show|search [--corpus dir]"
+  echo "                              read the generated corpus"
   echo "  gene pkg <command>      init/add/remove/resolve/update/sync/vendor/members/tree/why"
   echo "  gene view [options] <file.gene> browse source structure and edit externally"
   echo "  gene lsp                run the language server over stdio (docs/book/tools.md)"
@@ -1280,6 +1285,111 @@ proc writeDocImports(app: Application, chunk: Chunk) =
     for spec in imports:
       echo docImportText(app, spec)
 
+proc docToolExecutable(tool: string): string =
+  let sibling = getAppDir() / tool
+  result = if fileExists(sibling): sibling else: findExe(tool)
+  if result.len == 0:
+    stderr.writeLine "Error: '" & tool & "' was not found next to " &
+      getAppFilename() & " or on PATH."
+    stderr.writeLine "  It is built separately from `gene`: run `nimble tools`."
+    quit(1)
+
+proc docPackageRoot(start: string): string =
+  try:
+    let pkg = discoverApplicationPackage(start)
+    normalizedPath(pkg.root)
+  except CatchableError:
+    normalizedPath(absolutePath(start))
+
+proc writeDocHeads(root: string) =
+  ## The compiler's head list is data for the generator's name table. The
+  ## builder never links the compiler, so the command that does hands it over
+  ## as a file.
+  let docsDir = root / "build" / "docs"
+  createDir(docsDir)
+  var items: seq[string]
+  for name in CoreSpecialFormNames:
+    items.add "\"" & name & "\""
+  writeFile(docsDir / "heads.gene", "[" & items.join(" ") & "]\n")
+
+proc docCommit(root: string): string =
+  let (output, code) = execCmdEx("git -C " & quoteShell(root) & " rev-parse HEAD")
+  if code == 0: output.strip() else: ""
+
+const docsGeneratorAtBuild = currentSourcePath().parentDir.parentDir /
+  "tools" / "docs" / "src" / "main.gene"
+
+proc findDocGenerator(root: string): string =
+  ## The generator ships with the checkout (`tools/docs`), so walk up from the
+  ## package, the working directory, and the binary looking for it. A binary
+  ## built from a checkout also knows that checkout's path.
+  let override = getEnv("GENE_DOCS_GENERATOR")
+  if override.len > 0 and fileExists(override):
+    return override
+  if fileExists(docsGeneratorAtBuild):
+    return docsGeneratorAtBuild
+  for start in [root, getCurrentDir(), getAppDir()]:
+    var dir = normalizedPath(absolutePath(start))
+    while true:
+      let candidate = dir / "tools" / "docs" / "src" / "main.gene"
+      if fileExists(candidate):
+        return candidate
+      let parent = parentDir(dir)
+      if parent.len == 0 or parent == dir:
+        break
+      dir = parent
+
+proc cmdDocBuild(args: openArray[string]) =
+  var dir = ""
+  var packageRoot = ""
+  var i = 0
+  while i < args.len:
+    let arg = args[i]
+    if arg == "--package-root":
+      inc i
+      if i >= args.len:
+        stderr.writeLine "Error: --package-root expects a path"
+        quit(1)
+      packageRoot = args[i]
+    elif arg.startsWith("-"):
+      stderr.writeLine "Error: unknown option: " & arg
+      quit(1)
+    elif dir.len == 0:
+      dir = arg
+    else:
+      stderr.writeLine "Error: unexpected argument: " & arg
+      quit(1)
+    inc i
+  let start = if packageRoot.len > 0: packageRoot else: getCurrentDir()
+  let root = docPackageRoot(start)
+  writeDocHeads(root)
+  let tool = docToolExecutable("gene-doc")
+  var toolArgs = @["build"]
+  if dir.len > 0:
+    toolArgs.add dir
+  toolArgs.add("--package-root")
+  toolArgs.add(root)
+  let process = startProcess(tool, workingDir = getCurrentDir(),
+                             args = toolArgs, options = {poParentStreams})
+  let builderCode = process.waitForExit()
+  process.close()
+  let generator = findDocGenerator(root)
+  if generator.len == 0:
+    stderr.writeLine "Error: the documentation generator " &
+      "(tools/docs/src/main.gene) was not found"
+    quit(1)
+  let commit = docCommit(root)
+  var runArgs = @[root]
+  if commit.len > 0:
+    runArgs.add "--commit"
+    runArgs.add commit
+  if builderCode != 0 and builderCode != 3:
+    # A fatal builder failure has no corpus for the generator to read.
+    quit(builderCode)
+  cmdRun(generator, runArgs)
+  if builderCode != 0:
+    quit(builderCode)
+
 proc cmdDoc(path: string) =
   if not fileExists(path):
     stderr.writeLine "Error: file not found: " & path
@@ -1844,10 +1954,15 @@ proc main() =
      "rollback", "installed":
     unavailableBuildFeature(cmd)
   of "doc":
-    if paramCount() >= 2 and paramStr(2) == "build":
+    let sub = if paramCount() >= 2: paramStr(2) else: ""
+    case sub
+    of "build":
+      cmdDocBuild(commandArgs(3))
+    of "index", "ls", "show", "search":
       delegateToTool("gene-doc", commandArgs(2))
-    elif paramCount() < 2:
-      stderr.writeLine "Error: 'doc' needs a file path or 'build [dir]'"
+    of "":
+      stderr.writeLine "Error: 'doc' needs a file path, 'build [dir]', or " &
+        "one of index, ls, show, search"
       quit(1)
     else:
       cmdDoc(paramStr(2))

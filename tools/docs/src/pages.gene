@@ -1,0 +1,442 @@
+# Rendering pages: chapters, sections, namespaces, and entries.
+
+(import $str [join split trim lower upper starts_with? ends_with? byte_size
+              slice_bytes])
+(import $order [sort_by])
+(import fail_pipeline in? first_paragraph anchor format_size str_or_empty short_summary ^from "./util")
+(import gene_tail entry_local ^from "./names")
+
+(fn code [text]
+  ($str/join ["`" text "`"] ""))
+
+(fn entry_summary [entry]
+  (if ($present? entry/doc)
+    (first_paragraph ($str/split entry/doc "\n") 0)
+    else
+    ""))
+
+(fn param_text [param named]
+  (var parts [])
+  (if named
+    (parts .push $"^${param/name}")
+    else
+    (parts .push (str_or_empty param/name)))
+  (if (&& ($present? param/type) (not (== param/type "")))
+    (parts .push $" : ${param/type}"))
+  (if (&& param/has_default ($present? param/default) (not (== param/default "")))
+    (parts .push $" = ${param/default}"))
+  ($str/join parts ""))
+
+(fn signature_text [module entry]
+  (let title (entry_title module entry))
+  (let kind ($to_str entry/kind))
+  (if (|| (&& ($present? entry/shape_known) (not entry/shape_known))
+          (|| (== kind "type") (|| (== kind "protocol") (== kind "enum"))))
+    title
+    else
+    (do
+      (var params [])
+      (for param in entry/positional
+        (params .push (param_text param false)))
+      (for param in entry/named
+        (params .push (param_text param true)))
+      (if ($present? entry/rest)
+        (params .push $"${(str_or_empty entry/rest/name)}..."))
+      (if ($present? entry/namedRest)
+        (params .push $"^${(str_or_empty entry/namedRest/name)}..."))
+      (var text ($str/join [title " [" ($str/join params " ") "]"] ""))
+      (if (&& ($present? entry/result) (not (== entry/result "")))
+        (set text ($str/join [text " : " entry/result] "")))
+      text)))
+
+(fn entry_title [module entry]
+  (if ($present? entry/for)
+    (if (starts_with? entry/for "gene/")
+      ($str/join ["$" (gene_tail entry/for)] "")
+      else
+      entry/for)
+    else
+    ($str/join [module/module "/" (entry_local module/module entry/id)] "")))
+
+(fn page_dir_parts [id]
+  # A page id's directory segments: `lib/gene/str` lives in `lib/gene`.
+  (let parts ($str/split id "/"))
+  (if (> ($size parts) 1)
+    ($take parts (- ($size parts) 1))
+    else
+    []))
+
+(fn relative_md [target source]
+  # Both ids live in the same `md/` tree; the link is the target file relative
+  # to the source page's directory.
+  (let sdir (page_dir_parts source))
+  (let tparts ($str/split target "/"))
+  (var common 0)
+  (while (&& (< common ($size sdir)) (< common ($size tparts))
+              (== (sdir .get common) (tparts .get common)))
+    (set common (+ common 1)))
+  (var out [])
+  (var up 0)
+  (while (< up (- ($size sdir) common))
+    (out .push "..")
+    (set up (+ up 1)))
+  (let rest ($drop tparts common))
+  (var i 0)
+  (for part in rest
+    (if (== i (- ($size rest) 1))
+      (out .push ($str/join [part ".md"] ""))
+      else
+      (out .push part))
+    (set i (+ i 1)))
+  ($str/join out "/"))
+
+(fn book_index [chapters]
+  # chapter name -> anchor -> section id
+  (let map {})
+  (for chapter in chapters
+    (let anchors {})
+    (for section in chapter/sections
+      (anchors .put (anchor section/segment) section/id))
+    (map .put chapter/chapter anchors))
+  map)
+
+(fn resolve_book_target [target chapter_id index]
+  # `foo.md#bar`, `foo.md`, `#bar`: a link written against a book chapter file.
+  (var part target)
+  (var frag "")
+  (let hash ($str/split target "#"))
+  (if (> ($size hash) 1)
+    (do
+      (set part (hash .get 0))
+      (set frag (hash .get 1))))
+  (let current (get_chapter chapter_id))
+  (var chapter current)
+  (var section "")
+  (if (not (== part ""))
+    (do
+      (let stem ($str/split part "."))
+      (let first (stem .get 0))
+      (set chapter (if (ends_with? first "/")
+        ($str/slice_bytes first 0 (- ($str/byte_size first) 1))
+        else
+        first))
+      (if ($has_key? index chapter)
+        (do
+          (let anchors (index .get chapter))
+          (if (&& (not (== frag "")) ($has_key? anchors frag))
+            (set section (anchors .get frag))))
+        else nil))
+    else
+    (if (&& (not (== frag "")) ($has_key? index current))
+      (do
+        (let anchors (index .get current))
+        (if ($has_key? anchors frag) (set section (anchors .get frag))))
+      else nil))
+  (if (== chapter "")
+    target
+    else
+    (if (not (== section ""))
+      section
+      else
+      (if (not (== frag ""))
+        ($str/join ["book/" chapter "#" frag] "")
+        else
+        ($str/join ["book/" chapter] "")))))
+
+(fn repeat_item [item n]
+  (var out [])
+  (var i 0)
+  (while (< i n)
+    (out .push item)
+    (set i (+ i 1)))
+  out)
+
+(fn repo_relative_target [target source_id]
+  # A source link like `../../examples/x` is relative to docs/book; the page
+  # lives under build/docs/md, so count that extra depth.
+  (let ups (+ 3 ($size (page_dir_parts source_id))))
+  (let rest ($str/slice_bytes target 6 (- ($str/byte_size target) 6)))
+  ($str/join [($str/join (repeat_item ".." ups) "/") rest] "/"))
+
+(fn rewrite_book_links [text chapter_id index source_id]
+  (let parts ($str/split text "]("))
+  (if (== ($size parts) 1)
+    text
+    else
+    (do
+      (var out (parts .get 0))
+      (var i 1)
+      (while (< i ($size parts))
+        (let tail (parts .get i))
+        (let close ($str/split tail ")"))
+        (if (> ($size close) 1)
+          (do
+            (let target (close .get 0))
+            (let rest ($str/join ($drop close 1) ")"))
+            (var rewritten target)
+            (if (|| (starts_with? target "http://") (starts_with? target "https://"))
+              (set rewritten target)
+              elif (starts_with? target "../../")
+                (set rewritten (repo_relative_target target source_id))
+              elif (|| (starts_with? target "book/") (starts_with? target "lib/"))
+                (set rewritten target)
+              else
+                (let resolved (resolve_book_target target chapter_id index))
+                (if (starts_with? resolved "book/")
+                  (set rewritten (relative_md resolved source_id))
+                  else
+                  (set rewritten target)))
+            (set out ($str/join [out "](" rewritten ")" rest] ""))
+            (set i (+ i 1)))
+          else
+          (do
+            (set out ($str/join [out "](" tail] ""))
+            (set i (+ i 1)))))
+      out)))
+
+(fn get_chapter [chapter_id]
+  (let parts ($str/split chapter_id "/"))
+  (if (> ($size parts) 1) (parts .get 1) else ""))
+
+(fn link_row [title target summary size source]
+  (let text (if (&& ($present? summary) (not (== summary "")))
+    ($str/join ["- [" title "](" (relative_md target source) ") — " (short_summary summary) " (" (format_size size) ")"] "")
+    else
+    ($str/join ["- [" title "](" (relative_md target source) ") (" (format_size size) ")"] "")))
+  text)
+
+(fn kind_heading [kind]
+  (match kind
+    when "type" "Types"
+    when "enum" "Types"
+    when "protocol" "Protocols"
+    when "message" "Messages"
+    when "ctor" "Constructors"
+    when "namespace" "Namespaces"
+    when "fn" "Functions"
+    when "macro" "Macros"
+    when "fexpr" "Functions"
+    when "const" "Values"
+    when "var" "Values"
+    when "let" "Values"
+    when "alias" "Aliases"
+    else "Other"))
+
+(fn kind_rank [kind]
+  (match kind
+    when "type" 0
+    when "enum" 0
+    when "protocol" 1
+    when "namespace" 2
+    when "fn" 3
+    when "macro" 3
+    when "fexpr" 3
+    when "message" 4
+    when "ctor" 5
+    when "const" 6
+    when "var" 6
+    when "let" 6
+    when "alias" 6
+    else 7))
+
+(fn render_param_list [params]
+  (var out [])
+  (for param in params
+    (out .push $"`./${param/name}`"))
+  ($str/join out ", "))
+
+(fn entry_page [module entry introduced_by]
+  (let title (entry_title module entry))
+  (var lines [])
+  (lines .push $"# ${title}")
+  (lines .push "")
+  (lines .push "```gene")
+  (lines .push (signature_text module entry))
+  (lines .push "```")
+  (lines .push "")
+  (if (&& (== ($to_str entry/kind) "type")
+          (&& ($present? entry/positional) (> ($size entry/positional) 0)))
+    (do
+      (lines .push "## Fields")
+      (lines .push "")
+      (for field in entry/positional
+        (lines .push ($str/join ["- `" (str_or_empty field/name) "`"
+                        (if (&& ($present? field/type) (not (== field/type "")))
+                          ($str/join [" : `" field/type "`"] "")
+                          else "")] "")))
+      (lines .push "")))
+  (if (&& ($present? entry/doc) (not (== ($str/trim entry/doc) "")))
+    (do
+      (lines .push entry/doc)
+      (lines .push "")))
+  (if (&& ($present? entry/errors) (> ($size entry/errors) 0))
+    (do
+      (lines .push ($str/join ["**Errors:** " ($str/join entry/errors ", ")] ""))
+      (lines .push "")))
+  (if (&& ($present? entry/status) (not (== entry/status "")))
+    (do
+      (lines .push $"**Status:** ${entry/status}")
+      (lines .push "")))
+  (if (&& ($present? entry/see) (> ($size entry/see) 0))
+    (do
+      (var refs [])
+      (for ref in entry/see
+        (if (|| (starts_with? ref "book/") (starts_with? ref "lib/"))
+          (refs .push ($str/join ["[" ref "](" (relative_md ref entry/id) ")"] ""))
+          else
+          (refs .push (code ref))))
+      (lines .push ($str/join ["**See also:** " ($str/join refs ", ")] ""))
+      (lines .push "")))
+  (if ($present? introduced_by)
+    (do
+      (lines .push ($str/join ["**Introduced in:** [`" introduced_by "`]("
+                    (relative_md introduced_by entry/id) ")"] ""))
+      (lines .push "")))
+  (let source (if ($present? entry/source) entry/source else module/source))
+  (if (&& ($present? source) (not (== source "")))
+    (do
+      (lines .push $"**Source:** `${source}:${entry/loc/line}`")
+      (lines .push "")))
+  {^id entry/id ^kind "entry" ^decl_kind ($to_str entry/kind)
+   ^title title ^summary (entry_summary entry)
+   ^parent ($str/join ["lib/" module/module] "")
+   ^content ($str/trim ($str/join (check_lines lines entry/id) "\n"))})
+
+(fn check_lines [lines where]
+  (var out [])
+  (var i 0)
+  (for line in lines
+    (out .push ($to_str line))
+    (set i (+ i 1)))
+  out)
+
+(fn namespace_page [module entry_pages]
+  (let tail (if (== module/module "gene")
+    "Built-in functions, types, and errors"
+    else
+    (gene_tail module/module)))
+  (let summary (if ($present? module/doc) (first_paragraph ($str/split module/doc "\n") 0) else ""))
+  (var lines [])
+  (let heading (if (&& ($present? summary) (not (== summary "")))
+    $"# ${tail} — ${summary}"
+    else
+    $"# ${tail}"))
+  (lines .push heading)
+  (lines .push "")
+  (if (&& ($present? module/doc) (not (== ($str/trim module/doc) "")))
+    (do
+      (lines .push module/doc)
+      (lines .push "")))
+  (let usage (if (== module/module "gene")
+    "Built in as `$…`."
+    elif (starts_with? module/module "gene/")
+    ($str/join ["Built in as `$" tail "/…`."] "")
+    else
+    ($str/join ["Import from `" module/module "`."] "")))
+  (lines .push usage)
+  (lines .push "")
+  (var kinds [])
+  (for page in entry_pages
+    (let kind page/decl_kind)
+    (if (not (in? kind kinds)) (kinds .push kind)))
+  (for kind in (sort_by kinds (fn [k] (kind_rank k)))
+    (var group [])
+    (for page in entry_pages
+      (if (== page/decl_kind kind) (group .push page)))
+    (lines .push $"## ${(kind_heading kind)}")
+    (lines .push "")
+    (for page in group
+      (lines .push (link_row page/title page/id page/summary page/size
+                     ($str/join ["lib/" module/module] "")))))
+  (let module_parts ($str/split module/module "/"))
+  (let parent (if (> ($size module_parts) 1)
+    ($str/join ["lib/" ($str/join ($take module_parts (- ($size module_parts) 1)) "/")] "")
+    else
+    "lib"))
+  {^id ($str/join ["lib/" module/module] "") ^kind "namespace" ^title tail
+   ^summary summary ^parent parent
+   ^content ($str/trim ($str/join (check_lines lines module/module) "\n"))})
+
+(fn section_page [section index]
+  (let body (rewrite_book_links section/body section/id index section/id))
+  {^id section/id ^kind "section" ^title section/title ^summary section/summary
+   ^parent ($str/join ["book/" section/chapter] "")
+   ^content ($str/trim ($str/join [$"# ${section/title}" "" body] "\n"))})
+
+(fn recipe_lines [runtime]
+  (var lines [])
+  (lines .push "Load the index first; it is small.")
+  (lines .push "Before writing or changing Gene code, load `book/overview` once.")
+  (lines .push "To learn a feature: find its chapter in the index, load the chapter page")
+  (lines .push "  (its list of sections), then load only the sections you need.")
+  (if runtime
+    (do
+      (lines .push "To use a name you know: load its entry, `lib/gene/<name path>`")
+      (lines .push "  (`$str/join` is `lib/gene/str/join`)."))
+    else
+    (do
+      (lines .push "To use a name you know: load its entry, `lib/<module>/<name>`.")))
+  (lines .push "To find a library for a job: scan the index's reference groups, then load")
+  (lines .push "  that namespace's page.")
+  (if runtime
+    (lines .push "For an error message: `gene doc search \"<message>\"`.")
+    else
+    (lines .push "For an error message: `gene doc search \"<message>\" --corpus <package root>`."))
+  (lines .push "  Watch out notes quote the messages they explain.")
+  (lines .push "Load a section or an entry, not a whole chapter or namespace.")
+  lines)
+
+(fn book_recipe [runtime]
+  (var lines [])
+  (lines .push "## How to read these docs")
+  (lines .push "")
+  (for line in (recipe_lines runtime) (lines .push line))
+  ($str/join lines "\n"))
+
+(fn chapter_page [chapter section_pages index runtime]
+  (var lines [])
+  (lines .push $"# ${chapter/title}")
+  (lines .push "")
+  (if (&& ($present? chapter/body) (not (== chapter/body "")))
+    (do
+      (lines .push (rewrite_book_links chapter/body chapter/id index chapter/id))
+      (lines .push "")))
+  (lines .push "## Sections")
+  (lines .push "")
+  (for page in section_pages
+    (lines .push (link_row page/title page/id page/summary page/size chapter/id)))
+  (if (== chapter/chapter "overview")
+    (do
+      (lines .push "")
+      (lines .push (book_recipe runtime))))
+  {^id chapter/id ^kind "chapter" ^title chapter/title ^summary chapter/summary
+   ^parent "" ^content ($str/trim ($str/join lines "\n"))})
+
+(fn book_pages [chapters runtime]
+  (var pages [])
+  (let index (book_index chapters))
+  (for chapter in chapters
+    (var section_pages [])
+    (for section in chapter/sections
+      (let page (section_page section index))
+      (page .put "size" ($str/byte_size page/content))
+      (section_pages .push page))
+    (let page (chapter_page chapter section_pages index runtime))
+    (page .put "size" ($str/byte_size page/content))
+    (pages .push page)
+    (for sp in section_pages (pages .push sp)))
+  pages)
+
+(fn reference_pages [modules names_by_id]
+  (var pages [])
+  (for module in modules
+    (var entry_pages [])
+    (for entry in module/entries
+      (let page (entry_page module entry (names_by_id .get entry/id)))
+      (page .put "size" ($str/byte_size page/content))
+      (entry_pages .push page))
+    (for page in entry_pages (pages .push page))
+    (let page (namespace_page module entry_pages))
+    (page .put "size" ($str/byte_size page/content))
+    (pages .push page))
+  pages)

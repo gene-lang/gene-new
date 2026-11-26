@@ -1,0 +1,86 @@
+# The book: one Markdown file per chapter, one `##` heading per section.
+
+(import $str [join split trim lower upper starts_with? byte_size])
+(import $fs [exists? read_text])
+(import slug strip_inline first_paragraph fail_pipeline
+  ^from "./util")
+
+(fn is_fence [line]
+  ($str/starts_with? line "```"))
+
+(fn heading [line]
+  (if ($str/starts_with? line "# ")
+    {^kind "chapter" ^text ($str/trim ($str/slice_bytes line 2 (- ($str/byte_size line) 2)))}
+    elif ($str/starts_with? line "## ")
+      {^kind "section" ^text ($str/trim ($str/slice_bytes line 3 (- ($str/byte_size line) 3)))}
+    else
+      {^kind "" ^text ""}))
+
+(fn read_chapter [book_dir chapter]
+  (let path ($path/join book_dir $"${chapter}.md"))
+  (let lines ($str/split ($fs/read_text path) "\n"))
+  (var title "")
+  (var intro [])
+  (var sections [])
+  (var current {^title "" ^lines []})
+  (var current_segment "")
+  (var current_path "")
+  (var in_section false)
+  (var fence false)
+  (for line in lines
+    (if (is_fence line) (set fence (not fence)))
+    (let h (heading line))
+    (if (&& (not fence) (== h/kind "chapter"))
+      (set title h/text)
+      elif (&& (not fence) (== h/kind "section"))
+        (if in_section
+          (sections .push {^title current/title ^lines current/lines
+                           ^segment current_segment ^path current_path}))
+        (set current {^title h/text ^lines []})
+        (set current_segment (slug h/text))
+        (set current_path path)
+        (set in_section true)
+        (if (== current_segment "")
+          (fail_pipeline $"${path}: a section heading has no name"))
+        (var seen false)
+        (for section in sections
+          (if (== (slug section/title) current_segment) (set seen true)))
+        (if seen
+          (fail_pipeline $"${path}: two headings slug to '${current_segment}'"))
+      elif in_section
+        (current/lines .push line)
+      else
+        (intro .push line)))
+  (if in_section
+    (sections .push {^title current/title ^lines current/lines
+                     ^segment current_segment ^path current_path}))
+  (if (== title "")
+    (fail_pipeline $"${path}: no '# ' chapter heading"))
+  (let id $"book/${chapter}")
+  (var out_sections [])
+  (var index 0)
+  (for section in sections
+    (let lines2 section/lines)
+    (let body ($str/trim ($str/join lines2 "\n")))
+    (out_sections .push
+      {^id $"${id}/${section/segment}"
+       ^segment section/segment
+       ^title section/title
+       ^summary (first_paragraph lines2 0)
+       ^body body
+       ^chapter chapter
+       ^source path
+       ^order index})
+    (set index (+ index 1)))
+  {^id id ^chapter chapter ^title title
+   ^summary (first_paragraph intro 0)
+   ^body ($str/trim ($str/join intro "\n"))
+   ^sections out_sections
+   ^source path})
+
+(fn read_book [root_dir, chapters]
+  (let book_dir ($path/join root_dir "docs/book"))
+  (var out [])
+  (for chapter in chapters
+    (out .push (read_chapter book_dir chapter)))
+  out)

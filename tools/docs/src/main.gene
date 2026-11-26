@@ -1,0 +1,32 @@
+# The documentation generator.
+#
+# Usage: gene run tools/docs/src/main.gene <package root> [--commit <sha>]
+#
+# It reads build/docs/ from the builder and docs/ from the package, and writes
+# the pages, the index, the manifest, the name table, and the search database.
+
+(import run ^from "./emit")
+(import format_size ^from "./util")
+
+(fn argument_value [args flag]
+  (var out "")
+  (var i 0)
+  (while (< i ($size args))
+    (if (== (args .get i) flag)
+      (set out (args .get (+ i 1))))
+    (set i (+ i 1)))
+  out)
+
+(fn main [args]
+  (var root ".")
+  (if (> ($size args) 0) (set root (args .get 0)))
+  (let commit (argument_value args "--commit"))
+  (let result (run root commit))
+  ($println "documentation: " root)
+  ($println "  pages: " result/pages)
+  ($println "  names: " result/rows)
+  ($println "  index bytes: " result/index_size)
+  ($println "  largest page: chapter " result/chapter_max
+            ", section " result/section_max ", entry " result/entry_max)
+  ($println "  link problems: " result/problems)
+  nil)

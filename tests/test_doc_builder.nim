@@ -14,8 +14,8 @@
 ## the standard library.
 
 import std/[algorithm, json, os, osproc, sets, strutils, tables, unittest]
-import gene/[callable_reflection, gir, package, printer, reader, types, vm,
-            web]
+import gene/[callable_reflection, docs_lookup, gir, package, printer, reader,
+            types, vm, web]
 import tools/declaration_heads
 import tools/docs/builder as docBuilder
 from tools/docs/model import DocEntry, DocImport, DocParam, ModuleDoc, renderModuleDoc
@@ -81,6 +81,18 @@ proc docTestEntryNamed(doc: ModuleDoc, name: string): DocEntry =
 # ---------------------------------------------------------------------------
 # Fixtures: every kind, sidecars, and the records for what cannot be read
 # ---------------------------------------------------------------------------
+
+proc docTestRunGenerator(root: string) =
+  ## Run `tools/docs` in this test's VM, the way `gene doc build` runs it.
+  let mainPath = docTestRepoRoot() / "tools/docs/src/main.gene"
+  check fileExists(mainPath)
+  let app = newApplicationForEntryFile(mainPath)
+  let module = app.loadFileModule(mainPath)
+  let scope = module.moduleRootNamespace.nsScope
+  var mainValue: Value
+  check scope.lookupOptional("main", mainValue)
+  if mainValue.kind == vkFunction:
+    discard mainValue.call(@[newList(@[newStr(root)])])
 
 suite "doc builder — declaration pass":
   test "every declaration kind becomes an entry":
@@ -916,6 +928,136 @@ proc docTestLinkedObjects(repo: string): seq[string] =
     result.add item.getStr()
 
 suite "doc builder — no VM linked":
+  test "the generated corpus is identical at two checkout paths":
+    let firstRoot = docTestFixturesRoot()
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-generator-copy"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    for root in [firstRoot, copyRoot]:
+      var built = docBuilder.buildPackage(root)
+      built.writeOutputs()
+    docTestRunGenerator(firstRoot)
+    docTestRunGenerator(copyRoot)
+    var filesA, filesB: seq[string]
+    for path in walkDirRec(firstRoot / "build" / "docs"):
+      filesA.add relativePath(path, firstRoot / "build" / "docs")
+    for path in walkDirRec(copyRoot / "build" / "docs"):
+      filesB.add relativePath(path, copyRoot / "build" / "docs")
+    filesA.sort()
+    filesB.sort()
+    check filesA == filesB
+    check "md/book/overview.md" in filesA
+    check "llms.txt" in filesA
+    check "manifest.gene" in filesA
+    check "names.gene" in filesA
+    check "gene-docs.sqlite" in filesA
+    for name in filesA:
+      check readFile(firstRoot / "build" / "docs" / name) ==
+        readFile(copyRoot / "build" / "docs" / name)
+    let twice = readFile(firstRoot / "build" / "docs" / "md" / "lib" / "main" /
+      "twice.md")
+    check "**Introduced in:**" in twice
+    check "book/values/text" in twice
+    let llms = readFile(firstRoot / "build" / "docs" / "llms.txt")
+    check llms.startsWith("# test/docs documentation")
+    check "## Reference" in llms
+    let manifest = readFile(firstRoot / "build" / "docs" / "manifest.gene")
+    check "^sizes {" in manifest
+    check "^checks {^links \"ok\"" in manifest
+    removeDir(copyRoot)
+
+  test "a broken book link fails the link check before writing":
+    let root = docTestRepoRoot() / "tests/fixtures/docs_bad_link"
+    var built = docBuilder.buildPackage(root)
+    built.writeOutputs()
+    let keep = root / "build" / "docs" / "md" / "keep.md"
+    createDir(root / "build" / "docs" / "md")
+    writeFile(keep, "old corpus")
+    var failed = false
+    try:
+      docTestRunGenerator(root)
+    except GeneError as error:
+      failed = true
+      check "link check" in error.msg
+    check failed
+    check fileExists(keep)
+
+  test "the runtime corpus wins over a package corpus":
+    let root = docTestRepoRoot()
+    let built = root / "build" / "docs"
+    if not fileExists(built / "manifest.gene"):
+      var builtRepo = docBuilder.buildPackage(root)
+      builtRepo.writeOutputs()
+      docTestRunGenerator(root)
+    let temp = root / "build/m1/corpus-precedence"
+    if dirExists(temp): removeDir(temp)
+    createDir(temp / "build" / "docs" / "md")
+    writeFile(temp / "build" / "docs" / "manifest.gene", "{}")
+    let saved = getCurrentDir()
+    let hadRoot = existsEnv("GENE_DOCS_ROOT")
+    let savedRoot = getEnv("GENE_DOCS_ROOT")
+    try:
+      delEnv("GENE_DOCS_ROOT")
+      setCurrentDir(temp)
+      check normalizedPath(findCorpus()) == normalizedPath(built)
+      putEnv("GENE_DOCS_ROOT", temp)
+      check normalizedPath(findCorpus()) == normalizedPath(temp / "build" / "docs")
+      putEnv("GENE_DOCS_ROOT", "/nonexistent-corpus")
+      check findCorpus() == ""
+    finally:
+      setCurrentDir(saved)
+      if hadRoot: putEnv("GENE_DOCS_ROOT", savedRoot)
+      else: delEnv("GENE_DOCS_ROOT")
+    removeDir(temp)
+
+  test "reflection entries keep their signature and build the same at two paths":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-reflect-copy"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    for root in [firstRoot, copyRoot]:
+      var built = docBuilder.buildPackage(root)
+      built.writeOutputs()
+    docTestRunGenerator(firstRoot)
+    docTestRunGenerator(copyRoot)
+    let page = firstRoot / "build" / "docs" / "md" / "lib" / "gene" / "runtime" /
+      "with_context.md"
+    check fileExists(page)
+    if fileExists(page):
+      let text = readFile(page)
+      check "with_context" in text
+      check "context" in text
+    let bodyPage = firstRoot / "build" / "docs" / "md" / "lib" / "gene" /
+      "node" / "body.md"
+    check fileExists(bodyPage)
+    if fileExists(bodyPage):
+      let text = readFile(bodyPage)
+      check "book/fences/real" in text
+      check "book/fakes" notin text
+    # `$"n=${n}"` reads as a `$to_str` call; only the written call counts.
+    let toStrPage = firstRoot / "build" / "docs" / "md" / "lib" / "gene" /
+      "to_str.md"
+    check fileExists(toStrPage)
+    if fileExists(toStrPage):
+      let text = readFile(toStrPage)
+      check "book/fences/real" in text
+      check "book/fakes" notin text
+    let rootPage = readFile(firstRoot / "build" / "docs" / "md" / "lib" /
+      "gene.md")
+    check rootPage.startsWith("# Built-in functions, types, and errors\n")
+    var filesA, filesB: seq[string]
+    for path in walkDirRec(firstRoot / "build" / "docs"):
+      filesA.add relativePath(path, firstRoot / "build" / "docs")
+    for path in walkDirRec(copyRoot / "build" / "docs"):
+      filesB.add relativePath(path, copyRoot / "build" / "docs")
+    filesA.sort()
+    filesB.sort()
+    check filesA == filesB
+    for name in filesA:
+      check readFile(firstRoot / "build" / "docs" / name) ==
+        readFile(copyRoot / "build" / "docs" / name)
+    removeDir(copyRoot)
+
   test "gene-doc's import closure excludes vm, compiler, and stdlib":
     if findExe("nim").len == 0:
       checkpoint "nim is not on PATH; cannot verify the dependency list"

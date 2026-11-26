@@ -1,0 +1,341 @@
+# The name table: every Gene spelling the reference or the book can address,
+# and the index of names computed from the book's Gene fences.
+
+(import $str [join split trim lower starts_with? ends_with? contains? byte_size
+              slice_bytes])
+(import $order [sort_by])
+(import fail_pipeline in? ^from "./util")
+
+(fn copy_list [items]
+  (var out [])
+  (for item in items (out .push item))
+  out)
+
+(fn full_path [path name]
+  (if (> ($size path) 0)
+    ($str/join [($str/join path "/") name] "/")
+    else
+    name))
+
+(fn gene_tail [module_path]
+  # `gene/str` addresses as `$str/...`; a package module keeps its path.
+  (if ($str/starts_with? module_path "gene/")
+    ($str/slice_bytes module_path 5 (- ($str/byte_size module_path) 5))
+    else
+    module_path))
+
+(fn entry_local [module_path entry_id]
+  # The entry's path below its module: `join`, `T/a`, `P:msg`.
+  (let prefix ($str/join ["lib/" module_path "/"] ""))
+  (if (starts_with? entry_id prefix)
+    ($str/slice_bytes entry_id ($str/byte_size prefix)
+      (- ($str/byte_size entry_id) ($str/byte_size prefix)))
+    else
+    entry_id))
+
+(fn target_id [full]
+  ($str/join ["lib/gene/" full] ""))
+
+(fn dollar [full]
+  ($str/join ["$" full] ""))
+
+(fn spelling_forms [full]
+  (let short (if ($str/starts_with? full "gene/")
+    ($str/slice_bytes full 5 (- ($str/byte_size full) 5))
+    else
+    full))
+  (var out [])
+  (out .push (dollar short))
+  (out .push short)
+  (if ($str/starts_with? full "gene/")
+    (out .push full)
+    else
+    (out .push ($str/join ["gene/" full] "")))
+  out)
+
+(fn collect_reflections [ns path out]
+  (for d in ($declarations ns)
+    (let kind d/kind)
+    (if (== kind "Namespace")
+      (do
+        (let child (copy_list path))
+        (child .push ($to_str d/name))
+        (collect_reflections d/value child out))
+      elif (in? kind ["Fn" "NativeFn" "Macro" "Type" "Protocol"])
+        (do
+          (let value d/value)
+          (let name ($to_str d/name))
+          (let sig (try ($runtime/signature value) catch Error nil))
+          (if (not (contains? name "/"))
+            (out .push {^path path ^name name ^kind kind ^value value
+                         ^reported (if ($present? sig) sig/name else nil)})))))
+  out)
+
+(fn groups_of [decls]
+  (var groups [])
+  (for decl in decls
+    (var found false)
+    (for group in groups
+      (let member ($first group))
+      (if (&& (not found) ($same? decl/value member/value))
+        (do
+          (group .push decl)
+          (set found true))))
+    (if (not found) (groups .push [decl])))
+  groups)
+
+(fn add_row [rows by_key spelling id kind canonical reported]
+  (if (not ($has_key? by_key spelling))
+    (do
+      (let row {^spelling spelling ^id id ^kind kind ^canonical canonical
+                ^reported reported ^introduced_in "" ^used_in []})
+      (rows .push row)
+      (by_key .put spelling row))))
+
+(fn build_name_table [modules heads entry_ids]
+  (var rows [])
+  (var by_key {})
+  (var undocumented [])
+  # Entries first: every documented entry has a spelling even before reflection
+  # runs.
+  (for module in modules
+    (let module_path module/module)
+    (let tail (gene_tail module_path))
+    (for spelling in (spelling_forms tail)
+      (add_row rows by_key spelling ($str/join ["lib/" module_path] "") "namespace"
+        (== ($str/starts_with? spelling "$")) tail))
+    (for entry in module/entries
+      (let local $"${tail}/${(entry_local module_path entry/id)}")
+      (for spelling in (spelling_forms local)
+        (add_row rows by_key spelling entry/id entry/kind
+          (== ($str/starts_with? spelling "$")) entry/name))
+      (if (&& (== ($to_str entry/kind) "message") (contains? local "/"))
+        (let parts ($str/split local "/"))
+        (let dot ($str/join [($str/join ($take parts (- ($size parts) 1)) "/") ($last parts)] "."))
+        (add_row rows by_key dot entry/id entry/kind false entry/name))))
+  (let decls (collect_reflections gene [] []))
+  (for group in (groups_of decls)
+    (var chosen nil)
+    (for decl in group
+      (if (&& (== chosen nil) (in? (target_id (full_path decl/path decl/name)) entry_ids))
+        (set chosen decl)))
+    (if ($present? chosen)
+      (do
+        (let chosen_full (full_path chosen/path chosen/name))
+        (let id (target_id chosen_full))
+        (for decl in group
+          (for spelling in (spelling_forms (full_path decl/path decl/name))
+            (add_row rows by_key spelling id decl/kind false decl/reported)))
+        (let reported (if chosen/reported chosen/reported else chosen_full))
+        (for spelling in (spelling_forms reported)
+          (if ($has_key? by_key spelling)
+            (do
+              (let row (by_key .get spelling))
+              (row .put "canonical" true)
+              (row .put "id" id)))))
+      else
+      (do
+        (for decl in group
+          (for spelling in (spelling_forms (full_path decl/path decl/name))
+            (if (not (in? spelling undocumented))
+              (undocumented .push spelling)))))))
+  (for head in heads
+    (add_row rows by_key head "" "head" true head))
+  {^rows (sort_by rows (fn [row] row/spelling)) ^undocumented undocumented})
+
+(fn valid_symbol? [text]
+  (if (== ($str/byte_size text) 0) false
+    elif (starts_with? text "'") false
+    elif (starts_with? text "\"") false
+    elif (starts_with? text ":") false
+    elif (== text "true") false
+    elif (== text "false") false
+    elif (== text "nil") false
+    else
+      (let first ($str/slice_bytes text 0 1))
+      (if (contains? "0123456789-" first) false else true)))
+
+(fn string_leaf? [value]
+  (try (do ($chars value) true) catch Fault false))
+
+(fn add_binder [value locals]
+  # A parameter, `let`/`var` target, or pattern binder. Types after `:` and
+  # message names are not binders.
+  (if ($leaf? value)
+    (if (not (string_leaf? value))
+      (do
+        (let text ($to_str value))
+        (if (&& (> ($str/byte_size text) 0) (not (== text ":")))
+          (do
+            (var name text)
+            (if (starts_with? name "^")
+              (set name ($str/slice_bytes name 1 (- ($str/byte_size name) 1))))
+            (if (ends_with? name "...")
+              (set name ($str/slice_bytes name 0 (- ($str/byte_size name) 3))))
+            (if (&& (> ($str/byte_size name) 0) (valid_symbol? name))
+              (locals .put name true))))))
+    else
+    (do
+      (let head ($head value))
+      (if (&& ($leaf? head) (== ($to_str head) "path"))
+        nil
+        else
+        (do
+          (var skip false)
+          (for item in ($body value)
+            (if (&& ($leaf? item) (== ($to_str item) ":"))
+              (set skip true)
+              else
+              (do
+                (if (not skip) (add_binder item locals))
+                (set skip false))))
+          (map_for [k v] in ($props value) (add_binder v locals))
+          (map_for [k v] in ($meta value) (add_binder v locals)))))))
+
+(fn collect_locals [value locals]
+  (if ($leaf? value)
+    nil
+    else
+    (do
+      (let head ($head value))
+      (if ($leaf? head)
+        (do
+          (let h ($to_str head))
+          (if (|| (== h "fn") (== h "macro"))
+            (let body ($body value))
+            (if (> ($size body) 0)
+              (if (not ($leaf? (body .get 0)))
+                (add_binder (body .get 0) locals)
+                else
+                (if (> ($size body) 1) (add_binder (body .get 1) locals)))))
+          (if (|| (== h "let") (== h "var"))
+            (let body ($body value))
+            (if (> ($size body) 0) (add_binder (body .get 0) locals)))
+          (if (|| (== h "for") (== h "map_for"))
+            (let body ($body value))
+            (var i 0)
+            (while (< i ($size body))
+              (if (&& ($leaf? (body .get i))
+                      (== ($to_str (body .get i)) "in"))
+                (set i ($size body))
+                else
+                (do
+                  (add_binder (body .get i) locals)
+                  (set i (+ i 1))))))
+          (if (== h "match")
+            (let body ($body value))
+            (var i 0)
+            (while (< i (- ($size body) 1))
+              (if (&& ($leaf? (body .get i))
+                      (== ($to_str (body .get i)) "when"))
+                (add_binder (body .get (+ i 1)) locals))
+              (set i (+ i 1))))
+          ))
+      (for item in ($body value) (collect_locals item locals))
+      (map_for [k v] in ($props value) (collect_locals v locals))
+      (map_for [k v] in ($meta value) (collect_locals v locals)))))
+
+(fn written? [full source]
+  # The reader turns `$"a${b}"` into `($to_str "a" b)`, a path the fence never
+  # wrote. A path counts only when its spelling appears in the fence's source.
+  (if ($str/starts_with? full "gene/")
+    (|| (contains? source
+          (dollar ($str/slice_bytes full 5 (- ($str/byte_size full) 5))))
+        (contains? source full))
+    else
+    (contains? source full)))
+
+(fn walk_value [value out locals source]
+  (if ($leaf? value)
+    (do
+      (let is_string (string_leaf? value))
+      (if (not is_string)
+        (do
+          (let text ($to_str value))
+          (if (&& (valid_symbol? text) (not (== text "$"))
+                  (not ($has_key? locals text)))
+            (out .push text)))))
+    else
+    (do
+      (let head ($head value))
+      (if (&& ($leaf? head) (== ($to_str head) "path"))
+        (do
+          (var segments [])
+          (for part in ($body value)
+            (if ($leaf? part) (segments .push ($to_str part))))
+          (let full ($str/join segments "/"))
+          (if (&& (not (== full "")) (written? full source))
+            (for spelling in (spelling_forms full) (out .push spelling))))
+        else
+        (do
+          (if ($leaf? head)
+            (walk_value head out locals source)
+            elif (== ($to_str ($head head)) "path")
+              (walk_value head out locals source))
+          (let body ($body value))
+          (var i 0)
+          (while (< i ($size body))
+            (let item (body .get i))
+            (if (&& ($leaf? item) (== ($to_str item) "~"))
+              (set i (+ i 2))
+              else
+              (do
+                (walk_value item out locals source)
+                (set i (+ i 1)))))
+          (map_for [k v] in ($props value) (walk_value v out locals source))
+          (map_for [k v] in ($meta value) (walk_value v out locals source)))))))
+
+(fn fence_names [body]
+  (var names [])
+  (var fence false)
+  (var collect false)
+  (var lines [])
+  (for line in ($str/split body "\n")
+    (if ($str/starts_with? line "```")
+      (if fence
+        (do
+          (if collect
+            (do
+              (let source ($str/join lines "\n"))
+              (let forms (try ($parse/read_all source) catch Error nil))
+              (if ($present? forms)
+                (do
+                  (var parsed [])
+                  (for form in forms (parsed .push form))
+                  (var locals {})
+                  (for form in parsed (collect_locals form locals))
+                  (for form in parsed (walk_value form names locals source))))))
+          (set lines [])
+          (set fence false)
+          (set collect false))
+        else
+        (do
+          (let label ($str/trim ($str/slice_bytes line 3
+                             (- ($str/byte_size line) 3))))
+          (set collect (|| (== label "gene") ($str/starts_with? label "gene ")))
+          (set fence true)
+          (set lines [])))
+      else
+      (if (&& fence collect) (lines .push line))))
+  names)
+
+(fn index_book [chapters rows]
+  (let by_key {})
+  (for row in rows (by_key .put row/spelling row))
+  (for chapter in chapters
+    (for section in chapter/sections
+      (for spelling in (fence_names section/body)
+        (if ($has_key? by_key spelling)
+          (do
+            (let row (by_key .get spelling))
+            (if (not (== chapter/chapter "overview"))
+              (if (== row/id "")
+                (do
+                  (row .put "id" section/id)
+                  (row .put "introduced_in" section/id))
+                else
+                (if (== row/introduced_in "")
+                  (row .put "introduced_in" section/id))))
+            (let used (row .get "used_in"))
+            (if (not (in? section/id used)) (used .push section/id)))))))
+  rows)

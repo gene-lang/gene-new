@@ -1,0 +1,2 @@
+(mod main)
+(fn fixture [x : Int] : Int x)

@@ -15,6 +15,11 @@ support, and logging.
 | `gene build`, `gene install` | build and install package targets ([Native code, builds, and deployment](native.md)) |
 | `gene build --target web` | compiles a web-profile module to JavaScript ([Gene on the web](web.md)) |
 | `gene doc file.gene` | prints a module's doc, imports, and declarations |
+| `gene doc build [dir]` | builds the documentation corpus under `build/docs/` |
+| `gene doc index` | prints the corpus index (`llms.txt`) |
+| `gene doc show <id or name>` | prints one page; `$str/join` and `lib/gene/str/join` both work |
+| `gene doc ls [id]` | lists a page's children with their sizes |
+| `gene doc search <text>` | full-text search over the pages |
 | `gene parse file.gene` | prints the forms the reader produces |
 | `gene compile file.gene` | prints the compiled bytecode |
 | `gene lsp` | runs the language server over standard input and output |
@@ -25,7 +30,8 @@ the build: release or debug, platform, and runtime checks.
 
 ## Inspecting code
 
-`gene doc` reads a module without running it:
+`gene doc file.gene` prints a module's doc, imports, and declarations. It
+loads the module to inspect it, so the module's top-level forms run:
 
 ```sh
 gene doc greet.gene
@@ -34,6 +40,9 @@ gene doc greet.gene
 # Declarations:
 # - hello : Fn
 ```
+
+For a view that never executes the module, build the corpus or read one of
+its pages (`gene doc build`, then `gene doc show`).
 
 `gene parse` shows what the reader made of a file, with shorthand expanded.
 It is useful when a form does not mean what it seems to:
@@ -46,6 +55,27 @@ gene parse greet.gene
 From inside a program, `$runtime/signature` describes a function or type
 ([Documenting a function](functions.md#documenting-a-function)), and
 `$runtime/messages` lists the messages a value answers.
+
+## Documentation
+
+`gene doc build` writes a corpus under `build/docs/`. The builder reads source
+without compiling it; the generator, a Gene package under `tools/docs/`, turns
+the builder's data and the book into the pages. The outputs are:
+
+- `build/docs/md/<id>.md`, one Markdown page per chapter, section, namespace,
+  and entry. An id is addressable: `$str/join` is `lib/gene/str/join`.
+- `build/docs/llms.txt`, the small index agents load first.
+- `build/docs/manifest.gene`, coverage, check results, and page sizes.
+- `build/docs/names.gene`, the name table: every Gene spelling mapped to its id.
+- `build/docs/gene-docs.sqlite`, full-text search and the name table.
+
+`gene doc index`, `show`, `ls`, and `search` read that corpus. `--corpus <dir>`
+reads another package's corpus. `$docs/index`, `$docs/show`, `$docs/ls`, and
+`$docs/search` are the same lookup from Gene code; `($docs/show $str/join)`
+also works by value. A doc call reads files and never runs a documented module.
+The commands and `$docs` describe the corpus of the binary that is running; in
+another package, pass `--corpus` (or set `GENE_DOCS_ROOT`) to read that
+package's corpus.
 
 ## Editors
 

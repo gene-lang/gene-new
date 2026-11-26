@@ -1,0 +1,27 @@
+{^format 1
+ ^book ["overview" "getting_started" "values" "names" "control_flow"
+        "functions" "collections" "types" "errors" "modules" "io"
+        "concurrency" "code_as_data" "testing" "web" "native" "tools"]
+ ^reference [
+  {^title "Built-in functions" ^root "functions"}
+  {^title "Built-in types" ^root "types"}
+  {^title "Errors" ^root "errors"}
+  {^title "Text and parsing" ^namespaces ["str" "regex" "parse" "base64"]}
+  {^title "Binary data" ^namespaces ["binary" "bit"]}
+  {^title "Data formats" ^namespaces ["json" "csv" "serde"]}
+  {^title "Numbers and ordering" ^namespaces ["math" "order"]}
+  {^title "Collections" ^namespaces ["stream" "node"]}
+  {^title "Files and the OS"
+   ^namespaces ["fs" "path" "io" "os" "terminal" "curses" "device"]}
+  {^title "Time" ^namespaces ["temporal" "clock"]}
+  {^title "Networking and the web" ^namespaces ["net" "url" "web" "html" "css"]}
+  {^title "Concurrency and events" ^namespaces ["actor" "sync" "event"]}
+  {^title "Storage" ^namespaces ["db" "store"]}
+  {^title "Security" ^namespaces ["crypto"]}
+  {^title "Runtime and tooling" ^namespaces ["runtime" "repl" "log" "test" "docs"]}
+  {^title "Packages and native code"
+   ^namespaces ["pkg" "native" "ffi" "C" "aot"]}
+  {^title "Packages (experimental)" ^genex true}]
+ ^packages [
+  {^glob "src/genex/*/package.gene"}
+  {^file "examples/cordis/package.gene"}]}

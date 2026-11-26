@@ -1,0 +1,5 @@
+{^format 1
+ ^name "gene/runtime"
+ ^description "Reflection fixture."
+ ^version "0.0.0"
+ ^library {^entry "src/main.gene"}}

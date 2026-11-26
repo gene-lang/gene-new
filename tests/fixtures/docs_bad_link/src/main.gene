@@ -1,0 +1,2 @@
+(mod main)
+(fn twice [x : Int] : Int (* x 2))

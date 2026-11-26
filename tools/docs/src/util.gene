@@ -1,0 +1,86 @@
+# Shared helpers for the documentation generator.
+#
+# The generator is a separate stage: it reads the builder's data files and the
+# book, and writes the pages, the index, the manifest, and the search database.
+# It never loads a documented module.
+
+(import $str [join split trim lower upper starts_with? ends_with? contains?
+              byte_size])
+(import $fs [exists? make_dir read_text write_text list_dir])
+(import $order [sort sort_by])
+(import $parse [read_all])
+
+(type DocsError : Error)
+
+(fn fail_pipeline [message]
+  (fail (DocsError ^_msg message)))
+
+(let re_not_word #"[^a-z0-9]+")
+(let re_edge_us #"(^_+|_+$)")
+(let re_link_target #"\]\([^)]*\)")
+(let re_brackets #"[\[\]]+")
+(let re_ticks #"[`*_]+")
+(let re_space #"\s+")
+
+(fn str_or_empty [value]
+  (if ($present? value) value else ""))
+
+(fn short_summary [text]
+  # Listing rows keep one sentence; page summaries keep the whole paragraph.
+  (let trimmed ($str/trim text))
+  (let stop ($str/split trimmed ". "))
+  (let first (if (> ($size stop) 1)
+    ($str/join [($str/join ($take stop 1) ". ") "."] "")
+    else
+    trimmed))
+  (if (> ($str/byte_size first) 100)
+    ($str/join [($str/slice_bytes first 0 97) "..."] "")
+    else
+    first))
+
+(fn format_size [size]
+  (if (< size 1024)
+    $"${size} B"
+    else
+    (let rounded (+ (* size 10) 512))
+    (let tenths ($to_int (/ rounded 1024)))
+    (let whole ($to_int (/ tenths 10)))
+    $"${whole}.${(- tenths (* whole 10))} KB"))
+
+(fn slug [text]
+  # A section id segment: lower case, words joined by `_`, punctuation
+  # dropped. `## The standard library` is `the_standard_library`.
+  (let separated (re_not_word .replace_all ($str/lower text) "_"))
+  (re_edge_us .replace_all separated ""))
+
+(fn anchor [segment]
+  # Markdown heading anchors join words with `-`; ids use `_`.
+  ($str/join ($str/split segment "_") "-"))
+
+(fn in? [item items]
+  (var found false)
+  (for candidate in items
+    (if (== candidate item) (set found true)))
+  found)
+
+(fn collapse_ws [text]
+  ($str/trim (re_space .replace_all text " ")))
+
+(fn strip_inline [text]
+  # A summary keeps the words and drops Markdown decoration: link targets,
+  # code ticks, emphasis.
+  (let without_targets (re_link_target .replace_all text ""))
+  (let without_brackets (re_brackets .replace_all without_targets ""))
+  (let without_ticks (re_ticks .replace_all without_brackets ""))
+  (collapse_ws without_ticks))
+
+(fn first_paragraph [lines start]
+  # The first non-empty run of lines after `start`, joined with spaces.
+  (var out [])
+  (var i start)
+  (while (&& (< i ($size lines)) (== ($str/trim (lines .get i)) ""))
+    (set i (+ i 1)))
+  (while (&& (< i ($size lines)) (not (== ($str/trim (lines .get i)) "")))
+    (out .push ($str/trim (lines .get i)))
+    (set i (+ i 1)))
+  (strip_inline ($str/join out " ")))

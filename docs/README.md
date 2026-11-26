@@ -24,9 +24,13 @@ chapters you need.
 | 16 | [Native code, builds, and deployment](book/native.md) | `gene build`, `gene install`, C libraries, untrusted code |
 | 17 | [Tools](book/tools.md) | the `gene` command, inspecting code, editors, logging |
 
-The library reference, one entry per standard name generated from the
-source, is not built yet. Until it is, `($runtime/signature f)` and
-`gene doc file.gene` describe what is defined.
+The library reference is generated from the source into `build/docs/`.
+`gene doc build` writes the pages, `gene doc index` is the entry point, and
+`gene doc show <id or name>` reads one page; `$docs/index`, `$docs/show`,
+`$docs/ls`, and `$docs/search` are the same lookup from Gene code. The
+reference covers every namespace the runtime exposes: reflection supplies
+names and signatures, and `.doc.gene` sidecars supply the prose where they
+exist.
 
 The book replaced the earlier guides, the specification, the change log,
 proposals, and reports. Git history keeps them under `docs/`, and code

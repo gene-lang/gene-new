@@ -1,0 +1,90 @@
+# Reading the builder's data files and the root manifest.
+
+(import $str [join split trim])
+(import $fs [exists? list_dir read_text])
+(import $parse [read_all])
+(import $order [sort_by])
+(import fail_pipeline ^from "./util")
+
+(fn read_forms [path]
+  (var forms [])
+  (for form in ($parse/read_all ($fs/read_text path))
+    (forms .push form))
+  forms)
+
+(fn read_one [path]
+  (let forms (read_forms path))
+  (if (not (== ($size forms) 1))
+    (fail_pipeline $"${path}: expected one Gene datum, found ${($size forms)}"))
+  (let first (forms .get 0))
+  first)
+
+(fn load_index [root]
+  (let path ($path/join root "docs/index.gene"))
+  (if (not ($fs/exists? path))
+    (fail_pipeline $"no docs/index.gene under ${root}"))
+  (read_one path))
+
+(fn load_coverage [root]
+  (let path ($path/join root "build/docs/coverage.gene"))
+  (if (not ($fs/exists? path))
+    (fail_pipeline $"no build/docs/coverage.gene under ${root}; run gene-doc build first"))
+  (read_one path))
+
+(fn load_modules [root coverage]
+  # The coverage report is the module list: one data file per module row.
+  (var out [])
+  (for row in coverage/modules
+    (let path ($path/join root $"build/docs/modules/${row/module}.gene"))
+    (if ($fs/exists? path) (out .push (read_one path))))
+  out)
+
+(fn package_row [root path]
+  (let abs ($path/join root path))
+  (if ($fs/exists? abs)
+    (do
+      (let manifest (read_one abs))
+      (if (&& ($present? manifest) ($present? manifest/name))
+        {^name manifest/name
+         ^description (if ($present? manifest/description)
+                        manifest/description else "")
+         ^path path}
+        else nil))
+    else nil))
+
+(fn glob_packages [root pattern]
+  (var out [])
+  (let parts ($str/split pattern "*"))
+  (if (== ($size parts) 2)
+    (do
+      (let prefix (parts .get 0))
+      (let suffix (parts .get 1))
+      (let dir ($path/join root prefix))
+      (if ($fs/exists? dir)
+        (for name in ($fs/list_dir dir)
+          (let path ($str/join [prefix name suffix] ""))
+          (let row (package_row root path))
+          (if ($present? row) (out .push row))))))
+  out)
+
+(fn load_packages [root index]
+  (var out [])
+  (if ($present? index/packages)
+    (for entry in index/packages
+      (do
+        (if ($present? entry/file)
+          (let row (package_row root entry/file))
+          (if ($present? row) (out .push row)))
+        (if ($present? entry/glob)
+          (for row in (glob_packages root entry/glob) (out .push row))))))
+  (sort_by out (fn [row] row/name)))
+
+(fn load_package [root]
+  (let path ($path/join root "package.gene"))
+  (if ($fs/exists? path) (read_one path) else {}))
+
+(fn load_heads [root]
+  # The compiler's head list is written by `gene doc build`; a direct generator
+  # run may not have it.
+  (let path ($path/join root "build/docs/heads.gene"))
+  (if ($fs/exists? path) (read_one path) else nil))

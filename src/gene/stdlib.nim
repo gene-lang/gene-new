@@ -10621,6 +10621,56 @@ proc biNativeModuleStatus(args: openArray[Value],
 
 const syncGateSource = staticRead("lib/sync.gene")
 
+when not defined(geneWasm):
+  import ./docs_lookup
+
+  proc docsCorpus(scope: Scope): DocsCorpus =
+    let root = findCorpus()
+    if root.len == 0:
+      let configured = getEnv("GENE_DOCS_ROOT")
+      raiseReaderError("docs", (if configured.len > 0:
+          "no documentation corpus at " & configured
+        else:
+          "no documentation corpus found; run `gene doc build` in the package root"),
+        "IoError", scope)
+    loadCorpus(root)
+
+  proc biDocsIndex(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
+    if args.len != 0:
+      raiseReaderError("docs/index", "takes no arguments", "TypeError", scope)
+    docsIndexValue(docsCorpus(scope))
+
+  proc biDocsShow(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
+    requireOne("docs/show", args)
+    let corpus = docsCorpus(scope)
+    if args[0].kind == vkString:
+      docsShowValue(corpus, args[0].strVal)
+    else:
+      docsPageByValue(corpus, args[0])
+
+  proc biDocsLs(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
+    if args.len > 1:
+      raiseReaderError("docs/ls", "takes zero or one argument", "TypeError", scope)
+    var id = ""
+    if args.len == 1:
+      if args[0].kind != vkString:
+        raiseReaderError("docs/ls", "expects a Str id", "TypeError", scope)
+      id = args[0].strVal
+    docsLsValue(docsCorpus(scope), id)
+
+  proc biDocsSearch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    let scope {.cursor.} = if call == nil: nil else: call.dispatchScope
+    requireOne("docs/search", args)
+    if args[0].kind != vkString:
+      raiseReaderError("docs/search", "expects a Str", "TypeError", scope)
+    let (hits, error) = docsCorpus(scope).searchDocs(args[0].strVal)
+    if error.len > 0:
+      raiseReaderError("docs/search", error, "IoError", scope)
+    docsHitsValue(hits)
+
 proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   let app = root.application()
   ## Define the importable stdlib namespaces (gene/*, str, html, url, net/http,
@@ -10799,6 +10849,19 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
     let proto = syncProtos[index]
     syncScope.define(name, newFunction("sync/" & name, proto.params, proto, gateScope))
   root.define("sync", newNamespace("sync", syncScope))
+  # `gene/docs` — read the generated documentation corpus. The lookup is the
+  # same implementation `gene doc` uses, so the two cannot drift.
+  when not defined(geneWasm):
+    let docsScope = newScope(root)
+    docsScope.define("index",
+      builtinNativeCallFn("docs/index", biDocsIndex, acceptsNamed = false))
+    docsScope.define("show",
+      builtinNativeCallFn("docs/show", biDocsShow, acceptsNamed = false))
+    docsScope.define("ls",
+      builtinNativeCallFn("docs/ls", biDocsLs, acceptsNamed = false))
+    docsScope.define("search",
+      builtinNativeCallFn("docs/search", biDocsSearch, acceptsNamed = false))
+    root.define("docs", newNamespace("docs", docsScope))
   # `gene/bit` and `gene/bytes` — the primitives a binary format needs.
   let bitScope = newScope(root)
   bitScope.define("and", builtinNativeFn("bit/and", biBitAnd))

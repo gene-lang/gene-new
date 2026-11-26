@@ -69,7 +69,8 @@ proc execCmdOnce(cmd: string): tuple[output: string, exitCode: int] =
   ## the same capture behavior without masking crashes through retries.
   execCmdEx(cmd)
 
-proc runGene(args: openArray[string], workingDir = ""):
+proc runGene(args: openArray[string], workingDir = "",
+             env: openArray[(string, string)] = []):
     tuple[output: string, exitCode: int] =
   buildGeneCli()
   var command = shellQuote(geneExe)
@@ -77,12 +78,19 @@ proc runGene(args: openArray[string], workingDir = ""):
     command.add " " & shellQuote(arg)
   let hadStore = existsEnv("GENE_ARTIFACT_STORE")
   let savedStore = getEnv("GENE_ARTIFACT_STORE")
+  var savedEnv: seq[(string, string, bool, string)]
+  for (key, value) in env:
+    savedEnv.add((key, getEnv(key), existsEnv(key), value))
+    putEnv(key, value)
   putEnv("GENE_ARTIFACT_STORE", cliArtifactStore)
   try:
     result = execCmdEx(command, workingDir = workingDir)
   finally:
     if hadStore: putEnv("GENE_ARTIFACT_STORE", savedStore)
     else: delEnv("GENE_ARTIFACT_STORE")
+    for (key, oldValue, had, value) in savedEnv:
+      if had: putEnv(key, oldValue)
+      else: delEnv(key)
 
 proc runGeneInput(args: openArray[string],
                   input: string, workingDir = ""): tuple[output: string, exitCode: int] =
@@ -2158,27 +2166,115 @@ suite "cli — gene doc":
       "- item : Int"
     ]
 
-  test "gene doc build delegates to gene-doc and writes the corpus":
+  test "gene doc build writes the corpus and the lookup reads it":
     let root = cliDir / "doc_build"
     if dirExists(root): removeDir(root)
     createDir(root / "src")
+    createDir(root / "docs" / "book")
     writeFile(root / "package.gene",
       "{^format 1 ^name \"test/doc_build\" ^version \"0.0.0\" " &
       "^library {^entry \"src/main.gene\"}}\n")
     writeFile(root / "src/main.gene",
       "(mod main @doc \"Built by the CLI.\")\n" &
       "(fn twice [x : Int] : Int @doc \"Double `x`.\" (* x 2))\n")
+    writeFile(root / "docs/index.gene",
+      "{^format 1 ^book [\"overview\"] " &
+      "^reference [{^title \"Fixture\" ^namespaces [\"main\"]}] ^packages []}\n")
+    writeFile(root / "docs/book/overview.md",
+      "# Overview\n\nThe test book.\n\n## Start\n\nA page.\n")
     let ran = runGene(["doc", "build"], workingDir = root)
     check ran.exitCode == 0
     check "modules: 1" in ran.output
     check "entries: 1" in ran.output
     check "with @doc: 1" in ran.output
-    let data = root / "build" / "docs" / "modules" / "main.gene"
+    check "pages: " in ran.output
+    let docsDir = root / "build" / "docs"
+    let data = docsDir / "modules" / "main.gene"
     check fileExists(data)
     if fileExists(data):
       let text = readFile(data)
       check "^module \"main\"" in text
       check "^id \"lib/main/twice\"" in text
+    check fileExists(docsDir / "llms.txt")
+    check fileExists(docsDir / "manifest.gene")
+    check fileExists(docsDir / "names.gene")
+    check fileExists(docsDir / "gene-docs.sqlite")
+    check fileExists(docsDir / "md" / "lib" / "main" / "twice.md")
+    check fileExists(docsDir / "md" / "book" / "overview.md")
+
+    let show = runGene(["doc", "show", "main/twice", "--corpus", root],
+                       workingDir = root)
+    check show.exitCode == 0
+    check "# main/twice" in show.output
+    check "twice [x : Int] : Int" in show.output
+    let showAlias = runGene(["doc", "show", "lib/main/twice",
+                             "--corpus", root], workingDir = root)
+    check showAlias.exitCode == 0
+    check "# main/twice" in showAlias.output
+    let missing = runGene(["doc", "show", "twic", "--corpus", root],
+                          workingDir = root)
+    check missing.exitCode == 0
+    check "Nearest ids" in missing.output
+    let index = runGene(["doc", "index", "--corpus", root], workingDir = root)
+    check index.exitCode == 0
+    check "# test/doc_build documentation" in index.output
+    let listed = runGene(["doc", "ls", "lib/main", "--corpus", root],
+                         workingDir = root)
+    check listed.exitCode == 0
+    check "lib/main/twice" in listed.output
+    let searched = runGene(["doc", "search", "twice", "--corpus", root],
+                           workingDir = root)
+    check searched.exitCode == 0
+    check "lib/main/twice" in searched.output
+    let other = runGene(["doc", "index", "--corpus", root])
+    check other.exitCode == 0
+    check "# test/doc_build documentation" in other.output
+    let bad = runGene(["doc", "show", "$str/join", "--corpus",
+                       root / "missing-corpus"], workingDir = root)
+    check bad.exitCode != 0
+    check "no documentation corpus found" in bad.output
+
+    let docsShow = runGene(["eval", "($docs/show \"main/twice\")"],
+                           workingDir = root,
+                           env = [("GENE_DOCS_ROOT", root)])
+    check docsShow.exitCode == 0
+    check "# main/twice" in docsShow.output
+    let docsIndex = runGene(["eval", "($docs/index)"], workingDir = root,
+                            env = [("GENE_DOCS_ROOT", root)])
+    check docsIndex.exitCode == 0
+    check "# test/doc_build documentation" in docsIndex.output
+    let docsSearch = runGene(["eval", "($docs/search \"twice\")"],
+                             workingDir = root,
+                             env = [("GENE_DOCS_ROOT", root)])
+    check docsSearch.exitCode == 0
+    check "lib/main/twice" in docsSearch.output
+
+    # A fatal builder failure does not run the generator or replace a corpus.
+    let fatal = cliDir / "doc_build_fatal"
+    if dirExists(fatal): removeDir(fatal)
+    createDir(fatal / "src")
+    createDir(fatal / "docs" / "book")
+    createDir(fatal / "build" / "docs")
+    writeFile(fatal / "package.gene",
+      "{^format 1 ^name \"test/doc_fatal\" ^version \"0.0.0\" " &
+      "^library {^entry \"src/main.gene\"}}\n")
+    writeFile(fatal / "src/main.gene", "(mod main)\n(fn twice [] 1)\n")
+    writeFile(fatal / "docs/index.gene",
+      "{^format 1 ^book [\"overview\"] ^reference [] ^packages []}\n")
+    writeFile(fatal / "docs/book/overview.md", "# Overview\n\n## Start\n\nx\n")
+    writeFile(fatal / "build" / "docs" / "modules", "not a directory")
+    let fatalRun = runGene(["doc", "build"], workingDir = fatal)
+    check fatalRun.exitCode != 0
+    check "Failed to create" in fatalRun.output or "modules" in fatalRun.output
+    check not fileExists(fatal / "build" / "docs" / "llms.txt")
+
+    # A source that does not read still writes the corpus, and the command
+    # reports the failure.
+    writeFile(root / "src" / "broken.gene", "(fn broken [\n")
+    let broken = runGene(["doc", "build"], workingDir = root)
+    check broken.exitCode != 0
+    check "read_error" in broken.output or "file(s) did not read" in broken.output
+    check fileExists(docsDir / "md" / "lib" / "main" / "twice.md")
 
 suite "cli — example runner":
   proc exampleCliRoot(): string =

@@ -1,0 +1,4 @@
+{^format 1
+ ^name "test/docs_bad_link"
+ ^version "0.0.0"
+ ^library {^entry "src/main.gene"}}

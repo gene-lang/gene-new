@@ -1,0 +1,523 @@
+# Emitting the corpus: Markdown pages, the index, the manifest, the name
+# table, and the search database.
+
+(import $str [join split trim lower starts_with? ends_with? contains? byte_size
+              slice_bytes])
+(import $fs [exists? make_dir remove_dir remove read_text write_text])
+(import $order [sort sort_by])
+(import $db/sqlite [Db open])
+(import fail_pipeline in? format_size ^from "./util")
+(import load_index load_coverage load_modules load_heads load_package load_packages read_one ^from "./data")
+(import read_book ^from "./book")
+(import reflection_modules ^from "./reflection")
+(import build_name_table index_book entry_local ^from "./names")
+(import book_pages reference_pages relative_md page_dir_parts recipe_lines ^from "./pages")
+
+(fn escape_backslash [text]
+  ($str/join ($str/split text "\\") "\\\\"))
+
+(fn escape_quote [text]
+  ($str/join ($str/split text "\"") "\\\""))
+
+(fn escape_newline [text]
+  ($str/join ($str/split text "\n") "\\n"))
+
+(fn qq [text]
+  # A Gene string literal. Summaries and ids have no newlines, but a backslash
+  # or quote in prose must survive.
+  (let step1 (escape_backslash text))
+  (let step2 (escape_quote step1))
+  (let step3 (escape_newline step2))
+  ($str/join ["\"" step3 "\""] ""))
+
+(fn bool_text [value]
+  (if value "true" else "false"))
+
+(fn remove_tree [path]
+  (if ($fs/exists? path)
+    (let info ($fs/info path))
+    (if (== info/kind "directory")
+      (do
+        (var dirs [])
+        (for entry in ($fs/walk path)
+          (if (== entry/kind "file")
+            ($fs/remove ($path/join path entry/relative_path))
+            else
+            (dirs .push entry)))
+        (set dirs (sort_by dirs (fn [entry] (- ($str/byte_size entry/relative_path)))))
+        (for entry in dirs
+          ($fs/remove_dir ($path/join path entry/relative_path)))
+        ($fs/remove_dir path))
+      else
+      ($fs/remove path))))
+
+(fn write_file [path text]
+  (let parent ($path/parent path))
+  ($fs/make_dir parent)
+  ($fs/write_text path text))
+
+(fn md_path [root id]
+  ($path/join root $"build/docs/md/${id}.md"))
+
+(fn write_pages [root pages]
+  (let md_dir ($path/join root "build/docs/md"))
+  (if ($fs/exists? md_dir) (remove_tree md_dir))
+  ($fs/make_dir md_dir)
+  (for page in pages
+    (write_file (md_path root page/id)
+      ($str/join [($str/trim page/content) ""] "\n"))))
+
+(fn chapter_order [index]
+  (var out [])
+  (for chapter in index/book (out .push chapter))
+  out)
+
+(fn pages_by_id [pages]
+  (let map {})
+  (for page in pages (map .put page/id page))
+  map)
+
+(fn row_text [page, base]
+  (if (&& ($present? page/summary) (not (== page/summary "")))
+    ($str/join ["- [" page/title "](" base page/id ".md) — " page/summary
+                " (" (format_size page/size) ")"] "")
+    else
+    ($str/join ["- [" page/title "](" base page/id ".md) ("
+                (format_size page/size) ")"] "")))
+
+(fn book_lines [index by_id]
+  (var out [])
+  (for chapter in index/book
+    (let page (by_id .get ($str/join ["book/" chapter] "")))
+    (if ($present? page) (out .push (row_text page "md/"))))
+  out)
+
+(fn namespace_page_for [name by_id]
+  (let runtime_page (by_id .get ($str/join ["lib/gene/" name] "")))
+  (if ($present? runtime_page)
+    runtime_page
+    else
+    (by_id .get ($str/join ["lib/" name] ""))))
+
+(fn namespace_lines [names modules by_id]
+  (var pages [])
+  (var seen {})
+  (for module in modules
+    (let runtime_path (if ($str/starts_with? module/module "gene/")
+      ($str/slice_bytes module/module 5 (- ($str/byte_size module/module) 5))
+      else
+      module/module))
+    (var matched false)
+    (for name in names
+      (if (|| (== runtime_path name)
+              ($str/starts_with? runtime_path ($str/join [name "/"] "")))
+        (set matched true)))
+    (if matched
+      (do
+        (let id ($str/join ["lib/" module/module] ""))
+        (let page (by_id .get id))
+        (if (&& ($present? page) (not ($has_key? seen id)))
+          (do
+            (pages .push page)
+            (seen .put id true))))))
+  (var out [])
+  (for page in (sort_by pages (fn [page] page/id))
+    (out .push (row_text page "md/")))
+  out)
+
+(fn reference_lines [index modules by_id packages]
+  (var out [])
+  (let placed {})
+  (for group in index/reference
+    (if ($present? group/root)
+      (do
+        (let page (by_id .get "lib/gene"))
+        (if (&& ($present? page) (not ($has_key? placed "lib/gene")))
+          (do
+            (out .push ($str/join ["### " group/title] ""))
+            (out .push "")
+            (out .push (row_text page "md/"))
+            (out .push "")
+            (placed .put "lib/gene" true)))))
+    (if ($present? group/namespaces)
+      (do
+        (var rows [])
+        (for module in modules
+          (let runtime_path (if ($str/starts_with? module/module "gene/")
+            ($str/slice_bytes module/module 5 (- ($str/byte_size module/module) 5))
+            else
+            module/module))
+          (var matched false)
+          (for name in group/namespaces
+            (if (|| (== runtime_path name)
+                    ($str/starts_with? runtime_path ($str/join [name "/"] "")))
+              (set matched true)))
+          (let id ($str/join ["lib/" module/module] ""))
+          (if (&& matched (not ($has_key? placed id)))
+            (do
+              (let page (by_id .get id))
+              (if ($present? page)
+                (do
+                  (rows .push page)
+                  (placed .put id true))))))
+        (if (> ($size rows) 0)
+          (do
+            (out .push ($str/join ["### " group/title] ""))
+            (out .push "")
+            (for page in (sort_by rows (fn [page] page/id))
+              (out .push (row_text page "md/")))
+            (out .push "")))))
+    (if ($present? group/genex)
+      (do
+        (if (> ($size packages) 0)
+          (do
+            (out .push ($str/join ["### " group/title] ""))
+            (out .push "")
+            (for package in packages
+              (out .push ($str/join ["- " package/name " — " package/description
+                            " (corpus not built)"] "")))
+            (out .push ""))))))
+  (var other [])
+  (for module in modules
+    (let id ($str/join ["lib/" module/module] ""))
+    (if (&& (not ($has_key? placed id)) ($has_key? by_id id))
+      (other .push (by_id .get id))))
+  (if (> ($size other) 0)
+    (do
+      (out .push "### Other namespaces")
+      (out .push "")
+      (for page in (sort_by other (fn [page] page/id))
+        (out .push (row_text page "md/")))
+      (out .push "")))
+  out)
+
+(fn llms_text [pkg index modules pages packages runtime]
+  (let by_id (pages_by_id pages))
+  (let name (if ($present? pkg/name) pkg/name else "gene/runtime"))
+  (let description (if ($present? pkg/description) pkg/description else ""))
+  (let h1 (if (== name "gene/runtime")
+    "# Gene documentation"
+    else
+    ($str/join ["# " name " documentation"] "")))
+  (let summary (if (== name "gene/runtime")
+    "> The Gene language: a book and a generated reference, one file per id."
+    else
+    (if (> ($str/byte_size description) 0)
+      ($str/join ["> " description] "")
+      else
+      ($str/join ["> The " name " book and reference."] ""))))
+  (var lines [])
+  (lines .push h1)
+  (lines .push "")
+  (lines .push summary)
+  (lines .push "")
+  (lines .push "## How to use")
+  (lines .push "")
+  (for line in (recipe_lines runtime) (lines .push line))
+  (lines .push "")
+  (lines .push "## Book")
+  (lines .push "")
+  (for line in (book_lines index by_id) (lines .push line))
+  (lines .push "")
+  (lines .push "## Reference")
+  (lines .push "")
+  (for line in (reference_lines index modules by_id packages) (lines .push line))
+  ($str/join [($str/trim ($str/join lines "\n")) ""] "\n"))
+
+(fn sizes_report [pages index_size]
+  (var chapters [])
+  (var sections [])
+  (var entries [])
+  (var namespaces [])
+  (var overview 0)
+  (var index 0)
+  (for page in pages
+    (if (== page/kind "chapter")
+      (do
+        (chapters .push page/size)
+        (if (== page/id "book/overview") (set overview page/size)))
+      elif (== page/kind "section") (sections .push page/size)
+      elif (== page/kind "entry") (entries .push page/size)
+      elif (== page/kind "namespace") (namespaces .push page/size)))
+  {^index index_size
+   ^overview overview
+   ^targets {^index 6144 ^overview 12288 ^chapter 3072 ^section 6144
+             ^entry 3072}
+   ^chapter_max (max_of chapters) ^section_max (max_of sections)
+   ^entry_max (max_of entries) ^namespace_max (max_of namespaces)
+   ^chapter_avg (avg_of chapters) ^section_avg (avg_of sections)
+   ^entry_avg (avg_of entries) ^namespace_avg (avg_of namespaces)})
+
+(fn max_of [values]
+  (var out 0)
+  (for value in values (if (> value out) (set out value)))
+  out)
+
+(fn avg_of [values]
+  (if (== ($size values) 0)
+    0
+    else
+    ($to_int (/ (sum_of values) ($size values)))))
+
+(fn sum_of [values]
+  (var out 0)
+  (for value in values (set out (+ out value)))
+  out)
+
+(fn file_target [target]
+  # A link target without its `#anchor`.
+  (let hash ($str/split target "#"))
+  (if (> ($size hash) 1) (hash .get 0) else target))
+
+(fn normalize_ref [text]
+  (var out text)
+  (let hash ($str/split out "#"))
+  (if (> ($size hash) 1) (set out (hash .get 0)))
+  (if (ends_with? out ".md")
+    (set out ($str/slice_bytes out 0 (- ($str/byte_size out) 3))))
+  out)
+
+(fn link_file [page_id target]
+  # The file a Markdown link points at, relative to the corpus root.
+  (let base ($str/join ["build/docs/md/" page_id] ""))
+  (if ($str/starts_with? target "/")
+    ($str/slice_bytes target 1 (- ($str/byte_size target) 1))
+    else
+    (do
+      (let dir ($path/parent base))
+      (let joined ($path/join dir target))
+      (let normalized ($path/normalize joined))
+      normalized)))
+
+(fn check_links [root pages modules rows chapters]
+  (var problems [])
+  (let ids {})
+  (for page in pages (ids .put page/id true))
+  (let names {})
+  (for row in rows
+    (if (not (== row/id "")) (names .put row/spelling row/id)))
+  # Every generated link resolves to a written file.
+  (for page in pages
+    (do
+      (let parts ($str/split page/content "]("))
+      (var i 1)
+      (while (< i ($size parts))
+        (do
+          (let close ($str/split (parts .get i) ")"))
+          (if (> ($size close) 1)
+            (do
+              (let target (close .get 0))
+              (if (&& (not ($str/starts_with? target "http://"))
+                      (&& (not ($str/starts_with? target "https://"))
+                          (not ($str/starts_with? target "#"))))
+                (do
+                  (let file (link_file page/id (file_target target)))
+                  (if ($str/starts_with? file "build/docs/md/")
+                    (do
+                      (let id ($str/slice_bytes file 14 (- ($str/byte_size file) 17)))
+                      (if (not ($has_key? ids id))
+                        (problems .push $"${page/id}: link ${target} names no page")))
+                    else
+                    (if (not ($fs/exists? ($path/join root file)))
+                      (problems .push $"${page/id}: link ${target} is not a file")))))))
+          (set i (+ i 1))))))
+  # @see values are ids or names the table knows.
+  (for module in modules
+    (for entry in module/entries
+      (if ($present? entry/see)
+        (for ref in entry/see
+          (do
+            (let is_id (|| ($str/starts_with? ref "book/")
+                           ($str/starts_with? ref "lib/")))
+            (if is_id
+              (do
+                (if (not ($has_key? ids (normalize_ref ref)))
+                  (problems .push $"${entry/id}: @see ${ref} names no page")))
+              else
+              (do
+                (if (not ($has_key? names ref))
+                  (problems .push $"${entry/id}: @see ${ref} names no page")))))))))
+  # Backticked Gene names the table links, in the book's prose.
+  (for chapter in chapters
+    (for section in chapter/sections
+      (let parts ($str/split section/body "`"))
+      (var i 1)
+      (while (< i ($size parts))
+        (let span ($str/trim (parts .get i)))
+        (if ($has_key? names span)
+          (let target (names .get span))
+          (if (not ($has_key? ids target))
+            (problems .push $"${section/id}: backticked ${span} names no page")))
+        (set i (+ i 2)))))
+  problems)
+
+(fn cov [coverage k]
+  ($to_str (coverage/counts .get k)))
+
+(fn qq_list [items]
+  (var out [])
+  (for item in items (out .push (qq item)))
+  ($str/join out " "))
+
+(fn manifest_text [root commit coverage index pages rows undocumented links_ok index_size]
+  (let sizes (sizes_report pages index_size))
+  (var lines [])
+  (lines .push "{^format 2")
+  (lines .push ($str/join [" ^gene_commit " (qq commit)] ""))
+  (lines .push ($str/join [" ^coverage {"
+    "^modules " (cov coverage "modules") " "
+    "^entries " (cov coverage "entries") " "
+    "^with_doc " (cov coverage "with_doc") " "
+    "^without_doc " (cov coverage "without_doc") " "
+    "^unverified " (cov coverage "unverified") " "
+    "^unresolved_imports " (cov coverage "unresolved_imports") " "
+    "^unexpanded " (cov coverage "unexpanded") " "
+    "^diagnostics " (cov coverage "diagnostics") "}"] ""))
+  (lines .push ($str/join [" ^checks {^links "
+    (qq (if links_ok "ok" else "failed"))
+    " ^determinism " (qq "not run") "}"] ""))
+  (lines .push ($str/join [" ^sizes {^index " ($to_str sizes/index) " ^overview " ($to_str sizes/overview)
+    " ^chapter_max " ($to_str sizes/chapter_max)
+    " ^section_max " ($to_str sizes/section_max)
+    " ^entry_max " ($to_str sizes/entry_max)
+    " ^namespace_max " ($to_str sizes/namespace_max)
+    " ^chapter_avg " ($to_str sizes/chapter_avg)
+    " ^section_avg " ($to_str sizes/section_avg)
+    " ^entry_avg " ($to_str sizes/entry_avg)
+    " ^namespace_avg " ($to_str sizes/namespace_avg) " ^targets {^index 6144 ^overview 12288 ^chapter 3072 ^section 6144 ^entry 3072}}"] ""))
+  (lines .push ($str/join [" ^undocumented {^count " ($to_str ($size undocumented))
+    " ^sample [" (qq_list ($take undocumented 20)) "]}"] ""))
+  (lines .push " ^pages [")
+  (for page in pages
+    (do
+      (lines .push ($str/join ["  {^id " (qq page/id) " ^kind " (qq page/kind)
+        " ^parent " (qq page/parent) " ^title " (qq page/title)
+        " ^summary " (qq page/summary) " ^size " ($to_str page/size) "}"] ""))))
+  (lines .push " ]")
+  (lines .push "}")
+  ($str/join lines "\n"))
+
+(fn write_names [root rows]
+  (var lines [])
+  (lines .push "{^format 1 ^names [")
+  (for row in rows
+    (do
+      (lines .push ($str/join ["  {^spelling " (qq row/spelling) " ^id " (qq row/id)
+        " ^kind " (qq ($to_str row/kind)) " ^canonical " (bool_text row/canonical)
+        " ^introduced_in " (qq row/introduced_in) " ^used_in ["
+        (qq_list row/used_in) "]}"] ""))))
+  (lines .push " ]}")
+  (write_file ($path/join root "build/docs/names.gene")
+    ($str/join [($str/join lines "\n") ""] "\n")))
+
+(fn write_manifest [root text]
+  (write_file ($path/join root "build/docs/manifest.gene") ($str/join [text ""] "\n")))
+
+(fn write_index [root text]
+  (write_file ($path/join root "build/docs/llms.txt") text))
+
+(fn write_sqlite [root pages rows]
+  (let db_path ($path/join root "build/docs/gene-docs.sqlite"))
+  (if ($fs/exists? db_path) ($fs/remove db_path))
+  (let db (open db_path))
+  (try
+    (db .Db:exec "create table pages (id text primary key, kind text, parent text, title text, summary text, size integer)")
+    (db .Db:exec "create virtual table search using fts5(id, title, summary, body)")
+    (db .Db:exec "create table names (spelling text primary key, id text, kind text, canonical integer, introduced_in text, used_in text)")
+    (for page in pages
+      (db .Db:execute "insert into pages values (?, ?, ?, ?, ?, ?)"
+        page/id page/kind page/parent page/title page/summary page/size)
+      (db .Db:execute "insert into search values (?, ?, ?, ?)"
+        page/id page/title page/summary page/content))
+    (for row in rows
+      (db .Db:execute "insert into names values (?, ?, ?, ?, ?, ?)"
+        row/spelling row/id ($to_str row/kind)
+        (if row/canonical 1 else 0) row/introduced_in
+        ($str/join row/used_in ",")))
+    ensure (db .Db:close)))
+
+(fn entry_ids_of [module]
+  (var out {})
+  (for entry in module/entries (out .put entry/id true))
+  out)
+
+(fn merge_reflection [modules]
+  # Reflection supplies names and signatures for namespaces that have no
+  # declaration file. A real module's entries win; only missing ids are added.
+  (var by_name {})
+  (for module in modules
+    (do (by_name .put module/module module)))
+  (let reflected_list (reflection_modules))
+  (for reflected in reflected_list
+    (do
+      (let real (by_name .get reflected/module))
+      (if ($present? real)
+        (do
+          (let ids (entry_ids_of real))
+          (for entry in reflected/entries
+            (do
+              (if (not ($has_key? ids entry/id))
+                (do
+                  (let entries real/entries)
+                  (entries .push entry))))))
+        else
+        (do
+          (modules .push reflected)
+          (by_name .put reflected/module reflected)))))
+  modules)
+
+(fn run [root commit]
+  (let index (load_index root))
+  (let chapters (read_book root index/book))
+  (let pkg (load_package root))
+  (let packages (load_packages root index))
+  (let coverage (load_coverage root))
+  (var modules (load_modules root coverage))
+  (let heads (load_heads root))
+  (if (&& (== coverage/package "gene/runtime") ($present? coverage/package))
+    (set modules (merge_reflection modules)))
+  (var entry_ids [])
+  (for module in modules
+    (for entry in module/entries (entry_ids .push entry/id)))
+  (let table (build_name_table modules (if ($present? heads) heads else []) entry_ids))
+  (let rows (index_book chapters table/rows))
+  (let section_order {})
+  (var order_index 0)
+  (for chapter in chapters
+    (for section in chapter/sections
+      (section_order .put section/id order_index)
+      (set order_index (+ order_index 1))))
+  (var best {})
+  (for row in rows
+    (if (&& (not (== row/id "")) (not (== row/introduced_in "")))
+      (let idx (section_order .get row/introduced_in))
+      (if ($present? idx)
+        (let seen (best .get row/id))
+        (if (|| (not ($present? seen)) (< idx seen/idx))
+          (best .put row/id {^idx idx ^section row/introduced_in})))))
+  (var introduced {})
+  (map_for [id value] in best
+    (introduced .put id value/section))
+  (let runtime (== coverage/package "gene/runtime"))
+  (var pages (book_pages chapters runtime))
+  (for page in (reference_pages modules introduced) (pages .push page))
+  (set pages (sort_by pages (fn [page] page/id)))
+  (let problems (check_links root pages modules rows chapters))
+  (if (> ($size problems) 0)
+    (do
+      (for problem in problems ($eprintln problem))
+      (fail_pipeline $"${($size problems)} link check problem(s)")))
+  (write_pages root pages)
+  (let by_id (pages_by_id pages))
+  (let overview (by_id .get "book/overview"))
+  (write_index root (llms_text pkg index modules pages packages runtime))
+  (write_names root rows)
+  (let index_size ($str/byte_size ($fs/read_text ($path/join root "build/docs/llms.txt"))))
+  (let manifest (manifest_text root commit coverage index pages rows
+                   table/undocumented true index_size))
+  (write_manifest root manifest)
+  (write_sqlite root pages rows)
+  (let sizes (sizes_report pages index_size))
+  {^pages ($size pages) ^problems ($size problems) ^rows ($size rows)
+   ^index_size index_size ^chapter_max sizes/chapter_max
+   ^section_max sizes/section_max ^entry_max sizes/entry_max})

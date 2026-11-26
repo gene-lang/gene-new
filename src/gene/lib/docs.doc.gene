@@ -1,0 +1,27 @@
+(mod docs
+  @doc "Read the generated documentation corpus: the index, a page, a page's children, or full-text search. The corpus is build/docs/ in a checkout, or the copy installed beside the binary. These calls read files; they never load or run a documented module."
+  nil)
+
+(fn index [] : Str
+  @doc "The corpus index (llms.txt): the recipe, the book and its chapters, and the reference groups. The same text as `gene doc index`."
+  @for "gene/docs/index"
+  ^errors ["IoError"]
+  nil)
+
+(fn show [target] : Str
+  @doc "The page an id or a name addresses. `($docs/show $str/join)` works by value; a wrong guess returns the nearest ids instead of an empty result."
+  @for "gene/docs/show"
+  ^errors ["IoError"]
+  nil)
+
+(fn ls [id : Str = ""] : (List Map)
+  @doc "The children of a page: a chapter's sections, a namespace's entries. With no id, the chapters and namespaces."
+  @for "gene/docs/ls"
+  ^errors ["IoError" "TypeError"]
+  nil)
+
+(fn search [text : Str] : (List Map)
+  @doc "Full-text search over the generated pages. Each hit has `^id`, `^title`, and `^summary`."
+  @for "gene/docs/search"
+  ^errors ["IoError" "TypeError"]
+  nil)

@@ -1,0 +1,157 @@
+# Entries from the running runtime for namespaces that have no declaration
+# file. Names and signatures are real; prose, examples, and profiles are not
+# invented.
+
+(import $str [join split trim starts_with? ends_with? contains? byte_size
+              slice_bytes])
+(import $order [sort_by])
+(import fail_pipeline ^from "./util")
+
+(fn kind_name [kind]
+  (match kind
+    when "NativeFn" "fn"
+    when "Fn" "fn"
+    when "Macro" "macro"
+    when "Type" "type"
+    when "Protocol" "protocol"
+    else "value"))
+
+(fn type_text [value]
+  (if ($present? value)
+    (let text ($to_str value))
+    (if (starts_with? text "#(")
+      ($str/slice_bytes text 2 (- ($str/byte_size text) 3))
+      else
+      text)
+    else
+    ""))
+
+(fn known? [sig key]
+  (&& ($present? sig) (sig .has_key? key)))
+
+(fn params [sig]
+  (var out [])
+  (if (known? sig "positional")
+    (for p in sig/positional
+      (out .push {^name (if ($present? p/name) p/name else "")
+                  ^local (if ($present? p/local) p/local else "")
+                  ^type (if (&& (known? p "type_known") p/type_known)
+                          (type_text p/type) else "")
+                  ^required (if (&& (known? p "required") p/required) true else false)
+                  ^has_default (if (&& (known? p "has_default") p/has_default) true else false)
+                  ^default ""})))
+  out)
+
+(fn named_params [sig]
+  (var out [])
+  (if (known? sig "named")
+    (for p in sig/named
+      (out .push {^name (if ($present? p/name) p/name else "")
+                  ^local (if ($present? p/local) p/local else "")
+                  ^type (if (&& (known? p "type_known") p/type_known)
+                          (type_text p/type) else "")
+                  ^required (if (&& (known? p "required") p/required) true else false)
+                  ^has_default (if (&& (known? p "has_default") p/has_default) true else false)
+                  ^default ""})))
+  out)
+
+(fn entry_from_decl [path decl]
+  (let sig (try ($runtime/signature decl/value) catch Error nil))
+  (let name ($to_str decl/name))
+  (let full (if (> ($size path) 0)
+    ($str/join [($str/join path "/") name] "/")
+    else
+    name))
+  (let shape (known? sig "positional"))
+  {^id ($str/join ["lib/gene/" full] "")
+   ^name ($to_str decl/name)
+   ^kind ($to_sym (kind_name decl/kind))
+   ^for ($str/join ["gene/" full] "")
+   ^parent (if (> ($size path) 0)
+             ($str/join ["lib/gene/" ($str/join path "/")] "")
+             else "lib/gene")
+   ^positional (params sig)
+   ^named (named_params sig)
+   ^rest nil
+   ^named_rest nil
+   ^result (type_text (if ($present? sig) sig/result else nil))
+   ^errors []
+   ^generator false
+   ^fexpr false
+   ^doc (if (&& ($present? sig) ($present? sig/doc)) sig/doc else "")
+   ^see []
+   ^shape_known shape})
+
+(fn message_entries [path decl]
+  (var out [])
+  (let name ($to_str decl/name))
+  (let base (if (> ($size path) 0)
+    ($str/join [($str/join path "/") name] "/")
+    else
+    name))
+  (let messages (try ($runtime/messages decl/value) catch Error nil))
+  (if ($present? messages)
+    (for msg in messages
+      (let name (if ($present? msg/name) msg/name else ""))
+      (if (> ($size name) 0)
+        (do
+          (let separator (if (== ($to_str decl/kind) "Protocol") ":" else "/"))
+          (let full ($str/join [base name] separator))
+          (out .push
+            {^id ($str/join ["lib/gene/" full] "")
+             ^name name
+             ^kind ($to_sym "message")
+             ^for ($str/join ["gene/" full] "")
+             ^parent ($str/join ["lib/gene/" base] "")
+             ^positional []
+             ^named []
+             ^rest nil
+             ^named_rest nil
+             ^result ""
+             ^errors []
+             ^generator false
+             ^fexpr false
+             ^doc (if (&& ($present? msg/signature) ($present? msg/signature/doc))
+                    msg/signature/doc else "")
+             ^see []
+             ^shape_known false})))))
+  out)
+
+(fn collect [ns path modules]
+  (let module_name (if (> ($size path) 0)
+    ($str/join ["gene/" ($str/join path "/")] "")
+    else
+    "gene"))
+  (var entries [])
+  (for d in ($declarations ns)
+    (if (== d/kind "Namespace")
+      (do
+        (var child [])
+        (for p in path (child .push p))
+        (child .push ($to_str d/name))
+        (collect d/value child modules))
+      elif (in_kinds d/kind)
+        (do
+          (if (not (contains? ($to_str d/name) "/"))
+            (entries .push (entry_from_decl path d)))
+          (if (|| (== d/kind "Type") (== d/kind "Protocol"))
+            (for msg in (message_entries path d)
+              (entries .push msg))))))
+  (if (> ($size entries) 0)
+    # The root page's title already says what it holds (`namespace_page`), so
+    # no synthetic module carries a doc of its own.
+    (modules .push {^module module_name ^source "" ^doc ""
+                    ^entries entries ^synthetic true}))
+  modules)
+
+(fn in_kinds [kind]
+  (match kind
+    when "NativeFn" true
+    when "Fn" true
+    when "Macro" true
+    when "Type" true
+    when "Protocol" true
+    else false))
+
+(fn reflection_modules []
+  (collect gene [] []))

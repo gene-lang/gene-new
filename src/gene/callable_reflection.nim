@@ -211,7 +211,11 @@ proc describeCallable*(target: Value, lookup: ReflectionTypeLookup,
       positional.add parameter("", "", typ, true, false, nil, lookup)
     minimum = positional.len
     resultType = safeAnnotation(target.ffiCallableReturnType, nil, lookup)
-  of vkNativeFn: props["category"] = newSym("native")
+  of vkNativeFn:
+    props["category"] = newSym("native")
+    # A native's registered name is its canonical spelling (`str/join`,
+    # `map`); the shape stays unknown, but a caller can address the entry.
+    props["name"] = newStr(target.nativeFnName)
   of vkProtocolMessage: props["category"] = newSym("message")
   of vkType:
     props["category"] = newSym("type")

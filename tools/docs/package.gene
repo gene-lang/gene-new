@@ -1,0 +1,6 @@
+{^format 1
+ ^name "gene/docs"
+ ^version "0.1.0"
+ ^description "The Gene documentation generator"
+ ^library {^entry "src/main.gene"}
+ ^files {^include ["package.gene" "src/**"]}}
