@@ -283,7 +283,7 @@ suite "spec — reader surface from design":
     check_read("user/name", "(path user name)")
     check_read("/users/0/name", "(Path \"users\" 0 \"name\")")
     check_read("users/-1/name", "(path users -1 name)")
-    check_read("(import $net/http [Request])", "(import (path gene net http) [Request])")
+    check_read("(import $net/http/[Request])", "(import (path gene net http) [Request])")
     check_read("xs/.size", "xs/.size")
     check_read("(fn f [^server : Http/Server] nil)",
                "(fn f [^ server : Http/Server] nil)")
@@ -1696,7 +1696,7 @@ suite "spec — explicit fexprs from design (§3/§11.1)":
     check_eval("(fn leak! [] (scope (spawn caller_env))) " &
                "(try (leak!) catch Fault \"blocked\")",
                "\"blocked\"")
-    check_eval("(import $serde [write SerdeError]) " &
+    check_eval("(import $serde/[write SerdeError]) " &
                "(fn leak! [] " &
                "  (try (write caller_env) catch SerdeError \"blocked\")) " &
                "(leak!)",
@@ -2462,7 +2462,7 @@ int main(void) {
     discard run(compileSource("(var q 1)"), scope)
     var raised = false
     try:
-      discard run(compileSource("(import $str [join]) (join [\"a\"] \",\")"),
+      discard run(compileSource("(import $str/[join]) (join [\"a\"] \",\")"),
                   scope)
     except CatchableError as e:
       raised = true
@@ -2474,7 +2474,7 @@ int main(void) {
     ## compileEvalSource this keeps ambient import authority.
     let scope = newGlobalScope()
     discard run(compileSource("(var q 1)", useLocalSlots = false), scope)
-    check run(compileSource("(import $str [join]) (join [\"a\" \"b\"] \",\")",
+    check run(compileSource("(import $str/[join]) (join [\"a\" \"b\"] \",\")",
                             useLocalSlots = false), scope).strVal == "a,b"
     check run(compileSource("q", useLocalSlots = false), scope).intVal == 1
 
@@ -2508,7 +2508,7 @@ int main(void) {
     if built.exitCode == 0:
       let scope = newGlobalScope()
       check run(compileSource(
-        "(import $aot [load]) " &
+        "(import $aot/[load]) " &
         "(var native (load " & geneString(libPath) & ")) " &
         "(native/triple 14)"), scope).intVal == 42
 
@@ -2546,7 +2546,7 @@ size_t total(uint32_t a, size_t b) { return (size_t)a + b; }
     checkpoint built.output
     check built.exitCode == 0
     if built.exitCode == 0:
-      let prelude = "(import $aot [load]) " &
+      let prelude = "(import $aot/[load]) " &
         "(var n (load " & geneString(libPath) & ")) "
       proc runAot(program: string): Value =
         run(compileSource(prelude & program), newGlobalScope())
@@ -2662,7 +2662,7 @@ size_t total(uint32_t a, size_t b) { return (size_t)a + b; }
 
       var compared = 0
       for (suffix, label) in parityLabels:
-        let aotPrelude = "(import $aot [load]) " &
+        let aotPrelude = "(import $aot/[load]) " &
           "(var n (load " & geneString(libPath) & ")) "
         let dynPrelude = "(var lib ($ffi/open " &
           geneString(libPath) & ")) " &
@@ -2723,7 +2723,7 @@ void free_a(void *p) { free(p); }
     checkpoint built.output
     check built.exitCode == 0
     if built.exitCode == 0:
-      let prelude = "(import $aot [load]) " &
+      let prelude = "(import $aot/[load]) " &
         "(var n (load " & geneString(libPath) & ")) "
       proc runAot(program: string): Value =
         run(compileSource(prelude & program), newGlobalScope())
@@ -2793,7 +2793,7 @@ int64_t total(const void *data, size_t len) {
     checkpoint built.output
     check built.exitCode == 0
     if built.exitCode == 0:
-      let prelude = "(import $aot [load]) " &
+      let prelude = "(import $aot/[load]) " &
         "(var n (load " & geneString(libPath) & ")) "
       proc runAot(program: string): Value =
         run(compileSource(prelude & program), newGlobalScope())
@@ -2859,7 +2859,7 @@ void point_free(CPoint *p) { free(p); }
       # create Point and register its native identity), the library load, and
       # the calls. `compileSource` names every unit "<memory>", so the identity
       # baked into the library above is the identity registered here.
-      let prelude = src & " (import $aot [load]) " &
+      let prelude = src & " (import $aot/[load]) " &
         "(var native (load " & geneString(libPath) & ")) "
       proc runAot(program: string): Value =
         run(compileSource(prelude & program), newGlobalScope())
@@ -3434,7 +3434,7 @@ int main(void) {
       for lib in libs:
         if fileExists(lib): removeFile(lib)
     check run(compileSource(
-      "(import $aot [load]) " &
+      "(import $aot/[load]) " &
       "(var a (load " & geneString(libs[0]) & ")) " &
       "(var b (load " & geneString(libs[1]) & ")) " &
       "[(a/make 10) (b/make 10)]"), newGlobalScope()).print() == "[10 20]"
@@ -3469,7 +3469,7 @@ int main(void) {
     if built.exitCode == 0:
       # Same declaration: loads, and the entry works.
       check run(compileSource(
-        libSrc & " (import $aot [load]) " &
+        libSrc & " (import $aot/[load]) " &
         "(var n (load " & geneString(libPath) & ")) n"),
         newGlobalScope()).kind == vkMap
 
@@ -3479,7 +3479,7 @@ int main(void) {
         "(type Point ^repr native_wrapper " &
         "  ^props {^handle (C/OwnedPtr CPoint)} " &
         "  ^native {^abi CPoint ^lifecycle manual ^wrapper handle}) " &
-        "(import $aot [load]) (load " & geneString(libPath) & ")",
+        "(import $aot/[load]) (load " & geneString(libPath) & ")",
         "the layout of")
 
       # Policy-only drift: same layout, different ^release. The layout
@@ -3490,13 +3490,13 @@ int main(void) {
         "  ^props {^handle (C/OwnedPtr CPoint)} " &
         "  ^native {^abi CPoint ^lifecycle manual ^wrapper handle " &
         "           ^release \"point_free\"}) " &
-        "(import $aot [load]) (load " & geneString(libPath) & ")",
+        "(import $aot/[load]) (load " & geneString(libPath) & ")",
         "changed since the library was compiled")
 
       # And an unloadable library leaves nothing behind: the failed load must
       # not have registered entries, so a later good load still works.
       check run(compileSource(
-        libSrc & " (import $aot [load]) " &
+        libSrc & " (import $aot/[load]) " &
         "(var n (load " & geneString(libPath) & ")) n"),
         newGlobalScope()).kind == vkMap
 
@@ -3557,7 +3557,7 @@ extern void gene_spec_note_free(int64_t which);
       ## second cannot run against the first's resident layout.
       let scope = newGlobalScope()
       discard run(compileSource(
-        decls & "(import $aot [load]) " &
+        decls & "(import $aot/[load]) " &
         "(var n (load " & geneString(libPath) & ")) ",
         useLocalSlots = false), scope)
       # The held callable works while the contract still holds. `nil` is not a
@@ -3636,7 +3636,7 @@ int64_t last_freed(void) { return gene_spec_last_free(); }
 
     # Library A is loaded first, so a name-keyed lookup would resolve B's
     # `destroy` to A's. Close B's pointer and check B's destructor ran.
-    let prelude = "(import $aot [load]) " &
+    let prelude = "(import $aot/[load]) " &
       "(var a (load " & geneString(libs[0]) & ")) " &
       "(var b (load " & geneString(libs[1]) & ")) "
     check run(compileSource(
@@ -3694,7 +3694,7 @@ int64_t freed_count(void) { return freed; }
       # `take2` transfers `a`, then fails converting `b`; the wrapper must
       # survive that with its pointer intact.
       check run(compileSource(src &
-        " (import $aot [load]) " &
+        " (import $aot/[load]) " &
         "(var n (load " & geneString(libPath) & ")) " &
         "(var p (n/make)) " &
         "(var caught (try (n/take2 p \"not an int\") catch Fault 1)) " &
@@ -4991,7 +4991,7 @@ suite "spec — native wrapper types (design §16.6)":
     # UTF-8, so a binary payload came back truncated rather than raising. These
     # bytes are chosen to fail that way: a NUL, a byte above 0x7F, and a byte
     # after the NUL that a truncating read would drop.
-    check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
+    check_eval("(import $db/sqlite/[open Db]) (var c (open \":memory:\")) " &
                "(c .Db:exec \"create table b (k integer primary key, v blob)\") " &
                "(var payload ($binary/from_list [0 128 255 65])) " &
                "(c .Db:execute \"insert into b values (?, ?)\" 1 payload) " &
@@ -5002,7 +5002,7 @@ suite "spec — native wrapper types (design §16.6)":
     # sqlite ignores the length when the data pointer is NULL and stores SQL
     # NULL instead, so an empty payload needs a non-NULL pointer to survive as
     # a blob.
-    check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
+    check_eval("(import $db/sqlite/[open Db]) (var c (open \":memory:\")) " &
                "(c .Db:exec \"create table b (k integer primary key, v blob)\") " &
                "(c .Db:execute \"insert into b values (?, ?)\" 1 " &
                "  ($binary/from_list [])) " &
@@ -5021,7 +5021,7 @@ suite "spec — native wrapper types (design §16.6)":
   test "native receivers are admitted by Type identity, never by name":
     # The guard turns a prop into an index into a native session table, so a
     # look-alike declaration must not reach state the program never opened.
-    check_eval("(import $terminal [write]) " &
+    check_eval("(import $terminal/[write]) " &
                "(type TerminalSession ^props {^id Int ^closed Any}) " &
                "(var fake (TerminalSession ^id 1 ^closed ($cell false))) " &
                "(try (write fake ^bytes \"x\") catch Error $err/.message)",
@@ -5032,14 +5032,14 @@ suite "spec — native wrapper types (design §16.6)":
     # cannot keep it: the `closed` Cell and the pointer still change through the
     # original. Shallow freeze promises only that the container's own structure
     # is fixed, which a completed wrapper already satisfies.
-    check_eval("(import $db/sqlite [open]) (var c (open \":memory:\")) " &
+    check_eval("(import $db/sqlite/[open]) (var c (open \":memory:\")) " &
                "(try ($freeze c) catch Fault $err/.message)",
                "\"freeze cannot freeze SqliteDb: a native wrapper owns " &
                "native state; freeze_shallow returns it unchanged\"")
-    check_eval("(import $db/sqlite [open]) (var c (open \":memory:\")) " &
+    check_eval("(import $db/sqlite/[open]) (var c (open \":memory:\")) " &
                "(try ($freeze [c]) catch Fault \"rejected through a container\")",
                "\"rejected through a container\"")
-    check_eval("(import $db/sqlite [open]) (var c (open \":memory:\")) " &
+    check_eval("(import $db/sqlite/[open]) (var c (open \":memory:\")) " &
                "[(same? c ($thaw c)) (same? c ($freeze_shallow c))]",
                "[true true]")
 
@@ -6123,7 +6123,7 @@ suite "spec — implicit self in message bodies from design §10":
   test "a qualified send requires a protocol message, not a namespace member":
     # Only a protocol gives a message a qualified spelling, so the qualifier is
     # a reliable signal: bare means type-direct, qualified means protocol.
-    check_eval("(import $str [join]) " &
+    check_eval("(import $str/[join]) " &
                "(try ([\"a\" \"b\"] .%$str/join \"-\") " &
                "catch CallKindFault $err/expected)",
                "\"Message\"")
@@ -8530,7 +8530,7 @@ suite "spec — structured tasks from design":
 
   test "Task/join carries the whole panic; reports bound its text":
     let payload = repeat('x', 5000)
-    check_eval("(import $str [byte_size]) " &
+    check_eval("(import $str/[byte_size]) " &
                "(var task (spawn (panic \"" & payload & "\"))) " &
                "(match (task .join) ^!exhaustive " &
                "  when (TaskOutcome/fault fault) (let message fault/.message) " &
@@ -9319,7 +9319,7 @@ suite "spec — Env and eval from design":
   test "persistent REPL eval keeps declarations, imports, macros and base shadowing":
     check_eval("""
       (let s ($repl/open (env ^bindings {^base 40})))
-      ($repl/eval s "(import $math [max]) (var x base) (fn plus [n] (+ x n)) (type Point ^props {^x Int})")
+      ($repl/eval s "(import $math/[max]) (var x base) (fn plus [n] (+ x n)) (type Point ^props {^x Int})")
       ($repl/eval s "(macro twice [x] `(+ %x %x))")
       ($repl/bind s "base" 41)
       (let first ($repl/eval s "[(plus 2) (max 3 4) (/x (Point ^x 7)) (twice 3) base]"))
@@ -9398,7 +9398,7 @@ suite "spec — Env and eval from design":
     """, "[0 20 42]")
 
   test "incremental REPL sessions retain declarations and incomplete source":
-    check_eval("(import $repl [open eval_source close]) " &
+    check_eval("(import $repl/[open eval_source close]) " &
                "(var s (open (env ^bindings {^base 40}))) " &
                "(var declared (eval_source s \"(var x (+ base 1))\")) " &
                "(var used (eval_source s \"(+ x 1)\")) " &
@@ -10570,10 +10570,10 @@ suite "spec — value ordering and stable sort":
     check_eval_error("($order/sort_by [1] nil)", "Callable")
     check_eval_error("($order/compare 1 \"1\")", "OrderFault")
     check_eval_error("($order/sort (Set 1 2))", "expects a finite List")
-    check_eval_error("(import $serde [read_data]) " &
+    check_eval_error("(import $serde/[read_data]) " &
       "(let nanv (read_data \"(serde_v1 (serde_float \\\"nan\\\"))\")) " &
       "($order/sort [nanv 1.0])", "NaN has no default ordering")
-    check_eval("(import $serde [read_data]) " &
+    check_eval("(import $serde/[read_data]) " &
       "(let nanv (read_data \"(serde_v1 (serde_float \\\"nan\\\"))\")) " &
       "(< nanv 1.0)", "false")
     check_eval_error("(type BadOrder ^props {}) " &
@@ -10589,7 +10589,7 @@ suite "spec — value ordering and stable sort":
 
 suite "spec — gene/io qualified contracts":
   let fakeIoDecl = """
-    (import $io [AsyncReader AsyncWriter IoResource IoError IoBusy IoClosed])
+    (import $io/[AsyncReader AsyncWriter IoResource IoError IoBusy IoClosed])
     (type FakeReader ^props {^data Bytes ^offset Cell ^closed Cell})
     (impl AsyncReader for FakeReader
       (message read [max_bytes : Int] : (Task Bytes? Error)
@@ -10794,7 +10794,7 @@ suite "spec — native I/O lifecycle adapter":
       "(resource .IoResource:close)"), firstScope)
 
   test "read admission, busy direction, EOF, and repeatable close":
-    check_eval("(import $io [AsyncReader IoResource IoBusy]) " &
+    check_eval("(import $io/[AsyncReader IoResource IoBusy]) " &
       "(let reader ($io/testing/new)) " &
       "(let first (reader .AsyncReader:read 3)) " &
       "(let busy (try (reader .AsyncReader:read 1) false " &
@@ -10812,7 +10812,7 @@ suite "spec — native I/O lifecycle adapter":
       "[true 3 1 \"ab\" nil nil nil]")
 
   test "close cancels the user Task but retains native bytes until completion":
-    check_eval("(import $io [AsyncWriter IoResource IoBusy]) " &
+    check_eval("(import $io/[AsyncWriter IoResource IoBusy]) " &
       "(let writer ($io/testing/new)) " &
       "(let operation (writer .AsyncWriter:write ($binary/from_str \"abc\"))) " &
       "(let busy (try (writer .AsyncWriter:flush) false catch IoBusy true)) " &
@@ -10828,7 +10828,7 @@ suite "spec — native I/O lifecycle adapter":
       " after/io_cleanup_leases after/io_open_resources (await waiter) " &
       " ($binary/to_str ($io/testing/written writer))]",
       "[true true \"iopClosing\" 2 0 0 nil \"ab\"]")
-    check_eval("(import $io [AsyncReader IoResource]) " &
+    check_eval("(import $io/[AsyncReader IoResource]) " &
       "(let reader ($io/testing/new)) " &
       "(let operation (reader .AsyncReader:read 3)) " &
       "(reader .IoResource:close) " &
@@ -10840,7 +10840,7 @@ suite "spec — native I/O lifecycle adapter":
       "[true 2 0]")
 
   test "close errors remain attached to every fresh wait_closed Task":
-    check_eval("(import $io [IoResource IoError]) " &
+    check_eval("(import $io/[IoResource IoError]) " &
       "(let resource ($io/testing/new)) " &
       "($io/testing/fail_close resource \"injected close failure\") " &
       "(resource .IoResource:close) " &
@@ -10849,7 +10849,7 @@ suite "spec — native I/O lifecycle adapter":
       " (try (await (resource .IoResource:wait_closed)) " &
       "   catch IoError $err/.message)]",
       "[\"injected close failure\" \"injected close failure\"]")
-    check_eval("(import $io [AsyncWriter IoResource IoError]) " &
+    check_eval("(import $io/[AsyncWriter IoResource IoError]) " &
       "(let resource ($io/testing/new)) " &
       "($io/testing/fail_close resource \"late close failure\") " &
       "(let operation (resource .AsyncWriter:write " &
@@ -10865,7 +10865,7 @@ suite "spec — native I/O lifecycle adapter":
       "[\"late close failure\" \"late close failure\" \"late close failure\"]")
 
   test "byte backpressure rejects before admission and close blocks new work":
-    check_eval("(import $io [AsyncWriter IoResource IoBackpressure IoClosed]) " &
+    check_eval("(import $io/[AsyncWriter IoResource IoBackpressure IoClosed]) " &
       "(let resource ($io/testing/new ^max_bytes 2)) " &
       "(let blocked (try (resource .AsyncWriter:write " &
       "  ($binary/from_str \"abc\")) false catch IoBackpressure true)) " &
@@ -10877,7 +10877,7 @@ suite "spec — native I/O lifecycle adapter":
       "[true 0 true]")
 
   test "scope cleanup waits for a physically completed late write":
-    check_eval("(import $io [AsyncWriter IoResource]) " &
+    check_eval("(import $io/[AsyncWriter IoResource]) " &
       "(let resource ($io/testing/new)) " &
       "(let release ($channel ^capacity 1)) " &
       "(spawn ^lane root (do (release .recv) " &
@@ -10920,85 +10920,85 @@ suite "spec — stdlib namespaces from stdlib plan":
     # (the separately built `gene-fmt`), not a runtime one.
 
   test "str module covers join/split/trim/lower and predicates":
-    check_eval("(import $str [join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
+    check_eval("(import $str/[join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
     # D6: `join` is a function, not a List message — call it, don't send it.
-    check_eval("(import $str [join]) (join [\"a\" \"b\"] \"\")", "\"ab\"")
-    check_eval("(import $str [split]) (split \"a,b,,c\" \",\")",
+    check_eval("(import $str/[join]) (join [\"a\" \"b\"] \"\")", "\"ab\"")
+    check_eval("(import $str/[split]) (split \"a,b,,c\" \",\")",
                "[\"a\" \"b\" \"\" \"c\"]")
-    check_eval("(import $str [trim lower]) (lower (trim \"  MiXeD  \"))",
+    check_eval("(import $str/[trim lower]) (lower (trim \"  MiXeD  \"))",
                "\"mixed\"")
-    check_eval("(import $str [starts_with? ends_with? contains?]) " &
+    check_eval("(import $str/[starts_with? ends_with? contains?]) " &
                "[(starts_with? \"hello\" \"he\") (ends_with? \"hello\" \"lo\") " &
                " (contains? \"hello\" \"xyz\")]",
                "[true true false]")
-    check_eval("(import $str [byte_size]) (byte_size \"Aé\")", "3")
-    check_eval("(import $str [slice_bytes]) (slice_bytes \"AéZ\" 1 2)",
+    check_eval("(import $str/[byte_size]) (byte_size \"Aé\")", "3")
+    check_eval("(import $str/[slice_bytes]) (slice_bytes \"AéZ\" 1 2)",
                "\"é\"")
-    check_eval("(import $str [slice_bytes]) (slice_bytes \"AéZ\" 0 2)",
+    check_eval("(import $str/[slice_bytes]) (slice_bytes \"AéZ\" 0 2)",
                "\"A\"")
     expect GeneError:
       discard run(compileSource(
-        "(import $str [slice_bytes]) (slice_bytes \"AéZ\" 2 2)"),
+        "(import $str/[slice_bytes]) (slice_bytes \"AéZ\" 2 2)"),
         newGlobalScope())
 
   test "html/escape neutralizes markup and quote characters":
-    check_eval("(import $html [escape]) " &
+    check_eval("(import $html/[escape]) " &
                "(escape \"<a b=\\\"x\\\">&'\")",
                "\"&lt;a b=&quot;x&quot;&gt;&amp;&#39;\"")
 
   test "url module encodes, decodes, and parses queries":
-    check_eval("(import $url [encode_component]) (encode_component \"a b&c\")",
+    check_eval("(import $url/[encode_component]) (encode_component \"a b&c\")",
                "\"a%20b%26c\"")
-    check_eval("(import $url [decode_component]) (decode_component \"a%20b\")",
+    check_eval("(import $url/[decode_component]) (decode_component \"a%20b\")",
                "\"a b\"")
-    check_eval("(import $url [parse_query]) " &
+    check_eval("(import $url/[parse_query]) " &
                "(parse_query \"text=hello+world&x=%2F\")",
                "{^text \"hello world\" ^x \"/\"}")
-    check_eval("(import $url [format_query]) " &
+    check_eval("(import $url/[format_query]) " &
                "(format_query {^a \"1\" ^b \"x y\"})",
                "\"a=1&b=x%20y\"")
-    check_eval("(import $url [decode_component UrlError]) " &
+    check_eval("(import $url/[decode_component UrlError]) " &
                "(try (decode_component \"a%zz\") " &
                "catch UrlError \"bad\")",
                "\"bad\"")
 
   test "response helpers build typed Response nodes":
-    check_eval("(import $net/http [text]) (import gene/node [body]) " &
+    check_eval("(import $net/http/[text]) (import gene/node [body]) " &
                "(var r (text \"hi\")) " &
                "[r/status r/headers/content-type (body r)]",
                "[200 \"text/plain; charset=utf-8\" [\"hi\"]]")
-    check_eval("(import $net/http [json]) (var r (json \"{}\")) " &
+    check_eval("(import $net/http/[json]) (var r (json \"{}\")) " &
                "r/headers/content-type",
                "\"application/json\"")
-    check_eval("(import $net/http [redirect]) (var r (redirect \"/x\")) " &
+    check_eval("(import $net/http/[redirect]) (var r (redirect \"/x\")) " &
                "[r/status r/headers/location]",
                "[302 \"/x\"]")
-    check_eval("(import $net/http [not_found]) (var r (not_found)) r/status",
+    check_eval("(import $net/http/[not_found]) (var r (not_found)) r/status",
                "404")
 
   test "Server and Response types construct with typed props":
-    check_eval("(import $net/http [Server]) " &
+    check_eval("(import $net/http/[Server]) " &
                "(var s (Server ^host \"127.0.0.1\" ^port 8088)) " &
                "[s/host s/port]",
                "[\"127.0.0.1\" 8088]")
-    check_eval("(import $net/http [Response]) " &
+    check_eval("(import $net/http/[Response]) " &
                "(var r (Response ^status 201)) r/status",
                "201")
 
   test "serve validates its Server argument":
-    check_eval("(import $net/http [serve HttpError]) " &
+    check_eval("(import $net/http/[serve HttpError]) " &
                "(try (serve nil (fn [q] q)) " &
                "catch HttpError \"bad server\")",
                "\"bad server\"")
 
   test "client entry points are importable":
-    check_eval("(import $net/http_client [request stream HttpClientError]) " &
+    check_eval("(import $net/http_client/[request stream HttpClientError]) " &
                "true",
                "true")
 
 suite "spec — net/http_client native client contract":
   test "client rejects non-http URL schemes before starting work":
-    check_eval("(import $net/http_client [request HttpClientError]) " &
+    check_eval("(import $net/http_client/[request HttpClientError]) " &
                "(try (request ^url \"file:///etc/passwd\") false " &
                " catch HttpClientError " &
                "   ($str/contains? $err/.message \"http:// or https://\"))",
@@ -11008,11 +11008,11 @@ suite "spec — net/http_client native client contract":
     # Usage mistakes (bad args/authority) are ^kind "usage" and must not be
     # confused with libcurl load failures (^kind "unavailable"): the agent's
     # curl(1) fallback catches only the latter.
-    check_eval("(import $net/http_client [request HttpClientError]) " &
+    check_eval("(import $net/http_client/[request HttpClientError]) " &
                "(try (request ^url \"file:///x\") false " &
                " catch HttpClientError (== $err/kind \"usage\"))",
                "true")
-    check_eval("(import $net/http_client [request HttpClientError]) " &
+    check_eval("(import $net/http_client/[request HttpClientError]) " &
                "(try (request ^url \"file:///x\") false " &
                " catch HttpClientError " &
                "   (if (== $err/kind \"unavailable\") \"fallback\" else \"surfaced\"))",
@@ -11023,7 +11023,7 @@ suite "spec — net/http_client native client contract":
 # Non-TTY rejection and terminal restoration are covered by the CLI PTY tests.
 # suite "spec — public curses terminal contract":
 #   test "owned Screen API is importable and non-TTY open is typed":
-#     check_eval("(import $curses [open close dimensions draw read_input " &
+#     check_eval("(import $curses/[open close dimensions draw read_input " &
 #                "refresh_input escape_pressed? next_event Screen CursesError]) " &
 #                "(try (open) false " &
 #                " catch CursesError ($str/contains? $err/.message \"TTY\"))",
@@ -11031,7 +11031,7 @@ suite "spec — net/http_client native client contract":
 
 suite "spec — structured logging contract":
   test "Logger API is importable and eager/lazy evaluation is explicit":
-    check_eval("(import $log [Logger LogLevel new_logger log_debug]) " &
+    check_eval("(import $log/[Logger LogLevel new_logger log_debug]) " &
                "(var logger (new_logger \"app/spec\" ^payload {^x 1})) " &
                "(var eager ($cell false)) (var lazy ($cell false)) " &
                "(logger .info (do (eager .set true) \"eager\")) " &
@@ -11041,7 +11041,7 @@ suite "spec — structured logging contract":
                "[true false true]")
 
   test "built-in namespace macros support selection aliases":
-    check_eval("(import $log [new_logger log_debug:diagnostic]) " &
+    check_eval("(import $log/[new_logger log_debug:diagnostic]) " &
                "(var logger (new_logger \"app/spec\")) " &
                "(var touched ($cell false)) " &
                "(diagnostic logger (do (touched .set true) \"x\")) " &
@@ -11049,45 +11049,45 @@ suite "spec — structured logging contract":
                "false")
 
   test "a lazy logging macro carries its LogLevel dependency":
-    check_eval("(import $log [new_logger]) " &
+    check_eval("(import $log/[new_logger]) " &
                "(var logger (new_logger \"app/spec\")) " &
-               "(import $log [log_debug]) " &
+               "(import $log/[log_debug]) " &
                "(var touched ($cell false)) " &
                "(log_debug logger (do (touched .set true) \"x\")) " &
                "(touched .get)",
                "false")
 
   test "logging payload rejects process-bound values":
-    check_eval("(import $log [new_logger]) " &
+    check_eval("(import $log/[new_logger]) " &
                "(try (new_logger \"app/spec\" ^payload {^bad ($cell 1)}) " &
                "  false catch Fault true)",
                "true")
 
   test "logging payload reserves event envelope keys":
-    check_eval("(import $log [new_logger]) " &
+    check_eval("(import $log/[new_logger]) " &
                "(try (new_logger \"app/spec\" ^payload {^message \"fake\"}) " &
                "  false catch Fault true)",
                "true")
 
 suite "spec — db protocol from stdlib plan":
   test "sqlite backend covers CRUD, typed params, and typed rows":
-    check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
+    check_eval("(import $db/sqlite/[open Db]) (var c (open \":memory:\")) " &
                "(c .Db:exec \"create table t (id integer primary key, x text, f float, b integer)\") " &
                "(c .Db:execute \"insert into t(x, f, b) values (?, ?, ?)\" \"a\" 1.5 true) " &
                "(c .Db:query \"select * from t\")",
                "[{^id 1 ^x \"a\" ^f 1.5 ^b 1}]")
-    check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
+    check_eval("(import $db/sqlite/[open Db]) (var c (open \":memory:\")) " &
                "(c .Db:exec \"create table t (x text)\") " &
                "(c .Db:query_one \"select * from t where x = ?\" \"missing\")",
                "nil")
-    check_eval("(import $db/sqlite [open Db DbError]) " &
+    check_eval("(import $db/sqlite/[open Db DbError]) " &
                "(var c (open \":memory:\")) " &
                "(try (c .Db:query \"select * from missing\") " &
                "catch DbError \"caught\")",
                "\"caught\"")
 
   test "sqlite transactions roll back on recoverable failure":
-    check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
+    check_eval("(import $db/sqlite/[open Db]) (var c (open \":memory:\")) " &
                "(c .Db:exec \"create table t (x text)\") " &
                "(try (c .Db:transaction (fn [d] " &
                "  (d .Db:execute \"insert into t(x) values (?)\" \"doomed\") " &
@@ -11098,7 +11098,7 @@ suite "spec — db protocol from stdlib plan":
                "[{^x \"kept\"}]")
 
   test "connections close explicitly and reject further use":
-    check_eval("(import $db/sqlite [open Db DbError]) " &
+    check_eval("(import $db/sqlite/[open Db DbError]) " &
                "(var c (open \":memory:\")) " &
                "(var before (c .Db:closed?)) (c .Db:close) " &
                "[before (c .Db:closed?) " &
@@ -11107,7 +11107,7 @@ suite "spec — db protocol from stdlib plan":
                "[false true \"rejected\"]")
 
   test "sqlite and postgres share one Db protocol":
-    check_eval("(import $db [Db]) " &
+    check_eval("(import $db/[Db]) " &
                "[(same? Db ($db/sqlite .lookup \"Db\")) " &
                " (same? Db ($db/postgres .lookup \"Db\")) " &
                " ($present? ($db/postgres .lookup \"open\"))]",
@@ -11115,7 +11115,7 @@ suite "spec — db protocol from stdlib plan":
 
 suite "spec — store persistence protocol":
   test "crypto sha256 matches the standard known vector":
-    check_eval("(import $crypto [sha256]) (sha256 \"abc\")",
+    check_eval("(import $crypto/[sha256]) (sha256 \"abc\")",
                "\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"")
 
   test "crypto sha256 hashes raw Bytes including NUL and non-UTF8 octets":
@@ -11123,22 +11123,22 @@ suite "spec — store persistence protocol":
                "\"79301df919df82d717f591339d85235fb8bb8683b2c74680306959327d4a4464\"")
 
   test "crypto random_hex returns the requested number of random bytes":
-    check_eval("(import $crypto [random_hex]) " &
-               "(import $str [byte_size]) " &
+    check_eval("(import $crypto/[random_hex]) " &
+               "(import $str/[byte_size]) " &
                "(byte_size (random_hex 16))", "32")
-    check_eval("(import $crypto [random_hex]) " &
+    check_eval("(import $crypto/[random_hex]) " &
       "(try (random_hex 0) catch Fault $err/.message)",
       "\"crypto/random_hex byte count must be between 1 and 1024\"")
 
   test "crypto secure_equal? compares credentials without an early-exit API":
-    check_eval("(import $crypto [secure_equal?]) " &
+    check_eval("(import $crypto/[secure_equal?]) " &
       "[(secure_equal? \"secret\" \"secret\") " &
       " (secure_equal? \"secret\" \"secrex\") " &
       " (secure_equal? \"secret\" \"short\")]", "[true false false]")
 
   test "sqlite store round-trips data records and missing/default semantics":
-    check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open:store-open Store StoreError]) " &
+    check_eval("(import $db/sqlite/[open]) " &
+               "(import $store/sqlite/[open:store-open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
                "(s .Store:put \"a\" {^x 1}) " &
@@ -11152,8 +11152,8 @@ suite "spec — store persistence protocol":
                "[{^x 1} nil true false \"fallback\" missing]")
 
   test "sqlite store supports full mode refs, keys, delete, clear, and close":
-    check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open:store-open Store StoreError]) " &
+    check_eval("(import $db/sqlite/[open]) " &
+               "(import $store/sqlite/[open:store-open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
                "(s .Store:put \"fn\" gene/str/join ^mode \"full\") " &
@@ -11175,7 +11175,7 @@ suite "spec — store persistence protocol":
       removeDir(dir)
     createDir(dir)
     writeFile(dir / "junk.tmp", "not a record")
-    check_eval_at("(import $store/fs [open:store-open Store StoreError]) " &
+    check_eval_at("(import $store/fs/[open:store-open Store StoreError]) " &
                "(var s (store-open ^root " & geneString(dir) & ")) " &
                "(s .Store:put \"session:tg/42\" {^x 1}) " &
                "[(s .Store:get \"session:tg/42\") " &
@@ -11189,7 +11189,7 @@ suite "spec — store persistence protocol":
       removeDir(dir)
     createDir(dir)
     let path = dir / "module.gene"
-    check_eval_at("(import $fs [write_text_atomic read_text]) " &
+    check_eval_at("(import $fs/[write_text_atomic read_text]) " &
                "(write_text_atomic " & geneString(path) & " \"first\") " &
                "(write_text_atomic " & geneString(path) & " \"second\") " &
                "(read_text " & geneString(path) & ")",
@@ -11203,19 +11203,19 @@ suite "spec — store persistence protocol":
     let path = dir / "secret.txt"
     writeFile(path, "old")
     setFilePermissions(path, {fpUserRead, fpUserWrite, fpGroupRead, fpOthersRead})
-    check_eval_at("(import $fs [write_text_atomic read_text]) " &
+    check_eval_at("(import $fs/[write_text_atomic read_text]) " &
                "(write_text_atomic " & geneString(path) & " \"s3cret\" ^^owner_only) " &
                "(read_text " & geneString(path) & ")",
                "\"s3cret\"", dir)
     check getFilePermissions(path) == {fpUserRead, fpUserWrite}
-    check_eval_at("(import $fs [write_text_atomic]) " &
+    check_eval_at("(import $fs/[write_text_atomic]) " &
                "(try (write_text_atomic " & geneString(path) & " \"x\" ^owner_only 1) " &
                " catch Fault \"rejected\")",
                "\"rejected\"", dir)
 
   test "sqlite checkpoints publish one hash-validated generation atomically":
-    check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open:store-open Store]) " &
+    check_eval("(import $db/sqlite/[open]) " &
+               "(import $store/sqlite/[open:store-open Store]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store-open db)) " &
                "(s .Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
@@ -11227,8 +11227,8 @@ suite "spec — store persistence protocol":
                "[2 1 2 [\"ok\"]]")
 
   test "checkpoint generations are exclusive CAS claims":
-    check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open:store_open Store StoreError]) " &
+    check_eval("(import $db/sqlite/[open]) " &
+               "(import $store/sqlite/[open:store_open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store_open db)) " &
                "(s .Store:checkpoint 1 {^state {^winner 1}}) " &
@@ -11243,7 +11243,7 @@ suite "spec — store persistence protocol":
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval_at("(import $store/fs [open:store_open Store StoreError]) " &
+    check_eval_at("(import $store/fs/[open:store_open Store StoreError]) " &
                "(var first (store_open ^root " & geneString(dir) & ")) " &
                "(var stale (store_open ^root " & geneString(dir) & ")) " &
                "(first .Store:checkpoint 1 {^state {^winner 1}}) " &
@@ -11255,8 +11255,8 @@ suite "spec — store persistence protocol":
                "[conflict 1]", dir)
 
   test "a retained-out stale generation cannot roll CURRENT backward":
-    check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open:store_open Store StoreError]) " &
+    check_eval("(import $db/sqlite/[open]) " &
+               "(import $store/sqlite/[open:store_open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store_open db)) " &
                "(var n 1) " &
@@ -11274,7 +11274,7 @@ suite "spec — store persistence protocol":
     if dirExists(staleDir):
       removeDir(staleDir)
     createDir(staleDir)
-    check_eval_at("(import $store/fs [open:store_open Store StoreError]) " &
+    check_eval_at("(import $store/fs/[open:store_open Store StoreError]) " &
                "(var s (store_open ^root " & geneString(staleDir) & ")) " &
                "(var n 1) " &
                "(while (<= n 5) " &
@@ -11292,8 +11292,8 @@ suite "spec — store persistence protocol":
       let path = getTempDir() / "gene-store-owner-only-spec.sqlite"
       for suffix in ["", "-wal", "-shm", "-journal"]:
         if fileExists(path & suffix): removeFile(path & suffix)
-      check_eval_at("(import $db/sqlite [open Db]) " &
-                 "(import $store/sqlite [open:store-open Store]) " &
+      check_eval_at("(import $db/sqlite/[open Db]) " &
+                 "(import $store/sqlite/[open:store-open Store]) " &
                  "(var db (open " & geneString(path) & ")) " &
                  "(var s (store-open db)) " &
                  "(s .Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
@@ -11310,7 +11310,7 @@ suite "spec — store persistence protocol":
       for suffix in ["", "-wal", "-shm", "-journal"]:
         if fileExists(path & suffix):
           removeFile(path & suffix)
-    check_eval_at("(import $db/sqlite [open Db]) " &
+    check_eval_at("(import $db/sqlite/[open Db]) " &
                "(var first (open " & geneString(path) & ")) " &
                "(first .Db:exec \"create table t (x integer)\") " &
                "(first .Db:execute \"insert into t(x) values (?)\" 7) " &
@@ -11334,13 +11334,13 @@ suite "spec — store persistence protocol":
     defer:
       for suffix in ["", "-wal", "-shm", "-journal"]:
         if fileExists(path & suffix): removeFile(path & suffix)
-    check_eval_at("(import $db/sqlite [open_file DbError]) " &
+    check_eval_at("(import $db/sqlite/[open_file DbError]) " &
                   "(try (open_file " & geneString(path) & ") " &
                   "catch DbError \"refused\")",
                   "\"refused\"", parentDir(path))
     check not fileExists(path)
     check_eval_at("""
-      (import $db/sqlite [open_file Db])
+      (import $db/sqlite/[open_file Db])
       (let db (open_file """ & geneString(path) & """ ^^create))
       (let mode (db .Db:query_one "pragma journal_mode=wal"))
       (db .Db:exec "pragma synchronous=full")
@@ -11362,7 +11362,7 @@ suite "spec — store persistence protocol":
           check getFilePermissions(path & suffix) == {fpUserRead, fpUserWrite}
     let inodeBefore = getFileInfo(path).id.file
     check_eval_at("""
-      (import $db/sqlite [open_file Db])
+      (import $db/sqlite/[open_file Db])
       (let db (open_file """ & geneString(path) & """))
       (db .Db:execute "insert into t values (?)" 10)
       (let n (db .Db:query_one "select count(*) as n from t"))
@@ -11380,7 +11380,7 @@ suite "spec — store persistence protocol":
       defer:
         if fileExists(path): removeFile(path)
       check_eval_at("""
-        (import $db/sqlite [open Db])
+        (import $db/sqlite/[open Db])
         (let path """ & geneString(path) & """)
         (let db (open path))
         (db .Db:exec "create table t (x integer)")
@@ -11409,7 +11409,7 @@ suite "spec — store persistence protocol":
     defer:
       if fileExists(path): removeFile(path)
     check_eval_at("""
-      (import $db/sqlite [open Db])
+      (import $db/sqlite/[open Db])
       (let path """ & geneString(path) & """)
       (let db (open path))
       (db .Db:exec "create table t (x integer); insert into t values (7)")
@@ -11427,7 +11427,7 @@ suite "spec — store persistence protocol":
     defer:
       if fileExists(path): removeFile(path)
     check_eval_at("""
-      (import $db/sqlite [open Db])
+      (import $db/sqlite/[open Db])
       (let path """ & geneString(path) & """)
       (let db (open path))
       (db .Db:exec "create table t (x integer)")
@@ -11450,7 +11450,7 @@ suite "spec — store persistence protocol":
     defer:
       if fileExists(path): removeFile(path)
     check_eval_at("""
-      (import $db/sqlite [open Db DbError])
+      (import $db/sqlite/[open Db DbError])
       (let path """ & geneString(path) & """)
       (let db (open path))
       (db .Db:exec "create table t (x integer)")
@@ -11477,7 +11477,7 @@ suite "spec — store persistence protocol":
       defer:
         if fileExists(path): removeFile(path)
       check_eval_at("""
-        (import $db/sqlite [open Db DbError])
+        (import $db/sqlite/[open Db DbError])
         (let path """ & geneString(path) & """)
         (let db (open path))
         (db .Db:exec "create table t (x integer primary key); insert into t values (1)")
@@ -11497,7 +11497,7 @@ suite "spec — store persistence protocol":
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval_at("(import $store/fs [open:store-open Store]) " &
+    check_eval_at("(import $store/fs/[open:store-open Store]) " &
                "(var s (store-open ^root " & geneString(dir) & ")) " &
                "(s .Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
                "(s .Store:checkpoint 2 {^session {^schema 1 ^data {^x 2}}}) " &
@@ -11507,7 +11507,7 @@ suite "spec — store persistence protocol":
     let newest = dir / "generations" / "00000000000000000002" /
                  "session.gene"
     writeFile(newest, "corrupt")
-    check_eval_at("(import $store/fs [open:store-open Store]) " &
+    check_eval_at("(import $store/fs/[open:store-open Store]) " &
                "(var s (store-open ^root " & geneString(dir) & ")) " &
                "(var loaded (s .Store:load_checkpoint)) " &
                "[loaded/generation loaded/records/session/data/x]",
@@ -11521,7 +11521,7 @@ suite "spec — store persistence protocol":
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval_at("(import $store/fs [open:store_open Store]) " &
+    check_eval_at("(import $store/fs/[open:store_open Store]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "(s .Store:checkpoint 1 {^state {^value 1}}) true",
                "true", dir)
@@ -11532,14 +11532,14 @@ suite "spec — store persistence protocol":
     let unpublishedManifest = unpublished / "MANIFEST.gene"
     writeFile(unpublishedManifest,
       readFile(unpublishedManifest).replace("^generation 1", "^generation 2"))
-    check_eval_at("(import $store/fs [open:store_open Store]) " &
+    check_eval_at("(import $store/fs/[open:store_open Store]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "(var loaded (s .Store:load_checkpoint)) " &
                "[loaded/generation loaded/records/state/value]",
                "[1 1]", dir)
     # The publication lock may reclaim the complete-but-unpublished directory
     # and reuse generation 2; it must not strand the store after a crash.
-    check_eval_at("(import $store/fs [open:store_open Store]) " &
+    check_eval_at("(import $store/fs/[open:store_open Store]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "(s .Store:checkpoint 2 {^state {^value 2}}) " &
                "(var loaded (s .Store:load_checkpoint)) " &
@@ -11547,8 +11547,8 @@ suite "spec — store persistence protocol":
                "[2 2]", dir)
 
   test "malformed checkpoint CURRENT is corruption, never an empty store":
-    check_eval("(import $db/sqlite [open]) " &
-               "(import $store/sqlite [open:store_open Store StoreError]) " &
+    check_eval("(import $db/sqlite/[open]) " &
+               "(import $store/sqlite/[open:store_open Store StoreError]) " &
                "(var db (open \":memory:\")) " &
                "(var s (store_open db)) " &
                "(s .Store:checkpoint 1 {^state 1}) " &
@@ -11563,12 +11563,12 @@ suite "spec — store persistence protocol":
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval_at("(import $store/fs [open:store_open Store]) " &
+    check_eval_at("(import $store/fs/[open:store_open Store]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "(s .Store:checkpoint 1 {^state 1}) true",
                "true", dir)
     writeFile(dir / "CURRENT", "broken\n")
-    check_eval_at("(import $store/fs [open:store_open Store StoreError]) " &
+    check_eval_at("(import $store/fs/[open:store_open Store StoreError]) " &
                "(var s (store_open ^root " & geneString(dir) & ")) " &
                "[(try (s .Store:load_checkpoint) " &
                "  catch StoreError $err/kind) " &
@@ -11581,7 +11581,7 @@ suite "spec — store persistence protocol":
     removeDir(dir / "generations")
     for current in ["broken\n", "00000000000000000001\n"]:
       writeFile(dir / "CURRENT", current)
-      check_eval_at("(import $store/fs [open:store_open Store StoreError]) " &
+      check_eval_at("(import $store/fs/[open:store_open Store StoreError]) " &
                  "(var s (store_open ^root " & geneString(dir) & ")) " &
                  "(try (s .Store:load_checkpoint) catch StoreError $err/kind)",
                  "corrupt", dir)
@@ -11593,7 +11593,7 @@ suite "spec — filesystem watching":
     createDir(root)
     let path = root / "item.txt"
     check_eval_at(
-      "(import $fs [watch write_text remove FsWatcher FsChange WatcherClosed]) " &
+      "(import $fs/[watch write_text remove FsWatcher FsChange WatcherClosed]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") &
       "\" ^capacity 16)) " &
       "(var create_task (spawn ^lane root " &
@@ -11621,7 +11621,7 @@ suite "spec — filesystem watching":
     removeDir(root)
     createDir(root)
     check_eval_at(
-      "(import $fs [watch write_text]) " &
+      "(import $fs/[watch write_text]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") &
       "\" ^capacity 1)) " &
       "(write_text \"" & (root / "a").replace("\\", "/") & "\" \"a\") " &
@@ -11642,8 +11642,8 @@ suite "spec — filesystem watching":
     let newPath = root / "new.txt"
     writeFile(oldPath, "same inode")
     check_eval_at(
-      "(import $fs [watch]) " &
-      "(import $os [exec]) " &
+      "(import $fs/[watch]) " &
+      "(import $os/[exec]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") & "\")) " &
       "(var mover (spawn ^lane root (do ($sleep 30) " &
       "  (exec \"mv\" \"" & oldPath.replace("\\", "/") &
@@ -11662,7 +11662,7 @@ suite "spec — filesystem watching":
     let child = root / "child"
     let item = child / "item.txt"
     check_eval_at(
-      "(import $fs [watch make_dir write_text]) " &
+      "(import $fs/[watch make_dir write_text]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") &
       "\" ^^recursive)) " &
       "(var writer (spawn ^lane root (do ($sleep 30) " &
@@ -11687,7 +11687,7 @@ suite "spec — filesystem watching":
     createSymlink(outside, root / "outside-link")
     let outsideFile = outside / "hidden.txt"
     check_eval_at(
-      "(import $fs [watch write_text]) " &
+      "(import $fs/[watch write_text]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") &
       "\" ^^recursive)) " &
       "(spawn ^lane root (do ($sleep 30) " &
@@ -11707,7 +11707,7 @@ suite "spec — filesystem watching":
     createDir(root)
     let path = root / "next.txt"
     check_eval_at(
-      "(import $fs [watch write_text]) " &
+      "(import $fs/[watch write_text]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") & "\")) " &
       "(var waiting (spawn ^lane root (watcher .recv))) " &
       "($sleep 30) (waiting .cancel) " &
@@ -11727,7 +11727,7 @@ suite "spec — filesystem watching":
     removeDir(root)
     createDir(root)
     check_eval_at(
-      "(import $fs [watch]) " &
+      "(import $fs/[watch]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") & "\")) " &
       "(var waiting (spawn ^lane root " &
       "  (try (watcher .recv) false catch WatcherClosed true))) " &
@@ -11741,7 +11741,7 @@ suite "spec — filesystem watching":
     removeDir(root)
     createDir(root)
     check_eval_at(
-      "(import $fs [watch write_text]) " &
+      "(import $fs/[watch write_text]) " &
       "(var watcher (watch \"" & root.replace("\\", "/") &
       "\" ^capacity 4)) " &
       "(write_text \"" & (root / "a").replace("\\", "/") & "\" \"a\") " &
@@ -11757,19 +11757,19 @@ suite "spec — filesystem watching":
     removeDir(root)
 
   test "os/get_env reads, defaults, and errors":
-    check_eval("(import $os [get_env env?]) " &
+    check_eval("(import $os/[get_env env?]) " &
                "[(env? \"GENE_SPEC_UNSET_XYZ\") " &
                " (get_env \"GENE_SPEC_UNSET_XYZ\" \"fallback\")]",
                "[nil \"fallback\"]")
-    check_eval("(import $os [get_env OsError]) " &
+    check_eval("(import $os/[get_env OsError]) " &
                "(try (get_env \"GENE_SPEC_UNSET_XYZ\") " &
                "catch OsError \"unset\")",
                "\"unset\"")
 
 suite "spec — os and json from ai-agent plan":
   test "os/executable_path identifies the running Gene executable":
-    check_eval("(import $os [executable_path]) " &
-               "(import $str [byte_size]) " &
+    check_eval("(import $os/[executable_path]) " &
+               "(import $str/[byte_size]) " &
                "(> (byte_size (executable_path)) 0)",
                "true")
 
@@ -11782,16 +11782,16 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(try ($os/launch_dir 1) false catch Fault true)", "true")
 
   test "os/exec runs a program, captures output, and enforces timeout":
-    check_eval("(import $os [exec]) " &
+    check_eval("(import $os/[exec]) " &
                "(var r (exec \"echo\" \"hi\")) " &
                "[r/status r/timed_out]",
                "[0 false]")
-    check_eval("(import $os [exec]) " &
+    check_eval("(import $os/[exec]) " &
                "(var r (exec \"sleep\" \"5\" ^timeout_ms 150)) " &
                "r/timed_out",
                "true")
 
-    check_eval("(import $os [exec]) " &
+    check_eval("(import $os/[exec]) " &
                "(var r (exec \"printf\" \"abcdef\" ^max_bytes 3)) " &
                "[r/stdout r/stdout_truncated r/truncated]",
                "[\"abc\" true true]")
@@ -11830,7 +11830,7 @@ suite "spec — os and json from ai-agent plan":
       "($os/exec ^^full ^cmd \"echo hi\")", "($os/exec ^args [])",
       "($os/exec \"true\" ^full 1)", "($os/exec \"true\" ^full \"yes\")",
       "($os/exec \"true\" ^^unknown)"]:
-      check_eval("(import $os [OsError]) (try " & invocation & " catch OsError true)", "true")
+      check_eval("(import $os/[OsError]) (try " & invocation & " catch OsError true)", "true")
     check_eval_error("($os/exec 1)", "command expects a Str")
     check_eval_error("($os/exec \"echo\" 1)", "argument 1 expects a Str")
     for args in [geneString("bad\0command"), "\"printf\" " & geneString("bad\0argument"),
@@ -11862,7 +11862,7 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(await ($os/exec_stdio_async ^^full \"exit 8\"))", "8")
 
   test "os/exec_stream invokes stdout callbacks while retaining captured output":
-    check_eval("(import $os [exec_stream]) " &
+    check_eval("(import $os/[exec_stream]) " &
                "(import gene/stream [to_stream into]) " &
                "(var seen ($cell [])) " &
                "(var r (exec_stream \"printf\" \"a\\nb\\n\" " &
@@ -11872,12 +11872,12 @@ suite "spec — os and json from ai-agent plan":
                "[0 \"a\\nb\\n\" [\"a\" \"b\"]]")
 
   test "os/exec_stdio runs with parent streams and returns status":
-    check_eval("(import $os [exec_stdio]) " &
+    check_eval("(import $os/[exec_stdio]) " &
                "(exec_stdio \"sh\" \"-c\" \"exit 7\")",
                "7")
 
   test "os/exec_stdio_async inherits streams without blocking the scheduler":
-    check_eval("(import $os [exec_stdio_async]) " &
+    check_eval("(import $os/[exec_stdio_async]) " &
                "(var ticks ($cell 0)) " &
                "(var status ($cell -1)) " &
                "(scope " &
@@ -11890,16 +11890,16 @@ suite "spec — os and json from ai-agent plan":
                "[7 5]")
 
   test "os/exec_async settles a task off-thread with the exec result map":
-    check_eval("(import $os [exec_async]) " &
+    check_eval("(import $os/[exec_async]) " &
                "(var r (await (exec_async \"echo\" \"hi\"))) " &
                "[r/status r/timed_out]",
                "[0 false]")
-    check_eval("(import $os [exec_async]) " &
+    check_eval("(import $os/[exec_async]) " &
                "(var r (await (exec_async \"sleep\" \"5\" " &
                "                          ^timeout_ms 150))) " &
                "r/timed_out",
                "true")
-    check_eval("(import $os [exec_async]) " &
+    check_eval("(import $os/[exec_async]) " &
                "(var status 1) " &
                "(repeat 20 " &
                "  (set status (/status (await (exec_async \"true\"))))) " &
@@ -11908,7 +11908,7 @@ suite "spec — os and json from ai-agent plan":
 
   test "root await polls external tasks before unrelated distant timers":
     let started = getMonoTime()
-    check_eval("(import $os [exec_async]) " &
+    check_eval("(import $os/[exec_async]) " &
                "(var status -1) " &
                "(scope " &
                "  (var distant (spawn ($sleep 1500))) " &
@@ -11921,7 +11921,7 @@ suite "spec — os and json from ai-agent plan":
     check getMonoTime() - started < initDuration(milliseconds = 800)
 
   test "os/exec_stream_async feeds stdout lines through a channel then closes it":
-    check_eval("(import $os [exec_stream_async]) " &
+    check_eval("(import $os/[exec_stream_async]) " &
                "(import gene/stream [to_stream into]) " &
                "(var ch ($channel ^capacity 8)) " &
                "(var t (exec_stream_async \"printf\" " &
@@ -11936,22 +11936,22 @@ suite "spec — os and json from ai-agent plan":
 
   test "os turn interrupt polling is scoped and consumptive":
     when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-      check_eval("(import $os [begin_interrupt take_interrupt end_interrupt]) " &
+      check_eval("(import $os/[begin_interrupt take_interrupt end_interrupt]) " &
                  "[(begin_interrupt) (take_interrupt) (end_interrupt)]",
                  "[true false nil]")
     else:
-      check_eval("(import $os [begin_interrupt take_interrupt end_interrupt]) " &
+      check_eval("(import $os/[begin_interrupt take_interrupt end_interrupt]) " &
                  "[(begin_interrupt) (take_interrupt) (end_interrupt)]",
                  "[false false nil]")
 
   test "os/monotonic_ms is nondecreasing":
-    check_eval("(import $os [monotonic_ms]) " &
+    check_eval("(import $os/[monotonic_ms]) " &
                "(var a (monotonic_ms)) ($sleep 2) (>= (monotonic_ms) a)",
                "true")
 
   test "Task/cancel terminates an async exec child and closes its channel":
     let started = getMonoTime()
-    check_eval("(import $os [exec_stream_async]) " &
+    check_eval("(import $os/[exec_stream_async]) " &
                "(scope " &
                "  (var ch ($channel ^capacity 1)) " &
                "  (var t (exec_stream_async \"sleep\" \"2\" " &
@@ -11968,7 +11968,7 @@ suite "spec — os and json from ai-agent plan":
 
   test "Task/cancel terminates an inherited-stream async child":
     let started = getMonoTime()
-    check_eval("(import $os [exec_stdio_async]) " &
+    check_eval("(import $os/[exec_stdio_async]) " &
                "(scope " &
                "  (var t (exec_stdio_async \"sleep\" \"2\")) " &
                "  (spawn (do ($sleep 50) (t .cancel))) " &
@@ -12026,7 +12026,7 @@ suite "spec — os and json from ai-agent plan":
     # The whole point of the async variants (archive/docs/stdlib.md, `$os` async exec):
     # fibers must make progress during a subprocess. The snapshot is taken
     # right after the await — a blocking exec would leave it at 0.
-    check_eval("(import $os [exec_async]) " &
+    check_eval("(import $os/[exec_async]) " &
                "(var ticks ($cell 0)) " &
                "(var during ($cell 0)) " &
                "(scope " &
@@ -12050,7 +12050,7 @@ suite "spec — os and json from ai-agent plan":
     let fsApp = newApplication(dir)
     let scope = newGlobalScope(fsApp)
     check run(compileSource(
-      "(import $fs [read_text write_text exists? list_dir make_dir remove]) " &
+      "(import $fs/[read_text write_text exists? list_dir make_dir remove]) " &
       "(write_text " & geneString(path) & " \"hello\") " &
       "(write_text " & geneString(removable) & " \"bye\") " &
       "(make_dir " & geneString(made) & ") " &
@@ -12077,8 +12077,8 @@ suite "spec — os and json from ai-agent plan":
     let realPathApp = newApplication(dir)
     let scope = newGlobalScope(realPathApp)
     check run(compileSource(
-      "(import $fs [real_path write_text]) " &
-      "(import $str [starts_with?]) " &
+      "(import $fs/[real_path write_text]) " &
+      "(import $str/[starts_with?]) " &
       "(var base (real_path " & geneString(dir) & ")) " &
       "(var direct (real_path " & geneString(path) & ")) " &
       "(var detour (real_path " &
@@ -12102,61 +12102,61 @@ suite "spec — os and json from ai-agent plan":
     createSymlink(outside / "new-file", ws / "escape")
     let scope = newGlobalScope(newApplication(ws))
     check run(compileSource(
-      "(import $fs [real_path]) " &
-      "(import $str [starts_with?]) " &
+      "(import $fs/[real_path]) " &
+      "(import $str/[starts_with?]) " &
       "(var resolved (real_path " & geneString(ws / "escape") & ")) " &
       "[(starts_with? resolved (real_path " & geneString(outside) & ")) " &
       " (starts_with? resolved (real_path " & geneString(ws) & "))]"),
       scope).print() == "[true false]"
 
   test "json round-trips objects, arrays, scalars, and escapes":
-    check_eval("(import $json [parse stringify]) " &
+    check_eval("(import $json/[parse stringify]) " &
                "(stringify (parse \"{\\\"a\\\":1,\\\"b\\\":[true,null,2.5]}\"))",
                "\"{\\\"a\\\":1,\\\"b\\\":[true,null,2.5]}\"")
-    check_eval("(import $json [parse]) (var m (parse \"{\\\"x\\\":\\\"a\\\\nb\\\"}\")) m/x",
+    check_eval("(import $json/[parse]) (var m (parse \"{\\\"x\\\":\\\"a\\\\nb\\\"}\")) m/x",
                "\"a\\nb\"")
 
   test "json/parse raises JsonError on malformed input and trailing junk":
-    check_eval("(import $json [parse JsonError]) " &
+    check_eval("(import $json/[parse JsonError]) " &
                "(try (parse \"{bad}\") catch JsonError \"e1\")",
                "\"e1\"")
-    check_eval("(import $json [parse JsonError]) " &
+    check_eval("(import $json/[parse JsonError]) " &
                "(try (parse \"[1] extra\") catch JsonError \"e2\")",
                "\"e2\"")
 
   test "json/parse ^strict rejects duplicate keys and ^max_depth bounds nesting":
-    check_eval("(import $json [parse]) " &
+    check_eval("(import $json/[parse]) " &
                "(var m (parse \"{\\\"a\\\":1,\\\"a\\\":2}\")) m/a",
                "2")
-    check_eval("(import $json [parse JsonError]) " &
+    check_eval("(import $json/[parse JsonError]) " &
                "(try (parse \"{\\\"a\\\":1,\\\"a\\\":2}\" ^^strict) " &
                "catch JsonError \"duplicate\")",
                "\"duplicate\"")
-    check_eval("(import $json [parse]) " &
+    check_eval("(import $json/[parse]) " &
                "(var m (parse \"{\\\"a\\\":{\\\"a\\\":1}}\" ^^strict)) m/a/a",
                "1")
-    check_eval("(import $json [parse JsonError]) " &
+    check_eval("(import $json/[parse JsonError]) " &
                "(try (parse \"[[[1]]]\" ^max_depth 2) catch JsonError \"deep\")",
                "\"deep\"")
-    check_eval("(import $json [parse]) (parse \"[[1]]\" ^max_depth 2)",
+    check_eval("(import $json/[parse]) (parse \"[[1]]\" ^max_depth 2)",
                "[[1]]")
 
   test "json/parse ^strict rejects text that is not valid UTF-8":
     # The same bytes as a string parse leniently and are refused strictly: a
     # binary WebSocket frame and a text frame meet one decoder.
-    check_eval("(import $json [parse]) " &
+    check_eval("(import $json/[parse]) " &
                "($str/byte_size (parse ($str/from_utf8 ($buffer U8 [34 255 34]))))",
                "1")
-    check_eval("(import $json [parse JsonError]) " &
+    check_eval("(import $json/[parse JsonError]) " &
                "(try (parse ($str/from_utf8 ($buffer U8 [34 255 34])) ^^strict) " &
                "catch JsonError \"invalid\")",
                "\"invalid\"")
-    check_eval("(import $json [parse]) " &
+    check_eval("(import $json/[parse]) " &
                "(parse ($str/from_utf8 ($buffer U8 [34 195 169 34])) ^^strict)",
                "\"é\"")
 
   test "json/stringify raises JsonError for unsupported values":
-    check_eval("(import $json [stringify JsonError]) " &
+    check_eval("(import $json/[stringify JsonError]) " &
                "(try (stringify (fn [] nil)) " &
                "catch JsonError \"bad\")",
                "\"bad\"")
@@ -12271,21 +12271,21 @@ suite "spec — flat clause syntax":
 
 suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
   test "scalars and containers round-trip under structural equality":
-    check_eval("(import $serde [write_data read_data]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
                "(var v {^a 1 ^b [1 2.5 \"x\" true nil] " &
                "        ^c {^nested \"y\"} ^d 'q' ^e 0x0aff " &
                "        ^f 123456789012345678901234567890}) " &
                "(== v (read_data (write_data v)))",
                "true")
-    check_eval("(import $serde [write_data read_data]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
+               "(import $str/[contains?]) " &
                "(var v #[1 #{^k 2} [3]]) " &
                "(var rt (read_data (write_data v))) " &
                "[(== v rt) (contains? (write_data rt) \"#[1 #{\")]",
                "[true true]")
 
   test "dates, times, ranges, sets, durations, timezones round-trip":
-    check_eval("(import $serde [write_data read_data]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
                "(var v [2026-07-08 12:30:05 2026-07-08T12:30:05Z " &
                "        ($range 1 10 2) (Set 1 2 3) ($duration 1500000) " &
                "        ($timezone 120 \"CEST\")]) " &
@@ -12293,33 +12293,33 @@ suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
                "true")
 
   test "regexes round-trip as source plus flags":
-    check_eval("(import $serde [write_data read_data]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
                "(var v #\"ab+c\"i) " &
                "(== v (read_data (write_data v)))",
                "true")
 
   test "nodes round-trip including props, meta, children, immutability":
-    check_eval("(import $serde [write_data read_data]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
                "(var v `(p @m 1 ^x 2 \"c\" [3])) " &
                "(== v (read_data (write_data v)))",
                "true")
 
   test "reserved serde heads in user data are escaped and round-trip":
-    check_eval("(import $serde [write_data read_data]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
+               "(import $str/[contains?]) " &
                "(var evil `(serde_float \"nan\")) " &
                "(var text (write_data evil)) " &
                "[(contains? text \"serde_data_node\") " &
                " (== evil (read_data text))]",
                "[true true]")
-    check_eval("(import $serde [write_data read_data]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
                "(var evil2 `(serde_data_node 1)) " &
                "(== evil2 (read_data (write_data evil2)))",
                "true")
 
   test "shared identity-bearing values use #Ref/#Deref and preserve identity":
-    check_eval("(import $serde [write_data read_data]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
+               "(import $str/[contains?]) " &
                "(var shared [1 2]) (var value [shared shared]) " &
                "(var text (write_data value)) " &
                "(var rt (read_data text)) " &
@@ -12329,8 +12329,8 @@ suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
                "[true true true]")
 
   test "repeated identity-free values stay inline":
-    check_eval("(import $serde [write_data read_data]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
+               "(import $str/[contains?]) " &
                "(var text_value \"same\") " &
                "(var text (write_data [42 42 true true nil nil " &
                "                           text_value text_value])) " &
@@ -12340,29 +12340,29 @@ suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
                "[false true]")
 
   test "unsupported cycles fail explicitly":
-    check_eval("(import $serde [write_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(var cyclic [nil]) (cyclic .set 0 cyclic) " &
                "(try (write_data cyclic) " &
                " catch SerdeError (contains? $err/.message \"cycle\"))",
                "true")
 
   test "float specials use canonical serde_float forms":
-    check_eval("(import $serde [write_data read_data]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
+               "(import $str/[contains?]) " &
                "(var nanv (read_data \"(serde_v1 (serde_float \\\"nan\\\"))\")) " &
                "(var back (write_data nanv)) " &
                "[(contains? back \"serde_float\") " &
                " (!= nanv nanv)]",   # NaN != NaN
                "[true true]")
-    check_eval("(import $serde [write_data read_data]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
                "(var inf (read_data \"(serde_v1 (serde_float \\\"+inf\\\"))\")) " &
                "(== inf (read_data (write_data inf)))",
                "true")
 
   test "symbols that do not re-read verbatim are escaped":
-    check_eval("(import $serde [write_data read_data]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
+               "(import $str/[contains?]) " &
                "(var s (read_data \"(serde_v1 (serde_sym \\\"a/b\\\"))\")) " &
                "(var text (write_data s)) " &
                "[(contains? text \"serde_sym\") " &
@@ -12370,8 +12370,8 @@ suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
                "[true true]")
 
   test "maps with non-literal keys use the serde_map escape":
-    check_eval("(import $serde [write_data read_data]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data read_data]) " &
+               "(import $str/[contains?]) " &
                "(var m {}) (m .put \"weird key\" 1) " &
                "(var text (write_data m)) " &
                "[(contains? text \"serde_map\") " &
@@ -12379,8 +12379,8 @@ suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
                "[true true]")
 
   test "cells are rejected with clear errors":
-    check_eval("(import $serde [write_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (write_data [1 ($cell 2)]) " &
                "catch SerdeError " &
                "  [(contains? $err/.message \"at 1:\") " &
@@ -12388,16 +12388,16 @@ suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
                "[true true]")
 
   test "serde/data? classifies without raising":
-    check_eval("(import $serde [data?]) " &
+    check_eval("(import $serde/[data?]) " &
                "[(data? [1 {^a 2}]) (data? ($cell 1)) (data? (fn [] 1))]",
                "[true false false]")
-    check_eval("(import $serde [write_data data?]) " &
+    check_eval("(import $serde/[write_data data?]) " &
                "[(try (write_data 1 ^policy nil) catch Fault \"rejected\") " &
                " (try (data? 1 ^policy nil) catch Fault \"rejected\")]",
                "[\"rejected\" \"rejected\"]")
 
   test "serde rejects executable Paths and traverses node metadata":
-    check_eval("(import $serde [data? write_data read_data SerdeError]) " &
+    check_eval("(import $serde/[data? write_data read_data SerdeError]) " &
                "(var pure /name) " &
                "(var executable (Path %($map /name))) " &
                "[(data? pure) (== pure (read_data (write_data pure))) " &
@@ -12407,113 +12407,113 @@ suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
                "[true true false \"rejected\" false]")
 
   test "cycles are detected with a path":
-    check_eval("(import $serde [write_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(var m {}) (m .put \"self\" m) " &
                "(try (write_data m) " &
                "catch SerdeError (contains? $err/.message \"cycle\"))",
                "true")
 
   test "policy limits are enforced and named":
-    check_eval("(import $serde [read_data SerdeError SerdePolicy]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError SerdePolicy]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data \"(serde_v1 [[[[1]]]])\" " &
                "               ^policy (SerdePolicy ^max_depth 2)) " &
                "catch SerdeError (contains? $err/.message \"max_depth\"))",
                "true")
     let deep = "(serde_v1 " & repeat("[", 20) & "1" & repeat("]", 20) & ")"
-    check_eval("(import $serde [read_data SerdeError SerdePolicy]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError SerdePolicy]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data " & geneString(deep) &
                "               ^policy (SerdePolicy ^max_depth 2)) " &
                "catch SerdeError " &
                "  (&& (contains? $err/.message \"parse\") " &
                "      (contains? $err/.message \"max_depth\")))",
                "true")
-    check_eval("(import $serde [read_data SerdeError SerdePolicy]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError SerdePolicy]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data \"(serde_v1 [1 2 3 4 5])\" " &
                "               ^policy (SerdePolicy ^max_nodes 3)) " &
                "catch SerdeError (contains? $err/.message \"max_nodes\"))",
                "true")
-    check_eval("(import $serde [read_data SerdeError SerdePolicy]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError SerdePolicy]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data \"(serde_v1 [a b c])\" " &
                "               ^policy (SerdePolicy ^max_symbols 2)) " &
                "catch SerdeError (contains? $err/.message \"max_symbols\"))",
                "true")
-    check_eval("(import $serde [read_data SerdeError SerdePolicy]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError SerdePolicy]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data \"(serde_v1 nil)\" " &
                "               ^policy (SerdePolicy ^max_bytes 5)) " &
                "catch SerdeError (contains? $err/.message \"max_bytes\"))",
                "true")
 
   test "envelope versioning is enforced":
-    check_eval("(import $serde [read_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data \"(serde_v2 nil)\") " &
                "catch SerdeError " &
                "  (contains? $err/.message \"unsupported serde envelope\"))",
                "true")
-    check_eval("(import $serde [read_data SerdeError]) " &
+    check_eval("(import $serde/[read_data SerdeError]) " &
                "(try (read_data \"[1 2]\") " &
                "catch SerdeError \"no-envelope\")",
                "\"no-envelope\"")
 
   test "unknown control tags and malformed shapes are rejected":
-    check_eval("(import $serde [read_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data \"(serde_v1 (serde_bogus 1))\") " &
                "catch SerdeError (contains? $err/.message \"serde_bogus\"))",
                "true")
-    check_eval("(import $serde [read_data SerdeError]) " &
+    check_eval("(import $serde/[read_data SerdeError]) " &
                "(try (read_data \"(serde_v1 (serde_range 1 2))\") " &
                "catch SerdeError \"bad-range\")",
                "\"bad-range\"")
-    check_eval("(import $serde [read_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data \"(serde_v1 (serde_map false [\\\"a\\\" 1 \\\"a\\\" 2]))\") " &
                "catch SerdeError (contains? $err/.message \"duplicate key\"))",
                "true")
-    check_eval("(import $serde [read_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data \"(serde_v1 (serde_set 1 1))\") " &
                "catch SerdeError (contains? $err/.message \"duplicate\"))",
                "true")
-    check_eval("(import $serde [read_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data \"(serde_v1 (serde_set [1]))\") " &
                "catch SerdeError (contains? $err/.message \"hash-stable\"))",
                "true")
 
 suite "spec — serde references (stage 3)":
   test "builtin function references round-trip by identity":
-    check_eval("(import $serde [write read]) " &
+    check_eval("(import $serde/[write read]) " &
                "(== gene/str/join (read (write gene/str/join)))",
                "true")
-    check_eval("(import $serde [write read]) " &
+    check_eval("(import $serde/[write read]) " &
                "(var f (read (write gene/str/join))) (f [\"a\" \"b\"] \"-\")",
                "\"a-b\"")
 
   test "builtin references carry a path but no module":
-    check_eval("(import $serde [write]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write]) " &
+               "(import $str/[contains?]) " &
                "(var t (write gene/str/join)) " &
                "[(contains? t \"serde_fn_ref\") (contains? t \"str/join\") " &
                " (contains? t \"^module\")]",
                "[true true false]")
 
   test "write_data refuses references":
-    check_eval("(import $serde [write_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (write_data gene/str/join) " &
                "catch SerdeError (contains? $err/.message \"not data\"))",
                "true")
 
   test "read_data refuses reference tags":
-    check_eval("(import $serde [write read_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write read_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data (write gene/str/join)) " &
                "catch SerdeError (contains? $err/.message \"serde/read\"))",
                "true")
@@ -12522,49 +12522,49 @@ suite "spec — serde references (stage 3)":
     # Whether the host package cannot resolve the path at all (no library
     # target) or resolves it to an unloaded module, the reader raises before
     # loading anything, and the message names the module.
-    check_eval("(import $serde [read SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read \"(serde_v1 (serde_type_ref ^module \\\"no/such\\\" " &
                "^path \\\"X\\\"))\") " &
                "catch SerdeError (contains? $err/.message \"no/such\"))",
                "true")
 
   test "reserved ref props are rejected":
-    check_eval("(import $serde [read SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read \"(serde_v1 (serde_type_ref ^package \\\"p\\\" " &
                "^path \\\"X\\\"))\") " &
                "catch SerdeError (contains? $err/.message \"reserved\"))",
                "true")
 
   test "a reference resolving to the wrong kind errors":
-    check_eval("(import $serde [read SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[read SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read \"(serde_v1 (serde_type_ref ^path \\\"gene/str/join\\\"))\") " &
                "catch SerdeError (contains? $err/.message \"not the expected kind\"))",
                "true")
 
   test "cells snapshot through serde/write, outside the equality guarantee":
-    check_eval("(import $serde [write read]) " &
+    check_eval("(import $serde/[write read]) " &
                "(var c ($cell 41)) (var c2 (read (write c))) " &
                "[(c2 .get) (!= c c2)]",
                "[41 true]")
 
   test "write_data refuses cells; read_data refuses snapshot-cells":
-    check_eval("(import $serde [write_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (write_data ($cell 1)) " &
                "catch SerdeError (contains? $err/.message \"not data\"))",
                "true")
-    check_eval("(import $serde [write read_data SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write read_data SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (read_data (write ($cell 1))) " &
                "catch SerdeError (contains? $err/.message \"read_data\"))",
                "true")
 
   test "atomic cells never serialize":
-    check_eval("(import $serde [write SerdeError]) " &
-               "(import $str [contains?]) " &
+    check_eval("(import $serde/[write SerdeError]) " &
+               "(import $str/[contains?]) " &
                "(try (write ($atomic_cell 1)) " &
                "catch SerdeError (contains? $err/.message \"atomic\"))",
                "true")
@@ -12857,13 +12857,13 @@ suite "spec — documentation contract":
 suite "spec — Tier 0 HTML renderer (transpile proposal P0)":
   test "html/render escapes text and attributes through the public namespace":
     check_eval(
-      "(import $html [render]) " &
+      "(import $html/[render]) " &
       "(render `(div ^title \"a&\\\"b\" \"x < y\"))",
       "\"<div title=\\\"a&amp;&quot;b\\\">x &lt; y</div>\"")
 
   test "html/render handles boolean attrs, void tags, and raw-text elements":
     check_eval(
-      "(import $html [render]) " &
+      "(import $html/[render]) " &
       "(render `(div ^^hidden ^!draggable ^data-ok true " &
       "(input ^^required ^value \"x\") " &
       "(style \"a>b&c\") " &
@@ -12874,7 +12874,7 @@ suite "spec — Tier 0 HTML renderer (transpile proposal P0)":
 
   test "html/render rejects children on a void element":
     check_eval_error(
-      "(import $html [render]) (render `(br \"not allowed\"))",
+      "(import $html/[render]) (render `(br \"not allowed\"))",
       "void element 'br' cannot have children")
 
 suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
@@ -12894,7 +12894,7 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
       "  }\n" &
       "}\n"
     check_eval(
-      "(import $css [css rule decl media render]) " &
+      "(import $css/[css rule decl media render]) " &
       "(render (css " &
       "  (rule \".card\" " &
       "    (decl display \"-webkit-box\") " &
@@ -12907,7 +12907,7 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
 
   test "css/scoped generates deterministic classes from meta-blind data":
     let value = run(compileSource(
-      "(import $css [scoped class_name render]) " &
+      "(import $css/[scoped class_name render]) " &
       "(var a (scoped \"card\" " &
       "  (quote #(css @note \"first\" #(rule \"&\" #(decl color \"red\")))))) " &
       "(var b (scoped \"card\" " &
@@ -12927,7 +12927,7 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
 
   test "css/scoped rewrites local keyframe declarations and references":
     let value = run(compileSource(
-      "(import $css [css scoped class_name rule decl keyframes frame render]) " &
+      "(import $css/[css scoped class_name rule decl keyframes frame render]) " &
       "(var styles (scoped \"pulse\" (css " &
       "  (keyframes \"fade\" " &
       "    (frame \"from\" (decl opacity 0)) " &
@@ -12951,7 +12951,7 @@ suite "spec — application event bus (archive/docs/stdlib.md)":
 
   test "a typed event is subscribed and published through a bus":
     check_eval(
-      "(import gene/event [Bus]) " &
+      "(import gene/event/[Bus]) " &
       "(type PaymentReceived : $event/Event " &
       "  ^props {^payment_id Str ^amount F64}) " &
       "(var seen ($cell nil)) " &
@@ -13389,7 +13389,7 @@ suite "spec — application event bus (archive/docs/stdlib.md)":
 
 suite "spec — lexical path library":
   test "joining and normalizing preserve relative parents":
-    check_eval("(import $path [join normalize]) " &
+    check_eval("(import $path/[join normalize]) " &
                "[(join \"a\" \"b\" \"..\" \"c\") " &
                " (normalize \"a//./b/../c\") " &
                " (normalize \"../../a\") " &
@@ -13397,7 +13397,7 @@ suite "spec — lexical path library":
                "[\"a/c\" \"a/c\" \"../../a\" \"/a\"]")
 
   test "components and relative paths are lexical":
-    check_eval("(import $path [parent name extension relative]) " &
+    check_eval("(import $path/[parent name extension relative]) " &
                "[(parent \"a/b\") (parent \"/\") " &
                " (name \"a/b/\") (name \"/\") " &
                " (extension \".bashrc\") (extension \"a.txt\") " &
@@ -13405,7 +13405,7 @@ suite "spec — lexical path library":
                "[\"a\" \"/\" \"b\" \"\" \"\" \".txt\" \"../b/c\"]")
 
   test "incompatible roots and absolute later components fail before work":
-    check_eval("(import $path [join relative PathError]) " &
+    check_eval("(import $path/[join relative PathError]) " &
                "[(try (join \"a\" \"/b\") false catch PathError true) " &
                " (try (relative \"a\" \"/a\") false catch PathError true) " &
                " (try (relative \"../a\" \"b\") false catch PathError true)]",

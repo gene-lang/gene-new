@@ -9,7 +9,7 @@ and compiles Gene for the browser with the web profile.
 request to a handler function, which returns a response:
 
 ```gene
-(import $net/http [listen serve text])
+(import $net/http/[listen serve text])
 
 (fn handle [request]
   (match request/path
@@ -45,7 +45,7 @@ puts routes, forms, SQLite, and browser code together.
 response, with its `status`, `headers`, and `body`:
 
 ```gene
-(import $net/http_client [request])
+(import $net/http_client/[request])
 (let response (await (request ^url "http://127.0.0.1:8080/")))
 [response/status response/body]
 # [200 "Hello from Gene"]
@@ -67,7 +67,7 @@ Markup is ordinary node data, built with templates and rendered at the edge.
 Rendering escapes text and attribute values:
 
 ```gene runnable
-(import $html [render])
+(import $html/[render])
 (let title "Ada & Grace")
 (render `(article ^class "card" (h1 %title)))
 # "<article class=\"card\"><h1>Ada &amp; Grace</h1></article>"
@@ -81,7 +81,7 @@ functions and inspected or tested like any value.
 `$css` builds style rules as data and renders them:
 
 ```gene runnable
-(import $css [decl render rule])
+(import $css/[decl render rule])
 (render (rule ".card" (decl color "red") (decl padding "1rem")))
 # ".card {\n  color: red;\n  padding: 1rem;\n}\n"
 ```
