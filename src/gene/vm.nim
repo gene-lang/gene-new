@@ -28585,7 +28585,7 @@ proc biRuntimeSignature(args: openArray[Value], call: ptr NativeCall): Value {.n
       ("apply_contract", applyContract)])
 
 proc messageListing(name, send, kind: string, protocol, signature: Value,
-                    problem = ""): Value =
+                    problem = "", declaredOn = NIL): Value =
   var entry = initPropTable()
   entry["name"] = newStr(name)
   entry["send"] = newStr(send)
@@ -28593,11 +28593,15 @@ proc messageListing(name, send, kind: string, protocol, signature: Value,
   entry["protocol"] = protocol
   entry["signature"] = signature
   entry["problem"] = if problem.len > 0: newStr(problem) else: NIL
+  if declaredOn.kind != vkNil:
+    entry["declared_on"] = declaredOn
   newMap(entry, immutable = true)
 
 proc biRuntimeMessagesOfType(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## Lists the messages declared on a Type value without constructing an
-  ## instance. The value behavior of `runtime/messages` is unchanged.
+  ## Lists the messages a Type declares or inherits, or a Protocol's
+  ## requirements, without constructing an instance. Each listing's
+  ## `declared_on` is the Type or Protocol whose own table holds the message.
+  ## The value behavior of `runtime/messages` is unchanged.
   requireOne("runtime/messages_of_type", args)
   let typ = args[0]
   var items: seq[Value]
@@ -28613,7 +28617,8 @@ proc biRuntimeMessagesOfType(args: openArray[Value], call: ptr NativeCall): Valu
           ("dispatch_scope", newSym("query")),
           ("receiver_included", TRUE),
           ("receiver_type", typ),
-          ("impl", impl)]))
+          ("impl", impl)]),
+        declaredOn = typeDirectMessageOwner(typ, name))
   elif typ.kind == vkProtocol:
     for name, impl in protocolMessages(typ):
       let signature = describeCallable(impl, reflectionTypeLookup,
@@ -28625,7 +28630,8 @@ proc biRuntimeMessagesOfType(args: openArray[Value], call: ptr NativeCall): Valu
           ("dispatch_scope", newSym("query")),
           ("receiver_included", TRUE),
           ("receiver_type", typ),
-          ("impl", impl)]))
+          ("impl", impl)]),
+        declaredOn = typ)
   else:
     raise newException(GeneError,
       "runtime/messages_of_type expects a Type or Protocol, got " & $typ.kind)

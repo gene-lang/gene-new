@@ -6,7 +6,7 @@
 (import $fs/[exists? make_dir remove_dir remove read_text write_text walk])
 (import $order/[sort sort_by])
 (import $db/sqlite/[Db open])
-(import fail_pipeline in? format_size short_summary ^from "./util")
+(import fail_pipeline in? format_size short_summary first_sentence word_cut ^from "./util")
 (import exemptions ^from "./exemptions")
 (import load_index load_coverage load_modules load_heads load_macros load_package load_packages read_one ^from "./data")
 (import read_book ^from "./book")
@@ -79,12 +79,16 @@
   map)
 
 (fn index_summary [text]
-  # The index keeps a short summary, not the page's whole first paragraph.
-  (let sentence (short_summary text))
-  (if (> ($str/byte_size sentence) 32)
-    ($str/join [($str/slice_bytes sentence 0 29) "..."] "")
-    else
-    sentence))
+  # The index keeps the first sentence, cut at a word boundary to fit the
+  # index's size target (§6.3). A chapter summary's "This chapter " opener
+  # says nothing, so it is dropped.
+  (var sentence (first_sentence text))
+  (if (starts_with? sentence "This chapter ")
+    (do
+      (let rest ($str/slice_bytes sentence 13 (- ($str/byte_size sentence) 13)))
+      (set sentence ($str/join [($str/upper ($str/slice_bytes rest 0 1))
+                                ($str/slice_bytes rest 1 (- ($str/byte_size rest) 1))] ""))))
+  (word_cut sentence 90))
 
 (fn row_text [page, base]
   (if (&& ($present? page/summary) (not (== page/summary "")))
@@ -183,9 +187,10 @@
           (do
             (out .push ($str/join ["### " group/title] ""))
             (out .push "")
-            (for package in packages
-              (out .push ($str/join ["- " package/name " — " package/description
-                            " (corpus not built)"] "")))
+            # These have no pages to load yet, so one line names them.
+            (var listed [])
+            (for package in packages (listed .push ($str/join ["`" package/name "`"] "")))
+            (out .push ($str/join ["No corpus is built yet for " ($str/join listed ", ") "."] ""))
             (out .push ""))))))
   (var other [])
   (for module in modules
@@ -490,35 +495,25 @@
           (by_name .put reflected/module reflected)))))
   modules)
 
-(fn index_imports [chapters rows]
-  # Credit a standard import's selections in the section that writes them.
-  (let by_key {})
-  (for row in rows (by_key .put row/spelling row))
-  (for chapter in chapters
-    (for section in chapter/sections
-      (for source in (fence_sources section/body)
-        (let forms ($parse/read_all source))
-        (var parsed [])
-        (for form in forms (parsed .push form))
-        (for form in parsed
-          (if (form_import? form)
+(fn section_imports [body]
+  # The `ns/name` of every selection a standard import makes in this section's
+  # fences, nested selections and `name:local` aliases included. A local
+  # import (`^from "./x"`) selects nothing here.
+  (var out [])
+  (for source in (fence_sources body)
+    (var parsed [])
+    (for form in ($parse/read_all source) (parsed .push form))
+    (for form in parsed
+      (if (form_import? form)
+        (do
+          (let items ($body form))
+          (if (> ($size items) 0)
             (do
-              (let body ($body form))
-              (if (> ($size body) 0)
-                (do
-                  (let short (import_target (body .get 0)))
-                  (if (not (== short ""))
-                    (for selected in (import_selections body)
-                      (let full ($str/join [short selected] "/"))
-                      (for spelling in (spelling_forms full)
-                        (if ($has_key? by_key spelling)
-                          (do
-                            (let row (by_key .get spelling))
-                            (if (== row/introduced_in "")
-                              (row .put "introduced_in" section/id))
-                            (let used (row .get "used_in"))
-                            (if (not (in? section/id used)) (used .push section/id)))))))))))))))
-  rows)
+              (let short (import_target (items .get 0)))
+              (if (!= short "")
+                (for selected in (import_selections items)
+                  (out .push ($str/join [short selected] "/"))))))))))
+  out)
 
 (fn macro_binding_map [macros]
   # A macro parameter named `params` receives a vector whose names the macro
@@ -760,8 +755,7 @@
   (for module in modules
     (for entry in module/entries (entry_ids .push entry/id)))
   (let table (build_name_table modules (if ($present? heads) heads else []) entry_ids))
-  (let rows (index_book chapters table/rows))
-  (index_imports chapters rows)
+  (let rows (index_book chapters table/rows section_imports))
   (let section_order {})
   (var order_index 0)
   (for chapter in chapters

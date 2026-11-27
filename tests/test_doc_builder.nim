@@ -1125,6 +1125,30 @@ suite "doc builder — no VM linked":
     check "{^spelling \"List.push\" ^id \"lib/gene/List/push\"" in names
     check "{^spelling \"$str/join\" ^id \"lib/gene/str/join\" ^kind \"fn\" ^canonical true ^introduced_in \"book/names/the_standard_library\"" in names
     check "{^spelling \"List.join\" ^id \"lib/gene/List/join\" ^kind \"message\" ^canonical false" in names
+    # A protocol requirement keeps its colon spelling and has no dot row.
+    check "{^spelling \"csv/IoResource:close\" ^id \"lib/gene/csv/IoResource:close\"" in names
+    check "{^spelling \"csv.IoResource:close\"" notin names
+    let requirement = readFile(root / "build" / "docs" / "md" / "lib" / "gene" /
+                               "csv" / "IoResource:close.md")
+    check requirement.startsWith("# $csv/IoResource:close\n")
+    # A re-exported protocol's requirements alias the canonical declaration's.
+    check "**Alias of:** [`$io/IoResource:close`]" in requirement
+    # A message signature leaves out the receiver, and an inherited message
+    # points at the type that declares it.
+    let inherited = readFile(root / "build" / "docs" / "md" / "lib" / "gene" /
+                             "ActorClosed" / "message.md")
+    check "ActorClosed.message [] : Str" in inherited
+    check "**Inherited from:** [`Throwable.message`](../Throwable/message.md)" in inherited
+    # The canonical entry names its receiver forms.
+    let size = readFile(root / "build" / "docs" / "md" / "lib" / "gene" / "size.md")
+    check "**Receiver form:** [`List.size`](List/size.md)" in size
+    # The paged namespace says which page holds which names.
+    check "Pages: page 1 (this page): `$" in rootNs
+    check "[page 2](gene/@2.md): `" in rootNs
+    # Index summaries are whole words, without the chapter opener.
+    check "This chapter " notin index
+    check "..." notin index
+    check "No corpus is built yet for `genex/" in index
 
   test "check 4: a head with no section fails the build and names the head":
     let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
@@ -1251,15 +1275,17 @@ suite "doc builder — no VM linked":
       check "`$str/no_such_join`" in error.msg
     check failed
 
-  test "check 2: a test macro binder does not hide a stale name":
+  test "check 2: a test macro's params list binds its fixture":
+    # The binder comes from the macro data: without macros.gene, `t` is unbound
+    # and `t/items` fails; with it, `it` binds its params list.
     let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
     let copyRoot = docTestRepoRoot() / "build/m1/docs-test-binder"
     if dirExists(copyRoot): removeDir(copyRoot)
     docTestCopyTree(firstRoot, copyRoot)
     let book = copyRoot / "docs" / "book" / "fences.md"
     writeFile(book, readFile(book) &
-      "\n## Test block\n\n```gene\n(import $test/[describe it])\n" &
-      "(describe \"x\"\n  (it \"y\" [t]\n    ($str/no_such_test t)))\n```\n")
+      "\n## Test block\n\n```gene\n(describe \"x\"\n  (it \"y\" [t]\n" &
+      "    (t/items .push 1)\n    t/items/.empty?))\n```\n")
     var built = docBuilder.buildPackage(copyRoot)
     built.writeOutputs()
     docTestWriteHeads(copyRoot, @["let"])
@@ -1268,5 +1294,32 @@ suite "doc builder — no VM linked":
       docTestRunGenerator(copyRoot)
     except GeneError as error:
       failed = true
-      check "no_such_test" in error.msg
+      check "`t/items`" in error.msg
+    check failed
+    writeFile(copyRoot / "build" / "docs" / "macros.gene", compilerMacrosText())
+    docTestRunGenerator(copyRoot)
+    let manifest = readFile(copyRoot / "build" / "docs" / "manifest.gene")
+    check "^stale \"ok\"" in manifest
+
+  test "check 2: names a test block does not bind, and names before a send, fail":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-test-binder-stale"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    let book = copyRoot / "docs" / "book" / "fences.md"
+    writeFile(book, readFile(book) &
+      "\n## Test block\n\n```gene\n(describe \"x\"\n  (it \"y\" [t]\n" &
+      "    (u/items .push 1)\n    ($println $str/no_such/.size)))\n```\n")
+    var built = docBuilder.buildPackage(copyRoot)
+    built.writeOutputs()
+    docTestWriteHeads(copyRoot, @["let"])
+    writeFile(copyRoot / "build" / "docs" / "macros.gene", compilerMacrosText())
+    var failed = false
+    try:
+      docTestRunGenerator(copyRoot)
+    except GeneError as error:
+      failed = true
+      check "`u/items`" in error.msg
+      check "`$str/no_such`" in error.msg
+      check "`t/items`" notin error.msg
     check failed

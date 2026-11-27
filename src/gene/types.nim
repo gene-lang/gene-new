@@ -11347,6 +11347,25 @@ proc typeDirectMessage*(v: Value, name: string): Value =
       t = NIL
   NIL
 
+proc typeDirectMessageOwner*(v: Value, name: string): Value =
+  ## The type in `v`'s parent chain whose own table holds `name`: the type
+  ## that declares the message `typeDirectMessage` resolves. NIL when none.
+  var t = v
+  while t.kind == vkType:
+    case objData(t).objKind
+    of okType:
+      let data = TypeData(objData(t))
+      if data.messages.hasKey(name):
+        return t
+      t = data.parent
+    of okEnum:
+      if EnumData(objData(t)).messages.hasKey(name):
+        return t
+      t = NIL
+    else:
+      t = NIL
+  NIL
+
 proc newProtocolMessage*(protocol: Value, name: string,
                          signatureFn: Value = NIL,
                          hasDefault = false): Value =

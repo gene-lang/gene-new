@@ -9,9 +9,20 @@
 (fn code [text]
   ($str/join ["`" text "`"] ""))
 
+(fn alias_name [entry]
+  (if (&& ($present? entry/alias_title) (!= entry/alias_title ""))
+    entry/alias_title
+    else
+    entry/alias_of))
+
 (fn entry_summary [entry]
-  (if ($present? entry/doc)
+  (if (&& ($present? entry/doc) (!= ($str/trim entry/doc) ""))
     (first_paragraph ($str/split entry/doc "\n") 0)
+    elif (&& ($present? entry/alias_of) (!= entry/alias_of ""))
+    (if entry/inherited
+      $"Inherited from `${(alias_name entry)}`."
+      else
+      $"Alias of `${(alias_name entry)}`.")
     else
     ""))
 
@@ -54,7 +65,10 @@
     (if (starts_with? entry/for "gene/")
       (do
         (let tail (gene_tail entry/for))
-        (if (&& (== ($to_str entry/kind) "message") (contains? tail "/"))
+        # A type message reads `List.push`; a protocol requirement keeps its
+        # colon spelling, `$csv/IoResource:close`.
+        (if (&& (== ($to_str entry/kind) "message") (not entry/requirement)
+                (contains? tail "/"))
           (let parts ($str/split tail "/"))
           ($str/join [($str/join ($take parts (- ($size parts) 1)) "/") ($last parts)] ".")
           else
@@ -257,7 +271,7 @@
     (out .push $"`./${param/name}`"))
   ($str/join out ", "))
 
-(fn entry_page [module entry introduced_by]
+(fn entry_page [module entry introduced_by receivers]
   (let title (entry_title module entry))
   (var lines [])
   (lines .push $"# ${title}")
@@ -287,12 +301,21 @@
       (lines .push "")))
   (if (&& ($present? entry/alias_of) (not (== entry/alias_of "")))
     (do
-      (lines .push ($str/join ["**Alias of:** [" entry/alias_of "]("
-        (relative_md entry/alias_of entry/id) ")"] ""))
+      (lines .push ($str/join [(if entry/inherited "**Inherited from:** [`" else "**Alias of:** [`")
+        (alias_name entry) "`](" (relative_md entry/alias_of entry/id) ")"] ""))
       (lines .push "")))
   (if (&& ($present? entry/status) (not (== entry/status "")))
     (do
       (lines .push $"**Status:** ${entry/status}")
+      (lines .push "")))
+  (if (&& ($present? receivers) (> ($size receivers) 0))
+    (do
+      # The receiver forms that do the same job (§5.3): messages whose value
+      # is this entry's.
+      (var forms [])
+      (for r in (sort_by receivers (fn [r] r/title))
+        (forms .push ($str/join ["[`" r/title "`](" (relative_md r/id entry/id) ")"] "")))
+      (lines .push ($str/join ["**Receiver form:** " ($str/join forms ", ")] ""))
       (lines .push "")))
   (if (&& ($present? entry/see) (> ($size entry/see) 0))
     (do
@@ -336,15 +359,14 @@
     (fn [page] ($str/join [($to_str (kind_rank page/decl_kind)) page/title] ":"))))
 
 (fn namespace_pages [module entry_pages]
-  # The first page is the namespace page; pages past 100 rows are
-  # `lib/gene/<namespace>/@<n>`. `@` cannot start a Gene name, so an entry id
-  # cannot collide with a paging id.
+  # A page holds at most 98 entry rows. The first page is the namespace page;
+  # later pages are `lib/gene/<namespace>/@<n>`. `@` cannot start a Gene name,
+  # so an entry id cannot collide with a paging id.
   (let tail (if (== module/module "gene")
     "Built-in functions, types, and errors"
     else
     (gene_tail module/module)))
-  (let summary (if ($present? module/doc) (first_paragraph ($str/split module/doc "
-") 0) else ""))
+  (let summary (if ($present? module/doc) (first_paragraph ($str/split module/doc "\n") 0) else ""))
   (var visible [])
   (for page in entry_pages
     (if (not (== page/decl_kind "message")) (visible .push page)))
@@ -357,6 +379,13 @@
     ($str/join ["lib/" ($str/join ($take module_parts (- ($size module_parts) 1)) "/")] "")
     else
     "lib"))
+  (let page_ids (do
+    (var ids [])
+    (var n 1)
+    (while (<= n page_count)
+      (ids .push (if (== n 1) ns_id else ($str/join [ns_id "/@" ($to_str n)] "")))
+      (set n (+ n 1)))
+    ids))
   (var out [])
   (var p 1)
   (while (<= p page_count)
@@ -366,10 +395,14 @@
       ($take ($drop ordered start_index) (- end_index start_index))
       else
       []))
-    (let page_id (if (== p 1) ns_id else ($str/join [ns_id "/@" ($to_str p)] "")))
+    (let page_id (page_ids .get (- p 1)))
     (let page_title (if (== p 1) tail else $"${tail} — page ${p}"))
     (var lines [])
-    (lines .push $"# ${page_title}")
+    # §5.3: the namespace page is titled "<namespace> — <summary>".
+    (lines .push (if (&& (== p 1) (!= summary ""))
+                   $"# ${page_title} — ${summary}"
+                   else
+                   $"# ${page_title}"))
     (lines .push "")
     (if (== p 1)
       (do
@@ -384,10 +417,27 @@
           else
           ($str/join ["Import from `" module/module "`."] "")))
         (lines .push usage)
-        (lines .push ""))
-      else
+        (lines .push "")))
+    (if (> page_count 1)
       (do
-        (lines .push $"Page ${p} of ${page_count}; entries ${(+ start_index 1)}–${end_index}.")
+        # One line names every page, its first and last entry, and its size in
+        # entries, so a reader knows which page holds a name before loading it.
+        (var marks [])
+        (var n 1)
+        (while (<= n page_count)
+          (let first_i (* (- n 1) 98))
+          (let last_i (- (if (< (* n 98) total) (* n 98) else total) 1))
+          (let first_row (ordered .get first_i))
+          (let last_row (ordered .get last_i))
+          (let range ($str/join ["`" first_row/title "` … `" last_row/title "` ("
+                                 ($to_str (+ (- last_i first_i) 1)) ")"] ""))
+          (marks .push (if (== n p)
+            ($str/join ["page " ($to_str n) " (this page): " range] "")
+            else
+            ($str/join ["[page " ($to_str n) "](" (relative_md (page_ids .get (- n 1)) page_id)
+                        "): " range] "")))
+          (set n (+ n 1)))
+        (lines .push ($str/join ["Pages: " ($str/join marks "; ") "."] ""))
         (lines .push "")))
     (var kinds [])
     (for page in slice
@@ -400,22 +450,12 @@
       (lines .push $"## ${(kind_heading kind)}")
       (lines .push "")
       (for page in group
-        (lines .push (link_row page/title page/id page/summary page/size page_id))))
-    (if (> page_count 1)
-      (do
-        (lines .push "")
-        (if (> p 1)
-          (lines .push (link_row "Previous page"
-            (if (== p 2) ns_id else ($str/join [ns_id "/@" ($to_str (- p 1))] ""))
-            "" 0 page_id)))
-        (if (< p page_count)
-          (lines .push (link_row "Next page" ($str/join [ns_id "/@" ($to_str (+ p 1))] "")
-            "" 0 page_id)))))
+        (lines .push (link_row page/title page/id page/summary page/size page_id)))
+      (lines .push ""))
     (out .push
       {^id page_id ^kind "namespace" ^title page_title ^summary summary
        ^parent (if (== p 1) parent else ns_id)
-       ^content ($str/trim ($str/join (check_lines lines page_id) "
-"))})
+       ^content ($str/trim ($str/join (check_lines lines page_id) "\n"))})
     (set p (+ p 1)))
   out)
 
@@ -526,18 +566,34 @@
 
 (fn reference_pages [modules names_by_id]
   (var pages [])
+  # Messages whose value is a namespace entry's, keyed by that entry's id.
+  (var receivers {})
+  (for module in modules
+    (for entry in module/entries
+      (if (&& (== ($to_str entry/kind) "message") ($present? entry/alias_of)
+              (!= entry/alias_of "") (not entry/inherited)
+              (starts_with? ($to_str entry/alias_title) "$")
+              (not entry/requirement))
+        (do
+          (if (not ($has_key? receivers entry/alias_of))
+            (receivers .put entry/alias_of []))
+          ((receivers .get entry/alias_of) .push
+            {^id entry/id ^title (entry_title module entry)})))))
   (for module in modules
     (var entry_pages [])
     (for entry in module/entries
-      (let page (entry_page module entry (names_by_id .get entry/id)))
+      (let page (entry_page module entry (names_by_id .get entry/id)
+                  (if (== ($to_str entry/kind) "message") nil
+                    else (receivers .get entry/id))))
       (page .put "size" ($str/byte_size page/content))
       (entry_pages .push page))
     (for page in entry_pages
-      (if (&& (in? ($to_str page/decl_kind) ["type" "protocol"]))
+      (if (in? ($to_str page/decl_kind) ["type" "protocol"])
         (do
-          (var children [])
+          (var found [])
           (for child in entry_pages
-            (if (== child/parent page/id) (children .push child)))
+            (if (== child/parent page/id) (found .push child)))
+          (let children (sort_by found (fn [child] child/title)))
           (if (> ($size children) 0)
             (do
               (var extra [])

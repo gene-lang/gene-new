@@ -25,18 +25,31 @@
 (fn str_or_empty [value]
   (if ($present? value) value else ""))
 
-(fn short_summary [text]
-  # Listing rows keep one sentence; page summaries keep the whole paragraph.
+(fn first_sentence [text]
   (let trimmed ($str/trim text))
   (let stop ($str/split trimmed ". "))
-  (let first (if (> ($size stop) 1)
+  (if (> ($size stop) 1)
     ($str/join [($str/join ($take stop 1) ". ") "."] "")
     else
     trimmed))
-  (if (> ($str/byte_size first) 100)
-    ($str/join [($str/slice_bytes first 0 97) "..."] "")
+
+(fn word_cut [text max_bytes]
+  # At most `max_bytes`, cut at a word boundary and marked with `…`.
+  (if (<= ($str/byte_size text) max_bytes)
+    text
     else
-    first))
+    (do
+      (let words ($str/split ($str/slice_bytes text 0 (- max_bytes 3)) " "))
+      (var kept (if (> ($size words) 1) ($take words (- ($size words) 1)) else words))
+      (var cut ($str/join kept " "))
+      (while (|| (ends_with? cut ",") (ends_with? cut ";") (ends_with? cut ":")
+                 (ends_with? cut " —") (ends_with? cut "("))
+        (set cut ($str/trim ($str/slice_bytes cut 0 (- ($str/byte_size cut) 1)))))
+      ($str/join [cut "…"] ""))))
+
+(fn short_summary [text]
+  # Listing rows keep one sentence; page summaries keep the whole paragraph.
+  (word_cut (first_sentence text) 100))
 
 (fn format_size [size]
   (if (< size 1024)

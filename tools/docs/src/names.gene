@@ -124,7 +124,9 @@
             full))
           (for spelling in (spelling_forms base)
             (add_row rows by_key spelling entry/id entry/kind false entry/name))
-          (if (contains? base "/")
+          # `List.push` for a type message; a protocol requirement has only its
+          # colon spelling (`csv/IoResource:close`).
+          (if (&& (not entry/requirement) (contains? base "/"))
             (let parts ($str/split base "/"))
             (let dot ($str/join [($str/join ($take parts (- ($size parts) 1)) "/") ($last parts)] "."))
             (add_row rows by_key dot entry/id entry/kind true entry/name))))))
@@ -355,9 +357,15 @@
       (let head ($head value))
       (if (&& ($leaf? head) (== ($to_str head) "path"))
         (do
+          # A send segment (`$str/split/.size`, read as `~size`) ends the name:
+          # the name is the path before it.
           (var segments [])
+          (var sending false)
           (for part in ($body value)
-            (segments .push ($to_str part)))
+            (let text ($to_str part))
+            (if (starts_with? text "~") (set sending true))
+            (if (not sending) (segments .push text)))
+          (if (&& sending (< ($size segments) 2)) (set segments []))
           (let full ($str/join segments "/"))
           (let first (if (> ($size segments) 0) (segments .get 0) else ""))
           (let second (if (> ($size segments) 1) (segments .get 1) else ""))
@@ -502,12 +510,18 @@
               (intro .put head section/id)))))))
   intro)
 
-(fn index_book [chapters rows]
+(fn index_book [chapters rows imported]
+  # One pass in reading order: a section credits the names its fences write
+  # and the names its standard imports select (`imported` gives their
+  # `ns/name`).
   (let by_key {})
   (for row in rows (by_key .put row/spelling row))
   (for chapter in chapters
     (for section in chapter/sections
-      (for spelling in (fence_names section/body)
+      (var spellings (fence_names section/body))
+      (for full in (imported section/body)
+        (for spelling in (spelling_forms full) (spellings .push spelling)))
+      (for spelling in spellings
         (if ($has_key? by_key spelling)
           (do
             (let row (by_key .get spelling))

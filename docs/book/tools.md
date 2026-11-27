@@ -76,6 +76,15 @@ gene parse greet.gene
 From inside a program, `$runtime/signature` describes a function or type
 ([Documenting a function](functions.md#documenting-a-function)), and
 `$runtime/messages` lists the messages a value answers.
+`$runtime/messages_of_type` lists the messages a type declares or inherits,
+or a protocol's requirements, without constructing a value. Each entry's
+`declared_on` is the type or protocol that holds it:
+
+```gene runnable
+(let first ($first ($runtime/messages_of_type Error)))
+[($size ($runtime/messages_of_type List)) first/name first/declared_on]
+# [19 "message" (type Throwable)]
+```
 
 ## Documentation
 

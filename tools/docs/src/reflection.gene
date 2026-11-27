@@ -98,43 +98,144 @@
         (collect_values d/value child out))
       elif (in_kinds d/kind)
         (if (not (contains? ($to_str d/name) "/"))
-          (out .push {^value d/value
-                      ^id ($str/join ["lib/gene/" (full_path path ($to_str d/name))] "")}))))
+          (do
+            (let full (full_path path ($to_str d/name)))
+            (let sig (try ($runtime/signature d/value) catch Error nil))
+            (out .push {^value d/value
+                        ^id ($str/join ["lib/gene/" full] "")
+                        ^home (&& ($present? sig) ($present? sig/name)
+                                  (== ($to_str sig/name) full))})))))
   out)
 
 (fn canonical_for [impl canon my_id]
+  # The declaration holding `impl`: the one under the name the value reports
+  # (§3.2, `$stream/take` reports `take`), else the first in walk order.
   (var found "")
+  (var home "")
   (if ($present? impl)
     (for item in canon
-      (if (&& (== found "") ($same? impl item/value) (not (== item/id my_id)))
-        (set found item/id))))
+      (if (&& ($same? impl item/value) (not (== item/id my_id)))
+        (do
+          (if (== found "") (set found item/id))
+          (if (&& item/home (== home "")) (set home item/id))))))
+  (if (== home "") found else home))
+
+(fn collect_owners [ns path out]
+  # Every declared type and protocol, with the name its value reports.
+  (for d in ($declarations ns)
+    (if (== d/kind "Namespace")
+      (do
+        (var child [])
+        (for p in path (child .push p))
+        (child .push ($to_str d/name))
+        (collect_owners d/value child out))
+      elif (|| (== d/kind "Type") (== d/kind "Protocol"))
+        (if (not (contains? ($to_str d/name) "/"))
+          (do
+            (let sig (try ($runtime/signature d/value) catch Error nil))
+            (out .push {^value d/value
+                        ^full (full_path path ($to_str d/name))
+                        ^reported (if (&& ($present? sig) ($present? sig/name))
+                                    ($to_str sig/name) else "")})))))
+  out)
+
+(fn owner_before? [a b]
+  # The canonical owner of a re-exported type is the declaration under the name
+  # the value reports (§3.2); otherwise the shortest path, then the first by
+  # spelling.
+  (let a_home (== a/full a/reported))
+  (let b_home (== b/full b/reported))
+  (if (!= a_home b_home)
+    a_home
+    elif (!= ($str/byte_size a/full) ($str/byte_size b/full))
+    (< ($str/byte_size a/full) ($str/byte_size b/full))
+    else
+    (< a/full b/full)))
+
+(fn owner_homes [owners]
+  # Each owner gains `home`: the path of the canonical declaration of its value.
+  (for owner in owners
+    (var best owner)
+    (for other in owners
+      (if (&& ($same? other/value owner/value) (owner_before? other best))
+        (set best other)))
+    (owner .put "home" best/full))
+  owners)
+
+(fn home_of [value owners]
+  (var found "")
+  (for owner in owners
+    (if (&& (== found "") ($same? owner/value value))
+      (set found owner/home)))
   found)
 
-(fn message_entries [path decl canon]
+(fn message_title [home mname requirement]
+  # `List.push`, `device/Buffer.read`; a protocol requirement keeps its colon
+  # spelling, `$csv/IoResource:close`.
+  (if requirement
+    ($str/join ["$" home ":" mname] "")
+    else
+    ($str/join [home "." mname] "")))
+
+(fn receiverless [positional sig]
+  # A message's listing includes the receiver as its first positional
+  # parameter; the declared params list (`(message label [] …)`) does not.
+  (if (&& (known? sig "receiver_included") sig/receiver_included
+          (> ($size positional) 0))
+    ($drop positional 1)
+    else
+    positional))
+
+(fn message_entries [path decl canon owners]
   (var out [])
   (let name ($to_str decl/name))
   (let base (if (> ($size path) 0)
     ($str/join [($str/join path "/") name] "/")
     else
     name))
+  (let requirement (== ($to_str decl/kind) "Protocol"))
+  (let separator (if requirement ":" else "/"))
+  (let own_home (home_of decl/value owners))
   (let messages (try ($runtime/messages_of_type decl/value) catch Error nil))
   (if ($present? messages)
     (for msg in messages
       (let mname ($to_str (if ($present? msg/name) msg/name else "")))
       (if (> ($str/byte_size mname) 0)
         (do
-          (let separator (if (== ($to_str decl/kind) "Protocol") ":" else "/"))
           (let full ($str/join [base mname] separator))
           (let id ($str/join ["lib/gene/" full] ""))
           (let sig (if ($present? msg/signature) msg/signature else nil))
           (let impl (if (&& ($present? sig) ($present? sig/impl)) sig/impl else nil))
+          # One value, one canonical entry (§3.2): a namespace declaration that
+          # holds the same value, else the message on the type that declares
+          # it, under that type's canonical declaration.
+          (let decl_alias (canonical_for impl canon id))
+          (let declared_home (if ($present? msg/declared_on)
+                               (home_of msg/declared_on owners) else ""))
+          (let home (if (== declared_home "") own_home else declared_home))
+          (let home_id (if (== home "") ""
+                         else ($str/join ["lib/gene/" home separator mname] "")))
+          (let alias (if (!= decl_alias "")
+                       decl_alias
+                       elif (&& (!= home_id "") (!= home_id id))
+                       home_id
+                       else
+                       ""))
+          (let alias_title (if (== alias "")
+                             ""
+                             elif (== alias decl_alias)
+                             ($str/join ["$" ($str/slice_bytes alias 9
+                                          (- ($str/byte_size alias) 9))] "")
+                             else
+                             (message_title home mname requirement)))
           (out .push
             {^id id
              ^name mname
              ^kind ($to_sym "message")
              ^for ($str/join ["gene/" full] "")
              ^parent ($str/join ["lib/gene/" base] "")
-             ^positional (params sig)
+             ^requirement requirement
+             ^positional (receiverless (params sig) sig)
              ^named (named_params sig)
              ^rest nil
              ^named_rest nil
@@ -144,11 +245,13 @@
              ^fexpr false
              ^doc (if (&& ($present? sig) ($present? sig/doc)) sig/doc else "")
              ^see []
-             ^alias_of (canonical_for impl canon id)
+             ^alias_of alias
+             ^alias_title alias_title
+             ^inherited (&& (!= declared_home "") (!= declared_home own_home))
              ^shape_known (known? sig "positional")})))))
   out)
 
-(fn collect [ns path modules canon]
+(fn collect [ns path modules canon owners]
   (let module_name (if (> ($size path) 0)
     ($str/join ["gene/" ($str/join path "/")] "")
     else
@@ -160,13 +263,13 @@
         (var child [])
         (for p in path (child .push p))
         (child .push ($to_str d/name))
-        (collect d/value child modules canon))
+        (collect d/value child modules canon owners))
       elif (in_kinds d/kind)
         (do
           (if (not (contains? ($to_str d/name) "/"))
             (entries .push (entry_from_decl path d)))
           (if (|| (== d/kind "Type") (== d/kind "Protocol"))
-            (for msg in (message_entries path d canon)
+            (for msg in (message_entries path d canon owners)
               (entries .push msg))))))
   (if (> ($size entries) 0)
     # The root page's title already says what it holds (`namespace_page`), so
@@ -186,7 +289,8 @@
 
 (fn reflection_modules []
   (let canon (collect_values gene [] []))
-  (collect gene [] [] canon))
+  (let owners (owner_homes (collect_owners gene [] [])))
+  (collect gene [] [] canon owners))
 
 (fn macro_param [param]
   {^name param/name ^local "" ^type "" ^required (not param/optional)
