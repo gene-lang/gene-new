@@ -1,0 +1,29 @@
+(mod runtime)
+
+(fn bind_call [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a function that calls a callable with a List of arguments, bounded by a `^policy` of memory and time limits that raise `LimitExceeded` in the caller."
+  @see ["book/native/running_code_you_do_not_trust"]
+  @errors ["TypeFault"]
+  @for "gene/runtime/bind_call"
+  nil)
+
+(fn load_sandboxed [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Loads a module from a directory with access only to the effectful namespaces and shared modules you list, and returns the module."
+  @see ["book/native/running_code_you_do_not_trust"]
+  @errors ["TypeFault"]
+  @for "gene/runtime/load_sandboxed"
+  nil)
+
+(fn messages_of_type [arg0]
+  @doc "Returns a List describing the messages a Type declares or inherits, or a Protocol's requirements, without constructing a value."
+  @see ["book/tools/inspecting_code"]
+  @errors ["TypeFault"]
+  @for "gene/runtime/messages_of_type"
+  nil)
+
+(fn signature [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a description of a callable's parameters, result, and `@doc` without calling it."
+  @see ["book/functions/documenting_a_function"]
+  @errors ["SerdeError"]
+  @for "gene/runtime/signature"
+  nil)

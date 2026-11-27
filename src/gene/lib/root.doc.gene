@@ -1,0 +1,385 @@
+(mod gene)
+
+(fn * [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Multiplies numbers; `(*)` is `1`."
+  @see ["book/values/expressions" "book/values/numbers"]
+  @errors ["Panic"]
+  @for "gene/*"
+  nil)
+
+(fn + [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Adds numbers; an F64 operand makes the result an F64, and `(+)` is `0`."
+  @see ["book/overview/code_is_data" "book/overview/tasks"]
+  @errors ["Panic"]
+  @for "gene/+"
+  nil)
+
+(fn < [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns whether each argument is less than the next."
+  @see ["book/values/expressions" "book/values/numbers"]
+  @errors ["Panic"]
+  @for "gene/<"
+  nil)
+
+(fn == [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns whether values are structurally equal; `(== 1 1.0)` is false."
+  @see ["book/values/equality" "book/control_flow/if"]
+  @errors ["Panic"]
+  @for "gene/=="
+  nil)
+
+(fn > [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns whether each argument is greater than the next."
+  @see ["book/control_flow/if" "book/collections/transforming_lists"]
+  @errors ["Panic"]
+  @for "gene/>"
+  nil)
+
+(fn Set [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "`(Set …)` makes a Set of the values given, ignoring repeats."
+  @see ["book/collections/sets"]
+  @errors ["Panic"]
+  @for "gene/Set"
+  nil)
+
+(fn absent? [arg0]
+  @doc "Returns true when the value is `nil` and false for anything else, including `false`, `0`, `\\\"\\\"`, and empty collections."
+  @see ["book/values/absence"]
+  @errors ["AssertionFault"]
+  @for "gene/absent?"
+  nil)
+
+(fn assert [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns `nil` when the condition is truthy, and otherwise raises an `AssertionFault` with the message, or with `assertion failed` when there is none."
+  @see ["book/errors/panics_and_assertions" "book/testing/assertions"]
+  @errors ["AssertionFault"]
+  @for "gene/assert"
+  nil)
+
+(fn assoc_in [arg0 arg1 arg2]
+  @doc "Returns a new root with the value at a Path set, leaving the original unchanged."
+  @see ["book/collections/immutable_values"]
+  @errors ["CsvError"]
+  @for "gene/assoc_in"
+  nil)
+
+(fn cell [arg0]
+  @doc "Returns a new Cell holding the value; `.get` reads it, and `.set` replaces it for every task that shares the cell."
+  @see ["book/concurrency/shared_state_in_a_cell" "book/concurrency/cancellation"]
+  @errors ["CsvError"]
+  @for "gene/cell"
+  nil)
+
+(fn channel [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a new channel that buffers up to `^capacity` values between tasks; it takes no positional arguments."
+  @see ["book/concurrency/channels"]
+  @errors ["CsvError"]
+  @for "gene/channel"
+  nil)
+
+(fn chars [arg0]
+  @doc "Splits a Str into a List of its code points, as Chars."
+  @see ["book/values/text"]
+  @errors ["CsvError"]
+  @for "gene/chars"
+  nil)
+
+(fn filter [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a List of the items for which the function returns a truthy value."
+  @see ["book/collections/transforming_lists"]
+  @errors ["OsError"]
+  @for "gene/filter"
+  nil)
+
+(fn filter_map [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a List of the function's results on each item, dropping `nil` results and keeping `false`, `0`, and `\\\"\\\"`."
+  @see ["book/collections/transforming_lists"]
+  @errors ["OsError"]
+  @for "gene/filter_map"
+  nil)
+
+(fn first [arg0]
+  @doc "Returns the first item of a List, or `nil` when it is empty."
+  @see ["book/tools/inspecting_code"]
+  @errors ["OsError"]
+  @for "gene/first"
+  nil)
+
+(fn freeze [arg0]
+  @doc "Returns an immutable copy of a value and everything inside it; the original stays mutable."
+  @see ["book/collections/immutable_values"]
+  @errors ["OsError"]
+  @for "gene/freeze"
+  nil)
+
+(fn gensym [arg0]
+  @doc "Returns a symbol made from a prefix that no caller code is using, for a name a macro's template binds; it works only while a macro body runs."
+  @see ["book/code_as_data/bindings_inside_an_expansion"]
+  @errors ["JsonError"]
+  @for "gene/gensym"
+  nil)
+
+(fn has_key? [arg0 arg1]
+  @doc "Returns whether a Map has a key, or a node a property, without raising when it is missing."
+  @see ["book/names/missing_and_wrong_reads" "book/collections/maps"]
+  @errors ["JsonError"]
+  @for "gene/has_key?"
+  nil)
+
+(fn into [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a new collection: the target, a List or a Map, with the items of a List or Stream added."
+  @see ["book/collections/iterating_maps"]
+  @errors ["JsonError"]
+  @for "gene/into"
+  nil)
+
+(fn map [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a List of the function's result on each item; on a Stream it returns a lazy Stream."
+  @see ["book/names/paths_as_values" "book/functions/defining_functions"]
+  @errors ["HttpError"]
+  @for "gene/map"
+  nil)
+
+(fn map_filter [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a new Map with the entries whose value the function accepts."
+  @see ["book/collections/iterating_maps"]
+  @errors ["HttpError"]
+  @for "gene/map_filter"
+  nil)
+
+(fn map_map [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a new Map with the function applied to each value."
+  @see ["book/collections/iterating_maps"]
+  @errors ["HttpError"]
+  @for "gene/map_map"
+  nil)
+
+(fn map_size [arg0]
+  @doc "Returns the number of entries in a Map, or of properties on a node."
+  @see ["book/collections/nodes_as_data"]
+  @errors ["HttpError"]
+  @for "gene/map_size"
+  nil)
+
+(fn panic [message = nil]
+  @doc "Raises a `Panic` that carries the value."
+  @see ["book/errors/panics_and_assertions"]
+  @errors ["Panic"]
+  @for "gene/panic"
+  nil)
+
+(fn present? [arg0]
+  @doc "Returns true for any value except `nil`, so `false`, `0`, `\\\"\\\"`, and empty collections are present."
+  @see ["book/values/absence" "book/io/the_environment_and_standard_input"]
+  @errors ["TypeFault"]
+  @for "gene/present?"
+  nil)
+
+(fn println [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Writes its arguments to standard output, separated by spaces and followed by a newline, and returns `nil`."
+  @see ["book/getting_started/running_a_file" "book/getting_started/programs_with_main"]
+  @errors ["TypeFault"]
+  @for "gene/println"
+  nil)
+
+(fn same? [arg0 arg1]
+  @doc "Returns whether two values are the same object, not just equal."
+  @see ["book/values/equality"]
+  @errors ["EndOfStream"]
+  @for "gene/same?"
+  nil)
+
+(fn set_has? [arg0 arg1]
+  @doc "Returns whether a Set contains a value."
+  @see ["book/collections/sets"]
+  @errors ["AssertionFault"]
+  @for "gene/set_has?"
+  nil)
+
+(fn set_size [arg0]
+  @doc "Returns the number of values in a Set."
+  @see ["book/collections/sets"]
+  @errors ["AssertionFault"]
+  @for "gene/set_size"
+  nil)
+
+(fn size [arg0] : Int
+  @doc "Returns the number of items in a List or a Set; a Map uses `$map_size`, and a Str has no plain size."
+  @see ["book/values/text" "book/control_flow/patterns"]
+  @errors ["AssertionFault"]
+  @for "gene/size"
+  nil)
+
+(fn sleep [arg0]
+  @doc "Suspends the current task for a number of milliseconds and returns `nil`."
+  @see ["book/concurrency/cancellation"]
+  @errors ["AssertionFault"]
+  @for "gene/sleep"
+  nil)
+
+(fn thaw [arg0]
+  @doc "Returns a mutable copy of a frozen value and everything inside it."
+  @see ["book/collections/immutable_values"]
+  @errors ["TypeFault"]
+  @for "gene/thaw"
+  nil)
+
+(fn to_int [arg0]
+  @doc "Converts an Int or a Float to an Int, dropping any fraction; a Str raises a `TypeFault`."
+  @see ["book/errors/errors_and_faults"]
+  @errors ["TypeFault"]
+  @for "gene/to_int"
+  nil)
+
+(fn to_str [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Converts its arguments to text and joins them into one Str."
+  @see ["book/values/symbols_and_characters"]
+  @errors ["Panic"]
+  @for "gene/to_str"
+  nil)
+
+(fn to_sym [arg0]
+  @doc "Converts a Str to a symbol."
+  @see ["book/values/symbols_and_characters"]
+  @errors ["Panic"]
+  @for "gene/to_sym"
+  nil)
+
+(fn update_in [arg0 arg1 arg2]
+  @doc "Returns a new root with the value at a Path replaced by the function's result on it, leaving the original unchanged."
+  @see ["book/collections/immutable_values"]
+  @errors ["Panic"]
+  @for "gene/update_in"
+  nil)
+
+(fn msg_list_assoc [arg0 arg1]
+  @doc "Returns a copy of the List with the item at an index replaced."
+  @errors ["EndOfStream"]
+  @for "gene/List/assoc"
+  nil)
+
+(fn msg_list_get [arg0]
+  @doc "Returns the item at an index, or `nil` when the index is out of range."
+  @errors ["EndOfStream"]
+  @for "gene/List/get"
+  nil)
+
+(fn msg_list_push [arg0]
+  @doc "Appends an item to a mutable List and returns the item."
+  @errors ["EndOfStream"]
+  @for "gene/List/push"
+  nil)
+
+(fn msg_list_set [arg0 arg1]
+  @doc "Replaces the item at an index in a mutable List and returns the new item."
+  @errors ["EndOfStream"]
+  @for "gene/List/set"
+  nil)
+
+(fn msg_map_assoc [arg0 arg1]
+  @doc "Returns a copy of the Map with a key set to a value."
+  @errors ["EndOfStream"]
+  @for "gene/Map/assoc"
+  nil)
+
+(fn msg_map_delete [arg0]
+  @doc "Removes a key from a mutable Map and returns its value."
+  @errors ["EndOfStream"]
+  @for "gene/Map/delete"
+  nil)
+
+(fn msg_map_dissoc [arg0]
+  @doc "Returns a copy of the Map without a key."
+  @errors ["EndOfStream"]
+  @for "gene/Map/dissoc"
+  nil)
+
+(fn msg_map_get [arg0]
+  @doc "Returns the value at a key, or `nil` when the key is absent."
+  @errors ["EndOfStream"]
+  @for "gene/Map/get"
+  nil)
+
+(fn msg_map_put [arg0 arg1]
+  @doc "Sets a key in a mutable Map and returns the value."
+  @errors ["EndOfStream"]
+  @for "gene/Map/put"
+  nil)
+
+(fn msg_node_assoc [arg0 arg1]
+  @doc "Returns a copy of the Node with a property set to a value."
+  @errors []
+  @for "gene/Node/assoc"
+  nil)
+
+(fn msg_node_delete [arg0]
+  @doc "Removes a property from a mutable Node and returns its value."
+  @errors []
+  @for "gene/Node/delete"
+  nil)
+
+(fn msg_node_dissoc [arg0]
+  @doc "Returns a copy of the Node without a property."
+  @errors []
+  @for "gene/Node/dissoc"
+  nil)
+
+(fn msg_node_get [arg0]
+  @doc "Returns the body item at an index, or `nil`."
+  @errors []
+  @for "gene/Node/get"
+  nil)
+
+(fn msg_node_push [arg0]
+  @doc "Appends an item to a mutable Node's body and returns the item."
+  @errors []
+  @for "gene/Node/push"
+  nil)
+
+(fn msg_node_put [arg0 arg1]
+  @doc "Sets a property on a mutable Node and returns the value."
+  @errors []
+  @for "gene/Node/put"
+  nil)
+
+(fn msg_node_set [arg0 arg1]
+  @doc "Replaces the body item at an index in a mutable Node and returns the new item."
+  @errors []
+  @for "gene/Node/set"
+  nil)
+
+(fn msg_node_set_body [arg0]
+  @doc "Replaces the body of a mutable Node and returns the new body."
+  @errors []
+  @for "gene/Node/set_body"
+  nil)
+
+(fn msg_stream_close []
+  @doc "Closes a Stream and releases its producer."
+  @errors ["EndOfStream"]
+  @for "gene/Stream/close"
+  nil)
+
+(fn msg_stream_has_next []
+  @doc "Returns whether the Stream has another item."
+  @errors ["EndOfStream"]
+  @for "gene/Stream/has_next"
+  nil)
+
+(fn msg_stream_next []
+  @doc "Pulls the next item from the Stream."
+  @errors ["EndOfStream"]
+  @for "gene/Stream/next"
+  nil)
+
+(fn msg_stream_peek []
+  @doc "Returns the next item without consuming it."
+  @errors []
+  @for "gene/Stream/peek"
+  nil)
+
+(fn msg_stream_try_next []
+  @doc "Pulls the next item as a `TryNext` result, which tells the end of the Stream apart from an item."
+  @errors []
+  @for "gene/Stream/try_next"
+  nil)

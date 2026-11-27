@@ -58,58 +58,11 @@
   {^id "lib/gene/web" ^doc "The web profile: assets, URLs, scripts, stylesheets, and published routes."}
  ]
  ^entries [
-  {^for "gene/absent?"
-   ^doc "Returns true when the value is `nil` and false for anything else, including `false`, `0`, `\"\"`, and empty collections."
-   ^see ["book/values/absence"]}
-  {^for "gene/actor/continue"
-   ^doc "Returns the step that keeps an actor running with `state` as its new state; a `^handle` function returns it."
-   ^see ["book/concurrency/actors"]}
-  {^for "gene/actor/spawn"
-   ^doc "Starts an actor from an `^init` function, which returns the first state, and a `^handle` function, which receives the context, the state, and a message and returns the next step; returns the actor."
-   ^see ["book/concurrency/actors"]}
-  {^for "gene/assert"
-   ^doc "Returns `nil` when the condition is truthy, and otherwise raises an `AssertionFault` with the message, or with `assertion failed` when there is none."
-   ^errors ["AssertionFault"]
-   ^see ["book/errors/panics_and_assertions" "book/testing/assertions"]}
-  {^for "gene/assoc_in"
-   ^doc "Returns a new root with the value at a Path set, leaving the original unchanged."
-   ^see ["book/collections/immutable_values"]}
-  {^for "gene/binary/to_str"
-   ^doc "Decodes UTF-8 `Bytes`, such as the result of `$csv/encode_row`, into a Str."
-   ^see ["book/io/csv"]}
-  {^for "gene/node/body"
-   ^doc "Returns a node's positional body items as a List."
-   ^see ["book/collections/nodes_as_data" "book/code_as_data/quoting"]}
-  {^for "gene/cell"
-   ^doc "Returns a new Cell holding the value; `.get` reads it, and `.set` replaces it for every task that shares the cell."
-   ^see ["book/concurrency/shared_state_in_a_cell" "book/concurrency/cancellation"]}
-  {^for "gene/channel"
-   ^doc "Returns a new channel that buffers up to `^capacity` values between tasks; it takes no positional arguments."
-   ^see ["book/concurrency/channels"]}
-  {^for "gene/chars"
-   ^doc "Splits a Str into a List of its code points, as Chars."
-   ^see ["book/values/text"]}
   {^for "gene/css/decl"
    ^doc "Makes one CSS declaration from a property name and a value, for a `rule`."
    ^see ["book/web/css_as_data"]}
-  {^for "gene/css/render"
-   ^doc "Renders CSS rules to stylesheet text."
-   ^see ["book/web/css_as_data"]}
-  {^for "gene/css/rule"
-   ^doc "Makes a CSS rule from a selector and its declarations."
-   ^see ["book/web/css_as_data"]}
-  {^for "gene/csv/encode_row"
-   ^doc "Encodes a List of fields as one CSV record, quoting fields that need it and ending with CRLF, and returns it as Bytes."
-   ^see ["book/io/csv"]}
-  {^for "gene/csv/parse_rows"
-   ^doc "Parses CSV text into a List of rows, each a List of Str, or with `^^headers` a property map keyed by the header row."
-   ^errors ["CsvError"]
-   ^see ["book/io/csv"]}
   {^for "gene/db/sqlite/Db"
    ^doc "The database protocol: `exec` runs SQL text, `execute` runs one statement with parameters, `query` returns rows as property maps, `query_one` returns one row or `nil`, and `transaction`, `close`, and `closed?` manage the connection."
-   ^see ["book/io/sqlite"]}
-  {^for "gene/db/sqlite/open"
-   ^doc "Opens an SQLite database (`\":memory:\"` for one in memory) and returns a connection that implements `Db`; it keeps an image of the database and rewrites the whole file on each commit."
    ^see ["book/io/sqlite"]}
   {^for "gene/event/Bus"
    ^doc "An event bus: `($event/Bus)` makes one, `.subscribe` registers a handler for an event type and its subtypes, `.publish` delivers an immutable snapshot of an event, and `.close` releases the handlers."
@@ -117,172 +70,12 @@
   {^for "gene/event/Event"
    ^doc "The parent type of events; declare an event as `(type T : $event/Event …)` so a bus can deliver it."
    ^see ["book/concurrency/events"]}
-  {^for "gene/ffi/bind"
-   ^doc "Binds a function of a loaded library by name, with its C parameter types and result type, and returns a callable that checks its arguments against them."
-   ^see ["book/native/calling_c_libraries"]}
-  {^for "gene/ffi/open"
-   ^doc "Loads the shared library at a path and returns it, for `$ffi/bind`."
-   ^see ["book/native/calling_c_libraries"]}
-  {^for "gene/filter"
-   ^doc "Returns a List of the items for which the function returns a truthy value."
-   ^see ["book/collections/transforming_lists"]}
-  {^for "gene/filter_map"
-   ^doc "Returns a List of the function's results on each item, dropping `nil` results and keeping `false`, `0`, and `\"\"`."
-   ^see ["book/collections/transforming_lists"]}
-  {^for "gene/first"
-   ^doc "Returns the first item of a List, or `nil` when it is empty."
-   ^see ["book/tools/inspecting_code"]}
-  {^for "gene/freeze"
-   ^doc "Returns an immutable copy of a value and everything inside it; the original stays mutable."
-   ^see ["book/collections/immutable_values"]}
-  {^for "gene/fs/read_text"
-   ^doc "Reads a file and returns its contents as a Str."
-   ^errors ["OsError"]
-   ^see ["book/io/files"]}
-  {^for "gene/fs/walk"
-   ^doc "Returns a lazy Stream of records, with `path`, `relative_path`, `kind`, and `size`, for each entry under a directory; close it when done early."
-   ^see ["book/io/paths"]}
-  {^for "gene/fs/write_text"
-   ^doc "Replaces a file's contents with a Str and returns `nil`."
-   ^errors ["OsError"]
-   ^see ["book/io/files"]}
-  {^for "gene/gensym"
-   ^doc "Returns a symbol made from a prefix that no caller code is using, for a name a macro's template binds; it works only while a macro body runs."
-   ^see ["book/code_as_data/bindings_inside_an_expansion"]}
-  {^for "gene/has_key?"
-   ^doc "Returns whether a Map has a key, or a node a property, without raising when it is missing."
-   ^see ["book/names/missing_and_wrong_reads" "book/collections/maps"]}
-  {^for "gene/node/head"
-   ^doc "Returns a node's head."
-   ^see ["book/collections/nodes_as_data" "book/code_as_data/quoting"]}
-  {^for "gene/html/render"
-   ^doc "Renders an HTML node, or text, to a Str, escaping text and attribute values."
-   ^see ["book/web/html_as_data"]}
-  {^for "gene/into"
-   ^doc "Returns a new collection: the target, a List or a Map, with the items of a List or Stream added."
-   ^see ["book/collections/iterating_maps"]}
-  {^for "gene/json/parse"
-   ^doc "Parses JSON text into Gene values: an object becomes a property map, and `null` becomes `nil`."
-   ^errors ["JsonError"]
-   ^see ["book/io/json"]}
-  {^for "gene/json/stringify"
-   ^doc "Writes a Gene value as compact JSON text."
-   ^see ["book/io/json"]}
   {^for "gene/log/log_debug"
    ^doc "Logs a record at `debug` level, and skips evaluating the message and payload when that level is off."
    ^see ["book/tools/logging"]}
-  {^for "gene/log/new_logger"
-   ^doc "Returns a logger with a name under `app/`, such as `app/demo`, and an optional `^payload` for its records."
-   ^see ["book/tools/logging"]}
-  {^for "gene/map"
-   ^doc "Returns a List of the function's result on each item; on a Stream it returns a lazy Stream."
-   ^see ["book/names/paths_as_values" "book/functions/defining_functions"]}
-  {^for "gene/map_filter"
-   ^doc "Returns a new Map with the entries whose value the function accepts."
-   ^see ["book/collections/iterating_maps"]}
-  {^for "gene/map_map"
-   ^doc "Returns a new Map with the function applied to each value."
-   ^see ["book/collections/iterating_maps"]}
-  {^for "gene/map_size"
-   ^doc "Returns the number of entries in a Map, or of properties on a node."
-   ^see ["book/collections/nodes_as_data"]}
-  {^for "gene/net/http/listen"
-   ^doc "Opens a server on `^host` and `^port` (`0` picks a free one, which `server/port` reports) and returns it, for `serve`."
-   ^errors ["HttpError"]
-   ^see ["book/web/an_http_server"]}
-  {^for "gene/net/http/serve"
-   ^doc "Serves requests on a listening server, calling the `^handler` function with each request in its own task; the handler returns a response."
-   ^see ["book/web/an_http_server"]}
-  {^for "gene/net/http/text"
-   ^doc "Returns a `text/plain` response with a status and a body."
-   ^see ["book/web/an_http_server"]}
-  {^for "gene/net/http_client/request"
-   ^doc "Sends an HTTP request to `^url` and returns a Task for the response, with its `status`, `headers`, and `body`; a non-2xx status is an ordinary response."
-   ^errors ["HttpClientError"]
-   ^see ["book/web/calling_http_services"]}
-  {^for "gene/order/compare"
-   ^doc "Returns `-1`, `0`, or `1` as the first value sorts before, with, or after the second."
-   ^see ["book/collections/ordering"]}
-  {^for "gene/order/sort"
-   ^doc "Returns a new sorted List, ordered by `^compare` when given; the input is unchanged."
-   ^see ["book/collections/ordering"]}
-  {^for "gene/order/sort_by"
-   ^doc "Returns a new List sorted by the key the function computes for each item."
-   ^see ["book/collections/ordering"]}
-  {^for "gene/os/exec"
-   ^doc "Runs a program with literal string arguments and no shell, and returns a map with `status`, `stdout`, `stderr`, and `timed_out`; a nonzero status is data, not an error."
-   ^errors ["OsError"]
-   ^see ["book/io/running_programs"]}
-  {^for "gene/os/exec_async"
-   ^doc "Runs a program as `$os/exec` does and returns a Task for the same result map."
-   ^errors ["OsError"]
-   ^see ["book/io/running_programs"]}
-  {^for "gene/os/read_line"
-   ^doc "Reads one line of standard input without its newline, or returns `nil` at the end of input."
-   ^see ["book/io/the_environment_and_standard_input"]}
-  {^for "gene/path/extension"
-   ^doc "Returns a path's extension with its dot, such as `\".txt\"`, or `\"\"` when there is none."
-   ^see ["book/io/paths"]}
-  {^for "gene/path/join"
-   ^doc "Joins path components with `/`, without touching the filesystem."
-   ^errors ["PathError"]
-   ^see ["book/io/paths"]}
-  {^for "gene/path/relative"
-   ^doc "Returns a path relative to a base directory, such as `\"b/c\"` for `\"/a/b/c\"` from `\"/a\"`."
-   ^see ["book/io/paths"]}
-  {^for "gene/present?"
-   ^doc "Returns true for any value except `nil`, so `false`, `0`, `\"\"`, and empty collections are present."
-   ^see ["book/values/absence" "book/io/the_environment_and_standard_input"]}
-  {^for "gene/println"
-   ^doc "Writes its arguments to standard output, separated by spaces and followed by a newline, and returns `nil`."
-   ^see ["book/getting_started/running_a_file" "book/getting_started/programs_with_main"]}
-  {^for "gene/runtime/bind_call"
-   ^doc "Returns a function that calls a callable with a List of arguments, bounded by a `^policy` of memory and time limits that raise `LimitExceeded` in the caller."
-   ^see ["book/native/running_code_you_do_not_trust"]}
-  {^for "gene/runtime/load_sandboxed"
-   ^doc "Loads a module from a directory with access only to the effectful namespaces and shared modules you list, and returns the module."
-   ^see ["book/native/running_code_you_do_not_trust"]}
-  {^for "gene/runtime/messages_of_type"
-   ^doc "Returns a List describing the messages a Type declares or inherits, or a Protocol's requirements, without constructing a value."
-   ^errors ["TypeFault"]
-   ^see ["book/tools/inspecting_code"]}
-  {^for "gene/runtime/signature"
-   ^doc "Returns a description of a callable's parameters, result, and `@doc` without calling it."
-   ^see ["book/functions/documenting_a_function"]}
-  {^for "gene/serde/read_data"
-   ^doc "Reads text written by `$serde/write_data` back into an equal value."
-   ^errors ["SerdeError"]
-   ^see ["book/io/serializing_gene_data"]}
-  {^for "gene/serde/write_data"
-   ^doc "Writes a data value as versioned text, such as `(serde_v1 {^a 1})`; functions and open resources are not data."
-   ^errors ["SerdeError"]
-   ^see ["book/io/serializing_gene_data"]}
-  {^for "gene/set_has?"
-   ^doc "Returns whether a Set contains a value."
-   ^see ["book/collections/sets"]}
-  {^for "gene/set_size"
-   ^doc "Returns the number of values in a Set."
-   ^see ["book/collections/sets"]}
-  {^for "gene/size"
-   ^doc "Returns the number of items in a List or a Set; a Map uses `$map_size`, and a Str has no plain size."
-   ^see ["book/values/text" "book/control_flow/patterns"]}
-  {^for "gene/sleep"
-   ^doc "Suspends the current task for a number of milliseconds and returns `nil`."
-   ^see ["book/concurrency/cancellation"]}
   {^for "gene/store/fs/Store"
    ^doc "The key-value store protocol: `put`, `get`, `has?`, `delete`, `keys`, and `clear` work on named records, `checkpoint` and `load_checkpoint` save and restore them, and `close` closes the store."
    ^see ["book/io/serializing_gene_data"]}
-  {^for "gene/store/fs/open"
-   ^doc "Opens a store that keeps its records in the `^root` directory and returns it; it implements `Store`."
-   ^see ["book/io/serializing_gene_data"]}
-  {^for "gene/test/assert_equal"
-   ^doc "Returns `nil` when the actual value `==` the expected one, and otherwise raises an `AssertionFault` that reports both."
-   ^errors ["AssertionFault"]
-   ^see ["book/testing/assertions" "book/testing/writing_examples"]}
-  {^for "gene/test/assert_raises"
-   ^doc "Calls a function once and returns the error it raises when that error is of the given type; it fails when nothing is raised, and lets an error of another type through."
-   ^errors ["AssertionFault"]
-   ^see ["book/testing/assertions" "book/testing/writing_examples"]}
   {^for "gene/test/before_each"
    ^doc "Declares a hook that runs before each example in its group, with the example's fixture."
    ^see ["book/testing/writing_examples"]}
@@ -295,40 +88,6 @@
   {^for "gene/test/it"
    ^doc "Declares one example with a description, a parameter list (`[]`, or `[t]` for the fixture), and a body that passes when it finishes without raising."
    ^see ["book/testing/writing_examples"]}
-  {^for "gene/thaw"
-   ^doc "Returns a mutable copy of a frozen value and everything inside it."
-   ^see ["book/collections/immutable_values"]}
-  {^for "gene/to_int"
-   ^doc "Converts an Int or a Float to an Int, dropping any fraction; a Str raises a `TypeFault`."
-   ^errors ["TypeFault"]
-   ^see ["book/errors/errors_and_faults"]}
-  {^for "gene/stream/to_pairs_stream"
-   ^doc "Returns a Stream of the `[key value]` pairs of a Map."
-   ^see ["book/collections/iterating_maps"]}
-  {^for "gene/to_str"
-   ^doc "Converts its arguments to text and joins them into one Str."
-   ^see ["book/values/symbols_and_characters"]}
-  {^for "gene/to_sym"
-   ^doc "Converts a Str to a symbol."
-   ^see ["book/values/symbols_and_characters"]}
-  {^for "gene/update_in"
-   ^doc "Returns a new root with the value at a Path replaced by the function's result on it, leaving the original unchanged."
-   ^see ["book/collections/immutable_values"]}
-  {^for "gene/*"
-   ^doc "Multiplies numbers; `(*)` is `1`."
-   ^see ["book/values/expressions" "book/values/numbers"]}
-  {^for "gene/+"
-   ^doc "Adds numbers; an F64 operand makes the result an F64, and `(+)` is `0`."
-   ^see ["book/overview/code_is_data" "book/overview/tasks"]}
-  {^for "gene/<"
-   ^doc "Returns whether each argument is less than the next."
-   ^see ["book/values/expressions" "book/values/numbers"]}
-  {^for "gene/=="
-   ^doc "Returns whether values are structurally equal; `(== 1 1.0)` is false."
-   ^see ["book/values/equality" "book/control_flow/if"]}
-  {^for "gene/>"
-   ^doc "Returns whether each argument is greater than the next."
-   ^see ["book/control_flow/if" "book/collections/transforming_lists"]}
   {^for "gene/AdHocError"
    ^doc "The Error that `(fail \"text\")` raises; `(fail \"text\")` is short for `(fail (AdHocError ^_msg \"text\"))`."
    ^see ["book/errors/raising_an_error"]}
@@ -359,67 +118,12 @@
   {^for "gene/Panic"
    ^doc "The Fault that `panic` raises, carrying its value."
    ^see ["book/errors/panics_and_assertions"]}
-  {^for "gene/Set"
-   ^doc "`(Set …)` makes a Set of the values given, ignoring repeats."
-   ^see ["book/collections/sets"]}
   {^for "gene/Str"
    ^doc "UTF-8 text; `$str` holds its operations."
    ^see ["book/overview/a_first_program" "book/overview/types_and_messages"]}
   {^for "gene/Throwable"
    ^doc "The parent of every raised value, with its two branches `Error` and `Fault`; `.message` reads its message."
    ^see ["book/errors/errors_and_faults"]}
-  {^for "gene/panic"
-   ^doc "Raises a `Panic` that carries the value."
-   ^errors ["Panic"]
-   ^see ["book/errors/panics_and_assertions"]}
-  {^for "gene/same?"
-   ^doc "Returns whether two values are the same object, not just equal."
-   ^see ["book/values/equality"]}
-  {^for "gene/List/assoc"
-   ^doc "Returns a copy of the List with the item at an index replaced."}
-  {^for "gene/List/get"
-   ^doc "Returns the item at an index, or `nil` when the index is out of range."}
-  {^for "gene/List/push"
-   ^doc "Appends an item to a mutable List and returns the item."}
-  {^for "gene/List/set"
-   ^doc "Replaces the item at an index in a mutable List and returns the new item."}
-  {^for "gene/Map/assoc"
-   ^doc "Returns a copy of the Map with a key set to a value."}
-  {^for "gene/Map/delete"
-   ^doc "Removes a key from a mutable Map and returns its value."}
-  {^for "gene/Map/dissoc"
-   ^doc "Returns a copy of the Map without a key."}
-  {^for "gene/Map/get"
-   ^doc "Returns the value at a key, or `nil` when the key is absent."}
-  {^for "gene/Map/put"
-   ^doc "Sets a key in a mutable Map and returns the value."}
-  {^for "gene/Stream/close"
-   ^doc "Closes a Stream and releases its producer."}
-  {^for "gene/Stream/has_next"
-   ^doc "Returns whether the Stream has another item."}
-  {^for "gene/Stream/next"
-   ^doc "Pulls the next item from the Stream."
-   ^errors ["EndOfStream"]}
-  {^for "gene/Stream/peek"
-   ^doc "Returns the next item without consuming it."}
-  {^for "gene/Stream/try_next"
-   ^doc "Pulls the next item as a `TryNext` result, which tells the end of the Stream apart from an item."}
-  {^for "gene/Node/assoc"
-   ^doc "Returns a copy of the Node with a property set to a value."}
-  {^for "gene/Node/delete"
-   ^doc "Removes a property from a mutable Node and returns its value."}
-  {^for "gene/Node/dissoc"
-   ^doc "Returns a copy of the Node without a property."}
-  {^for "gene/Node/get"
-   ^doc "Returns the body item at an index, or `nil`."}
-  {^for "gene/Node/push"
-   ^doc "Appends an item to a mutable Node's body and returns the item."}
-  {^for "gene/Node/put"
-   ^doc "Sets a property on a mutable Node and returns the value."}
-  {^for "gene/Node/set"
-   ^doc "Replaces the body item at an index in a mutable Node and returns the new item."}
-  {^for "gene/Node/set_body"
-   ^doc "Replaces the body of a mutable Node and returns the new body."}
   {^for "gene/io/IoResource:close"
    ^doc "Closes the resource."}
   {^for "gene/io/IoResource:wait_closed"

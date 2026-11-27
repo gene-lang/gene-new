@@ -580,6 +580,52 @@
       (fail_pipeline $"${file}: ${e/for} names no reference entry")))
   modules)
 
+(fn shape_text [entry]
+  (var parts [])
+  (for p in (?? entry/positional [])
+    (parts .push ($str/join [($to_str p/name) ":" (?? p/type "")
+      (if p/required "" "?")] "")))
+  (for p in (?? entry/named [])
+    (parts .push ($str/join ["^" ($to_str p/name) ":" (?? p/type "")
+      (if p/required "" "?")] "")))
+  (if ($present? entry/rest)
+    (parts .push ($str/join ["..." (?? entry/rest/type "")] "")))
+  (if ($present? entry/named_rest)
+    (parts .push ($str/join ["^..." (?? entry/named_rest/type "")] "")))
+  (parts .push ($str/join ["->" (?? entry/result "")] ""))
+  (parts .push ($str/join ["!" ($str/join (?? entry/errors []) ",")] ""))
+  ($str/join parts " "))
+
+(fn declared_shape? [entry]
+  (|| (> ($size (?? entry/positional [])) 0)
+      (> ($size (?? entry/named [])) 0)
+      ($present? entry/rest) ($present? entry/named_rest)
+      (not (== (?? entry/result "") ""))
+      (> ($size (?? entry/errors [])) 0)))
+
+(fn merge_declaration [ref real module]
+  # Reflection keeps identity: id, kind, parent, requirement, alias. A
+  # declaration supplies prose and, when reflection has no shape, the shape.
+  (let declared (declared_shape? real))
+  (if (&& declared (== (?? ref/shape_known false) true))
+    (if (!= (shape_text ref) (shape_text real))
+      (fail_pipeline
+        $"${declared_in module real}: ${ref/id} shape disagrees with reflection: declared ${(shape_text real)}, reflected ${(shape_text ref)}")))
+  (var merged ref)
+  (if (&& declared (not (== (?? ref/shape_known false) true)))
+    (do
+      (merged .put "positional" (?? real/positional []))
+      (merged .put "named" (?? real/named []))
+      (merged .put "rest" real/rest)
+      (merged .put "named_rest" real/named_rest)
+      (merged .put "result" (?? real/result ""))
+      (merged .put "shape_known" true)))
+  (if (&& ($present? real/doc) (!= (?? real/doc "") "")) (merged .put "doc" real/doc))
+  (if ($present? real/see) (merged .put "see" real/see))
+  (if ($present? real/status) (merged .put "status" real/status))
+  (if ($present? real/errors) (merged .put "errors" real/errors))
+  merged)
+
 (fn merge_reflection [modules extra]
   # Reflection supplies names and signatures for namespaces that have no
   # declaration file, and `extra` adds the compiler's namespace macros. A real
@@ -594,13 +640,23 @@
       (let real (by_name .get reflected/module))
       (if ($present? real)
         (do
-          (let ids (entry_ids_of real))
-          (for entry in reflected/entries
-            (do
-              (if (not ($has_key? ids entry/id))
+          (var merged_entries [])
+          (let seen {})
+          (for entry in real/entries
+            (for candidate in reflected/entries
+              (if (== ($to_str candidate/id) ($to_str entry/id))
                 (do
-                  (let entries real/entries)
-                  (entries .push entry))))))
+                  (if (&& ($present? entry/for) (!= entry/for ""))
+                    (merged_entries .push (merge_declaration candidate entry real))
+                    else
+                    (merged_entries .push entry))
+                  (seen .put ($to_str entry/id) true))))
+            (if (not ($has_key? seen ($to_str entry/id)))
+              (merged_entries .push entry)))
+          (for entry in reflected/entries
+            (if (not ($has_key? seen entry/id))
+              (merged_entries .push entry)))
+          (real .put "entries" merged_entries))
         else
         (do
           (modules .push reflected)

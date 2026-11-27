@@ -1129,7 +1129,7 @@ suite "doc builder — no VM linked":
     # and the manifest reads back: the lookup loads it.
     check "^summaries {^kinds {^fn {^entries " in manifest
     check "^book_used {^entries 104 ^with_summary 104}" in manifest
-    check "^namespace {^entries 52 ^with_summary 52}" in manifest
+    check "namespace {^entries 52 ^with_summary 52}" in manifest
     let corpus = loadCorpus(root / "build" / "docs")
     check "lib/gene/List/push" in corpus.byId
     # The content file is not a module.

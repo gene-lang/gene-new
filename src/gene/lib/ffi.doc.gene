@@ -1,0 +1,15 @@
+(mod ffi)
+
+(fn bind [arg0 arg1 arg2 arg3 arg4 = nil]
+  @doc "Binds a function of a loaded library by name, with its C parameter types and result type, and returns a callable that checks its arguments against them."
+  @see ["book/native/calling_c_libraries"]
+  @errors ["OsError"]
+  @for "gene/ffi/bind"
+  nil)
+
+(fn open [arg0]
+  @doc "Loads the shared library at a path and returns it, for `$ffi/bind`."
+  @see ["book/native/calling_c_libraries"]
+  @errors ["OsError"]
+  @for "gene/ffi/open"
+  nil)

@@ -1,0 +1,15 @@
+(mod node)
+
+(fn body [arg0]
+  @doc "Returns a node's positional body items as a List."
+  @see ["book/collections/nodes_as_data" "book/code_as_data/quoting"]
+  @errors ["CsvError"]
+  @for "gene/node/body"
+  nil)
+
+(fn head [arg0]
+  @doc "Returns a node's head."
+  @see ["book/collections/nodes_as_data" "book/code_as_data/quoting"]
+  @errors ["JsonError"]
+  @for "gene/node/head"
+  nil)

@@ -197,15 +197,31 @@ proc mergeSidecar*(doc: var ModuleDoc, pkg: Package, sidecarFile,
     for i in 0 ..< doc.entries.len:
       var entry = doc.entries[i]
       let expected = modulePath & "/" & entry.namePath
-      if entry.forName.len == 0:
-        doc.diagnostics.add DocDiagnostic(kind: "missing_for",
-          message: "native documentation requires @for \"" & expected & "\"",
-          source: sidecarRel, line: entry.line, col: entry.col)
-        entry.forName = expected
-      elif entry.forName != expected:
-        doc.diagnostics.add DocDiagnostic(kind: "unresolved_for",
-          message: "@for \"" & entry.forName & "\" does not name " & expected,
-          source: sidecarRel, line: entry.line, col: entry.col)
+      if modulePath == "gene":
+        # The root sidecar declares reflected names by absolute `@for`, not
+        # by a local name: a type message's id (`gene/List/push`) is not a
+        # module path plus its declaration name.
+        if entry.forName.len == 0:
+          doc.diagnostics.add DocDiagnostic(kind: "missing_for",
+            message: "root documentation requires @for \"gene/<name>\"",
+            source: sidecarRel, line: entry.line, col: entry.col)
+          entry.forName = expected
+        if entry.forName.startsWith("gene/"):
+          entry.id = "lib/" & entry.forName
+        else:
+          doc.diagnostics.add DocDiagnostic(kind: "unresolved_for",
+            message: "@for \"" & entry.forName & "\" is not under gene/",
+            source: sidecarRel, line: entry.line, col: entry.col)
+      else:
+        if entry.forName.len == 0:
+          doc.diagnostics.add DocDiagnostic(kind: "missing_for",
+            message: "native documentation requires @for \"" & expected & "\"",
+            source: sidecarRel, line: entry.line, col: entry.col)
+          entry.forName = expected
+        elif entry.forName != expected:
+          doc.diagnostics.add DocDiagnostic(kind: "unresolved_for",
+            message: "@for \"" & entry.forName & "\" does not name " & expected,
+            source: sidecarRel, line: entry.line, col: entry.col)
       doc.entries[i] = entry
   else:
     for sidecarEntry in sidecar.entries:

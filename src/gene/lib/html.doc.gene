@@ -1,0 +1,8 @@
+(mod html)
+
+(fn render [arg0]
+  @doc "Renders an HTML node, or text, to a Str, escaping text and attribute values."
+  @see ["book/web/html_as_data"]
+  @errors ["JsonError"]
+  @for "gene/html/render"
+  nil)

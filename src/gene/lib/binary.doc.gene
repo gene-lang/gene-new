@@ -1,0 +1,8 @@
+(mod binary)
+
+(fn to_str [arg0]
+  @doc "Decodes UTF-8 `Bytes`, such as the result of `$csv/encode_row`, into a Str."
+  @see ["book/io/csv"]
+  @errors ["CsvError"]
+  @for "gene/binary/to_str"
+  nil)

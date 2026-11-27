@@ -1,0 +1,8 @@
+(mod log)
+
+(fn new_logger [arg0]
+  @doc "Returns a logger with a name under `app/`, such as `app/demo`, and an optional `^payload` for its records."
+  @see ["book/tools/logging"]
+  @errors ["HttpError"]
+  @for "gene/log/new_logger"
+  nil)

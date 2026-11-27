@@ -1,0 +1,8 @@
+(mod sqlite)
+
+(fn open [arg0]
+  @doc "Opens an SQLite database (`\\\":memory:\\\"` for one in memory) and returns a connection that implements `Db`; it keeps an image of the database and rewrites the whole file on each commit."
+  @see ["book/io/sqlite"]
+  @errors ["OsError"]
+  @for "gene/db/sqlite/open"
+  nil)

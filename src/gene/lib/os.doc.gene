@@ -1,0 +1,22 @@
+(mod os)
+
+(fn exec [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Runs a program with literal string arguments and no shell, and returns a map with `status`, `stdout`, `stderr`, and `timed_out`; a nonzero status is data, not an error."
+  @see ["book/io/running_programs"]
+  @errors ["OsError"]
+  @for "gene/os/exec"
+  nil)
+
+(fn exec_async [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Runs a program as `$os/exec` does and returns a Task for the same result map."
+  @see ["book/io/running_programs"]
+  @errors ["OsError"]
+  @for "gene/os/exec_async"
+  nil)
+
+(fn read_line [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Reads one line of standard input without its newline, or returns `nil` at the end of input."
+  @see ["book/io/the_environment_and_standard_input"]
+  @errors ["PathError"]
+  @for "gene/os/read_line"
+  nil)

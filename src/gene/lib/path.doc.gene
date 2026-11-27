@@ -1,0 +1,22 @@
+(mod path)
+
+(fn extension [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a path's extension with its dot, such as `\\\".txt\\\"`, or `\\\"\\\"` when there is none."
+  @see ["book/io/paths"]
+  @errors ["PathError"]
+  @for "gene/path/extension"
+  nil)
+
+(fn join [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Joins path components with `/`, without touching the filesystem."
+  @see ["book/io/paths"]
+  @errors ["PathError"]
+  @for "gene/path/join"
+  nil)
+
+(fn relative [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a path relative to a base directory, such as `\\\"b/c\\\"` for `\\\"/a/b/c\\\"` from `\\\"/a\\\"`."
+  @see ["book/io/paths"]
+  @errors ["TypeFault"]
+  @for "gene/path/relative"
+  nil)

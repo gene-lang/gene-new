@@ -1,0 +1,8 @@
+(mod fs)
+
+(fn open [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Opens a store that keeps its records in the `^root` directory and returns it; it implements `Store`."
+  @see ["book/io/serializing_gene_data"]
+  @errors ["AssertionFault"]
+  @for "gene/store/fs/open"
+  nil)

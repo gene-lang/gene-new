@@ -1,0 +1,22 @@
+(mod http)
+
+(fn listen [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Opens a server on `^host` and `^port` (`0` picks a free one, which `server/port` reports) and returns it, for `serve`."
+  @see ["book/web/an_http_server"]
+  @errors ["HttpError"]
+  @for "gene/net/http/listen"
+  nil)
+
+(fn serve [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Serves requests on a listening server, calling the `^handler` function with each request in its own task; the handler returns a response."
+  @see ["book/web/an_http_server"]
+  @errors ["HttpClientError"]
+  @for "gene/net/http/serve"
+  nil)
+
+(fn text [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+  @doc "Returns a `text/plain` response with a status and a body."
+  @see ["book/web/an_http_server"]
+  @errors ["HttpClientError"]
+  @for "gene/net/http/text"
+  nil)

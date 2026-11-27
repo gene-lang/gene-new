@@ -134,8 +134,13 @@ proc modulePathFor*(pkg: Package, path: string): string =
     let srcDir = if pkg.sourceDir.len > 0: pkg.sourceDir else: "src"
     let libRoot = normalizedPath(absolutePath(pkg.root / srcDir / "gene" / "lib"))
     if containsPath(libRoot, file):
-      return "gene/" & stripSourceSuffix(
+      let relative = stripSourceSuffix(
         relativePath(file, libRoot).replace('\\', '/'))
+      # `root.doc.gene` is the root namespace's declaration file; it has no
+      # module directory of its own, so it maps to the module `gene`.
+      if relative == "root":
+        return "gene"
+      return "gene/" & relative
   relativeModulePath(pkg, file)
 
 proc sidecarFor*(sourceFile: string): string =
