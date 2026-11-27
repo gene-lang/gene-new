@@ -941,13 +941,19 @@ proc strReceiverNatives(): seq[(string, Value)] =
   ## just as the collection operations do. Keep both registrations together.
   @[
     ("split", sharedBuiltinNative("str/split", builtinNativeFn("str/split", biStrSplit))),
-    ("trim", sharedBuiltinNative("str/trim", builtinNativeFn("str/trim", biStrTrim))),
-    ("lower", sharedBuiltinNative("str/lower", builtinNativeFn("str/lower", biStrLower))),
-    ("upper", sharedBuiltinNative("str/upper", builtinNativeFn("str/upper", biStrUpper))),
-    ("empty?", sharedBuiltinNative("str/empty?", builtinNativeFn("str/empty?", biStrEmpty))),
-    ("byte_size", sharedBuiltinNative("str/byte_size", builtinNativeFn("str/byte_size", biStrByteSize))),
+    ("trim", sharedBuiltinNative("str/trim", builtinNativeFn("str/trim", biStrTrim,
+      acceptsOnePositional = true))),
+    ("lower", sharedBuiltinNative("str/lower", builtinNativeFn("str/lower", biStrLower,
+      acceptsOnePositional = true))),
+    ("upper", sharedBuiltinNative("str/upper", builtinNativeFn("str/upper", biStrUpper,
+      acceptsOnePositional = true))),
+    ("empty?", sharedBuiltinNative("str/empty?", builtinNativeFn("str/empty?", biStrEmpty,
+      acceptsOnePositional = true))),
+    ("byte_size", sharedBuiltinNative("str/byte_size", builtinNativeFn("str/byte_size", biStrByteSize,
+      acceptsOnePositional = true))),
     ("slice_bytes", sharedBuiltinNative("str/slice_bytes", builtinNativeFn("str/slice_bytes", biStrSliceBytes))),
-    ("to_utf8", sharedBuiltinNative("str/to_utf8", builtinNativeFn("str/to_utf8", biStrToUtf8))),
+    ("to_utf8", sharedBuiltinNative("str/to_utf8", builtinNativeFn("str/to_utf8", biStrToUtf8,
+      acceptsOnePositional = true))),
     ("starts_with?", sharedBuiltinNative("str/starts_with?", builtinNativeFn("str/starts_with?", biStrStartsWith))),
     ("ends_with?", sharedBuiltinNative("str/ends_with?", builtinNativeFn("str/ends_with?", biStrEndsWith))),
     ("contains?", sharedBuiltinNative("str/contains?", builtinNativeFn("str/contains?", biStrContains)))]
@@ -10786,11 +10792,13 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   # file-backed modules later without changing call sites.
   let stdStreamScope = newScope(root)
   stdStreamScope.define("to_stream",
-    builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false))
+    builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false,
+      acceptsOnePositional = true))
   stdStreamScope.define("to_pairs_stream",
     sharedBuiltinNative("to_pairs_stream",
       builtinNativeCallFn("to_pairs_stream", biToPairsStream,
-                          acceptsNamed = false)))
+                          acceptsNamed = false,
+                          acceptsOnePositional = true)))
   # The generic collection operations (§6.2) must bind the same process-wide
   # dispatchers the root and the type tables hold — `sharedBuiltinNative`
   # returns those instances; the fresh values built here are discarded.
@@ -10810,10 +10818,10 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   stdStreamScope.define("each",
     sharedBuiltinNative("each", builtinNativeCallFn("each", biEach, acceptsNamed = false)))
   let stdNodeScope = newScope(root)
-  stdNodeScope.define("head", builtinNativeFn("head", biHead))
-  stdNodeScope.define("props", builtinNativeFn("props", biProps))
-  stdNodeScope.define("body", builtinNativeFn("body", biBody))
-  stdNodeScope.define("meta", builtinNativeFn("meta", biMeta))
+  stdNodeScope.define("head", builtinNativeFn("head", biHead, acceptsOnePositional = true))
+  stdNodeScope.define("props", builtinNativeFn("props", biProps, acceptsOnePositional = true))
+  stdNodeScope.define("body", builtinNativeFn("body", biBody, acceptsOnePositional = true))
+  stdNodeScope.define("meta", builtinNativeFn("meta", biMeta, acceptsOnePositional = true))
   stdNodeScope.define("rebuild", builtinNativeCallFn("node/rebuild", biNodeRebuild))
   stdNodeScope.define("declarations",
                       builtinNativeFn("declarations", biDeclarations))
@@ -10937,7 +10945,8 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
   root.define("math", newNamespace("math", mathScope))
   let strScope = newScope(root)
   strScope.define("join", sharedBuiltinNative("str/join",
-    builtinNativeCallFn("str/join", biStrJoin, acceptsNamed = false)))
+    builtinNativeCallFn("str/join", biStrJoin, acceptsNamed = false,
+      acceptsOnePositional = true)))
   for (name, native) in strReceiverNatives():
     strScope.define(name, native)
   strScope.define("from_utf8", builtinNativeFn("str/from_utf8", biStrFromUtf8))

@@ -835,6 +835,7 @@ type
     contextImpl: NativeContextCallProc
     context: RootRef
     acceptsNamed: bool
+    acceptsOnePositional: bool
     fastKind: NativeFastKind
     errorMetadata: NativeErrorMetadata
 
@@ -6208,6 +6209,12 @@ proc nativeAcceptsNamed*(v: Value): bool {.inline.} =
     raise newException(FieldDefect, "value is not a NativeFn")
   cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).acceptsNamed
 
+proc nativeAcceptsOnePositional*(v: Value): bool {.inline.} =
+  ## Published hint that this native accepts one positional and no named args.
+  ## A missing hint leaves the shape unknown.
+  v.tagOf == NATIVE_FN_TAG and
+    cast[ptr GeneNativeFn](v.bits and PAYLOAD_MASK).acceptsOnePositional
+
 proc nativeFastKind*(v: Value): NativeFastKind {.inline.} =
   if v.tagOf != NATIVE_FN_TAG:
     raise newException(FieldDefect, "value is not a NativeFn")
@@ -10802,24 +10809,27 @@ proc classifyNativeFastKind*(name: string): NativeFastKind =
 proc newNativeFn*(name: string, impl: NativeProc,
                   acceptsNamed = false,
                   errorMetadata = NativeErrorMetadata(),
-                  fastKind = nfkNone): Value =
+                  fastKind = nfkNone, acceptsOnePositional = false): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
   p.name = name
   p.impl = impl
   p.acceptsNamed = acceptsNamed
+  p.acceptsOnePositional = acceptsOnePositional
   p.fastKind = fastKind
   p.errorMetadata = errorMetadata
   boxPtr(NATIVE_FN_TAG, p)
 
 proc newNativeCallFn*(name: string, impl: NativeCallProc,
                       acceptsNamed = true,
-                      errorMetadata = NativeErrorMetadata()): Value =
+                      errorMetadata = NativeErrorMetadata(),
+                      acceptsOnePositional = false): Value =
   let p = createObj(GeneNativeFn)
   p.refCount = 1
   p.name = name
   p.callImpl = impl
   p.acceptsNamed = acceptsNamed
+  p.acceptsOnePositional = acceptsOnePositional
   p.fastKind = nfkNone
   p.errorMetadata = errorMetadata
   boxPtr(NATIVE_FN_TAG, p)

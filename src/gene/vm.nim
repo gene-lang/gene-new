@@ -13,12 +13,15 @@ when defined(geneAtomicGenerationRetirementProbe):
 import ./ext/logging
 export type_contracts
 
-proc builtinNativeFn(name: string, impl: NativeProc, acceptsNamed = false): Value =
+proc builtinNativeFn(name: string, impl: NativeProc, acceptsNamed = false,
+                     acceptsOnePositional = false): Value =
   newNativeFn(name, impl, acceptsNamed, builtinNativeErrorMetadata(name),
-    classifyNativeFastKind(name))
+    classifyNativeFastKind(name), acceptsOnePositional)
 
-proc builtinNativeCallFn(name: string, impl: NativeCallProc, acceptsNamed = true): Value =
-  newNativeCallFn(name, impl, acceptsNamed, builtinNativeErrorMetadata(name))
+proc builtinNativeCallFn(name: string, impl: NativeCallProc, acceptsNamed = true,
+                         acceptsOnePositional = false): Value =
+  newNativeCallFn(name, impl, acceptsNamed, builtinNativeErrorMetadata(name),
+    acceptsOnePositional)
 
 when not defined(emscripten) and not defined(geneWasm):
   import ./process_lock
@@ -68,9 +71,15 @@ else:
 type
   ReplReadLine* = proc(line: var string): bool {.closure.}
   ReplWrite* = proc(text: string) {.closure.}
+  ReplEditDraft* = proc(source: var string, continuation: bool): bool {.closure.}
   ReplOptions* = object
     interactive*: bool
     prompt*: string
+    # Editable frontends receive a whole draft back after an incomplete read.
+    # They own prompt rendering and can record the source once it is handled.
+    editDraft*: ReplEditDraft
+    finishDraft*: proc() {.closure.}
+    recordSubmission*: ReplWrite
 
 # Pre-interned PropTable key ids for the computed Node projection names on
 # the selector hot path (design §5 static lookup). Interned lazily on first
@@ -6291,18 +6300,20 @@ proc declarationKind*(value: Value): string =
   of vkProtocolMessage: "ProtocolMessage"
   of vkEnumVariant: "EnumVariant"
 
+proc canReadExport(ns: Value, namespaceScope: Scope, name: string): bool {.inline.} =
+  if ns.nsIsModuleRoot and name in ["this_mod", "this_pkg"]:
+    return false
+  # A set probe hashes the name before it can see the set is empty, and the
+  # standard-library namespaces every `$ns/fn` goes through exclude nothing.
+  namespaceScope.exportExcludedNames.len == 0 or name notin namespaceScope.exportExcludedNames
+
 proc exportedBinding(ns: Value, name: string): Value =
   ## The exported binding, or `MISSING` when `name` is not exported. A caller
   ## that hands the result to Gene code converts `MISSING` to nil.
   if ns.kind != vkNamespace:
     return MISSING
-  if ns.nsIsModuleRoot and name in ["this_mod", "this_pkg"]:
-    return MISSING
   let namespaceScope {.cursor.} = ns.borrowedNsScope
-  # A set probe hashes the name before it can see the set is empty, and the
-  # standard-library namespaces every `$ns/fn` goes through exclude nothing.
-  if namespaceScope.exportExcludedNames.len > 0 and
-      name in namespaceScope.exportExcludedNames:
+  if not canReadExport(ns, namespaceScope, name):
     return MISSING
   namespaceScope.materializeMirroredVars()
   namespaceScope.vars.getOrDefault(name, MISSING)
@@ -10333,8 +10344,8 @@ proc biTypeName(args: openArray[Value]): Value {.nimcall.} =
 
 proc typeReflectionMessage(name: string): Value =
   case name
-  of "fields": builtinNativeFn("Type/fields", biTypeFields)
-  of "name": builtinNativeFn("Type/name", biTypeName)
+  of "fields": builtinNativeFn("Type/fields", biTypeFields, acceptsOnePositional = true)
+  of "name": builtinNativeFn("Type/name", biTypeName, acceptsOnePositional = true)
   else: NIL
 
 proc biRespondTo(args: openArray[Value], call: ptr NativeCall): Value
@@ -10802,10 +10813,14 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # The four node projections are both bare wrapper functions and messages on
   # the `Node` type. Bind one value each so `(head n)` and `(n .head)` name the
   # same function rather than two natives that merely behave alike.
-  let headFn = sharedBuiltinNative("head", builtinNativeFn("head", biHead))
-  let propsFn = sharedBuiltinNative("props", builtinNativeFn("props", biProps))
-  let bodyFn = sharedBuiltinNative("body", builtinNativeFn("body", biBody))
-  let metaFn = sharedBuiltinNative("meta", builtinNativeFn("meta", biMeta))
+  let headFn = sharedBuiltinNative("head", builtinNativeFn("head", biHead,
+    acceptsOnePositional = true))
+  let propsFn = sharedBuiltinNative("props", builtinNativeFn("props", biProps,
+    acceptsOnePositional = true))
+  let bodyFn = sharedBuiltinNative("body", builtinNativeFn("body", biBody,
+    acceptsOnePositional = true))
+  let metaFn = sharedBuiltinNative("meta", builtinNativeFn("meta", biMeta,
+    acceptsOnePositional = true))
   result.define("head", headFn)
   result.define("props", propsFn)
   result.define("body", bodyFn)
@@ -10857,11 +10872,12 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.define("regex", newNamespace("regex", regexScope))
   result.define("range", builtinNativeFn("range", biRange))
   result.defineBuiltinType(vkRange, "Range", {
-    "start": builtinNativeFn("Range/start", biRangeStart),
-    "stop": builtinNativeFn("Range/stop", biRangeStop),
-    "step": builtinNativeFn("Range/step", biRangeStep),
-    "inclusive?": builtinNativeFn("Range/inclusive?", biRangeInclusive),
-    "size": builtinNativeFn("Range/size", biRangeSize)})
+    "start": builtinNativeFn("Range/start", biRangeStart, acceptsOnePositional = true),
+    "stop": builtinNativeFn("Range/stop", biRangeStop, acceptsOnePositional = true),
+    "step": builtinNativeFn("Range/step", biRangeStep, acceptsOnePositional = true),
+    "inclusive?": builtinNativeFn("Range/inclusive?", biRangeInclusive,
+      acceptsOnePositional = true),
+    "size": builtinNativeFn("Range/size", biRangeSize, acceptsOnePositional = true)})
   result.define("date", builtinNativeFn("date", biDate))
   result.define("time", builtinNativeFn("time", biTime))
   result.define("datetime", builtinNativeFn("datetime", biDateTime))
@@ -10870,33 +10886,43 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.define("today", builtinNativeFn("today", biToday))
   result.define("now", builtinNativeFn("now", biNow))
   result.defineBuiltinType(vkDate, "Date", {
-    "year": builtinNativeFn("Date/year", biDateYear),
-    "month": builtinNativeFn("Date/month", biDateMonth),
-    "day": builtinNativeFn("Date/day", biDateDay)})
+    "year": builtinNativeFn("Date/year", biDateYear, acceptsOnePositional = true),
+    "month": builtinNativeFn("Date/month", biDateMonth, acceptsOnePositional = true),
+    "day": builtinNativeFn("Date/day", biDateDay, acceptsOnePositional = true)})
   result.defineBuiltinType(vkTime, "Time", {
-    "hour": builtinNativeFn("Time/hour", biTimeHour),
-    "minute": builtinNativeFn("Time/minute", biTimeMinute),
-    "second": builtinNativeFn("Time/second", biTimeSecond),
-    "microsecond": builtinNativeFn("Time/microsecond", biTimeMicrosecond),
-    "offset": builtinNativeFn("Time/offset", biTimeOffset),
-    "timezone": builtinNativeFn("Time/timezone", biTimeTimezone)})
+    "hour": builtinNativeFn("Time/hour", biTimeHour, acceptsOnePositional = true),
+    "minute": builtinNativeFn("Time/minute", biTimeMinute, acceptsOnePositional = true),
+    "second": builtinNativeFn("Time/second", biTimeSecond, acceptsOnePositional = true),
+    "microsecond": builtinNativeFn("Time/microsecond", biTimeMicrosecond,
+      acceptsOnePositional = true),
+    "offset": builtinNativeFn("Time/offset", biTimeOffset, acceptsOnePositional = true),
+    "timezone": builtinNativeFn("Time/timezone", biTimeTimezone, acceptsOnePositional = true)})
   result.defineBuiltinType(vkDateTime, "DateTime", {
-    "year": builtinNativeFn("DateTime/year", biDateTimeYear),
-    "month": builtinNativeFn("DateTime/month", biDateTimeMonth),
-    "day": builtinNativeFn("DateTime/day", biDateTimeDay),
-    "hour": builtinNativeFn("DateTime/hour", biDateTimeHour),
-    "minute": builtinNativeFn("DateTime/minute", biDateTimeMinute),
-    "second": builtinNativeFn("DateTime/second", biDateTimeSecond),
-    "microsecond": builtinNativeFn("DateTime/microsecond", biDateTimeMicrosecond),
-    "offset": builtinNativeFn("DateTime/offset", biDateTimeOffset),
-    "timezone": builtinNativeFn("DateTime/timezone", biDateTimeTimezone)})
+    "year": builtinNativeFn("DateTime/year", biDateTimeYear, acceptsOnePositional = true),
+    "month": builtinNativeFn("DateTime/month", biDateTimeMonth, acceptsOnePositional = true),
+    "day": builtinNativeFn("DateTime/day", biDateTimeDay, acceptsOnePositional = true),
+    "hour": builtinNativeFn("DateTime/hour", biDateTimeHour, acceptsOnePositional = true),
+    "minute": builtinNativeFn("DateTime/minute", biDateTimeMinute,
+      acceptsOnePositional = true),
+    "second": builtinNativeFn("DateTime/second", biDateTimeSecond,
+      acceptsOnePositional = true),
+    "microsecond": builtinNativeFn("DateTime/microsecond", biDateTimeMicrosecond,
+      acceptsOnePositional = true),
+    "offset": builtinNativeFn("DateTime/offset", biDateTimeOffset,
+      acceptsOnePositional = true),
+    "timezone": builtinNativeFn("DateTime/timezone", biDateTimeTimezone,
+      acceptsOnePositional = true)})
   result.defineBuiltinType(vkTimezone, "Timezone", {
-    "offset": builtinNativeFn("Timezone/offset", biTimezoneOffset),
-    "name": builtinNativeFn("Timezone/name", biTimezoneName)})
+    "offset": builtinNativeFn("Timezone/offset", biTimezoneOffset,
+      acceptsOnePositional = true),
+    "name": builtinNativeFn("Timezone/name", biTimezoneName, acceptsOnePositional = true)})
   result.defineBuiltinType(vkDuration, "Duration", {
-    "microseconds": builtinNativeFn("Duration/microseconds", biDurationMicroseconds),
-    "milliseconds": builtinNativeFn("Duration/milliseconds", biDurationMilliseconds),
-    "seconds": builtinNativeFn("Duration/seconds", biDurationSeconds)})
+    "microseconds": builtinNativeFn("Duration/microseconds", biDurationMicroseconds,
+      acceptsOnePositional = true),
+    "milliseconds": builtinNativeFn("Duration/milliseconds", biDurationMilliseconds,
+      acceptsOnePositional = true),
+    "seconds": builtinNativeFn("Duration/seconds", biDurationSeconds,
+      acceptsOnePositional = true)})
   result.define("Set", builtinNativeFn("Set", biSet))
   result.define("set_has?", builtinNativeFn("set_has?", biSetHas))
   result.define("set_size", builtinNativeFn("set_size", biSetSize))
@@ -10905,18 +10931,22 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   # have to name the same function value rather than two natives that merely
   # behave alike. `contains?` is bound further up and captured here.
   let sizeFn = sharedBuiltinNative("size",
-    builtinNativeCallFn("size", biListSize, acceptsNamed = false))
+    builtinNativeCallFn("size", biListSize, acceptsNamed = false, acceptsOnePositional = true))
   let emptyFn = sharedBuiltinNative("empty?",
-    builtinNativeCallFn("empty?", biListEmpty, acceptsNamed = false))
+    builtinNativeCallFn("empty?", biListEmpty, acceptsNamed = false,
+      acceptsOnePositional = true))
   let firstFn = sharedBuiltinNative("first",
-    builtinNativeCallFn("first", biListFirst, acceptsNamed = false))
+    builtinNativeCallFn("first", biListFirst, acceptsNamed = false,
+      acceptsOnePositional = true))
   let lastFn = sharedBuiltinNative("last",
-    builtinNativeCallFn("last", biListLast, acceptsNamed = false))
+    builtinNativeCallFn("last", biListLast, acceptsNamed = false, acceptsOnePositional = true))
   let toStreamFn = sharedBuiltinNative("to_stream",
-    builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false))
+    builtinNativeCallFn("to_stream", biToStream, acceptsNamed = false,
+      acceptsOnePositional = true))
   let toPairsStreamFn = sharedBuiltinNative("to_pairs_stream",
     builtinNativeCallFn("to_pairs_stream", biToPairsStream,
-                        acceptsNamed = false))
+                        acceptsNamed = false,
+                        acceptsOnePositional = true))
   # The generic collection operations (design §6.2) are call-fns so the
   # dispatcher can reach the send's scope: a receiver whose type declares no
   # such method raises the send path's recoverable MessageFault, never a kind
@@ -10930,9 +10960,11 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   let filterFn = sharedBuiltinNative("filter",
     builtinNativeCallFn("filter", biFilter, acceptsNamed = false))
   let mapSizeFn = sharedBuiltinNative("map_size",
-    builtinNativeCallFn("map_size", biMapSize, acceptsNamed = false))
+    builtinNativeCallFn("map_size", biMapSize, acceptsNamed = false,
+      acceptsOnePositional = true))
   let mapEmptyFn = sharedBuiltinNative("map_empty?",
-    builtinNativeCallFn("map_empty?", biMapEmpty, acceptsNamed = false))
+    builtinNativeCallFn("map_empty?", biMapEmpty, acceptsNamed = false,
+      acceptsOnePositional = true))
   let mapMapFn = sharedBuiltinNative("map_map",
     builtinNativeCallFn("map_map", biMapMap, acceptsNamed = false))
   let mapFilterMapFn = sharedBuiltinNative("map_filter_map",
@@ -10944,7 +10976,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   let takeFn = sharedBuiltinNative("take",
     builtinNativeCallFn("take", biTake, acceptsNamed = false))
   let reverseFn = sharedBuiltinNative("reverse",
-    builtinNativeCallFn("reverse", biReverse, acceptsNamed = false))
+    builtinNativeCallFn("reverse", biReverse, acceptsNamed = false,
+      acceptsOnePositional = true))
   let dropFn = sharedBuiltinNative("drop",
     builtinNativeCallFn("drop", biDrop, acceptsNamed = false))
   let hasKeyFn = sharedBuiltinNative("has_key?",
@@ -10973,7 +11006,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     "assoc": builtinNativeFn("List/assoc", biListAssoc),
     "get": builtinNativeFn("List/get", biListGet),
     "join": sharedBuiltinNative("str/join",
-      builtinNativeCallFn("str/join", biStrJoin, acceptsNamed = false)),
+      builtinNativeCallFn("str/join", biStrJoin, acceptsNamed = false,
+        acceptsOnePositional = true)),
     "set": builtinNativeFn("List/set", biListSetBang),
     "push": builtinNativeFn("List/push", biListPushBang),
     "size": sizeFn,
@@ -11039,7 +11073,7 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     "map_each": mapEachFn,
     "to_pairs_stream": toPairsStreamFn})
   result.defineBuiltinType(vkBuffer, "Buffer", {
-    "len": builtinNativeFn("Buffer/len", biBufferLen),
+    "len": builtinNativeFn("Buffer/len", biBufferLen, acceptsOnePositional = true),
     "get": builtinNativeFn("Buffer/get", biBufferGet),
     "set": builtinNativeCallFn("Buffer/set", biBufferSetBang,
                             acceptsNamed = false),
@@ -11047,9 +11081,11 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                              acceptsNamed = false),
     "copy_from": builtinNativeCallFn("Buffer/copy_from", biBufferCopyFromBang,
                                   acceptsNamed = false),
-    "to_list": builtinNativeFn("Buffer/to_list", biBufferToList),
-    "to_bytes": builtinNativeFn("Buffer/to_bytes", biBufferToBytes),
-    "elem_type": builtinNativeFn("Buffer/elem_type", biBufferElemType)})
+    "to_list": builtinNativeFn("Buffer/to_list", biBufferToList, acceptsOnePositional = true),
+    "to_bytes": builtinNativeFn("Buffer/to_bytes", biBufferToBytes,
+      acceptsOnePositional = true),
+    "elem_type": builtinNativeFn("Buffer/elem_type", biBufferElemType,
+      acceptsOnePositional = true)})
   let strBuilderCtor = sharedBuiltinNative("StrBuilder/construct",
     builtinNativeFn("StrBuilder", biStrBuilderConstruct))
   result.defineBuiltinType(vkStrBuilder, "StrBuilder", {
@@ -11058,11 +11094,11 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     "append_char": sharedBuiltinNative("StrBuilder/append_char",
       builtinNativeFn("StrBuilder/append_char", biStrBuilderAppendChar)),
     "clear": sharedBuiltinNative("StrBuilder/clear",
-      builtinNativeFn("StrBuilder/clear", biStrBuilderClear)),
+      builtinNativeFn("StrBuilder/clear", biStrBuilderClear, acceptsOnePositional = true)),
     "size": sharedBuiltinNative("StrBuilder/size",
-      builtinNativeFn("StrBuilder/size", biStrBuilderSize)),
+      builtinNativeFn("StrBuilder/size", biStrBuilderSize, acceptsOnePositional = true)),
     "to_str": sharedBuiltinNative("StrBuilder/to_str",
-      builtinNativeFn("StrBuilder/to_str", biStrBuilderToStr))},
+      builtinNativeFn("StrBuilder/to_str", biStrBuilderToStr, acceptsOnePositional = true))},
     ctor = strBuilderCtor)
   # The fixed-width numeric names, bound as values so they can be *passed*
   # rather than only annotated. `matchesBuiltinType` has always known them, so
@@ -11239,13 +11275,13 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   result.define("net", newNamespace("net", netScope))
   result.define("cell", builtinNativeFn("cell", biCell))
   result.defineBuiltinType(vkCell, "Cell", {
-    "get": builtinNativeFn("Cell/get", biCellGet),
+    "get": builtinNativeFn("Cell/get", biCellGet, acceptsOnePositional = true),
     "set": builtinNativeFn("Cell/set", biCellSet),
     "swap": builtinNativeFn("Cell/swap", biCellSwap),
     "update": builtinNativeFn("Cell/update", biCellUpdate)})
   result.define("atomic_cell", builtinNativeFn("atomic_cell", biAtomicCell))
   result.defineBuiltinType(vkAtomicCell, "AtomicCell", {
-    "load": builtinNativeFn("AtomicCell/load", biAtomicCellLoad),
+    "load": builtinNativeFn("AtomicCell/load", biAtomicCellLoad, acceptsOnePositional = true),
     "store": builtinNativeFn("AtomicCell/store", biAtomicCellStore),
     "swap": builtinNativeFn("AtomicCell/swap", biAtomicCellSwap),
     "compare_exchange":
@@ -11279,12 +11315,14 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   ffiScope.define("Library", newNamespace("ffi/Library", ffiLibraryScope))
   result.define("ffi", newNamespace("ffi", ffiScope))
   result.defineBuiltinType(vkTask, "Task", {
-    "cancel": builtinNativeFn("Task/cancel", biTaskCancel),
+    "cancel": builtinNativeFn("Task/cancel", biTaskCancel, acceptsOnePositional = true),
     "detach": builtinNativeCallFn("Task/detach", biTaskDetach,
-                                             acceptsNamed = false),
+                                             acceptsNamed = false,
+                                             acceptsOnePositional = true),
     "join": builtinNativeCallFn("Task/join", biTaskJoin,
-                                         acceptsNamed = false),
-    "done?": builtinNativeFn("Task/done?", biTaskDone)})
+                                         acceptsNamed = false,
+                                         acceptsOnePositional = true),
+    "done?": builtinNativeFn("Task/done?", biTaskDone, acceptsOnePositional = true)})
   let taskOutcomeType = newEnum("TaskOutcome", @["T", "E"],
     [(name: "ok", payloadTypes: @[newSym("T")],
       hasBacking: false, backing: NIL),
@@ -11319,11 +11357,14 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     "try_send": builtinNativeCallFn("Channel/try_send", biChannelTrySend,
                                 acceptsNamed = false),
     "recv": builtinNativeCallFn("Channel/recv", biChannelRecv,
-                            acceptsNamed = false),
+                            acceptsNamed = false,
+                            acceptsOnePositional = true),
     "try_recv": builtinNativeCallFn("Channel/try_recv", biChannelTryRecv,
-                                acceptsNamed = false),
+                                acceptsNamed = false,
+                                acceptsOnePositional = true),
     "close": builtinNativeCallFn("Channel/close", biChannelClose,
-                             acceptsNamed = false)})
+                             acceptsNamed = false,
+                             acceptsOnePositional = true)})
   # A lowercase namespace holds functions; an uppercase one is a type's message
   # surface (design §3). So operations that act *on* an actor reference live on
   # `Actor` and are sent — `(a .send v)` — while the ones that take no receiver
@@ -11334,7 +11375,8 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
     "try_send": builtinNativeCallFn("Actor/try_send", biActorTrySend,
                                 acceptsNamed = false),
     "ask": builtinNativeCallFn("Actor/ask", biActorAsk),
-    "snapshot": builtinNativeFn("Actor/snapshot", biActorSnapshot),
+    "snapshot": builtinNativeFn("Actor/snapshot", biActorSnapshot,
+      acceptsOnePositional = true),
     "upgrade": builtinNativeCallFn("Actor/upgrade", biActorUpgrade)})
   let actorScope = newScope(result)
   actorScope.define("spawn", builtinNativeCallFn("actor/spawn", biActorSpawn))
@@ -11356,15 +11398,19 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                                 acceptsNamed = false))
   result.define("declarations", builtinNativeFn("declarations", biDeclarations))
   result.defineBuiltinType(vkNamespace, "Namespace", {
-    "bindings": builtinNativeFn("Namespace/bindings", biNamespaceBindings),
+    "bindings": builtinNativeFn("Namespace/bindings", biNamespaceBindings,
+      acceptsOnePositional = true),
     "lookup": builtinNativeFn("Namespace/lookup", biNamespaceLookup),
-    "declarations": builtinNativeFn("Namespace/declarations", biNamespaceDeclarations)})
+    "declarations": builtinNativeFn("Namespace/declarations", biNamespaceDeclarations,
+      acceptsOnePositional = true)})
   result.defineBuiltinType(vkModule, "Module", {
-    "root_namespace": builtinNativeFn("Module/root_namespace", biModuleRootNamespace),
-    "name": builtinNativeFn("Module/name", biModuleName),
-    "path": builtinNativeFn("Module/path", biModulePath),
-    "meta": builtinNativeFn("Module/meta", biModuleMeta),
-    "declarations": builtinNativeFn("Module/declarations", biModuleDeclarations)})
+    "root_namespace": builtinNativeFn("Module/root_namespace", biModuleRootNamespace,
+      acceptsOnePositional = true),
+    "name": builtinNativeFn("Module/name", biModuleName, acceptsOnePositional = true),
+    "path": builtinNativeFn("Module/path", biModulePath, acceptsOnePositional = true),
+    "meta": builtinNativeFn("Module/meta", biModuleMeta, acceptsOnePositional = true),
+    "declarations": builtinNativeFn("Module/declarations", biModuleDeclarations,
+      acceptsOnePositional = true)})
   result.defineBuiltinType(vkEnv, "Env", {
     "extend": builtinNativeCallFn("Env/extend", biEnvExtend,
                               acceptsNamed = false)})
@@ -11408,14 +11454,18 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
   var streamNs: Value
   discard result.lookupOptional("stream", streamNs)
   result.defineBuiltinType(vkStream, "Stream", {
-    "has_next": builtinNativeFn("Stream/has_next", biStreamHasNext),
+    "has_next": builtinNativeFn("Stream/has_next", biStreamHasNext,
+      acceptsOnePositional = true),
     "peek": builtinNativeCallFn("Stream/peek", biStreamPeek,
-                            acceptsNamed = false),
+                            acceptsNamed = false,
+                            acceptsOnePositional = true),
     "next": builtinNativeCallFn("Stream/next", biStreamNext,
-                            acceptsNamed = false),
+                            acceptsNamed = false,
+                            acceptsOnePositional = true),
     "try_next": builtinNativeCallFn("Stream/try_next", biStreamTryNext,
-                                acceptsNamed = false),
-    "close": builtinNativeFn("Stream/close", biStreamClose),
+                                acceptsNamed = false,
+                                acceptsOnePositional = true),
+    "close": builtinNativeFn("Stream/close", biStreamClose, acceptsOnePositional = true),
     "map": mapFn,
     "filter_map": filterMapFn,
     "filter": filterFn,
@@ -24871,12 +24921,13 @@ proc runReplSession*(scope: Scope,
   var pendingSource = ""
   var pendingError = ""
   let continuationPrompt = "....> "
+  let editing = options.editDraft != nil
+  let writesPrompt = options.interactive and not editing
 
-  # Interactive sessions handle SIGINT themselves: while reading, the tty's
-  # ISIG flush already discarded the partial line and the handler redraws the
-  # prompt; while evaluating, the handler arms the VM interrupt flag so the
-  # dispatch loop raises a catchable "interrupted" error. SA_RESTART keeps the
-  # blocking readLine transparent to the signal.
+  # The editor handles Ctrl-C while it owns the terminal. The legacy line
+  # reader uses the tty's ISIG flush and the handler redraws the prompt.
+  # During evaluation the handler arms the VM interrupt flag. SA_RESTART
+  # keeps the blocking legacy readLine transparent to the signal.
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     var oldSigint: Sigaction
     var sigintInstalled = false
@@ -24895,43 +24946,63 @@ proc runReplSession*(scope: Scope,
         scope.evalBudget = EvalBudget()
         installedBudget = true
 
-  template readOneLine(dest: var string): bool =
+  template readInput(dest: var string): bool =
     when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       if sigintInstalled:
-        volatileStore(addr gReplSigPhase, replPhaseReading)
-      let ok = readLine(dest)
+        volatileStore(addr gReplSigPhase,
+          if editing: replPhaseIdle else: replPhaseReading)
+    let ok =
+      if editing:
+        dest = pendingSource
+        options.editDraft(dest, pendingSource.len > 0)
+      else:
+        readLine(dest)
+    when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+      volatileStore(addr gVmInterrupt, false)
       if sigintInstalled:
         volatileStore(addr gReplSigPhase, replPhaseEvaluating)
-      ok
-    else:
-      readLine(dest)
+    ok
 
   try:
-    if options.interactive:
+    if writesPrompt:
       writeOut(options.prompt)
-    while readOneLine(line):
+    while readInput(line):
       let trimmed = line.strip()
-      if pendingSource.len == 0 and trimmed.len == 0:
-        if options.interactive:
+      let atNewInput = editing or pendingSource.len == 0
+      if atNewInput and trimmed.len == 0:
+        if options.finishDraft != nil: options.finishDraft()
+        pendingSource = ""
+        pendingError = ""
+        if writesPrompt:
           writeOut(options.prompt)
         continue
-      if pendingSource.len == 0 and trimmed in [":quit", ":exit", "quit", "exit"]:
+      if atNewInput and trimmed in [":quit", ":exit", "quit", "exit"]:
+        if options.finishDraft != nil: options.finishDraft()
         return 0
       let source =
-        if pendingSource.len == 0: line
+        if atNewInput: line
         else: pendingSource & "\n" & line
       try:
-        when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-          # Drop any interrupt that landed after the previous eval finished so
-          # it cannot spuriously abort this line.
-          volatileStore(addr gVmInterrupt, false)
+        let unit =
+          try:
+            readAllWithLocs(source, "<repl>")
+          except ReadIncompleteError as e:
+            pendingSource = source
+            pendingError = e.msg
+            if writesPrompt:
+              writeOut(continuationPrompt)
+            continue
+          except ReadError:
+            if options.finishDraft != nil: options.finishDraft()
+            raise
+        if options.finishDraft != nil: options.finishDraft()
         let context = scopeMacroBindings(scope)
         var existingValues: seq[string]
         for name in scope.vars.keys: existingValues.add name
         for index, name in scope.slotNames:
           if index notin scope.privateSlots and name notin existingValues:
             existingValues.add name
-        let chunk = compileReplSource(source, macros = context,
+        let chunk = compileReplSource(unit, macros = context,
           history = if context != nil: context.history else: @[],
           existingValues = existingValues)
         for diagnostic in chunk.compilerDiagnostics:
@@ -24942,29 +25013,21 @@ proc runReplSession*(scope: Scope,
         # Compiler declarations commit with successful compilation. Runtime
         # errors do not roll them back, just as they do not undo value effects.
         writeOut(run(chunk, scope).print() & "\n")
-        pendingSource = ""
-        pendingError = ""
-      except ReadIncompleteError as e:
-        pendingSource = source
-        pendingError = e.msg
-        if options.interactive:
-          writeOut(continuationPrompt)
-        continue
       except ReadError as e:
-        pendingSource = ""
-        pendingError = ""
         writeErr(formatDiagnostic("Read error", e.msg,
           SourceLoc(sourceName: e.sourceName, line: e.line, col: e.col)) & "\n")
       except GeneError as e:
-        pendingSource = ""
-        pendingError = ""
         writeErr(formatDiagnostic("Error", errorDiagnosticMessage(e, scope),
                                   e.loc) & "\n")
-      if options.interactive:
+      pendingSource = ""
+      pendingError = ""
+      if options.recordSubmission != nil:
+        options.recordSubmission(source)
+      if writesPrompt:
         writeOut(options.prompt)
-    if options.interactive:
+    if writesPrompt:
       writeOut("\n")
-    if pendingSource.len > 0:
+    if not editing and pendingSource.len > 0:
       let msg = if pendingError.len == 0: "unexpected end of input" else: pendingError
       writeErr("Read error: " & msg & "\n")
     0
@@ -28944,6 +29007,116 @@ proc staticLookupValue(target, segment: Value): Value =
   ## a miss is nil.
   let found = staticLookup(target, segment)
   if found.isMissing: NIL else: found
+
+proc replBindingNames*(scope: Scope): tuple[local, builtin: seq[string]] =
+  ## Enumerate the same names a lexical lookup can read, including nil values.
+  var seen = initHashSet[string]()
+  let app = scope.application()
+  var current = scope
+  template consider(name: string, readable: bool) =
+    if name.len > 0 and name[0] != '\0' and not seen.containsOrIncl(name):
+      if readable:
+        if current == app.builtins or current == app.sandboxRoot:
+          result.builtin.add name
+        else:
+          result.local.add name
+  while current != nil:
+    for index, name in current.slotNames:
+      if index notin current.privateSlots:
+        consider(name, current.slotDefined(index))
+    for name in current.vars.keys:
+      consider(name, true)
+    for name, fallback in current.wildcardFallbacks:
+      consider(name, not fallback.parentCollision and fallback.conflicts.len == 0)
+    current = current.parent
+
+proc replBinding*(scope: Scope, name: string): Value =
+  try:
+    if not scope.lookupOptional(name, result):
+      result = MISSING
+  except GeneError:
+    # Ambiguous wildcard imports are not usable as receivers.
+    result = MISSING
+
+proc replMemberNames*(target: Value): seq[string] =
+  case target.kind
+  of vkMap:
+    for name, _ in target.mapEntries:
+      result.add name
+  of vkNode:
+    for name, _ in target.props:
+      result.add name
+    let typ = target.borrowedNodeHead
+    if typ.kind == vkType and not typ.isEnumType and not typ.typeContractPending:
+      for field in typ.borrowedTypeFields:
+        result.add field.name
+    if target.errorEvidence != nil:
+      for name in target.errorEvidence.diagnostics.keys:
+        result.add name
+  of vkNamespace, vkModule:
+    let ns = if target.kind == vkModule: target.moduleRootNamespace else: target
+    let owner {.cursor.} = ns.borrowedNsScope
+    for name in owner.vars.keys:
+      if canReadExport(ns, owner, name):
+        result.add name
+    if owner.varsDirty:
+      for i, name in owner.slotNames:
+        if i notin owner.privateSlots and owner.slotDefined(i) and
+            canReadExport(ns, owner, name):
+          result.add name
+  of vkType:
+    if target.isEnumType:
+      for variant in target.enumVariants:
+        result.add variant.enumVariantName
+  else: discard
+
+proc replStructuralMember*(target: Value, segment: Value): Value =
+  ## Use only the storage-reading branches of a path. Other branches can
+  ## dispatch messages or advance declaration assembly.
+  if target.isEnumType and segment.kind == vkString:
+    let variant = target.enumVariantDescriptor(segment.strVal)
+    return if variant.kind == vkNil: MISSING else: variant
+  if target.kind in {vkNamespace, vkModule}:
+    if segment.kind != vkString: return MISSING
+    let ns = if target.kind == vkModule: target.moduleRootNamespace else: target
+    let owner {.cursor.} = ns.borrowedNsScope
+    let name = segment.strVal
+    if not canReadExport(ns, owner, name): return MISSING
+    if owner.varsDirty:
+      let index = owner.slotIndex(name)
+      if index >= 0 and owner.slotDefined(index): return owner.slots[index]
+    return owner.vars.getOrDefault(name, MISSING)
+  if target.kind notin {vkMap, vkNode, vkList}:
+    return MISSING
+  try:
+    staticLookup(target, segment)
+  except GeneError:
+    MISSING
+
+proc replReceiverOnly(fn: Value): bool =
+  case fn.kind
+  of vkFunction:
+    let proto = FunctionProto(fn.fnCode)
+    if proto.requiredPositional > 1 or
+        (proto.params.len == 0 and proto.restParam.len == 0):
+      return false
+    for parameter in proto.namedParams:
+      if not parameter.defaultValue.optional:
+        return false
+    true
+  of vkNativeFn: fn.nativeAcceptsOnePositional
+  else: false
+
+proc replMessageNames*(receiver: Value, receiverOnly: bool): seq[string] =
+  ## Use the direct-message metadata that runtime/messages uses, without
+  ## resolving contracts or inspecting signatures with type lookups.
+  if receiver.isMissing:
+    return
+  let typ = receiver.receiverType
+  if typ.kind == vkType and not typ.typeContractPending:
+    for name in typ.typeDirectMessageNames:
+      if not receiverOnly or typeDirectMessage(typ, name).replReceiverOnly:
+        result.add name
 
 proc applySelectorCallStage(stage, target: Value): Value =
   if stage.body.len == 0:

@@ -2,6 +2,8 @@ import std/[algorithm, json, monotimes, net, os, osproc, sequtils, streams,
             strutils, times, unittest]
 when defined(posix):
   import std/posix
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  import gene/ext/term/pty_process
 when defined(macosx):
   const SigWinch = 28
 import gene/[digest, package, printer, reader, repl, vm, web]
@@ -1225,6 +1227,51 @@ suite "cli — gene eval":
     check "undefined symbol: missing" in ran.output
     check "at <eval>:1:1" in ran.output
 
+when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+  proc replPty(extra: openArray[(string, string)] = [],
+               command: seq[string] = @[]): PtyProcess =
+    buildGeneCli()
+    var environment = sanitizedTerminalEnvironment().filterIt(
+      not (it.startsWith("VISUAL=") or it.startsWith("EDITOR=") or
+           it.startsWith("GENE_USER_PACKAGES=")))
+    environment.add "GENE_USER_PACKAGES=" & (cliDir / "repl-user-packages")
+    for (key, value) in extra:
+      environment.add key & "=" & value
+    spawnPty(if command.len > 0: command else: @[geneExe, "repl"],
+             cwd = cliDir, cols = 120, environment = environment)
+
+  proc awaitReplPty(child: PtyProcess, marker: string): string =
+    let deadline = getMonoTime() + initDuration(seconds = 5)
+    while getMonoTime() < deadline:
+      result.add child.readAvailable().data
+      if marker in result: return
+      if child.pollExit():
+        result.add child.readAvailable().data
+        if marker in result: return
+        break
+      sleep(5)
+    raise newException(IOError, "expected REPL output " & marker.escape &
+      ", got " & result.escape)
+
+  proc sendReplPty(child: PtyProcess, keys: string) =
+    let deadline = getMonoTime() + initDuration(seconds = 5)
+    var offset = 0
+    while offset < keys.len and getMonoTime() < deadline:
+      let written = child.writeAvailable(keys[offset .. ^1])
+      offset += written
+      if written == 0: sleep(5)
+    if offset < keys.len:
+      raise newException(IOError, "timed out writing REPL input")
+
+  const replReady = "\e[?2004h"
+
+  proc replPtyExit(child: PtyProcess): int =
+    let deadline = getMonoTime() + initDuration(seconds = 5)
+    while getMonoTime() < deadline:
+      if child.pollExit(): return child.exitStatus
+      sleep(5)
+    raise newException(IOError, "timed out waiting for the REPL to exit")
+
 suite "cli — gene repl":
   setup:
     createDir(cliDir)
@@ -1316,6 +1363,119 @@ suite "cli — gene repl":
     check code == 0
     check outText == "gene> ....> 3\ngene> "
     check errText == ""
+
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    test "TTY completes live names and members at the UTF-8 cursor":
+      let child = replPty()
+      defer: child.close()
+      discard child.awaitReplPty(replReady & "gene> ")
+      child.sendReplPty("(let account {^name \"Élodie\" ^roles [1 2]})\r")
+      check "{^name \"Élodie\" ^roles [1 2]}\r\n" in child.awaitReplPty(replReady)
+      child.sendReplPty("\t")
+      discard child.awaitReplPty("account  ")
+      child.sendReplPty("account/\t")
+      discard child.awaitReplPty("name  roles\r")
+      child.sendReplPty("naé\e[D\t")
+      discard child.awaitReplPty("gene> account/name")
+      child.sendReplPty("\r")
+      check "\r\n\"Élodie\"\r\n" in child.awaitReplPty(replReady)
+      child.sendReplPty("\x04")
+      discard child.awaitReplPty("\e[?2004l")
+      check child.replPtyExit() == 0
+
+    test "TTY edits continuation lines, recalls whole drafts, and searches history":
+      let child = replPty()
+      defer: child.close()
+      discard child.awaitReplPty(replReady & "gene> ")
+      child.sendReplPty("(+ 10\r")
+      discard child.awaitReplPty("....> ")
+      child.sendReplPty("9)\e[A\e[F\x7f\x7f20\r")
+      check "\r\n29\r\n" in child.awaitReplPty(replReady)
+
+      child.sendReplPty("(+ 50 1)\e[D\e[D\e[A")
+      discard child.awaitReplPty("....> 9)")
+      child.sendReplPty("\e[B")
+      discard child.awaitReplPty("gene> (+ 50 1)")
+      child.sendReplPty("2\r")
+      check "\r\n71\r\n" in child.awaitReplPty(replReady)
+
+      child.sendReplPty("\x12unmatched")
+      discard child.awaitReplPty("(no match) unmatched>")
+      child.sendReplPty("\x07\x12(+\x12")
+      discard child.awaitReplPty("(+ 20 ↵ 9)")
+      child.sendReplPty("\r")
+      let selected = child.awaitReplPty("....> 9)")
+      check "\r\n29\r\n" notin selected
+      child.sendReplPty("\r")
+      check "\r\n29\r\n" in child.awaitReplPty(replReady)
+
+      child.sendReplPty("\e[200~(+ 70\n 3)\e[201~")
+      let pasted = child.awaitReplPty("....>  3)")
+      check "\r\n73\r\n" notin pasted
+      child.sendReplPty("\r")
+      check "\r\n73\r\n" in child.awaitReplPty(replReady)
+
+      child.sendReplPty("(var side_effect 42) (+\r")
+      discard child.awaitReplPty("....> ")
+      child.sendReplPty("\x03side_effect\r")
+      check "undefined symbol: side_effect" in child.awaitReplPty(replReady)
+      child.sendReplPty(")\r")
+      check "Read error:" in child.awaitReplPty(replReady)
+      child.sendReplPty("(while true nil)\r")
+      discard child.awaitReplPty("\e[?2004l")
+      child.sendReplPty("\x03")
+      check "interrupted" in child.awaitReplPty(replReady)
+      child.sendReplPty("\x04")
+      discard child.awaitReplPty("\e[?2004l")
+      check child.replPtyExit() == 0
+
+    test "TTY Ctrl-E round-trips the full draft and restores terminal modes":
+      let editor = writeCliProgram("repl-test-editor", """#!/bin/sh
+if [ "$(cat "$1")" = "$(printf '(+ 1\n 2')" ]; then
+  printf '(+ 30\n 4)' > "$1"
+elif [ "$(cat "$1")" = '(+ 80 1)' ]; then
+  printf '(+ 1 1)' > "$1"
+  exit 3
+else
+  rm "$1" "$0"
+fi
+""")
+      setFilePermissions(editor, {fpUserRead, fpUserWrite, fpUserExec})
+      let command = "before=$(stty -g) && " & shellQuote(geneExe) &
+        " repl && echo CHECK_TERMINAL && IFS= read -r probe && after=$(stty -g); " &
+        "if [ \"$probe\" = termios-probe ] && [ \"$after\" = \"$before\" ]; then " &
+        "echo RESTORED; else echo \"before $before, after $after\"; exit 1; fi"
+      let child = replPty([("EDITOR", shellQuote(editor))], @["/bin/sh", "-c", command])
+      defer: child.close()
+      discard child.awaitReplPty(replReady & "gene> ")
+      child.sendReplPty("(+ 1\r")
+      discard child.awaitReplPty("....> ")
+      child.sendReplPty(" 2\x05")
+      let updated = child.awaitReplPty("....>  4)")
+      check "\r\n34\r\n" notin updated
+      child.sendReplPty("\r")
+      check "\r\n34\r\n" in child.awaitReplPty(replReady)
+
+      child.sendReplPty("(+ 80 1)\x05")
+      check "editor exited with status 3" in child.awaitReplPty(replReady)
+      child.sendReplPty("\r")
+      check "\r\n81\r\n" in child.awaitReplPty(replReady)
+
+      child.sendReplPty("(+ 90 1)\x05")
+      check "Could not edit draft" in child.awaitReplPty(replReady)
+      child.sendReplPty("\r")
+      check "\r\n91\r\n" in child.awaitReplPty(replReady)
+
+      child.sendReplPty("(+ 97 1)\x05")
+      check "Could not edit draft" in child.awaitReplPty(replReady)
+      child.sendReplPty("\r")
+      check "\r\n98\r\n" in child.awaitReplPty(replReady)
+      child.sendReplPty("\x04")
+      # The first canonical read clears macOS's transient PENDIN flag.
+      discard child.awaitReplPty("CHECK_TERMINAL")
+      child.sendReplPty("termios-probe\r")
+      discard child.awaitReplPty("RESTORED")
+      check child.replPtyExit() == 0
 
   test "rejects unknown repl options":
     let ran = runGene(["repl", "--bogus"])

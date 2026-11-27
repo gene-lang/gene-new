@@ -82,6 +82,7 @@ type
     wraps: Table[uint64, WrapSyntax]
     captureTrivia: bool
     spannedTokens: seq[SpannedToken]
+    spanStart: int               # start of the token being scanned by tooling
 
   ReadError* = object of CatchableError
     sourceName*: string
@@ -831,6 +832,8 @@ proc tokenizeImpl(r: var Reader,
     let startLine = r.line
     let startCol = r.col
     let startByte = r.pos
+    when captureSpans:
+      r.spanStart = startByte
 
     case c
     of ' ', '\t', '\r', '\n':
@@ -1164,6 +1167,19 @@ proc lexAllSpanned*(src: string, includeEof = false,
   result = r.spannedTokens
   if not includeEof and result.len > 0 and result[^1].kind == tkEof:
     result.setLen(result.len - 1)
+
+proc lexEditBuffer*(src: string): tuple[tokens: seq[SpannedToken], stoppedAt: int] =
+  ## An unfinished literal or bad token can follow otherwise usable tokens.
+  ## Keep the valid prefix and its boundary without relaxing the source reader.
+  var r = initReader(src, captureTrivia = true)
+  result.stoppedAt = -1
+  try:
+    r.tokenize(captureSpans = true)
+  except ReadError:
+    result.stoppedAt = r.spanStart
+  result.tokens = move(r.spannedTokens)
+  if result.tokens.len > 0 and result.tokens[^1].kind == tkEof:
+    result.tokens.setLen(result.tokens.len - 1)
 
 proc peek(r: Reader): Token =
   if r.tokIdx < r.tokens.len:

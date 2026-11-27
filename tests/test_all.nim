@@ -54,6 +54,7 @@ include test_logging
 include test_declaration_heads
 include test_str_declarations
 include test_cli
+include test_repl_completion
 include test_lsp
 include test_doc_builder
 include test_http_server

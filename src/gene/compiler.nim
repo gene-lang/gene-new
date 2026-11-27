@@ -11821,15 +11821,20 @@ proc compileEvalSource*(src: string, useLocalSlots = true,
                     macros = macros, history = history, existingValues = existingValues,
                     persistentMacros = persistentMacros)
 
-proc compileReplSource*(src: string, macros: MacroBindings = nil,
+proc compileReplSource*(unit: SourceUnit, macros: MacroBindings = nil,
                         history: seq[Value] = @[],
                         existingValues: seq[string] = @[]): Chunk =
   ## A REPL is a sequence of declaration-bearing inputs, including imports.
   ## Ordinary eval retains its explicit Env import contract.
-  compileSourceUnit(readAllWithLocs(src, "<repl>"),
+  compileSourceUnit(unit,
                     allowAmbientImports = true, useLocalSlots = false,
                     macros = macros, history = history,
                     existingValues = existingValues, persistentMacros = true)
+
+proc compileReplSource*(src: string, macros: MacroBindings = nil,
+                        history: seq[Value] = @[],
+                        existingValues: seq[string] = @[]): Chunk =
+  compileReplSource(readAllWithLocs(src, "<repl>"), macros, history, existingValues)
 
 proc compileSource*(src: string, sourceName = "",
                     useLocalSlots = true, errorsMode = ""): Chunk =
