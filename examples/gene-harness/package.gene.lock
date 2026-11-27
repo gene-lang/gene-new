@@ -7,10 +7,10 @@
   ^roots [ "workspace:gene/harness@0.1.0#sha256:de81822bf8b636eae5728c615a334e0ea2069931729dd90d7f0383db14f824c3"]
   ^packages [
     (locked_package
-      ^id "path:gene/reference@0.1.0#sha256:85a121591aa68a326bb795a5315fff1fb31f1306d4732cdce1a5bc937662fb21"
+      ^id "path:gene/reference@0.1.0#sha256:b252acfa53c95674be89f8a038a233319c2f1cbe889f1f31fa93384bda37710c"
       ^name "gene/reference"
       ^version "0.1.0"
-      ^manifest_digest "sha256:f71f62e936371d313f8db901320f78046576814babbdd3c4855dce92283954bd"
+      ^manifest_digest "sha256:c33a7a85ae4329da192ae0cc02588eeabe9c2478c376c443838715281507389e"
       ^source (path ^path "../../tools/gene-lang-skill")
       ^features []
       ^dependencies {
@@ -99,7 +99,7 @@
         ^cordis (locked_edge ^scope runtime ^target "path:genex/cordis@0.1.0#sha256:5b89857382fdb77760d29445d8d0c02d3ecc3d7933ce8f79b3ed6648b3624212")
         ^crypto (locked_edge ^scope runtime ^target "path:genex/crypto@0.1.0#sha256:d9e1ad2d97b0a69a4737381ef96d2d48a36dcb9b730d07e2a25c310843d0af8b")
         ^documents (locked_edge ^scope runtime ^target "path:genex/documents@0.1.0#sha256:f550ff1d2055144fe47ff770f9f911cb5ec475bca06f96d5597e48abf1145be9")
-        ^gene_reference (locked_edge ^scope runtime ^target "path:gene/reference@0.1.0#sha256:85a121591aa68a326bb795a5315fff1fb31f1306d4732cdce1a5bc937662fb21")
+        ^gene_reference (locked_edge ^scope runtime ^target "path:gene/reference@0.1.0#sha256:b252acfa53c95674be89f8a038a233319c2f1cbe889f1f31fa93384bda37710c")
         ^raster (locked_edge ^scope runtime ^target "path:genex/raster@0.1.0#sha256:ec2af0e6b71a890491c05bdcdcce963ae7f107c0de2d0f0cf362241059b1dd8e")
         ^websocket (locked_edge ^scope runtime ^target "path:genex/websocket@0.1.0#sha256:332aab4ff651882f4eed81e319d19143856ec741c14dd40169f04393d9bcc87e")
       }

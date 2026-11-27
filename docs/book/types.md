@@ -128,6 +128,28 @@ declares it, and a pattern can test for it:
 A protocol whose impl lives in another module is brought in with
 `import_impl` ([Modules and packages](modules.md)).
 
+## Deriving an implementation
+
+A protocol can supply a `derive` rule that builds an `impl` for every type
+that names it in `^derive`. The rule receives the type and the requested
+protocol, and returns an impl as quoted code. This is how a protocol gives a
+whole family of types the same implementation:
+
+```gene runnable
+(protocol Labelled
+  (message label [] : Str)
+  (derive [t : Type, req]
+    `(impl Labelled for %t
+       (message label [] : Str self/name))))
+(type Person ^props {^name Str} ^derive [Labelled])
+((Person ^name "Ada") .Labelled:label)
+# "Ada"
+```
+
+The generated impl exists only for the deriving type. Use `impl` when one
+type needs a hand-written implementation; use `derive` when the protocol
+itself knows how to build it.
+
 ## Inheritance
 
 A type may have one parent, written `: Parent` after its name. It inherits
@@ -193,7 +215,15 @@ value, and a variant with types in parentheses carries a payload:
 | `Self` | the declaring type, in a message signature |
 
 `(alias Name Str)` gives a type expression a name. A record or enum's name is
-itself a type expression.
+itself a type expression. The alias is checked wherever the type is used, so
+an annotation can name a shape once:
+
+```gene runnable
+(alias Name Str)
+(fn greet [who : Name] : Str who)
+(greet "Ada")
+# "Ada"
+```
 
 Annotations are checked when a value crosses them, including the items of a
 collection: `(Person ^tags [1])` against `^tags (List Str)` fails with

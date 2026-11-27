@@ -14,8 +14,8 @@
 ## the standard library.
 
 import std/[algorithm, json, os, osproc, sets, strutils, tables, unittest]
-import gene/[callable_reflection, docs_lookup, gir, package, printer, reader,
-            types, vm, web]
+import gene/[callable_reflection, compiler, docs_lookup, gir, package, printer,
+            reader, types, vm, web]
 import tools/declaration_heads
 import tools/docs/builder as docBuilder
 from tools/docs/model import DocEntry, DocImport, DocParam, ModuleDoc, renderModuleDoc
@@ -81,6 +81,14 @@ proc docTestEntryNamed(doc: ModuleDoc, name: string): DocEntry =
 # ---------------------------------------------------------------------------
 # Fixtures: every kind, sidecars, and the records for what cannot be read
 # ---------------------------------------------------------------------------
+
+proc docTestWriteHeads(root: string, heads: seq[string]) =
+  var quoted: seq[string]
+  for head in heads:
+    quoted.add("\"" & head.replace("\\", "\\\\").replace("\"", "\\\"") & "\"")
+  createDir(root / "build" / "docs")
+  writeFile(root / "build" / "docs" / "heads.gene",
+    "[" & quoted.join(" ") & "]\n")
 
 proc docTestRunGenerator(root: string) =
   ## Run `tools/docs` in this test's VM, the way `gene doc build` runs it.
@@ -978,7 +986,7 @@ suite "doc builder — no VM linked":
       docTestRunGenerator(root)
     except GeneError as error:
       failed = true
-      check "link check" in error.msg
+      check "check problem" in error.msg
     check failed
     check fileExists(keep)
 
@@ -1074,3 +1082,61 @@ suite "doc builder — no VM linked":
           if name.startsWith(forbidden):
             checkpoint "linked: " & name
             check false
+
+  test "check 4: every compiler head has a book section":
+    let root = docTestRepoRoot()
+    var built = docBuilder.buildPackage(root)
+    built.writeOutputs()
+    docTestWriteHeads(root, @CoreSpecialFormNames)
+    docTestRunGenerator(root)
+    let manifest = readFile(root / "build" / "docs" / "manifest.gene")
+    check "^heads \"ok\"" in manifest
+
+  test "check 4: a head with no section fails the build and names the head":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-missing-head"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    var built = docBuilder.buildPackage(copyRoot)
+    built.writeOutputs()
+    docTestWriteHeads(copyRoot, @["let", "zzz_missing_head"])
+    var failed = false
+    try:
+      docTestRunGenerator(copyRoot)
+    except GeneError as error:
+      failed = true
+      check "zzz_missing_head" in error.msg
+    check failed
+
+  test "SKILL.md is generated from the overview page":
+    let root = docTestRepoRoot()
+    let skillPath = root / "tools" / "gene-lang-skill" / "SKILL.md"
+    let pagePath = root / "build" / "docs" / "md" / "book" / "overview.md"
+    if not fileExists(pagePath):
+      var built = docBuilder.buildPackage(root)
+      built.writeOutputs()
+      docTestWriteHeads(root, @CoreSpecialFormNames)
+      docTestRunGenerator(root)
+    let skill = readFile(skillPath)
+    let close = skill.find("\n---", 3)
+    check close > 0
+    if close > 0:
+      let body = skill[close + 4 .. ^1].strip()
+      check body == readFile(pagePath).strip()
+
+  test "check 2: a stale qualified name fails the build":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-stale-name"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    var built = docBuilder.buildPackage(copyRoot)
+    built.writeOutputs()
+    docTestWriteHeads(copyRoot, @["let"])
+    writeFile(copyRoot / "AGENTS.md", "Use `$str/no_such_name` here.\n")
+    var failed = false
+    try:
+      docTestRunGenerator(copyRoot)
+    except GeneError as error:
+      failed = true
+      check "no_such_name" in error.msg
+    check failed

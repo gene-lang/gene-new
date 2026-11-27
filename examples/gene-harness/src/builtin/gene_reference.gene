@@ -4,28 +4,15 @@
 
 (fn gene_reference [] : Plugin
   (Plugin ^id "gene_reference"
-    ^provides [["prompt" "gene_reference"] ["docs" "gene/stdlib"] ["docs" "harness/ui/quickstart"]]
+    ^provides [["prompt" "gene_reference"] ["docs" "harness/ui/quickstart"]]
     ^activate (fn [host]
       (host .PluginHost:contribute "prompt"
         {^name "gene_reference"
-         ^text "Write Gene using documented patterns and verify the working implementation with focused tests. Probe specific blocking uncertainties. The language guide is gene/overview; a complete tested UI starter is harness/ui/quickstart. Focused chapters are discoverable by topic."})
+         ^text "Write Gene using documented patterns and verify the working implementation with focused tests. Probe specific blocking uncertainties. The language overview is gene/overview; load book chapters with $docs and the index with $docs/index. A complete tested UI starter is harness/ui/quickstart. Focused chapters are discoverable by topic."})
       (contribute_doc host "gene/overview"
-        "Writing and probing Gene; essential conventions and reference branches."
+        "The language overview: how the book is organized and how to load it."
         "tools/gene-lang-skill/SKILL.md" ^tags ["language" "Gene" "syntax" "tooling"]
-        ^docs ["gene/syntax" "gene/declarations" "gene/control_flow" "gene/stdlib" "gene/pitfalls"])
-      (for entry in
-          [["pitfalls" "pitfalls" "Error messages, common authoring mistakes and fixes."
-             ["errors" "undefined" "diagnostics"]]
-           ["syntax" "syntax" "Literals, quoted nodes, paths, interpolation and spread."
-             ["quote" "splice" "spread" "interpolation" "paths"]]
-           ["declarations" "declarations" "Functions, types, protocols, modules and imports."
-             ["fn" "type" "protocol" "import" "module"]]
-           ["control_flow" "control-flow" "Conditionals, multi-step guards, loops, tasks and streams."
-             ["if" "if_not" "if_present" "elif" "else" "loops" "match" "tasks"]]
-           ["stdlib" "stdlib" "Standard-library namespaces, files, processes and built-in messages."
-             ["stdlib" "fs" "files" "os" "exec" "process" "http" "json" "serde" "collections"]]]
-        (contribute_doc host $"gene/${entry/0}" entry/2
-          $"tools/gene-lang-skill/reference/${entry/1}.md" ^tags entry/3))
+        ^docs ["harness/ui/quickstart"])
       (contribute_doc host "harness/web_components"
         "Complete contract for UI slots, keyed forms, browser state, actions and safe workspace images."
         "examples/gene-harness/docs/web-components.md"

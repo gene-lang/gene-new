@@ -4,46 +4,13 @@ When working on any Gene feature, example, library, or application, keep the **s
 
 Applications and examples are also opportunities to test the language itself. If something feels awkward, unnecessarily difficult, inconsistent, or missing, do not simply work around it. Consider whether the underlying language, standard library, tooling, or runtime should be improved instead. Record such issues and, when appropriate, fix them as part of the work.
 
-### Preferred Gene style
+### Gene style
 
-Prefer `($present? x)` to `(! ($absent? x))`. Presence means not `nil`, Gene's
-one absence value; `false`, zero, empty strings and empty collections are still
-present.
-
-Prefer an `elif` chain to nested `if` forms in successive else branches. Write
-`elif` and `else` as bare markers, not parenthesized clauses, even for
-one-expression arms:
-
-```gene
-(if x
-  do_x
-  elif y do_y
-  elif z do_z
-  else do_something)
-```
-
-When the branches compare the same value against literals, prefer `match` with
-`when` arms and an explicit `else` instead of repeated equality tests:
-
-```gene
-(match x
-  when 1 do_1
-  when 2 do_2
-  else do_3)
-```
-
-Prefer the path spelling for a zero-argument message send on a simple symbol or path receiver: `(a .x)` becomes `a/.x`. This also applies to protocol-qualified messages, such as `resource/.IoResource:close`.
-
-Keep sends with arguments parenthesized, such as `(a .x value)`. Keep the explicit send for literal or computed receivers, such as `([1 2] .size)` and `((make_a) .x)`, and for parent dispatch, such as `(super .x)`. Preserve quoted syntax as data rather than rewriting its structure for style.
-
-In a macro template, when spliced caller syntax sits inside a binder the
-template declares, name the binder with `$gensym` instead of a fixed name:
-
-```gene
-(macro swap [a b]
-  (let tmp ($gensym "tmp"))
-  `(do (var %tmp %a) (set %a %b) (set %b %tmp)))
-```
+The book is the style contract: read `docs/book/overview.md` and the section
+for the construct you are writing. Its examples are runnable, so copy their
+spelling rather than a Lisp habit. In particular, `$present?` tests presence,
+`elif`/`else` are bare markers, `match` replaces a chain of equality tests,
+and a zero-argument send on a simple receiver is written `receiver/.message`.
 
 ### Preserve the language design
 

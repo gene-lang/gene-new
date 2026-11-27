@@ -101,7 +101,11 @@ A path reads through data with `/`:
 # ["Ada" "reader" "writer" "Ada" 2]
 ```
 
-A send with arguments keeps its parentheses: `(person/roles .get 1)`.
+A send with arguments keeps its parentheses: `(person/roles .get 1)`. For a
+zero-argument send on a simple symbol or path receiver, prefer the path
+spelling: `person/.name` reads more directly than `(person .name)`. A literal
+or computed receiver keeps the explicit send (`([1 2] .size)`,
+`((make_person) .name)`), and a parent dispatch keeps `(super .x)`.
 
 > **Watch out:** a path cannot be glued to a closing bracket.
 > `(get_person)/name` and `[1 2]/.size` are read errors,

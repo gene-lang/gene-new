@@ -153,7 +153,22 @@ counter/.snapshot/state
 
 Because an actor handles one message at a time, its state needs no locking.
 A `supervisor` form owns actors and restarts or stops one whose handler
-fails.
+fails. Its body is a scope: actors spawned there are owned by the supervisor,
+and `^strategy restart` or `^strategy stop` decides what happens when one
+raises. `^events` names a channel that receives failure and recovery events:
+
+```gene runnable
+(supervisor ^strategy restart
+  (let counter
+    ($actor/spawn ^init (fn [] 0)
+      ^handle (fn [ctx state msg]
+        ($actor/continue (+ state msg)))))
+  (counter .send 2)
+  (counter .send 5)
+  ($sleep 100)
+  counter/.snapshot/state)
+# 7
+```
 
 ## Events
 

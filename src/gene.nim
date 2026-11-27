@@ -22,6 +22,7 @@ import gene/[build, build_info, compiler, diagnostics, gir, install,
 # native_managed installs the owned byte-ingress adapter for this executable.
 import gene/ext/[logging, logging_config]
 import tools/docs/file_view
+import gene/docs_lookup
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
 # executable's dynamic symbol table for a dlopened AOT library to resolve.
@@ -97,6 +98,7 @@ proc usage() =
   echo "  gene clean               remove project build views and sandboxes"
   echo "  gene doc <file.gene>     print a module's doc, imports, and declarations (never runs it)"
   echo "  gene doc build [dir]     write the documentation corpus to build/docs"
+  echo "  gene doc skill           regenerate tools/gene-lang-skill/SKILL.md from book/overview"
   echo "  gene doc index|ls|show|search [--corpus dir]"
   echo "                              read the generated corpus"
   echo "  gene pkg <command>      init/add/remove/resolve/update/sync/vendor/members/tree/why"
@@ -1304,6 +1306,47 @@ proc cmdDocBuild(args: openArray[string]) =
   if builderCode != 0:
     quit(builderCode)
 
+proc cmdDocSkill(args: openArray[string]) =
+  var corpusArg = ""
+  var i = 0
+  while i < args.len:
+    if args[i] == "--corpus":
+      inc i
+      if i >= args.len:
+        stderr.writeLine "Error: --corpus expects a directory"
+        quit(1)
+      corpusArg = args[i]
+    elif args[i].startsWith("-"):
+      stderr.writeLine "Error: unknown option: " & args[i]
+      quit(1)
+    else:
+      stderr.writeLine "Error: unexpected argument: " & args[i]
+      quit(1)
+    inc i
+  let root = docPackageRoot(getCurrentDir())
+  let corpus = findCorpus(if corpusArg.len > 0: corpusArg else: root)
+  if corpus.len == 0:
+    stderr.writeLine "Error: no documentation corpus found; run `gene doc build` first"
+    quit(1)
+  let page = corpus / "md" / "book" / "overview.md"
+  if not fileExists(page):
+    stderr.writeLine "Error: the corpus has no book/overview page: " & page
+    quit(1)
+  let target = root / "tools" / "gene-lang-skill" / "SKILL.md"
+  var frontmatter = ""
+  if fileExists(target):
+    let existing = readFile(target)
+    if existing.startsWith("---"):
+      let close = existing.find("\n---", 3)
+      if close >= 0:
+        frontmatter = existing[0 .. close + 3] & "\n"
+  if frontmatter.len == 0:
+    stderr.writeLine "Error: " & target & " has no frontmatter to keep"
+    quit(1)
+  let body = readFile(page).strip(leading = false).strip(leading = true)
+  writeFile(target, frontmatter & "\n" & body & "\n")
+  echo "wrote: " & target
+
 proc cmdDoc(path: string) =
   ## Read the module the way the corpus builder does: nothing is compiled or
   ## run, so a top-level form never executes and `main` is never called.
@@ -1860,6 +1903,8 @@ proc main() =
     case sub
     of "build":
       cmdDocBuild(commandArgs(3))
+    of "skill":
+      cmdDocSkill(commandArgs(3))
     of "index", "ls", "show", "search":
       delegateToTool("gene-doc", commandArgs(2))
     of "":

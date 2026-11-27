@@ -38,7 +38,7 @@
           ($assert (! ($str/contains? initial "The rules that catch most errors")))
           ($assert ($str/contains? initial "harness/ui/quickstart"))
           (let overview (doc runtime/h "gene/overview"))
-          ($assert ($str/contains? overview "focused tests"))
+          ($assert ($str/contains? overview "Load the index first"))
           ($assert (! ($str/contains? overview "Every construct you are not certain of")))
           (let starter (doc runtime/h "harness/ui/quickstart"))
           ($assert (< ($str/byte_size starter) 16384) "quickstart must fit without output elision")
@@ -55,8 +55,8 @@
           (contribute runtime/h "core" "docs" {^name "probe" ^text "hello"})
           ($assert (== (doc runtime/h "probe") "hello")
             "docs text row was not readable")
-          ($assert ($str/contains? (doc runtime/h "gene/stdlib") "stdlib")
-            "Gene reference chapter was not registered")
+          ($assert ($str/contains? (doc runtime/h "gene/overview") "How to read these docs")
+            "language overview was not registered")
           ($assert ($str/contains? (doc runtime/h "harness/plugins")
                      "Register from a session")
             "plugin administration chapter was not registered")
@@ -65,7 +65,7 @@
               (doc runtime/h "missing")
               false
             catch Error
-              ($str/contains? $err/.message "gene/stdlib"))
+              ($str/contains? $err/.message "gene/overview"))
             "unknown doc did not list registered chapters")
           (let lease (acquire_snapshot runtime/h/snapshots))
           (try

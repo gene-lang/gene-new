@@ -82,6 +82,26 @@ the result. This macro computes a number during expansion:
 A local macro compiles its expansion on every call, so prefer a module-level
 macro on a hot path.
 
+## Computed paths
+
+A path expression is data before it runs: the compiler accepts a `path` node
+whose segments are expressions, and the value of each segment is read at the
+call site. A macro can build one while keeping the caller's syntax for a
+segment:
+
+```gene runnable
+(var data {^a 1})
+(macro pick [k]
+  `(do (let key %k) (path data %(quote (unquote key)))))
+(pick "a")
+# 1
+```
+
+The inner `(quote (unquote key))` stays syntax until the expansion is read,
+which is what lets the generated path read the local `key`. Use an ordinary
+path when the segments are known; reach for this only when a macro must
+compute one.
+
 ## Bindings inside an expansion
 
 Bindings that an expansion makes stay inside it. The caller's names are

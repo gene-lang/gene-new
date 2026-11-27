@@ -68,13 +68,13 @@ END
                 ($str/contains? request/messages/2/content "*** Add File: /invalid.txt")
                 "failed patch body was lost")
               ($assert (== request/budget/remaining 1) "remaining budget was incorrect")
-              (return "(append_prompt \"docs\" (doc \"gene/stdlib\")) (Outcome ^prompt \"implement\")"))
+              (return "(append_prompt \"docs\" (doc \"gene/overview\")) (Outcome ^prompt \"implement\")"))
             (if (== number 3)
               ($assert
                 ($str/contains? request/messages/1/content prompt)
                 "task did not survive another turn")
               ($assert
-                ($str/contains? latest/content "Standard library inventory")
+                ($str/contains? latest/content "Load the index first")
                 "documentation was immediately elided")
               ($assert
                 (== request/budget/remaining 0)

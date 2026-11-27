@@ -3,14 +3,14 @@
 
 (import $str/[join split trim lower starts_with? ends_with? contains? byte_size
               slice_bytes])
-(import $fs/[exists? make_dir remove_dir remove read_text write_text])
+(import $fs/[exists? make_dir remove_dir remove read_text write_text walk])
 (import $order/[sort sort_by])
 (import $db/sqlite/[Db open])
 (import fail_pipeline in? format_size ^from "./util")
 (import load_index load_coverage load_modules load_heads load_package load_packages read_one ^from "./data")
 (import read_book ^from "./book")
 (import reflection_modules ^from "./reflection")
-(import build_name_table index_book entry_local ^from "./names")
+(import build_name_table index_book index_heads section_names entry_local collect_reflections full_path spelling_forms ^from "./names")
 (import book_pages reference_pages relative_md page_dir_parts recipe_lines ^from "./pages")
 
 (fn escape_backslash [text]
@@ -359,7 +359,8 @@
   (for item in items (out .push (qq item)))
   ($str/join out " "))
 
-(fn manifest_text [root commit coverage index pages rows undocumented links_ok index_size]
+(fn manifest_text [root commit coverage index pages rows undocumented links_ok index_size
+                   heads_ok dated]
   (let sizes (sizes_report pages index_size))
   (var lines [])
   (lines .push "{^format 2")
@@ -375,7 +376,8 @@
     "^diagnostics " (cov coverage "diagnostics") "}"] ""))
   (lines .push ($str/join [" ^checks {^links "
     (qq (if links_ok "ok" else "failed"))
-    " ^determinism " (qq "not run") "}"] ""))
+    " ^determinism " (qq "not run")
+    " ^heads " (qq (if heads_ok "ok" else "not run")) "}"] ""))
   (lines .push ($str/join [" ^sizes {^index " ($to_str sizes/index) " ^overview " ($to_str sizes/overview)
     " ^chapter_max " ($to_str sizes/chapter_max)
     " ^section_max " ($to_str sizes/section_max)
@@ -385,6 +387,8 @@
     " ^section_avg " ($to_str sizes/section_avg)
     " ^entry_avg " ($to_str sizes/entry_avg)
     " ^namespace_avg " ($to_str sizes/namespace_avg) " ^targets {^index 6144 ^overview 12288 ^chapter 3072 ^section 6144 ^entry 3072}}"] ""))
+  (lines .push ($str/join [" ^dated {^count " ($to_str dated/count)
+    " ^sample [" (qq_list dated/sample) "]}"] ""))
   (lines .push ($str/join [" ^undocumented {^count " ($to_str ($size undocumented))
     " ^sample [" (qq_list ($take undocumented 20)) "]}"] ""))
   (lines .push " ^pages [")
@@ -466,6 +470,128 @@
           (by_name .put reflected/module reflected)))))
   modules)
 
+(fn check_known [rows heads]
+  (var known {})
+  (for row in rows (known .put row/spelling true))
+  (for head in heads (known .put head true))
+  (for spelling in ["$" "gene/" "else" "catch" "unquote" "/" "//" "..."]
+    (known .put spelling true))
+  (for spelling in ["$self" "$err" "$args" "$x" "$dom" "$browser" "$http"
+                    "$event" "$console" "$C" "$dom/add_event_listener"
+                    "$console/log" "$C/Int"]
+    (known .put spelling true))
+  (for prefix in ["C/" "dom/" "console/" "ffi/" "gene/ffi/"]
+    (known .put prefix true))
+  (for decl in (collect_reflections gene [] [])
+    (let full (full_path decl/path decl/name))
+    (for spelling in (spelling_forms full) (known .put spelling true)))
+  known)
+
+(fn prose_candidate? [span]
+  (let text ($str/trim span))
+  (&& (> ($str/byte_size text) 1)
+      (|| (starts_with? text "$") (contains? text "gene/"))
+      (not (contains? text "{"))
+      (not (contains? text "\""))
+      (not (contains? text "("))
+      (not (contains? text ")"))
+      (not (contains? text " "))))
+
+(fn single_letter_root? [name]
+  (let parts ($str/split name "/"))
+  (let first (parts .get 0))
+  (let second (if (> ($size parts) 1) (parts .get 1) else ""))
+  (let base (if (&& (== first "gene") (not (== second ""))) second else first))
+  (let root (if ($str/starts_with? base "$")
+    ($str/slice_bytes base 1 (- ($str/byte_size base) 1))
+    else
+    base))
+  (== ($str/byte_size root) 1))
+
+(fn known_or_local? [name known]
+  (|| ($has_key? known name)
+      (single_letter_root? name)
+      (starts_with? name "$self/")
+      (starts_with? name "$err/")
+      (starts_with? name "$args/")
+      (starts_with? name "C/")
+      (starts_with? name "dom/")
+      (starts_with? name "console/")
+      (starts_with? name "ffi/")
+      (starts_with? name "gene/ffi/")
+      (starts_with? name "$ffi/")
+      (starts_with? name "gene/C/")
+      (starts_with? name "gene/dom/")
+      (starts_with? name "gene/console/")
+      (== name "strings/upper")
+      (== name "$strings/upper")
+      (== name "gene/strings/upper")
+      (contains? name "…")
+      (== name "$/")
+      (== name "gene//")
+      (== name "$//")
+      (== name "gene///")))
+
+(fn check_text [text known file problems]
+  (let parts ($str/split text "`"))
+  (var i 1)
+  (while (< i ($size parts))
+    (let span (parts .get i))
+    (if (prose_candidate? span)
+      (do
+        (var name ($str/trim span))
+        (if (|| (ends_with? name ",") (ends_with? name ".")
+                (ends_with? name ";") (ends_with? name ":"))
+          (set name ($str/slice_bytes name 0 (- ($str/byte_size name) 1))))
+        (if (&& (not (known_or_local? name known))
+                (not (starts_with? name "lib/"))
+                (not (starts_with? name "book/")))
+          (problems .push ($str/join [file ": `" name "` is not in the name table"] "")))))
+    (set i (+ i 2))))
+
+(fn check_stale [root chapters rows heads]
+  (let known (check_known rows heads))
+  (var problems [])
+  (for chapter in chapters
+    (for section in chapter/sections
+      (for name in (section_names section/body)
+        (if (&& (|| (contains? name "/") (starts_with? name "$"))
+                (not (known_or_local? name known))
+                (not (in? name ["/" "//"])))
+          (problems .push ($str/join ["fence " section/id ": `" name "` is not in the name table"] ""))))))
+  (let docs ($path/join root "docs/book"))
+  (if ($fs/exists? docs)
+    (for entry in ($fs/walk docs)
+      (if (&& (== entry/kind "file") (ends_with? entry/relative_path ".md"))
+        (check_text ($fs/read_text ($path/join docs entry/relative_path)) known
+          entry/relative_path problems))))
+  (let agents ($path/join root "AGENTS.md"))
+  (if ($fs/exists? agents)
+    (check_text ($fs/read_text agents) known "AGENTS.md" problems))
+  (let skill ($path/join root "tools/gene-lang-skill/SKILL.md"))
+  (if ($fs/exists? skill)
+    (check_text ($fs/read_text skill) known "SKILL.md" problems))
+  problems)
+
+(fn dated_language [chapters]
+  # Check 9 reports, never gates: prose that dates a rule or describes a change.
+  (let words ["previously" "used to" "formerly" "no longer" "as of"
+              "this release" "recently" "now also" "changed in"
+              "deprecated" "before this" "until now"])
+  (var count 0)
+  (var sample [])
+  (for chapter in chapters
+    (for section in chapter/sections
+      (let text ($str/lower section/body))
+      (var hit false)
+      (for word in words
+        (if (contains? text word) (set hit true)))
+      (if hit
+        (do
+          (set count (+ count 1))
+          (if (< ($size sample) 20) (sample .push section/id))))))
+  {^count count ^sample sample})
+
 (fn run [root commit]
   (let index (load_index root))
   (let chapters (read_book root index/book))
@@ -502,19 +628,38 @@
   (var pages (book_pages chapters runtime))
   (for page in (reference_pages modules introduced) (pages .push page))
   (set pages (sort_by pages (fn [page] page/id)))
-  (let problems (check_links root pages modules rows chapters))
+  (let head_intro (index_heads chapters (if ($present? heads) heads else [])))
+  (for row in rows
+    (let section (head_intro .get row/spelling))
+    (if ($present? section)
+      (do
+        (if (== row/introduced_in "") (row .put "introduced_in" section))
+        (let used (row .get "used_in"))
+        (if (not (in? section used)) (used .push section)))))
+  (var missing_heads [])
+  (if (&& runtime ($present? heads))
+    (for head in heads
+      (if (not ($has_key? head_intro head)) (missing_heads .push head))))
+  (var problems (check_links root pages modules rows chapters))
+  (for head in missing_heads
+    (problems .push $"head '${head}' has no book section that introduces it"))
+  (if (&& runtime ($fs/exists? ($path/join root "AGENTS.md")))
+    (for problem in (check_stale root chapters rows (if ($present? heads) heads else []))
+      (problems .push problem)))
   (if (> ($size problems) 0)
     (do
       (for problem in problems ($eprintln problem))
-      (fail_pipeline $"${($size problems)} link check problem(s)")))
+      (fail_pipeline ($str/join [$"${($size problems)} check problem(s): " ($str/join problems "; ")] ""))))
   (write_pages root pages)
   (let by_id (pages_by_id pages))
   (let overview (by_id .get "book/overview"))
   (write_index root (llms_text pkg index modules pages packages runtime))
   (write_names root rows)
   (let index_size ($str/byte_size ($fs/read_text ($path/join root "build/docs/llms.txt"))))
+  (let dated (dated_language chapters))
   (let manifest (manifest_text root commit coverage index pages rows
-                   table/undocumented true index_size))
+                   table/undocumented true index_size
+                   (&& runtime (== ($size missing_heads) 0)) dated))
   (write_manifest root manifest)
   (write_sqlite root pages rows)
   (let sizes (sizes_report pages index_size))

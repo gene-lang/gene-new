@@ -20,6 +20,7 @@ support, and logging.
 | `gene doc show <id or name>` | prints one page; `$str/join` and `lib/gene/str/join` both work |
 | `gene doc ls [id]` | lists a page's children with their sizes |
 | `gene doc search <text>` | full-text search over the pages |
+| `gene doc skill` | regenerates `tools/gene-lang-skill/SKILL.md` from `book/overview` |
 | `gene parse file.gene` | prints the forms the reader produces |
 | `gene compile file.gene` | prints the compiled bytecode |
 | `gene lsp` | runs the language server over standard input and output |
@@ -71,6 +72,11 @@ the builder's data and the book into the pages. The outputs are:
 - `build/docs/manifest.gene`, coverage, check results, and page sizes.
 - `build/docs/names.gene`, the name table: every Gene spelling mapped to its id.
 - `build/docs/gene-docs.sqlite`, full-text search and the name table.
+
+`gene doc skill` writes the agent-facing skill file
+`tools/gene-lang-skill/SKILL.md` from the generated `book/overview` page; edit
+the book, then regenerate the skill. The doc-builder test fails when the two
+drift, so the skill is never hand-edited.
 
 `gene doc index`, `show`, `ls`, and `search` read that corpus. `--corpus <dir>`
 reads another package's corpus. `$docs/index`, `$docs/show`, `$docs/ls`, and
