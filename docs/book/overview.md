@@ -137,20 +137,3 @@ The docs have two parts. This book teaches the language in reading order,
 one idea per section. The library reference documents every standard name,
 one entry per name, and is generated from the source. A section or an entry
 can be loaded on its own.
-
-<!-- Pilot: the reference, the index, and `gene doc index/show/search` are
-designed in tmp/documentation.md but not built yet. -->
-
-```text
-Load the index first; it is small.
-Before writing or changing Gene code, load book/overview once.
-To learn a feature: find its chapter in the index, load the chapter page
-  (its list of sections), then load only the sections you need.
-To use a name you know: load its entry, lib/gene/<name path>
-  ($str/join is lib/gene/str/join; List.push is lib/gene/List/push).
-To find a library for a job: scan the index's reference groups, then load
-  that namespace's page.
-For an error message: gene doc search "<message>". Watch out notes quote
-  the messages they explain.
-Load a section or an entry, not a whole chapter or namespace.
-```

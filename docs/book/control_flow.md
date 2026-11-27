@@ -40,6 +40,9 @@ expected.
 - Only `false` and `nil` count as false ([Booleans and
   truthiness](values.md#booleans-and-truthiness)).
 
+Prefer an `elif` chain to an `if` nested in the `else` arm: the chain stays
+at one indentation and reads top to bottom.
+
 > **Watch out:** `(if c a b)` is one arm of two expressions, not a choice
 > between `a` and `b`. When `c` holds, both run; when it does not, the result
 > is `nil`. Write `(if c a else b)`.

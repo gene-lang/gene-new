@@ -36,7 +36,8 @@ p/name
 ```
 
 > **Watch out:** a field name cannot end in `?`. Optionality belongs to the
-> field's type: write `^nickname Str?`, not `^nickname? Str`.
+> field's type: write `^nickname Str?`, not `^nickname? Str`, which fails
+> with `type field 'nickname?' may not end in '?'`.
 
 ## Messages
 
@@ -113,6 +114,10 @@ a qualified send, `.Protocol:message`, calls them:
 > `(ada .label)` fails with `no message 'label' on Person; protocol messages
 > visible here: Labelled:label — use a qualified send`.
 
+> **Watch out:** only a protocol qualifies a message. A type's own message
+> is sent bare: `(ada .Person:greet)` fails with `CallKindFault: message
+> qualifier must be a Protocol, got type Person`; write `(ada .greet)`.
+
 A protocol with no messages is a marker. `^impl [Audited]` on a type
 declares it, and a pattern can test for it:
 
@@ -148,7 +153,9 @@ whole family of types the same implementation:
 
 The generated impl exists only for the deriving type. Use `impl` when one
 type needs a hand-written implementation; use `derive` when the protocol
-itself knows how to build it.
+itself knows how to build it. The rule returns quoted code, so
+[Templates](code_as_data.md#templates) explains the `quasiquote` and `%`
+spelling it uses.
 
 ## Inheritance
 
@@ -224,6 +231,9 @@ an annotation can name a shape once:
 (greet "Ada")
 # "Ada"
 ```
+
+> **Watch out:** `Any` and `Never` exist only in annotations. `(var a Any)`
+> fails with `undefined symbol: Any`.
 
 Annotations are checked when a value crosses them, including the items of a
 collection: `(Person ^tags [1])` against `^tags (List Str)` fails with

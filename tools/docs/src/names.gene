@@ -177,7 +177,9 @@
     else
     (do
       (let head ($head value))
-      (if (&& ($leaf? head) (== ($to_str head) "path"))
+      (if (&& ($leaf? head) (== ($to_str head) "import"))
+        nil
+        elif (&& ($leaf? head) (== ($to_str head) "path"))
         nil
         else
         (do
@@ -191,6 +193,22 @@
                 (set skip false))))
           (map_for [k v] in ($props value) (add_binder v locals))
           (map_for [k v] in ($meta value) (add_binder v locals)))))))
+
+(fn bind_import [item locals]
+  # An import binds its selected names (the list items) and the alias after a
+  # colon, never a path segment of the target.
+  (let text ($to_str item))
+  (if (contains? text ":")
+    (do
+      (let pieces ($str/split text ":"))
+      (let name (pieces .get (- ($size pieces) 1)))
+      (if (> ($str/byte_size name) 0) (locals .put name true)))
+    elif (&& (> ($str/byte_size text) 0)
+             (not ($str/starts_with? text "\""))
+             (not ($str/starts_with? text "$"))
+             (not (contains? text "/")))
+      (do
+        (locals .put text true))))
 
 (fn collect_locals [value locals]
   (if ($leaf? value)
@@ -227,15 +245,19 @@
             (for item in body
               (if (not ($leaf? item))
                 (do
-                  (for part in ($body item)
-                    (if ($leaf? part) (add_binder part locals))))
+                  (let ih ($head item))
+                  (if (&& ($leaf? ih) (== ($to_str ih) "path"))
+                    (do
+                      (let parts ($body item))
+                      (if (> ($size parts) 0)
+                        (let last (parts .get (- ($size parts) 1)))
+                        (if (&& ($leaf? last) (contains? ($to_str last) ":"))
+                          (bind_import last locals))))
+                    else
+                    (for part in ($body item)
+                      (if ($leaf? part) (bind_import part locals)))))
                 else
-                (do
-                  (let text ($to_str item))
-                  (if (contains? text ":")
-                    (let pieces ($str/split text ":"))
-                    (let name (pieces .get (- ($size pieces) 1)))
-                    (if (> ($str/byte_size name) 0) (locals .put name true))))))))
+                (bind_import item locals)))))
           (if (|| (== h "for") (== h "map_for"))
             (let body ($body value))
             (var i 0)
@@ -280,7 +302,11 @@
           (if (ends_with? text "...")
             (set text ($str/slice_bytes text 0 (- ($str/byte_size text) 3))))
           (if (&& (valid_symbol? text) (not (== text "$"))
-                  (not (in? text ["^" "~"])))
+                  (not (in? text ["^" "~"]))
+                  (|| (not ($str/starts_with? text "$"))
+                      (contains? source text))
+                  (|| (not (contains? text "gene/"))
+                      (contains? source text)))
             (if (contains? text "/")
               (do
                 (let segments ($str/split text "/"))
@@ -308,15 +334,15 @@
           (let full ($str/join segments "/"))
           (let first (if (> ($size segments) 0) (segments .get 0) else ""))
           (let second (if (> ($size segments) 1) (segments .get 1) else ""))
-          (let base (if (&& (== first "gene") (not (== second ""))) second else first))
-          (let root (if (&& (starts_with? base "$") (> ($str/byte_size base) 1))
-            ($str/slice_bytes base 1 (- ($str/byte_size base) 1))
+          (if (== first "gene")
+            (if (&& (written? full source)
+                    (not (in? second ["self" "err" "args"])))
+              (for spelling in (spelling_forms full) (out .push spelling)))
             else
-            base))
-          (if (&& (not (== full "")) (written? full source)
-                  (not ($has_key? locals root))
-                  (not (in? root ["self" "err" "args"])))
-            (for spelling in (spelling_forms full) (out .push spelling))))
+            (if (&& (not (== full "")) (written? full source)
+                    (not ($has_key? locals first))
+                    (not (in? first ["self" "err" "args"])))
+              (for spelling in (spelling_forms full) (out .push spelling)))))
         else
         (do
           (if (&& ($present? head)
@@ -334,6 +360,11 @@
                 (set i (+ i 1)))))
           (map_for [k v] in ($props value) (walk_value v out locals source))
           (map_for [k v] in ($meta value) (walk_value v out locals source)))))))
+
+(fn import_form? [value]
+  (&& (not ($leaf? value))
+      ($leaf? ($head value))
+      (== ($to_str ($head value)) "import")))
 
 (fn fence_names [body]
   (var names [])
@@ -416,28 +447,32 @@
     (let forms ($parse/read_all source))
     (var parsed [])
     (for form in forms (parsed .push form))
-    (for form in parsed (walk_value form names locals source)))
+    (for form in parsed
+      (if (not (import_form? form))
+        (walk_value form names locals source))))
   names)
 
 (fn index_heads [chapters heads]
-  # Check 4 uses this, not the row table: a head spelling can also be a page
-  # name (`Path` is both), and the row table keeps one row per spelling.
+  # Check 4: a head is introduced where a gene fence writes it. The reader
+  # lowers `(Path …)` and `(path …)` to values, so those two use the source;
+  # every other head comes from the fence's names (heads like `quasiquote`
+  # are written as `), not as a call.
   (let wanted {})
   (for head in heads (wanted .put head true))
+  (let lowered ["Path" "path"])
   (let intro {})
   (for chapter in chapters
     (if (not (== chapter/chapter "overview"))
       (for section in chapter/sections
-        (let names (fence_names section/body))
-        (for name in names
-          (if (&& ($has_key? wanted name) (not ($has_key? intro name)))
+        (for name in (fence_names section/body)
+          (if (&& ($has_key? wanted name) (not (in? name lowered))
+                  (not ($has_key? intro name)))
             (intro .put name section/id)))
-        (let sources (fence_sources section/body))
-        (for head in heads
-          (if (not ($has_key? intro head))
-            (for source in sources
-              (if (&& (not ($has_key? intro head)) (head_written? source head))
-                (intro .put head section/id))))))))
+        (for source in (fence_sources section/body)
+          (for head in lowered
+            (if (&& ($has_key? wanted head) (not ($has_key? intro head))
+                    (head_written? source head))
+              (intro .put head section/id)))))))
   intro)
 
 (fn index_book [chapters rows]

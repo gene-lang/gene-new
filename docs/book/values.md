@@ -138,6 +138,9 @@ and return that operand:
 # [true 1 nil 2]
 ```
 
+> **Watch out:** there is no `and` or `or`. `(and true false)` fails with
+> `undefined symbol: and`; write `&&` and `||`.
+
 > **Watch out:** an emptiness test carried over from Python or JavaScript
 > never fires, because `""` and `[]` count as true. Test explicitly:
 > `(== s "")`, `s/.empty?`, or `xs/.empty?`.
@@ -154,7 +157,8 @@ and return that operand:
 - a binding declared without a value.
 
 `(?? value fallback)` gives the fallback only when the value is `nil`, so
-`false` stays `false`. `$present?` and `$absent?` test for `nil`:
+`false` stays `false`. Prefer `($present? x)` to `(! ($absent? x))` when a
+branch tests presence; `$present?` and `$absent?` test for `nil`:
 
 ```gene runnable
 (let person {^name "Ada"})
@@ -174,6 +178,22 @@ value except `nil`.
 > here", and `??`, `$present?`, and `T?` cover every case. A mistake is
 > kept apart from absence: a misspelled field raises instead of reading
 > `nil` ([Missing and wrong reads](names.md#missing-and-wrong-reads)).
+
+## Other literals
+
+The reader also gives bytes, regular expressions, dates, times, and date-times
+their own literal forms:
+
+```gene runnable
+[#B16#4869 #"[a-z]+"i 2026-07-04 09:30:15.123456
+ 2026-07-04T09:30:15-04:00[America/New_York]]
+# [#B16#4869 #"[a-z]+"i 2026-07-04 09:30:15.123456 2026-07-04T09:30:15-04:00[America/New_York]]
+```
+
+A regex carries its flags after the closing quote (`i` is case-insensitive);
+`.match` returns a Match (its `text`, `groups`, `start`, and `end`) or `nil`.
+A date-time may name an IANA zone in brackets. The `$regex` namespace holds
+`find_all`, `match`, `replace`, `replace_all`, and `split`.
 
 ## Collection literals
 

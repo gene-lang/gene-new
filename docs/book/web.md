@@ -136,8 +136,9 @@ which runs with the element it mounts on. A server publishes the entry with
 content-addressed URLs, so a browser caches them safely.
 
 `web_module` marks a block of browser code inside a server module. The block
-is compiled for the web profile and served as its own module; the host
-compiler accepts it without running it:
+is compiled for the web profile and served as its own module. It must be an
+unconditional top-level declaration, and its name is an asset value that a
+page places:
 
 ```gene
 (web_module page_script
@@ -145,7 +146,12 @@ compiler accepts it without running it:
     ($dom/add_event_listener root "click"
       (fn [event : Any] : Nil
         ($console/log "clicked")))))
+
+(var page_asset page_script)
 ```
+
+The host compiler accepts the block without running it; only the web build
+compiles its body.
 
 Browser bindings live under `$dom`, `$browser`, `$event`, and `$http` in the
 web profile. They cover elements, events, history, storage, and requests

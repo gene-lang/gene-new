@@ -71,6 +71,10 @@ A supplied `nil` is an argument, so it does not select the default:
 Optional positional parameters come after the required ones and cannot come
 before a rest parameter.
 
+> **Watch out:** a default value is evaluated in the function's scope, and a
+> path is not allowed there: `(fn f [^v = s/a] v)` raises
+> `undefined symbol: s/a`. Use a plain value, or compute the path in the body.
+
 ## Named arguments
 
 A parameter written with `^` is passed by name, at the declaration and at the

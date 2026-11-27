@@ -22,6 +22,13 @@ documents it:
 `module/namespace has no export: scale`. `gene doc stats.gene` prints a
 module's doc and declarations.
 
+## Module and package bindings
+
+Inside a file, `this_mod` is the module's `mod` node and `this_pkg` is the
+package map (name, version, root, dependencies, and manifest path). They are
+not available in `gene eval`, which has no module context; run a file when
+the code needs them.
+
 ## Importing
 
 `import` names what it takes, and `^from` names the module, by a path

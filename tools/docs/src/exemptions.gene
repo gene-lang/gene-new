@@ -1,0 +1,44 @@
+# Names check 2 accepts without a page, one reason per entry. Keep this file
+# beside the book: a new entry is a book change, not a checker change.
+
+(fn exemptions []
+  {^names [
+  {^name "$EDITOR" ^why "environment variable named in book/tools"}
+  {^name "$VISUAL" ^why "environment variable named in book/tools"}
+  {^name "$x" ^why "placeholder for the root-selector example in book/names"}
+  {^name "$err" ^why "the error binding inside a catch clause"}
+  {^name "$self" ^why "the receiver binding inside a message body"}
+  {^name "$args" ^why "main's arguments binding"}
+  {^name "gene/x" ^why "placeholder for the root-selector example in book/names"}
+  {^name "$/" ^why "the modulo operator example in book/values"}
+  {^name "$//" ^why "the integer-division operator example in book/values"}
+  {^name "gene//" ^why "reader spelling of the integer-division operator"}
+  {^name "gene///" ^why "reader spelling of an operator example"}
+  {^name "$p/nmae" ^why "misspelled local path in the error example in book/names"}
+  {^name "p/nmae" ^why "misspelled local path in the error example in book/names"}
+  {^name "gene/p/nmae" ^why "misspelled local path in the error example in book/names"}
+  {^name "$t/items" ^why "example binding introduced by a test helper in book/testing"}
+  {^name "t/items" ^why "example binding introduced by a test helper in book/testing"}
+  {^name "gene/t/items" ^why "example binding introduced by a test helper in book/testing"}
+  {^name "$dom" ^why "web-profile namespace; no host reflection"}
+  {^name "$dom/add_event_listener" ^why "web-profile binding; no host reflection"}
+  {^name "dom/add_event_listener" ^why "web-profile binding; no host reflection"}
+  {^name "gene/dom/add_event_listener" ^why "web-profile binding; no host reflection"}
+  {^name "$console" ^why "web-profile namespace; no host reflection"}
+  {^name "$console/log" ^why "web-profile binding; no host reflection"}
+  {^name "console/log" ^why "web-profile binding; no host reflection"}
+  {^name "gene/console/log" ^why "web-profile binding; no host reflection"}
+  {^name "$browser" ^why "web-profile namespace; no host reflection"}
+  {^name "$http" ^why "web-profile namespace; no host reflection"}
+  {^name "$event" ^why "web-profile namespace; no host reflection"}
+  {^name "$C" ^why "native FFI namespace; no host reflection"}
+  {^name "$C/Int" ^why "native FFI type; no host reflection"}
+  {^name "C/Int" ^why "native FFI type; no host reflection"}
+  {^name "gene/C/Int" ^why "native FFI type; no host reflection"}
+  {^name "$ffi/struct" ^why "native FFI binding; no host reflection"}
+  {^name "ffi/struct" ^why "native FFI binding; no host reflection"}
+  {^name "gene/ffi/struct" ^why "native FFI binding; no host reflection"}
+  {^name "$ffi/fn" ^why "native FFI binding; no host reflection"}
+  {^name "ffi/fn" ^why "native FFI binding; no host reflection"}
+  {^name "gene/ffi/fn" ^why "native FFI binding; no host reflection"}
+]})

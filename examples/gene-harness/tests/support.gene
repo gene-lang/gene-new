@@ -121,6 +121,7 @@
      ^GENE_HARNESS_CLAUDE_COMMAND ($path/join bin "claude")
      ^GENE_HARNESS_ANT_COMMAND ($path/join bin "ant")
      ^GENE_HARNESS_AUTH_HOME ($path/join workspace "provider-logins")
+     ^GENE_DOCS_ROOT ($path/join package_root "tests/fixtures/docs_corpus")
      ^GENE_C_COMPILER (?? ($os/env? "GENE_C_COMPILER") (tools .get "cc"))
      ^GENE_HARNESS_PROVIDER nil ^GENE_HARNESS_MODEL nil ^GENE_HARNESS_THINKING_EFFORT nil
      ^OPENROUTER_MODEL nil

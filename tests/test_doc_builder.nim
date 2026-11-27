@@ -17,6 +17,7 @@ import std/[algorithm, json, os, osproc, sets, strutils, tables, unittest]
 import gene/[callable_reflection, compiler, docs_lookup, gir, package, printer,
             reader, types, vm, web]
 import tools/declaration_heads
+import gene/doc_compiler_data
 import tools/docs/builder as docBuilder
 from tools/docs/model import DocEntry, DocImport, DocParam, ModuleDoc, renderModuleDoc
 
@@ -1087,10 +1088,20 @@ suite "doc builder — no VM linked":
     let root = docTestRepoRoot()
     var built = docBuilder.buildPackage(root)
     built.writeOutputs()
-    docTestWriteHeads(root, @CoreSpecialFormNames)
+    writeCompilerDocData(root)
     docTestRunGenerator(root)
     let manifest = readFile(root / "build" / "docs" / "manifest.gene")
     check "^heads \"ok\"" in manifest
+    let names = readFile(root / "build" / "docs" / "names.gene")
+    check " ^heads [" in names
+    check "{^spelling \"path\" ^introduced_in \"book/code_as_data/computed_paths\"}" in names
+    # The compiler's namespace macros have reference pages, so check 2 needs
+    # no exemption for them.
+    check "^spelling \"$test/describe\" ^id \"lib/gene/test/describe\"" in names
+    check "^spelling \"$log/log_info\" ^id \"lib/gene/log/log_info\"" in names
+    let describe = readFile(root / "build" / "docs" / "md" / "lib" / "gene" /
+                            "test" / "describe.md")
+    check "$test/describe [description body...]" in describe
 
   test "check 4: a head with no section fails the build and names the head":
     let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
@@ -1111,12 +1122,11 @@ suite "doc builder — no VM linked":
   test "SKILL.md is generated from the overview page":
     let root = docTestRepoRoot()
     let skillPath = root / "tools" / "gene-lang-skill" / "SKILL.md"
-    let pagePath = root / "build" / "docs" / "md" / "book" / "overview.md"
-    if not fileExists(pagePath):
-      var built = docBuilder.buildPackage(root)
-      built.writeOutputs()
-      docTestWriteHeads(root, @CoreSpecialFormNames)
-      docTestRunGenerator(root)
+    var built = docBuilder.buildPackage(root)
+    built.writeOutputs()
+    writeCompilerDocData(root)
+    docTestRunGenerator(root)
+    let pagePath = root / "build" / "docs" / "skill.md"
     let skill = readFile(skillPath)
     let close = skill.find("\n---", 3)
     check close > 0
@@ -1132,11 +1142,88 @@ suite "doc builder — no VM linked":
     var built = docBuilder.buildPackage(copyRoot)
     built.writeOutputs()
     docTestWriteHeads(copyRoot, @["let"])
-    writeFile(copyRoot / "AGENTS.md", "Use `$str/no_such_name` here.\n")
+    writeFile(copyRoot / "AGENTS.md",
+      "```gene\n`(do %x)\n```\n\nUse `$str/no_such_name` here.\n")
     var failed = false
     try:
       docTestRunGenerator(copyRoot)
     except GeneError as error:
       failed = true
       check "no_such_name" in error.msg
+    check failed
+
+  test "check 2: an import does not hide a stale qualified name":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-import-stale"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    let book = copyRoot / "docs" / "book" / "fences.md"
+    writeFile(book, readFile(book) &
+      "\n## Imported\n\n```gene\n(import $str/[join])\n($str/no_such_fence \"x\")\n```\n")
+    var built = docBuilder.buildPackage(copyRoot)
+    built.writeOutputs()
+    docTestWriteHeads(copyRoot, @["let"])
+    var failed = false
+    try:
+      docTestRunGenerator(copyRoot)
+    except GeneError as error:
+      failed = true
+      check "no_such_fence" in error.msg
+    check failed
+
+  test "check 2: stale import targets and selections fail":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-import-targets"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    let book = copyRoot / "docs" / "book" / "fences.md"
+    writeFile(book, readFile(book) &
+      "\n## Imports\n\n```gene\n(import $strs/[join])\n(import $str/[no_such_sel])\n```\n")
+    var built = docBuilder.buildPackage(copyRoot)
+    built.writeOutputs()
+    docTestWriteHeads(copyRoot, @["let"])
+    var failed = false
+    try:
+      docTestRunGenerator(copyRoot)
+    except GeneError as error:
+      failed = true
+      check "import target `$strs`" in error.msg
+      check "`$str/no_such_sel`" in error.msg
+    check failed
+
+  test "check 2: nested and aliased standard selections pass":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-import-nested"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    let book = copyRoot / "docs" / "book" / "fences.md"
+    writeFile(book, readFile(book) &
+      "\n## Nested imports\n\n```gene\n(import $db/[sqlite/[Db open]])\n" &
+      "(import $str/[join:glue])\n```\n")
+    var built = docBuilder.buildPackage(copyRoot)
+    built.writeOutputs()
+    docTestWriteHeads(copyRoot, @["let"])
+    docTestRunGenerator(copyRoot)
+    let manifest = readFile(copyRoot / "build" / "docs" / "manifest.gene")
+    check "^stale \"ok\"" in manifest
+
+  test "check 2: a stale nested or aliased selection fails":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-import-nested-stale"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    let book = copyRoot / "docs" / "book" / "fences.md"
+    writeFile(book, readFile(book) &
+      "\n## Nested imports\n\n```gene\n(import $db/[sqlite/[NoSuchDb]])\n" &
+      "(import $str/[no_such_join:glue])\n```\n")
+    var built = docBuilder.buildPackage(copyRoot)
+    built.writeOutputs()
+    docTestWriteHeads(copyRoot, @["let"])
+    var failed = false
+    try:
+      docTestRunGenerator(copyRoot)
+    except GeneError as error:
+      failed = true
+      check "`$db/sqlite/NoSuchDb`" in error.msg
+      check "`$str/no_such_join`" in error.msg
     check failed

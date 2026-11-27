@@ -6,11 +6,9 @@ Applications and examples are also opportunities to test the language itself. If
 
 ### Gene style
 
-The book is the style contract: read `docs/book/overview.md` and the section
-for the construct you are writing. Its examples are runnable, so copy their
-spelling rather than a Lisp habit. In particular, `$present?` tests presence,
-`elif`/`else` are bare markers, `match` replaces a chain of equality tests,
-and a zero-argument send on a simple receiver is written `receiver/.message`.
+The book is the style contract. Read the map with `gene doc index` and a
+chapter with `gene doc show book/<chapter>` (or `($docs/show "book/<chapter>")`).
+Copy the spelling of its runnable examples rather than a Lisp habit.
 
 ### Preserve the language design
 

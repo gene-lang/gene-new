@@ -1021,7 +1021,7 @@ proc visibleMacroBindings(c: Compiler): MacroBindings
 proc markStaticImplForms(c: var Compiler, forms: openArray[Value], first = 0)
 proc reserveProtocolBindingsFor(c: var Compiler, forms: openArray[Value])
 proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first = 0)
-proc builtinNamespaceMacros(segments: openArray[string]):
+proc builtinNamespaceMacros*(segments: openArray[string]):
     Table[string, MacroDef]
 proc declarationIsPrivate(node: Value): bool
 proc importMacro(c: var Compiler, local: string, def: MacroDef)
@@ -7170,23 +7170,29 @@ proc builtinTestMacro(name: string): MacroDef =
           "(fn %params %body...))"
     result.body = @[read(templateSource)]
 
-proc builtinNamespaceMacros(segments: openArray[string]):
+const BuiltinMacroNamespaces* = ["log", "css", "test"]
+  ## The standard namespaces whose macros the compiler supplies. They are not
+  ## runtime namespace members, so reflection cannot list them; the
+  ## documentation build reads them from here.
+
+proc builtinNamespaceMacros*(segments: openArray[string]):
     Table[string, MacroDef] =
   result = initTable[string, MacroDef]()
-  if (segments.len == 1 and segments[0] == "log") or
-      (segments.len == 2 and segments[0] == "gene" and
-       segments[1] == "log"):
+  let ns =
+    if segments.len == 1: segments[0]
+    elif segments.len == 2 and segments[0] == "gene": segments[1]
+    else: ""
+  case ns
+  of "log":
     for level in ["error", "warn", "info", "debug", "trace"]:
       result["log_" & level] = builtinLogMacro(level)
-  elif (segments.len == 1 and segments[0] == "css") or
-      (segments.len == 2 and segments[0] == "gene" and
-       segments[1] == "css"):
+  of "css":
     result["decl"] = builtinCssDeclMacro()
-  elif (segments.len == 1 and segments[0] == "test") or
-      (segments.len == 2 and segments[0] == "gene" and
-       segments[1] == "test"):
+  of "test":
     for name in ["describe", "context", "it", "before_each", "after_each"]:
       result[name] = builtinTestMacro(name)
+  else:
+    discard
 
 proc importMacro(c: var Compiler, local: string, def: MacroDef) =
   validateBindingName(local)

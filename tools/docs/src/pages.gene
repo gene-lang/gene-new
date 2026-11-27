@@ -366,6 +366,7 @@
 (fn recipe_lines [runtime]
   (var lines [])
   (lines .push "Load the index first; it is small.")
+  (lines .push "To load a page in Gene: `($docs/show \"book/<chapter>/<section>\")`.")
   (lines .push "Before writing or changing Gene code, load `book/overview` once.")
   (lines .push "To learn a feature: find its chapter in the index, load the chapter page")
   (lines .push "  (its list of sections), then load only the sections you need.")
@@ -391,6 +392,40 @@
   (lines .push "## How to read these docs")
   (lines .push "")
   (for line in (recipe_lines runtime) (lines .push line))
+  ($str/join lines "\n"))
+
+(fn first_overview [chapters]
+  (var found nil)
+  (for chapter in chapters
+    (if (&& (not ($present? found)) (== chapter/chapter "overview"))
+      (set found chapter)))
+  found)
+
+(fn skill_text [chapters runtime]
+  # The agent skill is the overview chapter itself: intro, every section in
+  # reading order, then the recipe. It is not the chapter's table of contents.
+  (let chapter (first_overview chapters))
+  (var lines [])
+  (lines .push $"# ${chapter/title}")
+  (lines .push "")
+  (lines .push "Each section below is a page; `modules.md` names `book/modules`")
+  (lines .push "and `values.md#absence` names `book/values/absence`. Load a page")
+  (lines .push "with `($docs/show \"book/...\")`; outside a Gene program use")
+  (lines .push "`gene doc show book/...`.")
+  (lines .push "")
+  (if (&& ($present? chapter/body) (not (== chapter/body "")))
+    (do
+      (lines .push chapter/body)
+      (lines .push "")))
+  (for section in chapter/sections
+    (do
+      (lines .push $"## ${section/title}")
+      (lines .push "")
+      (if (not (== section/body ""))
+        (do
+          (lines .push section/body)
+          (lines .push "")))))
+  (lines .push (book_recipe runtime))
   ($str/join lines "\n"))
 
 (fn chapter_page [chapter section_pages index runtime]

@@ -207,6 +207,22 @@ are pulled, and `yield` produces each one:
 The Stream is infinite here, and `$take 4` is what stops it. `yield`
 requires the `^^generator` marker on its own function.
 
+## Chaining sends
+
+A `;` between send stages passes each stage's result to the next stage,
+starting with the value before the first `;`. It keeps a chain at one
+indentation:
+
+```gene runnable
+(var xs [1 2 3])
+(xs .to_stream ; .filter (fn [x] (> x 1)) ; .into [])
+# [2 3]
+```
+
+The stage before the first `;` is an ordinary call or send; each later stage
+starts with `.` and receives the previous result. `(xs .size ; .to_str)`
+therefore sends `to_str` to an Int and raises `no message 'to_str' on Int`.
+
 ## Immutable values
 
 `#[…]` and `#{…}` are immutable literals. `$freeze` makes a value and

@@ -84,6 +84,16 @@ $ printf '(+ 1 2)\n(let a 5)\n(* a 2)\n' | gene repl
 10
 ```
 
+## Working loop
+
+Use `gene eval '<source>'` for one expression; it prints the last value and
+needs no file. It can import namespaces with `import`, but it has no module
+bindings: `this_pkg` and `this_mod` are undefined there. Use
+`gene run file.gene` for code that needs the module or package context. Probe the
+shape that blocks the next change, then persist a small working version early
+and grow it with focused tests. The implementation is done when it runs and
+tests cover its intended behavior and the failure cases that matter.
+
 ## Other commands
 
 | Command | What it does |

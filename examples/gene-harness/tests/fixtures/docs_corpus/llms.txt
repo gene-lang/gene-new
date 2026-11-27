@@ -1,0 +1,5 @@
+# Fixture corpus
+
+The Harness tests read this index through `$docs/index`.
+
+- [Overview](md/book/overview.md)

@@ -151,24 +151,38 @@ counter/.snapshot/state
 - `send` queues a message. `ask` sends a message that carries a one-shot
   `ReplyTo` and returns a Task for the reply.
 
+> **Watch out:** actor configuration is named. `($actor/spawn 1)` fails with
+> `actor/spawn expects no positional arguments`; pass `^init` and `^handle`.
+
 Because an actor handles one message at a time, its state needs no locking.
-A `supervisor` form owns actors and restarts or stops one whose handler
-fails. Its body is a scope: actors spawned there are owned by the supervisor,
-and `^strategy restart` or `^strategy stop` decides what happens when one
-raises. `^events` names a channel that receives failure and recovery events:
+A `supervisor` form owns actors and decides what happens when a handler
+fails. Its body is a scope: actors spawned there are owned by the supervisor.
+`^strategy restart` rebuilds the actor from `^init`. `stop` closes the actor
+and then re-raises unless an `ask` reply already took the error, so a `send`
+failure ends the supervisor too; `escalate` also ends it. `^dead_letter`,
+`^max_restarts`, and `^within_ms` tune the failure path; `^events` names a
+channel that receives failure and recovery events.
 
 ```gene runnable
+(type Boom : Error)
+
 (supervisor ^strategy restart
   (let counter
     ($actor/spawn ^init (fn [] 0)
       ^handle (fn [ctx state msg]
-        ($actor/continue (+ state msg)))))
+        (if (== msg "bad")
+          (fail (Boom ^_msg "bad"))
+          else
+          ($actor/continue (+ state msg))))))
   (counter .send 2)
-  (counter .send 5)
-  ($sleep 100)
+  (counter .send "bad")
+  (counter .send 3)
   counter/.snapshot/state)
-# 7
+# 3
 ```
+
+`2` advances the state to 2. `"bad"` raises, so the actor restarts from
+`^init` with state 0; `3` then leaves the state at 3.
 
 ## Events
 

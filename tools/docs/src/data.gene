@@ -88,3 +88,10 @@
   # run may not have it.
   (let path ($path/join root "build/docs/heads.gene"))
   (if ($fs/exists? path) (read_one path) else nil))
+
+(fn load_macros [root]
+  # The macros the compiler supplies for standard namespaces, written by
+  # `gene doc build` beside the heads; a direct generator run may not have
+  # them.
+  (let path ($path/join root "build/docs/macros.gene"))
+  (if ($fs/exists? path) (read_one path) else nil))

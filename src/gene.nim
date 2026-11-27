@@ -16,13 +16,14 @@
 ##                       read the generated corpus
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
-import gene/[build, build_info, compiler, diagnostics, gir, install,
+import gene/[build, build_info, diagnostics, gir, install,
              native_managed, package, printer, reader, registry_config,
              registry_publish, repl, system_dependency, types, vm, web]
 # native_managed installs the owned byte-ingress adapter for this executable.
 import gene/ext/[logging, logging_config]
 import tools/docs/file_view
 import gene/docs_lookup
+import gene/doc_compiler_data
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
 # executable's dynamic symbol table for a dlopened AOT library to resolve.
@@ -1217,17 +1218,6 @@ proc docPackageRoot(start: string): string =
   except CatchableError:
     normalizedPath(absolutePath(start))
 
-proc writeDocHeads(root: string) =
-  ## The compiler's head list is data for the generator's name table. The
-  ## builder never links the compiler, so the command that does hands it over
-  ## as a file.
-  let docsDir = root / "build" / "docs"
-  createDir(docsDir)
-  var items: seq[string]
-  for name in CoreSpecialFormNames:
-    items.add "\"" & name & "\""
-  writeFile(docsDir / "heads.gene", "[" & items.join(" ") & "]\n")
-
 proc docCommit(root: string): string =
   let (output, code) = execCmdEx("git -C " & quoteShell(root) & " rev-parse HEAD")
   if code == 0: output.strip() else: ""
@@ -1278,7 +1268,9 @@ proc cmdDocBuild(args: openArray[string]) =
     inc i
   let start = if packageRoot.len > 0: packageRoot else: getCurrentDir()
   let root = docPackageRoot(start)
-  writeDocHeads(root)
+  # The builder never links the compiler, so the command that does hands the
+  # generator the compiler's heads and namespace macros as files.
+  writeCompilerDocData(root)
   let tool = docToolExecutable("gene-doc")
   var toolArgs = @["build"]
   if dir.len > 0:
@@ -1328,11 +1320,16 @@ proc cmdDocSkill(args: openArray[string]) =
   if corpus.len == 0:
     stderr.writeLine "Error: no documentation corpus found; run `gene doc build` first"
     quit(1)
-  let page = corpus / "md" / "book" / "overview.md"
+  let page = corpus / "skill.md"
   if not fileExists(page):
-    stderr.writeLine "Error: the corpus has no book/overview page: " & page
+    stderr.writeLine "Error: the corpus has no skill page: " & page &
+      "; run `gene doc build` first"
     quit(1)
   let target = root / "tools" / "gene-lang-skill" / "SKILL.md"
+  if not fileExists(root / "tools" / "gene-lang-skill" / "package.gene"):
+    stderr.writeLine "Error: `gene doc skill` regenerates the Gene checkout's " &
+      "tools/gene-lang-skill/SKILL.md, and this package has none"
+    quit(1)
   var frontmatter = ""
   if fileExists(target):
     let existing = readFile(target)

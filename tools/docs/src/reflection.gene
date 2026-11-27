@@ -155,3 +155,43 @@
 
 (fn reflection_modules []
   (collect gene [] []))
+
+(fn macro_param [param]
+  {^name param/name ^local "" ^type "" ^required (not param/optional)
+   ^has_default param/optional ^default ""})
+
+(fn macro_modules [macros]
+  # Entries for the macros the compiler supplies (`$test/describe`, …). They
+  # are not runtime namespace members, so `collect` cannot see them; the
+  # build hands them over in `macros.gene`.
+  (var by_ns {})
+  (var order [])
+  (for m in macros
+    (if (not ($has_key? by_ns m/ns))
+      (do
+        (by_ns .put m/ns [])
+        (order .push m/ns)))
+    (let full ($str/join [m/ns m/name] "/"))
+    (let entries (by_ns .get m/ns))
+    (entries .push
+      {^id ($str/join ["lib/gene/" full] "")
+       ^name m/name
+       ^kind ($to_sym "macro")
+       ^for ($str/join ["gene/" full] "")
+       ^parent ($str/join ["lib/gene/" m/ns] "")
+       ^positional ($map m/positional macro_param)
+       ^named ($map m/named macro_param)
+       ^rest (if (== m/rest "") nil else {^name m/rest})
+       ^named_rest nil
+       ^result ""
+       ^errors []
+       ^generator false
+       ^fexpr false
+       ^doc ""
+       ^see []
+       ^shape_known true}))
+  (var modules [])
+  (for ns in order
+    (modules .push {^module ($str/join ["gene/" ns] "") ^source "" ^doc ""
+                    ^entries (by_ns .get ns) ^synthetic true}))
+  modules)

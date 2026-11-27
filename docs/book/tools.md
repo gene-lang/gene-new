@@ -21,6 +21,7 @@ support, and logging.
 | `gene doc ls [id]` | lists a page's children with their sizes |
 | `gene doc search <text>` | full-text search over the pages |
 | `gene doc skill` | regenerates `tools/gene-lang-skill/SKILL.md` from `book/overview` |
+| `gene fmt file.gene` | prints the canonical layout to stdout; also a parse check |
 | `gene parse file.gene` | prints the forms the reader produces |
 | `gene compile file.gene` | prints the compiled bytecode |
 | `gene lsp` | runs the language server over standard input and output |
@@ -55,6 +56,14 @@ gene doc greet.gene
 An import shows the file it resolves to, or why it does not resolve. A `let`,
 `var`, or `const` shows its declared type or the type of its literal value;
 when only running the form would tell, it shows `var`.
+
+`gene fmt` prints the canonical layout to stdout and leaves the file alone.
+It is also a parse check: if it cannot format the source, the source does not
+read. Formatting its output again gives the same text.
+
+> **Watch out:** `fmt` expands a triple-quoted interpolated string containing
+> newlines into a `($to_str …)` call, so the preferred interpolation spelling
+> is not always what it prints back.
 
 `gene parse` shows what the reader made of a file, with shorthand expanded.
 It is useful when a form does not mean what it seems to:

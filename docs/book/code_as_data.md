@@ -40,7 +40,9 @@ problem above does not arise.
 
 > **Watch out:** `%(…)` is a call. `` `(do %(env/code)...) `` calls
 > `env/code` and fails with `value is List, which is not callable`. A path
-> splices without parentheses: `` `(do %env/code...) ``.
+> splices without parentheses: `` `(do %env/code...) ``. A splice takes a
+> name: `%(mk)...` with a callable `mk` puts the whole list in and leaves
+> `...` as a literal symbol, so bind the value and write `%v...`.
 
 ## Macros
 
@@ -84,23 +86,27 @@ macro on a hot path.
 
 ## Computed paths
 
-A path expression is data before it runs: the compiler accepts a `path` node
-whose segments are expressions, and the value of each segment is read at the
-call site. A macro can build one while keeping the caller's syntax for a
-segment:
+A path expression is data as well as a read. `data/a` is read as
+`(path data a)`, and the quoted form shows it:
 
 ```gene runnable
-(var data {^a 1})
-(macro pick [k]
-  `(do (let key %k) (path data %(quote (unquote key)))))
-(pick "a")
-# 1
+(quote data/a)
+# (path data a)
 ```
 
-The inner `(quote (unquote key))` stays syntax until the expansion is read,
-which is what lets the generated path read the local `key`. Use an ordinary
-path when the segments are known; reach for this only when a macro must
-compute one.
+Segments are literal: `(path data a)` reads the key `a`. Prefix a segment
+with `%` to evaluate it instead, which is how a segment can come from a
+variable:
+
+```gene runnable
+(let data {^a 1})
+(let k "a")
+[(path data a) (path data %k)]
+# [1 1]
+```
+
+Both forms are ordinary code; a macro uses the same shape when it has to
+insert a computed segment into code it generates.
 
 ## Bindings inside an expansion
 
