@@ -1,7 +1,7 @@
 ## Gene language CLI entry point.
 ##
 ## Subcommands (a subset of design Section 18):
-##   gene eval "<src>"   evaluate a source string, print the result
+##   gene eval [source|-] evaluate source from an argument or stdin
 ##   gene repl           read/eval/print source lines from stdin
 ##   gene run  <file>    load and execute a .gene file, then call main if present
 ##   gene runurl <url>   (experimental) run a remote entry module (design §15.9)
@@ -16,6 +16,7 @@
 ##                       read the generated corpus
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
+import std/terminal as terminal
 import gene/[build, build_info, diagnostics, gir, install,
              native_managed, package, printer, reader, registry_config,
              registry_publish, repl, system_dependency, types, vm, web]
@@ -71,8 +72,8 @@ proc usage() =
   echo ""
   echo "Usage:"
   echo "  gene --version         print version, build mode and runtime check settings"
-  echo "  gene eval \"<source>\"   evaluate a source string from cwd, with imports"
-  echo "  gene eval --errors-mode dynamic|warn|strict \"<source>\""
+  echo "  gene eval [--errors-mode dynamic|warn|strict] [<source>|-]"
+  echo "                         evaluate source from an argument or stdin, with imports"
   echo "  gene repl              read/eval/print source lines from stdin"
   echo "  gene run [--log-config path] [--package-root dir] [--debug]"
   echo "           [--report_tail_fallbacks]"
@@ -81,10 +82,10 @@ proc usage() =
   echo "           <file.gene> [--] [args...]     execute a file and call main"
   echo "  gene runurl <https-url> [args...]  (experimental) run a remote entry module;"
   echo "                              relative imports resolve against the module's URL"
-  echo "  gene parse <file.gene>  print canonical parsed forms"
-  echo "  gene fmt <file.gene>    human-friendly format: sugar restored, comments kept"
-  echo "  gene compile <file.gene> print compiled GIR bytecode"
-  echo "  gene compile --target c <file.gene> print experimental typed_native C"
+  echo "  gene parse [<file.gene>|-]  print canonical parsed forms"
+  echo "  gene fmt [<file.gene>|-]    human-friendly format: sugar restored, comments kept"
+  echo "  gene compile [<file.gene>|-] print compiled GIR bytecode"
+  echo "  gene compile --target c [<file.gene>|-] print experimental typed_native C"
   echo "  gene compile --c-header           print the standalone checked C ABI header"
   echo "  gene build [target] [options] build a package product"
   echo "  gene build --all [options] build every workspace product"
@@ -111,6 +112,13 @@ proc readSourceFile(path: string): string =
     stderr.writeLine "Error: file not found: " & path
     quit(1)
   readFile(path)
+
+proc readSourceStdin(): string =
+  try:
+    stdin.readAll()
+  except IOError as e:
+    stderr.writeLine "Error reading stdin: " & e.msg
+    quit(1)
 
 proc readErrorLoc(e: ref ReadError): SourceLoc =
   SourceLoc(sourceName: e.sourceName, line: e.line, col: e.col)
@@ -141,12 +149,13 @@ proc reportPipelineWarnings(chunk: Chunk) =
       stderr.writeLine formatDiagnostic("Warning", diagnostic.message,
                                          diagnostic.loc)
 
-proc cmdEval(src: string, errorsMode = "") =
+proc cmdEval(src, errorsMode: string, fromStdin: bool) =
   let app = newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir())))
   if errorsMode.len > 0: app.setErrorCheckingMode(errorsMode)
   let scope = newGlobalScope(app)
   try:
-    let chunk = app.compileEvalModuleSource(src)
+    let sourceName = if fromStdin: "<stdin>" else: "<eval>"
+    let chunk = app.compileEvalModuleSource(src, sourceName)
     reportPipelineWarnings(chunk)
     echo run(chunk, scope).print()
   except ReadError as e:
@@ -308,8 +317,10 @@ proc configureRunLogging(options: RunCli) =
                                            level: llDebug)
   installLoggingConfig(config)
 
-proc parseInteractiveCli(label: string, needsSource: bool): RunCli =
+proc parseInteractiveCli(label: string, allowsSource: bool): tuple[
+    source, errorsMode: string, fromStdin: bool] =
   let args = commandArgs(2)
+  var sourceGiven = false
   var index = 0
   while index < args.len:
     let argument = args[index]
@@ -325,22 +336,27 @@ proc parseInteractiveCli(label: string, needsSource: bool): RunCli =
       if value notin ["dynamic", "warn", "strict"]:
         raise newException(ValueError, "--errors-mode expects dynamic, warn, or strict")
       result.errorsMode = value
-    elif needsSource and argument == "--":
+    elif allowsSource and argument == "--":
       inc index
       if index >= args.len or index + 1 != args.len:
         raise newException(ValueError, "eval requires one source string")
-      result.path = args[index]
+      result.source = args[index]
+      sourceGiven = true
     elif argument.startsWith("--"):
       raise newException(ValueError, "unknown " & label & " option: " & argument)
-    elif needsSource and result.path.len == 0:
-      result.path = argument
+    elif allowsSource and not sourceGiven:
+      result.source = argument
+      result.fromStdin = argument == "-"
+      sourceGiven = true
       if index + 1 != args.len:
         raise newException(ValueError, "eval requires one source string after its options")
     else:
       raise newException(ValueError, "unexpected " & label & " argument: " & argument)
     inc index
-  if needsSource and result.path.len == 0:
-    raise newException(ValueError, "eval requires a source string")
+  if allowsSource and not sourceGiven:
+    if terminal.isatty(stdin):
+      raise newException(ValueError, "eval requires a source string or '-' for stdin")
+    result.fromStdin = true
 
 proc raiseMainReturnTypeError(scope: Scope, value: Value) =
   let message = "main return expected Nil or Int, got " & $value.kind
@@ -499,32 +515,37 @@ proc cmdRunUrl(url: string, args: openArray[string] = [],
     maybeReplOnError(replScope, app)
     quit(1)
 
+proc sourcePath(label: string, index: int): string =
+  if index <= paramCount(): return paramStr(index)
+  if not terminal.isatty(stdin): return "-"
+  stderr.writeLine "Error: '" & label & "' needs a file path or '-' for stdin"
+  quit(1)
+
 proc cmdParse(path: string) =
-  let src = readSourceFile(path)
+  let fromStdin = path == "-"
+  let src = if fromStdin: readSourceStdin() else: readSourceFile(path)
+  let sourceName = if fromStdin: "<stdin>" else: normalizedPath(absolutePath(path))
   try:
-    for f in readAll(src, normalizedPath(absolutePath(path))):
+    for f in readAll(src, sourceName):
       echo f.print()
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
 
-proc cmdCompile(path: string) =
-  let absPath = normalizedPath(absolutePath(path))
+proc cmdCompile(path: string, targetC = false) =
   try:
-    let app = newApplicationForEntryFile(absPath)
-    echo app.compileFileModule(absPath).disassemble()
-  except ReadError as e:
-    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
-    quit(1)
-  except GeneError as e:
-    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
-    quit(1)
-
-proc cmdCompileC(path: string) =
-  let absPath = normalizedPath(absolutePath(path))
-  try:
-    let app = newApplicationForEntryFile(absPath)
-    echo app.compileFileModule(absPath).emitExperimentalC()
+    let chunk =
+      if path == "-":
+        let app = newApplication(singlePackageGraph(newAdHocPackage(getCurrentDir())))
+        app.compileEvalModuleSource(readSourceStdin(), "<stdin>")
+      else:
+        let absPath = normalizedPath(absolutePath(path))
+        let app = newApplicationForEntryFile(absPath)
+        app.compileFileModule(absPath)
+    if targetC:
+      echo chunk.emitExperimentalC()
+    else:
+      echo chunk.disassemble()
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
@@ -1778,7 +1799,8 @@ proc main() =
     echo geneBuildInfo()
   of "eval":
     let options = parseInteractiveCli("eval", true)
-    cmdEval(options.path, options.errorsMode)
+    let source = if options.fromStdin: readSourceStdin() else: options.source
+    cmdEval(source, options.errorsMode, options.fromStdin)
   of "repl":
     let options = parseInteractiveCli("repl", false)
     cmdRepl(options.errorsMode)
@@ -1812,34 +1834,27 @@ proc main() =
       quit(1)
     cmdRunUrl(options.path, options.args, options.packageRoot, options)
   of "parse":
-    if paramCount() < 2:
-      stderr.writeLine "Error: 'parse' needs a file path"
-      quit(1)
-    cmdParse(paramStr(2))
+    cmdParse(sourcePath("parse", 2))
   of "fmt":
     delegateToTool("gene-fmt", commandArgs(2))
   of "compile":
     if paramCount() < 2:
-      stderr.writeLine "Error: 'compile' needs a file path"
-      quit(1)
-    if paramStr(2) == "--c-header":
+      cmdCompile(sourcePath("compile", 2))
+    elif paramStr(2) == "--c-header":
       if paramCount() != 2:
         stderr.writeLine "Error: 'compile --c-header' takes no file path"
         quit(1)
       stdout.write emitNativeCHeader()
     elif paramStr(2) == "--target":
-      if paramCount() < 4:
-        stderr.writeLine "Error: 'compile --target' needs a target and file path"
+      if paramCount() < 3:
+        stderr.writeLine "Error: 'compile --target' needs a target"
         quit(1)
       if paramStr(3) != "c":
         stderr.writeLine "Error: unsupported compile target: " & paramStr(3)
         quit(1)
-      cmdCompileC(paramStr(4))
+      cmdCompile(sourcePath("compile --target c", 4), targetC = true)
     elif paramStr(2) == "--c":
-      if paramCount() < 3:
-        stderr.writeLine "Error: 'compile --c' needs a file path"
-        quit(1)
-      cmdCompileC(paramStr(3))
+      cmdCompile(sourcePath("compile --c", 3), targetC = true)
     else:
       cmdCompile(paramStr(2))
   of "build":

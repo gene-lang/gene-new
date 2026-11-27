@@ -29077,6 +29077,12 @@ proc replBindingNames*(scope: Scope): tuple[local, builtin: seq[string]] =
       consider(name, not fallback.parentCollision and fallback.conflicts.len == 0)
     current = current.parent
 
+proc replMacroNames*(scope: Scope): seq[string] =
+  let context = scopeMacroBindings(scope)
+  if context != nil:
+    for name in context.definitions.keys:
+      result.add name
+
 proc replBinding*(scope: Scope, name: string): Value =
   try:
     if not scope.lookupOptional(name, result):

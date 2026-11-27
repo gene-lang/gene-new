@@ -8,7 +8,7 @@ support, and logging.
 | Command | What it does |
 | --- | --- |
 | `gene run file.gene [args…]` | runs a file, then its `main` ([Getting started](getting_started.md)) |
-| `gene eval "source"` | evaluates source and prints the last value |
+| `gene eval [source]` | evaluates source and prints the last value |
 | `gene repl` | evaluates input in a session that keeps its bindings |
 | `gene test [paths…] [--name text]` | runs `*_spec.gene` examples ([Testing](testing.md)) |
 | `gene pkg …` | manages dependencies and the lock ([Modules and packages](modules.md)) |
@@ -30,9 +30,16 @@ support, and logging.
 `gene --help` lists every command and option, and `gene --version` reports
 the build: release or debug, platform, and runtime checks.
 
-In a terminal, Tab completes a name at the cursor. Press Tab on an empty
-prompt to see names from the session, or after a slash to see members such as
-`person/name` or `$str/upper`. Use Up and Down to recall earlier submissions
+`gene eval`, `gene parse`, `gene fmt`, and `gene compile` accept source from
+stdin when input is redirected and no source or file argument is given. Use
+`-` to select stdin explicitly. Piped source passed to `eval` or `compile` can
+import relative to the current directory.
+
+In a terminal, the REPL shows completion candidates as you type. The menu
+includes forms such as `import` and `fn` as well as session names and members
+such as `person/name` or `$str/upper`. Tab completes a common prefix or selects
+a candidate. With a selection active, use Up and Down to move and Enter to
+insert it. Esc dismisses the menu. Up and Down also recall earlier submissions
 and Ctrl-R to search them. Ctrl-E opens the draft in `$VISUAL` or `$EDITOR`
 and returns it to the prompt for review. Enter evaluates a complete draft or
 opens a continuation line when the reader needs more input. History keeps

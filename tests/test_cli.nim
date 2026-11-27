@@ -1185,6 +1185,24 @@ suite "cli — gene eval":
     check ran.exitCode == 0
     check ran.output.strip == "5"
 
+  test "evaluates piped source as a single module from cwd":
+    let root = cliDir / "eval_stdin"
+    createDir(root)
+    writeFile(root / "helper.gene", "(let answer 40)")
+    let source = "(import answer ^from \"./helper\")\n(+ answer\n 2)\n"
+    for args in [@["eval"], @["eval", "--errors-mode=dynamic", "-"]]:
+      let ran = runGeneInput(args, source, workingDir = root)
+      check ran.exitCode == 0
+      check ran.output == "42\n"
+    let err = runGeneInput(["eval"], "\n(missing)\n", workingDir = root)
+    check err.exitCode == 1
+    check "at <stdin>:2:1" in err.output
+
+  test "explicit eval source leaves the pipe available to the program":
+    let ran = runGeneInput(["eval", "($os/read_line)"], "data\n")
+    check ran.exitCode == 0
+    check ran.output == "\"data\"\n"
+
   test "imports from cwd with the ordinary module loader":
     let root = cliDir / "eval_imports"
     createDir(root)
@@ -1365,6 +1383,25 @@ suite "cli — gene repl":
     check errText == ""
 
   when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    test "TTY suggests keywords and lets the user pick a live completion":
+      let child = replPty()
+      defer: child.close()
+      discard child.awaitReplPty(replReady & "gene> ")
+      child.sendReplPty("(mac")
+      discard child.awaitReplPty("\e[2m macro")
+      child.sendReplPty("\x03(let repl_alpha 61) (let repl_beta 72)\r")
+      discard child.awaitReplPty(replReady & "gene> ")
+      child.sendReplPty("repl_")
+      discard child.awaitReplPty("\e[2m repl_beta")
+      child.sendReplPty("\t\e[B")
+      discard child.awaitReplPty("\e[7m repl_beta")
+      child.sendReplPty("\r")
+      discard child.awaitReplPty("gene> repl_beta")
+      child.sendReplPty("\r")
+      check "\r\n72\r\n" in child.awaitReplPty(replReady)
+      child.sendReplPty("\x04")
+      check child.replPtyExit() == 0
+
     test "TTY completes live names and members at the UTF-8 cursor":
       let child = replPty()
       defer: child.close()
@@ -1542,7 +1579,7 @@ suite "cli — gene parse/fmt/compile":
     for option in ["--help", "-h"]:
       let ran = runGene(["fmt", option])
       check ran.exitCode == 0
-      check "Usage: gene-fmt <file.gene>" in ran.output
+      check "Usage: gene-fmt [<file.gene>|-]" in ran.output
       check "file not found" notin ran.output
 
   test "wrapping println returns nil and formatting keeps the prefix":
@@ -1556,6 +1593,26 @@ suite "cli — gene parse/fmt/compile":
 
   setup:
     createDir(cliDir)
+
+  test "parse, fmt, and compile accept piped source":
+    let source = "(var x   1)\n[ x 2 ]\n"
+    let parsed = runGeneInput(["parse"], source)
+    check parsed.exitCode == 0
+    check parsed.output == "(var x 1)\n[x 2]\n"
+    let formatted = runGeneInput(["fmt", "-"], source)
+    check formatted.exitCode == 0
+    check formatted.output == parsed.output
+    let compiled = runGeneInput(["compile"], "(panic \"compile should not run\")\n")
+    check compiled.exitCode == 0
+    check "opPanic" in compiled.output
+    let compiledC = runGeneInput(["compile", "--target", "c", "-"],
+      "(fn add64 [x : I64 y : I64] : I64 (+ x y))\n")
+    check compiledC.exitCode == 0
+    check "GeneNativeStatus gene_native_add64(" in compiledC.output
+    for cmd in ["parse", "fmt", "compile"]:
+      let invalid = runGeneInput([cmd, "-"], "(\n")
+      check invalid.exitCode == 1
+      check "<stdin>" in invalid.output
 
   test "parse prints canonical multi-form source":
     let path = writeCliProgram("parse_subject.gene",

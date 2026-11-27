@@ -5,6 +5,14 @@ proc completionNames(scope: Scope, source: string): seq[string] =
   completeRepl(scope, source, source.len).candidates
 
 suite "REPL completion":
+  test "completes compiler forms, literals, and session macros":
+    let scope = newGlobalScope()
+    discard run(compileReplSource("(macro twice [x] `(+ %x %x))"), scope)
+    for name in ["import", "macro", "fn", "var", "nil", "true", "false", "twice"]:
+      check name in scope.completionNames("")
+      check name in scope.completionNames("(" & name[0 .. ^2])
+    check "var" notin scope.completionNames("$str/")
+
   test "uses visible bindings, including nil and wildcard imports":
     let outer = newGlobalScope()
     outer.define("shadowed", newInt(1))

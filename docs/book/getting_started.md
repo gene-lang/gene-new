@@ -24,13 +24,15 @@ The examples below write `gene` for `bin/gene`.
 
 ## Evaluating an expression
 
-`gene eval` evaluates source given on the command line and prints the value
-of its last expression:
+`gene eval` reads source from an argument or from stdin and prints the value
+of its last expression.
 
 ```sh
 gene eval '(+ 1 2)'
 # 3
 gene eval '(let a 2) (* a 21)'
+# 42
+printf '%s\n' '(let a 2)' '(* a 21)' | gene eval
 # 42
 ```
 

@@ -1,12 +1,13 @@
 ## Completion for editable Gene source, independent of the terminal adapter.
 
 import std/[algorithm, sequtils, strutils, unicode]
-import ./[reader, types, vm]
+import ./[compiler, reader, types, vm]
 
 type
   ReplCompletion* = object
     first*, last*: int         # UTF-8 byte span, exclusive end
     prefix*: string
+    member*: bool
     candidates*: seq[string]
 
   CompletionKind = enum
@@ -159,12 +160,12 @@ proc completeRepl*(scope: Scope, source: string, cursor: int): ReplCompletion =
             return
 
   result.prefix = source[result.first ..< cursor]
+  result.member = kind != ckName
   let prefix = result.prefix
   proc matching(names: seq[string]): seq[string] =
     for name in names:
       if name.startsWith(prefix) and
-          (readableSymbol(name) or (kind == ckName and name in ["/", "//"])) and
-          (kind != ckName or name notin ["true", "false", "nil"]):
+          (readableSymbol(name) or (kind == ckName and name in ["/", "//"])):
         result.add name
     result.sort()
     result = result.deduplicate(isSorted = true)
@@ -172,10 +173,16 @@ proc completeRepl*(scope: Scope, source: string, cursor: int): ReplCompletion =
   case kind
   of ckName:
     let (local, builtin) = scope.replBindingNames()
-    # Empty-prefix menus surface the user's bindings before the prelude.
+    let sessionNames = local & scope.replMacroNames()
+    let keywords = @CoreSpecialFormNames & @["true", "false", "nil"]
+    # Keep session bindings and syntax ahead of the prelude in a capped menu.
     result.candidates =
-      if prefix.len == 0: matching(local) & matching(builtin)
-      else: matching(local & builtin)
+      if prefix.len == 0:
+        let names = matching(sessionNames)
+        let syntax = matching(keywords.filterIt(it notin names))
+        names & syntax & matching(builtin.filterIt(it notin names and it notin syntax))
+      else:
+        matching(sessionNames & keywords & builtin)
   of ckMember:
     result.candidates = matching(scope.completionReceiver(receiver).replMemberNames())
   of ckMessage, ckPathMessage:

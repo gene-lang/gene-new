@@ -38,6 +38,7 @@ const
   continuationPrompt = "....> "
   historyLimit = 1000
   displayLimit = 40
+  completionRows = 6
   pasteEnd = "\e[201~"
 
 proc emit(terminal: ReplTerminal, text: string) =
@@ -186,7 +187,8 @@ proc clearDisplay(terminal: ReplTerminal) =
     terminal.emit(erase)
     terminal.rendered = false
 
-proc render(terminal: ReplTerminal, draft: Draft, search: HistorySearch) =
+proc render(terminal: ReplTerminal, draft: Draft, search: HistorySearch,
+            choices = ReplCompletion(), selected = -1) =
   terminal.clearDisplay()
   let fd = int(terminal.output.getFileHandle)
   let columns = terminalWidthIoctl([fd])
@@ -197,6 +199,7 @@ proc render(terminal: ReplTerminal, draft: Draft, search: HistorySearch) =
   var lines = @[""]
   var column = 0
   var cursorRow, cursorColumn: int
+  var completionColumn = 0
   proc put(text: string) =
     for rune in text.runes:
       let raw = rune.toUTF8
@@ -224,6 +227,8 @@ proc render(terminal: ReplTerminal, draft: Draft, search: HistorySearch) =
     put(terminal.prompt)
     var offset = 0
     while offset < draft.text.len:
+      if offset == choices.first:
+        completionColumn = column
       if offset == draft.cursor:
         cursorRow = lines.high
         cursorColumn = column
@@ -239,7 +244,25 @@ proc render(terminal: ReplTerminal, draft: Draft, search: HistorySearch) =
     if draft.cursor == draft.text.len:
       cursorRow = lines.high
       cursorColumn = column
-  let last = min(lines.high, max(cursorRow, height - 1))
+    if choices.first == draft.text.len:
+      completionColumn = column
+
+  let rowsBelowCursor = lines.high - cursorRow
+  let menuRows = min(choices.candidates.len,
+                     min(completionRows, height - 1 - rowsBelowCursor))
+  if menuRows > 0:
+    let firstChoice = max(0, selected - menuRows + 1)
+    var menuWidth = 0
+    for i in firstChoice ..< firstChoice + menuRows:
+      menuWidth = max(menuWidth, textWidth(choices.candidates[i]))
+    menuWidth = min(menuWidth + 2, width)
+    let left = min(completionColumn, width - menuWidth)
+    for i in firstChoice ..< firstChoice + menuRows:
+      let style = if i == selected: "\e[7m" else: "\e[2m"
+      let label = fitCells(" " & choices.candidates[i], menuWidth)
+      lines.add repeat(' ', left) & style & label & "\e[0m"
+
+  let last = if menuRows > 0: lines.high else: min(lines.high, max(cursorRow, height - 1))
   let first = max(0, last - height + 1)
   var output = lines[first .. last].join("\r\n") & "\r"
   if last > cursorRow: output.add "\e[" & $(last - cursorRow) & "A"
@@ -259,22 +282,29 @@ proc commonPrefix(names: openArray[string]): string =
       dec sameBytes
     result.setLen(sameBytes)
 
-proc showCompletions(terminal: ReplTerminal, draft: var Draft) =
-  let choices = terminal.complete(draft.text, draft.cursor)
-  if choices.candidates.len == 0:
-    return
-  if choices.prefix.len > 0:
-    let prefix = commonPrefix(choices.candidates)
-    if prefix.len > choices.prefix.len or choices.candidates.len == 1:
-      draft.replace(choices.first, choices.last, prefix)
-    if choices.candidates.len == 1:
-      return
+proc listCompletions(terminal: ReplTerminal, choices: ReplCompletion) =
   terminal.clearDisplay()
   let size = min(choices.candidates.len, displayLimit)
   var list = choices.candidates[0 ..< size].join("  ")
   if size < choices.candidates.len:
     list.add "  (" & $(choices.candidates.len - size) & " more)"
   terminal.emit(list & "\r\n")
+
+proc liveCompletions(terminal: ReplTerminal, draft: Draft): ReplCompletion =
+  if draft.cursor == 0 or draft.text[draft.cursor - 1] in
+      {' ', '\t', '\r', '\n', '(', ')', '[', ']', '{', '}', ',', ';'}:
+    return
+  result = terminal.complete(draft.text, draft.cursor)
+  if (result.prefix.len == 0 and not result.member) or
+      (result.candidates.len == 1 and
+       result.candidates[0] == draft.text[result.first ..< result.last]):
+    result.candidates.setLen(0)
+
+proc cycleChoice(current, count, direction: int): int =
+  if current < 0:
+    if direction > 0: 0 else: count - 1
+  else:
+    (current + count + direction) mod count
 
 proc editExternally(terminal: ReplTerminal, draft: var Draft) =
   terminal.clearDisplay()
@@ -337,6 +367,8 @@ proc readDraft*(terminal: ReplTerminal, source: var string, continued: bool): bo
   var historyIndex = terminal.history.len
   var unsaved: Draft
   var search: HistorySearch
+  var selected = -1
+  var dismissed = false
 
   template navigate(direction: int) =
     if not draft.moveVertical(direction):
@@ -352,12 +384,20 @@ proc readDraft*(terminal: ReplTerminal, source: var string, continued: bool): bo
           draft = Draft(text: text, cursor: text.len)
 
   while true:
-    terminal.render(draft, search)
+    let choices =
+      if not search.active and not dismissed: terminal.liveCompletions(draft)
+      else: ReplCompletion()
+    if selected >= choices.candidates.len:
+      selected = -1
+    terminal.render(draft, search, choices, selected)
     let byteValue = terminal.readByte()
     if byteValue < 0:
       terminal.clearDisplay()
       return false
     let key = char(byteValue)
+    let previousSelection = selected
+    selected = -1
+    dismissed = false
     if key == '\x03':
       terminal.clearDisplay()
       terminal.emit("^C\r\n")
@@ -395,12 +435,29 @@ proc readDraft*(terminal: ReplTerminal, source: var string, continued: bool): bo
       continue
     case key
     of '\r', '\n':
+      if previousSelection >= 0:
+        draft.replace(choices.first, choices.last, choices.candidates[previousSelection])
+        dismissed = true
+        continue
       draft.cursor = draft.text.len
       terminal.render(draft, search)
       source = move(draft.text)
       submitted = true
       return true
-    of '\t': terminal.showCompletions(draft)
+    of '\t':
+      let matches =
+        if choices.candidates.len > 0: choices
+        else: terminal.complete(draft.text, draft.cursor)
+      if matches.candidates.len == 0:
+        continue
+      if matches.prefix.len == 0:
+        terminal.listCompletions(matches)
+      else:
+        let prefix = commonPrefix(matches.candidates)
+        if prefix.len > matches.prefix.len or matches.candidates.len == 1:
+          draft.replace(matches.first, matches.last, prefix)
+        else:
+          selected = cycleChoice(previousSelection, matches.candidates.len, 1)
     of '\x01': draft.cursor = draft.beginLine()
     of '\x04':
       if draft.text.len == 0:
@@ -419,14 +476,26 @@ proc readDraft*(terminal: ReplTerminal, source: var string, continued: bool): bo
       search = HistorySearch(active: true, match: terminal.history.high)
     of '\e':
       case terminal.readEscape()
-      of "[A", "OA": navigate(-1)
-      of "[B", "OB": navigate(1)
+      of "[A", "OA":
+        if previousSelection >= 0:
+          selected = cycleChoice(previousSelection, choices.candidates.len, -1)
+        else:
+          navigate(-1)
+      of "[B", "OB":
+        if previousSelection >= 0:
+          selected = cycleChoice(previousSelection, choices.candidates.len, 1)
+        else:
+          navigate(1)
+      of "[Z":
+        if choices.candidates.len > 1:
+          selected = cycleChoice(previousSelection, choices.candidates.len, -1)
       of "[C", "OC": draft.cursor = nextRune(draft.text, draft.cursor)
       of "[D", "OD": draft.cursor = previousRune(draft.text, draft.cursor)
       of "[H", "OH", "[1~", "[7~": draft.cursor = draft.beginLine()
       of "[F", "OF", "[4~", "[8~": draft.cursor = draft.endLine()
       of "[3~": draft.replace(draft.cursor, nextRune(draft.text, draft.cursor), "")
       of "[200~": draft.replace(draft.cursor, draft.cursor, terminal.readPaste())
+      of "": dismissed = true
       else: discard
     of ' ' .. '~', '\x80' .. '\xff':
       draft.replace(draft.cursor, draft.cursor, terminal.readRune(key))
