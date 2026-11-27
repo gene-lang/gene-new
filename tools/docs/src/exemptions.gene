@@ -14,12 +14,6 @@
   {^name "$//" ^why "the integer-division operator example in book/values"}
   {^name "gene//" ^why "reader spelling of the integer-division operator"}
   {^name "gene///" ^why "reader spelling of an operator example"}
-  {^name "$p/nmae" ^why "misspelled local path in the error example in book/names"}
-  {^name "p/nmae" ^why "misspelled local path in the error example in book/names"}
-  {^name "gene/p/nmae" ^why "misspelled local path in the error example in book/names"}
-  {^name "$t/items" ^why "example binding introduced by a test helper in book/testing"}
-  {^name "t/items" ^why "example binding introduced by a test helper in book/testing"}
-  {^name "gene/t/items" ^why "example binding introduced by a test helper in book/testing"}
   {^name "$dom" ^why "web-profile namespace; no host reflection"}
   {^name "$dom/add_event_listener" ^why "web-profile binding; no host reflection"}
   {^name "dom/add_event_listener" ^why "web-profile binding; no host reflection"}

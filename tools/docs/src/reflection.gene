@@ -82,42 +82,73 @@
    ^see []
    ^shape_known shape})
 
-(fn message_entries [path decl]
+(fn full_path [path name]
+  (if (> ($size path) 0)
+    ($str/join [($str/join path "/") name] "/")
+    else
+    name))
+
+(fn collect_values [ns path out]
+  (for d in ($declarations ns)
+    (if (== d/kind "Namespace")
+      (do
+        (var child [])
+        (for p in path (child .push p))
+        (child .push ($to_str d/name))
+        (collect_values d/value child out))
+      elif (in_kinds d/kind)
+        (if (not (contains? ($to_str d/name) "/"))
+          (out .push {^value d/value
+                      ^id ($str/join ["lib/gene/" (full_path path ($to_str d/name))] "")}))))
+  out)
+
+(fn canonical_for [impl canon my_id]
+  (var found "")
+  (if ($present? impl)
+    (for item in canon
+      (if (&& (== found "") ($same? impl item/value) (not (== item/id my_id)))
+        (set found item/id))))
+  found)
+
+(fn message_entries [path decl canon]
   (var out [])
   (let name ($to_str decl/name))
   (let base (if (> ($size path) 0)
     ($str/join [($str/join path "/") name] "/")
     else
     name))
-  (let messages (try ($runtime/messages decl/value) catch Error nil))
+  (let messages (try ($runtime/messages_of_type decl/value) catch Error nil))
   (if ($present? messages)
     (for msg in messages
-      (let name (if ($present? msg/name) msg/name else ""))
-      (if (> ($size name) 0)
+      (let mname ($to_str (if ($present? msg/name) msg/name else "")))
+      (if (> ($str/byte_size mname) 0)
         (do
           (let separator (if (== ($to_str decl/kind) "Protocol") ":" else "/"))
-          (let full ($str/join [base name] separator))
+          (let full ($str/join [base mname] separator))
+          (let id ($str/join ["lib/gene/" full] ""))
+          (let sig (if ($present? msg/signature) msg/signature else nil))
+          (let impl (if (&& ($present? sig) ($present? sig/impl)) sig/impl else nil))
           (out .push
-            {^id ($str/join ["lib/gene/" full] "")
-             ^name name
+            {^id id
+             ^name mname
              ^kind ($to_sym "message")
              ^for ($str/join ["gene/" full] "")
              ^parent ($str/join ["lib/gene/" base] "")
-             ^positional []
-             ^named []
+             ^positional (params sig)
+             ^named (named_params sig)
              ^rest nil
              ^named_rest nil
-             ^result ""
+             ^result (type_text (if ($present? sig) sig/result else nil))
              ^errors []
              ^generator false
              ^fexpr false
-             ^doc (if (&& ($present? msg/signature) ($present? msg/signature/doc))
-                    msg/signature/doc else "")
+             ^doc (if (&& ($present? sig) ($present? sig/doc)) sig/doc else "")
              ^see []
-             ^shape_known false})))))
+             ^alias_of (canonical_for impl canon id)
+             ^shape_known (known? sig "positional")})))))
   out)
 
-(fn collect [ns path modules]
+(fn collect [ns path modules canon]
   (let module_name (if (> ($size path) 0)
     ($str/join ["gene/" ($str/join path "/")] "")
     else
@@ -129,13 +160,13 @@
         (var child [])
         (for p in path (child .push p))
         (child .push ($to_str d/name))
-        (collect d/value child modules))
+        (collect d/value child modules canon))
       elif (in_kinds d/kind)
         (do
           (if (not (contains? ($to_str d/name) "/"))
             (entries .push (entry_from_decl path d)))
           (if (|| (== d/kind "Type") (== d/kind "Protocol"))
-            (for msg in (message_entries path d)
+            (for msg in (message_entries path d canon)
               (entries .push msg))))))
   (if (> ($size entries) 0)
     # The root page's title already says what it holds (`namespace_page`), so
@@ -154,7 +185,8 @@
     else false))
 
 (fn reflection_modules []
-  (collect gene [] []))
+  (let canon (collect_values gene [] []))
+  (collect gene [] [] canon))
 
 (fn macro_param [param]
   {^name param/name ^local "" ^type "" ^required (not param/optional)

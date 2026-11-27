@@ -1,6 +1,6 @@
 # Rendering pages: chapters, sections, namespaces, and entries.
 
-(import $str/[join split trim lower upper starts_with? ends_with? byte_size
+(import $str/[join split trim lower upper starts_with? ends_with? contains? byte_size
               slice_bytes])
 (import $order/[sort_by])
 (import fail_pipeline in? first_paragraph anchor format_size str_or_empty short_summary ^from "./util")
@@ -52,7 +52,13 @@
 (fn entry_title [module entry]
   (if ($present? entry/for)
     (if (starts_with? entry/for "gene/")
-      ($str/join ["$" (gene_tail entry/for)] "")
+      (do
+        (let tail (gene_tail entry/for))
+        (if (&& (== ($to_str entry/kind) "message") (contains? tail "/"))
+          (let parts ($str/split tail "/"))
+          ($str/join [($str/join ($take parts (- ($size parts) 1)) "/") ($last parts)] ".")
+          else
+          ($str/join ["$" tail] "")))
       else
       entry/for)
     else
@@ -81,13 +87,19 @@
     (out .push "..")
     (set up (+ up 1)))
   (let rest ($drop tparts common))
-  (var i 0)
-  (for part in rest
-    (if (== i (- ($size rest) 1))
-      (out .push ($str/join [part ".md"] ""))
-      else
-      (out .push part))
-    (set i (+ i 1)))
+  (if (== ($size rest) 0)
+    (do
+      (out .push "..")
+      (out .push ($str/join [($last tparts) ".md"] "")))
+    else
+    (do
+      (var i 0)
+      (for part in rest
+        (if (== i (- ($size rest) 1))
+          (out .push ($str/join [part ".md"] ""))
+          else
+          (out .push part))
+        (set i (+ i 1)))))
   ($str/join out "/"))
 
 (fn book_index [chapters]
@@ -273,6 +285,11 @@
     (do
       (lines .push ($str/join ["**Errors:** " ($str/join entry/errors ", ")] ""))
       (lines .push "")))
+  (if (&& ($present? entry/alias_of) (not (== entry/alias_of "")))
+    (do
+      (lines .push ($str/join ["**Alias of:** [" entry/alias_of "]("
+        (relative_md entry/alias_of entry/id) ")"] ""))
+      (lines .push "")))
   (if (&& ($present? entry/status) (not (== entry/status "")))
     (do
       (lines .push $"**Status:** ${entry/status}")
@@ -299,7 +316,11 @@
       (lines .push "")))
   {^id entry/id ^kind "entry" ^decl_kind ($to_str entry/kind)
    ^title title ^summary (entry_summary entry)
-   ^parent ($str/join ["lib/" module/module] "")
+   ^parent (if (&& (== ($to_str entry/kind) "message")
+                   ($present? entry/parent) (not (== entry/parent "")))
+             entry/parent
+             else
+             ($str/join ["lib/" module/module] ""))
    ^content ($str/trim ($str/join (check_lines lines entry/id) "\n"))})
 
 (fn check_lines [lines where]
@@ -310,52 +331,93 @@
     (set i (+ i 1)))
   out)
 
-(fn namespace_page [module entry_pages]
+(fn ordered_entries [entry_pages]
+  (sort_by entry_pages
+    (fn [page] ($str/join [($to_str (kind_rank page/decl_kind)) page/title] ":"))))
+
+(fn namespace_pages [module entry_pages]
+  # The first page is the namespace page; pages past 100 rows are
+  # `lib/gene/<namespace>/@<n>`. `@` cannot start a Gene name, so an entry id
+  # cannot collide with a paging id.
   (let tail (if (== module/module "gene")
     "Built-in functions, types, and errors"
     else
     (gene_tail module/module)))
-  (let summary (if ($present? module/doc) (first_paragraph ($str/split module/doc "\n") 0) else ""))
-  (var lines [])
-  (let heading (if (&& ($present? summary) (not (== summary "")))
-    $"# ${tail} — ${summary}"
-    else
-    $"# ${tail}"))
-  (lines .push heading)
-  (lines .push "")
-  (if (&& ($present? module/doc) (not (== ($str/trim module/doc) "")))
-    (do
-      (lines .push module/doc)
-      (lines .push "")))
-  (let usage (if (== module/module "gene")
-    "Built in as `$…`."
-    elif (starts_with? module/module "gene/")
-    ($str/join ["Built in as `$" tail "/…`."] "")
-    else
-    ($str/join ["Import from `" module/module "`."] "")))
-  (lines .push usage)
-  (lines .push "")
-  (var kinds [])
+  (let summary (if ($present? module/doc) (first_paragraph ($str/split module/doc "
+") 0) else ""))
+  (var visible [])
   (for page in entry_pages
-    (let kind page/decl_kind)
-    (if (not (in? kind kinds)) (kinds .push kind)))
-  (for kind in (sort_by kinds (fn [k] (kind_rank k)))
-    (var group [])
-    (for page in entry_pages
-      (if (== page/decl_kind kind) (group .push page)))
-    (lines .push $"## ${(kind_heading kind)}")
-    (lines .push "")
-    (for page in group
-      (lines .push (link_row page/title page/id page/summary page/size
-                     ($str/join ["lib/" module/module] "")))))
+    (if (not (== page/decl_kind "message")) (visible .push page)))
+  (let ordered (ordered_entries visible))
+  (let total ($size ordered))
+  (let page_count (if (> total 0) (+ 1 (/ (- total 1) 98)) else 1))
+  (let ns_id ($str/join ["lib/" module/module] ""))
   (let module_parts ($str/split module/module "/"))
   (let parent (if (> ($size module_parts) 1)
     ($str/join ["lib/" ($str/join ($take module_parts (- ($size module_parts) 1)) "/")] "")
     else
     "lib"))
-  {^id ($str/join ["lib/" module/module] "") ^kind "namespace" ^title tail
-   ^summary summary ^parent parent
-   ^content ($str/trim ($str/join (check_lines lines module/module) "\n"))})
+  (var out [])
+  (var p 1)
+  (while (<= p page_count)
+    (let start_index (* (- p 1) 98))
+    (let end_index (if (< (* p 98) total) (* p 98) else total))
+    (let slice (if (> end_index start_index)
+      ($take ($drop ordered start_index) (- end_index start_index))
+      else
+      []))
+    (let page_id (if (== p 1) ns_id else ($str/join [ns_id "/@" ($to_str p)] "")))
+    (let page_title (if (== p 1) tail else $"${tail} — page ${p}"))
+    (var lines [])
+    (lines .push $"# ${page_title}")
+    (lines .push "")
+    (if (== p 1)
+      (do
+        (if (&& ($present? module/doc) (not (== ($str/trim module/doc) "")))
+          (do
+            (lines .push module/doc)
+            (lines .push "")))
+        (let usage (if (== module/module "gene")
+          "Built in as `$…`."
+          elif (starts_with? module/module "gene/")
+          ($str/join ["Built in as `$" tail "/…`."] "")
+          else
+          ($str/join ["Import from `" module/module "`."] "")))
+        (lines .push usage)
+        (lines .push ""))
+      else
+      (do
+        (lines .push $"Page ${p} of ${page_count}; entries ${(+ start_index 1)}–${end_index}.")
+        (lines .push "")))
+    (var kinds [])
+    (for page in slice
+      (let kind page/decl_kind)
+      (if (not (in? kind kinds)) (kinds .push kind)))
+    (for kind in (sort_by kinds (fn [k] (kind_rank k)))
+      (var group [])
+      (for page in slice
+        (if (== page/decl_kind kind) (group .push page)))
+      (lines .push $"## ${(kind_heading kind)}")
+      (lines .push "")
+      (for page in group
+        (lines .push (link_row page/title page/id page/summary page/size page_id))))
+    (if (> page_count 1)
+      (do
+        (lines .push "")
+        (if (> p 1)
+          (lines .push (link_row "Previous page"
+            (if (== p 2) ns_id else ($str/join [ns_id "/@" ($to_str (- p 1))] ""))
+            "" 0 page_id)))
+        (if (< p page_count)
+          (lines .push (link_row "Next page" ($str/join [ns_id "/@" ($to_str (+ p 1))] "")
+            "" 0 page_id)))))
+    (out .push
+      {^id page_id ^kind "namespace" ^title page_title ^summary summary
+       ^parent (if (== p 1) parent else ns_id)
+       ^content ($str/trim ($str/join (check_lines lines page_id) "
+"))})
+    (set p (+ p 1)))
+  out)
 
 (fn section_page [section index]
   (let body (rewrite_book_links section/body section/id index section/id))
@@ -373,7 +435,7 @@
   (if runtime
     (do
       (lines .push "To use a name you know: load its entry, `lib/gene/<name path>`")
-      (lines .push "  (`$str/join` is `lib/gene/str/join`)."))
+      (lines .push "  (`$str/join` is `lib/gene/str/join`; `List.push` is `lib/gene/List/push`)."))
     else
     (do
       (lines .push "To use a name you know: load its entry, `lib/<module>/<name>`.")))
@@ -470,8 +532,25 @@
       (let page (entry_page module entry (names_by_id .get entry/id)))
       (page .put "size" ($str/byte_size page/content))
       (entry_pages .push page))
+    (for page in entry_pages
+      (if (&& (in? ($to_str page/decl_kind) ["type" "protocol"]))
+        (do
+          (var children [])
+          (for child in entry_pages
+            (if (== child/parent page/id) (children .push child)))
+          (if (> ($size children) 0)
+            (do
+              (var extra [])
+              (extra .push "## Messages")
+              (extra .push "")
+              (for child in children
+                (extra .push (link_row child/title child/id child/summary
+                  child/size page/id)))
+              (page .put "content"
+                ($str/join [page/content "" ($str/join extra "\n")] "\n"))
+              (page .put "size" ($str/byte_size page/content)))))))
     (for page in entry_pages (pages .push page))
-    (let page (namespace_page module entry_pages))
-    (page .put "size" ($str/byte_size page/content))
-    (pages .push page))
+    (for page in (namespace_pages module entry_pages)
+      (page .put "size" ($str/byte_size page/content))
+      (pages .push page)))
   pages)

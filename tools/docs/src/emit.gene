@@ -6,12 +6,12 @@
 (import $fs/[exists? make_dir remove_dir remove read_text write_text walk])
 (import $order/[sort sort_by])
 (import $db/sqlite/[Db open])
-(import fail_pipeline in? format_size ^from "./util")
+(import fail_pipeline in? format_size short_summary ^from "./util")
 (import exemptions ^from "./exemptions")
 (import load_index load_coverage load_modules load_heads load_macros load_package load_packages read_one ^from "./data")
 (import read_book ^from "./book")
 (import reflection_modules macro_modules ^from "./reflection")
-(import build_name_table index_book index_heads section_names fence_sources entry_local collect_reflections full_path spelling_forms ^from "./names")
+(import build_name_table index_book index_heads section_names fence_sources entry_local collect_reflections full_path spelling_forms set_macro_params ^from "./names")
 (import book_pages reference_pages relative_md page_dir_parts recipe_lines skill_text ^from "./pages")
 
 (fn escape_backslash [text]
@@ -78,9 +78,18 @@
   (for page in pages (map .put page/id page))
   map)
 
+(fn index_summary [text]
+  # The index keeps a short summary, not the page's whole first paragraph.
+  (let sentence (short_summary text))
+  (if (> ($str/byte_size sentence) 32)
+    ($str/join [($str/slice_bytes sentence 0 29) "..."] "")
+    else
+    sentence))
+
 (fn row_text [page, base]
   (if (&& ($present? page/summary) (not (== page/summary "")))
-    ($str/join ["- [" page/title "](" base page/id ".md) — " page/summary
+    ($str/join ["- [" page/title "](" base page/id ".md) — "
+                (index_summary page/summary)
                 " (" (format_size page/size) ")"] "")
     else
     ($str/join ["- [" page/title "](" base page/id ".md) ("
@@ -300,6 +309,7 @@
   # Every generated link resolves to a written file.
   (for page in pages
     (do
+
       (let parts ($str/split page/content "]("))
       (var i 1)
       (while (< i ($size parts))
@@ -479,6 +489,48 @@
           (modules .push reflected)
           (by_name .put reflected/module reflected)))))
   modules)
+
+(fn index_imports [chapters rows]
+  # Credit a standard import's selections in the section that writes them.
+  (let by_key {})
+  (for row in rows (by_key .put row/spelling row))
+  (for chapter in chapters
+    (for section in chapter/sections
+      (for source in (fence_sources section/body)
+        (let forms ($parse/read_all source))
+        (var parsed [])
+        (for form in forms (parsed .push form))
+        (for form in parsed
+          (if (form_import? form)
+            (do
+              (let body ($body form))
+              (if (> ($size body) 0)
+                (do
+                  (let short (import_target (body .get 0)))
+                  (if (not (== short ""))
+                    (for selected in (import_selections body)
+                      (let full ($str/join [short selected] "/"))
+                      (for spelling in (spelling_forms full)
+                        (if ($has_key? by_key spelling)
+                          (do
+                            (let row (by_key .get spelling))
+                            (if (== row/introduced_in "")
+                              (row .put "introduced_in" section/id))
+                            (let used (row .get "used_in"))
+                            (if (not (in? section/id used)) (used .push section/id)))))))))))))))
+  rows)
+
+(fn macro_binding_map [macros]
+  # A macro parameter named `params` receives a vector whose names the macro
+  # binds in its body. The mapping is read from the macro data, not a list of
+  # macro names.
+  (var mapping {})
+  (for m in macros
+    (var i 0)
+    (for p in m/positional
+      (if (== p/name "params") (mapping .put m/name i))
+      (set i (+ i 1))))
+  mapping)
 
 (fn check_known [rows heads]
   (var known {})
@@ -699,14 +751,17 @@
   (let coverage (load_coverage root))
   (var modules (load_modules root coverage))
   (let heads (load_heads root))
+  (let macros (?? (load_macros root) []))
+  (set_macro_params (macro_binding_map macros))
   (if (&& (== coverage/package "gene/runtime") ($present? coverage/package))
     (set modules (merge_reflection modules
-                   (macro_modules (?? (load_macros root) [])))))
+                   (macro_modules macros))))
   (var entry_ids [])
   (for module in modules
     (for entry in module/entries (entry_ids .push entry/id)))
   (let table (build_name_table modules (if ($present? heads) heads else []) entry_ids))
   (let rows (index_book chapters table/rows))
+  (index_imports chapters rows)
   (let section_order {})
   (var order_index 0)
   (for chapter in chapters

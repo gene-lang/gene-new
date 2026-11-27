@@ -156,7 +156,7 @@ Before writing or changing Gene code, load `book/overview` once.
 To learn a feature: find its chapter in the index, load the chapter page
   (its list of sections), then load only the sections you need.
 To use a name you know: load its entry, `lib/gene/<name path>`
-  (`$str/join` is `lib/gene/str/join`).
+  (`$str/join` is `lib/gene/str/join`; `List.push` is `lib/gene/List/push`).
 To find a library for a job: scan the index's reference groups, then load
   that namespace's page.
 For an error message: `gene doc search "<message>"`.

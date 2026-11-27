@@ -9813,6 +9813,7 @@ proc biRuntimeBindCall(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeSignature(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeMessages(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeMessagesOfType(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeConstructorSignature(args: openArray[Value]): Value {.nimcall.}
 proc biRuntimeBindShape(args: openArray[Value]): Value {.nimcall.}
 proc biRuntimeConfigureModule(args: openArray[Value],
@@ -11223,6 +11224,10 @@ proc buildBuiltins(app: Application): Scope {.startupRegistration.} =
                                       acceptsNamed = false))
   runtimeScope.define("messages",
                       builtinNativeCallFn("runtime/messages", biRuntimeMessages,
+                                      acceptsNamed = false))
+  runtimeScope.define("messages_of_type",
+                      builtinNativeCallFn("runtime/messages_of_type",
+                                      biRuntimeMessagesOfType,
                                       acceptsNamed = false))
   runtimeScope.define("constructor_signature",
                       builtinNativeFn("runtime/constructor_signature", biRuntimeConstructorSignature))
@@ -28589,6 +28594,42 @@ proc messageListing(name, send, kind: string, protocol, signature: Value,
   entry["signature"] = signature
   entry["problem"] = if problem.len > 0: newStr(problem) else: NIL
   newMap(entry, immutable = true)
+
+proc biRuntimeMessagesOfType(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Lists the messages declared on a Type value without constructing an
+  ## instance. The value behavior of `runtime/messages` is unchanged.
+  requireOne("runtime/messages_of_type", args)
+  let typ = args[0]
+  var items: seq[Value]
+  if typ.kind == vkType:
+    for name in typ.typeDirectMessageNames:
+      let impl = readyTypeDirectMessage(typ, name)
+      let signature = describeCallable(impl, reflectionTypeLookup,
+        ReflectionOptions(category: "message", origin: "implementation"))
+      items.add messageListing(name, name, "direct", NIL,
+        signature.withReflectionProperties([
+          ("name", newStr(name)),
+          ("resolution", newSym("implementation")),
+          ("dispatch_scope", newSym("query")),
+          ("receiver_included", TRUE),
+          ("receiver_type", typ),
+          ("impl", impl)]))
+  elif typ.kind == vkProtocol:
+    for name, impl in protocolMessages(typ):
+      let signature = describeCallable(impl, reflectionTypeLookup,
+        ReflectionOptions(category: "message", origin: "requirement"))
+      items.add messageListing(name, name, "protocol", typ,
+        signature.withReflectionProperties([
+          ("name", newStr(name)),
+          ("resolution", newSym("requirement")),
+          ("dispatch_scope", newSym("query")),
+          ("receiver_included", TRUE),
+          ("receiver_type", typ),
+          ("impl", impl)]))
+  else:
+    raise newException(GeneError,
+      "runtime/messages_of_type expects a Type or Protocol, got " & $typ.kind)
+  newList(items)
 
 proc biRuntimeMessages(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## Lists what a send in the caller's scope can reach on a receiver, using the

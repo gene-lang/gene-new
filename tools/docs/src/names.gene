@@ -6,6 +6,12 @@
 (import $order/[sort_by])
 (import fail_pipeline in? ^from "./util")
 
+# Macro call shapes that bind a params vector; filled from build/docs/macros.gene.
+(var macro_param_index {})
+
+(fn set_macro_params [mapping]
+  (set macro_param_index mapping))
+
 (fn copy_list [items]
   (var out [])
   (for item in items (out .push item))
@@ -109,10 +115,25 @@
       (for spelling in (spelling_forms local)
         (add_row rows by_key spelling entry/id entry/kind
           (== ($str/starts_with? spelling "$")) entry/name))
-      (if (&& (== ($to_str entry/kind) "message") (contains? local "/"))
-        (let parts ($str/split local "/"))
-        (let dot ($str/join [($str/join ($take parts (- ($size parts) 1)) "/") ($last parts)] "."))
-        (add_row rows by_key dot entry/id entry/kind false entry/name))))
+      (if (== ($to_str entry/kind) "message")
+        (do
+          (let full ($to_str entry/for))
+          (let base (if ($str/starts_with? full "gene/")
+            ($str/slice_bytes full 5 (- ($str/byte_size full) 5))
+            else
+            full))
+          (for spelling in (spelling_forms base)
+            (add_row rows by_key spelling entry/id entry/kind false entry/name))
+          (if (contains? base "/")
+            (let parts ($str/split base "/"))
+            (let dot ($str/join [($str/join ($take parts (- ($size parts) 1)) "/") ($last parts)] "."))
+            (add_row rows by_key dot entry/id entry/kind true entry/name))))))
+  (for module in modules
+    (for entry in module/entries
+      (if (&& (== ($to_str entry/kind) "message")
+              ($present? entry/alias_of) (not (== entry/alias_of "")))
+        (for row in rows
+          (if (== row/id entry/id) (row .put "canonical" false))))))
   (let decls (collect_reflections gene [] []))
   (for group in (groups_of decls)
     (var chosen nil)
@@ -219,6 +240,12 @@
       (if ($leaf? head)
         (do
           (let h ($to_str head))
+          (if ($has_key? macro_param_index h)
+            (do
+              (let idx (macro_param_index .get h))
+              (let args ($body value))
+              (if (< idx ($size args))
+                (add_binder (args .get idx) locals))))
           (if (|| (== h "fn") (== h "macro"))
             (let body ($body value))
             (if (> ($size body) 0)

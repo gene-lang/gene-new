@@ -943,8 +943,9 @@ suite "doc builder — no VM linked":
     if dirExists(copyRoot): removeDir(copyRoot)
     docTestCopyTree(firstRoot, copyRoot)
     for root in [firstRoot, copyRoot]:
+      removeDir(root / "build" / "docs")
       var built = docBuilder.buildPackage(root)
-      built.writeOutputs()
+      built.writeOutputs(root / "build" / "docs")
     docTestRunGenerator(firstRoot)
     docTestRunGenerator(copyRoot)
     var filesA, filesB: seq[string]
@@ -1025,8 +1026,9 @@ suite "doc builder — no VM linked":
     if dirExists(copyRoot): removeDir(copyRoot)
     docTestCopyTree(firstRoot, copyRoot)
     for root in [firstRoot, copyRoot]:
+      removeDir(root / "build" / "docs")
       var built = docBuilder.buildPackage(root)
-      built.writeOutputs()
+      built.writeOutputs(root / "build" / "docs")
     docTestRunGenerator(firstRoot)
     docTestRunGenerator(copyRoot)
     let page = firstRoot / "build" / "docs" / "md" / "lib" / "gene" / "runtime" /
@@ -1102,6 +1104,27 @@ suite "doc builder — no VM linked":
     let describe = readFile(root / "build" / "docs" / "md" / "lib" / "gene" /
                             "test" / "describe.md")
     check "$test/describe [description body...]" in describe
+    # Type messages, spellings, paging, imported-selection credit, and the
+    # index target.
+    check fileExists(root / "build" / "docs" / "md" / "lib" / "gene" /
+                     "List" / "push.md")
+    let listPage = readFile(root / "build" / "docs" / "md" / "lib" / "gene" /
+                            "List.md")
+    check "## Messages" in listPage
+    check "List.push" in listPage
+    check fileExists(root / "build" / "docs" / "md" / "lib" / "gene" / "@2.md")
+    let index = readFile(root / "build" / "docs" / "llms.txt")
+    check index.len <= 6144
+    check "`List.push` is `lib/gene/List/push`" in index
+    let rootNs = readFile(root / "build" / "docs" / "md" / "lib" / "gene.md")
+    var rootRows = 0
+    for line in rootNs.splitLines:
+      if line.startsWith("- ["): inc rootRows
+    check rootRows <= 100
+    check fileExists(root / "build" / "docs" / "md" / "lib" / "gene" / "@3.md")
+    check "{^spelling \"List.push\" ^id \"lib/gene/List/push\"" in names
+    check "{^spelling \"$str/join\" ^id \"lib/gene/str/join\" ^kind \"fn\" ^canonical true ^introduced_in \"book/names/the_standard_library\"" in names
+    check "{^spelling \"List.join\" ^id \"lib/gene/List/join\" ^kind \"message\" ^canonical false" in names
 
   test "check 4: a head with no section fails the build and names the head":
     let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
@@ -1226,4 +1249,24 @@ suite "doc builder — no VM linked":
       failed = true
       check "`$db/sqlite/NoSuchDb`" in error.msg
       check "`$str/no_such_join`" in error.msg
+    check failed
+
+  test "check 2: a test macro binder does not hide a stale name":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-test-binder"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    let book = copyRoot / "docs" / "book" / "fences.md"
+    writeFile(book, readFile(book) &
+      "\n## Test block\n\n```gene\n(import $test/[describe it])\n" &
+      "(describe \"x\"\n  (it \"y\" [t]\n    ($str/no_such_test t)))\n```\n")
+    var built = docBuilder.buildPackage(copyRoot)
+    built.writeOutputs()
+    docTestWriteHeads(copyRoot, @["let"])
+    var failed = false
+    try:
+      docTestRunGenerator(copyRoot)
+    except GeneError as error:
+      failed = true
+      check "no_such_test" in error.msg
     check failed
