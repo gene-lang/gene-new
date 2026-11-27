@@ -1,15 +1,15 @@
 (mod json)
 
-(fn parse [arg0]
+(fn parse [text : Str ^strict = nil ^max_depth = nil]
+  ^errors [JsonError]
   @doc "Parses JSON text into Gene values: an object becomes a property map, and `null` becomes `nil`."
   @see ["book/io/json"]
-  @errors ["JsonError"]
   @for "gene/json/parse"
   nil)
 
-(fn stringify [arg0]
+(fn stringify [value ^omit_nil = nil] : Str
+  ^errors [JsonError]
   @doc "Writes a Gene value as compact JSON text."
   @see ["book/io/json"]
-  @errors ["HttpError"]
   @for "gene/json/stringify"
   nil)

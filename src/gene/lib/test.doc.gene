@@ -1,15 +1,15 @@
 (mod test)
 
-(fn assert_equal [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn assert_equal [actual, expected, message = nil] : Nil
+  ^errors []
   @doc "Returns `nil` when the actual value `==` the expected one, and otherwise raises an `AssertionFault` that reports both."
   @see ["book/testing/assertions" "book/testing/writing_examples"]
-  @errors ["AssertionFault"]
   @for "gene/test/assert_equal"
   nil)
 
-(fn assert_raises [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn assert_raises [thunk, type, message = nil]
+  ^errors []
   @doc "Calls a function once and returns the error it raises when that error is of the given type; it fails when nothing is raised, and lets an error of another type through."
   @see ["book/testing/assertions" "book/testing/writing_examples"]
-  @errors ["AssertionFault"]
   @for "gene/test/assert_raises"
   nil)

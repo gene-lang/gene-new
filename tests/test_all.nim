@@ -53,6 +53,7 @@ include test_native_callbacks
 include test_logging
 include test_declaration_heads
 include test_str_declarations
+include test_native_declarations
 include test_cli
 include test_repl_completion
 include test_lsp

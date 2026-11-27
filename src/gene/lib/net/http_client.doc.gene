@@ -1,8 +1,8 @@
 (mod http_client)
 
-(fn request [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn request [^url : Str ^method : Str = "GET" ^headers = nil ^body : Str = "" ^ca_file = nil ^timeout_ms = nil ^max_bytes = nil]
+  ^errors [HttpClientError]
   @doc "Sends an HTTP request to `^url` and returns a Task for the response, with its `status`, `headers`, and `body`; a non-2xx status is an ordinary response."
   @see ["book/web/calling_http_services"]
-  @errors ["HttpClientError"]
   @for "gene/net/http_client/request"
   nil)

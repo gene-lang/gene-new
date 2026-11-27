@@ -1,15 +1,15 @@
 (mod css)
 
-(fn render [arg0]
+(fn render [rules] : Str
+  ^errors []
   @doc "Renders CSS rules to stylesheet text."
   @see ["book/web/css_as_data"]
-  @errors ["CsvError"]
   @for "gene/css/render"
   nil)
 
-(fn rule [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn rule [selector : Str, declarations...]
+  ^errors []
   @doc "Makes a CSS rule from a selector and its declarations."
   @see ["book/web/css_as_data"]
-  @errors ["CsvError"]
   @for "gene/css/rule"
   nil)

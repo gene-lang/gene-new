@@ -28,7 +28,7 @@
 # 19	src/gene/testing.nim
 # 2	src/gene/type_contracts.nim
 # 61	src/gene/types.nim
-# 816	src/gene/vm.nim
+# 817	src/gene/vm.nim
 #
 src/gene.nim	--package-root is not a directory: 
 src/gene/aot_checked.nim	typed_native function 
@@ -1849,6 +1849,7 @@ src/gene/vm.nim	order/compare expects 2 values
 src/gene/vm.nim	order/sort expects a finite List
 src/gene/vm.nim	order/sort expects one List
 src/gene/vm.nim	order/sort_by expects a List and key_fn
+src/gene/vm.nim	panic expects 0..1 arguments, got 
 src/gene/vm.nim	pattern %name expects a name
 src/gene/vm.nim	pattern (@ meta value) expects two patterns
 src/gene/vm.nim	pattern (not p) expects one pattern

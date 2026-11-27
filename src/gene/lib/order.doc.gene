@@ -1,22 +1,22 @@
 (mod order)
 
-(fn compare [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn compare [a, b] : Int
+  ^errors []
   @doc "Returns `-1`, `0`, or `1` as the first value sorts before, with, or after the second."
   @see ["book/collections/ordering"]
-  @errors ["OsError"]
   @for "gene/order/compare"
   nil)
 
-(fn sort [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn sort [items : List ^compare = nil] : List
+  ^errors []
   @doc "Returns a new sorted List, ordered by `^compare` when given; the input is unchanged."
   @see ["book/collections/ordering"]
-  @errors ["OsError"]
   @for "gene/order/sort"
   nil)
 
-(fn sort_by [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn sort_by [items : List, key_fn : Callable ^compare = nil] : List
+  ^errors []
   @doc "Returns a new List sorted by the key the function computes for each item."
   @see ["book/collections/ordering"]
-  @errors ["OsError"]
   @for "gene/order/sort_by"
   nil)

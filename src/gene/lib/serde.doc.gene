@@ -1,15 +1,15 @@
 (mod serde)
 
-(fn read_data [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn read_data [text : Str ^policy = nil]
+  ^errors [SerdeError]
   @doc "Reads text written by `$serde/write_data` back into an equal value."
   @see ["book/io/serializing_gene_data"]
-  @errors ["SerdeError"]
   @for "gene/serde/read_data"
   nil)
 
-(fn write_data [arg0]
+(fn write_data [value] : Str
+  ^errors [SerdeError]
   @doc "Writes a data value as versioned text, such as `(serde_v1 {^a 1})`; functions and open resources are not data."
   @see ["book/io/serializing_gene_data"]
-  @errors ["SerdeError"]
   @for "gene/serde/write_data"
   nil)

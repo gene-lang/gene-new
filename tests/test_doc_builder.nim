@@ -1129,7 +1129,7 @@ suite "doc builder — no VM linked":
     # and the manifest reads back: the lookup loads it.
     check "^summaries {^kinds {^fn {^entries " in manifest
     check "^book_used {^entries 104 ^with_summary 104}" in manifest
-    check "namespace {^entries 52 ^with_summary 52}" in manifest
+    check "^namespace {^entries 52 ^with_summary 52}" in manifest
     let corpus = loadCorpus(root / "build" / "docs")
     check "lib/gene/List/push" in corpus.byId
     # The content file is not a module.
@@ -1164,6 +1164,17 @@ suite "doc builder — no VM linked":
     # The canonical entry names its receiver forms.
     let size = readFile(root / "build" / "docs" / "md" / "lib" / "gene" / "size.md")
     check "**Receiver form:** [`List.size`](List/size.md)" in size
+    # Declared natives print their signature and their declaration's line; a
+    # reflected name nothing declares has no source line.
+    let lib = root / "build" / "docs" / "md" / "lib" / "gene"
+    check "$channel [^capacity = nil]" in readFile(lib / "channel.md")
+    check "List.push [item]" in readFile(lib / "List" / "push.md")
+    let parse = readFile(lib / "json" / "parse.md")
+    check "$json/parse [text : Str ^strict = nil ^max_depth = nil]" in parse
+    check "**Errors:** JsonError" in parse
+    check "**Source:** `src/gene/lib/json.doc.gene:" in parse
+    check "**Source:**" notin readFile(lib / "last.md")
+    check "**Source:** `src/gene/lib/str.doc.gene:81`" in readFile(lib / "str" / "trim.md")
     # An alias carries its canonical entry's summary.
     check "[List.size](List/size.md) — Alias of `$size`: Returns the number" in listPage
     check "[ActorClosed.message](ActorClosed/message.md) — Inherited from `Throwable.message`." in
@@ -1348,6 +1359,38 @@ suite "doc builder — no VM linked":
       check "`u/items`" in error.msg
       check "`$str/no_such`" in error.msg
       check "`t/items`" notin error.msg
+    check failed
+
+  test "a declared shape must agree with a reflected one":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-test-shape"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    createDir(copyRoot / "src" / "gene" / "lib")
+    let rootFile = copyRoot / "src" / "gene" / "lib" / "root.doc.gene"
+    proc declare(params, result: string) =
+      writeFile(rootFile, "(mod gene)\n(type Throwable\n  @doc \"Raised values.\"\n" &
+        "  @for \"gene/Throwable\"\n  (message message " & params & " : " & result &
+        "\n    ^errors []\n    @doc \"The message.\"\n" &
+        "    @for \"gene/Throwable/message\"\n    nil))\n")
+      var built = docBuilder.buildPackage(copyRoot)
+      built.writeOutputs()
+      docTestWriteHeads(copyRoot, @["let"])
+      writeFile(copyRoot / "build" / "docs" / "macros.gene", compilerMacrosText())
+    # Reflection knows `Throwable.message [] : Str`; the same declaration
+    # merges and keeps its prose.
+    declare("[]", "Str")
+    docTestRunGenerator(copyRoot)
+    check "The message." in readFile(copyRoot / "build" / "docs" / "md" / "lib" /
+                                     "gene" / "Throwable" / "message.md")
+    declare("[x : Int]", "Int")
+    var failed = false
+    try:
+      docTestRunGenerator(copyRoot)
+    except GeneError as error:
+      failed = true
+      checkpoint error.msg
+      check "src/gene/lib/root.doc.gene: lib/gene/Throwable/message declares a shape reflection disagrees with" in error.msg
     check failed
 
   test "the content file documents reflected names, once each":

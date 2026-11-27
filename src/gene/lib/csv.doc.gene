@@ -1,15 +1,15 @@
 (mod csv)
 
-(fn encode_row [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn encode_row [fields : (List Str) ^delimiter = nil]
+  ^errors [CsvError]
   @doc "Encodes a List of fields as one CSV record, quoting fields that need it and ending with CRLF, and returns it as Bytes."
   @see ["book/io/csv"]
-  @errors ["CsvError"]
   @for "gene/csv/encode_row"
   nil)
 
-(fn parse_rows [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn parse_rows [text : Str ^headers : Bool = false ^delimiter = nil ^max_bytes = nil ^max_field_bytes = nil ^max_record_bytes = nil ^max_columns = nil] : List
+  ^errors [CsvError]
   @doc "Parses CSV text into a List of rows, each a List of Str, or with `^^headers` a property map keyed by the header row."
   @see ["book/io/csv"]
-  @errors ["CsvError"]
   @for "gene/csv/parse_rows"
   nil)

@@ -1,22 +1,22 @@
 (mod fs)
 
-(fn read_text [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn read_text [path : Str] : Str
+  ^errors [OsError]
   @doc "Reads a file and returns its contents as a Str."
   @see ["book/io/files"]
-  @errors ["OsError"]
   @for "gene/fs/read_text"
   nil)
 
-(fn walk [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn walk [root : Str ^follow_symlinks = nil ^max_depth = nil ^max_entries_per_dir = nil ^max_entries_total = nil]
+  ^errors [FsError]
   @doc "Returns a lazy Stream of records, with `path`, `relative_path`, `kind`, and `size`, for each entry under a directory; close it when done early."
   @see ["book/io/paths"]
-  @errors ["OsError"]
   @for "gene/fs/walk"
   nil)
 
-(fn write_text [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn write_text [path : Str, text : Str] : Nil
+  ^errors [OsError]
   @doc "Replaces a file's contents with a Str and returns `nil`."
   @see ["book/io/files"]
-  @errors ["OsError"]
   @for "gene/fs/write_text"
   nil)

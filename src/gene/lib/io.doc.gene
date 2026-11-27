@@ -1,0 +1,15 @@
+(mod io)
+
+(protocol IoResource
+  @doc "The protocol of resources that close: `close` closes one, and `wait_closed` waits until its work is released."
+  @for "gene/io/IoResource"
+  (message close []
+    ^errors []
+    @doc "Closes the resource."
+    @for "gene/io/IoResource:close"
+    nil)
+  (message wait_closed []
+    ^errors []
+    @doc "Returns a Task that completes once a closed resource has finished any operation in flight and released itself."
+    @for "gene/io/IoResource:wait_closed"
+    nil))

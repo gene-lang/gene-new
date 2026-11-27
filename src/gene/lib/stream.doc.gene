@@ -1,8 +1,8 @@
 (mod stream)
 
-(fn to_pairs_stream [arg0]
+(fn to_pairs_stream [map]
+  ^errors []
   @doc "Returns a Stream of the `[key value]` pairs of a Map."
   @see ["book/collections/iterating_maps"]
-  @errors ["Panic"]
   @for "gene/stream/to_pairs_stream"
   nil)

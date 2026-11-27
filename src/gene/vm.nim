@@ -9347,7 +9347,10 @@ proc panicError*(text: string, value: Value = NIL, hasValue = false): ref GeneEr
   result.hasErrVal = true
 
 proc biPanic(args: openArray[Value]): Value {.nimcall.} =
-  let v = if args.len >= 1: args[0] else: newStr("panic")
+  if args.len > 1:
+    raise newException(GeneError,
+      "panic expects 0..1 arguments, got " & $args.len)
+  let v = if args.len == 1: args[0] else: newStr("panic")
   raise panicError(displayStr(v), v, true)
 
 when defined(geneWasm):

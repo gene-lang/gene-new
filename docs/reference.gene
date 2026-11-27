@@ -1,9 +1,10 @@
-# Authored prose for the reference: the root namespace, type messages,
-# protocol requirements, compiler macros, and reflected natives, which have
-# no declaration file to carry it. `gene doc build` merges `^doc`, `^see`,
-# `^errors`, and `^status` into the reflected entry with the same `^for`;
-# identity and shape stay as reflection reports them. A name documented in a
-# `.doc.gene` sidecar or a source `@doc` is documented there, not here.
+# Authored prose for reflected names that have no declaration: namespace
+# summaries, types, protocols, and compiler macros. Natives and type messages
+# are declared, with their shape, in `src/gene/lib/*.doc.gene`
+# (`root.doc.gene` for the root namespace). `gene doc build` merges `^doc`,
+# `^see`, `^errors`, and `^status` into the reflected entry with the same
+# `^for`; identity and shape stay as reflection reports them. A name has one
+# source of prose, so a name declared in a `.doc.gene` file is not here.
 {^format 1
  ^namespaces [
   {^id "lib/gene" ^doc "The root namespace: built-in functions, root types, and the errors every program shares."}
@@ -109,9 +110,6 @@
   {^for "gene/Int"
    ^doc "An integer of arbitrary precision."
    ^see ["book/values/numbers" "book/names/bindings"]}
-  {^for "gene/List"
-   ^doc "An ordered, indexed collection; `[…]` makes a mutable List and `#[…]` an immutable one."
-   ^see ["book/overview/a_first_program" "book/tools/inspecting_code"]}
   {^for "gene/Nil"
    ^doc "The type of `nil`, the only absent value."
    ^see ["book/web/browser_code_in_a_server"]}
@@ -124,9 +122,5 @@
   {^for "gene/Throwable"
    ^doc "The parent of every raised value, with its two branches `Error` and `Fault`; `.message` reads its message."
    ^see ["book/errors/errors_and_faults"]}
-  {^for "gene/io/IoResource:close"
-   ^doc "Closes the resource."}
-  {^for "gene/io/IoResource:wait_closed"
-   ^doc "Returns a Task that completes once a closed resource has finished any operation in flight and released itself."}
  ]
 }

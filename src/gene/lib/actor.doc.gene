@@ -1,15 +1,15 @@
 (mod actor)
 
-(fn continue [arg0]
+(fn continue [state]
+  ^errors []
   @doc "Returns the step that keeps an actor running with `state` as its new state; a `^handle` function returns it."
   @see ["book/concurrency/actors"]
-  @errors ["AssertionFault"]
   @for "gene/actor/continue"
   nil)
 
-(fn spawn [arg0 = nil arg1 = nil arg2 = nil arg3 = nil arg4 = nil arg5 = nil args...]
+(fn spawn [^init ^handle ^mailbox = nil ^type = nil]
+  ^errors []
   @doc "Starts an actor from an `^init` function, which returns the first state, and a `^handle` function, which receives the context, the state, and a message and returns the next step; returns the actor."
   @see ["book/concurrency/actors"]
-  @errors ["AssertionFault"]
   @for "gene/actor/spawn"
   nil)
