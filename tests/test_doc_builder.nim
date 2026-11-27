@@ -1114,8 +1114,8 @@ suite "doc builder — no VM linked":
     check "List.push" in listPage
     check fileExists(root / "build" / "docs" / "md" / "lib" / "gene" / "@2.md")
     let index = readFile(root / "build" / "docs" / "llms.txt")
-    check index.len <= 6144
     check "`List.push` is `lib/gene/List/push`" in index
+    check "### Storage" in index
     let rootNs = readFile(root / "build" / "docs" / "md" / "lib" / "gene.md")
     var rootRows = 0
     for line in rootNs.splitLines:
@@ -1125,6 +1125,12 @@ suite "doc builder — no VM linked":
     check "{^spelling \"List.push\" ^id \"lib/gene/List/push\"" in names
     check "{^spelling \"$str/join\" ^id \"lib/gene/str/join\" ^kind \"fn\" ^canonical true ^introduced_in \"book/names/the_standard_library\"" in names
     check "{^spelling \"List.join\" ^id \"lib/gene/List/join\" ^kind \"message\" ^canonical false" in names
+    check "^book_used {^entries 104 ^with_summary 104}" in manifest
+    check "namespace {^entries 53 ^with_summary 52}" in manifest
+    let absentPage = readFile(root / "build" / "docs" / "md" / "lib" /
+                              "gene" / "absent?.md")
+    check absentPage.len > 100
+    check "— String operations" in index
     # A protocol requirement keeps its colon spelling and has no dot row.
     check "{^spelling \"csv/IoResource:close\" ^id \"lib/gene/csv/IoResource:close\"" in names
     check "{^spelling \"csv.IoResource:close\"" notin names

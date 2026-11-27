@@ -8,7 +8,7 @@
 (import $db/sqlite/[Db open])
 (import fail_pipeline in? format_size short_summary first_sentence word_cut ^from "./util")
 (import exemptions ^from "./exemptions")
-(import load_index load_coverage load_modules load_heads load_macros load_package load_packages read_one ^from "./data")
+(import load_index load_coverage load_modules load_heads load_macros load_content load_package load_packages read_one ^from "./data")
 (import read_book ^from "./book")
 (import reflection_modules macro_modules ^from "./reflection")
 (import build_name_table index_book index_heads section_names fence_sources entry_local collect_reflections full_path spelling_forms set_macro_params ^from "./names")
@@ -375,8 +375,51 @@
   (for item in items (out .push (qq item)))
   ($str/join out " "))
 
+(fn summary_report [pages rows]
+  # Check 3: authored summaries, per kind and for the book-used names. Alias
+  # messages are excluded; their page carries the canonical page's summary.
+  (let by_id {})
+  (for page in pages (by_id .put page/id page))
+  (var kinds {})
+  (for page in pages
+    (if (&& (== page/kind "namespace")
+            (not (contains? page/id "/@")))
+      (do
+        (let rec (if ($has_key? kinds "namespace") (kinds .get "namespace")
+          else {^entries 0 ^with_summary 0}))
+        (rec .put "entries" (+ rec/entries 1))
+        (if (not (== page/summary ""))
+          (rec .put "with_summary" (+ rec/with_summary 1)))
+        (kinds .put "namespace" rec)))
+    (if (== page/kind "entry")
+      (let kind ($to_str page/decl_kind))
+      (if (not (&& (== kind "message")
+                   ($present? page/alias_of) (not (== page/alias_of ""))))
+        (do
+          (let rec (if ($has_key? kinds kind) (kinds .get kind)
+            else {^entries 0 ^with_summary 0}))
+          (rec .put "entries" (+ rec/entries 1))
+          (if (not (== page/summary ""))
+            (rec .put "with_summary" (+ rec/with_summary 1)))
+          (kinds .put kind rec)))))
+  (var used {^entries 0 ^with_summary 0})
+  (let seen {})
+  (for row in rows
+    (if (&& (not (== row/id "")) (> ($size row/used_in) 0)
+            (not ($has_key? seen row/id)))
+      (do
+        (seen .put row/id true)
+        (let page (by_id .get row/id))
+        (if (&& ($present? page)
+                (in? ($to_str page/decl_kind) ["fn" "type" "protocol" "macro"]))
+          (do
+            (used .put "entries" (+ used/entries 1))
+            (if (not (== page/summary ""))
+              (used .put "with_summary" (+ used/with_summary 1))))))))
+  {^kinds kinds ^book_used used})
+
 (fn manifest_text [root commit coverage index pages rows undocumented links_ok index_size
-                   heads_ok dated stale_ok]
+                   heads_ok dated stale_ok summary]
   (let sizes (sizes_report pages index_size))
   (var lines [])
   (lines .push "{^format 2")
@@ -404,6 +447,16 @@
     " ^section_avg " ($to_str sizes/section_avg)
     " ^entry_avg " ($to_str sizes/entry_avg)
     " ^namespace_avg " ($to_str sizes/namespace_avg) " ^targets {^index 6144 ^overview 12288 ^chapter 3072 ^section 6144 ^entry 3072}}"] ""))
+  (lines .push ($str/join [" ^summaries {^kinds "
+    (do
+      (var kind_lines [])
+      (map_for [kind rec] in summary/kinds
+        (kind_lines .push ($str/join [($to_str kind) " {^entries "
+          ($to_str rec/entries) " ^with_summary " ($to_str rec/with_summary)
+          "}"] "")))
+      ($str/join (sort_by kind_lines (fn [line] line)) " "))
+    "} ^book_used {^entries " ($to_str summary/book_used/entries)
+    " ^with_summary " ($to_str summary/book_used/with_summary) "}}"] ""))
   (lines .push ($str/join [" ^dated {^count " ($to_str dated/count)
     " ^sample [" (qq_list dated/sample) "]}"] ""))
   (lines .push ($str/join [" ^undocumented {^count " ($to_str ($size undocumented))
@@ -467,6 +520,31 @@
   (var out {})
   (for entry in module/entries (out .put entry/id true))
   out)
+
+(fn apply_content [modules content]
+  # Prose only: identity (id, kind, parent, requirement, alias) comes from
+  # reflection and is never replaced.
+  (let ns_docs {})
+  (for ns in (if ($present? content/namespaces) content/namespaces else [])
+    (ns_docs .put ns/id ns/doc))
+  (let by_for {})
+  (for e in (if ($present? content/entries) content/entries else [])
+    (by_for .put e/for e))
+  (for module in modules
+    (let ns_id ($str/join ["lib/" module/module] ""))
+    (if ($has_key? ns_docs ns_id)
+      (module .put "doc" (ns_docs .get ns_id)))
+    (for entry in module/entries
+      (let key ($to_str entry/for))
+      (if ($has_key? by_for key)
+        (do
+          (let doc (by_for .get key))
+          (if ($present? doc/doc) (entry .put "doc" doc/doc))
+          (if ($present? doc/see) (entry .put "see" doc/see))
+          (if ($present? doc/errors) (entry .put "errors" doc/errors))
+          (if ($present? doc/status) (entry .put "status" doc/status)))))
+    )
+  modules)
 
 (fn merge_reflection [modules extra]
   # Reflection supplies names and signatures for namespaces that have no
@@ -747,10 +825,12 @@
   (var modules (load_modules root coverage))
   (let heads (load_heads root))
   (let macros (?? (load_macros root) []))
+  (let content (?? (load_content root) {}))
   (set_macro_params (macro_binding_map macros))
   (if (&& (== coverage/package "gene/runtime") ($present? coverage/package))
     (set modules (merge_reflection modules
                    (macro_modules macros))))
+  (apply_content modules content)
   (var entry_ids [])
   (for module in modules
     (for entry in module/entries (entry_ids .push entry/id)))
@@ -802,9 +882,10 @@
     (write_file ($path/join root "build/docs/skill.md") (skill_text chapters runtime)))
   (let index_size ($str/byte_size ($fs/read_text ($path/join root "build/docs/llms.txt"))))
   (let dated (dated_language chapters))
+  (let summary (summary_report pages rows))
   (let manifest (manifest_text root commit coverage index pages rows
                    table/undocumented true index_size
-                   (&& runtime (== ($size missing_heads) 0)) dated runtime))
+                   (&& runtime (== ($size missing_heads) 0)) dated runtime summary))
   (write_manifest root manifest)
   (write_sqlite root pages rows)
   (let sizes (sizes_report pages index_size))

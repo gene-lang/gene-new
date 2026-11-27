@@ -89,6 +89,12 @@
   (let path ($path/join root "build/docs/heads.gene"))
   (if ($fs/exists? path) (read_one path) else nil))
 
+(fn load_content [root]
+  # Authored prose for names reflection cannot describe: the root namespace,
+  # compiler macros, type messages, protocol requirements, and the entries the
+  # book uses.
+  (let path ($path/join root "src/gene/lib/content.gene"))
+  (if ($fs/exists? path) (read_one path) else {}))
 (fn load_macros [root]
   # The macros the compiler supplies for standard namespaces, written by
   # `gene doc build` beside the heads; a direct generator run may not have

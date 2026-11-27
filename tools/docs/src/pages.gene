@@ -338,7 +338,12 @@
       (lines .push $"**Source:** `${source}:${entry/loc/line}`")
       (lines .push "")))
   {^id entry/id ^kind "entry" ^decl_kind ($to_str entry/kind)
-   ^title title ^summary (entry_summary entry)
+   ^title title
+   ^summary (if (&& ($present? entry/alias_of) (not (== entry/alias_of "")))
+              ($str/join ["Alias of " entry/alias_of] "")
+              else
+              (entry_summary entry))
+   ^alias_of (if ($present? entry/alias_of) entry/alias_of else "")
    ^parent (if (&& (== ($to_str entry/kind) "message")
                    ($present? entry/parent) (not (== entry/parent "")))
              entry/parent
