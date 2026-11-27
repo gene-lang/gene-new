@@ -639,7 +639,7 @@ proc checkWebExportRejection(facade, selection, expected: string) =
     "(fn make [] : Thing (Thing ^value count))")
   writeFile(root / "facade.gene", "(mod facade ^profile web) " & facade)
   writeFile(root / "entry.gene", "(mod entry ^profile web) " &
-    "(import " & selection & " ^from \"./facade.gene\") (fn run/[] : Int 0)")
+    "(import " & selection & " ^from \"./facade.gene\") (fn run [] : Int 0)")
   var diagnostic = ""
   try:
     discard buildWebModule(root / "entry.gene", root / "out")

@@ -1327,7 +1327,7 @@ suite "cli — gene repl":
     createDir(root / "lib")
     writeFile(root / "lib" / "values.gene", "(mod values) (var value 41)")
     writeFile(root / "sample.gene", "(mod sample) " &
-      "(import value ^from \"./lib/values\") (fn answer/[] (+ value 1))")
+      "(import value ^from \"./lib/values\") (fn answer [] (+ value 1))")
     let ran = runGeneInput(["repl"],
       "(import $math/[max])\n" &
       "(import answer ^from \"./sample\")\n" &

@@ -262,7 +262,7 @@ suite "spec — reader surface from design":
                "[false true]")
 
   test "programs contain multiple top-level forms":
-    let forms = readAll("(mod app) (import gene/stream [map]) (fn main/[] nil)")
+    let forms = readAll("(mod app) (import gene/stream [map]) (fn main [] nil)")
     check forms.len == 3
     check forms[0].print() == "(mod app)"
     check forms[1].print() == "(import (path gene stream) [map])"
@@ -9319,7 +9319,7 @@ suite "spec — Env and eval from design":
   test "persistent REPL eval keeps declarations, imports, macros and base shadowing":
     check_eval("""
       (let s ($repl/open (env ^bindings {^base 40})))
-      ($repl/eval s "(import $math/[max]) (var x base) (fn plus/[n] (+ x n)) (type Point ^props {^x Int})")
+      ($repl/eval s "(import $math/[max]) (var x base) (fn plus [n] (+ x n)) (type Point ^props {^x Int})")
       ($repl/eval s "(macro twice [x] `(+ %x %x))")
       ($repl/bind s "base" 41)
       (let first ($repl/eval s "[(plus 2) (max 3 4) (/x (Point ^x 7)) (twice 3) base]"))
