@@ -19,7 +19,7 @@
 (let re_edge_us #"(^_+|_+$)")
 (let re_link_target #"\]\([^)]*\)")
 (let re_brackets #"[\[\]]+")
-(let re_ticks #"[`*_]+")
+(let re_emphasis #"\*+")
 (let re_space #"\s+")
 
 (fn str_or_empty [value]
@@ -81,11 +81,18 @@
 
 (fn strip_inline [text]
   # A summary keeps the words and drops Markdown decoration: link targets,
-  # code ticks, emphasis.
+  # link brackets, code ticks, and `*` emphasis. A code span keeps its text
+  # whole, so `max_bytes`, `[key value]`, and `(*)` survive.
   (let without_targets (re_link_target .replace_all text ""))
-  (let without_brackets (re_brackets .replace_all without_targets ""))
-  (let without_ticks (re_ticks .replace_all without_brackets ""))
-  (collapse_ws without_ticks))
+  (var out [])
+  (var i 0)
+  (for part in ($str/split without_targets "`")
+    (if (== (// i 2) 0)
+      (out .push (re_emphasis .replace_all (re_brackets .replace_all part "") ""))
+      else
+      (out .push part))
+    (set i (+ i 1)))
+  (collapse_ws ($str/join out "")))
 
 (fn first_paragraph [lines start]
   # The first non-empty run of lines after `start`, joined with spaces.

@@ -1125,12 +1125,28 @@ suite "doc builder — no VM linked":
     check "{^spelling \"List.push\" ^id \"lib/gene/List/push\"" in names
     check "{^spelling \"$str/join\" ^id \"lib/gene/str/join\" ^kind \"fn\" ^canonical true ^introduced_in \"book/names/the_standard_library\"" in names
     check "{^spelling \"List.join\" ^id \"lib/gene/List/join\" ^kind \"message\" ^canonical false" in names
+    # Check 3 reports authored summaries per kind and for the book's names,
+    # and the manifest reads back: the lookup loads it.
+    check "^summaries {^kinds {^fn {^entries " in manifest
     check "^book_used {^entries 104 ^with_summary 104}" in manifest
-    check "namespace {^entries 53 ^with_summary 52}" in manifest
+    check "^namespace {^entries 52 ^with_summary 52}" in manifest
+    let corpus = loadCorpus(root / "build" / "docs")
+    check "lib/gene/List/push" in corpus.byId
+    # The content file is not a module.
+    check not fileExists(root / "build" / "docs" / "md" / "lib" / "gene" /
+                         "content.md")
+    check "lib/gene/content" notin corpus.byId
+    # Content documents reflected names; a sidecar's own docs stay.
     let absentPage = readFile(root / "build" / "docs" / "md" / "lib" /
                               "gene" / "absent?.md")
-    check absentPage.len > 100
+    check "Returns true when the value is `nil`" in absentPage
+    let trimPage = readFile(root / "build" / "docs" / "md" / "lib" /
+                            "gene" / "str" / "trim.md")
+    check "Returns `text` without leading and trailing whitespace" in trimPage
     check "— String operations" in index
+    # A summary keeps a code span whole.
+    check "max_bytes bytes" in readFile(root / "build" / "docs" / "md" / "lib" /
+                                        "gene" / "str.md")
     # A protocol requirement keeps its colon spelling and has no dot row.
     check "{^spelling \"csv/IoResource:close\" ^id \"lib/gene/csv/IoResource:close\"" in names
     check "{^spelling \"csv.IoResource:close\"" notin names
@@ -1148,6 +1164,10 @@ suite "doc builder — no VM linked":
     # The canonical entry names its receiver forms.
     let size = readFile(root / "build" / "docs" / "md" / "lib" / "gene" / "size.md")
     check "**Receiver form:** [`List.size`](List/size.md)" in size
+    # An alias carries its canonical entry's summary.
+    check "[List.size](List/size.md) — Alias of `$size`: Returns the number" in listPage
+    check "[ActorClosed.message](ActorClosed/message.md) — Inherited from `Throwable.message`." in
+      readFile(root / "build" / "docs" / "md" / "lib" / "gene" / "ActorClosed.md")
     # The paged namespace says which page holds which names.
     check "Pages: page 1 (this page): `$" in rootNs
     check "[page 2](gene/@2.md): `" in rootNs
@@ -1329,3 +1349,48 @@ suite "doc builder — no VM linked":
       check "`$str/no_such`" in error.msg
       check "`t/items`" notin error.msg
     check failed
+
+  test "the content file documents reflected names, once each":
+    let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"
+    let copyRoot = docTestRepoRoot() / "build/m1/docs-test-content"
+    if dirExists(copyRoot): removeDir(copyRoot)
+    docTestCopyTree(firstRoot, copyRoot)
+    # A sidecar that documents one native, so content cannot document it too.
+    createDir(copyRoot / "src" / "gene" / "lib")
+    writeFile(copyRoot / "src" / "gene" / "lib" / "json.doc.gene",
+      "(fn parse [text : Str]\n  @doc \"Parses JSON text.\"\n" &
+      "  @for \"gene/json/parse\"\n  nil)\n")
+    var built = docBuilder.buildPackage(copyRoot)
+    built.writeOutputs()
+    docTestWriteHeads(copyRoot, @["let"])
+    writeFile(copyRoot / "build" / "docs" / "macros.gene", compilerMacrosText())
+    let content = copyRoot / "docs" / "reference.gene"
+    writeFile(content, "{^namespaces [{^id \"lib/gene/bit\" ^doc \"Bits.\"}]\n" &
+      " ^entries [{^for \"gene/List/push\" ^doc \"Appends an item.\" ^errors [\"Oops\"]}]}\n")
+    docTestRunGenerator(copyRoot)
+    let push = readFile(copyRoot / "build" / "docs" / "md" / "lib" / "gene" /
+                        "List" / "push.md")
+    check "Appends an item." in push
+    check "**Errors:** Oops" in push
+    check "# bit — Bits." in readFile(copyRoot / "build" / "docs" / "md" / "lib" /
+                                      "gene" / "bit.md")
+    for (text, expected) in [
+        ("{^entries [{^for \"gene/no_such\" ^doc \"x\"}]}",
+         "docs/reference.gene: gene/no_such names no reference entry"),
+        ("{^entries [{^for \"gene/List/size\" ^doc \"x\"}]}",
+         "gene/List/size is an alias of lib/gene/size; document that entry instead"),
+        ("{^entries [{^for \"gene/json/parse\" ^doc \"x\"}]}",
+         "gene/json/parse is already documented in src/gene/lib/json.doc.gene"),
+        ("{^entries [{^for \"gene/List/push\" ^doc \"a\"} {^for \"gene/List/push\" ^doc \"b\"}]}",
+         "gene/List/push is documented twice"),
+        ("{^namespaces [{^id \"lib/gene/nope\" ^doc \"x\"}]}",
+         "lib/gene/nope names no namespace")]:
+      writeFile(content, text & "\n")
+      var failed = false
+      try:
+        docTestRunGenerator(copyRoot)
+      except GeneError as error:
+        failed = true
+        checkpoint error.msg
+        check expected in error.msg
+      check failed

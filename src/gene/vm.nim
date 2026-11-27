@@ -28633,8 +28633,8 @@ proc biRuntimeMessagesOfType(args: openArray[Value], call: ptr NativeCall): Valu
           ("impl", impl)]),
         declaredOn = typ)
   else:
-    raise newException(GeneError,
-      "runtime/messages_of_type expects a Type or Protocol, got " & $typ.kind)
+    raiseTypeError("runtime/messages_of_type", "Type or Protocol", typ,
+                   if call == nil: nil else: call[].dispatchScope)
   newList(items)
 
 proc biRuntimeMessages(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =

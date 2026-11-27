@@ -15,14 +15,21 @@
     else
     entry/alias_of))
 
-(fn entry_summary [entry]
+(fn entry_summary [entry target]
+  # An alias has no prose of its own: its summary names the canonical entry
+  # and carries that entry's summary, `target`, when it has one.
   (if (&& ($present? entry/doc) (!= ($str/trim entry/doc) ""))
     (first_paragraph ($str/split entry/doc "\n") 0)
     elif (&& ($present? entry/alias_of) (!= entry/alias_of ""))
-    (if entry/inherited
-      $"Inherited from `${(alias_name entry)}`."
-      else
-      $"Alias of `${(alias_name entry)}`.")
+    (do
+      (let lead (if entry/inherited
+        $"Inherited from `${(alias_name entry)}`"
+        else
+        $"Alias of `${(alias_name entry)}`"))
+      (if (&& ($present? target) (!= target ""))
+        $"${lead}: ${target}"
+        else
+        $"${lead}."))
     else
     ""))
 
@@ -271,7 +278,8 @@
     (out .push $"`./${param/name}`"))
   ($str/join out ", "))
 
-(fn entry_page [module entry introduced_by receivers]
+(fn entry_page [module entry introduced_by receivers target]
+  # `target` is the canonical entry's summary when `entry` is an alias.
   (let title (entry_title module entry))
   (var lines [])
   (lines .push $"# ${title}")
@@ -301,6 +309,10 @@
       (lines .push "")))
   (if (&& ($present? entry/alias_of) (not (== entry/alias_of "")))
     (do
+      (if (&& ($present? target) (!= target ""))
+        (do
+          (lines .push target)
+          (lines .push "")))
       (lines .push ($str/join [(if entry/inherited "**Inherited from:** [`" else "**Alias of:** [`")
         (alias_name entry) "`](" (relative_md entry/alias_of entry/id) ")"] ""))
       (lines .push "")))
@@ -339,10 +351,7 @@
       (lines .push "")))
   {^id entry/id ^kind "entry" ^decl_kind ($to_str entry/kind)
    ^title title
-   ^summary (if (&& ($present? entry/alias_of) (not (== entry/alias_of "")))
-              ($str/join ["Alias of " entry/alias_of] "")
-              else
-              (entry_summary entry))
+   ^summary (entry_summary entry target)
    ^alias_of (if ($present? entry/alias_of) entry/alias_of else "")
    ^parent (if (&& (== ($to_str entry/kind) "message")
                    ($present? entry/parent) (not (== entry/parent "")))
@@ -584,12 +593,21 @@
             (receivers .put entry/alias_of []))
           ((receivers .get entry/alias_of) .push
             {^id entry/id ^title (entry_title module entry)})))))
+  # The summary of every canonical entry, which its aliases carry.
+  (var summaries {})
+  (for module in modules
+    (for entry in module/entries
+      (if (not (&& ($present? entry/alias_of) (!= entry/alias_of "")))
+        (summaries .put entry/id (entry_summary entry nil)))))
   (for module in modules
     (var entry_pages [])
     (for entry in module/entries
       (let page (entry_page module entry (names_by_id .get entry/id)
                   (if (== ($to_str entry/kind) "message") nil
-                    else (receivers .get entry/id))))
+                    else (receivers .get entry/id))
+                  (if (&& ($present? entry/alias_of) (!= entry/alias_of ""))
+                    (summaries .get entry/alias_of)
+                    else nil)))
       (page .put "size" ($str/byte_size page/content))
       (entry_pages .push page))
     (for page in entry_pages

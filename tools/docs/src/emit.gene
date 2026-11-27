@@ -6,7 +6,7 @@
 (import $fs/[exists? make_dir remove_dir remove read_text write_text walk])
 (import $order/[sort sort_by])
 (import $db/sqlite/[Db open])
-(import fail_pipeline in? format_size short_summary first_sentence word_cut ^from "./util")
+(import fail_pipeline in? format_size short_summary first_sentence word_cut str_or_empty ^from "./util")
 (import exemptions ^from "./exemptions")
 (import load_index load_coverage load_modules load_heads load_macros load_content load_package load_packages read_one ^from "./data")
 (import read_book ^from "./book")
@@ -447,11 +447,11 @@
     " ^section_avg " ($to_str sizes/section_avg)
     " ^entry_avg " ($to_str sizes/entry_avg)
     " ^namespace_avg " ($to_str sizes/namespace_avg) " ^targets {^index 6144 ^overview 12288 ^chapter 3072 ^section 6144 ^entry 3072}}"] ""))
-  (lines .push ($str/join [" ^summaries {^kinds "
+  (lines .push ($str/join [" ^summaries {^kinds {"
     (do
       (var kind_lines [])
       (map_for [kind rec] in summary/kinds
-        (kind_lines .push ($str/join [($to_str kind) " {^entries "
+        (kind_lines .push ($str/join ["^" ($to_str kind) " {^entries "
           ($to_str rec/entries) " ^with_summary " ($to_str rec/with_summary)
           "}"] "")))
       ($str/join (sort_by kind_lines (fn [line] line)) " "))
@@ -521,29 +521,63 @@
   (for entry in module/entries (out .put entry/id true))
   out)
 
+(fn declared_in [module entry]
+  # The file that declares an entry, for an error that names it.
+  (let source (if ($present? entry/source) entry/source else module/source))
+  (if (&& ($present? source) (!= source "")) source else "its declaration"))
+
 (fn apply_content [modules content]
-  # Prose only: identity (id, kind, parent, requirement, alias) comes from
-  # reflection and is never replaced.
+  # Authored prose from `docs/reference.gene` for names that have no
+  # declaration file to carry it: the root namespace, type messages, protocol
+  # requirements, compiler macros, and reflected natives. Only prose merges
+  # (`doc`, `see`, `errors`, `status`); identity (id, kind, parent,
+  # requirement, alias) and shape stay as reflection reports them. A name has
+  # one source of prose, so a content entry for a name a declaration already
+  # documents, for an alias, for no name at all, or written twice fails the
+  # build.
+  (let file "docs/reference.gene")
   (let ns_docs {})
-  (for ns in (if ($present? content/namespaces) content/namespaces else [])
+  (for ns in (?? content/namespaces [])
+    (if ($has_key? ns_docs ns/id)
+      (fail_pipeline $"${file}: ${ns/id} is documented twice"))
     (ns_docs .put ns/id ns/doc))
   (let by_for {})
-  (for e in (if ($present? content/entries) content/entries else [])
+  (for e in (?? content/entries [])
+    (if ($has_key? by_for e/for)
+      (fail_pipeline $"${file}: ${e/for} is documented twice"))
     (by_for .put e/for e))
+  (let used {})
   (for module in modules
     (let ns_id ($str/join ["lib/" module/module] ""))
     (if ($has_key? ns_docs ns_id)
-      (module .put "doc" (ns_docs .get ns_id)))
+      (do
+        (if (&& ($present? module/doc) (!= ($str/trim module/doc) ""))
+          (fail_pipeline
+            $"${file}: ${ns_id} is already documented in ${(str_or_empty module/source)}; edit it there"))
+        (module .put "doc" (ns_docs .get ns_id))
+        (used .put ns_id true)))
     (for entry in module/entries
       (let key ($to_str entry/for))
       (if ($has_key? by_for key)
         (do
           (let doc (by_for .get key))
+          (if (&& ($present? entry/alias_of) (!= entry/alias_of ""))
+            (fail_pipeline
+              $"${file}: ${key} is an alias of ${entry/alias_of}; document that entry instead"))
+          (if (&& ($present? entry/doc) (!= ($str/trim entry/doc) ""))
+            (fail_pipeline
+              $"${file}: ${key} is already documented in ${(declared_in module entry)}; edit it there"))
           (if ($present? doc/doc) (entry .put "doc" doc/doc))
           (if ($present? doc/see) (entry .put "see" doc/see))
           (if ($present? doc/errors) (entry .put "errors" doc/errors))
-          (if ($present? doc/status) (entry .put "status" doc/status)))))
-    )
+          (if ($present? doc/status) (entry .put "status" doc/status))
+          (used .put key true)))))
+  (for ns in (?? content/namespaces [])
+    (if (not ($has_key? used ns/id))
+      (fail_pipeline $"${file}: ${ns/id} names no namespace")))
+  (for e in (?? content/entries [])
+    (if (not ($has_key? used e/for))
+      (fail_pipeline $"${file}: ${e/for} names no reference entry")))
   modules)
 
 (fn merge_reflection [modules extra]
