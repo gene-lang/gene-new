@@ -631,7 +631,7 @@ suite "modules — file imports":
       "(macro smuggle [items] (items .push helper) `(quote %items))")
     let app = newApplication(modDir)
     for caller in [
-        "(import smuggle ^from \"./launder_def\") (smuggle/[])",
+        "(import smuggle ^from \"./launder_def\") (smuggle [])",
         "(import smuggle ^from \"./launder_def\") " &
           "(var picked (eval `(smuggle []) ^in (env)))",
         "(import smuggle ^from \"./launder_def\") " &

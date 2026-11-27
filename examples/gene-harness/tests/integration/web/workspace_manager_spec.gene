@@ -217,7 +217,7 @@
           ($assert (== ((Path "epoch") (discover project)) child/epoch))
           (set host (manager_host home))
           ($assert (== (managed_names host) entries))
-          (let code "(register_plugin \"workspace_manager\" (quote (mod plugin (import Plugin ^from \"src/plugin_api.gene\") (fn init [descriptor] (Plugin ^id \"workspace_manager\" ^activate (fn/[host] (fail (Error ^_msg \"test broken manager\"))))))) ^^replace)")
+          (let code "(register_plugin \"workspace_manager\" (quote (mod plugin (import Plugin ^from \"src/plugin_api.gene\") (fn init [descriptor] (Plugin ^id \"workspace_manager\" ^activate (fn [host] (fail (Error ^_msg \"test broken manager\"))))))) ^^replace)")
           (cli host/root ["--session" session/id "run" code])
           ($assert (== ((Path "epoch") (discover project)) child/epoch))
           ($assert (== (managed_names host) entries))

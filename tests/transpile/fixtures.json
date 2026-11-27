@@ -5008,8 +5008,8 @@
     },
     {
       "id": "self.default_nested_binding",
-      "source": "(ns origin (fn private_label [] : Str \"provider\") (protocol P (message checker [] : (Fn [Any] Str) (fn [x : Any] : Str (let checked : (List Self) x) (private_label))))) (import origin/P) (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f/[(Other)]) catch TypeFault \"checked\")]) (run)",
-      "web_source": "(mod self_default_nested_binding ^profile web) (import P ^from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f/[(Other)]) catch TypeFault \"checked\")])",
+      "source": "(ns origin (fn private_label [] : Str \"provider\") (protocol P (message checker [] : (Fn [Any] Str) (fn [x : Any] : Str (let checked : (List Self) x) (private_label))))) (import origin/P) (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeFault \"checked\")]) (run)",
+      "web_source": "(mod self_default_nested_binding ^profile web) (import P ^from \"./provider.gene\") (fn private_label [] : Str \"consumer\") (type Dog ^props {}) (impl P for Dog) (type Pup : Dog ^props {}) (type Other ^props {}) (fn run [] : (List Str) (let f ((Pup) .P:checker)) [(f [(Dog)]) (try (f [(Other)]) catch TypeFault \"checked\")])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -5035,8 +5035,8 @@
     },
     {
       "id": "self.imported_universal_value",
-      "source": "(ns origin (protocol U ^^universal (message label [] : Str \"fallback\"))) (import origin/U) (type Box ^props {}) (fn run [] : Str (let f : (Callable/[Box] Str) U:label) (f (Box))) (run)",
-      "web_source": "(mod self_imported_universal_value ^profile web) (import U ^from \"./provider.gene\") (type Box ^props {}) (fn run [] : Str (let f : (Callable/[Box] Str) U:label) (f (Box)))",
+      "source": "(ns origin (protocol U ^^universal (message label [] : Str \"fallback\"))) (import origin/U) (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box))) (run)",
+      "web_source": "(mod self_imported_universal_value ^profile web) (import U ^from \"./provider.gene\") (type Box ^props {}) (fn run [] : Str (let f : (Callable [Box] Str) U:label) (f (Box)))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",

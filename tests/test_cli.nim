@@ -1201,7 +1201,7 @@ suite "cli — gene eval":
       ("(import *:helper ^from \"./helper\") helper/answer", "42"),
       ("(import twice ^from \"./helper\") (twice 21)", "42"),
       ("(import plus_two ^from \"./nested/child\") (plus_two 40)", "42"),
-      ("(import $str [join]) (join/[\"a\" \"b\"] \"-\")", "\"a-b\"")
+      ("(import $str/[join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
     ]:
       let ran = runGene(["eval", source], workingDir = root)
       check ran.exitCode == 0

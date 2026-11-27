@@ -2462,7 +2462,7 @@ int main(void) {
     discard run(compileSource("(var q 1)"), scope)
     var raised = false
     try:
-      discard run(compileSource("(import $str/[join]) (join/[\"a\"] \",\")"),
+      discard run(compileSource("(import $str/[join]) (join [\"a\"] \",\")"),
                   scope)
     except CatchableError as e:
       raised = true
@@ -2474,7 +2474,7 @@ int main(void) {
     ## compileEvalSource this keeps ambient import authority.
     let scope = newGlobalScope()
     discard run(compileSource("(var q 1)", useLocalSlots = false), scope)
-    check run(compileSource("(import $str/[join]) (join/[\"a\" \"b\"] \",\")",
+    check run(compileSource("(import $str/[join]) (join [\"a\" \"b\"] \",\")",
                             useLocalSlots = false), scope).strVal == "a,b"
     check run(compileSource("q", useLocalSlots = false), scope).intVal == 1
 
@@ -10538,7 +10538,7 @@ suite "spec — value ordering and stable sort":
       "  catch OrderFault true))) (await task))"), newGlobalScope(app)).print() == "true"
 
   test "default sort is stable and sort_by evaluates each key once":
-    check_eval("(import gene/order [sort]) (sort/[3 1 2])", "[1 2 3]")
+    check_eval("(import gene/order [sort]) (sort [3 1 2])", "[1 2 3]")
     check_eval("(import gene/order/[sort_by]) " &
       "(let rows [{^rank 2 ^name \"Ada\"} {^rank 1 ^name \"Bob\"} " &
       "           {^rank 2 ^name \"Cy\"}]) " &
@@ -10920,9 +10920,9 @@ suite "spec — stdlib namespaces from stdlib plan":
     # (the separately built `gene-fmt`), not a runtime one.
 
   test "str module covers join/split/trim/lower and predicates":
-    check_eval("(import $str/[join]) (join/[\"a\" \"b\"] \"-\")", "\"a-b\"")
+    check_eval("(import $str/[join]) (join [\"a\" \"b\"] \"-\")", "\"a-b\"")
     # D6: `join` is a function, not a List message — call it, don't send it.
-    check_eval("(import $str/[join]) (join/[\"a\" \"b\"] \"\")", "\"ab\"")
+    check_eval("(import $str/[join]) (join [\"a\" \"b\"] \"\")", "\"ab\"")
     check_eval("(import $str/[split]) (split \"a,b,,c\" \",\")",
                "[\"a\" \"b\" \"\" \"c\"]")
     check_eval("(import $str/[trim lower]) (lower (trim \"  MiXeD  \"))",
