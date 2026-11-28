@@ -1,0 +1,3 @@
+# Overview
+
+genex/computer is an experimental transport for Cua Driver 0.34.0's public command-line interface. It uses argument arrays, bounded asynchronous subprocess output, and deadlines; it embeds no shell commands or browser automation runtime. `open_driver` connects to an operator-started daemon, `grant_window` grants one native window, and `observe` returns an observation ID and the driver result. `action` sends a click, type, key, or scroll against a granted target; every observation is consumed. Browser targets use `grant_browser` and typed browser actions. Host code grants targets and exposes only opaque IDs; the adapter normalizes driver JSON into content and structured state, including screenshots as image blocks.

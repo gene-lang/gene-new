@@ -1,0 +1,4 @@
+{^format 1
+ ^title "genex/cordis"
+ ^book ["overview"]
+ ^reference [{^title "Reference" ^namespaces ["cordis"]}]}

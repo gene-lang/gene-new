@@ -1,0 +1,3 @@
+# Overview
+
+genex/audio is an experimental package for bounded, in-memory audio work. `audio.gene` converts 16-bit PCM and WAV without opening devices: `wav_encode` writes a WAV from PCM and `wav_decode` returns `{^format ^pcm}`. It accepts mono or stereo at 8–192 kHz and validates RIFF lengths, chunks, padding, alignment, and byte rate before use. `worker.gene` adds length-framed subprocess I/O: `open_worker`, `read_packet`, `write_packet`, `read_json`, and `write_json` preserve packet boundaries across short reads and writes, and `close_worker` closes the pipes and joins the process. Import the package through its `audio` alias.

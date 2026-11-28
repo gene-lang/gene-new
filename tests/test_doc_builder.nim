@@ -1185,7 +1185,10 @@ suite "doc builder — no VM linked":
     # Index summaries are whole words, without the chapter opener.
     check "This chapter " notin index
     check "..." notin index
-    check "No corpus is built yet for `genex/" in index
+    if fileExists(root / "src/genex/archive/build/docs/llms.txt"):
+      check "[genex/archive](src/genex/archive/build/docs/llms.txt)" in index
+    else:
+      check "No corpus is built yet for `genex/" in index
 
   test "check 4: a head with no section fails the build and names the head":
     let firstRoot = docTestRepoRoot() / "tests/fixtures/docs_reflect"

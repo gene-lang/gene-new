@@ -1266,6 +1266,20 @@ proc findDocGenerator(root: string): string =
         break
       dir = parent
 
+proc docSourceScope(root: string): string =
+  ## A package index may narrow the reference to one source directory:
+  ## `{^source "src/public"}`. The default is the package's own source roots.
+  let path = root / "docs" / "index.gene"
+  if not fileExists(path): return ""
+  let text = readFile(path)
+  const marker = "^source \""
+  let at = text.find(marker)
+  if at < 0: return ""
+  let start = at + marker.len
+  let stop = text.find('"', start)
+  if stop < 0: return ""
+  text[start ..< stop]
+
 proc cmdDocBuild(args: openArray[string]) =
   var dir = ""
   var packageRoot = ""
@@ -1287,15 +1301,26 @@ proc cmdDocBuild(args: openArray[string]) =
       stderr.writeLine "Error: unexpected argument: " & arg
       quit(1)
     inc i
-  let start = if packageRoot.len > 0: packageRoot else: getCurrentDir()
+  # `dir` names a package to document, not just a source subdirectory: its
+  # corpus belongs in that package's `build/docs/`, and the generator must
+  # read that package, not the checkout it happens to sit in.
+  let start = if dir.len > 0: dir
+              elif packageRoot.len > 0: packageRoot
+              else: getCurrentDir()
   let root = docPackageRoot(start)
+  let builderDir = block:
+    let scope = docSourceScope(root)
+    if scope.len > 0 and (dir.len == 0 or normalizedPath(absolutePath(dir)) == root):
+      root / scope
+    else:
+      dir
   # The builder never links the compiler, so the command that does hands the
   # generator the compiler's heads and namespace macros as files.
   writeCompilerDocData(root)
   let tool = docToolExecutable("gene-doc")
   var toolArgs = @["build"]
-  if dir.len > 0:
-    toolArgs.add dir
+  if builderDir.len > 0:
+    toolArgs.add builderDir
   toolArgs.add("--package-root")
   toolArgs.add(root)
   let process = startProcess(tool, workingDir = getCurrentDir(),

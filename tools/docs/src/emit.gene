@@ -139,6 +139,23 @@
     (out .push (row_text page "md/")))
   out)
 
+(fn package_dir [path]
+  (if ($str/ends_with? path "/package.gene")
+    ($str/slice_bytes path 0 (- ($str/byte_size path) 13))
+    else
+    path))
+
+(fn dependency_lines [pkg]
+  (var out [])
+  (if (&& ($present? pkg/dependencies) (> ($map_size pkg/dependencies) 0))
+    (do
+      (out .push "## Dependencies")
+      (out .push "")
+      (map_for [name dep] in pkg/dependencies
+        (out .push ($str/join ["- `" ($to_str name) "` — `"
+          (?? dep/path "") "`"] "")))))
+  out)
+
 (fn reference_lines [index modules by_id packages]
   (var out [])
   (let placed {})
@@ -187,10 +204,23 @@
           (do
             (out .push ($str/join ["### " group/title] ""))
             (out .push "")
-            # These have no pages to load yet, so one line names them.
-            (var listed [])
-            (for package in packages (listed .push ($str/join ["`" package/name "`"] "")))
-            (out .push ($str/join ["No corpus is built yet for " ($str/join listed ", ") "."] ""))
+            (var built [])
+            (var missing [])
+            (for package in packages
+              (let dir (package_dir package/abs))
+              (let corpus ($path/join dir "build/docs/llms.txt"))
+              (if ($fs/exists? corpus)
+                (built .push {^package package
+                              ^corpus ($str/join [($path/join (package_dir package/path) "build/docs/llms.txt")] "")})
+                else (missing .push package)))
+            (for row in built
+              (out .push ($str/join ["- [" row/package/name "](" row/corpus ") — "
+                row/package/description "; `experimental`."] "")))
+            (if (> ($size missing) 0)
+              (do
+                (var listed [])
+                (for package in missing (listed .push ($str/join ["`" package/name "`"] "")))
+                (out .push ($str/join ["No corpus is built yet for " ($str/join listed ", ") "."] ""))))
             (out .push ""))))))
   (var other [])
   (for module in modules
@@ -237,6 +267,10 @@
   (lines .push "## Reference")
   (lines .push "")
   (for line in (reference_lines index modules by_id packages) (lines .push line))
+  (if (not runtime)
+    (do
+      (lines .push "")
+      (for line in (dependency_lines pkg) (lines .push line))))
   ($str/join [($str/trim ($str/join lines "\n")) ""] "\n"))
 
 (fn sizes_report [pages index_size]
@@ -929,6 +963,12 @@
     (set modules (merge_reflection modules
                    (macro_modules macros))))
   (apply_content modules content)
+  (if (&& (not (== coverage/package "gene/runtime"))
+          ($str/starts_with? (?? coverage/package "") "genex/"))
+    (for module in modules
+      (for entry in module/entries
+        (if (not (&& ($present? entry/status) (!= entry/status "")))
+          (entry .put "status" "experimental")))))
   (var entry_ids [])
   (for module in modules
     (for entry in module/entries (entry_ids .push entry/id)))

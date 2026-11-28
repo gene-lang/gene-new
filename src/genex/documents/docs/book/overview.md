@@ -1,0 +1,3 @@
+# Overview
+
+genex/documents is an experimental package for bounded document and image inspection. It never evaluates an uploaded document as Gene code. `inspect_bytes` accepts bytes and reports display name, MIME type, kind, and size; PNG inspection also validates chunks and CRC and reports image dimensions and color facts. `extract_document` and `extract_pdf_page` return text and rendered page images for PDFs, and are imported from the package's `extract` module. PDF extraction needs Poppler; DOCX extraction on macOS needs `textutil` and `unzip`. Inspection identifies formats but does not prove downstream decoding.

@@ -104,3 +104,6 @@ examples/math/
 skills-lock.json
 nimble.develop
 nimble.paths
+
+# Documentation and native build output
+src/genex/archive/build/

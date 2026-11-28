@@ -48,7 +48,8 @@
         {^name manifest/name
          ^description (if ($present? manifest/description)
                         manifest/description else "")
-         ^path path}
+         ^path path
+         ^abs abs}
         else nil))
     else nil))
 

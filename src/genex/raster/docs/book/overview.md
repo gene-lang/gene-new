@@ -1,0 +1,3 @@
+# Overview
+
+genex/raster is an experimental deterministic CPU painting worker. A Gene build API and a native C++ worker cover scalar path coverage, pressure-sensitive round dabs, gradients, premultiplied linear-sRGB compositing, erasing, and fixed RGBA8 PNG output. `worker_profile` captures the executable and runtime dependency identity; `worker_render` verifies the executable and runs one fresh process with bounded output and time. `decode_png` decodes a PNG into canonical bytes and RGBA pixels in a caller-owned staging directory. The numeric request protocol is internal and versioned, and the caller owns cleanup.

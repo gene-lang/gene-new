@@ -1,0 +1,3 @@
+# Overview
+
+genex/cordis is an experimental Gene-native plugin runtime for spatially scoped services, dependency-driven activation, deterministic effect ownership, hooks, data-only composition, and recoverable hot reload. The supported library entry is `src/cordis.gene`; sandboxed plugins import `src/plugin_api.gene` plus explicitly shared service-contract modules. `new_runtime` takes `RuntimeOptions` for the logger, invoker, and default limits, and the runtime's `loader` takes `LoaderOptions` for the plugin root, shared modules, namespace limits, and reload policy. Optional adapters cover data loading and persistence, bounded filesystem watching, effect-owned timers, and a typed bounded cross-lane service handle.

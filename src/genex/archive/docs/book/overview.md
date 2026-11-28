@@ -1,0 +1,3 @@
+# Overview
+
+genex/archive is an experimental package for bounded gzip and ZIP handling. It builds a native C codec against declared zlib and utf8proc system dependencies and exposes verification, ZIP inspection, and ZIP extraction through Gene. The codec works in bounded 64 KiB stream steps and distinguishes ordinary progress, a need for more input, and verified stream completion. `inspect_zip` reports the number of accepted entries or raises `ArchiveError`; `extract_zip_sync` verifies the archive and extracts into a new destination. The worker-backed `extract_zip` form lets a Gene task start, wait for, and cancel extraction. Load the package through its `archive` alias, as the package README shows.

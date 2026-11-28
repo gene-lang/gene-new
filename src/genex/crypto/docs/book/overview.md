@@ -1,0 +1,3 @@
+# Overview
+
+genex/crypto is an experimental package for public-key signature verification backed by OpenSSL 3. `verify_rs256` verifies bytes with RSA PKCS#1 v1.5 and SHA-256 using unsigned public components in network byte order; it accepts 2048–8192 bit keys and messages up to 1 MiB. `encode_url` and `decode_url` implement unpadded RFC 4648 base64url, rejecting padding and noncanonical encodings. `verify_id_token` pins RS256, requires one matching JWKS key, and checks signature, issuer, audience or authorized party, subject, issued-at, expiry, optional not-before, nonce, and an optional access-token hash. The caller still decides which account and scopes to grant.

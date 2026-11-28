@@ -1,0 +1,5 @@
+{^format 1
+ ^source "src/public"
+ ^title "gene/harness"
+ ^book ["overview"]
+ ^reference [{^title "Public API" ^namespaces ["src/public"]}]}

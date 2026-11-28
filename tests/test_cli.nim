@@ -3390,3 +3390,38 @@ suite "cli — gene pkg (archive/docs/workflows.md)":
       ["run", root / "app/src/main.gene"])
     check ran.exitCode == 0
     check ran.output.strip == "acme/app"
+
+  test "doc build of a package inside the checkout stays in that package":
+    let repo = normalizedPath(parentDir(currentSourcePath()) / "..")
+    let pkg = repo / "build" / "cli-doc-package"
+    if dirExists(pkg): removeDir(pkg)
+    createDir(pkg / "src")
+    createDir(pkg / "docs" / "book")
+    writeFile(pkg / "package.gene", """
+{^format 1
+ ^name "test/docl"
+ ^description "A package documented in the checkout"
+ ^version "0.0.0"
+ ^library {^entry "src/main.gene"}}
+""")
+    writeFile(pkg / "src" / "main.gene",
+      "(mod main @doc \"A tiny package.\")\n(fn answer [] : Int @doc \"Returns 42.\" 42)\n")
+    writeFile(pkg / "docs" / "index.gene", """
+{^format 1 ^title "test/docl" ^book ["overview"]
+ ^reference [{^title "Reference" ^namespaces ["main"]}]}
+""")
+    writeFile(pkg / "docs" / "book" / "overview.md",
+      "# Overview\n\nA tiny package used to prove that a package build stays in the package.\n")
+    let rootIndexPath = repo / "build" / "docs" / "llms.txt"
+    let rootBefore = if fileExists(rootIndexPath): readFile(rootIndexPath) else: ""
+    let built = runGene(@["doc", "build", "build/cli-doc-package"],
+                        workingDir = repo)
+    check built.exitCode == 0
+    check fileExists(pkg / "build" / "docs" / "llms.txt")
+    if rootBefore.len > 0:
+      check readFile(rootIndexPath) == rootBefore
+    var junk = 0
+    let md = pkg / "build" / "docs" / "md"
+    for path in walkDirRec(md):
+      if relativePath(path, md).contains("build/docs"): inc junk
+    check junk == 0

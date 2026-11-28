@@ -1,0 +1,3 @@
+# Overview
+
+genex/tls is an experimental direct TLS transport backed by a declared OpenSSL 3 system dependency. Its C ABI validates a server certificate, private key, optional client CA, and authentication policy before publishing an immutable context. Reload builds a replacement before swapping, while live connections keep their old context until physical close. Contexts require TLS 1.2 or newer and negotiate TLS 1.3 where supported. `net/http/listen ^tls` uses the adapter for nonblocking HTTPS and optional required client certificates; `reload_tls` returns an external task backed by a bounded reload service.
