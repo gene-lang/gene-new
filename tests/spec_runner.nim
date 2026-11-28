@@ -12409,6 +12409,38 @@ suite "spec — serde data core (archive/docs/stdlib.md stage 1)":
                " catch SerdeError (contains? $err/.message \"cycle\"))",
                "true")
 
+  test "read_data returns mutable containers and names the path of a bad item":
+    check_eval("(import $serde/[read_data]) " &
+               "(var v (read_data \"(serde_v1 [1 {^a [2 3 4]} \\\"s\\\"])\")) " &
+               "(v .push 5) (v/1/a .push 9) " &
+               "[($size v) v/1/a]", "[4 [2 3 4 9]]")
+    check_eval("(import $serde/[read_data SerdeError]) " &
+               "[(try (read_data \"(serde_v1 [1 {^a [(serde_float 1)]}])\") " &
+               "   catch SerdeError $err/.message) " &
+               " (try (read_data \"(serde_v1 {^x [1 (serde_float 2)]})\") " &
+               "   catch SerdeError $err/.message)]",
+               "[\"at 1/a/0: serde_float expects a Str\" " &
+               "\"at x/1: serde_float expects a Str\"]")
+
+  test "store/encode makes one encoding to hash and to put":
+    let dir = getTempDir() / "gene_spec_store_encode"
+    if dirExists(dir): removeDir(dir)
+    check_eval("(import $store/fs/[Store open:store_open]) " &
+               "(import $store/encode) (import $serde/write_data) " &
+               "(import $crypto/sha256) " &
+               "(var store (store_open ^root \"" & dir & "\")) " &
+               "(var value {^id 1 ^items [1 2 3] ^note \"x\"}) " &
+               "(var encoded (encode value)) " &
+               "(store .Store:put \"k\" encoded) " &
+               "[(== encoded/text (write_data value)) " &
+               " (== (sha256 encoded/text) (sha256 (write_data value))) " &
+               " (== (store .Store:get \"k\") value)]", "[true true true]")
+    check_eval_error("(import $store/fs/[Store open:store_open]) " &
+               "(import $store/encode) " &
+               "(var store (store_open ^root \"" & dir & "\" ^mode \"data\")) " &
+               "(store .Store:put \"k2\" (encode {^id 1} ^mode \"full\"))",
+               "full mode")
+
   test "float specials use canonical serde_float forms":
     check_eval("(import $serde/[write_data read_data]) " &
                "(import $str/[contains?]) " &

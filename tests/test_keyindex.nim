@@ -83,3 +83,12 @@ suite "indexed Sets and HashMaps keep the linear scan's answers":
       " (m .get #(CollideMapKey ^n 24)) (n .get #(CollideMapKey ^n 24)) " &
       " ($map_size o) (o .get #(CollideMapKey ^n 5)) (== m n)]") ==
       "[24 17 nil 24 25 50 false]"
+
+suite "store/native?":
+  test "only a built-in store is native":
+    let dir = getTempDir() / "gene_keyindex_native_store"
+    if dirExists(dir): removeDir(dir)
+    check eval("(import $store/fs/[open:store_open]) (import $store/native?) " &
+      "(type Fake ^props {}) " &
+      "[(native? (store_open ^root \"" & dir & "\")) (native? (Fake)) " &
+      " (native? {^a 1}) (native? nil)]") == "[true false false false]"

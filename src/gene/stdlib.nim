@@ -113,6 +113,33 @@ proc fsWriteAtomic(path, content: string, ownerOnly = false) =
       except CatchableError: discard
     raise
 
+when defined(geneStoreFaultTests):
+  var fsSyncFailPath*: string
+    ## Test only: the directory whose sync reports an I/O error, to exercise a
+    ## failure on either side of the CURRENT rename. Empty means none.
+
+proc fsSyncDirectory(path: string) =
+  ## Flush a directory's entries. `fsWriteAtomic` syncs the file it writes, but
+  ## the rename that gives the file its name lives in the parent directory, and
+  ## a crash can lose it until that directory is synced too. A filesystem that
+  ## cannot sync a directory (EINVAL, ENOTSUP) has nothing to flush.
+  when defined(geneStoreFaultTests):
+    if fsSyncFailPath.len > 0 and path == fsSyncFailPath:
+      raise newException(OSError, "injected directory sync failure: " & path)
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    let fd = posix.open(path.cstring, O_RDONLY)
+    if fd < 0:
+      raiseOSError(osLastError())
+    defer: discard posix.close(fd)
+    while posix.fsync(fd) != 0:
+      let code = errno
+      if code == EINTR: continue
+      if code != EINVAL and code != ENOTSUP:
+        raiseOSError(OSErrorCode(code))
+      break
+  else:
+    discard
+
 proc fsPathExists(path: string): bool =
   fileExists(path) or dirExists(path) or symlinkExists(path)
 
@@ -1326,8 +1353,6 @@ proc biCssDeclValue(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "css/decl expects a Symbol or Str property name and one value")
   cssNode("decl", args)
-
-proc sha256Hex(data: string): string
 
 proc cssCanonical(value: Value): string =
   ## Length-prefixed, kind-tagged, source-meta-blind serialization. Node props
@@ -7209,12 +7234,27 @@ type SerdePolicyLimits = object
   maxSymbols: int
   allowRestore: bool   # serde_hooked serde_restore runs user code; off by default
 
+type PathSeg = object
+  ## One step of the path an error message names. A list index is kept as an
+  ## Int and formatted only when an error is raised, because writing or reading
+  ## a payload pushes one step per item and almost none of them is ever shown.
+  name: string
+  index: int      # empty `name`: >= 0 a list index, <= -2 a prop key id, -1 none
+
+converter toPathSeg(name: string): PathSeg = PathSeg(name: name, index: -1)
+
+proc pathIndex(index: int): PathSeg {.inline.} =
+  PathSeg(name: "", index: index)
+
+proc pathKey(id: int32): PathSeg {.inline.} =
+  PathSeg(name: "", index: -2 - int(id))
+
 type SerdeWriter = object
   sb: string
   scope: Scope
   app: Application                  # nil unless allowRefs (origin resolution)
   allowRefs: bool                   # serde/write emits refs; write_data errors
-  path: seq[string]
+  path: seq[PathSeg]
   onPath: HashSet[uint64]           # container identities on the current path
   shareCounts: Table[uint64, int]   # identity-bearing occurrence counts
   shareNames: Table[uint64, string] # generated simple snake_case ref names
@@ -7229,14 +7269,26 @@ type SerdeReader = object
   limits: SerdePolicyLimits
   nodes: int
   symbols: HashSet[string]
-  path: seq[string]
+  path: seq[PathSeg]
   refs: Table[string, Value]        # local #Ref/#Deref serialization unit
   resolvingRefs: HashSet[string]
 
-proc serdePathText(path: seq[string]): string =
-  if path.len == 0: "payload" else: path.join("/")
+proc serdePathText(path: seq[PathSeg]): string =
+  if path.len == 0: return "payload"
+  var parts: seq[string]
+  for step in path:
+    if step.name.len > 0:
+      parts.add step.name
+    elif step.index >= 0:
+      parts.add $step.index
+    elif step.index <= -2:
+      let id = int32(-2 - step.index)
+      parts.add propKeyText(id)
+    else:
+      parts.add ""
+  parts.join("/")
 
-proc raiseSerdeError(scope: Scope, message: string, path: seq[string] = @[]) =
+proc raiseSerdeError(scope: Scope, message: string, path: seq[PathSeg] = @[]) =
   var full = message
   if path.len > 0:
     full = "at " & serdePathText(path) & ": " & message
@@ -7612,7 +7664,7 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
     w.sb.add "(serde_set"
     for i, it in v.setItems:
       w.sb.add ' '
-      w.path.add $i
+      w.path.add pathIndex(i)
       serdeEmit(w, it)
       discard w.path.pop()
     w.sb.add ')'
@@ -7622,7 +7674,7 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
     w.sb.add (if v.listImmutable: "#[" else: "[")
     for i, it in v.listItems:
       if i > 0: w.sb.add ' '
-      w.path.add $i
+      w.path.add pathIndex(i)
       serdeEmit(w, it)
       discard w.path.pop()
     w.sb.add ']'
@@ -7669,7 +7721,7 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
       serdeEmitEscapedMap(w, v.meta, false)
       for i, it in v.body:
         w.sb.add ' '
-        w.path.add $i
+        w.path.add pathIndex(i)
         serdeEmit(w, it)
         discard w.path.pop()
       w.sb.add ')'
@@ -7693,7 +7745,7 @@ proc serdeEmit(w: var SerdeWriter, v: Value) =
         serdeEmitMapBody(w, v.props)
       for i, it in v.body:
         w.sb.add ' '
-        w.path.add $i
+        w.path.add pathIndex(i)
         serdeEmit(w, it)
         discard w.path.pop()
       w.sb.add ')'
@@ -7806,7 +7858,7 @@ proc serdeEmitInst(w: var SerdeWriter, v: Value) =
   w.sb.add " ["
   for i, it in v.body:
     if i > 0: w.sb.add ' '
-    w.path.add $i
+    w.path.add pathIndex(i)
     serdeEmit(w, it)
     discard w.path.pop()
   w.sb.add "])"
@@ -8201,7 +8253,7 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
       raiseSerdeError(r.scope, "serde_set expects no props", r.path)
     var items: seq[Value]
     for i, it in v.body:
-      r.path.add $i
+      r.path.add pathIndex(i)
       let item = serdeDecode(r, it, depth + 1)
       if not isHashStable(item):
         raiseSerdeError(r.scope,
@@ -8290,7 +8342,7 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
         "serde_data_node props/meta must decode to maps", r.path)
     var children: seq[Value]
     for i in 4 ..< v.body.len:
-      r.path.add $(i - 4)
+      r.path.add pathIndex(i - 4)
       children.add serdeDecode(r, v.body[i], depth + 1)
       discard r.path.pop()
     var props = initPropTable()
@@ -8409,6 +8461,11 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
     NIL
 
 proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
+  ## Lists, Maps and HashMaps come back as the very value read when nothing
+  ## inside them changed. The reader just made them, nothing else holds them,
+  ## and rebuilding each one doubled the allocations of a plain data payload.
+  ## A container with a control node inside (a ref, a set, a float special)
+  ## is copied once and has only the changed children replaced.
   serdeCountValue(r, depth)
   case v.kind
   of vkNil, vkBool, vkInt, vkFloat, vkString, vkBytes, vkChar,
@@ -8419,28 +8476,46 @@ proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
     v
   of vkList:
     var items: seq[Value]
+    var changed = false
     for i, it in v.listItems:
-      r.path.add $i
-      items.add serdeDecode(r, it, depth + 1)
+      r.path.add pathIndex(i)
+      let decoded = serdeDecode(r, it, depth + 1)
       discard r.path.pop()
+      if not changed and decoded.bits != it.bits:
+        changed = true
+        items = v.listItems
+      if changed: items[i] = decoded
+    if not changed: return v
     newList(items, immutable = v.listImmutable)
   of vkMap:
-    var entries = initPropTable()
-    for k, val in v.mapEntries:
-      r.path.add k
-      entries[k] = serdeDecode(r, val, depth + 1)
+    var entries: PropTable
+    var changed = false
+    for id, val in v.mapEntries.idPairs:
+      r.path.add pathKey(id)
+      let decoded = serdeDecode(r, val, depth + 1)
       discard r.path.pop()
+      if not changed and decoded.bits != val.bits:
+        changed = true
+        entries = v.mapEntries
+      if changed: entries.putById(id, decoded)
+    if not changed: return v
     newMap(entries, immutable = v.mapImmutable)
   of vkHashMap:
     var entries: seq[HashMapEntry]
-    for entry in v.hashMapEntries:
+    var changed = false
+    for i, entry in v.hashMapEntries:
       r.path.add "key"
       let k = serdeDecode(r, entry.key, depth + 1)
       discard r.path.pop()
       r.path.add "val"
       let value = serdeDecode(r, entry.val, depth + 1)
       discard r.path.pop()
-      entries.add HashMapEntry(key: k, val: value)
+      if not changed and (k.bits != entry.key.bits or
+                          value.bits != entry.val.bits):
+        changed = true
+        entries = v.hashMapEntries
+      if changed: entries[i] = HashMapEntry(key: k, val: value)
+    if not changed: return v
     newHashMap(entries)
   of vkNode:
     if v.head.kind == vkSymbol and v.head.symVal in ["#Ref", "#Deref"]:
@@ -8452,18 +8527,18 @@ proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
     let head = serdeDecode(r, v.head, depth + 1)
     discard r.path.pop()
     var props = initPropTable()
-    for k, val in v.props:
-      r.path.add k
-      props[k] = serdeDecode(r, val, depth + 1)
+    for id, val in v.props.idPairs:
+      r.path.add pathKey(id)
+      props.putById(id, serdeDecode(r, val, depth + 1))
       discard r.path.pop()
     var meta = initPropTable()
-    for k, val in v.meta:
-      r.path.add k
-      meta[k] = serdeDecode(r, val, depth + 1)
+    for id, val in v.meta.idPairs:
+      r.path.add pathKey(id)
+      meta.putById(id, serdeDecode(r, val, depth + 1))
       discard r.path.pop()
     var children: seq[Value]
     for i, it in v.body:
-      r.path.add $i
+      r.path.add pathIndex(i)
       children.add serdeDecode(r, it, depth + 1)
       discard r.path.pop()
     newNode(head, props = props, body = children, meta = meta,
@@ -9436,97 +9511,6 @@ const storeDefaultDataColumn = "data"
 const storeCheckpointSchema = 1
 const storeCheckpointRetain = 3
 
-const sha256RoundConstants: array[64, uint32] = [
-  0x428a2f98'u32, 0x71374491'u32, 0xb5c0fbcf'u32, 0xe9b5dba5'u32,
-  0x3956c25b'u32, 0x59f111f1'u32, 0x923f82a4'u32, 0xab1c5ed5'u32,
-  0xd807aa98'u32, 0x12835b01'u32, 0x243185be'u32, 0x550c7dc3'u32,
-  0x72be5d74'u32, 0x80deb1fe'u32, 0x9bdc06a7'u32, 0xc19bf174'u32,
-  0xe49b69c1'u32, 0xefbe4786'u32, 0x0fc19dc6'u32, 0x240ca1cc'u32,
-  0x2de92c6f'u32, 0x4a7484aa'u32, 0x5cb0a9dc'u32, 0x76f988da'u32,
-  0x983e5152'u32, 0xa831c66d'u32, 0xb00327c8'u32, 0xbf597fc7'u32,
-  0xc6e00bf3'u32, 0xd5a79147'u32, 0x06ca6351'u32, 0x14292967'u32,
-  0x27b70a85'u32, 0x2e1b2138'u32, 0x4d2c6dfc'u32, 0x53380d13'u32,
-  0x650a7354'u32, 0x766a0abb'u32, 0x81c2c92e'u32, 0x92722c85'u32,
-  0xa2bfe8a1'u32, 0xa81a664b'u32, 0xc24b8b70'u32, 0xc76c51a3'u32,
-  0xd192e819'u32, 0xd6990624'u32, 0xf40e3585'u32, 0x106aa070'u32,
-  0x19a4c116'u32, 0x1e376c08'u32, 0x2748774c'u32, 0x34b0bcb5'u32,
-  0x391c0cb3'u32, 0x4ed8aa4a'u32, 0x5b9cca4f'u32, 0x682e6ff3'u32,
-  0x748f82ee'u32, 0x78a5636f'u32, 0x84c87814'u32, 0x8cc70208'u32,
-  0x90befffa'u32, 0xa4506ceb'u32, 0xbef9a3f7'u32, 0xc67178f2'u32]
-
-proc sha256RotateRight(value: uint32, amount: int): uint32 {.inline.} =
-  (value shr amount) or (value shl (32 - amount))
-
-proc sha256Hex(data: string): string =
-  ## Small dependency-free SHA-256 used for checkpoint validation and durable
-  ## artifact ids. This is off every VM/reader hot path.
-  var bytes = newSeq[byte](data.len)
-  for i, c in data:
-    bytes[i] = byte(ord(c))
-  let bitLen = uint64(bytes.len) * 8'u64
-  bytes.add 0x80'u8
-  while (bytes.len mod 64) != 56:
-    bytes.add 0'u8
-  for shift in countdown(56, 0, 8):
-    bytes.add byte((bitLen shr shift) and 0xff'u64)
-
-  var state = [0x6a09e667'u32, 0xbb67ae85'u32, 0x3c6ef372'u32,
-               0xa54ff53a'u32, 0x510e527f'u32, 0x9b05688c'u32,
-               0x1f83d9ab'u32, 0x5be0cd19'u32]
-  var schedule: array[64, uint32]
-  var offset = 0
-  while offset < bytes.len:
-    for i in 0 ..< 16:
-      let j = offset + i * 4
-      schedule[i] = (uint32(bytes[j]) shl 24) or
-                    (uint32(bytes[j + 1]) shl 16) or
-                    (uint32(bytes[j + 2]) shl 8) or uint32(bytes[j + 3])
-    for i in 16 ..< 64:
-      let s0 = sha256RotateRight(schedule[i - 15], 7) xor
-               sha256RotateRight(schedule[i - 15], 18) xor
-               (schedule[i - 15] shr 3)
-      let s1 = sha256RotateRight(schedule[i - 2], 17) xor
-               sha256RotateRight(schedule[i - 2], 19) xor
-               (schedule[i - 2] shr 10)
-      schedule[i] = schedule[i - 16] + s0 + schedule[i - 7] + s1
-    var a = state[0]
-    var b = state[1]
-    var c = state[2]
-    var d = state[3]
-    var e = state[4]
-    var f = state[5]
-    var g = state[6]
-    var h = state[7]
-    for i in 0 ..< 64:
-      let big1 = sha256RotateRight(e, 6) xor sha256RotateRight(e, 11) xor
-                 sha256RotateRight(e, 25)
-      let choose = (e and f) xor ((not e) and g)
-      let temp1 = h + big1 + choose + sha256RoundConstants[i] + schedule[i]
-      let big0 = sha256RotateRight(a, 2) xor sha256RotateRight(a, 13) xor
-                 sha256RotateRight(a, 22)
-      let majority = (a and b) xor (a and c) xor (b and c)
-      let temp2 = big0 + majority
-      h = g
-      g = f
-      f = e
-      e = d + temp1
-      d = c
-      c = b
-      b = a
-      a = temp1 + temp2
-    state[0] += a
-    state[1] += b
-    state[2] += c
-    state[3] += d
-    state[4] += e
-    state[5] += f
-    state[6] += g
-    state[7] += h
-    offset += 64
-  result = ""
-  for word in state:
-    result.add toHex(word, 8).toLowerAscii()
-
 proc biCryptoSha256(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("crypto/sha256", args)
   case args[0].kind
@@ -9674,6 +9658,47 @@ proc storeDecode(scope: Scope, mode, text: string, policy: Value,
     raiseStoreError(scope, "corrupt", "store decode for key '" & key &
       "': " & e.msg, key)
 
+proc storeEncodedOrEncode(scope: Scope, mode: string, value: Value): string =
+  ## `Store/put` normally encodes the value. A `StoreEncoded` (made by
+  ## `$store/encode`) already holds the text, so a caller that needs the text
+  ## itself, to hash it for a content address, encodes once instead of twice.
+  if value.kind == vkNode and value.head.kind == vkType and
+      nativeReceiverIs(scope, value, "StoreEncoded"):
+    let encodedMode = value.props["mode"].symVal
+    if encodedMode == "full" and mode != "full":
+      raiseStoreError(scope, "serde",
+        "store encoded in full mode cannot be put in a data-mode store")
+    return value.props["text"].strVal
+  storeEncode(scope, mode, value)
+
+proc biStoreNative(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## Whether `store` is a built-in one (FsStore or SqliteStore). Only those
+  ## understand a StoreEncoded; any other Store implementation gets the value.
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1:
+    raiseStoreError(scope, "invalid_key", "store/native? expects (store)")
+  let store = args[0]
+  newBool(store.kind == vkNode and store.head.kind == vkType and
+    (nativeReceiverIs(scope, store, "FsStore") or
+     nativeReceiverIs(scope, store, "SqliteStore")))
+
+proc biStoreEncode(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  let scope {.cursor.} = if call == nil: nil else: call[].dispatchScope
+  if args.len != 1:
+    raiseStoreError(scope, "invalid_key",
+      "store/encode expects (value) plus optional ^mode")
+  let named = storeNamed(call)
+  var mode = "data"
+  if named.hasArg("mode"):
+    mode = storeModeText(scope, named.getArg("mode"))
+  for name in named.names:
+    if name != "mode":
+      raiseStoreError(scope, "invalid_key",
+        "store/encode got unexpected named argument: " & name)
+  let text = storeEncode(scope, mode, args[0])
+  newNativeWrapper(builtInTypeHead(scope, "StoreEncoded"),
+    {"text": newStr(text), "mode": newSym(mode)})
+
 proc storeReadModePolicy(store: Value, call: ptr NativeCall, scope: Scope):
     tuple[mode: string, policy: Value] =
   let named = storeNamed(call)
@@ -9761,7 +9786,7 @@ proc biStorePut(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   let key = args[1].strVal
   storeValidateKey(scope, key)
   let mode = storeWriteMode(args[0], call, scope)
-  let data = storeEncode(scope, mode, args[2])
+  let data = storeEncodedOrEncode(scope, mode, args[2])
   if kind == "SqliteStore":
     let db = storeSqliteDb(args[0], scope)
     let names = storeSqliteTable(args[0])
@@ -10030,7 +10055,20 @@ proc storeFilesystemCheckpoint(scope: Scope, store: Value, generation: int64,
       fsWriteAtomic(finalDir / (urlEncodeComponent(name) & ".gene"), data,
                     ownerOnly = true)
     fsWriteAtomic(finalDir / "MANIFEST.gene", manifestText, ownerOnly = true)
+    # Make the generation's entries durable before CURRENT can name it, and
+    # CURRENT's own rename durable before the checkpoint reports success.
+    # One sync per directory, not one per file.
+    fsSyncDirectory(finalDir)
+    fsSyncDirectory(generations)
     fsWriteAtomic(root / "CURRENT", generationName & "\n", ownerOnly = true)
+    # CURRENT now names the generation and readers can see it, so the
+    # checkpoint has happened whatever this sync reports; raising here would
+    # make the caller retry a generation that already exists. A failure only
+    # means the rename may not survive a crash yet.
+    try:
+      fsSyncDirectory(root)
+    except CatchableError:
+      discard
   except CatchableError as e:
     raiseStoreError(scope, "io", "Store/checkpoint: " & e.msg)
 
@@ -11751,9 +11789,17 @@ proc registerStdlibNamespaces(root: Scope) {.startupRegistration.} =
       storeField("mode", "Sym"), storeField("policy", "Any"),
       storeField("closed", "Any")],
     @[storeProtocol], root, repr = trNativeWrapper)
+  let storeEncodedType = newType("StoreEncoded", NIL,
+    @[storeField("text", "Str"), storeField("mode", "Sym")],
+    @[], root, repr = trNativeWrapper)
   root.define("SqliteStore", sqliteStoreType)
   root.define("FsStore", fsStoreType)
+  root.define("StoreEncoded", storeEncodedType)
   let storeScope = newScope(root)
+  storeScope.define("encode", builtinNativeCallFn("store/encode", biStoreEncode))
+  storeScope.define("native?", builtinNativeCallFn("store/native?", biStoreNative,
+                                                 acceptsNamed = false))
+  storeScope.define("StoreEncoded", storeEncodedType)
   storeScope.define("Store", storeProtocol)
   storeScope.define("StoreError", storeError)
   let storeSqliteScope = newScope(root)

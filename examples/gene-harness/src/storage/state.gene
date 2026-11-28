@@ -4,6 +4,7 @@
 
 (import $store/fs/[Store StoreError open:store_open])
 (import $serde/write_data)
+(import $store/[encode native?])
 (import $crypto/sha256)
 (import $str/[byte_size slice_bytes starts_with?])
 (import $fs/real_path)
@@ -448,11 +449,14 @@
   (while (< start values/.size)
     (var segment
       (slice_events values start (+ start events/segment_events)))
-    (var digest (sha256 (write_data segment)))
+    # Encode once: the digest names the key, and a built-in store writes the
+    # same text. Any other Store implementation is given the value itself.
+    (var encoded (encode segment))
+    (var digest (sha256 encoded/text))
     (if ($present? backend)
       (var key $"segment/${digest}")
       (if_not (backend .Store:has? key)
-        (backend .Store:put key segment)))
+        (backend .Store:put key (if (native? backend) encoded else segment))))
     (all_digests .push digest)
     (set start (+ start events/segment_events)))
   {^digests all_digests ^events values})
@@ -496,9 +500,11 @@
     (var projection
       {^plugin (events/projections/.get .get key)
        ^core (events/core_projections/.get .get key)})
-    (var projection_digest (sha256 (write_data projection)))
+    (var projection_encoded (encode projection))
+    (var projection_digest (sha256 projection_encoded/text))
     (if_not (events/backend .Store:has? $"projection/${projection_digest}")
-      (events/backend .Store:put $"projection/${projection_digest}" projection))
+      (events/backend .Store:put $"projection/${projection_digest}"
+        (if (native? events/backend) projection_encoded else projection)))
     (descriptors .put key
       {^segments segmented/digests ^projection projection_digest
        ^state_writers (copy_data (?? (events/state_writers/.get .get key) {}))

@@ -1,8 +1,6 @@
 ## Dependency-free content digests shared by package and build infrastructure.
 ## Digesting is deliberately off the VM and reader hot paths.
 
-import std/strutils
-
 const sha256RoundConstants: array[64, uint32] = [
   0x428a2f98'u32, 0x71374491'u32, 0xb5c0fbcf'u32, 0xe9b5dba5'u32,
   0x3956c25b'u32, 0x59f111f1'u32, 0x923f82a4'u32, 0xab1c5ed5'u32,
@@ -24,25 +22,42 @@ const sha256RoundConstants: array[64, uint32] = [
 proc rotateRight(value: uint32, amount: int): uint32 {.inline.} =
   (value shr amount) or (value shl (32 - amount))
 
-type Sha256Context* = object
+const hexDigits = "0123456789abcdef"
+
+proc hexOfState(state: array[8, uint32]): string =
+  result = newStringOfCap(64)
+  for word in state:
+    for shift in countdown(28, 0, 4):
+      result.add hexDigits[int((word shr shift) and 0xf'u32)]
+
+# Portable implementation. It is the only one on targets without a system
+# digest, and it stays compiled everywhere so a test can compare it with the
+# system one.
+
+type PortableSha256 = object
   state: array[8, uint32]
   buffer: array[64, byte]
   bufferLen: int
   totalLen: uint64
 
-proc initSha256*(): Sha256Context =
+proc initPortable(): PortableSha256 =
   result.state = [0x6a09e667'u32, 0xbb67ae85'u32, 0x3c6ef372'u32,
                   0xa54ff53a'u32, 0x510e527f'u32, 0x9b05688c'u32,
                   0x1f83d9ab'u32, 0x5be0cd19'u32]
 
-proc compress(context: var Sha256Context) =
+{.push boundChecks: off, overflowChecks: off.}
+
+proc compressBlock(state: var array[8, uint32],
+                   block64: ptr UncheckedArray[byte]) =
+  ## One 64-byte block. The indexes are constants or loop counters below the
+  ## array sizes, so the checks it would otherwise carry prove nothing.
   var schedule: array[64, uint32]
   for i in 0 ..< 16:
     let j = i * 4
-    schedule[i] = (uint32(context.buffer[j]) shl 24) or
-                  (uint32(context.buffer[j + 1]) shl 16) or
-                  (uint32(context.buffer[j + 2]) shl 8) or
-                  uint32(context.buffer[j + 3])
+    schedule[i] = (uint32(block64[j]) shl 24) or
+                  (uint32(block64[j + 1]) shl 16) or
+                  (uint32(block64[j + 2]) shl 8) or
+                  uint32(block64[j + 3])
   for i in 16 ..< 64:
     let s0 = rotateRight(schedule[i - 15], 7) xor
              rotateRight(schedule[i - 15], 18) xor
@@ -51,14 +66,14 @@ proc compress(context: var Sha256Context) =
              rotateRight(schedule[i - 2], 19) xor
              (schedule[i - 2] shr 10)
     schedule[i] = schedule[i - 16] + s0 + schedule[i - 7] + s1
-  var a = context.state[0]
-  var b = context.state[1]
-  var c = context.state[2]
-  var d = context.state[3]
-  var e = context.state[4]
-  var f = context.state[5]
-  var g = context.state[6]
-  var h = context.state[7]
+  var a = state[0]
+  var b = state[1]
+  var c = state[2]
+  var d = state[3]
+  var e = state[4]
+  var f = state[5]
+  var g = state[6]
+  var h = state[7]
   for i in 0 ..< 64:
     let big1 = rotateRight(e, 6) xor rotateRight(e, 11) xor
                rotateRight(e, 25)
@@ -76,46 +91,125 @@ proc compress(context: var Sha256Context) =
     c = b
     b = a
     a = temp1 + temp2
-  context.state[0] += a
-  context.state[1] += b
-  context.state[2] += c
-  context.state[3] += d
-  context.state[4] += e
-  context.state[5] += f
-  context.state[6] += g
-  context.state[7] += h
-  context.bufferLen = 0
+  state[0] += a
+  state[1] += b
+  state[2] += c
+  state[3] += d
+  state[4] += e
+  state[5] += f
+  state[6] += g
+  state[7] += h
 
-proc updateByte(context: var Sha256Context, value: byte) {.inline.} =
-  context.buffer[context.bufferLen] = value
-  inc context.bufferLen
-  inc context.totalLen
-  if context.bufferLen == context.buffer.len:
-    context.compress()
+proc updatePortable(context: var PortableSha256, data: ptr UncheckedArray[byte],
+                    count: int) =
+  ## Whole blocks are compressed straight from the input. Only the tail is
+  ## copied into the context's buffer.
+  var at = 0
+  context.totalLen += uint64(count)
+  if context.bufferLen > 0:
+    let take = min(64 - context.bufferLen, count)
+    copyMem(addr context.buffer[context.bufferLen], addr data[0], take)
+    context.bufferLen += take
+    at = take
+    if context.bufferLen == 64:
+      compressBlock(context.state, cast[ptr UncheckedArray[byte]](
+        addr context.buffer[0]))
+      context.bufferLen = 0
+  while count - at >= 64:
+    compressBlock(context.state, cast[ptr UncheckedArray[byte]](addr data[at]))
+    at += 64
+  if at < count:
+    copyMem(addr context.buffer[0], addr data[at], count - at)
+    context.bufferLen = count - at
 
-proc update*(context: var Sha256Context, data: string) =
-  for ch in data:
-    context.updateByte(byte(ord(ch)))
+{.pop.}
 
-proc update*(context: var Sha256Context, data: openArray[byte]) =
-  for value in data:
-    context.updateByte(value)
-
-proc finishHex*(context: Sha256Context): string =
+proc finishPortable(context: PortableSha256): string =
   var final = context
   let bitLen = final.totalLen * 8'u64
-  final.updateByte(0x80'u8)
-  while final.bufferLen != 56:
-    final.updateByte(0'u8)
-  for shift in countdown(56, 0, 8):
-    final.updateByte(byte((bitLen shr shift) and 0xff'u64))
-  for word in final.state:
-    result.add toHex(word, 8).toLowerAscii()
+  var padding: array[72, byte]
+  padding[0] = 0x80'u8
+  let padLen = (if final.bufferLen < 56: 56 - final.bufferLen
+                else: 120 - final.bufferLen)
+  for shift in 0 ..< 8:
+    padding[padLen + shift] = byte((bitLen shr (56 - 8 * shift)) and 0xff'u64)
+  updatePortable(final, cast[ptr UncheckedArray[byte]](addr padding[0]),
+                 padLen + 8)
+  hexOfState(final.state)
+
+# macOS has the SHA-2 instructions behind CommonCrypto, which hashes several
+# times faster than portable code. Content-addressed storage hashes every
+# segment, and the build cache hashes every artifact it loads.
+const useSystemDigest = defined(macosx) and not defined(geneWasm)
+
+when useSystemDigest:
+  type CcSha256Ctx {.importc: "CC_SHA256_CTX",
+                     header: "<CommonCrypto/CommonDigest.h>".} = object
+  proc ccSha256Init(ctx: ptr CcSha256Ctx): cint
+    {.importc: "CC_SHA256_Init", header: "<CommonCrypto/CommonDigest.h>".}
+  proc ccSha256Update(ctx: ptr CcSha256Ctx, data: pointer, len: uint32): cint
+    {.importc: "CC_SHA256_Update", header: "<CommonCrypto/CommonDigest.h>".}
+  proc ccSha256Final(digest: ptr byte, ctx: ptr CcSha256Ctx): cint
+    {.importc: "CC_SHA256_Final", header: "<CommonCrypto/CommonDigest.h>".}
+
+  type Sha256Context* = object
+    native: CcSha256Ctx
+
+  proc initSha256*(): Sha256Context =
+    discard ccSha256Init(addr result.native)
+
+  proc updateRaw(context: var Sha256Context, data: pointer, count: int) =
+    # CC_SHA256_Update takes a 32-bit length.
+    var offset = 0
+    while offset < count:
+      let chunk = min(count - offset, 1 shl 30)
+      discard ccSha256Update(addr context.native,
+                             cast[pointer](cast[uint](data) + uint(offset)),
+                             uint32(chunk))
+      offset += chunk
+
+  proc finishHex*(context: Sha256Context): string =
+    var final = context
+    var digest: array[32, byte]
+    discard ccSha256Final(addr digest[0], addr final.native)
+    result = newStringOfCap(64)
+    for value in digest:
+      result.add hexDigits[int(value shr 4)]
+      result.add hexDigits[int(value and 0xf)]
+else:
+  type Sha256Context* = object
+    portable: PortableSha256
+
+  proc initSha256*(): Sha256Context =
+    result.portable = initPortable()
+
+  proc updateRaw(context: var Sha256Context, data: pointer, count: int) =
+    updatePortable(context.portable, cast[ptr UncheckedArray[byte]](data),
+                   count)
+
+  proc finishHex*(context: Sha256Context): string =
+    finishPortable(context.portable)
+
+proc update*(context: var Sha256Context, data: string) =
+  if data.len > 0:
+    context.updateRaw(unsafeAddr data[0], data.len)
+
+proc update*(context: var Sha256Context, data: openArray[byte]) =
+  if data.len > 0:
+    context.updateRaw(unsafeAddr data[0], data.len)
 
 proc sha256Hex*(data: string): string =
   var context = initSha256()
   context.update(data)
   context.finishHex()
+
+proc sha256HexPortable*(data: string): string =
+  ## The portable implementation, for tests that compare it with the system one.
+  var context = initPortable()
+  if data.len > 0:
+    updatePortable(context, cast[ptr UncheckedArray[byte]](unsafeAddr data[0]),
+                   data.len)
+  finishPortable(context)
 
 proc sha256File*(path: string): string =
   ## Stream a file into SHA-256. Compiler and tool identities use this instead
