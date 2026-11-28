@@ -2,7 +2,7 @@
 
 import std/[algorithm, atomics, base64, dynlib, hashes, json, locks, math, monotimes, net, os,
             options, osproc, sets, strtabs, strutils, tables, times, unicode]
-import ./[compiler, diagnostics, digest, equality, execution_limits, gir, package, printer, reader, types,
+import ./[compiler, diagnostics, digest, equality, execution_limits, gir, keyindex, package, printer, reader, types,
           type_contracts]
 import ./[callable_reflection, error_analysis, gir_codec, native_errors, value_graph]
 import ./[import_spec, module_resolver]
@@ -2999,6 +2999,11 @@ proc semanticEqual(left, right: Value): bool
 proc semanticHash(value: Value): Hash
 proc readyCoreWitness(typ: Value, operation: CoreValueMethod): Value
 proc requireHashStableKey(name: string, key: Value)
+proc hashStableKeyHash(name: string, key: Value): Hash
+proc ensureSetIndex(set: Value): bool
+proc ensureHashMapIndex(map: Value): bool
+proc findSetItem(set, key: Value, h: Hash): int
+proc findHashMapEntry(map, key: Value, h: Hash): int
 
 proc semanticPropsEqual(left, right: PropTable): bool =
   if left.len != right.len: return false
@@ -3104,6 +3109,18 @@ proc semanticBodyEqual(left, right: Value): bool =
       beginKeyOperation(right)
       guardedRight = true
     if left.setItems.len != right.setItems.len: return false
+    if ensureSetIndex(right):
+      # Probe the larger index instead of scanning it once per item.
+      let leftIndexed = setKeyIndex(left).covers(left.setItems.len)
+      for position, item in left.setItems:
+        var found: bool
+        if tryImmediateSetContains(right, item, found):
+          if not found: return false
+          continue
+        let h = if leftIndexed: setKeyIndex(left).hashes[position]
+                else: semanticHash(item)
+        if findSetItem(right, item, h) < 0: return false
+      return true
     for item in left.setItems:
       var found = false
       for candidate in right.setItems:
@@ -3122,6 +3139,16 @@ proc semanticBodyEqual(left, right: Value): bool =
       beginKeyOperation(right)
       guardedRight = true
     if left.hashMapEntries.len != right.hashMapEntries.len: return false
+    if ensureHashMapIndex(right):
+      let leftIndexed = hashMapKeyIndex(left).covers(left.hashMapEntries.len)
+      for position, entry in left.hashMapEntries:
+        let h = if leftIndexed: hashMapKeyIndex(left).hashes[position]
+                else: semanticHash(entry.key)
+        let at = findHashMapEntry(right, entry.key, h)
+        if at < 0 or
+            not semanticEqual(entry.val, right.hashMapEntries[at].val):
+          return false
+      return true
     for entry in left.hashMapEntries:
       var found = false
       for candidate in right.hashMapEntries:
@@ -3304,10 +3331,8 @@ proc biContains(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     var found: bool
     if tryImmediateSetContains(source, args[1], found):
       return newBool(found)
-    requireHashStableKey("Set/contains?", args[1])
-    for item in source.setItems:
-      if semanticEqual(item, args[1]): return TRUE
-    FALSE
+    let h = hashStableKeyHash("Set/contains?", args[1])
+    return newBool(findSetItem(source, args[1], h) >= 0)
   else:
     raise newException(GeneError,
       "contains? expects a List or Set, got " & receiverDisplayType(source))
@@ -3612,32 +3637,117 @@ proc findHashMapKey(entries: openArray[HashMapEntry], key: Value): int =
       return i
   -1
 
-proc requireHashStableKey(name: string, key: Value) =
+proc hashStableKeyHash(name: string, key: Value): Hash =
+  ## Reject a key that cannot be hashed stably, and return its hash. The hash
+  ## is the one the container's index stores, so a lookup hashes exactly once.
   if not isHashStable(key):
     raiseTypeError(name, "HashStable", key, nil)
-  discard semanticHash(key)
+  semanticHash(key)
+
+proc requireHashStableKey(name: string, key: Value) =
+  discard hashStableKeyHash(name, key)
+
+# General Sets and HashMaps index their keys once they hold KeyIndexMin
+# positions (keyindex.nim). The builders below hash every key anyway, to
+# validate it, and hand the hashes to the new container. A container made some
+# other way builds its index on the first lookup, unless another lane can read
+# it, in which case lookups scan linearly as they always did.
+
+proc buildLazyKeyIndex(keys: openArray[Value]): KeyIndex =
+  ## The index of a container nothing has validated: a vector the reader, a
+  ## quote or a GIR constant produced. Only keys that are hash-stable (so a
+  ## cached hash cannot go stale) and pairwise distinct (so a rebuild that keeps
+  ## the last of two equal keys is not skipped) may be indexed. Anything else
+  ## marks the index `refused`, and the caller keeps the linear scan.
+  result = KeyIndex()
+  try:
+    for position in 0 ..< keys.len:
+      let key = keys[position]
+      if not isHashStable(key):
+        result.refused = true
+        break
+      let h = semanticHash(key)
+      for earlier in result.candidates(h):
+        if semanticEqual(keys[earlier], key):
+          result.refused = true
+          break
+      if result.refused: break
+      result.add h
+  except GeneError:
+    result.refused = true     # a witness that fails is the linear scan's to meet
+  if result.refused:
+    result = KeyIndex(refused: true)
+
+proc ensureSetIndex(set: Value): bool =
+  let items {.cursor.} = set.setItems
+  if items.len < KeyIndexMin: return false
+  if setKeyIndex(set).covers(items.len): return true
+  if setKeyIndex(set).refused or not set.keyIndexMayBuild: return false
+  let index = buildLazyKeyIndex(items)
+  setKeyIndex(set) = index
+  not index.refused
+
+proc ensureHashMapIndex(map: Value): bool =
+  let entries {.cursor.} = map.hashMapEntries
+  if entries.len < KeyIndexMin: return false
+  if hashMapKeyIndex(map).covers(entries.len): return true
+  if hashMapKeyIndex(map).refused or not map.keyIndexMayBuild: return false
+  var keys = newSeqOfCap[Value](entries.len)
+  for entry in entries: keys.add entry.key
+  let index = buildLazyKeyIndex(keys)
+  hashMapKeyIndex(map) = index
+  not index.refused
+
+proc findSetItem(set, key: Value, h: Hash): int =
+  ## Position of the item equal to `key`, whose hash is `h`, or -1.
+  if ensureSetIndex(set):
+    for position in setKeyIndex(set).candidates(h):
+      if semanticEqual(set.setItems[position], key): return position
+    return -1
+  findEqualValue(set.setItems, key)
+
+proc findHashMapEntry(map, key: Value, h: Hash): int =
+  ## Position of the entry whose key equals `key`, whose hash is `h`, or -1.
+  if ensureHashMapIndex(map):
+    for position in hashMapKeyIndex(map).candidates(h):
+      if semanticEqual(map.hashMapEntries[position].key, key): return position
+    return -1
+  findHashMapKey(map.hashMapEntries, key)
 
 proc buildSet(name: string, values: openArray[Value]): Value =
   let indexed = tryBuildImmediateSet(values)
   if not indexed.isNil:
     return indexed
   var items: seq[Value]
+  var index: KeyIndex
   for value in values:
-    requireHashStableKey(name, value)
-    if findEqualValue(items, value) < 0:
+    let h = hashStableKeyHash(name, value)
+    var found = false
+    for position in index.candidates(h):
+      if semanticEqual(items[position], value):
+        found = true
+        break
+    if not found:
       items.add value
-  newSet(items)
+      index.add h
+  newIndexedSet(items, index)
 
 proc buildHashMap(name: string, pairs: openArray[HashMapEntry]): Value =
   var entries: seq[HashMapEntry]
+  var index: KeyIndex
   for entry in pairs:
-    requireHashStableKey(name, entry.key)
-    let idx = findHashMapKey(entries, entry.key)
-    if idx >= 0:
-      entries[idx].val = entry.val
+    let h = hashStableKeyHash(name, entry.key)
+    var at = -1
+    for position in index.candidates(h):
+      if semanticEqual(entries[position].key, entry.key):
+        at = position
+        break
+    if at >= 0:
+      entries[at].val = entry.val
     else:
       entries.add entry
-  newHashMap(entries)
+      index.add h
+  newIndexedHashMap(entries, index)
 
 proc biNot(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 1: raise newException(GeneError, "not expects 1 argument")
@@ -7879,8 +7989,8 @@ proc biSetHas(args: openArray[Value]): Value {.nimcall.} =
   var found: bool
   if tryImmediateSetContains(args[0], args[1], found):
     return newBool(found)
-  requireHashStableKey("Set/has", args[1])
-  newBool(findEqualValue(args[0].setItems, args[1]) >= 0)
+  let h = hashStableKeyHash("Set/has", args[1])
+  newBool(findSetItem(args[0], args[1], h) >= 0)
 
 proc biSetSize(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Set/size", args)
@@ -7998,10 +8108,19 @@ proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
   of vkHashMap:
     beginKeyOperation(args[0])
     defer: endKeyOperation()
-    var entries: seq[HashMapEntry]
-    for entry in args[0].hashMapEntries:
-      entries.add entry
-    entries.add HashMapEntry(key: args[1], val: args[2])
+    let h = hashStableKeyHash("Map/assoc", args[1])
+    let at = findHashMapEntry(args[0], args[1], h)
+    var entries = args[0].hashMapEntries
+    if at >= 0:
+      entries[at].val = args[2]
+    else:
+      entries.add HashMapEntry(key: args[1], val: args[2])
+    if ensureHashMapIndex(args[0]):
+      # The parent's keys are hashed already: copy its index and add one hash.
+      var index = hashMapKeyIndex(args[0])
+      if at < 0: index.add h
+      return newIndexedHashMap(entries, index)
+    # A small parent: hash everything once, as a literal would.
     buildHashMap("Map/assoc", entries)
   else:
     raise newException(GeneError, "Map/assoc expects a Map")
@@ -8028,8 +8147,8 @@ proc biMapGet(args: openArray[Value]): Value {.nimcall.} =
   of vkHashMap:
     beginKeyOperation(args[0])
     defer: endKeyOperation()
-    requireHashStableKey("Map/get", args[1])
-    let idx = findHashMapKey(args[0].hashMapEntries, args[1])
+    let h = hashStableKeyHash("Map/get", args[1])
+    let idx = findHashMapEntry(args[0], args[1], h)
     if idx >= 0: args[0].hashMapEntries[idx].val else: NIL
   else:
     NIL
@@ -8045,8 +8164,8 @@ proc biHasKey(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   of vkHashMap:
     beginKeyOperation(args[0])
     defer: endKeyOperation()
-    requireHashStableKey("has_key?", args[1])
-    newBool(findHashMapKey(args[0].hashMapEntries, args[1]) >= 0)
+    let h = hashStableKeyHash("has_key?", args[1])
+    newBool(findHashMapEntry(args[0], args[1], h) >= 0)
   of vkNode:
     # Stored props only: no message dispatch, protocol, or default is consulted.
     newBool(args[0].props.hasKey(keySegment("has_key?", args[1])))

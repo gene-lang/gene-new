@@ -36,6 +36,7 @@
 import std/[locks, monotimes, sets, strutils, sysatomics, tables, times,
             unicode]
 import ./pending_exception
+import ./keyindex
 when defined(geneAtomicGenerationRetirementProbe):
   import ./retirement_native_gate
 
@@ -974,10 +975,15 @@ type
     # Membership index for canonical immediates only. Keep it in sync with
     # items, which owns iteration order. Published Sets have no mutator.
     immediateIndex: HashSet[uint64]
+    # Hash index for every other item kind; see keyindex.nim. It describes
+    # `items` only while `keyIndex.hashes.len == items.len`.
+    keyIndex: KeyIndex
 
   HashMapData = ref object of GeneObjectData
     inertEpoch: uint32     # escape-inert stamp; see `escapeInertEpoch`
     entries: seq[HashMapEntry]
+    # Hash index over the entry keys; see keyindex.nim.
+    keyIndex: KeyIndex
 
   PipelineData = ref object of GeneObjectData
     initial: Value
@@ -2406,8 +2412,10 @@ proc clearObjectEdges(data: GeneObjectData) =
     let d = SetData(data)
     d.items.setLen(0)
     reset(d.immediateIndex)
+    reset(d.keyIndex)
   of okHashMap:
     HashMapData(data).entries.setLen(0)
+    reset(HashMapData(data).keyIndex)
   of okPipeline:
     let d = PipelineData(data)
     clearValueSlot(d.initial)
@@ -8609,6 +8617,38 @@ proc tryImmediateSetContains*(v, key: Value, found: var bool): bool {.inline.} =
 proc newHashMap*(entries: sink seq[HashMapEntry] = @[]): Value =
   boxObject(HashMapData(objKind: okHashMap, entries: entries))
 
+proc newIndexedHashMap*(entries: sink seq[HashMapEntry],
+                        index: sink KeyIndex): Value =
+  ## A HashMap whose key hashes the caller already computed. An index that
+  ## does not cover `entries` is dropped, and the first lookup rebuilds it.
+  let covered = index.covers(entries.len)
+  var data = HashMapData(objKind: okHashMap, entries: entries)
+  if covered: data.keyIndex = move index
+  boxObject(data)
+
+proc newIndexedSet*(items: sink seq[Value], index: sink KeyIndex): Value =
+  ## A Set of non-immediate items; see `newIndexedHashMap`.
+  let covered = index.covers(items.len)
+  var data = SetData(objKind: okSet, items: items)
+  if covered: data.keyIndex = move index
+  boxObject(data)
+
+proc setKeyIndex*(v: Value): var KeyIndex =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okSet:
+    raise newException(FieldDefect, "value is not a Set")
+  SetData(objData(v)).keyIndex
+
+proc hashMapKeyIndex*(v: Value): var KeyIndex =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okHashMap:
+    raise newException(FieldDefect, "value is not a HashMap")
+  HashMapData(objData(v)).keyIndex
+
+proc keyIndexMayBuild*(v: Value): bool =
+  ## A lazy index is written into the container, so only its owner lane may
+  ## build one. A container another lane can read keeps the linear scan unless
+  ## it was indexed before it was shared.
+  v.tagOf == OBJECT_TAG and not isSharedFlag(objData(v).shared)
+
 proc newPipeline*(initial: sink Value, stages: sink seq[PipelineStage],
                   immutable = false): Value =
   boxObject(PipelineData(objKind: okPipeline, initial: initial,
@@ -8851,6 +8891,7 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
   of vkHashMap:
     let data = HashMapData(objData(v))
     retirePatchedStamp(data.inertEpoch)
+    reset(data.keyIndex)   # patched keys hash differently
     for i in 0 ..< data.entries.len:
       data.entries[i].key =
         patchPendingModuleRef(data.entries[i].key, name, target, seen)
@@ -8859,6 +8900,7 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
   of vkSet:
     let data = SetData(objData(v))
     retirePatchedStamp(data.inertEpoch)
+    reset(data.keyIndex)   # patched items hash differently
     # Indexed entries are immediates and cannot contain pending module refs.
     if data.immediateIndex.len == 0:
       for i in 0 ..< data.items.len:

@@ -188,6 +188,16 @@
       "category": "activation",
       "source": "(let form (quote (do (type Key ^props {}) (impl ValueEq for Key (message equal [other : Key] : Bool true)) (impl ValueHash for Key (message hash [] : Int 7)) Key))) (let A (eval form ^in (env))) (let B (eval form ^in (env))) (let a #(A)) (let b #(B)) [(== a a) (== a b) ($hash a) ($hash b)]",
       "text": "[true false 7 7]"
+    },
+    {
+      "id": "indexed_set_past_threshold",
+      "source": "(let s (Set \"a0\" \"a1\" \"a2\" \"a3\" \"a4\" \"a5\" \"a6\" \"a7\" \"a8\" \"a9\" \"a10\" \"a11\" \"a3\")) [($set_size s) ($set_has? s \"a11\") ($set_has? s \"zz\") (s .contains? \"a5\")]",
+      "text": "[12 true false true]"
+    },
+    {
+      "id": "indexed_hashmap_past_threshold",
+      "source": "(let m {{\"k0\" : 0 \"k1\" : 1 \"k2\" : 2 \"k3\" : 3 \"k4\" : 4 \"k5\" : 5 \"k6\" : 6 \"k7\" : 7 \"k8\" : 8 \"k9\" : 9 \"k10\" : 10 \"k11\" : 11}}) (let n (m .assoc \"k5\" 50)) (let o (n .assoc \"new\" 1)) [($map_size m) (m .get \"k11\") (n .get \"k5\") ($map_size o) (o .get \"new\") (m .get \"none\") (== m n)]",
+      "text": "[12 11 50 13 1 nil false]"
     }
   ]
 }

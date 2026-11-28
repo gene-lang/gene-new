@@ -4409,6 +4409,68 @@ suite "spec — hashable collections and bytes from design":
     check_eval("(try {{[1] : 2}} catch TypeFault $err/expected)",
                "\"HashStable\"")
 
+  # Containers with eight or more positions carry a hash index. Every case
+  # below has to agree with the linear scan used for smaller containers.
+  test "a large general map keeps lookup, order, and last-write-wins":
+    var literal = ""
+    for i in 0 ..< 40: literal.add "\"k" & $i & "\" : " & $i & " "
+    literal.add "\"k3\" : 300 \"k39\" : 390"
+    check_eval("(let m {{" & literal & "}}) " &
+      "[($map_size m) (m .get \"k0\") (m .get \"k3\") (m .get \"k39\") " &
+      " (m .get \"missing\") ($has_key? m \"k17\") ($has_key? m \"k40\")]",
+      "[40 0 300 390 nil true false]")
+    check_eval("(let m {{" & literal & "}}) " &
+      "(let n (m .assoc \"k5\" 55)) (let o (m .assoc \"new\" 1)) " &
+      "[($map_size n) (n .get \"k5\") (m .get \"k5\") " &
+      " ($map_size o) (o .get \"new\") ($has_key? m \"new\") " &
+      " (o .get \"k39\")]",
+      "[40 55 5 41 1 false 390]")
+
+  test "a general map built by repeated assoc matches a literal":
+    check_eval("(var m {{}}) " &
+      "(repeat i in 200 (set m (m .assoc i (* i i)))) " &
+      "(repeat i in 200 (set m (m .assoc i (+ i 1)))) " &
+      "(var total 0) " &
+      "(repeat i in 200 (set total (+ total (m .get i)))) " &
+      "[($map_size m) total (m .get 199) (m .get 200)]",
+      "[200 20100 200 nil]")
+
+  test "indexed general maps compare equal regardless of insertion order":
+    var forward, backward = ""
+    for i in 0 ..< 30: forward.add "\"k" & $i & "\" : " & $i & " "
+    for i in countdown(29, 0): backward.add "\"k" & $i & "\" : " & $i & " "
+    check_eval("(let a {{" & forward & "}}) (let b {{" & backward & "}}) " &
+      "(let c (b .assoc \"k7\" 70)) " &
+      "[(== a b) (== a c) (== c a) (== a (a .assoc \"k7\" 7))]",
+      "[true false false true]")
+
+  test "a large Set of strings keeps membership, dedup, and equality":
+    var literal = ""
+    for i in 0 ..< 40: literal.add "\"k" & $i & "\" "
+    literal.add "\"k0\" \"k39\""
+    check_eval("(let s (Set " & literal & ")) " &
+      "[($set_size s) ($set_has? s \"k0\") ($set_has? s \"k39\") " &
+      " ($set_has? s \"k40\") (s .contains? \"k12\") (s .contains? \"x\")]",
+      "[40 true true false true false]")
+    var reversed = ""
+    for i in countdown(39, 0): reversed.add "\"k" & $i & "\" "
+    check_eval("(let a (Set " & literal & ")) (let b (Set " & reversed & ")) " &
+      "(let c (a .map (fn [x] (if (== x \"k1\") \"k0\" else x)))) " &
+      "[(== a b) (== a c) ($set_size c) (c .contains? \"k1\") " &
+      " ($set_size (a .map (fn [x] \"same\")))]",
+      "[true false 39 false 1]")
+
+  test "mixed key kinds share one index":
+    check_eval("(let m {{0 : \"zero\" 1 : \"one\" 1.5 : \"float\" " &
+      "\"s\" : \"str\" #[1 2] : \"list\" #{^a 1} : \"map\" " &
+      "true : \"yes\" nil : \"nil\" 0x10000000000000000 : \"big\" " &
+      "(quote sym) : \"sym\" 0.0 : \"fz\" -0.0 : \"nz\"}}) " &
+      "[($map_size m) (m .get 0) (m .get 1.5) (m .get #[1 2]) " &
+      " (m .get #{^a 1}) (m .get nil) " &
+      " (m .get (+ 0x10000000000000000 0)) (m .get 0.0) (m .get -0.0) " &
+      " (m .get 1.0) (m .get (quote sym))]",
+      "[11 \"zero\" \"float\" \"list\" \"map\" \"nil\" \"big\" \"nz\" \"nz\" nil \"sym\"]")
+
 suite "spec — regular expressions from design":
   test "Regex literals are raw and constructor strings escape normally":
     check_eval("[#\"\\d+\" (Regex \"\\\\d+\") (Regex ^flags \"mi\" \"abc\")]",

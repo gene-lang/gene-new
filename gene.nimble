@@ -113,6 +113,7 @@ task test, "Run the test suite":
   exec "nim c -r --path:src --hints:off tests/test_native_callback_abi.nim"
   exec "nim c -r --path:src --hints:off tests/test_native_async_abi.nim"
   exec "nim c -r --path:src --hints:off tests/test_release_crypto.nim"
+  exec "nim c -r --path:src --hints:off tests/test_keyindex.nim"
   exec "nim c -r --path:src --hints:off tests/test_package_release.nim"
   exec "python3 tests/test_registry_https.py"
   exec "python3 tests/test_registry_service.py"

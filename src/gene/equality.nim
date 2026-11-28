@@ -220,7 +220,11 @@ proc hash*(v: Value): Hash =
   case v.kind
   of vkNil: discard
   of vkBool:   h = h !& hash(v.boolVal)
-  of vkInt:    h = h !& hash(v.intToString)
+  of vkInt:
+    # Equal Ints agree on whether they fit 64 bits, so each branch is
+    # consistent. Formatting every key as a string made Int keys slow.
+    if v.intFitsInt64: h = h !& hash(v.intVal)
+    else: h = h !& hash(v.intToString)
   of vkFloat:
     # IEEE equality identifies both signed zeroes, so hashing must as well.
     let x = v.floatVal
@@ -380,5 +384,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
     true
 
 proc isHashStable*(v: Value): bool =
-  var seen = initHashSet[uint64]()
+  # A default HashSet allocates nothing until the first `incl`, so scalar keys
+  # never pay for the visited set.
+  var seen: HashSet[uint64]
   isHashStable(v, seen)
