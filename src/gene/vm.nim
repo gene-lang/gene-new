@@ -13128,6 +13128,12 @@ proc forItems(coll: Value, mapFamily = false): seq[Value] =
 proc inlineForSnapshot(coll: Value, mapFamily = false): Value {.noinline.} =
   ## opForInlineBegin's item snapshot. Kept out of the dispatch function so the
   ## allocation and its failure paths do not change its code for other loops.
+  ##
+  ## An immutable List cannot change under the loop, so it is its own
+  ## snapshot. A mutable one still needs the copy: another task, or an
+  ## equality or index witness run by the body, may change it between items.
+  if not mapFamily and coll.kind == vkList and coll.listImmutable:
+    return coll
   newList(forItems(coll, mapFamily))
 
 proc iteratorStream(coll: Value, mapFamily = false): Value =

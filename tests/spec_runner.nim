@@ -13736,6 +13736,12 @@ suite "spec — runtime fast paths keep ordinary semantics":
     check_eval("""(fn inner [xs] (var t 0) (for x in xs (set t (+ t x))) t) (fn outer [rows] (var out []) (for row in rows (out .push (inner row))) out) [(outer [[1 2] [3 4] []]) (outer [[10]])]""",
                """[[3 7 0] [10]]""")
 
+  test "an inline for over an immutable list reads the list itself":
+    # An immutable List needs no snapshot; a mutable one is still copied
+    # because another task may change it between items.
+    check_eval("""(fn total [xs] (var t 0) (for x in xs (set t (+ t x))) t) (fn nested [xs] (var t 0) (for x in xs (for y in xs (set t (+ t (* x y))))) t) (fn early [xs] (var t 0) (for x in xs (if (> x 2) (break)) (set t (+ t x))) t) (fn skip [xs] (var t 0) (for x in xs (if (== x 2) (continue)) (set t (+ t x))) t) [(total #[1 2 3]) (total [1 2 3]) (nested #[1 2 3]) (early #[1 2 3 4]) (skip #[1 2 3]) (total ($freeze [4 5])) (total #[])]""",
+               """[6 6 36 3 4 9 0]""")
+
   test "a loop inside a recursive function keeps each call separate":
     check_eval("""(fn depth [n] (var t 0) (for x in [1 2] (if (> n 0) (set t (+ t (depth (- n 1)))) else (set t (+ t x)))) t) [(depth 0) (depth 1) (depth 3)]""",
                """[3 6 24]""")
