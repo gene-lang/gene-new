@@ -19230,6 +19230,48 @@ const fastLoopCallOps = {opCallLocal1, opCallLocalN, opCallParentLocal0,
 const fastLoopNumberKinds = {nfkAdd, nfkSub, nfkMul, nfkLt, nfkGt, nfkLe, nfkGe}
   ## The kinds `tryFastNativeKind2` answers for any two numbers without raising.
 
+const fastLoopConstOps = {opNativeFastConst, opIntAddConst, opIntSubConst,
+  opIntMulConst, opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst,
+  opCompareConstJumpIfFalse}
+
+proc fastLoopVerified*(chunk: Chunk, first, last: int): bool {.noinline.} =
+  ## Whether every index and jump target `fastLoop` would otherwise test before
+  ## use is in range for the loop `first ..< last`, ended by the instruction at
+  ## `last`. The trusted variant of `fastLoopForScope` runs on that word and
+  ## tests none of them. What a loop of fast instructions can do to `ip`:
+  ## step by one, take a jump, or step over the instructions a fused one
+  ## covers. Each must land within `first .. last`, and `last` must be an
+  ## instruction `fastLoop` does not run, so the loop always ends there.
+  let count = chunk.instructions.len
+  let constants = chunk.constants.len
+  if first < 0 or first >= last or last >= count or
+      chunk.instructions[last].op in fastLoopOps:
+    return false
+  template inLoop(target: int): bool = target >= first and target <= last
+  for i in first ..< last:
+    let inst = addr chunk.instructions[i]
+    case inst[].op
+    of opPushConst:
+      if inst[].intArg < 0 or inst[].intArg >= constants: return false
+    of opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop:
+      if not inLoop(inst[].intArg): return false
+    of opForInlineNext:
+      if not inLoop(inst[].depth): return false
+    of opSetLocalPop:
+      # The handler steps over the opPop it covers.
+      if i + 2 > last or chunk.instructions[i + 1].op != opPop: return false
+    of opCompareLocalsJumpIfFalse:
+      # Reads the three instructions after it; a hit steps past all of them.
+      if i + 4 > last or not inLoop(chunk.instructions[i + 3].intArg):
+        return false
+    of fastLoopConstOps:
+      if inst[].depth < 0 or inst[].depth >= constants: return false
+      if inst[].op == opCompareConstJumpIfFalse and
+          (i + 2 > last or not inLoop(chunk.instructions[i + 1].intArg)):
+        return false
+    else: discard
+  true
+
 proc scanFastLoopBody(chunk: Chunk, first, last, at: int): bool {.noinline.} =
   if chunk.fastLoopJumps.len != chunk.instructions.len:
     chunk.fastLoopJumps.setLen(chunk.instructions.len)
@@ -19243,7 +19285,12 @@ proc scanFastLoopBody(chunk: Chunk, first, last, at: int): bool {.noinline.} =
         only = false
         break
       if op in fastLoopCallOps: calls = true
-    chunk.fastLoopJumps[at] = (if not only: 2'u8 elif calls: 3'u8 else: 1'u8)
+    # 1: plain, 3: holds a call, 4: plain and verified (`fastLoopVerified`).
+    chunk.fastLoopJumps[at] =
+      if not only: 2'u8
+      elif calls: 3'u8
+      elif fastLoopVerified(chunk, first, last): 4'u8
+      else: 1'u8
   only
 
 proc fastLoopBody(chunk: Chunk, first, last, at: int): bool {.inline.} =
@@ -19260,7 +19307,7 @@ proc fastLoopBody(chunk: Chunk, first, last, at: int): bool {.inline.} =
 {.push boundChecks: off, overflowChecks: off.}
 proc fastLoopForScope(loopChunk: Chunk, scope: Scope, stack: var seq[Value],
                       startIp, startSp: int, mirrored: static bool,
-                      calls: static bool): FastRun {.noinline.} =
+                      calls: static bool, trusted: static bool): FastRun {.noinline.} =
   ## Runs the instructions from `startIp` for as long as each is one of a few
   ## simple ones whose fast path applies, exactly as `runLoop`'s handler for it
   ## would, and stops at the first other one, leaving it for `runLoop`. It never
@@ -19357,7 +19404,9 @@ proc fastLoopForScope(loopChunk: Chunk, scope: Scope, stack: var seq[Value],
     of opIntLe2, opIntLeConst: nfkLe
     of opIntGe2, opIntGeConst: nfkGe
     else: nfkNone
-  while ip >= 0 and ip < count:
+  # A verified loop (`fastLoopVerified`) keeps `ip` within it and ends at an
+  # instruction this proc does not run, so the bounds test is for the rest.
+  while (when trusted: true else: ip >= 0 and ip < count):
     let inst = addr chunk.instructions[ip]
     let op = inst[].op
     when calls:
@@ -19569,8 +19618,9 @@ proc fastLoopForScope(loopChunk: Chunk, scope: Scope, stack: var seq[Value],
     case op
     of opPushConst:
       let index = inst[].intArg
-      if index < 0 or index >= constantCount:
-        break
+      when not trusted:
+        if index < 0 or index >= constantCount:
+          break
       push chunk.constants[index]
       inc ip
     of opLoadLocal:
@@ -19626,9 +19676,10 @@ proc fastLoopForScope(loopChunk: Chunk, scope: Scope, stack: var seq[Value],
           stack[sp - 1].isHeapBacked or scope.managedBindingPins.len != 0 or
           atomicLoadN(addr gStrictErrorRegistered, ATOMIC_ACQUIRE):
         break
-      if op == opSetLocalPop and
-          (ip + 1 >= count or chunk.instructions[ip + 1].op != opPop):
-        break
+      when not trusted:
+        if op == opSetLocalPop and
+            (ip + 1 >= count or chunk.instructions[ip + 1].op != opPop):
+          break
       scope.slots[slot] = stack[sp - 1]
       when mirrored:
         # This is assignSlot's immediate store with typing, pins, and strict
@@ -19671,16 +19722,24 @@ proc fastLoopForScope(loopChunk: Chunk, scope: Scope, stack: var seq[Value],
        opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst,
        opCompareConstJumpIfFalse:
       let index = inst[].depth
-      if sp < 1 or index < 0 or index >= constantCount:
-        break
+      when trusted:
+        if sp < 1:
+          break
+      else:
+        if sp < 1 or index < 0 or index >= constantCount:
+          break
       let a {.cursor.} = stack[sp - 1]
       let b {.cursor.} = chunk.constants[index]
       let kind = binaryKind(op, inst)
       if a.isSmallInt and (inst[].flag or b.isSmallInt):
         if op == opCompareConstJumpIfFalse:
-          if kind notin {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe} or
-              ip + 1 >= count:
-            break
+          when trusted:
+            if kind notin {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe}:
+              break
+          else:
+            if kind notin {nfkLt, nfkGt, nfkLe, nfkGe, nfkEq, nfkNe} or
+                ip + 1 >= count:
+              break
           let x = a.smallIntVal
           let y = b.smallIntVal
           let holds =
@@ -19751,8 +19810,9 @@ proc fastLoopForScope(loopChunk: Chunk, scope: Scope, stack: var seq[Value],
         break
       inc ip
     of opCompareLocalsJumpIfFalse:
-      if ip + 3 >= count:
-        break
+      when not trusted:
+        if ip + 3 >= count:
+          break
       let left = inst[].intArg
       let right = chunk.instructions[ip + 1].intArg
       if not slotReady(left) or not slotReady(right) or
@@ -19800,14 +19860,18 @@ proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
               startIp, startSp: int): FastRun {.noinline.} =
   # Mirroring stays fixed for the whole activation. Specialize once here so
   # every scalar store in a function loop can skip the mirror-mode branch.
-  let calls = startIp >= 1 and startIp - 1 < chunk.fastLoopJumps.len and
-    chunk.fastLoopJumps[startIp - 1] == 3
+  let mode =
+    if startIp >= 1 and startIp - 1 < chunk.fastLoopJumps.len:
+      chunk.fastLoopJumps[startIp - 1]
+    else: 0'u8
   if scope.slotMirror:
-    if calls: fastLoopForScope(chunk, scope, stack, startIp, startSp, true, true)
-    else: fastLoopForScope(chunk, scope, stack, startIp, startSp, true, false)
+    if mode == 3: fastLoopForScope(chunk, scope, stack, startIp, startSp, true, true, false)
+    elif mode == 4: fastLoopForScope(chunk, scope, stack, startIp, startSp, true, false, true)
+    else: fastLoopForScope(chunk, scope, stack, startIp, startSp, true, false, false)
   else:
-    if calls: fastLoopForScope(chunk, scope, stack, startIp, startSp, false, true)
-    else: fastLoopForScope(chunk, scope, stack, startIp, startSp, false, false)
+    if mode == 3: fastLoopForScope(chunk, scope, stack, startIp, startSp, false, true, false)
+    elif mode == 4: fastLoopForScope(chunk, scope, stack, startIp, startSp, false, false, true)
+    else: fastLoopForScope(chunk, scope, stack, startIp, startSp, false, false, false)
 
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,

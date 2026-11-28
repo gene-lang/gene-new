@@ -1,4 +1,4 @@
-import gene/[types, compiler, vm, printer]
+import gene/[types, compiler, vm, printer, gir]
 import std/[strutils, unittest]
 
 proc fastLoopOutcome(source: string, enabled: bool): string =
@@ -263,6 +263,62 @@ suite "fastLoop":
         check fastLoopOutcome(source, true) == "4950"
         check fastLoopMirroredWrites >= before + 100
         check fastLoopOutcome(source, false) == "4950"
+
+  test "a verified loop is trusted, and a malformed one keeps its guards":
+    # fastLoopJumps holds one verdict per opLoopEnter: 3 for a loop with a call,
+    # 4 for one whose indexes and jump targets were all proved in range, 1 for
+    # a plain loop that could not be proved.
+    proc verdicts(chunk: Chunk): seq[uint8] =
+      for fn in chunk.functions:
+        for v in fn.chunk.fastLoopJumps:
+          if v != 0: result.add v
+    let plain = compileSource(
+      "(fn f [n] (var t 0) (repeat i in n (set t (+ t 1))) t) (f 10)")
+    check run(plain, newGlobalScope()).print() == "10"
+    check verdicts(plain) == @[4'u8]
+    let calling = compileSource(
+      "(fn g [x] (+ x 1)) (fn f [n] (var t 0) (repeat i in n (set t (g t))) t) " &
+      "(f 10)")
+    check run(calling, newGlobalScope()).print() == "10"
+    check 3'u8 in verdicts(calling)
+    # What the verifier accepts, and what it refuses. A damaged chunk is never
+    # run: with panics on, an index past a table ends the process.
+    proc loopOf(source: string): tuple[chunk: Chunk, first, last: int] =
+      let compiled = compileSource(source)
+      result.chunk = compiled.functions[0].chunk
+      for i, inst in result.chunk.instructions:
+        if inst.op == opLoopEnter:
+          result.first = i + 1
+          result.last = inst.intArg
+    let source = "(fn f [n] (var t 0) (repeat i in n (set t (+ t 1))) t) (f 10)"
+    var good = loopOf(source)
+    check fastLoopVerified(good.chunk, good.first, good.last)
+    proc damaged(change: proc (body: Chunk, first, last: int)): bool =
+      var loop = loopOf(source)
+      change(loop.chunk, loop.first, loop.last)
+      fastLoopVerified(loop.chunk, loop.first, loop.last)
+    template firstIn(body: Chunk, first, last: int, wanted: OpCode): int =
+      var found = -1
+      for i in first ..< last:
+        if body.instructions[i].op == wanted and found < 0: found = i
+      found
+    check not damaged(proc (b: Chunk, first, last: int) =
+      b.instructions[firstIn(b, first, last, opPushConst)].intArg =
+        b.constants.len)
+    check not damaged(proc (b: Chunk, first, last: int) =
+      b.instructions[firstIn(b, first, last, opJump)].intArg =
+        b.instructions.len)
+    check not damaged(proc (b: Chunk, first, last: int) =
+      b.instructions[firstIn(b, first, last, opJump)].intArg = first - 1)
+    check not damaged(proc (b: Chunk, first, last: int) =
+      b.instructions[firstIn(b, first, last, opSetLocalPop) + 1].op = opNoop)
+    check not damaged(proc (b: Chunk, first, last: int) =
+      b.instructions[firstIn(b, first, last, opCompareLocalsJumpIfFalse) + 3]
+        .intArg = last + 5)
+    check not damaged(proc (b: Chunk, first, last: int) =
+      b.instructions[last].op = opJump)       # the loop no longer ends at `last`
+    check not fastLoopVerified(good.chunk, good.first, good.chunk.instructions.len)
+    check not fastLoopVerified(good.chunk, -1, good.last)
 
   test "the kernels give their known results":
     check fastLoopOutcome(fastLoopPrograms[1], true) == "499500"
