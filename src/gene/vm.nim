@@ -19161,6 +19161,8 @@ when defined(geneFastLoopTests):
     ## How many times `fastLoop` was entered, for the tests that check it runs.
   var fastLoopMirroredWrites*: int
     ## Mirrored slot writes completed within `fastLoop`.
+  var fastLoopInlineCalls*: int
+    ## Scopeless leaf calls `fastLoop` ran without a frame.
 
 const fastLoopOps = {opPushConst, opLoadLocal, opLoadLocalFast, opPop, opNot,
   opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop, opSetLocal,
@@ -19168,8 +19170,62 @@ const fastLoopOps = {opPushConst, opLoadLocal, opLoadLocalFast, opPop, opNot,
   opIntGt2, opIntLe2, opIntGe2, opNativeFastConst, opIntAddConst,
   opIntSubConst, opIntMulConst, opIntLtConst, opIntGtConst, opIntLeConst,
   opIntGeConst, opCompareConstJumpIfFalse, opCompareLocalsJumpIfFalse,
-  opForInlineNext}
-  ## The instructions `fastLoop` runs.
+  opForInlineNext, opCallLocal1, opCallLocalN, opCallParentLocal0,
+  opCallParentLocal1, opCallOuterLocal0, opCallOuterLocal1, opCall0, opCall1,
+  opCall2, opCall, opLoadOuterLocal}
+  ## The instructions `fastLoop` runs. The calls run only a callee that
+  ## `trySmallIntClosure` evaluates, or a scopeless leaf `inlineLeafOps` covers
+  ## (see their handler below).
+
+const inlineLeafOps = {opPushConst, opPop, opNot, opLoadArg, opStoreArg,
+  opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop,
+  opNativeFast2, opIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,
+  opIntLe2, opIntGe2, opNativeFastConst, opIntAddConst, opIntSubConst,
+  opIntMulConst, opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst,
+  opReturn, opReturnBareInt, opReturnIntAdd2}
+  ## What a scopeless body may hold for `fastLoop` to run its call in place.
+
+proc scanInlineLeaf(proto: FunctionProto): bool {.noinline.} =
+  ## Whether `proto`'s scopeless body is made only of `inlineLeafOps`, with
+  ## every index in range and every store aimed at a cell after the arguments.
+  ## A body like that changes nothing but its own cells, so `fastLoop` can drop
+  ## the call and run it again in `runLoop` at any miss. Worked out once.
+  let body = proto.scopelessChunk
+  if body == nil: return false
+  # A scopeless body has no loops, so its `fastLoopJumps` is free to hold the
+  # verdict: one entry, 1 for a body that qualifies and 2 for one that does not.
+  if body.fastLoopJumps.len == 1: return body.fastLoopJumps[0] == 1
+  var ok = body.instructions.len > 0 and
+    body.instructions[body.instructions.high].op in
+      {opReturn, opReturnBareInt, opReturnIntAdd2}
+  if ok:
+    for i, inst in body.instructions:
+      if inst.op notin inlineLeafOps:
+        ok = false
+        break
+      case inst.op
+      of opPushConst:
+        ok = inst.intArg >= 0 and inst.intArg < body.constants.len
+      of opLoadArg:
+        ok = inst.intArg >= 0 and inst.intArg < proto.localNames.len
+      of opStoreArg:
+        ok = inst.intArg >= proto.params.len and
+          inst.intArg < proto.localNames.len
+      of opJump, opJumpIfFalse, opJumpIfFalseOrPop, opJumpIfTrueOrPop:
+        ok = inst.intArg > i and inst.intArg < body.instructions.len
+      of opNativeFastConst, opIntAddConst, opIntSubConst, opIntMulConst,
+         opIntLtConst, opIntGtConst, opIntLeConst, opIntGeConst:
+        ok = inst.depth >= 0 and inst.depth < body.constants.len
+      else: discard
+      if not ok: break
+  body.fastLoopJumps = @[if ok: 1'u8 else: 2'u8]
+  ok
+
+const fastLoopCallOps = {opCallLocal1, opCallLocalN, opCallParentLocal0,
+  opCallParentLocal1, opCallOuterLocal0, opCallOuterLocal1, opCall0, opCall1,
+  opCall2, opCall, opLoadOuterLocal}
+  ## The calls in `fastLoopOps`. A loop holding one takes the variant of
+  ## `fastLoopForScope` that can run a callee; the others keep the plain code.
 
 const fastLoopNumberKinds = {nfkAdd, nfkSub, nfkMul, nfkLt, nfkGt, nfkLe, nfkGe}
   ## The kinds `tryFastNativeKind2` answers for any two numbers without raising.
@@ -19180,11 +19236,14 @@ proc scanFastLoopBody(chunk: Chunk, first, last, at: int): bool {.noinline.} =
   var only = first >= 0 and first < last and last <= chunk.instructions.len and
     at >= 0 and at < chunk.instructions.len
   if only:
+    var calls = false
     for i in first ..< last:
-      if chunk.instructions[i].op notin fastLoopOps:
+      let op = chunk.instructions[i].op
+      if op notin fastLoopOps:
         only = false
         break
-    chunk.fastLoopJumps[at] = (if only: 1 else: 2)
+      if op in fastLoopCallOps: calls = true
+    chunk.fastLoopJumps[at] = (if not only: 2'u8 elif calls: 3'u8 else: 1'u8)
   only
 
 proc fastLoopBody(chunk: Chunk, first, last, at: int): bool {.inline.} =
@@ -19194,13 +19253,14 @@ proc fastLoopBody(chunk: Chunk, first, last, at: int): bool {.inline.} =
   ## than it saves, since `fastLoop` returns at that instruction every
   ## iteration. Worked out once per loop.
   if at < chunk.fastLoopJumps.len and chunk.fastLoopJumps[at] != 0:
-    chunk.fastLoopJumps[at] == 1
+    chunk.fastLoopJumps[at] != 2
   else:
     scanFastLoopBody(chunk, first, last, at)
 
 {.push boundChecks: off, overflowChecks: off.}
-proc fastLoopForScope(chunk: Chunk, scope: Scope, stack: var seq[Value],
-                      startIp, startSp: int, mirrored: static bool): FastRun {.noinline.} =
+proc fastLoopForScope(loopChunk: Chunk, scope: Scope, stack: var seq[Value],
+                      startIp, startSp: int, mirrored: static bool,
+                      calls: static bool): FastRun {.noinline.} =
   ## Runs the instructions from `startIp` for as long as each is one of a few
   ## simple ones whose fast path applies, exactly as `runLoop`'s handler for it
   ## would, and stops at the first other one, leaving it for `runLoop`. It never
@@ -19217,8 +19277,27 @@ proc fastLoopForScope(chunk: Chunk, scope: Scope, stack: var seq[Value],
     inc fastLoopRuns
   var ip = startIp
   var sp = startSp
-  let count = chunk.instructions.len
-  let constantCount = chunk.constants.len
+  # `chunk` is the loop's, or, inside a call run in place, the callee's
+  # scopeless body. Such a body keeps its arguments on the operand stack at
+  # `inlineBase`, calls nothing, and writes only cells after its arguments, so
+  # the way out of a miss is to cut the stack back to the arguments and hand
+  # the call instruction to runLoop, which then runs it as it always did.
+  when calls:
+    var callsRun = 0     # calls run here, so a miss after some is not a verdict
+    var demote = false   # the loop's first call is one this proc cannot run
+    var chunk {.cursor.} = loopChunk
+    var count = chunk.instructions.len
+    var constantCount = chunk.constants.len
+    var inlineDepth = 0
+    var inlineBase = 0
+    var inlineArgc = 0
+    var inlineDrop = 0   # 1 when the callee sits on the stack below the arguments
+    var inlineCallIp = 0
+  else:
+    # A loop with no call keeps the code it always had: one chunk, fixed.
+    let chunk = loopChunk
+    let count = chunk.instructions.len
+    let constantCount = chunk.constants.len
   template push(v: Value) =
     block:
       var pushed = v
@@ -19281,6 +19360,212 @@ proc fastLoopForScope(chunk: Chunk, scope: Scope, stack: var seq[Value],
   while ip >= 0 and ip < count:
     let inst = addr chunk.instructions[ip]
     let op = inst[].op
+    when calls:
+      # Calls, and the instructions of the body a call runs in place. They sit
+      # ahead of the main `case`, not in it, so a loop without calls is
+      # compiled from the same `case` it always was.
+      case op
+      of opLoadOuterLocal:
+        # runLoop's handler, for a slot that is defined and holds no pending
+        # module reference; anything else is its to run, or to raise in.
+        let slot = inst[].intArg
+        var outer {.cursor.} = scope.parent
+        if inst[].depth != 1:
+          outer = scope
+          for _ in 0 ..< inst[].depth:
+            if outer == nil: break
+            outer = outer.parent
+        if outer == nil or slot < 0 or slot >= outer.slots.len or
+            not outer.slotDefined(slot):
+          break
+        if scope.moduleRefs != nil and scope.moduleRefs.pendingStructural != 0 and
+            outer.slots[slot].isPendingModuleRef:
+          break
+        push outer.slots[slot]
+        inc ip
+        continue
+      of opCallLocal1, opCallLocalN, opCallParentLocal0, opCallParentLocal1,
+         opCallOuterLocal0, opCallOuterLocal1, opCall0, opCall1, opCall2,
+         opCall:
+        # runLoop's calls, for two kinds of callee. A small-Int closure
+        # (`trySmallIntClosure`) answers directly. A scopeless leaf whose body
+        # `scanInlineLeaf` accepted runs here, in place of the frame runLoop
+        # would push. Anything else, and any miss, is left to runLoop
+        # untouched; a loop whose first call misses is demoted. The callee is
+        # in a slot (the first six) or on the stack below its arguments.
+        if inlineDepth != 0 or inst[].tail:
+          break
+        let argc =
+          case op
+          of opCallParentLocal0, opCallOuterLocal0, opCall0: 0
+          of opCallLocalN: inst[].depth
+          of opCall2: 2
+          of opCall: inst[].intArg
+          else: 1
+        var onStack = 0
+        var calleeAt: ptr Value
+        if op in {opCall0, opCall1, opCall2, opCall}:
+          onStack = 1
+          # The general call also carries named arguments, which runLoop binds.
+          if sp < argc + 1 or argc < 0 or
+              (op == opCall and (inst[].names.len != 0 or argc > 64)):
+            if callsRun == 0: demote = true
+            break
+          calleeAt = addr stack[sp - argc - 1]
+        else:
+          var holder {.cursor.} = scope
+          case op
+          of opCallParentLocal0, opCallParentLocal1:
+            holder = scope.parent
+          of opCallOuterLocal0, opCallOuterLocal1:
+            holder = scope.parent
+            if inst[].depth != 1:
+              holder = scope
+              for _ in 0 ..< inst[].depth:
+                if holder == nil: break
+                holder = holder.parent
+          else: discard
+          let slot = inst[].intArg
+          if argc < 0 or sp < argc or holder == nil or slot < 0 or
+              slot >= holder.slots.len or not holder.slotDefined(slot):
+            if callsRun == 0: demote = true
+            break
+          calleeAt = addr holder.slots[slot]
+        let callee {.cursor.} = calleeAt[]
+        if callee.kind != vkFunction or callee.fnHasErrorLease:
+          if callsRun == 0: demote = true
+          break
+        let code {.cursor.} = cast[FunctionCode](callee.fnCodeAddr)
+        let calleeScope {.cursor.} = cast[Scope](callee.fnScopeAddr)
+        if code == nil or not (code of FunctionProto):
+          if callsRun == 0: demote = true
+          break
+        let proto {.cursor.} = FunctionProto(code)
+        if not proto.canBypassCallBudget(calleeScope, scope):
+          if callsRun == 0: demote = true
+          break
+        if proto.smallIntLeafEligible and argc == 1 and
+            stack[sp - 1].isSmallInt:
+          let number = trySmallIntClosure(proto, calleeScope, stack[sp - 1])
+          if number.isSmallInt:
+            # The result replaces the argument, and the callee when it is on
+            # the stack too.
+            for _ in 0 ..< 1 + onStack:
+              dec sp
+              discard move stack[sp]
+            push number
+            inc callsRun
+            inc ip
+            continue
+          if callsRun == 0: demote = true
+          break
+        if proto.nativeOp != ncoNone:
+          # A typed_native arithmetic function (`native=int_add`), which
+          # runLoop answers with applyNativeCompiled. That proc can raise, so
+          # this takes only what it would answer without adapting anything:
+          # two small-Int arguments that satisfy their annotations and a
+          # result that is a small Int, or the product intMul gives.
+          var nativeOk = argc == 2 and proto.params.len == 2 and
+            proto.nativeOp in {ncoIntAdd, ncoIntSub, ncoIntMul} and
+            (not proto.hasReturnType or proto.returnKnownBareInt) and
+            stack[sp - 2].isSmallInt and stack[sp - 1].isSmallInt
+          if nativeOk and proto.hasParamTypes:
+            for i in 0 ..< 2:
+              if i < proto.paramTypes.len and proto.paramTypes[i].kind != vkNil and
+                  not bareScalarSatisfied(proto.paramTypes[i], stack[sp - 2 + i]):
+                nativeOk = false
+          var nativeResult: Value
+          if nativeOk:
+            let x = stack[sp - 2].smallIntVal
+            let y = stack[sp - 1].smallIntVal
+            case proto.nativeOp
+            of ncoIntAdd:
+              let sum = x +% y
+              if fitsSmallInt(sum): nativeResult = smallIntOf(sum)
+              else: nativeOk = false
+            of ncoIntSub:
+              let difference = x -% y
+              if fitsSmallInt(difference): nativeResult = smallIntOf(difference)
+              else: nativeOk = false
+            else:
+              nativeResult = intMul(stack[sp - 2], stack[sp - 1])
+          if nativeOk:
+            for _ in 0 ..< argc + onStack:
+              dec sp
+              discard move stack[sp]
+            push nativeResult
+            when defined(geneFastLoopTests): inc fastLoopInlineCalls
+            inc callsRun
+            inc ip
+            continue
+          if callsRun == 0: demote = true
+          break
+        var inlineOk = proto.nativeOp == ncoNone and
+          proto.scopelessChunk != nil and argc == proto.params.len and
+          not proto.scopelessReadsFields and scanInlineLeaf(proto)
+        if inlineOk and proto.scopelessNeedsIntArgs:
+          # Typed parameters: the same kind sweep runLoop makes, stricter, so
+          # anything it would send to the classic convention goes there.
+          inlineOk = (proto.fastBindUnaryInt or proto.fastBindPositionalInt) and
+            proto.returnKnownBareInt
+          for i in 0 ..< argc:
+            if not stack[sp - argc + i].isSmallInt: inlineOk = false
+        if not inlineOk:
+          if callsRun == 0: demote = true
+          break
+        inlineDepth = 1
+        inlineBase = sp - argc
+        inlineArgc = argc
+        inlineDrop = onStack
+        inlineCallIp = ip
+        chunk = proto.scopelessChunk
+        count = chunk.instructions.len
+        constantCount = chunk.constants.len
+        ip = 0
+        continue
+      of opLoadArg:
+        if inlineDepth == 0 or inst[].intArg < 0 or
+            inlineBase + inst[].intArg >= sp:
+          break
+        push stack[inlineBase + inst[].intArg]
+        inc ip
+        continue
+      of opStoreArg:
+        let at = inlineBase + inst[].intArg
+        if inlineDepth == 0 or sp == 0 or inst[].intArg < inlineArgc or at >= sp - 1:
+          break
+        stack[at] = stack[sp - 1]
+        inc ip
+        continue
+      of opReturn, opReturnBareInt, opReturnIntAdd2:
+        if inlineDepth == 0 or sp <= inlineBase:
+          break
+        var returned: Value
+        if op == opReturnIntAdd2:
+          if sp < inlineBase + 2 or not stack[sp - 1].isSmallInt or
+              not stack[sp - 2].isSmallInt:
+            break
+          let sum = stack[sp - 2].smallIntVal +% stack[sp - 1].smallIntVal
+          if not fitsSmallInt(sum):
+            break
+          returned = smallIntOf(sum)
+        else:
+          if op == opReturnBareInt and stack[sp - 1].kind != vkInt:
+            break
+          returned = move stack[sp - 1]
+        while sp > inlineBase - inlineDrop:
+          dec sp
+          discard move stack[sp]
+        push returned
+        when defined(geneFastLoopTests): inc fastLoopInlineCalls
+        chunk = loopChunk
+        count = chunk.instructions.len
+        constantCount = chunk.constants.len
+        ip = inlineCallIp + 1
+        inlineDepth = 0
+        inc callsRun
+        continue
+      else: discard
     case op
     of opPushConst:
       let index = inst[].intArg
@@ -19495,17 +19780,34 @@ proc fastLoopForScope(chunk: Chunk, scope: Scope, stack: var seq[Value],
       ip = (if holds: ip + 4 else: chunk.instructions[ip + 3].intArg)
     else:
       break
+  when calls:
+    if inlineDepth != 0:
+      # Stopped inside a call run in place. Cut back to its arguments and leave
+      # the call instruction to runLoop.
+      while sp > inlineBase + inlineArgc:
+        dec sp
+        discard move stack[sp]
+      ip = inlineCallIp
+      if callsRun == 0: demote = true
+    if demote and startIp >= 1 and startIp - 1 < loopChunk.fastLoopJumps.len:
+      # Entered at the opLoopEnter just before `startIp`. Later entries then
+      # take runLoop from the start, as loops with a call always did.
+      loopChunk.fastLoopJumps[startIp - 1] = 2
   FastRun(ip: ip, sp: sp)
 {.pop.}
 
 proc fastLoop(chunk: Chunk, scope: Scope, stack: var seq[Value],
-              startIp, startSp: int): FastRun {.inline.} =
+              startIp, startSp: int): FastRun {.noinline.} =
   # Mirroring stays fixed for the whole activation. Specialize once here so
   # every scalar store in a function loop can skip the mirror-mode branch.
+  let calls = startIp >= 1 and startIp - 1 < chunk.fastLoopJumps.len and
+    chunk.fastLoopJumps[startIp - 1] == 3
   if scope.slotMirror:
-    fastLoopForScope(chunk, scope, stack, startIp, startSp, true)
+    if calls: fastLoopForScope(chunk, scope, stack, startIp, startSp, true, true)
+    else: fastLoopForScope(chunk, scope, stack, startIp, startSp, true, false)
   else:
-    fastLoopForScope(chunk, scope, stack, startIp, startSp, false)
+    if calls: fastLoopForScope(chunk, scope, stack, startIp, startSp, false, true)
+    else: fastLoopForScope(chunk, scope, stack, startIp, startSp, false, false)
 
 proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
